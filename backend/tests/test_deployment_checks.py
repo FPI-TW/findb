@@ -85,8 +85,10 @@ def test_neither_target_requires_calendar_seeding():
     assert "alembic upgrade head" in helper
 
 
+@pytest.mark.parametrize("mode", ["candidate", "activate"])
 def test_migration_script_does_not_let_compose_consume_remaining_commands(
     tmp_path: Path,
+    mode: str,
 ) -> None:
     helper = (REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh").read_text(
         encoding="utf-8"
@@ -121,7 +123,7 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "production",
-            "FINDB_DEPLOY_MODE": "activate",
+            "FINDB_DEPLOY_MODE": mode,
             "DOCKER_CALLS": str(docker_calls),
             "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "3553ed95cfbf",
             "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.test",
@@ -131,6 +133,11 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
 
     assert completed.returncode == 0, completed.stderr
     calls = docker_calls.read_text(encoding="utf-8").splitlines()
+    if mode == "activate":
+        assert len(calls) == 1
+        assert "--require-exact-alembic-revision" in calls[0]
+        assert "alembic upgrade" not in calls[0]
+        return
     assert len(calls) == 5
     assert "alembic upgrade head" in calls[0]
     assert "--require-exact-alembic-revision" in calls[1]
@@ -195,8 +202,10 @@ def test_staging_migration_requires_exact_revision_before_reconciliation_or_serv
     assert all("reconcile_" not in call for call in calls)
 
 
+@pytest.mark.parametrize("mode", ["candidate", "activate"])
 def test_predeploy_script_checks_credentials_without_consuming_remaining_commands(
     tmp_path: Path,
+    mode: str,
 ) -> None:
     helper = (REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh").read_text(
         encoding="utf-8"
@@ -228,6 +237,7 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
             **os.environ,
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "staging",
+            "FINDB_DEPLOY_MODE": mode,
             "DOCKER_CALLS": str(docker_calls),
             "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "3553ed95cfbf",
             "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.test",
@@ -239,6 +249,11 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
     calls = docker_calls.read_text(encoding="utf-8").splitlines()
     assert len(calls) == 2
     assert "predeploy_db_check.py" in calls[0]
+    assert (
+        "--require-exact-alembic-revision"
+        if mode == "activate"
+        else "--allow-empty-database-bootstrap"
+    ) in calls[0]
     assert (
         "reconcile_deployment_credentials.py --deployment-target staging --check-only" in calls[1]
     )
@@ -3479,11 +3494,16 @@ def test_activation_requires_database_at_the_single_exact_selected_revision() ->
     precheck_block = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
         "\nMIGRATION_CHECK_SCRIPT", 1
     )[0]
-    assert "--require-exact-alembic-revision" not in precheck_block
+    assert 'if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then' in precheck_block
+    assert "revision_policy=--require-exact-alembic-revision" in precheck_block
     migration_block = helper.split("<<'MIGRATION_SCRIPT'", 1)[1].split("MIGRATION_SCRIPT", 1)[0]
     assert "alembic upgrade head" in migration_block
     assert "--require-exact-alembic-revision" in migration_block
-    assert migration_block.index("alembic upgrade head") < migration_block.index(
+    activation, candidate = migration_block.split("\nfi\n", 1)
+    assert "--require-exact-alembic-revision" in activation
+    assert "exit 0" in activation
+    assert "alembic upgrade" not in activation
+    assert candidate.index("alembic upgrade head") < candidate.index(
         "--require-exact-alembic-revision"
     )
     assert helper.count("alembic upgrade head") == 1

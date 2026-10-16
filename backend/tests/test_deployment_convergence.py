@@ -214,7 +214,7 @@ def test_reusable_deployments_persist_production_acceptance_and_replay_only_acce
         assert "inputs.mode == 'candidate'" in text
         assert f"{unit}/production/accepted/" in text
         assert 'state:"accepted"' in text
-        assert "ssm_command_marker_state" in text
+        assert "ssm_wait_command" in text
         assert "PRODUCTION_DEPLOY_ENABLED" not in text
         assert 'test "$GITHUB_REF" = refs/heads/main' in text
         assert 'bundle_sha256="${bundle_filename##*-}"' in text
@@ -351,10 +351,13 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
             "id-token": "write",
         }
         assert "environment" not in jobs["prepare"]
-        assert jobs["prepare"]["permissions"] == {
+        prepare_permissions = {
             "contents": "read",
             "id-token": "write",
         }
+        if unit == "fetcher":
+            prepare_permissions["actions"] = "read"
+        assert jobs["prepare"]["permissions"] == prepare_permissions
         assert workflow["jobs"]["deploy"]["permissions"] == {
             "contents": "read",
             "id-token": "write",
@@ -441,7 +444,7 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
             assert ci.count("docker build -f fetcher/") == 3
 
 
-def test_fetcher_waits_for_same_sha_findb_before_aws_credentials() -> None:
+def test_fetcher_builds_before_waiting_for_same_sha_findb_deployment() -> None:
     text = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
     assert "Wait for same-revision FinDB staging rollout" in text
     assert "actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}" in text
@@ -449,7 +452,22 @@ def test_fetcher_waits_for_same_sha_findb_before_aws_credentials() -> None:
     select_block = re.search(
         r"^  select:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
     ).group("body")
-    assert "Wait for same-revision FinDB staging rollout" in select_block
+    assert "Wait for same-revision FinDB staging rollout" not in select_block
+    workflow = yaml.safe_load(text)
+    prepare = workflow["jobs"]["prepare"]
+    names = [step.get("name") for step in prepare["steps"]]
+    assert (
+        names.index("Build and upload exact v2 staging candidate")
+        < names.index("Wait for same-revision FinDB staging rollout")
+        < names.index("Publish exact reusable deployment contract")
+    )
+    assert workflow["jobs"]["deploy"]["needs"] == "prepare"
+    wait = next(
+        step
+        for step in prepare["steps"]
+        if step.get("name") == "Wait for same-revision FinDB staging rollout"
+    )
+    assert wait["env"]["HEAD_SHA"] == "${{ needs.select.outputs.revision }}"
     assert "Configure staging publisher credentials" not in select_block
 
 
@@ -528,7 +546,7 @@ def test_reusable_deployments_only_forward_deployment_controls():
 
 
 def test_every_ssm_run_shell_command_is_explicitly_wrapped_for_bash() -> None:
-    wrapper = "python3 infra/deploy/ssm_bash_command.py"
+    wrapper = "python3 .deployment-driver/infra/deploy/ssm_bash_command.py"
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
         assert text.count("--document-name AWS-RunShellScript") == 3
@@ -591,9 +609,9 @@ def test_prepare_contracts_are_main_push_or_confirmed_manual_candidate_or_exact_
 def test_reusable_records_and_ssm_gates_are_immutable_and_bounded() -> None:
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
-        assert "timeout-minutes: 90" in text
+        assert "timeout-minutes: 55" in text
         assert "--if-none-match '*'" in text
-        assert "ssm_command_marker_state" in text
+        assert "ssm_wait_command" in text
         assert "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=" in text
         assert "status=success" in text and "status=failed" in text
         assert (

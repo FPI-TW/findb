@@ -39,6 +39,7 @@ command = Path(sys.argv[0]).name
 state["log"].append([command, *args])
 status = 0
 if command == "commit-boundary": state["committed"] = True
+elif command == "sleep": pass
 elif command == "stat": print("root:root:700")
 elif command == "mv": os.replace(args[-2], args[-1])
 elif command == "sudo":
@@ -50,6 +51,9 @@ elif command == "sudo":
         import subprocess
         result=subprocess.run([sys.executable,*args[1:]],input=sys.stdin.read(),text=True,capture_output=True)
         store.write_text(json.dumps(state));raise SystemExit(result.returncode)
+    if args[args.index("--consumer") + 1] == "images":
+        state["images_prepared"] = True
+        store.write_text(json.dumps(state));raise SystemExit(0)
     index = next(i for i, a in enumerate(args) if a.endswith("/release_fetcher_provider.sh"))
     provider, image, state_dir, state_path, stable, candidate, previous = args[index+1:index+8]
     state.setdefault("provider_images", []).append([stable, image])
@@ -69,13 +73,14 @@ elif command == "sudo":
                 state["fault"] = "used";status = 5
             else: rows[previous] = rows.pop(stable)
         if not status and os.environ["FETCHER_DEPLOY_MODE"] == "activate":
-            rows[stable] = dict(id="new-"+stable, running=True, exit=0, oom=False, error="", accepted="true", cmd=runtime_command)
+            rows[stable] = dict(id="new-"+stable, image=image, running=True, exit=0, oom=False, error="", accepted="true", cmd=runtime_command)
             if os.environ["APP_ENVIRONMENT"] == "production" and os.environ.get("FETCHER_RUNTIME_PROFILE", "bounded") == "bounded":
                 rows[stable+"-historical"] = dict(id="new-"+stable+"-historical", running=True, exit=0, oom=False, error="", accepted="true", marker="date-boundary-v1", cmd=["findb-fetch-historical-backfill","--provider",provider.replace("-","_"),"--run-forever"])
         if not status and state.get("fault") == "provider_after": status = 9
         if not status and state.get("fault") == "provider_signal": state["signal_on_exit"] = True
 elif command == "docker":
-    if args[:2] == ["container", "ls"]:
+    if args[:2] == ["image", "prune"]: pass
+    elif args[:2] == ["container", "ls"]:
         if state.get("fault", "").startswith("inventory-list-"): status = int(state["fault"].rsplit("-", 1)[1])
         else: print("\n".join(rows))
     elif args[0] == "container":
@@ -95,6 +100,7 @@ elif command == "docker":
                 elif field_fault[1] in ["rc1", "rc81"]: status = int(field_fault[1][2:])
                 else: print(field_fault[1])
             elif ".State.Running" in template: print(str(row["running"]).lower())
+            elif ".RestartCount" in template: print(1 if state.get("fault") == "activation-restarts" else 0)
             elif ".State.ExitCode" in template: print(row["exit"])
             elif ".State.OOMKilled" in template: print(str(row["oom"]).lower())
             elif ".State.Error" in template: print(row["error"])
@@ -247,7 +253,7 @@ def execute(
         )
         binaries = root / "bin"
         binaries.mkdir()
-        for name in ("docker", "sudo", "stat", "mv", "commit-boundary"):
+        for name in ("docker", "sudo", "stat", "mv", "commit-boundary", "sleep"):
             path = binaries / name
             path.write_text(f"#!{sys.executable}\n" + FAKE_COMMAND)
             path.chmod(0o700)
@@ -401,3 +407,40 @@ def test_unclean_stop_fails_without_deleting_the_original(change):
     assert any(row["id"] == before[name]["id"] for row in state["rows"].values())
     assert "private-error" not in completed.stderr
     assert pointer == "b" * 64 + "-122-1"
+
+
+def test_shared_activation_observation_keeps_all_originals_until_healthy():
+    result, state, _ = execute(original_rows(), mode="activate")
+    assert result.returncode == 0, result.stderr
+    sleeps = [entry for entry in state["log"] if entry[0] == "sleep"]
+    assert sleeps == [["sleep", "5"]] * 5
+    checks = [
+        entry
+        for entry in state["log"]
+        if entry[0] == "docker" and ".RestartCount" in " ".join(entry)
+    ]
+    assert len(checks) == len(PROVIDERS) * 6
+    assert state["images_prepared"] is True
+    wrappers = [entry for entry in state["log"] if entry[0] == "sudo" and "--consumer" in entry]
+    assert sum(entry[entry.index("--consumer") + 1] == "images" for entry in wrappers) == 1
+    providers = [entry for entry in wrappers if entry[entry.index("--consumer") + 1] != "images"]
+    assert len(providers) == 11
+    assert all("--docker-login" not in entry for entry in providers)
+    last_observation = max(i for i, entry in enumerate(state["log"]) if entry[0] == "sleep")
+    first_retirement = next(
+        i for i, entry in enumerate(state["log"]) if entry[:2] == ["docker", "rm"]
+    )
+    assert last_observation < first_retirement
+    assert state["log"][-1] == ["docker", "image", "prune", "-af"]
+
+
+def test_shared_health_failure_restores_original_identities_and_pointer():
+    original = original_rows()
+    result, state, pointer = execute(original, mode="activate", fault="activation-restarts")
+    assert result.returncode != 0
+    assert "reason=activation_unhealthy runtime=" in result.stderr
+    assert pointer == "b" * 64 + "-122-1"
+    assert {name: row["id"] for name, row in state["rows"].items()} == {
+        name: row["id"] for name, row in original.items()
+    }
+    assert all(row["running"] for row in state["rows"].values())

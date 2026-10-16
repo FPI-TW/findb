@@ -88,6 +88,18 @@ ssm_command_marker_state() {
     terminal$'\t'*)
       IFS=$'\t' read -r _ status status_details response_code <<<"$state"
       echo "SSM terminal invocation failure: status=$status status_details=$status_details response_code=$response_code" >&2
+      # Surface only the allowlisted diagnostic protocol, never raw stdout/stderr.
+      local diagnostic profile provider line
+      diagnostic="$(jq -r '[.stdout | split("\n")[] | rtrimstr("\r") | select(test("^fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=(pilot|full_market) provider=(twelve_data|finlab|shioaji|taifex)$"))] | unique | .[:8][]' <<<"$response")"
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        profile="${line#*execution_profile=}"; profile="${profile%% *}"
+        provider="${line##*provider=}"
+        echo "Fetcher deployment blocked: scheduler_not_stopped execution_profile=$profile provider=$provider. Stop the scheduler in Dashboard and wait for desired/observed stopped before retrying." >&2
+        if [ "${GITHUB_ACTIONS:-false}" = true ]; then
+          printf '::error title=Fetcher scheduler 尚未停止::execution_profile=%s provider=%s；請先在 Dashboard 停止該 scheduler，等待 desired/observed stopped 後重試。\n' "$profile" "$provider" >&2
+        fi
+      done <<<"$diagnostic"
       return 1
       ;;
     *)
@@ -96,3 +108,51 @@ ssm_command_marker_state() {
       ;;
   esac
 }
+
+ssm_cancel_and_confirm() {
+  local region="$1" command_id="$2" instance_id="$3" state deadline
+  # Do not assume that a cancelled runner stopped the remote process. A terminal
+  # SSM status is required; otherwise explicitly report the unresolved command.
+  aws ssm cancel-command --region "$region" --command-id "$command_id" \
+    --instance-ids "$instance_id" --cli-connect-timeout 5 --cli-read-timeout 10 \
+    >/dev/null 2>&1 || true
+  deadline=$((SECONDS + 120))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state="$(aws ssm get-command-invocation --region "$region" --command-id "$command_id" \
+      --instance-id "$instance_id" --cli-connect-timeout 5 --cli-read-timeout 10 \
+      --query Status --output text)" || break
+    case "$state" in
+      Success|Failed|Cancelled|TimedOut)
+        echo "SSM remote command terminal after abort: command_id=$command_id status=$state. Verify host recovery before retrying." >&2
+        return 0 ;;
+      Pending|InProgress|Delayed|Cancelling) sleep 5 ;;
+      *) break ;;
+    esac
+  done
+  echo "SSM remote termination unconfirmed: command_id=$command_id. Inspect the host and CloudWatch before retrying; acceptance is blocked." >&2
+  return 1
+}
+
+ssm_wait_command() (
+  if [ "$#" -ne 6 ] || ! [[ "$6" =~ ^[1-9][0-9]*$ ]]; then
+    echo 'usage: ssm_wait_command REGION COMMAND_ID INSTANCE_ID SUCCESS_MARKER FAILED_MARKER TIMEOUT_SECONDS' >&2
+    return 2
+  fi
+  local region="$1" command_id="$2" instance_id="$3" success_marker="$4" failed_marker="$5"
+  local deadline=$((SECONDS + $6)) state completed=false
+  trap 'if [ "$completed" != true ]; then ssm_cancel_and_confirm "$region" "$command_id" "$instance_id" || true; fi' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    state="$(ssm_command_marker_state "$region" "$command_id" "$instance_id" "$success_marker" "$failed_marker")" || return 1
+    [ "$SECONDS" -lt "$deadline" ] || break
+    if [ "$state" = success ]; then
+      completed=true
+      return 0
+    fi
+    sleep 5
+  done
+  echo "SSM command deadline exceeded: command_id=$command_id timeout_seconds=$6; acceptance is blocked." >&2
+  return 1
+)

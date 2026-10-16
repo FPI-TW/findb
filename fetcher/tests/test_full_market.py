@@ -1113,7 +1113,7 @@ def test_require_stopped_never_recreates_unavailable_checkpoint(
 
 @pytest.mark.parametrize("desired", ["stopped", "running"])
 def test_require_stopped_checks_existing_control_without_mutating_prepared_checkpoint(
-    tmp_path, monkeypatch, desired
+    tmp_path, monkeypatch, desired, capsys
 ):
     from findb_fetcher import full_market_cli
 
@@ -1165,6 +1165,15 @@ def test_require_stopped_checks_existing_control_without_mutating_prepared_check
         ]
     )
     assert result == (0 if desired == "stopped" else 2)
+    output = capsys.readouterr()
+    if desired != "stopped":
+        assert (
+            "fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=full_market provider=twelve_data"
+            in output.out
+        )
+        assert "stop this scheduler in Dashboard" in output.err
+    else:
+        assert "scheduler_not_stopped" not in output.out
     assert calls == [{"observed_state": "stopped"}]
     assert state.path.read_bytes() == before
     assert state.prepared("fp1:123:AAPL") == b"prepared delivery"

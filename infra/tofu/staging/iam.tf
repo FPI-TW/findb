@@ -199,6 +199,20 @@ data "aws_iam_policy_document" "deploy_permissions" {
     resources = ["*"]
   }
 
+  # CancelCommand has no resource-level IAM support. Limit the standalone
+  # action to this region; the caller supplies its captured command/instance ID.
+  statement {
+    sid       = "CancelDeploymentCommand"
+    effect    = "Allow"
+    actions   = ["ssm:CancelCommand"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [var.aws_region]
+    }
+  }
+
   statement {
     sid       = "PublishOwnDeploymentFailureMetric"
     effect    = "Allow"

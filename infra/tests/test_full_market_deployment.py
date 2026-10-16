@@ -26,6 +26,19 @@ policy = load_module("full_market_policy", "infra/deploy/change_policy.py")
 
 
 class FullMarketDeploymentTests(unittest.TestCase):
+    def test_image_preparation_never_loads_provider_or_application_secrets(self):
+        catalog = json.loads((ROOT / "infra/deploy/runtime-secrets/fetcher.json").read_text())
+
+        def forbidden_fetch(_name):
+            self.fail("image preparation must not fetch credentials")
+
+        self.assertEqual(
+            loader.load_consumer(
+                catalog, "images", forbidden_fetch, deployment_target="production"
+            ),
+            {},
+        )
+
     def manifest(self, target="production", unit="fetcher"):
         account = "289112218471" if target == "production" else "439622209937"
         registry = f"{account}.dkr.ecr.ap-southeast-1.amazonaws.com"

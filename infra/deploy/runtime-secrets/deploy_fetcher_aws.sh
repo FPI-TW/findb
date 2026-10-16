@@ -144,7 +144,7 @@ validate_image "$SHIOAJI_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/shioaji"
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
-preserve_env=FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
+preserve_env=FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -482,6 +482,47 @@ registered_original() {
 
 # A first cutover must drain and archive legacy pilot containers before this
 # immutable release is installed. Never restart pre-unification workers here.
+# Pull each exact image once per phase with a secret-free consumer. Individual
+# provider credentials remain confined to their own runtime wrapper invocation.
+run_runtime --consumer images --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+  bash -s -- "$TWELVE_IMAGE_REF" "$FINLAB_IMAGE_REF" "$SHIOAJI_IMAGE_REF" <<'PREPARE_IMAGES'
+set -euo pipefail
+for image in "$@"; do
+  docker pull "$image" >/dev/null
+  docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq "$image"
+done
+PREPARE_IMAGES
+export FETCHER_IMAGES_PREPARED=true FETCHER_HEALTH_MODE=coordinator
+activated_runtimes=()
+record_activated_runtime() {
+  local stable="$1" image="$2" id
+  [ "$FETCHER_DEPLOY_MODE" = activate ] || return 0
+  id="$(docker inspect --format '{{.Id}}' "$stable")" || return 1
+  [ -n "$id" ] || return 1
+  activated_runtimes+=("$stable|$id|$image")
+}
+verify_activated_runtimes() {
+  local attempt entry stable id image actual_id actual_image running restarts
+  # Six checks spanning at least 25 seconds for EVERY new consumer. Mutations
+  # stay serial; only observation windows overlap. Originals remain journaled.
+  for attempt in 1 2 3 4 5 6; do
+    for entry in "${activated_runtimes[@]}"; do
+      IFS='|' read -r stable id image <<< "$entry"
+      actual_id="$(docker inspect --format '{{.Id}}' "$stable")" || return 1
+      actual_image="$(docker inspect --format '{{.Config.Image}}' "$stable")" || return 1
+      running="$(docker inspect --format '{{.State.Running}}' "$stable")" || return 1
+      restarts="$(docker inspect --format '{{.RestartCount}}' "$stable")" || return 1
+      if [ "$actual_id" != "$id" ] || [ "$actual_image" != "$image" ] \
+        || [ "$running" != true ] || [ "$restarts" != 0 ]; then
+        echo "fetcher_aws_deploy=failed reason=activation_unhealthy runtime=$stable" >&2
+        return 1
+      fi
+    done
+    [ "$attempt" -eq 6 ] || sleep 5
+  done
+}
+
+# Never restart pre-unification pilot workers during this release.
 for legacy in findb-fetcher-scheduler findb-fetcher-finlab-scheduler findb-fetcher-shioaji-scheduler findb-fetcher-taifex-scheduler; do
   if runtime_exists "$legacy"; then
     echo "fetcher_aws_deploy=failed reason=legacy_runtime_requires_cutover" >&2
@@ -506,13 +547,14 @@ for execution_profile in pilot full_market; do
     esac
     stable="$name_prefix-$provider"
     register_provider "$stable" "${stable}-previous"
-    run_runtime --consumer "$provider" --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+    run_runtime --consumer "$provider" -- \
       "$provider_helper" "$provider" "$image" \
       "$state_dir" "$state_dir/state.sqlite3" \
       "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
       findb-fetch-runtime --execution-profile "$execution_profile" \
       --config "/app/configs/full_market.$APP_ENVIRONMENT.v1.json" \
       --state-path "$state_dir/state.sqlite3" --provider "$identity"
+    record_activated_runtime "$stable" "$image"
   done
 done
 
@@ -527,10 +569,11 @@ for provider in twelve-data finlab shioaji; do
   esac
   stable="findb-historical-$provider"
   register_provider "$stable" "${stable}-previous"
-  run_runtime --consumer "$provider" --ecr-registry "$ECR_REGISTRY" --docker-login -- \
+  run_runtime --consumer "$provider" -- \
     "$provider_helper" "$provider" "$image" "$state_dir" "$state_dir/state.sqlite3" \
     "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
     findb-fetch-historical-backfill --provider "${provider//-/_}"
+  record_activated_runtime "$stable" "$image"
 done
 
 if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
@@ -539,6 +582,8 @@ if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
   echo "fetcher_aws_deploy=candidate_ready_for_acceptance providers=$provider_count profile=$FETCHER_RUNTIME_PROFILE"
   exit 0
 fi
+
+verify_activated_runtimes
 
 commit_removals=()
 prepare_original_cleanup() {
@@ -601,5 +646,10 @@ trap - ERR INT TERM HUP
 if ! cleanup_originals; then
   echo "fetcher_aws_deploy=failed reason=committed_cleanup_failed committed=true" >&2
   exit 1
+fi
+# Only after all consumers are healthy and rollback originals are retired.
+# Never prune between consumers/phases and evict the next prepared image.
+if ! docker image prune -af >/dev/null; then
+  echo "fetcher_aws_deploy=warning reason=post_activation_image_prune_failed" >&2
 fi
 echo "fetcher_aws_deploy=activated providers=$provider_count profile=$FETCHER_RUNTIME_PROFILE"

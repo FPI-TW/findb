@@ -10,27 +10,31 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
 
 
-@pytest.mark.parametrize("failure", ["", "image", "pull"])
-def test_docker_progress_preserves_bounded_terminal_protocol(tmp_path, failure):
+@pytest.mark.parametrize(
+    ("prepared", "failure"), [(False, ""), (False, "pull"), (True, ""), (True, "image")]
+)
+def test_docker_progress_preserves_bounded_terminal_protocol(tmp_path, prepared, failure):
     docker = tmp_path / "docker"
     docker.write_text(
         "#!/usr/bin/env python3\n"
         "import os, sys\n"
         "print('progress ' * 10000)\n"
+        "if sys.argv[1] == 'image': print(os.environ['image'])\n"
         "if sys.argv[1] == os.environ['DOCKER_FAILURE']:\n"
         "    print('docker operation failed', file=sys.stderr)\n"
         "    sys.exit(17)\n"
     )
     docker.chmod(0o755)
     source = SCRIPT.read_text()
-    start = source.index("docker image prune")
+    start = source.index('if [ "${FETCHER_IMAGES_PREPARED:-false}" = true ]; then')
     end = source.index("cache_mount=()", start)
     result = subprocess.run(
-        ["bash", "-e", "-c", source[start:end] + "echo terminal_success"],
+        ["bash", "-e", "-o", "pipefail", "-c", source[start:end] + "echo terminal_success"],
         env={
             **os.environ,
             "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
             "DOCKER_FAILURE": failure,
+            "FETCHER_IMAGES_PREPARED": str(prepared).lower(),
             "image": "registry/image@sha256:" + "a" * 64,
         },
         text=True,

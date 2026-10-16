@@ -205,7 +205,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("full-market control scope mismatch")
             if args.require_stopped:
                 if observed.desired_state != "stopped":
-                    raise ValueError("DB full-market control must be stopped")
+                    # A fixed, bounded protocol is safe to surface from SSM stdout.
+                    # Never print arbitrary Source responses or credential errors.
+                    print(
+                        "fetcher_deployment_blocked reason=scheduler_not_stopped "
+                        f"execution_profile={args.execution_profile} provider={args.provider}",
+                        flush=True,
+                    )
+                    print(
+                        "Deployment blocked: stop this scheduler in Dashboard and wait for "
+                        "desired/observed stopped before retrying.",
+                        file=sys.stderr,
+                    )
+                    return 2
                 print(json.dumps({"status": "stopped", "provider": args.provider}))
                 return 0
             source = FullMarketSourceClient(fetcher, execution_profile=args.execution_profile)

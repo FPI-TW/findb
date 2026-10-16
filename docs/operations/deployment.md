@@ -29,13 +29,141 @@ staging／production 完全一致，只有 values 不同。設定驗證／同步
 Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最小 consumer scope。
 `APP_ENVIRONMENT=local|staging|production` 是應用環境輸入；immutable JSON 的 `deployment_target` 必須吻合。
 
+## Staging／production 流程差異
+
+以下比較以 repository 的 workflow／部署腳本為準，不代表已即時查驗 Actions 執行紀錄或 AWS 設定值。
+
+| 項目 | Staging | Production |
+| --- | --- | --- |
+| 觸發 | push main 後由 `change_policy.py` 判斷受影響 unit；也可人工 dispatch | 僅人工 dispatch，選擇 `promote` 或 `rollback`；push tag 不會觸發 |
+| 版本選擇 | 完整 commit SHA；人工指定版本必須在 main history 中 | `findb-vMAJOR.MINOR.PATCH`／`fetcher-vMAJOR.MINOR.PATCH` annotated tag，指向 main history 中的 commit |
+| 人工確認 | 手動新 candidate 要輸入 `deploy-new-candidate`；預設模式是 accepted replay | 必填 `PROMOTE_FINDB_PRODUCTION`／`PROMOTE_FETCHER_PRODUCTION`；不是 GitHub Environment 審批 |
+| CI | 部署前執行指定 SHA 的 unit CI；自動入口依變更範圍選擇 | promotion 與 rollback 都在 tag binding 驗證後重跑指定 SHA 的 unit CI |
+| 發布 images | 依 commit tag 建置，已存在則重用；部署固定 digest | 從 staging accepted bundle 複製 exact digests 至 production ECR，綁定版本 tag；不重建發布 images，CI 仍可能建置測試 images |
+| 發布契約 | manifest 的 `release_tag` 為空；建立 staging candidate bundle | 額外保存 tag object／commit／staging accepted bundle 的 immutable binding；產生帶 production identity 與 promotion source 的新 bundle |
+| 環境位置 | AWS account `439622209937`；`findb/staging/*` ECR 與 `/findb/staging/<unit>/deployment` SSM | AWS account `289112218471`；`findb/production/*` ECR 與 `/findb/production/<unit>/deployment` SSM；另需 staging reader 與 production promotion role |
+| Accepted bundle key | `<unit>/accepted/<sha>/<bundle-sha256>.tar` | `<unit>/production/accepted/<sha>/<bundle-sha256>.tar`；images digest 相同不代表兩環境 bundle checksum 相同 |
+| 回退 | 人工 `deployment_mode=replay`，指定該 SHA 的 staging accepted bundle 與相同 `image_tag` | 人工 `mode=rollback`，指定 production accepted bundle、對應 tag 與既有 binding；共用部署器以 `replay` 執行 |
+| 跨 unit 順序 | Fetcher 的 push candidate 會等待同 SHA 的 FinDB CD 成功；手動 dispatch 沒有此等待 | 兩個 production workflows 獨立，Backend-first 由操作順序維持，沒有跨 workflow 自動等待 |
+| 部署失敗回報 | 兩個 staging 入口皆有 failure／cancelled job，發布 `FinDB/Staging` 的 `DeploymentFailure` metric | production 入口沒有對應回報 job；IaC 雖定義 `FinDB/Production` 的同名 alarm，不能視為 workflow 失敗回報已接通 |
+
+兩環境都在 `ap-southeast-1`，共用 `findb-deploy.yml`／`fetcher-deploy.yml` 和主機部署腳本。
+兩者均執行 preflight、candidate 驗證、immutable acceptance 與 activation；replay 驗證既有 acceptance 後直接走 activation，
+不建立新的 acceptance。RDS 備份與 DB compatibility、Secrets Manager consumer isolation、controls stopped、
+checkpoint 完整性及 activation health 並未因 staging 而放寬。兩環境的 Full market checkpoint
+路徑差異見下方持久化狀態表；schema-v3／統一 runtime 的 rollback 下限也同時適用。
+
+## 部署耗時檢查（2026-10-16，優化前基準）
+
+以下使用 GitHub Actions 的 job／step started_at、completed_at，整體時間以 run_started_at 至 updated_at
+近似，包含編排與等待；不將平行 CI jobs 相加當成牆鐘時間。樣本限 2026-10-15～16 的成功部署，
+排除文件變更導致的 skipped rollout、失敗執行與尚未完成的執行；不是 p95 或效能 SLA。
+FinDB staging 取五次，Fetcher staging 取六次；production 各取目前統一版的一次成功 promotion。
+
+| 流程 | 實測耗時 | 判斷 |
+| --- | --- | --- |
+| FinDB staging 全流程 | 11:22～12:38，中位數 11:49 | 合理，主要是 Backend CI 與兩階段主機部署 |
+| FinDB Backend CI job | 4:29～5:42，中位數 5:03 | 合理；最新 2,201 tests 的 pytest 為 267.68 秒，20 分鐘 timeout 有充分餘裕 |
+| FinDB migration CI job | 1:36～2:16，中位數 2:06 | 合理，與其他 CI jobs 平行 |
+| FinDB Infra CI job | 1:43～2:38，中位數 2:31 | 合理，與其他 CI jobs 平行 |
+| FinDB Dashboard CI job | 0:49～1:05，中位數 0:55 | 合理 |
+| FinDB browser CI job | 2:21～2:45，中位數 2:43 | 合理，含 PostgreSQL 初始化與 hydration E2E |
+| FinDB publish | 1:39～1:50，中位數 1:43 | 兩個 images 依序發布，目前不是主要瓶頸 |
+| FinDB prepare | 0:17～0:22 | 合理 |
+| FinDB 主機部署 job | 4:07～4:19，中位數 4:17 | preflight 約 20～23 秒、candidate 99～109 秒、activation 90～101 秒 |
+| Fetcher staging 全流程，FinDB 沒有 rollout | 17:27～19:32，四次中位數 18:04 | 穩定但偏長，主要消耗在主機部署 |
+| Fetcher staging 全流程，同 SHA 有 FinDB rollout | 26:11～27:26，兩次 | 額外等待 FinDB 約 9:16～9:17，且 image publish 也被等待阻擋 |
+| Fetcher CI job | 2:08～4:21，中位數 2:26 | 合理，含 tests 與三個測試 images；15 分鐘 timeout 有餘裕 |
+| Fetcher publish／prepare | 1:51～2:24／0:18～0:21 | 合理，三個 images 依序發布 |
+| Fetcher 主機部署 job | 11:51～12:34，中位數約 12:26 | preflight 43～48 秒、candidate 221～241 秒、activation 413～435 秒；優先優化 |
+| FinDB production promotion | 13:10 | CI 5:02、promotion 1:21、主機部署 5:56；單次樣本尚不能建立穩定基準 |
+| Fetcher production promotion | 17:13 | CI 2:14、promotion 1:45、主機部署 12:24；瓶頸與 staging 一致，仍僅單次樣本 |
+
+成功證據：FinDB staging [38836673961](https://github.com/FPI-TW/findb/actions/runs/38836673961)、
+[38775214962](https://github.com/FPI-TW/findb/actions/runs/38775214962)、
+[38720416747](https://github.com/FPI-TW/findb/actions/runs/38720416747)、
+[38715581934](https://github.com/FPI-TW/findb/actions/runs/38715581934)、
+[38706989093](https://github.com/FPI-TW/findb/actions/runs/38706989093)；
+Fetcher staging [38824347083](https://github.com/FPI-TW/findb/actions/runs/38824347083)、
+[38775214709](https://github.com/FPI-TW/findb/actions/runs/38775214709)、
+[38769679416](https://github.com/FPI-TW/findb/actions/runs/38769679416)、
+[38732467628](https://github.com/FPI-TW/findb/actions/runs/38732467628)、
+[38725255170](https://github.com/FPI-TW/findb/actions/runs/38725255170)、
+[38683048673](https://github.com/FPI-TW/findb/actions/runs/38683048673)。Production 使用下方復原基準的兩筆 runs。
+
+## 部署耗時與失敗診斷調整
+
+Runtime 優化適用於包含新版部署腳本的 release bundle；既有 accepted bundles 不覆寫，
+回退舊 bundle 仍使用其原有 runtime 腳本。新版 protected-main driver 的等待／deadline 則適用於新版 workflow 發起的 replay。
+
+Fetcher staging 先完成 images publish 與 candidate bundle upload，再等待同 SHA 的 FinDB CD 成功，
+才輸出部署契約並進入主機部署。FinDB 失敗或找不到同 SHA 執行時仍拒絕 rollout；
+手動 dispatch 維持既有操作順序。等待 job 預留 75 分鐘，其餘解析／binding、publish／promotion
+分別設定 5、15 分鐘上限；FinDB bundle prepare 上限 10 分鐘。
+
+Fetcher 每個 candidate／activation 階段各集中拉取、驗證三個 exact digests 一次。
+專用 `images` consumer 不讀取 application／provider secrets；各 provider wrapper 仍獨立載入、清除
+最小 credentials，並在使用前核對本機 RepoDigest。只有成功 activation、退休舊 containers 後
+執行一次 image prune；清理失敗回報 warning，不影響已完成的 activation 身分。
+Offline check、controls stopped、checkpoint 與 rollback journal 驗證均保留。
+
+八個 recurring 與三個 historical runtimes 仍依序替換，原 container IDs／images／running state
+保留到共同健康觀察通過後才清理。Coordinator 對全部新 runtimes 進行六次檢查，間隔五秒，
+每次比對 ID、image、running 與 restart count；觀察窗口至少 25 秒，替代逐個等待造成的 275 秒。
+任一檢查失敗則依原 journal 還原 containers 與 current pointer。這是程序存活檢查，
+不代表 provider native 資料驗收或 controls 已 start。Standalone provider helper 仍保留原有 25 秒觀察。
+
+FinDB candidate 執行 migration、DB grants／credentials reconciliation 與 registry provisioning。
+Activation／accepted replay 改為 exact DB revision 與 credentials check-only，停止服務前即檢查相容性，
+不再重跑 schema／registry mutations；不相容仍 fail closed。Production rollback 維持完整 unit CI，
+本次未改成重用舊 CI 證據，也沒有新增成功 rollback 的實測基準。
+
+兩個 reusable deploy job 上限由 90 改為 55 分鐘。Protected-main driver 負責主機 Bash wrapper 與 SSM wait，
+避免 accepted replay 依賴舊 release 缺少的新 helper。主機 preflight／candidate／activation 分別由
+GNU timeout 限制為 240／900／900 秒，TERM 後最多保留 180 秒供原停止／復原 traps 完成；
+SSM executionTimeout 為 480／1200／1200 秒，runner wait deadline 為 540／1260／1260 秒。
+Deadline、讀取失敗、terminal failure 或 runner 收到中止訊號都不產生新的 acceptance；runner 嘗試
+cancel-command，最多另等 120 秒確認 SSM 終態。取消或 SSM terminal status 不能保證底層程序已停止，
+仍須核對主機停止／復原證據；無法確認時明確回報 command ID，禁止直接重試部署。
+
+取消命令需要先套用兩環境 deploy role 的 IAM 變更。本次僅更新 IaC，未執行 apply。
+`ssm:CancelCommand` 沒有 resource-level IAM 支援，因此獨立 statement 使用 `Resource="*"`，
+並以 `aws:RequestedRegion` 限制區域；SendCommand 仍限制各 unit 的主機。
+參考 [AWS Systems Manager 授權表](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ssm.html)；
+[AWS CancelCommand API](https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_CancelCommand.html)
+亦明定取消不保證底層程序終止。
+
+[Fetcher 38836673928](https://github.com/FPI-TW/findb/actions/runs/38836673928) 於台北時間
+2026-10-16 10:00:41 完成為 failure，總計約 16:57；candidate 在 46 秒後收到 SSM Failed／response code 2，
+未保存 acceptance 或 activation。Owner 確認是 scheduler 仍在運行而阻擋部署。新版 unified CLI
+會輸出以下受限格式，再以 code 2 停止，並提示先在 Dashboard 停止對應 scheduler：
+
+```text
+fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=full_market provider=twelve_data
+```
+
+SSM gate 只從失敗 stdout 擷取此固定 reason、合法 profile 與 provider，讓 Actions 顯示
+`scheduler_not_stopped`、對應 profile／provider 及等待 desired／observed stopped 後重試的指引。
+任意 stdout、stderr、Source 回應與 credentials 都不直接轉印；其他失敗保留安全通用訊息及 command ID。
+Daemon container 為 running 且 idle 不等同 scheduler control 仍允許抓取，不能以 Docker running 直接阻擋部署。
+舊 accepted images 沒有此 CLI 訊息，不會因更新 driver 而自動取得新版 diagnostic protocol。
+
+上方耗時表保留優化前樣本；固定 sleep 總額減少與可重疊建置時間只是預期改善，
+部署後仍須以同 runner 規格的多次成功 Actions 重新量測，不能宣稱已達成新的總耗時。
+
+本機驗證已通過 `pnpm check`、`pnpm test`、IaC format 與兩環境 `tofu validate`。
+完整測試包含 Backend 2,203、migration 54、Infra 165（另含 268 個子測試）、Fetcher 1,406，
+以及 Dashboard unit 192／browser 10／E2E 15。新增回歸涵蓋八種 profile／provider 診斷、敏感輸出隔離、
+deadline 後不得 acceptance、取消／未確認終態、共同觀察窗口，以及健康失敗還原原 container IDs 與 pointer。
+以上為本機驗證，不代表已部署或通過 AWS 線上 rollback 演練。
+
 ## 共用部署順序
 
 1. 解析指定版本與 AWS 設定，驗證 schema、account、instance tags／instance profile、SSM Online、
    registry、release manifest 與 exact image digests。RDS 需 available、備份保留至少一天，且可還原時間不超過一小時。
 2. 以實際 image 執行 configuration、DB migration compatibility、credential reconciliation 的唯讀 preflight。
    SQLite checkpoint 必須存在且完整；已安裝 runtime 的 checkpoint 遺失不得被當成新主機初始化。
-3. Backend 停止公開 nginx、舊讀寫服務，優雅停止 writers；以 migration role 升級、核對 exact revision、
+3. Backend candidate 停止公開 nginx、舊讀寫服務，優雅停止 writers；以 migration role 升級、核對 exact revision、
    校準 DB grants、deployment credentials 與 registry。兩環境執行相同步驟；不執行 calendar seed 或 completeness gate。
    Migration `91a4c7e2d630` 凍結既有工作使用的日曆與政策快照，完整保留既有 plans、first dates、prepared deliveries。
 4. Backend candidate 只啟動內部 services，驗證 API、Dashboard、RabbitMQ durable topology、worker ping／heartbeat
@@ -46,7 +174,8 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
    SSM timeout、結果不明或缺少成功 marker 均不得視為 acceptance。
    Provider 安裝抑制 Docker image prune／pull 的例行 stdout，避免超過 SSM 回應上限而截斷終態 marker；
    錯誤 stderr 與失敗 exit code 仍保留，不以 CloudWatch 的成功文字繞過 acceptance gate。
-6. Activate 再次驗證相同 identity 與必要 gates，啟動 accepted services、公開 nginx，完成 TLS／routing／queue health，
+6. Activate 再次驗證相同 identity、exact DB revision 與必要 gates，不重跑 migration／registry mutations；
+   啟動 accepted services、公開 nginx，完成 TLS／routing／queue health，
    才更新 current pointer。Fetcher daemon 可保持 idle，抓取 desired state 仍由 Owner 人工控制。
 
 日常 deployment 不執行 provider native 抓取 gate。不可因驗收而自動 start controls、重設首次日期，

@@ -30,6 +30,7 @@ concurrency:
 jobs:
   resolve:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       revision: ${{ steps.resolve.outputs.sha }}
       tag_ref_oid: ${{ steps.resolve.outputs.tag_ref_oid }}
@@ -81,6 +82,7 @@ jobs:
   bind-release-tag:
     needs: resolve
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -171,6 +173,7 @@ jobs:
     - verify
     if: ${{ inputs.mode == 'promote' && needs.verify.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       candidate_bundle_key: ${{ steps.bundle.outputs.candidate_bundle_key }}
     steps:
