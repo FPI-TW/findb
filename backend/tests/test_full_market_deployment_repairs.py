@@ -308,7 +308,9 @@ def test_named_full_journal_restores_names_state_and_stale_backup(
         + deploy.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
     )
     restore = helper[
-        helper.index('if runtime_exists "$previous"') : helper.index("\ndocker image prune")
+        helper.index('if runtime_exists "$previous"') : helper.index(
+            '\nif [ "${FETCHER_IMAGES_PREPARED:-false}"'
+        )
     ]
     retirement = helper[
         helper.index("had_previous=0\n") : helper.index("# The deployment identity only reports")

@@ -47,6 +47,7 @@ permissions:
 jobs:
   policy:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       revision: ${{ steps.revision.outputs.sha }}
       findb_ci: ${{ steps.policy.outputs.findb_ci }}
@@ -95,6 +96,7 @@ jobs:
     - verify
     if: github.ref == 'refs/heads/main' && needs.verify.result == 'success' && needs.policy.outputs.findb_staging == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
@@ -145,6 +147,7 @@ jobs:
     needs: select
     if: ${{ needs.select.result == 'success' && needs.select.outputs.mode == 'candidate' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
@@ -210,6 +213,7 @@ jobs:
       always() && needs.select.result == 'success' && ((needs.select.outputs.mode == 'candidate' && needs.publish.result == 'success') ||
        (needs.select.outputs.mode == 'replay' && needs.publish.result == 'skipped'))
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       id-token: write

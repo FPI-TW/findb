@@ -329,8 +329,12 @@ fi
 
 # Keep routine Docker output below SSM's bounded stdout so the coordinator's
 # terminal marker remains visible. Failures still retain stderr and exit status.
-docker image prune -af >/dev/null
-docker pull "$image" >/dev/null
+if [ "${FETCHER_IMAGES_PREPARED:-false}" = true ]; then
+  # A coordinator hint never authorizes a missing or substituted image.
+  docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq "$image"
+else
+  docker pull "$image" >/dev/null
+fi
 cache_mount=()
 if [ "$cache_dir" != "-" ]; then
   cache_mount=(--mount "type=bind,src=$cache_dir,dst=/home/fetcher")
@@ -535,7 +539,7 @@ for attempt in 1 2 3 4 5 6; do
   if [ "$status" != "running" ] || [ "$restarts" -ne 0 ]; then
     break
   fi
-  if [ "$attempt" -eq 6 ]; then
+  if [ "${FETCHER_HEALTH_MODE:-standalone}" = coordinator ] || [ "$attempt" -eq 6 ]; then
     healthy=1
     break
   fi

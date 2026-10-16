@@ -48,6 +48,18 @@ data "aws_iam_policy_document" "deploy" {
     actions   = ["ec2:DescribeInstances", "ec2:DescribeInstanceStatus", "ssm:DescribeInstanceInformation", "ssm:GetCommandInvocation"]
     resources = ["*"]
   }
+  # CancelCommand has no resource-level IAM support. Keep it separate from
+  # tagged SendCommand permissions and constrain its regional endpoint.
+  statement {
+    sid       = "CancelDeploymentCommand"
+    actions   = ["ssm:CancelCommand"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = [var.aws_region]
+    }
+  }
   # Only the FinDB deploy workflow resolves the production RDS endpoint before
   # sending its SSM command. DescribeDBInstances does not support resource-level
   # permissions, so keep the wildcard action isolated from the Fetcher deployer.

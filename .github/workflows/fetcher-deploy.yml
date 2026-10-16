@@ -33,7 +33,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 55
     env:
       FETCHER_RUNTIME_PROFILE: unified
     concurrency:
@@ -231,11 +231,11 @@ jobs:
         printf -v q_host_guard_b64 '%q' "$host_guard_b64"
         printf -v q_host_guard_sha '%q' "$host_guard_sha"
         host_command="set -euo pipefail; trap 'printf \"fetcher_preflight_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; work=\$(mktemp -d /tmp/fetcher-preflight.XXXXXX); trap 'rm -rf \"\$work\"' EXIT; bundle=\"\$work/bundle.tar\"; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$work/validator.py\"; [ \"\$(sha256sum \"\$work/validator.py\" | cut -d ' ' -f1)\" = $q_validator ]; python3 \"\$work/validator.py\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit fetcher --output \"\$work/release\" --commit-sha $q_revision --migration-revision none --image twelve_data=$q_twelve --image finlab=$q_finlab --image shioaji=$q_shioaji; aws ecr get-login-password --region $q_region | docker --config \"\$work/docker\" login --username AWS --password-stdin $q_registry >/dev/null; for image in $q_twelve $q_finlab $q_shioaji; do docker --config \"\$work/docker\" pull \"\$image\" >/dev/null; docker image inspect \"\$image\" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq \"\$image\"; done; if aws secretsmanager get-secret-value --region $q_region --secret-id findb/$q_target/findb/runtime/configuration >/dev/null 2>&1; then exit 1; fi; python3 \"\$work/release/infra/deploy/runtime-secrets/load_runtime_secrets.py\" --catalog \"\$work/release/infra/deploy/runtime-secrets/fetcher.json\" --consumer twelve-data --region $q_region --deployment-target $q_target --output /run/findb-runtime-secrets/preflight-fetcher/runtime.env --check-only; bash -n \"\$work/release/infra/deploy/runtime-secrets/runtime_secret_command.sh\" \"\$work/release/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\" \"\$work/release/infra/deploy/runtime-secrets/release_fetcher_provider.sh\"; printf '%s' $q_host_guard_b64 | base64 --decode | gzip --decompress > \"\$work/host-guard.py\"; [ \"\$(sha256sum \"\$work/host-guard.py\" | cut -d ' ' -f1)\" = $q_host_guard_sha ]; printf '%s' $q_installed_validator_b64 | base64 --decode | gzip --decompress > \"\$work/installed-validator.py\"; [ \"\$(sha256sum \"\$work/installed-validator.py\" | cut -d ' ' -f1)\" = $q_installed_validator_sha ]; python3 \"\$work/host-guard.py\" --target $q_target --registry $q_registry --installed-validator \"\$work/installed-validator.py\"; printf \"fetcher_preflight_marker=%s status=success\\n\" $q_marker"
-        host_command="$(printf '%s' "$host_command" | python3 infra/deploy/ssm_bash_command.py)"
-        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${SSM_LOG_GROUP}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
-        source infra/deploy/ssm_command_marker_gate.sh
-        for _ in $(seq 1 60); do state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_preflight_marker=$marker status=success" "fetcher_preflight_marker=$marker status=failed")"; [ "$state" = success ] && { echo "command_id=$command_id" >> "$GITHUB_OUTPUT"; exit 0; }; sleep 5; done
-        exit 1
+        host_command="$(printf '%s' "$host_command" | python3 .deployment-driver/infra/deploy/ssm_bash_command.py --timeout-seconds 240)"
+        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${SSM_LOG_GROUP}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command], executionTimeout: ["480"]}')" --query Command.CommandId --output text)"
+        source .deployment-driver/infra/deploy/ssm_command_marker_gate.sh
+        ssm_wait_command "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_preflight_marker=$marker status=success" "fetcher_preflight_marker=$marker status=failed" 540
+        echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
     - name: Run candidate acceptance or accepted replay through bounded SSM
       id: ssm
       env:
@@ -282,15 +282,11 @@ jobs:
         printf -v q_guard_sha '%q' "$guard_sha"
         checkpoint_entry_gate="(guard=\$(mktemp /tmp/fetcher-checkpoint-guard.XXXXXX); trap 'rm -f \"\$guard\"' EXIT; printf '%s' $q_guard_b64 | base64 --decode > \"\$guard\"; [ \"\$(sha256sum \"\$guard\" | cut -d ' ' -f1)\" = $q_guard_sha ]; bash \"\$guard\");"
         host_command="set -euo pipefail; trap 'printf \"fetcher_deploy_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; bundle=/tmp/fetcher-$BUNDLE_SHA256.tar; validator=/tmp/fetcher-release-manifest-$BUNDLE_SHA256.py; root=/opt/fetcher/releases/$BUNDLE_SHA256-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$validator\"; [ \"\$(sha256sum \"\$validator\" | cut -d ' ' -f1)\" = $q_validator_sha ]; chmod 0700 \"\$validator\"; python3 \"\$validator\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit fetcher --output \"\$root\" --commit-sha $REVISION --migration-revision none --image twelve_data=$q_twelve --image finlab=$q_finlab --image shioaji=$q_shioaji; [ \"\${APP_ENVIRONMENT+x}\" != x ] || [ \"\$APP_ENVIRONMENT\" = $q_target ]; [ \"\${DEPLOYMENT_TARGET+x}\" != x ] || [ \"\$DEPLOYMENT_TARGET\" = $q_target ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account APP_ENVIRONMENT=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=$q_host_mode; $checkpoint_entry_gate \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_deploy_marker=%s status=success\\n\" $q_marker"
-        host_command="$(printf '%s' "$host_command" | python3 infra/deploy/ssm_bash_command.py)"
-        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ env.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
-        source infra/deploy/ssm_command_marker_gate.sh
-        for _ in $(seq 1 360); do
-          state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_deploy_marker=$marker status=success" "fetcher_deploy_marker=$marker status=failed")"
-          if [ "$state" = success ]; then echo "command_id=$command_id" >> "$GITHUB_OUTPUT"; exit 0; fi
-          sleep 5
-        done
-        exit 1
+        host_command="$(printf '%s' "$host_command" | python3 .deployment-driver/infra/deploy/ssm_bash_command.py --timeout-seconds 900)"
+        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ env.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command], executionTimeout: ["1200"]}')" --query Command.CommandId --output text)"
+        source .deployment-driver/infra/deploy/ssm_command_marker_gate.sh
+        ssm_wait_command "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_deploy_marker=$marker status=success" "fetcher_deploy_marker=$marker status=failed" 1260
+        echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
     - name: Persist immutable target-aware acceptance record
       id: acceptance
       if: ${{ success() && inputs.mode == 'candidate' }}
@@ -352,15 +348,10 @@ jobs:
         root="/opt/fetcher/releases/${BUNDLE_SHA256}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         printf -v q_root '%q' "$root"; printf -v q_account '%q' "$AWS_ACCOUNT_ID"; printf -v q_registry '%q' "$ECR_REGISTRY"; printf -v q_twelve '%q' "$TWELVE_IMAGE"; printf -v q_finlab '%q' "$FINLAB_IMAGE"; printf -v q_shioaji '%q' "$SHIOAJI_IMAGE"; printf -v q_target '%q' "$TARGET"; printf -v q_marker '%q' "$marker"
         host_command="set -euo pipefail; trap 'printf \"fetcher_activate_marker=%s status=failed\\n\" $q_marker' ERR; root=$q_root; [ -d \"\$root\" ] && [ ! -L \"\$root\" ]; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; [ \"\${APP_ENVIRONMENT+x}\" != x ] || [ \"\$APP_ENVIRONMENT\" = $q_target ]; [ \"\${DEPLOYMENT_TARGET+x}\" != x ] || [ \"\$DEPLOYMENT_TARGET\" = $q_target ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account APP_ENVIRONMENT=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab SHIOAJI_IMAGE_REF=$q_shioaji$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=activate; grep -qx \"# findb_environment_contract=app-environment-v1\" \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; printf \"fetcher_activate_marker=%s status=success\\n\" $q_marker"
-        host_command="$(printf '%s' "$host_command" | python3 infra/deploy/ssm_bash_command.py)"
-        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ env.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command]}')" --query Command.CommandId --output text)"
-        source infra/deploy/ssm_command_marker_gate.sh
-        for _ in $(seq 1 360); do
-          state="$(ssm_command_marker_state "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_activate_marker=$marker status=success" "fetcher_activate_marker=$marker status=failed")"
-          [ "$state" = success ] && exit 0
-          sleep 5
-        done
-        exit 1
+        host_command="$(printf '%s' "$host_command" | python3 .deployment-driver/infra/deploy/ssm_bash_command.py --timeout-seconds 900)"
+        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ env.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command], executionTimeout: ["1200"]}')" --query Command.CommandId --output text)"
+        source .deployment-driver/infra/deploy/ssm_command_marker_gate.sh
+        ssm_wait_command "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_activate_marker=$marker status=success" "fetcher_activate_marker=$marker status=failed" 1260
     - name: Publish reusable deployment outputs
       id: outputs
       if: ${{ success() }}

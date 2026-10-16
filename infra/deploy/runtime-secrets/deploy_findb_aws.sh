@@ -238,11 +238,15 @@ set -euo pipefail
 compose_file="$1"
 expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?target revision is required}"
 expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?RDS endpoint is required}"
+revision_policy=--allow-empty-database-bootstrap
+if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then
+  revision_policy=--require-exact-alembic-revision
+fi
 docker compose -f "$compose_file" run --rm --no-deps ingest \
   python /app/scripts/predeploy_db_check.py \
     --expected-alembic-revision "$expected_revision" \
     --expected-rds-endpoint "$expected_rds_endpoint" \
-    --allow-empty-database-bootstrap </dev/null
+    "$revision_policy" </dev/null
 docker compose -f "$compose_file" run --rm --no-deps \
   -e APPLICATION_DATABASE_URL \
   -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
@@ -298,6 +302,17 @@ run_runtime --consumer migration --consumer compose --consumer credentials \
   -- bash -s -- "$compose_file" <<'MIGRATION_SCRIPT'
 set -euo pipefail
 compose_file="$1"
+if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then
+  # An accepted release is already migrated and reconciled. Replay/activation
+  # must verify exact compatibility, never perform a new schema mutation.
+  docker compose -f "$compose_file" run --rm --no-deps ingest \
+    python /app/scripts/predeploy_db_check.py \
+      --expected-alembic-revision "${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?target revision is required}" \
+      --expected-rds-endpoint "${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?RDS endpoint is required}" \
+      --require-exact-alembic-revision </dev/null
+  echo "findb_aws_deploy=activation_schema_verified mutations=skipped"
+  exit 0
+fi
 docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
   uv run alembic upgrade head
   uv run alembic current
