@@ -15,6 +15,47 @@ Pre-commit 執行 check，pre-push 依序執行 check 與 test；不得使用 `-
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
 
+## 依賴安全更新
+
+套件版本以 `pnpm-lock.yaml`、`backend/uv.lock` 與 `fetcher/uv.lock` 為準。修復間接依賴前，
+先確認實際依賴鏈、上游版本範圍與 peer dependencies；避免為了解除告警而全面更新標示
+`latest` 的 TanStack 直接依賴，或把所有套件強制覆寫到同一版本。
+
+- TanStack Router／Start 與 Devtools 的 Solid 可能使用不同的 Seroval 範圍。
+  Solid 1.9.14 的 `~1.5.4` 不接受 Seroval 1.6.x；目前使用 Solid 1.9.17 搭配
+  Seroval／seroval-plugins 1.6.8，不以 override 繞過範圍。
+- React Start 固定為 1.168.60、配套 React Router 固定為 1.170.41，讓
+  start-server-core 使用 1.169.39，修復 server-function 回應的未登入反射型 XSS
+  [CVE-2026-102989](https://github.com/advisories/GHSA-qx66-fv34-fjm8)。不要僅更新 Seroval
+  就視為已修復此 transport 漏洞；更新框架時維持其精確配套版本並驗證正常 GET／POST RPC。
+- Vitest 與 `@vitest/browser-playwright` 必須一起更新；其 browser、mocker、runner 等內部
+  套件具有精確版本與 peer 限制。目前使用 4.1.11，Vite 與 Playwright 維持既有版本。
+- Dashboard 未使用 `@tailwindcss/typography`，不安裝此套件；避免引入其精確鎖定的舊版
+  selector parser。日後需要 typography 時，重新確認 parser 修補版與上游相容性。
+- Backend 透過 FastAPI 引入 Starlette，更新時需驗證認證、middleware、Source payload
+  限制、StaticFiles 與 Serve 查詢；不能只以 resolver 接受版本作為相容性證據。
+
+更新後以 frozen lockfile 安裝，執行 `pnpm check`、`pnpm test`、`pnpm build:dashboard`
+與 `pnpm audit`。
+另驗證 TanStack serialization、登入、權限保護與 SSR／hydration；browser tests 目前可能
+輸出既存 TanStack virtual-module pre-transform 訊息，必須比較基準並檢查測試退出狀態。
+GitHub 告警需在修復整合至預設分支並重新掃描後確認關閉，本機通過不能代替遠端結果。
+
+目前 PyPI 的 `shioaji==1.7.1` metadata 回傳 404，會阻擋 Fetcher 全平台重新解析；不要因此
+自行變更 provider SDK 版本或縮減平台支援。本次僅以 uv 產生的 urllib3 2.8.0 package 記錄
+更新既有 lockfile，保留其餘 provider 記錄，並以 `uv lock --check --offline` 與 frozen 安裝
+驗證 core／dev runtime。Shioaji extra 的重新下載安裝不在這項驗證範圍內；下次完整解析前
+須先處理其套件索引可用性。
+
+2026-10-16 安全依賴驗收：`pnpm check`、`pnpm test` 與 production build 通過。
+Backend 2,201、migration 54、Infra 148（另有 268 個子測試）、Fetcher 1,406，
+Dashboard unit 192、browser 10、E2E 15。追加 TanStack XSS 修補後，已重跑全 repo checks、
+完整 Dashboard suite 與 production build；production SSR、匿名權限導向、登入 POST、
+分頁／重新整理與 hydration smoke 通過，偽造 server-function result 未反射為 HTML。
+最終 `pnpm audit` 各嚴重度皆為零；這是 npm 依賴掃描結果，不代表 GitHub 告警已關閉。
+
+## CI 與測試隔離
+
 FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type checks、published contracts
 與非 migration tests；`backend-migrations` 保留 Alembic smoke 與全部 migration tests；
 `infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service。Backend 與 Infra 固定兩個
