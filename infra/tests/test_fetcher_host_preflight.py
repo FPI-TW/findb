@@ -181,12 +181,17 @@ class FetcherHostPreflightTests(unittest.TestCase):
                     self.row(name, "twelve_data" if provider == "taifex" else provider, args)
                 )
 
-        for provider in ("twelve_data", "finlab", "shioaji"):
+        for provider in ("twelve_data", "finlab", "shioaji", "taifex"):
             self.rows.append(
                 self.row(
                     "findb-historical-" + provider.replace("_", "-"),
-                    provider,
-                    ["findb-fetch-historical-backfill", "--provider", provider, "--run-forever"],
+                    "twelve_data" if provider == "taifex" else provider,
+                    [
+                        "findb-fetch-historical-backfill",
+                        "--provider",
+                        provider,
+                        "--run-forever",
+                    ],
                 )
             )
 
@@ -253,6 +258,20 @@ class FetcherHostPreflightTests(unittest.TestCase):
         return result
 
     def test_complete_unified_installation_is_drained(self):
+        self.assertEqual(len(self.rows), 12)
+        self.assertEqual(self.check(), "drained")
+
+    def test_accepted_eleven_consumer_installation_can_upgrade(self):
+        self.rows = [row for row in self.rows if row["Name"] != "/findb-historical-taifex"]
+        path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+        path.write_text(
+            path.read_text().replace("# historical-taifex-v1:", "# previous-historical-consumers:")
+        )
+        with release.SourceBundleReader(self.root) as source:
+            self.manifest["deployment_source_bundle_sha256"] = (
+                source.deployment_source_bundle_sha256("fetcher")
+            )
+        self.write_manifest()
         self.assertEqual(len(self.rows), 11)
         self.assertEqual(self.check(), "drained")
 
@@ -310,7 +329,10 @@ class FetcherHostPreflightTests(unittest.TestCase):
         mutations = (
             ("wrong-path", lambda row: row.update(Path="/bin/true")),
             ("conflicting-args", lambda row: row.update(Args=["--help"])),
-            ("entrypoint-override", lambda row: row["Config"].update(Entrypoint=["/bin/true"])),
+            (
+                "entrypoint-override",
+                lambda row: row["Config"].update(Entrypoint=["/bin/true"]),
+            ),
             ("missing-path", lambda row: row.pop("Path")),
             ("missing-args", lambda row: row.pop("Args")),
             ("missing-entrypoint", lambda row: row["Config"].pop("Entrypoint")),
@@ -398,7 +420,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
 
     def test_missing_profile_worker_is_rejected(self):
         self.rows.pop()
-        with self.assertRaises(KeyError):
+        with self.assertRaises((KeyError, ValueError)):
             self.check()
 
     def test_manifest_unit_target_registry_and_source_corruption_fail(self):

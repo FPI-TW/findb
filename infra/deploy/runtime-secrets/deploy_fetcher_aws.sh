@@ -561,11 +561,13 @@ done
 # Historical requests retain their existing provider-specific durable directory.
 # They are independently journaled consumers, never side effects of pilot release.
 export FETCHER_CONSUMER_PROFILE=historical
-for provider in twelve-data finlab shioaji; do
+# historical-taifex-v1: accepted installations require all four historical consumers.
+for provider in twelve-data finlab shioaji taifex; do
   case "$provider" in
     twelve-data) image="$TWELVE_IMAGE_REF"; state_dir=/var/lib/findb-fetcher/historical; cache_dir=- ;;
     finlab) image="$FINLAB_IMAGE_REF"; state_dir=/var/lib/findb-finlab-fetcher/historical; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
     shioaji) image="$SHIOAJI_IMAGE_REF"; state_dir=/var/lib/findb-shioaji-fetcher/historical; cache_dir=/var/lib/findb-shioaji-fetcher/cache ;;
+    taifex) image="$TWELVE_IMAGE_REF"; state_dir=/var/lib/findb-taifex-fetcher/historical; cache_dir=- ;;
   esac
   stable="findb-historical-$provider"
   register_provider "$stable" "${stable}-previous"

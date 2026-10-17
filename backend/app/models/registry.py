@@ -1032,6 +1032,7 @@ class HistoricalBackfillItem(Base):
     )
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     calendar_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    result_evidence: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_token: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)

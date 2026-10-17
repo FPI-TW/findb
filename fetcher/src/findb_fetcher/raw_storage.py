@@ -123,7 +123,11 @@ class RawPayloadStore(Protocol):
 class R2RawPayloadStore:
     """Upload exact bytes with deterministic content-addressed R2 keys."""
 
-    def __init__(self, config: RawStorageConfig, *, client: Any | None = None) -> None:
+    def __init__(
+        self, config: RawStorageConfig, *, client: Any | None = None, total_max_attempts: int = 4
+    ) -> None:
+        if type(total_max_attempts) is not int or total_max_attempts < 1:
+            raise RawStorageConfigError("R2 total attempts must be positive")
         self._config = config
         if client is None:
             import boto3
@@ -140,7 +144,7 @@ class R2RawPayloadStore:
                         signature_version="s3v4",
                         connect_timeout=5,
                         read_timeout=30,
-                        retries={"mode": "standard", "max_attempts": 3},
+                        retries={"mode": "standard", "total_max_attempts": total_max_attempts},
                     ),
                 )
             except Exception as exc:

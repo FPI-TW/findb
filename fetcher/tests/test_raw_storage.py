@@ -439,3 +439,28 @@ def test_attach_provenance_rejects_unsafe_r2_references(ref: str) -> None:
             source_raw_ref=ref,
             source_raw_sha256="a" * 64,
         )
+
+
+def test_single_dispatch_store_disables_hidden_sdk_retries(monkeypatch):
+    from botocore.awsrequest import AWSResponse
+
+    class ResponseBody(io.BytesIO):
+        def stream(self, amt=None, decode_content=False):
+            yield self.read()
+
+    store = R2RawPayloadStore(_config(), total_max_attempts=1)
+    assert store._client.meta.config.retries["total_max_attempts"] == 1
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        raw = b"<Error><Code>ServiceUnavailable</Code><Message>temporary</Message></Error>"
+        return AWSResponse(request.url, 503, {"Content-Length": str(len(raw))}, ResponseBody(raw))
+
+    monkeypatch.setattr(store._client._endpoint.http_session, "send", respond)
+    with pytest.raises(RawStorageUploadError) as failure:
+        store.persist(
+            RAW_BYTES, dataset_key="tw_futures_eod", source_symbol="TX", provider="taifex"
+        )
+    assert failure.value.retryable and len(calls) == 1
+    store._client.close()

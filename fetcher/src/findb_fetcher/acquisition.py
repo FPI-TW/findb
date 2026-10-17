@@ -28,6 +28,7 @@ _held_locks = threading.local()
 _policy: ContextVar[Callable[[], Authorization] | None] = ContextVar(
     "acquisition_policy", default=None
 )
+_dispatch_attempts: ContextVar[int] = ContextVar("authorization_dispatch_attempts", default=3)
 _state_path: ContextVar[Path | None] = ContextVar("acquisition_state_path", default=None)
 
 
@@ -52,8 +53,14 @@ class Authorization:
 
 @contextmanager
 def authorization_scope(
-    callback: Callable[[], Authorization], *, state_path: Path | None = None
+    callback: Callable[[], Authorization],
+    *,
+    state_path: Path | None = None,
+    dispatch_attempts: int = 3,
 ) -> Iterator[None]:
+    if type(dispatch_attempts) is not int or not 1 <= dispatch_attempts <= 3:
+        raise ValueError("authorization dispatch attempts must be between one and three")
+    attempts_token = _dispatch_attempts.set(dispatch_attempts)
     token = _policy.set(callback)
     state_token = _state_path.set(state_path or _state_path.get())
     try:
@@ -61,6 +68,7 @@ def authorization_scope(
     finally:
         _policy.reset(token)
         _state_path.reset(state_token)
+        _dispatch_attempts.reset(attempts_token)
 
 
 @contextmanager
@@ -345,7 +353,7 @@ class Acquisition:
             self.started_at = time.time()
             self.requests_after = self.requests_before
             return
-        for _ in range(3):
+        for _ in range(_dispatch_attempts.get()):
             self.prepare()
             grant = self.authorize()
             now = time.time()

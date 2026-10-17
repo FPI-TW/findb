@@ -8,8 +8,10 @@ import json
 import re
 import time
 from collections.abc import Callable, Mapping
-from datetime import date
+from datetime import date, timezone
 from decimal import Decimal, InvalidOperation
+from email.utils import parsedate_to_datetime
+from math import isfinite
 from typing import Any
 
 import httpx
@@ -22,11 +24,39 @@ from findb_fetcher.full_market_universe import (
 )
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
 
-_PRODUCTS = {"TX", "MTX", "TMF", "TE", "TF"}
+PRODUCTS = ("TX", "MTX", "TMF", "TE", "TF")
+_PRODUCTS = set(PRODUCTS)
 
 
 class TaifexOperationalError(RuntimeError):
     """Transport, HTTP or response-bound failures must stop acquisition."""
+
+    def __init__(
+        self, message: str, *, status_code: int | None = None, retry_after: float = 0
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retry_after = retry_after
+
+    @property
+    def retryable(self) -> bool:
+        return self.status_code == 429 or (self.status_code is not None and self.status_code >= 500)
+
+
+def _retry_after(value: str | None) -> float:
+    if value is None:
+        return 0
+    try:
+        delay = float(value)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            delay = retry_at.timestamp() - time.time()
+        except (TypeError, ValueError, OverflowError):
+            return 0
+    return max(0, delay) if isfinite(delay) else 0
 
 
 _FIELDS = {
@@ -65,9 +95,16 @@ def parse_report(
 ) -> list[dict[str, Any]]:
     if historical:
         text = raw.decode("cp950").lstrip("\ufeff")
+        reader = csv.DictReader(io.StringIO(text))
+        columns = {str(key).strip() for key in reader.fieldnames or []}
+        if any(
+            english not in columns and chinese not in columns
+            for english, chinese in _FIELDS.items()
+        ):
+            raise UniverseSnapshotError("TAIFEX historical report columns changed")
         source_rows = [
             {str(key).strip(): value for key, value in row.items() if key is not None}
-            for row in csv.DictReader(io.StringIO(text))
+            for row in reader
         ]
     else:
         source_rows = json.loads(raw)
@@ -202,7 +239,11 @@ def fetch_report(
             if on_observed_bytes is not None:
                 on_observed_bytes(len(raw))
             if response.status_code != 200:
-                raise TaifexOperationalError("TAIFEX report request failed")
+                raise TaifexOperationalError(
+                    "TAIFEX report request failed",
+                    status_code=response.status_code,
+                    retry_after=_retry_after(response.headers.get("Retry-After")),
+                )
             return raw
         except BoundedResponseError as exc:
             if permit:
@@ -222,3 +263,21 @@ def fetch_report(
             if on_observed_bytes is not None and observed:
                 on_observed_bytes(observed)
             raise
+
+
+def persist_dated_report(
+    raw: bytes, *, target_date: date, product: str, persist: Callable[[bytes], Any]
+) -> tuple[Any, list[dict[str, Any]]]:
+    """Persist exact report bytes before parsing or validating dated membership."""
+    stored = persist(raw)
+    rows = parse_report(raw, target_date=target_date, historical=True)
+    if product not in _PRODUCTS or any(row["product_code"] != product for row in rows):
+        raise UniverseSnapshotError("TAIFEX product report differs from request")
+    return stored, rows
+
+
+def is_no_trade(row: Mapping[str, Any]) -> bool:
+    return row["volume"] == 0 and all(
+        row[field] is None
+        for field in ("open", "high", "low", "close", "settlement_price", "open_interest")
+    )

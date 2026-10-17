@@ -906,6 +906,22 @@ async def validate_ingest_part(
     governance = (dataset.config or {}).get("full_market") or {}
     delivery = getattr(request, "delivery", None)
     work_item_id = getattr(delivery, "work_item_id", None)
+    if (
+        isinstance(request, FuturesEODIngressRequest)
+        and request.source == "taifex"
+        and isinstance(work_item_id, str)
+        and work_item_id.startswith("historical:")
+    ):
+        from app.services.historical_backfill import (
+            HistoricalBackfillError,
+            validate_taifex_historical_delivery,
+        )
+
+        try:
+            await validate_taifex_historical_delivery(db, request)
+        except HistoricalBackfillError as exc:
+            raise FullMarketError(str(exc), 409) from exc
+        return None
     if not isinstance(work_item_id, str) or not work_item_id.startswith("fp1:"):
         if governance.get("required"):
             raise FullMarketError("This feed requires a frozen full-market work item", 409)

@@ -57,7 +57,12 @@ def installed_manifest(base, validator, target, registry):
 
 def runtime_command(target, provider, profile):
     if profile == "historical":
-        return ["findb-fetch-historical-backfill", "--provider", provider, "--run-forever"]
+        return [
+            "findb-fetch-historical-backfill",
+            "--provider",
+            provider,
+            "--run-forever",
+        ]
     state_dir = f"/var/lib/findb-{profile.replace('_', '-')}/{target}"
     if profile == "full_market" and target == "production":
         state_dir = "/var/lib/findb-full-market"
@@ -118,7 +123,17 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     names = {row["Name"].removeprefix("/"): row for row in rows}
     for profile in ("pilot", "full_market", "historical"):
         for provider in ("twelve_data", "finlab", "shioaji", "taifex"):
-            if profile == "historical" and provider == "taifex":
+            if (
+                profile == "historical"
+                and provider == "taifex"
+                and "findb-historical-taifex" not in names
+            ):
+                # Require the consumer only after an immutable installed bundle declares it.
+                root = Path((base / "current").readlink())
+                with validator.SourceBundleReader(root) as source:
+                    deployment = source.read("infra/deploy/runtime-secrets/deploy_fetcher_aws.sh")
+                if b"# historical-taifex-v1:" in deployment:
+                    raise ValueError("installed TAIFEX historical consumer is missing")
                 continue
             name = f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}"
             image = manifest["images"]["twelve_data" if provider == "taifex" else provider]

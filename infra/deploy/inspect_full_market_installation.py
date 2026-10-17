@@ -48,8 +48,7 @@ def build(
     full_name = "findb-full-market-" + provider.replace("_", "-")
     actual = [("full_market", inspect(full_name))]
     actual.append(("pilot", inspect(names[provider])))
-    if provider != "taifex":
-        actual.append(("historical", inspect("findb-historical-" + provider.replace("_", "-"))))
+    actual.append(("historical", inspect("findb-historical-" + provider.replace("_", "-"))))
     allocation = json.loads(allocation_path.read_bytes())
     if (
         allocation["environment"] != target

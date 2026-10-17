@@ -19,11 +19,19 @@ from findb_fetcher.full_market_universe import canonical_bytes
 
 class FullMarketProtocolError(RuntimeError):
     def __init__(
-        self, message: str, *, status_code: int | None = None, code: str | None = None
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        code: str | None = None,
+        retryable: bool = False,
+        retry_after: float = 0,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+        self.retryable = retryable
+        self.retry_after = retry_after
 
 
 class FullMarketSourceClient:
@@ -141,6 +149,8 @@ class FullMarketSourceClient:
                             f"Source governance returned HTTP {response.status_code}",
                             status_code=response.status_code,
                             code=code,
+                            retryable=response.status_code == 429 or response.status_code >= 500,
+                            retry_after=self._retry_delay(response, attempt, bounded=False),
                         )
                     result = json.loads(raw)
                     if not isinstance(result, dict):
@@ -179,10 +189,14 @@ class FullMarketSourceClient:
                     return result
             except httpx.TransportError:
                 if attempt + 1 == self.config.max_attempts:
-                    raise FullMarketProtocolError("Source governance transport failed") from None
+                    raise FullMarketProtocolError(
+                        "Source governance transport failed", retryable=True
+                    ) from None
         raise FullMarketProtocolError("Source governance retries exhausted")
 
-    def _retry_delay(self, response: httpx.Response, attempt: int) -> float:
+    def _retry_delay(
+        self, response: httpx.Response, attempt: int, *, bounded: bool = True
+    ) -> float:
         fallback = min(float(2**attempt), self.config.max_retry_after_seconds)
         value = response.headers.get("Retry-After")
         if value is None:
@@ -192,17 +206,15 @@ class FullMarketSourceClient:
         except ValueError:
             seconds = -1.0
         if isfinite(seconds) and seconds >= 0:
-            return min(seconds, self.config.max_retry_after_seconds)
+            return min(seconds, self.config.max_retry_after_seconds) if bounded else seconds
         try:
             retry_at = parsedate_to_datetime(value)
         except (TypeError, ValueError, OverflowError):
             return fallback
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=timezone.utc)
-        return min(
-            max(0.0, retry_at.timestamp() - time.time()),
-            self.config.max_retry_after_seconds,
-        )
+        delay = max(0.0, retry_at.timestamp() - time.time())
+        return min(delay, self.config.max_retry_after_seconds) if bounded else delay
 
     def universes(self, dataset: str, provider: str, as_of: str | None = None) -> dict[str, Any]:
         return self.request(

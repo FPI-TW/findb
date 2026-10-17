@@ -17,7 +17,7 @@ Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受
 Pilot 建立 daily plan 時按 canonical 商品識別排序取前兩項，期貨以 product／contract 取樣並保留所有 sessions。
 樣本建立後凍結；重試、重啟、補抓及 universe 發布不得改寫它。
 
-兩環境固定安裝八個 recurring consumers，以及三個獨立 historical consumers。
+新版部署在兩環境固定安裝八個 recurring consumers，以及四個獨立 historical consumers。
 `FULL_MARKET_ENABLED=false` 只禁止 full market 新抓取，不影響安裝、pilot 或 prepared delivery。
 部署只接受 stopped controls；Owner 操作啟停。Staging 常態開 pilot，上版可短暫開 full market；production 常態只開 full market。
 `pilot_<provider>_v1` 與 `full_market_<provider>_v1` 各自有 first dates、plans、checkpoint；同環境共用帳號 governor。
@@ -210,3 +210,13 @@ Client 統一將上界編碼成隔日午夜；scheduler、人工回補與共用 
 CLI、universe 與 scheduler/runtime 的 canonical mapping 只納入要求的日期範圍；
 Raw R2 保留完整原始 HTTP bytes，即使 provider 回傳額外日期也不改寫原始證據。
 空回應或範圍內無資料仍按既有錯誤／重試規則處理，不直接標示成功或 no_data。
+
+## TAIFEX historical backfill
+
+`findb-fetch-historical-backfill --provider taifex --run-forever` 消費 Admin 核准的逐日工作，
+使用共用 `full_market.<environment>.v1.json`（`FETCHER_FULL_MARKET_CONFIG` 可覆寫）。
+部署 checkpoint 為 `/var/lib/findb-taifex-fetcher/historical/state.sqlite3`；本機使用
+`FETCHER_HISTORICAL_STATE_DIR` 指定可寫目錄，並沿用既有 `FETCHER_ACCOUNT_STATE_PATH`。
+Raw-first 五商品報表、整日 manifest、prepared body、receipt 與有限重試均持久保存；
+停止 TAIFEX Pilot／Full 並排空後執行，操作與驗收見
+[資料維護](../docs/operations/data_maintenance.md#taifex-futures-eod-回補)。

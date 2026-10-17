@@ -336,3 +336,12 @@ Logout 是既有資源 cleanup，Source stopped／revoked 不阻止關閉；它�
 Same-account lock／zero-unit cleanup intent 保護至 durable completion；crash 保留 cleanup unknown
 cooldown，不捏造行情 request 或 SDK bytes。Parent timeout／EOF／SIGKILL 期間 child 保留共享 FD，
 先 finalize／cleanup 再交 ACK／釋放；無法終止的 child 留 lock 供後續 recovery。
+
+## TAIFEX historical 與日常 catchup
+
+TAIFEX 指定歷史日期回補沿用獨立 historical control plane，操作見
+[資料維護](data_maintenance.md#taifex-futures-eod-回補)。日常與 historical 共用日期 CSV 的
+raw-first／契約／時段解析；historical 不受 Full flag、activation first date 或今日 universe
+限制，也不改寫 Pilot／Full frozen plans。執行前停止 TAIFEX 兩個 controls 並排空在途工作，
+完成驗證後恢復日常 catchup。新版部署要求兩環境安裝八個 recurring 與四個 historical consumers；
+TAIFEX 共用既有公開資料 governor、Source key 與 Twelve Data image，無新增 provider secret。

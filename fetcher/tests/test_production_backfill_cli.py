@@ -98,3 +98,26 @@ def test_shioaji_history_and_wait_without_deliver_fail_closed(
     assert production_backfill_cli.main([*_args(), "--wait"]) == 2
     assert production_backfill_cli.main(_args("shioaji", "tw_equity_minute")) == 2
     assert "production_backfill_failed" in capsys.readouterr().err
+
+
+def test_taifex_preview_uses_shared_catalog_and_unknown_rows(monkeypatch, capsys):
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    monkeypatch.setenv(
+        "FETCHER_FULL_MARKET_CONFIG", str(SCHEDULE.parent / "full_market.production.v1.json")
+    )
+    monkeypatch.setenv("FINDB_ADMIN_API_URL", "https://findb.example")
+    monkeypatch.setenv("FINDB_BACKFILL_ADMIN_API_KEY", "secret")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(
+            200, json={"scope_valid": True, "days": [{"valid": True}, {"valid": True}]}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert production_backfill_cli.main(_args("taifex", "tw_futures_eod"), client=client) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["estimated_provider_calls"] == 10
+    assert output["estimated_rows"] is None
+    assert len(requests) == 1 and requests[0].url.path.endswith("/preview")
