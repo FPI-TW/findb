@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import subprocess
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
@@ -379,9 +380,17 @@ async def test_evidence_migration_is_additive_and_keeps_existing_items():
                 ids,
             )
             before = await db.scalar(text("SELECT count(*) FROM historical_backfill_item"))
-        await _run_alembic(url, "head")
+            before_item = await db.scalar(
+                text("SELECT to_jsonb(t) FROM historical_backfill_item t WHERE item_id=:item"), ids
+            )
+        await _run_alembic(url, "a42c89d3e610")
         async with engine.begin() as db:
             assert await db.scalar(text("SELECT count(*) FROM historical_backfill_item")) == before
+            after_item = await db.scalar(
+                text("SELECT to_jsonb(t) FROM historical_backfill_item t WHERE item_id=:item"), ids
+            )
+            assert after_item.pop("result_evidence") is None
+            assert after_item == before_item
             column = (
                 await db.execute(
                     text(
@@ -390,6 +399,29 @@ async def test_evidence_migration_is_additive_and_keeps_existing_items():
                 )
             ).one()
             assert column == ("jsonb", "YES")
+            proof = evidence(ids["item"], ids["request"], no_data=True)
+            await db.execute(
+                text(
+                    "UPDATE historical_backfill_item SET result_evidence=CAST(:evidence AS jsonb) WHERE item_id=:item"
+                ),
+                {"item": ids["item"], "evidence": json.dumps(proof)},
+            )
+        with pytest.raises(subprocess.CalledProcessError) as failed:
+            await _run_alembic(url, "91a4c7e2d630", command="downgrade")
+        assert "Historical evidence must be retained; use a forward fix" in failed.value.stderr
+        async with engine.begin() as db:
+            assert (
+                await db.scalar(text("SELECT version_num FROM alembic_version")) == "a42c89d3e610"
+            )
+            assert (
+                await db.scalar(
+                    text(
+                        "SELECT result_evidence FROM historical_backfill_item WHERE item_id=:item"
+                    ),
+                    ids,
+                )
+                == proof
+            )
 
 
 @pytest.mark.asyncio

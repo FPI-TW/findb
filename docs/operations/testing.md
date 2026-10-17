@@ -61,6 +61,10 @@ FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type chec
 `infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service。Backend 與 Infra 固定兩個
 workers；migration job 維持序列執行。Full-market schema roundtrip 位於
 `backend/tests/test_full_market_migration.py`，只由 migration job 收集。
+針對特定 migration 的欄位差異或 downgrade guard 測試，必須明確指定該 revision，
+避免後續 additive 欄位或較新的 rollback 下限改變舊測試的範圍。升級至 `head` 的整合測試
+仍驗證完整 migration chain；TAIFEX evidence 測試另驗證舊 item 保留、新欄位預設 NULL，
+以及拒絕 downgrade 後 revision 與完成證據均保持不變。
 Shutdown transaction 的獨立情境由 pytest parameters 分配給 workers；每個情境使用自己的
 暫存目錄與 Docker state，交易內的操作／assertions 仍在同一 case 依序執行。
 

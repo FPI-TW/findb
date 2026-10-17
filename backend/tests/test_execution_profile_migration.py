@@ -52,7 +52,7 @@ async def test_profile_upgrade_preserves_full_dates_and_frozen_plans():
                     (await db.execute(text(f"SELECT to_jsonb(t) FROM {table} t"))).scalars().all()
                 )
         try:
-            await _run_alembic(url, "head")
+            await _run_alembic(url, "91a4c7e2d630")
         except subprocess.CalledProcessError as failure:
             pytest.fail(failure.stderr)
         async with engine.begin() as db:

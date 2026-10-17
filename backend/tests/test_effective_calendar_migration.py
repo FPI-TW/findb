@@ -41,7 +41,7 @@ async def test_calendar_policy_upgrade_preserves_existing_historical_work():
             before_item = await db.scalar(
                 text("SELECT to_jsonb(t) FROM historical_backfill_item t WHERE item_id=:item"), ids
             )
-        await _run_alembic(url, "head")
+        await _run_alembic(url, "91a4c7e2d630")
         async with engine.begin() as db:
             assert (
                 await db.scalar(
