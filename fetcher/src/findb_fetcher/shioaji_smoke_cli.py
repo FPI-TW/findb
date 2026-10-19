@@ -59,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from findb_fetcher.provider_work import enabled
+
+    if enabled():
+        return _error("provider_work_required", 4)
     try:
         args = build_parser().parse_args(argv)
         if args.symbol not in REVIEWED_SYMBOLS or not _within_provider_window(args.target_date):

@@ -82,7 +82,14 @@ async def enforce_source_payload_size(request, call_next):
     if request.url.path.startswith(source_prefix):
         limit = (
             SOURCE_UNIVERSE_MAX_PAYLOAD_BYTES
-            if request.method == "POST" and request.url.path == f"{source_prefix}/universes"
+            if request.method == "POST"
+            and (
+                request.url.path == f"{source_prefix}/universes"
+                or (
+                    request.url.path.startswith(f"{source_prefix}/provider-work/")
+                    and request.url.path.endswith("/manifest")
+                )
+            )
             else max(1, int(settings.SOURCE_MAX_PAYLOAD_BYTES))
         )
         content_length = request.headers.get("content-length")

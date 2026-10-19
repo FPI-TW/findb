@@ -192,6 +192,12 @@ def main(argv: list[str] | None = None) -> int:
             state = FullMarketState(args.state_path)
             state.bind_profile(args.execution_profile)
         if args.initialize_state or args.health:
+            if args.initialize_state:
+                from findb_fetcher.provider_work import enabled, host_lock
+
+                if enabled():
+                    with host_lock(args.provider):
+                        pass
             print(json.dumps(state.health(args.provider), separators=(",", ":")))
             return 0
         fetcher = FetcherConfig.from_env()
@@ -261,7 +267,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.sync_universes:
                 os.environ["FETCHER_CONSUMER_PROFILE"] = "maintenance"
                 # Publishing remains an Admin-only action.
-                print(json.dumps(runtime.sync_universes(), separators=(",", ":")))
+                from findb_fetcher.provider_work import enabled
+
+                print(
+                    json.dumps(
+                        runtime.sync_queued_universes() if enabled() else runtime.sync_universes(),
+                        separators=(",", ":"),
+                    )
+                )
                 return 0
             with scheduler_stop_event() as stopped:
                 while not stopped.is_set():

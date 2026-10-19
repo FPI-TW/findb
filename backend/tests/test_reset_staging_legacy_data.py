@@ -266,6 +266,51 @@ async def test_apply_truncates_mutable_tables_and_preserves_protected_tables(tes
                 status="completed",
                 suffix="reset",
             )
+            from app.models.provider_work import (
+                ProviderWork,
+                ProviderWorkAttempt,
+                ProviderWorkOwner,
+                ProviderWorkReceipt,
+            )
+
+            work = ProviderWork(
+                environment="staging",
+                provider="twelve_data",
+                stable_key="reset-proof",
+                kind="rerun",
+                dataset_key=dataset.dataset_key,
+                scope={},
+                state="completed",
+            )
+            session.add(work)
+            await session.flush()
+            attempt = ProviderWorkAttempt(
+                work_id=work.work_id,
+                attempt_number=1,
+                state="settled",
+                not_before=utc_now(),
+                outcome="completed",
+                generation=8,
+            )
+            session.add(attempt)
+            await session.flush()
+            session.add_all(
+                [
+                    ProviderWorkReceipt(
+                        run_id=run.run_id,
+                        work_id=work.work_id,
+                        attempt_id=attempt.attempt_id,
+                        member_key="retained_raw",
+                        payload_sha256="e" * 64,
+                    ),
+                    ProviderWorkOwner(
+                        environment="staging",
+                        provider="twelve_data",
+                        generation=9,
+                        host_lock_identity="staging:1:2",
+                    ),
+                ]
+            )
             now = utc_now()
             instrument = Instrument(asset_class="equity", market="US", symbol="RESET")
             session.add_all(
@@ -324,6 +369,28 @@ async def test_apply_truncates_mutable_tables_and_preserves_protected_tables(tes
             assert await connection.scalar(text("SELECT count(*) FROM dataset_registry")) == 1
             assert await connection.scalar(text("SELECT count(*) FROM scheduler_control")) == 1
             assert await connection.scalar(text("SELECT count(*) FROM scheduler_dataset")) == 1
+            owner = (
+                await connection.execute(
+                    text(
+                        "SELECT generation,host_lock_identity,attempt_id,recovery_reason FROM provider_work_owner"
+                    )
+                )
+            ).one()
+            assert tuple(owner) == (
+                9,
+                "staging:1:2",
+                None,
+                "mutable_reset_requires_verified_cutover",
+            )
+            assert all(
+                report.before[f"public.{name}"] == 1
+                for name in (
+                    "provider_work",
+                    "provider_work_attempt",
+                    "provider_work_receipt",
+                    "provider_work_owner",
+                )
+            )
 
 
 @pytest.mark.asyncio
@@ -437,3 +504,25 @@ async def test_reset_clears_full_admission_fk_graph_and_preserves_installation_a
                 )
             ).one()
             assert tuple(row) == ("c" * 64, "d" * 64, source.client_id)
+
+
+@pytest.mark.asyncio
+async def test_reset_refuses_active_queue_owner_even_without_ingestion_runs(test_engine):
+    from app.services import provider_work
+    from tests.test_provider_work import add, seed
+
+    async with test_engine.begin() as connection:
+        async with AsyncSession(bind=connection, expire_on_commit=False) as db:
+            key = await seed(db, "finlab")
+            await add(db, "finlab", key, "reset-owner-barrier")
+            assert await provider_work.claim(
+                db, provider="finlab", datasets=[key], host_lock_identity="host:1:22"
+            )
+            await db.flush()
+            with pytest.raises(ResetSafetyError, match="active provider owners=1"):
+                await reset_staging_legacy_data(
+                    connection,
+                    apply=True,
+                    db_writers_stopped=True,
+                    target_fingerprint=await get_target_fingerprint(connection),
+                )

@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
                 "taifex": TaifexHistoricalRunner.from_env,
             }[args.provider](),
         )
-        with HistoricalControlClient(FetcherConfig.from_env()) as control:
+        with HistoricalControlClient(FetcherConfig.from_env(), provider=args.provider) as control:
             try:
                 run_worker(control, runner, run_forever=args.run_forever, stop_event=stopper)
             finally:

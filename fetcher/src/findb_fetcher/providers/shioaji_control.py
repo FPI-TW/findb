@@ -55,6 +55,18 @@ class ChildBoundary:
     def __init__(self, conn: Any, metadata: dict[str, Any]) -> None:
         self.conn, self.metadata = conn, metadata
         self.fd = recv_handle(conn)
+        if os.getenv("PROVIDER_WORK_REQUIRED") == "true" or metadata.get("work_required"):
+            work_fd = metadata.get("work_fd")
+            identity = metadata.get("work_identity")
+            try:
+                if type(work_fd) is not int or not isinstance(identity, list) or len(identity) != 2:
+                    raise ValueError
+                info = os.fstat(work_fd)
+                if (info.st_dev, info.st_ino) != tuple(identity):
+                    raise ValueError
+            except (TypeError, OSError, ValueError):
+                os.close(self.fd)
+                raise QuotaBlockedError("whole-work descriptor is unavailable") from None
         self.started_at: float | None = None
         self.before: dict[str, Any] | None = None
         self.after: dict[str, Any] | None = None
@@ -70,7 +82,9 @@ class ChildBoundary:
                 if int(sample["sample_started_at"] // 86400) != int(sample["observed_at"] // 86400):
                     continue
                 if sample["bytes"] >= SHIOAJI_DAILY_BYTES:
-                    raise QuotaBlockedError("SDK daily account byte quota exhausted")
+                    raise QuotaBlockedError(
+                        "SDK daily account byte quota exhausted", quota_wait=True
+                    )
                 if type(sample["connections"]) is not int or not 1 <= sample["connections"] <= 5:
                     raise QuotaBlockedError("SDK authenticated connections unavailable or invalid")
             self.conn.send_bytes(
@@ -162,7 +176,14 @@ def parent_fetch(
     timeout: float,
     max_bytes: int,
 ) -> dict[str, Any]:
+    from findb_fetcher.provider_work import enabled, inherited_fds, require_acquisition
+
+    require_acquisition("shioaji")
+    descriptors = inherited_fds()
+    work_fd = descriptors[0] if descriptors else None
+    work_stat = os.fstat(work_fd) if work_fd is not None else None
     operation.prepare()  # Durable intent before child preparation/FD/READY.
+    require_acquisition("shioaji")  # Pacing may have blocked before even child usage sampling.
     command = {
         **command,
         "governor": {
@@ -171,6 +192,9 @@ def parent_fetch(
             "operation_id": operation.operation_id,
             "interval": operation.interval,
             "kind": operation.kind,
+            "work_required": enabled(),
+            "work_fd": work_fd,
+            "work_identity": [work_stat.st_dev, work_stat.st_ino] if work_stat else None,
         },
     }
     conn.send_bytes(json.dumps(command).encode())
@@ -196,8 +220,10 @@ def parent_fetch(
                         "UPDATE acquisition_intent SET usage_before_state=? WHERE operation_id=?",
                         (message.get("usage_state", "observed"), operation.operation_id),
                     )
+                require_acquisition("shioaji")
                 operation.prepare()
                 grant = operation.authorize()
+                require_acquisition("shioaji")
                 fresh = grant.valid() and (
                     sample is None or 0 <= time.time() - sample["observed_at"] < SDK_SAMPLE_SECONDS
                 )
@@ -227,7 +253,10 @@ def parent_fetch(
                 operation.units if operation.started_at is not None else 0
             )
             if message.get("error"):
-                raise QuotaBlockedError("isolated provider acquisition failed")
+                waiting = message.get("quota_wait") is True and operation.started_at is None
+                if waiting:
+                    operation.possibly_started = False
+                raise QuotaBlockedError("isolated provider acquisition failed", quota_wait=waiting)
             return message["payload"]
     except BaseException:
         try:

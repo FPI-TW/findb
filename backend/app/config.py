@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     PORT: int = 8080
     APP_ENVIRONMENT: Literal["local", "staging", "production"] = "local"
     FULL_MARKET_ENABLED: bool = False
+    PROVIDER_WORK_REQUIRED: bool = False
     TWELVE_DATA_SKIP_NON_TRADING_DAYS: bool = False
     FINLAB_SKIP_NON_TRADING_DAYS: bool = False
     SHIOAJI_SKIP_NON_TRADING_DAYS: bool = False

@@ -256,6 +256,37 @@ def test_ordinary_client_errors_and_http_500_are_not_retried(
     assert attempts == 1
 
 
+@pytest.mark.parametrize("accepted_ack", [False, True])
+def test_http_request_timeout_retries_same_identity_and_never_becomes_permanent_rejection(
+    contracts_dir: Path, market_request: dict[str, Any], accepted_ack: bool
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if accepted_ack and len(requests) == 2:
+            return httpx.Response(202, json=_receipt_payload(), request=request)
+        return httpx.Response(408, request=request)
+
+    client = SourceAPIClient(
+        _config(max_attempts=2),
+        ContractRegistry(contracts_dir),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _seconds: None,
+    )
+    prepared = client.prepare(market_request)
+    if accepted_ack:
+        assert client.deliver(prepared).status == "queued"
+    else:
+        with pytest.raises(SourceAPITransportError):
+            client.deliver(prepared)
+    assert len(requests) == 2
+    assert all(request.content == prepared.body for request in requests)
+    assert {request.headers["Idempotency-Key"] for request in requests} == {
+        prepared.idempotency_key
+    }
+
+
 def test_http_date_retry_after_uses_injected_clock(
     contracts_dir: Path, market_request: dict[str, Any]
 ) -> None:

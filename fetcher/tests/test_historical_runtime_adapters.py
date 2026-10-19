@@ -309,9 +309,10 @@ def test_shioaji_historical_runtime_rejects_incomplete_terminal_sequence(
     _configure_shioaji_runner(monkeypatch, tmp_path, source, events)
     item = _item("shioaji", "tw_etf_minute", "TW", date(2026, 7, 29))
 
+    from findb_fetcher.historical_backfill import HistoricalPreparedManualError
+
     with pytest.raises(
-        shioaji_historical.ShioajiHistoricalBridgeUnavailableError,
-        match="sequenced snapshot did not complete",
+        HistoricalPreparedManualError, match="prepared delivery requires manual review"
     ):
         shioaji_historical.ExecutableShioajiHistoricalRunner(
             fetcher=cast(FetcherConfig, SimpleNamespace()),

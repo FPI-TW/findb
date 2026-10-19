@@ -15,13 +15,24 @@ from typing import Any
 
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 
+FULL_WORK_MAX_ATTEMPTS = 8
+
 
 class FullMarketStateError(RuntimeError):
     pass
 
 
 class QuotaBlockedError(FullMarketStateError):
-    pass
+    # Set at the real acquisition boundary when the provider might have run.
+    # Pre-dispatch waiting cannot spend an operation failure budget.
+    dispatched = False
+
+    def __init__(
+        self, message: str, *, quota_wait: bool = False, status_code: int | None = None
+    ) -> None:
+        super().__init__(message)
+        self.quota_wait = quota_wait
+        self.status_code = status_code
 
 
 class FullMarketState:
@@ -46,10 +57,13 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_account_identity (provider TEXT NOT NULL, credential_sha256 TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(provider,credential_sha256));
                 CREATE TABLE IF NOT EXISTS full_quota (account TEXT, window TEXT, requests INTEGER NOT NULL, bytes INTEGER NOT NULL, blocked_until REAL NOT NULL DEFAULT 0, PRIMARY KEY(account,window));
                 CREATE TABLE IF NOT EXISTS full_pacing (account TEXT PRIMARY KEY, next_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS full_account_cooldown(account TEXT PRIMARY KEY, not_before REAL NOT NULL, reason TEXT NOT NULL);
+                INSERT INTO full_account_cooldown SELECT account,next_at,'legacy' FROM full_pacing WHERE true ON CONFLICT(account) DO UPDATE SET not_before=MAX(not_before,excluded.not_before),reason=CASE WHEN excluded.not_before>not_before THEN 'legacy' ELSE reason END;
                 CREATE TABLE IF NOT EXISTS full_capacity_violation (account TEXT PRIMARY KEY, violation_id TEXT NOT NULL, observed_bytes INTEGER NOT NULL, allocation_sha256 TEXT NOT NULL, recorded_at REAL NOT NULL, received_bytes INTEGER NOT NULL DEFAULT 0, declared_bytes INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_capacity_repair (violation_id TEXT PRIMARY KEY, account TEXT NOT NULL, observed_bytes INTEGER NOT NULL, previous_allocation_sha256 TEXT NOT NULL, corrected_allocation_sha256 TEXT NOT NULL, declaration_sha256 TEXT NOT NULL, repaired_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_work (key TEXT PRIMARY KEY, provider TEXT NOT NULL, plan_id TEXT NOT NULL, member_key TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0, body BLOB, body_sha256 TEXT, receipt TEXT, reason TEXT, next_at REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_plan (plan_id TEXT PRIMARY KEY, provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, body BLOB NOT NULL, complete INTEGER NOT NULL DEFAULT 0, late INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS full_work_receipt (key TEXT NOT NULL, idempotency_key TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(key,idempotency_key));
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
                 CREATE TABLE IF NOT EXISTS full_cursor (provider TEXT, dataset TEXT, trade_date TEXT NOT NULL, PRIMARY KEY(provider,dataset));
@@ -81,9 +95,22 @@ class FullMarketState:
                 "CREATE INDEX IF NOT EXISTS acquisition_login_window ON acquisition_intent(account,operation_kind,actual_start)"
             )
             # Promote cooldowns written by older runtimes out of dated quota rows.
-            db.execute(
-                "INSERT INTO full_pacing(account,next_at) SELECT account,MAX(blocked_until) FROM full_quota WHERE blocked_until>0 GROUP BY account ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)"
-            )
+            for row in db.execute(
+                "SELECT account,MAX(blocked_until) FROM full_quota WHERE blocked_until>0 GROUP BY account"
+            ).fetchall():
+                self.record_floor(db, row[0], row[1], reason="quota_block")
+
+    @staticmethod
+    def record_floor(db, account: str, until: float, *, reason: str) -> None:
+        """Persist pacing and its reason atomically; longer debt always wins."""
+        db.execute(
+            "INSERT INTO full_pacing VALUES(?,?) ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)",
+            (account, until),
+        )
+        db.execute(
+            "INSERT INTO full_account_cooldown VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET not_before=MAX(not_before,excluded.not_before),reason=CASE WHEN excluded.not_before>=not_before THEN excluded.reason ELSE reason END",
+            (account, until, reason),
+        )
 
     def bind_profile(self, profile: str) -> None:
         """Bind a checkpoint once; legacy full checkpoints retain all state verbatim."""
@@ -181,7 +208,7 @@ class FullMarketState:
                 or row["requests"] + requests > request_limit
                 or row["bytes"] + byte_count > byte_limit
             ):
-                raise QuotaBlockedError("durable account quota is exhausted")
+                raise QuotaBlockedError("durable account quota is exhausted", quota_wait=True)
             before = row["requests"]
             db.execute(
                 "UPDATE full_quota SET requests=requests+?, bytes=bytes+? WHERE account=? AND window=?",
@@ -269,14 +296,14 @@ class FullMarketState:
                     and (day["bytes"] >= byte_limit or day["bytes"] + byte_count > byte_limit)
                 )
             ):
-                raise QuotaBlockedError("durable account quota is exhausted")
+                raise QuotaBlockedError("durable account quota is exhausted", quota_wait=True)
             minute_row = db.execute(
                 "SELECT * FROM full_quota WHERE account=? AND window=?", (account, minute)
             ).fetchone()
             if minute_row["blocked_until"] > now or (
                 minute_limit is not None and minute_row["requests"] + requests > minute_limit
             ):
-                raise QuotaBlockedError("durable account quota is exhausted")
+                raise QuotaBlockedError("durable account quota is exhausted", quota_wait=True)
             if allocation is not None:
                 allocation_account = account + ":allocation:" + allocation
                 db.execute(
@@ -291,7 +318,9 @@ class FullMarketState:
                     allocated["requests"] + requests > allocation_request_limit
                     or allocated["bytes"] + byte_count > allocation_byte_limit
                 ):
-                    raise QuotaBlockedError("installed consumer allocation is exhausted")
+                    raise QuotaBlockedError(
+                        "installed consumer allocation is exhausted", quota_wait=True
+                    )
                 db.execute(
                     "UPDATE full_quota SET requests=requests+?,bytes=bytes+? WHERE account=? AND window=?",
                     (requests, byte_count, allocation_account, daily),
@@ -313,21 +342,15 @@ class FullMarketState:
                     "UPDATE full_quota SET requests=requests+? WHERE account=? AND window=?",
                     (requests, account, minute),
                 )
-                db.execute(
-                    "INSERT INTO full_pacing VALUES(?,?) ON CONFLICT(account) DO UPDATE SET next_at=excluded.next_at",
-                    (account, now + interval),
-                )
+                self.record_floor(db, account, now + interval, reason="pacing")
         if rejected:
-            raise QuotaBlockedError("durable account quota is exhausted")
+            raise QuotaBlockedError("durable account quota is exhausted", quota_wait=True)
         return 0, before, before + requests, daily
 
     def pace_from_completion(self, *, account: str, now: float, interval: float) -> None:
         """Extend the account permit after a slow/failed SDK call, using UTC epoch."""
         with self.connection() as db:
-            db.execute(
-                "INSERT INTO full_pacing VALUES(?,?) ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)",
-                (account, now + interval),
-            )
+            self.record_floor(db, account, now + interval, reason="pacing")
 
     def record_byte_overage(self, *, account: str, window: str, byte_count: int) -> None:
         """Keep already-observed overage even when it exceeds the approved quota."""
@@ -436,10 +459,7 @@ class FullMarketState:
             db.execute("BEGIN IMMEDIATE")
             # A response can arrive on a new UTC day without a quota row there.
             # Account pacing retains the cooldown without reserving future quota.
-            db.execute(
-                "INSERT INTO full_pacing VALUES(?,?) ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)",
-                (account, until),
-            )
+            self.record_floor(db, account, until, reason="rate_limited")
             db.execute(
                 "UPDATE full_quota SET blocked_until=MAX(blocked_until,?) WHERE account=? AND window=?",
                 (until, account, window),
@@ -510,6 +530,27 @@ class FullMarketState:
             row = db.execute("SELECT receipt FROM full_work WHERE key=?", (key,)).fetchone()
             return row["receipt"] if row is not None else None
 
+    def sequence_receipt(self, key: str, idempotency_key: str) -> str | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT run_id FROM full_work_receipt WHERE key=? AND idempotency_key=?",
+                (key, idempotency_key),
+            ).fetchone()
+            return row[0] if row else None
+
+    def save_sequence_receipt(self, key: str, idempotency_key: str, run_id: str) -> None:
+        with self.connection() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO full_work_receipt VALUES(?,?,?)",
+                (key, idempotency_key, run_id),
+            )
+            row = db.execute(
+                "SELECT run_id FROM full_work_receipt WHERE key=? AND idempotency_key=?",
+                (key, idempotency_key),
+            ).fetchone()
+            if row[0] != run_id:
+                raise FullMarketStateError("sequence receipt identity changed")
+
     def prepare(self, key: str, body: bytes) -> None:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -519,6 +560,14 @@ class FullMarketState:
             db.execute(
                 "UPDATE full_work SET body=?,body_sha256=?,status='prepared' WHERE key=?",
                 (body, checksum(body), key),
+            )
+
+    def defer_wait(self, key: str, *, now: float, reason: str = "rate_limited") -> None:
+        """Quota waiting retains prepared bytes and the original failure budget."""
+        with self.connection() as db:
+            db.execute(
+                "UPDATE full_work SET status=CASE WHEN body IS NULL THEN 'pending' ELSE 'prepared' END,reason=?,lease_until=0,next_at=?,attempts=MAX(0,attempts-1) WHERE key=?",
+                (reason, now + 60, key),
             )
 
     def finish(
@@ -533,6 +582,8 @@ class FullMarketState:
         if status not in {"pending", "prepared", "complete", "manual"}:
             raise FullMarketStateError("work status is invalid")
         with self.connection() as db:
+            if reason == "normalizing":
+                db.execute("UPDATE full_work SET attempts=MAX(0,attempts-1) WHERE key=?", (key,))
             db.execute(
                 "UPDATE full_work SET status=?,reason=?,receipt=COALESCE(?,receipt),lease_until=0,next_at=? WHERE key=?",
                 (
@@ -544,8 +595,8 @@ class FullMarketState:
                 ),
             )
             db.execute(
-                "UPDATE full_work SET status='manual',reason='retry_exhausted' WHERE key=? AND attempts>=8 AND status IN ('pending','prepared') AND reason != 'normalizing'",
-                (key,),
+                "UPDATE full_work SET status='manual',reason='retry_exhausted' WHERE key=? AND attempts>=? AND status IN ('pending','prepared') AND reason != 'normalizing'",
+                (key, FULL_WORK_MAX_ATTEMPTS),
             )
 
     def catchup_dates(

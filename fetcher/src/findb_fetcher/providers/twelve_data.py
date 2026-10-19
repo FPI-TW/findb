@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
+from findb_fetcher.provider_work import durable_response
 
 TWELVE_DATA_SOURCE = "twelve_data"
 TWELVE_DATA_DEFAULT_BASE_URL = "https://api.twelvedata.com"
@@ -46,9 +47,11 @@ class TwelveDataResponseError(TwelveDataError):
         *,
         status_code: int | None = None,
         provider_code: int | None = None,
+        dispatched: bool | None = None,
         observed_bytes: int = 0,
         declared_bytes: int = 0,
     ) -> None:
+        self.dispatched = dispatched
         self.observed_bytes = observed_bytes
         self.declared_bytes = declared_bytes
         self.status_code = status_code
@@ -137,6 +140,16 @@ class TwelveDataConfig:
         )
 
 
+def _target_rows_present(value: Any, arguments: dict[str, Any]) -> bool:
+    start, end = arguments["start_date"], arguments["end_date"]
+    if start is None or end is None:
+        return True
+    try:
+        return any(date.fromisoformat(row["datetime"]) == end for row in value["values"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 class TwelveDataClient:
     """Small synchronous client for the provider's daily time-series endpoint."""
 
@@ -150,6 +163,11 @@ class TwelveDataClient:
         self._client = client or httpx.Client(timeout=config.timeout_seconds)
         self._owns_client = client is None
 
+    @durable_response(
+        "twelve_daily",
+        ("symbol", "start_date", "end_date", "outputsize", "exchange"),
+        target_valid=_target_rows_present,
+    )
     def fetch_daily(
         self,
         symbol: str,
@@ -243,6 +261,7 @@ class TwelveDataClient:
                     raise TwelveDataResponseError(
                         f"Twelve Data {exc}",
                         status_code=response_status_code,
+                        dispatched=operation.started_at is not None or operation.possibly_started,
                         observed_bytes=exc.observed_bytes,
                         declared_bytes=exc.declared_bytes,
                     ) from exc
@@ -253,6 +272,7 @@ class TwelveDataClient:
             raise TwelveDataResponseError(
                 "Twelve Data transport request failed",
                 status_code=response_status_code,
+                dispatched=operation.started_at is not None or operation.possibly_started,
                 observed_bytes=observed,
             ) from exc
 
@@ -264,6 +284,7 @@ class TwelveDataClient:
             raise TwelveDataResponseError(
                 f"Twelve Data returned non-JSON HTTP {response_status_code}",
                 status_code=response_status_code,
+                dispatched=operation.started_at is not None or operation.possibly_started,
             ) from exc
         if response_status_code != 200:
             # Error JSON is used only for redacted diagnostics; even an 'ok'
@@ -274,27 +295,37 @@ class TwelveDataClient:
             raise TwelveDataResponseError(
                 f"Twelve Data request failed (HTTP {response_status_code}): {provider_message}",
                 status_code=response_status_code,
+                dispatched=operation.started_at is not None or operation.possibly_started,
                 provider_code=provider_code,
                 observed_bytes=len(raw_bytes),
             )
         if not isinstance(payload, dict):
             raise TwelveDataResponseError(
-                "Twelve Data response must be a JSON object", status_code=response_status_code
+                "Twelve Data response must be a JSON object",
+                status_code=response_status_code,
+                dispatched=operation.started_at is not None or operation.possibly_started,
             )
 
         provider_status = payload.get("status")
         if provider_status == "error":
             raw_provider_code = payload.get("code", response_status_code)
             provider_code = _provider_code(raw_provider_code)
+            if provider_code == 429:
+                operation.rate_limited()
+                if on_http_rate_limited is not None:
+                    on_http_rate_limited()
             provider_message = _redacted_message(payload.get("message"), self._config.api_key)
             raise TwelveDataResponseError(
                 f"Twelve Data request failed ({raw_provider_code}): {provider_message}",
                 status_code=response_status_code,
+                dispatched=operation.started_at is not None or operation.possibly_started,
                 provider_code=provider_code,
             )
         if provider_status != "ok":
             raise TwelveDataResponseError(
-                "Twelve Data response status must be 'ok'", status_code=response_status_code
+                "Twelve Data response status must be 'ok'",
+                status_code=response_status_code,
+                dispatched=operation.started_at is not None or operation.possibly_started,
             )
         return TwelveDataResponse(payload, raw_bytes=raw_bytes)
 
@@ -450,7 +481,9 @@ def build_market_eod_request(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    identity_digest = hashlib.sha256(identity).hexdigest()
+    from findb_fetcher.provider_work import scoped_identity
+
+    identity_digest = hashlib.sha256(scoped_identity(identity)).hexdigest()
     normalized_fetched_at = fetched_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     request: dict[str, Any] = {

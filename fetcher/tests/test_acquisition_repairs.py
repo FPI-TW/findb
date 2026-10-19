@@ -241,10 +241,11 @@ def test_finlab_cross_token_gateway_denied_thread_cannot_change_dispatch_token(g
             try:
                 with pytest.raises(TimeoutError):
                     second.result(timeout=0.1)
-                assert logins == ["token-A"]
+                assert logins == []
             finally:
                 release.set()
             assert first.result(timeout=5).symbols == ("2330",)
+            assert logins == ["token-A"]
             with pytest.raises(FinLabSdkError):
                 second.result(timeout=5)
         # Denied B must release the SDK lock; a reused A selects its own token.

@@ -24,7 +24,11 @@ import httpx
 from findb_fetcher.acquisition import authorization_scope, http_acquisition
 from findb_fetcher.client import SourceAPIClient, SourceAPIResponseError, SourceAPITransportError
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
-from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
+from findb_fetcher.full_market_state import (
+    FULL_WORK_MAX_ATTEMPTS,
+    FullMarketState,
+    QuotaBlockedError,
+)
 from findb_fetcher.full_market_universe import (
     HKEX_URL,
     MAX_SNAPSHOT_BYTES,
@@ -46,7 +50,9 @@ from findb_fetcher.full_market_universe import (
     universe_request,
 )
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
+from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped, durable_response
 from findb_fetcher.providers.finlab import (
+    FinLabConfigError,
     FinLabDatasetConfig,
     FinLabDatasetTable,
     FinLabOperationalError,
@@ -64,6 +70,7 @@ from findb_fetcher.providers.taifex import (
     TaifexOperationalError,
     fetch_report,
     is_no_trade,
+    official_report_date,
     parse_report,
     persist_dated_report,
     report_members,
@@ -83,6 +90,15 @@ _TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States", "hk_equity_eod": "H
 
 class ReadinessBlockedError(RuntimeError):
     pass
+
+
+class ProviderHTTPError(ReadinessBlockedError):
+    """Preserve the public universe error while retaining a dispatched HTTP status."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.dispatched = True
 
 
 class DatedUniversePendingError(ReadinessBlockedError):
@@ -192,9 +208,14 @@ def _governed(method):
             if not self._acquisition_allowed():
                 raise ReadinessBlockedError("scheduler acquisition stopped")
             consumer = os.getenv("FETCHER_CONSUMER_PROFILE", "full_market")
+            from findb_fetcher.provider_work import active
+
+            owner = active()
             consumer = (
                 "maintenance"
-                if consumer == "maintenance" or method.__name__ == "sync_universes"
+                if consumer == "maintenance"
+                or method.__name__ == "sync_universes"
+                or (owner and owner.work["kind"] == "maintenance")
                 else self.execution_profile
             )
             plan = kwargs.get("plan") or (
@@ -297,6 +318,12 @@ class FullMarketRuntime:
             raise
 
     def _acquisition_allowed(self) -> bool:
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if owner and owner.work["kind"] == "maintenance":
+            owner.authorize()
+            return True
         return self.can_acquire()
 
     def _reserve(self, *, requests: int = 1, byte_count: int | None = None) -> tuple[int, int]:
@@ -397,6 +424,7 @@ class FullMarketRuntime:
             raise
 
     @_governed
+    @durable_response("official_snapshot", ("url",))
     def _snapshot(self, url: str, *, provider_response: bool = False) -> bytes:
         if not self._acquisition_allowed():
             raise ReadinessBlockedError("scheduler acquisition stopped")
@@ -413,10 +441,19 @@ class FullMarketRuntime:
                 operation.rate_limited(response.headers.get("Retry-After"))
                 # Status is known before a bounded read can reject its body.
                 self._rate_limited()
-            body = self._read_response(response, bound=bound, provider_response=True)
+            try:
+                body = self._read_response(response, bound=bound, provider_response=True)
+            except (ReadinessBlockedError, httpx.HTTPError) as exc:
+                if response.status_code != 200:
+                    raise ProviderHTTPError(
+                        "official exchange snapshot unavailable", response.status_code
+                    ) from exc
+                raise
             self._observed_response(len(body))
             if response.status_code != 200:
-                raise ReadinessBlockedError("official exchange snapshot unavailable")
+                raise ProviderHTTPError(
+                    "official exchange snapshot unavailable", response.status_code
+                )
             if url in NASDAQ_URLS:
                 dataset = "us_equity_eod"
             elif url == HKEX_URL:
@@ -488,6 +525,7 @@ class FullMarketRuntime:
         }
 
     @_governed
+    @durable_response("twelve_catalogue", ("dataset_key",))
     def _catalogue_market(self, dataset_key: str) -> tuple[list[dict[str, Any]], str, bytes]:
         config = TwelveDataConfig.from_env()
         country = _TD_CATALOGUE_COUNTRIES[dataset_key]
@@ -518,12 +556,18 @@ class FullMarketRuntime:
                 )
             except (ReadinessBlockedError, httpx.HTTPError) as exc:
                 if response.status_code == 429:
-                    raise QuotaBlockedError("provider catalogue rate limited") from exc
+                    raise QuotaBlockedError(
+                        "provider catalogue rate limited", status_code=429
+                    ) from exc
+                if response.status_code != 200:
+                    raise ProviderHTTPError(
+                        "provider catalogue unavailable", response.status_code
+                    ) from exc
                 raise
             if response.status_code == 429:
-                raise QuotaBlockedError("provider catalogue rate limited")
+                raise QuotaBlockedError("provider catalogue rate limited", status_code=429)
             if response.status_code != 200:
-                raise ReadinessBlockedError("provider catalogue unavailable")
+                raise ProviderHTTPError("provider catalogue unavailable", response.status_code)
             value = json.loads(raw)
             if not isinstance(value, dict) or not isinstance(value.get("data"), list):
                 raise ReadinessBlockedError("provider catalogue shape invalid")
@@ -685,9 +729,7 @@ class FullMarketRuntime:
         else:
             self._ensure_proof()
             raw = self._snapshot(TAIFEX_URL, provider_response=True)
-            values = json.loads(raw)
-            report_date = str(values[0]["Date"]).replace("/", "").replace("-", "")
-            day = datetime.strptime(report_date, "%Y%m%d").date()
+            day = official_report_date(raw)
             if day > now.astimezone(ZoneInfo("Asia/Taipei")).date():
                 raise ReadinessBlockedError("TAIFEX report is future-dated")
             rows = parse_report(raw, target_date=day)
@@ -716,6 +758,10 @@ class FullMarketRuntime:
 
     def drain(self) -> dict[str, Any]:
         """Deliver immutable prepared bodies without acquiring new provider data."""
+        from findb_fetcher.provider_work import enabled
+
+        if enabled():
+            return self._queued_cycle()
         self._drain_blocked = False
         for saved in self.state.pending_plans(self.provider):
             plan = json.loads(saved["body"])
@@ -738,6 +784,10 @@ class FullMarketRuntime:
         return self.state.health(self.provider)
 
     def cycle(self, *, drain_prepared: bool = True) -> dict[str, Any]:
+        from findb_fetcher.provider_work import enabled
+
+        if enabled():
+            return self._queued_cycle()
         if drain_prepared:
             self.drain()
         if self._drain_blocked:
@@ -833,6 +883,372 @@ class FullMarketRuntime:
                 self.bundles.pop((feed["dataset_key"], day), None)
                 self.futures.pop(day.isoformat(), None)
         return self.state.health(self.provider)
+
+    def sync_queued_universes(self) -> list[dict[str, Any]]:
+        from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
+
+        self._ensure_proof()
+        for feed in self.installed_feeds:
+            self.source.request(
+                "POST",
+                "provider-work/enqueue",
+                {
+                    "stable_key": f"maintenance:{feed['dataset_key']}:{datetime.now(timezone.utc).date()}",
+                    "kind": "maintenance",
+                    "dataset_key": feed["dataset_key"],
+                    "scope": {"dataset_key": feed["dataset_key"]},
+                },
+            )
+        try:
+            with claimed_work(self.source, self.provider, accepted_kinds=["maintenance"]) as owner:
+                if owner is None:
+                    return [{"status": "queued"}]
+                try:
+                    return self._run_queued_maintenance(owner)
+                finally:
+                    self.pause()
+        except ProviderWorkWaitingError:
+            return [{"status": "queued"}]
+
+    def _run_queued_maintenance(self, owner) -> list[dict[str, Any]]:
+        """Known catalogue failures close a safe round; uncertain ownership never does."""
+        from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+        from findb_fetcher.providers.shioaji import ShioajiSdkError
+        from findb_fetcher.raw_storage import RawStorageUploadError
+
+        work = owner.work
+        if work["state"] != "open":
+            manifest = work.get("manifest")
+            if manifest:
+                owner.freeze(manifest)
+                self._settle_queued_round(owner, outcome="completed")
+                # Replay the original completion proof without acquiring again.
+                return manifest.get("no_data_evidence", {}).get("universe_refresh", [])
+            self._settle_queued_round(owner, outcome="retry", failure_code="RECOVERED_CLOSED_ROUND")
+            return [{"status": "queued"}]
+        operation_key = "maintenance:universe_refresh"
+        try:
+            owner.journal.reserve_attempt(operation_key, FULL_WORK_MAX_ATTEMPTS)
+        except ValueError:
+            self._settle_queued_round(
+                owner, outcome="failed", failure_code="MAINTENANCE_RETRY_EXHAUSTED"
+            )
+            return [{"status": "manual", "reason": "MAINTENANCE_RETRY_EXHAUSTED"}]
+        retryable, code = False, "MAINTENANCE_FORMAT_OR_SCOPE"
+        dispatch_before = owner.dispatch_observations
+        try:
+            results = self.sync_universes(dataset_keys=[work["dataset_key"]])
+        except ProviderWorkRecoveryBlockedError:
+            raise
+        except QuotaBlockedError as exc:
+            retryable, code = True, "MAINTENANCE_QUOTA_OR_ACQUISITION"
+            if (
+                exc.quota_wait
+                and not exc.dispatched
+                and owner.dispatch_observations == dispatch_before
+            ):
+                owner.journal.release_wait_attempt(operation_key)
+        except (TwelveDataResponseError, ProviderHTTPError, httpx.HTTPStatusError) as exc:
+            status = (
+                exc.status_code
+                if isinstance(exc, (TwelveDataResponseError, ProviderHTTPError))
+                else exc.response.status_code
+            )
+            retryable = status is None or status in {408, 429} or status >= 500
+            code = "MAINTENANCE_HTTP_" + str(status or "UNKNOWN")
+        except (httpx.TransportError, SourceAPITransportError):
+            retryable, code = True, "MAINTENANCE_TRANSPORT"
+        except FullMarketProtocolError as exc:
+            if exc.code == "PROVIDER_WORK_FENCE":
+                raise ProviderWorkRecoveryBlockedError("maintenance owner fence differs") from exc
+            retryable = (
+                exc.retryable
+                or exc.status_code in {408, 429}
+                or (exc.status_code is not None and exc.status_code >= 500)
+            )
+            code = "MAINTENANCE_SOURCE_" + str(exc.status_code or "UNKNOWN")
+        except RawStorageUploadError as exc:
+            retryable, code = exc.retryable, "MAINTENANCE_RAW_UPLOAD"
+        except FinLabOperationalError:
+            retryable, code = True, "MAINTENANCE_FINLAB_OPERATIONAL"
+        except FinLabConfigError:
+            code = "MAINTENANCE_FINLAB_CONFIG"
+        except ShioajiSdkError as exc:
+            retryable = exc.code not in {"CREDENTIALS", "LOGIN", "SDK", "CONTRACT", "PAYLOAD"}
+            code = "MAINTENANCE_SDK_" + exc.code
+        except (ReadinessBlockedError, ValueError):
+            pass
+        else:
+            owner.freeze(
+                {
+                    "members": [{"key": "universe_refresh"}],
+                    "no_data_evidence": {"universe_refresh": results},
+                }
+            )
+            self.pause()
+            # The manifest is already durable; closed-round replay uses it.
+            owner.settle("completed", proof={"no_data": ["universe_refresh"]})
+            now = datetime.now(timezone.utc).timestamp()
+            self.state.refresh(self.provider, now=now, result=results, next_at=now + 86400)
+            return results
+        self._settle_queued_round(
+            owner, outcome="retry" if retryable else "failed", failure_code=code
+        )
+        return [{"status": "queued" if retryable else "manual", "reason": code}]
+
+    def _queued_cycle(self) -> dict[str, Any]:
+        """Enqueue bounded dates before claiming; every provider call is owned."""
+        from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
+
+        self._ensure_proof()
+        authorization = self.source.request(
+            "GET", "full-market/authorization?consumer=" + self.execution_profile
+        )
+        now = datetime.now(timezone.utc)
+        admitted = (
+            authorization.get("admitted_dataset_keys", [])
+            if authorization.get("acquisition_allowed")
+            else []
+        )
+        due: list[tuple[date, dict[str, Any]]] = []
+        for feed in self.installed_feeds:
+            if feed["dataset_key"] not in admitted:
+                continue
+            listed = self.source.universes(feed["dataset_key"], self.provider)
+            activation = listed.get("activation", {})
+            if activation.get("enabled") is not True or not listed.get("published_release_id"):
+                continue
+            first = date.fromisoformat(activation["activation_date"])
+            local = now.astimezone(ZoneInfo(feed["source_timezone"]))
+            through = local.date() - timedelta(days=feed["target_date_lag_days"])
+            if local.strftime("%H:%M") < feed["scheduled_time"]:
+                through -= timedelta(days=1)
+            due.extend(
+                (first + timedelta(days=offset), feed)
+                for offset in range((through - first).days + 1)
+            )
+        # Existing durable plans must drain after stop even when no new dates
+        # are admitted. Enqueue idempotency preserves their original position.
+        for saved in self.state.pending_plans(self.provider):
+            plan = json.loads(saved["body"])
+            feed = next(
+                (
+                    feed
+                    for feed in self.installed_feeds
+                    if feed["dataset_key"] == plan["dataset_key"]
+                ),
+                None,
+            )
+            if feed:
+                due.append((date.fromisoformat(plan["trade_date"]), feed))
+        for day, feed in sorted(due, key=lambda value: (value[0], value[1]["dataset_key"])):
+            self.source.request(
+                "POST",
+                "provider-work/enqueue",
+                {
+                    "stable_key": f"daily:{self.execution_profile}:{feed['dataset_key']}:{day}",
+                    "kind": "daily",
+                    "dataset_key": feed["dataset_key"],
+                    "trade_date": day.isoformat(),
+                    "execution_profile": self.execution_profile,
+                    "scope": {"feed": feed},
+                },
+            )
+        if (
+            admitted
+            and self.provider != "taifex"
+            and self.state.refresh_due(self.provider, now.timestamp())
+        ):
+            for feed in self.installed_feeds:
+                if feed["dataset_key"] in admitted:
+                    self.source.request(
+                        "POST",
+                        "provider-work/enqueue",
+                        {
+                            "stable_key": f"maintenance:{feed['dataset_key']}:{now.date()}",
+                            "kind": "maintenance",
+                            "dataset_key": feed["dataset_key"],
+                            "scope": {"dataset_key": feed["dataset_key"]},
+                        },
+                    )
+        try:
+            with claimed_work(
+                self.source,
+                self.provider,
+                accepted_kinds=["daily", "maintenance", "rerun"],
+                execution_profile=self.execution_profile,
+            ) as owner:
+                if owner is None:
+                    return self.state.health(self.provider)
+                try:
+                    work = owner.work
+                    if work["kind"] == "rerun":
+                        owner.request("execute-rerun")
+                        self._settle_queued_round(owner, outcome="completed")
+                    elif work["kind"] == "maintenance":
+                        self._run_queued_maintenance(owner)
+                    else:
+                        if work["state"] != "open" and not work.get("manifest"):
+                            owner.settle("retry", failure_code="RECOVERED_CLOSED_ROUND")
+                            return self.state.health(self.provider)
+                        feed = work["scope"].get("feed") or next(
+                            feed
+                            for feed in self.installed_feeds
+                            if feed["dataset_key"] == work["dataset_key"]
+                        )
+                        day = date.fromisoformat(work["trade_date"])
+                        plan = self._plan_for_date(feed, day)
+                        if plan["status"] == "skipped_calendar":
+                            owner.freeze(
+                                {"members": [{"key": "calendar_skip"}], "calendar_skip": True}
+                            )
+                            owner.settle("completed", proof={"no_data": ["calendar_skip"]})
+                        else:
+                            owner.freeze(
+                                {
+                                    "mode": "canonical",
+                                    "plan_id": plan["plan_id"],
+                                    "members": [
+                                        {"key": key}
+                                        for part in plan["parts"]
+                                        for key in part["member_keys"]
+                                    ],
+                                }
+                            )
+                            self.state.record_plan(plan, self.provider)
+                            release = self.source.release(plan["release_id"])
+                            self._deliver_plan(
+                                plan,
+                                release,
+                                feed,
+                                drain_only=bool(work.get("drain_only")) or not bool(admitted),
+                            )
+                            self._settle_queued_round(owner)
+                except (
+                    FullMarketProtocolError,
+                    SourceAPITransportError,
+                    httpx.TransportError,
+                ) as exc:
+                    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+                    if (
+                        isinstance(exc, FullMarketProtocolError)
+                        and exc.code == "PROVIDER_WORK_FENCE"
+                    ):
+                        raise ProviderWorkRecoveryBlockedError("daily owner fence differs") from exc
+                    retryable = not isinstance(exc, FullMarketProtocolError) or (
+                        exc.retryable
+                        or exc.status_code in {408, 429}
+                        or (exc.status_code is not None and exc.status_code >= 500)
+                    )
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry" if retryable else "failed",
+                        failure_code="DAILY_SOURCE_UNAVAILABLE"
+                        if retryable
+                        else "DAILY_SOURCE_REJECTED",
+                    )
+                except (ProviderHTTPError, TwelveDataResponseError, TaifexOperationalError) as exc:
+                    status = exc.status_code
+                    retryable = (
+                        (exc.retryable or status == 408)
+                        if isinstance(exc, TaifexOperationalError)
+                        else (status is None or status in {408, 429} or status >= 500)
+                    )
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry" if retryable else "failed",
+                        failure_code="DAILY_PROVIDER_HTTP_" + str(status or "UNKNOWN"),
+                    )
+                except QuotaBlockedError as exc:
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry"
+                        if exc.quota_wait
+                        or exc.status_code in {408, 429}
+                        or (exc.status_code is not None and exc.status_code >= 500)
+                        else "failed",
+                        failure_code="DAILY_PROVIDER_QUOTA_OR_ACQUISITION",
+                    )
+                except DatedUniversePendingError:
+                    self.pause()
+                    self._settle_queued_round(
+                        owner, outcome="retry", failure_code="DATED_UNIVERSE_PENDING"
+                    )
+                except (ReadinessBlockedError, ValueError):
+                    self._settle_queued_round(
+                        owner, outcome="failed", failure_code="DAILY_PLANNING_FORMAT_OR_SCOPE"
+                    )
+                finally:
+                    # Persistent SDK sessions must be stopped and reaped before
+                    # ownership can leave this process. HTTP calls are bounded.
+                    self.pause()
+        except ProviderWorkWaitingError:
+            pass
+        return self.state.health(self.provider)
+
+    def _settle_queued_round(
+        self, owner, *, outcome: str | None = None, failure_code: str | None = None
+    ) -> None:
+        """Close acceptance, drain every accepted run, then settle this round."""
+        self.pause()
+        owner.request("close")
+        while True:
+            desired = outcome
+            if desired is None:
+                plan = self.source.evaluate(owner.journal.manifest()["plan_id"])
+                self.state.evaluate(plan)
+                with self.state.connection() as db:
+                    manual = db.execute(
+                        "SELECT 1 FROM full_work WHERE plan_id=? AND status='manual' LIMIT 1",
+                        (plan["plan_id"],),
+                    ).fetchone()
+                    pending = db.execute(
+                        "SELECT 1 FROM full_work WHERE plan_id=? AND status NOT IN ('complete','manual') LIMIT 1",
+                        (plan["plan_id"],),
+                    ).fetchone()
+                desired = (
+                    "completed"
+                    if plan["status"] == "complete"
+                    else "failed"
+                    if manual or not pending
+                    else "retry"
+                )
+            try:
+                proof: dict[str, Any] = (
+                    {
+                        "no_data": [
+                            row["key"]
+                            for row in (owner.work.get("manifest") or {}).get("members", [])
+                        ]
+                    }
+                    if desired == "completed" and owner.work["kind"] == "maintenance"
+                    else {}
+                )
+                if desired == "failed":
+                    proof = {
+                        "manual_pending_prepared": owner.prepared_keys(),
+                        "manual_reason": "frozen_scope_requires_manual_review",
+                    }
+                owner.settle(
+                    desired,
+                    failure_code=failure_code
+                    or ("MANUAL_INTERVENTION_REQUIRED" if desired == "failed" else None),
+                    proof=proof,
+                )
+                return
+            except FullMarketProtocolError as exc:
+                if exc.code != "PROVIDER_WORK_DRAINING":
+                    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+                    raise ProviderWorkRecoveryBlockedError(
+                        "provider settlement requires recovery"
+                    ) from exc
+                # Source owns the terminal drain decision; waiting neither
+                # acquires a new member nor consumes an acquisition attempt.
+                time.sleep(2)
+                if owner.failed.is_set():
+                    raise ReadinessBlockedError("provider ownership recovery required")
 
     def _existing_plan(self, feed: dict[str, Any], day: date) -> dict[str, Any] | None:
         plans = self.source.plans_for_date(dataset=feed["dataset_key"], trade_date=day.isoformat())[
@@ -991,12 +1407,22 @@ class FullMarketRuntime:
             for member_key in part["member_keys"]:
                 member = members[member_key]
                 key = part["work_item_id"] + ":" + member_key
+                from findb_fetcher.provider_work import active
+
+                owner = active()
+                if owner and self.state.prepared(key) is None:
+                    restored = owner.restore(member_key=member_key)
+                    if restored:
+                        self.state.prepare(
+                            key, canonical_bytes([json.loads(body) for body in restored])
+                        )
                 if self.state.prepared(key) is None and (
                     drain_only or not self._acquisition_allowed()
                 ):
                     continue
                 if not self.state.claim(key, now=time.time()):
                     continue
+                dispatch_before = owner.dispatch_observations if owner else 0
                 try:
                     if member["mapping_status"] != "mapped":
                         self.source.outcome(
@@ -1009,34 +1435,56 @@ class FullMarketRuntime:
                         continue
                     prepared = self.state.prepared(key)
                     if prepared is None:
+                        if owner:
+                            owner.authorize()
                         requests = self._acquire(member, plan, part, release, feed)
                         if not requests:
                             self.state.finish(
                                 key, status="complete", reason="source_proven_no_trade"
                             )
                             continue
+                        if owner:
+                            for request in requests:
+                                owner.reserve(request)
                         prepared = canonical_bytes(requests)
                         self.state.prepare(key, prepared)
                     normalizing = False
-                    for request in json.loads(prepared):
+                    prepared_requests = json.loads(prepared)
+                    for request in prepared_requests:
                         immutable = self.delivery.prepare(request)
-                        saved_run = self.state.receipt(key)
+                        request_identity = request.get("idempotency_key") or checksum(
+                            canonical_bytes(request)
+                        )
+                        saved_run = self.state.sequence_receipt(key, request_identity)
+                        if saved_run is None and len(prepared_requests) == 1:
+                            # Legacy checkpoints stored one receipt per member.
+                            # Import only the unambiguous one-request case; each
+                            # multi-sequence body replays its own immutable key.
+                            saved_run = self.state.receipt(key)
+                            if saved_run is not None:
+                                self.state.save_sequence_receipt(key, request_identity, saved_run)
                         if saved_run is None:
                             receipt = self.delivery.deliver(immutable)
                             saved_run = str(receipt.run_id)
+                            self.state.save_sequence_receipt(key, request_identity, saved_run)
                             self.state.finish(key, status="prepared", receipt=saved_run)
                         run = self.delivery.get_run_status(UUID(saved_run), expected=immutable)
                         if run.status in {"queued", "pending", "processing", "retrying"}:
                             normalizing = True
                             break
-                        if run.status != "completed" or run.failed_records:
+                        if (
+                            run.status != "completed"
+                            or run.failed_records
+                            or run.success_records != run.total_records
+                        ):
                             self.state.finish(key, status="manual", reason="normalization_failed")
-                            self.source.outcome(
-                                plan["plan_id"],
-                                work_item_id=part["work_item_id"],
-                                member_key=member_key,
-                                reason="source_error",
-                            )
+                            if run.status != "completed" or run.failed_records:
+                                self.source.outcome(
+                                    plan["plan_id"],
+                                    work_item_id=part["work_item_id"],
+                                    member_key=member_key,
+                                    reason="source_error",
+                                )
                             normalizing = True
                             saved_run = None
                             break
@@ -1047,8 +1495,23 @@ class FullMarketRuntime:
                             )
                         continue
                     self.state.finish(key, status="complete")
+                except ProviderWorkAcquisitionStopped:
+                    if owner and owner.dispatch_observations != dispatch_before:
+                        self.state.finish(
+                            key,
+                            status="prepared" if self.state.prepared(key) else "pending",
+                            reason="suspended",
+                            now=time.time(),
+                        )
+                    else:
+                        self.state.defer_wait(key, now=time.time(), reason="suspended")
+                    return False
                 except (QuotaBlockedError, TwelveDataResponseError) as exc:
-                    limited = isinstance(exc, QuotaBlockedError) or exc.is_rate_limited
+                    limited = (
+                        exc.quota_wait and not exc.dispatched
+                        if isinstance(exc, QuotaBlockedError)
+                        else exc.is_rate_limited
+                    )
                     reason = "rate_limited" if limited else "source_error"
                     if limited:
                         self.state.rate_limited(
@@ -1056,6 +1519,16 @@ class FullMarketRuntime:
                             window=datetime.now(timezone.utc).date().isoformat(),
                             until=time.time() + 60,
                         )
+                    from findb_fetcher.provider_work import enabled
+
+                    predispatch_wait = (
+                        isinstance(exc, QuotaBlockedError)
+                        and limited
+                        and (owner is None or owner.dispatch_observations == dispatch_before)
+                    )
+                    if predispatch_wait and enabled():
+                        self.state.defer_wait(key, now=time.time())
+                        return False
                     self.source.outcome(
                         plan["plan_id"],
                         work_item_id=part["work_item_id"],
@@ -1068,16 +1541,38 @@ class FullMarketRuntime:
                         reason=reason,
                         now=time.time(),
                     )
-                    if limited:
+                    if limited or enabled():
                         return False
-                except SourceAPIResponseError:
+                except SourceAPIResponseError as exc:
+                    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+                    if exc.code == "PROVIDER_WORK_FENCE":
+                        raise ProviderWorkRecoveryBlockedError(
+                            "Source provider owner fence differs"
+                        ) from None
+                    if exc.status_code == 429:
+                        from findb_fetcher.provider_work import enabled
+
+                        if enabled() and (
+                            self.state.prepared(key) is not None
+                            or owner is None
+                            or owner.dispatch_observations == dispatch_before
+                        ):
+                            self.state.defer_wait(key, now=time.time())
+                            return False
                     self.state.finish(
                         key,
-                        status="prepared" if self.state.prepared(key) else "pending",
+                        status="manual"
+                        if exc.status_code < 500 and exc.status_code != 429
+                        else "prepared"
+                        if self.state.prepared(key)
+                        else "pending",
                         reason="source_rejected",
                         now=time.time(),
                     )
-                    if self.provider == "taifex":
+                    from findb_fetcher.provider_work import enabled
+
+                    if self.provider == "taifex" or enabled():
                         return False
                 except Exception as exc:
                     # Provider/SDK diagnostics never enter durable state or logs.
@@ -1087,6 +1582,10 @@ class FullMarketRuntime:
                         reason="source_error",
                         now=time.time(),
                     )
+                    from findb_fetcher.provider_work import enabled
+
+                    if enabled():
+                        return False
                     self.source.outcome(
                         plan["plan_id"],
                         work_item_id=part["work_item_id"],

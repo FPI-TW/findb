@@ -18,6 +18,7 @@ from datetime import date, datetime, timedelta
 from datetime import time as clock_time
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from findb_fetcher.client import PreparedDelivery, SourceAPIDeadlineExceeded
@@ -600,6 +601,14 @@ def _supported_universe_id(value: Any) -> bool:
 
 
 def _coordinator_universe_id(value: Any) -> bool:
+    if isinstance(value, str) and value.startswith("shioaji_tw_staging_pilot_v3:historical:"):
+        try:
+            return (
+                str(UUID(value.removeprefix("shioaji_tw_staging_pilot_v3:historical:")))
+                == value.rsplit(":", 1)[-1]
+            )
+        except ValueError:
+            return False
     return isinstance(value, str) and (
         value.startswith(PILOT_UNIVERSE_ID)
         or value == "shioaji_tw_staging_pilot_v3"

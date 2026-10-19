@@ -19,6 +19,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_source_api_key
+from app.api.v1.provider_work import router as provider_work_router
 from app.dependencies import get_db
 from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
 from app.models.registry import DailyDeliveryPlan
@@ -91,6 +92,7 @@ from app.services.ingress_contracts import (
     UnsupportedIngressContractError,
     get_contract_json_schema,
 )
+from app.services.provider_work import ProviderWorkDrainingError, ProviderWorkError
 from app.services.scheduler_control import (
     SchedulerControlNotFoundError,
     SchedulerControlScopeError,
@@ -102,6 +104,8 @@ from app.services.slot_identity import CanonicalSlotId
 from app.utils import utc_now
 
 router = APIRouter()
+
+router.include_router(provider_work_router)
 logger = logging.getLogger(__name__)
 
 
@@ -405,7 +409,10 @@ async def claim_historical_backfill_item(
     datasets = db.info.get("allowed_datasets")
     if datasets is not None and not isinstance(datasets, list):
         raise HTTPException(status_code=403, detail="Source dataset scope unavailable")
-    item = await claim_next_item(db, provider=provider, allowed_datasets=datasets)
+    try:
+        item = await claim_next_item(db, provider=provider, allowed_datasets=datasets)
+    except (HistoricalBackfillConflictError, ProviderWorkError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await db.commit()
     if item is None:
         return HistoricalBackfillClaimResponse()
@@ -450,7 +457,10 @@ async def complete_historical_backfill_item(
             if body.result_evidence
             else None,
         )
-    except HistoricalBackfillConflictError as exc:
+    except ProviderWorkDrainingError as exc:
+        await db.commit()
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+    except (HistoricalBackfillConflictError, ProviderWorkError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except HistoricalBackfillValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -576,6 +586,19 @@ async def ingest_canonical_contract(
 ):
     """Accept a provider-neutral, explicitly versioned ingress contract."""
     raw_body = await request.body()
+    work_header = request.headers.get("X-FinDB-Work-Id")
+    if work_header:
+        try:
+            db.info["provider_work"] = {
+                "work_id": UUID(work_header),
+                "generation": int(request.headers["X-FinDB-Work-Generation"]),
+                "token": UUID(request.headers["X-FinDB-Work-Token"]),
+                "member_key": request.headers["X-FinDB-Work-Member"],
+            }
+        except (ValueError, KeyError):
+            raise HTTPException(
+                status_code=422, detail="provider work headers are invalid"
+            ) from None
     try:
         result = await accept_canonical_ingest(db, raw_body)
     except (OperationalError, DBAPIError):

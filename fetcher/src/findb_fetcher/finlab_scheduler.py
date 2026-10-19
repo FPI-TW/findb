@@ -22,9 +22,11 @@ from findb_fetcher.client import (
     SourceAPIProtocolError,
     SourceAPIResponseError,
     SourceAPITransportError,
+    permanent_source_failure,
 )
 from findb_fetcher.contracts import ContractError, ContractRegistry
 from findb_fetcher.finlab_universe import FinLabPilotUniverse
+from findb_fetcher.full_market_state import QuotaBlockedError
 from findb_fetcher.providers.finlab import (
     FinLabConfigError,
     FinLabPayloadError,
@@ -203,6 +205,16 @@ class FinLabScheduledExecutor:
                 succeeded=False,
                 retryable=True,
             )
+        except QuotaBlockedError as exc:
+            return JobExecution(
+                outcome="provider_rate_limited"
+                if exc.quota_wait and not exc.dispatched
+                else "provider_failed",
+                succeeded=False,
+                retryable=True,
+                predispatch_quota_wait=exc.quota_wait and not exc.dispatched,
+                provider_dispatched=exc.dispatched,
+            )
         except FinLabConfigError:
             return JobExecution(outcome="config_failed", succeeded=False)
         except FinLabPayloadError:
@@ -218,10 +230,12 @@ class FinLabScheduledExecutor:
         except SourceAPIDeadlineExceeded:
             return JobExecution(outcome="wait_timeout", succeeded=False, retryable=True)
         except SourceAPIResponseError as exc:
+            permanent_source_failure(exc)
             return JobExecution(
                 outcome="source_rate_limited" if exc.status_code == 429 else "source_rejected",
                 succeeded=False,
                 retryable=exc.status_code == 429 or exc.status_code >= 500,
+                prepared_delivery_wait=isinstance(request, dict),
             )
         except SourceAPITransportError:
             return JobExecution(outcome="delivery_failed", succeeded=False, retryable=True)

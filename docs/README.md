@@ -8,6 +8,7 @@
 | 需求 | 文件 |
 | --- | --- |
 | 理解整體資料流、服務責任、active feeds、full-market universe／daily plan與scheduler/calendar治理 | [architecture/overview.md](architecture/overview.md) |
+| 協調同 provider daily／historical／maintenance／rerun、排查 FIFO／fencing 與新增 provider | [architecture/provider_work.md](architecture/provider_work.md) |
 | 實作或升級Fetcher與Source間的versioned contract | [architecture/ingress_contracts.md](architecture/ingress_contracts.md) |
 | 呼叫Source、Serve或Admin API | [api/api_usage_guide.md](api/api_usage_guide.md) |
 | 部署、migration、credential設定、release或rollback | [operations/deployment.md](operations/deployment.md) |

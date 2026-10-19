@@ -142,7 +142,7 @@ def _cycle_runtime(
         prepare=lambda body: body,
         deliver=lambda body: SimpleNamespace(run_id=UUID(int=1)),
         get_run_status=lambda *args, **kwargs: SimpleNamespace(
-            status="completed", failed_records=0
+            status="completed", failed_records=0, total_records=1, success_records=1
         ),
     )
     return runtime, source

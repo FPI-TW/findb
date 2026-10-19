@@ -257,7 +257,7 @@ jobs:
       run: |
         set -euo pipefail
         [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
-        runtime_variable_names="FULL_MARKET_ENABLED"
+        runtime_variable_names="FULL_MARKET_ENABLED PROVIDER_WORK_REQUIRED"
         runtime_exports=""
         for name in $runtime_variable_names; do
           printf -v q_runtime_value '%q' "${!name:-}"
@@ -338,7 +338,7 @@ jobs:
         TARGET: ${{ inputs.deployment_target }}
       run: |
         set -euo pipefail
-        runtime_variable_names="FULL_MARKET_ENABLED"
+        runtime_variable_names="FULL_MARKET_ENABLED PROVIDER_WORK_REQUIRED"
         runtime_exports=""
         for name in $runtime_variable_names; do
           printf -v q_runtime_value '%q' "${!name:-}"

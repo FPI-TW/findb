@@ -163,3 +163,13 @@ Fetcher 每日經 Source 建立凍結決策，不依賴 Serve 日曆 credentials
 - Workflow：`backend/app/services/ingestion.py`與queue services
 - ORM／schema：`backend/app/models/`、`backend/migrations/`
 - Topology／delivery：`docker-compose.prod.yml`、`.github/workflows/`
+
+## Provider work 協調
+
+[Provider work FIFO](provider_work.md) 將同環境／provider 的 Pilot、Full daily、historical、maintenance 與
+retained-raw rerun 協調為 PostgreSQL stable work＋append-only attempts＋single owner slot；Fetcher 的 shared
+whole-work OS flock 另約束外部 provider I/O 與 descendants。Source acceptance／receipt association 與 close／settle
+共用 transaction lock／generation fence，owner 保留到 accepted runs 全部 terminal 與完整 durable proof committed。
+不同 providers 仍可並行，profile 的 controls／first dates／frozen plans／checkpoints 不合併。
+目前 checked-in `PROVIDER_WORK_REQUIRED=false`，尚未進行遠端切換；啟用須完成 deployment runbook 的 audited preflight。
+新增 provider 的 acquisition、universe/catalogue、historical 與 rerun 都必須接入此 protocol。

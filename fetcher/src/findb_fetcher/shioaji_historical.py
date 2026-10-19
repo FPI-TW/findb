@@ -74,6 +74,18 @@ class ExecutableShioajiHistoricalRunner:
         if item.provider != "shioaji":
             raise ShioajiHistoricalBridgeUnavailableError("provider mismatch")
         rows = [dict(row) for row in EXPECTED if row["dataset_key"] == item.dataset_key]
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if owner:
+            frozen = owner.freeze(
+                {
+                    "mode": "canonical",
+                    "members": [{"key": row["symbol"]} for row in rows],
+                    "sequences": rows,
+                }
+            )
+            rows = frozen["sequences"]
         if not rows:
             raise ShioajiHistoricalBridgeUnavailableError(
                 "dataset is outside fixed Shioaji universe"
@@ -103,6 +115,14 @@ class ExecutableShioajiHistoricalRunner:
             results = coordinator.run(item.trade_date, deliver=True, historical=True)
         completed = [result for result in results if result.code == "completed"]
         if len(completed) != len(rows):
+            if any(result.retryable for result in results):
+                from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
+
+                raise HistoricalWorkDeferredError("sequenced snapshot delivery is retryable")
+            if any(result.stage == "source" for result in results):
+                from findb_fetcher.historical_backfill import HistoricalPreparedManualError
+
+                raise HistoricalPreparedManualError("prepared delivery requires manual review")
             raise ShioajiHistoricalBridgeUnavailableError("sequenced snapshot did not complete")
         # The final sequenced receipt is a useful, non-secret control-plane
         # reference. Every completed sequence must have one; omit nothing

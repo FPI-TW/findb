@@ -8,6 +8,7 @@ x-app-environment: &app-environment
   FINLAB_SKIP_NON_TRADING_DAYS: "${FINLAB_SKIP_NON_TRADING_DAYS:?FINLAB_SKIP_NON_TRADING_DAYS must be set in runtime configuration}"
   SHIOAJI_SKIP_NON_TRADING_DAYS: "${SHIOAJI_SKIP_NON_TRADING_DAYS:?SHIOAJI_SKIP_NON_TRADING_DAYS must be set in runtime configuration}"
   TAIFEX_SKIP_NON_TRADING_DAYS: "${TAIFEX_SKIP_NON_TRADING_DAYS:?TAIFEX_SKIP_NON_TRADING_DAYS must be set in runtime configuration}"
+  PROVIDER_WORK_REQUIRED: "${PROVIDER_WORK_REQUIRED:-false}"
   FULL_MARKET_ENABLED: "${FULL_MARKET_ENABLED:-false}"
   APP_ROLE: "${APP_ROLE:-all}"
   DEBUG: "${DEBUG:?DEBUG must be set in deployment variables}"

@@ -153,6 +153,10 @@ async def verify_source_api_key(
     db: AsyncSession = Depends(get_db),
 ) -> str:
     """Verify API key for Source API endpoints."""
+    db.info.pop("provider_work", None)
+    db.info.pop("provider_work_body_sha256", None)
+    db.info.pop("provider_work_locked_owner", None)
+    db.info.pop("historical_completion_validated", None)
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -184,6 +188,20 @@ async def verify_source_api_key(
         db.info["source_client_id"] = source_client.client_id
         db.info["source_name"] = source_client.source_name
         db.info["allowed_datasets"] = source_client.allowed_datasets
+        if request.headers.get("X-FinDB-Work-Id"):
+            from uuid import UUID
+
+            try:
+                db.info["provider_work"] = {
+                    "work_id": UUID(request.headers["X-FinDB-Work-Id"]),
+                    "generation": int(request.headers["X-FinDB-Work-Generation"]),
+                    "token": UUID(request.headers["X-FinDB-Work-Token"]),
+                    "member_key": request.headers.get("X-FinDB-Work-Member", ""),
+                }
+            except (ValueError, KeyError):
+                raise HTTPException(
+                    status_code=422, detail="provider work headers are invalid"
+                ) from None
         _enforce_source_rate_limit(
             str(source_client.client_id),
             client_ip,

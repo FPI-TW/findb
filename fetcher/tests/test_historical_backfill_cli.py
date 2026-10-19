@@ -41,7 +41,7 @@ class Runner:
         return UUID("01982886-b452-7c71-b166-cb74cfd1d002")
 cli.TwelveDataHistoricalRunner = Runner
 cli.FetcherConfig.from_env = lambda: object()
-cli.HistoricalControlClient = lambda config: Control()
+cli.HistoricalControlClient = lambda config, **kwargs: Control()
 raise SystemExit(cli.main(["--provider", "twelve_data", "--run-forever"]))
 """
 
@@ -63,7 +63,9 @@ def test_process_signal_drains_and_exits(mode: str, signum: signal.Signals) -> N
             while expected not in captured.decode().splitlines():
                 ready, _, _ = select.select([process.stdout], [], [], 5)
                 assert ready, "worker did not reach signal boundary"
-                captured += os.read(process.stdout.fileno(), 4096)
+                chunk = os.read(process.stdout.fileno(), 4096)
+                assert chunk, "worker exited before signal boundary"
+                captured += chunk
             lines.extend(captured.decode().splitlines())
             process.send_signal(signum)
             stdout, stderr = process.communicate(timeout=3)

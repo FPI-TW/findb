@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 from datetime import date, timedelta
-from typing import Any, Optional, Protocol, cast
+from typing import TYPE_CHECKING, Any, Optional, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy import select, text
@@ -15,6 +15,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+
+if TYPE_CHECKING:
+    from app.api.deps import AdminPrincipal
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DatasetRegistry,
@@ -299,13 +302,19 @@ async def lock_ingestion_idempotency_scope(
 class IngestionService:
     """Service for handling data ingestion."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, *, admin_principal: "AdminPrincipal | None" = None):
         self.db = db
+        self.admin_principal = admin_principal
         session_info = db.info if isinstance(db.info, dict) else {}
         self.ownership_enforced = "source_client_id" in session_info
         self.source_client_id: UUID | None = session_info.get("source_client_id")
         self.bound_source: str | None = session_info.get("source_name")
         self.allowed_datasets: list[str] | None = session_info.get("allowed_datasets")
+        if admin_principal is not None:
+            # Only authenticated Admin rerun routers supply this capability.
+            # Source ownership checks remain unchanged for all other callers.
+            self.ownership_enforced, self.source_client_id, self.bound_source = False, None, None
+            self.allowed_datasets = None
 
     async def get_raw_payload_by_idempotency_key(
         self,
@@ -347,6 +356,21 @@ class IngestionService:
             raise IdempotencyPayloadMismatchError(
                 "idempotency_key is bound to another delivery part"
             )
+        from app.services.provider_work import acceptance, associate_receipt
+
+        work = await acceptance(
+            self.db,
+            provider=request.source,
+            dataset_key=request.dataset_key,
+            trade_date=request.payload.batch.data_date,
+        )
+        await associate_receipt(
+            self.db,
+            work=work,
+            run_id=existing_raw.run_id,
+            payload_sha256=request_payload_sha256,
+            replay=True,
+        )
         status = existing_run.status if existing_run else "unknown"
         await IngestionAttemptService(self.db).mark_accepted(
             attempt_id,
@@ -523,6 +547,11 @@ class IngestionService:
         raw_payload = await self.get_raw_payload_by_run(run_id)
         if not raw_payload:
             raise RawPayloadNotFoundError(f"Raw payload not found for run {run_id}")
+        from app.services import provider_work as queue
+
+        coordinated = get_settings().PROVIDER_WORK_REQUIRED
+        if coordinated:
+            await queue.lock_provider(self.db, raw_payload.source)
         if (
             self.bound_source is not None
             and raw_payload.source.strip().lower() != self.bound_source
@@ -530,7 +559,9 @@ class IngestionService:
             raise SourceIdentityMismatchError(
                 f"Credential is bound to source {self.bound_source}, not {raw_payload.source}"
             )
-        if not self.allowed_datasets or raw_payload.dataset_key not in self.allowed_datasets:
+        if self.admin_principal is None and (
+            not self.allowed_datasets or raw_payload.dataset_key not in self.allowed_datasets
+        ):
             raise DatasetAccessDeniedError(
                 f"Source client is not allowed to rerun dataset {raw_payload.dataset_key}"
             )
@@ -599,8 +630,10 @@ class IngestionService:
         if original_run is None:
             raise RawPayloadNotFoundError(f"Original run {run_id} not found")
 
+        new_run_id = uuid7()
         run = await self.create_ingestion_run(
             raw_payload.dataset_key,
+            run_id=new_run_id,
             source=raw_payload.source,
             request_key=raw_payload.request_key,
             raw_records=raw_records,
@@ -616,7 +649,55 @@ class IngestionService:
                 schema_id=raw_payload.schema_id,
             ),
         )
-        await self.create_normalization_job(run)
+        if coordinated:
+            work = await queue.enqueue(
+                self.db,
+                provider=raw_payload.source,
+                stable_key=f"rerun:{new_run_id}",
+                kind="rerun",
+                dataset_key=raw_payload.dataset_key,
+                trade_date=original_run.batch_data_date,
+                scope={"run_id": str(new_run_id), "rerun_from_run_id": str(run_id)},
+            )
+            work.manifest = {
+                "members": [{"key": "retained_raw"}],
+                "retained_raw_payload_id": str(raw_payload.raw_payload_id),
+            }
+            from app.models.provider_work import ProviderWorkAttempt, ProviderWorkReceipt
+
+            attempt = await self.db.scalar(
+                select(ProviderWorkAttempt).where(ProviderWorkAttempt.work_id == work.work_id)
+            )
+            assert attempt is not None
+            self.db.add(
+                ProviderWorkReceipt(
+                    run_id=new_run_id,
+                    work_id=work.work_id,
+                    attempt_id=attempt.attempt_id,
+                    member_key="retained_raw",
+                    payload_sha256=raw_payload.payload_sha256
+                    or payload_sha256(raw_payload.payload),
+                )
+            )
+        else:
+            await self.create_normalization_job(run)
+        if self.admin_principal is not None:
+            from app.services.admin_audit import record_admin_audit
+
+            run.source_client_id = original_run.source_client_id
+            await record_admin_audit(
+                self.db,
+                self.admin_principal,
+                action="rerun",
+                resource_type="ingestion_run",
+                resource_id=str(run.run_id),
+                details={
+                    "rerun_from_run_id": str(run_id),
+                    "raw_payload_id": str(raw_payload.raw_payload_id),
+                    "provider_work_id": str(work.work_id) if coordinated else None,
+                },
+                commit=False,
+            )
         await self.db.commit()
 
         return run.run_id, run.status, raw_payload.dataset_key, raw_payload.payload
@@ -639,6 +720,14 @@ class IngestionService:
                 f"Source client is not allowed to ingest dataset {request.dataset_key}"
             )
 
+        from app.services.provider_work import acceptance, associate_receipt
+
+        work = await acceptance(
+            self.db,
+            provider=request.source,
+            dataset_key=request.dataset_key,
+            trade_date=request.payload.batch.data_date,
+        )
         dataset = await self.get_dataset(request.dataset_key, include_inactive=True)
         if dataset is None:
             raise DatasetNotFoundError(f"Dataset {request.dataset_key} not found")
@@ -776,6 +865,18 @@ class IngestionService:
                 **_minute_sequence_identity(request.payload),
                 policy_outcome=policy_result.outcome,
                 policy_details=policy_details,
+            )
+            await associate_receipt(
+                self.db,
+                work=work,
+                run_id=run.run_id,
+                payload_sha256=request_payload_sha256,
+                canonical_members={
+                    f"{row['product_code']}|{row['contract_code']}|{row['session']}"
+                    if request.schema_id == "futures_eod"
+                    else row["symbol"]
+                    for row in canonical_payload["data"]
+                },
             )
             if policy_result.outcome == "warn":
                 self.db.add(

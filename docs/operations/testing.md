@@ -326,3 +326,133 @@ canonical projection 與 HTTP 200 Serve 回應完全一致。此證據為整個�
 香港已排除本次目標，因此本次 native 範圍為 5／6。
 TAIFEX 舊計畫仍為 `native_plan_incomplete`，待台北 2026-10-16 17:00 新日期計畫；
 香港仍為 `nonzero_native_sample_missing`，不因排除而標成成功。Production 驗收尚未開始。
+
+## Provider work 整合測試
+
+Backend dev group 以 editable path 安裝 Fetcher，僅供真實跨 application 測試；production `uv sync --no-dev`
+不會安裝 Fetcher 或 provider SDK。`test_provider_work_runtime.py` 以 sync transport bridge 將實際 Fetcher
+FullMarketRuntime／historical runner 連至 authenticated ASGI Source，再執行真實 normalization、DB fencing、
+canonical proof 與 shared flock；只替換外部 provider response／R2 upload。它驗證 Full → historical → Pilot
+handoff 與 controls 保持 running。`test_provider_work.py` 另涵蓋 queue enforcement、四 provider historical
+授權、acceptance／close transaction barrier、FIFO／retry／heartbeat recovery 與 retained-raw rerun。
+
+`test_provider_work_adapters.py` 的 enabled native runtime 矩陣完整執行五個 historical scopes：
+Twelve Data US equity EOD、FinLab TW equity EOD、Shioaji TW equity minute／TW ETF minute，以及
+TAIFEX TW futures EOD；使用真 adapter、Source client、authenticated ASGI、worker 與 canonical proof，
+僅以 fixtures 取代 native SDK／HTTP 回應與 R2。Shioaji fixture 仍執行實際隔離 child 的 IPC／FD protocol，
+不需下載 provider SDK 或持有 live credentials。Fault cases 包含 intent commit ACK 遺失、local save 後
+confirm 前取消、local save crash、intent／cancel transaction barrier，以及 daily stop 後 prepared 排空。
+取消／停止期間不新增 provider I/O，accepted nonterminal run 仍保留 whole-work owner；取消狀態與缺漏保持真實。
+Admin single／bulk endpoint 測試驗證新 run／audit／FIFO fence；failed rerun 使用實際 worker failure path，
+不以直接改 run status 代替 normalization。Migration case 保留舊 prepared body／raw hash／receipt，
+停止後只允許同 work 原 payload 導入 descriptor 並 replay。
+
+Closed-round 回歸涵蓋 daily、FinLab、Twelve Data 與 Shioaji：close commit 後失去 ACK，復原不新增
+provider I/O；partial frozen scope 先安全 retry，再完成原 members。Shioaji 多日期／三 ETF sequences 的
+429、503、lost accepted ACK 與 terminal polling timeout，分別在 running／cancelled 狀態下驗證原 bytes、
+tail FIFO、後續日期不被取消、budgets／receipts 保留，以及 cancelled 只排空原 prepared。
+Daily 另驗證 stopped 429／503 retry 可 claim，及同日較新 Pilot 寫入後的 explicit manual failure；
+該 overlap 的 actual-write evidence 不偽造，且結束後不再阻塞 provider。
+Stop／drain handoff 另驗證原 prepared 已 terminal、只剩未抓取 members 時，stopped queued work
+不能以「曾有 prepared」反覆占據 runnable head；maintenance consumer 可直接前進。合法 start 同
+profile 後由新 attempt 接續同一 frozen scope，保留 first date、原 bytes／receipts 與 failure budgets。
+
+Fetcher `test_provider_work.py` 使用真 subprocess 驗證 orphan FD 持鎖、timeout terminate／kill／reap、
+uncertain-stop quarantine 與四種 native response 的 raw-upload crash／restart。Migration 與 host preflight
+測試分別位於 Backend `test_provider_work_migration.py` 與 Infra `test_provider_work_preflight.py`。
+
+同一 native scope 矩陣另驗證 Source 408／503 tail retry **入列後**才取消的排空，以及 DatasetInactive
+永久拒絕：取消不新增 native I/O，原 prepared 可繼續；永久拒絕保留實際 status／code／digest 與
+manual pending identities，安全結束後 provider 可用。Source／Admin single／bulk 三路 retained-raw
+rerun 使用真 worker 驗證較新 canonical precedence 的零寫入 failed settlement 與 lost-ACK replay。
+Scoped FIFO 測試以兩把不同 dataset 權限的 authenticated Source keys 和 transaction barrier，驗證
+較窄 consumer 不能超越全域 provider head、其他 provider 可同時前進。完整 Alembic upgrade 測試
+覆蓋 stock／ETF minute 原三個 sequences 中已完成前兩個的 partial group，保留原 checkpoint bytes、
+raw／receipt IDs，再 replay 前兩個並交付第三個至真 normalization／proof settlement。
+
+`test_provider_work_daily_faults.py` 以 actual daily adapters、authenticated Source、真 worker 與 proof
+覆蓋現有七條 feeds（含僅支援 daily 的 HK EOD／TW ETF EOD）；429、503、lost accepted ACK 與
+native network fault 後同一 attempt 不再新增 member acquisition／intent，下一 attempt 完成原 scope。
+`test_provider_work_transitions.py` 覆蓋 failure-induced sibling cancellation 後無 historical consumer 的
+maintenance claim，以及 actual account governor 四次 predispatch quota wait 後恢復；保留真正 dispatch
+failure 的原 budget 與 account usage。SQLite frozen-v9 DDL 測試驗證 transactional v10 upgrade、升級
+中 hard crash／reopen、原 rows／prepared／receipts／pins 不變，未知或實際失敗不退款。
+
+Provider-work native harness 以 fork 注入離線 Shioaji fake；production `_ProviderProcess` 使用
+`subprocess.Popen`／exec 與明確 `pass_fds`。測試在再次啟動 native child 前，所有 quota 注入與
+SQLite diagnostics 都必須先 commit、再 close；`sqlite3.Connection` 的 context exit 只處理 transaction，
+不會 close。不得將 live governor SQLite／WAL VFS state 帶入 fork child，否則 cleanup 可出現
+`SQLITE_IOERR_SHORT_READ`。Fake launcher 的 `sdk-boundary-errors.jsonl` 只記 SQLite error name／
+frame location，不保存 SDK exception message、payload 或 credentials；SDK timeout／terminate／kill／
+reap 邊界維持原設定。完成 normalization 的測試 stub 必須提供與該 member records 一致的
+`total_records`／`success_records`，不能只給 status 而把 AttributeError 當作 Source error。
+
+`test_provider_work_maintenance.py` 以 authenticated ASGI／owned PostgreSQL 驗證 explicit／automatic
+兩條 maintenance 路徑在 daily controls stopped 時，四 provider 的 native catalogue／official HTTP 503
+都能安全結束 round、tail retry、釋放 host FD 並直接 claim 下一工作；另有 transport、403、格式拒絕、
+真正 predispatch quota 四次等待及跨 runtime restart 原預算耗盡驗證。
+Daily native 十二資料 HTTP 429／200-code429 測試只涵蓋已支援的 US／HK daily feeds，historical 只用
+US scope；以 native MockTransport、真 Source／normalization／proof，分別驗證原 daily 8 次與 historical
+schedule 上限、cooldown 跨 tail／重啟保存、耗盡 manual 或最後合法 attempt 成功，沒有增加 historical scopes。
+Account clock fixture 只移動 governor、PG queue／retry sender 與已由 Source 驗證的回傳 authorization 時間座標，不清除 usage、
+cooldown、audits 或原 failure counter。
+
+Native HTTP429 使用真 `Retry-After: 120`，驗證原 tail `not_before` 超過60秒、journal cooldown 跨重啟
+保存，且同 provider 的 authenticated retained-raw rerun 在原 work 冷卻時可取得 fence、完成真 worker
+normalization／settlement；原 native call count／account ledger 不變，原工作到期前仍不可 claim。
+`test_observed_cooldown_survives_restart_fences_new_io_and_sets_tail_deadline` 另驗證 journal reopen、
+fence 優先、pure predispatch wait、原 prepared bytes 與 tail deadline，heartbeat failure 不會降級成等待。
+
+Maintenance 503 的有效body與被bounded reader拒絕的body都保留實際HTTP status並安全tail retry；
+原public ReadinessBlockedError／quota exception相容性仍驗證，malformed HTTP200維持明確failed/manual。
+
+Maintenance 實際 Source／owned PostgreSQL matrix 另納入四 provider 的 transport／403／malformed200／
+predispatch quota siblings，以及 TAIFEX 官方 HTTP200 `{}`、空list、非object row、缺Date、Date非字串、
+無效／不一致日期、有效日期但錯誤report body；兩入口都須明確 failed/manual、owner free、下一runnable
+可claim，且不能產生 no_data proof。FinLab／Shioaji malformed200 依現有pipeline先取得4份official
+snapshots才解析，TAIFEX官方JSON格式案例僅1個native call；historical五report/manifest驗證維持原路徑。
+
+`test_provider_work_first_plan.py` 不預建 TAIFEX daily plan：actual native latest503／dated503、純quota、
+not-published 與永久403均驗證安全round／下一工作claim；依原Admin規則發布dated universe後，同一
+work完成，valid native reports不重抓。`test_provider_work_not_published.py` 與 daily fault suite驗證
+TD US historical／US+HK daily 在 fresh runner 下從舊日期200回覆恢復，首原operation真正native兩次，
+negative bytes/hash、原budgets及全scope保留；不增加HK historical。Fetcher journal tests另驗證valid／
+invalid legacy cache升級、prepared與budget不變，以及有效raw cache的原crash/restart行為。
+
+`test_provider_work_dispatch_fence.py` 以 HTTP MockTransport、FinLab SDK gateway 與 production Shioaji
+child protocol 驗證 governor wait／account-auth return 後的 heartbeat／generation races：native calls 與
+charged requests 必須為0，保持 recovery blocked；另驗 legacy governor reopen、reason/deadline單調保留及
+cooldown publication ACK失聯隔離。正常SDK bootstrap與account security suites仍須通過。
+`test_provider_work_unknown_cooldown.py` 以 authenticated Source／owned PostgreSQL 保存 crash-point
+owner、manifest、原job budget與armed／unknown／legacy floor snapshot，然後fresh coordinator恢復；
+六參數含publication ACK遺失，驗PG cooldown、原unknown liability／budget保留、prepared／retained-raw
+排空、另一provider同時持有slot+flock、到期原scope完成，無claim後持owner睡冷卻。
+
+### FinLab SDK 與過期 cutover 邊界
+
+- `fetcher/tests/test_finlab_work_boundaries.py` 使用真實 supervised child／IPC，涵蓋
+  catalogue 與 data 的 login 後 stop、heartbeat／generation 失效、slow login、slow fence、
+  expired IPC grant、單次計費與 stop-reap；另驗證 negative table snapshot 跨 reopen 保留，
+  valid cache 不新增 SDK I/O，prepared bytes／budget 不變且不序列化任意 SDK 物件。
+- `backend/tests/test_provider_work_expired_cutover.py` 以 authenticated Source／fixture-owned
+  PostgreSQL 跑五種 historical scopes，涵蓋 prepared expired 首項、空 expired head 加 prepared
+  sibling、重複兩次 cutover、原 body 排空及後續 claim；一般 manual failure 不復活。
+- `backend/tests/test_provider_work_not_published.py` 的 FinLab 案例驗證缺目標日期先保存
+  negative observation，下一輪完成原 frozen members 且不清除原 budget／觀測。
+
+這些測試使用離線 SDK／HTTP／R2 seam，沒有驗證 live provider 或 AWS rollout。
+
+- `backend/tests/test_provider_work_live_expiry.py` 驗證五種 historical scope 的精確當地
+  到期邊界、兩條授權路徑、成功授權不更新 item lease、新 manifest／intent 拒絕，及 active owner
+  已保存 prepared 的原 body 排空與 `BACKFILL_EXPIRED` 保留。
+- `fetcher/tests/test_provider_work_suspension_budget.py` 涵蓋 daily／historical／maintenance
+  的 predispatch wait、login 後停止、先前 field 已完成後停止／quota wait 與原 retry ceiling。
+  Dispatch-fence lost-ACK 測試在斷言 quarantine 後只釋放該測試自行建立且無 native child 的 handles，
+  可與 FinLab tests 換序執行；產品的 quarantine／recovery 行為不變。
+
+- `fetcher/tests/test_provider_process_reap.py` 注入 SIGTERM／SIGKILL 的 PermissionError，
+  驗證已退出 child 仍完成 reap／group proof，活著或無法 probe 的 group 則 recovery blocked。
+  FinLab 真實 child／IPC 測試以跨程序共享時鐘精確模擬 login 與 fence 延遲，保留產品 50ms grant。
+
+- `backend/tests/test_provider_work_daily_manifest.py` 透過 authenticated Source API 驗證
+  Pilot／Full 在 claim 後停止時拒絕首次 manifest，已凍結相同內容仍可重播與安全 close／settle。

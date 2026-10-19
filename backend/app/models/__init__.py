@@ -22,6 +22,12 @@ from app.models.canonical import (
     TradingCalendar,
 )
 from app.models.correction import CanonicalCorrection
+from app.models.provider_work import (
+    ProviderWork,
+    ProviderWorkAttempt,
+    ProviderWorkOwner,
+    ProviderWorkReceipt,
+)
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     AdminAuditEvent,
@@ -66,6 +72,10 @@ from app.models.registry import (
 
 __all__ = [
     "Base",
+    "ProviderWork",
+    "ProviderWorkAttempt",
+    "ProviderWorkOwner",
+    "ProviderWorkReceipt",
     "RawMarketPayload",
     "Instrument",
     "InstrumentIdentifier",

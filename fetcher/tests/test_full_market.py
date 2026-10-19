@@ -726,7 +726,10 @@ def test_provider_not_recalled_after_prepared_body_and_receipt_restart(
         def get_run_status(self, *args: Any, **kwargs: Any) -> Any:
             counts["status"] += 1
             return SimpleNamespace(
-                status="processing" if counts["status"] == 1 else "completed", failed_records=0
+                status="processing" if counts["status"] == 1 else "completed",
+                failed_records=0,
+                total_records=1,
+                success_records=1,
             )
 
     runtime.delivery = Delivery()

@@ -1,5 +1,6 @@
 """Application service for the versioned canonical ingest endpoint."""
 
+import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -34,6 +35,7 @@ from app.services.ingress_contracts import (
     UnsupportedIngressContractError,
     validate_ingress_request,
 )
+from app.services.provider_work import ProviderWorkError
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +148,7 @@ async def accept_canonical_ingest(
     raw_body: bytes,
 ) -> CanonicalIngestAccepted:
     """Validate, audit, persist, and enqueue one canonical request."""
+    db.info["provider_work_body_sha256"] = hashlib.sha256(raw_body).hexdigest()
     json_valid = True
     try:
         body: Any = json.loads(raw_body)
@@ -215,6 +218,15 @@ async def accept_canonical_ingest(
         run_id, run_status, is_duplicate = await ingestion_service.ingest_contract(
             contract_request,
             attempt_id,
+        )
+    except ProviderWorkError as exc:
+        await db.rollback()
+        await _reject(
+            attempt_service,
+            attempt_id,
+            status_code=409,
+            code="PROVIDER_WORK_FENCE",
+            message=str(exc),
         )
     except DatasetAccessDeniedError as exc:
         await _reject(

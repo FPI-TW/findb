@@ -25,6 +25,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://findb:findb@db:5432/findb
       APP_ENVIRONMENT: local
+      PROVIDER_WORK_REQUIRED: ${PROVIDER_WORK_REQUIRED:-false}
       FULL_MARKET_ENABLED: ${FULL_MARKET_ENABLED:-false}
       TWELVE_DATA_SKIP_NON_TRADING_DAYS: "${TWELVE_DATA_SKIP_NON_TRADING_DAYS:-false}"
       FINLAB_SKIP_NON_TRADING_DAYS: "${FINLAB_SKIP_NON_TRADING_DAYS:-false}"

@@ -169,6 +169,12 @@ def merge_identity(
                                 "INSERT INTO full_pacing VALUES(?,?) ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)",
                                 (target, pacing[0]),
                             )
+                        cooldown = db.execute(
+                            "SELECT not_before,reason FROM full_account_cooldown WHERE account=?",
+                            (alias,),
+                        ).fetchone()
+                        if cooldown:
+                            state.record_floor(db, target, cooldown[0], reason=cooldown[1])
                         db.execute(
                             "UPDATE acquisition_intent SET account=? WHERE account=?",
                             (target, alias),

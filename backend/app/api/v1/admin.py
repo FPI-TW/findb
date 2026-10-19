@@ -98,6 +98,7 @@ from app.schemas.admin import (
     PasswordResetRequest,
     PatchEODRequest,
     PatchEODResponse,
+    ProviderWorkCutoverRequest,
     QueueHealthResponse,
     RawPayloadListResponse,
     RawPayloadResponse,
@@ -120,6 +121,7 @@ from app.schemas.full_market import (
     UniversePublishRequest,
     UniverseReleaseResponse,
 )
+from app.schemas.source import IngestResponse
 from app.services.admin import (
     AlreadyResolvedError,
     InvalidCorrectionError,
@@ -225,6 +227,41 @@ from app.vocabulary import normalize_market
 from scripts.generate_instrument_cache import main as run_cache_generation
 
 router = APIRouter()
+
+
+@router.get("/provider-work")
+async def provider_work_queue(
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from app.services.provider_work import projection
+
+    return {"data": await projection(db)}
+
+
+@router.post("/provider-work/cutover")
+async def provider_work_cutover(
+    body: ProviderWorkCutoverRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from app.services.provider_work import ProviderWorkError, apply_cutover
+
+    try:
+        await apply_cutover(db, body.model_dump(mode="json"))
+    except ProviderWorkError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="cutover",
+        resource_type="provider_work",
+        resource_id=body.environment,
+        details=body.model_dump(mode="json"),
+    )
+    await db.commit()
+    return {"success": True, "environment": body.environment}
 
 
 @router.post("/universes/{release_id}/publish", response_model=UniverseReleaseResponse)
@@ -1451,6 +1488,29 @@ async def list_corrections_endpoint(
     )
 
 
+@router.post("/runs/{run_id}/rerun", response_model=IngestResponse, status_code=202)
+async def rerun_retained_raw(
+    run_id: UUID,
+    principal: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create an audited normalization decision for retained raw, through FIFO."""
+    try:
+        new_run_id, run_status, _, _ = await IngestionService(
+            db, admin_principal=principal
+        ).rerun_from_raw(run_id)
+    except RawPayloadNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return IngestResponse(
+        success=True,
+        run_id=new_run_id,
+        status=run_status,
+        message="Retained raw rerun durably queued",
+    )
+
+
 @router.post("/runs/bulk-rerun", response_model=BulkRerunResponse)
 async def bulk_rerun_runs(
     dataset_key: Optional[str] = Query(None, description="依 dataset_key 篩選"),
@@ -1483,7 +1543,7 @@ async def bulk_rerun_runs(
     result = await db.execute(stmt)
     run_ids = [row[0] for row in result.all()]
 
-    service = IngestionService(db)
+    service = IngestionService(db, admin_principal=api_key)
     queued = 0
     skipped = 0
     errors = 0

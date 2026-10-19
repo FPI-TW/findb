@@ -19,7 +19,7 @@ from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import ContractRegistry, ContractValidationError
 
 _MAX_RESPONSE_BYTES = 64 * 1024
-_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 502, 503, 504})
 _KNOWN_STATUSES = frozenset(
     {
         "queued",
@@ -46,6 +46,7 @@ _ALLOWED_ERROR_CODES = frozenset(
         "INGRESS_SCHEMA_UNSUPPORTED",
         "INTERNAL_ERROR",
         "SOURCE_IDENTITY_MISMATCH",
+        "PROVIDER_WORK_FENCE",
     }
 )
 _ALLOWED_RUN_FAILURE_CODES = frozenset(
@@ -73,6 +74,14 @@ class SourceAPIResponseError(RuntimeError):
         if code is not None:
             detail = f"{detail} ({code})"
         super().__init__(detail)
+
+
+def permanent_source_failure(error: SourceAPIResponseError) -> bool:
+    if error.code == "PROVIDER_WORK_FENCE":
+        from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+        raise ProviderWorkRecoveryBlockedError("Source owner fence differs") from None
+    return 400 <= error.status_code < 500 and error.status_code not in {408, 429}
 
 
 class SourceAPIProtocolError(RuntimeError):
@@ -169,13 +178,21 @@ class SourceAPIClient:
             separators=(",", ":"),
             sort_keys=True,
         ).encode("utf-8")
-        return PreparedDelivery(
+        prepared = PreparedDelivery(
             body=body,
             idempotency_key=idempotency_key,
             dataset_key=dataset_key,
             schema_id=schema_id,
             schema_version=schema_version,
         )
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if owner is not None:
+            owner.reserve(snapshot)
+            owner.journal.prepare(prepared.idempotency_key, prepared.body)
+            owner._preparation_request("prepare", body=prepared.body.decode(), stage="confirm")
+        return prepared
 
     def deliver(
         self,
@@ -208,6 +225,14 @@ class SourceAPIClient:
             schema_id=schema_id,
             schema_version=schema_version,
         )
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if owner is not None:
+            owner.journal.receipt(
+                delivery.idempotency_key,
+                {"run_id": str(run_id), "attempt_id": str(attempt_id), "status": status},
+            )
         _check_deadline(deadline, monotonic)
         return receipt
 
@@ -314,6 +339,17 @@ class SourceAPIClient:
                 }
             )
             content = delivery.body
+            from findb_fetcher.provider_work import (
+                ProviderWorkRecoveryBlockedError,
+                active,
+                enabled,
+            )
+
+            owner = active()
+            if owner is not None:
+                headers.update(owner.headers(delivery))
+            elif enabled():
+                raise ProviderWorkRecoveryBlockedError("delivery requires provider work ownership")
 
         for attempt in range(1, self._config.max_attempts + 1):
             source_permit(self._config.source_client_key)
@@ -369,6 +405,18 @@ class SourceAPIClient:
                 response.status_code not in _RETRYABLE_STATUS_CODES
                 or attempt == self._config.max_attempts
             ):
+                if delivery is not None:
+                    from findb_fetcher.provider_work import active
+
+                    owner = active()
+                    if owner:
+                        owner.journal.source_error(
+                            delivery, response.status_code, _safe_error_code(body)
+                        )
+                if response.status_code == 408:
+                    # A proxy/request timeout cannot prove the original delivery
+                    # was rejected before acceptance. Reconcile its immutable identity.
+                    raise SourceAPITransportError("Source API request timeout retries exhausted")
                 raise SourceAPIResponseError(
                     response.status_code,
                     _safe_error_code(body),

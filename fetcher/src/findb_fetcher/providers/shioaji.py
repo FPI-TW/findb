@@ -330,6 +330,9 @@ class ShioajiSdkGateway:
 
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
         _validate_symbol(symbol)
+        from findb_fetcher.provider_work import require_acquisition
+
+        require_acquisition("shioaji")
         if self._sdk is None:
             from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 

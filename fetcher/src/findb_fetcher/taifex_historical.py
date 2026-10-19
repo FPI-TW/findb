@@ -140,6 +140,13 @@ class TaifexHistoricalRunner:
                 float(attempt["next_at"]), self._cooldown() if key.startswith("fetch:") else 0
             )
             expiry = item.lease_expires_at.timestamp() if item.lease_expires_at else now + 900
+            from findb_fetcher.provider_work import active
+
+            owner = active()
+            if owner:
+                if owner.failed.is_set():
+                    raise HistoricalWorkDeferredError("provider work heartbeat unavailable")
+                expiry = now + 900
             if max(now, ready) + 35 >= expiry:
                 raise HistoricalWorkDeferredError("lease boundary")
             if ready > now:
@@ -151,12 +158,24 @@ class TaifexHistoricalRunner:
             # Commit budget and retry floor before dispatch, including hard interruption.
             # The caller acknowledges success atomically with its durable result.
             attempt["attempts"] = count + 1
+            audit = {"key": key, "attempt": count + 1, "reserved_at": now, "outcome": "unknown"}
+            state.setdefault("operation_history", []).append(audit)
             delay = (30, 120, 120)[count]
             attempt["next_at"] = now + delay
             self._save(item, state)
             try:
                 result = action()
             except Exception as exc:
+                if isinstance(exc, QuotaBlockedError) and exc.quota_wait and not exc.dispatched:
+                    audit["outcome"] = "quota_wait"
+                    audit["predispatch"] = True
+                    attempt["attempts"] = count
+                    attempt.setdefault("quota_waits", []).append(self.clock())
+                    attempt["next_at"] = max(self.clock() + 60, self._cooldown())
+                    self._save(item, state)
+                    if owner:
+                        raise HistoricalWorkDeferredError("account quota wait") from None
+                    continue
                 retryable = (
                     isinstance(
                         exc, (httpx.TransportError, SourceAPITransportError, QuotaBlockedError)
@@ -173,14 +192,45 @@ class TaifexHistoricalRunner:
                     and exc.retryable
                 )
                 if not retryable:
+                    audit["outcome"] = "failed"
+                    self._save(item, state)
                     raise
+                audit["outcome"] = "retryable_failure"
                 attempt["next_at"] = self.clock() + max(delay, getattr(exc, "retry_after", 0) or 0)
                 self._save(item, state)
+                if owner:
+                    raise HistoricalWorkDeferredError(
+                        "retryable operation retained for FIFO tail retry"
+                    ) from None
                 if attempt["attempts"] >= 3:
                     raise ValueError("historical operation retry exhausted") from None
             else:
+                audit["outcome"] = "success"
                 state["operations"].pop(key)
                 return result
+
+    def _freeze_evidence(self, evidence: dict) -> None:
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if owner:
+            owner.freeze(
+                {
+                    "mode": "canonical",
+                    "members": [
+                        {"key": f"{row['product_code']}|{row['contract_code']}|{row['session']}"}
+                        for row in evidence["rows"]
+                    ],
+                    "no_data_evidence": {
+                        f"{row['product_code']}|{row['contract_code']}|{row['session']}": evidence[
+                            "manifest"
+                        ]
+                        for row in evidence["rows"]
+                        if is_no_trade(row)
+                    },
+                    "evidence": evidence,
+                }
+            )
 
     def run(self, item: HistoricalWorkItem) -> HistoricalRunResult:
         if item.lease_expires_at is None or item.lease_expires_at.tzinfo is None:
@@ -202,6 +252,21 @@ class TaifexHistoricalRunner:
             )
             if any(state.get(key) != value for key, value in identity.items()):
                 raise ValueError("historical checkpoint scope differs")
+            from findb_fetcher.provider_work import active
+
+            owner = active()
+            if (
+                owner
+                and "prepared" not in state
+                and (owner.work.get("manifest") or {}).get("evidence")
+            ):
+                restored = owner.restore(job_key=f"historical:{item.item_id}")
+                if restored:
+                    if len(restored) != 1:
+                        raise ValueError("historical prepared identity is ambiguous")
+                    state["prepared"] = json.loads(restored[0])
+                    state["evidence"] = owner.work["manifest"]["evidence"]
+                    self._save(item, state)
             if "prepared" not in state and "evidence" not in state:
                 for product in PRODUCTS:
                     if product in state["reports"]:
@@ -312,12 +377,16 @@ class TaifexHistoricalRunner:
                         },
                     }
                     attach_raw_object(request, stored)
-                    prepared = self.source.prepare(request)
-                    if len(prepared.body) > 1_000_000:
+                    self.registry.validate("futures_eod", 1, request)
+                    if len(canonical_bytes(request)) > 1_000_000:
                         raise ValueError("historical Source batch exceeds bounds")
+                    self._freeze_evidence(evidence)
+                    if owner:
+                        owner.reserve(request, job_key=f"historical:{item.item_id}")
                     state["prepared"] = request
                 state["evidence"] = evidence
                 self._save(item, state)
+            self._freeze_evidence(state["evidence"])
             if "prepared" not in state:
                 return HistoricalRunResult(None, state["evidence"])
             prepared = self.source.prepare(state["prepared"])

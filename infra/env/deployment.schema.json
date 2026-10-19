@@ -17,7 +17,8 @@
         "STAGING_AWS_ACCOUNT_ID": "",
         "STAGING_PROMOTION_READ_ROLE_ARN": "",
         "STAGING_ECR_REGISTRY": "",
-        "STAGING_DEPLOY_BUNDLE_BUCKET": ""
+        "STAGING_DEPLOY_BUNDLE_BUCKET": "",
+        "PROVIDER_WORK_REQUIRED": "false"
       }
     },
     "fetcher": {
@@ -35,7 +36,8 @@
         "STAGING_AWS_ACCOUNT_ID": "",
         "STAGING_PROMOTION_READ_ROLE_ARN": "",
         "STAGING_ECR_REGISTRY": "",
-        "STAGING_DEPLOY_BUNDLE_BUCKET": ""
+        "STAGING_DEPLOY_BUNDLE_BUCKET": "",
+        "PROVIDER_WORK_REQUIRED": "false"
       }
     }
   }

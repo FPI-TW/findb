@@ -18,6 +18,11 @@ from typing import Any
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.platform_limits import account_identity, interval, limits
 
+
+class _AuthorizationExpiredError(QuotaBlockedError):
+    """An undispatched grant expired while rechecking the work fence."""
+
+
 PROTOCOL_VERSION = 2
 LOCAL_DISPATCH_SECONDS = 0.050
 REMOTE_AGE_SECONDS = 5.0
@@ -202,19 +207,29 @@ class Acquisition:
                     "UPDATE acquisition_intent SET status='unknown',completed_at=? WHERE operation_id=? AND status='armed'",
                     (now, row["operation_id"]),
                 )
-                self._floor(db, now + max(row["cooldown_bound"], self.interval))
+                self._floor(
+                    db, now + max(row["cooldown_bound"], self.interval), reason="unknown_recovery"
+                )
 
-    def _floor(self, db: Any, until: float) -> None:
-        db.execute(
-            "INSERT INTO full_pacing VALUES(?,?) ON CONFLICT(account) DO UPDATE SET next_at=MAX(next_at,excluded.next_at)",
-            (self.account, until),
-        )
+    def _floor(self, db: Any, until: float, *, reason: str = "legacy") -> None:
+        self.state.record_floor(db, self.account, until, reason=reason)
+
+    def _publish_cooldown(self, until: float) -> bool:
+        from findb_fetcher.provider_work import active, enabled
+
+        owner = active()
+        if enabled() and owner is not None and owner.provider == self.provider:
+            owner.journal.observe_cooldown(until)
+            owner.publish_cooldown()
+            return True
+        return False
 
     def prepare(self) -> None:
         while True:
             now = time.time()
             day, minute = _windows(now)
             wait = 0.0
+            cooldown = 0.0
             with self.state.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 row = db.execute(
@@ -230,6 +245,13 @@ class Acquisition:
                     0.0
                     if self.kind == "cleanup"
                     else max(0.0, max(row[0] if row else 0.0, prior) - now)
+                )
+                saved_floor = db.execute(
+                    "SELECT not_before,reason FROM full_account_cooldown WHERE account=?",
+                    (self.account,),
+                ).fetchone()
+                cooldown = max(
+                    prior, saved_floor[0] if saved_floor and saved_floor[1] != "pacing" else 0.0
                 )
                 if not math.isfinite(wait):
                     raise QuotaBlockedError("account pacing is invalid")
@@ -253,7 +275,9 @@ class Acquisition:
                             and self.units
                             and used + liability + self.units > request_limit
                         ):
-                            raise QuotaBlockedError("durable account quota is exhausted")
+                            raise QuotaBlockedError(
+                                "durable account quota is exhausted", quota_wait=True
+                            )
                     if self.login_units:
                         self._check_login(db, now)
                     db.execute(
@@ -275,6 +299,12 @@ class Acquisition:
                         (self.account, day),
                     ).fetchone()
                     self.requests_before = day_row[0] if day_row else 0
+            if self.kind != "cleanup" and cooldown > now and self._publish_cooldown(cooldown):
+                # Only this new reservation is provably undispatched. Recovered
+                # unknown intents/liability and their original budgets remain.
+                raise QuotaBlockedError(
+                    "durable provider account cooldown is pending", quota_wait=True
+                )
             if not wait:
                 return
             self.authorization = None
@@ -292,7 +322,7 @@ class Acquisition:
             (self.account, self.operation_id, now - 86400, now, now - 86400),
         ).fetchone()[0]
         if used + 1 > 1000:
-            raise QuotaBlockedError("SDK login rolling 24h quota exhausted")
+            raise QuotaBlockedError("SDK login rolling 24h quota exhausted", quota_wait=True)
         latest = db.execute(
             "SELECT u.* FROM acquisition_usage u JOIN acquisition_intent i USING(operation_id) WHERE i.account=? AND u.connections IS NOT NULL ORDER BY observed_at DESC LIMIT 1",
             (self.account,),
@@ -302,7 +332,7 @@ class Acquisition:
             and 0 <= now - latest["observed_at"] < SDK_SAMPLE_SECONDS
             and latest["connections"] >= 5
         ):
-            raise QuotaBlockedError("SDK current connection limit reached")
+            raise QuotaBlockedError("SDK current connection limit reached", quota_wait=True)
 
     def authorize(self) -> Authorization:
         callback = _policy.get()
@@ -353,16 +383,26 @@ class Acquisition:
             self.started_at = time.time()
             self.requests_after = self.requests_before
             return
+        from findb_fetcher.provider_work import require_acquisition
+
+        require_acquisition(self.provider)
         for _ in range(_dispatch_attempts.get()):
             self.prepare()
             grant = self.authorize()
             now = time.time()
             if grant.valid() and _windows(now) == self.prepared_windows:
-                self.confirm_start(now)
+                try:
+                    self.confirm_start(now)
+                except _AuthorizationExpiredError:
+                    continue
                 return
         raise QuotaBlockedError("authorization dispatch latency exceeds safe bound")
 
     def confirm_start(self, timestamp: float) -> None:
+        from findb_fetcher.provider_work import require_acquisition
+
+        require_acquisition(self.provider)
+        timestamp = time.time()
         if (
             self.authorization is None
             or not self.authorization.valid()
@@ -373,9 +413,34 @@ class Acquisition:
                 and timestamp >= self.authorization.expires_at
             )
         ):
-            raise QuotaBlockedError("acquisition authorization expired")
+            raise _AuthorizationExpiredError("acquisition authorization expired")
         self.started_at = timestamp
         self.requests_after = self.requests_before + self.units
+
+    def dispatch_checkpoint(self) -> float:
+        """Authorize another SDK boundary within the same charged operation.
+
+        Login may block past the original grant. Refresh authority without
+        rearming the intent, resetting its start time, or charging it twice.
+        The child also checks the returned deadline immediately before I/O.
+        """
+        if self.started_at is None:
+            self.start()
+            assert self.authorization is not None
+            return self.authorization.deadline()
+        from findb_fetcher.provider_work import require_acquisition
+
+        for _ in range(_dispatch_attempts.get()):
+            grant = self.authorize()
+            require_acquisition(self.provider)
+            now = time.time()
+            if (
+                grant.valid()
+                and -0.250 <= now - grant.checked_at < REMOTE_AGE_SECONDS
+                and (grant.expires_at is None or now < grant.expires_at)
+            ):
+                return grant.deadline()
+        raise QuotaBlockedError("authorization dispatch latency exceeds safe bound")
 
     def rate_limited(self, retry_after: str | None = None) -> None:
         from email.utils import parsedate_to_datetime
@@ -393,7 +458,8 @@ class Acquisition:
         delay = min(self.bound, max(60.0, delay if math.isfinite(delay) else 60.0))
         with self.state.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._floor(db, now + delay)
+            self._floor(db, now + delay, reason="rate_limited")
+        self._publish_cooldown(now + delay)
 
     def usage(self, sample: dict[str, Any]) -> None:
         with self.state.connection() as db:
@@ -420,7 +486,7 @@ class Acquisition:
             if row is None or row[0] != "armed":
                 return
             if self.started_at is None and self.possibly_started:
-                self._floor(db, completed + self.bound)
+                self._floor(db, completed + self.bound, reason="unknown_dispatch")
                 db.execute(
                     "UPDATE acquisition_intent SET status='unknown',completed_at=? WHERE operation_id=? AND status='armed'",
                     (completed, self.operation_id),
@@ -434,7 +500,7 @@ class Acquisition:
                         "INSERT INTO full_quota(account,window,requests,bytes) VALUES(?,?,?,0) ON CONFLICT(account,window) DO UPDATE SET requests=requests+excluded.requests",
                         (self.account, window, self.units),
                     )
-                self._floor(db, completed + self.interval)
+                self._floor(db, completed + self.interval, reason="pacing")
             db.execute(
                 "UPDATE acquisition_intent SET status=?,actual_start=?,completed_at=?,outcome=? WHERE operation_id=? AND status='armed'",
                 (
@@ -447,6 +513,20 @@ class Acquisition:
             )
 
     def __exit__(self, *args: Any) -> None:
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if (
+            owner is not None
+            and owner.provider == self.provider
+            and self.kind != "cleanup"
+            and (self.started_at is not None or self.possibly_started)
+        ):
+            owner.dispatch_observations += 1
+        if len(args) > 1 and isinstance(args[1], QuotaBlockedError):
+            args[1].dispatched = (
+                args[1].dispatched or self.started_at is not None or self.possibly_started
+            )
         if self.outcome == "unknown":
             self.outcome = "error" if args and args[0] is not None else "success"
         if self.quarantined:
@@ -454,6 +534,13 @@ class Acquisition:
             return
         try:
             self.finalize()
+            with self.state.connection() as db:
+                floor = db.execute(
+                    "SELECT not_before,reason FROM full_account_cooldown WHERE account=?",
+                    (self.account,),
+                ).fetchone()
+            if floor and floor[1] != "pacing" and floor[0] > time.time():
+                self._publish_cooldown(floor[0])
         except BaseException:
             # Keep the descriptor locked until process termination. Releasing it
             # after failed durability would let a second consumer bypass debt.
