@@ -17,7 +17,7 @@ from app.utils import utc_now
 
 async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
     """Counts alone never establish delivery; record only rows actually upserted."""
-    if not run.delivery_part_id or run.status not in {"completed", "completed_with_errors"}:
+    if run.status not in {"completed", "completed_with_errors"}:
         return
     if run.schema_id == "futures_eod":
         rows = await db.execute(
@@ -39,12 +39,16 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
         )
     else:
         return
-    expected = set(
-        await db.scalars(
-            select(DailyDeliveryMember.member_key).where(
-                DailyDeliveryMember.part_id == run.delivery_part_id
+    expected = (
+        set(
+            await db.scalars(
+                select(DailyDeliveryMember.member_key).where(
+                    DailyDeliveryMember.part_id == run.delivery_part_id
+                )
             )
         )
+        if run.delivery_part_id
+        else written
     )
     values = [
         {"run_id": run.run_id, "member_key": key, "created_at": utc_now()}

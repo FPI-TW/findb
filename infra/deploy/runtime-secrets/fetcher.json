@@ -26,7 +26,8 @@
             "SHIOAJI_SIMULATION",
             "TAIFEX_BASE_URL",
             "TAIFEX_TIMEOUT_SECONDS",
-            "TAIFEX_MAX_RESPONSE_BYTES"
+            "TAIFEX_MAX_RESPONSE_BYTES",
+            "PROVIDER_WORK_REQUIRED"
           ]
         },
         {
@@ -74,7 +75,8 @@
             "SHIOAJI_SIMULATION",
             "TAIFEX_BASE_URL",
             "TAIFEX_TIMEOUT_SECONDS",
-            "TAIFEX_MAX_RESPONSE_BYTES"
+            "TAIFEX_MAX_RESPONSE_BYTES",
+            "PROVIDER_WORK_REQUIRED"
           ]
         },
         {
@@ -122,7 +124,8 @@
             "TWELVE_DATA_MAX_RESPONSE_BYTES",
             "TAIFEX_BASE_URL",
             "TAIFEX_TIMEOUT_SECONDS",
-            "TAIFEX_MAX_RESPONSE_BYTES"
+            "TAIFEX_MAX_RESPONSE_BYTES",
+            "PROVIDER_WORK_REQUIRED"
           ]
         },
         {
@@ -181,7 +184,8 @@
             "SHIOAJI_SIMULATION",
             "TAIFEX_BASE_URL",
             "TAIFEX_TIMEOUT_SECONDS",
-            "TAIFEX_MAX_RESPONSE_BYTES"
+            "TAIFEX_MAX_RESPONSE_BYTES",
+            "PROVIDER_WORK_REQUIRED"
           ]
         },
         {

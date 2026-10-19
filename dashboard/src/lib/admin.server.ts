@@ -9,6 +9,7 @@ import {
   marketFreshnessSchema,
   missingDeliveriesSchema,
   queueHealthSchema,
+  providerWorkSchema,
   rawPayloadSchema,
   rawPayloadsSchema,
   schedulerMutationResponseSchema,
@@ -495,6 +496,17 @@ export async function fetchDeliveryResourceData(
 ) {
   const { resource, page, pageSize } = request
   const base = safeBaseUrl(baseUrl)
+  if (resource === "providerWork")
+    return deliveryResourceResponseSchema.parse({
+      resource,
+      result: await fetchTarget(
+        base,
+        sessionToken,
+        "/api/v1/admin/provider-work",
+        providerWorkSchema,
+        fetchImplementation
+      ),
+    })
   if (resource === "alerts")
     return deliveryResourceResponseSchema.parse({
       resource,

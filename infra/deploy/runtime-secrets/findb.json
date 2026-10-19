@@ -4,64 +4,289 @@
   "consumers": {
     "deployment": {
       "secrets": [
-        {"name": "runtime/configuration", "required_keys": ["SOURCE_ALLOWLIST_CIDRS", "TWELVE_DATA_SKIP_NON_TRADING_DAYS", "FINLAB_SKIP_NON_TRADING_DAYS", "SHIOAJI_SKIP_NON_TRADING_DAYS", "TAIFEX_SKIP_NON_TRADING_DAYS"], "optional_keys": ["APP_NAME", "APP_VERSION", "DEBUG", "PORT", "DATABASE_POOL_SIZE", "DATABASE_MAX_OVERFLOW", "API_V1_PREFIX", "API_KEY_HEADER", "SOURCE_TRUST_PROXY_HEADERS", "SERVE_REQUIRE_AUTH", "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW", "RAW_RETENTION_ENABLED", "RAW_RETENTION_DAYS", "FINDB_STATIC_CACHE_BASE_URL", "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_CANONICAL_BUCKET", "FINDB_TLS_CERT_PATH", "FINDB_TLS_PRIVATE_KEY_PATH"]}
+        {
+          "name": "runtime/configuration",
+          "required_keys": [
+            "SOURCE_ALLOWLIST_CIDRS",
+            "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
+            "FINLAB_SKIP_NON_TRADING_DAYS",
+            "SHIOAJI_SKIP_NON_TRADING_DAYS",
+            "TAIFEX_SKIP_NON_TRADING_DAYS"
+          ],
+          "optional_keys": [
+            "APP_NAME",
+            "APP_VERSION",
+            "DEBUG",
+            "PORT",
+            "DATABASE_POOL_SIZE",
+            "DATABASE_MAX_OVERFLOW",
+            "API_V1_PREFIX",
+            "API_KEY_HEADER",
+            "SOURCE_TRUST_PROXY_HEADERS",
+            "SERVE_REQUIRE_AUTH",
+            "RATE_LIMIT_REQUESTS",
+            "RATE_LIMIT_WINDOW",
+            "RAW_RETENTION_ENABLED",
+            "RAW_RETENTION_DAYS",
+            "FINDB_STATIC_CACHE_BASE_URL",
+            "CLOUDFLARE_R2_ACCOUNT_ID",
+            "CLOUDFLARE_R2_CANONICAL_BUCKET",
+            "FINDB_TLS_CERT_PATH",
+            "FINDB_TLS_PRIVATE_KEY_PATH",
+            "PROVIDER_WORK_REQUIRED"
+          ]
+        }
       ]
     },
     "migration": {
       "secrets": [
-        {"name": "database/migration", "required_keys": ["MIGRATION_DATABASE_URL"]}
+        {
+          "name": "database/migration",
+          "required_keys": [
+            "MIGRATION_DATABASE_URL"
+          ]
+        }
       ]
     },
     "credentials": {
       "secrets": [
-        {"name": "api/admin-break-glass", "required_keys": ["ADMIN_BREAK_GLASS_API_KEY"]},
-        {"name": "api/queue-health-admin", "required_keys": ["FINDB_QUEUE_HEALTH_ADMIN_API_KEY"]},
-        {"name": "api/lookup-serve", "required_keys": ["FINDB_LOOKUP_SERVE_API_KEY"]},
-        {"name": "api/static-cache-serve", "required_keys": ["FINDB_STATIC_CACHE_SERVE_API_KEY"]}
+        {
+          "name": "api/admin-break-glass",
+          "required_keys": [
+            "ADMIN_BREAK_GLASS_API_KEY"
+          ]
+        },
+        {
+          "name": "api/queue-health-admin",
+          "required_keys": [
+            "FINDB_QUEUE_HEALTH_ADMIN_API_KEY"
+          ]
+        },
+        {
+          "name": "api/lookup-serve",
+          "required_keys": [
+            "FINDB_LOOKUP_SERVE_API_KEY"
+          ]
+        },
+        {
+          "name": "api/static-cache-serve",
+          "required_keys": [
+            "FINDB_STATIC_CACHE_SERVE_API_KEY"
+          ]
+        }
       ],
       "distinct_keys": [
-        ["FINDB_LOOKUP_SERVE_API_KEY", "FINDB_STATIC_CACHE_SERVE_API_KEY", "FINDB_QUEUE_HEALTH_ADMIN_API_KEY", "ADMIN_BREAK_GLASS_API_KEY"]
+        [
+          "FINDB_LOOKUP_SERVE_API_KEY",
+          "FINDB_STATIC_CACHE_SERVE_API_KEY",
+          "FINDB_QUEUE_HEALTH_ADMIN_API_KEY",
+          "ADMIN_BREAK_GLASS_API_KEY"
+        ]
       ]
     },
     "nginx": {
       "secrets": [
-        {"name": "api/lookup-serve", "required_keys": ["FINDB_LOOKUP_SERVE_API_KEY"]},
-        {"name": "tls/origin-certificate", "required_keys": ["FINDB_ORIGIN_CERTIFICATE_PEM_B64", "FINDB_ORIGIN_PRIVATE_KEY_PEM_B64"]}
+        {
+          "name": "api/lookup-serve",
+          "required_keys": [
+            "FINDB_LOOKUP_SERVE_API_KEY"
+          ]
+        },
+        {
+          "name": "tls/origin-certificate",
+          "required_keys": [
+            "FINDB_ORIGIN_CERTIFICATE_PEM_B64",
+            "FINDB_ORIGIN_PRIVATE_KEY_PEM_B64"
+          ]
+        }
       ]
     },
     "compose": {
       "secrets": [
-        {"name": "runtime/configuration", "required_keys": ["APP_NAME", "APP_VERSION", "DEBUG", "PORT", "DATABASE_POOL_SIZE", "DATABASE_MAX_OVERFLOW", "API_V1_PREFIX", "API_KEY_HEADER", "SOURCE_ALLOWLIST_CIDRS", "SOURCE_TRUST_PROXY_HEADERS", "SERVE_REQUIRE_AUTH", "RATE_LIMIT_REQUESTS", "RATE_LIMIT_WINDOW", "RAW_RETENTION_ENABLED", "RAW_RETENTION_DAYS", "FINDB_STATIC_CACHE_BASE_URL", "CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_CANONICAL_BUCKET", "FINDB_TLS_CERT_PATH", "FINDB_TLS_PRIVATE_KEY_PATH", "TWELVE_DATA_SKIP_NON_TRADING_DAYS", "FINLAB_SKIP_NON_TRADING_DAYS", "SHIOAJI_SKIP_NON_TRADING_DAYS", "TAIFEX_SKIP_NON_TRADING_DAYS"]},
-        {"name": "database/application", "required_keys": ["DATABASE_URL"]},
-        {"name": "api/admin-break-glass", "required_keys": ["ADMIN_BREAK_GLASS_API_KEY"]},
-        {"name": "api/queue-health-admin", "required_keys": ["FINDB_QUEUE_HEALTH_ADMIN_API_KEY"]},
-        {"name": "api/static-cache-serve", "required_keys": ["FINDB_STATIC_CACHE_SERVE_API_KEY"]},
-        {"name": "rabbitmq/runtime", "required_keys": ["CELERY_BROKER_URL", "RABBITMQ_DEFAULT_USER", "RABBITMQ_DEFAULT_PASS", "RABBITMQ_ERLANG_COOKIE"]},
-        {"name": "r2/canonical-publisher", "required_keys": ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN"]},
-        {"name": "r2/canonical-reader", "required_keys": ["CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN"]}
+        {
+          "name": "runtime/configuration",
+          "required_keys": [
+            "APP_NAME",
+            "APP_VERSION",
+            "DEBUG",
+            "PORT",
+            "DATABASE_POOL_SIZE",
+            "DATABASE_MAX_OVERFLOW",
+            "API_V1_PREFIX",
+            "API_KEY_HEADER",
+            "SOURCE_ALLOWLIST_CIDRS",
+            "SOURCE_TRUST_PROXY_HEADERS",
+            "SERVE_REQUIRE_AUTH",
+            "RATE_LIMIT_REQUESTS",
+            "RATE_LIMIT_WINDOW",
+            "RAW_RETENTION_ENABLED",
+            "RAW_RETENTION_DAYS",
+            "FINDB_STATIC_CACHE_BASE_URL",
+            "CLOUDFLARE_R2_ACCOUNT_ID",
+            "CLOUDFLARE_R2_CANONICAL_BUCKET",
+            "FINDB_TLS_CERT_PATH",
+            "FINDB_TLS_PRIVATE_KEY_PATH",
+            "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
+            "FINLAB_SKIP_NON_TRADING_DAYS",
+            "SHIOAJI_SKIP_NON_TRADING_DAYS",
+            "TAIFEX_SKIP_NON_TRADING_DAYS"
+          ],
+          "optional_keys": [
+            "PROVIDER_WORK_REQUIRED"
+          ]
+        },
+        {
+          "name": "database/application",
+          "required_keys": [
+            "DATABASE_URL"
+          ]
+        },
+        {
+          "name": "api/admin-break-glass",
+          "required_keys": [
+            "ADMIN_BREAK_GLASS_API_KEY"
+          ]
+        },
+        {
+          "name": "api/queue-health-admin",
+          "required_keys": [
+            "FINDB_QUEUE_HEALTH_ADMIN_API_KEY"
+          ]
+        },
+        {
+          "name": "api/static-cache-serve",
+          "required_keys": [
+            "FINDB_STATIC_CACHE_SERVE_API_KEY"
+          ]
+        },
+        {
+          "name": "rabbitmq/runtime",
+          "required_keys": [
+            "CELERY_BROKER_URL",
+            "RABBITMQ_DEFAULT_USER",
+            "RABBITMQ_DEFAULT_PASS",
+            "RABBITMQ_ERLANG_COOKIE"
+          ]
+        },
+        {
+          "name": "r2/canonical-publisher",
+          "required_keys": [
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY"
+          ],
+          "optional_keys": [
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN"
+          ]
+        },
+        {
+          "name": "r2/canonical-reader",
+          "required_keys": [
+            "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"
+          ],
+          "optional_keys": [
+            "CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN"
+          ]
+        }
       ],
       "distinct_keys": [
-        ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID"],
-        ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY", "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"]
+        [
+          "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID",
+          "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID"
+        ],
+        [
+          "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY",
+          "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"
+        ]
       ]
     },
     "canary": {
       "secrets": [
-        {"name": "database/application", "required_keys": ["DATABASE_URL"]},
-        {"name": "database/migration", "required_keys": ["MIGRATION_DATABASE_URL"]},
-        {"name": "api/admin-break-glass", "required_keys": ["ADMIN_BREAK_GLASS_API_KEY"]},
-        {"name": "api/queue-health-admin", "required_keys": ["FINDB_QUEUE_HEALTH_ADMIN_API_KEY"]},
-        {"name": "api/lookup-serve", "required_keys": ["FINDB_LOOKUP_SERVE_API_KEY"]},
-        {"name": "api/static-cache-serve", "required_keys": ["FINDB_STATIC_CACHE_SERVE_API_KEY"]},
-        {"name": "rabbitmq/runtime", "required_keys": ["CELERY_BROKER_URL", "RABBITMQ_DEFAULT_USER", "RABBITMQ_DEFAULT_PASS", "RABBITMQ_ERLANG_COOKIE"]},
-        {"name": "r2/canonical-publisher", "required_keys": ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN"]},
-        {"name": "r2/canonical-reader", "required_keys": ["CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"], "optional_keys": ["CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN"]}
+        {
+          "name": "database/application",
+          "required_keys": [
+            "DATABASE_URL"
+          ]
+        },
+        {
+          "name": "database/migration",
+          "required_keys": [
+            "MIGRATION_DATABASE_URL"
+          ]
+        },
+        {
+          "name": "api/admin-break-glass",
+          "required_keys": [
+            "ADMIN_BREAK_GLASS_API_KEY"
+          ]
+        },
+        {
+          "name": "api/queue-health-admin",
+          "required_keys": [
+            "FINDB_QUEUE_HEALTH_ADMIN_API_KEY"
+          ]
+        },
+        {
+          "name": "api/lookup-serve",
+          "required_keys": [
+            "FINDB_LOOKUP_SERVE_API_KEY"
+          ]
+        },
+        {
+          "name": "api/static-cache-serve",
+          "required_keys": [
+            "FINDB_STATIC_CACHE_SERVE_API_KEY"
+          ]
+        },
+        {
+          "name": "rabbitmq/runtime",
+          "required_keys": [
+            "CELERY_BROKER_URL",
+            "RABBITMQ_DEFAULT_USER",
+            "RABBITMQ_DEFAULT_PASS",
+            "RABBITMQ_ERLANG_COOKIE"
+          ]
+        },
+        {
+          "name": "r2/canonical-publisher",
+          "required_keys": [
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY"
+          ],
+          "optional_keys": [
+            "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN"
+          ]
+        },
+        {
+          "name": "r2/canonical-reader",
+          "required_keys": [
+            "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"
+          ],
+          "optional_keys": [
+            "CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN"
+          ]
+        }
       ],
       "distinct_keys": [
-        ["DATABASE_URL", "MIGRATION_DATABASE_URL"],
-        ["FINDB_LOOKUP_SERVE_API_KEY", "FINDB_STATIC_CACHE_SERVE_API_KEY", "FINDB_QUEUE_HEALTH_ADMIN_API_KEY", "ADMIN_BREAK_GLASS_API_KEY"],
-        ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID", "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID"],
-        ["CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY", "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"]
+        [
+          "DATABASE_URL",
+          "MIGRATION_DATABASE_URL"
+        ],
+        [
+          "FINDB_LOOKUP_SERVE_API_KEY",
+          "FINDB_STATIC_CACHE_SERVE_API_KEY",
+          "FINDB_QUEUE_HEALTH_ADMIN_API_KEY",
+          "ADMIN_BREAK_GLASS_API_KEY"
+        ],
+        [
+          "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID",
+          "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID"
+        ],
+        [
+          "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY",
+          "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"
+        ]
       ]
     }
   }

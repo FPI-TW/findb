@@ -81,6 +81,77 @@ Claim 不重算政策；可先建立當日請求，但必須到凍結快照的�
 Migration `91a4c7e2d630` 保留既有計畫及歷史項目，用升級當時有效日曆建立 `legacy_migration_snapshot`，
 不聲稱它是原始建立時的日曆；不補入舊回補範圍中原本省略的日期。這是新的 rollback 下限。
 
+### 凍結計畫的人工休市更正
+
+現有版本沒有獨立的休市處置或告警 acknowledgement API。只將 `missing_delivery_alert`
+設為 resolved，monitor 仍會依既有 planned 決策重開。永久結清需要更正每日決策，屬於
+凍結規則的人工例外，必須先取得對「修改原決策、原值完整另存稽核」的明確授權，不能因
+日曆／政策更新便自動套用，也不能以偽造 no_data 或將 blocked 改成成功替代。
+
+操作限定明確的 environment、provider、dataset、profile、日期、plan ID 與 alert ID，先 dry-run：
+核對 AWS／DB 身分、原 plan／decision fingerprints、原與目前日曆皆休市、目前休市略過已啟用，
+並確認沒有 accepted run、prepared body、receipt、有效 lease 或在途抓取。若已有交付證據，
+停止套用此流程，另行判定。保留 checkpoint 的 manual／attempts，不刪除或重置 SQLite。
+
+同一 DB transaction 為每筆新增 `admin_audit_event`，保存操作身分、理由、operation ID、
+完整原 decision／plan／parts／members／alert／first date／control、目前日曆與 before／after
+SHA-256，再將 decision 改為 `skipped_calendar`、`plan_id=NULL`，並結清對應 alert。
+原 `created_at` 保留；新 snapshot 使用 `snapshot_origin=manual_calendar_repair`，標明
+`corrected_at`、`original_plan_id`、`audit_event_id` 與 operation ID。原 planned 決策全文由
+該 audit 保存，原 plan／part／member、expected、blocked、first dates 與 control revision 不變。
+任何檢查失敗應整批 rollback；重跑同一 operation ID 只核對已完成結果，不能重複建立 audit。
+
+Staging 的 `manual-pilot-weekend-calendar-20261019-v1` 於 2026-10-19 11:24（Asia/Taipei）
+依明確授權處理六條非 TAIFEX feeds 的 10/17、10/18，共 12 筆 decision／alert，新增 12 筆
+`action=calendar_decision_repair`、`actor_type=aws_operator` 稽核。每個原 plan 在首階段維持
+`expected=2、data=0、no_data=0、missing=0、blocked=2`；這些原值亦隨下述封存保留，
+不改記成功或 no_data。此作業未部署 application／schema，也未更換 image 或設定。
+套用 SSM command：`1280065f-4683-43e7-be8d-c8c8614d2975`；完整原值與前後差異以 DB audit 為準。
+11:24:28、11:25:28 自然 monitor scan 後均未重開；11:27 後驗確認 25 plans、25 parts、
+52 member identities、14 first dates、12 controls 及日曆／flags fingerprints 不變，27 筆
+decisions 中僅指定的 12 筆改變，其餘告警狀態不變。12 個原 plan 的完整成員紀錄亦逐筆與
+audit before 相符，Backend／Fetcher images 和 SQLite checkpoints 不變。後驗 SSM commands：
+`0d81ba54-4c29-4e13-8db1-d7191a9aae86`、`071c705c-0270-4a99-a132-7d79873874b6`。
+
+後驗應跨至少兩次自然 monitor scan，核對告警不重開、audit hashes 與前後資料一致，並確認
+其他日期／profiles 的告警仍正常。現版沒有新增 plan acquisition guard；既有 checkpoint 的
+manual 狀態仍保留，不應重置後直接重跑舊 plan。如需撤回，以新 operation ID 和新 audit
+在單一交易恢復原 decision／alert，先核對目前狀態；不得刪除原 repair audit。
+
+#### 同步交付計畫的活動資料
+
+交付計畫沒有可手動改為 skipped 的 status 欄位；API 直接依成員計算完整性。保留舊計畫時，
+畫面會同時出現 incomplete 舊計畫及 skipped_calendar 決策。若不部署新版本而要消除這項
+重複，必須另取得「完整封存後刪除活動計畫／parts／members／checkpoint」的明確授權。
+不得清空成員後把空計畫算成功，或只刪 Backend 而留下 Fetcher 的舊 plan 參照。
+
+先核對原決策更正 audit、無 ingestion run／其他外鍵交付引用，以及 checkpoint 無 prepared
+body／receipt／有效 lease。完整保存每個 plan、part、member、目前 decision／alert 及 SQLite
+plan／work 原文，包括 BLOB bytes、前後 fingerprints、原修復 audit 連結與操作身分。
+在 `calendar_plan_archive_prepare` audit 已 commit 後，才可移除指定活動資料。
+PostgreSQL 依 members → parts → plans 在同一交易刪除；SQLite 依 work → plan 在同一交易
+刪除。兩者不能共用 transaction，須以持久化階段紀錄協調；任何一側失敗，先核對實際 commit
+狀態，再恢復 checkpoint 或完成已提交的一側。兩側一致後才能恢復 runtime，不刪除 prepare audit。
+
+Staging 已依另次明確授權完成 `manual-pilot-weekend-plan-archive-20261019-v1`：12 plans、
+12 parts、24 members 及對應的 12 SQLite plans／24 work rows 完整封存至 Admin audit 後移出
+活動資料。活動計畫由 25 降為 13，交付頁保留 14 筆休市略過（含原有 2 筆 TAIFEX）；
+原 12 筆決策更正 audit、27 筆 daily decisions、已結清 alerts、first dates、controls、日曆，
+以及其餘 Backend／SQLite 資料的保護 fingerprints 均相符。原 expected／blocked 值保存在
+封存 audit，沒有造出 complete 或 no_data。
+
+本次短暫 pause／unpause 共用 Pilot checkpoint 的四個服務，未部署 application／schema、
+未換 image 或設定。恢復時 Shioaji／Twelve Data 各以 exit code 2 自動重啟一次，後驗均維持
+running，其他兩個沒有重啟；containers IDs 與 digests 均未變。僅 pause 仍會保留程序中的
+舊 plan 參照，後續此類活動計畫移除須安排 runtime 靜止與恢復驗收，不能以 DB／SQLite
+交易已完成便假設舊程序可無中斷繼續。Checkpoint bytes 還原及中斷交易 rollback 已先在本機演練。
+
+Prepare SSM：`477ef221-ad3e-4086-9389-76f26bfe794b`；Backend 刪除：
+`abe7d74f-67ea-4022-b7b4-a671ee781e3c`；完成 audit：
+`01a1524d-5328-7cc1-9240-8f0ac2918799`。如需還原，須在 runtime 靜止時從 prepare audit
+先恢復 Backend plans → parts → members，再恢復 SQLite plans → work，核對原文與 hashes，
+並新增復原 audit；已更正的 skipped_calendar 決策不隨計畫還原自動改回 planned。
+
 ## 平台限制與用量
 
 平台配額只採用以下已確認限制；未公布的維度不新增數值配額、預算或啟動門檻。
@@ -345,3 +416,22 @@ raw-first／契約／時段解析；historical 不受 Full flag、activation fir
 限制，也不改寫 Pilot／Full frozen plans。執行前停止 TAIFEX 兩個 controls 並排空在途工作，
 完成驗證後恢復日常 catchup。新版部署要求兩環境安裝八個 recurring 與四個 historical consumers；
 TAIFEX 共用既有公開資料 governor、Source key 與 Twelve Data image，無新增 provider secret。
+
+## Provider work FIFO（待環境啟用）
+
+本分支的 `PROVIDER_WORK_REQUIRED=true` 路徑將 Pilot／Full daily work 拆成 dataset/date，與同 provider
+historical／maintenance／retained-raw rerun 共用 PostgreSQL FIFO；整批日期由早到晚入列，沒有 daily
+優先權。相同 provider 從官方 universe／catalogue acquisition 前就取得 shared whole-work flock 與
+fenced DB owner，一直到所有 accepted runs terminal、完整 proof 與 round settlement committed 才釋放。
+其他 providers 可並行。原 profile controls、first dates、frozen expected、calendar decisions 與 checkpoints 保留。
+
+切換後可讓兩種 controls desired running 同時建立 historical request；不需以停止 TAIFEX controls 當排他。
+停止／cancel 阻止新 acquisition，prepared／accepted work 由原 coordinator 安全排空；quota／FIFO 等待不改
+controls，也不回報假 provider failure／no_data。Retryable round 排空後以原 work／scope／budgets 附加到隊尾。
+心跳遺失保留原 owner，必須重取同一 shared inode、確認 child 已停止後恢復；不會依 TTL 自動跳下一工作。
+
+目前已提交設定預設仍為 false，未執行 staging／production deployment 或 cutover；原 compatibility 操作規則
+僅適用尚未啟用的環境。啟用、migration／import、rollback 與 preflight 見
+[deployment](deployment.md#provider-work-切換)，完整契約與新 provider 必要條件見
+[provider work](../architecture/provider_work.md)。交付監控頁會顯示共用 provider queue、active work、順位、
+wait reason、retry／heartbeat；GET projection 不更動 controls、lease 或 audit。

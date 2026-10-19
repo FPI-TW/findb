@@ -65,7 +65,10 @@ def validate(document: Any, *, target: str, unit: str) -> dict[str, str]:
             or (name in fields["required"] and not value)
         ):
             raise ConfigurationError("configuration_value_invalid")
-    if result["FULL_MARKET_ENABLED"] not in {"true", "false"}:
+    if any(
+        result[name] not in {"true", "false"}
+        for name in ("FULL_MARKET_ENABLED", "PROVIDER_WORK_REQUIRED")
+    ):
         raise ConfigurationError("configuration_flag_invalid")
     if (
         result["ECR_REGISTRY"]

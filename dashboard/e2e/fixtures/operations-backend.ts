@@ -7,6 +7,7 @@ import {
   type HistoricalBackfill,
   marketFreshnessSchema,
   queueHealthSchema,
+  providerWorkSchema,
   schedulerSchema,
   type Scheduler,
 } from "../../src/lib/admin-api.ts"
@@ -373,6 +374,67 @@ createServer(async (request, response) => {
   if (path === "/api/v1/admin/market-freshness")
     return send(marketFreshnessSchema.parse({ success: true, data: [] }))
   if (path === "/api/v1/admin/queue/health") return send(queue)
+  if (path === "/api/v1/admin/provider-work" && request.method === "GET")
+    return send(
+      providerWorkSchema.parse({
+        data: [
+          {
+            work_id: "019565d2-f838-7c91-85c1-72d4d7bbbe11",
+            provider: "finlab",
+            dataset_key: "tw_equity_eod",
+            kind: "daily",
+            stable_key: "daily:pilot:tw_equity_eod:2026-10-06",
+            trade_date: "2026-10-06",
+            execution_profile: "pilot",
+            state: "running",
+            queue_order: 10,
+            drain_only: false,
+            position: null,
+            active: true,
+            attempt_number: 1,
+            not_before: timestamp,
+            heartbeat_at: timestamp,
+            wait_reason: null,
+          },
+          {
+            work_id: "019565d2-f838-7c91-85c1-72d4d7bbbe12",
+            provider: "finlab",
+            dataset_key: "tw_equity_eod",
+            kind: "historical",
+            stable_key: "historical:fixture",
+            trade_date: "2026-10-05",
+            execution_profile: null,
+            state: "queued",
+            queue_order: 11,
+            drain_only: true,
+            position: null,
+            active: false,
+            attempt_number: 2,
+            not_before: "2099-10-19T01:00:00Z",
+            heartbeat_at: null,
+            wait_reason: "not_before",
+          },
+          {
+            work_id: "019565d2-f838-7c91-85c1-72d4d7bbbe13",
+            provider: "finlab",
+            dataset_key: "tw_equity_eod",
+            kind: "historical",
+            stable_key: "historical:following-fixture",
+            trade_date: "2026-10-04",
+            execution_profile: null,
+            state: "queued",
+            queue_order: 12,
+            drain_only: false,
+            position: 1,
+            active: false,
+            attempt_number: 1,
+            not_before: timestamp,
+            heartbeat_at: null,
+            wait_reason: "provider_active",
+          },
+        ],
+      })
+    )
   if (
     request.method === "PATCH" &&
     path.startsWith("/api/v1/admin/schedulers/")

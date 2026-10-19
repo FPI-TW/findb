@@ -1694,8 +1694,8 @@ describe("Operations presentation", () => {
       ).not.toBeDisabled()
     )
     expect(
-      mocks.loadDeliveryResource.mock.calls.every(
-        ([input]) => input.data.resource === "alerts"
+      mocks.loadDeliveryResource.mock.calls.every(([input]) =>
+        ["alerts", "providerWork"].includes(input.data.resource)
       )
     ).toBe(true)
     fireEvent.click(screen.getByRole("button", { name: "交付缺漏分頁下一頁" }))

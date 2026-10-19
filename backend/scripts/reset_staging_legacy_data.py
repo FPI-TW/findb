@@ -16,6 +16,7 @@ The reset deliberately preserves only schema/configuration/authentication data:
 * ``public.full_market_environment``
 * ``public.full_market_enrollment``
 * ``public.full_market_dataset_state``
+* ``public.provider_work_owner`` (installed inode and fencing generation)
 
 Every other current application data table is cleared, including canonical,
 raw, workflow, audit, alert, calendar, roll-rule, and worker-heartbeat data.
@@ -69,6 +70,7 @@ PROTECTED_TABLES = (
     "public.full_market_environment",
     "public.full_market_enrollment",
     "public.full_market_dataset_state",
+    "public.provider_work_owner",
     "public.scheduler_control",
     # Normalized scheduler-to-dataset authority.  This is configuration, not
     # mutable delivery state, and must remain aligned with scheduler_control.
@@ -116,6 +118,9 @@ TARGET_TABLES = (
     "public.normalization_job",
     "public.normalization_outbox",
     "public.normalization_worker_heartbeat",
+    "public.provider_work",
+    "public.provider_work_attempt",
+    "public.provider_work_receipt",
     "public.roll_rule",
     "public.trading_calendar",
     "public.tw_minute_archive_chunk",
@@ -197,6 +202,11 @@ async def _assert_inactive(connection: AsyncConnection) -> None:
             "staging reset refused: nonterminal work exists "
             f"(runs={active_runs}, jobs={active_jobs})"
         )
+    active_owners = await _scalar_count(
+        connection, "SELECT count(*) FROM provider_work_owner WHERE attempt_id IS NOT NULL"
+    )
+    if active_owners:
+        raise ResetSafetyError(f"staging reset refused: active provider owners={active_owners}")
 
 
 async def _table_exists(connection: AsyncConnection, qualified_name: str) -> bool:
@@ -226,7 +236,23 @@ async def _truncate_mutable_rows(connection: AsyncConnection) -> None:
     # forbidden. PostgreSQL will fail closed if an unlisted FK dependency is
     # introduced. One transactional TRUNCATE avoids millions of row-level
     # DELETE operations and handles the raw/run and DQ/run relationships.
-    table_list = ", ".join(TARGET_TABLES)
+    # Owner slots retain installed inode identity and monotonic generation.
+    # Their FK to attempts forbids TRUNCATE attempts even with a NULL reference.
+    # Delete this small queue graph explicitly, then truncate receipts alongside
+    # ingestion_run so every FK remains checked without CASCADE.
+    await connection.execute(text("DELETE FROM provider_work_receipt"))
+    await connection.execute(text("DELETE FROM provider_work_attempt"))
+    await connection.execute(text("DELETE FROM provider_work"))
+    await connection.execute(
+        text(
+            "UPDATE provider_work_owner SET recovery_reason='mutable_reset_requires_verified_cutover'"
+        )
+    )
+    table_list = ", ".join(
+        table
+        for table in TARGET_TABLES
+        if table not in {"public.provider_work", "public.provider_work_attempt"}
+    )
     await connection.execute(text(f"TRUNCATE TABLE {table_list} RESTART IDENTITY"))
 
 

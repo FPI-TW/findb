@@ -145,6 +145,18 @@ class FullMarketSourceClient:
                                 "code": "taifex_dated_universe_required"
                             }:
                                 code = "taifex_dated_universe_required"
+                            elif isinstance(error, dict) and error.get("detail") == {
+                                "code": "PROVIDER_WORK_PREPARED_DRAINING"
+                            }:
+                                code = "PROVIDER_WORK_PREPARED_DRAINING"
+                            elif isinstance(error, dict) and error.get("detail") == {
+                                "code": "PROVIDER_WORK_DRAINING"
+                            }:
+                                code = "PROVIDER_WORK_DRAINING"
+                            elif isinstance(error, dict) and error.get("detail") == {
+                                "code": "PROVIDER_WORK_SUSPENDED"
+                            }:
+                                code = "PROVIDER_WORK_SUSPENDED"
                         raise FullMarketProtocolError(
                             f"Source governance returned HTTP {response.status_code}",
                             status_code=response.status_code,

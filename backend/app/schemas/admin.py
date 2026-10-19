@@ -18,6 +18,16 @@ from app.utils import ensure_utc, utc_now
 # ── Provider historical backfill ────────────────────────────────────────────
 
 
+class ProviderWorkCutoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    protocol: Literal["provider-work-v1"]
+    environment: Literal["local", "staging", "production"]
+    host_id: str = Field(min_length=1, max_length=100)
+    inventory_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    checked_at: datetime
+    host_lock_identities: dict[str, str]
+
+
 HistoricalBackfillStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 HistoricalBackfillItemStatus = Literal[
     "pending", "running", "completed", "failed", "cancelled", "skipped_calendar"

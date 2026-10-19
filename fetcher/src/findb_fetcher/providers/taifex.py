@@ -8,7 +8,7 @@ import json
 import re
 import time
 from collections.abc import Callable, Mapping
-from datetime import date, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from email.utils import parsedate_to_datetime
 from math import isfinite
@@ -23,6 +23,7 @@ from findb_fetcher.full_market_universe import (
     _member,
 )
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
+from findb_fetcher.provider_work import durable_response
 
 PRODUCTS = ("TX", "MTX", "TMF", "TE", "TF")
 _PRODUCTS = set(PRODUCTS)
@@ -88,6 +89,30 @@ def _numeric(value: str, *, integer: bool = False) -> str | int | None:
     if not number.is_finite() or number < 0 or (integer and number != number.to_integral_value()):
         raise UniverseSnapshotError("TAIFEX numeric field is invalid")
     return int(number) if integer else format(number, "f")
+
+
+def official_report_date(raw: bytes) -> date:
+    """Validate the official JSON envelope before deriving its attribution date."""
+    try:
+        values = json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise UniverseSnapshotError("TAIFEX official report JSON is invalid") from None
+    if not isinstance(values, list) or not values:
+        raise UniverseSnapshotError("TAIFEX official report rows are absent")
+    dates = set()
+    for row in values:
+        if not isinstance(row, dict) or not isinstance(row.get("Date"), str):
+            raise UniverseSnapshotError("TAIFEX official report row/date is invalid")
+        text = row["Date"].strip().replace("/", "").replace("-", "")
+        if not re.fullmatch(r"[0-9]{8}", text):
+            raise UniverseSnapshotError("TAIFEX official report date is invalid")
+        try:
+            dates.add(datetime.strptime(text, "%Y%m%d").date())
+        except ValueError:
+            raise UniverseSnapshotError("TAIFEX official report date is invalid") from None
+    if len(dates) != 1:
+        raise UniverseSnapshotError("TAIFEX official report dates differ")
+    return dates.pop()
 
 
 def parse_report(
@@ -183,6 +208,21 @@ def report_members(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(grouped.values())
 
 
+def _target_report_present(value: bytes, arguments: dict[str, Any]) -> bool:
+    try:
+        rows = parse_report(
+            value, target_date=arguments["target_date"], historical=not arguments["latest"]
+        )
+        return arguments["latest"] or all(
+            row["product_code"] == arguments["product"] for row in rows
+        )
+    except (ValueError, UnicodeError):
+        return False
+
+
+@durable_response(
+    "taifex_report", ("target_date", "latest", "product"), target_valid=_target_report_present
+)
 def fetch_report(
     client: httpx.Client,
     *,

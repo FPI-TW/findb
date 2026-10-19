@@ -662,14 +662,37 @@ export const deliveryPlanDatasetsSchema = z.object({
 })
 export const deliveryResourceRequestSchema = z.object({
   profile: executionProfileSchema.optional(),
-  resource: z.enum(["alerts", "backfills", "scopes"]),
+  resource: z.enum(["alerts", "backfills", "scopes", "providerWork"]),
   page: z.number().int().positive().default(1),
   pageSize: z.number().int().min(1).max(100).default(25),
 })
 export type DeliveryResourceRequest = z.infer<
   typeof deliveryResourceRequestSchema
 >
+export const providerWorkSchema = z.object({
+  data: z.array(
+    z.object({
+      work_id: z.uuid(),
+      provider: z.string(),
+      dataset_key: z.string(),
+      kind: z.string(),
+      stable_key: z.string(),
+      trade_date: z.string().nullable(),
+      execution_profile: z.string().nullable(),
+      state: z.string(),
+      queue_order: z.number(),
+      position: z.number().nullable(),
+      active: z.boolean(),
+      drain_only: z.boolean(),
+      attempt_number: z.number(),
+      not_before: isoDateTime,
+      heartbeat_at: isoDateTime.nullable(),
+      wait_reason: z.string().nullable(),
+    })
+  ),
+})
 export const deliveryResourceResponseSchema = z.discriminatedUnion("resource", [
+  z.object({ resource: z.literal("providerWork"), result: providerWorkSchema }),
   z.object({ resource: z.literal("alerts"), result: missingDeliveriesSchema }),
   z.object({
     resource: z.literal("backfills"),

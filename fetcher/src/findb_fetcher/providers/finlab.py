@@ -21,6 +21,8 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from findb_fetcher.finlab_credentials import effective_token, installed_token, sdk_credential_scope
+from findb_fetcher.full_market_state import QuotaBlockedError
+from findb_fetcher.provider_work import durable_response
 from findb_fetcher.raw_storage import RawPayloadStore, attach_raw_object
 
 FINLAB_SOURCE = "finlab"
@@ -127,12 +129,24 @@ class FinLabSdkGateway:
     ) -> FinLabDatasetTable:
         if not isinstance(target_date, date) or isinstance(target_date, datetime):
             raise FinLabConfigError("FinLab target_date must be a date")
-        return self._fetch(dataset, target_date=target_date, symbols=symbols)
+        table = self._fetch(dataset, target_date=target_date, symbols=symbols)
+        if table.dates != (target_date.isoformat(),):
+            raise FinLabTargetNotReadyError(
+                "FinLab dataset does not contain exactly one target date"
+            )
+        return table
 
     def fetch_catalogue(self, *, symbols: Sequence[str]) -> FinLabDatasetTable:
         """Observe column presence, without claiming any trading-date data exists."""
         return self._fetch("price:收盤價", target_date=None, symbols=symbols)
 
+    @durable_response(
+        "finlab_dataset",
+        ("dataset", "target_date", "symbols"),
+        target_valid=lambda table, args: (
+            args["target_date"] is None or table.dates == (args["target_date"].isoformat(),)
+        ),
+    )
     def _fetch(
         self, dataset: str, *, target_date: date | None, symbols: Sequence[str]
     ) -> FinLabDatasetTable:
@@ -178,12 +192,23 @@ class FinLabSdkGateway:
                     # Operational failures must not become catalogue mapping gaps.
                     with Acquisition("finlab", credential=self._identity_credential) as operation:
                         try:
-                            login(self.api_token)
-                        except Exception:
-                            raise FinLabOperationalError("FinLab SDK login failed") from None
-                        operation.start()
-                        try:
-                            frame = get(dataset.strip())
+                            if self._sdk is None:
+                                from findb_fetcher.provider_process import supervised_call
+
+                                frame = supervised_call(
+                                    lambda: get(dataset.strip()),
+                                    initialize=lambda: login(self.api_token),
+                                    checkpoint=operation.dispatch_checkpoint,
+                                )
+                            else:
+                                operation.dispatch_checkpoint()
+                                login(self.api_token)
+                                operation.dispatch_checkpoint()
+                                frame = get(dataset.strip())
+                        except QuotaBlockedError:
+                            # __exit__ records whether login already dispatched;
+                            # only the outer boundary may classify a quota wait.
+                            raise
                         except Exception:
                             raise FinLabOperationalError(
                                 "FinLab SDK dataset retrieval failed"
@@ -217,6 +242,10 @@ class FinLabSdkGateway:
                     # get() can replace its storage while the package re-export
                     # still retains the old instance. Release both under the lock.
                     _disable_frame_cache((*storages, *_file_storages(data, get)))
+        except QuotaBlockedError as exc:
+            if exc.quota_wait and not exc.dispatched:
+                raise
+            raise FinLabOperationalError("FinLab acquisition failed") from None
         except FinLabSdkError:
             raise
         except Exception:
@@ -419,7 +448,9 @@ def build_market_eod_request(
             "volume": _integer_value(bundle.field_values["volume"][symbol.source_symbol]),
         }
         rows.append(row)
-    identity = hashlib.sha256(bundle.raw_bytes).hexdigest()
+    from findb_fetcher.provider_work import scoped_identity
+
+    identity = hashlib.sha256(scoped_identity(bundle.raw_bytes)).hexdigest()
     request: dict[str, Any] = {
         "dataset_key": bundle.config.dataset_key,
         "schema_id": "market_eod",
@@ -562,7 +593,24 @@ def _table_from_dataframe(
         raise FinLabSdkError("FinLab dataset is missing reviewed symbols")
     matching = [position for position, value in enumerate(dates) if value == target_date]
     if len(matching) != 1:
-        raise FinLabSdkError("FinLab dataset does not contain exactly one target date")
+        from findb_fetcher.provider_work import active
+
+        if active() is None:
+            raise FinLabTargetNotReadyError(
+                "FinLab dataset does not contain exactly one target date"
+            )
+        # Only reviewed table data is captured, never DataFrame attrs or SDK
+        # objects. This snapshot is negative evidence, not replay authority.
+        try:
+            rows = tuple(
+                tuple(_snapshot_scalar(loc[index, symbol]) for symbol in reviewed_symbols)
+                for index in index_values
+            )
+        except Exception:
+            raise FinLabSdkError("FinLab dataset observation cannot be read") from None
+        return FinLabDatasetTable(
+            tuple(value.isoformat() for value in dates), reviewed_symbols, rows
+        )
     try:
         row = tuple(loc[index_values[matching[0]], symbol] for symbol in reviewed_symbols)
     except Exception as exc:
@@ -572,6 +620,19 @@ def _table_from_dataframe(
         symbols=reviewed_symbols,
         values=(row,),
     )
+
+
+def _snapshot_scalar(value: object) -> object:
+    """Serialize only table scalar types, never arbitrary object repr/str."""
+    if value is None or type(value) in {bool, int, float, str}:
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    # NumPy scalar values returned by pandas expose item(); do not invoke an
+    # arbitrary SDK object's method or stringify it into durable evidence.
+    if type(value).__module__ == "numpy":
+        return _snapshot_scalar(value.item())  # type: ignore[attr-defined]
+    raise FinLabSdkError("FinLab dataset observation contains an unsupported scalar")
 
 
 def _frame_index_date(value: object) -> date:

@@ -70,7 +70,14 @@ Reset可移除mutable canonical、workflow與PostgreSQL raw，建立bounded pilo
 `full_market_dataset_state` 永久首次日期同樣保留；`full_market_admission`／`full_market_admission_feed`
 和被引用的 baseline、calendar、plan 一起清除。重建 published baseline、取得有效
 installed runtime ACK 後，Owner 才能重新手動啟動並建立新 admission；first date 不重設。
-所有 mutable targets 在同一個 explicit `TRUNCATE` 清除，禁止 `CASCADE`；新增未列出的 FK 時 fail closed。
+Provider queue 的 work／attempt／receipt 屬 mutable workflow，一起清除；owner slots 的 installed inode
+與 monotonic fencing generation 保留。任何 active owner 都拒絕 reset，即使 heartbeat 已過期。
+為保留 owner→attempt 的 FK，先明確刪除 receipt／attempt／work，再在同一 transaction explicit
+`TRUNCATE` 其餘 targets（包含 receipt 與 ingestion run）；禁止 `CASCADE`，未列出的 FK fail closed。
+Reset 後 owner 留下 `mutable_reset_requires_verified_cutover` blocker；停止 consumers，備份並重置
+provider-work journal、各 profile／historical mutable checkpoints，保留 shared lock inodes 和獨立
+account governor quota／usage。重新執行完整 host preflight 與具名 Owner cutover 後才能 claim；
+不能以舊 journal／prepared bytes 對新空白 DB 基線重播，也不能刪 governor 來退款用量。
 `market_data_eod.run_id`、raw run ID與DQ run ID沒有完整DB FK／cascade，不能假設
 只刪run即可清乾淨。
 
@@ -148,6 +155,14 @@ profile 的 daily plan。Historical 完成後，恢復的日常 runtime 仍自�
    仍需有效 Source credential／dataset scope、lease 與 account governor。
 4. 驗證 raw manifest、Source run／outbox、DQ、canonical 與 Serve，才恢復 TAIFEX controls。
 
+若 request 長時間維持 `queued`，先唯讀檢查日期 item 的 `lease_attempt`、`started_at` 與
+`run_id`；`lease_attempt=0` 且其餘兩者為空表示尚未領取。建立 request 成功不代表已進入
+維護窗口：所有未 retired 的 TAIFEX controls 都須同時滿足 `desired_state=stopped` 與
+`observed_state=stopped`，且沒有屬於其他 work item 的 queued／pending／processing／retrying
+TAIFEX `tw_futures_eod` ingestion run，才可領取已收盤日期。Pilot 在兩次 cycle 間暫時回報
+observed stopped，若 desired 仍為 running，仍不符合條件。Historical worker 空閒時每
+15 秒輪詢一次；應另核對 consumer 存活與最近 claim 存取紀錄，不能只由 queued 推定 worker 故障。
+
 ```bash
 findb-fetch-backfill-plan --provider taifex --dataset-key tw_futures_eod \
   --start-date 2026-10-01 --end-date 2026-10-02
@@ -217,3 +232,20 @@ migration-owned partition。Staging monitoring以一筆為告警門檻，因此�
 每次維護保存image SHA、target、參數、開始／結束時間、pre／post counts、驗證與operator。
 不把`DATABASE_URL`或secret貼入文件、log或shell history。不使用未pin外部結果直接覆寫
 資料。回復優先採RDS snapshot或script明確提供的可逆流程，不手寫大範圍DELETE。
+
+## Provider work 模式的 historical／raw rerun
+
+當環境完成 [provider-work cutover](deployment.md#provider-work-切換) 並同步啟用
+`PROVIDER_WORK_REQUIRED=true` 後，本文前述 TAIFEX stopped-controls 維護窗口與獨立 historical TTL lease
+只屬舊 compatibility protocol。新模式可在 Pilot／Full desired running 時提交所有既有支援 scope 的回補。
+它們依同 provider FIFO 排隊；日期由早到晚入列，profile／request 決策與證據不互相覆蓋。
+本分支未新增 HK／TW ETF EOD historical、未開放 production Shioaji，也尚未啟用任何遠端環境。
+
+Twelve Data／FinLab historical 會保存 frozen universe、native response、immutable prepared jobs 與所有 receipts；
+Shioaji 保存全部 minute sequences，TAIFEX 保存五報表與 whole-day manifest。Queue retry 重用原 scope／budget，
+不重新抓取已持久化的 prepared work。TAIFEX completion 依 durable actual canonical-write evidence，後續 upsert
+改寫 canonical 最新 run_id 不會抹除原證據；格式／DQ error 保留 failed／manual，不當作正常 no_data。
+
+Source／Admin 單筆與 bulk retained-raw rerun 都建立新的 audited run／work，維持原 raw body 與失敗 receipt；
+排到 provider owner 後才 dispatch normalization。不能以 receipt replay 重設 terminal failed run，或繞過同 provider
+的 active daily work。Dashboard「交付監控」的 provider queue 可查看等待順位、active work、retry time 與 heartbeat。

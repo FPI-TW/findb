@@ -95,7 +95,8 @@ def test_documented_local_profiles_share_writable_ledger_and_restart_state(local
 def test_documented_local_finlab_scheduler_reaches_governed_sdk_boundary(local_setup):
     result = _process(local_setup, "finlab", "finlab-cli")
     assert result["status"] == "completed"
-    assert result["provider_calls"] == result["source_calls"] == 5
+    assert result["provider_calls"] == 5
+    assert result["source_calls"] == 10  # Fresh grants before login and dataset get.
     assert result["path"] == str(local_setup / ".state/account/governor.sqlite3")
     assert sum(row[2] for row in result["snapshot"]["quota"]) == 10
 

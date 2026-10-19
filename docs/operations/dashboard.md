@@ -83,3 +83,7 @@ Overview、freshness、plans、alerts 的請求與 query cache key 都包含 pro
 交付計畫在各 profile 下分開顯示有效 provider 政策及「依設定略過」日期／資料集，支援日期與資料集篩選。
 略過清單最多顯示最近 100 筆並顯示總數；略過不混入 expected、missing、blocked 或 no_data。
 人工回補的 skipped_calendar 顯示「依設定略過」，不算成功 Source run。
+
+交付監控頁的「供應商工作佇列」顯示跨 Pilot／Full／historical／maintenance／rerun 的 provider owner、
+FIFO 位置、等待原因、round、not_before 與 heartbeat。資料來自唯讀 Admin `/provider-work`，不包含 lease token；
+初次回應前顯示 loading，使用既有 operations query refresh 註冊與 session query scope。

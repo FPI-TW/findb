@@ -24,7 +24,7 @@ from findb_fetcher.providers.shioaji import (
 from findb_fetcher.raw_storage import RawStorageError, attach_raw_provenance
 
 MAX_BYTES = 1024 * 1024
-SCHEMA_VERSION = "9"
+SCHEMA_VERSION = "10"
 _PAYLOAD_REASON_SQL = ",".join(f"'{reason}'" for reason in sorted(PAYLOAD_REASONS))
 EXPECTED_COLUMNS = {
     "meta": ("key", "value"),
@@ -127,6 +127,9 @@ class ShioajiStagingState:
                 if "meta" in existing_tables
                 else None
             )
+            if schema_row == ("9",):
+                self._upgrade_v9()
+                schema_row = (SCHEMA_VERSION,)
             if schema_row != (SCHEMA_VERSION,):
                 raise ShioajiStagingStateError("staging state schema is incompatible")
         else:
@@ -154,7 +157,7 @@ class ShioajiStagingState:
               sequence_no INTEGER NOT NULL CHECK(sequence_no BETWEEN 1 AND 99999),
               sequence_count INTEGER NOT NULL
                 CHECK(sequence_count BETWEEN sequence_no AND 99999),
-              attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 3),
+              attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
               lease_until TEXT, snapshot BLOB CHECK(snapshot IS NULL OR length(snapshot) BETWEEN 1 AND 1048576),
               raw_ref TEXT, raw_sha256 TEXT, raw_size INTEGER, prepared BLOB,
               prepared_sha256 TEXT,
@@ -182,10 +185,10 @@ class ShioajiStagingState:
             );
             CREATE TABLE IF NOT EXISTS provider_attempts (
               daily_id TEXT NOT NULL, symbol TEXT NOT NULL,
-              attempt_no INTEGER NOT NULL CHECK(attempt_no BETWEEN 1 AND 3),
+              attempt_no INTEGER NOT NULL CHECK(attempt_no >= 1),
               created_at TEXT NOT NULL,
               outcome TEXT NOT NULL DEFAULT 'started'
-                CHECK(outcome IN ('started','success','failed')),
+                CHECK(outcome IN ('started','success','failed','waiting')),
               code TEXT CHECK(code IS NULL OR length(code) BETWEEN 1 AND 64),
               reason TEXT CHECK(reason IS NULL OR reason IN ({_PAYLOAD_REASON_SQL})),
               CHECK(reason IS NULL OR code='KBARS_PAYLOAD'),
@@ -205,6 +208,46 @@ class ShioajiStagingState:
         if self.db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
             raise ShioajiStagingStateError("staging state integrity check failed")
         self._validate_semantics()
+
+    def _upgrade_v9(self) -> None:
+        """Widen append-only audit numbering; copy every original value atomically."""
+        definitions = dict(
+            self.db.execute(
+                "SELECT name,sql FROM sqlite_schema WHERE name IN ('snapshot_sequences','provider_attempts')"
+            )
+        )
+        if (
+            "CHECK(attempts BETWEEN 0 AND 3)" not in definitions["snapshot_sequences"]
+            or "CHECK(attempt_no BETWEEN 1 AND 3)" not in definitions["provider_attempts"]
+        ):
+            raise ShioajiStagingStateError("staging state schema is incompatible")
+        self.db.execute("PRAGMA foreign_keys=OFF")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            for table in ("snapshot_sequences", "provider_attempts"):
+                sql = definitions[table].replace(
+                    f"CREATE TABLE {table}", f"CREATE TABLE {table}_v10", 1
+                )
+                sql = sql.replace("CHECK(attempts BETWEEN 0 AND 3)", "CHECK(attempts >= 0)")
+                sql = sql.replace("CHECK(attempt_no BETWEEN 1 AND 3)", "CHECK(attempt_no >= 1)")
+                sql = sql.replace(
+                    "('started','success','failed')", "('started','success','failed','waiting')"
+                )
+                self.db.execute(sql)
+                self.db.execute(f"INSERT INTO {table}_v10 SELECT * FROM {table}")
+            self.db.execute("DROP TABLE provider_attempts")
+            self.db.execute("DROP TABLE snapshot_sequences")
+            self.db.execute("ALTER TABLE snapshot_sequences_v10 RENAME TO snapshot_sequences")
+            self.db.execute("ALTER TABLE provider_attempts_v10 RENAME TO provider_attempts")
+            self.db.execute("UPDATE meta SET value=? WHERE key='schema_version'", (SCHEMA_VERSION,))
+            if self.db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise ShioajiStagingStateError("staging state upgrade foreign key mismatch")
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        finally:
+            self.db.execute("PRAGMA foreign_keys=ON")
 
     def bind_raw_storage(self, account_id: str, bucket: str) -> None:
         """Bind persisted delivery refs to one unambiguous Raw R2 location."""
@@ -402,14 +445,31 @@ class ShioajiStagingState:
         try:
             cutoff = _utc(now - timedelta(seconds=rolling_seconds))
             self.db.execute("DELETE FROM limiter WHERE used_at < ?", (cutoff,))
-            attempts, lease, terminal = self.db.execute(
+            sequence = self.db.execute(
                 "SELECT attempts,lease_until,terminal_status FROM snapshot_sequences WHERE daily_id=? AND symbol=?",
                 (daily_id, symbol),
-            ).fetchone() or (-1, None, "blocked")
+            ).fetchone()
+            if sequence is None:
+                raise ShioajiStagingStateError(
+                    "provider sequence is outside frozen checkpoint scope"
+                )
+            attempts, lease, terminal = sequence
             used = self.db.execute("SELECT count(*) FROM limiter").fetchone()[0]
+            # Each audit and limiter reservation share the same transaction/time.
+            # Retain both histories; only proven pre-dispatch waits do not spend
+            # the reviewed rolling provider request allowance.
+            used -= self.db.execute(
+                "SELECT count(*) FROM provider_attempts WHERE outcome='waiting' AND code='QUOTA_WAIT' AND created_at>=?",
+                (cutoff,),
+            ).fetchone()[0]
+            waits = self.db.execute(
+                "SELECT count(*) FROM provider_attempts WHERE daily_id=? AND symbol=? AND outcome='waiting' AND code='QUOTA_WAIT'",
+                (daily_id, symbol),
+            ).fetchone()[0]
+            budget_used = attempts - waits
             if (
                 terminal_on_exhaustion
-                and attempts >= max_attempts
+                and budget_used >= max_attempts
                 and terminal is None
                 and not (lease and lease > now_text)
             ):
@@ -429,7 +489,7 @@ class ShioajiStagingState:
             if (
                 attempts < 0
                 or terminal
-                or attempts >= max_attempts
+                or budget_used >= max_attempts
                 or used >= max_requests
                 or (lease and lease > now_text)
             ):
@@ -450,6 +510,12 @@ class ShioajiStagingState:
         except Exception:
             self.db.execute("ROLLBACK")
             raise
+
+    def budget_used(self, daily_id: str, symbol: str) -> int:
+        return self.db.execute(
+            "SELECT count(*) FROM provider_attempts WHERE daily_id=? AND symbol=? AND NOT (outcome='waiting' AND code='QUOTA_WAIT')",
+            (daily_id, symbol),
+        ).fetchone()[0]
 
     def finish_attempt(
         self,
@@ -703,6 +769,13 @@ class ShioajiStagingState:
             return None
         return str(row[0]), str(row[1]), int(row[2])
 
+    def source_receipt(self, daily_id: str, symbol: str) -> tuple[str, str] | None:
+        row = self.db.execute(
+            "SELECT source_attempt_id,source_run_id FROM snapshot_sequences WHERE daily_id=? AND symbol=?",
+            (daily_id, symbol),
+        ).fetchone()
+        return (str(row[0]), str(row[1])) if row and all(row) else None
+
     def save_source(
         self, daily_id: str, symbol: str, attempt_id: str, run_id: str, terminal: str | None = None
     ) -> None:
@@ -785,7 +858,8 @@ class ShioajiStagingState:
         ):
             if (
                 type(attempts) is not int
-                or not 0 <= attempts <= 3
+                or attempts < 0
+                or self.budget_used(daily_id, symbol) > 3
                 or status
                 not in {
                     "pending",

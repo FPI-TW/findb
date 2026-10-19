@@ -102,6 +102,13 @@ def _provider_current_date(provider: str, now: datetime) -> date:
     return now.astimezone(ZoneInfo(timezone_name)).date()
 
 
+def expiry_cutoff(provider: str, now: datetime) -> date:
+    """One read-only provider-local boundary for claims and live acquisition."""
+    return _provider_current_date(provider, now) - timedelta(
+        days=_max_backfill_days() - (1 if provider == "taifex" else 0)
+    )
+
+
 def _session_closed(item: HistoricalBackfillItem, now: datetime) -> bool:
     """Use the immutable request snapshot for new acquisition, never live calendar data."""
     snapshot = item.calendar_snapshot
@@ -208,6 +215,26 @@ async def create_request(
         row.status, row.completed_at = "completed", now
     db.add(row)
     await db.flush()
+    from app.services.provider_work import enqueue
+
+    for item in row.items:
+        if item.status != "pending":
+            continue
+        snapshot = item.calendar_snapshot
+        assert snapshot is not None
+        close = time.fromisoformat(snapshot["regular_close"])
+        if provider == "taifex":
+            close = max(close, time(17))
+        await enqueue(
+            db,
+            provider=provider,
+            stable_key=f"historical:{item.item_id}",
+            kind="historical",
+            dataset_key=dataset_key,
+            trade_date=item.trade_date,
+            scope={"item_id": str(item.item_id), "request_id": str(row.request_id)},
+            not_before=datetime.combine(item.trade_date, close, ZoneInfo(snapshot["timezone"])),
+        )
     return row, False
 
 
@@ -342,9 +369,53 @@ async def preview_request(
     return market, scope_reason, days
 
 
+async def _cancel_queued_item_work(
+    db: AsyncSession, item: HistoricalBackfillItem, *, provider: str, now: datetime
+) -> None:
+    """Project a terminal domain decision without abandoning retained deliveries.
+
+    Callers hold the provider transaction lock before locking request/item rows.
+    """
+    from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkReceipt
+    from app.services.provider_work import environment
+
+    work = await db.scalar(
+        select(ProviderWork).where(
+            ProviderWork.environment == environment(),
+            ProviderWork.provider == provider,
+            ProviderWork.stable_key == f"historical:{item.item_id}",
+        )
+    )
+    if work is None or work.state != "queued":
+        return
+    retained = bool(work.prepared_deliveries) or bool(
+        await db.scalar(
+            select(ProviderWorkReceipt.run_id)
+            .where(ProviderWorkReceipt.work_id == work.work_id)
+            .limit(1)
+        )
+    )
+    if not retained:
+        work.state, work.completed_at = "cancelled", now
+    for attempt in await db.scalars(
+        select(ProviderWorkAttempt).where(
+            ProviderWorkAttempt.work_id == work.work_id, ProviderWorkAttempt.state == "queued"
+        )
+    ):
+        if retained:
+            attempt.drain_only = True
+        else:
+            attempt.state, attempt.outcome, attempt.settled_at = "settled", "cancelled", now
+
+
 async def cancel_request(
     db: AsyncSession, request_id: UUID, *, actor: str
 ) -> HistoricalBackfillRequest:
+    from app.services.provider_work import lock_provider
+
+    initial = await db.get(HistoricalBackfillRequest, request_id)
+    if initial is not None:
+        await lock_provider(db, initial.provider)
     row = (
         await db.execute(
             select(HistoricalBackfillRequest)
@@ -360,6 +431,7 @@ async def cancel_request(
     now = utc_now()
     row.status, row.cancelled_by, row.cancelled_at = "cancelled", actor, now
     for item in row.items:
+        await _cancel_queued_item_work(db, item, provider=row.provider, now=now)
         if item.status in {"pending", "running"}:
             item.status, item.completed_at = "cancelled", now
             item.lease_token, item.lease_expires_at = None, None
@@ -367,32 +439,9 @@ async def cancel_request(
     return row
 
 
-async def claim_next_item(
-    db: AsyncSession,
-    *,
-    provider: str,
-    allowed_datasets: list[str] | None,
-    now: datetime | None = None,
-) -> HistoricalBackfillItem | None:
-    """Lease one date only when its request has no earlier unfinished item."""
-    now = now or utc_now()
-    if provider == "taifex":
-        if not await _taifex_maintenance_window(db):
-            return None
-        in_flight = list(
-            await db.scalars(
-                select(IngestionRun).where(
-                    IngestionRun.source == "taifex",
-                    IngestionRun.dataset_key == "tw_futures_eod",
-                    IngestionRun.status.in_(("queued", "pending", "processing", "retrying")),
-                )
-            )
-        )
-    else:
-        in_flight = []
-    expiry_date = _provider_current_date(provider, now) - timedelta(
-        days=_max_backfill_days() - (1 if provider == "taifex" else 0)
-    )
+async def expire_requests(db: AsyncSession, *, provider: str, now: datetime) -> None:
+    """Apply the original window under the provider lock, preserving retained drains."""
+    expiry_date = expiry_cutoff(provider, now)
     expired = (
         (
             await db.execute(
@@ -438,6 +487,114 @@ async def claim_next_item(
             if sibling.status in {"pending", "running"}:
                 sibling.status, sibling.completed_at = "cancelled", now
                 sibling.lease_token, sibling.lease_expires_at = None, None
+            await _cancel_queued_item_work(db, sibling, provider=provider, now=now)
+
+
+async def reconcile_cancelled_queue(
+    db: AsyncSession, *, provider: str, now: datetime | None = None
+) -> None:
+    """Defend FIFO eligibility against expiry or a terminal domain transition."""
+    await expire_requests(db, provider=provider, now=now or utc_now())
+    for item in await db.scalars(
+        select(HistoricalBackfillItem)
+        .join(HistoricalBackfillRequest)
+        .where(
+            HistoricalBackfillRequest.provider == provider,
+            HistoricalBackfillRequest.status.in_(("cancelled", "failed")),
+            HistoricalBackfillItem.status == "cancelled",
+        )
+    ):
+        await _cancel_queued_item_work(db, item, provider=provider, now=utc_now())
+
+
+async def claim_next_item(
+    db: AsyncSession,
+    *,
+    provider: str,
+    allowed_datasets: list[str] | None,
+    now: datetime | None = None,
+) -> HistoricalBackfillItem | None:
+    """Lease one date only when its request has no earlier unfinished item."""
+    now = now or utc_now()
+    from app.config import get_settings
+
+    if get_settings().PROVIDER_WORK_REQUIRED:
+        from app.services.provider_work import ProviderWorkError, fence, lock_provider
+
+        await lock_provider(db, provider)
+        await expire_requests(db, provider=provider, now=now)
+
+        identity = db.info.get("provider_work")
+        if identity is None:
+            raise HistoricalBackfillConflictError("provider work protocol is required")
+        try:
+            work, _, owner = await fence(
+                db,
+                provider=provider,
+                work_id=identity["work_id"],
+                generation=identity["generation"],
+                token=identity["token"],
+                # A recovered closed round may only replay its prepared
+                # receipts and prove completion; per-operation authorization
+                # still rejects every new acquisition in that state.
+                acquisition=False,
+            )
+        except ProviderWorkError as exc:
+            raise HistoricalBackfillConflictError(str(exc)) from exc
+        if work.kind != "historical" or work.dataset_key not in (allowed_datasets or []):
+            raise HistoricalBackfillConflictError("provider work historical scope differs")
+        item_id = UUID(work.scope.get("item_id", work.scope.get("legacy_id")))
+        item = await db.scalar(
+            select(HistoricalBackfillItem)
+            .options(selectinload(HistoricalBackfillItem.request))
+            .where(HistoricalBackfillItem.item_id == item_id)
+        )
+        from app.models.provider_work import ProviderWorkReceipt
+
+        retained = bool(work.prepared_deliveries) or bool(
+            await db.scalar(
+                select(ProviderWorkReceipt.run_id)
+                .where(ProviderWorkReceipt.work_id == work.work_id)
+                .limit(1)
+            )
+        )
+        cancelled_prepared = bool(
+            item and item.request.status in {"cancelled", "failed"} and retained
+        )
+        if (
+            item is None
+            or (not cancelled_prepared and item.request.status not in {"queued", "running"})
+            or not _session_closed(item, now)
+        ):
+            return None
+        if cancelled_prepared:
+            item.lease_token, item.lease_expires_at = owner.token, owner.expires_at
+            await db.flush()
+            return item
+        item.status, item.started_at = "running", item.started_at or now
+        item.lease_token, item.lease_expires_at = owner.token, owner.expires_at
+        item.lease_attempt += 1
+        item.request.status, item.request.started_at = "running", item.request.started_at or now
+        await db.flush()
+        return item
+    from app.services.provider_work import lock_provider
+
+    await lock_provider(db, provider)
+    if provider == "taifex":
+        if not await _taifex_maintenance_window(db):
+            return None
+        in_flight = list(
+            await db.scalars(
+                select(IngestionRun).where(
+                    IngestionRun.source == "taifex",
+                    IngestionRun.dataset_key == "tw_futures_eod",
+                    IngestionRun.status.in_(("queued", "pending", "processing", "retrying")),
+                )
+            )
+        )
+    else:
+        in_flight = []
+    await expire_requests(db, provider=provider, now=now)
     # A worker crash or a failed completion call must not leave the serial
     # request permanently blocked. Tokens make any expired worker's late
     # completion harmless after this safe reclaim.
@@ -538,13 +695,44 @@ async def authorize_item(
         and item.lease_token == lease_token
         and item.lease_expires_at is not None
         and item.lease_expires_at > checked_at
+        and item.trade_date >= expiry_cutoff(provider, checked_at)
         and _session_closed(item, checked_at)
         and (provider != "taifex" or await _taifex_maintenance_window(db))
     )
+    from app.config import get_settings
+
+    projected_expiry = item.lease_expires_at
+    if get_settings().PROVIDER_WORK_REQUIRED:
+        from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
+        from app.services.provider_work import environment
+
+        owner = await db.get(ProviderWorkOwner, (environment(), provider), populate_existing=True)
+        attempt = (
+            await db.get(ProviderWorkAttempt, owner.attempt_id)
+            if owner and owner.attempt_id
+            else None
+        )
+        work = await db.get(ProviderWork, attempt.work_id) if attempt else None
+        allowed = bool(
+            work
+            and work.stable_key == f"historical:{item_id}"
+            and owner
+            and owner.token == lease_token
+            and owner.expires_at
+            and owner.expires_at > checked_at
+            and attempt
+            and attempt.state == "open"
+            and request.status in {"queued", "running"}
+            and item.status == "running"
+            and item.trade_date >= expiry_cutoff(provider, checked_at)
+            and _session_closed(item, checked_at)
+        )
+        if allowed and owner:
+            projected_expiry = owner.expires_at
     return (
         allowed,
         checked_at,
-        item.lease_expires_at if allowed else None,
+        projected_expiry if allowed else None,
         request.request_id,
         request.dataset_key,
     )
@@ -562,6 +750,10 @@ async def complete_item(
     failure_message: str | None,
     result_evidence: dict | None = None,
 ) -> HistoricalBackfillItem:
+    from app.config import get_settings
+    from app.services import provider_work as queue
+
+    await queue.lock_provider(db, provider)
     item = (
         await db.execute(
             select(HistoricalBackfillItem)
@@ -581,6 +773,66 @@ async def complete_item(
     if item is None:
         raise HistoricalBackfillError("backfill item not found")
     now = utc_now()
+
+    if get_settings().PROVIDER_WORK_REQUIRED:
+        from app.models.provider_work import ProviderWorkOwner
+        from app.services.provider_work import environment, fence
+
+        owner = await db.get(ProviderWorkOwner, (environment(), provider))
+        identity = db.info.get("provider_work")
+        if identity is None or owner is None:
+            raise HistoricalBackfillConflictError("provider work protocol is required")
+        owned_work, _, _ = await fence(
+            db,
+            provider=provider,
+            work_id=identity["work_id"],
+            generation=identity["generation"],
+            token=lease_token,
+        )
+        if owned_work.kind != "historical" or owned_work.stable_key != f"historical:{item.item_id}":
+            raise HistoricalBackfillConflictError("historical completion owner scope differs")
+        # An active owner can cross the date boundary before another claim.
+        # Apply the domain decision only on this authenticated write path;
+        # authorization itself remains a pure observation.
+        await expire_requests(db, provider=provider, now=now)
+        item.lease_expires_at = owner.expires_at
+        if item.request.status == "cancelled" or (
+            item.request.status == "failed" and item.status in {"cancelled", "failed"}
+        ):
+            # Cancellation preserves its terminal decision, while the same
+            # fenced owner drains prepared/accepted deliveries. It cannot
+            # turn missing members into completed or no-data evidence.
+            fence_identity = {
+                "provider": provider,
+                "work_id": owned_work.work_id,
+                "generation": identity["generation"],
+                "token": lease_token,
+            }
+            await queue.close(db, **fence_identity)
+            await queue.settle(
+                db,
+                **fence_identity,
+                outcome="failed"
+                if outcome == "failed" and failure_code == "PREPARED_DELIVERY_MANUAL_REVIEW"
+                else "cancelled",
+                failure_code=failure_code
+                if failure_code == "PREPARED_DELIVERY_MANUAL_REVIEW"
+                else None,
+                proof={
+                    "historical_item_id": str(item_id),
+                    "cancelled_prepared_drain": True,
+                    **(
+                        {
+                            "manual_pending_prepared": list(owned_work.prepared_deliveries),
+                            "manual_reason": "permanent_prepared_delivery_rejection",
+                            "source_rejection": failure_message,
+                        }
+                        if failure_code == "PREPARED_DELIVERY_MANUAL_REVIEW"
+                        else {}
+                    ),
+                },
+            )
+            return item
     if (
         item.request.status == "cancelled"
         or item.status != "running"
@@ -601,6 +853,44 @@ async def complete_item(
             raise HistoricalBackfillValidationError(
                 "Source run does not match completed backfill item"
             )
+    if get_settings().PROVIDER_WORK_REQUIRED:
+        identity = db.info["provider_work"]
+        fence_identity = {
+            "provider": provider,
+            "work_id": identity["work_id"],
+            "generation": identity["generation"],
+            "token": lease_token,
+        }
+        await queue.close(db, **fence_identity)
+        db.info["historical_completion_validated"] = identity["work_id"]
+        no_data = (
+            [
+                f"{row.product_code}|{row.contract_code}|{row.session}"
+                for row in HistoricalResultEvidence.model_validate(result_evidence).rows
+                if row.no_trade
+            ]
+            if provider == "taifex" and result_evidence
+            else []
+        )
+        await queue.settle(
+            db,
+            **fence_identity,
+            outcome=outcome,
+            proof={
+                "historical_item_id": str(item_id),
+                "no_data": no_data,
+                **(
+                    {
+                        "manual_pending_prepared": list(owned_work.prepared_deliveries),
+                        "manual_reason": "permanent_prepared_delivery_rejection",
+                        "source_rejection": failure_message,
+                    }
+                    if outcome == "failed" and failure_code == "PREPARED_DELIVERY_MANUAL_REVIEW"
+                    else {}
+                ),
+            },
+            failure_code=failure_code,
+        )
     item.status, item.completed_at, item.run_id = outcome, now, run_id
     item.lease_token, item.lease_expires_at = None, None
     item.failure_code = failure_code if outcome == "failed" else None
@@ -613,8 +903,10 @@ async def complete_item(
             failure_message,
         )
         for sibling in request.items:
-            if sibling.status == "pending":
+            if sibling.status in {"pending", "running"} and sibling.item_id != item.item_id:
                 sibling.status, sibling.completed_at = "cancelled", now
+                sibling.lease_token, sibling.lease_expires_at = None, None
+                await _cancel_queued_item_work(db, sibling, provider=provider, now=now)
     elif all(sibling.status in {"completed", "skipped_calendar"} for sibling in request.items):
         request.status, request.completed_at = "completed", now
     await db.flush()
@@ -658,8 +950,8 @@ async def _validate_taifex_completion(
     evidence: dict | None,
     now: datetime,
 ) -> None:
-    from app.models.canonical import FuturesContract, FuturesContractEOD, Instrument
     from app.models.raw import RawMarketPayload
+    from app.models.registry import DeliveryMemberEvidence
 
     try:
         proof = HistoricalResultEvidence.model_validate(evidence)
@@ -707,17 +999,13 @@ async def _validate_taifex_completion(
     ):
         raise HistoricalBackfillValidationError("Source raw manifest differs from completion proof")
     canonical = (
-        await db.execute(
-            select(Instrument.symbol, FuturesContract.contract_code, FuturesContractEOD.session)
-            .join(FuturesContract, FuturesContract.instrument_id == Instrument.instrument_id)
-            .join(FuturesContractEOD, FuturesContractEOD.contract_id == FuturesContract.contract_id)
-            .where(
-                FuturesContractEOD.run_id == run.run_id,
-                FuturesContractEOD.trade_date == item.trade_date,
+        await db.scalars(
+            select(DeliveryMemberEvidence.member_key).where(
+                DeliveryMemberEvidence.run_id == run.run_id
             )
         )
     ).all()
-    expected = {(row.product_code, row.contract_code, row.session) for row in data_rows}
+    expected = {f"{row.product_code}|{row.contract_code}|{row.session}" for row in data_rows}
     if set(canonical) != expected:
         raise HistoricalBackfillValidationError("TAIFEX canonical member proof is incomplete")
 
@@ -736,13 +1024,53 @@ async def validate_taifex_historical_delivery(db: AsyncSession, request) -> None
         )
     ).one_or_none()
     now = utc_now()
+    from app.config import get_settings
+
+    cancelled_prepared = False
+    if get_settings().PROVIDER_WORK_REQUIRED and item is not None:
+        from app.models.provider_work import ProviderWork, ProviderWorkOwner
+        from app.services.provider_work import environment, fence
+
+        owner = await db.get(ProviderWorkOwner, (environment(), "taifex"))
+        if owner is not None:
+            item.lease_expires_at = owner.expires_at
+        identity = db.info.get("provider_work")
+        if identity and (
+            item.request.status == "cancelled"
+            or item.request.status == "failed"
+            and item.status in {"cancelled", "failed"}
+        ):
+            work = await db.get(ProviderWork, identity["work_id"])
+            descriptor = (
+                (work.prepared_deliveries or {}).get(request.idempotency_key) if work else None
+            )
+            if (
+                work
+                and work.kind == "historical"
+                and work.stable_key == f"historical:{item.item_id}"
+                and descriptor
+                and descriptor["body_sha256"] == db.info.get("provider_work_body_sha256")
+            ):
+                await fence(
+                    db,
+                    provider="taifex",
+                    work_id=work.work_id,
+                    generation=identity["generation"],
+                    token=identity["token"],
+                )
+                cancelled_prepared = True
     if item is None or (
         item.request.provider != "taifex"
         or item.request.dataset_key != request.dataset_key
-        or item.request.status not in {"queued", "running"}
-        or item.status != "running"
-        or item.lease_expires_at is None
-        or item.lease_expires_at <= now
+        or (
+            not cancelled_prepared
+            and (
+                item.request.status not in {"queued", "running"}
+                or item.status != "running"
+                or item.lease_expires_at is None
+                or item.lease_expires_at <= now
+            )
+        )
         or request.source != "taifex"
         or request.schema_id != "futures_eod"
         or request.schema_version != 1

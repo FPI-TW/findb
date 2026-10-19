@@ -14,8 +14,10 @@ from uuid import UUID
 
 import httpx
 
+from findb_fetcher.client import SourceAPIResponseError, permanent_source_failure
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
+from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
 
 
 class HistoricalControlError(RuntimeError):
@@ -44,6 +46,10 @@ class HistoricalWorkDeferredError(RuntimeError):
     """Retain the lease/checkpoint for safe reclaim without failing its request."""
 
 
+class HistoricalPreparedManualError(RuntimeError):
+    """Permanent prepared delivery rejection; retain bytes and explicit manual proof."""
+
+
 @dataclass(frozen=True, slots=True)
 class HistoricalRunResult:
     run_id: UUID | None
@@ -55,7 +61,14 @@ class HistoricalProviderRunner(Protocol):
 
 
 class HistoricalControlClient:
-    def __init__(self, config: FetcherConfig, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        config: FetcherConfig,
+        *,
+        client: httpx.Client | None = None,
+        provider: str | None = None,
+    ) -> None:
+        self.provider = provider
         self._config, self._client = (
             config,
             client or httpx.Client(timeout=config.request_timeout_seconds),
@@ -139,6 +152,16 @@ class HistoricalControlClient:
 
     def fail(self, item: HistoricalWorkItem, code: str) -> None:
         # Never transmit provider diagnostics: the control plane needs only a safe code.
+        import json
+
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        error = (
+            owner.journal.latest_source_error()
+            if owner and code == "PREPARED_DELIVERY_MANUAL_REVIEW"
+            else None
+        )
         self._request(
             "POST",
             f"/api/v1/source/historical-backfills/{item.item_id}/complete",
@@ -146,20 +169,60 @@ class HistoricalControlClient:
                 "status": "failed",
                 "lease_token": str(item.lease_token),
                 "failure_code": code[:50],
-                "failure_message": "provider historical acquisition failed",
+                "failure_message": json.dumps(error, sort_keys=True)
+                if error
+                else "provider historical acquisition failed",
             },
         )
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
-        try:
-            response = self._client.request(
-                method,
-                f"{self._config.source_api_url}{path}",
-                json=body,
-                headers={"X-API-Key": self._config.source_client_key, "Accept": "application/json"},
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        headers = {"X-API-Key": self._config.source_client_key, "Accept": "application/json"}
+        if owner:
+            headers.update(
+                {
+                    "X-FinDB-Work-Id": owner.work["work_id"],
+                    "X-FinDB-Work-Generation": str(owner.work["generation"]),
+                    "X-FinDB-Work-Token": owner.work["token"],
+                }
             )
-        except httpx.HTTPError as exc:
-            raise HistoricalControlError("historical control transport failed") from exc
+        while True:
+            try:
+                response = self._client.request(
+                    method,
+                    f"{self._config.source_api_url}{path}",
+                    json=body,
+                    headers=headers,
+                )
+            except httpx.HTTPError as exc:
+                raise HistoricalControlError("historical control transport failed") from exc
+            if owner and response.status_code == 409:
+                try:
+                    error = response.json()
+                    if isinstance(error, dict) and error.get("detail") == {
+                        "code": "PROVIDER_WORK_PREPARED_DRAINING"
+                    }:
+                        owner.drain_prepared()
+                        continue
+                    draining = isinstance(error, dict) and error.get("detail") == {
+                        "code": "PROVIDER_WORK_DRAINING"
+                    }
+                except ValueError:
+                    draining = False
+                if draining:
+                    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+                    if owner.failed.is_set():
+                        raise ProviderWorkRecoveryBlockedError(
+                            "provider work heartbeat is unavailable"
+                        )
+                    import time
+
+                    time.sleep(2)
+                    continue
+            break
         if response.status_code >= 400:
             raise HistoricalControlError(
                 f"historical control rejected work ({response.status_code})",
@@ -174,15 +237,71 @@ class HistoricalControlClient:
             raise HistoricalControlError("historical control response was invalid") from exc
         if not isinstance(value, dict):
             raise HistoricalControlError("historical control response was invalid")
+        if owner and method == "POST" and path.endswith("/complete"):
+            # Source commits historical proof, settlement and item status in
+            # one transaction before acknowledging this completion.
+            owner.settled = True
         return value
 
 
 def run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner) -> bool:
+    from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work, enabled
+
+    if not enabled():
+        return _run_once(control, runner)
+    if not control.provider:
+        raise HistoricalControlError("historical provider identity is required")
+    try:
+        with (
+            FullMarketSourceClient(control._config) as source,
+            claimed_work(source, control.provider, accepted_kinds=["historical", "rerun"]) as owner,
+        ):
+            if owner is None:
+                return False
+            if owner.work["kind"] == "rerun":
+                owner.request("execute-rerun")
+                owner.settle("completed")
+                return True
+            worked = _run_once(control, runner)
+            if not worked:
+                owner.settle("cancelled", proof={"reason": "historical_request_stopped"})
+            return worked
+    except ProviderWorkWaitingError:
+        return False
+
+
+def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner) -> bool:
     """Run one serial date; a failed date ends its request server-side."""
     item = control.claim()
     if item is None:
         return False
     try:
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if owner and owner.work.get("scope_stopped"):
+            receipts = owner.drain_prepared()
+            if receipts:
+                control.complete(item, receipts[-1].run_id)
+            else:
+                owner.settle("cancelled", proof={"reason": "historical_request_stopped"})
+            return True
+        if owner and owner.work.get("drain_only") and owner.work["state"] == "open":
+            owner.drain_prepared()
+            owner.settle("retry", failure_code="PROVIDER_ACCOUNT_COOLDOWN", delay=60)
+            return True
+        if owner and owner.work["state"] in {"closed", "draining"}:
+            receipts = owner.drain_prepared()
+            if item.provider != "taifex" or not owner.work.get("manifest"):
+                if receipts:
+                    try:
+                        control.complete(item, receipts[-1].run_id)
+                        return True
+                    except HistoricalControlError as exc:
+                        if exc.status_code not in {409, 422}:
+                            raise
+                owner.settle("retry", failure_code="RECOVERED_CLOSED_ROUND", delay=60)
+                return True
         from findb_fetcher.acquisition import authorization_scope
 
         with authorization_scope(
@@ -194,8 +313,48 @@ def run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner)
             isinstance(run_id, HistoricalRunResult) and item.provider != "taifex"
         ):
             raise HistoricalControlError("historical runner did not return a Source run")
-    except HistoricalWorkDeferredError:
+    except ProviderWorkAcquisitionStopped:
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if owner:
+            try:
+                control.fail(item, "ACQUISITION_SUSPENDED")
+            except SourceAPIResponseError as exc:
+                if permanent_source_failure(exc):
+                    control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
+                    return True
+                if exc.status_code != 429 and exc.status_code < 500:
+                    raise
+                owner.settle("retry", failure_code="ACQUISITION_SUSPENDED", delay=60)
+        else:
+            control.fail(item, "ACQUISITION_SUSPENDED")
         return True
+    except HistoricalWorkDeferredError:
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if owner:
+            owner.settle("retry", failure_code="DEFERRED", delay=60)
+        return True
+    except HistoricalPreparedManualError:
+        control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
+        return True
+    except SourceAPIResponseError as exc:
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        if permanent_source_failure(exc):
+            control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
+            return True
+        if owner and (exc.status_code == 429 or exc.status_code >= 500):
+            owner.settle(
+                "retry",
+                failure_code="SOURCE_TEMPORARILY_UNAVAILABLE",
+                delay=max(60, int(exc.retry_after)),
+            )
+            return True
+        raise
     except Exception:  # Provider diagnostics must not escape into FinDB.
         control.fail(item, "PROVIDER_ACQUISITION_FAILED")
         return True

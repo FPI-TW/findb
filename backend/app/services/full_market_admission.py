@@ -89,6 +89,11 @@ async def lock_environment(db: AsyncSession) -> FullMarketEnvironment:
 
 
 async def reconcile_environment(db: AsyncSession, *, actor: str) -> None:
+    if get_settings().PROVIDER_WORK_REQUIRED:
+        from app.services.provider_work import lock_provider
+
+        for provider in ("finlab", "shioaji", "taifex", "twelve_data"):
+            await lock_provider(db, provider)
     row = await lock_environment(db)
     enabled = get_settings().FULL_MARKET_ENABLED
     row.enabled = enabled

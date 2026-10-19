@@ -356,3 +356,67 @@ Host preflight 依已驗證 immutable installed source 的 historical-taifex-v1 
 舊版 11 consumers 可進行升級；新版必須具備 12 consumers，缺少新 worker 即拒絕。
 Native 驗收應先以 staging 短區間及 production 一年邊界樣本驗證 raw、run／outbox、DQ、
 canonical／Serve，再於維護窗口啟用正式回補；本機自動測試不代表雲端 native 驗收已完成。
+
+## Provider work 切換
+
+本分支尚未部署的 Fetcher 包含 Shioaji checkpoint schema v10：已知 v9 以單一 SQLite transaction
+放寬 audit numbering，保留全部原 rows、IDs、prepared bytes、receipts 與 credential pins；只有明確
+predispatch `QUOTA_WAIT` 才排除 failure budget／rolling allowance，舊 unknown／failed rows 不重新分類。
+Hard crash 在 commit 前會回復完整 v9；commit 後由 v10 reopen。升級前依下列 drain／備份程序保存
+一致的 checkpoint 與 sidecars。舊 binary 會拒讀 v10；rollback 必須先停止並確認所有新 work 安全排空，
+使用與舊 binary 相容且已核對原交付狀態的成套備份復原，不能改版號、刪 state 或遺失新 receipts。
+若備份後已有交付，先 reconcile 全部新 immutable bytes／receipts 才能 rollback；account governor
+usage／cooldown 不得退回較舊用量。此相容性說明不代表 staging 已升級或 queue 已啟用。
+
+本分支新增 `b53da90e7f21` 與 `c64eb01f8a32` expand-only migrations（後者保存 provider account cooldown floor） 與 provider-work-v1 protocol；**尚未部署或啟用任何遠端環境**。
+`infra/env/deployment.schema.json`、兩環境 deployment examples、Compose 與 Fetcher `.env.example`
+均明示 `PROVIDER_WORK_REQUIRED=false`。Backend 與全部 Fetcher consumers 必須一起切換；
+`FULL_MARKET_ENABLED` 是另一個獨立旗標，不能替代 queue cutover。完整邊界見
+[provider work 架構](../architecture/provider_work.md)。
+
+切換順序為可重複的安全契約：
+
+1. 在舊 protocol 下停止新 acquisition，先送完所有已保存但尚未 accepted 的 prepared bytes，
+   再讓所有已接受的 normalization terminal；舊 historical
+   running item 必須完成或由 operator 取消。保存各 profile／historical SQLite checkpoint、raw bytes、
+   prepared bodies、receipts、controls 與 DB scope，不刪除或重新初始化。未送出的舊 prepared 不得只因
+   consumer 已退出就視為完成 drain；須以原 checkpoint 的實際 receipts／terminal 狀態對照。無法釐清舊外部 child 時停止切換。
+2. 執行 expand migration。非 terminal historical／daily work 依 creation order 與日期匯入；原 lease token、
+   request／plan／parts／member／calendar／raw 都不改寫。可明確對應 daily part／TAIFEX work 的既有 receipts
+   綁定原 stable work；舊 Twelve Data／FinLab historical 缺少可驗證 linkage，不能猜測收據歸屬，須在舊 consumer
+   下完成或取消。Legacy active owner 會留下 recovery blocker，TTL 不會解除。
+3. 保持所有 consumer 停止，準備含 `com.findb.provider-work.protocol=v1` label 的新 images／containers，
+   設定 `APP_ENVIRONMENT` 與 `PROVIDER_WORK_REQUIRED=true`，但尚不啟動 provider I/O。
+   所有 profile／historical containers 必須 bind 同一 host 的 `/var/lib/findb-account/{environment}`。
+   對每個 provider 執行新 CLI 的 `--initialize-state`，只建立／驗證原 profile state 與 shared lock inode；
+   不得重建遺失的既有 checkpoint。保留單環境唯一 Fetcher host 的 trusted deployment inventory。
+4. 保存完整 consumer `docker inspect` JSON（不可將含 secrets 的原始內容貼進 audit／chat），以及只包含
+   該環境 Fetcher host IDs 的可信 inventory JSON。以 host local 的 `infra/deploy/provider_work_preflight.py`
+   驗證單 host、全部 12 個 consumers、protocol flag／image label、graceful stopped state、同一 writable
+   bind mount，並實際嘗試取得四個 provider flock。任一 orphan／未知 consumer／不同 inode 都拒絕。
+
+   ```bash
+   python3 infra/deploy/provider_work_preflight.py --environment staging \
+     --host-id HOST_ID --host-inventory /run/findb/host-ids.json \
+     --docker-inspect /run/findb/consumers.json > /run/findb/provider-work-proof.json
+   ```
+
+5. Owner 在五分鐘內將上述無 secrets proof 原樣 POST 至 Admin `/api/v1/admin/provider-work/cutover`。
+   Backend 在固定 provider lock order 下再次驗證 environment、freshness、所有舊 runs terminal、
+   沒有 running historical item／active queue owner；成功後保存具名 Admin audit、inventory SHA256 與
+   shared inode identities，才解除 legacy blocker。不是手動確認「已停止」就可跳過檢查。
+6. Backend 與全部新 consumer 的部署 runtime configuration 同步設定 `PROVIDER_WORK_REQUIRED=true`，
+   啟動新 consumers。Source 未啟用前拒絕 queue claim；啟用後拒絕沒有 fence headers 的 legacy acceptance
+   與 historical lease claim。從同一共享 inode 取得 lock 後，先恢復原 owner，再選下一 runnable FIFO。
+   保留各 profile desired state、first dates 與 frozen plan。切換後 historical 不要求停止 Pilot／Full controls。
+7. 驗證同 provider daily → historical → daily 的完整 canonical proof、不同 provider 並行、heartbeat-loss
+   恢復原 owner、cancel／prepared drain，以及 Dashboard queue projection，才宣告該環境完成 cutover。
+
+Rollback 也必須先停止 acquisition、證明 child reaped 並 drain accepted runs。不能在新 owner／prepared work
+尚未排空時啟動舊 image，不能因 TTL 到期直接清 slot；expand tables／evidence 不 downgrade。
+
+Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_cooldown` 保存 floor reason。
+原 full_pacing／quota／intents／audits 不刪、不重設；舊資料只有 deadline 時保守作 legacy cooldown，
+可能多一個安全 tail wait。明確正常 request pacing 維持原間距，不拆 SDK bootstrap。Upgrade/reopen
+只延長 debt；rollback 仍須依上述完整停止／排空／成套checkpoint備份程序，不可倒退 usage／cooldown
+或混用未通過此 dispatch gate 的 consumer。這不代表任何環境已部署或啟用。

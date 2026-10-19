@@ -74,6 +74,31 @@ test.beforeEach(async ({ request }) => {
   await request.post(`${backend}/fixture/reset`, { data: {} })
 })
 
+test("authenticated provider queue shows active daily work and historical FIFO wait", async ({
+  page,
+  request,
+}) => {
+  await login(page)
+  const queue = page.getByRole("region", { name: "供應商工作佇列" })
+  await expect(
+    queue.getByRole("cell", { name: "執行中 · running" })
+  ).toBeVisible()
+  await expect(queue.getByText("第 1 位", { exact: true })).toBeVisible()
+  await expect(queue.getByText("等待市場收盤或重試時間")).toBeVisible()
+  await expect(queue.getByText("等待同供應商目前工作完成")).toBeVisible()
+  await expect(queue.getByText("僅排空原交付")).toBeVisible()
+  await expect(queue.getByText("2099-10-19T01:00:00Z")).toBeVisible()
+  await expect(queue.getByText("第 2 輪", { exact: false })).toBeVisible()
+  await expect(
+    queue.getByText("2026-10-07T01:00:00Z", { exact: true })
+  ).toHaveCount(3)
+  await expect(queue.getByRole("alert")).toHaveCount(0)
+  const snapshot = await request.get(`${backend}/fixture/state`)
+  expect(
+    (await snapshot.json()).reads["/api/v1/admin/provider-work"]
+  ).toBeGreaterThan(0)
+})
+
 test("tabs, filters, pagination, browser history and backfill draft remain independent", async ({
   page,
   request,

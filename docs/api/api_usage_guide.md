@@ -84,6 +84,10 @@ GET  /api/v1/source/datasets
 - Attempt記錄通過auth／rate-limit gate的呼叫，包括contract rejection。
 - Run代表已durable accept並排入normalization的工作。
 - Rerun從仍保存的raw建立新run，不修改原run，也不算新的delivery arrival。
+- 已認證 Admin 可使用 `POST /api/v1/admin/runs/{run_id}/rerun` 或既有
+  `POST /api/v1/admin/runs/bulk-rerun`，每個新 run 保留原 raw 與 lineage，並原子記錄具名 audit。
+  啟用 provider work 時先排入同 provider FIFO，取得自己的 fence 後才建立 normalization job；
+  不會重設既有 failed run 或改寫舊 receipt。
 - 冪等範圍是已認證`source_client_id + dataset_key + idempotency_key`。
 - 同一範圍內的canonical payload、source及schema/version皆相同時回既有run；任一項不同
   時回`409 IDEMPOTENCY_PAYLOAD_MISMATCH`。

@@ -7,12 +7,16 @@ import importlib.metadata
 import json
 import multiprocessing
 import os
+import signal
 import subprocess
 import sys
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+from findb_fetcher.full_market_state import QuotaBlockedError
+from findb_fetcher.provider_work import durable_response
 from findb_fetcher.providers.shioaji import (
     MAX_ISOLATED_IPC_BYTES,
     ShioajiKbarsSnapshot,
@@ -224,7 +228,7 @@ def _child(conn: Any, api_key: str, secret_key: str, simulation: bool) -> None:
                 if acknowledgement != {"stage": "ack"}:
                     cleanup_session(session, metadata, inherited_fd=boundary.fd)
                     break
-            except Exception:
+            except Exception as exc:
                 boundary.finish(session.api if session.authenticated else None, outcome="error")
                 cleanup_session(session, metadata, inherited_fd=boundary.fd)
                 try:
@@ -234,6 +238,9 @@ def _child(conn: Any, api_key: str, secret_key: str, simulation: bool) -> None:
                                 "stage": "result",
                                 "actual_start": boundary.started_at,
                                 "error": "provider_boundary",
+                                "quota_wait": isinstance(exc, QuotaBlockedError)
+                                and exc.quota_wait
+                                and boundary.started_at is None,
                             }
                         ).encode()
                     )
@@ -258,18 +265,25 @@ def _child(conn: Any, api_key: str, secret_key: str, simulation: bool) -> None:
 def _provider_environment() -> dict[str, str]:
     # Explicit launch environment: no inherited Source/cloud/other-provider secrets.
     names = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
-    return {name: os.environ[name] for name in names if name in os.environ}
+    values = {name: os.environ[name] for name in names if name in os.environ}
+    values["PROVIDER_WORK_REQUIRED"] = os.getenv("PROVIDER_WORK_REQUIRED", "false")
+    return values
 
 
 class _ProviderProcess:
     def __init__(self, fd: int) -> None:
+        from findb_fetcher.provider_work import inherited_fds, require_acquisition
+
+        require_acquisition("shioaji")
+
         self.child = subprocess.Popen(
             [sys.executable, "-m", "findb_fetcher.providers.shioaji_session", str(fd)],
-            pass_fds=(fd,),
+            pass_fds=(fd, *inherited_fds()),
             env=_provider_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
         self.pid = self.child.pid
 
@@ -287,6 +301,25 @@ class _ProviderProcess:
 
     def kill(self) -> None:
         self.child.kill()
+
+    def reap_descendants(self) -> None:
+        from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+        for action in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(self.pid, action)
+            except ProcessLookupError:
+                pass
+            self.join(2)
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                os.killpg(self.pid, 0)
+            except ProcessLookupError:
+                return
+            if time.monotonic() >= deadline:
+                raise ProviderWorkRecoveryBlockedError("provider descendant process group remains")
+            time.sleep(0.02)
 
 
 def _entry() -> None:
@@ -348,6 +381,7 @@ class PersistentIsolatedShioajiGateway:
             self.close()
             raise ShioajiSdkError("isolated shioaji provider failed", code="ACQUISITION") from None
 
+    @durable_response("shioaji_catalogue", ())
     def catalogue(self) -> list[dict[str, str]]:
         self._bootstrap()
         value = json.loads(self._request({"op": "catalogue"}, _MAX_CATALOGUE_BYTES))
@@ -372,30 +406,46 @@ class PersistentIsolatedShioajiGateway:
         from findb_fetcher.acquisition import Acquisition
         from findb_fetcher.providers.shioaji_control import parent_fetch
 
-        with Acquisition(
-            "shioaji",
-            credential=self._credential,
-            kind=kind,
-            state_path=self._path,
-            account=self._account,
-            strict=True,
-        ) as operation:
-            self._path, self._account = operation.state.path, operation.account
-            try:
-                value = parent_fetch(
-                    self.parent,
-                    self.process,
-                    {"op": kind, **command},
-                    operation,
-                    timeout=self.timeout_seconds,
-                    max_bytes=MAX_ISOLATED_IPC_BYTES,
-                )
-            except Exception:
-                self._stop()
-                operation.quarantined = self.process.is_alive()
-                raise ShioajiSdkError(
-                    "isolated shioaji acquisition failed", code="ACQUISITION"
-                ) from None
+        try:
+            with Acquisition(
+                "shioaji",
+                credential=self._credential,
+                kind=kind,
+                state_path=self._path,
+                account=self._account,
+                strict=True,
+            ) as operation:
+                self._path, self._account = operation.state.path, operation.account
+                try:
+                    value = parent_fetch(
+                        self.parent,
+                        self.process,
+                        {"op": kind, **command},
+                        operation,
+                        timeout=self.timeout_seconds,
+                        max_bytes=MAX_ISOLATED_IPC_BYTES,
+                    )
+                except QuotaBlockedError:
+                    self._stop()
+                    operation.quarantined = self.process.is_alive()
+                    raise
+                except Exception:
+                    self._stop()
+                    operation.quarantined = self.process.is_alive()
+                    raise ShioajiSdkError(
+                        "isolated shioaji acquisition failed", code="ACQUISITION"
+                    ) from None
+        except QuotaBlockedError as exc:
+            from findb_fetcher.provider_work import active, enabled
+
+            # Public/legacy SDK callers receive the established safe SDK error.
+            # Only a queue consumer can use proven predispatch quota to defer
+            # without spending its frozen operation failure budget.
+            if enabled() and active() is not None and exc.quota_wait and not exc.dispatched:
+                raise
+            raise ShioajiSdkError(
+                "isolated shioaji acquisition failed", code="ACQUISITION"
+            ) from None
         return value, operation.requests_before, operation.requests_after
 
     def _bootstrap(self) -> None:
@@ -410,6 +460,7 @@ class PersistentIsolatedShioajiGateway:
                 self._run("sdk_contracts", exchange=exchange)
             self._contracts_loaded = True
 
+    @durable_response("shioaji_kbars", ("symbol", "target_date"))
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
         _validate_symbol(symbol)
         self._bootstrap()
@@ -435,7 +486,13 @@ class PersistentIsolatedShioajiGateway:
         if self.process.is_alive():
             self.process.kill()
             self.process.join(2)
+        if isinstance(self.process, _ProviderProcess):
+            self.process.reap_descendants()
         self.parent.close()
+        if self.process.is_alive():
+            from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+            raise ProviderWorkRecoveryBlockedError("provider child has not been reaped")
 
     def close(self) -> None:
         if self.is_alive() and self._logged_in:

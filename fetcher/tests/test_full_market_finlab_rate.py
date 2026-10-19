@@ -212,7 +212,7 @@ def test_finlab_field_calls_paced_cached_and_prepared_identity_survives_restart(
     runtime.state = FullMarketState(runtime.state.path)
     clock.elapsed += 61
     runtime.delivery.get_run_status = lambda *args, **kwargs: SimpleNamespace(
-        status="completed", failed_records=0
+        status="completed", failed_records=0, total_records=1, success_records=1
     )
     assert runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
     assert len(context.gateway.calls) == 5

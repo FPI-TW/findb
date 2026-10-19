@@ -128,7 +128,7 @@ def test_prepared_transport_failure_recovers_while_controls_stopped(tmp_path, mo
     with runtime.state.connection() as db:
         db.execute("UPDATE full_work SET next_at=0 WHERE key=?", (key,))
     runtime.delivery.get_run_status = lambda *a, **kw: SimpleNamespace(
-        status="completed", failed_records=0
+        status="completed", failed_records=0, total_records=1, success_records=1
     )
     runtime.drain()
     runtime.cycle(drain_prepared=False)

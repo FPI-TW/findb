@@ -5,6 +5,7 @@ import type { AdminRole } from "../../lib/admin-governance-api"
 import { DeliveryPlansPanel } from "./DeliveryPlansPanel"
 import { DeliveryAlertsPanel } from "./DeliveryAlertsPanel"
 import { HistoricalBackfillsPanel } from "./HistoricalBackfillsPanel"
+import { ProviderWorkPanel } from "./ProviderWorkPanel"
 import { PageIntro } from "./operations.shared"
 import {
   deliveriesSearchSchema,
@@ -44,6 +45,7 @@ export function DeliveriesPage({
         title="交付監控"
         description="分別檢查 Pilot 與 Full market 的交付完整性、缺漏告警與歷史回補。"
       />
+      <ProviderWorkPanel />
       <OperationsTabs
         label="執行模式"
         tabs={
