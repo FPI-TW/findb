@@ -12,6 +12,11 @@ Pre-commit 執行 check，pre-push 依序執行 check 與 test；不得使用 `-
 `pnpm test:infra` 使用 Backend pytest 環境，固定 `-n 2 --dist worksteal`，不需要 PostgreSQL。
 直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
 因此測試中的 nested pytest subprocess 不會意外再建立 workers。
+macOS 本機完整兩 worker 套件曾在
+`test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_after_window_change[native_runtime4]`
+觀察到 TAIFEX 工作仍為 queued 的間歇失敗；同一檔案單獨以序列與兩 workers 執行均通過，
+根因仍待追查。須保留並回報完整平行 run 的失敗，另用 `test-db --workers 0` 驗證完整序列
+套件；不能把單獨重跑成功描述成原完整 run 通過，也不能調寬產品授權期限來掩蓋此限制。
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
 
@@ -56,11 +61,31 @@ Dashboard unit 192、browser 10、E2E 15。追加 TanStack XSS 修補後，已�
 
 ## CI 與測試隔離
 
+CI 長時間沒有進度時，先查 workflow run 與各 job 的 `status`、`runner_id` 和 `steps`，
+並核對 [GitHub Status](https://www.githubstatus.com/) 的 Actions 事故時間。若 jobs 都是
+`queued`、尚無 runner 與 steps，應先追查平台排程／狀態回報、concurrency 與 runner 可用性，
+不能直接判定為 pytest、DB lock 或 build 卡住；`started_at` 單一欄位不足以證明已執行測試。
+平台事故期間先保留原 run，恢復後再確認是否繼續；若已失敗，再依實際失敗 jobs 重跑。
+
 FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type checks、published contracts
 與非 migration tests；`backend-migrations` 保留 Alembic smoke 與全部 migration tests；
 `infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service。Backend 與 Infra 固定兩個
 workers；migration job 維持序列執行。Full-market schema roundtrip 位於
 `backend/tests/test_full_market_migration.py`，只由 migration job 收集。
+
+Migration job 另以正式 `backend/Dockerfile` 建置 image，執行
+`infra/tests/test_backend_runtime_container.py`。測試從 deploy helper 擷取實際 migration container
+argv，在獨立 internal Docker network 與 PostgreSQL 16 上驗證空 DB、先前 accepted revision
+`a42c89d3e610` 升級、exact head、重跑與 sentinel 保留。Runtime image 不掛 repo、不含 Fetcher／
+pytest，不允許對外網路或寫入 root filesystem；fixture 只清理自己建立的 containers／network。
+一般 Infra suite 未指定 image 時略過這兩個案例；CI migration job 明確設定 image，不能略過。
+本機重現：
+
+```bash
+docker build -t findb-backend-runtime:local -f backend/Dockerfile backend
+FINDB_TEST_BACKEND_IMAGE=findb-backend-runtime:local uv --directory backend run pytest ../infra/tests/test_backend_runtime_container.py -v
+```
+
 針對特定 migration 的欄位差異或 downgrade guard 測試，必須明確指定該 revision，
 避免後續 additive 欄位或較新的 rollback 下限改變舊測試的範圍。升級至 `head` 的整合測試
 仍驗證完整 migration chain；TAIFEX evidence 測試另驗證舊 item 保留、新欄位預設 NULL，

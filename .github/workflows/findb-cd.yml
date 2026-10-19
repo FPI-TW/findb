@@ -281,7 +281,7 @@ jobs:
         [ -n "$key" ]; echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
   deploy:
     needs: prepare
-    if: ${{ needs.prepare.result == 'success' }}
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     permissions:
       contents: read
       id-token: write

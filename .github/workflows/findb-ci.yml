@@ -177,6 +177,14 @@ jobs:
           uv run alembic upgrade head
           uv run alembic current
 
+      - name: Build production Backend image
+        run: docker build -t findb-backend-runtime:ci .
+
+      - name: Run production container migration regression
+        env:
+          FINDB_TEST_BACKEND_IMAGE: findb-backend-runtime:ci
+        run: uv run pytest ../infra/tests/test_backend_runtime_container.py --tb=short -v
+
       - name: Run migration tests
         shell: bash
         run: |
