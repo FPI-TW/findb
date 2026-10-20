@@ -186,6 +186,27 @@ deadline 後不得 acceptance、取消／未確認終態、共同觀察窗口，
 
 ## 共用部署順序
 
+排查「合併後失敗」時，先分開核對 PR 的 merged state、Required CI 與 main push 的 CD。
+Fetcher CD 的 `Wait for same-revision FinDB staging rollout` 若回報
+`FinDB rollout concluded failure`，代表上游 FinDB CD 失敗，須先追查該版本的 FinDB deploy job。
+若 Actions 只有 `SSM terminal invocation failure` 與 `response_code`，以 log 中的 command ID、
+target instance 和 region 唯讀查詢 `ssm get-command-invocation` 的 stdout／stderr；
+必要時查對應 CloudWatch output。Exit code 本身不足以判定是 migration、configuration 或 health check。
+重試前須確認 command 已終止與主機恢復狀態；未取得遠端輸出時，不宣稱已回滾或服務健康。
+
+Backend image 以 `uv sync --frozen --no-dev --no-install-project` 安裝 runtime，只有 `/app`，
+不包含 Backend dev group 的 editable `../fetcher`。部署 migration 直接執行 PATH 中的
+`/app/.venv/bin/alembic`（`alembic upgrade head`、`alembic current`），不得裸用會重新處理
+開發依賴的 `uv run alembic ...`，避免在執行 Alembic 前因
+`Distribution not found at: file:///fetcher` 退出。驗證必須涵蓋實際 image 內的部署命令，
+repo checkout 的 migration tests 與 image build 成功不足以覆蓋這個邊界。
+此錯誤若發生在 `writers_stopped` 之後，candidate cleanup 會維持服務停止，不能視為已恢復舊版。
+
+Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使用
+`!cancelled() && needs.prepare.result == 'success'`，避免被略過的 publish ancestor 連帶略過，
+並保留取消整個 workflow 時不繼續部署的行為。
+恢復後須確認實際 deploy／activation job、服務與公開 endpoint，不能只看 workflow 的 success。
+
 1. 解析指定版本與 AWS 設定，驗證 schema、account、instance tags／instance profile、SSM Online、
    registry、release manifest 與 exact image digests。RDS 需 available、備份保留至少一天，且可還原時間不超過一小時。
 2. 以實際 image 執行 configuration、DB migration compatibility、credential reconciliation 的唯讀 preflight。

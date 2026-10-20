@@ -3863,6 +3863,17 @@ def test_findb_ci_separates_infra_and_migrations_without_losing_checks() -> None
     assert "unittest discover" not in infra_commands
 
     migration_steps = jobs["backend-migrations"]["steps"]
+    container = next(
+        step
+        for step in migration_steps
+        if step.get("name") == "Run production container migration regression"
+    )
+    assert container["env"]["FINDB_TEST_BACKEND_IMAGE"] == "findb-backend-runtime:ci"
+    assert "pytest ../infra/tests/test_backend_runtime_container.py" in container["run"]
+    image_build = next(
+        step for step in migration_steps if step.get("name") == "Build production Backend image"
+    )
+    assert image_build["run"] == "docker build -t findb-backend-runtime:ci ."
     smoke = next(step for step in migration_steps if step.get("name") == "Run migration smoke test")
     assert smoke["run"].splitlines() == ["uv run alembic upgrade head", "uv run alembic current"]
     migration = next(step for step in migration_steps if step.get("name") == "Run migration tests")

@@ -940,3 +940,15 @@ def test_checkout_cannot_remove_configuration_action_before_its_post_step(filena
             assert all(i < driver_index for i in root_checkouts)
             checked += 1
     assert checked
+
+
+@pytest.mark.parametrize("unit", ["findb", "fetcher"])
+def test_staging_replay_deploy_survives_skipped_publisher(unit: str) -> None:
+    workflow = yaml.safe_load((ROOT / f".github/workflows/{unit}-cd.yml").read_text())
+    jobs = workflow["jobs"]
+    # Replay intentionally skips publish. A status function is required so that
+    # GitHub does not inject success() and suppress deploy through that ancestor.
+    assert jobs["deploy"]["needs"] == "prepare"
+    assert jobs["deploy"]["if"] == "${{ !cancelled() && needs.prepare.result == 'success' }}"
+    assert "needs.select.outputs.mode == 'replay'" in jobs["prepare"]["if"]
+    assert "needs.publish.result == 'skipped'" in jobs["prepare"]["if"]

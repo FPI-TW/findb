@@ -314,8 +314,8 @@ if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then
   exit 0
 fi
 docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
-  uv run alembic upgrade head
-  uv run alembic current
+  alembic upgrade head
+  alembic current
 ' </dev/null
   expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?target revision is required}"
   expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?RDS endpoint is required}"
