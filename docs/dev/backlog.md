@@ -44,11 +44,14 @@ Production native 資料與實際 rollback 演練由
 ## FactSet 港股首次環境啟用
 
 實作契約與操作見 [FactSet 港股日行情](../operations/factset_hk.md)；staging ECR、IAM／KMS
-及 secret metadata 已套用，Fetcher runtime 部署與原生資料驗收尚未完成。
+及獨立 Source／RDS credentials 已就緒；backend migration、FactSet Source registry、
+停止中的 Pilot／Full scheduler seed、Fetcher host secret loader 與 Source 契約認證已核對。
+Staging 已完成十五個 consumers 的 runtime 部署驗收；原生資料驗收尚未完成。
 
-- [ ] 在 staging 填入獨立 FactSet Source／RDS credentials，核對 backend schema／seed／
-  credential registry，依 backend-first 順序部署並完成五 provider／
-  十五 consumer 的停止、排空及 shared-inode attestation。
+- [ ] Provider-work 切換暫不執行，staging 維持 `PROVIDER_WORK_REQUIRED=false`。
+  後續啟用前須完成 prepared／receipt 與 DB terminal 核對、一致備份、五 provider／
+  十五 consumer 的完整停止與排空、shared-inode attestation 及 Owner cutover；
+  現有共用 bind mount 核對不代替此項驗收。
 - [ ] 發布 HKEX 第一份 baseline，記錄明確 HK provider cutover，執行兩檔單日、異常歷史樣本、
   全名單的真實 R2／Source／queue／canonical／Serve 驗收；核對 retained v1 排空與 rollback 下限。
   本機原生快照重播與測試 raw storage 不能代替此項環境驗收。
