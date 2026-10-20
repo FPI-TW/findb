@@ -85,5 +85,8 @@ Overview、freshness、plans、alerts 的請求與 query cache key 都包含 pro
 人工回補的 skipped_calendar 顯示「依設定略過」，不算成功 Source run。
 
 交付監控頁的「供應商工作佇列」顯示跨 Pilot／Full／historical／maintenance／rerun 的 provider owner、
-FIFO 位置、等待原因、round、not_before 與 heartbeat。資料來自唯讀 Admin `/provider-work`，不包含 lease token；
+FIFO 位置、等待原因、round、not_before 與 heartbeat。依供應商分頁，各頁標示工作數並只列出該供應商的工作，
+保留原 FIFO 順序；預設選取 `twelve_data`，沒有工作仍保留分頁並顯示空清單提示。
+切換供應商不影響下方的執行模式與交付功能分頁；定期或手動更新保留目前選取的供應商。
+資料來自唯讀 Admin `/provider-work`，不包含 lease token；
 初次回應前顯示 loading，使用既有 operations query refresh 註冊與 session query scope。

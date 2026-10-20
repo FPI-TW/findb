@@ -81,6 +81,16 @@ test("authenticated provider queue shows active daily work and historical FIFO w
   await login(page)
   const queue = page.getByRole("region", { name: "供應商工作佇列" })
   await expect(
+    queue.getByRole("tab", { name: "twelve_data (0)" })
+  ).toHaveAttribute("aria-selected", "true")
+  await expect(
+    queue.getByText("此供應商目前沒有等待或執行中的工作。")
+  ).toBeVisible()
+  await queue.getByRole("tab", { name: "finlab (3)" }).click()
+  await expect(
+    queue.getByRole("table", { name: "finlab 工作佇列" })
+  ).toBeVisible()
+  await expect(
     queue.getByRole("cell", { name: "執行中 · running" })
   ).toBeVisible()
   await expect(queue.getByText("第 1 位", { exact: true })).toBeVisible()
@@ -93,6 +103,21 @@ test("authenticated provider queue shows active daily work and historical FIFO w
     queue.getByText("2026-10-07T01:00:00Z", { exact: true })
   ).toHaveCount(3)
   await expect(queue.getByRole("alert")).toHaveCount(0)
+  await queue.getByRole("tab", { name: "finlab (3)" }).press("ArrowRight")
+  await expect(queue.getByRole("tab", { name: "shioaji (0)" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  )
+  await expect(queue.getByRole("table")).toHaveCount(0)
+  await expect(
+    queue.getByText("此供應商目前沒有等待或執行中的工作。")
+  ).toBeVisible()
+  await queue.getByRole("tab", { name: "finlab (3)" }).click()
+  await page.getByRole("tab", { name: "缺漏告警", exact: true }).click()
+  await expect(queue.getByRole("tab", { name: "finlab (3)" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  )
   const snapshot = await request.get(`${backend}/fixture/state`)
   expect(
     (await snapshot.json()).reads["/api/v1/admin/provider-work"]
