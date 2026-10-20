@@ -437,11 +437,15 @@ def main() -> None:
     inspect = commands.add_parser("inspect-acquisition")
     inspect.add_argument("--governor", type=Path, required=True)
     inspect.add_argument(
-        "--provider", choices=("twelve_data", "finlab", "shioaji", "taifex"), required=True
+        "--provider",
+        choices=("twelve_data", "finlab", "shioaji", "taifex", "factset"),
+        required=True,
     )
     repair = commands.add_parser("repair-capacity")
     repair.add_argument(
-        "--provider", required=True, choices=("twelve_data", "finlab", "shioaji", "taifex")
+        "--provider",
+        required=True,
+        choices=("twelve_data", "finlab", "shioaji", "taifex", "factset"),
     )
     repair.add_argument("--environment", required=True, choices=("local", "staging", "production"))
     for name in ("governor", "readiness", "allocation", "enrollment"):

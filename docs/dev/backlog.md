@@ -41,6 +41,19 @@ Production native 資料與實際 rollback 演練由
 - [ ] TW、HK、US、futures 實際 rollout 驗證 open-day 準時 complete，驗證
   expected 分母、durable no_data、partial Serve、gap catch-up、session 與 nullable futures fields。
 
+## FactSet 港股首次環境啟用
+
+實作契約與操作見 [FactSet 港股日行情](../operations/factset_hk.md)。尚未部署或啟用任何遠端環境。
+
+- [ ] 取得部署授權後，在 staging 執行 OpenTofu refresh plan／套用新增 ECR 與 secret metadata、
+  填入獨立 FactSet Source／RDS credentials，依 backend-first 順序部署並完成五 provider／
+  十五 consumer 的停止、排空及 shared-inode attestation。
+- [ ] 發布 HKEX 第一份 baseline，記錄明確 HK provider cutover，執行兩檔單日、異常歷史樣本、
+  全名單的真實 R2／Source／queue／canonical／Serve 驗收；核對 retained v1 排空與 rollback 下限。
+  本機原生快照重播與測試 raw storage 不能代替此項環境驗收。
+- [ ] Staging 驗收後，依既有 production promotion 與 Owner control 流程啟用；維持目前上市
+  cohort 回補範圍、18:30–23:00 新 I/O 窗口、明確 partial／missing／DQ 證據，不自動 fallback。
+
 ## 不變約束
 
 - 新資料來源只走provider-neutral Source contract；不恢復legacy direct routes。

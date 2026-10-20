@@ -28,7 +28,7 @@ class AccountAllocation(FullMarketModel):
 
 class ReadinessDeclaration(FullMarketModel):
     version: Literal[1] = 1
-    provider: Literal["twelve_data", "finlab", "shioaji", "taifex"]
+    provider: Literal["twelve_data", "finlab", "shioaji", "taifex", "factset"]
     status: Literal["verified"]
     environment: Literal["local", "staging", "production"]
     source_client_id: UUID

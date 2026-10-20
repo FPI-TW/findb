@@ -39,11 +39,13 @@ def test_shared_feed_catalog_matches_source_scope_and_supported_contracts(target
     declarations = {item["dataset_key"]: item["config"] for item in DATASETS}
     assert len(catalog["feeds"]) == 7
     for spec in specs:
-        assert set(spec.allowed_datasets) == {
+        acquisition = {
             feed["dataset_key"] for feed in catalog["feeds"] if feed["provider"] == spec.source_name
         }
+        retained = {"hk_equity_eod"} if spec.source_name == "twelve_data" else set()
+        assert set(spec.allowed_datasets) == acquisition | retained
         for key in spec.allowed_datasets:
-            assert declarations[key]["allowed_sources"] == [spec.source_name]
+            assert spec.source_name in declarations[key]["allowed_sources"]
 
 
 def test_futures_provisioning_has_same_policy_in_both_environments():

@@ -295,10 +295,15 @@ async def test_registry_metadata_is_not_an_additional_start_gate(
 ):
     from app.services.full_market_admission import eligibility
 
-    await seed_datasets(test_session)
+    if provider == "factset":
+        from tests.test_factset_historical import setup
+
+        await setup(test_session, monkeypatch)
+    else:
+        await seed_datasets(test_session)
+        await _baseline(test_session, key)
     dataset = await test_session.get(DatasetRegistry, key)
     await _calendar(test_session, "TAIFEX" if key == "tw_futures_eod" else market)
-    await _baseline(test_session, key)
     change_runtime_identity(dataset, invalid)
     result = await eligibility(test_session, provider, [dataset])
     assert result["ready"]

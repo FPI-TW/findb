@@ -69,6 +69,15 @@ if [ "$provider_release_mode" = transactional ]; then
 fi
 
 case "$provider" in
+  factset)
+    marker_identity="factset"
+    image_repository_suffix="factset"
+    source_key="${FETCHER_FACTSET_SOURCE_CLIENT_KEY:-}"
+    provider_key="${FACTSET_PASSWORD:-}"
+    : "${FACTSET_HOST:?FactSet host required}"
+    : "${FACTSET_USER:?FactSet user required}"
+    provider_env=(--env FACTSET_HOST --env FACTSET_USER --env FACTSET_PASSWORD --env FACTSET_PORT --env FACTSET_QUERY_TIMEOUT_SECONDS)
+    ;;
   taifex)
     marker_identity="taifex"
     image_repository_suffix="twelve-data"

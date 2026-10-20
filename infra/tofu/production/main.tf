@@ -29,6 +29,9 @@ locals {
     fetcher_shioaji = {
       name = "findb/production/fetcher/shioaji", unit = "fetcher"
     }
+    fetcher_factset = {
+      name = "findb/production/fetcher/factset", unit = "fetcher"
+    }
 
   }
   repositories_by_unit = {

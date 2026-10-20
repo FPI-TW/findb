@@ -88,7 +88,7 @@ def main() -> int:
         environment={"FINDB_NATIVE_EVIDENCE_SPEC": json.dumps(spec)},
     )
     fetchers = {}
-    for provider in ("twelve_data", "finlab", "shioaji", "taifex"):
+    for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset"):
         fetchers[provider] = _ssm_probe(
             region=target["region"],
             instance_id=args.fetcher_instance_id,

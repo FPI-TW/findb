@@ -26,8 +26,12 @@ from app.models.registry import (
     IngestionRun,
     SchedulerControl,
     SchedulerDataset,
+    UniverseMember,
+    UniverseRelease,
 )
+from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
+from app.schemas.ingress import MarketEODIngressRequestV2
 from app.services.effective_calendar import effective_days, execution_policy
 from app.utils import utc_now, uuid7
 
@@ -37,6 +41,7 @@ CAPABILITIES: dict[tuple[str, str], str] = {
     ("shioaji", "tw_equity_minute"): "executable",
     ("shioaji", "tw_etf_minute"): "executable",
     ("taifex", "tw_futures_eod"): "executable",
+    ("factset", "hk_equity_eod"): "executable",
 }
 STAGING_MAX_BACKFILL_DAYS = 31
 PRODUCTION_MAX_BACKFILL_DAYS = 366
@@ -48,6 +53,7 @@ PROVIDER_TIMEZONES: dict[str, str] = {
     "finlab": "Asia/Taipei",
     "shioaji": "Asia/Taipei",
     "taifex": "Asia/Taipei",
+    "factset": "Asia/Hong_Kong",
 }
 
 
@@ -70,7 +76,7 @@ def _supports_backfill(provider: str, dataset_key: str) -> bool:
 
 def _historical_policy(provider: str) -> dict:
     policy = execution_policy(provider)
-    if provider == "taifex":
+    if provider in {"taifex", "factset"}:
         # Official daily reports do not exist for exchange-closed dates.
         policy = {key: value for key, value in policy.items() if key != "sha256"}
         policy["skip_non_trading_days"] = True
@@ -105,7 +111,7 @@ def _provider_current_date(provider: str, now: datetime) -> date:
 def expiry_cutoff(provider: str, now: datetime) -> date:
     """One read-only provider-local boundary for claims and live acquisition."""
     return _provider_current_date(provider, now) - timedelta(
-        days=_max_backfill_days() - (1 if provider == "taifex" else 0)
+        days=_max_backfill_days() - (1 if provider in {"taifex", "factset"} else 0)
     )
 
 
@@ -138,8 +144,17 @@ async def create_request(
     today: date | None = None,
 ) -> tuple[HistoricalBackfillRequest, bool]:
     provider = provider.lower()
+    if provider == "factset":
+        from app.config import get_settings
+        from app.services.provider_work import lock_provider
+
+        if not get_settings().PROVIDER_WORK_REQUIRED:
+            raise HistoricalBackfillError("FactSet requires the provider work protocol")
+        await lock_provider(db, provider)
     today = today or (
-        _provider_current_date(provider, utc_now()) if provider == "taifex" else utc_now().date()
+        _provider_current_date(provider, utc_now())
+        if provider in {"taifex", "factset"}
+        else utc_now().date()
     )
     max_days = _max_backfill_days()
     if start_date < today - timedelta(days=max_days - 1) or end_date > today:
@@ -183,6 +198,61 @@ async def create_request(
     ).scalar_one_or_none()
     if scope is None:
         raise HistoricalBackfillError("provider is not active for dataset")
+    universe_snapshot = None
+    if provider == "factset":
+        # Publication locks the same dataset; a request gets one immutable current
+        # cohort, not different universe dates for its historical items.
+        await db.refresh(dataset, with_for_update=True)
+        from app.services.hk_provider_cutover import acquisition_allowed
+
+        if not acquisition_allowed(dataset, provider):
+            raise HistoricalBackfillError("FactSet acquisition cutover is not effective")
+        release = await db.scalar(
+            select(UniverseRelease)
+            .where(
+                UniverseRelease.dataset_key == dataset_key,
+                UniverseRelease.provider == provider,
+                UniverseRelease.status == "published",
+                UniverseRelease.effective_date <= today,
+            )
+            .order_by(UniverseRelease.effective_date.desc(), UniverseRelease.created_at.desc())
+            .limit(1)
+        )
+        if release is None:
+            raise HistoricalBackfillError("FactSet requires a published current HKEX universe")
+        members = list(
+            await db.scalars(
+                select(UniverseMember)
+                .where(UniverseMember.release_id == release.release_id)
+                .order_by(UniverseMember.member_key)
+            )
+        )
+        if not 1 <= len(members) <= 10000:
+            raise HistoricalBackfillError("FactSet current cohort is empty or exceeds its bound")
+        universe_snapshot = {
+            "version": 1,
+            "cohort": "current_hkex",
+            "release_id": str(release.release_id),
+            "effective_date": release.effective_date.isoformat(),
+            "member_sha256": release.member_sha256,
+            "members": [
+                {
+                    field: getattr(member, field)
+                    for field in (
+                        "member_key",
+                        "symbol",
+                        "provider_symbol",
+                        "exchange",
+                        "currency",
+                        "asset_class",
+                        "classification",
+                        "mapping_status",
+                        "raw_evidence_ref",
+                    )
+                }
+                for member in members
+            ],
+        }
     calendar = await effective_days(
         db, "TAIFEX" if provider == "taifex" else dataset.market, start_date, end_date
     )
@@ -198,6 +268,7 @@ async def create_request(
         end_date=end_date,
         created_by=created_by,
         status="queued",
+        universe_snapshot=universe_snapshot,
     )
     row.items = [
         HistoricalBackfillItem(
@@ -426,7 +497,7 @@ async def cancel_request(
     ).scalar_one_or_none()
     if row is None:
         raise HistoricalBackfillError("backfill request not found")
-    if row.status in {"completed", "failed", "cancelled"}:
+    if row.status in {"completed", "partial", "failed", "cancelled"}:
         raise HistoricalBackfillConflictError("backfill request is already terminal")
     now = utc_now()
     row.status, row.cancelled_by, row.cancelled_at = "cancelled", actor, now
@@ -636,7 +707,9 @@ async def claim_next_item(
                 .where(
                     HistoricalBackfillItem.request_id == item.request_id,
                     HistoricalBackfillItem.trade_date < item.trade_date,
-                    HistoricalBackfillItem.status.not_in(("completed", "skipped_calendar")),
+                    HistoricalBackfillItem.status.not_in(
+                        ("completed", "partial", "skipped_calendar")
+                    ),
                 )
                 .limit(1)
             )
@@ -690,7 +763,7 @@ async def authorize_item(
     ):
         raise HistoricalBackfillError("backfill item not found")
     allowed = bool(
-        request.status not in {"cancelled", "completed", "failed"}
+        request.status not in {"cancelled", "completed", "partial", "failed"}
         and item.status == "running"
         and item.lease_token == lease_token
         and item.lease_expires_at is not None
@@ -743,7 +816,7 @@ async def complete_item(
     item_id: UUID,
     *,
     provider: str,
-    outcome: Literal["completed", "failed"],
+    outcome: Literal["completed", "partial", "failed"],
     lease_token: UUID,
     run_id: UUID | None,
     failure_code: str | None,
@@ -772,7 +845,45 @@ async def complete_item(
     ).scalar_one_or_none()
     if item is None:
         raise HistoricalBackfillError("backfill item not found")
+    completion_report = {
+        "outcome": outcome,
+        "run_id": str(run_id) if run_id else None,
+        "failure_code": failure_code,
+        "failure_message": failure_message,
+        "result_evidence": result_evidence,
+    }
+    if provider == "factset" and get_settings().PROVIDER_WORK_REQUIRED:
+        from app.models.provider_work import ProviderWork, ProviderWorkAttempt
+
+        replay_identity = db.info.get("provider_work")
+        if replay_identity is not None:
+            previous = await db.scalar(
+                select(ProviderWorkAttempt)
+                .join(ProviderWork)
+                .where(
+                    ProviderWork.work_id == replay_identity["work_id"],
+                    ProviderWork.environment == queue.environment(),
+                    ProviderWork.provider == provider,
+                    ProviderWork.stable_key == f"historical:{item_id}",
+                    ProviderWorkAttempt.generation == replay_identity["generation"],
+                    ProviderWorkAttempt.token == lease_token,
+                    ProviderWorkAttempt.state == "settled",
+                )
+            )
+            if previous is not None:
+                if (
+                    replay_identity["token"] != lease_token
+                    or (previous.proof or {}).get("historical_completion") != completion_report
+                    or item.status
+                    != (previous.proof or {}).get("historical_item_status", previous.outcome)
+                ):
+                    raise HistoricalBackfillConflictError("historical completion replay differs")
+                return item
     now = utc_now()
+    if outcome == "partial" and (
+        provider != "factset" or not get_settings().PROVIDER_WORK_REQUIRED
+    ):
+        raise HistoricalBackfillValidationError("partial is restricted to fenced FactSet EOD v2")
 
     if get_settings().PROVIDER_WORK_REQUIRED:
         from app.models.provider_work import ProviderWorkOwner
@@ -823,6 +934,14 @@ async def complete_item(
                     "cancelled_prepared_drain": True,
                     **(
                         {
+                            "historical_completion": completion_report,
+                            "historical_item_status": item.status,
+                        }
+                        if provider == "factset"
+                        else {}
+                    ),
+                    **(
+                        {
                             "manual_pending_prepared": list(owned_work.prepared_deliveries),
                             "manual_reason": "permanent_prepared_delivery_rejection",
                             "source_rejection": failure_message,
@@ -842,7 +961,23 @@ async def complete_item(
     ):
         raise HistoricalBackfillConflictError("backfill item is not leased")
     run: IngestionRun | None = None
-    if outcome == "completed" and provider == "taifex":
+    eod_evidence = None
+    if outcome in {"completed", "partial"} and provider == "factset":
+        try:
+            eod_evidence = EODCompletionEvidence.model_validate(result_evidence)
+        except ValueError as exc:
+            raise HistoricalBackfillValidationError("EOD completion evidence is invalid") from exc
+        if (
+            eod_evidence.item_id != item.item_id
+            or eod_evidence.request_id != item.request_id
+            or eod_evidence.trade_date != item.trade_date
+            or not item.request.universe_snapshot
+            or {member.member_key for member in eod_evidence.members}
+            != {member["member_key"] for member in item.request.universe_snapshot["members"]}
+        ):
+            raise HistoricalBackfillValidationError("EOD evidence differs from the frozen request")
+        item.result_evidence = eod_evidence.model_dump(mode="json")
+    elif outcome == "completed" and provider == "taifex":
         await _validate_taifex_completion(db, item, run_id, result_evidence, now)
         item.result_evidence = result_evidence
     elif outcome == "completed":
@@ -878,7 +1013,16 @@ async def complete_item(
             outcome=outcome,
             proof={
                 "historical_item_id": str(item_id),
+                **(
+                    {
+                        "historical_completion": completion_report,
+                        "historical_item_status": outcome,
+                    }
+                    if provider == "factset"
+                    else {}
+                ),
                 "no_data": no_data,
+                **({"eod": eod_evidence.model_dump(mode="json")} if eod_evidence else {}),
                 **(
                     {
                         "manual_pending_prepared": list(owned_work.prepared_deliveries),
@@ -907,10 +1051,82 @@ async def complete_item(
                 sibling.status, sibling.completed_at = "cancelled", now
                 sibling.lease_token, sibling.lease_expires_at = None, None
                 await _cancel_queued_item_work(db, sibling, provider=provider, now=now)
-    elif all(sibling.status in {"completed", "skipped_calendar"} for sibling in request.items):
-        request.status, request.completed_at = "completed", now
+    elif all(
+        sibling.status in {"completed", "partial", "skipped_calendar"} for sibling in request.items
+    ):
+        request.status = (
+            "partial"
+            if any(sibling.status == "partial" for sibling in request.items)
+            else "completed"
+        )
+        request.completed_at = now
     await db.flush()
     return item
+
+
+async def validate_factset_historical_delivery(
+    db: AsyncSession, request: MarketEODIngressRequestV2
+) -> None:
+    from app.config import get_settings
+    from app.services.provider_work import fence
+
+    if not get_settings().PROVIDER_WORK_REQUIRED or request.delivery is None:
+        raise HistoricalBackfillValidationError("FactSet historical delivery requires fenced work")
+    try:
+        item_id = UUID(request.delivery.work_item_id.removeprefix("historical:"))
+    except ValueError as exc:
+        raise HistoricalBackfillValidationError("historical work identity is invalid") from exc
+    item = await db.scalar(
+        select(HistoricalBackfillItem)
+        .options(selectinload(HistoricalBackfillItem.request))
+        .where(HistoricalBackfillItem.item_id == item_id)
+    )
+    identity = db.info.get("provider_work")
+    if item is None or identity is None:
+        raise HistoricalBackfillValidationError("historical work is unavailable")
+    work, _, _ = await fence(
+        db, provider="factset", **{key: identity[key] for key in ("work_id", "generation", "token")}
+    )
+    descriptor = (work.prepared_deliveries or {}).get(request.idempotency_key)
+    retained = descriptor is not None and descriptor["body_sha256"] == db.info.get(
+        "provider_work_body_sha256"
+    )
+    now = utc_now()
+    snapshot = item.request.universe_snapshot or {}
+    members = {row["symbol"]: row for row in snapshot.get("members", [])}
+    if (
+        work.kind != "historical"
+        or work.stable_key != f"historical:{item.item_id}"
+        or item.request.provider != "factset"
+        or item.request.dataset_key != request.dataset_key
+        or request.source != "factset"
+        or (
+            not retained
+            and (
+                item.request.status not in {"queued", "running"}
+                or item.status != "running"
+                or item.lease_token != identity["token"]
+                or item.lease_expires_at is None
+                or item.lease_expires_at <= now
+            )
+        )
+        or request.payload.batch.delivery_mode != "backfill"
+        or request.payload.batch.data_date != item.trade_date
+        or request.payload.batch.coverage_start_date != item.trade_date
+        or request.payload.batch.coverage_end_date != item.trade_date
+        or request.delivery.target_data_date != item.trade_date
+        or request.fetched_at > now + timedelta(minutes=5)
+        or not _session_closed(item, request.fetched_at)
+        or any(
+            row.trade_date != item.trade_date
+            or row.symbol not in members
+            or members[row.symbol]["mapping_status"] != "mapped"
+            or row.source_symbol != members[row.symbol]["provider_symbol"]
+            or row.currency != members[row.symbol]["currency"]
+            for row in request.payload.data
+        )
+    ):
+        raise HistoricalBackfillValidationError("historical delivery is outside its frozen cohort")
 
 
 def _valid_completed_run(run: IngestionRun | None, item: HistoricalBackfillItem) -> bool:

@@ -154,7 +154,7 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
                 "host_lock_identities": {
                     provider: f"{get_settings().APP_ENVIRONMENT}:1:{index}"
                     for index, provider in enumerate(
-                        ("finlab", "shioaji", "taifex", "twelve_data"), 1
+                        ("factset", "finlab", "shioaji", "taifex", "twelve_data"), 1
                     )
                 },
             }
@@ -163,7 +163,7 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
                 db,
                 provider="taifex",
                 datasets=["tw_futures_eod"],
-                host_lock_identity=f"{get_settings().APP_ENVIRONMENT}:1:3",
+                host_lock_identity=proof["host_lock_identities"]["taifex"],
                 recover=True,
             )
             assert claimed and claimed[0].work_id == work_id

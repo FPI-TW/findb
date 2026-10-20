@@ -28,9 +28,11 @@ class ProviderWorkCutoverRequest(BaseModel):
     host_lock_identities: dict[str, str]
 
 
-HistoricalBackfillStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+HistoricalBackfillStatus = Literal[
+    "queued", "running", "completed", "partial", "failed", "cancelled"
+]
 HistoricalBackfillItemStatus = Literal[
-    "pending", "running", "completed", "failed", "cancelled", "skipped_calendar"
+    "pending", "running", "completed", "partial", "failed", "cancelled", "skipped_calendar"
 ]
 
 

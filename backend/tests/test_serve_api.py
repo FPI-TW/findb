@@ -158,6 +158,68 @@ async def test_dataset_catalog_is_active_provider_free_and_reports_configured_em
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("accepted", "current"), [([1, 2], 1), ([1, 2], 2), ([2], 2), ([2, 1], 2)])
+async def test_eod_v2_opt_in_preserves_canonical_reads_and_unrelated_scopes(
+    client: AsyncClient, test_session, accepted, current
+):
+    hk = dataset("hk_equity_eod", market="HK", asset_class="equity", schema_id="market_eod")
+    hk.config.update(accepted_schema_versions=accepted, current_schema_version=current)
+    hk_id, us_id = uuid7(), uuid7()
+    test_session.add_all(
+        [
+            hk,
+            dataset("us_equity_eod", market="US", asset_class="equity", schema_id="market_eod"),
+            instrument(hk_id, "00700", market="HK"),
+            instrument(us_id, "AAPL", market="US"),
+            eod(hk_id, date(2026, 9, 18), "400"),
+            eod(us_id, date(2026, 9, 18), "250"),
+        ]
+    )
+    await test_session.commit()
+
+    catalog = await client.get("/api/v1/serve/datasets")
+    assert catalog.status_code == 200, catalog.text
+    assert {row["dataset_key"] for row in catalog.json()["data"]} == {
+        "hk_equity_eod",
+        "us_equity_eod",
+    }
+    for instrument_id in (hk_id, us_id):
+        response = await client.get(
+            "/api/v1/serve/eod",
+            params={"instrument_id": str(instrument_id)},
+        )
+        assert response.status_code == 200, response.text
+        assert len(response.json()["data"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schema_id", "accepted", "current"),
+    [
+        ("market_eod", [1, 99], 1),
+        ("market_eod", [99], 99),
+        ("market_eod", [1], 2),
+        ("market_minute", [1, 2], 1),
+        ("futures_eod", [1, 2], 2),
+    ],
+)
+async def test_serve_rejects_versions_without_a_supported_read_model(
+    client: AsyncClient, test_session, schema_id, accepted, current
+):
+    value = dataset(
+        "version_check",
+        market="TW",
+        asset_class="future" if schema_id == "futures_eod" else "equity",
+        schema_id=schema_id,
+    )
+    value.config.update(accepted_schema_versions=accepted, current_schema_version=current)
+    test_session.add(value)
+    await test_session.commit()
+    response = await client.get("/api/v1/serve/datasets")
+    assert_error(response, 503, "SERVE_CONFIGURATION_INVALID")
+
+
+@pytest.mark.asyncio
 async def test_unknown_or_mismatched_active_registry_config_fails_closed(
     client: AsyncClient, test_session
 ):

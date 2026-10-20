@@ -10,8 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, m
 from app.schemas.ingress import (
     CurrencyCode,
     FuturesEODIngressRequest,
-    IngressRequestV1,
+    IngressRequest,
     MarketEODIngressRequest,
+    MarketEODIngressRequestV2,
     MarketMinuteIngressRequest,
 )
 from app.services.delivery_policy import DeliveryExpectation
@@ -20,6 +21,7 @@ from app.vocabulary import SOURCE_NAME_PATTERN, normalize_asset_class, normalize
 ContractKey = tuple[str, int]
 ContractModel = (
     type[MarketEODIngressRequest]
+    | type[MarketEODIngressRequestV2]
     | type[MarketMinuteIngressRequest]
     | type[FuturesEODIngressRequest]
 )
@@ -28,6 +30,7 @@ PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
     {
         ("market_eod", 1): MarketEODIngressRequest,
+        ("market_eod", 2): MarketEODIngressRequestV2,
         ("market_minute", 1): MarketMinuteIngressRequest,
         ("futures_eod", 1): FuturesEODIngressRequest,
     }
@@ -324,6 +327,8 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             },
         },
     ]
+    if (schema_id, schema_version) == ("market_eod", 2):
+        semantic_rules = [rule for rule in semantic_rules if not rule["id"].startswith("row.ohlc.")]
     if schema_id == "futures_eod":
         observation_fields = ["open", "high", "low", "close", "settlement_price", "open_interest"]
         schema["$defs"]["FuturesEODRow"]["anyOf"] = [
@@ -618,7 +623,7 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
     }
 
 
-def validate_ingress_request(value: Mapping[str, Any]) -> IngressRequestV1:
+def validate_ingress_request(value: Mapping[str, Any]) -> IngressRequest:
     """Dispatch and validate a raw request without guessing its schema version."""
     schema_id = value.get("schema_id")
     schema_version = value.get("schema_version")
@@ -663,12 +668,12 @@ def validate_dataset_contract_scope(
 
 def validate_request_currency(
     declaration: DatasetContractDeclaration,
-    request: IngressRequestV1,
+    request: IngressRequest,
 ) -> None:
     """Apply dataset-dependent currency requirements before persistence."""
     if declaration.defaults.currency is not None:
         return
-    if isinstance(request, MarketEODIngressRequest) and any(
+    if isinstance(request, (MarketEODIngressRequest, MarketEODIngressRequestV2)) and any(
         row.currency is None for row in request.payload.data
     ):
         raise CurrencyRequiredError(

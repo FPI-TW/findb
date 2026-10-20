@@ -81,6 +81,28 @@ Coverage metadata會保存到run供missing-delivery判定；同日incremental或
 - OHLC、volume與turnover不得為負；high/low必須包住其他已提供價格。
 - Dataset沒有default currency時，每列必須提供`currency`。
 
+## `market_eod.v2`
+
+v2 保留 v1 的欄位、必填性、非負／型別約束、日期、重複鍵與批次限制，只將 OHLC 大小關係
+移至 normalizer 逐列 DQ。`high` 必須不低於所有已提供的 `open/low/close`，`low` 必須不高於
+所有已提供的 `open/high/close`；其他欄位為 null 時仍檢查已有值。缺少 close、負數或結構錯誤
+仍在 Source 入口拒絕整批。
+
+OHLC 衝突列保留原 raw 與 error DQ（含 symbol、trade_date、source_symbol），不建立商品、
+不寫入行情／最新價，也不建立該列的 actual-write evidence；有效列正常寫入。混合批次與全錯
+批次的 run 均為 `completed_with_errors`，可依原 v2 raw 重跑；這不是完整交付或 no_data 證明。
+Source precedence 仍適用，既有其他來源行情不能充當本次寫入證據。
+
+HK seed 同時接受 v1／v2；明確切換後的新 FactSet 抓取輸出 v2，舊 Twelve Data frozen
+prepared／raw rerun 保留 v1 identity。Serve 對 `market_eod` 明確支援版本 1／2，使用相同唯讀
+canonical read model；不支援的版本仍 fail closed。
+
+EOD v2 daily／historical 可結算 `partial`：所有 accepted runs 必須 terminal，原 prepared 已交付
+或有合法終結證據，完整 frozen member 集須逐一以本 work 的實際寫入、DQ 或持久 raw 缺漏證據
+對帳。資料錯誤不阻止 historical 下一日期；request 最終仍保留 partial。暫時 provider／Source
+故障採 close／drain／tail retry，不能視為 partial。切換與修補方式見
+[FactSet 港股日行情](../operations/factset_hk.md)。
+
 ## `market_minute.v1`
 
 適用`tw_equity_minute`與`tw_etf_minute`。每列是一分鐘bar：

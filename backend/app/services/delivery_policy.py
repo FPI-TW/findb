@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import CalendarRevisionDay
 from app.models.registry import IngestionRun
-from app.schemas.ingress import DeliveryMode, IngressRequestV1
+from app.schemas.ingress import DeliveryMode, IngressRequest
 from app.services.calendar_management import published_year
 from app.services.feed_scope import lock_feed_scope
 from app.utils import utc_now
@@ -444,7 +444,7 @@ def parse_delivery_expectation(config: dict | None) -> DeliveryExpectation | Non
 
 async def lock_delivery_policy_scope(
     db: AsyncSession,
-    request: IngressRequestV1,
+    request: IngressRequest,
 ) -> None:
     """Serialize duplicate recheck, baseline evaluation, and delivery creation."""
     await lock_feed_scope(
@@ -459,7 +459,7 @@ async def lock_delivery_policy_scope(
 
 async def _baseline_runs(
     db: AsyncSession,
-    request: IngressRequestV1,
+    request: IngressRequest,
     policy: BaselinePolicy,
 ) -> list[IngestionRun]:
     data_date = request.payload.batch.data_date
@@ -578,7 +578,7 @@ def _violation(
 
 async def evaluate_delivery_policy(
     db: AsyncSession,
-    request: IngressRequestV1,
+    request: IngressRequest,
     expectation: DeliveryExpectation | None,
     *,
     now: datetime | None = None,

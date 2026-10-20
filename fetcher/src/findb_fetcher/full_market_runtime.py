@@ -22,7 +22,12 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from findb_fetcher.acquisition import authorization_scope, http_acquisition
-from findb_fetcher.client import SourceAPIClient, SourceAPIResponseError, SourceAPITransportError
+from findb_fetcher.client import (
+    SourceAPIClient,
+    SourceAPIResponseError,
+    SourceAPITransportError,
+    permanent_source_failure,
+)
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
@@ -49,8 +54,16 @@ from findb_fetcher.full_market_universe import (
     parse_tw_ordinary,
     universe_request,
 )
+from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
+from findb_fetcher.provider_process import ProviderProcessError
 from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped, durable_response
+from findb_fetcher.providers.factset import (
+    FactSetConfig,
+    FactSetGateway,
+    FactSetOperationalError,
+    map_current_cohort,
+)
 from findb_fetcher.providers.finlab import (
     FinLabConfigError,
     FinLabDatasetConfig,
@@ -201,6 +214,10 @@ def split_rows(
 def _governed(method):
     @wraps(method)
     def run(self, *args, **kwargs):
+        from findb_fetcher.provider_work import active
+
+        if self.provider == "factset" and active() is None:
+            raise ReadinessBlockedError("FactSet acquisition requires provider work enforcement")
         if not self._acquisition_allowed():
             raise ReadinessBlockedError("scheduler acquisition stopped")
 
@@ -641,6 +658,20 @@ class FullMarketRuntime:
                         **self._catalogue_evidence_for("hk_equity_eod"),
                     },
                 )
+        elif self.provider == "factset":
+            snapshots[HKEX_URL] = self._snapshot(HKEX_URL)
+            hk_date, hk = parse_hkex(
+                snapshots[HKEX_URL], observed_date=now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
+            )
+            native = FactSetGateway(FactSetConfig.from_env()).catalogue(
+                tuple(sorted({member["symbol"] for member in hk}))
+            )
+            self._observed_response(len(native))
+            stored = self._persist(native, "hk_equity_eod", "provider_catalogue")
+            members = map_current_cohort(hk, native)
+            for member in members:
+                member["raw_evidence_ref"] = stored.ref
+            groups = {"hk_equity_eod": (hk_date, members, {HKEX_URL: snapshots[HKEX_URL]})}
         elif self.provider in {"finlab", "shioaji"}:
             snapshots = {url: self._snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)}
             companies = {
@@ -762,6 +793,8 @@ class FullMarketRuntime:
 
         if enabled():
             return self._queued_cycle()
+        if self.provider == "factset":
+            return self.state.health(self.provider)
         self._drain_blocked = False
         for saved in self.state.pending_plans(self.provider):
             plan = json.loads(saved["body"])
@@ -788,6 +821,8 @@ class FullMarketRuntime:
 
         if enabled():
             return self._queued_cycle()
+        if self.provider == "factset":
+            return self.state.health(self.provider)
         if drain_prepared:
             self.drain()
         if self._drain_blocked:
@@ -940,6 +975,10 @@ class FullMarketRuntime:
             results = self.sync_universes(dataset_keys=[work["dataset_key"]])
         except ProviderWorkRecoveryBlockedError:
             raise
+        except ProviderWorkAcquisitionStopped:
+            retryable, code = True, "MAINTENANCE_ACQUISITION_SUSPENDED"
+            if owner.dispatch_observations == dispatch_before:
+                owner.journal.release_wait_attempt(operation_key)
         except QuotaBlockedError as exc:
             retryable, code = True, "MAINTENANCE_QUOTA_OR_ACQUISITION"
             if (
@@ -969,6 +1008,10 @@ class FullMarketRuntime:
             code = "MAINTENANCE_SOURCE_" + str(exc.status_code or "UNKNOWN")
         except RawStorageUploadError as exc:
             retryable, code = exc.retryable, "MAINTENANCE_RAW_UPLOAD"
+        except FactSetOperationalError as exc:
+            retryable, code = exc.retryable, exc.code
+        except ProviderProcessError:
+            retryable, code = True, "MAINTENANCE_PROVIDER_PROCESS"
         except FinLabOperationalError:
             retryable, code = True, "MAINTENANCE_FINLAB_OPERATIONAL"
         except FinLabConfigError:
@@ -999,6 +1042,7 @@ class FullMarketRuntime:
     def _queued_cycle(self) -> dict[str, Any]:
         """Enqueue bounded dates before claiming; every provider call is owned."""
         from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
+        from findb_fetcher.raw_storage import RawStorageUploadError
 
         self._ensure_proof()
         authorization = self.source.request(
@@ -1019,6 +1063,8 @@ class FullMarketRuntime:
             if activation.get("enabled") is not True or not listed.get("published_release_id"):
                 continue
             first = date.fromisoformat(activation["activation_date"])
+            if activation.get("acquisition_start_date"):
+                first = max(first, date.fromisoformat(activation["acquisition_start_date"]))
             local = now.astimezone(ZoneInfo(feed["source_timezone"]))
             through = local.date() - timedelta(days=feed["target_date_lag_days"])
             if local.strftime("%H:%M") < feed["scheduled_time"]:
@@ -1104,26 +1150,29 @@ class FullMarketRuntime:
                             )
                             owner.settle("completed", proof={"no_data": ["calendar_skip"]})
                         else:
-                            owner.freeze(
-                                {
-                                    "mode": "canonical",
-                                    "plan_id": plan["plan_id"],
-                                    "members": [
-                                        {"key": key}
-                                        for part in plan["parts"]
-                                        for key in part["member_keys"]
-                                    ],
-                                }
-                            )
                             self.state.record_plan(plan, self.provider)
                             release = self.source.release(plan["release_id"])
-                            self._deliver_plan(
-                                plan,
-                                release,
-                                feed,
-                                drain_only=bool(work.get("drain_only")) or not bool(admitted),
-                            )
-                            self._settle_queued_round(owner)
+                            if self.provider == "factset":
+                                self._deliver_factset_plan(owner, plan, release, feed)
+                            else:
+                                owner.freeze(
+                                    {
+                                        "mode": "canonical",
+                                        "plan_id": plan["plan_id"],
+                                        "members": [
+                                            {"key": key}
+                                            for part in plan["parts"]
+                                            for key in part["member_keys"]
+                                        ],
+                                    }
+                                )
+                                self._deliver_plan(
+                                    plan,
+                                    release,
+                                    feed,
+                                    drain_only=bool(work.get("drain_only")) or not bool(admitted),
+                                )
+                                self._settle_queued_round(owner)
                 except (
                     FullMarketProtocolError,
                     SourceAPITransportError,
@@ -1138,6 +1187,7 @@ class FullMarketRuntime:
                         raise ProviderWorkRecoveryBlockedError("daily owner fence differs") from exc
                     retryable = not isinstance(exc, FullMarketProtocolError) or (
                         exc.retryable
+                        or exc.code == "PROVIDER_WORK_SUSPENDED"
                         or exc.status_code in {408, 429}
                         or (exc.status_code is not None and exc.status_code >= 500)
                     )
@@ -1170,6 +1220,27 @@ class FullMarketRuntime:
                         else "failed",
                         failure_code="DAILY_PROVIDER_QUOTA_OR_ACQUISITION",
                     )
+                except SourceAPIResponseError as exc:
+                    permanent = permanent_source_failure(exc)
+                    self._settle_queued_round(
+                        owner,
+                        outcome="failed" if permanent else "retry",
+                        failure_code="DAILY_SOURCE_REJECTED"
+                        if permanent
+                        else "DAILY_SOURCE_UNAVAILABLE",
+                    )
+                except (FactSetOperationalError, RawStorageUploadError) as exc:
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry" if exc.retryable else "failed",
+                        failure_code="DAILY_PROVIDER_UNAVAILABLE"
+                        if exc.retryable
+                        else "DAILY_PROVIDER_REJECTED",
+                    )
+                except (HistoricalWorkDeferredError, ProviderWorkAcquisitionStopped):
+                    self._settle_queued_round(
+                        owner, outcome="retry", failure_code="DAILY_ACQUISITION_DEFERRED"
+                    )
                 except DatedUniversePendingError:
                     self.pause()
                     self._settle_queued_round(
@@ -1186,6 +1257,75 @@ class FullMarketRuntime:
         except ProviderWorkWaitingError:
             pass
         return self.state.health(self.provider)
+
+    def _deliver_factset_plan(self, owner, plan: dict, release: dict, feed: dict) -> None:
+        from findb_fetcher.factset_eod import FactSetEOD, completion_status
+
+        deliveries = {
+            key: {"slot_id": feed["slot_id"], "work_item_id": part["work_item_id"]}
+            for part in plan["parts"]
+            for key in part["member_keys"]
+        }
+        members = [row for row in release["members"] if row["member_key"] in deliveries]
+        owner.freeze(
+            {
+                "mode": "canonical",
+                "plan_id": plan["plan_id"],
+                "contract": {"schema_id": "market_eod", "schema_version": 2},
+                "members": [
+                    {
+                        "key": m["member_key"],
+                        "source_symbol": m["provider_symbol"],
+                        "mapping_status": m["mapping_status"],
+                    }
+                    for m in members
+                ],
+            }
+        )
+
+        def checkpoint_receipt(key: str, request: dict, run_id: str) -> None:
+            work_key = deliveries[key]["work_item_id"] + ":" + key
+            self.state.prepare(work_key, canonical_bytes([request]))
+            self.state.save_sequence_receipt(work_key, request["idempotency_key"], run_id)
+            self.state.finish(work_key, status="prepared", receipt=run_id)
+
+        with authorization_scope(
+            lambda: self.source.authorization(
+                "GET",
+                "full-market/authorization?consumer=" + self.execution_profile,
+                required_dataset=plan["dataset_key"],
+            ),
+            state_path=self.state.path,
+        ):
+            evidence = FactSetEOD(
+                FactSetGateway(FactSetConfig.from_env()),
+                self.delivery,
+                self.raw_store,
+                on_receipt=checkpoint_receipt,
+            ).run(
+                day=date.fromisoformat(plan["trade_date"]),
+                members=members,
+                dataset=plan["dataset_key"],
+                deliveries=deliveries,
+                historical=False,
+            )
+        for result in evidence["members"]:
+            key = result["member_key"]
+            delivery = deliveries[key]
+            if result["outcome"] in {"invalid", "mapping_gap"}:
+                self.source.outcome(
+                    plan["plan_id"],
+                    work_item_id=delivery["work_item_id"],
+                    member_key=key,
+                    reason="mapping_gap" if result["outcome"] == "mapping_gap" else "source_error",
+                )
+            self.state.finish(
+                delivery["work_item_id"] + ":" + key,
+                status="complete" if result["outcome"] == "data" else "manual",
+                reason=result["outcome"],
+            )
+        self.state.evaluate(self.source.evaluate(plan["plan_id"]))
+        owner.settle(completion_status(evidence), proof={"eod": evidence})
 
     def _settle_queued_round(
         self, owner, *, outcome: str | None = None, failure_code: str | None = None

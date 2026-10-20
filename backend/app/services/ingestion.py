@@ -26,7 +26,7 @@ from app.models.registry import (
     NormalizationJob,
     NormalizationOutbox,
 )
-from app.schemas.ingress import IngressRequestV1
+from app.schemas.ingress import IngressRequest
 from app.services.delivery_policy import (
     DeliveryPolicyRejectedError,
     DeliveryPolicyResult,
@@ -45,6 +45,7 @@ from app.services.normalize import (
     BaseNormalizer,
     FuturesEODContractNormalizer,
     MarketEODContractNormalizer,
+    MarketEODV2ContractNormalizer,
     MarketMinuteContractNormalizer,
 )
 from app.utils import utc_now, uuid7
@@ -64,6 +65,7 @@ class NormalizerFactory(Protocol):
 
 CONTRACT_NORMALIZER_MAP: dict[tuple[str, int], NormalizerFactory] = {
     ("market_eod", 1): MarketEODContractNormalizer,
+    ("market_eod", 2): MarketEODV2ContractNormalizer,
     ("market_minute", 1): MarketMinuteContractNormalizer,
     ("futures_eod", 1): FuturesEODContractNormalizer,
 }
@@ -335,7 +337,7 @@ class IngestionService:
     async def _accept_existing_contract_delivery(
         self,
         existing_raw: RawMarketPayload,
-        request: IngressRequestV1,
+        request: IngressRequest,
         request_payload_sha256: str,
         attempt_id: UUID,
         delivery_part_id: UUID | None = None,
@@ -451,7 +453,7 @@ class IngestionService:
 
     async def store_raw_payload(
         self,
-        request: IngressRequestV1,
+        request: IngressRequest,
         run_id: UUID,
         *,
         schema_id: str | None = None,
@@ -704,7 +706,7 @@ class IngestionService:
 
     async def ingest_contract(
         self,
-        request: IngressRequestV1,
+        request: IngressRequest,
         attempt_id: UUID,
     ) -> tuple[UUID, str, bool]:
         """Persist a validated canonical contract and enqueue schema-based normalization."""

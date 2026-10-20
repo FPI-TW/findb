@@ -121,3 +121,40 @@ def test_taifex_preview_uses_shared_catalog_and_unknown_rows(monkeypatch, capsys
     assert output["estimated_provider_calls"] == 10
     assert output["estimated_rows"] is None
     assert len(requests) == 1 and requests[0].url.path.endswith("/preview")
+
+
+@pytest.mark.parametrize("status", ["completed", "partial", "failed", "cancelled"])
+def test_factset_wait_reports_terminal_gaps_without_polling_until_timeout(
+    monkeypatch, capsys, status
+):
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    monkeypatch.setenv(
+        "FETCHER_FULL_MARKET_CONFIG", str(SCHEDULE.parent / "full_market.production.v1.json")
+    )
+    monkeypatch.setenv("FINDB_ADMIN_API_URL", "https://findb.example")
+    monkeypatch.setenv("FINDB_BACKFILL_ADMIN_API_KEY", "secret")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path.endswith("/preview"):
+            return httpx.Response(200, json={"scope_valid": True, "days": [{"valid": True}]})
+        if request.method == "POST":
+            return httpx.Response(202, json={"request_id": "factset-request", "status": "queued"})
+        return httpx.Response(
+            200, json={"data": [{"request_id": "factset-request", "status": status}]}
+        )
+
+    def no_sleep(_):
+        pytest.fail("terminal request must not keep polling")
+
+    monkeypatch.setattr(production_backfill_cli.time, "sleep", no_sleep)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        code = production_backfill_cli.main(
+            [*_args("factset", "hk_equity_eod"), "--deliver", "--wait"], client=client
+        )
+    assert code == (0 if status == "completed" else 3)
+    output = json.loads(capsys.readouterr().out)
+    assert output["terminal"]["status"] == status
+    assert output["estimated_provider_calls"] == 1 and output["estimated_rows"] is None
+    assert len(requests) == 3

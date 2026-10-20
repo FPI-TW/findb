@@ -426,6 +426,7 @@ async def claim_historical_backfill_item(
         trade_date=item.trade_date,
         lease_token=item.lease_token,
         lease_expires_at=item.lease_expires_at,
+        universe_snapshot=item.request.universe_snapshot,
     )
 
 
@@ -441,7 +442,7 @@ async def complete_historical_backfill_item(
     provider = db.info.get("source_name")
     if not isinstance(provider, str) or not provider:
         raise HTTPException(status_code=403, detail="Source provider identity unavailable")
-    if body.status == "completed" and (body.failure_code or body.failure_message):
+    if body.status in {"completed", "partial"} and (body.failure_code or body.failure_message):
         raise HTTPException(status_code=422, detail="completed item cannot include failure details")
     try:
         item = await complete_item(

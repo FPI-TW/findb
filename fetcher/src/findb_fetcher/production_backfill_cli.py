@@ -30,7 +30,9 @@ class _Parser(argparse.ArgumentParser):
 def build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="findb-fetch-backfill-plan")
     parser.add_argument(
-        "--provider", required=True, choices=("twelve_data", "finlab", "shioaji", "taifex")
+        "--provider",
+        required=True,
+        choices=("twelve_data", "finlab", "shioaji", "taifex", "factset"),
     )
     parser.add_argument("--dataset-key", required=True)
     parser.add_argument("--start-date", required=True, type=date.fromisoformat)
@@ -54,7 +56,7 @@ def _default_schedule_file() -> Path:
 
 
 def _scope(path: Path, provider: str, dataset_key: str) -> tuple[int, int | None]:
-    if provider == "taifex":
+    if provider in {"taifex", "factset"}:
         from findb_fetcher.config import app_environment
         from findb_fetcher.full_market_cli import load_config
 
@@ -69,7 +71,7 @@ def _scope(path: Path, provider: str, dataset_key: str) -> tuple[int, int | None
             for feed in config["feeds"]
         ):
             raise BackfillCLIError("requested production EOD scope is not enabled")
-        return 5, None
+        return (1 if provider == "factset" else 5), None
     if provider == "shioaji":
         raise BackfillCLIError("Shioaji historical backfill is not supported")
     manifest = load_schedule_manifest(path)
@@ -199,6 +201,7 @@ def main(argv: Sequence[str] | None = None, *, client: httpx.Client | None = Non
                     current = _find_request(listing, request_id)
                     if current is not None and current.get("status") in {
                         "completed",
+                        "partial",
                         "failed",
                         "cancelled",
                     }:

@@ -19,6 +19,7 @@ PROVIDER_DATASET_SCOPE: dict[str, tuple[str, ...]] = {
     "finlab": ("tw_equity_eod", "tw_etf_eod"),
     "shioaji": ("tw_equity_minute", "tw_etf_minute"),
     "taifex": ("tw_futures_eod",),
+    "factset": ("hk_equity_eod",),
 }
 
 

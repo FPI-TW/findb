@@ -84,6 +84,18 @@ locals {
       consumer      = "finlab"
       status        = "active"
     }
+    "fetcher/api/source/factset" = {
+      unit          = "fetcher"
+      relative_name = "api/source/factset"
+      consumer      = "factset"
+      status        = "active"
+    }
+    "fetcher/provider/factset" = {
+      unit          = "fetcher"
+      relative_name = "provider/factset"
+      consumer      = "factset"
+      status        = "active"
+    }
     "fetcher/api/source/shioaji" = {
       unit          = "fetcher"
       relative_name = "api/source/shioaji"

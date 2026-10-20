@@ -205,6 +205,61 @@
           ]
         }
       ]
+    },
+    "factset": {
+      "secrets": [
+        {
+          "name": "runtime/configuration",
+          "required_keys": [
+            "FETCHER_SOURCE_API_URL",
+            "FETCHER_REQUEST_TIMEOUT_SECONDS",
+            "FETCHER_SCHEDULER_CONTROL_POLL_SECONDS",
+            "FETCHER_MAX_ATTEMPTS",
+            "FETCHER_MAX_RETRY_AFTER_SECONDS",
+            "CLOUDFLARE_R2_ACCOUNT_ID",
+            "CLOUDFLARE_R2_RAW_BUCKET",
+            "CLOUDFLARE_R2_MAX_OBJECT_BYTES"
+          ],
+          "optional_keys": [
+            "TWELVE_DATA_BASE_URL",
+            "TWELVE_DATA_TIMEOUT_SECONDS",
+            "TWELVE_DATA_MAX_RESPONSE_BYTES",
+            "SHIOAJI_SIMULATION",
+            "TAIFEX_BASE_URL",
+            "TAIFEX_TIMEOUT_SECONDS",
+            "TAIFEX_MAX_RESPONSE_BYTES",
+            "PROVIDER_WORK_REQUIRED"
+          ]
+        },
+        {
+          "name": "api/source/factset",
+          "required_keys": [
+            "FETCHER_FACTSET_SOURCE_CLIENT_KEY"
+          ]
+        },
+        {
+          "name": "provider/factset",
+          "required_keys": [
+            "FACTSET_HOST",
+            "FACTSET_USER",
+            "FACTSET_PASSWORD"
+          ],
+          "optional_keys": [
+            "FACTSET_PORT",
+            "FACTSET_QUERY_TIMEOUT_SECONDS"
+          ]
+        },
+        {
+          "name": "r2/raw",
+          "required_keys": [
+            "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY"
+          ],
+          "optional_keys": [
+            "CLOUDFLARE_R2_RAW_SESSION_TOKEN"
+          ]
+        }
+      ]
     }
   }
 }

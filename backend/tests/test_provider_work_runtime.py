@@ -83,7 +83,7 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
     from tests.test_provider_work import attest_cutover
 
     inodes = {}
-    for provider in ("finlab", "shioaji", "taifex", "twelve_data"):
+    for provider in ("factset", "finlab", "shioaji", "taifex", "twelve_data"):
         with coordinator.host_lock(provider) as (_, inode):
             inodes[provider] = inode
     await attest_cutover(test_session, inodes)

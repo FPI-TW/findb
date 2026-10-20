@@ -17,7 +17,7 @@ from app.models.canonical import (
     MarketDataMinute,
 )
 from app.schemas.ingress import FuturesEODRow
-from app.services.dq.validators import DQIssueRecord
+from app.services.dq.validators import DQIssueRecord, MarketEODV2DQValidator
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
 from app.services.normalize.types import MappedRecord, MarketMinuteRecord
 from app.utils import utc_now, uuid7
@@ -98,6 +98,14 @@ class MarketEODContractNormalizer(BaseNormalizer):
                 )
             )
         return records
+
+
+class MarketEODV2ContractNormalizer(MarketEODContractNormalizer):
+    """Preserve v1 mapping while rejecting contradictory OHLC rows before writes."""
+
+    def __init__(self, db, dataset_config: dict | None = None):
+        super().__init__(db, dataset_config)
+        self.dq_validator = MarketEODV2DQValidator()
 
 
 class FuturesEODContractNormalizer(BaseNormalizer):

@@ -91,7 +91,7 @@ async def list_delivery_plans(
     ]
     policies = {
         provider: execution_policy(provider)
-        for provider in ("twelve_data", "finlab", "shioaji", "taifex")
+        for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset")
     }
     if not paginated:
         return DeliveryPlanListResponse(

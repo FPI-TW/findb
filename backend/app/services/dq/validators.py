@@ -366,3 +366,31 @@ class DQValidator:
             trade_date=record.trade_date if isinstance(record.trade_date, datetime) else None,
             raw_data=record.raw_data,
         )
+
+
+class MarketEODV2DQValidator(DQValidator):
+    """Check every provided OHLC value without changing v1 or minute semantics."""
+
+    def _check_ohlc_high(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:
+        values = [value for value in (record.open, record.low, record.close) if value is not None]
+        if record.high is not None and values and record.high < max(values):
+            return DQIssueRecord(
+                issue_type="OHLC_HIGH_CHECK",
+                severity="error",
+                description="High is below a provided open, low, or close",
+                trade_date=record.trade_date if isinstance(record.trade_date, datetime) else None,
+                raw_data=record.raw_data,
+            )
+        return None
+
+    def _check_ohlc_low(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:
+        values = [value for value in (record.open, record.high, record.close) if value is not None]
+        if record.low is not None and values and record.low > min(values):
+            return DQIssueRecord(
+                issue_type="OHLC_LOW_CHECK",
+                severity="error",
+                description="Low is above a provided open, high, or close",
+                trade_date=record.trade_date if isinstance(record.trade_date, datetime) else None,
+                raw_data=record.raw_data,
+            )
+        return None

@@ -65,7 +65,7 @@ class PreparedLookup(FenceRequest):
 
 
 class SettleRequest(FenceRequest):
-    outcome: Literal["completed", "failed", "cancelled", "retry"]
+    outcome: Literal["completed", "partial", "failed", "cancelled", "retry"]
     proof: dict
     retry_at: datetime | None = None
     failure_code: str | None = None

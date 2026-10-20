@@ -22,6 +22,7 @@ from app.services.ingress_contracts import (
 )
 from app.services.normalize import (
     MarketEODContractNormalizer,
+    MarketEODV2ContractNormalizer,
     MarketMinuteContractNormalizer,
 )
 from scripts.seed_data import DATASETS
@@ -365,7 +366,12 @@ def test_registry_dispatches_explicit_contract_version():
     request = validate_ingress_request(_market_eod_request())
 
     assert isinstance(request, MarketEODIngressRequest)
-    assert supported_contracts() == (("futures_eod", 1), ("market_eod", 1), ("market_minute", 1))
+    assert supported_contracts() == (
+        ("futures_eod", 1),
+        ("market_eod", 1),
+        ("market_eod", 2),
+        ("market_minute", 1),
+    )
 
 
 @pytest.mark.parametrize(
@@ -556,9 +562,9 @@ def test_contract_registry_does_not_normalize_dispatch_discriminators():
 
 def test_registry_does_not_guess_unknown_or_missing_versions():
     value = _market_eod_request()
-    value["schema_version"] = 2
+    value["schema_version"] = 99
 
-    with pytest.raises(UnsupportedIngressContractError, match="market_eod.v2"):
+    with pytest.raises(UnsupportedIngressContractError, match="market_eod.v99"):
         validate_ingress_request(value)
 
     del value["schema_version"]
@@ -633,7 +639,7 @@ def test_contract_normalizer_routing_requires_schema_id_and_version():
             schema_id="market_eod",
             schema_version=2,
         )
-        is None
+        is MarketEODV2ContractNormalizer
     )
     assert (
         _select_normalizer_for_payload(

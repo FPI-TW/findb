@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
@@ -145,7 +146,17 @@ class MarketEODRow(_OHLCRow):
     total_ticks: Optional[NonNegativeInt] = None
 
 
-def _validate_payload_batch(batch: IngressBatch, data: list[MarketEODRow]) -> None:
+class MarketEODRowV2(MarketEODRow):
+    """The v1 fields, with relational OHLC checks deferred to row-level DQ."""
+
+    @model_validator(mode="after")
+    def validate_ohlc_bounds(self) -> "MarketEODRowV2":
+        # Override only the inherited relational validator. Field constraints,
+        # including required close and non-negative prices, remain unchanged.
+        return self
+
+
+def _validate_payload_batch(batch: IngressBatch, data: Sequence[MarketEODRow]) -> None:
     ensure_data_items_count_within_limit(len(data))
     if batch.declared_record_count != len(data):
         raise PydanticCustomError(
@@ -181,6 +192,27 @@ class MarketEODPayload(BaseModel):
 
     @model_validator(mode="after")
     def validate_batch_and_rows(self) -> "MarketEODPayload":
+        _validate_payload_batch(self.batch, self.data)
+        natural_keys = [(row.symbol, row.trade_date) for row in self.data]
+        if len(natural_keys) != len(set(natural_keys)):
+            raise PydanticCustomError(
+                "duplicate_delivery_key",
+                "duplicate (symbol, trade_date) rows are not allowed",
+            )
+        ensure_payload_size_within_limit(self.model_dump(mode="json"))
+        return self
+
+
+class MarketEODPayloadV2(BaseModel):
+    """Payload body for ``market_eod.v2``; invalid OHLC relationships reach DQ."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch: IngressBatch
+    data: list[MarketEODRowV2]
+
+    @model_validator(mode="after")
+    def validate_batch_and_rows(self) -> "MarketEODPayloadV2":
         _validate_payload_batch(self.batch, self.data)
         natural_keys = [(row.symbol, row.trade_date) for row in self.data]
         if len(natural_keys) != len(set(natural_keys)):
@@ -520,6 +552,14 @@ class MarketEODIngressRequest(_IngressRequest):
     payload: MarketEODPayload
 
 
+class MarketEODIngressRequestV2(_IngressRequest):
+    """Complete ``market_eod.v2`` request."""
+
+    schema_id: Literal["market_eod"]
+    schema_version: Literal[2]
+    payload: MarketEODPayloadV2
+
+
 class MarketMinuteIngressRequest(_IngressRequest):
     """Complete ``market_minute.v1`` request shape with runtime normalization."""
 
@@ -575,3 +615,4 @@ def minute_sequence_key_digest(
 
 
 IngressRequestV1 = MarketEODIngressRequest | MarketMinuteIngressRequest | FuturesEODIngressRequest
+IngressRequest = IngressRequestV1 | MarketEODIngressRequestV2

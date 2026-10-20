@@ -80,6 +80,7 @@ fi
 : "${TWELVE_IMAGE_REF:?TWELVE_IMAGE_REF is required}"
 : "${FINLAB_IMAGE_REF:?FINLAB_IMAGE_REF is required}"
 : "${SHIOAJI_IMAGE_REF:?SHIOAJI_IMAGE_REF is required}"
+: "${FACTSET_IMAGE_REF:?FACTSET_IMAGE_REF is required}"
 
 FETCHER_RUNTIME_PROFILE=unified
 export FETCHER_RUNTIME_PROFILE
@@ -143,10 +144,11 @@ validate_image() {
 validate_image "$TWELVE_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/twelve-data"
 validate_image "$FINLAB_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/finlab"
 validate_image "$SHIOAJI_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/shioaji"
+validate_image "$FACTSET_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/factset"
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
-preserve_env=PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF
+preserve_env=PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF,FACTSET_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -216,7 +218,7 @@ initial_runtime_exists() {
   return 1
 }
 retained_full_market=false
-for pair in "findb-pilot-twelve-data:findb-full-market-twelve-data" "findb-pilot-finlab:findb-full-market-finlab" "findb-pilot-shioaji:findb-full-market-shioaji" "findb-pilot-taifex:findb-full-market-taifex"; do
+for pair in "findb-pilot-twelve-data:findb-full-market-twelve-data" "findb-pilot-finlab:findb-full-market-finlab" "findb-pilot-shioaji:findb-full-market-shioaji" "findb-pilot-taifex:findb-full-market-taifex" "findb-pilot-factset:findb-full-market-factset"; do
   pilot_name="${pair%%:*}"
   full_name="${pair#*:}"
   for base in "$full_name" "$pilot_name" "findb-historical-${full_name#findb-full-market-}"; do
@@ -487,7 +489,7 @@ registered_original() {
 # Pull each exact image once per phase with a secret-free consumer. Individual
 # provider credentials remain confined to their own runtime wrapper invocation.
 run_runtime --consumer images --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-  bash -s -- "$TWELVE_IMAGE_REF" "$FINLAB_IMAGE_REF" "$SHIOAJI_IMAGE_REF" <<'PREPARE_IMAGES'
+  bash -s -- "$TWELVE_IMAGE_REF" "$FINLAB_IMAGE_REF" "$SHIOAJI_IMAGE_REF" "$FACTSET_IMAGE_REF" <<'PREPARE_IMAGES'
 set -euo pipefail
 for image in "$@"; do
   docker pull "$image" >/dev/null
@@ -531,7 +533,7 @@ for legacy in findb-fetcher-scheduler findb-fetcher-finlab-scheduler findb-fetch
     exit 1
   fi
 done
-provider_count=8
+provider_count=10
 for execution_profile in pilot full_market; do
   export FETCHER_CONSUMER_PROFILE="$execution_profile"
   state_dir="$pilot_state"
@@ -540,10 +542,11 @@ for execution_profile in pilot full_market; do
     state_dir="$full_market_state"
     name_prefix=findb-full-market
   fi
-  for provider in twelve-data finlab shioaji taifex; do
+  for provider in twelve-data finlab shioaji taifex factset; do
     identity="${provider//-/_}"
     case "$provider" in
       twelve-data|taifex) image="$TWELVE_IMAGE_REF"; cache_dir=- ;;
+      factset) image="$FACTSET_IMAGE_REF"; cache_dir=- ;;
       finlab) image="$FINLAB_IMAGE_REF"; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
       shioaji) image="$SHIOAJI_IMAGE_REF"; cache_dir=/var/lib/findb-shioaji-fetcher/cache ;;
     esac
@@ -563,13 +566,15 @@ done
 # Historical requests retain their existing provider-specific durable directory.
 # They are independently journaled consumers, never side effects of pilot release.
 export FETCHER_CONSUMER_PROFILE=historical
-# historical-taifex-v1: accepted installations require all four historical consumers.
-for provider in twelve-data finlab shioaji taifex; do
+# historical-taifex-v1: accepted installations require the TAIFEX historical consumer.
+# factset-consumers-v1: accepted installations require five providers and fifteen consumers.
+for provider in twelve-data finlab shioaji taifex factset; do
   case "$provider" in
     twelve-data) image="$TWELVE_IMAGE_REF"; state_dir=/var/lib/findb-fetcher/historical; cache_dir=- ;;
     finlab) image="$FINLAB_IMAGE_REF"; state_dir=/var/lib/findb-finlab-fetcher/historical; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
     shioaji) image="$SHIOAJI_IMAGE_REF"; state_dir=/var/lib/findb-shioaji-fetcher/historical; cache_dir=/var/lib/findb-shioaji-fetcher/cache ;;
     taifex) image="$TWELVE_IMAGE_REF"; state_dir=/var/lib/findb-taifex-fetcher/historical; cache_dir=- ;;
+    factset) image="$FACTSET_IMAGE_REF"; state_dir=/var/lib/findb-factset-fetcher/historical; cache_dir=- ;;
   esac
   stable="findb-historical-$provider"
   register_provider "$stable" "${stable}-previous"

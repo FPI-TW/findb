@@ -975,7 +975,7 @@ class HistoricalBackfillRequest(Base):
     __table_args__ = (
         UniqueConstraint("request_key", name="uq_historical_backfill_request_key"),
         CheckConstraint(
-            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled')",
+            "status IN ('queued', 'running', 'completed', 'partial', 'failed', 'cancelled')",
             name="historical_backfill_request_status_valid",
         ),
         CheckConstraint("start_date <= end_date", name="historical_backfill_request_date_order"),
@@ -991,6 +991,7 @@ class HistoricalBackfillRequest(Base):
     market: Mapped[str] = mapped_column(String(10), nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    universe_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)
     cancelled_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -1017,7 +1018,7 @@ class HistoricalBackfillItem(Base):
     __table_args__ = (
         UniqueConstraint("request_id", "trade_date", name="uq_historical_backfill_item_date"),
         CheckConstraint(
-            "status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'skipped_calendar')",
+            "status IN ('pending', 'running', 'completed', 'partial', 'failed', 'cancelled', 'skipped_calendar')",
             name="historical_backfill_item_status_valid",
         ),
         Index("idx_historical_backfill_item_claim", "status", "trade_date"),

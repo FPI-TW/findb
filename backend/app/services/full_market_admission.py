@@ -92,7 +92,7 @@ async def reconcile_environment(db: AsyncSession, *, actor: str) -> None:
     if get_settings().PROVIDER_WORK_REQUIRED:
         from app.services.provider_work import lock_provider
 
-        for provider in ("finlab", "shioaji", "taifex", "twelve_data"):
+        for provider in ("factset", "finlab", "shioaji", "taifex", "twelve_data"):
             await lock_provider(db, provider)
     row = await lock_environment(db)
     enabled = get_settings().FULL_MARKET_ENABLED
@@ -305,7 +305,7 @@ def capacity_proof(
         5 if provider == "finlab" else 7 if provider == "taifex" else count
         for count in members.values()
     )
-    calls += {"twelve_data": 4, "finlab": 6, "shioaji": 5, "taifex": 1}[provider]
+    calls += {"twelve_data": 4, "finlab": 6, "shioaji": 5, "taifex": 1, "factset": 2}[provider]
     required = math.ceil(calls * 1.2)
     required_bytes = required * proof.max_response_bytes
     rate = min(proof.requests_per_second, proof.requests_per_minute / 60)
@@ -323,7 +323,7 @@ def capacity_proof(
     ) + source_requests * (
         proof.source_check_seconds + 60 / (0.8 * proof.source_requests_per_minute)
     )
-    windows = {"us_equity_eod": 10800, "hk_equity_eod": 14400, "tw_futures_eod": 18000}
+    windows = {"us_equity_eod": 10800, "hk_equity_eod": 16200, "tw_futures_eod": 18000}
     completion_window = min(
         proof.completion_window_seconds,
         min(windows.get(dataset, 14400) for dataset in members),
@@ -376,6 +376,10 @@ async def eligibility(
     for dataset in datasets:
         reasons: list[str] = []
         today = local_today(dataset)
+        from app.services.hk_provider_cutover import acquisition_allowed
+
+        if not acquisition_allowed(dataset, provider):
+            reasons.append("provider_acquisition_cutover")
         state = await db.get(
             FullMarketDatasetState,
             {"dataset_key": dataset.dataset_key, "execution_profile": profile},
@@ -605,11 +609,20 @@ async def account_authorization(
         blockers.append("full_market_flag_disabled")
     if not _valid_source_binding(client, provider):
         blockers.append("full_market_source_binding_invalid")
+    from app.services.hk_provider_cutover import acquisition_allowed
+
+    authorized = []
+    if client and not blockers:
+        for dataset in await db.scalars(
+            select(DatasetRegistry).where(
+                DatasetRegistry.dataset_key.in_(client.allowed_datasets or [])
+            )
+        ):
+            if acquisition_allowed(dataset, provider, maintenance=True):
+                authorized.append(dataset.dataset_key)
     return {
-        "acquisition_allowed": not blockers,
+        "acquisition_allowed": not blockers and bool(authorized),
         "acquisition_blockers": blockers,
-        "authorized_dataset_keys": list(client.allowed_datasets or [])
-        if not blockers and client
-        else [],
+        "authorized_dataset_keys": sorted(authorized),
         "declaration_sha256": None,
     }

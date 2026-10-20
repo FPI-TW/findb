@@ -33,7 +33,9 @@
             "CLOUDFLARE_R2_CANONICAL_BUCKET",
             "FINDB_TLS_CERT_PATH",
             "FINDB_TLS_PRIVATE_KEY_PATH",
-            "PROVIDER_WORK_REQUIRED"
+            "PROVIDER_WORK_REQUIRED",
+            "FACTSET_SKIP_NON_TRADING_DAYS",
+            "EOD_LONG_GAP_TRADING_DAYS"
           ]
         }
       ]
@@ -132,7 +134,9 @@
             "TAIFEX_SKIP_NON_TRADING_DAYS"
           ],
           "optional_keys": [
-            "PROVIDER_WORK_REQUIRED"
+            "PROVIDER_WORK_REQUIRED",
+            "FACTSET_SKIP_NON_TRADING_DAYS",
+            "EOD_LONG_GAP_TRADING_DAYS"
           ]
         },
         {

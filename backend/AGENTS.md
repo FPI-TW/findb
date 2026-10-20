@@ -65,6 +65,8 @@ Admin負責已認證的營運、修正與治理操作。
 `app/services/normalize/`只處理provider-neutral versioned contracts。目前正式路徑為：
 
 - `market_eod.v1` -> `MarketEODContractNormalizer`
+- `market_eod.v2` -> `MarketEODV2ContractNormalizer`；僅將 OHLC 關係移至逐列 DQ，保留
+  v1 結構限制與原 provider 設定。`completed_with_errors` 不代表 FIFO／historical 已完整完成。
 - `market_minute.v1` -> `MarketMinuteContractNormalizer`
 - `futures_eod.v1` -> `FuturesEODContractNormalizer`，依實際產品／到期契約／交易日期／交易時段寫入
   `futures_contract_eod`；不得由契約價格產生 continuous 或產品層級 latest close。

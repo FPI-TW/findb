@@ -22,11 +22,11 @@ async def attest_cutover(db, identities=None):
             "environment": queue.environment(),
             "host_id": "test-host",
             "inventory_sha256": "a" * 64,
-            "checked_at": utc_now().isoformat(),
+            "checked_at": queue.utc_now().isoformat(),
             "host_lock_identities": identities
             or {
                 provider: "local:1:22"
-                for provider in ("finlab", "shioaji", "taifex", "twelve_data")
+                for provider in ("factset", "finlab", "shioaji", "taifex", "twelve_data")
             },
         },
     )
