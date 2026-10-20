@@ -1,6 +1,8 @@
 # Provider work FIFO
 
-本工作分支提供統一 provider work protocol；尚未部署或啟用 staging／production。
+統一 provider work protocol 已在 staging 完成 Owner cutover 與 enforcement 部署；
+FactSet 首次原生驗收仍在進行，production 尚未啟用。當前環境狀態見
+[deployment runbook](../operations/deployment.md#provider-work-切換)。
 `PROVIDER_WORK_REQUIRED=false` 仍是已提交的 local、staging、production 預設設定。
 啟用須先完成 [deployment runbook](../operations/deployment.md#provider-work-切換) 的 drain、單 host／
 shared inode preflight 與 Owner attestation；不能只改旗標便宣稱環境已完成切換。

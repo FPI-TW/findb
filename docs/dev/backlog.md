@@ -46,15 +46,18 @@ Production native 資料與實際 rollback 演練由
 實作契約與操作見 [FactSet 港股日行情](../operations/factset_hk.md)；staging ECR、IAM／KMS
 及獨立 Source／RDS credentials 已就緒；backend migration、FactSet Source registry、
 停止中的 Pilot／Full scheduler seed、Fetcher host secret loader 與 Source 契約認證已核對。
-Staging 已完成十五個 consumers 的 runtime 部署驗收；原生資料驗收尚未完成。
+Staging Backend 與十五個 consumers 已完成 `f7d0d8f` 部署、enforcement 與健康核對。
+59 筆 prepared／receipt 與 DB terminal、一致備份、十五 consumer graceful stop、shared-inode
+attestation、Owner cutover，以及原 plans／first dates 的保留均已核對。部署與備份證據見
+[deployment](../operations/deployment.md#factset-港股版本下限)。
 
-- [ ] 修復 enforced dispatch 前的授權順序問題並恢復三個 FactSet consumers。Backend-first 部署、
-  59 筆 prepared／receipt 與 DB terminal 核對、一致備份、十五 consumer graceful stop、shared-inode
-  attestation、Owner cutover 與兩端 enforcement 已完成；首次 maintenance 尚未實際 dispatch。
-  部署與備份證據見 [deployment](../operations/deployment.md#factset-港股版本下限)。
-- [ ] 發布 HKEX 第一份 baseline，記錄明確 HK provider cutover，執行兩檔單日、異常歷史樣本、
-  全名單的真實 R2／Source／queue／canonical／Serve 驗收；核對 retained v1 排空與 rollback 下限。
-  本機原生快照重播與測試 raw storage 不能代替此項環境驗收。
+- [ ] 清單日期生效後，以正常日期的 maintenance 取得並發布 HKEX 第一份 baseline。10/20 夜間
+  官方檔案已標示 10/21，原工作依 future-date 規則安全結算 failed；保留原 journal／預算，
+  不繞過日期驗證。再驗證每日更新、當日成員凍結與明確 HK provider cutover／rollback 下限。
+- [ ] 驗證 staging 到 FactSet RDS 的 TLS／查詢，以及兩檔單日、異常歷史樣本、全名單的真實
+  R2／Source／queue／canonical／Serve 流程，核對 partial／missing／DQ。兩檔 daily 須於
+  香港時間 18:30–23:00 抓取；本機原生快照重播或歷史回補不能替代 daily 環境驗收。
+  目前 Pilot／Full controls 皆停止；驗收後維持 Pilot 每日兩檔、Full 停止。
 - [ ] Staging 驗收後，套用 production 的新增基礎設施與 secrets，再依既有 production promotion
   與 Owner control 流程啟用；維持目前上市
   cohort 回補範圍、18:30–23:00 新 I/O 窗口、明確 partial／missing／DQ 證據，不自動 fallback。
