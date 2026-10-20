@@ -388,6 +388,7 @@ class Acquisition:
         require_acquisition(self.provider)
         for _ in range(_dispatch_attempts.get()):
             self.prepare()
+            require_acquisition(self.provider)
             grant = self.authorize()
             now = time.time()
             if grant.valid() and _windows(now) == self.prepared_windows:
@@ -401,10 +402,11 @@ class Acquisition:
     def confirm_start(self, timestamp: float) -> None:
         from findb_fetcher.provider_work import require_acquisition
 
-        require_acquisition(self.provider)
+        work_fresh = require_acquisition(self.provider, local_only=True)
         timestamp = time.time()
         if (
-            self.authorization is None
+            not work_fresh
+            or self.authorization is None
             or not self.authorization.valid()
             or _windows(timestamp) != self.prepared_windows
             or not -0.250 <= timestamp - self.authorization.checked_at < REMOTE_AGE_SECONDS
@@ -424,22 +426,26 @@ class Acquisition:
         rearming the intent, resetting its start time, or charging it twice.
         The child also checks the returned deadline immediately before I/O.
         """
+        from findb_fetcher.provider_work import acquisition_dispatch_deadline, require_acquisition
+
         if self.started_at is None:
             self.start()
             assert self.authorization is not None
-            return self.authorization.deadline()
-        from findb_fetcher.provider_work import require_acquisition
+            return acquisition_dispatch_deadline(self.provider, self.authorization.deadline())
 
         for _ in range(_dispatch_attempts.get()):
-            grant = self.authorize()
             require_acquisition(self.provider)
+            grant = self.authorize()
+            work_fresh = require_acquisition(self.provider, local_only=True)
             now = time.time()
             if (
-                grant.valid()
+                work_fresh
+                and grant.valid()
+                and _windows(now) == _windows(grant.receipt_utc)
                 and -0.250 <= now - grant.checked_at < REMOTE_AGE_SECONDS
                 and (grant.expires_at is None or now < grant.expires_at)
             ):
-                return grant.deadline()
+                return acquisition_dispatch_deadline(self.provider, grant.deadline())
         raise QuotaBlockedError("authorization dispatch latency exceeds safe bound")
 
     def rate_limited(self, retry_after: str | None = None) -> None:

@@ -13,6 +13,7 @@ from findb_fetcher import provider_work as queue
 from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.providers.finlab import FinLabSdkGateway
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+from provider_work_support import work_authorization
 from sdk_bootstrap_harness import install_launcher
 
 
@@ -26,6 +27,7 @@ from sdk_bootstrap_harness import install_launcher
         "generation_auth",
         "heartbeat_fence",
         "generation_fence",
+        "remote_fence",
     ],
 )
 def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
@@ -36,7 +38,6 @@ def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
     path = tmp_path / "governor.sqlite3"
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
     clock = [time.time()]
-    revoked = [False]
     calls = []
     fence_checks = []
 
@@ -49,17 +50,21 @@ def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
                     owner.failed.set()
                 if len(fence_checks) == final_check and fault == "generation_fence":
                     owner.work["generation"] += 1
-            if route.endswith("/authorize") and revoked[0]:
+            if (
+                route.endswith("/authorize")
+                and len(fence_checks) == final_check
+                and fault == "remote_fence"
+            ):
                 raise FullMarketProtocolError(
                     "fence differs", status_code=409, code="PROVIDER_WORK_FENCE"
                 )
-            return {}
+            return work_authorization(provider, body) if route.endswith("/authorize") else {}
 
     def grant():
         if fault == "heartbeat_auth":
             owner.failed.set()
         elif fault == "generation_auth":
-            revoked[0] = True
+            owner.work["generation"] += 1
         return acq.Authorization(clock[0], clock[0], clock[0], provider=provider)
 
     def sleep(seconds):
@@ -201,7 +206,7 @@ def test_cooldown_publish_lost_ack_keeps_unknown_debt_journal_and_host_quarantin
             if path.endswith("/heartbeat") and body.get("acquisition_not_before"):
                 saved.append(body["acquisition_not_before"])
                 raise FullMarketProtocolError("lost cooldown ACK", status_code=503, retryable=True)
-            return {}
+            return work_authorization("twelve_data", body) if path.endswith("/authorize") else {}
 
     journal = queue.WorkJournal(tmp_path / "work.sqlite3", "original")
     journal.reserve_attempt("original-native", 3)
@@ -256,9 +261,7 @@ def test_cooldown_publish_lost_ack_keeps_unknown_debt_journal_and_host_quarantin
 
 
 @pytest.mark.parametrize("always_slow", [False, True])
-def test_slow_fresh_work_check_reauthorizes_with_original_dispatch_limit(
-    tmp_path, monkeypatch, always_slow
-):
+def test_slow_owner_rpc_precedes_fresh_dispatch_grant(tmp_path, monkeypatch, always_slow):
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
     path = tmp_path / "governor.sqlite3"
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
@@ -272,7 +275,7 @@ def test_slow_fresh_work_check_reauthorizes_with_original_dispatch_limit(
                 checks.append(path)
                 if len(checks) == 2 or (always_slow and len(checks) > 1):
                     time.sleep(0.06)
-            return {}
+            return work_authorization("twelve_data", body) if path.endswith("/authorize") else {}
 
     owner = queue.ProviderWorkSession(
         Source(),
@@ -308,17 +311,494 @@ def test_slow_fresh_work_check_reauthorizes_with_original_dispatch_limit(
                             == 200
                         )
 
-                if always_slow:
-                    with pytest.raises(acq.QuotaBlockedError) as failure:
-                        dispatch()
-                    assert not failure.value.quota_wait
-                else:
-                    dispatch()
-        assert len(grants) == (3 if always_slow else 2) and len(native) == (0 if always_slow else 1)
+                dispatch()
+        assert len(grants) == 1 and len(native) == 1
         with acq.FullMarketState(path).connection() as db:
-            assert db.execute(
-                "SELECT count(*) FROM acquisition_intent WHERE actual_start IS NOT NULL"
-            ).fetchone()[0] == (0 if always_slow else 1)
+            assert (
+                db.execute(
+                    "SELECT count(*) FROM acquisition_intent WHERE actual_start IS NOT NULL"
+                ).fetchone()[0]
+                == 1
+            )
+    finally:
+        queue._current.reset(token)
+        owner.stop()
+
+
+@pytest.mark.parametrize("boundary", ["http", "checkpoint"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "stop",
+        "heartbeat",
+        "generation",
+        "token",
+        "descriptor",
+        "slow_grant",
+        "slow_owner",
+        "owner_expiry",
+        "minute",
+        "owner_missing",
+        "owner_naive",
+        "owner_identity",
+        "owner_stale_check",
+    ],
+)
+def test_fresh_grant_follows_owner_rpc_and_local_checks_fail_closed(
+    tmp_path, monkeypatch, boundary, fault
+):
+    import os
+
+    monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
+    path = tmp_path / "governor.sqlite3"
+    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
+    clock = [1792501200.0]
+    monkeypatch.setattr(
+        acq,
+        "time",
+        SimpleNamespace(
+            time=lambda: clock[0],
+            monotonic=lambda: clock[0],
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        ),
+    )
+    events = []
+    armed = [boundary == "http"]
+
+    class Source:
+        def request(self, method, route, body):
+            if route.endswith("/authorize"):
+                events.append("owner")
+                if armed[0] and fault == "stop":
+                    raise FullMarketProtocolError(
+                        "stopped", status_code=409, code="PROVIDER_WORK_SUSPENDED"
+                    )
+                clock[0] += 5.01 if armed[0] and fault == "slow_owner" else 0.2
+            response = {
+                "work_id": "original",
+                "provider": "twelve_data",
+                **body,
+                "checked_at": datetime_from(clock[0]),
+                "expires_at": datetime_from(
+                    clock[0] + (0.02 if fault == "owner_expiry" and armed[0] else 120)
+                ),
+            }
+            if armed[0]:
+                if fault == "owner_missing":
+                    response.pop("expires_at")
+                elif fault == "owner_naive":
+                    response["expires_at"] = "2026-10-20T23:00:00"
+                elif fault == "owner_identity":
+                    response["token"] = "different"
+                elif fault == "owner_stale_check":
+                    response["checked_at"] = datetime_from(clock[0] - 6)
+            return response
+
+    def datetime_from(timestamp):
+        from datetime import datetime, timezone
+
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+    def grant():
+        events.append("grant")
+        result = acq.Authorization(clock[0], clock[0], clock[0], provider="twelve_data")
+        if armed[0]:
+            if fault == "heartbeat":
+                owner.failed.set()
+            elif fault in {"generation", "token"}:
+                owner.work[fault] = 99 if fault == "generation" else "different"
+            elif fault == "descriptor":
+                os.close(queue.inherited_fds()[0])
+                # Replace the descriptor number, so merely checking existence
+                # cannot mistake an unrelated inode for the locked host file.
+                replacement = os.open(tmp_path / "unrelated", os.O_CREAT | os.O_RDWR, 0o600)
+                assert replacement == queue.inherited_fds()[0]
+            elif fault in {"slow_grant", "owner_expiry"}:
+                clock[0] += 0.06 if fault == "slow_grant" else 0.03
+            elif fault == "minute":
+                clock[0] += 60 - clock[0] % 60
+        return result
+
+    journal = queue.WorkJournal(tmp_path / "work.sqlite3", "original")
+    journal.reserve_attempt("original-operation", 8)
+    owner = queue.ProviderWorkSession(
+        Source(), "twelve_data", {"work_id": "original", "generation": 1, "token": "fence"}, journal
+    )
+    token = queue._current.set(owner)
+    try:
+        with (
+            queue.host_lock("twelve_data", root=tmp_path),
+            acq.authorization_scope(grant, state_path=path),
+        ):
+
+            def dispatch():
+                if boundary == "http":
+                    with httpx.Client(
+                        transport=httpx.MockTransport(
+                            lambda request: (
+                                events.append("native"),
+                                httpx.Response(200, request=request),
+                            )[1]
+                        )
+                    ) as client:
+                        with acq.http_acquisition(
+                            "twelve_data", client, url="https://offline.test", credential="offline"
+                        ) as (_, extensions):
+                            client.get("https://offline.test", extensions=extensions)
+                else:
+                    with acq.Acquisition("twelve_data", credential="offline") as operation:
+                        operation.start()
+                        events.clear()
+                        armed[0] = True
+                        deadline = operation.dispatch_checkpoint()
+                        assert clock[0] < deadline
+                        events.append("native")
+
+            if fault == "none":
+                dispatch()
+                assert events[-3:] == ["owner", "grant", "native"]
+            elif fault == "stop":
+                with pytest.raises(queue.ProviderWorkAcquisitionStopped):
+                    dispatch()
+            elif fault in {
+                "heartbeat",
+                "generation",
+                "token",
+                "descriptor",
+                "owner_missing",
+                "owner_naive",
+                "owner_identity",
+            }:
+                with pytest.raises(queue.ProviderWorkRecoveryBlockedError):
+                    dispatch()
+            else:
+                with pytest.raises(acq.QuotaBlockedError, match="latency"):
+                    dispatch()
+                assert events.count("grant") == 3
+        assert events.count("native") == (fault == "none")
+        with acq.FullMarketState(path).connection() as db:
+            starts = db.execute(
+                "SELECT COUNT(*) FROM acquisition_intent WHERE actual_start IS NOT NULL"
+            ).fetchone()[0]
+            assert starts == (boundary == "checkpoint" or fault == "none")
+            assert (
+                db.execute("SELECT COALESCE(SUM(requests),0) FROM full_quota").fetchone()[0]
+                == 2 * starts
+            )
+        with journal.connection() as db:
+            assert db.execute("SELECT attempts FROM work_budget").fetchone()[0] == 1
+    finally:
+        queue._current.reset(token)
+        owner.stop()
+
+
+@pytest.mark.parametrize("fault", ["slow_owner", "stop_after_connect", "expiry_after_connect"])
+def test_real_factset_child_connect_and_select_use_separate_fresh_grants(
+    tmp_path, monkeypatch, fault
+):
+    import multiprocessing
+    import sys
+
+    from findb_fetcher import provider_process
+    from findb_fetcher.providers import factset
+
+    monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
+    path = tmp_path / "governor.sqlite3"
+    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
+    events, connected = tmp_path / "events", tmp_path / "connected"
+    # Parent is the only writer. Lock-free child reads cannot leave an
+    # abandoned semaphore if the supervisor kills the child at its deadline.
+    elapsed = multiprocessing.get_context("fork").RawValue("d", 0)
+    epoch = 1792501200.0
+
+    def advance(seconds):
+        elapsed.value += seconds
+
+    clock = SimpleNamespace(
+        time=lambda: epoch + elapsed.value, monotonic=lambda: 1000 + elapsed.value, sleep=advance
+    )
+    monkeypatch.setattr(acq, "time", clock)
+    monkeypatch.setattr(provider_process, "time", clock)
+    grants = []
+
+    class Source:
+        def request(self, method, route, body):
+            if connected.exists() and fault == "stop_after_connect":
+                raise FullMarketProtocolError(
+                    "stopped", status_code=409, code="PROVIDER_WORK_SUSPENDED"
+                )
+            advance(0.2)
+            result = work_authorization("factset", body)
+            if connected.exists() and fault == "expiry_after_connect":
+                from datetime import datetime, timezone
+
+                result["expires_at"] = datetime.fromtimestamp(
+                    clock.time() + 0.02, timezone.utc
+                ).isoformat()
+            return result
+
+    def record(event):
+        with events.open("a") as stream:
+            stream.write(event + "\n")
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, sql, params=()):
+            if sql.startswith("SELECT"):
+                record("select")
+
+        def fetchmany(self, count):
+            return []
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def rollback(self):
+            record("rollback")
+
+        def close(self):
+            record("close")
+
+    def connect(**kwargs):
+        record("connect")
+        connected.touch()
+        return Connection()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pymysql",
+        SimpleNamespace(connect=connect, cursors=SimpleNamespace(SSDictCursor=object)),
+    )
+    monkeypatch.setattr(factset.ssl, "create_default_context", lambda **kwargs: object())
+    ca = tmp_path / "ca.pem"
+    ca.touch()
+    owner = queue.ProviderWorkSession(
+        Source(),
+        "factset",
+        {"work_id": "original", "generation": 1, "token": "fence"},
+        queue.WorkJournal(tmp_path / "work.sqlite3", "original"),
+    )
+    token = queue._current.set(owner)
+
+    def grant():
+        grants.append(connected.exists())
+        result = acq.Authorization(
+            clock.monotonic(), clock.time(), clock.time(), provider="factset"
+        )
+        if connected.exists() and fault == "expiry_after_connect":
+            advance(0.03)
+        return result
+
+    try:
+        with (
+            queue.host_lock("factset", root=tmp_path),
+            acq.authorization_scope(grant, state_path=path),
+        ):
+            gateway = factset.FactSetGateway(
+                factset.FactSetConfig("offline.invalid", "reader", "secret", ca)
+            )
+            if fault == "slow_owner":
+                assert json.loads(gateway.prices(date(2026, 10, 15), ("J3TRKQ-L",)))["rows"] == []
+            else:
+                error = (
+                    queue.ProviderWorkAcquisitionStopped
+                    if fault == "stop_after_connect"
+                    else acq.QuotaBlockedError
+                )
+                with pytest.raises(error):
+                    gateway.prices(date(2026, 10, 15), ("J3TRKQ-L",))
+        assert events.read_text().splitlines() == (
+            ["connect", "select", "rollback", "close"] if fault == "slow_owner" else ["connect"]
+        )
+        assert grants == (
+            [False, True]
+            if fault == "slow_owner"
+            else [False]
+            if fault == "stop_after_connect"
+            else [False, True, True, True]
+        )
+        with acq.FullMarketState(path).connection() as db:
+            assert (
+                db.execute(
+                    "SELECT COUNT(*) FROM acquisition_intent WHERE actual_start IS NOT NULL"
+                ).fetchone()[0]
+                == 1
+            )
+            assert [row[0] for row in db.execute("SELECT requests FROM full_quota")] == [1, 1]
+    finally:
+        queue._current.reset(token)
+        owner.stop()
+
+
+def test_shioaji_slow_owner_rpc_does_not_consume_ready_go_grant(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
+    path = tmp_path / "governor.sqlite3"
+    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
+    output = tmp_path / "sdk.jsonl"
+    install_launcher(monkeypatch, output)
+    events = []
+
+    class Source:
+        def request(self, method, route, body):
+            events.append("owner")
+            time.sleep(0.06)
+            return work_authorization("shioaji", body)
+
+    owner = queue.ProviderWorkSession(
+        Source(),
+        "shioaji",
+        {"work_id": "original", "generation": 1, "token": "fence"},
+        queue.WorkJournal(tmp_path / "work.sqlite3", "original"),
+    )
+    token = queue._current.set(owner)
+
+    def grant():
+        assert events[-1] == "owner"
+        events.append("grant")
+        now = time.time()
+        return acq.Authorization(time.monotonic(), now, now, provider="shioaji")
+
+    sdk = None
+    try:
+        with (
+            queue.host_lock("shioaji", root=tmp_path),
+            acq.authorization_scope(grant, state_path=path),
+        ):
+            sdk = PersistentIsolatedShioajiGateway("offline", "offline-secret")
+            assert sdk.fetch_kbars("2330", date(2026, 10, 15))
+            sdk.close()
+            sdk = None
+        native_events = [json.loads(row)["event"] for row in output.read_text().splitlines()]
+        assert all(
+            native_events.count(name) == count
+            for name, count in (("create", 1), ("login", 1), ("contracts", 2), ("kbars", 1))
+        )
+        with acq.FullMarketState(path).connection() as db:
+            assert (
+                db.execute(
+                    "SELECT COUNT(*) FROM acquisition_intent WHERE actual_start IS NOT NULL AND operation_kind!='cleanup'"
+                ).fetchone()[0]
+                == 5
+            )
+    finally:
+        if sdk is not None:
+            sdk.close()
+        queue._current.reset(token)
+        owner.stop()
+
+
+def test_owner_expiry_monotonic_cap_survives_backward_wall_clock(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
+    wall, mono = [1792501200.0], [1000.0]
+    monkeypatch.setattr(
+        acq, "time", SimpleNamespace(time=lambda: wall[0], monotonic=lambda: mono[0])
+    )
+
+    def authorize(method, route, body):
+        response = work_authorization("twelve_data", body)
+        response["expires_at"] = datetime.fromtimestamp(wall[0] + 0.02, timezone.utc).isoformat()
+        return response
+
+    owner = queue.ProviderWorkSession(
+        SimpleNamespace(request=authorize),
+        "twelve_data",
+        {"work_id": "original", "generation": 1, "token": "fence"},
+        queue.WorkJournal(tmp_path / "work.sqlite3", "original"),
+    )
+    token = queue._current.set(owner)
+    try:
+        with queue.host_lock("twelve_data", root=tmp_path):
+            queue.require_acquisition("twelve_data")
+            assert queue.require_acquisition("twelve_data", local_only=True)
+            wall[0] -= 0.01  # Within allowed server skew; UTC expiry alone still passes.
+            mono[0] += 0.03
+            assert wall[0] < owner._authorization_expires
+            assert not queue.require_acquisition("twelve_data", local_only=True)
+    finally:
+        queue._current.reset(token)
+        owner.stop()
+
+
+@pytest.mark.parametrize("bound", ["owner_age", "owner_expiry", "server_ahead"])
+@pytest.mark.parametrize("started", [False, True])
+def test_deferred_child_cannot_outlive_owner_deadline(tmp_path, monkeypatch, bound, started):
+    import multiprocessing
+    from datetime import datetime, timezone
+
+    from findb_fetcher import provider_process
+
+    monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
+    path = tmp_path / "governor.sqlite3"
+    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
+    # Parent is the only writer. Lock-free child reads cannot leave an
+    # abandoned semaphore if the supervisor kills the child at its deadline.
+    elapsed = multiprocessing.get_context("fork").RawValue("d", 0)
+    epoch = 1792501200.0
+
+    def advance(seconds):
+        elapsed.value += seconds
+
+    clock = SimpleNamespace(
+        time=lambda: epoch + elapsed.value, monotonic=lambda: 1000 + elapsed.value, sleep=advance
+    )
+    monkeypatch.setattr(acq, "time", clock)
+    monkeypatch.setattr(provider_process, "time", clock)
+    near_expiry = [False]
+
+    def authorize(method, route, body):
+        if near_expiry[0] and bound == "owner_age":
+            advance(4.99)
+        response = work_authorization("factset", body)
+        if near_expiry[0] and bound in {"owner_expiry", "server_ahead"}:
+            ahead = 0.2 if bound == "server_ahead" else 0
+            response["checked_at"] = datetime.fromtimestamp(
+                clock.time() + ahead, timezone.utc
+            ).isoformat()
+            response["expires_at"] = datetime.fromtimestamp(
+                clock.time() + ahead + 0.01, timezone.utc
+            ).isoformat()
+        return response
+
+    owner = queue.ProviderWorkSession(
+        SimpleNamespace(request=authorize),
+        "factset",
+        {"work_id": "original", "generation": 1, "token": "fence"},
+        queue.WorkJournal(tmp_path / "work.sqlite3", "original"),
+    )
+    token = queue._current.set(owner)
+    called = tmp_path / "native"
+
+    def grant():
+        return acq.Authorization(clock.monotonic(), clock.time(), clock.time(), provider="factset")
+
+    try:
+        with (
+            queue.host_lock("factset", root=tmp_path),
+            acq.authorization_scope(grant, state_path=path),
+        ):
+            with acq.Acquisition("factset", account="offline") as operation:
+                if started:
+                    operation.start()
+                near_expiry[0] = True
+
+                def checkpoint():
+                    deadline = operation.dispatch_checkpoint()
+                    assert deadline <= clock.monotonic() + 0.011
+                    advance(0.02)  # IPC scheduling delay before child receives GO.
+                    return deadline
+
+                with pytest.raises(provider_process.ProviderProcessError):
+                    provider_process.supervised_call(called.touch, checkpoint=checkpoint, timeout=1)
+        assert not called.exists()
     finally:
         queue._current.reset(token)
         owner.stop()

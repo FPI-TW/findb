@@ -387,11 +387,11 @@ Hard crash 在 commit 前會回復完整 v9；commit 後由 v10 reopen。升級�
 一致的 checkpoint 與 sidecars。舊 binary 會拒讀 v10；rollback 必須先停止並確認所有新 work 安全排空，
 使用與舊 binary 相容且已核對原交付狀態的成套備份復原，不能改版號、刪 state 或遺失新 receipts。
 若備份後已有交付，先 reconcile 全部新 immutable bytes／receipts 才能 rollback；account governor
-usage／cooldown 不得退回較舊用量。Staging 已部署此版本，但 provider-work queue 尚未啟用。
+usage／cooldown 不得退回較舊用量。Staging 已部署此版本；provider-work 啟用進度見下方 FactSet 章節。
 
 `b53da90e7f21` 與 `c64eb01f8a32` 為 expand-only migrations（後者保存 provider account cooldown floor）。
-Staging 已部署至 `d75fc12a9b43`，runtime 包含 provider-work-v1 protocol，但仍維持
-`PROVIDER_WORK_REQUIRED=false`，尚未執行 queue cutover。部署證據見下方 FactSet 章節。
+Staging 已部署至 `d75fc12a9b43`，runtime 包含 provider-work-v1 protocol。
+Owner cutover 與兩端 enforcement 的實際狀態見下方 FactSet 章節。
 `infra/env/deployment.schema.json`、兩環境 deployment examples、Compose 與 Fetcher `.env.example`
 均明示 `PROVIDER_WORK_REQUIRED=false`。Backend 與全部 Fetcher consumers 必須一起切換；
 `FULL_MARKET_ENABLED` 是另一個獨立旗標，不能替代 queue cutover。完整邊界見
@@ -464,11 +464,27 @@ Source key 與本次 registry 註冊一致。
 首次填值前須先核對 `AWSCURRENT`；已有版本時不得以初始化流程覆寫。Operator 僅將
 Source key 的 SHA-256 傳到 FinDB application role；註冊須在同一 transaction 中鎖定
 並重驗身分衝突、限定 scope、寫入 audit，遇到衝突或意外輪替即回滾。
-Staging 維持 `FULL_MARKET_ENABLED=true`、`PROVIDER_WORK_REQUIRED=false`；
-十五個 consumers 共用 account bind mount，但 provider-work lock files 尚未初始化，
-尚無完整停止／排空的 shared-inode attestation。旗標切換暫不執行；目前的部署成功
-不代表 provider-work 強制模式或原生資料驗收完成。Production 基礎設施尚未套用，
-尚未執行 HK provider cutover 或啟動 FactSet controls。
+初次 runtime 部署時維持 `FULL_MARKET_ENABLED=true`、`PROVIDER_WORK_REQUIRED=false`。
+2026-10-20 的後續啟用已核對 59 筆 prepared request 的 checksum、Source 202 receipt 與 DB terminal，
+十五個 consumers 均 graceful stop／exit 0。Checkpoint 成套備份位於兩台 staging host 的
+`/var/backups/findb-provider-work/staging-20261020T1230Z`；Fetcher archive SHA-256 為
+`cb80468e204c3b5aa296409b98cb56c5b2f2c6030d93552d94b49ae8d6d84829`，RDS snapshot
+`findb-provider-work-staging-20261020-1230` 已 available。備份標籤不作實際擷取時間；
+Fetcher 擷取於 12:20:28 UTC，RDS snapshot 建立於 12:20:39 UTC。
+
+八份既有 SQLite 的原 tables／rows 比對一致，五組 shared-inode lock proof 通過，Owner cutover
+已提交。兩端 AWS runtime config 與 deployment parameter 僅將 `PROVIDER_WORK_REQUIRED` 改為
+`true`；舊 secret versions、原停止容器與 account usage 均保留。舊 Backend replay
+[39422130758](https://github.com/FPI-TW/findb/actions/runs/39422130758) 在部署前因測試時鐘漂移失敗；
+修正 [PR #322](https://github.com/FPI-TW/findb/pull/322) 已通過 Required CI 並整合。
+[Backend CD 39426038217](https://github.com/FPI-TW/findb/actions/runs/39426038217) 已通過部署驗收，
+revision 為 `8dc1f0a056ed3ed5f8828b410b6f56ee91a055fe`，四個 Backend roles 均已核對
+`PROVIDER_WORK_REQUIRED=true`。[Fetcher CD 39429297439](https://github.com/FPI-TW/findb/actions/runs/39429297439)
+已成功重播 schema-v3 accepted bundle，十五個 consumers 的 enforcement、零重啟與五組
+attested inode 均核對一致。首次 FactSet maintenance 在實際 dispatch 前被取消；Source maintenance
+授權有效，原 journal／budget 保留，三個 FactSet consumers 已 graceful stop 以診斷 dispatch
+授權順序，另外十二個 consumers 與所有 stopped controls 不變。HKEX baseline、HK provider cutover
+及原生行情驗收尚未完成。Production 基礎設施尚未套用。
 舊 bundle v1 仍可供升級前安裝辨識；
 新版 source bundle 與 topology marker 必須一致，promotion 必須含四個 immutable digests。
 
