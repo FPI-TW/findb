@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,16 +14,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.config import get_settings
 from app.models.provider_work import ProviderWork, ProviderWorkOwner
+from app.models.raw import RawMarketPayload
 from app.models.registry import DeliveryMemberEvidence, HistoricalBackfillRequest, IngestionRun
 from app.services.historical_backfill import create_request
+from tests import test_factset_historical as fixtures
 from tests.provider_work_runtime_support import RuntimeHarness
-from tests.test_factset_historical import setup
 from tests.test_provider_work import attest_cutover
 
 
 async def factset_harness(client, db, engine, patch, path, *, members=None, snapshots=None):
     root = Path(__file__).resolve().parents[2]
     patch.syspath_prepend(str(root / "fetcher/src"))
+    from findb_fetcher import factset_eod
     from findb_fetcher import historical_backfill as history
     from findb_fetcher import provider_work as coordinator
     from findb_fetcher.client import SourceAPIClient
@@ -42,7 +44,16 @@ async def factset_harness(client, db, engine, patch, path, *, members=None, snap
         "FETCHER_ACCOUNT_STATE_PATH": str(path / "account/governor.sqlite3"),
     }.items():
         patch.setenv(key, value)
-    headers, _ = await setup(db, patch, members=members)
+    headers, _ = await fixtures.setup(db, patch, members=members)
+
+    # Native snapshots and Source validation share the fixture's aware UTC clock.
+    # Keep existing lease durations, monotonic deadlines and account pacing.
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixtures.NOW.astimezone(tz) if tz is not None else fixtures.NOW
+
+    patch.setattr(factset_eod, "datetime", Clock)
     identities = {}
     for provider in ("factset", "finlab", "shioaji", "taifex", "twelve_data"):
         with coordinator.host_lock(provider) as (_, identity):
@@ -130,9 +141,11 @@ async def factset_harness(client, db, engine, patch, path, *, members=None, snap
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("clock_offset", [timedelta(), timedelta(days=1)])
 async def test_factset_fenced_runner_partial_continues_and_serve_only_has_valid_rows(
-    client, test_session, test_engine, monkeypatch, tmp_path
+    client, test_session, test_engine, monkeypatch, tmp_path, clock_offset
 ):
+    monkeypatch.setattr(fixtures, "NOW", fixtures.NOW + clock_offset)
     h = await factset_harness(client, test_session, test_engine, monkeypatch, tmp_path)
     try:
         assert await h.run(), h.failure
@@ -144,6 +157,8 @@ async def test_factset_fenced_runner_partial_continues_and_serve_only_has_valid_
         assert request.status == "partial"
         runs = list(await test_session.scalars(select(IngestionRun)))
         assert len(runs) == 4
+        fetched_at = list(await test_session.scalars(select(RawMarketPayload.fetched_at)))
+        assert fetched_at == [fixtures.NOW] * 4
         assert (
             sorted(run.status for run in runs) == ["completed"] * 2 + ["completed_with_errors"] * 2
         )
@@ -170,9 +185,6 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
     client, test_session, test_engine, monkeypatch, tmp_path, profile
 ):
     h = await factset_harness(client, test_session, test_engine, monkeypatch, tmp_path)
-    from datetime import datetime
-
-    from findb_fetcher import factset_eod
     from findb_fetcher import full_market_runtime as runtime
     from findb_fetcher.client import SourceAPIClient
     from findb_fetcher.full_market_client import FullMarketSourceClient
@@ -186,12 +198,6 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
     from tests.full_market_fixtures import historical_admission
     from tests.test_factset_historical import NOW
 
-    class Clock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return NOW.astimezone(tz)
-
-    monkeypatch.setattr(factset_eod, "datetime", Clock)
     monkeypatch.setattr(runtime.FactSetConfig, "from_env", classmethod(lambda cls: None))
     monkeypatch.setattr(runtime, "FactSetGateway", lambda config: h.gateway)
     try:
@@ -283,8 +289,6 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
 async def test_factset_prepared_drain_preserves_terminal_domain_and_completion_ack(
     client, test_session, test_engine, monkeypatch, tmp_path, decision
 ):
-    from datetime import timedelta
-
     from app.services.historical_backfill import cancel_request, expire_requests
     from tests.test_factset_historical import NOW
 

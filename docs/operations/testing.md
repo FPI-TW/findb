@@ -407,6 +407,11 @@ maintenance claim，以及 actual account governor 四次 predispatch quota wait
 failure 的原 budget 與 account usage。SQLite frozen-v9 DDL 測試驗證 transactional v10 upgrade、升級
 中 hard crash／reopen、原 rows／prepared／receipts／pins 不變，未知或實際失敗不退款。
 
+FactSet runtime harness 的 native snapshot `fetched_at` 與 Source fixture 共用同一個 UTC-aware
+測試時鐘；historical、daily 與 prepared drain 都必須在 harness 安裝，避免固定服務時間與真實
+producer 時間漂移。偏移一天的 pipeline regression 驗證 raw timestamps 與服務時間一致；不得
+放寬 production 五分鐘 freshness 限制，也不移動 account pacing、monotonic deadlines 或 lease 時限。
+
 共用 `RuntimeHarness` 的所有 TAIFEX cases 透過測試限定的共用 monotonic clock 控制 acquisition 與
 Source grant receipt，涵蓋 historical、daily、maintenance 與 prepared retry；不能只在單一 test file
 安裝時鐘。UTC、account pacing、asyncio 及 harness timeout 預設仍使用真實時鐘。這些案例驗證狀態轉移，
