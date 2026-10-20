@@ -73,6 +73,10 @@ FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type chec
 workers；migration job 維持序列執行。Full-market schema roundtrip 位於
 `backend/tests/test_full_market_migration.py`，只由 migration job 收集。
 
+Fetcher deployment transaction harness 以 fake Docker／sudo／sleep 驗證十五個 consumers；
+每個案例保留 90 秒程序上限，供兩個 workers 下數百次模擬 CLI 啟動使用。此上限不是正式
+部署 SLA；實際健康觀察次數、原 container 身分、checkpoint 與 rollback 斷言仍須全部通過。
+
 Migration job 另以正式 `backend/Dockerfile` 建置 image，執行
 `infra/tests/test_backend_runtime_container.py`。測試從 deploy helper 擷取實際 migration container
 argv，在獨立 internal Docker network 與 PostgreSQL 16 上驗證空 DB、先前 accepted revision

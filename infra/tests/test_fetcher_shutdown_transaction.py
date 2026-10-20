@@ -280,7 +280,10 @@ def execute(
             env=environment,
             capture_output=True,
             text=True,
-            timeout=30,
+            # Fifteen consumers exercise hundreds of fresh Python CLI processes
+            # under xdist. Bound the harness without imposing a host-speed SLA;
+            # real activation sleeps are mocked and their exact count is asserted.
+            timeout=90,
         )
         actual = json.loads(state.read_text())
         if full_checkpoint:
