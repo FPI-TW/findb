@@ -447,7 +447,12 @@ Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_coo
 新 Fetcher bundle v2 包含 FactSet 第四個 image、第五個 provider 與十五個 consumers。
 OpenTofu 定義新增兩環境的 FactSet ECR repository、Source／provider secret metadata 與衍生
 IAM repository scope；必須先完成基礎設施套用與填入 secret values，再部署新版 Fetcher。
-本次僅更新宣告，未套用 AWS 或切換遠端環境。舊 bundle v1 仍可供升級前安裝辨識；
+2026-10-20 已在 staging 套用：4 個資源新增、5 個政策更新、零刪除；fresh plan 已無變更。
+FactSet ECR 為 immutable，publisher 的 FactSet 查詢／推送權限已核對，FinDB 三份相關政策
+保持原 scope。兩個 FactSet secrets 目前只有 metadata、尚無版本，須先填入獨立 Source／
+RDS credentials 並完成 credential registry 與停止／排空前置作業，才重跑 Fetcher CD。
+Production 基礎設施尚未套用，尚未執行 HK provider cutover 或啟動 FactSet controls。
+舊 bundle v1 仍可供升級前安裝辨識；
 新版 source bundle 與 topology marker 必須一致，promotion 必須含四個 immutable digests。
 
 Backend expand migration `d75fc12a9b43` 保存 request-time HKEX cohort 與 partial 狀態；
