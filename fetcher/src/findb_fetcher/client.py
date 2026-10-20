@@ -155,7 +155,9 @@ class SourceAPIClient:
         self._sleep = sleep
         self._now = now
 
-    def prepare(self, request: Mapping[str, Any]) -> PreparedDelivery:
+    def prepare(
+        self, request: Mapping[str, Any], *, job_key: str | None = None
+    ) -> PreparedDelivery:
         snapshot = dict(request)
         dataset_key = snapshot.get("dataset_key")
         schema_id = snapshot.get("schema_id")
@@ -189,7 +191,7 @@ class SourceAPIClient:
 
         owner = active()
         if owner is not None:
-            owner.reserve(snapshot)
+            owner.reserve(snapshot, job_key=job_key)
             owner.journal.prepare(prepared.idempotency_key, prepared.body)
             owner._preparation_request("prepare", body=prepared.body.decode(), stage="confirm")
         return prepared

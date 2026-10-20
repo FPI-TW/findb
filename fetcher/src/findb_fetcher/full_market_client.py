@@ -188,7 +188,8 @@ class FullMarketSourceClient:
                                 or result.get("max_age_seconds") != 5
                                 or not -0.250 <= receipt_utc - checked_at < REMOTE_AGE_SECONDS
                                 or origin - sent_monotonic >= REMOTE_AGE_SECONDS
-                                or provider not in {"twelve_data", "finlab", "shioaji", "taifex"}
+                                or provider
+                                not in {"twelve_data", "finlab", "shioaji", "taifex", "factset"}
                             ):
                                 raise ValueError
                         except (KeyError, TypeError, ValueError):

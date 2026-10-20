@@ -446,15 +446,17 @@ requires-dist = [
     { name = "finlab", marker = "extra == 'finlab'", specifier = "==1.5.7" },
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4.25.1,<5.0.0" },
+    { name = "pymysql", marker = "extra == 'factset'", specifier = ">=1.1.1,<2" },
     { name = "shioaji", marker = "extra == 'shioaji'", specifier = "==1.7.1" },
 ]
-provides-extras = ["finlab", "shioaji"]
+provides-extras = ["factset", "finlab", "shioaji"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=1.20.1,<2.0.0" },
     { name = "pytest", specifier = ">=9.0.3,<10.0.0" },
     { name = "ruff", specifier = ">=0.15.11,<0.16.0" },
+    { name = "types-pymysql", specifier = ">=1.1.0" },
 ]
 
 [[package]]

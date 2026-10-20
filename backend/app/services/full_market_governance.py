@@ -67,7 +67,8 @@ def full_market_configuration(
             if expected is not None:
                 if (
                     declaration.schema_id != expected.schema_id
-                    or expected.schema_version not in declaration.accepted_schema_versions
+                    or (2 if provider == "factset" else expected.schema_version)
+                    not in declaration.accepted_schema_versions
                 ):
                     errors.append("runtime_contract_mismatch")
                 if (

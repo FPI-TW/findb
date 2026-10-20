@@ -82,6 +82,8 @@ async def daily_readiness(db: AsyncSession, *, provider: str, values: dict) -> d
     closing = time.fromisoformat(snapshot["regular_close"])
     if provider == "taifex":
         closing = max(closing, time(17))
+    elif provider == "factset":
+        closing = max(closing, time(18, 30))
     ready = datetime.combine(day, closing, ZoneInfo(snapshot["timezone"]))
     requested = values["not_before"]
     if requested is not None and requested.tzinfo is None:
@@ -388,8 +390,16 @@ async def fence(
         raise ProviderWorkSuspendedError("provider account cooldown is pending")
     if acquisition and (attempt.state != "open" or work.state != "running" or attempt.drain_only):
         raise ProviderWorkError("provider work acquisition is closed")
-    if acquisition and work.kind == "historical" and not await acquisition_open(db, work):
-        raise ProviderWorkSuspendedError("historical acquisition is stopped or expired")
+    if acquisition and work.provider == "factset" and work.kind == "daily":
+        local_time = utc_now().astimezone(ZoneInfo("Asia/Hong_Kong")).time()
+        if not time(18, 30) <= local_time < time(23):
+            raise ProviderWorkSuspendedError("FactSet daily acquisition window is closed")
+    if (
+        acquisition
+        and work.kind in {"historical", "daily", "maintenance"}
+        and not await acquisition_open(db, work)
+    ):
+        raise ProviderWorkSuspendedError("provider acquisition is stopped or expired")
     return work, attempt, owner
 
 
@@ -431,6 +441,21 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
         raise ProviderWorkError("expected member identities must be unique")
     if work.manifest is not None and work.manifest != manifest:
         raise ProviderWorkError("expected scope is already frozen")
+    if "contract" in manifest:
+        from app.models.registry import DatasetRegistry
+        from app.services.ingress_contracts import parse_dataset_contract_declaration
+
+        dataset = await db.get(DatasetRegistry, work.dataset_key)
+        declaration = parse_dataset_contract_declaration(dataset.config) if dataset else None
+        if (
+            manifest["contract"] != {"schema_id": "market_eod", "schema_version": 2}
+            or work.kind not in {"daily", "historical"}
+            or declaration is None
+            or declaration.schema_id != "market_eod"
+            or 2 not in declaration.accepted_schema_versions
+            or work.provider not in declaration.provider_scope()
+        ):
+            raise ProviderWorkError("frozen EOD v2 contract is outside the dataset scope")
     if work.kind == "daily":
         from app.models.registry import (
             DailyDeliveryMember,
@@ -470,6 +495,42 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
                 or set(keys) != expected
             ):
                 raise ProviderWorkError("daily manifest differs from frozen plan scope")
+            if "contract" in manifest:
+                frozen = {
+                    member.member_key: member
+                    for member in await db.scalars(
+                        select(DailyDeliveryMember).where(
+                            DailyDeliveryMember.plan_id == plan.plan_id
+                        )
+                    )
+                }
+                if any(
+                    row.get("mapping_status") != frozen[row["key"]].mapping_status
+                    or row.get("source_symbol") != frozen[row["key"]].provider_symbol
+                    for row in manifest["members"]
+                ):
+                    raise ProviderWorkError("EOD manifest mapping differs from the frozen plan")
+    elif work.kind == "historical" and "contract" in manifest:
+        from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
+
+        try:
+            item = await db.get(HistoricalBackfillItem, UUID(work.scope["item_id"]))
+            request = await db.get(HistoricalBackfillRequest, item.request_id) if item else None
+        except (ValueError, KeyError):
+            request = None
+        snapshot = request.universe_snapshot if request else None
+        if not snapshot or manifest.get("universe_release_id") != snapshot["release_id"]:
+            raise ProviderWorkError("EOD historical manifest lacks the request's frozen cohort")
+        expected_rows = {
+            row["member_key"]: (row["mapping_status"], row["provider_symbol"])
+            for row in snapshot["members"]
+        }
+        observed_rows = {
+            row["key"]: (row.get("mapping_status"), row.get("source_symbol"))
+            for row in manifest["members"]
+        }
+        if observed_rows != expected_rows:
+            raise ProviderWorkError("EOD historical manifest differs from the frozen cohort")
     work.manifest = manifest
 
 
@@ -479,7 +540,7 @@ async def acceptance(
     """Lock before any other ingest locks, even on duplicate fast paths."""
     identity = db.info.get("provider_work")
     if identity is None:
-        if get_settings().PROVIDER_WORK_REQUIRED:
+        if get_settings().PROVIDER_WORK_REQUIRED or provider == "factset":
             raise ProviderWorkError("provider work protocol is required")
         return None
     owner = await lock_provider(db, provider)
@@ -497,7 +558,7 @@ async def acceptance(
         raise ProviderWorkError("prepared delivery bytes differ from retained descriptor")
     if (
         get_settings().PROVIDER_WORK_REQUIRED
-        and work.state not in {"completed", "failed", "cancelled"}
+        and work.state not in {"completed", "partial", "failed", "cancelled"}
         and not await acquisition_open(db, work)
         and descriptor is None
     ):
@@ -509,6 +570,18 @@ async def acceptance(
 
 
 async def acquisition_open(db: AsyncSession, work: ProviderWork) -> bool:
+    if work.kind != "rerun" and work.dataset_key == "hk_equity_eod":
+        from app.models.registry import DatasetRegistry
+        from app.services.hk_provider_cutover import acquisition_allowed
+
+        dataset = await db.get(DatasetRegistry, work.dataset_key)
+        if dataset is None or not acquisition_allowed(
+            dataset,
+            work.provider,
+            trade_date=work.trade_date if work.kind == "daily" else None,
+            maintenance=work.kind == "maintenance",
+        ):
+            return False
     if work.kind == "daily":
         control = await db.get(SchedulerControl, f"{work.execution_profile}_{work.provider}_v1")
         return control is not None and control.desired_state == "running"
@@ -720,7 +793,29 @@ async def settle(
         )
     ):
         outcome, failure_code = "failed", "NORMALIZATION_FAILED"
-    if outcome == "completed":
+    eod_v2 = (work.manifest or {}).get("contract") == {
+        "schema_id": "market_eod",
+        "schema_version": 2,
+    }
+    if outcome == "partial" or outcome == "completed" and eod_v2:
+        from app.schemas.eod_completion import EODCompletionEvidence
+        from app.services.eod_completion import validate_eod_completion
+
+        try:
+            evidence = EODCompletionEvidence.model_validate(proof.get("eod"))
+            await validate_eod_completion(
+                db, work, [run for _, run in receipts], evidence, outcome=outcome
+            )
+        except ValueError as exc:
+            raise ProviderWorkError("EOD v2 completion evidence is invalid") from exc
+        if (
+            work.kind == "historical"
+            and db.info.get("historical_completion_validated") != work.work_id
+        ):
+            raise ProviderWorkError("historical completion requires its domain evidence validator")
+        # Preserve the exact validated client proof for acknowledgement replay.
+        # Actual writes remain queryable in permanent receipt/member evidence.
+    elif outcome == "completed":
         expected = {row["key"] for row in (work.manifest or {}).get("members", [])}
         completed = {
             receipt.member_key
@@ -795,7 +890,7 @@ async def settle(
             raise ProviderWorkError(
                 "historical completion requires the historical evidence validator"
             )
-    if outcome not in {"completed", "failed", "cancelled", "retry"}:
+    if outcome not in {"completed", "partial", "failed", "cancelled", "retry"}:
         raise ProviderWorkError("invalid provider work outcome")
     attempt.state, attempt.outcome, attempt.settled_at = "settled", outcome, utc_now()
     attempt.proof, attempt.failure_code = proof, failure_code
@@ -918,7 +1013,7 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
 async def apply_cutover(db: AsyncSession, proof: dict) -> None:
     """Owner-attested host proof plus DB drain; never infer death from TTL."""
     checked = datetime.fromisoformat(proof["checked_at"])
-    providers = ("finlab", "shioaji", "taifex", "twelve_data")
+    providers = ("factset", "finlab", "shioaji", "taifex", "twelve_data")
     if (
         checked.tzinfo is None
         or not timedelta(0) <= utc_now() - checked <= timedelta(minutes=5)
@@ -965,7 +1060,13 @@ async def apply_cutover(db: AsyncSession, proof: dict) -> None:
         item = await db.get(
             HistoricalBackfillItem, UUID(work.scope.get("item_id", work.scope.get("legacy_id")))
         )
-        if item and item.status in {"completed", "failed", "cancelled", "skipped_calendar"}:
+        if item and item.status in {
+            "completed",
+            "partial",
+            "failed",
+            "cancelled",
+            "skipped_calendar",
+        }:
             retained_transition = item.status == "cancelled" or (
                 item.status == "failed" and item.failure_code == "BACKFILL_EXPIRED"
             )

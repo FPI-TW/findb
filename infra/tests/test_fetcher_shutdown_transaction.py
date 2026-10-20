@@ -24,7 +24,7 @@ PROVIDERS = tuple(
         profile,
     )
     for profile in ("pilot", "full_market", "historical")
-    for provider in ("twelve_data", "finlab", "shioaji", "taifex")
+    for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset")
 )
 
 FAKE_COMMAND = r"""
@@ -273,6 +273,7 @@ def execute(
             "TWELVE_IMAGE_REF": f"{registry}/findb/{target}/fetcher/twelve-data@sha256:{'c' * 64}",
             "FINLAB_IMAGE_REF": f"{registry}/findb/{target}/fetcher/finlab@sha256:{'c' * 64}",
             "SHIOAJI_IMAGE_REF": f"{registry}/findb/{target}/fetcher/shioaji@sha256:{'c' * 64}",
+            "FACTSET_IMAGE_REF": f"{registry}/findb/{target}/fetcher/factset@sha256:{'c' * 64}",
         }
         completed = subprocess.run(
             ["bash", str(script)],
@@ -423,7 +424,7 @@ def test_shared_activation_observation_keeps_all_originals_until_healthy():
     wrappers = [entry for entry in state["log"] if entry[0] == "sudo" and "--consumer" in entry]
     assert sum(entry[entry.index("--consumer") + 1] == "images" for entry in wrappers) == 1
     providers = [entry for entry in wrappers if entry[entry.index("--consumer") + 1] != "images"]
-    assert len(providers) == 12
+    assert len(providers) == 15
     assert all("--docker-login" not in entry for entry in providers)
     last_observation = max(i for i, entry in enumerate(state["log"]) if entry[0] == "sleep")
     first_retirement = next(

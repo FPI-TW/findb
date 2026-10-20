@@ -231,7 +231,8 @@ jobs:
         twelve_data="$(jq -r .images.twelve_data "$RUNNER_TEMP/staging-manifest.json")"
         finlab="$(jq -r .images.finlab "$RUNNER_TEMP/staging-manifest.json")"
         shioaji="$(jq -r .images.shioaji "$RUNNER_TEMP/staging-manifest.json")"
-        python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit fetcher --commit-sha "$REVISION" --migration-revision none --image "twelve_data=$twelve_data" --image "finlab=$finlab" --image "shioaji=$shioaji"
+        factset="$(jq -r .images.factset "$RUNNER_TEMP/staging-manifest.json")"
+        python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit fetcher --commit-sha "$REVISION" --migration-revision none --image "twelve_data=$twelve_data" --image "finlab=$finlab" --image "shioaji=$shioaji" --image "factset=$factset"
         aws s3api get-object --bucket "$SOURCE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/staging-acceptance.json" >/dev/null
         jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" --slurpfile manifest "$RUNNER_TEMP/staging-manifest.json" '
           type == "object" and .state == "accepted" and .unit == "fetcher" and .commit_sha == $revision
@@ -241,8 +242,9 @@ jobs:
           [twelve_data]=twelve-data
           [finlab]=finlab
           [shioaji]=shioaji
+          [factset]=factset
         )
-        for name in twelve_data finlab shioaji; do
+        for name in twelve_data finlab shioaji factset; do
           image_ref="$(jq -r --arg name "$name" '.images[$name]' "$RUNNER_TEMP/staging-manifest.json")"
           [ "${image_ref%@*}" = "$SOURCE_REGISTRY/findb/staging/fetcher/${staging_suffixes[$name]}" ]
           [[ "${image_ref##*@}" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -286,8 +288,9 @@ jobs:
           [twelve_data]=twelve-data
           [finlab]=finlab
           [shioaji]=shioaji
+          [factset]=factset
         )
-        for name in twelve_data finlab shioaji; do
+        for name in twelve_data finlab shioaji factset; do
           source_ref="$(jq -r --arg name "$name" '.images[$name]' "$manifest")"
           destination_repository="$REGISTRY/findb/production/fetcher/${suffixes[$name]}"
           SOURCE_IMAGE_REF="$source_ref" DESTINATION_REPOSITORY="$destination_repository" RELEASE_TAG="$short_tag" infra/deploy/promote_image.sh

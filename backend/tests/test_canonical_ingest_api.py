@@ -508,7 +508,7 @@ async def test_worker_routes_using_persisted_schema_version(
     run_id = UUID(accepted.json()["run_id"])
     run = await test_session.get(IngestionRun, run_id)
     raw = await test_session.get(RawMarketPayload, run.raw_payload_id)
-    raw.schema_version = 2
+    raw.schema_version = 99
     await test_session.commit()
 
     await _execute_run(test_session, test_engine, run_id)
@@ -992,7 +992,7 @@ async def test_attempt_status_endpoint_returns_rejection(
     source_headers: dict,
 ):
     value = _canonical_request()
-    value["schema_version"] = 2
+    value["schema_version"] = 99
     rejected = await client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
@@ -1187,7 +1187,7 @@ async def test_non_database_rejection_audit_failure_returns_internal_error(
     monkeypatch,
 ):
     value = _canonical_request()
-    value["schema_version"] = 2
+    value["schema_version"] = 99
 
     async def fail_reject(*args, **kwargs):
         raise RuntimeError("audit programming failure")

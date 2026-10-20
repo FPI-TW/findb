@@ -64,7 +64,8 @@ admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Fu
 
 | Provider | 目標範圍 | Contract |
 | --- | --- | --- |
-| `twelve_data` | US 主要交易所普通股與 ADR；HK 主板與 GEM | `market_eod.v1` |
+| `twelve_data` | US 主要交易所普通股與 ADR；保留舊 HK delivery／rerun acceptance | `market_eod.v1` |
+| `factset` | HKEX 現行主板／GEM 普通股；切換後的新 HK 抓取 | `market_eod.v2` |
 | `finlab` | TW 上市／上櫃普通股與各類 ETF 日線 | `market_eod.v1` |
 | `shioaji` | 相同 TW 股票／ETF 的一分鐘 bars | `market_minute.v1` |
 | `taifex` | TX、MTX、TMF、TE、TF 實際月／週到期合約，日盤與盤後分開 | `futures_eod.v1` |
@@ -133,8 +134,9 @@ provider-scoped Source key輪詢
 市場日曆以不可變的年度revision管理。Dashboard建立draft，只有Owner可publish或rollback。
 Backend 共用有效日曆解析：published 日期優先，缺日期採週一至週五預設；draft 不影響抓取。
 Serve 年度／區間查詢及 Admin 顯示日期來源與可空 revision，不寫入或自動發布。
-Fetcher 每日經 Source 建立凍結決策，不依賴 Serve 日曆 credentials。Provider 預設連非交易日也抓取，
-只有 Backend AWS 設定中對應 provider 的 `*_SKIP_NON_TRADING_DAYS` 開關設為 true，才略過並保存 durable skip。
+Fetcher 每日經 Source 建立凍結決策，不依賴 Serve 日曆 credentials。FactSet 的
+`FACTSET_SKIP_NON_TRADING_DAYS` 預設 true，其餘 provider 預設 false。對應開關為 true
+時略過非交易日並保存 durable skip。
 部署與啟動不要求日曆完整；其他認證、時區、收盤、Owner controls、配額與交付證據規則保留。
 
 

@@ -107,3 +107,12 @@ jobs:
           # SDK.  Keep the generic and FinLab images hermetic as well.
           docker run --rm "$shioaji_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("shioaji") is not None and importlib.util.find_spec("finlab") is None else 1)'
           docker run --rm "$shioaji_image" findb-fetch-shioaji-scheduler --help
+
+      - name: Build and inspect isolated FactSet runtime
+        working-directory: .
+        run: |
+          image="findb-fetcher-factset:${{ github.sha }}"
+          docker build -f fetcher/Dockerfile.factset -t "$image" .
+          docker run --rm "$image" python -c 'import importlib.util,ssl; assert importlib.util.find_spec("pymysql"); assert all(importlib.util.find_spec(n) is None for n in ("finlab","shioaji")); c=ssl.create_default_context(cafile="/app/certs/ap-southeast-1-bundle.pem"); assert c.check_hostname and c.verify_mode==ssl.CERT_REQUIRED'
+          docker run --rm "$image" findb-fetch-runtime --provider factset --config /app/configs/full_market.local.v1.json --check
+          docker run --rm "$image" findb-fetch-historical-backfill --help

@@ -342,16 +342,18 @@ variable "ecr_repository_names" {
     fetcher_twelve_data = "findb/staging/fetcher/twelve-data"
     fetcher_finlab      = "findb/staging/fetcher/finlab"
     fetcher_shioaji     = "findb/staging/fetcher/shioaji"
+    fetcher_factset     = "findb/staging/fetcher/factset"
   }
   validation {
-    condition = length(var.ecr_repository_names) == 5 && alltrue([
+    condition = length(var.ecr_repository_names) == 6 && alltrue([
       try(var.ecr_repository_names["findb_backend"], null) == "findb/staging/backend",
       try(var.ecr_repository_names["findb_dashboard"], null) == "findb/staging/dashboard",
       try(var.ecr_repository_names["fetcher_twelve_data"], null) == "findb/staging/fetcher/twelve-data",
       try(var.ecr_repository_names["fetcher_finlab"], null) == "findb/staging/fetcher/finlab",
       try(var.ecr_repository_names["fetcher_shioaji"], null) == "findb/staging/fetcher/shioaji",
+      try(var.ecr_repository_names["fetcher_factset"], null) == "findb/staging/fetcher/factset",
     ])
-    error_message = "ecr_repository_names must remain the five reviewed staging ECR repository names."
+    error_message = "ecr_repository_names must remain the six reviewed staging ECR repository names."
   }
 }
 

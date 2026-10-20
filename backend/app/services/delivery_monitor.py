@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -12,6 +12,7 @@ from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.execution_profiles import ExecutionProfile, execution_profile
 from app.models.registry import (
     DailyDeliveryPart,
@@ -306,6 +307,22 @@ async def _scan_full_market_feed(
 
     zone, _ = feed_schedule(dataset.dataset_key)
     through = evaluated_at.astimezone(ZoneInfo(zone)).date()
+    if dataset.dataset_key == "hk_equity_eod":
+        cutover = (dataset.config or {}).get("hk_provider_cutover")
+        if source == "factset":
+            if not cutover:
+                return 0, 0
+            start_date = max(start_date, date.fromisoformat(cutover["effective_date"]))
+        elif source == "twelve_data":
+            # Retained v1 delivery has its original alert identity. Never expect
+            # new Twelve Data HK delivery after the explicit acquisition switch.
+            schema_version = 1
+            if cutover:
+                through = min(
+                    through, date.fromisoformat(cutover["effective_date"]) - timedelta(days=1)
+                )
+    if through < start_date:
+        return 0, 0
     dates = await acquisition_dates(
         db,
         market=_calendar_market(dataset),
@@ -348,12 +365,19 @@ async def _scan_full_market_feed(
         .returning(MissingDeliveryAlert.alert_id)
     )
     resolved = len(policy_resolved.scalars().all())
+    gap_streaks: dict[str, int] = {}
+    unplanned_streak = 0
     for trade_date in dates:
         deadline = _deadline(dataset, trade_date)
         if evaluated_at < deadline:
             continue
         plan = by_date.get(trade_date)
-        summary = await reconcile_plan(db, plan, now=evaluated_at) if plan else None
+        summary = await reconcile_plan(db, plan, now=evaluated_at, gap_limit=None) if plan else None
+        # Only exchange-expected dates enter this loop. Data or durable no_data
+        # removes that member from gaps and therefore resets its streak. Without
+        # a frozen plan, escalate the feed gap without inventing member scope.
+        gap_streaks = advance_gap_streaks(gap_streaks, summary.gaps if summary else [])
+        unplanned_streak = 0 if plan else unplanned_streak + 1
         complete = bool(summary and summary.data + summary.no_data == summary.expected)
         if complete:
             resolution = await db.execute(
@@ -372,7 +396,7 @@ async def _scan_full_market_feed(
             )
             resolved += len(resolution.scalars().all())
             continue
-        details = {
+        details: dict[str, Any] = {
             "code": "FULL_MARKET_INCOMPLETE" if profile == "full_market" else "PILOT_INCOMPLETE",
             "execution_profile": profile,
             "plan_id": str(plan.plan_id) if plan else None,
@@ -383,6 +407,19 @@ async def _scan_full_market_feed(
             "blocked": summary.blocked if summary else None,
             "deadline_at": deadline.isoformat(),
         }
+        if source == "factset" and schema_id == "market_eod":
+            threshold = get_settings().EOD_LONG_GAP_TRADING_DAYS
+            long_gaps = [
+                {"member_key": key, "consecutive_trading_days": count}
+                for key, count in sorted(gap_streaks.items())
+                if count >= threshold
+            ]
+            details.update(
+                severity="error" if long_gaps or unplanned_streak >= threshold else "warning",
+                long_gap_threshold=threshold,
+                long_gap_members=long_gaps,
+                consecutive_unplanned_days=unplanned_streak,
+            )
         await db.execute(
             insert(MissingDeliveryAlert)
             .values(
@@ -410,6 +447,11 @@ async def _scan_full_market_feed(
         )
         created += 1
     return created, resolved
+
+
+def advance_gap_streaks(previous: dict[str, int], gaps: list[dict]) -> dict[str, int]:
+    """A valid observation or authoritative no-data breaks a member's streak."""
+    return {row["member_key"]: previous.get(row["member_key"], 0) + 1 for row in gaps}
 
 
 async def _resolve_open_alerts_for_feed(

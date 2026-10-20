@@ -256,6 +256,12 @@ export function HistoricalBackfillsPanel({
                 description="可從上方缺漏列帶入，或手動指定已啟用的 provider、dataset 與日期。"
                 status={draftComplete ? "complete" : "active"}
               />
+              {backfillDraft.provider === "factset" && (
+                <p className="m-0 text-sm text-muted">
+                  依申請時已發布的港交所現行清單回補；不包含申請時已下市且不在清單中的股票。
+                  後續清單更新不會改變這次回補的成員。
+                </p>
+              )}
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="grid gap-1.5">
                   <Label htmlFor="backfill-provider">供應商</Label>
@@ -520,7 +526,7 @@ export function HistoricalBackfillsPanel({
                           {row.start_date} – {row.end_date}
                         </span>
                         <span className="rounded bg-surface-soft px-2">
-                          {row.status}
+                          {row.status === "partial" ? "部分完成" : row.status}
                         </span>
                         <span className="text-muted">
                           {
@@ -530,6 +536,16 @@ export function HistoricalBackfillsPanel({
                           }
                           /{row.items.length} 完成
                         </span>
+                        {row.items.some(item => item.status === "partial") && (
+                          <span className="text-muted">
+                            {
+                              row.items.filter(
+                                item => item.status === "partial"
+                              ).length
+                            }{" "}
+                            日仍有缺漏
+                          </span>
+                        )}
                         {row.failure_code && (
                           <span className="text-destructive">
                             {row.failure_code}
@@ -542,7 +558,9 @@ export function HistoricalBackfillsPanel({
                             {item.trade_date} ·{" "}
                             {item.status === "skipped_calendar"
                               ? "依設定略過"
-                              : item.status}{" "}
+                              : item.status === "partial"
+                                ? "部分完成，保留缺漏"
+                                : item.status}{" "}
                             · run: {item.run_id ?? "—"}
                             {item.failure_code ? ` · ${item.failure_code}` : ""}
                             {item.failure_message

@@ -28,6 +28,26 @@ from tests.test_staging_feed_evidence import _sample_record
 async def test_native_evidence_binds_profile_after_canonical_overwrite(
     test_session, test_engine, client, monkeypatch, environment, key
 ):
+    # This regression exercises retained v1 plans. Current FactSet v2 acquisition
+    # is covered by the fenced FactSet integration acceptance tests.
+    if key == "hk_equity_eod":
+        import json
+        from pathlib import Path
+
+        original_read = Path.read_text
+
+        def retained_catalog(path, *args, **kwargs):
+            raw = original_read(path, *args, **kwargs)
+            if str(path) == "configs/execution_feeds.v1.json":
+                catalog = json.loads(raw)
+                for feed in catalog["feeds"]:
+                    if feed["dataset_key"] == key:
+                        feed["provider"] = "twelve_data"
+                        feed["schema_version"] = 1
+                return json.dumps(catalog)
+            return raw
+
+        monkeypatch.setattr(Path, "read_text", retained_catalog)
     original_post = client.post
 
     async def post_with_raw_provenance(url, **kwargs):

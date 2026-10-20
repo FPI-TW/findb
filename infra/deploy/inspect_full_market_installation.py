@@ -172,7 +172,9 @@ def main() -> None:
     for name in ("manifest", "accepted", "config", "allocation", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument(
-        "--provider", required=True, choices=("twelve_data", "finlab", "shioaji", "taifex")
+        "--provider",
+        required=True,
+        choices=("twelve_data", "finlab", "shioaji", "taifex", "factset"),
     )
     parser.add_argument("--governor", required=True)
     parser.add_argument(

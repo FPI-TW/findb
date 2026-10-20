@@ -16,7 +16,7 @@ Job 先 checkout immutable release，再於 `.deployment-driver` checkout protec
 | Unit | Staging | Production |
 | --- | --- | --- |
 | Backend＋Dashboard | `findb-cd.yml`，main 自動部署 | `findb-production-cd.yml`，人工 promotion |
-| Fetcher 三個 images、四個 providers | `fetcher-cd.yml`，main 自動部署 | `fetcher-production-cd.yml`，人工 promotion |
+| Fetcher 四個 images、五個 providers | `fetcher-cd.yml`，main 自動部署 | `fetcher-production-cd.yml`，人工 promotion |
 
 Staging build／reuse immutable commit images；production 複製 staging 已 accepted 的同一組 digests，不重新建置。
 Production 的 annotated immutable tag 必須指向 main history 中的相同 commit，tag object、commit、bundle、
@@ -109,7 +109,7 @@ Offline check、controls stopped、checkpoint 與 rollback journal 驗證均保�
 Loader 只允許 catalog 明確宣告 `secrets: []` 的 consumer 建立空 env 檔，仍套用 tmpfs、
 owner／mode、exclusive create 與清理規則；宣告 secrets 的 consumer 若結果為空仍拒絕。
 
-八個 recurring 與四個 historical runtimes 仍依序替換，原 container IDs／images／running state
+十個 recurring 與五個 historical runtimes 仍依序替換，原 container IDs／images／running state
 保留到共同健康觀察通過後才清理。Coordinator 對全部新 runtimes 進行六次檢查，間隔五秒，
 每次比對 ID、image、running 與 restart count；觀察窗口至少 25 秒，替代逐個等待造成的 275 秒。
 任一檢查失敗則依原 journal 還原 containers 與 current pointer。這是程序存活檢查，
@@ -231,7 +231,7 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 ## Runtime 與持久化狀態
 
-每次 Fetcher 部署固定安裝八個 recurring runtimes：四個 `findb-pilot-*` 與四個 `findb-full-market-*`。
+每次 Fetcher 部署固定安裝十個 recurring runtimes：五個 `findb-pilot-*` 與五個 `findb-full-market-*`。
 兩者使用同一 `findb-fetch-runtime --execution-profile pilot|full_market` CLI、相同七條 feeds 與 calendar。
 `FULL_MARKET_ENABLED` 只控制 full market 的新抓取資格，不影響安裝拓撲。
 
@@ -246,7 +246,7 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 Historical Twelve Data／FinLab 以 Backend request／item lease 為持久狀態；Shioaji 另以 request UUID 命名 SQLite。
 驗收應依實際 entrypoint 與 mount 判定使用中的檔案，不能把共用 helper 的未使用通用 state path 當成遺失 checkpoint。
 
-四個 `findb-historical-*` workers 是獨立 transactional consumers，沿用既有人工歷史回補請求機制；
+五個 `findb-historical-*` workers 是獨立 transactional consumers，沿用既有人工歷史回補請求機制；
 不再由 pilot 部署順便建立。所有 acquiring consumers 使用同一帳號 governor mount，保留 credential pins、
 quota debt、unknown liability、cooldown 與 prepared delivery。不同環境仍使用各自帳號與儲存。
 容器 UID/GID 為 10001，state directories `0700`、SQLite `0600`；provider credentials 不跨 consumer 注入。
@@ -286,9 +286,9 @@ application role 不具 superuser／CREATEDB／CREATEROLE，授予 public／raw 
 Deployment credential reconciliation 以 SHA-256 建立 queue-health Admin viewer、lookup Serve、static-cache Serve
 固定 identity，輪替保留 audit；preflight check-only transaction rollback，migration／初始化階段才 commit。
 Fetcher Source credential bridge 只跨 unit 傳送 hashes，不授予 instance role 跨 unit讀取 secrets。
-四個 provider 的 Source scopes 必須涵蓋對應七條 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
+五個 provider 的 Source scopes 必須涵蓋對應七條 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
 
-RDS 不公開且只接受 FinDB security group；Fetcher 不連 RDS。Source 經 Cloudflare／nginx 還原可信 IP 後執行 allowlist。
+FinDB RDS 不公開且只接受 FinDB security group；Fetcher 不連 FinDB DB。FactSet consumer 另以 TLS 唯讀連接供應商 MySQL RDS，使用獨立 credentials。Source 經 Cloudflare／nginx 還原可信 IP 後執行 allowlist。
 nginx 非敏感設定在 `/etc/findb/nginx`，TLS、lookup key 在 `/run/findb-runtime-secrets/nginx`，
 systemd 在 Docker 啟動前重建 tmpfs；缺失時 fail closed。Serve API 保持唯讀。
 
@@ -413,8 +413,8 @@ usage／cooldown 不得退回較舊用量。此相容性說明不代表 staging 
    不得重建遺失的既有 checkpoint。保留單環境唯一 Fetcher host 的 trusted deployment inventory。
 4. 保存完整 consumer `docker inspect` JSON（不可將含 secrets 的原始內容貼進 audit／chat），以及只包含
    該環境 Fetcher host IDs 的可信 inventory JSON。以 host local 的 `infra/deploy/provider_work_preflight.py`
-   驗證單 host、全部 12 個 consumers、protocol flag／image label、graceful stopped state、同一 writable
-   bind mount，並實際嘗試取得四個 provider flock。任一 orphan／未知 consumer／不同 inode 都拒絕。
+   驗證單 host、全部 15 個 consumers、protocol flag／image label、graceful stopped state、同一 writable
+   bind mount，並實際嘗試取得五個 provider flock。任一 orphan／未知 consumer／不同 inode 都拒絕。
 
    ```bash
    python3 infra/deploy/provider_work_preflight.py --environment staging \
@@ -441,3 +441,16 @@ Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_coo
 可能多一個安全 tail wait。明確正常 request pacing 維持原間距，不拆 SDK bootstrap。Upgrade/reopen
 只延長 debt；rollback 仍須依上述完整停止／排空／成套checkpoint備份程序，不可倒退 usage／cooldown
 或混用未通過此 dispatch gate 的 consumer。這不代表任何環境已部署或啟用。
+
+## FactSet 港股版本下限
+
+新 Fetcher bundle v2 包含 FactSet 第四個 image、第五個 provider 與十五個 consumers。
+OpenTofu 定義新增兩環境的 FactSet ECR repository、Source／provider secret metadata 與衍生
+IAM repository scope；必須先完成基礎設施套用與填入 secret values，再部署新版 Fetcher。
+本次僅更新宣告，未套用 AWS 或切換遠端環境。舊 bundle v1 仍可供升級前安裝辨識；
+新版 source bundle 與 topology marker 必須一致，promotion 必須含四個 immutable digests。
+
+Backend expand migration `d75fc12a9b43` 保存 request-time HKEX cohort 與 partial 狀態；
+`FACTSET_SKIP_NON_TRADING_DAYS`（預設 true）及 `EOD_LONG_GAP_TRADING_DAYS`（預設 5）
+由 runtime/configuration 的 optional keys 注入。既有四個日曆開關的必填與預設規則不變。
+Native 驗收、明確 HK provider 切換與 rollback 證據限制見 [FactSet runbook](factset_hk.md)。

@@ -90,7 +90,7 @@ ssm_command_marker_state() {
       echo "SSM terminal invocation failure: status=$status status_details=$status_details response_code=$response_code" >&2
       # Surface only the allowlisted diagnostic protocol, never raw stdout/stderr.
       local diagnostic profile provider line
-      diagnostic="$(jq -r '[.stdout | split("\n")[] | rtrimstr("\r") | select(test("^fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=(pilot|full_market) provider=(twelve_data|finlab|shioaji|taifex)$"))] | unique | .[:8][]' <<<"$response")"
+      diagnostic="$(jq -r '[.stdout | split("\n")[] | rtrimstr("\r") | select(test("^fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=(pilot|full_market) provider=(twelve_data|finlab|shioaji|taifex|factset)$"))] | unique | .[:8][]' <<<"$response")"
       while IFS= read -r line; do
         [ -n "$line" ] || continue
         profile="${line#*execution_profile=}"; profile="${profile%% *}"

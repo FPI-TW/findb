@@ -24,7 +24,8 @@ from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
 from findb_fetcher.scheduler_control import SchedulerControlClient, scheduler_stop_event
 
 _SCOPES = {
-    "twelve_data": {"us_equity_eod", "hk_equity_eod"},
+    "twelve_data": {"us_equity_eod"},
+    "factset": {"hk_equity_eod"},
     "finlab": {"tw_equity_eod", "tw_etf_eod"},
     "shioaji": {"tw_equity_minute", "tw_etf_minute"},
     "taifex": {"tw_futures_eod"},
@@ -204,9 +205,10 @@ def main(argv: list[str] | None = None) -> int:
         scheduler_key = f"{args.execution_profile}_{args.provider}_v1"
         with SchedulerControlClient(fetcher, scheduler_key) as control:
             observed = control.poll(observed_state="stopped")
-            if (
-                observed.provider != args.provider
-                or set(observed.dataset_keys) != _SCOPES[args.provider]
+            if observed.provider != args.provider or set(observed.dataset_keys) != (
+                {"us_equity_eod", "hk_equity_eod"}
+                if args.provider == "twelve_data"
+                else _SCOPES[args.provider]
             ):
                 raise ValueError("full-market control scope mismatch")
             if args.require_stopped:

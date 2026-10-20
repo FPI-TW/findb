@@ -422,13 +422,14 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
         assert "outputs.image_ref" in text
         assert "sed -n 's/^image_ref=//p'" not in text
         if unit == "fetcher":
-            assert text.count("build_ecr_image_if_missing.sh") == 3
-            for repository in ("twelve-data", "finlab", "shioaji"):
+            assert text.count("build_ecr_image_if_missing.sh") == 4
+            for repository in ("twelve-data", "finlab", "shioaji", "factset"):
                 assert f"/findb/staging/fetcher/{repository}" in text
             for repository_var, dockerfile in (
                 ("TWELVE", "Dockerfile"),
                 ("FINLAB", "Dockerfile.finlab"),
                 ("SHIOAJI", "Dockerfile.shioaji"),
+                ("FACTSET", "Dockerfile.factset"),
             ):
                 assert (
                     f'build_ecr_image_if_missing.sh "${repository_var}" . ./fetcher/{dockerfile}'
@@ -439,9 +440,14 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
                 ) not in text
 
             ci = (ROOT / ".github" / "workflows" / "fetcher-ci.yml").read_text()
-            for dockerfile in ("Dockerfile", "Dockerfile.finlab", "Dockerfile.shioaji"):
+            for dockerfile in (
+                "Dockerfile",
+                "Dockerfile.finlab",
+                "Dockerfile.shioaji",
+                "Dockerfile.factset",
+            ):
                 assert f"docker build -f fetcher/{dockerfile}" in ci
-            assert ci.count("docker build -f fetcher/") == 3
+            assert ci.count("docker build -f fetcher/") == 4
 
 
 def test_fetcher_builds_before_waiting_for_same_sha_findb_deployment() -> None:

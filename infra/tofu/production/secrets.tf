@@ -1,5 +1,11 @@
 locals {
   secret_catalog = {
+    "fetcher/api/source/factset" = {
+      unit = "fetcher", consumer = "factset"
+    }
+    "fetcher/provider/factset" = {
+      unit = "fetcher", consumer = "factset"
+    }
     "findb/database/application" = {
       unit = "findb", consumer = "application"
     }

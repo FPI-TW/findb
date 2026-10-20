@@ -46,6 +46,7 @@ IMAGE_REPOSITORIES = {
         "twelve_data": f"{REGISTRY}/findb/staging/fetcher/twelve-data",
         "finlab": f"{REGISTRY}/findb/staging/fetcher/finlab",
         "shioaji": f"{REGISTRY}/findb/staging/fetcher/shioaji",
+        "factset": f"{REGISTRY}/findb/staging/fetcher/factset",
     },
 }
 
@@ -67,6 +68,7 @@ def image_repositories(target: str, unit: str, registry: str = REGISTRY) -> dict
             "twelve_data": "fetcher/twelve-data",
             "finlab": "fetcher/finlab",
             "shioaji": "fetcher/shioaji",
+            "factset": "fetcher/factset",
         },
     }[unit]
     return {name: f"{registry}/findb/{target}/{suffix}" for name, suffix in suffixes.items()}
@@ -479,9 +481,16 @@ def load_contract_versions(path: Path) -> tuple[str, ...]:
 
 
 def _validate_images_for_unit(
-    unit: str, images: object, *, target: str = "staging", registry: str = REGISTRY
+    unit: str,
+    images: object,
+    *,
+    target: str = "staging",
+    registry: str = REGISTRY,
+    fetcher_bundle_version: int = 2,
 ) -> None:
     expected_images = image_repositories(target, unit, registry)
+    if unit == "fetcher" and fetcher_bundle_version == 1:
+        expected_images.pop("factset")
     if not isinstance(images, dict) or set(images) != set(expected_images):
         raise ManifestError("images keys do not match the unit contract")
     for name, repository in expected_images.items():
@@ -535,7 +544,7 @@ def validate_manifest(
         if (
             manifest.get("unit") != "fetcher"
             or type(manifest.get("fetcher_bundle_version")) is not int
-            or manifest.get("fetcher_bundle_version") != 1
+            or manifest.get("fetcher_bundle_version") not in {1, 2}
         ):
             raise ManifestError("fetcher_bundle_version invalid")
     unknown = set(manifest) - required
@@ -593,7 +602,13 @@ def validate_manifest(
                 is None
             ):
                 raise ManifestError("production promotion_source invalid")
-    _validate_images_for_unit(unit, images, target=target, registry=registry)
+    _validate_images_for_unit(
+        unit,
+        images,
+        target=target,
+        registry=registry,
+        fetcher_bundle_version=manifest.get("fetcher_bundle_version", 2),
+    )
     migration = manifest["migration_revision"]
     if not isinstance(migration, str) or not migration:
         raise ManifestError("migration_revision must be nonempty")
@@ -625,6 +640,12 @@ def validate_manifest(
         unit
     ):
         raise ManifestError("deployment source bundle checksum mismatch")
+    if source_bundle is not None and unit == "fetcher":
+        topology = b"# factset-consumers-v1:" in source_bundle.read(
+            "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+        )
+        if topology != (manifest["fetcher_bundle_version"] == 2):
+            raise ManifestError("fetcher bundle version differs from deployment topology")
 
 
 def validate_expected_release_inputs(
@@ -640,7 +661,13 @@ def validate_expected_release_inputs(
     """Bind validation to the exact release inputs selected by the workflow."""
     target = deployment_target or str(manifest.get("deployment_target", ""))
     registry = str(manifest.get("registry", REGISTRY))
-    _validate_images_for_unit(unit, images, target=target, registry=registry)
+    _validate_images_for_unit(
+        unit,
+        images,
+        target=target,
+        registry=registry,
+        fetcher_bundle_version=manifest.get("fetcher_bundle_version", 2),
+    )
     expected = {
         "unit": unit,
         "commit_sha": commit_sha,
@@ -1161,7 +1188,7 @@ def generate(args: argparse.Namespace) -> None:
         if args.unit == "fetcher":
             manifest["runtime_profile"] = "unified"
         if args.unit == "fetcher":
-            manifest["fetcher_bundle_version"] = 1
+            manifest["fetcher_bundle_version"] = 2
         if args.deployment_target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": args.promotion_source_bundle_key,

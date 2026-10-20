@@ -401,6 +401,14 @@ DATASETS.extend(
 )
 
 
+# Backend-first expansion retains every v1 delivery/rerun. New acquisition is
+# separately gated by the explicit HK cutover transaction.
+_hk = next(item for item in DATASETS if item["dataset_key"] == "hk_equity_eod")
+_hk["config"]["accepted_schema_versions"] = [1, 2]
+_hk["config"]["current_schema_version"] = 2
+_hk["config"]["allowed_sources"] = ["twelve_data", "factset"]
+
+
 _LEGACY_CONFIG_KEYS = {
     "source_format",
     "field_mapping",
@@ -515,6 +523,7 @@ async def seed_datasets(session: AsyncSession) -> None:
         ("finlab", ["tw_equity_eod", "tw_etf_eod"], "taiwan_market_window", time(18)),
         ("shioaji", ["tw_equity_minute", "tw_etf_minute"], "taiwan_market_window", time(18)),
         ("taifex", ["tw_futures_eod"], "taiwan_market_window", time(18)),
+        ("factset", ["hk_equity_eod"], "asia_pacific_markets_window", time(18, 30)),
     ):
         for profile in ("pilot", "full_market"):
             key = f"{profile}_{provider}_v1"

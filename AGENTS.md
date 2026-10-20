@@ -8,7 +8,7 @@ FinDB 是一個 monorepo，包含以 FastAPI 建置的金融資料後端，以�
 
 整體資料流程是 Fetch -> Source -> durable queue -> Normalize -> Serve：
 
-- Fetch layer：`fetcher/` 是 monorepo內的獨立 application，已有 Twelve Data、FinLab、Shioaji、TAIFEX 四個隔離的 staging provider runtime、durable scheduler/checkpoint、contract validation 與 delivery client。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
+- Fetch layer：`fetcher/` 是 monorepo內的獨立 application，已有 Twelve Data、FactSet、FinLab、Shioaji、TAIFEX 五個隔離的 staging provider runtime、durable scheduler/checkpoint、contract validation 與 delivery client。Fetcher 先將 provider payload 轉成 versioned ingress contract，再 POST 到 Source API。
 - Source API：`backend/app/api/v1/source.py`，負責驗證、冪等去重，並在同一 transaction 寫入 raw、run、normalization job 與 outbox。
 - Durable queue：dispatcher 將 outbox 發布到 RabbitMQ，Celery worker 執行 normalization；RabbitMQ 可重建，PostgreSQL 是 durable truth。
 - Normalize layer：`backend/app/services/normalize/`，把 contract/raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。

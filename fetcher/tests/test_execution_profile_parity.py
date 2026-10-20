@@ -83,6 +83,12 @@ def test_same_calendar_date_retry_and_frozen_membership(
         return True
 
     runtime._deliver_plan = deliver
+    if feed["provider"] == "factset":
+        # FactSet has no legacy, unfenced acquisition path in either profile.
+        runtime.cycle()
+        runtime.drain()
+        assert seen == []
+        return
     for _ in range(2):
         runtime.cycle()
         # New universe members cannot change either profile's existing plans.

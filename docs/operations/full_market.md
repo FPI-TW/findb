@@ -54,10 +54,10 @@ normalization、canonical 與稽核可繼續；不重抓已 prepared 資料。�
 
 ## 有效日曆與每日政策
 
-Backend 是政策權威。`runtime/configuration` 使用四個獨立開關：
+Backend 是政策權威。`runtime/configuration` 使用五個獨立開關：
 `TWELVE_DATA_SKIP_NON_TRADING_DAYS`、`FINLAB_SKIP_NON_TRADING_DAYS`、
-`SHIOAJI_SKIP_NON_TRADING_DAYS`、`TAIFEX_SKIP_NON_TRADING_DAYS`。
-每個開關皆為 `true`／`false` 字串，預設全部 `false`，兩環境欄位相同，經部署生效。
+`SHIOAJI_SKIP_NON_TRADING_DAYS`、`TAIFEX_SKIP_NON_TRADING_DAYS`、`FACTSET_SKIP_NON_TRADING_DAYS`。
+每個開關皆為 `true`／`false` 字串，FactSet 預設 `true`，其餘預設 `false`，兩環境欄位相同，經部署生效。
 Fetcher 透過 Source 取得政策與每日決策，不保存另一份日曆或政策設定。預設每日執行，包括週末／休市；
 true 才略過非交易日。排程時間、交易所時區、Owner controls、平台配額、429 與既有重試規則仍有效。
 不設連續十筆失敗中斷規則。
@@ -414,7 +414,7 @@ TAIFEX 指定歷史日期回補沿用獨立 historical control plane，操作見
 [資料維護](data_maintenance.md#taifex-futures-eod-回補)。日常與 historical 共用日期 CSV 的
 raw-first／契約／時段解析；historical 不受 Full flag、activation first date 或今日 universe
 限制，也不改寫 Pilot／Full frozen plans。執行前停止 TAIFEX 兩個 controls 並排空在途工作，
-完成驗證後恢復日常 catchup。新版部署要求兩環境安裝八個 recurring 與四個 historical consumers；
+完成驗證後恢復日常 catchup。新版部署要求兩環境安裝十個 recurring 與五個 historical consumers；
 TAIFEX 共用既有公開資料 governor、Source key 與 Twelve Data image，無新增 provider secret。
 
 ## Provider work FIFO（待環境啟用）
@@ -435,3 +435,9 @@ controls，也不回報假 provider failure／no_data。Retryable round 排空�
 [deployment](deployment.md#provider-work-切換)，完整契約與新 provider 必要條件見
 [provider work](../architecture/provider_work.md)。交付監控頁會顯示共用 provider queue、active work、順位、
 wait reason、retry／heartbeat；GET projection 不更動 controls、lease 或 audit。
+
+## FactSet 港股 EOD
+
+HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 保留 US 與舊 HK immutable delivery／raw rerun
+acceptance。每日 HKEX 清單、申請時現行 cohort 回補、partial 結算、五日長缺漏與明確 provider
+切換規則見 [FactSet 港股日行情](factset_hk.md)。安裝新版 image 不會自動啟動 controls 或切換來源。

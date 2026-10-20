@@ -39,10 +39,9 @@ def installed_manifest(base, validator, target, registry):
         raise ValueError("release root mode invalid")
     with validator.SourceBundleReader(root) as source:
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
-        if (
-            type(manifest.get("fetcher_bundle_version")) is not int
-            or manifest["fetcher_bundle_version"] != 1
-        ):
+        if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
+            "fetcher_bundle_version"
+        ] not in {1, 2}:
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
         validator.validate_manifest(manifest, contracts, source)
@@ -122,7 +121,11 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     manifest = installed_manifest(base, validator, target, registry)
     names = {row["Name"].removeprefix("/"): row for row in rows}
     for profile in ("pilot", "full_market", "historical"):
-        for provider in ("twelve_data", "finlab", "shioaji", "taifex"):
+        for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset"):
+            if provider == "factset" and "factset" not in manifest["images"]:
+                # The trusted validator of the installed bundle defines its
+                # original inventory. New candidates require all five providers.
+                continue
             if (
                 profile == "historical"
                 and provider == "taifex"

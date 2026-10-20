@@ -89,7 +89,7 @@ class RuntimeHarness:
         }.items():
             patch.setenv(key, value)
         inodes = {}
-        for provider, _ in SCOPES:
+        for provider in {provider for provider, _ in SCOPES} | {"factset"}:
             with coordinator.host_lock(provider) as (_, inode):
                 inodes[provider] = inode
         await attest_cutover(self.db, inodes)
@@ -523,7 +523,7 @@ class RuntimeHarness:
     async def run(self):
         from findb_fetcher.historical_backfill import HistoricalControlClient, run_once
 
-        self.deadline = time.monotonic() + 25
+        self.deadline = time.monotonic() + getattr(self, "execution_timeout", 25)
 
         def execute():
             target = self.runner()
@@ -540,7 +540,10 @@ class RuntimeHarness:
                         raise
 
                 def complete(self, control, item, result):
-                    return target.complete(control, item, result)
+                    finish = getattr(target, "complete", None)
+                    return (
+                        finish(control, item, result) if finish else control.complete(item, result)
+                    )
 
             with HistoricalControlClient(
                 self.config, client=self.http(), provider=self.provider

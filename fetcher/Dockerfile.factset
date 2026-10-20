@@ -1,0 +1,33 @@
+FROM python:3.13-slim
+
+LABEL com.findb.provider-work.protocol="v1"
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir "uv==0.9.9"
+
+COPY fetcher/pyproject.toml fetcher/uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project --extra factset
+
+COPY fetcher/src ./src
+COPY fetcher/configs ./configs
+COPY contracts ./contracts
+COPY fetcher/certs ./certs
+RUN uv sync --frozen --no-dev --extra factset
+
+RUN groupadd --system --gid 10001 fetcher \
+    && useradd --system --uid 10001 --gid fetcher --home-dir /nonexistent fetcher \
+    && mkdir -p /var/lib/findb-fetcher \
+    && chown fetcher:fetcher /var/lib/findb-fetcher \
+    && chown -R fetcher:fetcher /app
+
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    FETCHER_CONTRACTS_DIR=/app/contracts \
+    FACTSET_SSL_CA_FILE=/app/certs/ap-southeast-1-bundle.pem
+
+VOLUME ["/var/lib/findb-fetcher"]
+
+USER fetcher
+
+CMD ["findb-fetch-runtime", "--help"]

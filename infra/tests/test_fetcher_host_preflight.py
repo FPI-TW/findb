@@ -133,7 +133,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.manifest = {
             "schema_version": 3,
             "runtime_profile": "unified",
-            "fetcher_bundle_version": 1,
+            "fetcher_bundle_version": 2,
             "deployment_target": "production",
             "unit": "fetcher",
             "commit_sha": "b" * 40,
@@ -159,7 +159,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.write_manifest()
         self.rows = []
         for profile in ("pilot", "full_market"):
-            for provider in ("twelve_data", "finlab", "shioaji", "taifex"):
+            for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset"):
                 prefix = profile.replace("_", "-")
                 name = f"findb-{prefix}-{provider.replace('_', '-')}"
                 state = f"/var/lib/findb-{prefix}/production"
@@ -181,7 +181,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                     self.row(name, "twelve_data" if provider == "taifex" else provider, args)
                 )
 
-        for provider in ("twelve_data", "finlab", "shioaji", "taifex"):
+        for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset"):
             self.rows.append(
                 self.row(
                     "findb-historical-" + provider.replace("_", "-"),
@@ -258,14 +258,19 @@ class FetcherHostPreflightTests(unittest.TestCase):
         return result
 
     def test_complete_unified_installation_is_drained(self):
-        self.assertEqual(len(self.rows), 12)
+        self.assertEqual(len(self.rows), 15)
         self.assertEqual(self.check(), "drained")
 
     def test_accepted_eleven_consumer_installation_can_upgrade(self):
+        self.manifest["fetcher_bundle_version"] = 1
+        self.manifest["images"].pop("factset")
+        self.rows = [row for row in self.rows if not row["Name"].endswith("-factset")]
         self.rows = [row for row in self.rows if row["Name"] != "/findb-historical-taifex"]
         path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
         path.write_text(
-            path.read_text().replace("# historical-taifex-v1:", "# previous-historical-consumers:")
+            path.read_text()
+            .replace("# historical-taifex-v1:", "# previous-historical-consumers:")
+            .replace("# factset-consumers-v1:", "# previous-provider-consumers:")
         )
         with release.SourceBundleReader(self.root) as source:
             self.manifest["deployment_source_bundle_sha256"] = (
@@ -384,7 +389,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                         self.check()
 
     def test_drained_requires_exact_pilot_format_identity(self):
-        for version in (None, False, True, 0, 2, "1", 1.0):
+        for version in (None, False, True, 0, 3, "1", 1.0):
             with self.subTest(version=version):
                 self.manifest["fetcher_bundle_version"] = version
                 if version is None:
@@ -392,7 +397,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 self.write_manifest()
                 with self.assertRaisesRegex(ValueError, "format identity invalid"):
                     self.check()
-        self.manifest["fetcher_bundle_version"] = 1
+        self.manifest["fetcher_bundle_version"] = 2
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 
@@ -635,6 +640,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
             "TWELVE_IMAGE": self.manifest["images"]["twelve_data"],
             "FINLAB_IMAGE": self.manifest["images"]["finlab"],
             "SHIOAJI_IMAGE": self.manifest["images"]["shioaji"],
+            "FACTSET_IMAGE": self.manifest["images"].get(
+                "factset", REGISTRY + "/findb/production/fetcher/factset@sha256:" + "e" * 64
+            ),
             "TARGET_ID": "offline-instance",
             "AWS_REGION": "ap-southeast-1",
             "AWS_ACCOUNT_ID": REGISTRY.split(".")[0],

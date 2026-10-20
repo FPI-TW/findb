@@ -14,6 +14,7 @@ from scripts.seed_data import DATASETS
 RUNTIME_FEEDS = [
     ("twelve_data", "us_equity_eod", "market_eod", "US", "equity", "daily"),
     ("twelve_data", "hk_equity_eod", "market_eod", "HK", "equity", "daily"),
+    ("factset", "hk_equity_eod", "market_eod", "HK", "equity", "daily"),
     ("finlab", "tw_equity_eod", "market_eod", "TW", "equity", "daily"),
     ("finlab", "tw_etf_eod", "market_eod", "TW", "etf", "daily"),
     ("shioaji", "tw_equity_minute", "market_minute", "TW", "equity", "minute"),
@@ -42,6 +43,8 @@ def change_runtime_identity(dataset, invalid):
         config["schema_id"] = (
             "market_eod" if config["schema_id"] == "market_minute" else "market_minute"
         )
+        config["accepted_schema_versions"] = [1]
+        config["current_schema_version"] = 1
         if config["schema_id"] == "market_minute":
             config["defaults"].update(market_timezone="Asia/Taipei", price_adjustment="none")
     elif invalid in {"market", "asset_class"}:
@@ -67,7 +70,10 @@ def test_runtime_v1_feed_declarations_are_accepted(
     dataset = runtime_dataset(key, enabled)
     declaration = parse_dataset_contract_declaration(dataset.config)
     assert declaration is not None
-    assert (declaration.schema_id, declaration.accepted_schema_versions) == (schema, [1])
+    assert (declaration.schema_id, declaration.accepted_schema_versions) == (
+        schema,
+        [1, 2] if key == "hk_equity_eod" else [1],
+    )
     assert (dataset.market, dataset.asset_class, dataset.frequency) == (market, asset, frequency)
     opted_in, activated, errors, blockers = full_market_configuration(dataset, provider)
     assert (opted_in, activated, errors) == (False, enabled, [])

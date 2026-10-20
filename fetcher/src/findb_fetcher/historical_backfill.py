@@ -40,6 +40,7 @@ class HistoricalWorkItem:
     trade_date: date
     lease_token: UUID
     lease_expires_at: datetime | None = None
+    universe_snapshot: dict[str, Any] | None = None
 
 
 class HistoricalWorkDeferredError(RuntimeError):
@@ -54,6 +55,7 @@ class HistoricalPreparedManualError(RuntimeError):
 class HistoricalRunResult:
     run_id: UUID | None
     result_evidence: dict[str, Any]
+    status: str = "completed"
 
 
 class HistoricalProviderRunner(Protocol):
@@ -101,6 +103,7 @@ class HistoricalControlClient:
                 lease_expires_at=datetime.fromisoformat(payload["lease_expires_at"])
                 if payload.get("lease_expires_at")
                 else None,
+                universe_snapshot=payload.get("universe_snapshot"),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise HistoricalControlError("invalid historical work identity") from exc
@@ -108,7 +111,7 @@ class HistoricalControlClient:
     def complete(self, item: HistoricalWorkItem, run_id: UUID | HistoricalRunResult) -> None:
         result = run_id if isinstance(run_id, HistoricalRunResult) else None
         body: dict[str, Any] = {
-            "status": "completed",
+            "status": result.status if result else "completed",
             "run_id": str(result.run_id)
             if result and result.run_id
             else None
@@ -248,7 +251,9 @@ def run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner)
     from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work, enabled
 
     if not enabled():
-        return _run_once(control, runner)
+        return (
+            False if getattr(control, "provider", None) == "factset" else _run_once(control, runner)
+        )
     if not control.provider:
         raise HistoricalControlError("historical provider identity is required")
     try:
@@ -292,7 +297,7 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
             return True
         if owner and owner.work["state"] in {"closed", "draining"}:
             receipts = owner.drain_prepared()
-            if item.provider != "taifex" or not owner.work.get("manifest"):
+            if item.provider not in {"taifex", "factset"} or not owner.work.get("manifest"):
                 if receipts:
                     try:
                         control.complete(item, receipts[-1].run_id)
@@ -310,7 +315,7 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
         ):
             run_id = runner.run(item)
         if not isinstance(run_id, (UUID, HistoricalRunResult)) or (
-            isinstance(run_id, HistoricalRunResult) and item.provider != "taifex"
+            isinstance(run_id, HistoricalRunResult) and item.provider not in {"taifex", "factset"}
         ):
             raise HistoricalControlError("historical runner did not return a Source run")
     except ProviderWorkAcquisitionStopped:

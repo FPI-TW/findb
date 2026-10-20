@@ -41,9 +41,9 @@ async def test_fetcher_credentials_are_created_and_idempotent(
     )
     assert not (await test_session.scalars(select(APIKey))).all()
 
-    assert [row.action for row in created] == ["created"] * 4
-    assert [row.action for row in unchanged] == ["unchanged"] * 4
-    assert len(source_rows) == 4
+    assert [row.action for row in created] == ["created"] * 5
+    assert [row.action for row in unchanged] == ["unchanged"] * 5
+    assert len(source_rows) == 5
     by_name = {row.name: row for row in source_rows}
     for spec in SOURCE_SPECS:
         assert by_name[spec.name].source_name == spec.source_name
@@ -92,10 +92,16 @@ async def test_unified_credentials_cover_seven_feeds_without_profile_branch(test
     results = await reconcile_fetcher_credentials_in_session(
         test_session, _hashes(), deployment_target=target
     )
-    assert len(results) == 4
+    assert len(results) == 5
     rows = (await test_session.scalars(select(SourceClient))).all()
-    assert sum(len(row.allowed_datasets) for row in rows) == 7
-    assert {row.source_name for row in rows} == {"twelve_data", "finlab", "shioaji", "taifex"}
+    assert sum(len(row.allowed_datasets) for row in rows) == 8
+    assert {row.source_name for row in rows} == {
+        "twelve_data",
+        "finlab",
+        "shioaji",
+        "taifex",
+        "factset",
+    }
     assert all(row.rate_limit_requests == 2400 for row in rows)
     with pytest.raises(FetcherCredentialError):
         source_specs_for_profile("bounded", target)

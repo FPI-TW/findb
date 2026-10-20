@@ -12,7 +12,7 @@ SHIOAJI_DAILY_BYTES = 500 * 1024 * 1024
 
 
 def limits(provider: str, datasets: list[str] | None = None) -> dict[str, Any]:
-    if provider not in {"twelve_data", "finlab", "shioaji", "taifex"}:
+    if provider not in {"twelve_data", "finlab", "shioaji", "taifex", "factset"}:
         raise ValueError("unsupported provider")
     return {
         "provider": provider,
@@ -43,12 +43,16 @@ def account_identity(
         "finlab": "FINLAB_API_TOKEN",
         "shioaji": "SHIOAJI_API_KEY",
         "taifex": "",
+        "factset": "",
     }[provider]
     from findb_fetcher.finlab_credentials import effective_token, installed_token
 
     environment = (
         installed_token() if provider == "finlab" else (os.getenv(name, "") if name else "public")
     )
+    if provider == "factset":
+        # Credential identity excludes the password, so rotation preserves debt.
+        environment = f"{os.getenv('FACTSET_HOST', '').lower()}:{os.getenv('FACTSET_PORT', '3306')}:{os.getenv('FACTSET_USER', '')}"
     actual: str = credential if credential is not None else environment
     legacy_digest = hashlib.sha256(actual.encode()).hexdigest()
     # The supported SDK boundaries normalize surrounding credential whitespace.

@@ -78,7 +78,7 @@ def test_enforced_daily_quota_waits_do_not_publish_failure_or_consume_retry_budg
         runtime.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
 def test_orphan_provider_descendant_keeps_whole_work_lock_after_owner_exit(tmp_path, provider):
     release_read, release_write = os.pipe()
     child_script = "import os,sys; os.read(int(sys.argv[1]),1)"

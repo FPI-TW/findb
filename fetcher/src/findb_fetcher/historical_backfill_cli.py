@@ -8,6 +8,7 @@ import threading
 from typing import cast
 
 from findb_fetcher.config import FetcherConfig
+from findb_fetcher.factset_historical import FactSetHistoricalRunner
 from findb_fetcher.historical_backfill import (
     HistoricalControlClient,
     HistoricalProviderRunner,
@@ -25,7 +26,9 @@ def main(argv: list[str] | None = None) -> int:
         description="Run one provider's historical backfill control worker."
     )
     parser.add_argument(
-        "--provider", required=True, choices=("twelve_data", "finlab", "shioaji", "taifex")
+        "--provider",
+        required=True,
+        choices=("twelve_data", "finlab", "shioaji", "taifex", "factset"),
     )
     parser.add_argument("--run-forever", action="store_true")
     parser.add_argument(
@@ -43,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
                 "finlab": FinLabHistoricalRunner.from_env,
                 "shioaji": ExecutableShioajiHistoricalRunner.from_env,
                 "taifex": TaifexHistoricalRunner.from_env,
+                "factset": FactSetHistoricalRunner.from_env,
             }[args.provider](),
         )
         with HistoricalControlClient(FetcherConfig.from_env(), provider=args.provider) as control:

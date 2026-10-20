@@ -52,11 +52,12 @@ locals {
     fetcher_twelve_data = { name = var.ecr_repository_names["fetcher_twelve_data"], unit = "fetcher" }
     fetcher_finlab      = { name = var.ecr_repository_names["fetcher_finlab"], unit = "fetcher" }
     fetcher_shioaji     = { name = var.ecr_repository_names["fetcher_shioaji"], unit = "fetcher" }
+    fetcher_factset     = { name = var.ecr_repository_names["fetcher_factset"], unit = "fetcher" }
   }
 
   ecr_repository_keys_by_unit = {
     findb   = toset(["findb_backend", "findb_dashboard"])
-    fetcher = toset(["fetcher_twelve_data", "fetcher_finlab", "fetcher_shioaji"])
+    fetcher = toset(["fetcher_twelve_data", "fetcher_finlab", "fetcher_shioaji", "fetcher_factset"])
   }
 
   ecr_publisher_role_config = {

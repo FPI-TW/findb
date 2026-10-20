@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import DBAPIError, OperationalError, PendingRollbackError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.schemas.ingress import IngressRequestV1
+from app.schemas.ingress import IngressRequest
 from app.services.delivery_policy import DeliveryPolicyRejectedError
 from app.services.full_market import FullMarketError
 from app.services.ingestion import (
@@ -48,7 +48,7 @@ class CanonicalIngestAccepted:
     run_id: UUID
     run_status: str
     is_duplicate: bool
-    request: IngressRequestV1
+    request: IngressRequest
 
 
 class CanonicalIngestRejectionError(RuntimeError):

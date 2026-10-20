@@ -47,7 +47,8 @@ from app.schemas.full_market import (
 from app.schemas.ingress import (
     FuturesEODIngressRequest,
     FuturesEODRow,
-    IngressRequestV1,
+    IngressRequest,
+    MarketEODIngressRequestV2,
     MarketEODRow,
     MarketMinuteRow,
 )
@@ -255,7 +256,9 @@ async def list_universes(
     as_of: date | None = None,
     profile: ExecutionProfile = "full_market",
 ) -> UniverseListResponse:
-    await _scope(db, dataset_key=dataset_key, provider=provider, allowed_datasets=allowed_datasets)
+    dataset = await _scope(
+        db, dataset_key=dataset_key, provider=provider, allowed_datasets=allowed_datasets
+    )
     filters = [UniverseRelease.dataset_key == dataset_key, UniverseRelease.provider == provider]
     if as_of is not None:
         filters.append(UniverseRelease.effective_date <= as_of)
@@ -279,6 +282,11 @@ async def list_universes(
             "enabled": projection["acquisition_allowed"]
             and dataset_key in projection["admitted_dataset_keys"],
             "activation_date": projection["first_start_dates"].get(dataset_key),
+            "acquisition_start_date": (dataset.config or {})
+            .get("hk_provider_cutover", {})
+            .get("effective_date")
+            if provider == "factset"
+            else None,
             **projection,
             "execution_policy": execution_policy(provider),
         },
@@ -460,6 +468,10 @@ async def create_plan(
         or not activation_value
     ):
         raise FullMarketError("Full-market acquisition is not admitted", 409)
+    from app.services.hk_provider_cutover import acquisition_allowed
+
+    if not acquisition_allowed(dataset, body.provider, trade_date=body.trade_date):
+        raise FullMarketError("Provider acquisition is outside its cutover dates", 409)
     activation_date = date.fromisoformat(activation_value)
     if body.trade_date < activation_date:
         raise FullMarketError("Pre-first-start delivery plans are forbidden", 409)
@@ -629,7 +641,11 @@ async def _plan_scope(
 
 
 async def reconcile_plan(
-    db: AsyncSession, plan: DailyDeliveryPlan, *, now: datetime | None = None
+    db: AsyncSession,
+    plan: DailyDeliveryPlan,
+    *,
+    now: datetime | None = None,
+    gap_limit: int | None = 1000,
 ) -> DeliverySummaryResponse:
     members = list(
         (
@@ -743,6 +759,8 @@ async def reconcile_plan(
             or (part_id, snapshot_id, daily_update_id) in complete_groups
         ):
             canonical_keys.add(member_key)
+    if plan.provider == "factset" and plan.dataset_key == "hk_equity_eod":
+        canonical_keys.update(await _factset_historical_repairs(db, plan, members))
     counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
     gaps: list[dict] = []
     for member in members:
@@ -755,7 +773,7 @@ async def reconcile_plan(
         else:
             state = "missing"
         counts[state] += 1
-        if state in {"missing", "blocked"} and len(gaps) < 1000:
+        if state in {"missing", "blocked"} and (gap_limit is None or len(gaps) < gap_limit):
             gaps.append(
                 {
                     "member_key": member.member_key,
@@ -773,6 +791,64 @@ async def reconcile_plan(
         is_late=evaluated_at > plan.deadline_at and counts["missing"] + counts["blocked"] > 0,
         gaps=gaps,
     )
+
+
+async def _factset_historical_repairs(
+    db: AsyncSession, plan: DailyDeliveryPlan, members: list[DailyDeliveryMember]
+) -> set[str]:
+    """Historical actual writes may resolve monitoring, never settle another work."""
+    from app.config import get_settings
+    from app.models.provider_work import ProviderWork, ProviderWorkReceipt
+
+    if plan.provider != "factset" or plan.dataset_key != "hk_equity_eod":
+        return set()
+    evidence = (
+        await db.execute(
+            select(DeliveryMemberEvidence.member_key, ProviderWork.work_id)
+            .join(IngestionRun, IngestionRun.run_id == DeliveryMemberEvidence.run_id)
+            .join(ProviderWorkReceipt, ProviderWorkReceipt.run_id == IngestionRun.run_id)
+            .join(ProviderWork, ProviderWork.work_id == ProviderWorkReceipt.work_id)
+            .where(
+                IngestionRun.source == "factset",
+                IngestionRun.dataset_key == plan.dataset_key,
+                IngestionRun.batch_data_date == plan.trade_date,
+                IngestionRun.schema_id == "market_eod",
+                IngestionRun.schema_version == 2,
+                IngestionRun.status.in_(("completed", "completed_with_errors")),
+                ProviderWork.kind == "historical",
+                ProviderWork.environment == get_settings().APP_ENVIRONMENT,
+                ProviderWork.provider == "factset",
+                ProviderWork.dataset_key == plan.dataset_key,
+                ProviderWork.trade_date == plan.trade_date,
+            )
+        )
+    ).all()
+    expected = {
+        member.member_key: member.provider_symbol
+        for member in members
+        if member.mapping_status == "mapped"
+    }
+    manifests: dict[UUID, dict[str, str]] = {}
+    repaired = set()
+    for key, work_id in evidence:
+        if key not in expected:
+            continue
+        if work_id not in manifests:
+            work = await db.get(ProviderWork, work_id)
+            manifest = work.manifest if work else None
+            manifests[work_id] = (
+                {
+                    row["key"]: row["source_symbol"]
+                    for row in manifest["members"]
+                    if row.get("mapping_status") == "mapped"
+                }
+                if manifest
+                and manifest.get("contract") == {"schema_id": "market_eod", "schema_version": 2}
+                else {}
+            )
+        if manifests[work_id].get(key) == expected[key]:
+            repaired.add(key)
+    return repaired
 
 
 async def get_plan(
@@ -900,12 +976,28 @@ async def record_outcome(
 
 
 async def validate_ingest_part(
-    db: AsyncSession, request: IngressRequestV1, dataset: DatasetRegistry
+    db: AsyncSession, request: IngressRequest, dataset: DatasetRegistry
 ) -> UUID | None:
     """Bind a full-market request to one frozen part before raw persistence."""
     governance = (dataset.config or {}).get("full_market") or {}
     delivery = getattr(request, "delivery", None)
     work_item_id = getattr(delivery, "work_item_id", None)
+    if (
+        isinstance(request, MarketEODIngressRequestV2)
+        and request.source == "factset"
+        and isinstance(work_item_id, str)
+        and work_item_id.startswith("historical:")
+    ):
+        from app.services.historical_backfill import (
+            HistoricalBackfillError,
+            validate_factset_historical_delivery,
+        )
+
+        try:
+            await validate_factset_historical_delivery(db, request)
+        except HistoricalBackfillError as exc:
+            raise FullMarketError(str(exc), 409) from exc
+        return None
     if (
         isinstance(request, FuturesEODIngressRequest)
         and request.source == "taifex"

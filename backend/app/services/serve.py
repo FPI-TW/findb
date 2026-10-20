@@ -61,6 +61,11 @@ DataKind = Literal["eod", "minute", "futures_eod"]
 MAX_CURSOR_LENGTH = 2048
 MAX_CURSOR_BYTES = 1536
 BASE64URL_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+SUPPORTED_SERVE_VERSIONS = {
+    "market_eod": frozenset({1, 2}),
+    "market_minute": frozenset({1}),
+    "futures_eod": frozenset({1}),
+}
 SUPPORTED_ACTIVE_SCOPES = frozenset(
     {
         ("market_eod", "US", "equity"),
@@ -111,10 +116,10 @@ async def active_dataset_scopes(db: AsyncSession) -> tuple[ActiveDatasetScope, .
             frequency = row.frequency.strip().lower()
             if declaration.schema_enforcement != "enforce":
                 raise ValueError("schema enforcement must be enabled")
-            if declaration.current_schema_version != 1 or declaration.accepted_schema_versions != [
-                1
-            ]:
-                raise ValueError("Serve supports only the current v1 contract")
+            if not set(declaration.accepted_schema_versions) <= SUPPORTED_SERVE_VERSIONS.get(
+                schema_id, frozenset()
+            ):
+                raise ValueError("contract version does not have a supported Serve read model")
             if (
                 declaration.defaults.market != market
                 or declaration.defaults.asset_class != asset_class

@@ -25,17 +25,20 @@ class Settings(BaseSettings):
     PORT: int = 8080
     APP_ENVIRONMENT: Literal["local", "staging", "production"] = "local"
     FULL_MARKET_ENABLED: bool = False
+    EOD_LONG_GAP_TRADING_DAYS: int = Field(default=5, ge=1, le=366)
     PROVIDER_WORK_REQUIRED: bool = False
     TWELVE_DATA_SKIP_NON_TRADING_DAYS: bool = False
     FINLAB_SKIP_NON_TRADING_DAYS: bool = False
     SHIOAJI_SKIP_NON_TRADING_DAYS: bool = False
     TAIFEX_SKIP_NON_TRADING_DAYS: bool = False
+    FACTSET_SKIP_NON_TRADING_DAYS: bool = True
 
     @field_validator(
         "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
         "FINLAB_SKIP_NON_TRADING_DAYS",
         "SHIOAJI_SKIP_NON_TRADING_DAYS",
         "TAIFEX_SKIP_NON_TRADING_DAYS",
+        "FACTSET_SKIP_NON_TRADING_DAYS",
         mode="before",
     )
     @classmethod

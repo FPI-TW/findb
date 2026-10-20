@@ -91,6 +91,14 @@ FULL_MARKET_SOURCE_SPECS = (
         allowed_datasets=("tw_futures_eod",),
         rate_limit_requests=2400,
     ),
+    SourceCredentialSpec(
+        env_name="FETCHER_FACTSET_SOURCE_CLIENT_KEY_HASH",
+        name="fetcher-factset",
+        source_name="factset",
+        description="FactSet HK EOD Fetcher Source client",
+        allowed_datasets=("hk_equity_eod",),
+        rate_limit_requests=2400,
+    ),
 )
 
 
