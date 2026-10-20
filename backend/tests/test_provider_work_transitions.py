@@ -8,6 +8,7 @@ import time
 from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
@@ -21,13 +22,29 @@ from tests.provider_work_runtime_support import SCOPES
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
 
+@pytest.fixture
+def taifex_dispatch_clock(native_runtime, monkeypatch):
+    """Separate domain transitions from the CI runner's 50ms scheduling jitter."""
+    if native_runtime.provider != "taifex":
+        return None
+    from findb_fetcher import acquisition, full_market_client
+
+    clock = [time.monotonic()]
+    facade = SimpleNamespace(time=time.time, sleep=time.sleep, monotonic=lambda: clock[0])
+    # Keep UTC, pacing, asyncio and the harness timeout real. Only the grant's
+    # receipt/dispatch monotonic clock is controlled, without changing its bound.
+    monkeypatch.setattr(acquisition, "time", facade)
+    monkeypatch.setattr(full_market_client, "time", facade)
+    return clock
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime", [(provider, dataset, 5) for provider, dataset in SCOPES], indirect=True
 )
 @pytest.mark.parametrize("retained_earlier", [False, True])
 async def test_failed_request_cancels_empty_siblings_without_historical_consumer_but_retains_prepared_drain(
-    native_runtime, test_engine, retained_earlier
+    native_runtime, test_engine, retained_earlier, taifex_dispatch_clock
 ):
     h = native_runtime
     handle = h.handle
@@ -134,7 +151,7 @@ async def test_failed_request_cancels_empty_siblings_without_historical_consumer
     indirect=True,
 )
 async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_after_window_change(
-    native_runtime, test_engine, monkeypatch
+    native_runtime, test_engine, monkeypatch, taifex_dispatch_clock
 ):
     from findb_fetcher import acquisition
 
@@ -274,3 +291,66 @@ async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_
             ).fetchone()[0]
             == 100
         ), "verified prior account usage must not be erased by retry"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_runtime", [("taifex", "tw_futures_eod")], indirect=True)
+async def test_taifex_expired_dispatch_grant_defers_without_native_io_then_retries_same_work(
+    native_runtime, test_engine, taifex_dispatch_clock
+):
+    h = native_runtime
+    handle = h.handle
+    granted = False
+    expired = False
+
+    def expire_final_work_check(request):
+        nonlocal granted, expired
+        response = handle(request)
+        if request.url.path.endswith("/authorization"):
+            assert response.status_code == 200
+            granted = True
+        elif granted and request.url.path.endswith("/authorize"):
+            assert response.status_code == 200
+            taifex_dispatch_clock[0] += 0.051
+            expired = True
+        return response
+
+    h.handle = expire_final_work_check
+    assert await h.run()
+    assert granted and expired
+    assert not h.native_calls()
+    h.db.expire_all()
+    work = await h.db.scalar(
+        select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
+    )
+    assert work.state == "queued", h.failure
+    work_id = work.work_id
+    with closing(sqlite3.connect(os.environ["FETCHER_ACCOUNT_STATE_PATH"])) as db:
+        assert (
+            db.execute(
+                "SELECT count(*) FROM acquisition_intent WHERE actual_start IS NOT NULL"
+            ).fetchone()[0]
+            == 0
+        )
+    attempt = await h.db.scalar(
+        select(ProviderWorkAttempt).where(
+            ProviderWorkAttempt.work_id == work_id, ProviderWorkAttempt.state == "queued"
+        )
+    )
+    attempt.not_before = utc_now() - timedelta(seconds=1)
+    await h.db.commit()
+    h.handle = handle
+    # Advance the runner's durable retry clock, retaining real account pacing.
+    make_runner = h.runner
+
+    def runner():
+        target = make_runner()
+        target.clock = lambda: time.time() + 31
+        return target
+
+    h.runner = runner
+    assert await h.run()
+    h.db.expire_all()
+    assert (await h.db.get(ProviderWork, work_id)).state == "completed", h.failure
+    assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "completed"
+    assert h.native_calls()

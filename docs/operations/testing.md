@@ -403,6 +403,12 @@ maintenance claim，以及 actual account governor 四次 predispatch quota wait
 failure 的原 budget 與 account usage。SQLite frozen-v9 DDL 測試驗證 transactional v10 upgrade、升級
 中 hard crash／reopen、原 rows／prepared／receipts／pins 不變，未知或實際失敗不退款。
 
+TAIFEX transition cases 透過測試限定的共用 monotonic clock 控制 acquisition 與 Source grant
+receipt；UTC、account pacing、asyncio 及 harness timeout 仍使用真實時鐘。這些案例驗證狀態轉移，
+不應要求繁忙 CI runner 在 50ms 內完成真實 DB／ASGI 往返。另以同一時鐘在最後 work
+authorization 返回時推進 51ms，驗證原 50ms grant 失效、無 native I/O／actual_start、queued retry，
+再以新 grant 完成同一 work。Production 時限及 dedicated Fetcher elapsed-time tests 均保持不變。
+
 Provider-work native harness 以 fork 注入離線 Shioaji fake；production `_ProviderProcess` 使用
 `subprocess.Popen`／exec 與明確 `pass_fds`。測試在再次啟動 native child 前，所有 quota 注入與
 SQLite diagnostics 都必須先 commit、再 close；`sqlite3.Connection` 的 context exit 只處理 transaction，
