@@ -56,6 +56,7 @@ class RuntimeHarness:
         self.source_events = []
         self.failure = None
         self.deadline = time.monotonic() + 25
+        self.dispatch_clock = None
 
     async def initialize(self):
         root = Path(__file__).resolve().parents[2]
@@ -65,6 +66,10 @@ class RuntimeHarness:
         from findb_fetcher.config import FetcherConfig
         from findb_fetcher.contracts import ContractRegistry
 
+        if self.provider == "taifex":
+            from tests.provider_work_clock import dispatch_clock
+
+            self.dispatch_clock = dispatch_clock(patch)
         self.queue = coordinator
         patch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
         patch.setattr(get_settings(), "APP_ENVIRONMENT", self.environment)

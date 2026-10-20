@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import time
 
 import pytest
 import pytest_asyncio
@@ -624,10 +625,14 @@ async def test_permanent_prepared_rejection_retains_body_and_explicit_manual_fai
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("native_runtime", SCOPES, indirect=True)
+@pytest.mark.parametrize(
+    "native_runtime,fence_delay",
+    [(scope, 0) for scope in SCOPES] + [(("taifex", "tw_futures_eod"), 0.06)],
+    indirect=["native_runtime"],
+)
 @pytest.mark.parametrize("temporary_status", [408, 503])
 async def test_cancel_queued_prepared_retry_preserves_executable_drain_without_new_provider_io(
-    native_runtime, test_engine, admin_headers, temporary_status
+    native_runtime, test_engine, admin_headers, temporary_status, fence_delay
 ):
     from datetime import timedelta
 
@@ -638,13 +643,22 @@ async def test_cancel_queued_prepared_retry_preserves_executable_drain_without_n
 
     h = native_runtime
     handle = h.handle
+    delayed_checks = []
+
+    def slow_authorization(request):
+        response = handle(request)
+        if fence_delay and request.url.path.endswith("/authorize"):
+            assert response.status_code == 200
+            time.sleep(fence_delay)
+            delayed_checks.append(request.url.path)
+        return response
 
     def unavailable(request):
         if request.url.path == "/api/v1/source/ingest":
             return httpx.Response(
                 temporary_status, json={"detail": "temporarily unavailable"}, request=request
             )
-        return handle(request)
+        return slow_authorization(request)
 
     h.handle = unavailable
     assert await h.run()
@@ -654,6 +668,8 @@ async def test_cancel_queued_prepared_retry_preserves_executable_drain_without_n
     )
     work_id, frozen, original = work.work_id, work.manifest, dict(work.prepared_deliveries)
     assert work.state == "queued" and original and not h.runs
+    if fence_delay:
+        assert delayed_checks, "the prepared retry must survive actual slow work authorization"
     retry = await h.db.scalar(
         select(ProviderWorkAttempt).where(
             ProviderWorkAttempt.work_id == work_id, ProviderWorkAttempt.state == "queued"

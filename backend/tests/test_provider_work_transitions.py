@@ -8,7 +8,6 @@ import time
 from contextlib import closing
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
@@ -22,29 +21,13 @@ from tests.provider_work_runtime_support import SCOPES
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
 
-@pytest.fixture
-def taifex_dispatch_clock(native_runtime, monkeypatch):
-    """Separate domain transitions from the CI runner's 50ms scheduling jitter."""
-    if native_runtime.provider != "taifex":
-        return None
-    from findb_fetcher import acquisition, full_market_client
-
-    clock = [time.monotonic()]
-    facade = SimpleNamespace(time=time.time, sleep=time.sleep, monotonic=lambda: clock[0])
-    # Keep UTC, pacing, asyncio and the harness timeout real. Only the grant's
-    # receipt/dispatch monotonic clock is controlled, without changing its bound.
-    monkeypatch.setattr(acquisition, "time", facade)
-    monkeypatch.setattr(full_market_client, "time", facade)
-    return clock
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime", [(provider, dataset, 5) for provider, dataset in SCOPES], indirect=True
 )
 @pytest.mark.parametrize("retained_earlier", [False, True])
 async def test_failed_request_cancels_empty_siblings_without_historical_consumer_but_retains_prepared_drain(
-    native_runtime, test_engine, retained_earlier, taifex_dispatch_clock
+    native_runtime, test_engine, retained_earlier
 ):
     h = native_runtime
     handle = h.handle
@@ -151,7 +134,7 @@ async def test_failed_request_cancels_empty_siblings_without_historical_consumer
     indirect=True,
 )
 async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_after_window_change(
-    native_runtime, test_engine, monkeypatch, taifex_dispatch_clock
+    native_runtime, test_engine, monkeypatch
 ):
     from findb_fetcher import acquisition
 
@@ -296,9 +279,10 @@ async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("taifex", "tw_futures_eod")], indirect=True)
 async def test_taifex_expired_dispatch_grant_defers_without_native_io_then_retries_same_work(
-    native_runtime, test_engine, taifex_dispatch_clock
+    native_runtime, test_engine
 ):
     h = native_runtime
+    assert h.dispatch_clock is not None
     handle = h.handle
     granted = False
     expired = False
@@ -311,7 +295,7 @@ async def test_taifex_expired_dispatch_grant_defers_without_native_io_then_retri
             granted = True
         elif granted and request.url.path.endswith("/authorize"):
             assert response.status_code == 200
-            taifex_dispatch_clock[0] += 0.051
+            h.dispatch_clock[0] += 0.051
             expired = True
         return response
 
