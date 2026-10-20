@@ -474,17 +474,45 @@ Fetcher 擷取於 12:20:28 UTC，RDS snapshot 建立於 12:20:39 UTC。
 
 八份既有 SQLite 的原 tables／rows 比對一致，五組 shared-inode lock proof 通過，Owner cutover
 已提交。兩端 AWS runtime config 與 deployment parameter 僅將 `PROVIDER_WORK_REQUIRED` 改為
-`true`；舊 secret versions、原停止容器與 account usage 均保留。舊 Backend replay
-[39422130758](https://github.com/FPI-TW/findb/actions/runs/39422130758) 在部署前因測試時鐘漂移失敗；
-修正 [PR #322](https://github.com/FPI-TW/findb/pull/322) 已通過 Required CI 並整合。
-[Backend CD 39426038217](https://github.com/FPI-TW/findb/actions/runs/39426038217) 已通過部署驗收，
-revision 為 `8dc1f0a056ed3ed5f8828b410b6f56ee91a055fe`，四個 Backend roles 均已核對
-`PROVIDER_WORK_REQUIRED=true`。[Fetcher CD 39429297439](https://github.com/FPI-TW/findb/actions/runs/39429297439)
-已成功重播 schema-v3 accepted bundle，十五個 consumers 的 enforcement、零重啟與五組
-attested inode 均核對一致。首次 FactSet maintenance 在實際 dispatch 前被取消；Source maintenance
-授權有效，原 journal／budget 保留，三個 FactSet consumers 已 graceful stop 以診斷 dispatch
-授權順序，另外十二個 consumers 與所有 stopped controls 不變。HKEX baseline、HK provider cutover
-及原生行情驗收尚未完成。Production 基礎設施尚未套用。
+`true`；舊 secret versions、原停止容器與 account usage 均保留。
+
+目前 staging Backend 與 Fetcher 均部署至 `f7d0d8f7c6770ef1c874b8036ec112bcd18d5b5d`：
+
+- [Backend CD 39443577634](https://github.com/FPI-TW/findb/actions/runs/39443577634) 成功；七個
+  containers running、零重啟，公開 Dashboard 兩次完整回應正常。
+- [Fetcher CD 39446053008](https://github.com/FPI-TW/findb/actions/runs/39446053008) 成功；十五個
+  consumers 均 accepted、running、零重啟、enforced，images 與 manifest 一致，五組 lock inode
+  與原 Owner attestation 完全相同。FactSet image digest 為
+  `5f89f291c6994db6f5e6a5db67f53bdd74dffde5c2d3784a222f80c81ce0b114`。
+- 部署後再次核對 59 筆 Source 202 receipt／terminal／checksum，以及原 18 plans、18 parts、
+  38 members、33 decisions、14 first-date states；皆與切換前證據一致。
+- Accepted Backend bundle 為
+  `findb/accepted/f7d0d8f7c6770ef1c874b8036ec112bcd18d5b5d/fd5a8a469e924e1b8329937c67aeba006f352fec5f708f404ca42fa0a933b1a9.tar`；
+  Fetcher bundle 為
+  `fetcher/accepted/f7d0d8f7c6770ef1c874b8036ec112bcd18d5b5d/90e062834a301f25ba7ec02e9bf5dc61baaf908563379ce6c507a17f4acb33d1.tar`。
+
+[PR #322](https://github.com/FPI-TW/findb/pull/322) 修正測試時鐘，
+[PR #323](https://github.com/FPI-TW/findb/pull/323) 修正 owner RPC 與最後本機 dispatch grant 的順序；
+完整 Required CI 通過，Backend 2,564 tests、Fetcher 1,627 tests 通過。新版 Fetcher 需要新版
+Backend 的 owner 到期證據；rollback 下限與完整契約見
+[provider-work 授權](../architecture/provider_work.md)。首次新版 Backend activation 因公開探測
+收到部分內容後逾時而 fail-stop；先以舊 accepted bundle 恢復並核對健康，再以上述成功 replay
+啟用同一新版 bundle，未放寬健康門檻。這次受控復原發生在新版 Fetcher 部署前。
+
+原 FactSet maintenance `01a15980-fb91-7a11-a121-ea63dbb329ca` 的第 5 次 attempt 已實際取得
+HKEX 官方回應；但 2026-10-20 15:23 UTC 取得的檔案標示 `Updated as at 21/10/2026`，
+晚於當時香港日期，因此 parser 以 `HKEX snapshot is future-dated` 拒絕，工作安全結算
+`failed / MAINTENANCE_FORMAT_OR_SCOPE`，owner 已釋放。1,362,431 bytes 原始回應保留於
+journal，其 SHA-256 為 `19fc424f77714fedcbd5fe9b398d50dd9372b18101eac9bf07e7f6be8afeeddb`；
+未建立 HKEX release、HK provider cutover、FactSet RDS 查詢或行情 ingestion run。
+不得修改日期、重置預算或另造 maintenance identity 重試。清單日期生效後，以正常日期的新
+maintenance 工作續驗；停止中的 controls 不保證自動建立新 maintenance，須核對正常 CLI 結果。
+
+HKEX baseline 發布／每日更新、frozen membership、FactSet RDS TLS／query、兩檔單日與
+歷史全名單 R2 → Source → queue → canonical → Serve 驗收仍未完成。Pilot／Full controls
+目前均 `stopped`；使用者選定的驗收後日常模式為 Pilot 每日兩檔、Full 停止，須先完成 baseline
+與明確 cutover。Daily 新 I/O 仍限香港時間 18:30–23:00，歷史回補不能替代 daily 驗收。
+Production 基礎設施尚未套用。
 舊 bundle v1 仍可供升級前安裝辨識；
 新版 source bundle 與 topology marker 必須一致，promotion 必須含四個 immutable digests。
 
