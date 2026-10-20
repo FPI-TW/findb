@@ -1,8 +1,21 @@
-"""Advance only the account governor clock; preserve authentic Source authorization."""
+"""Control test clock coordinates while preserving authentic Source authorization."""
 
 import time
 from dataclasses import replace
 from types import SimpleNamespace
+
+
+def dispatch_clock(monkeypatch):
+    """Control grant receipt/dispatch timing independently of DB/ASGI latency."""
+    from findb_fetcher import acquisition, full_market_client
+
+    clock = [time.monotonic()]
+    facade = SimpleNamespace(time=time.time, sleep=time.sleep, monotonic=lambda: clock[0])
+    # Never patch the global time module: UTC, pacing, asyncio and bounded
+    # harness execution retain their real clocks. The grant bounds are unchanged.
+    monkeypatch.setattr(acquisition, "time", facade)
+    monkeypatch.setattr(full_market_client, "time", facade)
+    return clock
 
 
 def account_clock(monkeypatch):
@@ -28,11 +41,12 @@ def account_clock(monkeypatch):
     )
     monkeypatch.setattr(coordinator, "datetime", QueueClock)
     real_time = time.time
+    monotonic = acquisition.time.monotonic
     monkeypatch.setattr(
         acquisition,
         "time",
         SimpleNamespace(
-            time=lambda: real_time() + offset[0], monotonic=time.monotonic, sleep=time.sleep
+            time=lambda: real_time() + offset[0], monotonic=monotonic, sleep=time.sleep
         ),
     )
     authorize = FullMarketSourceClient.authorization
