@@ -230,7 +230,8 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
                         "settlement replay differs from durable round proof"
                     )
                 return {"work_id": str(work_id), "state": replay_work.state}
-        work, _, _ = await service.fence(db, **identity)
+        work, _, owner = await service.fence(db, **identity)
+        authorization_evidence = {}
         if work.dataset_key not in datasets:
             raise HTTPException(status_code=403, detail="Source dataset scope denied")
         if action == "heartbeat":
@@ -280,6 +281,13 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
                 )
                 if not authorization["acquisition_allowed"]:
                     raise service.ProviderWorkSuspendedError("scheduler acquisition is stopped")
+            authorization_evidence = {
+                "provider": provider,
+                "generation": owner.generation,
+                "token": str(owner.token),
+                "checked_at": service.utc_now(),
+                "expires_at": owner.expires_at,
+            }
         elif action == "close":
             await service.close(db, **identity)
         elif action == "execute-rerun":
@@ -319,7 +327,7 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
         elif action == "settle" and isinstance(body, SettleRequest):
             await service.settle(db, **body.model_dump(), provider=provider, work_id=work_id)
         await db.commit()
-        return {"work_id": str(work_id), "state": work.state}
+        return {"work_id": str(work_id), "state": work.state, **authorization_evidence}
     except service.ProviderWorkDrainingError as exc:
         await db.commit()
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc

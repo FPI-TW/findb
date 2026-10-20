@@ -68,6 +68,19 @@ async def test_active_historical_authorization_checks_exact_expiry_without_mutat
             assert (item.status, item.lease_token, item.lease_expires_at) == original
             authorized = await h.client.post(route + "/authorize", headers=h.headers, json=fence)
             assert authorized.status_code == (409 if expired else 200), authorized.text
+            if not expired:
+                evidence = authorized.json()
+                assert evidence["work_id"] == work["work_id"]
+                assert evidence["provider"] == h.provider
+                assert {key: evidence[key] for key in fence} == fence
+                assert datetime.fromisoformat(evidence["checked_at"]) == current[0]
+                assert datetime.fromisoformat(evidence["expires_at"]) == boundary + timedelta(
+                    minutes=2
+                )
+                await h.db.refresh(owner)
+                # Authorization projects current expiry; it never renews the owner.
+                assert owner.heartbeat_at == boundary
+                assert owner.expires_at == boundary + timedelta(minutes=2)
         manifest = await h.client.post(
             route + "/manifest",
             headers=h.headers,
@@ -150,3 +163,38 @@ async def test_owner_expiry_blocks_new_intent_but_drains_original_prepared_body(
         h.allow_confirm.set()
         if not task.done():
             await asyncio.wait_for(task, 15)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_runtime", [("twelve_data", "us_equity_eod")], indirect=True)
+async def test_owner_authorization_projects_latest_heartbeat_expiry(
+    native_runtime, test_engine, monkeypatch
+):
+    h = native_runtime
+    with h.queue.host_lock(h.provider) as (_, inode):
+        claim = await h.client.post(
+            "/api/v1/source/provider-work/claim",
+            headers=h.headers,
+            json={"protocol": "provider-work-v1", "host_lock_identity": inode},
+        )
+        assert claim.status_code == 200, claim.text
+        work = claim.json()["work"]
+        fence = {"generation": work["generation"], "token": work["token"]}
+        route = f"/api/v1/source/provider-work/{work['work_id']}"
+        later = queue.utc_now() + timedelta(seconds=10)
+        monkeypatch.setattr(queue, "utc_now", lambda: later)
+        heartbeat = await h.client.post(route + "/heartbeat", headers=h.headers, json=fence)
+        assert heartbeat.status_code == 200, heartbeat.text
+        authorized = await h.client.post(route + "/authorize", headers=h.headers, json=fence)
+        assert authorized.status_code == 200, authorized.text
+        evidence = authorized.json()
+        assert datetime.fromisoformat(evidence["checked_at"]) == later
+        assert datetime.fromisoformat(evidence["expires_at"]) == later + queue.HEARTBEAT_TTL
+        assert datetime.fromisoformat(evidence["expires_at"]) > datetime.fromisoformat(
+            work["expires_at"]
+        )
+        owner = await h.db.get(
+            ProviderWorkOwner, (h.environment, h.provider), populate_existing=True
+        )
+        assert owner.heartbeat_at == later
+        assert owner.expires_at == later + queue.HEARTBEAT_TTL

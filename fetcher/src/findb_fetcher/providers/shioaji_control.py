@@ -176,7 +176,12 @@ def parent_fetch(
     timeout: float,
     max_bytes: int,
 ) -> dict[str, Any]:
-    from findb_fetcher.provider_work import enabled, inherited_fds, require_acquisition
+    from findb_fetcher.provider_work import (
+        acquisition_dispatch_deadline,
+        enabled,
+        inherited_fds,
+        require_acquisition,
+    )
 
     require_acquisition("shioaji")
     descriptors = inherited_fds()
@@ -222,10 +227,16 @@ def parent_fetch(
                     )
                 require_acquisition("shioaji")
                 operation.prepare()
-                grant = operation.authorize()
                 require_acquisition("shioaji")
-                fresh = grant.valid() and (
-                    sample is None or 0 <= time.time() - sample["observed_at"] < SDK_SAMPLE_SECONDS
+                grant = operation.authorize()
+                deadline = acquisition_dispatch_deadline("shioaji", grant.deadline())
+                fresh = (
+                    time.monotonic() < deadline
+                    and grant.valid()
+                    and (
+                        sample is None
+                        or 0 <= time.time() - sample["observed_at"] < SDK_SAMPLE_SECONDS
+                    )
                 )
                 conn.send_bytes(
                     json.dumps(
@@ -233,7 +244,7 @@ def parent_fetch(
                             "stage": "go",
                             "operation_id": operation.operation_id,
                             "origin": grant.origin,
-                            "deadline": grant.deadline() if fresh else grant.origin,
+                            "deadline": deadline if fresh else grant.origin,
                             "windows": list(operation.prepared_windows or ()),
                             "checked_at": grant.checked_at,
                             "lease_expires_at": grant.expires_at,

@@ -27,6 +27,9 @@ from typing import Any, ParamSpec, TypeVar, cast
 
 _current: ContextVar[ProviderWorkSession | None] = ContextVar("provider_work", default=None)
 _fd: ContextVar[int | None] = ContextVar("provider_work_fd", default=None)
+_fd_identity: ContextVar[tuple[int, int] | None] = ContextVar(
+    "provider_work_fd_identity", default=None
+)
 _quarantine: list[int] = []
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -57,14 +60,60 @@ def inherited_fds() -> tuple[int, ...]:
     return (current,) if current is not None else ()
 
 
-def require_acquisition(provider: str) -> None:
+def require_acquisition(provider: str, *, local_only: bool = False) -> bool:
+    """Check the work fence; a local-only check never performs blocking RPC/DB I/O.
+
+    False means the prior remote check is too old and needs a fresh bounded
+    authorization attempt. Missing or changed ownership always raises.
+    """
+    if not enabled():
+        return True
+    owner = active()
+    fd = _fd.get()
+    identity = _fd_identity.get()
+    if owner is None or owner.provider != provider or fd is None or identity is None:
+        raise ProviderWorkRecoveryBlockedError(
+            "provider acquisition requires whole-work owner and host descriptor"
+        )
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != identity:
+            raise ValueError
+    except (OSError, ValueError):
+        raise ProviderWorkRecoveryBlockedError("provider host descriptor differs") from None
+    owner._check_local_fence()
+    if local_only:
+        from findb_fetcher.acquisition import REMOTE_AGE_SECONDS
+        from findb_fetcher.acquisition import time as account_time
+
+        return (
+            owner._authorization_started is not None
+            and owner._authorization_expires is not None
+            and owner._authorization_checked is not None
+            and owner._authorization_deadline is not None
+            and owner._authorization_started
+            <= account_time.monotonic()
+            < owner._authorization_deadline
+            and -0.250 <= account_time.time() - owner._authorization_checked < REMOTE_AGE_SECONDS
+            and account_time.time() < owner._authorization_expires
+            and owner._authorization_fd == (fd, *identity)
+        )
+    owner.authorize()
+    owner._authorization_fd = (fd, *identity)
+    return True
+
+
+def acquisition_dispatch_deadline(provider: str, account_deadline: float) -> float:
+    """Carry the tighter work bound through deferred SDK/IPC dispatch."""
+    from findb_fetcher.acquisition import time as account_time
+
+    if not require_acquisition(provider, local_only=True):
+        return account_time.monotonic()
+    owner = active()
     if enabled():
-        owner = active()
-        if owner is None or owner.provider != provider or not inherited_fds():
-            raise ProviderWorkRecoveryBlockedError(
-                "provider acquisition requires whole-work owner and host descriptor"
-            )
-        owner.authorize()
+        assert owner is not None and owner._authorization_deadline is not None
+        return min(account_deadline, owner._authorization_deadline)
+    return account_deadline
 
 
 def active() -> ProviderWorkSession | None:
@@ -98,6 +147,7 @@ def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int,
         stat = os.fstat(fd)
         identity = f"{env}:{stat.st_dev}:{stat.st_ino}"
         token = _fd.set(fd)
+        identity_token = _fd_identity.set((stat.st_dev, stat.st_ino))
         try:
             yield fd, identity
         except ProviderWorkRecoveryBlockedError:
@@ -106,6 +156,7 @@ def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int,
             raise
         finally:
             _fd.reset(token)
+            _fd_identity.reset(identity_token)
     finally:
         if fd >= 0:
             os.close(fd)
@@ -446,6 +497,12 @@ class ProviderWorkSession:
     def __init__(self, source, provider: str, work: dict[str, Any], journal: WorkJournal) -> None:
         self.source, self.provider, self.work, self.journal = source, provider, work, journal
         self._fence = {"generation": work["generation"], "token": work["token"]}
+        self._work_identity = (provider, work["work_id"])
+        self._authorization_started: float | None = None
+        self._authorization_deadline: float | None = None
+        self._authorization_checked: float | None = None
+        self._authorization_expires: float | None = None
+        self._authorization_fd: tuple[int, int, int] | None = None
         self.settled = False
         # Only current-reservation evidence; durable budgets/account debt remain
         # in their existing journals and survive a new session or process.
@@ -460,8 +517,10 @@ class ProviderWorkSession:
         return dict(self._fence)
 
     def _check_local_fence(self) -> None:
-        if self.failed.is_set() or any(
-            self.work[key] != value for key, value in self._fence.items()
+        if (
+            self.failed.is_set()
+            or (self.provider, self.work["work_id"]) != self._work_identity
+            or any(self.work[key] != value for key, value in self._fence.items())
         ):
             raise ProviderWorkRecoveryBlockedError(
                 "provider work heartbeat or generation is unavailable"
@@ -500,23 +559,56 @@ class ProviderWorkSession:
 
     def authorize(self) -> None:
         self._check_local_fence()
+        from findb_fetcher.acquisition import REMOTE_AGE_SECONDS
+        from findb_fetcher.acquisition import time as account_time
         from findb_fetcher.full_market_client import FullMarketProtocolError
 
+        self._authorization_started = None
+        started, started_utc = account_time.monotonic(), account_time.time()
         try:
-            self.request("authorize")
+            response = self.request("authorize")
         except FullMarketProtocolError as exc:
             if exc.code == "PROVIDER_WORK_SUSPENDED":
                 raise ProviderWorkAcquisitionStopped("provider acquisition is stopped") from None
             raise ProviderWorkRecoveryBlockedError(
                 "provider acquisition fence is unavailable"
             ) from exc
+        try:
+            if not isinstance(response, dict) or type(response.get("generation")) is not int:
+                raise ValueError
+            if any(
+                response.get(key) != value
+                for key, value in {
+                    "work_id": self._work_identity[1],
+                    "provider": self.provider,
+                    **self.fence,
+                }.items()
+            ):
+                raise ValueError
+            checked = datetime.fromisoformat(response["checked_at"])
+            expires = datetime.fromisoformat(response["expires_at"])
+            if checked.tzinfo is None or expires.tzinfo is None or expires <= checked:
+                raise ValueError
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise ProviderWorkRecoveryBlockedError(
+                "provider work authorization evidence is invalid"
+            ) from None
         # The Source RPC itself can block while heartbeat/recovery changes.
         self._check_local_fence()
-        from findb_fetcher.acquisition import time as account_time
         from findb_fetcher.full_market_state import QuotaBlockedError
 
         if self.journal.cooldown_until() > account_time.time():
             raise QuotaBlockedError("original provider work cooldown is pending", quota_wait=True)
+        # Anchor before the RPC: a delayed response cannot refresh an old check.
+        self._authorization_started = started
+        self._authorization_checked = checked.timestamp()
+        self._authorization_expires = expires.timestamp()
+        self._authorization_deadline = started + min(
+            REMOTE_AGE_SECONDS,
+            expires.timestamp() - started_utc,
+            (expires - checked).total_seconds(),
+            REMOTE_AGE_SECONDS - max(0.0, started_utc - checked.timestamp()),
+        )
 
     def headers(self, prepared) -> dict[str, str]:
         if self.failed.is_set():

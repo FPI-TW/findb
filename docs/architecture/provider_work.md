@@ -167,6 +167,12 @@ Source `/provider-work` 提供 enqueue、claim、authorize、heartbeat、manifes
 execute-rerun；historical claim 只是取得同一 owner 中的 item，不再有獨立 lease authority。
 未啟用時 Source queue claim 拒絕；啟用也須已有 Owner cutover 保存的相同 shared inode identity，
 單獨改 flag 無法開始 claim。啟用後 legacy ingest／historical claim 缺少 work protocol 一律 fail closed。
+Source `/provider-work/{work_id}/authorize` 在既有 provider transaction lock 下回傳原 work ID、provider、
+generation／token、UTC-aware checked_at 與目前 owner expires_at；此 projection 不續約 owner。
+Fetcher 嚴格驗證身份及時間欄位，缺少或 malformed 的證據 fail closed；heartbeat 仍以既有流程續約，
+下個授權讀取最新 expiry。部署須先更新 Backend，舊 Fetcher 可忽略新增欄位；新 Fetcher 的 Backend
+rollback 下限是提供此完整授權契約的版本。若須回復更早 Backend，先停止並回復 Fetcher 至相容版本，
+保存原 owner、journal、prepared bytes、budget 與 cooldown；不得用 claim 時的舊 expiry 代替。
 Admin `GET /provider-work` 是唯讀 projection，包含 active work、FIFO 順位、wait reason、retry time、round
 與 heartbeat，並公開 `drain_only`／`prepared_drain` 等排空狀態。Dashboard「交付監控」共用同一 projection；初次 loading、背景 refresh 與頁首刷新規則相同。
 Dashboard 的「僅排空原交付」獨立於等待原因顯示；未到 `not_before` 時仍同時顯示 cooldown／重試時間。
@@ -209,10 +215,16 @@ negative observation 的 audit 與有界重試驗收。
 whole-work heartbeat、generation、scope；HTTP／FinLab 的 `confirm_start` 與 Shioaji child command／
 READY→GO 都有此 gate，失效直接 recovery blocked，不能轉普通 retry/manual 或執行 SDK。
 正常 request pacing 是完整 work 內的節流，仍可短暫等待，但等待後不得沿用舊 work grant。
-派送順序是 account prepare／授權返回、fresh Source work-fence RPC、最後 local heartbeat／immutable
-generation 檢查，再驗原 account grant deadline 並 confirm／GO。Source RPC 若耗盡 50ms grant，
-必須重新取得 account grant 並重做 work fence；沿用原最多三次派送授權嘗試（原設定一回的操作仍為一回），
-不延長 deadline。持續慢 RPC 有界停止且零 native 派送，heartbeat／generation 失效不會藉重新授權繞過。
+派送順序是 account prepare／pacing 返回、fresh Source work-fence RPC、最後取得全新 Source account
+grant，再以純本機檢查驗證 heartbeat、原 provider／work ID／generation／token 與 shared FD inode，
+最後確認 account grant deadline 並 confirm／GO。最後 grant 返回後不再讀 SQLite 或呼叫 owner RPC，
+避免一般網路延遲耗盡 50ms 本機派送窗口；HTTP、FactSet connect／SELECT、FinLab login／get 與
+Shioaji READY→GO 共用此順序。Owner 遠端證據從 RPC 發送前的 monotonic 時點起最多五秒，
+同時受 server checked_at 與 expires_at 限制，monotonic expiry cap 不因 wall clock 後退而延長。
+遠端 stop／generation 撤銷以此有界證據生效；兩次 RPC 與 I/O 間仍有競態，不宣稱瞬時撤銷。
+觀察到本機 heartbeat／fence／FD 失效則立即拒絕。Account grant 仍保留原 50ms、本機 minute rollover、
+五秒 checked_at 與 lease expiry 下限。任何本機 fence／descriptor 失效立即停止；僅過期證據可在
+原最多三次授權嘗試內重取（原設定一回仍為一回），不延長 deadline、不重新收費或重設 budget。
 
 Governor 的 `full_account_cooldown` 與 `full_pacing` 在同一 SQLite transaction 保存 deadline/reason。
 `unknown_recovery`、`unknown_dispatch`、native `rate_limited`、quota block 及只有 deadline 的 legacy
@@ -229,8 +241,10 @@ PG 已保存 floor 但 ACK 遺失時，恢復的 open owner 也只可 drain／cl
 原未抓取 scope 到期且原 controls／request 合法時由後續 attempt 續作。
 
 FinLab 的同一 supervised child 在 login 與 dataset get 前分別送出 READY；parent 取得 fresh Source
-account grant、重驗 work fence 後才回覆 monotonic deadline。Child 在實際 I/O 前檢查期限；過期直接
-停止，不在 child 增設重試。Parent 每個 boundary 沿用原最多三次授權限制，持續慢 fence 有界零派送。
+work-fence 授權、再取得 fresh Source account grant，純本機重驗 fence 後才回覆 monotonic deadline。
+交給 child 的 deadline 取 account grant 與 owner proof／expiry 的最早期限；Child 在實際 I/O 前檢查
+此期限，過期直接停止，不在 child 增設重試。Parent 每個 boundary 沿用原最多三次
+授權限制；owner 或 account 證據持續過期時有界停止。
 登入後重新授權不重建 acquisition intent、不重設 started_at、不重複計費；已派送 login 的原責任與
 failure budget 不因 get 被 stop／heartbeat／generation 拒絕而退款。拒絕時先完成整個 process group
 terminate／kill／reap，再傳遞原 stop／recovery 邊界；無法證明停止仍保留 host FD。

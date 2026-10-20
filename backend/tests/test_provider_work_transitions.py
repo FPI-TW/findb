@@ -279,29 +279,28 @@ async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("taifex", "tw_futures_eod")], indirect=True)
 async def test_taifex_expired_dispatch_grant_defers_without_native_io_then_retries_same_work(
-    native_runtime, test_engine
+    native_runtime, test_engine, monkeypatch
 ):
+    from findb_fetcher.acquisition import Acquisition
+
     h = native_runtime
     assert h.dispatch_clock is not None
-    handle = h.handle
-    granted = False
-    expired = False
+    authorize = Acquisition.authorize
+    expired_grants = []
 
-    def expire_final_work_check(request):
-        nonlocal granted, expired
-        response = handle(request)
-        if request.url.path.endswith("/authorization"):
-            assert response.status_code == 200
-            granted = True
-        elif granted and request.url.path.endswith("/authorize"):
-            assert response.status_code == 200
-            h.dispatch_clock[0] += 0.051
-            expired = True
-        return response
+    def expire_final_grant(operation):
+        grant = authorize(operation)
+        assert grant.valid()
+        # Owner RPC now precedes the fresh account grant. Inject the pause
+        # after that grant exists, immediately before local dispatch validation.
+        h.dispatch_clock[0] += 0.051
+        assert not grant.valid()
+        expired_grants.append(grant)
+        return grant
 
-    h.handle = expire_final_work_check
+    monkeypatch.setattr(Acquisition, "authorize", expire_final_grant)
     assert await h.run()
-    assert granted and expired
+    assert expired_grants
     assert not h.native_calls()
     h.db.expire_all()
     work = await h.db.scalar(
@@ -323,7 +322,7 @@ async def test_taifex_expired_dispatch_grant_defers_without_native_io_then_retri
     )
     attempt.not_before = utc_now() - timedelta(seconds=1)
     await h.db.commit()
-    h.handle = handle
+    monkeypatch.setattr(Acquisition, "authorize", authorize)
     # Advance the runner's durable retry clock, retaining real account pacing.
     make_runner = h.runner
 

@@ -14,6 +14,7 @@ from findb_fetcher.provider_process import ProviderProcessError, supervised_call
 from findb_fetcher.providers.finlab import FinLabDatasetTable
 from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot
 from findb_fetcher.providers.twelve_data import TwelveDataResponse
+from provider_work_support import work_authorization
 
 
 def test_settlement_retains_host_lock_until_accepted_normalization_drains(tmp_path, monkeypatch):
@@ -284,7 +285,11 @@ def test_observed_cooldown_survives_restart_fences_new_io_and_sets_tail_deadline
     class Source:
         def request(self, method, path, body):
             requests.append((path.rsplit("/", 1)[-1], body))
-            return {}
+            return (
+                work_authorization("twelve_data", body, work_id="original-work")
+                if path.endswith("/authorize")
+                else {}
+            )
 
     path = tmp_path / "journal.sqlite3"
     original = queue.WorkJournal(path, "original-work")

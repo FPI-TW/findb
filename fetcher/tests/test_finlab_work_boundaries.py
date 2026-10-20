@@ -14,6 +14,7 @@ from findb_fetcher import acquisition as acq
 from findb_fetcher import provider_work as queue
 from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.providers import finlab
+from provider_work_support import work_authorization
 
 DAY = date(2026, 10, 15)
 
@@ -27,7 +28,9 @@ class Frame:
 
 
 @pytest.mark.parametrize("catalogue", [False, True])
-@pytest.mark.parametrize("fault", ["stop", "heartbeat", "generation", "slow_login", "slow_fence"])
+@pytest.mark.parametrize(
+    "fault", ["stop", "heartbeat", "generation", "slow_login", "slow_fence", "slow_grant"]
+)
 def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, catalogue, fault):
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
     path = tmp_path / "governor.sqlite3"
@@ -69,7 +72,7 @@ def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, ca
                     owner.work["generation"] += 1
                 if fault == "slow_fence":
                     advance(0.06)
-            return {}
+            return work_authorization("finlab", body) if route.endswith("/authorize") else {}
 
     def login(_):
         with events.open("a") as stream:
@@ -98,7 +101,12 @@ def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, ca
 
     def grant():
         grants.append((os.getpid(), logged_in.exists()))
-        return acq.Authorization(clock.monotonic(), clock.time(), clock.time(), provider="finlab")
+        authorization = acq.Authorization(
+            clock.monotonic(), clock.time(), clock.time(), provider="finlab"
+        )
+        if fault == "slow_grant" and logged_in.exists():
+            advance(0.06)
+        return authorization
 
     def fetch():
         gateway = finlab.FinLabSdkGateway("offline")
@@ -111,31 +119,31 @@ def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, ca
             queue.host_lock("finlab", root=tmp_path),
             acq.authorization_scope(grant, state_path=path),
         ):
-            if fault == "slow_login":
+            if fault in {"slow_login", "slow_fence"}:
                 assert fetch().symbols == ("2330",)
             else:
                 error = (
                     queue.ProviderWorkAcquisitionStopped
                     if fault == "stop"
                     else finlab.FinLabOperationalError
-                    if fault == "slow_fence"
+                    if fault == "slow_grant"
                     else queue.ProviderWorkRecoveryBlockedError
                 )
                 with pytest.raises(error):
                     fetch()
         observed = events.read_text().splitlines()
-        assert len(observed) == (2 if fault == "slow_login" else 1)
+        assert len(observed) == (2 if fault in {"slow_login", "slow_fence"} else 1)
         assert all(int(row.split(":")[1]) != os.getpid() for row in observed)
         assert len({row.split(":")[1] for row in observed}) == 1
         assert all(pid == os.getpid() for pid, _ in grants)
         assert 1 <= sum(not after_login for _, after_login in grants) <= 3
         after_login_grants = sum(after_login for _, after_login in grants)
-        if fault == "slow_fence":
+        if fault == "slow_grant":
             assert after_login_grants == 3
-        elif fault == "slow_login":
-            assert 1 <= after_login_grants <= 3
-        else:
+        elif fault in {"slow_login", "slow_fence"}:
             assert after_login_grants == 1
+        else:
+            assert after_login_grants == 0
         assert {p.pid for p in multiprocessing.active_children()} == before
         with acq.FullMarketState(path).connection() as db:
             rows = db.execute("SELECT actual_start,status FROM acquisition_intent").fetchall()
@@ -183,7 +191,11 @@ def test_negative_snapshot_survives_restart_and_valid_cache_replays_without_sdk(
 
     def fetch(journal):
         owner = queue.ProviderWorkSession(
-            SimpleNamespace(request=lambda *args: {}),
+            SimpleNamespace(
+                request=lambda method, route, body: (
+                    work_authorization("finlab", body) if route.endswith("/authorize") else {}
+                )
+            ),
             "finlab",
             {"work_id": "original", "generation": 1, "token": "fence"},
             journal,

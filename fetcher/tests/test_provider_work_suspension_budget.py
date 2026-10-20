@@ -15,6 +15,7 @@ from findb_fetcher.historical_runtime import _execute
 from findb_fetcher.providers.finlab import FinLabSdkGateway
 from findb_fetcher.scheduler_state import ScheduledJob
 from findb_fetcher.twelve_data_scheduler import JobExecution
+from provider_work_support import work_authorization
 from test_full_market import _member, _plan, _runtime
 
 DAY = date(2026, 10, 15)
@@ -44,7 +45,7 @@ def test_suspension_retains_only_dispatched_reservation(tmp_path, monkeypatch, l
                 raise FullMarketProtocolError(
                     "stopped", status_code=409, code="PROVIDER_WORK_SUSPENDED"
                 )
-            return {}
+            return work_authorization("finlab", body) if route.endswith("/authorize") else {}
 
     owner = queue.ProviderWorkSession(
         Source(),
@@ -180,7 +181,7 @@ def test_daily_repeated_login_stop_reaches_original_attempt_ceiling(tmp_path, mo
             raise FullMarketProtocolError(
                 "stopped", status_code=409, code="PROVIDER_WORK_SUSPENDED"
             )
-        return {}
+        return work_authorization("finlab", body) if path.endswith("/authorize") else {}
 
     owner = queue.ProviderWorkSession(
         SimpleNamespace(request=source),
