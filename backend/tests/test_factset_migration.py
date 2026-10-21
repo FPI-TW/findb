@@ -6,8 +6,7 @@ import pytest
 from sqlalchemy import text
 
 from app.utils import uuid7
-from tests.migration_database import get_active_migration_database_factory
-from tests.test_migration_upgrade import _run_alembic
+from tests.migration_database import get_active_migration_database_factory, run_alembic
 
 
 @pytest.mark.asyncio
@@ -16,7 +15,7 @@ async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss()
         url,
         engine,
     ):
-        await _run_alembic(url, "c64eb01f8a32")
+        await run_alembic(url, "c64eb01f8a32")
         ids = {"request": uuid7(), "item": uuid7(), "token": uuid7()}
         async with engine.begin() as db:
             await db.execute(
@@ -42,7 +41,7 @@ async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss()
             before = await db.scalar(
                 text("SELECT to_jsonb(i) FROM historical_backfill_item i WHERE item_id=:item"), ids
             )
-        await _run_alembic(url, "head")
+        await run_alembic(url, "head")
         async with engine.begin() as db:
             assert (
                 await db.scalar(
@@ -60,8 +59,8 @@ async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss()
                 )
                 is None
             )
-        await _run_alembic(url, "c64eb01f8a32", command="downgrade")
-        await _run_alembic(url, "head")
+        await run_alembic(url, "c64eb01f8a32", command="downgrade")
+        await run_alembic(url, "head")
         async with engine.begin() as db:
             await db.execute(
                 text(
@@ -74,7 +73,7 @@ async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss()
                 ids,
             )
         with pytest.raises(subprocess.CalledProcessError) as error:
-            await _run_alembic(url, "c64eb01f8a32", command="downgrade")
+            await run_alembic(url, "c64eb01f8a32", command="downgrade")
         assert "preserve cohort and partial evidence" in error.value.stderr
         async with engine.begin() as db:
             assert (

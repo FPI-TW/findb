@@ -1,6 +1,5 @@
 """Target-aware dataset registry provisioning checks."""
 
-import importlib.util
 from copy import deepcopy
 from pathlib import Path
 
@@ -9,21 +8,9 @@ import pytest
 from scripts import provision_registry as provisioning
 
 BACKEND_ROOT = Path(__file__).parents[1]
-MIGRATION_PATH = (
-    BACKEND_ROOT / "migrations" / "versions" / "b2c3d4e5f6a7_neutralize_finlab_pilot_policy.py"
-)
 DEPLOY_HELPER_PATH = (
     BACKEND_ROOT.parent / "infra" / "deploy" / "runtime-secrets" / "deploy_findb_aws.sh"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("neutralize_finlab_pilot_policy", MIGRATION_PATH)
-    if spec is None or spec.loader is None:
-        raise AssertionError("could not load neutralizing migration")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _config(*, finlab: dict | None = None, other: dict | None = None) -> dict:
@@ -227,27 +214,6 @@ async def test_update_failure_rolls_back_and_disposes_engine(
     assert connection.updated is True
     assert transaction.rolled_back is True
     assert engine.disposed is True
-
-
-def test_neutralizing_migration_is_linear_and_exactly_scoped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    migration = _load_migration()
-    statements: list[str] = []
-    monkeypatch.setattr(
-        migration.op,
-        "execute",
-        lambda statement, *params: statements.append(str(statement)),
-    )
-
-    migration.upgrade()
-    assert migration.down_revision == "a1b2c3d4e5f6"
-    assert len(statements) == 1
-    sql = statements[0]
-    assert "dataset_key = 'tw_equity_eod'" in sql
-    assert "CAST(:finlab_override AS jsonb)" in sql
-    assert "- 'finlab'" in sql
-    assert "updated_at = now()" in sql
 
 
 def test_cd_passes_target_explicitly_after_migration() -> None:

@@ -7,13 +7,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.utils import uuid7
-from tests.migration_database import get_active_migration_database_factory
-from tests.test_migration_upgrade import _run_alembic
+from tests.migration_database import get_active_migration_database_factory, run_alembic
 
 
 async def _upgrade(url, revision):
     try:
-        await _run_alembic(url, revision)
+        await run_alembic(url, revision)
     except subprocess.CalledProcessError as exc:
         pytest.fail(exc.stderr)
 

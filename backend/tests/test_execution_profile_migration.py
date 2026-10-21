@@ -6,8 +6,7 @@ import pytest
 from sqlalchemy import text
 
 from app.utils import uuid7
-from tests.migration_database import get_active_migration_database_factory
-from tests.test_migration_upgrade import _run_alembic
+from tests.migration_database import get_active_migration_database_factory, run_alembic
 
 
 @pytest.mark.asyncio
@@ -52,7 +51,7 @@ async def test_profile_upgrade_preserves_full_dates_and_frozen_plans():
                     (await db.execute(text(f"SELECT to_jsonb(t) FROM {table} t"))).scalars().all()
                 )
         try:
-            await _run_alembic(url, "91a4c7e2d630")
+            await run_alembic(url, "91a4c7e2d630")
         except subprocess.CalledProcessError as failure:
             pytest.fail(failure.stderr)
         async with engine.begin() as db:
@@ -108,5 +107,5 @@ async def test_profile_upgrade_preserves_full_dates_and_frozen_plans():
                 == "delivery_member_evidence"
             )
         with pytest.raises(subprocess.CalledProcessError) as failed:
-            await _run_alembic(url, "3553ed95cfbf", command="downgrade")
+            await run_alembic(url, "3553ed95cfbf", command="downgrade")
         assert "new rollback floor" in failed.value.stderr
