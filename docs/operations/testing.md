@@ -70,8 +70,9 @@ CI 長時間沒有進度時，先查 workflow run 與各 job 的 `status`、`run
 FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type checks、published contracts
 與非 migration tests；`backend-migrations` 保留 Alembic smoke 與全部 migration tests；
 `infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service。Backend 與 Infra 固定兩個
-workers；migration job 維持序列執行。Full-market schema roundtrip 位於
-`backend/tests/test_full_market_migration.py`，只由 migration job 收集。
+workers；migration job 維持序列執行。Migration tests 只涵蓋 rollback 下限
+（`docs/operations/deployment.md`）及之後的 revisions；`test_schema_drift_migration.py`
+比對 `alembic upgrade head` 與 ORM metadata，已知差異以 strict xfail 標示。
 
 Fetcher deployment transaction harness 以 fake Docker／sudo／sleep 驗證十五個 consumers；
 每個案例保留 90 秒程序上限，供兩個 workers 下數百次模擬 CLI 啟動使用。此上限不是正式

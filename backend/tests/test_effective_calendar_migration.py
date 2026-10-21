@@ -6,8 +6,7 @@ import pytest
 from sqlalchemy import text
 
 from app.utils import uuid7
-from tests.migration_database import get_active_migration_database_factory
-from tests.test_migration_upgrade import _run_alembic
+from tests.migration_database import get_active_migration_database_factory, run_alembic
 
 
 @pytest.mark.asyncio
@@ -15,7 +14,7 @@ async def test_calendar_policy_upgrade_preserves_existing_historical_work():
     async with get_active_migration_database_factory().clone(
         "3553ed95cfbf", "findb_effective_calendar"
     ) as (url, engine):
-        await _run_alembic(url, "6b93ef20a147")
+        await run_alembic(url, "6b93ef20a147")
         ids = {key: uuid7() for key in ("request", "item", "revision", "day")}
         async with engine.begin() as db:
             await db.execute(
@@ -41,7 +40,7 @@ async def test_calendar_policy_upgrade_preserves_existing_historical_work():
             before_item = await db.scalar(
                 text("SELECT to_jsonb(t) FROM historical_backfill_item t WHERE item_id=:item"), ids
             )
-        await _run_alembic(url, "91a4c7e2d630")
+        await run_alembic(url, "91a4c7e2d630")
         async with engine.begin() as db:
             assert (
                 await db.scalar(

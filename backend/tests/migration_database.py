@@ -1,9 +1,10 @@
 """Session-scoped PostgreSQL template databases for migration tests.
 
-Migration tests intentionally exercise historical revisions, but rebuilding the
-same Alembic chain for every test makes the suite unnecessarily expensive.  This
-module builds immutable databases once per pytest session and clones the required
-revision for each test with PostgreSQL's ``CREATE DATABASE ... TEMPLATE``.
+Migration tests exercise revisions from the deployed rollback floor onward, but
+rebuilding the same Alembic chain for every test makes the suite unnecessarily
+expensive.  This module builds immutable databases once per pytest session and
+clones the required revision for each test with PostgreSQL's
+``CREATE DATABASE ... TEMPLATE``.
 """
 
 from __future__ import annotations
@@ -25,26 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 MAX_DATABASE_IDENTIFIER_LENGTH = 63
 
-# Keep this list in Alembic order.  Every historical database used by the
-# migration regression tests starts at one of these revisions; later revisions
-# are applied only inside the test's cloned database.
-MIGRATION_TEMPLATE_REVISIONS = (
-    "f7a8b9c0d1e2",
-    "f8a9b0c1d2e3",
-    "a9b0c1d2e3f4",
-    "c1d2e3f4a5b6",
-    "e3f4a5b6c7d8",
-    "f4a5b6c7d8e9",
-    "d4e5f6a7b8c9",
-    "e5f6a7b8c9d0",
-    "f2a3b4c5d6e7",
-    "a3b4c5d6e7f8",
-    "b4c5d6e7f8a9",
-    "c5d6e7f8a9b0",
-    "a8b9c0d1e2f3",
-    "1331cb73adad",
-    "3553ed95cfbf",
-)
+# Data migrations older than the deployed rollback floor (91a4c7e2d630) never run
+# again on a deployed database.  Tests start two revisions below the floor so they
+# can seed data before 6b93ef20a147 and the floor run; later revisions are applied
+# only inside each test's cloned database.
+MIGRATION_TEMPLATE_REVISIONS = ("3553ed95cfbf",)
 
 _REVISION_PATTERN = re.compile(r"^[0-9a-f]{12}$")
 _DATABASE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
@@ -65,6 +51,27 @@ def _safe_identifier(*parts: str) -> str:
     value = re.sub(r"[^a-z0-9_]+", "_", "_".join(parts).lower()).strip("_")
     value = value or "findb_migration"
     return value[:MAX_DATABASE_IDENTIFIER_LENGTH].rstrip("_") or "findb_migration"
+
+
+async def run_alembic(
+    database_url: str,
+    revision: str,
+    *,
+    command: str = "upgrade",
+) -> None:
+    """Run ``alembic <command> <revision>`` against ``database_url`` in a subprocess."""
+
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = database_url
+    await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-m", "alembic", command, revision],
+        cwd=BACKEND_ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 class MigrationDatabaseFactory:
@@ -145,23 +152,6 @@ class MigrationDatabaseFactory:
             if dropped and database_name in self._created_databases:
                 self._created_databases.remove(database_name)
 
-    async def _run_alembic(self, database_url: str, revision: str) -> None:
-        environment = os.environ.copy()
-        environment["DATABASE_URL"] = database_url
-        result = await asyncio.to_thread(
-            subprocess.run,
-            [sys.executable, "-m", "alembic", "upgrade", revision],
-            cwd=BACKEND_ROOT,
-            env=environment,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Alembic upgrade {revision} failed:\n{result.stdout}\n{result.stderr}"
-            )
-
     async def _verify_stamp(self, database_url: str, revision: str) -> None:
         engine = create_async_engine(database_url)
         try:
@@ -201,38 +191,28 @@ class MigrationDatabaseFactory:
             if revision in self._templates:
                 return self._templates[revision]
 
-            target_index = MIGRATION_TEMPLATE_REVISIONS.index(revision)
-            created_this_call: list[tuple[str, str]] = []
+            database_name = self._template_name(revision)
+            await self._create_database(database_name, "template0")
             try:
-                for index, current_revision in enumerate(
-                    MIGRATION_TEMPLATE_REVISIONS[: target_index + 1]
-                ):
-                    if current_revision in self._templates:
-                        continue
-                    source = (
-                        "template0"
-                        if index == 0
-                        else self._templates[MIGRATION_TEMPLATE_REVISIONS[index - 1]]
-                    )
-                    database_name = self._template_name(current_revision)
-                    await self._create_database(database_name, source)
-                    created_this_call.append((current_revision, database_name))
-                    database_url = self._database_url(database_name)
-                    await self._run_alembic(database_url, current_revision)
-                    await self._verify_stamp(database_url, current_revision)
-                    await self._freeze_template(database_name)
-                    self._templates[current_revision] = database_name
-                return self._templates[revision]
+                database_url = self._database_url(database_name)
+                try:
+                    await run_alembic(database_url, revision)
+                except subprocess.CalledProcessError as exc:
+                    raise RuntimeError(
+                        f"Alembic upgrade {revision} failed:\n{exc.stdout}\n{exc.stderr}"
+                    ) from exc
+                await self._verify_stamp(database_url, revision)
+                await self._freeze_template(database_name)
             except Exception:
-                for current_revision, database_name in reversed(created_this_call):
-                    self._templates.pop(current_revision, None)
-                    try:
-                        await self._drop_database(database_name)
-                    except Exception:
-                        # Preserve the original migration error while still
-                        # attempting every best-effort cleanup target.
-                        pass
+                try:
+                    await self._drop_database(database_name)
+                except Exception:
+                    # Preserve the original migration error; session teardown
+                    # retries the tracked database drop.
+                    pass
                 raise
+            self._templates[revision] = database_name
+            return database_name
 
     @asynccontextmanager
     async def clone(
