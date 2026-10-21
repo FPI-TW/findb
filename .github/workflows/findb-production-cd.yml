@@ -319,3 +319,42 @@ jobs:
       mode: replay
       bundle_key: ${{ inputs.accepted_bundle_key }}
       release_tag: ${{ inputs.release_tag }}
+  report-production-deployment-failure:
+    # Input validation in resolve is not a deployment failure.
+    needs:
+    - bind-release-tag
+    - verify
+    - promote
+    - deploy-promotion
+    - deploy-rollback
+    if: |-
+      always() && github.ref == 'refs/heads/main' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - name: Load deployment driver from protected main
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: .deployment-driver
+        persist-credentials: false
+    - name: Load AWS deployment configuration
+      uses: ./.deployment-driver/.github/actions/aws-configuration
+      with:
+        target: production
+        unit: findb
+    - name: Verify deployment account
+      shell: bash
+      run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+    - name: Publish production deployment failure metric
+      run: |
+        aws cloudwatch put-metric-data \
+          --region ap-southeast-1 \
+          --namespace FinDB/Production \
+          --metric-name DeploymentFailure \
+          --dimensions DeploymentUnit=findb,Resource=github-actions \
+          --value 1 \
+          --unit Count
