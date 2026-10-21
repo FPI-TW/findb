@@ -667,7 +667,7 @@ async def test_cancel_queued_prepared_retry_preserves_executable_drain_without_n
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
     work_id, frozen, original = work.work_id, work.manifest, dict(work.prepared_deliveries)
-    assert work.state == "queued" and original and not h.runs
+    assert work.state == "queued" and original and not h.runs, (h.failure, h.source_events)
     if fence_delay:
         assert delayed_checks, "the prepared retry must survive actual slow work authorization"
     retry = await h.db.scalar(

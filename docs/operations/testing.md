@@ -12,11 +12,11 @@ Pre-commit 執行 check，pre-push 依序執行 check 與 test；不得使用 `-
 `pnpm test:infra` 使用 Backend pytest 環境，固定 `-n 2 --dist worksteal`，不需要 PostgreSQL。
 直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
 因此測試中的 nested pytest subprocess 不會意外再建立 workers。
-macOS 本機完整兩 worker 套件曾在
-`test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_after_window_change[native_runtime4]`
-觀察到 TAIFEX 工作仍為 queued 的間歇失敗；同一檔案單獨以序列與兩 workers 執行均通過，
-根因仍待追查。須保留並回報完整平行 run 的失敗，另用 `test-db --workers 0` 驗證完整序列
-套件；不能把單獨重跑成功描述成原完整 run 通過，也不能調寬產品授權期限來掩蓋此限制。
+TAIFEX historical 只有一次 authorization dispatch attempt；prepare 與 authorize 之間跨越
+UTC 分鐘時，account window 不一致會依設計 fail closed，工作延到 FIFO 尾端重試並維持
+queued。`RuntimeHarness.run()` 因此在距下一分鐘不足 5 秒時先等到下一分鐘再開始 TAIFEX
+run；不得以放寬產品授權期限或 window 檢查來處理此類間歇失敗。須保留並回報完整平行 run
+的失敗，不能把單獨重跑成功描述成原完整 run 通過。
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
 

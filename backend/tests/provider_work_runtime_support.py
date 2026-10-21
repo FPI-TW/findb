@@ -25,6 +25,8 @@ from tests.test_canonical_ingest_api import _execute_run
 from tests.test_provider_work import attest_cutover
 
 DAY = recent_backfill_day()
+# Longer than one TAIFEX harness run, including CI scheduling delay.
+MINUTE_ROLLOVER_MARGIN_SECONDS = 5
 SCOPES = [
     ("twelve_data", "us_equity_eod"),
     ("finlab", "tw_equity_eod"),
@@ -522,8 +524,17 @@ class RuntimeHarness:
         )
 
     async def run(self):
+        from findb_fetcher import acquisition
         from findb_fetcher.historical_backfill import HistoricalControlClient, run_once
 
+        if self.provider == "taifex":
+            # TAIFEX gets one dispatch attempt, so a minute rollover between
+            # prepare and authorize defers the work by design. A single run
+            # must therefore not start near a boundary of the (possibly
+            # shifted) account clock.
+            remaining = 60 - acquisition.time.time() % 60
+            if remaining < MINUTE_ROLLOVER_MARGIN_SECONDS:
+                time.sleep(remaining + 0.01)
         self.deadline = time.monotonic() + getattr(self, "execution_timeout", 25)
 
         def execute():
