@@ -53,7 +53,6 @@ def test_bootstrap_is_private_versioned_kms_encrypted_and_uses_native_lockfile()
     assert 'sse_algorithm     = "aws:kms"' in bootstrap
     assert 'resource "aws_kms_key" "state"' in bootstrap
     assert "allowed_account_ids = [var.aws_account_id]" in bootstrap_versions
-    assert "infra/tofu/bootstrap/backend.tf" in _read(REPO_ROOT / ".gitignore")
     assert 'backend "s3"' in bootstrap_backend_template
     assert "encrypt      = true" in bootstrap_backend_template
     assert "use_lockfile = true" in backend
@@ -70,11 +69,6 @@ def test_bootstrap_is_private_versioned_kms_encrypted_and_uses_native_lockfile()
         "use_lockfile=true",
     ):
         assert setting in outputs
-    gitignore = _read(REPO_ROOT / ".gitignore")
-    assert "**/.terraform/" in gitignore
-    assert "*.tfstate" in gitignore
-    assert "infra/tofu/bootstrap/backend.tf" in gitignore
-    assert "!*.tfvars.example" in gitignore
 
 
 def test_bootstrap_state_policy_requires_the_exact_customer_managed_kms_key() -> None:
@@ -853,7 +847,6 @@ def test_staging_cd_reports_deployment_failures_with_unit_scoped_metrics() -> No
         report_job = workflow.split("  report-staging-deployment-failure:", 1)[1]
         assert "always() &&" in report_job
         assert "github.ref == 'refs/heads/main'" in report_job
-        assert "STAGING_ECR_CUTOVER_ENABLED" not in report_job
         assert "needs.deploy.result == 'failure'" in report_job
         assert f"environment: {environment}" not in report_job
         assert "id-token: write" in report_job

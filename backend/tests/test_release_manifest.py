@@ -72,9 +72,10 @@ def _write_selected_source_bundle(root: Path, unit: str) -> None:
         schema.write_bytes((REPO_ROOT / "contracts" / contract["path"]).read_bytes())
 
 
+@pytest.mark.parametrize("unit", ["findb", "fetcher"])
 @pytest.mark.parametrize("version", [1, 2])
-def test_pre_unification_manifest_is_below_rollback_floor(version):
-    manifest = _manifest("fetcher")
+def test_pre_unification_manifest_is_below_rollback_floor(unit, version):
+    manifest = _manifest(unit)
     manifest["schema_version"] = version
     with pytest.raises(release_manifest.ManifestError, match="schema_version"):
         release_manifest.validate_manifest(manifest, CONTRACT_DATA)

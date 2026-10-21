@@ -1,105 +1,64 @@
-"""Stable contracts for operator-facing runbook structure and commands."""
+"""Operator runbooks must only reference scripts and IaC objects that exist."""
 
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNBOOKS = (
+    REPO_ROOT / "README.md",
+    REPO_ROOT / "infra" / "tofu" / "README.md",
+    *sorted((REPO_ROOT / "docs").rglob("*.md")),
+)
+TOFU_ROOT = REPO_ROOT / "infra" / "tofu"
 
 
-def _read(relative_path: str) -> str:
-    return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+def _tofu_sources() -> str:
+    return "\n".join(path.read_text(encoding="utf-8") for path in TOFU_ROOT.rglob("*.tf"))
 
 
-def _assert_headings(document: str, expected: tuple[str, ...]) -> None:
-    headings = {line.strip() for line in document.splitlines() if line.startswith("#")}
-    assert set(expected) <= headings
+def _missing_references(document: str) -> list[str]:
+    missing: list[str] = []
+    for name in re.findall(r"(?<![\w/.-])(?:backend/)?scripts/(\w+\.py)", document):
+        if not any(
+            (REPO_ROOT / unit / "scripts" / name).is_file() for unit in ("backend", "fetcher")
+        ):
+            missing.append(f"scripts/{name}")
+    for name in re.findall(r"/app/scripts/(\w+\.py)", document):
+        if not (REPO_ROOT / "backend" / "scripts" / name).is_file():
+            missing.append(f"/app/scripts/{name}")
+    for name in re.findall(r"/opt/findb/runtime-secrets/([\w.-]+)", document):
+        if not (REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / name).is_file():
+            missing.append(f"/opt/findb/runtime-secrets/{name}")
+    for name in re.findall(r"-chdir=infra/tofu/([\w-]+)", document):
+        if not (TOFU_ROOT / name).is_dir():
+            missing.append(f"infra/tofu/{name}")
+    sources = None
+    for kind, name in re.findall(r"-replace='(\w+)\.(\w+)'", document):
+        sources = sources if sources is not None else _tofu_sources()
+        if f'resource "{kind}" "{name}"' not in sources:
+            missing.append(f"{kind}.{name}")
+    for name in re.findall(r"\btofu -chdir=\S+ output -json (\w+)", document):
+        sources = sources if sources is not None else _tofu_sources()
+        if f'output "{name}"' not in sources:
+            missing.append(f"output {name}")
+    return missing
 
 
-def _bash_blocks(document: str) -> tuple[str, ...]:
-    return tuple(
-        re.findall(
-            r"^[ \t]*```bash[ \t]*\n(.*?)^[ \t]*```[ \t]*$",
-            document,
-            flags=re.DOTALL | re.MULTILINE,
-        )
-    )
+@pytest.mark.parametrize("runbook", RUNBOOKS, ids=lambda path: str(path.relative_to(REPO_ROOT)))
+def test_runbook_references_resolve_to_repository_objects(runbook: Path) -> None:
+    assert _missing_references(runbook.read_text(encoding="utf-8")) == []
 
 
-def test_tofu_runbook_documents_required_operator_workflows() -> None:
-    runbook = _read("infra/tofu/README.md")
-
-    _assert_headings(
-        runbook,
-        (
-            "# Staging OpenTofu control plane",
-            "## State bootstrap",
-            "## Staging foundation",
-            "## Pull-request plan gate",
-            "## IAM boundaries",
-            "## Phase 2 runtime-secret metadata and loader",
-        ),
-    )
-    commands = "\n".join(_bash_blocks(runbook))
-    for command in (
-        "tofu -chdir=infra/tofu/bootstrap init -reconfigure",
-        "tofu -chdir=infra/tofu/bootstrap init -migrate-state",
-        "tofu -chdir=infra/tofu/staging import",
-        "tofu -chdir=infra/tofu/staging plan -var-file=terraform.tfvars",
-        "tofu -chdir=infra/tofu/staging apply -var-file=terraform.tfvars",
-        "tofu -chdir=infra/tofu/staging output -json associate_instance_profile_commands",
-    ):
-        assert command in commands
-    assert "aws ssm start-session" in commands
-    assert "--document-name SSM-SessionManagerRunShell-findb-staging" in commands
-    assert "--document-name SSM-SessionManagerRunShell-fetcher-staging" in commands
-
-
-def test_monitoring_runbook_documents_safe_apply_and_notification_workflows() -> None:
-    runbook = _read("docs/operations/monitoring.md")
-
-    _assert_headings(
-        runbook,
-        (
-            "# Staging Native Monitoring Runbook",
-            "## Scope and current evidence boundary",
-            "## Declared alarm contract",
-            "## Applying monitoring changes",
-            "## Controlled recipient replacement",
-            "## Confirm and exercise notification delivery",
-            "## Coverage gaps and cost / retention caveats",
-        ),
-    )
-    commands = "\n".join(_bash_blocks(runbook))
-    assert "-replace='aws_sns_topic_subscription.operational_alert_email'" in commands
-    alarm_state_blocks = [
-        block for block in _bash_blocks(runbook) if "aws cloudwatch set-alarm-state" in block
+def test_reference_scanner_detects_missing_objects() -> None:
+    assert _missing_references(
+        "uv run python scripts/does_not_exist.py\n"
+        "/opt/findb/runtime-secrets/missing.sh\n"
+        "tofu -chdir=infra/tofu/missing plan -replace='aws_sns_topic.missing'\n"
+    ) == [
+        "scripts/does_not_exist.py",
+        "/opt/findb/runtime-secrets/missing.sh",
+        "infra/tofu/missing",
+        "aws_sns_topic.missing",
     ]
-    assert any("--state-value ALARM" in block for block in alarm_state_blocks)
-    assert any("--state-value OK" in block for block in alarm_state_blocks)
-    assert "aws sns publish" not in commands
-
-
-def test_ingestion_runbook_documents_secret_safe_queue_health_command() -> None:
-    runbook = _read("docs/operations/ingestion.md")
-
-    _assert_headings(
-        runbook,
-        (
-            "# Durable Ingestion Runbook",
-            "## 上線前檢查",
-            "## Bounded end-to-end acceptance",
-            "## Delivery completeness",
-            "## 監控",
-            "## RabbitMQ volume全毀",
-            "## Pause與failure recovery",
-        ),
-    )
-    required_tokens = (
-        "/opt/findb/runtime-secrets/runtime_secret_command.sh",
-        "--catalog /opt/findb/runtime-secrets/findb.json",
-        "--consumer compose",
-        "docker exec -e CELERY_BROKER_URL findb-ingest",
-        "python /app/scripts/check_queue_health.py",
-    )
-    assert any(all(token in block for token in required_tokens) for block in _bash_blocks(runbook))
-    assert "`export` `CELERY_BROKER_URL`" in runbook

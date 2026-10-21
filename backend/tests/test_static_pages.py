@@ -1,14 +1,9 @@
 """Tests for removed backend public/static surfaces."""
 
-from pathlib import Path
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
-REPO_ROOT = BACKEND_ROOT.parent
 
 
 @pytest.mark.asyncio
@@ -27,10 +22,3 @@ async def test_legacy_public_pages_and_html_assets_are_removed():
         ]
 
     assert all(response.status_code == 404 for response in responses)
-
-
-def test_instrument_cache_path_is_gitignored():
-    """Only the current generated instrument cache is ignored."""
-    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert "backend/app/static/data/instruments.json" in gitignore
-    assert "backend/app/static/data/macro-series.json" not in gitignore

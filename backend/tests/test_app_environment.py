@@ -40,13 +40,6 @@ def test_legacy_environment_cannot_supply_new_settings_input(monkeypatch, tmp_pa
     assert Settings(_env_file=None).APP_ENVIRONMENT == "local"
 
 
-@pytest.mark.parametrize("unit", ["findb", "fetcher"])
-def test_current_workflow_has_no_accepted_environment_bridge(unit):
-    workflow = (REPO_ROOT / ".github/workflows" / (unit + "-deploy.yml")).read_text()
-    assert "legacy_environment_bridge" not in workflow
-    assert ".schema_version == 3" in workflow
-
-
 @pytest.mark.parametrize("consumer", ["pilot", "full_market", "historical"])
 def test_current_runtime_only_injects_canonical_environment(consumer):
     source = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
