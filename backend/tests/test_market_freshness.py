@@ -116,6 +116,8 @@ async def _setup(
     session,
     sources: list[str] = ["finlab"],
     closed_calendar_days: set[date] | None = None,
+    *,
+    seed_calendar: bool = True,
 ) -> None:
     session.add(
         DatasetRegistry(
@@ -145,12 +147,13 @@ async def _setup(
         )
         await session.flush()
         session.add(SchedulerDataset(scheduler_key=scheduler_key, dataset_key="tw_equity_eod"))
-    await _seed_published_calendar_year(
-        session,
-        market="TW",
-        year=2026,
-        closed_calendar_days=closed_calendar_days,
-    )
+    if seed_calendar:
+        await _seed_published_calendar_year(
+            session,
+            market="TW",
+            year=2026,
+            closed_calendar_days=closed_calendar_days,
+        )
     await session.commit()
 
 
@@ -873,20 +876,33 @@ async def test_not_due_and_open_alert_are_read_only(test_session):
 async def test_admin_filters_and_serve_redacts_feed_internals(
     client: AsyncClient, test_session, admin_headers
 ):
-    await _setup(test_session)
+    # Routes evaluate at the wall clock and published calendars only reach the
+    # current year, so no calendar is seeded and no computed status is assumed.
+    await _setup(test_session, seed_calendar=False)
     unauthorized = await client.get("/api/v1/admin/market-freshness")
     assert unauthorized.status_code == 401
+    url = "/api/v1/admin/market-freshness"
+    detailed = await client.get(f"{url}?market=TW", headers=admin_headers)
+    assert detailed.status_code == 200
+    [card] = detailed.json()["data"]
+    assert card["feeds"]
+    status = card["status"]
+    other_status = next(value for value in ("fresh", "failed") if value != status)
+
     admin = await client.get(
-        "/api/v1/admin/market-freshness?market=TW&slot_id=taiwan_market_window&status=never_received&include_feeds=false",
+        f"{url}?market=TW&slot_id=taiwan_market_window&status={status}&include_feeds=false",
         headers=admin_headers,
     )
     assert admin.status_code == 200
-    assert admin.json()["data"][0]["feeds"] == []
+    [summary] = admin.json()["data"]
+    assert summary["status"] == status
+    assert summary["feeds"] == []
+    for query in ("market=US", f"market=TW&status={other_status}"):
+        filtered = await client.get(f"{url}?{query}", headers=admin_headers)
+        assert filtered.status_code == 200
+        assert filtered.json()["data"] == []
     for legacy_slot in ("us_0600", "global_0815", "tw_1430", "asia_1630"):
-        rejected = await client.get(
-            f"/api/v1/admin/market-freshness?slot_id={legacy_slot}",
-            headers=admin_headers,
-        )
+        rejected = await client.get(f"{url}?slot_id={legacy_slot}", headers=admin_headers)
         assert rejected.status_code == 422
 
     settings = get_settings()
@@ -898,7 +914,9 @@ async def test_admin_filters_and_serve_redacts_feed_internals(
         settings.SERVE_REQUIRE_AUTH = original
     served = await client.get("/api/v1/serve/market-freshness?market=TW")
     assert served.status_code == 200
-    assert "feeds" not in served.json()["data"][0]
+    [public] = served.json()["data"]
+    assert public["status"] == status
+    assert "feeds" not in public
     assert "dataset_key" not in str(served.json())
 
 

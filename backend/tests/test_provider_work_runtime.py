@@ -8,7 +8,7 @@ are real. The sync transport crosses to the ASGI app on the pytest event loop.
 import asyncio
 import hashlib
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -24,6 +24,7 @@ from app.services import historical_backfill, provider_work
 from app.services.source_clients import create_source_client
 from app.utils import utc_now
 from tests.full_market_fixtures import historical_admission
+from tests.provider_work_runtime_support import DAY as HISTORICAL_DAY
 from tests.test_canonical_ingest_api import _execute_run
 from tests.test_full_market import DAY, _activated_plan
 
@@ -276,8 +277,8 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         test_session,
         provider="finlab",
         dataset_key="tw_equity_eod",
-        start_date=date(2026, 10, 15),
-        end_date=date(2026, 10, 15),
+        start_date=HISTORICAL_DAY,
+        end_date=HISTORICAL_DAY,
         request_key="actual-runtime-handoff",
         created_by="owner",
     )

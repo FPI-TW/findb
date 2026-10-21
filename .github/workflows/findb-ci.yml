@@ -89,6 +89,7 @@ jobs:
         run: |
           uv run python scripts/export_ingress_contracts.py --check
           uv run python scripts/export_archive_contracts.py --check
+          uv run python scripts/export_execution_feeds.py --check
 
       - name: Run tests
         shell: bash

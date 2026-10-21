@@ -137,7 +137,7 @@ async def test_verify_required_objects_warns_on_missing_relation(monkeypatch, ca
     assert base.DB_INIT_COMMAND in warning
 
 
-def test_expected_alembic_heads_returns_non_empty_tuple():
+def test_alembic_history_has_single_linear_head():
     heads = base._expected_alembic_heads()
     assert isinstance(heads, tuple)
-    assert heads
+    assert len(heads) == 1
