@@ -348,23 +348,12 @@ class FullMarketDeploymentTests(unittest.TestCase):
     def test_first_cutover_rejects_legacy_containers(self):
         source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
         self.assertIn("reason=legacy_runtime_requires_cutover", source)
-        self.assertNotIn("move_legacy_full_runtime", source)
-
-    def test_unified_runtime_never_bridges_legacy_environment(self):
-        for name in ("deploy_fetcher_aws.sh", "release_fetcher_provider.sh"):
-            source = (ROOT / "infra/deploy/runtime-secrets" / name).read_text()
-            self.assertNotIn("FETCHER_LEGACY_ENV_BRIDGE", source)
-            self.assertNotIn("FETCHER_ACCEPTED_REPLAY", source)
 
     def test_infra_tests_run_ci_without_staging_deployment(self):
         routed = policy.classify(["infra/tests/test_full_market_deployment.py"])
         self.assertTrue(routed["findb_ci"])
         self.assertFalse(routed["findb_staging"])
         self.assertFalse(routed["fetcher_staging"])
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class InstallationReceiptTests(unittest.TestCase):
@@ -519,3 +508,7 @@ class InstallationReceiptTests(unittest.TestCase):
                         "/account/governor.sqlite3",
                         base / "allocation",
                     )
+
+
+if __name__ == "__main__":
+    unittest.main()

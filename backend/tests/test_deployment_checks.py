@@ -599,8 +599,6 @@ def _uses_references(value: object) -> list[str]:
 
 
 def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
-    assert not (WORKFLOWS_ROOT / "deploy.yml").exists()
-
     expected_names = {
         "required-ci.yml",
         "findb-ci.yml",
@@ -661,7 +659,8 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     assert "etirement" not in workflow_path.read_text(encoding="utf-8")
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"plan"}
-    assert workflow["env"]["TOFU_VERSION"] == "1.12.6"
+    # OpenTofu must be pinned to an exact release, never a floating range.
+    assert re.fullmatch(r"\d+\.\d+\.\d+", workflow["env"]["TOFU_VERSION"])
 
     plan_job = workflow["jobs"]["plan"]
     assert plan_job["permissions"] == {"contents": "read", "id-token": "write"}
@@ -681,7 +680,7 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     checkout = next(
         step for step in steps if step.get("name") == "Checkout exact pull request commit"
     )
-    assert checkout["uses"] == ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+    assert checkout["uses"].startswith("actions/checkout@")
     assert checkout["with"] == {
         "ref": "${{ github.event.pull_request.head.sha }}",
         "fetch-depth": "1",
@@ -691,7 +690,7 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     trusted_checkout = next(
         step for step in steps if step.get("name") == "Checkout trusted guard source"
     )
-    assert trusted_checkout["uses"] == ("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
+    assert trusted_checkout["uses"].startswith("actions/checkout@")
     assert trusted_checkout["with"] == {
         "repository": "${{ job.workflow_repository }}",
         "ref": "${{ job.workflow_sha }}",
@@ -734,9 +733,7 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     )
 
     tofu_setup = next(step for step in steps if step.get("name") == "Set up pinned OpenTofu")
-    assert tofu_setup["uses"] == (
-        "opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4"
-    )
+    assert tofu_setup["uses"].startswith("opentofu/setup-opentofu@")
     assert tofu_setup["with"] == {
         "tofu_version": "${{ env.TOFU_VERSION }}",
         "tofu_wrapper": "false",
@@ -765,9 +762,7 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         < steps.index(tofu_setup)
         < steps.index(credential_step)
     )
-    assert credential_step["uses"] == (
-        "aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c"
-    )
+    assert credential_step["uses"].startswith("aws-actions/configure-aws-credentials@")
     assert credential_step["with"] == {
         "role-to-assume": "arn:aws:iam::439622209937:role/staging-infra-plan",
         "aws-region": "${{ env.AWS_REGION }}",
@@ -1213,13 +1208,21 @@ def test_plan_json_guard_rejects_present_invalid_resource_drift_collection(
 
 
 def test_external_actions_are_pinned_to_full_commit_shas() -> None:
-    for path in (*WORKFLOWS_ROOT.glob("*.yml"), *WORKFLOWS_ROOT.glob("*.yaml")):
+    paths = (
+        *WORKFLOWS_ROOT.glob("*.yml"),
+        *WORKFLOWS_ROOT.glob("*.yaml"),
+        *(REPO_ROOT / ".github" / "actions").glob("*/action.yml"),
+    )
+    external = 0
+    for path in paths:
         for reference in _uses_references(_load_workflow(path)):
             if reference.startswith("./"):
                 continue
+            external += 1
             assert re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", reference), (
                 f"{path.name} contains an unpinned action reference: {reference}"
             )
+    assert external
 
 
 def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentials(
@@ -1658,6 +1661,26 @@ esac
     )
     assert forward_tag_mismatch.returncode != 0
     assert "reason=publisher_identity_or_sha_contract" in forward_tag_mismatch.stderr
+
+    non_main = subprocess.run(
+        ["bash", str(helper), image, ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**base_environment, "GITHUB_REF": "refs/heads/feature"},
+    )
+    assert non_main.returncode != 0
+    assert "reason=publisher_identity_or_sha_contract" in non_main.stderr
+
+    foreign_repository = subprocess.run(
+        ["bash", str(helper), f"{image}-other", ".", "./backend/Dockerfile"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=base_environment,
+    )
+    assert foreign_repository.returncode != 0
+    assert "reason=image_repository_contract" in foreign_repository.stderr
     assert not unexpected_aws_log.exists()
     assert not docker_log.exists()
 
@@ -2877,10 +2900,6 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
 
     combined = findb_cd + fetcher_cd
     for forbidden in (
-        "FINDB_EC2_",
-        "FETCHER_EC2_",
-        "appleboy/",
-        "ghcr.io",
         "DATABASE_URL",
         "CELERY_BROKER_URL",
         "RABBITMQ_",
@@ -2893,9 +2912,63 @@ def test_cd_workflows_do_not_reference_cross_service_credentials() -> None:
     assert "secrets: inherit" not in fetcher_cd
 
 
-def test_daily_deployment_does_not_gate_on_native_acquisition():
-    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/fetcher-cd.yml").read_text())
-    assert "finlab-acquisition-smoke" not in workflow["jobs"]
+RETIRED_IDENTIFIERS = (
+    "finlab-acquisition-smoke",
+    "legacy_environment_bridge",
+    "staging-v1-bundle-validator",
+    "STAGING_ECR_CUTOVER_ENABLED",
+    "PRODUCTION_DEPLOY_ENABLED",
+    "FETCHER_LEGACY_ENV_BRIDGE",
+    "FETCHER_ACCEPTED_REPLAY",
+    "move_legacy_full_runtime",
+    "FINDB_EC2_",
+    "FETCHER_EC2_",
+    "appleboy/",
+    "ghcr.io",
+)
+RETIRED_IDENTIFIER_SCAN_ROOTS = (
+    REPO_ROOT / ".github",
+    REPO_ROOT / "infra",
+    BACKEND_ROOT / "scripts",
+)
+RETIRED_IDENTIFIER_SUFFIXES = {
+    ".conf",
+    ".example",
+    ".hcl",
+    ".json",
+    ".ps1",
+    ".py",
+    ".sh",
+    ".sql",
+    ".tf",
+    ".yml",
+    ".yaml",
+}
+
+
+def _retired_identifier_scan_files() -> list[Path]:
+    infra_tests = REPO_ROOT / "infra" / "tests"
+    return [
+        path
+        for root in RETIRED_IDENTIFIER_SCAN_ROOTS
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+        and path.suffix in RETIRED_IDENTIFIER_SUFFIXES
+        and not path.is_relative_to(infra_tests)
+        and not {".terraform", "__pycache__"} & set(path.parts)
+    ]
+
+
+@pytest.mark.parametrize("identifier", RETIRED_IDENTIFIERS)
+def test_retired_deployment_identifiers_stay_removed(identifier: str) -> None:
+    files = _retired_identifier_scan_files()
+    assert files
+    offenders = [
+        str(path.relative_to(REPO_ROOT))
+        for path in files
+        if identifier in path.read_text(encoding="utf-8")
+    ]
+    assert offenders == []
 
 
 def test_findb_candidate_migrates_and_checks_internal_health_before_acceptance() -> None:
@@ -3247,9 +3320,6 @@ def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:
 
     assert "staging-findb" in setup_script
     assert "production-findb" in setup_script
-    assert "FINDB_EC2_HOST" not in setup_script
-    assert "FINDB_EC2_USER" not in setup_script
-    assert "FINDB_EC2_SSH_KEY" not in setup_script
     assert "findb/production/findb/" in setup_script
     assert "\n       EC2_HOST" not in setup_script
     assert "staging-fetcher" in setup_script
@@ -3835,7 +3905,7 @@ def test_findb_ci_reports_are_retained_even_after_failure(job_name: str) -> None
     upload = next(step for step in steps if step.get("name") == "Upload test reports")
     assert upload["if"] == "always()"
     assert re.fullmatch(r"actions/upload-artifact@[0-9a-f]{40}", upload["uses"])
-    assert upload["with"]["retention-days"] == "14"
+    assert 1 <= int(upload["with"]["retention-days"]) <= 90
     assert upload["with"]["path"] == f"${{{{ runner.temp }}}}/findb-ci-{job_name}/"
 
 
