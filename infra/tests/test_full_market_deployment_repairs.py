@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_deployment_checks import _FAKE_DOCKER, REPO_ROOT
+REPO_ROOT = Path(__file__).resolve().parents[2]
+_FAKE_DOCKER = (REPO_ROOT / "infra/tests/fixtures/fake_docker.sh").read_text(encoding="utf-8")
 
 
 def _inventory_policy(source):

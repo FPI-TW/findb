@@ -627,11 +627,16 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
         _load_workflow(path)
 
 
-def test_backend_ci_installs_isolated_fetcher_runtime_before_cross_unit_tests() -> None:
+@pytest.mark.parametrize(
+    ("job_name", "test_step"), [("backend", "Run tests"), ("infra-tests", "Run infra tests")]
+)
+def test_ci_installs_isolated_fetcher_runtime_before_cross_unit_tests(
+    job_name: str, test_step: str
+) -> None:
     workflow = _load_workflow(FINDB_CI_WORKFLOW)
-    backend = workflow["jobs"]["backend"]
-    assert backend["defaults"]["run"]["working-directory"] == "backend"
-    steps = backend["steps"]
+    job = workflow["jobs"][job_name]
+    assert job["defaults"]["run"]["working-directory"] == "backend"
+    steps = job["steps"]
     setup_uv = next(step for step in steps if step.get("name") == "Install uv")
     assert setup_uv["with"]["cache-dependency-glob"].splitlines() == [
         "backend/uv.lock",
@@ -644,7 +649,7 @@ def test_backend_ci_installs_isolated_fetcher_runtime_before_cross_unit_tests() 
     assert backend_install["run"] == "uv sync --frozen"
     assert fetcher_install["working-directory"] == "fetcher"
     assert fetcher_install["run"] == "uv sync --frozen --no-dev"
-    tests = next(step for step in steps if step.get("name") == "Run tests")
+    tests = next(step for step in steps if step.get("name") == test_step)
     assert steps.index(backend_install) < steps.index(fetcher_install) < steps.index(tests)
 
 
@@ -3065,125 +3070,8 @@ def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...
     )
 
 
-_FAKE_DOCKER = """#!/bin/sh
-set -eu
-state_dir="${FAKE_DOCKER_STATE:?}"
-printf '%s\\n' "$1" >> "${FAKE_DOCKER_LOG:?}"
-operation="$1"
-shift
-if [ -n "${FAKE_SIGNAL_ON:-}" ] && [ "$operation" = "$FAKE_SIGNAL_ON" ] \
-  && [ ! -e "${FAKE_SIGNAL_SENT:?}" ]; then
-  : > "$FAKE_SIGNAL_SENT"
-  kill -TERM "$PPID"
-fi
-case "$operation" in
-  container)
-    if [ "$1" = ls ]; then
-      for entry in "$state_dir"/*; do [ ! -f "$entry" ] || basename "$entry"; done
-      exit 0
-    fi
-    [ "$1" = inspect ]
-    [ -f "$state_dir/$2" ]
-    ;;
-  image)
-    [ "$1" = prune ]
-    [ "$2" = -af ]
-    ;;
-  pull)
-    exit 0
-    ;;
-  rm)
-    [ "$1" != "--name" ] || shift
-    [ "$1" != "-f" ] || shift
-    name="$1"
-    if [ ! -f "$state_dir/$name" ]; then
-      for entry in "$state_dir"/*; do
-        [ -f "$entry" ] || continue
-        inode="$(ls -i "$entry" | awk '{print $1}')"
-        if [ "$name" = "fake-$inode" ]; then name="${entry##*/}"; break; fi
-      done
-    fi
-    rm -f "$state_dir/$name"
-    ;;
-  rename)
-    mv "$state_dir/$1" "$state_dir/$2"
-    ;;
-  stop)
-    [ "$1" = "--time" ]
-    name="$3"
-    [ "$(cat "$state_dir/$name")" != stop-fail ] || exit 1
-    printf 'stopped\\n' > "$state_dir/$name"
-    ;;
-  start)
-    name="$1"
-    [ "$(cat "$state_dir/$name")" != start-fail ] || exit 1
-    printf 'running\\n' > "$state_dir/$name"
-    ;;
-  run)
-    detached=0
-    name=""
-    previous=""
-    for argument in "$@"; do
-      if [ "$argument" = -d ]; then detached=1; fi
-      if [ "$previous" = --name ]; then name="$argument"; fi
-      previous="$argument"
-    done
-    if [ "$detached" -eq 1 ]; then
-      [ -n "$name" ]
-      printf '%s\\n' "${FAKE_CANDIDATE_STATUS:-running}" > "$state_dir/$name"
-    else
-      [ "${FAKE_PREFLIGHT_FAIL:-0}" != 1 ]
-    fi
-    ;;
-  create)
-    name=""
-    previous=""
-    for argument in "$@"; do
-      if [ "$previous" = --name ]; then name="$argument"; fi
-      previous="$argument"
-    done
-    [ -n "$name" ]
-    printf 'created\\n' > "$state_dir/$name"
-    ;;
-  inspect)
-    [ "$1" = --format ]
-    format="$2"
-    name="$3"
-    status="$(cat "$state_dir/$name")"
-    case "$format" in
-      *Config.Labels*)
-        # Labels belong to an identity and survive rename. Older fixtures may
-        # still identify an initial unaccepted container by its fixed name.
-        container_id="$(ls -i "$state_dir/$name" | awk '{print "fake-" $1}')"
-        case ",${FAKE_UNACCEPTED_IDS:-}," in
-          *",$container_id,"*) printf 'false\\n'; exit 0 ;;
-        esac
-        case ",${FAKE_UNACCEPTED_NAMES:-}," in
-          *",$name,"*) printf 'false\\n' ;;
-          *) printf '<no value>\\n' ;;
-        esac
-        ;;
-      *Config.Image*) printf '%s\\n' "${FAKE_IMAGE:?}" ;;
-      *Config.User*) printf '10001:10001\\n' ;;
-      *HostConfig.RestartPolicy.Name*) printf 'no\\n' ;;
-      *State.Running*) [ "$status" = running ] && printf 'true\\n' || printf 'false\\n' ;;
-      *State.Status*) printf '%s\\n' "$status" ;;
-      *State.ExitCode*) printf '%s\\n' "${FAKE_STABLE_EXIT_CODE:-0}" ;;
-      *State.OOMKilled*) printf 'false\\n' ;;
-      *State.Error*) printf '\\n' ;;
-      *'{{.Id}}'*)
-        # Container identity survives rename and state changes, unlike status.
-        ls -i "$state_dir/$name" | awk '{print "fake-" $1}'
-        ;;
-      *RestartCount*) printf '0\\n' ;;
-      *) printf '%s\\n' "$status" ;;
-    esac
-    ;;
-  *)
-    exit 2
-    ;;
-esac
-"""
+# Shared with the offline deployment repair suites in infra/tests.
+_FAKE_DOCKER = (REPO_ROOT / "infra/tests/fixtures/fake_docker.sh").read_text(encoding="utf-8")
 
 _FAKE_SUDO = """#!/bin/sh
 set -eu
@@ -3851,7 +3739,7 @@ def test_findb_ci_separates_infra_and_migrations_without_losing_checks() -> None
     assert "export_archive_contracts.py --check" in backend_commands
     assert "export_execution_feeds.py --check" in backend_commands
     assert "../infra/tests" not in backend_commands
-    assert "pytest -n 2 --dist worksteal" in backend_commands
+    assert "pytest -n 4 --dist worksteal" in backend_commands
     assert "--ignore-glob='tests/test_*migration*.py'" in backend_commands
 
     infra = jobs["infra-tests"]
@@ -3860,7 +3748,7 @@ def test_findb_ci_separates_infra_and_migrations_without_losing_checks() -> None
     assert infra["defaults"]["run"]["working-directory"] == "backend"
     infra_commands = "\n".join(step.get("run", "") for step in infra["steps"])
     assert "uv sync --frozen" in infra_commands
-    assert "pytest ../infra/tests -n 2 --dist worksteal" in infra_commands
+    assert "pytest ../infra/tests -n 4 --dist worksteal --timeout=300" in infra_commands
     assert "unittest discover" not in infra_commands
 
     migration_steps = jobs["backend-migrations"]["steps"]
