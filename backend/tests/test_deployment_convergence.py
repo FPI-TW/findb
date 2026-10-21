@@ -38,6 +38,10 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
         (["infra/env/aws_configuration.py"], (True, False, False, False, True)),
         (["infra/monitoring/publish_staging_metrics.py"], (True, False, False, False, False)),
         (["infra/acceptance/native_feed_evidence.py"], (True, False, False, False, False)),
+        (
+            ["infra/acceptance/export_native_fetcher_evidence.py"],
+            (True, True, False, False, False),
+        ),
         ([".github/actions/aws-configuration/action.yml"], (True, True, True, True, False)),
         ([".github/workflows/findb-ci.yml"], (True, True, False, False, False)),
         ([".github/workflows/findb-cd.yml"], (True, True, True, False, False)),

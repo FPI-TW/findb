@@ -12,6 +12,7 @@ from app.models.provider_work import ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import DatasetRegistry, IngestionRun
 from app.services import provider_work as queue
 from app.utils import utc_now, uuid7
+from tests.provider_work_clock import recent_backfill_day
 
 
 async def attest_cutover(db, identities=None):
@@ -470,8 +471,8 @@ async def test_enforced_historical_bridge_authorizes_while_both_controls_running
         test_session,
         provider=provider,
         dataset_key=dataset,
-        start_date=date(2026, 10, 15),
-        end_date=date(2026, 10, 15),
+        start_date=recent_backfill_day(),
+        end_date=recent_backfill_day(),
         request_key=f"running-controls-{provider}",
         created_by="owner",
     )

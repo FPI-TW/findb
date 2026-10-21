@@ -20,6 +20,9 @@ async def test_queued_taifex_completion_survives_later_upsert_with_running_contr
     client, test_session, test_engine, monkeypatch
 ):
     monkeypatch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
+    # seed() pins the backfill clock; the queue must share it or the request
+    # ages out of the backfill window once the wall clock passes NOW + 31 days.
+    monkeypatch.setattr(provider_work, "utc_now", lambda: NOW)
     headers = await seed(test_session, monkeypatch)
     await test_session.execute(
         update(SchedulerControl)

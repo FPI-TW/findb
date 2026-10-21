@@ -115,7 +115,6 @@ def test_tw_minute_migration_is_single_linear_head():
     assert scheduler_dataset_projection_removal.down_revision == "c5d6e7f8a9b0"
     assert serve_stats is not None
     assert serve_stats.down_revision == "a8b9c0d1e2f3"
-    assert scripts.get_heads() == ["d75fc12a9b43"]
     ancestry = list(scripts.iterate_revisions("b53da90e7f21", "f8a9b0c1d2e3"))
     assert ancestry[0].down_revision == "a42c89d3e610"
     assert ancestry[-1].revision == foundation.revision

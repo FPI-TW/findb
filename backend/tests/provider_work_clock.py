@@ -2,7 +2,20 @@
 
 import time
 from dataclasses import replace
+from datetime import date, timedelta
 from types import SimpleNamespace
+
+from app.utils import utc_now
+
+
+def recent_backfill_day() -> date:
+    """Return a Thursday one to two weeks ago, so DAY + 1 is a weekday.
+
+    Historical requests must stay inside the staging backfill window; a fixed
+    calendar date silently ages out of it.
+    """
+    today = utc_now().date()
+    return today - timedelta(days=7 + (today.weekday() - 3) % 7)
 
 
 def dispatch_clock(monkeypatch):

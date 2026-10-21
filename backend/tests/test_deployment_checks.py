@@ -3779,6 +3779,7 @@ def test_findb_ci_separates_infra_and_migrations_without_losing_checks() -> None
     assert "uv run mypy app" in backend_commands
     assert "export_ingress_contracts.py --check" in backend_commands
     assert "export_archive_contracts.py --check" in backend_commands
+    assert "export_execution_feeds.py --check" in backend_commands
     assert "../infra/tests" not in backend_commands
     assert "pytest -n 2 --dist worksteal" in backend_commands
     assert "--ignore-glob='tests/test_*migration*.py'" in backend_commands

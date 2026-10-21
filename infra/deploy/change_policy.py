@@ -19,6 +19,9 @@ FETCHER_PREFIXES = ("fetcher/",)
 # Backend tests import the editable Fetcher package and assert infra files, so
 # both trees must run FinDB CI even when they do not deploy FinDB.
 FINDB_CI_PREFIXES = ("fetcher/", "infra/")
+# Fetcher tests execute these infra scripts, so editing one alone must still
+# run Fetcher CI.
+FETCHER_CI_PATHS = frozenset({"infra/acceptance/export_native_fetcher_evidence.py"})
 # The composite action authenticates and loads configuration for every
 # deployment, so a change must exercise both staging rollouts.
 DEPLOYMENT_ACTION_PREFIX = ".github/actions/"
@@ -68,6 +71,8 @@ def classify(paths: list[str]) -> dict[str, bool]:
             continue
         if path.startswith(FINDB_CI_PREFIXES):
             result["findb_ci"] = True
+        if path in FETCHER_CI_PATHS:
+            result["fetcher_ci"] = True
         if path.startswith("contracts/"):
             result["findb_ci"] = result["fetcher_ci"] = True
             continue

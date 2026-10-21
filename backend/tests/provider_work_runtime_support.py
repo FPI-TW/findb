@@ -6,7 +6,7 @@ import json
 import multiprocessing
 import os
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs
@@ -20,10 +20,11 @@ from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerData
 from app.services.historical_backfill import create_request
 from app.services.source_clients import create_source_client
 from scripts.seed_data import DATASETS
+from tests.provider_work_clock import recent_backfill_day
 from tests.test_canonical_ingest_api import _execute_run
 from tests.test_provider_work import attest_cutover
 
-DAY = date(2026, 10, 15)
+DAY = recent_backfill_day()
 SCOPES = [
     ("twelve_data", "us_equity_eod"),
     ("finlab", "tw_equity_eod"),

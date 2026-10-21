@@ -20,6 +20,9 @@ from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
+# Contract months follow DAY so the monthly contract never expires before it.
+CONTRACT_MONTHS = (f"{DAY:%Y%m}F1", f"{DAY.replace(day=1) + timedelta(days=32):%Y%m}")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -115,7 +118,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         )
         for index, member in enumerate(body.members):
             if h.provider == "taifex":
-                month = ("202610F1", "202611")[index]
+                month = CONTRACT_MONTHS[index]
                 member.provider_symbol, member.contract_code, member.contract_month = (
                     "TX" + month,
                     "TX:" + month,
@@ -217,9 +220,9 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         product = values["commodity_id"][0]
         h.native(["report", product])
         text = "交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,成交量,結算價,未沖銷契約數,交易時段\n"
-        for month in ("202610F1", "202611"):
+        for month in CONTRACT_MONTHS:
             for session in ("一般", "盤後"):
-                text += f"2026/10/15,{product},{month},100,110,90,105,37,-,-,{session}\n"
+                text += f"{DAY:%Y/%m/%d},{product},{month},100,110,90,105,37,-,-,{session}\n"
         return httpx.Response(200, content=text.encode("cp950"))
 
     def run_round():
