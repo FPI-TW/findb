@@ -1077,7 +1077,6 @@ def test_official_snapshot_records_only_received_bytes_on_incomplete_body(tmp_pa
 
 
 def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, monkeypatch):
-    import ast
     from uuid import UUID
 
     from findb_fetcher import full_market_cli
@@ -1106,23 +1105,9 @@ def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, mo
         calls.append("authorization")
         return {"acquisition_allowed": True}
 
-    # Execute the actual CLI callback, including its control/auth calls. The
-    # installed readiness ACK is already fresh, so its throttled report is idle.
-    callback = next(
-        node
-        for node in ast.walk(ast.parse(Path(full_market_cli.__file__).read_text()))
-        if isinstance(node, ast.FunctionDef) and node.name == "can_acquire"
-    )
-    namespace = {
-        "os": full_market_cli.os,
-        "report": lambda: None,
-        "args": SimpleNamespace(execution_profile="full_market"),
-        "control": SimpleNamespace(poll=poll),
-        "source": SimpleNamespace(request=authorize),
-    }
-    exec(
-        compile(ast.Module(body=[callback], type_ignores=[]), "actual-cli-callback", "exec"),
-        namespace,
+    # Use the actual CLI callback, including its control/auth calls.
+    can_acquire = full_market_cli.acquisition_gate(
+        "full_market", SimpleNamespace(poll=poll), SimpleNamespace(request=authorize)
     )
     monkeypatch.setenv("FULL_MARKET_ENABLED", "true")
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
@@ -1135,7 +1120,7 @@ def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, mo
         calls.append("status")
         return SimpleNamespace(status="completed", failed_records=0)
 
-    runtime.can_acquire = namespace["can_acquire"]
+    runtime.can_acquire = can_acquire
     runtime.delivery = SimpleNamespace(
         prepare=lambda request: request, deliver=deliver, get_run_status=status
     )

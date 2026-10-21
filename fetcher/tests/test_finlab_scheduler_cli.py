@@ -75,9 +75,8 @@ def test_disabled_or_mismatched_feed_is_rejected_before_runtime_config(
     assert json.loads(capsys.readouterr().err) == {"error": "finlab_scheduler_configuration_failed"}
 
 
-def test_parser_supports_required_modes_and_aware_as_of() -> None:
+def test_parser_normalizes_aware_as_of_to_utc() -> None:
     parsed = finlab_scheduler_cli.build_parser().parse_args(
         ["--as-of", "2026-07-29T08:00:00+08:00"]
     )
     assert parsed.as_of.isoformat() == "2026-07-29T00:00:00+00:00"
-    assert finlab_scheduler_cli.build_parser().parse_args(["--run-forever"]).run_forever

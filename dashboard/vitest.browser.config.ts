@@ -12,7 +12,10 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      // Pin zone and locale so formatting is identical on every host and in CI.
+      provider: playwright({
+        contextOptions: { timezoneId: "UTC", locale: "zh-TW" },
+      }),
       screenshotFailures: false,
       instances: [{ browser: "chromium" }],
       viewport: { width: 1440, height: 900 },

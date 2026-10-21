@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import sys
+from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timezone
 from datetime import time as clock_time
@@ -92,6 +93,37 @@ def load_config(path: Path) -> dict[str, Any]:
     if actual != expected:
         raise ValueError("full-market coverage must contain all seven feeds")
     return value
+
+
+def acquisition_gate(
+    execution_profile: str, control: SchedulerControlClient, source: FullMarketSourceClient
+) -> Callable[[], bool]:
+    """Return the per-acquisition flag, control and Source authorization check."""
+
+    def can_acquire() -> bool:
+        if (
+            execution_profile == "full_market"
+            and os.getenv("FULL_MARKET_ENABLED", "false").lower() != "true"
+        ):
+            return False
+        if os.getenv("FETCHER_CONSUMER_PROFILE") == "maintenance":
+            return (
+                source.request(
+                    "GET",
+                    "full-market/authorization?consumer=maintenance&execution_profile="
+                    + execution_profile,
+                ).get("acquisition_allowed")
+                is True
+            )
+        current = control.poll(observed_state="running")
+        authorization = source.request(
+            "GET", "full-market/authorization?consumer=" + execution_profile
+        )
+        return (
+            current.desired_state == "running" and authorization.get("acquisition_allowed") is True
+        )
+
+    return can_acquire
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -231,30 +263,7 @@ def main(argv: list[str] | None = None) -> int:
             source = FullMarketSourceClient(fetcher, execution_profile=args.execution_profile)
             delivery = SourceAPIClient(fetcher, ContractRegistry(fetcher.contracts_dir))
 
-            def can_acquire() -> bool:
-                if (
-                    args.execution_profile == "full_market"
-                    and os.getenv("FULL_MARKET_ENABLED", "false").lower() != "true"
-                ):
-                    return False
-                if os.getenv("FETCHER_CONSUMER_PROFILE") == "maintenance":
-                    return (
-                        source.request(
-                            "GET",
-                            "full-market/authorization?consumer=maintenance&execution_profile="
-                            + args.execution_profile,
-                        ).get("acquisition_allowed")
-                        is True
-                    )
-                current = control.poll(observed_state="running")
-                authorization = source.request(
-                    "GET", "full-market/authorization?consumer=" + args.execution_profile
-                )
-                return (
-                    current.desired_state == "running"
-                    and authorization.get("acquisition_allowed") is True
-                )
-
+            can_acquire = acquisition_gate(args.execution_profile, control, source)
             runtime = FullMarketRuntime(
                 provider=args.provider,
                 execution_profile=args.execution_profile,

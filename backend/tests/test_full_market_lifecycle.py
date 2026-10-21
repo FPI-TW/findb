@@ -1,4 +1,4 @@
-"""Canonical visibility, five-day rollout and safe registry reseeding."""
+"""Canonical visibility, retired feed routes and safe registry reseeding."""
 
 import json
 import subprocess
@@ -12,15 +12,8 @@ import pytest
 from sqlalchemy import select, text
 
 from app.models.registry import DatasetRegistry, IngestionRun, SchedulerControl
-from app.schemas.full_market import (
-    FeedActivateRequest,
-)
 from app.schemas.ingress import MarketMinuteIngressRequest
-from app.services.full_market import (
-    FullMarketError,
-    activate_feed,
-    get_plan,
-)
+from app.services.full_market import get_plan
 from app.services.normalize.contracts import (
     FuturesEODContractNormalizer,
     MarketMinuteContractNormalizer,
@@ -195,28 +188,13 @@ async def test_minute_available_before_closed_group_but_plan_remains_missing(tes
 
 
 @pytest.mark.asyncio
-async def test_acceptance_requires_five_distinct_consecutive_open_days_on_time(test_session):
-    dataset, _, plan = await _activated_plan(test_session, count=1)
-    # A valid scheduler admission needs no completed observation days.
-    assert plan.summary.missing == 2
-    control = await test_session.get(SchedulerControl, "full_market_taifex_v1")
-    assert control.desired_state == "running"
-    with pytest.raises(FullMarketError) as failure:
-        await activate_feed(
-            test_session,
-            dataset.dataset_key,
-            FeedActivateRequest(
-                activation_date=DAY,
-                mode="active",
-                readiness_evidence_note="Retired feed promotion.",
-            ),
-        )
-    assert failure.value.status_code == 410
-    assert (
-        await get_plan(
-            test_session, plan.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
-        )
-    ).summary.missing == 2
+@pytest.mark.parametrize("action", ["activate", "deactivate"])
+async def test_retired_feed_activation_routes_return_gone(client, admin_headers, action):
+    response = await client.post(
+        f"/api/v1/admin/feeds/hk_equity_eod/{action}", headers=admin_headers
+    )
+    assert response.status_code == 410
+    assert response.json()["detail"]["code"] == "feed_activation_retired"
 
 
 @pytest.mark.asyncio
@@ -234,9 +212,7 @@ async def test_reseed_preserves_approved_feed_and_running_scheduler(test_session
 
 
 @pytest.mark.asyncio
-async def test_audited_deactivation_retains_plan_and_restores_bounded_feed(
-    client, test_session, admin_headers
-):
+async def test_audited_deactivation_retains_plan_and_restores_bounded_feed(test_session):
     from app.config import get_settings
     from app.models.registry import AdminAuditEvent, DailyDeliveryPlan, UniverseRelease
     from app.services.full_market_admission import reconcile_environment
@@ -244,10 +220,6 @@ async def test_audited_deactivation_retains_plan_and_restores_bounded_feed(
     staged, _, plan = await _activated_plan(test_session, "hk_equity_eod", count=1)
     await seed_datasets(test_session)
     control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
-    response = await client.post(
-        "/api/v1/admin/feeds/hk_equity_eod/deactivate", headers=admin_headers
-    )
-    assert response.status_code == 410
     get_settings().FULL_MARKET_ENABLED = False
     await reconcile_environment(test_session, actor="test-flag-transition")
     await test_session.commit()
@@ -260,35 +232,6 @@ async def test_audited_deactivation_retains_plan_and_restores_bounded_feed(
             AdminAuditEvent.resource_id == control.scheduler_key, AdminAuditEvent.action == "stop"
         )
     )
-
-
-@pytest.mark.asyncio
-async def test_acceptance_cannot_skip_an_actual_exchange_open_day(test_session):
-    dataset, _, plan = await _activated_plan(test_session, count=1)
-    from app.models.registry import FullMarketDatasetState
-
-    state = await test_session.get(
-        FullMarketDatasetState,
-        {"dataset_key": dataset.dataset_key, "execution_profile": "full_market"},
-    )
-    assert state.first_start_date == DAY
-    with pytest.raises(FullMarketError) as failure:
-        await activate_feed(
-            test_session,
-            dataset.dataset_key,
-            FeedActivateRequest(
-                activation_date=DAY + timedelta(days=8),
-                mode="active",
-                readiness_evidence_note="Retired date reset.",
-            ),
-        )
-    assert failure.value.status_code == 410
-    assert state.first_start_date == DAY
-    assert (
-        await get_plan(
-            test_session, plan.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
-        )
-    ).summary.missing == 2
 
 
 @pytest.mark.asyncio

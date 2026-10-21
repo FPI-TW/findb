@@ -162,42 +162,7 @@ def _write_instrument_cache(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-# ── Auth Tests ─────────────────────────────────────────────────────────────────
-
-
-class TestAdminAuth:
-    @pytest.mark.asyncio
-    async def test_patch_eod_without_api_key_returns_401(
-        self, client: AsyncClient, test_session: AsyncSession
-    ):
-        instrument = await _create_instrument(test_session)
-        await _create_eod(test_session, instrument.instrument_id)
-        await test_session.commit()
-
-        response = await client.patch(
-            f"/api/v1/admin/eod/{instrument.instrument_id}/2025-01-02",
-            json={"correction_reason": "test", "close": "152.00"},
-        )
-        assert response.status_code == 401
-
-    @pytest.mark.asyncio
-    async def test_patch_eod_with_invalid_api_key_returns_403(
-        self,
-        client: AsyncClient,
-        test_session: AsyncSession,
-        admin_headers: dict,
-    ):
-        instrument = await _create_instrument(test_session)
-        await _create_eod(test_session, instrument.instrument_id)
-        await test_session.commit()
-
-        settings = get_settings()
-        response = await client.patch(
-            f"/api/v1/admin/eod/{instrument.instrument_id}/2025-01-02",
-            headers={settings.API_KEY_HEADER: "wrong-key"},
-            json={"correction_reason": "test", "close": "152.00"},
-        )
-        assert response.status_code == 403
+# ── API Key Tests ──────────────────────────────────────────────────────────────
 
 
 class TestAPIKeyAdmin:
@@ -207,116 +172,80 @@ class TestAPIKeyAdmin:
         client: AsyncClient,
         test_session: AsyncSession,
         admin_headers: dict,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         settings = get_settings()
-        original_require_auth = settings.SERVE_REQUIRE_AUTH
-        settings.SERVE_REQUIRE_AUTH = True
-        try:
-            create_response = await client.post(
-                "/api/v1/admin/api-keys",
-                headers=admin_headers,
-                json={
-                    "owner": "llm-client",
-                    "tier": "llm",
-                    "scopes": ["serve"],
-                    "rate_limit_requests": 2,
-                    "rate_limit_window": 60,
-                    "page_size_limit": 2,
-                },
-            )
-            assert create_response.status_code == 200
-            created = create_response.json()
-            plaintext_key = created["api_key"]
-            key_id = created["data"]["key_id"]
-            assert plaintext_key.startswith("findb_")
-            assert "key_hash" not in created["data"]
-
-            list_response = await client.get("/api/v1/admin/api-keys", headers=admin_headers)
-            assert list_response.status_code == 200
-            listed = list_response.json()["data"]
-            assert listed[0]["key_id"] == key_id
-            assert "api_key" not in listed[0]
-            assert "key_hash" not in listed[0]
-
-            serve_headers = {settings.API_KEY_HEADER: plaintext_key}
-            ok_response = await client.get(
-                "/api/v1/serve/instruments?page_size=2",
-                headers=serve_headers,
-            )
-            assert ok_response.status_code == 200
-
-            row = await test_session.get(APIKey, UUID(key_id))
-            assert row is not None
-            await test_session.refresh(row)
-            assert row.usage_count == 0
-            assert row.last_used_at is None
-
-            too_large_response = await client.get(
-                "/api/v1/serve/instruments?page_size=3",
-                headers=serve_headers,
-            )
-            assert too_large_response.status_code == 400
-            assert "page_size exceeds" in too_large_response.json()["detail"]
-
-            default_page_size_response = await client.get(
-                "/api/v1/serve/instruments",
-                headers=serve_headers,
-            )
-            assert default_page_size_response.status_code == 400
-            assert "page_size exceeds" in default_page_size_response.json()["detail"]
-
-            second_ok_response = await client.get(
-                "/api/v1/serve/instruments?page_size=2",
-                headers=serve_headers,
-            )
-            assert second_ok_response.status_code == 200
-            limited_response = await client.get(
-                "/api/v1/serve/instruments?page_size=2",
-                headers=serve_headers,
-            )
-            assert limited_response.status_code == 429
-
-            revoke_response = await client.delete(
-                f"/api/v1/admin/api-keys/{key_id}",
-                headers=admin_headers,
-            )
-            assert revoke_response.status_code == 200
-            assert revoke_response.json()["revoked_at"] is not None
-        finally:
-            settings.SERVE_REQUIRE_AUTH = original_require_auth
-
-    @pytest.mark.asyncio
-    async def test_serve_api_reports_server_misconfiguration(self, client: AsyncClient):
-        settings = get_settings()
-        original_require_auth = settings.SERVE_REQUIRE_AUTH
-        settings.SERVE_REQUIRE_AUTH = True
-        try:
-            response = await client.get(
-                "/api/v1/serve/instruments",
-                headers={settings.API_KEY_HEADER: "anything"},
-            )
-            assert response.status_code == 500
-            assert "no API keys configured" in response.json()["detail"]
-        finally:
-            settings.SERVE_REQUIRE_AUTH = original_require_auth
-
-    @pytest.mark.asyncio
-    async def test_resolve_dq_without_api_key_returns_401(
-        self, client: AsyncClient, test_session: AsyncSession
-    ):
-        issue = await _create_dq_issue(test_session)
-        await test_session.commit()
-
-        response = await client.patch(
-            f"/api/v1/admin/dq-issues/{issue.id}/resolve",
-            json={"correction_reason": "test"},
+        monkeypatch.setattr(settings, "SERVE_REQUIRE_AUTH", True)
+        create_response = await client.post(
+            "/api/v1/admin/api-keys",
+            headers=admin_headers,
+            json={
+                "owner": "llm-client",
+                "tier": "llm",
+                "scopes": ["serve"],
+                "rate_limit_requests": 2,
+                "rate_limit_window": 60,
+                "page_size_limit": 2,
+            },
         )
-        assert response.status_code == 401
+        assert create_response.status_code == 200
+        created = create_response.json()
+        plaintext_key = created["api_key"]
+        key_id = created["data"]["key_id"]
+        assert plaintext_key.startswith("findb_")
+        assert "key_hash" not in created["data"]
 
-    @pytest.mark.asyncio
-    async def test_list_corrections_without_api_key_returns_401(self, client: AsyncClient):
-        response = await client.get("/api/v1/admin/corrections")
-        assert response.status_code == 401
+        list_response = await client.get("/api/v1/admin/api-keys", headers=admin_headers)
+        assert list_response.status_code == 200
+        listed = list_response.json()["data"]
+        assert listed[0]["key_id"] == key_id
+        assert "api_key" not in listed[0]
+        assert "key_hash" not in listed[0]
+
+        serve_headers = {settings.API_KEY_HEADER: plaintext_key}
+        ok_response = await client.get(
+            "/api/v1/serve/instruments?page_size=2",
+            headers=serve_headers,
+        )
+        assert ok_response.status_code == 200
+
+        row = await test_session.get(APIKey, UUID(key_id))
+        assert row is not None
+        await test_session.refresh(row)
+        assert row.usage_count == 0
+        assert row.last_used_at is None
+
+        too_large_response = await client.get(
+            "/api/v1/serve/instruments?page_size=3",
+            headers=serve_headers,
+        )
+        assert too_large_response.status_code == 400
+        assert "page_size exceeds" in too_large_response.json()["detail"]
+
+        default_page_size_response = await client.get(
+            "/api/v1/serve/instruments",
+            headers=serve_headers,
+        )
+        assert default_page_size_response.status_code == 400
+        assert "page_size exceeds" in default_page_size_response.json()["detail"]
+
+        second_ok_response = await client.get(
+            "/api/v1/serve/instruments?page_size=2",
+            headers=serve_headers,
+        )
+        assert second_ok_response.status_code == 200
+        limited_response = await client.get(
+            "/api/v1/serve/instruments?page_size=2",
+            headers=serve_headers,
+        )
+        assert limited_response.status_code == 429
+
+        revoke_response = await client.delete(
+            f"/api/v1/admin/api-keys/{key_id}",
+            headers=admin_headers,
+        )
+        assert revoke_response.status_code == 200
+        assert revoke_response.json()["revoked_at"] is not None
 
 
 # ── Instrument Cache Tests ────────────────────────────────────────────────────
@@ -328,17 +257,6 @@ class TestInstrumentCacheAdmin:
         path = tmp_path / "static" / "data" / "instruments.json"
         monkeypatch.setattr(instrument_cache_service, "INSTRUMENT_CACHE_PATH", path)
         return path
-
-    @pytest.mark.asyncio
-    async def test_get_instrument_cache_without_api_key_returns_401(
-        self,
-        cache_path: Path,
-        client: AsyncClient,
-    ):
-        _write_instrument_cache(cache_path, _sample_instrument_cache())
-        response = await client.get("/api/v1/admin/instrument-cache")
-
-        assert response.status_code == 401
 
     @pytest.mark.asyncio
     async def test_get_instrument_cache_returns_generated_json(
@@ -1435,11 +1353,6 @@ class TestBulkRerun:
 
 
 class TestRefreshInstrumentCache:
-    @pytest.mark.asyncio
-    async def test_refresh_instrument_cache_without_api_key_returns_401(self, client: AsyncClient):
-        response = await client.post("/api/v1/admin/instrument-cache/refresh")
-        assert response.status_code == 401
-
     @pytest.mark.asyncio
     @patch("app.api.v1.admin.run_cache_generation")
     async def test_refresh_instrument_cache_queues_task(

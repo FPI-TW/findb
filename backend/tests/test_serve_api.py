@@ -702,11 +702,30 @@ async def test_minute_no_data_has_empty_resolved_range(client: AsyncClient, test
     }
 
 
+SERVE_ROUTE_URLS = {
+    "/api/v1/serve/datasets": "/api/v1/serve/datasets",
+    "/api/v1/serve/instruments": "/api/v1/serve/instruments",
+    "/api/v1/serve/instruments/{instrument_id}": (
+        "/api/v1/serve/instruments/11111111-1111-1111-1111-111111111111"
+    ),
+    "/api/v1/serve/eod": "/api/v1/serve/eod?instrument_id=11111111-1111-1111-1111-111111111111",
+    "/api/v1/serve/minute": (
+        "/api/v1/serve/minute?instrument_id=11111111-1111-1111-1111-111111111111"
+    ),
+    "/api/v1/serve/futures/eod": "/api/v1/serve/futures/eod",
+    "/api/v1/serve/calendar": "/api/v1/serve/calendar?market=TW",
+    "/api/v1/serve/calendar/years/{market}/{year}": "/api/v1/serve/calendar/years/TW/2026",
+    "/api/v1/serve/market-freshness": "/api/v1/serve/market-freshness",
+}
+
+
 @pytest.mark.asyncio
-async def test_current_serve_routes_use_optional_auth_dependency(client: AsyncClient, test_session):
+@pytest.mark.parametrize("url", sorted(SERVE_ROUTE_URLS.values()))
+async def test_serve_routes_require_key_when_auth_enabled(
+    client: AsyncClient, test_session, monkeypatch, url
+):
     settings = get_settings()
-    original = settings.SERVE_REQUIRE_AUTH
-    settings.SERVE_REQUIRE_AUTH = True
+    monkeypatch.setattr(settings, "SERVE_REQUIRE_AUTH", True)
     _, key = await create_api_key(
         test_session,
         owner="serve-test",
@@ -720,42 +739,25 @@ async def test_current_serve_routes_use_optional_auth_dependency(client: AsyncCl
         role=None,
         commit=False,
     )
-    try:
-        assert (await client.get("/api/v1/serve/datasets")).status_code == 401
-        assert (
-            await client.get("/api/v1/serve/datasets", headers={settings.API_KEY_HEADER: key})
-        ).status_code == 200
-    finally:
-        settings.SERVE_REQUIRE_AUTH = original
+    assert (await client.get(url)).status_code == 401
+    authorized = await client.get(url, headers={settings.API_KEY_HEADER: key})
+    assert authorized.status_code not in {401, 403, 500}
 
 
 @pytest.mark.asyncio
-async def test_removed_routes_are_404_and_absent_from_openapi(client: AsyncClient):
-    removed = [
-        "/api/v1/serve/lookup/instruments",
-        "/api/v1/serve/lookup/macro-series",
-        "/api/v1/serve/eod/11111111-1111-1111-1111-111111111111",
-        "/api/v1/serve/corporate-actions",
-        "/api/v1/serve/macro/series",
-        "/api/v1/serve/macro/observations",
-        "/api/v1/serve/futures/contracts",
-        "/api/v1/serve/futures/continuous",
-        "/api/v1/serve/bonds",
-        "/api/v1/serve/bonds/eod",
-    ]
-    for path in removed:
-        assert (await client.get(path)).status_code == 404
-
-    paths = (await client.get("/openapi.json")).json()["paths"]
-    for path in removed:
-        assert path not in paths
-    assert {
-        "/api/v1/serve/datasets",
+async def test_serve_api_reports_server_misconfiguration(client: AsyncClient, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "SERVE_REQUIRE_AUTH", True)
+    response = await client.get(
         "/api/v1/serve/instruments",
-        "/api/v1/serve/instruments/{instrument_id}",
-        "/api/v1/serve/eod",
-        "/api/v1/serve/minute",
-        "/api/v1/serve/calendar",
-        "/api/v1/serve/calendar/years/{market}/{year}",
-        "/api/v1/serve/market-freshness",
-    }.issubset(paths)
+        headers={settings.API_KEY_HEADER: "anything"},
+    )
+    assert response.status_code == 500
+    assert "no API keys configured" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_openapi_publishes_exactly_the_current_serve_routes(client: AsyncClient):
+    paths = (await client.get("/openapi.json")).json()["paths"]
+    serve_paths = {path for path in paths if path.startswith("/api/v1/serve/")}
+    assert serve_paths == set(SERVE_ROUTE_URLS)

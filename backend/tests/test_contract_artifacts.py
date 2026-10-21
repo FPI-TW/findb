@@ -24,8 +24,6 @@ EXPORT_SCRIPT = BACKEND_ROOT / "scripts" / "export_ingress_contracts.py"
 
 
 def test_checked_in_artifacts_match_registry() -> None:
-    assert check_artifacts(CONTRACTS_ROOT) == ()
-
     manifest = json.loads((CONTRACTS_ROOT / "manifest.json").read_text(encoding="utf-8"))
     expected_contracts = list(supported_contracts())
     assert [

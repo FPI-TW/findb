@@ -666,25 +666,19 @@ async def test_admin_preview_lifecycle_and_scheduler_contract(
 
 @pytest.mark.asyncio
 async def test_calendar_year_route_requires_db_backed_serve_key_when_auth_optional(
-    client: AsyncClient, test_session
+    client: AsyncClient, test_session, monkeypatch
 ):
     from app.config import get_settings
 
     settings = get_settings()
-    original_require_auth = settings.SERVE_REQUIRE_AUTH
-    settings.SERVE_REQUIRE_AUTH = False
-    try:
-        valid_headers = await _calendar_serve_headers(test_session)
-        wrong_scope_headers = await _calendar_serve_headers(test_session, scopes=[])
-        wrong_kind_headers = await _calendar_serve_headers(test_session, kind="admin")
-        path = "/api/v1/serve/calendar/years/TW/2026"
+    monkeypatch.setattr(settings, "SERVE_REQUIRE_AUTH", False)
+    valid_headers = await _calendar_serve_headers(test_session)
+    wrong_scope_headers = await _calendar_serve_headers(test_session, scopes=[])
+    wrong_kind_headers = await _calendar_serve_headers(test_session, kind="admin")
+    path = "/api/v1/serve/calendar/years/TW/2026"
 
-        assert (await client.get(path)).status_code == 401
-        assert (
-            await client.get(path, headers={settings.API_KEY_HEADER: "invalid"})
-        ).status_code == 403
-        assert (await client.get(path, headers=wrong_scope_headers)).status_code == 403
-        assert (await client.get(path, headers=wrong_kind_headers)).status_code == 403
-        assert (await client.get(path, headers=valid_headers)).status_code == 200
-    finally:
-        settings.SERVE_REQUIRE_AUTH = original_require_auth
+    assert (await client.get(path)).status_code == 401
+    assert (await client.get(path, headers={settings.API_KEY_HEADER: "invalid"})).status_code == 403
+    assert (await client.get(path, headers=wrong_scope_headers)).status_code == 403
+    assert (await client.get(path, headers=wrong_kind_headers)).status_code == 403
+    assert (await client.get(path, headers=valid_headers)).status_code == 200

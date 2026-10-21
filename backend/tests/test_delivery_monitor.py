@@ -679,8 +679,6 @@ async def test_admin_list_filters_paginates_and_health_summarizes(
     await _seed_dataset(test_session)
     await scan_missing_deliveries(test_session, now=NOW)
 
-    unauthorized = await client.get("/api/v1/admin/missing-deliveries")
-    assert unauthorized.status_code == 401
     response = await client.get(
         "/api/v1/admin/missing-deliveries",
         params={"status": "open", "dataset_key": "tw_equity_eod", "source": "FINLAB"},

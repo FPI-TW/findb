@@ -704,7 +704,7 @@ def test_provider_not_recalled_after_prepared_body_and_receipt_restart(
     if capacity_violated:
         runtime.state.observe_capacity(
             account="twelve_data",
-            window=date.today().isoformat(),
+            window=datetime.now(timezone.utc).date().isoformat(),
             bound=100,
             observed=250,
             allocation_sha256="a" * 64,

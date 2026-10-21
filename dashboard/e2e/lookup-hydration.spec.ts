@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test"
 
+import { LOOKUP_STORAGE_KEY } from "../src/features/lookup/config"
+
 test("hydrates the canonical Lookup URL without an attribute mismatch", async ({
   page,
 }) => {
@@ -15,7 +17,11 @@ test("hydrates the canonical Lookup URL without an attribute mismatch", async ({
   })
 
   await page.goto("/dashboard/lookup")
-  await page.waitForTimeout(500)
+  // Lookup persists preferences from a post-hydration effect.
+  await page.waitForFunction(
+    key => window.localStorage.getItem(key) !== null,
+    LOOKUP_STORAGE_KEY
+  )
 
   const headerHref = await page
     .getByRole("link", { name: "Instrument Lookup" })

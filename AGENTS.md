@@ -222,7 +222,7 @@ pnpm test:infra
 pnpm test:dashboard
 uv --directory backend run pytest
 uv --directory backend run pytest tests/test_source_routes.py tests/test_canonical_ingest_api.py
-uv --directory backend run pytest tests/test_canonical_ingest_api.py::test_contract_schema_endpoint_requires_source_auth
+uv --directory backend run pytest tests/test_canonical_ingest_api.py::test_unknown_contract_schema_returns_404
 uv --directory backend run pytest -k "market_eod or market_minute"
 uv --directory backend run pytest --cov=app
 uv --directory backend run python scripts/dev.py test-db

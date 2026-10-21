@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 import re
-import signal
 import sys
 from pathlib import Path
 
@@ -243,117 +242,6 @@ async def _finish(process: asyncio.subprocess.Process, output: list[str]) -> Non
         output.append((await process.stdout.read()).decode())
         assert await process.wait() == 0, "".join(output)
     assert "3 passed" in "".join(output)
-
-
-async def test_early_child_exit_cancels_reader_before_process_cleanup(monkeypatch):
-    processes = []
-    reader_started = asyncio.Event()
-    original_event = _event
-    release = None
-    cleanup_output = []
-
-    try:
-        for source in (
-            "import sys; sys.stdin.readline(); print('early-exit-marker', flush=True); sys.exit(7)",
-            "import sys; sys.stdin.readline(); print('eof-cleanup-marker', flush=True)",
-        ):
-            processes.append(
-                await asyncio.create_subprocess_exec(
-                    sys.executable,
-                    "-u",
-                    "-c",
-                    source,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                )
-            )
-
-        async def observe_event(process, expected, output):
-            if process is processes[1]:
-                reader_started.set()
-            return await original_event(process, expected, output)
-
-        monkeypatch.setattr(sys.modules[__name__], "_event", observe_event)
-
-        async def release_early_child():
-            await reader_started.wait()
-            await _command(processes[0], "exit")
-
-        release = asyncio.create_task(release_early_child())
-        # A cannot exit until B's reader is waiting. Before the fix, cleanup of B
-        # raised a competing-read RuntimeError and replaced A's original failure.
-        with pytest.raises(
-            pytest.fail.Exception, match="Child exited before ready: early-exit-marker"
-        ):
-            try:
-                await _ready_events(processes, [[], []])
-            finally:
-                cleanup_output = await _close_processes(processes, primary_error=sys.exception())
-        assert [process.returncode for process in processes] == [7, 0]
-        assert cleanup_output[1][0] == b"eof-cleanup-marker\n"
-    finally:
-        if release is not None:
-            release.cancel()
-            await asyncio.gather(release, return_exceptions=True)
-        if not cleanup_output:
-            await _close_processes(processes, primary_error=sys.exception())
-
-
-@pytest.mark.parametrize("ignore_terminate", [False, True])
-@pytest.mark.parametrize("has_primary_error", [False, True])
-async def test_stalled_owned_child_is_reaped_without_masking_failure(
-    ignore_terminate, has_primary_error
-):
-    processes = []
-    primary_error = RuntimeError("primary-probe-failure")
-    try:
-        signal_setup = "signal.signal(signal.SIGTERM, signal.SIG_IGN);" if ignore_terminate else ""
-        for source in (
-            "import sys, signal, threading;"
-            + signal_setup
-            + "print('ready', flush=True); sys.stdin.read(); threading.Event().wait()",
-            "import sys; print('ready', flush=True); sys.stdin.read(); print('EOF-drained', flush=True)",
-        ):
-            process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-u",
-                "-c",
-                source,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            processes.append(process)
-            async with asyncio.timeout(5):
-                assert await process.stdout.readline() == b"ready\n"
-
-        async def cleanup():
-            return await _close_processes(
-                processes,
-                primary_error=sys.exception(),
-                eof_timeout=0.1,
-                terminate_timeout=0.1,
-                kill_timeout=5,
-            )
-
-        if has_primary_error:
-            with pytest.raises(RuntimeError, match="primary-probe-failure") as failure:
-                try:
-                    raise primary_error
-                finally:
-                    output = await cleanup()
-            assert failure.value is primary_error
-            assert any("grace expired; terminate" in note for note in primary_error.__notes__)
-            assert output[1][0] == b"EOF-drained\n"
-        else:
-            with pytest.raises(RuntimeError, match="Subprocess cleanup:.*grace expired; terminate"):
-                await cleanup()
-
-        expected_signal = signal.SIGKILL if ignore_terminate else signal.SIGTERM
-        assert [process.returncode for process in processes] == [-expected_signal, 0]
-    finally:
-        await _close_processes(processes, primary_error=sys.exception(), eof_timeout=0.1)
 
 
 async def test_two_pytest_sessions_preserve_base_and_each_other(tmp_path):

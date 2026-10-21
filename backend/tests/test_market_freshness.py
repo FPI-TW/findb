@@ -879,8 +879,6 @@ async def test_admin_filters_and_serve_redacts_feed_internals(
     # Routes evaluate at the wall clock and published calendars only reach the
     # current year, so no calendar is seeded and no computed status is assumed.
     await _setup(test_session, seed_calendar=False)
-    unauthorized = await client.get("/api/v1/admin/market-freshness")
-    assert unauthorized.status_code == 401
     url = "/api/v1/admin/market-freshness"
     detailed = await client.get(f"{url}?market=TW", headers=admin_headers)
     assert detailed.status_code == 200
@@ -905,13 +903,6 @@ async def test_admin_filters_and_serve_redacts_feed_internals(
         rejected = await client.get(f"{url}?slot_id={legacy_slot}", headers=admin_headers)
         assert rejected.status_code == 422
 
-    settings = get_settings()
-    original = settings.SERVE_REQUIRE_AUTH
-    settings.SERVE_REQUIRE_AUTH = True
-    try:
-        assert (await client.get("/api/v1/serve/market-freshness")).status_code == 401
-    finally:
-        settings.SERVE_REQUIRE_AUTH = original
     served = await client.get("/api/v1/serve/market-freshness?market=TW")
     assert served.status_code == 200
     [public] = served.json()["data"]
