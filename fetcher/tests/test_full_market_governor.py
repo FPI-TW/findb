@@ -774,15 +774,21 @@ def test_control_or_expiry_during_transaction_keeps_reservation_without_acquisit
 def test_sqlite_contention_preserves_actual_one_second_permit_spacing(tmp_path: Path) -> None:
     first, _, _ = _runtime(tmp_path)
     second, _, _ = _runtime(tmp_path)
+    grant_clocks: dict[int, list[float]] = {}
     for runtime in (first, second):
         runtime.proof = _proof(datetime.now(timezone.utc))
         runtime.proof["requests_per_second"] = 1
+        # Record the real grant clock each state samples after owning the lock.
+        # Timing the caller after _reserve() returns adds thread-scheduling
+        # jitter that can shrink the observed gap on a busy CI runner.
+        samples = grant_clocks.setdefault(id(runtime), [])
+        runtime.state.clock = lambda samples=samples: samples.append(time.time()) or samples[-1]
     started = Barrier(3)
 
     def take(runtime: Any) -> float:
         started.wait()
         runtime._reserve()
-        return time.monotonic()
+        return grant_clocks[id(runtime)][-1]
 
     # Both processes enter with a pre-lock clock more than one permit old.
     with sqlite3.connect(first.state.path) as blocker, ThreadPoolExecutor(max_workers=2) as pool:

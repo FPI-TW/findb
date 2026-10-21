@@ -99,6 +99,38 @@ def test_staging_accepted_replay_skips_ci_but_candidates_require_it() -> None:
         ) in select
 
 
+def test_staging_cd_reuses_identical_tree_pull_request_ci_only_on_push() -> None:
+    for unit in ("findb", "fetcher"):
+        text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
+        jobs = yaml.safe_load(text)["jobs"]
+        policy_job = jobs["policy"]
+        assert policy_job["permissions"] == {
+            "contents": "read",
+            "actions": "read",
+            "pull-requests": "read",
+        }
+        assert policy_job["outputs"][f"{unit}_ci_evidence"] == (
+            f"${{{{ steps.policy.outputs.{unit}_ci_evidence }}}}"
+        )
+        script = next(step for step in policy_job["steps"] if step.get("id") == "policy")["run"]
+        dispatch = script.split("exit 0", 1)[0]
+        assert "ci_evidence.py" not in dispatch
+        evidence = script.split("change_policy.py --full", 1)[1]
+        assert f"grep -qx '{unit}_ci=true' \"$GITHUB_OUTPUT\"" in evidence
+        assert (
+            f'infra/deploy/ci_evidence.py --repository "$GITHUB_REPOSITORY" --revision "$HEAD" '
+            f"--unit {unit} --ci-workflow .github/workflows/{unit}-ci.yml"
+        ) in evidence
+        assert jobs["verify"]["if"] == (
+            f"${{{{ needs.policy.outputs.{unit}_ci == 'true' && "
+            f"needs.policy.outputs.{unit}_ci_evidence == '' }}}}"
+        )
+        assert (
+            "needs.verify.result == 'skipped' && github.event_name == 'push' && "
+            f"needs.policy.outputs.{unit}_ci_evidence != ''"
+        ) in jobs["select"]["if"]
+
+
 def _v2_manifest(target: str) -> dict[str, object]:
     registry = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com"
     unit = "findb"
