@@ -17,6 +17,22 @@ member checksum 及完整成員 mapping，所有日期共用這份快照。清�
 回補對象是申請當時的現行股票，不包含已不在清單中的下市商品，具有存活者偏差，
 不得標示為歷史全市場。Production 最長 366 calendar days，local/staging 最長 31 天。
 
+首次 baseline 尚未發布時，使用已部署 FactSet image 的正常
+`findb-fetch-runtime --execution-profile pilot --provider factset --sync-universes`，並帶入該環境
+原有 config、Pilot checkpoint 與 shared account／provider-work mounts。維護使用 Source 的
+maintenance 授權，不必先啟動 daily control；不得以獨立無 owner 的 MySQL probe 代替。
+CLI 回傳 `queued` 只表示排隊，須追到 maintenance terminal、原始證據與 release 才算成功。
+工作 key 由 CLI 依 UTC 日期產生，同日重跑不另造 identity；HKEX 檔案日期則按香港日期驗證。
+Future-dated 失敗保留原 journal 與用量，待正常日期建立新工作，不改時鐘或重置預算。
+
+首份 release 由 Owner 呼叫 `POST /api/v1/admin/universes/{release_id}/publish`，提供
+`first_baseline_approved=true` 與可追溯的 `evidence_note`。發布前核對官方檔案日期／SHA-256、
+raw reference、成員總數／checksum、mapping gaps 與 maintenance 結算；gaps 不得刪除。
+每日刷新驗收須保存不同正常日期的 work／release 與原始證據，並核對既有 daily plan 的
+release ID、members、parts 及 checksum 未變。單日重跑或本機 fixture 通過不代表已驗證跨日更新。
+自動 maintenance 由 running cycle 在 refresh due 時入列，controls stopped 時不保證每日刷新；
+需明確執行上述維護入口。既有發布差異門檻與人工例外規則維持。
+
 Daily 新 I/O 僅於香港時間 18:30（含）至 23:00（不含）進行；已準備好的交付仍須排空。
 Pilot 按 canonical 識別排序取前兩檔。`FACTSET_SKIP_NON_TRADING_DAYS=true` 是預設值；
 歷史回補略過休市日。缺少已發布日曆時沿用既有週一至週五規則。
@@ -104,3 +120,24 @@ exit code 3；只有 completed 回傳 0。未指定 `--deliver` 仍只是 previe
 
 不得在仍有 cohort、partial、v2 run 或切換紀錄時 downgrade 此 migration。Rollback 亦須保留
 支援 v2 acceptance、FactSet scopes 與五 provider inventory 的版本；不以刪除證據方式降版。
+
+### Cutover 與原生連線驗收證據
+
+切換前保存當前 accepted Backend／Fetcher bundle、Alembic revision、DB／checkpoint 備份、
+兩 provider 的 Pilot／Full controls revisions、first dates、plans／members fingerprints，
+以及 shared lock identity。以 CAS 停止四個 controls，等待 desired／observed stopped，
+核對兩 provider owner 已釋放及在途 prepared／receipts 已排空；心跳過期不代表 owner 已釋放。
+先執行 cutover script 的預設 dry-run，再以同一香港日期與具名 actor 執行 `--apply`，
+保存 decision／audit 與上述 fingerprints 的前後比對。跨香港午夜須重做日期核對。
+
+HK provider decision 不可改寫，應用 rollback 不代表把 HK 新抓取切回 Twelve Data。
+候選 rollback 版本須維持目前部署的 provider-work owner 到期證據契約，以及 EOD v2、
+cohort／partial、FactSet scopes 與十五 consumers；accepted 身分、migration compatibility
+及停止／排空要求依 [部署維運](deployment.md) 核對，不只比較 image tag。
+
+FactSet maintenance 成功可提供 staging 到 RDS 的 TLS／原生 catalogue SELECT 證據，須核對
+實際 image 的 CA／hostname 必驗、read-only transaction、timeout 及持久原生 response。
+行情驗收另須在正常 owner／授權流程下取得 frozen listings／日期的 prices SELECT，保存 raw
+SHA-256、查詢範圍與 terminal 結果。只看到 container running、Secrets Manager 配置完成、
+mock TLS 測試或本機快照重播，均不足以完成 staging 實際連線驗收。
+密碼與完整 connection string 不得進入輸出。

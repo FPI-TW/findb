@@ -50,6 +50,7 @@ def test_daily_known_failure_drains_settles_and_releases_owner(
                     "generation": 1,
                     "token": "fence",
                     "kind": "daily",
+                    "dataset_key": "us_equity_eod",
                     "state": "open",
                     "trade_date": "2026-10-15",
                     "scope": {"feed": runtime.feeds[0]},
@@ -103,6 +104,7 @@ def test_daily_source_fence_is_never_settled_as_known_failure(tmp_path, monkeypa
     owner = SimpleNamespace(
         work={
             "kind": "daily",
+            "dataset_key": "us_equity_eod",
             "state": "open",
             "trade_date": "2026-10-15",
             "scope": {"feed": runtime.feeds[0]},
@@ -130,6 +132,7 @@ def test_daily_source_fence_is_never_settled_as_known_failure(tmp_path, monkeypa
 @pytest.mark.parametrize("dispatched", [False, True])
 def test_maintenance_suspension_preserves_dispatch_budget(tmp_path, dispatched):
     runtime, _, _ = _runtime(tmp_path, provider="factset")
+    runtime.installed_feeds[0]["dataset_key"] = "hk_equity_eod"
     owner = SimpleNamespace(
         work={"state": "open", "dataset_key": "hk_equity_eod"},
         journal=queue.WorkJournal(tmp_path / "work.sqlite3", "original"),
