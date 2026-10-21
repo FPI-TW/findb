@@ -10,11 +10,12 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+from test_full_market_deployment_repairs import _inventory_policy
 
-from tests.test_deployment_checks import REPO_ROOT
-from tests.test_full_market_deployment_repairs import _inventory_policy
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 HELPER = REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
 DEPLOY = REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"

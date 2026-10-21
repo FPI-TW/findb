@@ -97,7 +97,7 @@ jobs:
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/findb-ci-backend"
           /usr/bin/time -p -o "$RUNNER_TEMP/findb-ci-backend/pytest-time.txt" \
-            uv run pytest -n 2 --dist worksteal --tb=short -q \
+            uv run pytest -n 4 --dist worksteal --tb=short -q \
             --durations=20 --durations-min=0.5 \
             --junitxml="$RUNNER_TEMP/findb-ci-backend/junit.xml" \
             --ignore-glob='tests/test_*migration*.py' \
@@ -243,10 +243,16 @@ jobs:
         with:
           version: "0.9.9"
           enable-cache: true
-          cache-dependency-glob: "backend/uv.lock"
+          cache-dependency-glob: |
+            backend/uv.lock
+            fetcher/uv.lock
 
       - name: Install dependencies
         run: uv sync --frozen
+
+      - name: Install Fetcher runtime dependencies
+        working-directory: fetcher
+        run: uv sync --frozen --no-dev
 
       - name: Lint and format check
         run: |
@@ -259,7 +265,7 @@ jobs:
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/findb-ci-infra-tests"
           /usr/bin/time -p -o "$RUNNER_TEMP/findb-ci-infra-tests/pytest-time.txt" \
-            uv run pytest ../infra/tests -n 2 --dist worksteal --tb=short -q \
+            uv run pytest ../infra/tests -n 4 --dist worksteal --timeout=300 --tb=short -q \
             --durations=20 --durations-min=0.5 \
             --junitxml="$RUNNER_TEMP/findb-ci-infra-tests/junit.xml" \
             2>&1 | tee "$RUNNER_TEMP/findb-ci-infra-tests/pytest.log"
@@ -364,5 +370,5 @@ jobs:
       - name: Browser component tests
         run: pnpm test:browser
 
-      - name: Public route hydration smoke test
+      - name: End-to-end tests
         run: pnpm test:e2e

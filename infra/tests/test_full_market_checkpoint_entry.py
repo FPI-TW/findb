@@ -3,18 +3,20 @@
 import os
 import sqlite3
 import subprocess
+from pathlib import Path
 
 import pytest
+import yaml
 
-from tests.test_deployment_checks import REPO_ROOT, _load_workflow
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 GUARD = REPO_ROOT / "infra/deploy/check_full_market_checkpoint.sh"
 
 
 def _workflow_steps():
-    return _load_workflow(REPO_ROOT / ".github/workflows/fetcher-deploy.yml")["jobs"]["deploy"][
-        "steps"
-    ]
+    path = REPO_ROOT / ".github/workflows/fetcher-deploy.yml"
+    workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)  # no YAML 1.1 booleans
+    return workflow["jobs"]["deploy"]["steps"]
 
 
 def _transport(tmp_path):

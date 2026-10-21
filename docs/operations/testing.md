@@ -9,7 +9,9 @@ Pre-commit 執行 check，pre-push 依序執行 check 與 test；不得使用 `-
 `--dist worksteal`，接著在同一 runner 的獨立序列 session 執行全部 `test_*migration*.py`。
 `uv --directory backend run python scripts/dev.py test-db --workers 0` 可將非 migration tests
 切回序列執行；migration tests 一律序列執行以重用 immutable templates。
-`pnpm test:infra` 使用 Backend pytest 環境，固定 `-n 2 --dist worksteal`，不需要 PostgreSQL。
+`pnpm test:infra` 使用 Backend pytest 環境，固定 `-n 2 --dist worksteal --timeout=300`，
+不需要 PostgreSQL。Backend pytest 設定每個測試 300 秒 timeout；卡住的測試會留下 traceback，
+而不是耗盡 job timeout。
 直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
 因此測試中的 nested pytest subprocess 不會意外再建立 workers。
 TAIFEX historical 只有一次 authorization dispatch attempt；prepare 與 authorize 之間跨越
@@ -69,13 +71,15 @@ CI 長時間沒有進度時，先查 workflow run 與各 job 的 `status`、`run
 
 FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type checks、published contracts
 與非 migration tests；`backend-migrations` 保留 Alembic smoke 與全部 migration tests；
-`infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service。Backend 與 Infra 固定兩個
+`infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service；不需資料庫的部署 shell
+suites（Fetcher inventory、full-market repair 與 checkpoint entry）放在 `infra/tests`，
+Infra job 因此另裝 Fetcher runtime。GitHub 4 vCPU runner 上 Backend 與 Infra 固定四個
 workers；migration job 維持序列執行。Migration tests 只涵蓋 rollback 下限
 （`docs/operations/deployment.md`）及之後的 revisions；`test_schema_drift_migration.py`
 比對 `alembic upgrade head` 與 ORM metadata，已知差異以 strict xfail 標示。
 
 Fetcher deployment transaction harness 以 fake Docker／sudo／sleep 驗證十五個 consumers；
-每個案例保留 90 秒程序上限，供兩個 workers 下數百次模擬 CLI 啟動使用。此上限不是正式
+每個案例保留 90 秒程序上限，供 CI 四個 workers 下數百次模擬 CLI 啟動使用。此上限不是正式
 部署 SLA；實際健康觀察次數、原 container 身分、checkpoint 與 rollback 斷言仍須全部通過。
 
 Migration job 另以正式 `backend/Dockerfile` 建置 image，執行
@@ -216,7 +220,7 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 兩個 AWS 環境共用部署 schema、設定 loader、必要 gates 與健康驗收。
 `test_execution_profiles.py` 覆蓋七條 feed 的凍結樣本與 profile 計畫隔離、canonical 覆寫後持久化證據及缺漏告警；
 `test_execution_profile_migration.py` 驗證升級保留與 rollback 下限。
-`test_full_market_checkpoint_entry.py` 執行 workflow 實際傳輸的 checkpoint guard；
+`infra/tests/test_full_market_checkpoint_entry.py` 執行 workflow 實際傳輸的 checkpoint guard；
 Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態及失敗回退。
 AWS 實際部署與七條 native feeds 驗收是另外的結果，不以 fixtures 或靜態檢查替代。
 
