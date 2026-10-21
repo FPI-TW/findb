@@ -16,6 +16,12 @@ OUTPUTS = ("findb_ci", "fetcher_ci", "findb_staging", "fetcher_staging", "infra_
 
 FINDB_PREFIXES = ("backend/", "dashboard/", "infra/nginx/")
 FETCHER_PREFIXES = ("fetcher/",)
+# Backend tests import the editable Fetcher package and assert infra files, so
+# both trees must run FinDB CI even when they do not deploy FinDB.
+FINDB_CI_PREFIXES = ("fetcher/", "infra/")
+# The composite action authenticates and loads configuration for every
+# deployment, so a change must exercise both staging rollouts.
+DEPLOYMENT_ACTION_PREFIX = ".github/actions/"
 SHARED_PREFIXES = (
     "contracts/",
     "docker-compose.yml",
@@ -56,9 +62,12 @@ def classify(paths: list[str]) -> dict[str, bool]:
             if path in FETCHER_STAGING_WORKFLOWS:
                 result["fetcher_staging"] = True
             continue
-        if path.startswith("infra/tests/"):
-            result["findb_ci"] = True
+        if path.startswith(DEPLOYMENT_ACTION_PREFIX):
+            for key in ("findb_ci", "fetcher_ci", "findb_staging", "fetcher_staging"):
+                result[key] = True
             continue
+        if path.startswith(FINDB_CI_PREFIXES):
+            result["findb_ci"] = True
         if path.startswith("contracts/"):
             result["findb_ci"] = result["fetcher_ci"] = True
             continue
@@ -74,6 +83,11 @@ def classify(paths: list[str]) -> dict[str, bool]:
         if path.startswith(INFRA_PREFIXES):
             result["infra_plan"] = True
     return result
+
+
+def classify_full() -> dict[str, bool]:
+    """Fail open to every suite and rollout when no trusted base exists."""
+    return dict.fromkeys(OUTPUTS, True)
 
 
 def changed_paths(repo: Path, base: str, head: str) -> list[str]:
@@ -93,13 +107,25 @@ def changed_paths(repo: Path, base: str, head: str) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base", required=True)
-    parser.add_argument("--head", required=True)
+    parser.add_argument("--base")
+    parser.add_argument("--head")
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="select every suite and rollout, for example without a deployed base",
+    )
     parser.add_argument("--repo", type=Path, default=Path("."))
     parser.add_argument("--github-output", type=Path)
     args = parser.parse_args(argv)
+    revisions = (args.base, args.head)
+    if (args.full and revisions != (None, None)) or (not args.full and None in revisions):
+        parser.error("use either --full or both --base and --head")
     try:
-        output = classify(changed_paths(args.repo, args.base, args.head))
+        output = (
+            classify_full()
+            if args.full
+            else classify(changed_paths(args.repo, args.base, args.head))
+        )
     except PolicyError as exc:
         print(f"change_policy=failed reason={exc}", file=sys.stderr)
         return 1

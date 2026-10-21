@@ -611,6 +611,8 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
         "fetcher-cd.yml",
         "fetcher-deploy.yml",
         "fetcher-production-cd.yml",
+        "production-release.yml",
+        "production-promote.yml",
         "staging-infra-plan.yml",
     }
     actual_paths = tuple(
@@ -654,16 +656,9 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     triggers = workflow["on"]
 
     assert set(triggers) == {"workflow_call"}
-    assert triggers["workflow_call"]["inputs"] == {
-        "allow_ghcr_metadata_retirement": {
-            "description": (
-                "Allow only the separately approved legacy GHCR metadata retirement pair."
-            ),
-            "required": "false",
-            "type": "boolean",
-            "default": "false",
-        }
-    }
+    # The completed GHCR metadata retirement route no longer accepts inputs.
+    assert not triggers["workflow_call"]
+    assert "etirement" not in workflow_path.read_text(encoding="utf-8")
     assert workflow["permissions"] == {"contents": "read"}
     assert set(workflow["jobs"]) == {"plan"}
     assert workflow["env"]["TOFU_VERSION"] == "1.12.6"
@@ -693,45 +688,6 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         "persist-credentials": "false",
     }
 
-    retirement_authorization = next(
-        step for step in steps if step.get("name") == "Authorize bounded GHCR metadata retirement"
-    )
-    assert retirement_authorization["id"] == "retirement_authorization"
-    assert retirement_authorization["env"] == {
-        "RETIREMENT_REQUESTED": "${{ inputs.allow_ghcr_metadata_retirement }}",
-        "CALLER_REPOSITORY": "${{ github.repository }}",
-        "PR_HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
-        "PR_HEAD_REF": "${{ github.event.pull_request.head.ref }}",
-        "EVENT_NAME": "${{ github.event_name }}",
-        "PR_BASE_REF": "${{ github.event.pull_request.base.ref }}",
-        "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
-        "TRUSTED_WORKFLOW_REPOSITORY": "${{ job.workflow_repository }}",
-        "TRUSTED_WORKFLOW_SHA": "${{ job.workflow_sha }}",
-        "TRUSTED_WORKFLOW_REF": "${{ job.workflow_ref }}",
-        "TRUSTED_WORKFLOW_FILE_PATH": "${{ job.workflow_file_path }}",
-    }
-    retirement_script = retirement_authorization["run"]
-    assert '"$CALLER_REPOSITORY" != "FPI-TW/findb"' in retirement_script
-    assert '"$PR_HEAD_REPOSITORY" != "FPI-TW/findb"' in retirement_script
-    assert '"$PR_HEAD_REF" != "chore/staging-phase2-retirement"' in retirement_script
-    assert '"$EVENT_NAME" != "pull_request"' in retirement_script
-    assert '"$PR_BASE_REF" != "main"' in retirement_script
-    assert re.search(r'! "\$PR_BASE_SHA" =~ \^\[0-9a-fA-F\]\{40\}\$', retirement_script)
-    assert '"$TRUSTED_WORKFLOW_REPOSITORY" != "FPI-TW/findb"' in retirement_script
-    assert re.search(r'! "\$TRUSTED_WORKFLOW_SHA" =~ \^\[0-9a-fA-F\]\{40\}\$', retirement_script)
-    assert (
-        'expected_workflow_ref="FPI-TW/findb/.github/workflows/staging-infra-plan.yml@$TRUSTED_WORKFLOW_SHA"'
-        in retirement_script
-    )
-    assert "A PR-local reusable workflow is reported as @refs/pull/<n>/merge." in retirement_script
-    assert "to an immutable SHA, which is the only accepted workflow_ref." in retirement_script
-    assert '"$TRUSTED_WORKFLOW_REF" != "$expected_workflow_ref"' in retirement_script
-    assert '"$TRUSTED_WORKFLOW_FILE_PATH" != ".github/workflows/staging-infra-plan.yml"' in (
-        retirement_script
-    )
-    assert 'echo "retirement_mode=true" >> "$GITHUB_OUTPUT"' in retirement_script
-    assert 'echo "retirement_mode=false" >> "$GITHUB_OUTPUT"' in retirement_script
-
     trusted_checkout = next(
         step for step in steps if step.get("name") == "Checkout trusted guard source"
     )
@@ -740,41 +696,21 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         "repository": "${{ job.workflow_repository }}",
         "ref": "${{ job.workflow_sha }}",
         "path": ".trusted-staging-infra-plan",
-        "sparse-checkout": "infra/tofu/plan_json_guard.py\ninfra/tofu/staging/.terraform.lock.hcl\n",
+        "sparse-checkout": "infra/tofu/plan_json_guard.py\n",
         "sparse-checkout-cone-mode": "false",
-        "fetch-depth": "0",
+        "fetch-depth": "1",
         "persist-credentials": "false",
     }
     trusted_source_verification = next(
         step for step in steps if step.get("name") == "Verify trusted guard source"
     )
     assert trusted_source_verification["env"] == {
-        "RETIREMENT_MODE": "${{ steps.retirement_authorization.outputs.retirement_mode }}",
-        "PR_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
         "TRUSTED_WORKFLOW_SHA": "${{ job.workflow_sha }}",
     }
     trusted_source_script = trusted_source_verification["run"]
     assert 'trusted_root="$GITHUB_WORKSPACE/.trusted-staging-infra-plan"' in trusted_source_script
     assert 'git -C "$trusted_root" rev-parse HEAD' in trusted_source_script
     assert '"$trusted_sha" != "$TRUSTED_WORKFLOW_SHA"' in trusted_source_script
-    assert re.search(
-        r'\[\[ ! "\$PR_BASE_SHA" =~ \^\[0-9a-fA-F\]\{40\}\$ \]\]', trusted_source_script
-    )
-    assert 'git -C "$trusted_root" cat-file -e "$PR_BASE_SHA^{commit}"' in trusted_source_script
-    assert (
-        'git -C "$trusted_root" merge-base --is-ancestor "$TRUSTED_WORKFLOW_SHA" "$PR_BASE_SHA"'
-        in trusted_source_script
-    )
-    assert 'lockfile_path="infra/tofu/staging/.terraform.lock.hcl"' in trusted_source_script
-    assert 'git -C "$trusted_root" cat-file -e "$TRUSTED_WORKFLOW_SHA:$lockfile_path"' in (
-        trusted_source_script
-    )
-    assert (
-        'git -C "$trusted_root" show "$TRUSTED_WORKFLOW_SHA:$lockfile_path" | sha256sum'
-        in trusted_source_script
-    )
-    assert 'sha256sum "$GITHUB_WORKSPACE/$lockfile_path"' in trusted_source_script
-    assert '"$trusted_lockfile_sha256" != "$pr_lockfile_sha256"' in trusted_source_script
 
     trusted_source_capture = next(
         step for step in steps if step.get("name") == "Capture verified plan guard source"
@@ -823,7 +759,6 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         steps.index(fork_guard)
         < steps.index(checkout)
         < steps.index(verify_commit)
-        < steps.index(retirement_authorization)
         < steps.index(trusted_checkout)
         < steps.index(trusted_source_verification)
         < steps.index(trusted_source_capture)
@@ -880,16 +815,11 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     assert "base64 --decode" in plan_script
     assert "sha256sum" in plan_script
     assert "unset trusted_guard_source" in plan_script
-    assert "RETIREMENT_MODE: ${{ steps.retirement_authorization.outputs.retirement_mode }}" in (
-        workflow_path.read_text(encoding="utf-8")
-    )
-    assert "--allow-delete-address" in plan_script
-    assert 'aws_secretsmanager_secret.runtime["findb/registry/ghcr-pull"]' in plan_script
-    assert 'aws_secretsmanager_secret.runtime["fetcher/registry/ghcr-pull"]' in plan_script
-    assert '"$delete_count" != "0" && "$delete_count" != "2"' in plan_script
+    assert 'python3 -c "$trusted_guard_source" "$show_file"' in plan_script
+    assert "--allow-delete-address" not in plan_script
+    assert 'if [[ "$delete_count" != "0" ]]; then' in plan_script
     assert "jq" not in plan_script
     assert "fallback" not in plan_script.lower()
-    assert "authorized metadata retirements" in plan_script
     assert "delete/replace actions" in plan_script
     assert "trap 'rm -rf \"$scratch\"' EXIT" in plan_script
     assert "GITHUB_STEP_SUMMARY" in plan_script
@@ -3934,3 +3864,74 @@ def test_findb_ci_pytest_failure_propagates_through_report_capture(job_name, tmp
     assert result.returncode == 23
     assert "deliberate pytest failure" in result.stdout
     assert (tmp_path / f"findb-ci-{job_name}" / "pytest.log").read_text() == result.stdout
+
+
+def test_immutable_ecr_build_helper_scopes_optional_gha_layer_cache(tmp_path: Path) -> None:
+    helper = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "build_ecr_image_if_missing.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_log = tmp_path / "docker.log"
+    state = tmp_path / "pushed"
+    (fake_bin / "aws").write_text(
+        f"""#!/bin/sh
+if [ -f {state} ]; then
+  printf '%s\\n' 'sha256:{"b" * 64}'
+else
+  printf '%s\\n' '{{"Code":"ImageNotFoundException","Message":"tag absent"}}' >&2; exit 255
+fi
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "docker").write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {docker_log}\n: > {state}\n", encoding="utf-8"
+    )
+    for command in ("aws", "docker"):
+        (fake_bin / command).chmod(0o755)
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("ACTIONS_")
+    } | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "AWS_REGION": "ap-southeast-1",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_SHA": "a" * 40,
+    }
+    image = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab"
+
+    def run(**extra: str) -> subprocess.CompletedProcess[str]:
+        state.unlink(missing_ok=True)
+        docker_log.unlink(missing_ok=True)
+        return subprocess.run(
+            ["bash", str(helper), image, ".", "./fetcher/Dockerfile.finlab"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment | extra,
+        )
+
+    uncached = run()
+    assert uncached.returncode == 0, uncached.stderr
+    assert "--cache-" not in docker_log.read_text(encoding="utf-8")
+
+    cached = run(
+        ECR_BUILD_CACHE="gha",
+        ACTIONS_RUNTIME_TOKEN="runtime-token",
+        ACTIONS_RESULTS_URL="https://results.example.test/",
+    )
+    assert cached.returncode == 0, cached.stderr
+    build = docker_log.read_text(encoding="utf-8")
+    assert "--cache-from type=gha,scope=findb/staging/fetcher/finlab" in build
+    assert (
+        "--cache-to type=gha,mode=max,scope=findb/staging/fetcher/finlab,ignore-error=true"
+    ) in build
+    assert build.index("--cache-to") < build.index("--push")
+    assert "runtime-token" not in cached.stdout + cached.stderr
+
+    missing_runtime = run(ECR_BUILD_CACHE="gha")
+    assert missing_runtime.returncode != 0
+    assert "reason=build_cache_runtime_missing" in missing_runtime.stderr
+    assert not docker_log.exists()
+
+    invalid = run(ECR_BUILD_CACHE="registry")
+    assert invalid.returncode != 0
+    assert "reason=build_cache_invalid" in invalid.stderr
+    assert not docker_log.exists()

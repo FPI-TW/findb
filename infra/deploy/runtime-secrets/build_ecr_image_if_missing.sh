@@ -16,6 +16,7 @@ dockerfile="${3:?Dockerfile required}"
 
 image_tag="${ECR_IMAGE_TAG:-$GITHUB_SHA}"
 reuse_only="${ECR_REUSE_ONLY:-false}"
+build_cache="${ECR_BUILD_CACHE:-none}"
 
 readonly expected_registry="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
 case "$image" in
@@ -43,6 +44,27 @@ if [ "$AWS_REGION" != "ap-southeast-1" ] \
 fi
 
 repository_name="${image#"$expected_registry/"}"
+# Layer cache is scoped per repository and only speeds up rebuilding unchanged
+# layers; the pushed tag and digest contract below is unchanged. A failed cache
+# export never fails a publication.
+cache_args=()
+case "$build_cache" in
+  none) ;;
+  gha)
+    if [ -z "${ACTIONS_RUNTIME_TOKEN:-}" ] || [ -z "${ACTIONS_RESULTS_URL:-}" ]; then
+      echo "staging_ecr_build=failed reason=build_cache_runtime_missing" >&2
+      exit 1
+    fi
+    cache_args=(
+      --cache-from "type=gha,scope=$repository_name"
+      --cache-to "type=gha,mode=max,scope=$repository_name,ignore-error=true"
+    )
+    ;;
+  *)
+    echo "staging_ecr_build=failed reason=build_cache_invalid" >&2
+    exit 1
+    ;;
+esac
 error_file="$(mktemp)"
 hex_file="$(mktemp)"
 digest_file="$(mktemp)"
@@ -150,6 +172,7 @@ fi
 docker buildx build \
   --file "$dockerfile" \
   --tag "$image:$image_tag" \
+  ${cache_args[@]+"${cache_args[@]}"} \
   --push \
   "$context"
 for attempt in 1 2 3 4 5; do

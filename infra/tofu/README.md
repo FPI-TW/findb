@@ -197,16 +197,11 @@ and DLM role. It also has exact state-object read/list access, exact state KMS
 decrypt, and native lockfile Get/Put/Delete access. Its only KMS GenerateDataKey
 exception is the exact state CMK through S3 with the state bucket-key encryption
 context. It cannot read runtime secret values or mutate managed AWS resources. The workflow
-inspects an ephemeral JSON plan and normally fails closed for every delete
-action, including replacement, without uploading a plan artifact. Ordinary
-infrastructure pull requests call their local reusable workflow with the
-default zero-delete policy. Only the dedicated
-`chore/staging-phase2-retirement` route pins the reviewed workflow and enables
-the two pre-authorized metadata-only deletes. That exception is a PR preflight
-rule, not apply authority: retirement mode may show either the bounded two
-deletes before retirement or zero deletes after a separately completed
-retirement. Its summary contains only the commit, configuration/lockfile
-checksums and bounded counts.
+inspects an ephemeral JSON plan and fails closed for every delete action,
+including replacement, without uploading a plan artifact. Infrastructure pull
+requests call the local reusable workflow with this zero-delete policy; the
+completed GHCR metadata retirement route (PR #185) has been removed. Its summary
+contains only the commit, configuration/lockfile checksums and bounded counts.
 
 The PR workflow uses the fixed nonsecret bootstrap role ARN from its reviewed
 configuration. It does not read repository variables, GitHub secrets or

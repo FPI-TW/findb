@@ -48,6 +48,9 @@ jobs:
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       revision: ${{ steps.revision.outputs.sha }}
       fetcher_ci: ${{ steps.policy.outputs.fetcher_ci }}
@@ -71,11 +74,26 @@ jobs:
     - id: policy
       env:
         EVENT: ${{ github.event_name }}
-        BASE: ${{ github.event.before }}
         HEAD: ${{ inputs.revision || github.sha }}
+        DEPLOYMENT_MODE: ${{ inputs.deployment_mode }}
+        GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
-        if [ "$EVENT" = workflow_dispatch ]; then printf 'fetcher_ci=true\nfetcher_staging=true\n' >> "$GITHUB_OUTPUT"; else python3 infra/deploy/change_policy.py --base "$BASE" --head "$HEAD" --github-output "$GITHUB_OUTPUT"; fi
+        if [ "$EVENT" = workflow_dispatch ]; then
+          # An accepted replay already passed CI when it was accepted.
+          ci=true; [ "$DEPLOYMENT_MODE" = replay ] && ci=false
+          printf 'fetcher_ci=%s\nfetcher_staging=true\n' "$ci" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        # Diff from the last successful push rollout, not github.event.before:
+        # a superseded pending run or a failed rollout must not hide changes.
+        base="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/fetcher-cd.yml/runs?branch=main&event=push&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // empty')"
+        if [[ "$base" =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor "$base" "$HEAD"; then
+          python3 infra/deploy/change_policy.py --base "$base" --head "$HEAD" --github-output "$GITHUB_OUTPUT"
+        else
+          echo "change_policy_base=unavailable selection=full"
+          python3 infra/deploy/change_policy.py --full --github-output "$GITHUB_OUTPUT"
+        fi
   verify:
     needs: policy
     if: ${{ needs.policy.outputs.fetcher_ci == 'true' }}
@@ -86,7 +104,9 @@ jobs:
     needs:
     - policy
     - verify
-    if: github.ref == 'refs/heads/main' && needs.verify.result == 'success' && needs.policy.outputs.fetcher_staging == 'true'
+    if: |-
+      !cancelled() && github.ref == 'refs/heads/main' && needs.policy.result == 'success' && needs.policy.outputs.fetcher_staging == 'true' &&
+      (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -133,10 +153,6 @@ jobs:
           [ "${{ github.event_name }}" = push ] && [ -z "$DEPLOYMENT_MODE" ] && [ -z "$CANDIDATE_CONFIRMATION" ] && [ -z "$IMAGE_TAG" ] && [ -z "$ACCEPTED" ] || exit 1
           echo 'mode=candidate' >> "$GITHUB_OUTPUT"
         fi
-    - name: Confirm staging credential and provider isolation policy
-      run: |
-        set -euo pipefail
-        echo 'staging runtime secret isolation remains host-catalog enforced'
   publish:
     needs: select
     if: ${{ needs.select.result == 'success' && needs.select.outputs.mode == 'candidate' }}
@@ -158,6 +174,7 @@ jobs:
       FINLAB: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab
       SHIOAJI: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji
       FACTSET: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/factset
+      ECR_BUILD_CACHE: gha
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -176,6 +193,14 @@ jobs:
         allowed-account-ids: '439622209937'
         role-session-name: fetcher-staging-publish-${{ github.run_id }}
     - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+    - name: Expose BuildKit cache runtime without logging it
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+      with:
+        script: |
+          core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN || '');
+          for (const name of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_URL']) {
+            if (process.env[name]) core.exportVariable(name, process.env[name]);
+          }
     - name: Build or reuse immutable Twelve Data image
       id: twelve_image
       env:

@@ -28,308 +28,96 @@ concurrency:
   group: production-fetcher
   cancel-in-progress: false
 jobs:
-  resolve:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      revision: ${{ steps.resolve.outputs.sha }}
-      tag_ref_oid: ${{ steps.resolve.outputs.tag_ref_oid }}
-    steps:
-    - name: Fail closed before release resolution
-      env:
-        CONFIRMATION: ${{ inputs.confirmation }}
-        MODE: ${{ inputs.mode }}
-        RELEASE_TAG: ${{ inputs.release_tag }}
-        BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
-      run: |
-        set -euo pipefail
-        test "$GITHUB_REF" = refs/heads/main
-        [ "$CONFIRMATION" = PROMOTE_FETCHER_PRODUCTION ]
-        [[ "$MODE" =~ ^(promote|rollback)$ ]]
-
-        [[ "$RELEASE_TAG" =~ ^fetcher-v[0-9]+[.][0-9]+[.][0-9]+$ ]]
-        if [ "$MODE" = promote ]; then
-          [[ "$BUNDLE_KEY" =~ ^fetcher/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]]
-        else
-          [[ "$BUNDLE_KEY" =~ ^fetcher/production/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]]
-        fi
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: refs/tags/${{ inputs.release_tag }}
-        fetch-depth: 0
-        persist-credentials: false
-        clean: false
-    - id: resolve
-      env:
-        RELEASE_TAG: ${{ inputs.release_tag }}
-      run: |
-        set -euo pipefail
-        tag_ref_oid="$(git rev-parse "refs/tags/$RELEASE_TAG")"
-        peeled_commit_sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
-        sha="$(git rev-parse HEAD)"
-        [ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag ]
-        [[ "$tag_ref_oid" =~ ^[0-9a-f]{40}$ ]]
-        [[ "$peeled_commit_sha" =~ ^[0-9a-f]{40}$ ]]
-        [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-        [ "$sha" = "$peeled_commit_sha" ]
-        [ "$(git tag --points-at HEAD --format='%(refname:short)' | grep -Fx "$RELEASE_TAG")" = "$RELEASE_TAG" ]
-        git fetch --no-tags origin main:refs/remotes/origin/main
-        git merge-base --is-ancestor "$sha" refs/remotes/origin/main
-        echo "sha=$sha" >> "$GITHUB_OUTPUT"
-        echo "tag_ref_oid=$tag_ref_oid" >> "$GITHUB_OUTPUT"
-    permissions:
-      contents: read
-  bind-release-tag:
-    needs: resolve
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ needs.resolve.outputs.revision }}
-        persist-credentials: false
-        clean: false
-    - name: Load deployment driver from protected main
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ github.workflow_sha }}
-        path: .deployment-driver
-        persist-credentials: false
-    - name: Load AWS deployment configuration
-      uses: ./.deployment-driver/.github/actions/aws-configuration
-      with:
-        target: production
-        unit: fetcher
-    - name: Verify exact release revision for binding
-      env:
-        EXPECTED_SHA: ${{ needs.resolve.outputs.revision }}
-      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-    - name: Configure staging binding-source reader credentials
-      if: ${{ inputs.mode == 'promote' }}
-      uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
-      with:
-        role-to-assume: ${{ env.STAGING_PROMOTION_READ_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-        allowed-account-ids: ${{ env.STAGING_AWS_ACCOUNT_ID }}
-        role-session-name: fetcher-production-binding-source-${{ github.run_id }}
-    - name: Verify exact accepted staging binding source
-      if: ${{ inputs.mode == 'promote' }}
-      env:
-        REVISION: ${{ needs.resolve.outputs.revision }}
-        BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
-        SOURCE_BUCKET: ${{ env.STAGING_DEPLOY_BUNDLE_BUCKET }}
-        SOURCE_ACCOUNT: ${{ env.STAGING_AWS_ACCOUNT_ID }}
-      run: |
-        set -euo pipefail
-        [ "$(aws sts get-caller-identity --query Account --output text)" = "$SOURCE_ACCOUNT" ]
-        [[ "$BUNDLE_KEY" =~ ^fetcher/accepted/${REVISION}/([0-9a-f]{64})[.]tar$ ]]
-        bundle_sha256="${BASH_REMATCH[1]}"
-        aws s3api get-object --bucket "$SOURCE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/staging-binding-acceptance.json" >/dev/null
-        jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" '
-          type == "object" and .schema_version == 3 and .deployment_target == "staging"
-          and .release_tag == "" and .state == "accepted" and .unit == "fetcher"
-          and .commit_sha == $revision and .bundle_key == $key and .bundle_sha256 == $sha
-        ' "$RUNNER_TEMP/staging-binding-acceptance.json" >/dev/null
-    - name: Configure production release-binding credentials
-      uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
-      with:
-        role-to-assume: ${{ env.AWS_PROMOTION_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-        allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
-        role-session-name: fetcher-production-release-binding-${{ github.run_id }}
-    - name: Bind or validate immutable release tag
-      env:
-        UNIT: fetcher
-        MODE: ${{ inputs.mode }}
-        RELEASE_TAG: ${{ inputs.release_tag }}
-        TAG_REF_OID: ${{ needs.resolve.outputs.tag_ref_oid }}
-        COMMIT_SHA: ${{ needs.resolve.outputs.revision }}
-        AWS_REGION: ${{ env.AWS_REGION }}
-        ACCOUNT_ID: ${{ env.AWS_ACCOUNT_ID }}
-        BUNDLE_BUCKET: ${{ env.DEPLOY_BUNDLE_BUCKET }}
-        BUNDLE_KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
-        BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
-      run: |
-        set -euo pipefail
-        if [ "$MODE" = promote ]; then
-          SOURCE_BUNDLE_KEY="$BUNDLE_KEY" infra/deploy/bind_release_tag.sh
-        else
-          infra/deploy/bind_release_tag.sh
-        fi
-    permissions:
-      id-token: write
-      contents: read
+  # Release binding and promotion are shared with the other unit; this caller
+  # keeps the unit's dispatch inputs, concurrency, CI, deployer and alerting.
+  release:
+    uses: ./.github/workflows/production-release.yml
+    with:
+      unit: fetcher
+      mode: ${{ inputs.mode }}
+      release_tag: ${{ inputs.release_tag }}
+      accepted_bundle_key: ${{ inputs.accepted_bundle_key }}
+      confirmation: ${{ inputs.confirmation }}
   verify:
-    needs:
-    - resolve
-    - bind-release-tag
+    # A rollback replays a production acceptance record, which already proves
+    # this SHA passed CI at promotion. Re-running today's CI definition against
+    # an older SHA can fail on drift and only delays recovery.
+    needs: release
+    if: ${{ inputs.mode == 'promote' }}
     uses: ./.github/workflows/fetcher-ci.yml
     with:
-      revision: ${{ needs.resolve.outputs.revision }}
+      revision: ${{ needs.release.outputs.revision }}
   promote:
     needs:
-    - resolve
-    - bind-release-tag
+    - release
     - verify
     if: ${{ inputs.mode == 'promote' && needs.verify.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    outputs:
-      candidate_bundle_key: ${{ steps.bundle.outputs.candidate_bundle_key }}
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ needs.resolve.outputs.revision }}
-        persist-credentials: false
-        clean: false
-    - name: Load deployment driver from protected main
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ github.workflow_sha }}
-        path: .deployment-driver
-        persist-credentials: false
-    - name: Load AWS deployment configuration
-      uses: ./.deployment-driver/.github/actions/aws-configuration
-      with:
-        target: production
-        unit: fetcher
-    - name: Verify exact release revision
-      env:
-        EXPECTED_SHA: ${{ needs.resolve.outputs.revision }}
-      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-    - name: Configure staging promotion-reader credentials
-      uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
-      with:
-        role-to-assume: ${{ env.STAGING_PROMOTION_READ_ROLE_ARN }}
-        aws-region: ap-southeast-1
-        allowed-account-ids: ${{ env.STAGING_AWS_ACCOUNT_ID }}
-        role-session-name: fetcher-production-source-${{ github.run_id }}
-    - name: Download and validate exact accepted staging bundle
-      env:
-        REVISION: ${{ needs.resolve.outputs.revision }}
-        BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
-        SOURCE_BUCKET: ${{ env.STAGING_DEPLOY_BUNDLE_BUCKET }}
-        SOURCE_REGISTRY: ${{ env.STAGING_ECR_REGISTRY }}
-        SOURCE_ACCOUNT: ${{ env.STAGING_AWS_ACCOUNT_ID }}
-        DESTINATION_ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
-      run: |
-        set -euo pipefail
-        [ "$(aws sts get-caller-identity --query Account --output text)" = "$SOURCE_ACCOUNT" ]
-        [ "$SOURCE_ACCOUNT" != "$DESTINATION_ACCOUNT" ]
-        [ "$SOURCE_REGISTRY" = "$SOURCE_ACCOUNT.dkr.ecr.ap-southeast-1.amazonaws.com" ]
-        [[ "$BUNDLE_KEY" =~ ^fetcher/accepted/${REVISION}/([0-9a-f]{64})[.]tar$ ]]
-        bundle_sha256="${BASH_REMATCH[1]}"
-        aws s3api get-object --bucket "$SOURCE_BUCKET" --key "$BUNDLE_KEY" "$RUNNER_TEMP/staging-bundle.tar" >/dev/null
-        [ "$(sha256sum "$RUNNER_TEMP/staging-bundle.tar" | cut -d ' ' -f1)" = "$bundle_sha256" ]
-        python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit fetcher
-        tar -xOf "$RUNNER_TEMP/staging-bundle.tar" release-manifest.json > "$RUNNER_TEMP/staging-manifest.json"
-        [ "$(jq -r .schema_version "$RUNNER_TEMP/staging-manifest.json")" = 3 ]
-        [ "$(jq -r .deployment_target "$RUNNER_TEMP/staging-manifest.json")" = staging ]
-        [ "$(jq -r .release_tag "$RUNNER_TEMP/staging-manifest.json")" = "" ]
-        [ "$(jq -r .registry "$RUNNER_TEMP/staging-manifest.json")" = "$SOURCE_REGISTRY" ]
-        [ "$(jq -r .account_id "$RUNNER_TEMP/staging-manifest.json")" = "$SOURCE_ACCOUNT" ]
-        twelve_data="$(jq -r .images.twelve_data "$RUNNER_TEMP/staging-manifest.json")"
-        finlab="$(jq -r .images.finlab "$RUNNER_TEMP/staging-manifest.json")"
-        shioaji="$(jq -r .images.shioaji "$RUNNER_TEMP/staging-manifest.json")"
-        factset="$(jq -r .images.factset "$RUNNER_TEMP/staging-manifest.json")"
-        python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit fetcher --commit-sha "$REVISION" --migration-revision none --image "twelve_data=$twelve_data" --image "finlab=$finlab" --image "shioaji=$shioaji" --image "factset=$factset"
-        aws s3api get-object --bucket "$SOURCE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/staging-acceptance.json" >/dev/null
-        jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" --slurpfile manifest "$RUNNER_TEMP/staging-manifest.json" '
-          type == "object" and .state == "accepted" and .unit == "fetcher" and .commit_sha == $revision
-          and .bundle_key == $key and .bundle_sha256 == $sha and .images == $manifest[0].images
-        ' "$RUNNER_TEMP/staging-acceptance.json" >/dev/null
-        declare -A staging_suffixes=(
-          [twelve_data]=twelve-data
-          [finlab]=finlab
-          [shioaji]=shioaji
-          [factset]=factset
-        )
-        for name in twelve_data finlab shioaji factset; do
-          image_ref="$(jq -r --arg name "$name" '.images[$name]' "$RUNNER_TEMP/staging-manifest.json")"
-          [ "${image_ref%@*}" = "$SOURCE_REGISTRY/findb/staging/fetcher/${staging_suffixes[$name]}" ]
-          [[ "${image_ref##*@}" =~ ^sha256:[0-9a-f]{64}$ ]]
-        done
-    - name: Log in to staging ECR
-      uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c
-      with:
-        registry: ${{ env.STAGING_ECR_REGISTRY }}
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
-    - name: Configure production promotion credentials
-      uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
-      with:
-        role-to-assume: ${{ env.AWS_PROMOTION_ROLE_ARN }}
-        aws-region: ap-southeast-1
-        allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
-        role-session-name: fetcher-production-promote-${{ github.run_id }}
-    - name: Log in to production ECR
-      uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c
-      with:
-        registry: ${{ env.ECR_REGISTRY }}
-    - name: Copy exact digests and create production candidate bundle
-      id: bundle
-      env:
-        REVISION: ${{ needs.resolve.outputs.revision }}
-        RELEASE_TAG: ${{ inputs.release_tag }}
-        SOURCE_BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
-        SOURCE_REGISTRY: ${{ env.STAGING_ECR_REGISTRY }}
-        REGISTRY: ${{ env.ECR_REGISTRY }}
-        ACCOUNT_ID: ${{ env.AWS_ACCOUNT_ID }}
-        BUNDLE_BUCKET: ${{ env.DEPLOY_BUNDLE_BUCKET }}
-        BUNDLE_KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
-      run: |
-        set -euo pipefail
-        [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT_ID" ]
-        [ "$REGISTRY" = "$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com" ]
-        short_tag="${RELEASE_TAG#fetcher-}"
-        manifest="$RUNNER_TEMP/staging-manifest.json"
-        args=()
-        declare -A suffixes=(
-          [twelve_data]=twelve-data
-          [finlab]=finlab
-          [shioaji]=shioaji
-          [factset]=factset
-        )
-        for name in twelve_data finlab shioaji factset; do
-          source_ref="$(jq -r --arg name "$name" '.images[$name]' "$manifest")"
-          destination_repository="$REGISTRY/findb/production/fetcher/${suffixes[$name]}"
-          SOURCE_IMAGE_REF="$source_ref" DESTINATION_REPOSITORY="$destination_repository" RELEASE_TAG="$short_tag" infra/deploy/promote_image.sh
-          args+=(--image "$name=$destination_repository@${source_ref##*@}")
-        done
-        [ "$(jq -r .migration_revision "$manifest")" = none ]
-        python3 infra/deploy/release_manifest.py generate --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target production --runtime-profile unified --registry "$REGISTRY" --account-id "$ACCOUNT_ID" --release-tag "$RELEASE_TAG" --promotion-source-bundle-key "$SOURCE_BUNDLE_KEY" --promotion-source-registry "$SOURCE_REGISTRY" "${args[@]}" --output "$RUNNER_TEMP/production-manifest.json"
-        python3 infra/deploy/release_manifest.py bundle --repo-root . --unit fetcher --manifest "$RUNNER_TEMP/production-manifest.json" --output "$RUNNER_TEMP/production-bundle.tar"
-        bundle_sha256="$(sha256sum "$RUNNER_TEMP/production-bundle.tar" | cut -d ' ' -f1)"
-        candidate_key="fetcher/production/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${bundle_sha256}.tar"
-        aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$candidate_key" --body "$RUNNER_TEMP/production-bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$BUNDLE_KMS_KEY" >/dev/null
-        echo "candidate_bundle_key=$candidate_key" >> "$GITHUB_OUTPUT"
-    permissions:
-      id-token: write
-      contents: read
+    uses: ./.github/workflows/production-promote.yml
+    with:
+      unit: fetcher
+      revision: ${{ needs.release.outputs.revision }}
+      release_tag: ${{ inputs.release_tag }}
+      accepted_bundle_key: ${{ inputs.accepted_bundle_key }}
   deploy-promotion:
     needs:
-    - resolve
-    - bind-release-tag
+    - release
     - verify
     - promote
     if: ${{ inputs.mode == 'promote' && needs.promote.result == 'success' }}
     uses: ./.github/workflows/fetcher-deploy.yml
     with:
       deployment_target: production
-      revision: ${{ needs.resolve.outputs.revision }}
+      revision: ${{ needs.release.outputs.revision }}
       mode: candidate
       bundle_key: ${{ needs.promote.outputs.candidate_bundle_key }}
       release_tag: ${{ inputs.release_tag }}
   deploy-rollback:
     needs:
-    - resolve
-    - bind-release-tag
-    - verify
-    if: ${{ inputs.mode == 'rollback' && needs.verify.result == 'success' }}
+    - release
+    if: ${{ inputs.mode == 'rollback' && needs.release.result == 'success' }}
     uses: ./.github/workflows/fetcher-deploy.yml
     with:
       deployment_target: production
-      revision: ${{ needs.resolve.outputs.revision }}
+      revision: ${{ needs.release.outputs.revision }}
       mode: replay
       bundle_key: ${{ inputs.accepted_bundle_key }}
       release_tag: ${{ inputs.release_tag }}
+  report-production-deployment-failure:
+    # The release job also fails on input validation; only jobs after a
+    # successful release binding report a deployment failure.
+    needs:
+    - verify
+    - promote
+    - deploy-promotion
+    - deploy-rollback
+    if: |-
+      always() && github.ref == 'refs/heads/main' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - name: Load deployment driver from protected main
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: .deployment-driver
+        persist-credentials: false
+    - name: Load AWS deployment configuration
+      uses: ./.deployment-driver/.github/actions/aws-configuration
+      with:
+        target: production
+        unit: fetcher
+    - name: Verify deployment account
+      shell: bash
+      run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
+    - name: Publish production deployment failure metric
+      run: |
+        aws cloudwatch put-metric-data \
+          --region ap-southeast-1 \
+          --namespace FinDB/Production \
+          --metric-name DeploymentFailure \
+          --dimensions DeploymentUnit=fetcher,Resource=github-actions \
+          --value 1 \
+          --unit Count

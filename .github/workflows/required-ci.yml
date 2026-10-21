@@ -46,24 +46,15 @@ jobs:
     with: {revision: '${{ needs.policy.outputs.revision }}'}
   staging-infra-plan:
     needs: policy
-    if: ${{ needs.policy.outputs.infra_plan == 'true' && github.event.pull_request.head.ref != 'chore/staging-phase2-retirement' }}
+    if: ${{ needs.policy.outputs.infra_plan == 'true' }}
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/staging-infra-plan.yml
-    with: {allow_ghcr_metadata_retirement: false}
-  staging-infra-retirement-plan:
-    needs: policy
-    if: ${{ needs.policy.outputs.infra_plan == 'true' && github.event.pull_request.head.ref == 'chore/staging-phase2-retirement' }}
-    permissions:
-      contents: read
-      id-token: write
-    uses: FPI-TW/findb/.github/workflows/staging-infra-plan.yml@efe573be9267a52a0b7e3090d00445f38df9945a
-    with: {allow_ghcr_metadata_retirement: true}
   required:
     name: Required CI
     if: ${{ always() }}
-    needs: [policy, findb, fetcher, staging-infra-plan, staging-infra-retirement-plan]
+    needs: [policy, findb, fetcher, staging-infra-plan]
     runs-on: ubuntu-latest
     steps:
       - env:
@@ -73,9 +64,7 @@ jobs:
           WANT_FINDB: ${{ needs.policy.outputs.findb_ci }}
           WANT_FETCHER: ${{ needs.policy.outputs.fetcher_ci }}
           INFRA: ${{ needs.staging-infra-plan.result }}
-          RETIREMENT_INFRA: ${{ needs.staging-infra-retirement-plan.result }}
           WANT_INFRA: ${{ needs.policy.outputs.infra_plan }}
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           [ "$POLICY" = success ]
@@ -89,10 +78,8 @@ jobs:
           else
             [ "$WANT_FETCHER" = false ] && [ "$FETCHER" = skipped ]
           fi
-          if [ "$WANT_INFRA" = false ]; then
-            [ "$INFRA" = skipped ] && [ "$RETIREMENT_INFRA" = skipped ]
-          elif [ "$PR_HEAD_REF" = chore/staging-phase2-retirement ]; then
-            [ "$INFRA" = skipped ] && [ "$RETIREMENT_INFRA" = success ]
+          if [ "$WANT_INFRA" = true ]; then
+            [ "$INFRA" = success ]
           else
-            [ "$INFRA" = success ] && [ "$RETIREMENT_INFRA" = skipped ]
+            [ "$WANT_INFRA" = false ] && [ "$INFRA" = skipped ]
           fi

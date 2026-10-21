@@ -43,3 +43,62 @@ def test_only_findb_production_deployer_can_resolve_the_rds_endpoint() -> None:
     assert 'actions   = ["rds:DescribeDBInstances"]' in rds_statement
     assert 'resources = ["*"]' in rds_statement
     assert deploy_policy.count('"rds:DescribeDBInstances"') == 1
+
+
+def test_production_cd_reports_deployment_failures_with_unit_scoped_metrics() -> None:
+    for unit in ("findb", "fetcher"):
+        workflow = (REPO_ROOT / ".github/workflows" / f"{unit}-production-cd.yml").read_text(
+            encoding="utf-8"
+        )
+        report_job = workflow.split("  report-production-deployment-failure:", 1)[1]
+        needs = report_job.split("    if:", 1)[0]
+        for job in ("verify", "promote", "deploy-promotion", "deploy-rollback"):
+            assert f"    - {job}\n" in needs
+        assert "    - release\n" not in needs
+        assert "always() && github.ref == 'refs/heads/main'" in report_job
+        assert "contains(needs.*.result, 'failure')" in report_job
+        assert "contains(needs.*.result, 'cancelled')" in report_job
+        assert "id-token: write" in report_job
+        assert "target: production" in report_job
+        assert "--namespace FinDB/Production" in report_job
+        assert "--metric-name DeploymentFailure" in report_job
+        assert f"--dimensions DeploymentUnit={unit},Resource=github-actions" in report_job
+
+
+def test_production_deployment_failure_alarm_fires_on_one_published_failure() -> None:
+    monitoring = (REPO_ROOT / "infra/tofu/production/monitoring.tf").read_text(encoding="utf-8")
+    custom = monitoring.split("custom_alarms = merge(", 1)[1].split("metric_service", 1)[0]
+    assert "DeploymentFailure" not in custom
+    alarm = monitoring.split('resource "aws_cloudwatch_metric_alarm" "deployment_failure"', 1)[
+        1
+    ].split("\n}\n", 1)[0]
+    assert "for_each            = local.units" in alarm
+    assert 'namespace           = "FinDB/Production"' in alarm
+    assert "evaluation_periods  = 1" in alarm
+    assert "datapoints_to_alarm = 1" in alarm
+    assert 'treat_missing_data  = "notBreaching"' in alarm
+    assert 'DeploymentUnit = each.key, Resource = "github-actions"' in alarm
+
+    iam = (REPO_ROOT / "infra/tofu/production/iam.tf").read_text(encoding="utf-8")
+    metric_statement = iam.split('sid       = "DeploymentFailureMetric"', 1)[1].split(
+        "statement {", 1
+    )[0]
+    assert 'actions   = ["cloudwatch:PutMetricData"]' in metric_statement
+    assert 'values   = ["FinDB/Production"]' in metric_statement
+
+
+def test_production_rollback_replays_acceptance_without_rerunning_ci() -> None:
+    for unit in ("findb", "fetcher"):
+        workflow = (REPO_ROOT / ".github/workflows" / f"{unit}-production-cd.yml").read_text(
+            encoding="utf-8"
+        )
+        verify = workflow.split("  verify:", 1)[1].split("  promote:", 1)[0]
+        assert "if: ${{ inputs.mode == 'promote' }}" in verify
+        rollback = workflow.split("  deploy-rollback:", 1)[1].split(
+            "  report-production-deployment-failure:", 1
+        )[0]
+        assert "    - verify\n" not in rollback
+        assert "needs.release.result == 'success'" in rollback
+        assert "mode: replay" in rollback
+        promote = workflow.split("  promote:", 1)[1].split("  deploy-promotion:", 1)[0]
+        assert "needs.verify.result == 'success'" in promote

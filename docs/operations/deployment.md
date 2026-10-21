@@ -18,6 +18,12 @@ Job 先 checkout immutable release，再於 `.deployment-driver` checkout protec
 | Backend＋Dashboard | `findb-cd.yml`，main 自動部署 | `findb-production-cd.yml`，人工 promotion |
 | Fetcher 四個 images、五個 providers | `fetcher-cd.yml`，main 自動部署 | `fetcher-production-cd.yml`，人工 promotion |
 
+兩個 production 入口只保留各自的 dispatch inputs、concurrency、unit CI、部署器與失敗回報；
+tag 解析／binding 共用 `production-release.yml`，跨帳號 digest 複製與 production candidate bundle
+共用 `production-promote.yml`，兩者以 `unit` 參數選擇 image 清單與 Fetcher 的 `migration_revision=none`／
+`runtime_profile=unified` 規則。`release` 失敗（含輸入驗證與 binding 衝突）不發布 `DeploymentFailure`，
+此時尚未變更 production。
+
 Staging build／reuse immutable commit images；production 複製 staging 已 accepted 的同一組 digests，不重新建置。
 Production 的 annotated immutable tag 必須指向 main history 中的相同 commit，tag object、commit、bundle、
 image digests 與 acceptance 全部一致。Backend 與 Fetcher 分別發布，跨 unit 變更採 Backend-first。
@@ -35,17 +41,17 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
 
 | 項目 | Staging | Production |
 | --- | --- | --- |
-| 觸發 | push main 後由 `change_policy.py` 判斷受影響 unit；也可人工 dispatch | 僅人工 dispatch，選擇 `promote` 或 `rollback`；push tag 不會觸發 |
+| 觸發 | push main 後由 `change_policy.py` 比對同 workflow 最後一次成功 push run 的 SHA 判斷受影響 unit，找不到可信基準時全選；也可人工 dispatch | 僅人工 dispatch，選擇 `promote` 或 `rollback`；push tag 不會觸發 |
 | 版本選擇 | 完整 commit SHA；人工指定版本必須在 main history 中 | `findb-vMAJOR.MINOR.PATCH`／`fetcher-vMAJOR.MINOR.PATCH` annotated tag，指向 main history 中的 commit |
 | 人工確認 | 手動新 candidate 要輸入 `deploy-new-candidate`；預設模式是 accepted replay | 必填 `PROMOTE_FINDB_PRODUCTION`／`PROMOTE_FETCHER_PRODUCTION`；不是 GitHub Environment 審批 |
-| CI | 部署前執行指定 SHA 的 unit CI；自動入口依變更範圍選擇 | promotion 與 rollback 都在 tag binding 驗證後重跑指定 SHA 的 unit CI |
+| CI | candidate 部署前執行指定 SHA 的 unit CI，自動入口依變更範圍選擇；accepted replay 不重跑 CI | promotion 在 tag binding 驗證後重跑指定 SHA 的 unit CI；rollback 只驗證既有 binding 與 production acceptance record，不重跑 CI |
 | 發布 images | 依 commit tag 建置，已存在則重用；部署固定 digest | 從 staging accepted bundle 複製 exact digests 至 production ECR，綁定版本 tag；不重建發布 images，CI 仍可能建置測試 images |
 | 發布契約 | manifest 的 `release_tag` 為空；建立 staging candidate bundle | 額外保存 tag object／commit／staging accepted bundle 的 immutable binding；產生帶 production identity 與 promotion source 的新 bundle |
 | 環境位置 | AWS account `439622209937`；`findb/staging/*` ECR 與 `/findb/staging/<unit>/deployment` SSM | AWS account `289112218471`；`findb/production/*` ECR 與 `/findb/production/<unit>/deployment` SSM；另需 staging reader 與 production promotion role |
 | Accepted bundle key | `<unit>/accepted/<sha>/<bundle-sha256>.tar` | `<unit>/production/accepted/<sha>/<bundle-sha256>.tar`；images digest 相同不代表兩環境 bundle checksum 相同 |
 | 回退 | 人工 `deployment_mode=replay`，指定該 SHA 的 staging accepted bundle 與相同 `image_tag` | 人工 `mode=rollback`，指定 production accepted bundle、對應 tag 與既有 binding；共用部署器以 `replay` 執行 |
 | 跨 unit 順序 | Fetcher 的 push candidate 會等待同 SHA 的 FinDB CD 成功；手動 dispatch 沒有此等待 | 兩個 production workflows 獨立，Backend-first 由操作順序維持，沒有跨 workflow 自動等待 |
-| 部署失敗回報 | 兩個 staging 入口皆有 failure／cancelled job，發布 `FinDB/Staging` 的 `DeploymentFailure` metric | production 入口沒有對應回報 job；IaC 雖定義 `FinDB/Production` 的同名 alarm，不能視為 workflow 失敗回報已接通 |
+| 部署失敗回報 | 兩個 staging 入口皆有 failure／cancelled job，發布 `FinDB/Staging` 的 `DeploymentFailure` metric | 兩個 production 入口在 CI／promotion／deploy 任一 failure 或 cancelled 時發布 `FinDB/Production` 的 `DeploymentFailure`（`DeploymentUnit=<unit>,Resource=github-actions`）；`release`（tag 解析與 binding）失敗不回報。每個 unit 一個 alarm，單一 datapoint 即告警、缺值視為正常；需在 production 套用 OpenTofu 後 alarm 才生效 |
 
 兩環境都在 `ap-southeast-1`，共用 `findb-deploy.yml`／`fetcher-deploy.yml` 和主機部署腳本。
 兩者均執行 preflight、candidate 驗證、immutable acceptance 與 activation；replay 驗證既有 acceptance 後直接走 activation，
@@ -117,8 +123,18 @@ owner／mode、exclusive create 與清理規則；宣告 secrets 的 consumer �
 
 FinDB candidate 執行 migration、DB grants／credentials reconciliation 與 registry provisioning。
 Activation／accepted replay 改為 exact DB revision 與 credentials check-only，停止服務前即檢查相容性，
-不再重跑 schema／registry mutations；不相容仍 fail closed。Production rollback 維持完整 unit CI，
-本次未改成重用舊 CI 證據，也沒有新增成功 rollback 的實測基準。
+不再重跑 schema／registry mutations；不相容仍 fail closed。Accepted replay 與 production rollback
+不重跑 unit CI：acceptance record 只會在該 SHA 通過 CI 後產生，而以目前 main 的 CI 定義檢查舊 SHA
+可能因 CI 漂移失敗並拖延復原。尚無成功 rollback 的實測基準。
+
+Staging publish 以 `ECR_BUILD_CACHE=gha` 讓 `build_ecr_image_if_missing.sh` 使用 BuildKit GitHub Actions
+layer cache，scope 為各 ECR repository；cache 只在 push main 的 publish job 寫入，PR 無法覆寫。
+`actions/github-script` 只把 cache runtime 變數寫入 `GITHUB_ENV` 並遮罩 token，不印出數值；cache 匯出失敗不影響發布。
+Image tag／digest 契約不變：既有 exact SHA tag 仍直接重用，不重建。
+
+Fetcher 十五個 runtimes 的替換刻意維持序列：rollback journal 存在 coordinator shell 陣列，
+同 provider 的 Pilot／Full／historical 共用同一 secret consumer tmpfs 與帳號 governor lock；
+平行化需重新設計交易與復原，不屬於目前可在本機驗證的範圍。
 
 兩個 reusable deploy job 上限由 90 改為 55 分鐘。Protected-main driver 負責主機 Bash wrapper 與 SSM wait，
 避免 accepted replay 依賴舊 release 缺少的新 helper。主機 preflight／candidate／activation 分別由
@@ -190,6 +206,11 @@ deadline 後不得 acceptance、取消／未確認終態、共同觀察窗口，
 以上為本機驗證，不代表已部署或通過 AWS 線上 rollback 演練。
 
 ## 共用部署順序
+
+變更範圍不以 `github.event.before` 計算：被後續 push 取代而取消的 pending run、或部署失敗的 run，
+其變更會由下一次 push 併入比對，不會因下一個 commit 只改文件而漏部署。`fetcher/` 與所有 `infra/`
+變更都會觸發 FinDB CI（Backend tests import Fetcher 並檢查 infra 檔案）；`.github/actions/` 變更
+同時觸發兩個 unit 的 CI 與 staging rollout。
 
 排查「合併後失敗」時，先分開核對 PR 的 merged state、Required CI 與 main push 的 CD。
 Fetcher CD 的 `Wait for same-revision FinDB staging rollout` 若回報
