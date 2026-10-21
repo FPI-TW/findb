@@ -1,12 +1,12 @@
 """Canonical environment identity and narrow immutable replay bridges."""
 
-import os
 import subprocess
 
 import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
+from tests.script_env import script_env
 from tests.test_deployment_checks import REPO_ROOT
 
 
@@ -53,7 +53,7 @@ def test_current_runtime_only_injects_canonical_environment(consumer):
     )
     result = subprocess.run(
         ["/bin/bash", "-c", shell],
-        env={**os.environ, "APP_ENVIRONMENT": "production", "FETCHER_CONSUMER_PROFILE": consumer},
+        env={**script_env(), "APP_ENVIRONMENT": "production", "FETCHER_CONSUMER_PROFILE": consumer},
         capture_output=True,
         text=True,
         check=True,

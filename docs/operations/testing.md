@@ -229,6 +229,11 @@ Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態�
 Shutdown 與 inventory suites 的假 `docker`／`sudo` 由 `infra/tests/fake_daemon.py` 提供：每個指令是只
 轉送參數與指定環境變數的 bash client，狀態與判斷集中在 pytest 行程內的 localhost daemon 並逐次序列化。
 Shutdown 的 activate 案例約上千次呼叫，不再各自啟動 Python 直譯器。
+執行部署／shell 腳本的測試以 `script_env()`（`backend/tests/script_env.py`、`infra/tests/script_env.py`）
+建立環境：只帶入 `PATH`、`HOME`、`TMPDIR` 與 locale，其餘變數由測試明確設定，避免開發機或 CI 的
+`AWS_*`、`APP_ENVIRONMENT`、`FETCHER_*`、`GITHUB_*`、`ACTIONS_*` 改變腳本行為或寫入 `GITHUB_OUTPUT`。
+執行 repo 自身 Python／pytest 子行程的測試（例如 migration、ORM 隔離）仍繼承完整環境；
+`backend/tests/test_script_env.py` 掃描 backend／infra 測試，阻擋其他繼承完整環境的寫法。
 AWS 實際部署與七條 native feeds 驗收是另外的結果，不以 fixtures 或靜態檢查替代。
 
 2026-10-15 staging Pilot 已核對四條 feeds：FinLab `tw_equity_eod`／`tw_etf_eod`，

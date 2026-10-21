@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "infra/deploy/ssm_command_marker_gate.sh"
@@ -50,7 +51,7 @@ def run_wait(tmp_path, *, status, stdout="", seconds=5, response_delay=0, confir
             f'"marker status=success" "marker status=failed" {seconds}',
         ],
         env={
-            **os.environ,
+            **script_env(),
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "FAKE_ROOT": str(tmp_path),
             "FAKE_RESPONSE": json.dumps(response),

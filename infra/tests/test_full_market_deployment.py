@@ -4,11 +4,12 @@ import copy
 import hashlib
 import importlib.util
 import json
-import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -110,7 +111,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
                                     + '\nprintf "%s\\n" ${account_mount[@]+"${account_mount[@]}"}',
                                 ],
                                 env={
-                                    **os.environ,
+                                    **script_env(),
                                     "APP_ENVIRONMENT": target,
                                     "FULL_MARKET_ENABLED": enabled,
                                 },
@@ -219,7 +220,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
                         completed = subprocess.run(
                             ["bash", "-c", preflight],
                             env={
-                                **os.environ,
+                                **script_env(),
                                 "FETCHER_RELEASE_ROOT": str(output),
                                 "FETCHER_RUNTIME_PROFILE": requested,
                             },
@@ -308,7 +309,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
 
     def test_staging_full_market_still_requires_verified_release_before_host_mutation(self):
         environment = {
-            **os.environ,
+            **script_env(),
             "AWS_REGION": "ap-southeast-1",
             "AWS_ACCOUNT_ID": "439622209937",
             "APP_ENVIRONMENT": "staging",
