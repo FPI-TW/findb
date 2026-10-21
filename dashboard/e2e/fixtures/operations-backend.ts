@@ -172,8 +172,8 @@ createServer(async (request, response) => {
     authenticationFailurePaths = []
     overviewFailurePath = ""
     rows = [
-      scheduler("pilot_finlab", "finlab"),
-      scheduler("pilot_shioaji", "shioaji", true),
+      scheduler("pilot_finlab_v1", "finlab"),
+      scheduler("pilot_shioaji_v1", "shioaji", true),
       scheduler("full_market_finlab_v1", "finlab", true),
       scheduler("full_market_shioaji_v1", "shioaji"),
       {

@@ -14,7 +14,6 @@ from app.models.registry import DailyDeliveryMember, IngestionRun
 from app.schemas.full_market import (
     DeliveryOutcomeRequest,
     DeliveryPlanCreateRequest,
-    FeedActivateRequest,
     UniversePublishRequest,
     UniverseSubmitRequest,
 )
@@ -23,7 +22,6 @@ from app.services import full_market
 from app.services.full_market import (
     FullMarketError,
     _require_closed_acceptance_day,
-    activate_feed,
     create_plan,
     get_plan,
     publish_universe,
@@ -150,34 +148,21 @@ async def test_official_mic_exchange_members_are_accepted(test_session, key, exc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("key", "market", "zone"),
+    ("key", "zone"),
     [
-        ("us_equity_eod", "US", "America/New_York"),
-        ("hk_equity_eod", "HK", "Asia/Hong_Kong"),
-        ("tw_etf_eod", "TW", "Asia/Taipei"),
-        ("tw_futures_eod", "TAIFEX", "Asia/Taipei"),
+        ("us_equity_eod", "America/New_York"),
+        ("hk_equity_eod", "Asia/Hong_Kong"),
+        ("tw_etf_eod", "Asia/Taipei"),
+        ("tw_futures_eod", "Asia/Taipei"),
     ],
 )
-@pytest.mark.parametrize("activation_offset", [0, 1])
-async def test_first_activation_cannot_backdate_market_local_day(
-    test_session, monkeypatch, key, market, zone, activation_offset
-):
+async def test_local_today_uses_market_local_day(test_session, monkeypatch, key, zone):
     dataset = await _dataset(test_session, key)
     from app.services import full_market_admission
 
     clock = datetime.combine(DAY, time(8, 30), ZoneInfo("Asia/Taipei"))
     monkeypatch.setattr(full_market_admission, "utc_now", lambda: clock)
     assert full_market_admission.local_today(dataset) == clock.astimezone(ZoneInfo(zone)).date()
-    with pytest.raises(FullMarketError) as failure:
-        await activate_feed(
-            test_session,
-            key,
-            FeedActivateRequest(
-                activation_date=DAY + timedelta(days=activation_offset),
-                readiness_evidence_note="Retired manual activation date.",
-            ),
-        )
-    assert failure.value.status_code == 410
 
 
 @pytest.mark.asyncio

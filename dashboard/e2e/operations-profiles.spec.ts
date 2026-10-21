@@ -78,7 +78,7 @@ test("hidden counterpart warnings cancel safely and Pilot batch start/stop stays
 }) => {
   await login(page)
   await page
-    .getByRole("button", { name: "Pilot finlab pilot_finlab 設為執行中" })
+    .getByRole("button", { name: "Pilot finlab pilot_finlab_v1 設為執行中" })
     .click()
   await expect(page.getByRole("alertdialog")).toContainText(
     "full_market_finlab_v1"
@@ -114,17 +114,17 @@ test("hidden counterpart warnings cancel safely and Pilot batch start/stop stays
   ).toBeVisible()
   expect((await state(request)).mutations).toEqual([
     {
-      scheduler_key: "pilot_finlab",
+      scheduler_key: "pilot_finlab_v1",
       desired_state: "running",
       expected_revision: 1,
     },
     {
-      scheduler_key: "pilot_finlab",
+      scheduler_key: "pilot_finlab_v1",
       desired_state: "stopped",
       expected_revision: 2,
     },
     {
-      scheduler_key: "pilot_shioaji",
+      scheduler_key: "pilot_shioaji_v1",
       desired_state: "stopped",
       expected_revision: 1,
     },
@@ -146,7 +146,7 @@ test("Full market batch skips blocked and running controls, warns about hidden P
   await page
     .getByRole("button", { name: "Full market 全部啟動", exact: true })
     .click()
-  await expect(page.getByRole("alertdialog")).toContainText("pilot_shioaji")
+  await expect(page.getByRole("alertdialog")).toContainText("pilot_shioaji_v1")
   await page
     .getByRole("button", { name: "確認 Full market 全部啟動", exact: true })
     .click()
@@ -226,7 +226,7 @@ test("partial overview failure and recovery preserve controls, cards and queue p
     exact: true,
   })
   const card = page.getByRole("button", {
-    name: "Pilot finlab pilot_finlab 設為執行中",
+    name: "Pilot finlab pilot_finlab_v1 設為執行中",
   })
   const queue = page.getByRole("heading", {
     name: "Source ingest 後的佇列與 Worker",

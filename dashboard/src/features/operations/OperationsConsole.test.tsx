@@ -1154,7 +1154,7 @@ describe("Operations presentation", () => {
   it.each([
     [
       "Pilot",
-      "pilot_finlab",
+      "pilot_finlab_v1",
       "Full market",
       "full_market_finlab_v1",
       "stopped",
@@ -1164,13 +1164,13 @@ describe("Operations presentation", () => {
       "Full market",
       "full_market_finlab_v1",
       "Pilot",
-      "pilot_finlab",
+      "pilot_finlab_v1",
       "stopped",
       "running",
     ],
     [
       "Pilot",
-      "pilot_finlab",
+      "pilot_finlab_v1",
       "Full market",
       "full_market_finlab_v1",
       "running",
@@ -1180,7 +1180,7 @@ describe("Operations presentation", () => {
       "Full market",
       "full_market_finlab_v1",
       "Pilot",
-      "pilot_finlab",
+      "pilot_finlab_v1",
       "running",
       "stopped",
     ],
@@ -1262,7 +1262,7 @@ describe("Operations presentation", () => {
     async profile => {
       const rows = [
         makeScheduler({
-          scheduler_key: "pilot_finlab",
+          scheduler_key: "pilot_finlab_v1",
           desired_state: "running",
           observed_state: "running",
         }),
@@ -1273,7 +1273,8 @@ describe("Operations presentation", () => {
           start_allowed: true,
         }),
       ]
-      const key = profile === "Pilot" ? "pilot_finlab" : "full_market_finlab_v1"
+      const key =
+        profile === "Pilot" ? "pilot_finlab_v1" : "full_market_finlab_v1"
       mocks.updateScheduler.mockResolvedValue({
         success: true,
         data: {
@@ -1300,7 +1301,7 @@ describe("Operations presentation", () => {
       expect(within(section).getByText(key)).toBeInTheDocument()
       expect(
         within(section).queryByText(
-          profile === "Pilot" ? "full_market_finlab_v1" : "pilot_finlab"
+          profile === "Pilot" ? "full_market_finlab_v1" : "pilot_finlab_v1"
         )
       ).not.toBeInTheDocument()
       fireEvent.click(
@@ -1327,7 +1328,7 @@ describe("Operations presentation", () => {
   )
 
   it("keeps freshness-only cards out of bulk writes and warns using live fallback status", () => {
-    const rows = [makeScheduler({ scheduler_key: "pilot_finlab" })]
+    const rows = [makeScheduler({ scheduler_key: "pilot_finlab_v1" })]
     const props = {
       freshnessResult: {
         ok: true as const,
@@ -1390,7 +1391,7 @@ describe("Operations presentation", () => {
   it("does not warn for unrelated providers or blocked bulk targets", () => {
     const rows = [
       makeScheduler({
-        scheduler_key: "pilot_finlab",
+        scheduler_key: "pilot_finlab_v1",
         desired_state: "running",
         observed_state: "running",
       }),

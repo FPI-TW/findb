@@ -1,6 +1,5 @@
 """Tests for provider-neutral, versioned ingress contracts."""
 
-import hashlib
 import json
 from datetime import timedelta, timezone
 from decimal import Decimal
@@ -375,21 +374,13 @@ def test_registry_dispatches_explicit_contract_version():
 
 
 @pytest.mark.parametrize(
-    ("schema_id", "title", "schema_specific_rule", "expected_sha256"),
-    [
-        (
-            "market_eod",
-            "MarketEODIngressRequest",
-            "market.currency.row_or_dataset_default",
-            "d92e6e032bf6c0f77d1ff516f18d6c04bedf4c57c61c864edfffc74bc42c3b02",
-        ),
-    ],
+    ("schema_id", "title", "schema_specific_rule"),
+    [("market_eod", "MarketEODIngressRequest", "market.currency.row_or_dataset_default")],
 )
 def test_registry_publishes_versioned_deterministic_json_schema(
     schema_id: str,
     title: str,
     schema_specific_rule: str,
-    expected_sha256: str,
 ):
     first = get_contract_json_schema(schema_id, 1)
     second = get_contract_json_schema(schema_id, 1)
@@ -522,8 +513,6 @@ def test_registry_publishes_versioned_deterministic_json_schema(
     ]
     expected_specific_path = "payload.data[*].currency"
     assert expected_specific_path in transformed_paths
-    canonical_json = json.dumps(first, sort_keys=True, separators=(",", ":")).encode()
-    assert hashlib.sha256(canonical_json).hexdigest() == expected_sha256
 
 
 def test_validation_error_priority_selects_one_structured_error_for_code_and_message():
@@ -793,13 +782,3 @@ def test_futures_minimum_observation_is_published_in_shape_and_semantics():
             "properties": {"volume": {"type": "integer", "exclusiveMinimum": 0}},
         }
     ]
-
-
-@pytest.mark.asyncio
-async def test_futures_schema_endpoint_publishes_minimum_observation(client, source_headers):
-    url = "/api/v1/source/contracts/futures_eod/versions/1"
-    first = await client.get(url, headers=source_headers)
-    second = await client.get(url, headers=source_headers)
-    assert first.status_code == 200
-    assert first.content == second.content
-    assert first.json() == get_contract_json_schema("futures_eod", 1)

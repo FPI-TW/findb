@@ -24,25 +24,27 @@ from tests.test_provider_work_adapters import native_runtime as native_runtime
 CONTRACT_MONTHS = (f"{DAY:%Y%m}F1", f"{DAY.replace(day=1) + timedelta(days=32):%Y%m}")
 
 
+DAILY_NATIVE_RUNTIMES = [
+    ("twelve_data", "us_equity_eod"),
+    ("twelve_data", "hk_equity_eod"),
+    ("finlab", "tw_equity_eod"),
+    ("finlab", "tw_etf_eod"),
+    ("shioaji", "tw_equity_minute"),
+    ("shioaji", "tw_etf_minute"),
+    ("taifex", "tw_futures_eod"),
+]
+# Native rate-limit responses are Twelve Data payloads; other providers lack them.
+DAILY_FAULT_CASES = [
+    ((provider, dataset, 0), fault)
+    for provider, dataset in DAILY_NATIVE_RUNTIMES
+    for fault in [429, 503, "lost-ack", "native-network", "native-http429", "native-payload429"]
+    if provider == "twelve_data" or fault not in {"native-http429", "native-payload429"}
+]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "native_runtime",
-    [
-        (provider, dataset, 0)
-        for provider, dataset in [
-            ("twelve_data", "us_equity_eod"),
-            ("twelve_data", "hk_equity_eod"),
-            ("finlab", "tw_equity_eod"),
-            ("finlab", "tw_etf_eod"),
-            ("shioaji", "tw_equity_minute"),
-            ("shioaji", "tw_etf_minute"),
-            ("taifex", "tw_futures_eod"),
-        ]
-    ],
-    indirect=True,
-)
-@pytest.mark.parametrize(
-    "fault", [429, 503, "lost-ack", "native-network", "native-http429", "native-payload429"]
+    ("native_runtime", "fault"), DAILY_FAULT_CASES, indirect=["native_runtime"]
 )
 async def test_daily_actual_native_failure_stops_round_and_next_attempt_completes_original_scope(
     native_runtime, test_engine, admin_headers, monkeypatch, fault
@@ -58,8 +60,6 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     h = native_runtime
     not_published = fault == "native-not-published"
     native_rate = fault in {"native-http429", "native-payload429"}
-    if native_rate and h.provider != "twelve_data":
-        pytest.skip("native Twelve Data responses do not add other-provider capabilities")
     if native_rate or not_published:
         from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 

@@ -10,6 +10,9 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:3000",
     browserName: "chromium",
+    // Pin zone and locale so formatting is identical on every host and in CI.
+    timezoneId: "UTC",
+    locale: "zh-TW",
     trace: "retain-on-failure",
   },
   webServer: [

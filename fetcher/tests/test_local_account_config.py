@@ -45,6 +45,8 @@ def local_setup(tmp_path):
 def _process(local, provider, mode):
     # uv, rather than a test-only parser, loads the same --env-file used by every
     # documented local CLI. No project resolution or dependency sync is needed.
+    if shutil.which("uv") is None:
+        pytest.skip("uv is required to load the documented --env-file")
     env = {
         key: value
         for key, value in os.environ.items()

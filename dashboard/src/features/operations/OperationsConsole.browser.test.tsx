@@ -39,7 +39,7 @@ function scheduler(provider: string, fullMarket: boolean): Scheduler {
   return {
     scheduler_key: fullMarket
       ? `full_market_${provider}_v1`
-      : `pilot_${provider}`,
+      : `pilot_${provider}_v1`,
     provider,
     dataset_keys: ["tw_equity_eod"],
     slot_id: "taiwan_market_window",
@@ -94,7 +94,7 @@ beforeEach(async () => {
     async ({ data }: { data: { schedulerKey: string } }) => ({
       success: true,
       data: {
-        ...scheduler(data.schedulerKey.replace("pilot_", ""), false),
+        ...scheduler(data.schedulerKey.replace(/^pilot_|_v1$/g, ""), false),
         desired_state: "running",
         revision: 2,
       },
@@ -183,7 +183,7 @@ describe("scheduler confirmation mobile layout", () => {
         name:
           mode === "bulk"
             ? "Pilot 全部啟動"
-            : "Pilot finlab pilot_finlab 設為執行中",
+            : "Pilot finlab pilot_finlab_v1 設為執行中",
       })
       await trigger.click()
       const dialog = dialogElement()
@@ -200,7 +200,7 @@ describe("scheduler confirmation mobile layout", () => {
       }
       if (mode === "bulk") {
         for (const provider of providers) {
-          expect(dialog.textContent).toContain(`pilot_${provider}`)
+          expect(dialog.textContent).toContain(`pilot_${provider}_v1`)
         }
         expect(dialog.scrollHeight).toBeGreaterThan(dialog.clientHeight)
       }
@@ -228,7 +228,7 @@ describe("scheduler confirmation mobile layout", () => {
         mocks.updateScheduler.mock.calls.map(([request]) => request.data)
       ).toEqual(
         (mode === "bulk" ? providers : ["finlab"]).map(provider => ({
-          schedulerKey: `pilot_${provider}`,
+          schedulerKey: `pilot_${provider}_v1`,
           desiredState: "running",
           expectedRevision: 1,
         }))

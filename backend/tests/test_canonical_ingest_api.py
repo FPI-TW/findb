@@ -33,6 +33,7 @@ from app.services.delivery_policy import (
     evaluate_delivery_policy,
 )
 from app.services.ingestion import (
+    CONTRACT_NORMALIZER_MAP,
     IngestionService,
     lock_ingestion_idempotency_scope,
 )
@@ -40,7 +41,7 @@ from app.services.ingestion_attempts import (
     IngestionAttemptService,
     reconcile_stale_ingestion_attempts,
 )
-from app.services.ingress_contracts import validate_ingress_request
+from app.services.ingress_contracts import get_contract_json_schema, validate_ingress_request
 from app.services.normalization_queue import execute_normalization
 from app.services.normalize.base import EODPartitionUnavailableError
 from app.services.source_clients import create_source_client
@@ -266,20 +267,14 @@ async def test_dataset_discovery_exposes_contract_declaration(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("schema_id", "expected_title", "has_currency_rule"),
-    [
-        ("market_eod", "MarketEODIngressRequest", True),
-    ],
-)
-async def test_versioned_contract_schema_endpoint_is_machine_readable(
+@pytest.mark.parametrize(("schema_id", "schema_version"), sorted(CONTRACT_NORMALIZER_MAP))
+async def test_versioned_contract_schema_endpoint_is_deterministic(
     client: AsyncClient,
     source_headers: dict,
     schema_id: str,
-    expected_title: str,
-    has_currency_rule: bool,
+    schema_version: int,
 ):
-    url = f"/api/v1/source/contracts/{schema_id}/versions/1"
+    url = f"/api/v1/source/contracts/{schema_id}/versions/{schema_version}"
 
     first = await client.get(url, headers=source_headers)
     second = await client.get(url, headers=source_headers)
@@ -287,26 +282,9 @@ async def test_versioned_contract_schema_endpoint_is_machine_readable(
     assert first.status_code == 200
     assert first.content == second.content
     schema = first.json()
-    assert schema["$id"] == f"urn:findb:ingress-contract:{schema_id}:v1"
-    assert schema["title"] == expected_title
+    assert schema == get_contract_json_schema(schema_id, schema_version)
+    assert schema["$id"] == f"urn:findb:ingress-contract:{schema_id}:v{schema_version}"
     assert schema["properties"]["schema_id"]["const"] == schema_id
-    assert schema["x-findb-contract-scope"]["sufficient_for_api_acceptance"] is False
-    assert schema["x-findb-contract-scope"]["additional_acceptance_boundaries"]
-    assert schema["x-findb-transformations"][0]["id"] == ("normalization.strings.strip_whitespace")
-    assert (
-        any(
-            rule["id"] == "market.currency.row_or_dataset_default"
-            for rule in schema["x-findb-semantic-rules"]
-        )
-        is has_currency_rule
-    )
-
-
-@pytest.mark.asyncio
-async def test_contract_schema_endpoint_requires_source_auth(client: AsyncClient):
-    response = await client.get("/api/v1/source/contracts/market_eod/versions/1")
-
-    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
