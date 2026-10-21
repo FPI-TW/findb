@@ -169,7 +169,7 @@ jobs:
         fi
   publish:
     needs: select
-    if: ${{ needs.select.result == 'success' && needs.select.outputs.mode == 'candidate' }}
+    if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.mode == 'candidate' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
