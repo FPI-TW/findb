@@ -734,6 +734,110 @@ describe("Operations presentation", () => {
     expect(invalidation).toHaveBeenCalledWith({ queryKey: key, exact: true })
   })
 
+  it("does not flash a configuration error while a started scheduler refetches", async () => {
+    const queryClient = new QueryClient()
+    const freshness = makeFullMarketFreshness("finlab")
+    const scheduler = makeScheduler({
+      scheduler_key: freshness.scheduler_key,
+    })
+    const key = operationsKeys.overview(audit)
+    queryClient.setQueryData(key, {
+      view: "overview",
+      fetchedAt: timestamp,
+      freshness: { ok: true, data: { success: true, data: [freshness] } },
+      queue: { ok: false, error: "not configured" },
+      schedulers: { ok: true, data: { success: true, data: [scheduler] } },
+      refreshErrors: {},
+      sourceUpdatedAt: {},
+    })
+    vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue()
+    await updateOverviewSchedulerCache(queryClient, audit, {
+      success: true,
+      data: makeScheduler({
+        scheduler_key: freshness.scheduler_key,
+        desired_state: "running",
+        revision: 2,
+      }),
+    })
+    const cached = queryClient.getQueryData<DashboardResponse>(key)
+    if (
+      cached?.view !== "overview" ||
+      !cached.freshness.ok ||
+      !cached.schedulers.ok
+    ) {
+      throw new Error("Missing overview cache")
+    }
+    const staleFreshness = cached.freshness.data.data[0]!
+    const control = cached.schedulers.data.data[0]!
+    // Freshness keeps the revision its activation_state was computed for.
+    expect(staleFreshness).toMatchObject({
+      revision: 1,
+      activation_state: "not_activated",
+    })
+    expect(control).toMatchObject({ desired_state: "running", revision: 2 })
+    expect(
+      selectSchedulerRuntimeStatus({ control, freshness: staleFreshness })
+    ).toBe("running")
+    render(
+      <QueryClientProvider client={queryClient}>
+        <IngestionOverviewPanel
+          profile="full_market"
+          freshnessResult={cached.freshness}
+          schedulersResult={cached.schedulers}
+          loading={false}
+          pending={false}
+          freshnessError=""
+          schedulersError=""
+          role="owner"
+        />
+      </QueryClientProvider>
+    )
+    expect(screen.queryByText("設定錯誤")).not.toBeInTheDocument()
+
+    const refetched = { ...freshness, desired_state: "running", revision: 2 }
+    expect(
+      selectSchedulerRuntimeStatus({
+        control,
+        freshness: { ...refetched, activation_state: "activated" },
+      })
+    ).toBe("running")
+    // At the same revision, a running scheduler without activation is real.
+    expect(
+      selectSchedulerRuntimeStatus({ control, freshness: refetched })
+    ).toBe("configuration_error")
+  })
+
+  it("advances the freshness revision when freshness is the only control source", async () => {
+    const queryClient = new QueryClient()
+    const freshness = makeFullMarketFreshness("finlab")
+    const key = operationsKeys.overview(audit)
+    queryClient.setQueryData(key, {
+      view: "overview",
+      fetchedAt: timestamp,
+      freshness: { ok: true, data: { success: true, data: [freshness] } },
+      queue: { ok: false, error: "not configured" },
+      schedulers: { ok: false, error: "unavailable" },
+      refreshErrors: {},
+      sourceUpdatedAt: {},
+    })
+    vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue()
+    await updateOverviewSchedulerCache(queryClient, audit, {
+      success: true,
+      data: makeScheduler({
+        scheduler_key: freshness.scheduler_key,
+        desired_state: "running",
+        revision: 2,
+      }),
+    })
+    const cached = queryClient.getQueryData<DashboardResponse>(key)
+    // The card's next mutation must send the current expected revision.
+    expect(
+      cached?.view === "overview" && cached.freshness.ok
+        ? cached.freshness.data.data[0]?.revision
+        : undefined
+    ).toBe(2)
+  })
+
   it("renders an explicit initial skeleton for the overview", () => {
     mocks.loadDashboard.mockReturnValue(new Promise(() => undefined))
     const queryClient = new QueryClient()
