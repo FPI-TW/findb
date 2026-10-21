@@ -332,7 +332,14 @@ function schedulerStartReason(control: SchedulerMutationTarget) {
     full_market_deadline_capacity_insufficient: "provider 無法在 deadline 完成",
     full_market_configuration_invalid:
       "全市場設定、readiness 或 scope 不符合啟動條件",
-    full_market_baseline_missing: "缺少已發布的官方 baseline",
+    full_market_baseline_missing:
+      control.provider === "factset"
+        ? "尚無已發布的 FactSet HKEX baseline"
+        : "缺少已發布的官方 baseline",
+    provider_acquisition_cutover:
+      control.provider === "factset"
+        ? "尚未提交 HK provider 切換"
+        : "供應商來源切換限制，目前不允許此供應商抓取",
     full_market_calendar_missing: "缺少完整已發布的交易所日曆",
   }
   return control.start_blockers?.length

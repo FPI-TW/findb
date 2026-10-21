@@ -76,6 +76,11 @@ Overview、freshness、plans、alerts 的請求與 query cache key 都包含 pro
 概況卡片的啟用範圍與心跳提示同樣標示所選 Pilot／Full market。尚未納入抓取範圍的 feed
 若有 blocker，顯示實際原因；沒有 blocker 則顯示「尚未啟用」，不視為日曆缺漏或資料缺漏。
 
+FactSet 的 Pilot／Full market 排程卡片、批次啟動跳過提示與確認視窗會區分兩項啟動阻擋：
+`full_market_baseline_missing` 顯示「尚無已發布的 FactSet HKEX baseline」，
+`provider_acquisition_cutover` 顯示「尚未提交 HK provider 切換」。操作順序見
+[FactSet 港股切換](factset_hk.md#backend-first-切換)。其他供應商仍使用一般 baseline 與來源切換限制訊息。
+
 ### 有效日曆與依設定略過
 
 日曆管理同時顯示可編輯修訂與「抓取使用的日曆」來源；published revision 優先，未設定日期標示

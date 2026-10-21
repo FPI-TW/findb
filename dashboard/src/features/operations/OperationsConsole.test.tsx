@@ -999,6 +999,73 @@ describe("Operations presentation", () => {
     ).toEqual(["full_market_finlab_v1"])
   })
 
+  it.each([
+    ["pilot", "Pilot"],
+    ["full_market", "Full market"],
+  ])(
+    "explains FactSet HK start blockers in %s cards and bulk confirmation",
+    (profile, label) => {
+      const schedulerKey = `${profile}_factset_v1`
+      const reason =
+        "尚無已發布的 FactSet HKEX baseline；尚未提交 HK provider 切換"
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <SchedulerPanel
+            result={{
+              ok: true,
+              data: {
+                success: true,
+                data: [
+                  makeScheduler({
+                    scheduler_key: schedulerKey,
+                    provider: "factset",
+                    desired_state: "stopped",
+                    start_allowed: false,
+                    start_blockers: [
+                      "full_market_baseline_missing",
+                      "provider_acquisition_cutover",
+                    ],
+                  }),
+                  makeScheduler({
+                    scheduler_key: `${profile}_finlab_v1`,
+                    provider: "finlab",
+                    desired_state: "stopped",
+                    start_allowed: true,
+                  }),
+                ],
+              },
+            }}
+            loading={false}
+            pending={false}
+            refreshError=""
+            role="owner"
+          />
+        </QueryClientProvider>
+      )
+      expect(screen.getByText(`無法啟動：${reason}`)).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          `全部啟動將跳過 1 個 Scheduler：${schedulerKey}（${reason}）`
+        )
+      ).toBeInTheDocument()
+      expect(
+        screen.queryByText(/全市場設定或 scope 無效/)
+      ).not.toBeInTheDocument()
+      expect(
+        screen.getByRole("button", {
+          name: `${label} factset ${schedulerKey} 設為執行中`,
+        })
+      ).toBeDisabled()
+      fireEvent.click(screen.getByRole("button", { name: `${label} 全部啟動` }))
+      expect(
+        screen.getByText(
+          `跳過 1 個無法啟動的 Scheduler：${schedulerKey}（${reason}）`
+        )
+      ).toBeInTheDocument()
+      expect(mocks.updateScheduler).not.toHaveBeenCalled()
+    }
+  )
+
   it("disables all-blocked starts while allowing a running invalid control to stop", () => {
     const schedulers = [
       makeScheduler({
