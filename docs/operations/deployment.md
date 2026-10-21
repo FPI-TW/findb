@@ -38,7 +38,7 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
 | 觸發 | push main 後由 `change_policy.py` 比對同 workflow 最後一次成功 push run 的 SHA 判斷受影響 unit，找不到可信基準時全選；也可人工 dispatch | 僅人工 dispatch，選擇 `promote` 或 `rollback`；push tag 不會觸發 |
 | 版本選擇 | 完整 commit SHA；人工指定版本必須在 main history 中 | `findb-vMAJOR.MINOR.PATCH`／`fetcher-vMAJOR.MINOR.PATCH` annotated tag，指向 main history 中的 commit |
 | 人工確認 | 手動新 candidate 要輸入 `deploy-new-candidate`；預設模式是 accepted replay | 必填 `PROMOTE_FINDB_PRODUCTION`／`PROMOTE_FETCHER_PRODUCTION`；不是 GitHub Environment 審批 |
-| CI | 部署前執行指定 SHA 的 unit CI；自動入口依變更範圍選擇 | promotion 與 rollback 都在 tag binding 驗證後重跑指定 SHA 的 unit CI |
+| CI | candidate 部署前執行指定 SHA 的 unit CI，自動入口依變更範圍選擇；accepted replay 不重跑 CI | promotion 在 tag binding 驗證後重跑指定 SHA 的 unit CI；rollback 只驗證既有 binding 與 production acceptance record，不重跑 CI |
 | 發布 images | 依 commit tag 建置，已存在則重用；部署固定 digest | 從 staging accepted bundle 複製 exact digests 至 production ECR，綁定版本 tag；不重建發布 images，CI 仍可能建置測試 images |
 | 發布契約 | manifest 的 `release_tag` 為空；建立 staging candidate bundle | 額外保存 tag object／commit／staging accepted bundle 的 immutable binding；產生帶 production identity 與 promotion source 的新 bundle |
 | 環境位置 | AWS account `439622209937`；`findb/staging/*` ECR 與 `/findb/staging/<unit>/deployment` SSM | AWS account `289112218471`；`findb/production/*` ECR 與 `/findb/production/<unit>/deployment` SSM；另需 staging reader 與 production promotion role |
@@ -117,8 +117,9 @@ owner／mode、exclusive create 與清理規則；宣告 secrets 的 consumer �
 
 FinDB candidate 執行 migration、DB grants／credentials reconciliation 與 registry provisioning。
 Activation／accepted replay 改為 exact DB revision 與 credentials check-only，停止服務前即檢查相容性，
-不再重跑 schema／registry mutations；不相容仍 fail closed。Production rollback 維持完整 unit CI，
-本次未改成重用舊 CI 證據，也沒有新增成功 rollback 的實測基準。
+不再重跑 schema／registry mutations；不相容仍 fail closed。Accepted replay 與 production rollback
+不重跑 unit CI：acceptance record 只會在該 SHA 通過 CI 後產生，而以目前 main 的 CI 定義檢查舊 SHA
+可能因 CI 漂移失敗並拖延復原。尚無成功 rollback 的實測基準。
 
 兩個 reusable deploy job 上限由 90 改為 55 分鐘。Protected-main driver 負責主機 Bash wrapper 與 SSM wait，
 避免 accepted replay 依賴舊 release 缺少的新 helper。主機 preflight／candidate／activation 分別由

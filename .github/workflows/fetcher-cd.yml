@@ -75,11 +75,14 @@ jobs:
       env:
         EVENT: ${{ github.event_name }}
         HEAD: ${{ inputs.revision || github.sha }}
+        DEPLOYMENT_MODE: ${{ inputs.deployment_mode }}
         GH_TOKEN: ${{ github.token }}
       run: |
         set -euo pipefail
         if [ "$EVENT" = workflow_dispatch ]; then
-          printf 'fetcher_ci=true\nfetcher_staging=true\n' >> "$GITHUB_OUTPUT"
+          # An accepted replay already passed CI when it was accepted.
+          ci=true; [ "$DEPLOYMENT_MODE" = replay ] && ci=false
+          printf 'fetcher_ci=%s\nfetcher_staging=true\n' "$ci" >> "$GITHUB_OUTPUT"
           exit 0
         fi
         # Diff from the last successful push rollout, not github.event.before:
@@ -101,7 +104,9 @@ jobs:
     needs:
     - policy
     - verify
-    if: github.ref == 'refs/heads/main' && needs.verify.result == 'success' && needs.policy.outputs.fetcher_staging == 'true'
+    if: |-
+      !cancelled() && github.ref == 'refs/heads/main' && needs.policy.result == 'success' && needs.policy.outputs.fetcher_staging == 'true' &&
+      (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -160,9 +160,13 @@ jobs:
       id-token: write
       contents: read
   verify:
+    # A rollback replays a production acceptance record, which already proves
+    # this SHA passed CI at promotion. Re-running today's CI definition against
+    # an older SHA can fail on drift and only delays recovery.
     needs:
     - resolve
     - bind-release-tag
+    if: ${{ inputs.mode == 'promote' }}
     uses: ./.github/workflows/fetcher-ci.yml
     with:
       revision: ${{ needs.resolve.outputs.revision }}
@@ -324,8 +328,7 @@ jobs:
     needs:
     - resolve
     - bind-release-tag
-    - verify
-    if: ${{ inputs.mode == 'rollback' && needs.verify.result == 'success' }}
+    if: ${{ inputs.mode == 'rollback' && needs.bind-release-tag.result == 'success' }}
     uses: ./.github/workflows/fetcher-deploy.yml
     with:
       deployment_target: production

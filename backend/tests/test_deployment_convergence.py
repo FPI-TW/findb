@@ -84,6 +84,20 @@ def test_staging_cd_diffs_from_last_successful_push_rollout() -> None:
         assert "change_policy.py --full" in job
 
 
+def test_staging_accepted_replay_skips_ci_but_candidates_require_it() -> None:
+    for unit in ("findb", "fetcher"):
+        text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
+        policy_job = text.split("  policy:", 1)[1].split("  verify:", 1)[0]
+        assert 'ci=true; [ "$DEPLOYMENT_MODE" = replay ] && ci=false' in policy_job
+        select = text.split("  select:", 1)[1].split("    runs-on:", 1)[0]
+        assert "!cancelled()" in select
+        assert "needs.policy.result == 'success'" in select
+        assert (
+            "needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch'"
+            " && inputs.deployment_mode == 'replay'"
+        ) in select
+
+
 def _v2_manifest(target: str) -> dict[str, object]:
     registry = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com"
     unit = "findb"

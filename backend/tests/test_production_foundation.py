@@ -85,3 +85,20 @@ def test_production_deployment_failure_alarm_fires_on_one_published_failure() ->
     )[0]
     assert 'actions   = ["cloudwatch:PutMetricData"]' in metric_statement
     assert 'values   = ["FinDB/Production"]' in metric_statement
+
+
+def test_production_rollback_replays_acceptance_without_rerunning_ci() -> None:
+    for unit in ("findb", "fetcher"):
+        workflow = (REPO_ROOT / ".github/workflows" / f"{unit}-production-cd.yml").read_text(
+            encoding="utf-8"
+        )
+        verify = workflow.split("  verify:", 1)[1].split("  promote:", 1)[0]
+        assert "if: ${{ inputs.mode == 'promote' }}" in verify
+        rollback = workflow.split("  deploy-rollback:", 1)[1].split(
+            "  report-production-deployment-failure:", 1
+        )[0]
+        assert "    - verify\n" not in rollback
+        assert "needs.bind-release-tag.result == 'success'" in rollback
+        assert "mode: replay" in rollback
+        promote = workflow.split("  promote:", 1)[1].split("    runs-on:", 1)[0]
+        assert "needs.verify.result == 'success'" in promote
