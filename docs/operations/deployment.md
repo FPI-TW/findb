@@ -35,7 +35,7 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
 
 | 項目 | Staging | Production |
 | --- | --- | --- |
-| 觸發 | push main 後由 `change_policy.py` 判斷受影響 unit；也可人工 dispatch | 僅人工 dispatch，選擇 `promote` 或 `rollback`；push tag 不會觸發 |
+| 觸發 | push main 後由 `change_policy.py` 比對同 workflow 最後一次成功 push run 的 SHA 判斷受影響 unit，找不到可信基準時全選；也可人工 dispatch | 僅人工 dispatch，選擇 `promote` 或 `rollback`；push tag 不會觸發 |
 | 版本選擇 | 完整 commit SHA；人工指定版本必須在 main history 中 | `findb-vMAJOR.MINOR.PATCH`／`fetcher-vMAJOR.MINOR.PATCH` annotated tag，指向 main history 中的 commit |
 | 人工確認 | 手動新 candidate 要輸入 `deploy-new-candidate`；預設模式是 accepted replay | 必填 `PROMOTE_FINDB_PRODUCTION`／`PROMOTE_FETCHER_PRODUCTION`；不是 GitHub Environment 審批 |
 | CI | 部署前執行指定 SHA 的 unit CI；自動入口依變更範圍選擇 | promotion 與 rollback 都在 tag binding 驗證後重跑指定 SHA 的 unit CI |
@@ -190,6 +190,11 @@ deadline 後不得 acceptance、取消／未確認終態、共同觀察窗口，
 以上為本機驗證，不代表已部署或通過 AWS 線上 rollback 演練。
 
 ## 共用部署順序
+
+變更範圍不以 `github.event.before` 計算：被後續 push 取代而取消的 pending run、或部署失敗的 run，
+其變更會由下一次 push 併入比對，不會因下一個 commit 只改文件而漏部署。`fetcher/` 與所有 `infra/`
+變更都會觸發 FinDB CI（Backend tests import Fetcher 並檢查 infra 檔案）；`.github/actions/` 變更
+同時觸發兩個 unit 的 CI 與 staging rollout。
 
 排查「合併後失敗」時，先分開核對 PR 的 merged state、Required CI 與 main push 的 CD。
 Fetcher CD 的 `Wait for same-revision FinDB staging rollout` 若回報

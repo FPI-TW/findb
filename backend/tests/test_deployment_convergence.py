@@ -31,10 +31,14 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
     [
         (["contracts/market_eod/v1.schema.json"], (True, True, False, False, False)),
         (["backend/app/main.py"], (True, False, True, False, False)),
-        (["fetcher/src/main.py"], (False, True, False, True, False)),
+        (["fetcher/src/main.py"], (True, True, False, True, False)),
         (["infra/deploy/release_manifest.py"], (True, True, True, True, False)),
-        (["infra/tofu/staging/main.tf"], (False, False, False, False, True)),
-        (["infra/env/production/findb/remote.env.example"], (False, False, False, False, True)),
+        (["infra/tofu/staging/main.tf"], (True, False, False, False, True)),
+        (["infra/env/production/findb/remote.env.example"], (True, False, False, False, True)),
+        (["infra/env/aws_configuration.py"], (True, False, False, False, True)),
+        (["infra/monitoring/publish_staging_metrics.py"], (True, False, False, False, False)),
+        (["infra/acceptance/native_feed_evidence.py"], (True, False, False, False, False)),
+        ([".github/actions/aws-configuration/action.yml"], (True, True, True, True, False)),
         ([".github/workflows/findb-ci.yml"], (True, True, False, False, False)),
         ([".github/workflows/findb-cd.yml"], (True, True, True, False, False)),
         ([".github/workflows/findb-deploy.yml"], (True, True, True, False, False)),
@@ -49,6 +53,35 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
 def test_change_policy_truth_table(paths: list[str], expected: tuple[bool, ...]) -> None:
     result = policy.classify(paths)
     assert tuple(result[key] for key in policy.OUTPUTS) == expected
+
+
+def test_change_policy_full_selection_without_trusted_base(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    assert policy.main(["--full", "--github-output", str(output)]) == 0
+    assert output.read_text().splitlines() == [f"{key}=true" for key in policy.OUTPUTS]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [[], ["--base", "a" * 40], ["--full", "--base", "a" * 40, "--head", "b" * 40]],
+)
+def test_change_policy_requires_exactly_one_selection_mode(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        policy.main(argv)
+    assert exc.value.code == 2
+
+
+def test_staging_cd_diffs_from_last_successful_push_rollout() -> None:
+    for unit in ("findb", "fetcher"):
+        text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
+        job = text.split("  policy:", 1)[1].split("  verify:", 1)[0]
+        assert "${{ github.event.before }}" not in job
+        assert "actions: read" in job
+        assert (
+            f"actions/workflows/{unit}-cd.yml/runs?branch=main&event=push&status=success"
+        ) in job
+        assert 'git merge-base --is-ancestor "$base" "$HEAD"' in job
+        assert "change_policy.py --full" in job
 
 
 def _v2_manifest(target: str) -> dict[str, object]:
