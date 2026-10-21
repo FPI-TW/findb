@@ -44,7 +44,7 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
 | 觸發 | push main 後由 `change_policy.py` 比對同 workflow 最後一次成功 push run 的 SHA 判斷受影響 unit，找不到可信基準時全選；也可人工 dispatch | 僅人工 dispatch，選擇 `promote` 或 `rollback`；push tag 不會觸發 |
 | 版本選擇 | 完整 commit SHA；人工指定版本必須在 main history 中 | `findb-vMAJOR.MINOR.PATCH`／`fetcher-vMAJOR.MINOR.PATCH` annotated tag，指向 main history 中的 commit |
 | 人工確認 | 手動新 candidate 要輸入 `deploy-new-candidate`；預設模式是 accepted replay | 必填 `PROMOTE_FINDB_PRODUCTION`／`PROMOTE_FETCHER_PRODUCTION`；不是 GitHub Environment 審批 |
-| CI | candidate 部署前執行指定 SHA 的 unit CI，自動入口依變更範圍選擇；accepted replay 不重跑 CI | promotion 在 tag binding 驗證後重跑指定 SHA 的 unit CI；rollback 只驗證既有 binding 與 production acceptance record，不重跑 CI |
+| CI | candidate 部署前執行指定 SHA 的 unit CI，自動入口依變更範圍選擇，tree 相同且 PR 已完整通過該 unit CI 時復用 PR 結果；accepted replay 不重跑 CI | promotion 在 tag binding 驗證後重跑指定 SHA 的 unit CI；rollback 只驗證既有 binding 與 production acceptance record，不重跑 CI |
 | 發布 images | 依 commit tag 建置，已存在則重用；部署固定 digest | 從 staging accepted bundle 複製 exact digests 至 production ECR，綁定版本 tag；不重建發布 images，CI 仍可能建置測試 images |
 | 發布契約 | manifest 的 `release_tag` 為空；建立 staging candidate bundle | 額外保存 tag object／commit／staging accepted bundle 的 immutable binding；產生帶 production identity 與 promotion source 的新 bundle |
 | 環境位置 | AWS account `439622209937`；`findb/staging/*` ECR 與 `/findb/staging/<unit>/deployment` SSM | AWS account `289112218471`；`findb/production/*` ECR 與 `/findb/production/<unit>/deployment` SSM；另需 staging reader 與 production promotion role |
@@ -211,6 +211,12 @@ deadline 後不得 acceptance、取消／未確認終態、共同觀察窗口，
 其變更會由下一次 push 併入比對，不會因下一個 commit 只改文件而漏部署。`fetcher/` 與所有 `infra/`
 變更都會觸發 FinDB CI（Backend tests import Fetcher 並檢查 infra 檔案）；`.github/actions/` 變更
 同時觸發兩個 unit 的 CI 與 staging rollout。
+
+Push 入口在 change policy 選到某 unit 的 CI 時，先以 `infra/deploy/ci_evidence.py` 查詢可復用的 PR CI：
+合併 commit 必須對應唯一、同 repo、base 為 main 的已合併 PR，其 tree 與 PR head 完全相同；該 head 最新一次
+`Required CI` 必須成功，且該 unit CI workflow 的每個 job 於最新 attempt 皆為 success（PR 略過該 unit 時不算）。
+符合時跳過 `verify` 並在 log 輸出 `ci_evidence=reused` 與 PR／run ID；任何不符或 API 錯誤都輸出
+`ci_evidence=unavailable reason=...` 並照常執行 CI。手動 dispatch 與 production promotion 不使用此復用。
 
 排查「合併後失敗」時，先分開核對 PR 的 merged state、Required CI 與 main push 的 CD。
 Fetcher CD 的 `Wait for same-revision FinDB staging rollout` 若回報

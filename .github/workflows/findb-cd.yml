@@ -51,10 +51,12 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     outputs:
       revision: ${{ steps.revision.outputs.sha }}
       findb_ci: ${{ steps.policy.outputs.findb_ci }}
       findb_staging: ${{ steps.policy.outputs.findb_staging }}
+      findb_ci_evidence: ${{ steps.policy.outputs.findb_ci_evidence }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -98,9 +100,14 @@ jobs:
           echo "change_policy_base=unavailable selection=full"
           python3 infra/deploy/change_policy.py --full --github-output "$GITHUB_OUTPUT"
         fi
+        # A squash merge whose tree equals the PR head already passed this unit's
+        # CI in Required CI; any doubt falls back to running CI here.
+        if grep -qx 'findb_ci=true' "$GITHUB_OUTPUT"; then
+          python3 infra/deploy/ci_evidence.py --repository "$GITHUB_REPOSITORY" --revision "$HEAD" --unit findb --ci-workflow .github/workflows/findb-ci.yml --github-output "$GITHUB_OUTPUT"
+        fi
   verify:
     needs: policy
-    if: ${{ needs.policy.outputs.findb_ci == 'true' }}
+    if: ${{ needs.policy.outputs.findb_ci == 'true' && needs.policy.outputs.findb_ci_evidence == '' }}
     uses: ./.github/workflows/findb-ci.yml
     with:
       revision: ${{ needs.policy.outputs.revision }}
@@ -110,7 +117,8 @@ jobs:
     - verify
     if: |-
       !cancelled() && github.ref == 'refs/heads/main' && needs.policy.result == 'success' && needs.policy.outputs.findb_staging == 'true' &&
-      (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay'))
+      (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay') ||
+      (needs.verify.result == 'skipped' && github.event_name == 'push' && needs.policy.outputs.findb_ci_evidence != ''))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
