@@ -175,6 +175,7 @@ def test_host_command_has_a_deadline_and_time_for_term_recovery():
         text=True,
         capture_output=True,
         check=False,
+        env=script_env(),
     )
     assert result.returncode == 0
     assert result.stdout.startswith("exec timeout --signal=TERM --kill-after=180s 900s bash -c ")

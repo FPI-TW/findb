@@ -19,6 +19,7 @@ from app.services.normalize.contracts import (
     MarketMinuteContractNormalizer,
 )
 from scripts.seed_data import seed_datasets
+from tests.script_env import script_env
 from tests.test_canonical_ingest_api import _execute_run
 from tests.test_full_market import DAY, _activated_plan, _ingress, _quote, _source_headers
 from tests.test_minute_normalize import _minute_request
@@ -66,6 +67,7 @@ print(json.dumps(request))
         capture_output=True,
         text=True,
         check=True,
+        env=script_env(),
     )
     request = json.loads(result.stdout)
     request["delivery"] = _ingress(plan, [])["delivery"]

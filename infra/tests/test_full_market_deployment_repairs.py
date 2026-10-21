@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -267,7 +268,8 @@ docker() {
     state.unlink()  # Execute the real CLI with exactly the extracted Docker environment.
     cli = arguments[arguments.index("findb-fetch-runtime") + 1 :]
     completed = subprocess.run(
-        [str(REPO_ROOT / "fetcher/.venv/bin/python"), "-m", "findb_fetcher.full_market_cli", *cli],
+        # -I: Fetcher (an editable dev dependency) imports; backend `app` does not.
+        [sys.executable, "-I", "-m", "findb_fetcher.full_market_cli", *cli],
         env=environment,
         capture_output=True,
         text=True,

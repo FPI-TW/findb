@@ -886,6 +886,7 @@ docker() {
         ],
         capture_output=True,
         text=True,
+        env=script_env(),
     )
     assert result.returncode == 0, result.stderr
     assert "runtime_retirement_failed" in result.stderr

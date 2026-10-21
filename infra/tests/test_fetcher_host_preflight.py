@@ -707,7 +707,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
         if tamper == "guard-transport":
             # Alter payload after generation without altering its expected SHA.
             payload = base64.b64encode(
-                subprocess.check_output(["gzip", "-c", str(trusted / "check_fetcher_host.py")])
+                subprocess.check_output(
+                    ["gzip", "-c", str(trusted / "check_fetcher_host.py")], env=script_env()
+                )
             ).decode()
             generated = generated.replace(
                 payload,
@@ -715,7 +717,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
             )
         if tamper == "validator-transport":
             payload = base64.b64encode(
-                subprocess.check_output(["gzip", "-c", str(trusted / "release_manifest.py")])
+                subprocess.check_output(
+                    ["gzip", "-c", str(trusted / "release_manifest.py")], env=script_env()
+                )
             ).decode()
             generated = generated.replace(
                 payload,

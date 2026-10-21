@@ -310,7 +310,9 @@ set -- findb-fetch-runtime --execution-profile pilot --state-path /state/state.s
 """
         + command
     )
-    result = subprocess.run(["/bin/bash", "-c", shell], capture_output=True, text=True, timeout=10)
+    result = subprocess.run(
+        ["/bin/bash", "-c", shell], capture_output=True, text=True, timeout=10, env=script_env()
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines()[-1] == "--" + mode
     assert "" not in result.stdout.splitlines()

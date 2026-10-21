@@ -16,6 +16,7 @@ from scripts.export_archive_contracts import (
     export_artifacts as export_archive_artifacts,
 )
 from scripts.export_ingress_contracts import check_artifacts, export_artifacts
+from tests.script_env import script_env
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -80,6 +81,7 @@ def test_check_command_fails_for_changed_and_missing_artifacts(tmp_path: Path) -
         capture_output=True,
         text=True,
         check=False,
+        env=script_env(),
     )
 
     assert result.returncode == 1

@@ -33,6 +33,7 @@ from app.services.source_clients import create_source_client
 from app.utils import utc_now
 from scripts.seed_data import seed_datasets
 from tests.full_market_fixtures import declaration
+from tests.script_env import script_env
 from tests.test_full_market import _baseline, _calendar
 from tests.test_full_market_governance import RUNTIME_FEEDS, change_runtime_identity
 
@@ -331,6 +332,7 @@ async def test_management_output_fetcher_partial_scope_digest_roundtrip(
 ):
     import json
     import subprocess
+    import sys
     from pathlib import Path
 
     from app.schemas.full_market_readiness import ReadinessDeclaration
@@ -349,10 +351,12 @@ async def test_management_output_fetcher_partial_scope_digest_roundtrip(
     row = await enroll(test_session, proof, "d" * 64)
     write_enrollment_files(row, tmp_path)
     source_root = Path(__file__).resolve().parents[2] / "fetcher" / "src"
-    # Execute the real Fetcher reader without a backend runtime dependency.
+    # Execute the real Fetcher reader without a backend runtime dependency:
+    # isolated mode keeps backend `app` off sys.path.
     result = subprocess.run(
         [
-            str(Path(__file__).resolve().parents[2] / "fetcher" / ".venv" / "bin" / "python"),
+            sys.executable,
+            "-I",
             "-c",
             """
 import json,sys
@@ -370,6 +374,7 @@ print(json.dumps({'digest':checksum(canonical_bytes(proof)), 'proof':proof}))
         capture_output=True,
         text=True,
         check=True,
+        env=script_env(),
     )
     loaded = json.loads(result.stdout)
     assert loaded["digest"] == row.declaration_sha256 == declaration_digest(loaded["proof"])
