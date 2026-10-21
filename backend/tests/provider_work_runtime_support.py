@@ -27,6 +27,7 @@ from tests.test_provider_work import attest_cutover
 DAY = recent_backfill_day()
 # Longer than one TAIFEX harness run, including CI scheduling delay.
 MINUTE_ROLLOVER_MARGIN_SECONDS = 5
+SHIOAJI_TEST_PACING_SECONDS = 0.01
 SCOPES = [
     ("twelve_data", "us_equity_eod"),
     ("finlab", "tw_equity_eod"),
@@ -73,6 +74,12 @@ class RuntimeHarness:
             from tests.provider_work_clock import dispatch_clock
 
             self.dispatch_clock = dispatch_clock(patch)
+        if self.provider == "shioaji":
+            from findb_fetcher import acquisition
+
+            # The 5/s platform pacing adds ~0.2s of real sleep per native call.
+            # Pacing floors and waits still run; only the interval is shortened.
+            patch.setattr(acquisition, "interval", lambda value: SHIOAJI_TEST_PACING_SECONDS)
         self.queue = coordinator
         patch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
         patch.setattr(get_settings(), "APP_ENVIRONMENT", self.environment)
@@ -560,20 +567,7 @@ class RuntimeHarness:
             with HistoricalControlClient(
                 self.config, client=self.http(), provider=self.provider
             ) as control:
-                try:
-                    return run_once(control, Diagnostic())
-                finally:
-                    Path(f"/tmp/findb-native-{self.provider}-{self.dataset}.json").write_text(
-                        json.dumps(
-                            {
-                                "native": self.native_calls(),
-                                "source": self.source_events,
-                                "failure": self.failure,
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        )
-                    )
+                return run_once(control, Diagnostic())
 
         return await asyncio.to_thread(execute)
 

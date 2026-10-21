@@ -164,7 +164,7 @@ findb/
 - `backend/tests/conftest.py` 為每個 pytest session／xdist worker 建立唯一的暫存 ORM database；
   schema 建立一次，結束時只刪除該 session 自行建立的 DB。帳號需具有 `CREATEDB` 權限。
 - 一般測試以外層 transaction rollback 隔離；直接要求 `test_engine` 的測試則在結束後
-  truncate 該 session 專屬 DB 的 ORM tables。Migration tests 繼續使用各自的 immutable templates／clones。
+  以 DELETE 清空該 session 專屬 DB 的 ORM tables 並重設 sequences。Migration tests 繼續使用各自的 immutable templates／clones。
 - 並行與失敗清理驗證、環境限制見 `docs/operations/testing.md`。
 - 測試 fixture 會在需要時建立 DB-backed Source/Admin credentials；`DEBUG=true`。
 - Repo-wide preferred test runner 是 `pnpm test` 或 `make test`，會涵蓋 contracts、Backend、

@@ -8,10 +8,11 @@ import copy
 import hashlib
 import json
 import os
+import signal
 import subprocess
-import sys
 from pathlib import Path
 
+import fake_daemon
 import pytest
 from test_full_market_deployment_repairs import _inventory_policy
 
@@ -21,92 +22,195 @@ HELPER = REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
 DEPLOY = REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
 REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
 
-FAKE = r"""
-import os,sys,json,signal
-from pathlib import Path
-store=Path(os.environ['STORE']);s=json.loads(store.read_text());a=sys.argv[1:];cmd=Path(sys.argv[0]).name
-rows=s['rows'];s['log'].append([cmd,*a]);status=0;output=None
-if cmd=='sudo':
-    if a[0]=='stat':output='0:0:755' if 'readiness' in a[-1] else ('10001:10001:600' if Path(a[-1]).is_file() else '10001:10001:700')
-    elif a[0]=='test':status=0 if Path(a[-1]).exists() else 1
-    elif a[0]=='cat':output=Path(a[-1]).read_text().strip()
-    elif a[0] in ['mkdir','chown','chmod']:pass
-    else:status=91
-elif cmd=='sleep':pass
-elif cmd=='docker':
-    if a[:2]==['container','ls']:
-        if s.get('inventory_failure'): status=s['failure_rc'];output='private daemon error'
-        else:output='\n'.join(rows)
-    elif a[:2]==['container','inspect']:
-        name=a[-1]
-        if s.get('exist_fail')==name and not s.get('exist_failed'):
-            s['exist_failed']=True;status=s.get('failure_rc',81);output='private daemon error'
-        else:status=0 if name in rows else 1
-    elif a[0]=='inspect':
-        name=a[-1];fmt=a[2];row=rows.get(name)
-        if row is None:status=1
+
+def fake_call(s, cmd, a, parent, environ):
+    """Offline Docker/sudo API for one call; return (status, stdout)."""
+    rows = s["rows"]
+    s["log"].append([cmd, *a])
+    status = 0
+    output = None
+    if cmd == "sudo":
+        if a[0] == "stat":
+            output = (
+                "0:0:755"
+                if "readiness" in a[-1]
+                else ("10001:10001:600" if Path(a[-1]).is_file() else "10001:10001:700")
+            )
+        elif a[0] == "test":
+            status = 0 if Path(a[-1]).exists() else 1
+        elif a[0] == "cat":
+            output = Path(a[-1]).read_text().strip()
+        elif a[0] in ["mkdir", "chown", "chmod"]:
+            pass
         else:
-            fields={'{{.Id}}':row['id'],'{{.Config.Image}}':row['image'],'{{.State.Running}}':str(row['running']).lower(),'{{.State.ExitCode}}':str(row.get('exit',0)),'{{.State.OOMKilled}}':str(row.get('oom',False)).lower(),'{{.State.Error}}':row.get('error',''),'{{.State.Status}}':'running' if row['running'] else 'exited','{{.Config.User}}':'10001:10001','{{.RestartCount}}':'0','{{.HostConfig.RestartPolicy.Name}}':'no'}
-            output=row.get('accepted','true') if 'Config.Labels' in fmt else (json.dumps(row['command'],separators=(',',':')) if fmt=='{{json .Config.Cmd}}' else fields.get(fmt))
-            if output is None:status=90
-            if s.get('recovery_query_active') and fmt=='{{.State.Running}}' and row['id']=='original-current':
-                failure=s.get('recovery_running_failure')
-                s['recovery_query_count']=s.get('recovery_query_count',0)+1
-                if failure in ['rc1','rc81']:status=int(failure[2:]);output=None
-                elif failure=='empty':output=''
-                elif failure=='invalid':output='unverified'
-            if s.get('recovery_query_active') and os.environ.get('COORDINATOR_QUERY_TEST')=='1' and fmt==s.get('recovery_identity_field') and row['id']=='original-current':
-                s['identity_query_count']=s.get('identity_query_count',0)+1
-                status=s['failure_rc'] # Deliberately retain valid matching stdout.
-            if s.get('normal_retirement_active') and row['id']=='original-current' and fmt==s.get('normal_field'):
-                failure=s['normal_failure']
-                if failure in ['rc1','rc81']:status=int(failure[2:]);output=None
-                elif failure=='empty':output=''
-                elif failure=='invalid':output='unverified'
-            victim=s.get('victim')
-            if name==victim and (row['id'].startswith('new-') or row['id']=='interrupted-candidate'):
-                if fmt=='{{.Config.Image}}' and s['trigger']=='health-failure':output='wrong-image'
-                if fmt=='{{.State.ExitCode}}' and s['retirement']=='exit-137':output='137'
-                if fmt=='{{.State.OOMKilled}}' and s['retirement']=='oom':output='true'
-                if fmt=='{{.State.Error}}' and s['retirement']=='docker-error':output='private host error'
-    elif a[0]=='stop':
-        name=a[-1]
-        if name==s.get('victim') and (rows[name]['id'].startswith('new-') or rows[name]['id']=='interrupted-candidate') and s['retirement']=='stop-refused':status=82
-        else:rows[name]['running']=False;rows[name]['exit']=0
-    elif a[0]=='start':rows[a[-1]]['running']=True
-    elif a[0]=='rm':
-        name=a[-1]
-        if name not in rows:status=1
-        elif '-f' not in a and rows[name]['running']:status=83
-        else:del rows[name]
-    elif a[0]=='rename':
-        old,new=a[1:3]
-        if new in rows:status=84
-        else:
-            rows[new]=rows.pop(old)
-            if new==s.get('victim') and rows[new]['id'].startswith('new-') and s['trigger'] in ['INT','TERM','HUP']:s['send']=s['trigger']
-    elif a[0] in ['image','pull']:pass
-    elif a[0] in ['run','create']:
-        if '-d' in a or a[0]=='create':
-            name=a[a.index('--name')+1]
-            if name in rows:status=85
+            status = 91
+    elif cmd == "sleep":
+        pass
+    elif cmd == "docker":
+        if a[:2] == ["container", "ls"]:
+            if s.get("inventory_failure"):
+                status = s["failure_rc"]
+                output = "private daemon error"
             else:
-                rows[name]={'id':'new-'+name,'image':s['new_image'],'running':a[0]=='run','accepted':'true'}
-                if name==s.get('victim') and s['trigger'] in ['INT','TERM','HUP']:s['send']=s['trigger']
+                output = "\n".join(rows)
+        elif a[:2] == ["container", "inspect"]:
+            name = a[-1]
+            if s.get("exist_fail") == name and not s.get("exist_failed"):
+                s["exist_failed"] = True
+                status = s.get("failure_rc", 81)
+                output = "private daemon error"
+            else:
+                status = 0 if name in rows else 1
+        elif a[0] == "inspect":
+            name = a[-1]
+            fmt = a[2]
+            row = rows.get(name)
+            if row is None:
+                status = 1
+            else:
+                fields = {
+                    "{{.Id}}": row["id"],
+                    "{{.Config.Image}}": row["image"],
+                    "{{.State.Running}}": str(row["running"]).lower(),
+                    "{{.State.ExitCode}}": str(row.get("exit", 0)),
+                    "{{.State.OOMKilled}}": str(row.get("oom", False)).lower(),
+                    "{{.State.Error}}": row.get("error", ""),
+                    "{{.State.Status}}": "running" if row["running"] else "exited",
+                    "{{.Config.User}}": "10001:10001",
+                    "{{.RestartCount}}": "0",
+                    "{{.HostConfig.RestartPolicy.Name}}": "no",
+                }
+                output = (
+                    row.get("accepted", "true")
+                    if "Config.Labels" in fmt
+                    else (
+                        json.dumps(row["command"], separators=(",", ":"))
+                        if fmt == "{{json .Config.Cmd}}"
+                        else fields.get(fmt)
+                    )
+                )
+                if output is None:
+                    status = 90
+                if (
+                    s.get("recovery_query_active")
+                    and fmt == "{{.State.Running}}"
+                    and row["id"] == "original-current"
+                ):
+                    failure = s.get("recovery_running_failure")
+                    s["recovery_query_count"] = s.get("recovery_query_count", 0) + 1
+                    if failure in ["rc1", "rc81"]:
+                        status = int(failure[2:])
+                        output = None
+                    elif failure == "empty":
+                        output = ""
+                    elif failure == "invalid":
+                        output = "unverified"
+                if (
+                    s.get("recovery_query_active")
+                    and environ.get("COORDINATOR_QUERY_TEST") == "1"
+                    and fmt == s.get("recovery_identity_field")
+                    and row["id"] == "original-current"
+                ):
+                    s["identity_query_count"] = s.get("identity_query_count", 0) + 1
+                    status = s["failure_rc"]  # Deliberately retain valid matching stdout.
+                if (
+                    s.get("normal_retirement_active")
+                    and row["id"] == "original-current"
+                    and fmt == s.get("normal_field")
+                ):
+                    failure = s["normal_failure"]
+                    if failure in ["rc1", "rc81"]:
+                        status = int(failure[2:])
+                        output = None
+                    elif failure == "empty":
+                        output = ""
+                    elif failure == "invalid":
+                        output = "unverified"
+                victim = s.get("victim")
+                if name == victim and (
+                    row["id"].startswith("new-") or row["id"] == "interrupted-candidate"
+                ):
+                    if fmt == "{{.Config.Image}}" and s["trigger"] == "health-failure":
+                        output = "wrong-image"
+                    if fmt == "{{.State.ExitCode}}" and s["retirement"] == "exit-137":
+                        output = "137"
+                    if fmt == "{{.State.OOMKilled}}" and s["retirement"] == "oom":
+                        output = "true"
+                    if fmt == "{{.State.Error}}" and s["retirement"] == "docker-error":
+                        output = "private host error"
+        elif a[0] == "stop":
+            name = a[-1]
+            if (
+                name == s.get("victim")
+                and (
+                    rows[name]["id"].startswith("new-")
+                    or rows[name]["id"] == "interrupted-candidate"
+                )
+                and s["retirement"] == "stop-refused"
+            ):
+                status = 82
+            else:
+                rows[name]["running"] = False
+                rows[name]["exit"] = 0
+        elif a[0] == "start":
+            rows[a[-1]]["running"] = True
+        elif a[0] == "rm":
+            name = a[-1]
+            if name not in rows:
+                status = 1
+            elif "-f" not in a and rows[name]["running"]:
+                status = 83
+            else:
+                del rows[name]
+        elif a[0] == "rename":
+            old, new = a[1:3]
+            if new in rows:
+                status = 84
+            else:
+                rows[new] = rows.pop(old)
+                if (
+                    new == s.get("victim")
+                    and rows[new]["id"].startswith("new-")
+                    and s["trigger"] in ["INT", "TERM", "HUP"]
+                ):
+                    s["send"] = s["trigger"]
+        elif a[0] in ["image", "pull"]:
+            pass
+        elif a[0] in ["run", "create"]:
+            if "-d" in a or a[0] == "create":
+                name = a[a.index("--name") + 1]
+                if name in rows:
+                    status = 85
+                else:
+                    rows[name] = {
+                        "id": "new-" + name,
+                        "image": s["new_image"],
+                        "running": a[0] == "run",
+                        "accepted": "true",
+                    }
+                    if name == s.get("victim") and s["trigger"] in ["INT", "TERM", "HUP"]:
+                        s["send"] = s["trigger"]
+            else:
+                if s["trigger"] == "preflight-failure" and "--check" in a:
+                    status = 87
+                    s["recovery_query_active"] = True
+                elif "--check" in a and s.get("normal_field"):
+                    s["normal_retirement_active"] = True
         else:
-            if s['trigger']=='preflight-failure' and '--check' in a:status=87;s['recovery_query_active']=True
-            elif '--check' in a and s.get('normal_field'):s['normal_retirement_active']=True
-    else:status=89
-else:status=88
-if cmd=='docker' and a[0]=='inspect' and output=='wrong-image':s['recovery_query_active']=True
-send=s.pop('send',None)
-if s.get('outage_on_recovery') and (send or (cmd=='docker' and a[0]=='inspect' and output=='wrong-image')):
-    s['inventory_failure']=True
-store.write_text(json.dumps(s))
-if output is not None:print(output)
-if send:os.kill(os.getppid(),getattr(signal,'SIG'+send))
-raise SystemExit(status)
-"""
+            status = 89
+    else:
+        status = 88
+    if cmd == "docker" and a[0] == "inspect" and output == "wrong-image":
+        s["recovery_query_active"] = True
+    send = s.pop("send", None)
+    if s.get("outage_on_recovery") and (
+        send or (cmd == "docker" and a[0] == "inspect" and output == "wrong-image")
+    ):
+        s["inventory_failure"] = True
+    if send:
+        # Delivered while the caller still waits on this command.
+        os.kill(parent, getattr(signal, "SIG" + send))
+    return status, "" if output is None else output + "\n"
 
 
 def run_entry(
@@ -134,12 +238,7 @@ def run_entry(
     normal_failure=None,
 ):
     binaries = tmp_path / "bin"
-    binaries.mkdir()
-    executable = binaries / "fake"
-    executable.write_text(f"#!{sys.executable}\n" + FAKE)
-    executable.chmod(0o700)
-    for name in ["docker", "sudo", "sleep"]:
-        (binaries / name).symlink_to(executable)
+    fake_daemon.install(binaries, ("docker", "sudo", "sleep"))
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     durable = checkpoint / "state.sqlite3"
@@ -194,31 +293,25 @@ def run_entry(
         rows[previous if previous_only else stable].update(original_fields)
     before = copy.deepcopy(rows)
     victim = candidate if location == "candidate" else stable
-    state = tmp_path / "daemon.json"
-    state.write_text(
-        json.dumps(
-            dict(
-                rows=rows,
-                log=[],
-                victim=victim,
-                trigger=trigger,
-                retirement=retirement,
-                new_image=image,
-                exist_fail=exist_fail,
-                failure_rc=failure_rc,
-                inventory_failure=inventory_failure,
-                outage_on_recovery=outage_on_recovery,
-                recovery_running_failure=recovery_running_failure,
-                recovery_identity_field=recovery_identity_field,
-                normal_field=normal_field,
-                normal_failure=normal_failure,
-            )
-        )
+    state = dict(
+        rows=rows,
+        log=[],
+        victim=victim,
+        trigger=trigger,
+        retirement=retirement,
+        new_image=image,
+        exist_fail=exist_fail,
+        failure_rc=failure_rc,
+        inventory_failure=inventory_failure,
+        outage_on_recovery=outage_on_recovery,
+        recovery_running_failure=recovery_running_failure,
+        recovery_identity_field=recovery_identity_field,
+        normal_field=normal_field,
+        normal_failure=normal_failure,
     )
     env = {
         **os.environ,
         "PATH": str(binaries) + ":" + os.environ["PATH"],
-        "STORE": str(state),
         "AWS_REGION": "ap-southeast-1",
         "AWS_ACCOUNT_ID": "439622209937",
         "APP_ENVIRONMENT": "production",
@@ -273,8 +366,13 @@ def run_entry(
         command = ["/bin/bash", "-c", script, "entry", *args]
     if entry == "guard":
         command = ["/bin/bash", str(REPO_ROOT / "infra/deploy/check_full_market_checkpoint.sh")]
-    completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=20)
-    actual = json.loads(state.read_text())
+    with fake_daemon.serve(
+        state, lambda *call: fake_call(state, *call), ("COORDINATOR_QUERY_TEST",)
+    ) as daemon:
+        completed = subprocess.run(
+            command, env={**env, **daemon}, capture_output=True, text=True, timeout=20
+        )
+    actual = json.loads(json.dumps(state))
     assert durable.read_bytes() == b"prepared-payload-debt-and-cursors"
     assert not any(a[:3] == ["docker", "rm", "-f"] for a in actual["log"])
     assert "private daemon error" not in completed.stderr

@@ -140,7 +140,9 @@ database 建立暫存 DB；不要求指定的基底 database 已存在，也不�
 
 `test_session` 的一般測試以外層 transaction 加 savepoint 保留 application commit 行為，
 測試結束時 rollback。直接在測試函式參數要求 `test_engine` 的測試需要跨連線可見的 commit，
-使用一般 session，結束後 truncate 所有 ORM tables。這些清理只發生於該 session 的暫存 DB。
+使用一般 session，結束後依 FK 反向順序 DELETE 所有 ORM tables 並重設 sequences；這些表
+每個測試只有少量資料，逐表 `TRUNCATE` 每次約 130 ms，DELETE 約 10 ms。這些清理只發生於該
+session 的暫存 DB。
 Session teardown 先 dispose engine，再刪除自己建立的 DB；不以 shared DB 的 `drop_all`
 重建 schema，也不以序列化所有 pytest runs 或重試 deadlock 掩蓋競爭。
 Migration tests 維持獨立的 session templates 與 per-test clones，由原 factory 管理。
@@ -156,7 +158,7 @@ uv --directory backend run pytest tests/test_orm_database_isolation.py
 保留該專用基底資料。
 同時啟動兩個載入實際 `tests.conftest` 的 pytest subprocess。stdin/stdout barriers 確認
 兩者都完成初始化與寫入後，先結束其中一個，再驗證另一個仍能讀取自己的 committed 資料。
-同時驗證一般 session rollback、直接 engine 測試後的 truncate、基底 schema／資料不變，
+同時驗證一般 session rollback、直接 engine 測試後的清空、基底 schema／資料不變，
 以及各 session 暫存 DB 的 teardown。另涵蓋 schema setup failure、測試 body failure、
 同名建立失敗與 PostgreSQL identifier 的長度／字元邊界。
 若其中一個 subprocess 提前失敗，先取消並收完所有 stdout reader，再對所有自行建立的
@@ -222,6 +224,9 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 `test_execution_profile_migration.py` 驗證升級保留與 rollback 下限。
 `infra/tests/test_full_market_checkpoint_entry.py` 執行 workflow 實際傳輸的 checkpoint guard；
 Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態及失敗回退。
+Shutdown 與 inventory suites 的假 `docker`／`sudo` 由 `infra/tests/fake_daemon.py` 提供：每個指令是只
+轉送參數與指定環境變數的 bash client，狀態與判斷集中在 pytest 行程內的 localhost daemon 並逐次序列化。
+Shutdown 的 activate 案例約上千次呼叫，不再各自啟動 Python 直譯器。
 AWS 實際部署與七條 native feeds 驗收是另外的結果，不以 fixtures 或靜態檢查替代。
 
 2026-10-15 staging Pilot 已核對四條 feeds：FinLab `tw_equity_eod`／`tw_etf_eod`，
@@ -374,7 +379,8 @@ handoff 與 controls 保持 running。`test_provider_work.py` 另涵蓋 queue en
 Twelve Data US equity EOD、FinLab TW equity EOD、Shioaji TW equity minute／TW ETF minute，以及
 TAIFEX TW futures EOD；使用真 adapter、Source client、authenticated ASGI、worker 與 canonical proof，
 僅以 fixtures 取代 native SDK／HTTP 回應與 R2。Shioaji fixture 仍執行實際隔離 child 的 IPC／FD protocol，
-不需下載 provider SDK 或持有 live credentials。Fault cases 包含 intent commit ACK 遺失、local save 後
+不需下載 provider SDK 或持有 live credentials。Harness 將 Shioaji 5/s 的帳號 pacing 間隔縮為 10 ms；
+pacing floor 與等待路徑仍執行，實際間隔由 Fetcher 單元測試覆蓋。Fault cases 包含 intent commit ACK 遺失、local save 後
 confirm 前取消、local save crash、intent／cancel transaction barrier，以及 daily stop 後 prepared 排空。
 取消／停止期間不新增 provider I/O，accepted nonterminal run 仍保留 whole-work owner；取消狀態與缺漏保持真實。
 Admin single／bulk endpoint 測試驗證新 run／audit／FIFO fence；failed rerun 使用實際 worker failure path，
