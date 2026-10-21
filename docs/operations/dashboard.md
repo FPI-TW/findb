@@ -91,7 +91,9 @@ FactSet 的 Pilot／Full market 排程卡片、批次啟動跳過提示與確認
 
 交付監控頁的「供應商工作佇列」顯示跨 Pilot／Full／historical／maintenance／rerun 的 provider owner、
 FIFO 位置、等待原因、round、not_before 與 heartbeat。依供應商分頁，各頁標示工作數並只列出該供應商的工作，
-保留原 FIFO 順序；預設選取 `twelve_data`，沒有工作仍保留分頁並顯示空清單提示。
+保留原 FIFO 順序；固定保留 Twelve Data、FinLab、Shioaji、TAIFEX、FactSet 五個供應商分頁，
+即使 API 沒有回傳該供應商的未結算工作，仍顯示 `(0)` 與空清單提示。預設選取 `twelve_data`。
+API 回傳的其他供應商仍可動態補入；固定清單也供 Source 憑證表單使用，FactSet 僅對應 `hk_equity_eod`。
 切換供應商不影響下方的執行模式與交付功能分頁；定期或手動更新保留目前選取的供應商。
 資料來自唯讀 Admin `/provider-work`，不包含 lease token；
 初次回應前顯示 loading，使用既有 operations query refresh 註冊與 session query scope。

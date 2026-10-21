@@ -11,6 +11,7 @@ export const SOURCE_PROVIDERS = [
   "finlab",
   "shioaji",
   "taifex",
+  "factset",
 ] as const
 export const sourceProviderSchema = z.enum(SOURCE_PROVIDERS)
 export type SourceProvider = z.infer<typeof sourceProviderSchema>
@@ -23,6 +24,7 @@ export const SOURCE_PROVIDER_DATASETS: Record<
   finlab: ["tw_equity_eod", "tw_etf_eod"],
   shioaji: ["tw_equity_minute", "tw_etf_minute"],
   taifex: ["tw_futures_eod"],
+  factset: ["hk_equity_eod"],
 }
 
 export const adminUserSchema = z.object({
