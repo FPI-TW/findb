@@ -26,6 +26,42 @@ Pilot 每條 feed 取 published universe 穩定排序的前兩個 canonical 商�
 兩種 profile 各有 controls、first dates、plans、checkpoints、缺漏與告警；同環境共用 account governor。
 只追補各自首次日期後的缺口，prepared delivery 在停止後仍可完成。
 
+### Scheduler scope 與有效抓取範圍
+
+Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代表 runtime 目前會抓取所有
+列出的 datasets。判讀時分別核對：
+
+| 範圍 | 權威來源 | 用途 |
+| --- | --- | --- |
+| 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 保留 US、HK |
+| 安裝 feeds | `backend/configs/execution_feeds.v1.json` 及實際部署的 Fetcher config | 目前七條 feeds；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
+| 凍結 admission | `admitted_dataset_keys`／`admission_id` | Owner 最近一次啟動時凍結的可用 datasets；停止後投影仍可能保留 |
+| 即時抓取授權 | Source `full-market/authorization?consumer=pilot\|full_market` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、profile flag、Source credential、baseline 與 provider cutover |
+
+新 daily 入列使用安裝 feeds 與 admission 的交集；新抓取仍須通過即時授權、交易日期／窗口及平台配額。
+不應刪除 Twelve Data 的 HK 相容 scope 來表示切換完成；舊 prepared／raw rerun 仍依原 identity
+交付。FactSet 的安裝 feed 也不代表已獲准取得 HK 新資料，仍須發布 baseline 並明確 cutover。
+
+`desired_state=running` 是 Owner 的持續意圖。統一 CLI 在 idle poll 與 cycle 完成後回報
+`observed_state=stopped`，進入 cycle 時才回報 `running`。因此 running／stopped 組合須連同
+`last_heartbeat_at`、`last_cycle_started_at`、`last_cycle_completed_at`、`last_error`、Source
+授權及 provider-work owner／queue 核對；心跳新鮮且 cycle 持續完成可屬正常間歇。心跳過期、
+cycle 沒有完成或授權拒絕時，保留相應證據再判定原因，不能只憑這一組狀態宣告故障或健康。
+
+Unified runtime 以工作 `dataset_key` 核對目前 `installed_feeds`，先於 closed-round retry 與
+frozen `scope.feed` 查找。退役 daily／maintenance 不規劃新 plan、不刷新名單、不執行 provider
+I/O，也不消耗 maintenance attempt；只以原 owner 排空 server-retained prepared bytes。
+所有已接受 runs 達 terminal 後，結算 `failed / RETIRED_FEED_MANUAL_REVIEW`，保留原
+manifest、plan、成員、receipt、manual／missing；不將缺漏改成成功或 no_data。Source settlement
+不豁免未接受的 prepared deliveries，normalization 未完成時持續保有 owner 與 shared inode。
+
+Migration 的 `legacy_id` 工作還須核對同 provider／dataset／日期的本機 checkpoint：每個已保存
+sequence 必須與 server-retained 原 bytes 相符。無法核對、本機 checksum 損壞或原交付排空失敗
+時保留 owner，要求明確復原，不能只憑 server prepared 清單為空就釋放。本機 body、逐 sequence
+receipt 與 retry budget 不重寫。操作前先停止相關 control、保存 checkpoint，再以相同 shared
+inode 復原；不得藉重新啟動 daemon、等待 TTL 或刪除相容 scope 排除舊工作。Staging 實際處置見
+[FactSet 部署證據](deployment.md#2026-10-21-staging-hk-切換)。
+
 `expected = data + no_data + missing + blocked`。Data 必須有該 plan 所屬 run 的持久化 canonical 寫入證據，
 Pilot 成功不能直接完成 Full plan。Minute 必須有完整 sequenced snapshot；DQ error、空批次、quota failure
 不得算成功或 no_data。No_data 必須有 durable provider evidence。

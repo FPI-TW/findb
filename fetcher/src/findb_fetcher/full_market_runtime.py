@@ -952,6 +952,9 @@ class FullMarketRuntime:
         from findb_fetcher.raw_storage import RawStorageUploadError
 
         work = owner.work
+        if not any(feed["dataset_key"] == work["dataset_key"] for feed in self.installed_feeds):
+            self._settle_retired_work(owner)
+            return [{"status": "manual", "reason": "RETIRED_FEED_MANUAL_REVIEW"}]
         if work["state"] != "open":
             manifest = work.get("manifest")
             if manifest:
@@ -1038,6 +1041,56 @@ class FullMarketRuntime:
             owner, outcome="retry" if retryable else "failed", failure_code=code
         )
         return [{"status": "queued" if retryable else "manual", "reason": code}]
+
+    def _settle_retired_work(self, owner) -> None:
+        """Drain original deliveries without turning compatibility scope into acquisition."""
+        from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+        work = owner.work
+        # Imported plans can predate the server preparation ledger. Never
+        # release their owner on the strength of an empty server ledger alone.
+        # Compare every local sequence with the original server-retained bytes;
+        # do not recreate a manifest, request, receipt, or provider response.
+        try:
+            if work["kind"] == "daily":
+                originals = {checksum(body.encode()) for body in owner.restore()}
+                with self.state.connection() as db:
+                    keys = db.execute(
+                        "SELECT w.key FROM full_work w JOIN full_plan p ON p.plan_id=w.plan_id "
+                        "WHERE p.provider=? AND p.dataset=? AND p.trade_date=? AND w.body IS NOT NULL",
+                        (self.provider, work["dataset_key"], work["trade_date"]),
+                    ).fetchall()
+                for row in keys:
+                    prepared = self.state.prepared(row["key"])
+                    if prepared is None:
+                        raise ValueError("local prepared bytes disappeared")
+                    requests = json.loads(prepared)
+                    if (
+                        not isinstance(requests, list)
+                        or not requests
+                        or any(
+                            not isinstance(body, dict)
+                            or checksum(canonical_bytes(body)) not in originals
+                            for body in requests
+                        )
+                    ):
+                        raise ProviderWorkRecoveryBlockedError(
+                            "retired feed has local prepared bytes requiring explicit recovery"
+                        )
+            owner.drain_prepared()
+        except Exception as exc:
+            raise ProviderWorkRecoveryBlockedError(
+                "retired feed original delivery drain requires recovery"
+            ) from exc
+        self.pause()
+        # No manual_pending_prepared waiver: Source must see all original
+        # deliveries accepted and every normalization terminal before release.
+        # Missing/manual frozen members remain missing/manual, never no_data.
+        owner.settle(
+            "failed",
+            failure_code="RETIRED_FEED_MANUAL_REVIEW",
+            proof={"manual_reason": "retired_feed_requires_manual_review"},
+        )
 
     def _queued_cycle(self) -> dict[str, Any]:
         """Enqueue bounded dates before claiming; every provider call is owned."""
@@ -1134,14 +1187,23 @@ class FullMarketRuntime:
                     elif work["kind"] == "maintenance":
                         self._run_queued_maintenance(owner)
                     else:
+                        installed = next(
+                            (
+                                feed
+                                for feed in self.installed_feeds
+                                if feed["dataset_key"] == work["dataset_key"]
+                            ),
+                            None,
+                        )
+                        if installed is None:
+                            self._settle_retired_work(owner)
+                            return self.state.health(self.provider)
                         if work["state"] != "open" and not work.get("manifest"):
                             owner.settle("retry", failure_code="RECOVERED_CLOSED_ROUND")
                             return self.state.health(self.provider)
-                        feed = work["scope"].get("feed") or next(
-                            feed
-                            for feed in self.installed_feeds
-                            if feed["dataset_key"] == work["dataset_key"]
-                        )
+                        feed = work["scope"].get("feed") or installed
+                        if feed["dataset_key"] != installed["dataset_key"]:
+                            raise ValueError("daily frozen feed differs from work dataset")
                         day = date.fromisoformat(work["trade_date"])
                         plan = self._plan_for_date(feed, day)
                         if plan["status"] == "skipped_calendar":

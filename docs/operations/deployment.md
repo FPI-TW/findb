@@ -476,7 +476,7 @@ Fetcher 擷取於 12:20:28 UTC，RDS snapshot 建立於 12:20:39 UTC。
 已提交。兩端 AWS runtime config 與 deployment parameter 僅將 `PROVIDER_WORK_REQUIRED` 改為
 `true`；舊 secret versions、原停止容器與 account usage 均保留。
 
-目前 staging Backend 與 Fetcher 均部署至 `f7d0d8f7c6770ef1c874b8036ec112bcd18d5b5d`：
+2026-10-20 staging Backend 與 Fetcher 部署至 `f7d0d8f7c6770ef1c874b8036ec112bcd18d5b5d`：
 
 - [Backend CD 39443577634](https://github.com/FPI-TW/findb/actions/runs/39443577634) 成功；七個
   containers running、零重啟，公開 Dashboard 兩次完整回應正常。
@@ -504,14 +504,13 @@ HKEX 官方回應；但 2026-10-20 15:23 UTC 取得的檔案標示 `Updated as a
 晚於當時香港日期，因此 parser 以 `HKEX snapshot is future-dated` 拒絕，工作安全結算
 `failed / MAINTENANCE_FORMAT_OR_SCOPE`，owner 已釋放。1,362,431 bytes 原始回應保留於
 journal，其 SHA-256 為 `19fc424f77714fedcbd5fe9b398d50dd9372b18101eac9bf07e7f6be8afeeddb`；
-未建立 HKEX release、HK provider cutover、FactSet RDS 查詢或行情 ingestion run。
-不得修改日期、重置預算或另造 maintenance identity 重試。清單日期生效後，以正常日期的新
-maintenance 工作續驗；停止中的 controls 不保證自動建立新 maintenance，須核對正常 CLI 結果。
+當次未建立 HKEX release、HK provider cutover、FactSet RDS 查詢或行情 ingestion run。
+原 failed 工作、journal 與預算保留；正常日期的後續結果見下節。
 
-HKEX baseline 發布／每日更新、frozen membership、FactSet RDS TLS／query、兩檔單日與
-歷史全名單 R2 → Source → queue → canonical → Serve 驗收仍未完成。Pilot／Full controls
-目前均 `stopped`；使用者選定的驗收後日常模式為 Pilot 每日兩檔、Full 停止，須先完成 baseline
-與明確 cutover。Daily 新 I/O 仍限香港時間 18:30–23:00，歷史回補不能替代 daily 驗收。
+跨日清單更新、第一份 FactSet daily plan 的 frozen membership、prices SELECT、兩檔單日與
+歷史全名單 R2 → Source → queue → canonical → Serve 驗收仍未完成。Twelve Data／FactSet
+的四個 Pilot／Full controls 均 `stopped`；使用者選定的驗收後日常模式為 Pilot 每日兩檔、Full 停止。
+Daily 新 I/O 仍限香港時間 18:30–23:00，歷史回補不能替代 daily 驗收。
 Production 基礎設施尚未套用。
 舊 bundle v1 仍可供升級前安裝辨識；
 新版 source bundle 與 topology marker 必須一致，promotion 必須含四個 immutable digests。
@@ -520,3 +519,64 @@ Backend expand migration `d75fc12a9b43` 保存 request-time HKEX cohort 與 part
 `FACTSET_SKIP_NON_TRADING_DAYS`（預設 true）及 `EOD_LONG_GAP_TRADING_DAYS`（預設 5）
 由 runtime/configuration 的 optional keys 注入。既有四個日曆開關的必填與預設規則不變。
 Native 驗收、明確 HK provider 切換與 rollback 證據限制見 [FactSet runbook](factset_hk.md)。
+
+### 2026-10-21 staging HK 切換
+
+目前 accepted Backend 為 `fe29ce5af468194aafbe39ea57a921f7104b1ccd`，bundle
+`b7d191d09124f57cff68e2f1267fca5eb9a12afab05b702611bd9f5073d0f3f0`；Fetcher 仍為上列
+`f7d0d8f`／`90e06283…`。兩份 S3 acceptance records 均為 schema-v3、staging／accepted，
+images 與主機 manifest 一致；Backend revision 為 `d75fc12a9b43`。Rollback 保留 owner 到期
+證據、v2／cohort／partial 與五 provider inventory，不能回退到不支援這些契約的舊版。
+
+今日正常 CLI maintenance `01a15c37-5fbe-78f7-9623-b78a8a1591e8` 已 completed，建立並發布
+HKEX release `01a15c37-822e-7131-8530-9cf37a29ca3e`，effective date 為 `2026-10-21`：
+
+- 官方檔案 1,362,431 bytes，SHA-256 為上列 `19fc424f…afeeddb`，日期當日有效。
+- 2,824 members；2,770 mapped，54 gaps（含 29 classification gaps）全部保留；member SHA-256
+  為 `4a212bacc815926087f8862da812af380c27a7be86dbd06d1f53117570255720`。
+- Staging FactSet RDS 原生 catalogue SELECT 回傳 2,796 rows／343,402 bytes，SHA-256 為
+  `5b43601bf7732be173c715ff2060f91ab56512d927b4020d919355c21f0c87e1`，已保存在原 journal／raw。
+  實際 image 的 CA bundle、`CERT_REQUIRED`、hostname verification、read-only transaction 與
+  30 秒 timeout 均已核對；此為 catalogue 連線驗收，prices SELECT／行情交付仍待驗證。
+- 以具名 SSM operator 執行同 immutable Backend image 的獨立 one-off publication，沿用既有
+  publish／audit services；發布前 rollback dry-run 通過，audit 為
+  `01a15c3c-f919-7ce2-8786-ae167c86e121`。
+
+Twelve Data Pilot 的 running／stopped 是實際重啟故障：恢復 10/15 的 legacy HK daily work 時，
+dataset 已不在 `installed_feeds`，feed lookup 拋出 `StopIteration`，owner 未結算。已透過
+既有 Owner session 將 control r34→r35 stopped，停止三個 Twelve Data consumers，取得原
+shared inode `staging:66305:512066` 後，以正常 Source recovery／settle protocol 將
+`01a13f28-240e-7178-b068-143f3d3adb31` 結算 `failed / RETIRED_FEED_MANUAL_REVIEW`。
+原兩名成員已是 manual，DB／checkpoint 均為零 prepared、零 receipt；原 frozen plan 與 gaps
+不變。10/16 的 HK work 仍 suspended／queued；在修正退役 feed 處理前不得啟動 Twelve Data control。
+
+兩 provider owners 已釋放，四 controls 的 desired／observed 均 stopped，HK cutover script
+先 dry-run 再於 `2026-10-21 02:19 UTC` apply，記錄不可變 FactSet 決定、priority -1／0 與 audit。
+切換前後 14 first-date states、20 plans、20 parts、42 members、35 decisions 的完整 fingerprints
+完全一致。這項檢查不代表尚未建立的 FactSet daily plan 已驗收跨日成員凍結。
+
+備份位於 Fetcher host `/var/backups/findb-hk-cutover/staging-20261021T0215Z`，包含 Pilot／Full
+SQLite、provider-work journal 與 account governor，均通過 integrity check；原 lock inodes 不變。
+RDS 為 encrypted／available、保留 10 天，操作前核對可復原時間為 `2026-10-21 02:03:13 UTC`，
+既有人工 snapshot `findb-provider-work-staging-20261020-1230` 仍 available。不得將 governor
+還原成較舊用量。三個原有 Twelve Data containers 已恢復，四個相關 controls 繼續停止。
+最終核對十五個 consumers running，三個恢復的 Twelve Data containers 均零新增重啟；兩個
+owner slots 為空、shared inodes 相同。10/20 failed maintenance 的 operation budget 仍為
+5，10/21 正常新工作的 budget 為 1，沒有重置原工作。
+
+SSM 證據：maintenance `dff4c933-2ea7-40df-ba14-7e89fb32b455`、publication
+`5489661e-6c3a-44cc-ba6e-be751a31fd8c`、owner recovery `ad46fa9d-f898-48b2-a694-29c0297cf614`、
+cutover dry-run `887ec9a1-3b39-44e1-9db9-429894e2501c`／apply
+`aba70d2e-cefd-45d0-8432-b819866dbf11`、切換後 fingerprints
+`c23a46b9-43e4-479b-8530-0b85064ec6cd`、恢復後健康／預算
+`1a99f75a-7cc6-4c77-a64b-a0774e86cf12`、最終 owner／control／fingerprints
+`b58add61-d89b-41c0-a39a-aba304fea429`。後續仍須另一正常日期的 maintenance／release，以及
+合法窗口內的 FactSet daily 與 native prices 驗收，不修改日期、製造 no_data 或重置預算。
+
+退役 feed 修正已加入 unified runtime：先檢查目前安裝範圍，原 daily／maintenance 只排空
+既有 prepared，再以 `RETIRED_FEED_MANUAL_REVIEW` 結算；無法核對的本機 prepared 保留
+owner。相容 scope 不變，closed round 與 frozen `scope.feed` 也不能恢復退役 provider I/O。
+本機驗證為完整 Fetcher **1,642 passed**、相關 Backend **151 passed／3 skipped**，以及
+全專案 format／lint／type check 通過。三項 skip 為既有選用原生驗收，不列為通過。
+真實 Source／worker 回歸測試涵蓋原 bytes 重播、normalization terminal 前持有 owner、
+FIFO 釋放與 Full 維持停止；staging 新版本部署與 Pilot 恢復仍須另行保存現場證據。
