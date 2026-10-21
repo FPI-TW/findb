@@ -176,10 +176,16 @@ export function selectSchedulerRuntimeStatus({
     | "observed_state"
     | "heartbeat_age_seconds"
     | "last_heartbeat_at"
+    | "revision"
   >
   freshness:
     | (Pick<MarketFreshness, "configuration_status" | "configuration_errors"> &
-        Partial<Pick<MarketFreshness, "monitor_kind" | "activation_state">>)
+        Partial<
+          Pick<
+            MarketFreshness,
+            "monitor_kind" | "activation_state" | "revision"
+          >
+        >)
     | null
 }): SchedulerRuntimeStatus {
   if (
@@ -187,6 +193,9 @@ export function selectSchedulerRuntimeStatus({
     (freshness?.configuration_errors.length ?? 0) > 0 ||
     (freshness?.monitor_kind === "full_market" &&
       control.desired_state === "running" &&
+      // Activation computed for an older revision predates this start's
+      // admission; wait for the refetch instead of reporting an error.
+      (freshness.revision ?? control.revision) === control.revision &&
       (freshness.activation_state === "not_activated" ||
         freshness.activation_state === "deactivated"))
   ) {

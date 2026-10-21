@@ -75,6 +75,9 @@ Overview、freshness、plans、alerts 的請求與 query cache key 都包含 pro
 舊版未指定 profile 的 plan API 保留 Full market 語意。
 概況卡片的啟用範圍與心跳提示同樣標示所選 Pilot／Full market。尚未納入抓取範圍的 feed
 若有 blocker，顯示實際原因；沒有 blocker 則顯示「尚未啟用」，不視為日曆缺漏或資料缺漏。
+啟停成功後，卡片先套用 scheduler 回應，再重新取得 freshness；freshness 的 activation 只對其計算時的
+revision 有效，因此重新取得前不會把「已要求執行但尚未啟用」判為設定錯誤。重新取得後若同一
+revision 仍未啟用，才顯示設定錯誤。
 
 FactSet 的 Pilot／Full market 排程卡片、批次啟動跳過提示與確認視窗會區分兩項啟動阻擋：
 `full_market_baseline_missing` 顯示「尚無已發布的 FactSet HKEX baseline」，

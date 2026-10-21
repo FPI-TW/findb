@@ -244,18 +244,24 @@ export function updateOverviewSchedulerCache(
   sessionScope = "protected"
 ) {
   const queryKey = operationsKeys.overview(audit, sessionScope)
+  const key = response.data.scheduler_key
   queryClient.setQueryData<OperationsQueryData>(queryKey, current => {
     if (!current || current.view !== "overview") return current
     const next: OperationsQueryData = { ...current }
+    // Derived freshness (activation_state, configuration_errors) stays computed
+    // at its old revision until the refetch lands, so keep that revision when
+    // the scheduler row supplies the card control. Without a row, the card
+    // reads its control (and expected revision) from freshness.
+    const ownControl =
+      current.schedulers.ok &&
+      current.schedulers.data.data.some(row => row.scheduler_key === key)
     if (current.schedulers.ok) {
       next.schedulers = {
         ok: true,
         data: {
           ...current.schedulers.data,
           data: current.schedulers.data.data.map(scheduler =>
-            scheduler.scheduler_key === response.data.scheduler_key
-              ? response.data
-              : scheduler
+            scheduler.scheduler_key === key ? response.data : scheduler
           ),
         },
       }
@@ -266,8 +272,12 @@ export function updateOverviewSchedulerCache(
         data: {
           ...current.freshness.data,
           data: current.freshness.data.data.map(summary =>
-            summary.scheduler_key === response.data.scheduler_key
-              ? { ...summary, ...response.data }
+            summary.scheduler_key === key
+              ? {
+                  ...summary,
+                  ...response.data,
+                  ...(ownControl ? { revision: summary.revision } : {}),
+                }
               : summary
           ),
         },
