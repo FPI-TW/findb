@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.script_env import script_env
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL_PATH = REPO_ROOT / "infra" / "deploy" / "release_manifest.py"
 SPEC = importlib.util.spec_from_file_location("release_manifest", TOOL_PATH)
@@ -94,6 +96,7 @@ def test_protocol_cli_emits_only_the_v3_marker() -> None:
         [sys.executable, str(TOOL_PATH), "protocol"],
         capture_output=True,
         check=False,
+        env=script_env(),
     )
     assert result.returncode == 0
     assert result.stdout == b"findb-release-manifest-v3\n"
@@ -521,7 +524,9 @@ def test_bundle_rejects_tampered_member_mode_and_materializes_runnable_tools(
         output=output,
     )
     validator = output / "infra/deploy/release_manifest.py"
-    protocol = subprocess.run([str(validator), "protocol"], capture_output=True, check=False)
+    protocol = subprocess.run(
+        [str(validator), "protocol"], capture_output=True, check=False, env=script_env()
+    )
     assert protocol.returncode == 0
     assert protocol.stdout == b"findb-release-manifest-v3\n"
     for relative in (
@@ -531,7 +536,9 @@ def test_bundle_rejects_tampered_member_mode_and_materializes_runnable_tools(
     ):
         tool = output / relative
         assert stat.S_IMODE(tool.stat().st_mode) == 0o755
-        assert subprocess.run(["bash", "-n", str(tool)], check=False).returncode == 0
+        assert (
+            subprocess.run(["bash", "-n", str(tool)], check=False, env=script_env()).returncode == 0
+        )
 
 
 def test_deployment_bundle_resource_limits_fail_closed(
@@ -1144,6 +1151,7 @@ def test_manifest_cli_rejects_non_file_bundle_input(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=False,
+        env=script_env(),
     )
     assert result.returncode == 1
     assert "regular file" in result.stderr
@@ -1190,6 +1198,7 @@ def test_manifest_cli_rejects_a_symlinked_repo_root_for_generate_and_validate(
         capture_output=True,
         text=True,
         check=False,
+        env=script_env(),
     )
     assert rejected_generate.returncode == 1
     assert "root is not a directory" in rejected_generate.stderr
@@ -1227,6 +1236,7 @@ def test_manifest_cli_rejects_a_symlinked_repo_root_for_generate_and_validate(
         capture_output=True,
         text=True,
         check=False,
+        env=script_env(),
     )
     assert rejected_validate.returncode == 1
     assert "root is not a directory" in rejected_validate.stderr

@@ -74,8 +74,8 @@ CI 長時間沒有進度時，先查 workflow run 與各 job 的 `status`、`run
 FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type checks、published contracts
 與非 migration tests；`backend-migrations` 保留 Alembic smoke 與全部 migration tests；
 `infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service；不需資料庫的部署 shell
-suites（Fetcher inventory、full-market repair 與 checkpoint entry）放在 `infra/tests`，
-Infra job 因此另裝 Fetcher runtime。GitHub 4 vCPU runner 上 Backend 與 Infra 固定四個
+suites（Fetcher inventory、full-market repair 與 checkpoint entry）放在 `infra/tests`。
+GitHub 4 vCPU runner 上 Backend 與 Infra 固定四個
 workers；migration job 維持序列執行。Migration tests 只涵蓋 rollback 下限
 （`docs/operations/deployment.md`）及之後的 revisions；`test_schema_drift_migration.py`
 比對 `alembic upgrade head` 與 ORM metadata，已知差異以 strict xfail 標示。
@@ -122,11 +122,11 @@ CI 效能驗收仍需外部實測：同 runner 規格至少三次成功執行，
 與 upload 成本，不能只用 pytest 或 artifact 中的 elapsed 值。失敗或缺少 runtime dependencies
 的舊執行不構成有效基準；本機通過不能代替這項 CI benchmark。目前尚待遠端成功執行的證據。
 
-Backend 的跨 application 回歸測試會直接呼叫 `fetcher/.venv/bin/python`，驗證實際 Fetcher
-CLI 與部署 checkpoint 邊界。執行前須先完成 `pnpm setup`，或以
-`uv --directory fetcher sync --frozen --no-dev` 建立獨立 Fetcher runtime；不需 provider extras、
-AWS 或 provider credentials。FinDB CI 的 Backend job 同樣先安裝 Backend 與 Fetcher frozen
-dependencies，uv cache 同時追蹤兩份 `uv.lock`，再執行跨 application 測試。
+Backend／Infra 的跨 application 回歸測試以 `sys.executable -I` 執行實際 Fetcher CLI 與 reader，
+驗證部署 checkpoint 邊界。Fetcher 是 Backend 的 editable dev dependency，isolated mode 下
+`findb_fetcher` 可匯入、Backend `app` 不在 `sys.path`；因此只需 Backend frozen dependencies，
+不需另建 `fetcher/.venv`、provider extras、AWS 或 provider credentials。Fetcher 依自身 lockfile
+的完整驗證仍由 Fetcher CI 負責。
 
 Backend 預設 `TEST_DATABASE_URL` 為
 `postgresql+asyncpg://findb:findb@localhost:5435/findb_test`。
@@ -233,7 +233,8 @@ Shutdown 的 activate 案例約上千次呼叫，不再各自啟動 Python 直�
 建立環境：只帶入 `PATH`、`HOME`、`TMPDIR` 與 locale，其餘變數由測試明確設定，避免開發機或 CI 的
 `AWS_*`、`APP_ENVIRONMENT`、`FETCHER_*`、`GITHUB_*`、`ACTIONS_*` 改變腳本行為或寫入 `GITHUB_OUTPUT`。
 執行 repo 自身 Python／pytest 子行程的測試（例如 migration、ORM 隔離）仍繼承完整環境；
-`backend/tests/test_script_env.py` 掃描 backend／infra 測試，阻擋其他繼承完整環境的寫法。
+`backend/tests/test_script_env.py` 掃描 backend／infra 測試：每個 `subprocess` 呼叫都須明確傳入
+`env=`（省略即隱式繼承），並阻擋其他繼承完整環境的寫法。
 AWS 實際部署與七條 native feeds 驗收是另外的結果，不以 fixtures 或靜態檢查替代。
 
 2026-10-15 staging Pilot 已核對四條 feeds：FinLab `tw_equity_eod`／`tw_etf_eod`，

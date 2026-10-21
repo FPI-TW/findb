@@ -334,7 +334,7 @@ def test_production_release_tags_require_annotated_object_identity(tmp_path: Pat
 def test_release_tag_binding_helper_is_conditional_kms_and_fail_closed() -> None:
     helper = ROOT / "infra" / "deploy" / "bind_release_tag.sh"
     completed = subprocess.run(
-        ["bash", "-n", str(helper)], check=False, capture_output=True, text=True
+        ["bash", "-n", str(helper)], check=False, capture_output=True, text=True, env=script_env()
     )
     assert completed.returncode == 0
     text = helper.read_text()
@@ -777,7 +777,7 @@ def test_native_provider_smoke_is_not_a_daily_deployment_gate():
 def test_promotion_helper_has_copy_collision_and_destination_digest_guards() -> None:
     helper = ROOT / "infra" / "deploy" / "promote_image.sh"
     completed = subprocess.run(
-        ["bash", "-n", str(helper)], check=False, capture_output=True, text=True
+        ["bash", "-n", str(helper)], check=False, capture_output=True, text=True, env=script_env()
     )
     assert completed.returncode == 0
     text = helper.read_text()

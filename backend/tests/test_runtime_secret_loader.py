@@ -12,6 +12,8 @@ from types import ModuleType
 
 import pytest
 
+from tests.script_env import script_env
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOADER_PATH = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "load_runtime_secrets.py"
 CATALOG_ROOT = LOADER_PATH.parent
@@ -921,6 +923,7 @@ def test_cli_does_not_echo_invalid_consumer_input(tmp_path: Path) -> None:
         check=False,
         capture_output=True,
         text=True,
+        env=script_env(),
     )
     assert completed.returncode == 1
     assert "consumer=invalid reason=consumer_not_allowed" in completed.stderr

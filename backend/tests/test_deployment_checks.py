@@ -477,6 +477,7 @@ def test_ssm_bash_command_runs_pipefail_scripts_through_bash_from_posix_sh() -> 
         check=True,
         capture_output=True,
         text=True,
+        env=script_env(),
     )
     assert encoded.stdout.startswith("exec bash -c ")
     completed = subprocess.run(
@@ -484,6 +485,7 @@ def test_ssm_bash_command_runs_pipefail_scripts_through_bash_from_posix_sh() -> 
         check=False,
         capture_output=True,
         text=True,
+        env=script_env(),
     )
     assert completed.returncode == 0
     assert completed.stdout == "ssm_bash_wrapper=success\n"
@@ -494,12 +496,14 @@ def test_ssm_bash_command_runs_pipefail_scripts_through_bash_from_posix_sh() -> 
         check=True,
         capture_output=True,
         text=True,
+        env=script_env(),
     )
     rejected = subprocess.run(
         ["/bin/sh", "-c", failing.stdout],
         check=False,
         capture_output=True,
         text=True,
+        env=script_env(),
     )
     assert rejected.returncode != 0
     assert "unreachable" not in rejected.stdout
@@ -628,30 +632,20 @@ def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
         _load_workflow(path)
 
 
-@pytest.mark.parametrize(
-    ("job_name", "test_step"), [("backend", "Run tests"), ("infra-tests", "Run infra tests")]
-)
-def test_ci_installs_isolated_fetcher_runtime_before_cross_unit_tests(
-    job_name: str, test_step: str
-) -> None:
+@pytest.mark.parametrize("job_name", ["backend", "infra-tests"])
+def test_ci_runs_cross_unit_tests_from_the_backend_environment(job_name: str) -> None:
+    # Fetcher is an editable Backend dev dependency; cross-unit tests run it with
+    # `sys.executable -I`, so no separate Fetcher runtime is installed.
     workflow = _load_workflow(FINDB_CI_WORKFLOW)
     job = workflow["jobs"][job_name]
     assert job["defaults"]["run"]["working-directory"] == "backend"
     steps = job["steps"]
     setup_uv = next(step for step in steps if step.get("name") == "Install uv")
-    assert setup_uv["with"]["cache-dependency-glob"].splitlines() == [
-        "backend/uv.lock",
-        "fetcher/uv.lock",
-    ]
-    backend_install = next(step for step in steps if step.get("name") == "Install dependencies")
-    fetcher_install = next(
-        step for step in steps if step.get("name") == "Install Fetcher runtime dependencies"
+    assert setup_uv["with"]["cache-dependency-glob"] == "backend/uv.lock"
+    assert next(step for step in steps if step.get("name") == "Install dependencies")["run"] == (
+        "uv sync --frozen"
     )
-    assert backend_install["run"] == "uv sync --frozen"
-    assert fetcher_install["working-directory"] == "fetcher"
-    assert fetcher_install["run"] == "uv sync --frozen --no-dev"
-    tests = next(step for step in steps if step.get("name") == test_step)
-    assert steps.index(backend_install) < steps.index(fetcher_install) < steps.index(tests)
+    assert all(step.get("working-directory") != "fetcher" for step in steps)
 
 
 def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
@@ -902,6 +896,7 @@ def _run_plan_json_guard(
         check=False,
         text=True,
         timeout=10,
+        env=script_env(),
     )
 
 
@@ -1896,6 +1891,7 @@ def test_nginx_runtime_catalog_path_gate_accepts_only_current_identity() -> None
             check=False,
             capture_output=True,
             text=True,
+            env=script_env(),
         )
         assert result.returncode == 1
         assert "renderer_metadata_invalid" in result.stderr
@@ -1927,6 +1923,7 @@ def test_nginx_runtime_catalog_path_gate_accepts_only_current_identity() -> None
             check=False,
             capture_output=True,
             text=True,
+            env=script_env(),
         )
         assert result.returncode == 1
         assert "catalog_path_invalid" in result.stderr
@@ -3705,6 +3702,7 @@ def test_account_mount_is_nounset_safe_and_preserves_complete_installed_mounts(a
         capture_output=True,
         text=True,
         check=True,
+        env=script_env(),
     )
     values = result.stdout.splitlines()
     assert "type=bind,src=/state,dst=/state" in values

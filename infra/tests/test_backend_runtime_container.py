@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 IMAGE = os.environ.get("FINDB_TEST_BACKEND_IMAGE")
@@ -19,9 +20,19 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def docker_env() -> dict[str, str]:
+    # The Docker CLI still needs its own context/host selection.
+    return script_env() | {k: v for k, v in os.environ.items() if k.startswith("DOCKER_")}
+
+
 def docker(*args: str, timeout: int = 120) -> str:
     result = subprocess.run(
-        ["docker", *args], capture_output=True, text=True, timeout=timeout, check=False
+        ["docker", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        env=docker_env(),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return result.stdout.strip()
@@ -80,6 +91,7 @@ def runtime() -> Iterator[tuple[Callable[..., str], Callable[[str], str]]]:
                 capture_output=True,
                 timeout=10,
                 check=False,
+                env=docker_env(),
             )
             if probe.returncode == 0:
                 break
@@ -130,7 +142,11 @@ def runtime() -> Iterator[tuple[Callable[..., str], Callable[[str], str]]]:
         # Only resources created by this fixture are eligible for removal.
         for name in reversed(containers):
             subprocess.run(
-                ["docker", "rm", "-f", name], capture_output=True, timeout=30, check=False
+                ["docker", "rm", "-f", name],
+                capture_output=True,
+                timeout=30,
+                check=False,
+                env=docker_env(),
             )
         docker("network", "rm", network)
 
