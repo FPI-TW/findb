@@ -48,11 +48,13 @@ workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境�
 輸出既存 TanStack virtual-module pre-transform 訊息，必須比較基準並檢查測試退出狀態。
 GitHub 告警需在修復整合至預設分支並重新掃描後確認關閉，本機通過不能代替遠端結果。
 
-目前 PyPI 的 `shioaji==1.7.1` metadata 回傳 404，會阻擋 Fetcher 全平台重新解析；不要因此
-自行變更 provider SDK 版本或縮減平台支援。本次僅以 uv 產生的 urllib3 2.8.0 package 記錄
-更新既有 lockfile，保留其餘 provider 記錄，並以 `uv lock --check --offline` 與 frozen 安裝
-驗證 core／dev runtime。Shioaji extra 的重新下載安裝不在這項驗證範圍內；下次完整解析前
-須先處理其套件索引可用性。
+Shioaji SDK 版本集中於 `providers/shioaji.py` 的 `SHIOAJI_SDK_VERSION`，與 `pyproject.toml`
+的 pin 一致。Shioaji 會從 PyPI 索引移除舊版（1.7.1–1.7.6 已不在索引，只剩 lockfile 內的檔案
+網址可下載），此時 Fetcher lockfile 無法重新解析，需升級 SDK。Fetcher CI 安裝 `shioaji` extra，
+`test_shioaji_sdk_contract.py` 對已安裝 SDK 檢查 adapter 使用的 client 方法參數、`contracts`／
+`Contracts` 綁定、`ContractsApi.get`、`KBars`／`UsageOut` 欄位與審核過的 `BaseContract`；
+不建立連線、不登入。其餘 Shioaji 測試使用離線替身；login、contract lookup、kbars 與 usage
+的實際行為仍須於 staging 以真實帳號驗收。
 
 2026-10-16 安全依賴驗收：`pnpm check`、`pnpm test` 與 production build 通過。
 Backend 2,201、migration 54、Infra 148（另有 268 個子測試）、Fetcher 1,406，

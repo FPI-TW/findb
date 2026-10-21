@@ -1,4 +1,4 @@
-"""Narrow, lazy Shioaji 1.7.1 boundary and Taiwan minute-bar adapter.
+"""Narrow, lazy Shioaji SDK boundary and Taiwan minute-bar adapter.
 
 The SDK is intentionally imported only by ``ShioajiSdkGateway.fetch_kbars``.
 No provider objects or credential-bearing exceptions cross this boundary.
@@ -21,6 +21,8 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 SHIOAJI_SOURCE = "shioaji"
+# The only SDK release whose API surface this adapter has been reviewed against.
+SHIOAJI_SDK_VERSION = "1.7.9"
 TAIPEI = ZoneInfo("Asia/Taipei")
 MAX_SYMBOLS = 50
 MAX_ROWS = 15_000
@@ -49,7 +51,7 @@ PAYLOAD_REASONS = frozenset(
     }
 )
 # These identities are the only catalog-free contracts reviewed against the
-# Shioaji 1.7.1 simulation API.  Do not infer an exchange for other symbols.
+# Shioaji simulation API.  Do not infer an exchange for other symbols.
 _REVIEWED_BASE_CONTRACTS: Mapping[str, tuple[str, str, str]] = MappingProxyType(
     {
         "2330": ("STK", "TSE", "TW"),
@@ -346,7 +348,7 @@ class ShioajiSdkGateway:
         if not isinstance(target_date, date) or isinstance(target_date, datetime):
             raise ShioajiConfigError("target date is invalid")
         try:
-            if importlib.metadata.version("shioaji") != "1.7.1":
+            if importlib.metadata.version("shioaji") != SHIOAJI_SDK_VERSION:
                 raise ShioajiSdkError("shioaji SDK version is unsupported", code="SDK")
             sdk = self._sdk if self._sdk is not None else importlib.import_module("shioaji")
             factory = getattr(sdk, "Shioaji")
@@ -689,7 +691,7 @@ def _plain_kbars(raw: Mapping[str, object]) -> dict[str, tuple[object, ...]]:
 
 
 def _kbars_mapping(raw: object) -> Mapping[str, object]:
-    """Convert the Shioaji 1.7.1 ``KBars`` struct to its public dict form."""
+    """Convert the Shioaji ``KBars`` struct to its public dict form."""
     if isinstance(raw, Mapping):
         return raw
     try:
@@ -754,7 +756,7 @@ def _normalize_scalar(value: object, field: str = "Open") -> object:
 
 
 def _stock_contract(api: Any, symbol: str) -> object:
-    """Use the public ContractsApi binding verified in Shioaji 1.7.1.
+    """Use the public ContractsApi binding (direct ``contracts.get``).
 
     The installed SDK's legacy type stub still advertises ``stocks``, but
     the runtime exposes direct ``get`` as documented by the provider.

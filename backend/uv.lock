@@ -449,7 +449,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4.25.1,<5.0.0" },
     { name = "pymysql", marker = "extra == 'factset'", specifier = ">=1.1.1,<2" },
-    { name = "shioaji", marker = "extra == 'shioaji'", specifier = "==1.7.1" },
+    { name = "shioaji", marker = "extra == 'shioaji'", specifier = "==1.7.9" },
 ]
 provides-extras = ["factset", "finlab", "shioaji"]
 

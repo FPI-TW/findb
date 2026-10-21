@@ -77,7 +77,11 @@ from findb_fetcher.providers.finlab import (
 from findb_fetcher.providers.finlab import (
     build_market_eod_request as finlab_request,
 )
-from findb_fetcher.providers.shioaji import _simulation_from_env, build_market_minute_request
+from findb_fetcher.providers.shioaji import (
+    SHIOAJI_SDK_VERSION,
+    _simulation_from_env,
+    build_market_minute_request,
+)
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 from findb_fetcher.providers.taifex import (
     TaifexOperationalError,
@@ -507,7 +511,7 @@ class FullMarketRuntime:
         if self.provider == "shioaji":
             catalogue = self._shioaji_request("catalogue")
             detached = canonical_bytes(
-                {"sdk_version": "1.7.1", "simulation": True, "catalogue": catalogue}
+                {"sdk_version": SHIOAJI_SDK_VERSION, "simulation": True, "catalogue": catalogue}
             )
             self._observed_response(len(detached))
             self._persist(detached, "tw_equity_minute", "sdk_catalogue")

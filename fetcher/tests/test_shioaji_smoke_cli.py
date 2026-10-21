@@ -9,6 +9,7 @@ import pytest
 
 from findb_fetcher import shioaji_smoke_cli
 from findb_fetcher.providers.shioaji import (
+    SHIOAJI_SDK_VERSION,
     ShioajiConfigError,
     ShioajiKbarsSnapshot,
     ShioajiSdkError,
@@ -42,7 +43,9 @@ def test_rejects_sdk_version_without_provider_work(
 def test_sanitizes_missing_credentials(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(shioaji_smoke_cli.importlib.metadata, "version", lambda _: "1.7.1")
+    monkeypatch.setattr(
+        shioaji_smoke_cli.importlib.metadata, "version", lambda _: SHIOAJI_SDK_VERSION
+    )
     monkeypatch.setattr(
         shioaji_smoke_cli.ShioajiSdkGateway,
         "from_env",
@@ -61,7 +64,9 @@ def test_sanitizes_missing_credentials(
 def test_success_output_is_bounded_and_excludes_payload(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(shioaji_smoke_cli.importlib.metadata, "version", lambda _: "1.7.1")
+    monkeypatch.setattr(
+        shioaji_smoke_cli.importlib.metadata, "version", lambda _: SHIOAJI_SDK_VERSION
+    )
     monkeypatch.setattr(
         shioaji_smoke_cli.ShioajiSdkGateway, "from_env", classmethod(lambda cls, **_: object())
     )

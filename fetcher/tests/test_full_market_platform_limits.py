@@ -11,7 +11,7 @@ import pytest
 from findb_fetcher import account_governor
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.platform_limits import SHIOAJI_DAILY_BYTES, account_identity, interval, limits
-from findb_fetcher.providers.shioaji import ShioajiSdkError
+from findb_fetcher.providers.shioaji import SHIOAJI_SDK_VERSION, ShioajiSdkError
 from findb_fetcher.providers.shioaji_session import ShioajiSession
 from test_full_market import _runtime
 
@@ -359,7 +359,7 @@ def test_effective_credential_whitespace_keeps_pinned_usage_and_cooldown(
 def test_shioaji_full_session_effective_key_and_account_are_whitespace_normalized(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr("importlib.metadata.version", lambda name: "1.7.1")
+    monkeypatch.setattr("importlib.metadata.version", lambda name: SHIOAJI_SDK_VERSION)
     login = []
     api = SimpleNamespace(
         login=lambda **kwargs: login.append(kwargs["api_key"]),

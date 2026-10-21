@@ -36,6 +36,7 @@ from findb_fetcher.full_market_universe import (
     universe_request,
 )
 from findb_fetcher.providers.finlab import FinLabDatasetConfig, FinLabSymbol
+from findb_fetcher.providers.shioaji import SHIOAJI_SDK_VERSION
 from findb_fetcher.providers.shioaji_session import ShioajiSession
 from findb_fetcher.providers.taifex import fetch_report, parse_report, report_members
 from findb_fetcher.readiness_probe import probe_twelve_data
@@ -359,7 +360,7 @@ def test_unknown_or_insufficient_readiness_blocks_no_false_subset(tmp_path: Path
 
 
 def test_sdk_session_one_login_catalogue_tse_otc_reused(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("importlib.metadata.version", lambda name: "1.7.1")
+    monkeypatch.setattr("importlib.metadata.version", lambda name: SHIOAJI_SDK_VERSION)
     calls: list[str] = []
 
     class API:

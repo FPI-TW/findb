@@ -425,7 +425,11 @@ class RuntimeHarness:
             sdk.importlib.metadata,
             "version",
             lambda name: (
-                "1.7.1" if name == "shioaji" else "1.5.7" if name == "finlab" else version(name)
+                sdk.SHIOAJI_SDK_VERSION
+                if name == "shioaji"
+                else "1.5.7"
+                if name == "finlab"
+                else version(name)
             ),
         )
 

@@ -167,7 +167,7 @@ Universe 的 official/provider 原始來源會先存入 R2，以 SHA-256 與不�
 舊 capacity violation 不再封鎖新抓取；HTTP identity encoding、Content-Length、串流大小、
 SDK／IPC／R2 bounds、schema 與 provenance 驗證保留。不合法 response 不建立成功 raw 或 prepared body。
 FinLab 1.5.7 對 dataset/date 取得五個 OHLCV 欄位，再投影成各商品 bundle，成功 cache 供商品共用。
-Shioaji 1.7.1 由靜默常駐 child process 執行 data API，SDK usage 無法確認時拒絕交付。
+Shioaji（版本見 `SHIOAJI_SDK_VERSION`）由靜默常駐 child process 執行 data API，SDK usage 無法確認時拒絕交付。
 
 TAIFEX 保留 `TX/MTX/TMF/TE/TF` 實際月／週代碼，排除含 `/` 的價差合約，保留一般／盤後及
 官方 attribution date、各時段 volume；不推算 expiry date、不產生 continuous series，也不以
