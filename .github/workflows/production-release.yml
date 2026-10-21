@@ -1,0 +1,164 @@
+name: Production release binding
+# Shared by findb-production-cd.yml and fetcher-production-cd.yml. Resolves the
+# annotated release tag to a protected-main commit and binds or validates its
+# immutable production release-tag record before any CI or deployment runs.
+'on':
+  workflow_call:
+    inputs:
+      unit:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: string
+      release_tag:
+        required: true
+        type: string
+      accepted_bundle_key:
+        required: true
+        type: string
+      confirmation:
+        required: true
+        type: string
+    outputs:
+      revision:
+        value: ${{ jobs.resolve.outputs.revision }}
+      tag_ref_oid:
+        value: ${{ jobs.resolve.outputs.tag_ref_oid }}
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      revision: ${{ steps.resolve.outputs.sha }}
+      tag_ref_oid: ${{ steps.resolve.outputs.tag_ref_oid }}
+    steps:
+    - name: Fail closed before release resolution
+      env:
+        UNIT: ${{ inputs.unit }}
+        CONFIRMATION: ${{ inputs.confirmation }}
+        MODE: ${{ inputs.mode }}
+        RELEASE_TAG: ${{ inputs.release_tag }}
+        BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+      run: |
+        set -euo pipefail
+        test "$GITHUB_REF" = refs/heads/main
+        [[ "$UNIT" =~ ^(findb|fetcher)$ ]]
+        [ "$CONFIRMATION" = "PROMOTE_${UNIT^^}_PRODUCTION" ]
+        [[ "$MODE" =~ ^(promote|rollback)$ ]]
+        [[ "$RELEASE_TAG" =~ ^${UNIT}-v[0-9]+[.][0-9]+[.][0-9]+$ ]]
+        if [ "$MODE" = promote ]; then
+          [[ "$BUNDLE_KEY" =~ ^${UNIT}/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]]
+        else
+          [[ "$BUNDLE_KEY" =~ ^${UNIT}/production/accepted/[0-9a-f]{40}/[0-9a-f]{64}[.]tar$ ]]
+        fi
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: refs/tags/${{ inputs.release_tag }}
+        fetch-depth: 0
+        persist-credentials: false
+        clean: false
+    - id: resolve
+      env:
+        RELEASE_TAG: ${{ inputs.release_tag }}
+      run: |
+        set -euo pipefail
+        tag_ref_oid="$(git rev-parse "refs/tags/$RELEASE_TAG")"
+        peeled_commit_sha="$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+        sha="$(git rev-parse HEAD)"
+        [ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag ]
+        [[ "$tag_ref_oid" =~ ^[0-9a-f]{40}$ ]]
+        [[ "$peeled_commit_sha" =~ ^[0-9a-f]{40}$ ]]
+        [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+        [ "$sha" = "$peeled_commit_sha" ]
+        [ "$(git tag --points-at HEAD --format='%(refname:short)' | grep -Fx "$RELEASE_TAG")" = "$RELEASE_TAG" ]
+        git fetch --no-tags origin main:refs/remotes/origin/main
+        git merge-base --is-ancestor "$sha" refs/remotes/origin/main
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "tag_ref_oid=$tag_ref_oid" >> "$GITHUB_OUTPUT"
+    permissions:
+      contents: read
+  bind-release-tag:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ needs.resolve.outputs.revision }}
+        persist-credentials: false
+        clean: false
+    - name: Load deployment driver from protected main
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.workflow_sha }}
+        path: .deployment-driver
+        persist-credentials: false
+    - name: Load AWS deployment configuration
+      uses: ./.deployment-driver/.github/actions/aws-configuration
+      with:
+        target: production
+        unit: ${{ inputs.unit }}
+    - name: Verify exact release revision for binding
+      env:
+        EXPECTED_SHA: ${{ needs.resolve.outputs.revision }}
+      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+    - name: Configure staging binding-source reader credentials
+      if: ${{ inputs.mode == 'promote' }}
+      uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
+      with:
+        role-to-assume: ${{ env.STAGING_PROMOTION_READ_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        allowed-account-ids: ${{ env.STAGING_AWS_ACCOUNT_ID }}
+        role-session-name: ${{ inputs.unit }}-production-binding-source-${{ github.run_id }}
+    - name: Verify exact accepted staging binding source
+      if: ${{ inputs.mode == 'promote' }}
+      env:
+        UNIT: ${{ inputs.unit }}
+        REVISION: ${{ needs.resolve.outputs.revision }}
+        BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+        SOURCE_BUCKET: ${{ env.STAGING_DEPLOY_BUNDLE_BUCKET }}
+        SOURCE_ACCOUNT: ${{ env.STAGING_AWS_ACCOUNT_ID }}
+      run: |
+        set -euo pipefail
+        [ "$(aws sts get-caller-identity --query Account --output text)" = "$SOURCE_ACCOUNT" ]
+        [[ "$BUNDLE_KEY" =~ ^${UNIT}/accepted/${REVISION}/([0-9a-f]{64})[.]tar$ ]]
+        bundle_sha256="${BASH_REMATCH[1]}"
+        aws s3api get-object --bucket "$SOURCE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/staging-binding-acceptance.json" >/dev/null
+        jq -e --arg unit "$UNIT" --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" '
+          type == "object" and .schema_version == 3 and .deployment_target == "staging"
+          and .release_tag == "" and .state == "accepted" and .unit == $unit
+          and .commit_sha == $revision and .bundle_key == $key and .bundle_sha256 == $sha
+        ' "$RUNNER_TEMP/staging-binding-acceptance.json" >/dev/null
+    - name: Configure production release-binding credentials
+      uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
+      with:
+        role-to-assume: ${{ env.AWS_PROMOTION_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+        allowed-account-ids: ${{ env.AWS_ACCOUNT_ID }}
+        role-session-name: ${{ inputs.unit }}-production-release-binding-${{ github.run_id }}
+    - name: Bind or validate immutable release tag
+      env:
+        UNIT: ${{ inputs.unit }}
+        MODE: ${{ inputs.mode }}
+        RELEASE_TAG: ${{ inputs.release_tag }}
+        TAG_REF_OID: ${{ needs.resolve.outputs.tag_ref_oid }}
+        COMMIT_SHA: ${{ needs.resolve.outputs.revision }}
+        AWS_REGION: ${{ env.AWS_REGION }}
+        ACCOUNT_ID: ${{ env.AWS_ACCOUNT_ID }}
+        BUNDLE_BUCKET: ${{ env.DEPLOY_BUNDLE_BUCKET }}
+        BUNDLE_KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+        BUNDLE_KEY: ${{ inputs.accepted_bundle_key }}
+      run: |
+        set -euo pipefail
+        if [ "$MODE" = promote ]; then
+          SOURCE_BUNDLE_KEY="$BUNDLE_KEY" infra/deploy/bind_release_tag.sh
+        else
+          infra/deploy/bind_release_tag.sh
+        fi
+    permissions:
+      id-token: write
+      contents: read

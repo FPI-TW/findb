@@ -18,6 +18,12 @@ Job 先 checkout immutable release，再於 `.deployment-driver` checkout protec
 | Backend＋Dashboard | `findb-cd.yml`，main 自動部署 | `findb-production-cd.yml`，人工 promotion |
 | Fetcher 四個 images、五個 providers | `fetcher-cd.yml`，main 自動部署 | `fetcher-production-cd.yml`，人工 promotion |
 
+兩個 production 入口只保留各自的 dispatch inputs、concurrency、unit CI、部署器與失敗回報；
+tag 解析／binding 共用 `production-release.yml`，跨帳號 digest 複製與 production candidate bundle
+共用 `production-promote.yml`，兩者以 `unit` 參數選擇 image 清單與 Fetcher 的 `migration_revision=none`／
+`runtime_profile=unified` 規則。`release` 失敗（含輸入驗證與 binding 衝突）不發布 `DeploymentFailure`，
+此時尚未變更 production。
+
 Staging build／reuse immutable commit images；production 複製 staging 已 accepted 的同一組 digests，不重新建置。
 Production 的 annotated immutable tag 必須指向 main history 中的相同 commit，tag object、commit、bundle、
 image digests 與 acceptance 全部一致。Backend 與 Fetcher 分別發布，跨 unit 變更採 Backend-first。
@@ -45,7 +51,7 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
 | Accepted bundle key | `<unit>/accepted/<sha>/<bundle-sha256>.tar` | `<unit>/production/accepted/<sha>/<bundle-sha256>.tar`；images digest 相同不代表兩環境 bundle checksum 相同 |
 | 回退 | 人工 `deployment_mode=replay`，指定該 SHA 的 staging accepted bundle 與相同 `image_tag` | 人工 `mode=rollback`，指定 production accepted bundle、對應 tag 與既有 binding；共用部署器以 `replay` 執行 |
 | 跨 unit 順序 | Fetcher 的 push candidate 會等待同 SHA 的 FinDB CD 成功；手動 dispatch 沒有此等待 | 兩個 production workflows 獨立，Backend-first 由操作順序維持，沒有跨 workflow 自動等待 |
-| 部署失敗回報 | 兩個 staging 入口皆有 failure／cancelled job，發布 `FinDB/Staging` 的 `DeploymentFailure` metric | 兩個 production 入口在 bind／CI／promotion／deploy 任一 failure 或 cancelled 時發布 `FinDB/Production` 的 `DeploymentFailure`（`DeploymentUnit=<unit>,Resource=github-actions`）；`resolve` 輸入驗證失敗不回報。每個 unit 一個 alarm，單一 datapoint 即告警、缺值視為正常；需在 production 套用 OpenTofu 後 alarm 才生效 |
+| 部署失敗回報 | 兩個 staging 入口皆有 failure／cancelled job，發布 `FinDB/Staging` 的 `DeploymentFailure` metric | 兩個 production 入口在 CI／promotion／deploy 任一 failure 或 cancelled 時發布 `FinDB/Production` 的 `DeploymentFailure`（`DeploymentUnit=<unit>,Resource=github-actions`）；`release`（tag 解析與 binding）失敗不回報。每個 unit 一個 alarm，單一 datapoint 即告警、缺值視為正常；需在 production 套用 OpenTofu 後 alarm 才生效 |
 
 兩環境都在 `ap-southeast-1`，共用 `findb-deploy.yml`／`fetcher-deploy.yml` 和主機部署腳本。
 兩者均執行 preflight、candidate 驗證、immutable acceptance 與 activation；replay 驗證既有 acceptance 後直接走 activation，

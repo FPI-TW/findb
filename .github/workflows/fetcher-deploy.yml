@@ -164,9 +164,10 @@ jobs:
         [ "$(jq -r .deployment_target "$RUNNER_TEMP/release-manifest.json")" = "$TARGET" ]
         [ "$(jq -r .release_tag "$RUNNER_TEMP/release-manifest.json")" = "$RELEASE_TAG" ]
         if [ "$MODE" = replay ]; then
-          record_key="${BUNDLE_KEY%.tar}.acceptance.json"
-          [ -f "$RUNNER_TEMP/acceptance.json" ] || aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$record_key" "$RUNNER_TEMP/acceptance.json" >/dev/null
+          # A replay keeps the runtime profile its acceptance record proved.
+          aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/acceptance.json" >/dev/null
           FETCHER_RUNTIME_PROFILE="$(jq -r '.runtime_profile' "$RUNNER_TEMP/acceptance.json")"
+          echo "FETCHER_RUNTIME_PROFILE=$FETCHER_RUNTIME_PROFILE" >> "$GITHUB_ENV"
         fi
         [ "$(jq -r '.runtime_profile' "$RUNNER_TEMP/release-manifest.json")" = "$FETCHER_RUNTIME_PROFILE" ]
         if [ "$TARGET" = production ]; then
@@ -183,17 +184,11 @@ jobs:
         [[ "$shioaji" =~ ^${ECR_REGISTRY}/findb/${TARGET}/fetcher/shioaji@sha256:[0-9a-f]{64}$ ]]
         [[ "$factset" =~ ^${ECR_REGISTRY}/findb/${TARGET}/fetcher/factset@sha256:[0-9a-f]{64}$ ]]
         if [ "$MODE" = replay ]; then
-          record_key="${BUNDLE_KEY%.tar}.acceptance.json"
-          [ -f "$RUNNER_TEMP/acceptance.json" ] || aws s3api get-object --bucket "$BUNDLE_BUCKET" --key "$record_key" "$RUNNER_TEMP/acceptance.json" >/dev/null
           if [ "$TARGET" = production ]; then
             jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" --arg release_tag "$RELEASE_TAG" '.schema_version == 3 and .deployment_target == "production" and .state == "accepted" and .bundle_key == $key and .bundle_sha256 == $sha and .unit == "fetcher" and .commit_sha == $revision and .release_tag == $release_tag and (.ssm_command_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$RUNNER_TEMP/acceptance.json" >/dev/null
           else
             jq -e --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" '.schema_version == 3 and .deployment_target == "staging" and .release_tag == "" and .state == "accepted" and .bundle_key == $key and .bundle_sha256 == $sha and .unit == "fetcher" and .commit_sha == $revision and (.ssm_command_id | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))' "$RUNNER_TEMP/acceptance.json" >/dev/null
           fi
-        fi
-        if [ "$MODE" = replay ]; then
-          FETCHER_RUNTIME_PROFILE="$(jq -r '.runtime_profile' "$RUNNER_TEMP/acceptance.json")"
-          echo "FETCHER_RUNTIME_PROFILE=$FETCHER_RUNTIME_PROFILE" >> "$GITHUB_ENV"
         fi
         validator_sha256="$(tar -xOf "$RUNNER_TEMP/release-bundle.tar" infra/deploy/release_manifest.py | sha256sum | cut -d ' ' -f1)"
         printf 'bundle_sha256=%s\ntwelve_data=%s\nfinlab=%s\nshioaji=%s\nfactset=%s\ntarget_id=%s\nvalidator_sha256=%s\n' "$bundle_sha256" "$twelve_data" "$finlab" "$shioaji" "$factset" "$target_id" "$validator_sha256" >> "$GITHUB_OUTPUT"

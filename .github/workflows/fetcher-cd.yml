@@ -153,10 +153,6 @@ jobs:
           [ "${{ github.event_name }}" = push ] && [ -z "$DEPLOYMENT_MODE" ] && [ -z "$CANDIDATE_CONFIRMATION" ] && [ -z "$IMAGE_TAG" ] && [ -z "$ACCEPTED" ] || exit 1
           echo 'mode=candidate' >> "$GITHUB_OUTPUT"
         fi
-    - name: Confirm staging credential and provider isolation policy
-      run: |
-        set -euo pipefail
-        echo 'staging runtime secret isolation remains host-catalog enforced'
   publish:
     needs: select
     if: ${{ needs.select.result == 'success' && needs.select.outputs.mode == 'candidate' }}

@@ -52,9 +52,9 @@ def test_production_cd_reports_deployment_failures_with_unit_scoped_metrics() ->
         )
         report_job = workflow.split("  report-production-deployment-failure:", 1)[1]
         needs = report_job.split("    if:", 1)[0]
-        for job in ("bind-release-tag", "verify", "promote", "deploy-promotion", "deploy-rollback"):
+        for job in ("verify", "promote", "deploy-promotion", "deploy-rollback"):
             assert f"    - {job}\n" in needs
-        assert "    - resolve\n" not in needs
+        assert "    - release\n" not in needs
         assert "always() && github.ref == 'refs/heads/main'" in report_job
         assert "contains(needs.*.result, 'failure')" in report_job
         assert "contains(needs.*.result, 'cancelled')" in report_job
@@ -98,7 +98,7 @@ def test_production_rollback_replays_acceptance_without_rerunning_ci() -> None:
             "  report-production-deployment-failure:", 1
         )[0]
         assert "    - verify\n" not in rollback
-        assert "needs.bind-release-tag.result == 'success'" in rollback
+        assert "needs.release.result == 'success'" in rollback
         assert "mode: replay" in rollback
-        promote = workflow.split("  promote:", 1)[1].split("    runs-on:", 1)[0]
+        promote = workflow.split("  promote:", 1)[1].split("  deploy-promotion:", 1)[0]
         assert "needs.verify.result == 'success'" in promote

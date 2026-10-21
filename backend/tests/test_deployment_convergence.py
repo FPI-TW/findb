@@ -45,6 +45,7 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
         ([".github/workflows/fetcher-cd.yml"], (True, True, False, True, False)),
         ([".github/workflows/fetcher-deploy.yml"], (True, True, False, True, False)),
         ([".github/workflows/fetcher-production-cd.yml"], (True, True, False, False, False)),
+        ([".github/workflows/production-promote.yml"], (True, True, False, False, False)),
         ([".github/workflows/required-ci.yml"], (True, True, False, False, False)),
         (["docs/operations/deployment.md"], (False, False, False, False, False)),
         ([""], (False, False, False, False, False)),
@@ -162,40 +163,83 @@ def test_pre_unification_releases_are_below_rollback_floor(target, version):
 
 
 def test_production_workflows_are_manual_and_do_not_contain_legacy_transport() -> None:
+    workflows = ROOT / ".github" / "workflows"
+    release = (workflows / "production-release.yml").read_text()
+    promote = (workflows / "production-promote.yml").read_text()
+    for shared in (release, promote):
+        assert set(yaml.safe_load(shared)["on"]) == {"workflow_call"}
+    assert 'test "$GITHUB_REF" = refs/heads/main' in release
+    assert '[ "$CONFIRMATION" = "PROMOTE_${UNIT^^}_PRODUCTION" ]' in release
+    assert "STAGING_PROMOTION_READ_ROLE_ARN" in release
+    assert "AWS_PROMOTION_ROLE_ARN" in release
+    assert "promote_image.sh" in promote and "docker build" not in promote
+    assert "STAGING_PROMOTION_READ_ROLE_ARN" in promote
+    assert "AWS_PROMOTION_ROLE_ARN" in promote
+    assert '.registry "$RUNNER_TEMP/staging-manifest.json"' in promote
+    assert '.account_id "$RUNNER_TEMP/staging-manifest.json"' in promote
+    assert '[ "$SOURCE_ACCOUNT" != "$DESTINATION_ACCOUNT" ]' in promote
+    assert 'candidate_key="${UNIT}/production/candidates/' in promote
     for unit in ("findb", "fetcher"):
-        text = (ROOT / ".github" / "workflows" / f"{unit}-production-cd.yml").read_text()
-        assert "workflow_dispatch" in text and "push:" not in text
+        text = (workflows / f"{unit}-production-cd.yml").read_text()
+        assert set(yaml.safe_load(text)["on"]) == {"workflow_dispatch"}
         assert "PRODUCTION_DEPLOY_ENABLED" not in text
-        assert 'test "$GITHUB_REF" = refs/heads/main' in text
         assert f"PROMOTE_{unit.upper()}_PRODUCTION" in text
-        assert "promote_image.sh" in text and "docker build" not in text
-        assert "STAGING_PROMOTION_READ_ROLE_ARN" in text
-        assert "AWS_PROMOTION_ROLE_ARN" in text
-        assert '.registry "$RUNNER_TEMP/staging-manifest.json"' in text
-        assert '.account_id "$RUNNER_TEMP/staging-manifest.json"' in text
-        assert '[ "$SOURCE_ACCOUNT" != "$DESTINATION_ACCOUNT" ]' in text
-        assert "secrets: inherit" not in text
-        assert f"{unit}/production/candidates/" in text
-        assert not {"ghcr.io", "appleboy", "FINDB_EC2_", "FETCHER_EC2_", "scp"} & set(text.split())
+        jobs = yaml.safe_load(text)["jobs"]
+        assert jobs["release"]["with"]["unit"] == unit
+        assert jobs["promote"]["with"]["unit"] == unit
+        for combined in (text, release, promote):
+            assert "secrets: inherit" not in combined
+            assert not {"ghcr.io", "appleboy", "FINDB_EC2_", "FETCHER_EC2_", "scp"} & set(
+                combined.split()
+            )
+
+
+def test_production_promotion_maps_each_unit_to_its_exact_image_set() -> None:
+    promote = yaml.safe_load((ROOT / ".github/workflows/production-promote.yml").read_text())
+    steps = promote["jobs"]["promote"]["steps"]
+    unit_step = next(step for step in steps if step.get("id") == "unit")["run"]
+    assert "findb) echo 'images=backend:backend dashboard:dashboard'" in unit_step
+    assert (
+        "fetcher) echo 'images=twelve_data:fetcher/twelve-data finlab:fetcher/finlab "
+        "shioaji:fetcher/shioaji factset:fetcher/factset'"
+    ) in unit_step
+    assert "*) exit 1 ;;" in unit_step
+    validate = next(
+        step
+        for step in steps
+        if step.get("name") == "Download and validate exact accepted staging bundle"
+    )["run"]
+    assert '[ "${image_ref%@*}" = "$SOURCE_REGISTRY/findb/staging/${entry#*:}" ]' in validate
+    assert '[ "$UNIT" != fetcher ] || [ "$migration" = none ]' in validate
+    bundle = next(step for step in steps if step.get("id") == "bundle")["run"]
+    assert 'destination_repository="$REGISTRY/findb/production/${entry#*:}"' in bundle
+    assert 'short_tag="${RELEASE_TAG#"$UNIT"-}"' in bundle
+    assert "profile_args=(--runtime-profile unified)" in bundle
 
 
 def test_production_release_binding_precedes_all_deploy_paths():
+    workflows = ROOT / ".github/workflows"
+    release_text = (workflows / "production-release.yml").read_text()
+    release = yaml.safe_load(release_text)
+    assert set(release["on"]["workflow_call"]["outputs"]) == {"revision", "tag_ref_oid"}
+    jobs = release["jobs"]
+    assert "tag_ref_oid" in jobs["resolve"]["outputs"]
+    binding = jobs["bind-release-tag"]
+    names = [step.get("name") for step in binding["steps"]]
+    assert names.index("Verify exact accepted staging binding source") < names.index(
+        "Bind or validate immutable release tag"
+    )
+    assert binding["needs"] == "resolve"
+    assert 'git rev-parse "refs/tags/$RELEASE_TAG^{commit}"' in release_text
+    assert '[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag ]' in release_text
     for unit in ("findb", "fetcher"):
-        text = (ROOT / ".github/workflows" / f"{unit}-production-cd.yml").read_text()
-        jobs = yaml.safe_load(text)["jobs"]
-        assert "tag_ref_oid" in jobs["resolve"]["outputs"]
-        binding = jobs["bind-release-tag"]
-        names = [step.get("name") for step in binding["steps"]]
-        assert names.index("Verify exact accepted staging binding source") < names.index(
-            "Bind or validate immutable release tag"
-        )
-        assert binding["needs"] == "resolve"
-        for job in jobs.values():
-            if "uses" in job:
-                assert "bind-release-tag" in job["needs"]
-        assert 'git rev-parse "refs/tags/$RELEASE_TAG^{commit}"' in text
-        assert '[ "$(git cat-file -t "refs/tags/$RELEASE_TAG")" = tag ]' in text
-        for action in re.findall(r"uses:\s*([^\s#}]+)", text):
+        caller = yaml.safe_load((workflows / f"{unit}-production-cd.yml").read_text())["jobs"]
+        assert caller["release"]["uses"] == "./.github/workflows/production-release.yml"
+        for name, job in caller.items():
+            if "uses" in job and name != "release":
+                assert "release" in job["needs"]
+    for filename in ("production-release.yml", "production-promote.yml"):
+        for action in re.findall(r"uses:\s*([^\s#}]+)", (workflows / filename).read_text()):
             if not action.startswith("./"):
                 assert re.search(r"@[0-9a-f]{40}$", action)
 
@@ -320,9 +364,7 @@ def test_containerized_dashboard_ci_marks_only_the_fixed_workspace_safe() -> Non
                 "WANT_FINDB": "true",
                 "WANT_FETCHER": "true",
                 "INFRA": "success",
-                "RETIREMENT_INFRA": "skipped",
                 "WANT_INFRA": "true",
-                "PR_HEAD_REF": "refactor/deployment-flow-convergence",
             },
             0,
         ),
@@ -334,9 +376,7 @@ def test_containerized_dashboard_ci_marks_only_the_fixed_workspace_safe() -> Non
                 "WANT_FINDB": "false",
                 "WANT_FETCHER": "false",
                 "INFRA": "skipped",
-                "RETIREMENT_INFRA": "skipped",
                 "WANT_INFRA": "false",
-                "PR_HEAD_REF": "docs/deployment-notes",
             },
             0,
         ),
@@ -348,11 +388,9 @@ def test_containerized_dashboard_ci_marks_only_the_fixed_workspace_safe() -> Non
                 "WANT_FINDB": "false",
                 "WANT_FETCHER": "false",
                 "INFRA": "skipped",
-                "RETIREMENT_INFRA": "success",
                 "WANT_INFRA": "true",
-                "PR_HEAD_REF": "chore/staging-phase2-retirement",
             },
-            0,
+            1,
         ),
         (
             {
@@ -362,9 +400,7 @@ def test_containerized_dashboard_ci_marks_only_the_fixed_workspace_safe() -> Non
                 "WANT_FINDB": "true",
                 "WANT_FETCHER": "true",
                 "INFRA": "success",
-                "RETIREMENT_INFRA": "skipped",
                 "WANT_INFRA": "true",
-                "PR_HEAD_REF": "fix/failed-fetcher-ci",
             },
             1,
         ),
@@ -622,8 +658,7 @@ def test_bundle_validation_never_passes_an_incomplete_exact_input_contract() -> 
     for workflow_name in (
         "findb-deploy.yml",
         "fetcher-deploy.yml",
-        "findb-production-cd.yml",
-        "fetcher-production-cd.yml",
+        "production-promote.yml",
     ):
         text = (ROOT / ".github" / "workflows" / workflow_name).read_text()
         exact_calls = [
@@ -635,7 +670,10 @@ def test_bundle_validation_never_passes_an_incomplete_exact_input_contract() -> 
         assert exact_calls
         for call in exact_calls:
             assert "--migration-revision" in call
-            assert "--image" in call
+            # The shared promotion builds its unit's exact image list first.
+            assert "--image" in call or (
+                '"${image_args[@]}"' in call and 'image_args+=(--image "$name=' in text
+            )
 
 
 def test_reusable_deployment_uses_current_validator_and_unified_acceptance():
@@ -972,8 +1010,8 @@ def test_release_tag_binding_validates_conditional_put_race_winner(
         "fetcher-cd.yml",
         "findb-deploy.yml",
         "fetcher-deploy.yml",
-        "findb-production-cd.yml",
-        "fetcher-production-cd.yml",
+        "production-release.yml",
+        "production-promote.yml",
     ),
 )
 def test_checkout_cannot_remove_configuration_action_before_its_post_step(filename):
