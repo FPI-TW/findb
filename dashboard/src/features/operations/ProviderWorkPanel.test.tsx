@@ -34,6 +34,23 @@ it("shows loading before any response and disables hidden polling", () => {
   )
 })
 
+it("keeps FactSet available and selected when the queue is empty", () => {
+  mocks.query.mockReturnValue({
+    data: { resource: "providerWork", result: { data: [] } },
+    isFetching: false,
+    error: null,
+    dataUpdatedAt: Date.now(),
+    refetch: vi.fn(),
+  })
+  const { rerender } = render(<ProviderWorkPanel />)
+  const factsetTab = screen.getByRole("tab", { name: "factset (0)" })
+  fireEvent.click(factsetTab)
+  rerender(<ProviderWorkPanel />)
+  expect(factsetTab).toHaveAttribute("aria-selected", "true")
+  expect(screen.getByText("此供應商目前沒有等待或執行中的工作。")).toBeVisible()
+  expect(screen.queryByRole("table")).not.toBeInTheDocument()
+})
+
 it("isolates provider lists and preserves selection and FIFO order on refresh", () => {
   const queryResult = {
     data: {
@@ -107,7 +124,7 @@ it("isolates provider lists and preserves selection and FIFO order on refresh", 
   mocks.query.mockReturnValue(queryResult)
   const { rerender } = render(<ProviderWorkPanel />)
   const tabs = screen.getByRole("tablist", { name: "供應商工作佇列分頁" })
-  expect(within(tabs).getAllByRole("tab")).toHaveLength(4)
+  expect(within(tabs).getAllByRole("tab")).toHaveLength(5)
   expect(screen.getByRole("tab", { name: "twelve_data (1)" })).toHaveAttribute(
     "aria-selected",
     "true"

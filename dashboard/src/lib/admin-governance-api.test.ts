@@ -48,13 +48,32 @@ describe("admin governance wire contracts", () => {
       "finlab",
       "shioaji",
       "taifex",
+      "factset",
     ])
     expect(SOURCE_PROVIDER_DATASETS).toEqual({
       twelve_data: ["us_equity_eod", "hk_equity_eod"],
       finlab: ["tw_equity_eod", "tw_etf_eod"],
       shioaji: ["tw_equity_minute", "tw_etf_minute"],
       taifex: ["tw_futures_eod"],
+      factset: ["hk_equity_eod"],
     })
+  })
+
+  it("accepts FactSet HK source credentials and rejects unrelated datasets", () => {
+    const input = {
+      kind: "source",
+      name: "factset-fetcher",
+      owner: "data-platform",
+      source_name: "factset",
+      allowed_datasets: ["hk_equity_eod"],
+    }
+    expect(createCredentialSchema.parse(input)).toMatchObject(input)
+    expect(
+      createCredentialSchema.safeParse({
+        ...input,
+        allowed_datasets: ["us_equity_eod"],
+      }).success
+    ).toBe(false)
   })
 
   it("parses backend login and keeps opaque secrets out of the user object", () => {
