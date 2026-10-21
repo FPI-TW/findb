@@ -468,6 +468,14 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
         assert "build_ecr_image_if_missing.sh" in text
         assert "outputs.image_ref" in text
         assert "sed -n 's/^image_ref=//p'" not in text
+        publish = text.split("  publish:", 1)[1].split("  prepare:", 1)[0]
+        assert "      ECR_BUILD_CACHE: gha\n" in publish
+        runtime = publish.split("Expose BuildKit cache runtime without logging it", 1)[1]
+        assert "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3" in runtime
+        assert "core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN" in runtime
+        assert "core.info" not in runtime
+        assert publish.index("setup-buildx-action") < publish.index("github-script")
+        assert publish.index("github-script") < publish.index("build_ecr_image_if_missing.sh")
         if unit == "fetcher":
             assert text.count("build_ecr_image_if_missing.sh") == 4
             for repository in ("twelve-data", "finlab", "shioaji", "factset"):

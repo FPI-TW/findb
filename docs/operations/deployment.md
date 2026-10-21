@@ -121,6 +121,15 @@ Activation／accepted replay 改為 exact DB revision 與 credentials check-only
 不重跑 unit CI：acceptance record 只會在該 SHA 通過 CI 後產生，而以目前 main 的 CI 定義檢查舊 SHA
 可能因 CI 漂移失敗並拖延復原。尚無成功 rollback 的實測基準。
 
+Staging publish 以 `ECR_BUILD_CACHE=gha` 讓 `build_ecr_image_if_missing.sh` 使用 BuildKit GitHub Actions
+layer cache，scope 為各 ECR repository；cache 只在 push main 的 publish job 寫入，PR 無法覆寫。
+`actions/github-script` 只把 cache runtime 變數寫入 `GITHUB_ENV` 並遮罩 token，不印出數值；cache 匯出失敗不影響發布。
+Image tag／digest 契約不變：既有 exact SHA tag 仍直接重用，不重建。
+
+Fetcher 十五個 runtimes 的替換刻意維持序列：rollback journal 存在 coordinator shell 陣列，
+同 provider 的 Pilot／Full／historical 共用同一 secret consumer tmpfs 與帳號 governor lock；
+平行化需重新設計交易與復原，不屬於目前可在本機驗證的範圍。
+
 兩個 reusable deploy job 上限由 90 改為 55 分鐘。Protected-main driver 負責主機 Bash wrapper 與 SSM wait，
 避免 accepted replay 依賴舊 release 缺少的新 helper。主機 preflight／candidate／activation 分別由
 GNU timeout 限制為 240／900／900 秒，TERM 後最多保留 180 秒供原停止／復原 traps 完成；

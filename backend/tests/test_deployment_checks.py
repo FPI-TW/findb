@@ -3934,3 +3934,74 @@ def test_findb_ci_pytest_failure_propagates_through_report_capture(job_name, tmp
     assert result.returncode == 23
     assert "deliberate pytest failure" in result.stdout
     assert (tmp_path / f"findb-ci-{job_name}" / "pytest.log").read_text() == result.stdout
+
+
+def test_immutable_ecr_build_helper_scopes_optional_gha_layer_cache(tmp_path: Path) -> None:
+    helper = REPO_ROOT / "infra" / "deploy" / "runtime-secrets" / "build_ecr_image_if_missing.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_log = tmp_path / "docker.log"
+    state = tmp_path / "pushed"
+    (fake_bin / "aws").write_text(
+        f"""#!/bin/sh
+if [ -f {state} ]; then
+  printf '%s\\n' 'sha256:{"b" * 64}'
+else
+  printf '%s\\n' '{{"Code":"ImageNotFoundException","Message":"tag absent"}}' >&2; exit 255
+fi
+""",
+        encoding="utf-8",
+    )
+    (fake_bin / "docker").write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {docker_log}\n: > {state}\n", encoding="utf-8"
+    )
+    for command in ("aws", "docker"):
+        (fake_bin / command).chmod(0o755)
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("ACTIONS_")
+    } | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "AWS_REGION": "ap-southeast-1",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_SHA": "a" * 40,
+    }
+    image = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab"
+
+    def run(**extra: str) -> subprocess.CompletedProcess[str]:
+        state.unlink(missing_ok=True)
+        docker_log.unlink(missing_ok=True)
+        return subprocess.run(
+            ["bash", str(helper), image, ".", "./fetcher/Dockerfile.finlab"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment | extra,
+        )
+
+    uncached = run()
+    assert uncached.returncode == 0, uncached.stderr
+    assert "--cache-" not in docker_log.read_text(encoding="utf-8")
+
+    cached = run(
+        ECR_BUILD_CACHE="gha",
+        ACTIONS_RUNTIME_TOKEN="runtime-token",
+        ACTIONS_RESULTS_URL="https://results.example.test/",
+    )
+    assert cached.returncode == 0, cached.stderr
+    build = docker_log.read_text(encoding="utf-8")
+    assert "--cache-from type=gha,scope=findb/staging/fetcher/finlab" in build
+    assert (
+        "--cache-to type=gha,mode=max,scope=findb/staging/fetcher/finlab,ignore-error=true"
+    ) in build
+    assert build.index("--cache-to") < build.index("--push")
+    assert "runtime-token" not in cached.stdout + cached.stderr
+
+    missing_runtime = run(ECR_BUILD_CACHE="gha")
+    assert missing_runtime.returncode != 0
+    assert "reason=build_cache_runtime_missing" in missing_runtime.stderr
+    assert not docker_log.exists()
+
+    invalid = run(ECR_BUILD_CACHE="registry")
+    assert invalid.returncode != 0
+    assert "reason=build_cache_invalid" in invalid.stderr
+    assert not docker_log.exists()
