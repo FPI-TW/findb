@@ -84,7 +84,11 @@ def test_deadline_cancels_and_confirms_remote_termination_without_acceptance(tmp
 
 def test_success_received_after_deadline_cannot_be_accepted(tmp_path):
     result, calls = run_wait(
-        tmp_path, status="Success", stdout="marker status=success\n", seconds=1, response_delay=1.1
+        tmp_path,
+        status="Success",
+        stdout="marker status=success\n",
+        seconds=1,
+        response_delay=1.1,
     )
     assert result.returncode != 0
     assert "deadline exceeded" in result.stderr
@@ -118,9 +122,54 @@ def test_scheduler_block_surfaces_only_safe_profile_and_provider(tmp_path, profi
     assert result.stderr.count("Fetcher deployment blocked:") == 1
 
 
+@pytest.mark.parametrize("profile", ["pilot", "full_market", "historical"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
+def test_host_preflight_block_surfaces_identity_without_raw_output(tmp_path, profile, provider):
+    diagnostic = (
+        "fetcher_host_blocked reason=runtime_not_eligible "
+        f"execution_profile={profile} provider={provider}"
+    )
+    result, _ = run_wait(
+        tmp_path,
+        status="Failed",
+        stdout=f"secret-token\n{diagnostic}\n{diagnostic}\n{diagnostic} secret\n",
+    )
+    assert result.returncode != 0
+    assert f"runtime_not_eligible execution_profile={profile} provider={provider}" in result.stderr
+    assert "safely recover its original owner" in result.stderr
+    assert "::error title=Fetcher 主機 runtime 未通過檢查::" in result.stderr
+    assert "secret" not in result.stderr
+    assert result.stderr.count("Fetcher host preflight blocked:") == 1
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        "execution_profile=unknown provider=twelve_data",
+        "execution_profile=pilot provider=unknown",
+        "execution_profile=pilot provider=twelve_data%0Asecret",
+    ],
+)
+def test_host_preflight_block_rejects_untrusted_identity(tmp_path, identity):
+    result, _ = run_wait(
+        tmp_path,
+        status="Failed",
+        stdout=f"fetcher_host_blocked reason=runtime_not_eligible {identity}\n",
+    )
+    assert result.returncode != 0
+    assert "Fetcher host preflight blocked:" not in result.stderr
+    assert "::error title=Fetcher 主機" not in result.stderr
+    assert "secret" not in result.stderr
+
+
 def test_host_command_has_a_deadline_and_time_for_term_recovery():
     result = subprocess.run(
-        ["python3", str(ROOT / "infra/deploy/ssm_bash_command.py"), "--timeout-seconds", "900"],
+        [
+            "python3",
+            str(ROOT / "infra/deploy/ssm_bash_command.py"),
+            "--timeout-seconds",
+            "900",
+        ],
         input="trap 'exit 143' TERM\nprintf 'safe'\n",
         text=True,
         capture_output=True,

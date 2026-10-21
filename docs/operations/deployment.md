@@ -158,6 +158,11 @@ fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=full_m
 SSM gate 只從失敗 stdout 擷取此固定 reason、合法 profile 與 provider，讓 Actions 顯示
 `scheduler_not_stopped`、對應 profile／provider 及等待 desired／observed stopped 後重試的指引。
 任意 stdout、stderr、Source 回應與 credentials 都不直接轉印；其他失敗保留安全通用訊息及 command ID。
+Host eligibility 拒絕某個已知 consumer 時，trusted guard 另輸出受限的
+`fetcher_host_blocked reason=runtime_not_eligible execution_profile=pilot provider=twelve_data`。
+SSM gate 只接受合法的 `pilot|full_market|historical` 與五個 provider，於 Actions 提示檢查
+既有 consumer、保持 control 停止並安全復原原 owner。重啟循環、非零 exit、identity 或
+argv 不符仍拒絕部署；診斷不直接輸出 Docker Error、environment 或原始 stdout／stderr。
 Daemon container 為 running 且 idle 不等同 scheduler control 仍允許抓取，不能以 Docker running 直接阻擋部署。
 舊 accepted images 沒有此 CLI 訊息，不會因更新 driver 而自動取得新版 diagnostic protocol。
 
@@ -522,7 +527,7 @@ Native 驗收、明確 HK provider 切換與 rollback 證據限制見 [FactSet r
 
 ### 2026-10-21 staging HK 切換
 
-目前 accepted Backend 為 `fe29ce5af468194aafbe39ea57a921f7104b1ccd`，bundle
+HK 切換時 accepted Backend 為 `fe29ce5af468194aafbe39ea57a921f7104b1ccd`，bundle
 `b7d191d09124f57cff68e2f1267fca5eb9a12afab05b702611bd9f5073d0f3f0`；Fetcher 仍為上列
 `f7d0d8f`／`90e06283…`。兩份 S3 acceptance records 均為 schema-v3、staging／accepted，
 images 與主機 manifest 一致；Backend revision 為 `d75fc12a9b43`。Rollback 保留 owner 到期
@@ -579,4 +584,89 @@ owner。相容 scope 不變，closed round 與 frozen `scope.feed` 也不能恢�
 本機驗證為完整 Fetcher **1,642 passed**、相關 Backend **151 passed／3 skipped**，以及
 全專案 format／lint／type check 通過。三項 skip 為既有選用原生驗收，不列為通過。
 真實 Source／worker 回歸測試涵蓋原 bytes 重播、normalization terminal 前持有 owner、
-FIFO 釋放與 Full 維持停止；staging 新版本部署與 Pilot 恢復仍須另行保存現場證據。
+FIFO 釋放與 Full 維持停止；staging 新版本部署與 Pilot 恢復的現場證據見下節。
+
+#### 退役 owner 阻擋部署的復原
+
+#326 已由使用者合併至 `dd1dece3e97c241e1a5f1ab2f87d097f58ae7040`。
+[Fetcher CD 39536143222](https://github.com/FPI-TW/findb/actions/runs/39536143222) 的測試、images
+publish 與 bundle preparation 通過，但 attempt 1 於 `2026-10-21 03:17 UTC` 在唯讀 preflight 被
+`fetcher_host_eligibility=failed` 擋下；未執行 candidate acceptance／activation。
+SSM command 為 `fa85a390-43fc-45a7-84a6-cba75316ff00`。當時 current 仍為 `f7d0d8f`，
+Twelve Data Pilot container 正以 exit 1／restarting 反覆恢復 10/16 HK owner。
+其 accepted image、環境、完整 argv 與 manifest 均正確，其他十四 consumers 通過 eligibility。
+Control 已 stopped，既有 owner 的 drain 仍會碰到舊 feed lookup；只停止 control 或重試部署不足以復原。
+
+使用者授權主機復原後，停止三個 Twelve Data consumers 並確認 PID 為零；在
+`/var/backups/findb-hk-cutover/staging-20261021T0324Z` 保存 Pilot／Full SQLite、account governor
+與 provider-work journal，各檔 SQLite backup／integrity check 通過，權限保留 0700／0600。
+三個 consumers 使用原 containers／images／mounts，shared inode `staging:66305:512066` 未替換。
+DB 確認 10/16 HK work 沒有 manifest、prepared 或 receipt；checkpoint 兩個成員已是 manual，
+沒有 prepared body，逐 sequence receipt 亦為零。以正常 Source recovery／settle protocol 於 `03:24 UTC` 將
+`01a14443-ca90-766c-b607-b669b7db0c0c` 結算 `failed / RETIRED_FEED_MANUAL_REVIEW`，
+owner generation 176 後釋放，沒有 provider I/O。不得依這次零 prepared 條件泛化為自動清除 owner；
+若有原 bytes／receipts 或無法核對，須先排空／復原並保留證據。
+
+復原前後 HK 的 2 first-date states、2 plans、2 parts、4 members、5 decisions fingerprints 完全一致；
+原 manual／missing 不改成成功或 no_data。十五 consumers running，恢復的三個 Twelve Data
+consumers 零新增重啟；FactSet 10/20 與 10/21 maintenance budgets 仍為 5／1。
+所有 Pilot／Full controls 均為 desired／observed stopped，未改動其 control revisions。
+
+以原 workflow preflight 程式、相同 candidate bundle／SHA／images 重新執行完整唯讀驗證，
+於 `03:26 UTC` 取得 `runtime_secret_loader=validated`、`fetcher_host_eligibility=running` 與精確成功 marker。
+Candidate bundle SHA-256 為 `66a1826a11bc814a5b3ca37958d18dbab3ee54f5397aff615d2c17be86e23980`。
+此結果證明原 preflight 阻擋已排除；之後使用者另行授權重試正式部署與驗收，結果見下節。
+
+SSM 證據：停止 `91123c7d-b22e-4cc0-a9b6-ecbb1808e09e`、備份
+`50a2fea0-02ee-4f1c-a20f-53a1f9425f88`、owner recovery
+`20e33878-2d82-497f-8fa8-22fdc7d1d1f1`、恢復
+`cd1ed9df-f8f9-42ae-a310-55c267be5844`、完整唯讀 preflight
+`953cade6-ad7b-4372-ace6-b752c9e29865`、fingerprints
+`8b087ff2-618c-4b1b-bcd2-20d519e7de2b`／`caa52862-d0c7-4657-9085-3b879aa0eca5`、
+健康／預算 `f8600ff1-881f-432a-809f-f7df5c8d16a1`、所有 controls 停止
+`6de138d3-6088-408b-a9ec-1a5ba93a4b5a`。
+
+
+#### 部署重試與 Twelve Data Pilot 恢復
+
+同一 [Fetcher CD 39536143222](https://github.com/FPI-TW/findb/actions/runs/39536143222)
+attempt 2 已成功，candidate acceptance SSM 為 `5da17277-134e-405e-99d0-abb637ef9f59`。
+`03:36 UTC` 發布 schema-v3、staging／accepted 紀錄：
+`fetcher/accepted/dd1dece3e97c241e1a5f1ab2f87d097f58ae7040/66a1826a11bc814a5b3ca37958d18dbab3ee54f5397aff615d2c17be86e23980.acceptance.json`。
+Bundle SHA 與原 candidate 相同，validator SHA 為
+`344a79c77aeafbd790aae299b8725eefa854de3112069db993320ef572a92003`；
+activation 後 current 為 `66a1826a…-39536143222-2`，commit 為 `dd1dece`。
+十五 consumers 的 accepted label、環境、image 與 manifest 一致，全部 running／exit 0，重啟次數為零。
+Twelve Data image 為 `sha256:404533a7dec6fbb9afde9de86de16079c43eed6c38849e6a878e43de97265ea2`；
+實際安裝 feed 只有 `us_equity_eod`，退役處理函式 fingerprint 與已測試版本相同。
+主機驗收 SSM 為 `f8f7a989-699d-4451-ae86-10feba46ea43`。
+
+`03:44 UTC` 透過既有 Owner Dashboard 只啟用 `pilot_twelve_data_v1`，revision 37 → 38，
+admission `01a15c8f-c6a4-75f3-80f7-81bbca47d2a2` 只納入 US baseline
+`01a15c43-b72e-75f8-829c-5220b0cd9c56`。Source authorization 確認 Pilot acquisition allowed，
+admitted keys 只有 US；Full acquisition 不允許，其他 Pilot 與全部 Full controls 保持停止。
+HK 的相容 scheduler scope 保留，Dashboard 以 `provider_acquisition_cutover` 排除新抓取。
+授權核對 SSM 為 `b73f0373-6d54-4a91-b320-51dfedd667dc`。
+
+
+Pilot 持續完成正常 cycles，`03:44:51`、`03:45:23`、`03:46:33`、`03:47:05 UTC`
+均有完成時間及新 heartbeat，`last_error` 為空。Cycle 完成後 `observed=stopped` 是 CLI
+回報閒置的既有契約，需合併 `desired=running`、新 heartbeat、cycle 與資料證據判讀。
+US 10/15–10/19 的舊工作依原 canonical／calendar 證據結算，未重新抓取或假造 no_data。
+10/20 新 plan `01a15c90-cb27-7e8b-9f3e-42327e609bdf` 凍結成員 `A`、`AA`，
+expected=2，member SHA 為 `e579f3789ae1cf09da44373fc2906adb037e21a10a15678c396bd5c464513392`。
+兩個新 runs `01a15c90-d39f-71e9-ab34-07c70da05de0`／`01a15c90-d8ce-7a9b-8aa9-7fff591aee3e`
+於 `03:45:57–59 UTC` 完成，各 1 record 成功、0 failed，各有 canonical member evidence。
+Daily work `01a15bed-12eb-7c2f-bb82-131dab9d54c5` 在 normalization 後完成第二輪結算，
+保留兩份 receipts，owner 已釋放；Dashboard 顯示 feed 1/1 complete、涵蓋日／預期日均為 10/20。
+Dashboard Lookup 經正式 Serve path 顯示兩檔最新 EOD 均為 `2026-10-20`，
+A／AA 明細的當日成交量分別為 1,978,600／5,735,300；未繞過 Serve 認證。
+自 `03:30 UTC` 部署與恢復觀察期間沒有新增 Full ingestion runs。
+資料流程驗收 SSM 為 `918801cd-d55e-4b0b-b3a2-d6c6f0bc8c8f`／`58622cca-26da-44fa-a5c8-da24a6e2339a`。
+
+部署及 Pilot 恢復後，HK 兩筆 work 仍為 `failed / RETIRED_FEED_MANUAL_REVIEW`，
+HK first dates／plans／parts／members／decisions 的前述 fingerprints 仍完全一致；owner 無 active attempt，
+shared inode 未變。十五 consumers 仍 running，Twelve Data 三個 consumers 均零重啟，
+FactSet 兩筆原 maintenance budgets 仍為 5／1。SSM 為
+`365c4630-b04c-40f1-a1df-3b66a0a0670a`／`49c125ec-8321-443b-a355-82776724b973`。
+FactSet 原生 prices／daily 及跨日 release 的未完成驗收仍由 backlog 追蹤。

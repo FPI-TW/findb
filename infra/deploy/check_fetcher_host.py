@@ -140,7 +140,16 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
                 continue
             name = f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}"
             image = manifest["images"]["twelve_data" if provider == "taifex" else provider]
-            require_runtime(names[name], image, target, provider, profile)
+            try:
+                require_runtime(names[name], image, target, provider, profile)
+            except (ValueError, KeyError):
+                # Only trusted inventory identities cross the SSM log boundary;
+                # Docker errors, argv and environment may contain secrets.
+                print(
+                    "fetcher_host_blocked reason=runtime_not_eligible "
+                    f"execution_profile={profile} provider={provider}"
+                )
+                raise
     return "running" if any(row["State"]["Running"] for row in rows) else "drained"
 
 

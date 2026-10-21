@@ -100,6 +100,16 @@ ssm_command_marker_state() {
           printf '::error title=Fetcher scheduler 尚未停止::execution_profile=%s provider=%s；請先在 Dashboard 停止該 scheduler，等待 desired/observed stopped 後重試。\n' "$profile" "$provider" >&2
         fi
       done <<<"$diagnostic"
+      diagnostic="$(jq -r '[.stdout | split("\n")[] | rtrimstr("\r") | select(test("^fetcher_host_blocked reason=runtime_not_eligible execution_profile=(pilot|full_market|historical) provider=(twelve_data|finlab|shioaji|taifex|factset)$"))] | unique | .[:15][]' <<<"$response")"
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        profile="${line#*execution_profile=}"; profile="${profile%% *}"
+        provider="${line##*provider=}"
+        echo "Fetcher host preflight blocked: runtime_not_eligible execution_profile=$profile provider=$provider. Inspect the installed consumer and safely recover its original owner before retrying; keep its scheduler stopped." >&2
+        if [ "${GITHUB_ACTIONS:-false}" = true ]; then
+          printf '::error title=Fetcher 主機 runtime 未通過檢查::execution_profile=%s provider=%s；請檢查既有 consumer，安全復原原 owner，保持 scheduler 停止後重試。\n' "$profile" "$provider" >&2
+        fi
+      done <<<"$diagnostic"
       return 1
       ;;
     *)
