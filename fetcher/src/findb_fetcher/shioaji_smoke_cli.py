@@ -16,6 +16,7 @@ from typing import Any, NoReturn
 
 from findb_fetcher.contracts import ContractRegistry, ContractValidationError
 from findb_fetcher.providers.shioaji import (
+    SHIOAJI_SDK_VERSION,
     ShioajiConfigError,
     ShioajiPayloadError,
     ShioajiSdkError,
@@ -23,7 +24,7 @@ from findb_fetcher.providers.shioaji import (
     build_market_minute_request,
 )
 
-EXPECTED_SHIOAJI_VERSION = "1.7.1"
+EXPECTED_SHIOAJI_VERSION = SHIOAJI_SDK_VERSION
 REVIEWED_SYMBOLS = frozenset({"2330"})
 MAX_PROVIDER_WINDOW_DAYS = 31
 TIMEOUT_SECONDS = 60.0

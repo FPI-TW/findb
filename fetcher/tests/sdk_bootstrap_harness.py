@@ -46,7 +46,7 @@ class API:
 sdk = types.SimpleNamespace(Shioaji=API)
 original_import = ss.importlib.import_module
 ss.importlib.import_module = lambda name: sdk if name == "shioaji" else original_import(name)
-ss.importlib.metadata.version = lambda name: "1.7.1"
+ss.importlib.metadata.version = lambda name: ss.SHIOAJI_SDK_VERSION
 ss._entry()
 """
 

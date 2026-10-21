@@ -19,6 +19,7 @@ from findb_fetcher.full_market_state import QuotaBlockedError
 from findb_fetcher.provider_work import durable_response
 from findb_fetcher.providers.shioaji import (
     MAX_ISOLATED_IPC_BYTES,
+    SHIOAJI_SDK_VERSION,
     ShioajiKbarsSnapshot,
     ShioajiSdkError,
     _decode_isolated_message,
@@ -55,7 +56,7 @@ class ShioajiSession:
                 self.load_group(exchange)
 
     def prepare_create(self, sdk: Any = None) -> None:
-        if importlib.metadata.version("shioaji") != "1.7.1":
+        if importlib.metadata.version("shioaji") != SHIOAJI_SDK_VERSION:
             raise ShioajiSdkError("shioaji SDK version unsupported", code="SDK")
         self._sdk = sdk or importlib.import_module("shioaji")
         self._factory = self._sdk.Shioaji

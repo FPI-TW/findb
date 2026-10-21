@@ -46,7 +46,8 @@ jobs:
           cache-dependency-glob: "fetcher/uv.lock"
 
       - name: Install dependencies
-        run: uv sync --frozen
+        # The Shioaji extra lets test_shioaji_sdk_contract.py check the real SDK API.
+        run: uv sync --frozen --extra shioaji
 
       - name: Check contract artifacts
         working-directory: backend

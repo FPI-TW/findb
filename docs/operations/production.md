@@ -13,7 +13,7 @@ Production 2026-10-01、10-02、10-05 共六筆未結案 missing alerts，分別
 `contract_access` 終止；其餘 48 檔股票與 3 檔 ETF 尚未嘗試，排程窗口已到 cutoff。
 這是 provider contract access 階段失敗，不能把未嘗試序列判定為商品無資料。
 
-Runtime 固定使用 Shioaji `1.7.1`。隔離的 bounded simulation 驗證確認 login 成功後，
+調查當時 runtime 固定使用 Shioaji `1.7.1`。隔離的 bounded simulation 驗證確認 login 成功後，
 `api.contracts` 實際為 `ContractsApi`；讀取 `.stocks` 立即拋出 `AttributeError`。
 直接呼叫 `api.contracts.get("2454")` 則回傳 `BaseContract`，identity 為
 `code=2454`、`exchange=TSE`、`security_type=STK`、`region=TW`，並成功 logout。

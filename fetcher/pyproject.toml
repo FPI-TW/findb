@@ -31,7 +31,7 @@ finlab = [
     "finlab==1.5.7",
 ]
 shioaji = [
-    "shioaji==1.7.1",
+    "shioaji==1.7.9",
 ]
 
 [dependency-groups]

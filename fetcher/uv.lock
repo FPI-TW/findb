@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.13.*"
 resolution-markers = [
     "sys_platform == 'win32'",
@@ -172,7 +172,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4.25.1,<5.0.0" },
     { name = "pymysql", marker = "extra == 'factset'", specifier = ">=1.1.1,<2" },
-    { name = "shioaji", marker = "extra == 'shioaji'", specifier = "==1.7.1" },
+    { name = "shioaji", marker = "extra == 'shioaji'", specifier = "==1.7.9" },
 ]
 provides-extras = ["factset", "finlab", "shioaji"]
 
@@ -681,6 +681,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pymysql"
+version = "1.2.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/d4/c15b459e25a23767d2f4065ef40968920320f04e302889574310c21c96a3/pymysql-1.2.3.tar.gz", hash = "sha256:d5b288529782e536ae171866df3ca9dc4f6cbfb3cc2f18e6f837fbb90dbc262b", size = 50629, upload-time = "2026-09-17T12:22:49.146Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/4b/0a906d8184f011ff8dbd4722743783867589b33269d2c5fff238d636fdcb/pymysql-1.2.3-py3-none-any.whl", hash = "sha256:14f1c68e2ed859243ae5ca41ffbe677027fc46bc136a9f0be8a4e928e5e7415a", size = 46740, upload-time = "2026-09-17T12:22:47.826Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -840,14 +849,14 @@ wheels = [
 
 [[package]]
 name = "shioaji"
-version = "1.7.1"
+version = "1.7.9"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/64/f5/e028140c5c317a19245f952494b5d39fde8067ae45f281f0e10fe3b14f26/shioaji-1.7.1-cp37-abi3-macosx_10_15_x86_64.whl", hash = "sha256:761c69f9f24fde9acc3de29a030866d9d28e9d952c3536856c504235406b95e8", size = 38535893, upload-time = "2026-07-30T07:37:50.041Z" },
-    { url = "https://files.pythonhosted.org/packages/1f/00/f57c041b2b50470bbb251bc148c010dafd4f42ed6c4f4458a57c7afbcfc9/shioaji-1.7.1-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:4cf8da8ab17f726fe97e997b09e5b87b7e2e0590e809e5b399e898b12abec317", size = 35589106, upload-time = "2026-07-30T07:38:28.061Z" },
-    { url = "https://files.pythonhosted.org/packages/76/67/1fce6329a2aa5263aaec7ae475e8a0d72c3dcf17928aabf8a9fccfc37329/shioaji-1.7.1-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:09d77dbcce164939d93bbac3b150ca8288816f110f10c75fc6769ac35436d724", size = 40183563, upload-time = "2026-07-30T07:37:05.622Z" },
-    { url = "https://files.pythonhosted.org/packages/e4/8d/28543f05380352d09bfefcadf6953f378b425f82cdd2925fb75c405d3baf/shioaji-1.7.1-cp37-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:9be89f9224932b4c6b67fefbbced98d61b6d1db27dc5b52296c7f7a1275ad397", size = 37683229, upload-time = "2026-07-30T07:38:46.203Z" },
-    { url = "https://files.pythonhosted.org/packages/fc/f8/ab9ecbef5dc4e066e66da361792490187a22fb18f3ab1e2dbd7356b4017f/shioaji-1.7.1-cp37-abi3-win_amd64.whl", hash = "sha256:598741e14f5a44e3d31995507578790009e593f068c78e0e7b2a1012b8c472d6", size = 42510080, upload-time = "2026-07-30T07:37:18.574Z" },
+    { url = "https://files.pythonhosted.org/packages/17/7e/d882174eeb1e9b20e6428850e8f88bc008d7ef10717e32ea4200c5114f38/shioaji-1.7.9-cp37-abi3-macosx_10_15_x86_64.whl", hash = "sha256:486ce30696adccd0e47cfeb2127c8c05646a1d73bf9d8339a27d4d60bfdd0a41", size = 34839114, upload-time = "2026-10-20T07:02:49.588Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/d0/b8c9a66a976f9db5f0b5a424fcdf1fa2434addd4e1bcb69573a64ab7ba04/shioaji-1.7.9-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:9509e6571052cde9299f1f94c12ae278ba306dd611caad3c4eb5dabbcd31c1ff", size = 32293381, upload-time = "2026-10-20T07:03:00.071Z" },
+    { url = "https://files.pythonhosted.org/packages/bb/57/8e67157911eb6af695a2e1d03fd31304b5a8641fd8dd75152a3a773548fd/shioaji-1.7.9-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1b076a9df6a7b49976629515ee326ad879ce5e552360603cadd58d2cd1cd4724", size = 36358684, upload-time = "2026-10-20T07:03:11.514Z" },
+    { url = "https://files.pythonhosted.org/packages/92/de/b58bb5be7a8d4db0d75da35edcf80c90abdb913e965d9eaad3e163957d53/shioaji-1.7.9-cp37-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:c3e07082e08484e038210ffd06a8f9abc322b67042722e1e9a3e9be413fb40cf", size = 34294759, upload-time = "2026-10-20T07:02:23.924Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/53/0be39bffd7eb37e3c58cbf94c766962bab3654a8c9adf7f0180dde5cc62e/shioaji-1.7.9-cp37-abi3-win_amd64.whl", hash = "sha256:77c864aa5bcd0f873746cb10a55a484c7a38723df432a7778f328d5fb7f57be4", size = 37975929, upload-time = "2026-10-20T07:03:26.933Z" },
 ]
 
 [[package]]
@@ -892,6 +901,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/57/a9/a2584b8313b89f94869ddb3c4074617a691de1812a614d2d50e32ca5a7a6/traitlets-5.15.1.tar.gz", hash = "sha256:7b1c07854fe25acb39e009bae49f11b79ff6cbb2f27999104e9110e7a6b53722", size = 163344, upload-time = "2026-06-03T12:26:06.181Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/8d/1080ee4c231f361b6ce4470d556c8c435b67c7e0753aaa641497ee92f88b/traitlets-5.15.1-py3-none-any.whl", hash = "sha256:770a53705f84b81ac107e83a1b3328ff2dae16094d8fc3cfc004e4b22dfd8e92", size = 85858, upload-time = "2026-06-03T12:26:04.395Z" },
+]
+
+[[package]]
+name = "types-pymysql"
+version = "1.2.0.20260923"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/cb/2c4017b0da85cbed15296b0569141f2c56790752aa4facc60ea199db24df/types_pymysql-1.2.0.20260923.tar.gz", hash = "sha256:2d02420956deeed7366c3b2b7dfaac3b33ad800d754327857f7b38f59751a59c", size = 22943, upload-time = "2026-09-23T06:52:06.076Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/f3/75928f071b26151423e7a681defd6eee6fa8181de70cb22ea2211c295d39/types_pymysql-1.2.0.20260923-py3-none-any.whl", hash = "sha256:2042fc2d0745eba181c3070221fdc9ac12baaa4908f79c1cb0f953c8c44efcc5", size = 23383, upload-time = "2026-09-23T06:52:04.912Z" },
 ]
 
 [[package]]
@@ -946,22 +964,4 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1d/7a/eb316761ec35664ea5174709a68bbd3389de60d4a1ebab8808bfc264ed67/webcolors-25.10.0.tar.gz", hash = "sha256:62abae86504f66d0f6364c2a8520de4a0c47b80c03fc3a5f1815fedbef7c19bf", size = 53491, upload-time = "2025-10-31T07:51:03.977Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e2/cc/e097523dd85c9cf5d354f78310927f1656c422bd7b2613b2db3e3f9a0f2c/webcolors-25.10.0-py3-none-any.whl", hash = "sha256:032c727334856fc0b968f63daa252a1ac93d33db2f5267756623c210e57a4f1d", size = 14905, upload-time = "2025-10-31T07:51:01.778Z" },
-]
-
-[[package]]
-name = "pymysql"
-version = "1.2.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b1/d4/c15b459e25a23767d2f4065ef40968920320f04e302889574310c21c96a3/pymysql-1.2.3.tar.gz", hash = "sha256:d5b288529782e536ae171866df3ca9dc4f6cbfb3cc2f18e6f837fbb90dbc262b", size = 50629, upload-time = "2026-09-17T12:22:49.146Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/4b/0a906d8184f011ff8dbd4722743783867589b33269d2c5fff238d636fdcb/pymysql-1.2.3-py3-none-any.whl", hash = "sha256:14f1c68e2ed859243ae5ca41ffbe677027fc46bc136a9f0be8a4e928e5e7415a", size = 46740, upload-time = "2026-09-17T12:22:47.826Z" },
-]
-
-[[package]]
-name = "types-pymysql"
-version = "1.2.0.20260923"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/58/cb/2c4017b0da85cbed15296b0569141f2c56790752aa4facc60ea199db24df/types_pymysql-1.2.0.20260923.tar.gz", hash = "sha256:2d02420956deeed7366c3b2b7dfaac3b33ad800d754327857f7b38f59751a59c", size = 22943, upload-time = "2026-09-23T06:52:06.076Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/af/f3/75928f071b26151423e7a681defd6eee6fa8181de70cb22ea2211c295d39/types_pymysql-1.2.0.20260923-py3-none-any.whl", hash = "sha256:2042fc2d0745eba181c3070221fdc9ac12baaa4908f79c1cb0f953c8c44efcc5", size = 23383, upload-time = "2026-09-23T06:52:04.912Z" },
 ]

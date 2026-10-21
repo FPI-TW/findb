@@ -11,6 +11,7 @@ import pytest
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.providers import shioaji
 from findb_fetcher.providers.shioaji import (
+    SHIOAJI_SDK_VERSION,
     IsolatedShioajiGateway,
     ShioajiPayloadError,
     ShioajiSdkError,
@@ -220,7 +221,7 @@ def test_contract_access_failures_are_secret_free_and_distinct(
         BaseContract = staticmethod(lambda **_: "contract")
 
     monkeypatch.setattr(
-        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: SHIOAJI_SDK_VERSION
     )
     with pytest.raises(ShioajiSdkError) as caught:
         ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("UNLISTED", date(2026, 7, 29))
@@ -264,7 +265,7 @@ def test_reviewed_symbols_use_exact_public_base_contract_without_catalog(
         BaseContract = staticmethod(base_contract)
 
     monkeypatch.setattr(
-        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: SHIOAJI_SDK_VERSION
     )
     ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("006201", date(2026, 7, 29))
     assert (
@@ -302,7 +303,7 @@ def test_nonreviewed_symbol_preserves_catalog_fallback(monkeypatch: pytest.Monke
         BaseContract = staticmethod(base_contract)
 
     monkeypatch.setattr(
-        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: SHIOAJI_SDK_VERSION
     )
     ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("2454", date(2026, 7, 29))
     assert events == [("catalog", "2454")]
@@ -331,7 +332,7 @@ def test_missing_contract_stays_distinct_and_logs_out(monkeypatch: pytest.Monkey
     class Sdk:
         Shioaji = staticmethod(lambda **_: Api())
 
-    monkeypatch.setattr(shioaji.importlib.metadata, "version", lambda _: "1.7.1")
+    monkeypatch.setattr(shioaji.importlib.metadata, "version", lambda _: SHIOAJI_SDK_VERSION)
     with pytest.raises(ShioajiSdkError) as caught:
         ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("2454", date(2026, 7, 29))
     assert (caught.value.code, caught.value.reason) == ("CONTRACT", None)
@@ -354,7 +355,7 @@ def test_pinned_runtime_contracts_api_acquires_entire_production_manifest(
     logouts: list[bool] = []
 
     class ContractsApi:
-        # Shioaji 1.7.1's observed runtime binding has direct get and no stocks.
+        # The observed runtime ContractsApi binding has direct get and no stocks.
         def get(self, code: str) -> str:
             assert code in symbols
             catalog.append(code)
@@ -396,7 +397,7 @@ def test_pinned_runtime_contracts_api_acquires_entire_production_manifest(
         current += timedelta(seconds=2)
         return current
 
-    monkeypatch.setattr(shioaji.importlib.metadata, "version", lambda _: "1.7.1")
+    monkeypatch.setattr(shioaji.importlib.metadata, "version", lambda _: SHIOAJI_SDK_VERSION)
     state = ShioajiStagingState(tmp_path / "production-contracts.sqlite3")
     try:
         results = ProductionCoordinator(
@@ -714,7 +715,7 @@ def test_normalizes_numpy_like_scalars_and_keeps_usage_bytes_separate(
         BaseContract = staticmethod(lambda **_: "contract")
 
     monkeypatch.setattr(
-        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: SHIOAJI_SDK_VERSION
     )
     snapshot = ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("2330", date(2026, 7, 29))
     assert events == ["login", "usage", "kbars", "usage", "logout"]
@@ -756,7 +757,7 @@ def test_gateway_uses_lowercase_contracts_and_always_logs_out(
 
     gateway = ShioajiSdkGateway("api-secret", "key-secret", simulation=False, _sdk=Sdk())
     monkeypatch.setattr(
-        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: SHIOAJI_SDK_VERSION
     )
     assert "api-secret" not in repr(gateway) and "key-secret" not in repr(gateway)
     with pytest.raises(Exception) as exc:
@@ -781,7 +782,7 @@ def test_gateway_logs_out_when_login_fails(monkeypatch: pytest.MonkeyPatch) -> N
         Shioaji = staticmethod(lambda **_: Api())
 
     monkeypatch.setattr(
-        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: "1.7.1"
+        "findb_fetcher.providers.shioaji.importlib.metadata.version", lambda _: SHIOAJI_SDK_VERSION
     )
     with pytest.raises(Exception):
         ShioajiSdkGateway("key", "secret", _sdk=Sdk()).fetch_kbars("2330", date(2026, 7, 29))
