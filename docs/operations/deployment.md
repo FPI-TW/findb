@@ -217,6 +217,8 @@ Push 入口在 change policy 選到某 unit 的 CI 時，先以 `infra/deploy/ci
 `Required CI` 必須成功，且該 unit CI workflow 的每個 job 於最新 attempt 皆為 success（PR 略過該 unit 時不算）。
 符合時跳過 `verify` 並在 log 輸出 `ci_evidence=reused` 與 PR／run ID；任何不符或 API 錯誤都輸出
 `ci_evidence=unavailable reason=...` 並照常執行 CI。手動 dispatch 與 production promotion 不使用此復用。
+`verify` 可能被跳過，因此其下游 job（`select`、`publish`、`prepare`、`deploy`）的 `if` 都必須含
+`!cancelled()` 或 `always()`，否則隱含的 `success()` 會因上游 skipped 而連帶略過部署。
 
 排查「合併後失敗」時，先分開核對 PR 的 merged state、Required CI 與 main push 的 CD。
 Fetcher CD 的 `Wait for same-revision FinDB staging rollout` 若回報

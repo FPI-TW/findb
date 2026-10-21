@@ -131,6 +131,26 @@ def test_staging_cd_reuses_identical_tree_pull_request_ci_only_on_push() -> None
         ) in jobs["select"]["if"]
 
 
+def test_staging_cd_jobs_after_an_optional_verify_override_skip_propagation() -> None:
+    # Without a status function, `if` implies success(), which is false once any
+    # transitive dependency was skipped; reused CI evidence skips verify on push.
+    for unit in ("findb", "fetcher"):
+        jobs = yaml.safe_load((ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text())[
+            "jobs"
+        ]
+
+        def needs(name: str) -> set[str]:
+            direct = jobs[name].get("needs", [])
+            direct = [direct] if isinstance(direct, str) else direct
+            return set(direct).union(*(needs(parent) for parent in direct))
+
+        downstream = [name for name in jobs if "verify" in needs(name)]
+        assert {"select", "publish", "prepare", "deploy"} <= set(downstream)
+        for name in downstream:
+            condition = str(jobs[name].get("if", ""))
+            assert "!cancelled()" in condition or "always()" in condition, (unit, name)
+
+
 def _v2_manifest(target: str) -> dict[str, object]:
     registry = "123456789012.dkr.ecr.ap-southeast-1.amazonaws.com"
     unit = "findb"
