@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
@@ -31,7 +32,7 @@ def test_docker_progress_preserves_bounded_terminal_protocol(tmp_path, prepared,
     result = subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", source[start:end] + "echo terminal_success"],
         env={
-            **os.environ,
+            **script_env(),
             "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
             "DOCKER_FAILURE": failure,
             "FETCHER_IMAGES_PREPARED": str(prepared).lower(),

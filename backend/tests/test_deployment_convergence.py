@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.script_env import script_env
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -290,7 +292,7 @@ def test_production_release_tags_require_annotated_object_identity(tmp_path: Pat
     # Ignore developer/system git config (signing, hooks, templates) so the
     # temporary repository behaves identically on every machine and in CI.
     environment = {
-        **os.environ,
+        **script_env(),
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
     }
@@ -457,7 +459,7 @@ def test_required_ci_aggregator_truth_table(
     script = workflow["jobs"]["required"]["steps"][0]["run"]
     completed = subprocess.run(
         ["bash", "-c", script],
-        env={**os.environ, **environment},
+        env={**script_env(), **environment},
         check=False,
     )
     assert completed.returncode == expected_code
@@ -820,7 +822,7 @@ def test_promotion_helper_fails_closed_or_is_idempotent(
     result = subprocess.run(
         ["bash", str(ROOT / "infra/deploy/promote_image.sh")],
         env={
-            **os.environ,
+            **script_env(),
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "PROMOTION_TEST_MODE": mode,
             "PROMOTION_DIGEST": digest,
@@ -899,7 +901,7 @@ def _binding_environment(
 ) -> dict[str, str]:
     source_bundle_key = source_bundle_key or f"{unit}/accepted/{commit_sha}/{'c' * 64}.tar"
     environment = {
-        **os.environ,
+        **script_env(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "RUNNER_TEMP": str(tmp_path),
         "FAKE_AWS_ACCOUNT": "123456789012",

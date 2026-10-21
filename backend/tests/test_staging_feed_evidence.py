@@ -23,6 +23,8 @@ from types import ModuleType
 
 import pytest
 
+from tests.script_env import script_env
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -909,7 +911,7 @@ def local_ssm(monkeypatch, tmp_path):
                 capture_output=True,
                 text=True,
                 input=command,
-                env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+                env={**script_env(), "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
                 timeout=timeout,
             )
             command_id = str(len(state["commands"]))

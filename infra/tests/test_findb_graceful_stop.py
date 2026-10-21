@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -32,7 +33,7 @@ def test_actual_writer_stop_script_checks_terminal_exit(tmp_path, exit_code, oom
         text=True,
         capture_output=True,
         env={
-            **os.environ,
+            **script_env(),
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "TEST_EXIT": str(exit_code),
             "TEST_OOM": oom,

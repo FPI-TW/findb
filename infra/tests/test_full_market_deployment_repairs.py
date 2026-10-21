@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from script_env import script_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _FAKE_DOCKER = (REPO_ROOT / "infra/tests/fixtures/fake_docker.sh").read_text(encoding="utf-8")
@@ -79,7 +80,7 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
             else names[provider]
         )
         args_env = {
-            **os.environ,
+            **script_env(),
             "APP_ENVIRONMENT": "production",
             "FULL_MARKET_ENABLED": "true",
             "FETCHER_CONSUMER_PROFILE": consumer,
@@ -229,8 +230,7 @@ docker() {
         "--provider",
         provider,
     ]
-    environment = {**os.environ}
-    environment.pop("FETCHER_CONSUMER_PROFILE", None)
+    environment = script_env()
     if consumer is not None:
         environment["FETCHER_CONSUMER_PROFILE"] = consumer
     script += _inventory_policy(helper) + 'set -- "$@"\n' + bootstrap
@@ -372,7 +372,7 @@ def test_named_full_journal_restores_names_state_and_stale_backup(
                     operations += "rollback_processed\ntrap - ERR INT TERM HUP\n"
     shell = f"set -Eeuo pipefail\nFETCHER_DEPLOY_MODE=candidate\nprocessed=(){transaction}\nstable={stable}\nprevious={previous}\n{operations}"
     env = {
-        **os.environ,
+        **script_env(),
         "PATH": str(binaries) + ":" + os.environ["PATH"],
         "FAKE_DOCKER_STATE": str(state),
         "FAKE_DOCKER_LOG": str(tmp_path / "docker.log"),
@@ -515,7 +515,7 @@ def test_named_registration_preflight_and_each_journal_boundary_preserve_origina
     result = subprocess.run(
         ["/bin/bash", "-c", shell],
         env={
-            **os.environ,
+            **script_env(),
             "PATH": str(binaries) + ":" + os.environ["PATH"],
             "FAKE_DOCKER_STATE": str(state),
             "FAKE_DOCKER_LOG": str(tmp_path / "docker.log"),
@@ -590,7 +590,7 @@ def test_actual_helper_recovery_traps_gracefully_retire_or_preserve_runtime(
     result = subprocess.run(
         ["/bin/bash", "-c", shell],
         env={
-            **os.environ,
+            **script_env(),
             "PATH": str(binaries) + ":" + os.environ["PATH"],
             "FAKE_DOCKER_STATE": str(state),
             "FAKE_DOCKER_LOG": str(tmp_path / "docker.log"),

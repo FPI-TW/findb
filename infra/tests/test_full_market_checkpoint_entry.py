@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from script_env import script_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -97,7 +98,7 @@ def test_workflow_gate_provenance_and_remote_order(tmp_path):
             ["/bin/bash", "-c", git_stub + verify],
             cwd=tmp_path,
             env={
-                **os.environ,
+                **script_env(),
                 "WORKFLOW_SHA": "a" * 40,
                 "checkout_sha": ("b" if wrong_sha else "a") * 40,
                 "pinned_objects": str(pinned),
@@ -192,7 +193,7 @@ export -f sudo docker
         ["/bin/bash", "-c", shell],
         cwd=tmp_path,
         env={
-            **os.environ,
+            **script_env(),
             "PATH": binaries + ":" + os.environ["PATH"],
             "APP_ENVIRONMENT": target,
             "installed_name": f"findb-{profile.replace('_', '-')}-finlab{suffix}",
@@ -280,7 +281,7 @@ def test_gate_transport_integrity_fails_before_deployment_entry(tmp_path, tamper
             + f'\n{mutate}\neval "$checkpoint_entry_gate"\ntouch deployment-entry',
         ],
         cwd=tmp_path,
-        env={**os.environ, "PATH": binaries + ":" + os.environ["PATH"]},
+        env={**script_env(), "PATH": binaries + ":" + os.environ["PATH"]},
         capture_output=True,
         timeout=10,
     )

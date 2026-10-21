@@ -13,6 +13,7 @@ from pathlib import Path
 
 import fake_daemon
 import pytest
+from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
@@ -336,7 +337,7 @@ def execute(
         account = "439622209937" if target == "staging" else "289112218471"
         registry = f"{account}.dkr.ecr.ap-southeast-1.amazonaws.com"
         environment = {
-            **os.environ,
+            **script_env(),
             "PATH": f"{binaries}:{os.environ['PATH']}",
             "AWS_REGION": "ap-southeast-1",
             "AWS_ACCOUNT_ID": account,

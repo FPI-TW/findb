@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -638,7 +639,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
             path.write_text("#!" + sys.executable + "\n" + shim)
             path.chmod(0o700)
         env = {
-            **os.environ,
+            **script_env(),
             "PATH": str(tools) + os.pathsep + os.environ["PATH"],
             "WORKFLOW_SHA": "f" * 40,
             "PRISTINE": str(pristine),

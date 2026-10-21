@@ -14,6 +14,7 @@ from pathlib import Path
 
 import fake_daemon
 import pytest
+from script_env import script_env
 from test_full_market_deployment_repairs import _inventory_policy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -310,7 +311,7 @@ def run_entry(
         normal_failure=normal_failure,
     )
     env = {
-        **os.environ,
+        **script_env(),
         "PATH": str(binaries) + ":" + os.environ["PATH"],
         "AWS_REGION": "ap-southeast-1",
         "AWS_ACCOUNT_ID": "439622209937",
@@ -588,7 +589,7 @@ def test_retirement_field_query_failure_is_not_empty_success(tmp_path, field, fa
     )
     result = subprocess.run(
         ["/bin/bash", "-c", script],
-        env={**os.environ, "failed_field": field, "failed_status": failure[2:]},
+        env={**script_env(), "failed_field": field, "failed_status": failure[2:]},
         capture_output=True,
         text=True,
     )
@@ -637,7 +638,7 @@ def test_conditional_legacy_and_generic_recovery_do_not_guess_running_state(
     events = tmp_path / "events"
     result = subprocess.run(
         ["/bin/bash", "-c", script],
-        env={**os.environ, "events": str(events), "query_failure": failure},
+        env={**script_env(), "events": str(events), "query_failure": failure},
         capture_output=True,
         text=True,
     )
@@ -843,7 +844,7 @@ docker() {
     result = subprocess.run(
         ["/bin/bash", "-c", script],
         env={
-            **os.environ,
+            **script_env(),
             "operation": operation,
             "failed_field": field,
             "query_rc": str(rc),

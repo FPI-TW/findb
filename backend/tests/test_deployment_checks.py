@@ -34,6 +34,7 @@ from scripts.reconcile_database_privileges import (
     DatabasePrivilegeError,
     validate_database_binding,
 )
+from tests.script_env import script_env
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_ROOT.parent
@@ -120,7 +121,7 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
         capture_output=True,
         text=True,
         env={
-            **os.environ,
+            **script_env(),
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "production",
             "FINDB_DEPLOY_MODE": mode,
@@ -181,7 +182,7 @@ def test_staging_migration_requires_exact_revision_before_reconciliation_or_serv
         capture_output=True,
         text=True,
         env={
-            **os.environ,
+            **script_env(),
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "staging",
             "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "target-revision",
@@ -234,7 +235,7 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
         capture_output=True,
         text=True,
         env={
-            **os.environ,
+            **script_env(),
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "APP_ENVIRONMENT": "staging",
             "FINDB_DEPLOY_MODE": mode,
@@ -290,7 +291,7 @@ printf '%s' "$SSM_RESPONSE"
         'ssm_command_marker_state region command instance "marker status=success" '
         '"marker status=failed"'
     )
-    environment = os.environ | {
+    environment = script_env() | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "AWS_CALLS": str(calls),
         "AWS_ERROR": aws_error,
@@ -1245,7 +1246,7 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
     )
     (fake_bin / "docker").chmod(0o755)
     environment = dict(
-        os.environ,
+        script_env(),
         PATH=f"{fake_bin}:{os.environ['PATH']}",
         AWS_REGION="ap-southeast-1",
         AWS_ACCOUNT_ID="439622209937",
@@ -1501,7 +1502,7 @@ esac
     for command in ("aws", "docker", "sleep"):
         (fake_bin / command).chmod(0o755)
     base_environment = {
-        **os.environ,
+        **script_env(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "AWS_REGION": "ap-southeast-1",
         "GITHUB_REF": "refs/heads/main",
@@ -1935,8 +1936,7 @@ def test_findb_deploy_requires_an_immutable_release_root():
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text()
     setup = helper.split('catalog="$runtime_dir/findb.json"', 1)[0]
     for root in (None, "/opt/findb/releases/demo"):
-        env = dict(os.environ)
-        env.pop("FINDB_RELEASE_ROOT", None)
+        env = script_env()
         if root:
             env["FINDB_RELEASE_ROOT"] = root
         result = subprocess.run(
@@ -2061,7 +2061,7 @@ def test_findb_candidate_cleanup_surfaces_a_docker_stop_failure(tmp_path: Path) 
         check=False,
         capture_output=True,
         text=True,
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**script_env(), "PATH": f"{fake_bin}:{os.environ['PATH']}"},
     )
     assert result.returncode != 0
     assert "candidate_cleanup_docker_stop_failed container=findb-nginx" in result.stderr
@@ -2142,7 +2142,7 @@ esac
     )
     fake_docker.chmod(0o755)
     environment = {
-        **os.environ,
+        **script_env(),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_DOCKER_LOG": str(docker_log),
         "FAKE_NGINX_STATE": str(state_file),
@@ -2273,7 +2273,7 @@ esac
         text=True,
         check=False,
         env={
-            **os.environ,
+            **script_env(),
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "FAKE_DOCKER_LOG": str(docker_log),
             "FAKE_NGINX_STATE": str(state_file),
@@ -2391,7 +2391,7 @@ docker() {
     completed = subprocess.run(
         ["bash", str(script)],
         env={
-            **os.environ,
+            **script_env(),
             "APP_ENVIRONMENT": target,
             "FETCHER_CONSUMER_PROFILE": profile,
             "state_dir": state_directory,
@@ -2515,7 +2515,7 @@ def _run_twelve_fetcher_release_with_marker(
         "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data@sha256:"
         + "a" * 64
     )
-    environment = dict(os.environ)
+    environment = script_env()
     environment.update(
         AWS_REGION="ap-southeast-1",
         AWS_ACCOUNT_ID="439622209937",
@@ -2704,7 +2704,7 @@ if [ {1 if had_old else 0} -eq 1 ]; then mv {state_dir}/stable {state_dir}/previ
 printf 'running\\n' > {state_dir}/stable
 kill -TERM "$$"
 """
-    environment = dict(os.environ)
+    environment = script_env()
     environment.update(
         PATH=f"{fake_bin}:{environment['PATH']}",
         FAKE_DOCKER_STATE=str(state_dir),
@@ -2814,7 +2814,7 @@ register_provider stable previous
 rollback_processed
 trap - ERR INT TERM HUP
 """
-    environment = dict(os.environ)
+    environment = script_env()
     environment.update(
         PATH=f"{fake_bin}:{environment['PATH']}",
         FAKE_DOCKER_STATE=str(state_dir),
@@ -3177,7 +3177,7 @@ previous={previous}
 {invocation}
 """
     log_path = tmp_path / provider_id / "docker.log"
-    environment = dict(os.environ)
+    environment = script_env()
     environment.update(
         PATH=f"{fake_bin}:{environment['PATH']}",
         FAKE_DOCKER_STATE=str(state_dir),
@@ -3539,7 +3539,7 @@ def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
         check=False,
         capture_output=True,
         text=True,
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        env={**script_env(), "PATH": f"{fake_bin}:{os.environ['PATH']}"},
     )
     assert completed.returncode == 42
     commands = command_log.read_text(encoding="utf-8")
@@ -3812,7 +3812,7 @@ def test_findb_ci_pytest_failure_propagates_through_report_capture(job_name, tmp
     result = subprocess.run(
         ["bash", "-e", "-c", script],
         env={
-            **os.environ,
+            **script_env(),
             "RUNNER_TEMP": str(tmp_path),
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
         },
@@ -3846,9 +3846,7 @@ fi
     )
     for command in ("aws", "docker"):
         (fake_bin / command).chmod(0o755)
-    environment = {
-        key: value for key, value in os.environ.items() if not key.startswith("ACTIONS_")
-    } | {
+    environment = script_env() | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "AWS_REGION": "ap-southeast-1",
         "GITHUB_REF": "refs/heads/main",
