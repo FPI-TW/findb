@@ -5,6 +5,7 @@ import copy
 import gzip
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -14,6 +15,7 @@ import tarfile
 import tempfile
 import textwrap
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -260,6 +262,20 @@ class FetcherHostPreflightTests(unittest.TestCase):
     def test_complete_unified_installation_is_drained(self):
         self.assertEqual(len(self.rows), 15)
         self.assertEqual(self.check(), "drained")
+
+    def test_restarting_runtime_reports_only_trusted_consumer_identity(self):
+        self.rows[0]["State"].update(
+            Running=True, Status="restarting", ExitCode=1, Error="secret-docker-error"
+        )
+        self.rows[0]["Config"]["Env"].append("SOURCE_CLIENT_KEY=secret-source-key")
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(ValueError):
+            self.check()
+        self.assertEqual(
+            output.getvalue(),
+            "fetcher_host_blocked reason=runtime_not_eligible execution_profile=pilot provider=twelve_data\n",
+        )
+        self.assertNotIn("secret", output.getvalue())
 
     def test_accepted_eleven_consumer_installation_can_upgrade(self):
         self.manifest["fetcher_bundle_version"] = 1
@@ -641,7 +657,8 @@ class FetcherHostPreflightTests(unittest.TestCase):
             "FINLAB_IMAGE": self.manifest["images"]["finlab"],
             "SHIOAJI_IMAGE": self.manifest["images"]["shioaji"],
             "FACTSET_IMAGE": self.manifest["images"].get(
-                "factset", REGISTRY + "/findb/production/fetcher/factset@sha256:" + "e" * 64
+                "factset",
+                REGISTRY + "/findb/production/fetcher/factset@sha256:" + "e" * 64,
             ),
             "TARGET_ID": "offline-instance",
             "AWS_REGION": "ap-southeast-1",

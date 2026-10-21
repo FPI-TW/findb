@@ -46,28 +46,24 @@ Production native 資料與實際 rollback 演練由
 實作契約與操作見 [FactSet 港股日行情](../operations/factset_hk.md)；staging ECR、IAM／KMS
 及獨立 Source／RDS credentials 已就緒；backend migration、FactSet Source registry、
 停止中的 Pilot／Full scheduler seed、Fetcher host secret loader 與 Source 契約認證已核對。
-Staging Backend 目前為 `fe29ce5`、Fetcher 為 `f7d0d8f`；十五個 consumers 已完成 enforcement。
+10/21 HK 切換時 Backend 為 `fe29ce5`、Fetcher 為 `f7d0d8f`；十五個 consumers 已完成 enforcement。
 59 筆 prepared／receipt 與 DB terminal、一致備份、十五 consumer graceful stop、shared-inode
 attestation、Owner cutover，以及原 plans／first dates 的保留均已核對。部署與備份證據見
 [deployment](../operations/deployment.md#factset-港股版本下限)。
 正常日期的 HKEX 第一份 baseline、RDS TLS／catalogue SELECT、兩 owner 排空、四個相關 controls
 停止、HK provider cutover 及 rollback 前置核對已完成；現行狀態與證據見
 [10/21 切換](../operations/deployment.md#2026-10-21-staging-hk-切換)。
+退役 feed 修正已部署至 staging `dd1dece`，Twelve Data Pilot 已恢復 US 新抓取與 canonical 入庫，
+Full 保持停止；證據見 [部署重試與 Pilot 恢復](../operations/deployment.md#部署重試與-twelve-data-pilot-恢復)。
 
-- [ ] 將已修正的退役 feed 排空／結算處理部署 staging，驗證 Twelve Data Pilot 恢復，Full 保持停止。
-  Runtime 保留相容 Source scope，只排空原 prepared，不再因 `StopIteration` 留下 owner／重啟循環；
-  無法與 server ledger 核對的本機 prepared bytes 保留 owner，要求明確復原。
-  Staging Twelve Data 的 10/15 HK work 已保留原 manual gaps 並結算 failed；10/16 HK work
-  仍 suspended／queued，沒有 prepared／receipt。修正前保持 Twelve Data Pilot control 停止。
-  相容 scope 與安裝 feed 的判讀見
-  [共用流程](../operations/full_market.md#scheduler-scope-與有效抓取範圍)。
 - [ ] 保存另一個正常日期的 FactSet maintenance／release，驗證跨日更新與第一份 FactSet daily
   plan 的成員凍結。既有 20 plans／42 members 的切換前後 fingerprints 已核對不變，不能
   代替尚未建立的 FactSet daily plan 驗收。證據要求見 [FactSet runbook](../operations/factset_hk.md)。
 - [ ] 驗證 staging FactSet 原生 prices SELECT，以及兩檔單日、異常歷史樣本、全名單的真實
   R2／Source／queue／canonical／Serve 流程，核對 partial／missing／DQ。兩檔 daily 須於
   香港時間 18:30–23:00 抓取；本機原生快照重播或歷史回補不能替代 daily 環境驗收。
-  目前 Twelve Data／FactSet 的四個 Pilot／Full controls 停止；驗收後維持 Pilot 每日兩檔、Full 停止。
+  Twelve Data Pilot 已恢復 US 每日兩檔；FactSet Pilot 與全部 Full controls 保持停止，
+  FactSet 驗收後維持 Pilot 每日兩檔、Full 停止。
 - [ ] Staging 驗收後，套用 production 的新增基礎設施與 secrets，再依既有 production promotion
   與 Owner control 流程啟用；維持目前上市
   cohort 回補範圍、18:30–23:00 新 I/O 窗口、明確 partial／missing／DQ 證據，不自動 fallback。
