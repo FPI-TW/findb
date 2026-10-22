@@ -292,9 +292,9 @@ def test_factory_and_identity_snapshot_each_sdk_phase_and_failure(
             else:
                 dispatch.result(5)
             gateway = factory.result(5)
-        # Successful login and get each obtain a fresh authorization while the
-        # same credential scope remains pinned; a denied first grant stops it.
-        assert snapshots == [TOKEN] * (2 if phase == "authorization" and not fail else 1)
+        # One fresh authorization covers local login and get while the same
+        # credential scope remains pinned; a denied grant stops before login.
+        assert snapshots == [TOKEN]
         assert gateway.api_token == TOKEN
         assert os.environ["FINLAB_API_TOKEN"] == TOKEN
         assert os.environ["finlab_id_token"] == "installed-id"

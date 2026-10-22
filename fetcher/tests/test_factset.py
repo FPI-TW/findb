@@ -159,12 +159,10 @@ def test_query_uses_tls_read_only_and_bound_parameters(monkeypatch, tmp_path):
         def dispatch_checkpoint(self):
             events.append("authorize")
 
-    def supervise(callback, *, initialize, checkpoint, timeout):
-        assert timeout <= 80
-        checkpoint()
-        initialize()
-        checkpoint()
-        return callback()
+    def supervise(operation, payload, *, checkpoint, timeout):
+        # The exec'd worker path is covered by the dispatch-fence tests.
+        assert operation == "factset.query" and timeout <= 80
+        return factset.native_query(payload, checkpoint)
 
     monkeypatch.setattr(factset, "Acquisition", Operation)
     monkeypatch.setattr(factset, "supervised_call", supervise)

@@ -220,7 +220,7 @@ READY→GO 都有此 gate，失效直接 recovery blocked，不能轉普通 retr
 派送順序是 account prepare／pacing 返回、fresh Source work-fence RPC、最後取得全新 Source account
 grant，再以純本機檢查驗證 heartbeat、原 provider／work ID／generation／token 與 shared FD inode，
 最後確認 account grant deadline 並 confirm／GO。最後 grant 返回後不再讀 SQLite 或呼叫 owner RPC，
-避免一般網路延遲耗盡 50ms 本機派送窗口；HTTP、FactSet connect／SELECT、FinLab login／get 與
+避免一般網路延遲耗盡 50ms 本機派送窗口；HTTP、FactSet connect／SELECT、FinLab get 與
 Shioaji READY→GO 共用此順序。Owner 遠端證據從 RPC 發送前的 monotonic 時點起最多五秒，
 同時受 server checked_at 與 expires_at 限制，monotonic expiry cap 不因 wall clock 後退而延長。
 遠端 stop／generation 撤銷以此有界證據生效；兩次 RPC 與 I/O 間仍有競態，不宣稱瞬時撤銷。
@@ -242,13 +242,20 @@ PG 已保存 floor 但 ACK 遺失時，恢復的 open owner 也只可 drain／cl
 失聯保留 recovery blocked 與 host descriptor，不能假設已交棒。prepared siblings／retained-raw 仍可排空，
 原未抓取 scope 到期且原 controls／request 合法時由後續 attempt 續作。
 
-FinLab 的同一 supervised child 在 login 與 dataset get 前分別送出 READY；parent 取得 fresh Source
+FinLab 與 FactSet 的 blocking 呼叫由 `supervised_call` 以 `subprocess` exec
+`findb_fetcher.provider_worker`，不在多執行緒 parent 內 fork。Worker 只接受白名單操作
+`finlab.get`／`factset.query`；credential 只經 pipe 傳遞，`pass_fds` 只含 pipe 與 whole-work FD，
+environment 為明確最小集合。Worker 在每個 native I/O 前送出 READY；parent 取得 fresh Source
 work-fence 授權、再取得 fresh Source account grant，純本機重驗 fence 後才回覆 monotonic deadline。
 交給 child 的 deadline 取 account grant 與 owner proof／expiry 的最早期限；Child 在實際 I/O 前檢查
 此期限，過期直接停止，不在 child 增設重試。Parent 每個 boundary 沿用原最多三次
 授權限制；owner 或 account 證據持續過期時有界停止。
-登入後重新授權不重建 acquisition intent、不重設 started_at、不重複計費；已派送 login 的原責任與
-failure budget 不因 get 被 stop／heartbeat／generation 拒絕而退款。拒絕時先完成整個 process group
+
+FinLab 1.5.7 的 `login(token)` 只在 worker 內設定 token、沒有網路 I/O，因此只在 login 與
+`data.get` 前送出一次 READY；worker 另停用 SDK 在每個新 process 都會發出、沒有 timeout 的
+PyPI 版本檢查。FactSet `connect` 是真實網路 I/O，connect 與 SELECT 前各送出一次 READY。
+SELECT 前重新授權不重建 acquisition intent、不重設 started_at、不重複計費；已派送 connect 的原責任與
+failure budget 不因 SELECT 被 stop／heartbeat／generation 拒絕而退款。拒絕時先完成整個 process group
 terminate／kill／reap，再傳遞原 stop／recovery 邊界；無法證明停止仍保留 host FD。
 
 歷史 expiry 的 provider-local cutoff 由 claim、work authorize、account authorize 與

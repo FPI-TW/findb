@@ -1,18 +1,34 @@
 """Signal errors never substitute for process/group death evidence."""
 
-import multiprocessing
 import os
 import signal
-import time
 
 import pytest
 
 from findb_fetcher.provider_process import supervised_call
 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+from provider_worker_support import fake_finlab, install_fake_sdk
+
+SLEEPING_GET = """
+if dataset == "sleep":
+    time.sleep(30)
+return "completed"
+"""
+
+
+@pytest.fixture
+def launched(monkeypatch, tmp_path):
+    return install_fake_sdk(monkeypatch, tmp_path / "sdk", fake_finlab(SLEEPING_GET))
+
+
+def _call(dataset, **kwargs):
+    return supervised_call("finlab.get", {"token": "offline", "dataset": dataset}, **kwargs)
 
 
 @pytest.mark.parametrize("signal_error", [signal.SIGTERM, signal.SIGKILL])
-def test_signal_race_still_reaps_exited_child_and_verifies_group(monkeypatch, signal_error):
+def test_signal_race_still_reaps_exited_child_and_verifies_group(
+    monkeypatch, launched, signal_error
+):
     killpg = os.killpg
     observed = []
 
@@ -22,16 +38,14 @@ def test_signal_race_still_reaps_exited_child_and_verifies_group(monkeypatch, si
             raise PermissionError("simulated exiting-group race")
         return killpg(pid, sig)
 
-    before = {p.pid for p in multiprocessing.active_children()}
     monkeypatch.setattr(os, "killpg", raced)
-    assert supervised_call(lambda: "completed") == "completed"
+    assert _call("done") == "completed"
     assert signal_error in observed and 0 in observed
-    assert {p.pid for p in multiprocessing.active_children()} == before
+    assert [process.poll() is not None for process in launched] == [True]
 
 
-def test_denied_signals_cannot_release_an_unreaped_live_child(monkeypatch):
+def test_denied_signals_cannot_release_an_unreaped_live_child(monkeypatch, launched):
     killpg = os.killpg
-    before = {p.pid for p in multiprocessing.active_children()}
 
     def denied(pid, sig):
         if sig:
@@ -42,17 +56,16 @@ def test_denied_signals_cannot_release_an_unreaped_live_child(monkeypatch):
         with monkeypatch.context() as patch:
             patch.setattr(os, "killpg", denied)
             with pytest.raises(ProviderWorkRecoveryBlockedError, match="not been reaped"):
-                supervised_call(lambda: time.sleep(30), timeout=0.05)
+                _call("sleep", timeout=0.05)
     finally:
-        for child in multiprocessing.active_children():
-            if child.pid not in before:
-                killpg(child.pid, signal.SIGKILL)
-                child.join(2)
-                assert not child.is_alive()
-                child.close()
+        for process in launched:
+            if process.poll() is None:
+                killpg(process.pid, signal.SIGKILL)
+                process.wait(2)
+            assert process.poll() is not None
 
 
-def test_unverifiable_group_is_recovery_blocked_even_when_leader_reaped(monkeypatch):
+def test_unverifiable_group_is_recovery_blocked_even_when_leader_reaped(monkeypatch, launched):
     killpg = os.killpg
 
     def cannot_verify(pid, sig):
@@ -62,4 +75,4 @@ def test_unverifiable_group_is_recovery_blocked_even_when_leader_reaped(monkeypa
 
     monkeypatch.setattr(os, "killpg", cannot_verify)
     with pytest.raises(ProviderWorkRecoveryBlockedError, match="cannot be verified"):
-        supervised_call(lambda: "completed")
+        _call("done")

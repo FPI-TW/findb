@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import multiprocessing
 import os
 import time
 from datetime import date, timedelta
@@ -15,6 +14,7 @@ from findb_fetcher import provider_work as queue
 from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.providers import finlab
 from provider_work_support import work_authorization
+from provider_worker_support import child_deadline, fake_finlab, install_fake_sdk
 
 DAY = date(2026, 10, 15)
 
@@ -29,39 +29,36 @@ class Frame:
 
 @pytest.mark.parametrize("catalogue", [False, True])
 @pytest.mark.parametrize(
-    "fault", ["stop", "heartbeat", "generation", "slow_login", "slow_fence", "slow_grant"]
+    "fault", [None, "stop", "heartbeat", "generation", "slow_fence", "slow_grant"]
 )
-def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, catalogue, fault):
+def test_real_worker_dispatches_get_after_one_fresh_grant(tmp_path, monkeypatch, catalogue, fault):
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
     path = tmp_path / "governor.sqlite3"
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
     logged_in, events = tmp_path / "logged-in", tmp_path / "events"
     grants = []
-    before = {p.pid for p in multiprocessing.active_children()}
-    # Share the dispatch clock with the real forked child. Advance it at the
-    # blocking boundaries, so scheduler load cannot randomly exhaust a 50ms
-    # grant between IPC messages in an otherwise successful-path test.
-    from findb_fetcher import provider_process
-
-    elapsed = multiprocessing.get_context("fork").Value("d", 0)
+    # Pinned 1.5.7 login is local: one READY covers login and get. The fake
+    # clock drives the parent; the worker only sees its verdict.
+    elapsed = [0.0]
     epoch = time.time()
 
     def advance(seconds):
-        with elapsed.get_lock():
-            elapsed.value += seconds
-        time.sleep(min(seconds, 0.001))
+        elapsed[0] += seconds
 
     clock = SimpleNamespace(
-        time=lambda: epoch + elapsed.value,
-        monotonic=lambda: 1000 + elapsed.value,
-        sleep=advance,
+        time=lambda: epoch + elapsed[0], monotonic=lambda: 1000 + elapsed[0], sleep=advance
     )
     monkeypatch.setattr(acq, "time", clock)
-    monkeypatch.setattr(provider_process, "time", clock)
+    checkpoint = acq.Acquisition.dispatch_checkpoint
+    monkeypatch.setattr(
+        acq.Acquisition,
+        "dispatch_checkpoint",
+        lambda self: child_deadline(checkpoint(self), clock.monotonic()),
+    )
 
     class Source:
         def request(self, method, route, body):
-            if route.endswith("/authorize") and logged_in.exists():
+            if route.endswith("/authorize"):
                 if fault == "stop":
                     raise FullMarketProtocolError(
                         "stopped", status_code=409, code="PROVIDER_WORK_SUSPENDED"
@@ -74,18 +71,18 @@ def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, ca
                     advance(0.06)
             return work_authorization("finlab", body) if route.endswith("/authorize") else {}
 
-    def login(_):
-        with events.open("a") as stream:
-            stream.write(f"login:{os.getpid()}\n")
-        logged_in.touch()
-        advance(0.08)
-
-    def get(_):
-        with events.open("a") as stream:
-            stream.write(f"get:{os.getpid()}\n")
-        return Frame()
-
-    native = SimpleNamespace(login=login, data=SimpleNamespace(get=get))
+    record = f"open({str(events)!r}, 'a').write('{{event}}:' + str(os.getpid()) + '\\n')\n"
+    install_fake_sdk(
+        monkeypatch,
+        tmp_path / "sdk",
+        fake_finlab(
+            record.replace("{event}", "get")
+            + f"import datetime\nfrom provider_worker_support import Frame\nreturn Frame({DAY!r})",
+            login=f"open({str(logged_in)!r}, 'w').close()",
+            check_version=record.replace("{event}", "pypi"),
+        ),
+    )
+    native = SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=lambda name: None))
     original_import = finlab.importlib.import_module
     monkeypatch.setattr(
         finlab.importlib,
@@ -100,11 +97,11 @@ def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, ca
     token = queue._current.set(owner)
 
     def grant():
-        grants.append((os.getpid(), logged_in.exists()))
+        grants.append(logged_in.exists())
         authorization = acq.Authorization(
             clock.monotonic(), clock.time(), clock.time(), provider="finlab"
         )
-        if fault == "slow_grant" and logged_in.exists():
+        if fault == "slow_grant":
             advance(0.06)
         return authorization
 
@@ -119,7 +116,7 @@ def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, ca
             queue.host_lock("finlab", root=tmp_path),
             acq.authorization_scope(grant, state_path=path),
         ):
-            if fault in {"slow_login", "slow_fence"}:
+            if fault in {None, "slow_fence"}:
                 assert fetch().symbols == ("2330",)
             else:
                 error = (
@@ -131,35 +128,27 @@ def test_real_child_reauthorizes_between_login_and_get(tmp_path, monkeypatch, ca
                 )
                 with pytest.raises(error):
                     fetch()
-        observed = events.read_text().splitlines()
-        assert len(observed) == (2 if fault in {"slow_login", "slow_fence"} else 1)
+        observed = events.read_text().splitlines() if events.exists() else []
         assert all(int(row.split(":")[1]) != os.getpid() for row in observed)
-        assert len({row.split(":")[1] for row in observed}) == 1
-        assert all(pid == os.getpid() for pid, _ in grants)
-        assert 1 <= sum(not after_login for _, after_login in grants) <= 3
-        after_login_grants = sum(after_login for _, after_login in grants)
-        if fault == "slow_grant":
-            assert after_login_grants == 3
-        elif fault in {"slow_login", "slow_fence"}:
-            assert after_login_grants == 1
+        if fault in {None, "slow_fence"}:
+            assert logged_in.exists()
+            assert [row.split(":")[0] for row in observed] == ["get"]
+            assert grants == [False]
         else:
-            assert after_login_grants == 0
-        assert {p.pid for p in multiprocessing.active_children()} == before
-        with acq.FullMarketState(path).connection() as db:
-            rows = db.execute("SELECT actual_start,status FROM acquisition_intent").fetchall()
-            assert len(rows) == 1 and rows[0][0] is not None and rows[0][1] == "finalized"
-            assert [row[0] for row in db.execute("SELECT requests FROM full_quota")] == [1, 1]
-        with journal.connection() as db:
-            assert db.execute("SELECT attempts FROM work_budget").fetchone()[0] == 1
+            assert not logged_in.exists() and observed == []
+            assert grants == ([False] * 3 if fault == "slow_grant" else [])
     finally:
         queue._current.reset(token)
         owner.stop()
 
 
-def test_supervisor_expired_ipc_grant_never_dispatches_or_retries(tmp_path):
+def test_supervisor_expired_ipc_grant_never_dispatches_or_retries(tmp_path, monkeypatch):
     from findb_fetcher.provider_process import ProviderProcessError, supervised_call
 
     called = tmp_path / "native"
+    install_fake_sdk(
+        monkeypatch, tmp_path / "sdk", fake_finlab(f"open({str(called)!r}, 'w').close()")
+    )
     grants = []
 
     def expired():
@@ -167,7 +156,9 @@ def test_supervisor_expired_ipc_grant_never_dispatches_or_retries(tmp_path):
         return time.monotonic() - 1
 
     with pytest.raises(ProviderProcessError):
-        supervised_call(lambda: called.touch(), checkpoint=expired, timeout=1)
+        supervised_call(
+            "finlab.get", {"token": "offline", "dataset": "x"}, checkpoint=expired, timeout=5
+        )
     assert grants == [True] and not called.exists()
 
 

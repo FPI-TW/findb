@@ -14,6 +14,7 @@ from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.providers.finlab import FinLabSdkGateway
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 from provider_work_support import work_authorization
+from provider_worker_support import CA_BUNDLE, child_deadline, fake_finlab, install_fake_sdk
 from sdk_bootstrap_harness import install_launcher
 
 
@@ -497,29 +498,29 @@ def test_fresh_grant_follows_owner_rpc_and_local_checks_fail_closed(
 def test_real_factset_child_connect_and_select_use_separate_fresh_grants(
     tmp_path, monkeypatch, fault
 ):
-    import multiprocessing
-    import sys
-
-    from findb_fetcher import provider_process
     from findb_fetcher.providers import factset
 
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
     path = tmp_path / "governor.sqlite3"
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
     events, connected = tmp_path / "events", tmp_path / "connected"
-    # Parent is the only writer. Lock-free child reads cannot leave an
-    # abandoned semaphore if the supervisor kills the child at its deadline.
-    elapsed = multiprocessing.get_context("fork").RawValue("d", 0)
+    # The fake clock drives only the parent; the exec'd worker sees its verdict.
+    elapsed = [0.0]
     epoch = 1792501200.0
 
     def advance(seconds):
-        elapsed.value += seconds
+        elapsed[0] += seconds
 
     clock = SimpleNamespace(
-        time=lambda: epoch + elapsed.value, monotonic=lambda: 1000 + elapsed.value, sleep=advance
+        time=lambda: epoch + elapsed[0], monotonic=lambda: 1000 + elapsed[0], sleep=advance
     )
     monkeypatch.setattr(acq, "time", clock)
-    monkeypatch.setattr(provider_process, "time", clock)
+    checkpoint = acq.Acquisition.dispatch_checkpoint
+    monkeypatch.setattr(
+        acq.Acquisition,
+        "dispatch_checkpoint",
+        lambda self: child_deadline(checkpoint(self), clock.monotonic()),
+    )
     grants = []
 
     class Source:
@@ -538,47 +539,54 @@ def test_real_factset_child_connect_and_select_use_separate_fresh_grants(
                 ).isoformat()
             return result
 
-    def record(event):
-        with events.open("a") as stream:
-            stream.write(event + "\n")
+    install_fake_sdk(
+        monkeypatch,
+        tmp_path / "sdk",
+        {
+            "pymysql/__init__.py": f"""
+                from pymysql import cursors
 
-    class Cursor:
-        def __enter__(self):
-            return self
 
-        def __exit__(self, *args):
-            pass
+                def record(event):
+                    with open({str(events)!r}, "a") as stream:
+                        stream.write(event + "\\n")
 
-        def execute(self, sql, params=()):
-            if sql.startswith("SELECT"):
-                record("select")
 
-        def fetchmany(self, count):
-            return []
+                class Cursor:
+                    def __enter__(self):
+                        return self
 
-    class Connection:
-        def cursor(self):
-            return Cursor()
+                    def __exit__(self, *args):
+                        pass
 
-        def rollback(self):
-            record("rollback")
+                    def execute(self, sql, params=()):
+                        if sql.startswith("SELECT"):
+                            record("select")
 
-        def close(self):
-            record("close")
+                    def fetchmany(self, count):
+                        return []
 
-    def connect(**kwargs):
-        record("connect")
-        connected.touch()
-        return Connection()
 
-    monkeypatch.setitem(
-        sys.modules,
-        "pymysql",
-        SimpleNamespace(connect=connect, cursors=SimpleNamespace(SSDictCursor=object)),
+                class Connection:
+                    def cursor(self):
+                        return Cursor()
+
+                    def rollback(self):
+                        record("rollback")
+
+                    def close(self):
+                        record("close")
+
+
+                def connect(**kwargs):
+                    record("connect")
+                    open({str(connected)!r}, "w").close()
+                    return Connection()
+            """,
+            "pymysql/cursors.py": "SSDictCursor = object\n",
+        },
     )
-    monkeypatch.setattr(factset.ssl, "create_default_context", lambda **kwargs: object())
-    ca = tmp_path / "ca.pem"
-    ca.touch()
+    ca = CA_BUNDLE
     owner = queue.ProviderWorkSession(
         Source(),
         "factset",
@@ -731,7 +739,6 @@ def test_owner_expiry_monotonic_cap_survives_backward_wall_clock(tmp_path, monke
 @pytest.mark.parametrize("bound", ["owner_age", "owner_expiry", "server_ahead"])
 @pytest.mark.parametrize("started", [False, True])
 def test_deferred_child_cannot_outlive_owner_deadline(tmp_path, monkeypatch, bound, started):
-    import multiprocessing
     from datetime import datetime, timezone
 
     from findb_fetcher import provider_process
@@ -739,19 +746,17 @@ def test_deferred_child_cannot_outlive_owner_deadline(tmp_path, monkeypatch, bou
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
     path = tmp_path / "governor.sqlite3"
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
-    # Parent is the only writer. Lock-free child reads cannot leave an
-    # abandoned semaphore if the supervisor kills the child at its deadline.
-    elapsed = multiprocessing.get_context("fork").RawValue("d", 0)
+    # The fake clock drives only the parent; the exec'd worker sees its verdict.
+    elapsed = [0.0]
     epoch = 1792501200.0
 
     def advance(seconds):
-        elapsed.value += seconds
+        elapsed[0] += seconds
 
     clock = SimpleNamespace(
-        time=lambda: epoch + elapsed.value, monotonic=lambda: 1000 + elapsed.value, sleep=advance
+        time=lambda: epoch + elapsed[0], monotonic=lambda: 1000 + elapsed[0], sleep=advance
     )
     monkeypatch.setattr(acq, "time", clock)
-    monkeypatch.setattr(provider_process, "time", clock)
     near_expiry = [False]
 
     def authorize(method, route, body):
@@ -776,6 +781,9 @@ def test_deferred_child_cannot_outlive_owner_deadline(tmp_path, monkeypatch, bou
     )
     token = queue._current.set(owner)
     called = tmp_path / "native"
+    install_fake_sdk(
+        monkeypatch, tmp_path / "sdk", fake_finlab(f"open({str(called)!r}, 'w').close()")
+    )
 
     def grant():
         return acq.Authorization(clock.monotonic(), clock.time(), clock.time(), provider="factset")
@@ -794,10 +802,15 @@ def test_deferred_child_cannot_outlive_owner_deadline(tmp_path, monkeypatch, bou
                     deadline = operation.dispatch_checkpoint()
                     assert deadline <= clock.monotonic() + 0.011
                     advance(0.02)  # IPC scheduling delay before child receives GO.
-                    return deadline
+                    return child_deadline(deadline, clock.monotonic())
 
                 with pytest.raises(provider_process.ProviderProcessError):
-                    provider_process.supervised_call(called.touch, checkpoint=checkpoint, timeout=1)
+                    provider_process.supervised_call(
+                        "finlab.get",
+                        {"token": "offline", "dataset": "x"},
+                        checkpoint=checkpoint,
+                        timeout=5,
+                    )
         assert not called.exists()
     finally:
         queue._current.reset(token)

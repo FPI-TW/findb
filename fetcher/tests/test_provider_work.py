@@ -15,6 +15,7 @@ from findb_fetcher.providers.finlab import FinLabDatasetTable
 from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot
 from findb_fetcher.providers.twelve_data import TwelveDataResponse
 from provider_work_support import work_authorization
+from provider_worker_support import fake_finlab, install_fake_sdk
 
 
 def test_settlement_retains_host_lock_until_accepted_normalization_drains(tmp_path, monkeypatch):
@@ -180,11 +181,11 @@ def test_prepared_bytes_cannot_change_when_receipt_was_lost(tmp_path):
         restarted.prepare("sequence:1", b'{"immutable":2}')
 
 
-def test_blocking_sdk_timeout_terminates_and_reaps_actual_process():
-    before = {process.pid for process in multiprocessing.active_children()}
+def test_blocking_sdk_timeout_terminates_and_reaps_actual_process(tmp_path, monkeypatch):
+    launched = install_fake_sdk(monkeypatch, tmp_path / "sdk", fake_finlab("time.sleep(30)"))
     with pytest.raises(ProviderProcessError):
-        supervised_call(lambda: time.sleep(30), timeout=0.05)
-    assert {process.pid for process in multiprocessing.active_children()} == before
+        supervised_call("finlab.get", {"token": "offline", "dataset": "slow"}, timeout=0.05)
+    assert [process.poll() is not None for process in launched] == [True]
 
 
 def test_persistent_shioaji_supervisor_reaps_real_isolated_process_group(tmp_path):

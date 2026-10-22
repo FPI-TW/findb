@@ -98,7 +98,7 @@ def test_documented_local_finlab_scheduler_reaches_governed_sdk_boundary(local_s
     result = _process(local_setup, "finlab", "finlab-cli")
     assert result["status"] == "completed"
     assert result["provider_calls"] == 5
-    assert result["source_calls"] == 10  # Fresh grants before login and dataset get.
+    assert result["source_calls"] == 5  # One fresh grant covers local login and get.
     assert result["path"] == str(local_setup / ".state/account/governor.sqlite3")
     assert sum(row[2] for row in result["snapshot"]["quota"]) == 10
 
