@@ -184,6 +184,7 @@ class FinLabSdkGateway:
         from findb_fetcher.acquisition import Acquisition
 
         permit = provider_permit("finlab")
+        account = bool(permit) or self.on_response_bytes is not None
         try:
             with sdk_credential_scope():
                 storages = _file_storages(data, get)
@@ -195,9 +196,14 @@ class FinLabSdkGateway:
                             if self._sdk is None:
                                 from findb_fetcher.provider_process import supervised_call
 
-                                frame = supervised_call(
+                                frame, observed = supervised_call(
                                     "finlab.get",
-                                    {"token": self.api_token, "dataset": dataset.strip()},
+                                    {
+                                        "token": self.api_token,
+                                        "dataset": dataset.strip(),
+                                        "symbols": reviewed_symbols,
+                                        "account": account,
+                                    },
                                     checkpoint=operation.dispatch_checkpoint,
                                 )
                             else:
@@ -206,6 +212,7 @@ class FinLabSdkGateway:
                                 operation.dispatch_checkpoint()
                                 login(self.api_token)
                                 frame = get(dataset.strip())
+                                observed = None
                         except QuotaBlockedError:
                             # __exit__ records whether get already dispatched;
                             # only the outer boundary may classify a quota wait.
@@ -214,9 +221,10 @@ class FinLabSdkGateway:
                             raise FinLabOperationalError(
                                 "FinLab SDK dataset retrieval failed"
                             ) from None
-                    if permit or self.on_response_bytes is not None:
+                    if account:
                         try:
-                            observed = _dataframe_response_bytes(frame)
+                            if observed is None:
+                                observed = _dataframe_response_bytes(frame)
                             if permit:
                                 permit.observe(observed)
                             if self.on_response_bytes is not None:
@@ -254,8 +262,13 @@ class FinLabSdkGateway:
             raise FinLabOperationalError("FinLab acquisition failed") from None
 
 
-def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> object:
-    """Worker-side pinned SDK dataset get with one fresh grant before native I/O."""
+def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> tuple[object, int | None]:
+    """Worker-side pinned SDK dataset get with one fresh grant before native I/O.
+
+    Returns the frame narrowed to reviewed columns and, when the parent accounts
+    usage, the complete frame's response bytes. The full table never crosses
+    the pipe, so the parent does not hold a second copy of it.
+    """
     sdk = importlib.import_module("finlab")
     data = importlib.import_module("finlab.data")
     # check_version() issues an unbounded PyPI request on every fresh process;
@@ -267,7 +280,20 @@ def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> object
     authorize()
     # Pinned 1.5.7 login only installs the token locally; get is the native I/O.
     sdk.login(payload["token"])
-    return get(payload["dataset"])
+    frame = get(payload["dataset"])
+    observed = _dataframe_response_bytes(frame) if payload["account"] else None
+    return _reviewed_columns(frame, payload["symbols"]), observed
+
+
+def _reviewed_columns(frame: Any, symbols: Sequence[str]) -> object:
+    try:
+        _frame_axes(frame)
+        keep = frame.columns.isin(symbols)
+    except Exception:
+        # Not a valid pandas frame: return it whole so the parent raises the
+        # same typed validation failure as the in-process path.
+        return frame
+    return frame.loc[:, keep]
 
 
 def _file_storages(data: object, get: object) -> tuple[Any, ...]:

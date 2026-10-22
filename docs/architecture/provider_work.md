@@ -253,7 +253,9 @@ work-fence 授權、再取得 fresh Source account grant，純本機重驗 fence
 
 FinLab 1.5.7 的 `login(token)` 只在 worker 內設定 token、沒有網路 I/O，因此只在 login 與
 `data.get` 前送出一次 READY；worker 另停用 SDK 在每個新 process 都會發出、沒有 timeout 的
-PyPI 版本檢查。FactSet `connect` 是真實網路 I/O，connect 與 SELECT 前各送出一次 READY。
+PyPI 版本檢查。`data.get` 一律載入整張 dataset；worker 只回傳 reviewed symbols 欄位，
+需要用量核對時另回傳完整表的 response bytes，父行程不再持有完整表。欄位或日期不合法時原表整份回傳，
+由父行程產生與 in-process 路徑相同的型別化驗證錯誤。FactSet `connect` 是真實網路 I/O，connect 與 SELECT 前各送出一次 READY。
 SELECT 前重新授權不重建 acquisition intent、不重設 started_at、不重複計費；已派送 connect 的原責任與
 failure budget 不因 SELECT 被 stop／heartbeat／generation 拒絕而退款。拒絕時先完成整個 process group
 terminate／kill／reap，再傳遞原 stop／recovery 邊界；無法證明停止仍保留 host FD。

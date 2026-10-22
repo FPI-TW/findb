@@ -517,6 +517,13 @@ fi
 if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" != historical ]; then
   common_args+=("${readiness_mount[@]}")
 fi
+# FinLab SDK get loads a whole dataset. On the small staging host (Pilot and
+# small backfills only), keep one table load from exhausting the whole host.
+expected_memory=0
+if [ "$APP_ENVIRONMENT" = staging ] && [ "$provider" = finlab ]; then
+  expected_memory=1073741824
+  common_args+=(--memory 1g --memory-swap 2g)
+fi
 if [ "$accepted_release" = false ]; then
   # Candidate mode has already executed the CLI's offline check and strict
   # stopped-state probe. Validate the final container configuration without
@@ -527,8 +534,9 @@ if [ "$accepted_release" = false ]; then
   candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
   candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"
   candidate_restart="$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$candidate")"
+  candidate_memory="$(docker inspect --format '{{.HostConfig.Memory}}' "$candidate")"
   if [ "$candidate_image" != "$image" ] || [ "$candidate_user" != "10001:10001" ] \
-    || [ "$candidate_restart" != no ]; then
+    || [ "$candidate_restart" != no ] || [ "$candidate_memory" != "$expected_memory" ]; then
     echo "release_fetcher_provider=failed reason=candidate_config_invalid" >&2
     false
   fi
@@ -542,6 +550,7 @@ docker run -d --name "$candidate" --label "com.findb.fetcher.accepted=$accepted_
   "$image" "$@" --run-forever >/dev/null
 candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
 candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"
+candidate_memory="$(docker inspect --format '{{.HostConfig.Memory}}' "$candidate")"
 healthy=0
 for attempt in 1 2 3 4 5 6; do
   status="$(docker inspect --format '{{.State.Status}}' "$candidate")"
@@ -555,7 +564,8 @@ for attempt in 1 2 3 4 5 6; do
   fi
   sleep 5
 done
-if [ "$candidate_image" != "$image" ] || [ "$candidate_user" != "10001:10001" ] || [ "$healthy" -ne 1 ]; then
+if [ "$candidate_image" != "$image" ] || [ "$candidate_user" != "10001:10001" ] \
+  || [ "$candidate_memory" != "$expected_memory" ] || [ "$healthy" -ne 1 ]; then
   echo "release_fetcher_provider=failed reason=candidate_unhealthy" >&2
   false
 fi

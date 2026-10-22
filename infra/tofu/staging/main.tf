@@ -442,3 +442,25 @@ resource "aws_ssm_document" "session_manager_preferences" {
 
   tags = merge(local.common_tags, { DeploymentUnit = each.key })
 }
+
+# A 4 GiB swap file absorbs short memory peaks on the small Fetcher host.
+resource "aws_ssm_association" "fetcher_swap" {
+  association_name                 = "findb-staging-fetcher-swap"
+  name                             = "AWS-RunShellScript"
+  apply_only_at_cron_interval      = false
+  compliance_severity              = "HIGH"
+  max_concurrency                  = "1"
+  max_errors                       = "0"
+  wait_for_success_timeout_seconds = 300
+
+  parameters = {
+    commands = "printf '%s' '${filebase64("${path.module}/../../deploy/ensure_swap.sh")}' | base64 -d | bash"
+  }
+
+  targets {
+    key    = "InstanceIds"
+    values = [local.unit_config.fetcher.instance_id]
+  }
+
+  tags = merge(local.common_tags, { DeploymentUnit = "fetcher" })
+}

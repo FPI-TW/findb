@@ -2462,6 +2462,7 @@ def _run_twelve_fetcher_release_with_marker(
     preflight_fails: bool = False,
     full_market_enabled: bool = False,
     consumer_profile: str = "pilot",
+    fake_memory: str = "0",
 ) -> subprocess.CompletedProcess[str]:
     helper = REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
     state_dir = tmp_path / "state"
@@ -2540,6 +2541,7 @@ def _run_twelve_fetcher_release_with_marker(
         FETCHER_DEPLOY_MODE="candidate" if transactional_candidate else "activate",
         FULL_MARKET_ENABLED="true" if full_market_enabled else "false",
         FETCHER_CONSUMER_PROFILE=consumer_profile,
+        FAKE_MEMORY=fake_memory,
     )
     return subprocess.run(
         [
@@ -3716,6 +3718,44 @@ def test_account_mount_is_nounset_safe_and_preserves_complete_installed_mounts(a
         ]
     else:
         assert values[-1] == "type=bind,src=/state,dst=/state"
+
+
+@pytest.mark.parametrize(
+    ("environment", "provider", "expected"),
+    [
+        ("staging", "finlab", ["--memory", "1g", "--memory-swap", "2g", "1073741824"]),
+        ("staging", "twelve-data", ["0"]),
+        ("production", "finlab", ["0"]),
+    ],
+)
+def test_only_staging_finlab_consumers_are_memory_bounded(environment, provider, expected):
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
+    start = helper.index("expected_memory=0\n")
+    block = helper[start:].split('\nif [ "$accepted_release" = false ]', 1)[0]
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            f"set -euo pipefail\nAPP_ENVIRONMENT={environment}\nprovider={provider}\n"
+            "common_args=()\n"
+            + block
+            + '\nprintf "%s\\n" ${common_args[@]+"${common_args[@]}"} "$expected_memory"',
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=script_env(),
+    )
+    assert result.stdout.splitlines() == expected
+
+
+def test_aws_fetcher_release_rejects_unexpected_memory_limit(tmp_path: Path) -> None:
+    completed = _run_twelve_fetcher_release_with_marker(
+        tmp_path, marker_identity="pilot", fake_memory="1073741824"
+    )
+
+    assert completed.returncode != 0
+    assert "reason=candidate_unhealthy" in completed.stderr
 
 
 def test_findb_ci_separates_infra_and_migrations_without_losing_checks() -> None:

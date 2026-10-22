@@ -98,6 +98,7 @@ case "$operation" in
       *Config.Image*) printf '%s\n' "${FAKE_IMAGE:?}" ;;
       *Config.User*) printf '10001:10001\n' ;;
       *HostConfig.RestartPolicy.Name*) printf 'no\n' ;;
+      *HostConfig.Memory*) printf '%s\n' "${FAKE_MEMORY:-0}" ;;
       *State.Running*) [ "$status" = running ] && printf 'true\n' || printf 'false\n' ;;
       *State.Status*) printf '%s\n' "$status" ;;
       *State.ExitCode*) printf '%s\n' "${FAKE_STABLE_EXIT_CODE:-0}" ;;

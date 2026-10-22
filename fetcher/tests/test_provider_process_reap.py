@@ -22,7 +22,11 @@ def launched(monkeypatch, tmp_path):
 
 
 def _call(dataset, **kwargs):
-    return supervised_call("finlab.get", {"token": "offline", "dataset": dataset}, **kwargs)
+    return supervised_call(
+        "finlab.get",
+        {"token": "offline", "dataset": dataset, "symbols": ("2330",), "account": False},
+        **kwargs,
+    )
 
 
 @pytest.mark.parametrize("signal_error", [signal.SIGTERM, signal.SIGKILL])
@@ -39,7 +43,7 @@ def test_signal_race_still_reaps_exited_child_and_verifies_group(
         return killpg(pid, sig)
 
     monkeypatch.setattr(os, "killpg", raced)
-    assert _call("done") == "completed"
+    assert _call("done") == ("completed", None)
     assert signal_error in observed and 0 in observed
     assert [process.poll() is not None for process in launched] == [True]
 

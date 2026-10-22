@@ -184,7 +184,11 @@ def test_prepared_bytes_cannot_change_when_receipt_was_lost(tmp_path):
 def test_blocking_sdk_timeout_terminates_and_reaps_actual_process(tmp_path, monkeypatch):
     launched = install_fake_sdk(monkeypatch, tmp_path / "sdk", fake_finlab("time.sleep(30)"))
     with pytest.raises(ProviderProcessError):
-        supervised_call("finlab.get", {"token": "offline", "dataset": "slow"}, timeout=0.05)
+        supervised_call(
+            "finlab.get",
+            {"token": "offline", "dataset": "slow", "symbols": ("2330",), "account": False},
+            timeout=0.05,
+        )
     assert [process.poll() is not None for process in launched] == [True]
 
 

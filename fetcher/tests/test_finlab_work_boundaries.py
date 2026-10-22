@@ -157,7 +157,10 @@ def test_supervisor_expired_ipc_grant_never_dispatches_or_retries(tmp_path, monk
 
     with pytest.raises(ProviderProcessError):
         supervised_call(
-            "finlab.get", {"token": "offline", "dataset": "x"}, checkpoint=expired, timeout=5
+            "finlab.get",
+            {"token": "offline", "dataset": "x", "symbols": ("2330",), "account": False},
+            checkpoint=expired,
+            timeout=5,
         )
     assert grants == [True] and not called.exists()
 
