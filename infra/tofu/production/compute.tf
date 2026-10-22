@@ -186,3 +186,27 @@ resource "aws_eip" "unit" {
     Name = "findb-production-${each.key}", DeploymentUnit = each.key
   })
 }
+
+# A 4 GiB swap file absorbs short memory peaks on the Fetcher host.
+resource "aws_ssm_association" "fetcher_swap" {
+  association_name                 = "findb-production-fetcher-swap"
+  name                             = "AWS-RunShellScript"
+  apply_only_at_cron_interval      = false
+  compliance_severity              = "HIGH"
+  max_concurrency                  = "1"
+  max_errors                       = "0"
+  wait_for_success_timeout_seconds = 300
+
+  depends_on = [aws_ssm_association.host_dependencies]
+
+  parameters = {
+    commands = "printf '%s' '${filebase64("${path.module}/../../deploy/ensure_swap.sh")}' | base64 -d | bash"
+  }
+
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.unit["fetcher"].id]
+  }
+
+  tags = merge(local.common_tags, { DeploymentUnit = "fetcher" })
+}

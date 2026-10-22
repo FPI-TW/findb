@@ -774,7 +774,7 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "ReadExactOperationalAlertTopic",
         "ReadExactOperationalAlertSubscription",
         "ReadStagingOperationalAlarmTags",
-        "ReadExactMetricPublisherAssociationTags",
+        "ReadExactHostAssociationTags",
     ):
         assert f'"{sid}"' in permissions
     assert "cloudwatch:DescribeAlarms" in permissions

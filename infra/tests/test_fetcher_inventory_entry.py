@@ -80,6 +80,7 @@ def fake_call(s, cmd, a, parent, environ):
                     "{{.Config.User}}": "10001:10001",
                     "{{.RestartCount}}": "0",
                     "{{.HostConfig.RestartPolicy.Name}}": "no",
+                    "{{.HostConfig.Memory}}": str(row.get("memory", 0)),
                 }
                 output = (
                     row.get("accepted", "true")

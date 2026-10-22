@@ -102,3 +102,18 @@ def test_production_rollback_replays_acceptance_without_rerunning_ci() -> None:
         assert "mode: replay" in rollback
         promote = workflow.split("  promote:", 1)[1].split("  deploy-promotion:", 1)[0]
         assert "needs.verify.result == 'success'" in promote
+
+
+def test_both_fetcher_hosts_keep_one_four_gib_swap_file() -> None:
+    script = (REPO_ROOT / "infra/deploy/ensure_swap.sh").read_text(encoding="utf-8")
+    assert "size_bytes=4294967296" in script
+    assert "vm.swappiness = 10" in script
+    for environment, path, target in (
+        ("production", "infra/tofu/production/compute.tf", 'aws_instance.unit["fetcher"].id'),
+        ("staging", "infra/tofu/staging/main.tf", "local.unit_config.fetcher.instance_id"),
+    ):
+        iac = (REPO_ROOT / path).read_text(encoding="utf-8")
+        association = iac.split('resource "aws_ssm_association" "fetcher_swap"', 1)[1]
+        assert f'"findb-{environment}-fetcher-swap"' in association
+        assert "deploy/ensure_swap.sh" in association
+        assert f"values = [{target}]" in association

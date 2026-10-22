@@ -29,7 +29,12 @@ return identities
 
 
 def _call(dataset, **kwargs):
-    return supervised_call("finlab.get", {"token": "offline", "dataset": dataset}, **kwargs)
+    frame, _ = supervised_call(
+        "finlab.get",
+        {"token": "offline", "dataset": dataset, "symbols": ("2330",), "account": False},
+        **kwargs,
+    )
+    return frame
 
 
 def test_unknown_operation_fails_closed_and_reaps(tmp_path, monkeypatch):
@@ -63,7 +68,10 @@ def test_credentials_stay_out_of_worker_argv_and_environment(tmp_path, monkeypat
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "source-secret-marker")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "cloud-marker")
     monkeypatch.setenv("FINLAB_API_TOKEN", "installed-marker")
-    observed = supervised_call("finlab.get", {"token": "worker-secret-marker", "dataset": "x"})
+    observed, _ = supervised_call(
+        "finlab.get",
+        {"token": "worker-secret-marker", "dataset": "x", "symbols": ("2330",), "account": False},
+    )
     # Only the SDK's own login installs the token, after the worker started.
     environment = observed["environment"]
     assert environment.pop("FINLAB_API_TOKEN") == "worker-secret-marker"
@@ -112,7 +120,10 @@ def _killed_parent(root, sdk, started):
             fake_finlab(f"open({started!r}, 'w').close()\ntime.sleep(3)\nreturn 'late'"),
         )
         with queue.host_lock("finlab", root=root):
-            provider_process.supervised_call("finlab.get", {"token": "offline", "dataset": "x"})
+            provider_process.supervised_call(
+                "finlab.get",
+                {"token": "offline", "dataset": "x", "symbols": ("2330",), "account": False},
+            )
 
 
 def test_parent_kill_keeps_worker_lock_until_worker_exits(tmp_path):

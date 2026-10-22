@@ -807,7 +807,12 @@ def test_deferred_child_cannot_outlive_owner_deadline(tmp_path, monkeypatch, bou
                 with pytest.raises(provider_process.ProviderProcessError):
                     provider_process.supervised_call(
                         "finlab.get",
-                        {"token": "offline", "dataset": "x"},
+                        {
+                            "token": "offline",
+                            "dataset": "x",
+                            "symbols": ("2330",),
+                            "account": False,
+                        },
                         checkpoint=checkpoint,
                         timeout=5,
                     )

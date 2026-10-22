@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from findb_fetcher.providers import finlab
 from findb_fetcher.providers.finlab import (
     FinLabOperationalError,
     FinLabSdkError,
@@ -146,3 +147,47 @@ def test_catalogue_source_denial_is_operational_before_sdk_get(tmp_path):
             FinLabSdkGateway(api_token="offline-token", _sdk=sdk).fetch_catalogue(symbols=("0050",))
     assert calls == []
     assert "credential-must-not-leak" not in "".join(traceback.format_exception(raised.value))
+
+
+class Columns(Axis):
+    def isin(self, values):
+        return [column in values for column in self]
+
+
+class Loc:
+    def __init__(self, frame):
+        self.frame = frame
+
+    def __getitem__(self, key):
+        rows, keep = key
+        assert rows == slice(None)
+        narrowed = Frame([], self.frame.index)
+        narrowed.columns = Columns(c for c, kept in zip(self.frame.columns, keep) if kept)
+        return narrowed
+
+
+def native_get(monkeypatch, frame, *, account):
+    modules = {
+        "finlab": SimpleNamespace(login=lambda _: None),
+        "finlab.data": SimpleNamespace(get=lambda _: frame),
+        "finlab.utils": SimpleNamespace(),
+    }
+    monkeypatch.setattr(finlab.importlib, "import_module", modules.__getitem__)
+    payload = {"token": "offline", "dataset": "x", "symbols": ("0050", "2330"), "account": account}
+    return finlab.native_get(payload, lambda: None)
+
+
+@pytest.mark.parametrize("account", [False, True])
+def test_worker_returns_only_reviewed_columns_with_complete_frame_bytes(monkeypatch, account):
+    frame = Frame([])
+    frame.columns = Columns(["2330", *(str(i) for i in range(32)), "0050"])
+    frame.loc = Loc(frame)
+    reviewed, observed = native_get(monkeypatch, frame, account=account)
+    # The parent never receives the complete table, only its accounted size.
+    assert reviewed.columns == ("2330", "0050")
+    assert observed == (len(frame.fragment(frame.columns).encode()) if account else None)
+
+
+def test_worker_returns_invalid_frame_whole_for_typed_parent_validation(monkeypatch):
+    frame = Frame(Columns(["2330", "2330"]))
+    assert native_get(monkeypatch, frame, account=False) == (frame, None)

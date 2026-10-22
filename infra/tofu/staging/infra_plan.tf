@@ -198,10 +198,13 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid       = "ReadExactMetricPublisherAssociationTags"
-    effect    = "Allow"
-    actions   = ["ssm:ListTagsForResource"]
-    resources = [for association in aws_ssm_association.staging_metric_publisher : association.arn]
+    sid     = "ReadExactHostAssociationTags"
+    effect  = "Allow"
+    actions = ["ssm:ListTagsForResource"]
+    resources = concat(
+      [for association in aws_ssm_association.staging_metric_publisher : association.arn],
+      [aws_ssm_association.fetcher_swap.arn],
+    )
   }
 
   statement {

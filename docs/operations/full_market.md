@@ -276,7 +276,11 @@ HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期
 ## 設定與啟動
 
 Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布 baseline 後才人工啟動。
-Staging 常態只開 Pilot，新版驗證時短暫開 Full；production 常態只開 Full。部署本身不 start controls。
+Staging 只開 Pilot 驗證功能，確認正常後部署到 production 只開 Full；部署本身不 start controls。
+Pilot 與 Full 的 daily 都只抓當日，回補天數由管理者建立回補時決定：Pilot 只補少量日期確認流程，
+Full 才補完整範圍。Staging fetcher 主機記憶體小（見
+[部署 OOM 紀錄](deployment.md#2026-10-22-staging-historical-finlab-oom-阻擋部署)），
+不在 staging 執行 Full 或完整回補；FinLab 即使只取 Pilot 兩檔，worker 仍會載入整張 dataset。
 
 ```bash
 cd fetcher

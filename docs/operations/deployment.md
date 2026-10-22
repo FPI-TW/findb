@@ -699,3 +699,38 @@ shared inode 未變。十五 consumers 仍 running，Twelve Data 三個 consumer
 FactSet 兩筆原 maintenance budgets 仍為 5／1。SSM 為
 `365c4630-b04c-40f1-a1df-3b66a0a0670a`／`49c125ec-8321-443b-a355-82776724b973`。
 FactSet 原生 prices／daily 及跨日 release 的未完成驗收仍由 backlog 追蹤。
+
+### 2026-10-22 staging historical FinLab OOM 阻擋部署
+
+#344 合併至 `6b153e734cc104d8a31302baa90d9eff8266d25e` 後，
+[Fetcher CD 39709175450](https://github.com/FPI-TW/findb/actions/runs/39709175450) attempt 1／2
+均在唯讀 preflight 收到 `runtime_not_eligible execution_profile=historical provider=finlab`；
+candidate acceptance／activation 未執行，current 仍為 `226c9860…-39635077338-1`。
+原因不是新 bundle：`findb-historical-finlab` 的 image、argv、環境與 accepted label 均正確且 running，
+但 `State.OOMKilled=true`。主機 kernel 於 `2026-10-22 00:46:38 UTC` 發生 global OOM，
+殺掉該容器內約 465 MB anon RSS 的舊版 fork 子程序（FinLab `data.get` 整張表載入）；
+主程序未退出，Docker 仍保留 OOM 標記。Staging fetcher 主機為 `t3.small`（1.9 GB、無 swap），
+十五個 consumers 常駐約 55–130 MB／個，部署前可用記憶體約 225 MB。
+
+使用者確認 historical FinLab scheduler 已停止後，僅 `docker restart findb-historical-finlab`
+清除標記（`OOMKilled=false`、exit 0），未改 image、mounts 或 checkpoint；attempt 3 成功，
+current 為 `3e917404…-39709175450-3`，十五 consumers running，FinLab／FactSet images 為
+`sha256:ede5e2aa…`／`sha256:ee1a2137…`。部署成功不代表 provider 功能驗收。
+
+FinLab SDK 1.5.7 的 `data.get` 只接受 dataset 名稱，Pilot 只取兩檔也會在 worker 下載並載入整張表；
+worker 只回傳 reviewed 欄位與完整表的 response bytes，避免父行程再持有一份完整表，但單次 worker 峰值仍在。
+因此 staging 只驗證 Pilot 與少量回補，完整 Full market 與完整回補在 production 執行。
+
+同日唯讀檢查 production fetcher（`t3.medium`，3.8 GB、無 swap）：十一個舊版 consumers，
+可用約 1.2 GB，`findb-full-market-finlab` 常駐 1.26 GB，10/1 後沒有 OOM 紀錄。
+Production 版本落後，運行問題延後處理；先以下列方式降低短暫高峰風險：
+
+- 兩環境 fetcher 主機由 OpenTofu `aws_ssm_association.fetcher_swap` 執行
+  `infra/deploy/ensure_swap.sh`，維持單一 4 GiB `/swapfile`（寫入 fstab、`vm.swappiness = 10`），
+  可重複執行。須在各環境 `tofu apply` 後才生效。
+- Staging 的 FinLab consumers（Pilot／Full／historical）由 `release_fetcher_provider.sh` 加上
+  `--memory 1g --memory-swap 2g`，candidate 與 activation 都核對 `HostConfig.Memory`；
+  其他 provider 與 production 不設上限。下次 staging Fetcher 部署重建容器後生效。
+
+容器上限讓 FinLab 的 OOM 只影響該容器，但 `OOMKilled=true` 仍會被 preflight 拒絕部署；
+再次阻擋時依本節確認原因，經授權重啟容器後重試。
