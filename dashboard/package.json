@@ -54,13 +54,13 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
-    "@vitest/browser-playwright": "4.1.11",
+    "@vitest/browser-playwright": "4.1.12",
     "eslint": "^10.7.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.9.6",
     "typescript": "^6.0.2",
-    "vite": "^8.0.0",
-    "vitest": "^4.1.11",
+    "vite": "^8.1.6",
+    "vitest": "^4.1.12",
     "vitest-browser-react": "^2.2.0"
   }
 }

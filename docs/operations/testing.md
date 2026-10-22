@@ -36,7 +36,16 @@ workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境�
   [CVE-2026-102989](https://github.com/advisories/GHSA-qx66-fv34-fjm8)。不要僅更新 Seroval
   就視為已修復此 transport 漏洞；更新框架時維持其精確配套版本並驗證正常 GET／POST RPC。
 - Vitest 與 `@vitest/browser-playwright` 必須一起更新；其 browser、mocker、runner 等內部
-  套件具有精確版本與 peer 限制。目前使用 4.1.11，Vite 與 Playwright 維持既有版本。
+  套件具有精確版本與 peer 限制。目前使用 4.1.12，修復 mock registration code injection
+  與 Windows redirect allowlist bypass；Playwright 維持既有版本。
+- Vite 最低版本為 8.1.6，修復內嵌 launch-editor、檔案 allowlist 與 custom middleware
+  漏洞。Devtools 另有獨立的 launch-editor 依賴；`pnpm-workspace.yaml` 只覆寫
+  `launch-editor@<2.14.2` 至 2.14.2，避免舊版仍留在依賴樹。上游已不再解析受影響版本後，
+  可移除這個 override，但仍須重新執行 audit 與 Dashboard suite。
+- Backend 與 Fetcher 的 certifi 均使用 2026.10.19，移除受 compromised intermediate
+  keys 影響的 emSign root 信任；更新 lockfile 後必須重建部署 image，既有 image 不會自動
+  換用新的 CA bundle。Backend 的 pre-commit 間接依賴 virtualenv 使用 21.14.12，
+  高於 activation scripts command injection 的修補下限 21.14.7。
 - Dashboard 未使用 `@tailwindcss/typography`，不安裝此套件；避免引入其精確鎖定的舊版
   selector parser。日後需要 typography 時，重新確認 parser 修補版與上游相容性。
 - Backend 透過 FastAPI 引入 Starlette，更新時需驗證認證、middleware、Source payload
@@ -48,6 +57,11 @@ workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境�
 輸出既存 TanStack virtual-module pre-transform 訊息，必須比較基準並檢查測試退出狀態。
 GitHub 告警需在修復整合至預設分支並重新掃描後確認關閉，本機通過不能代替遠端結果。
 
+本次修補對應 GitHub Dependabot #50–#63：certifi 兩項、virtualenv 四項、launch-editor
+三項與 Vite 五項。另由 npm audit 發現並修復 Vitest mocker 的
+[GHSA-qxg6-89mg-rqv8](https://github.com/advisories/GHSA-qxg6-89mg-rqv8) 與
+[GHSA-xp26-3454-mjgp](https://github.com/advisories/GHSA-xp26-3454-mjgp)。
+
 Shioaji SDK 版本集中於 `providers/shioaji.py` 的 `SHIOAJI_SDK_VERSION`，與 `pyproject.toml`
 的 pin 一致。Shioaji 會從 PyPI 索引移除舊版（1.7.1–1.7.6 已不在索引，只剩 lockfile 內的檔案
 網址可下載），此時 Fetcher lockfile 無法重新解析，需升級 SDK。Fetcher CI 安裝 `shioaji` extra，
@@ -56,12 +70,24 @@ Shioaji SDK 版本集中於 `providers/shioaji.py` 的 `SHIOAJI_SDK_VERSION`，�
 不建立連線、不登入。其餘 Shioaji 測試使用離線替身；login、contract lookup、kbars 與 usage
 的實際行為仍須於 staging 以真實帳號驗收。
 
-2026-10-16 安全依賴驗收：`pnpm check`、`pnpm test` 與 production build 通過。
-Backend 2,201、migration 54、Infra 148（另有 268 個子測試）、Fetcher 1,406，
-Dashboard unit 192、browser 10、E2E 15。追加 TanStack XSS 修補後，已重跑全 repo checks、
-完整 Dashboard suite 與 production build；production SSR、匿名權限導向、登入 POST、
-分頁／重新整理與 hydration smoke 通過，偽造 server-function result 未反射為 HTML。
-最終 `pnpm audit` 各嚴重度皆為零；這是 npm 依賴掃描結果，不代表 GitHub 告警已關閉。
+目前安全依賴驗收（2026-10-23）：frozen 安裝、`pnpm check`、`pnpm test`、
+`pnpm build:dashboard` 與 `pnpm audit` 通過。
+
+| 範圍 | 結果 |
+| --- | --- |
+| Backend | 1,967 passed、3 skipped |
+| Migration | 11 passed、2 xfailed |
+| Infra | 849 passed、2 skipped，另有 352 個子測試通過 |
+| Fetcher | 1,648 passed、1 skipped |
+| Dashboard | unit 197、browser 10、E2E 16 全部通過 |
+
+Production SSR、匿名權限導向、登入 POST RPC、已登入營運台與 Lookup hydration smoke
+通過。Smoke fixture 須先呼叫 `/fixture/reset` 初始化資料；未初始化時不應期待有執行中的
+Pilot。Backend 略過三個需 captured HKEX／FactSet bytes 的案例，Infra 略過兩個需指定
+runtime image 的案例，Fetcher 未安裝 Shioaji SDK 因而略過其 contract suite；migration
+兩個 xfail 為已知 schema drift。這些項目不算通過，真實 provider 驗收與 runtime image
+驗證仍依各自流程執行。最終 `pnpm audit` 各嚴重度皆為零；這是 npm 依賴掃描結果，
+不代表 GitHub 告警已關閉。
 
 ## CI 與測試隔離
 
