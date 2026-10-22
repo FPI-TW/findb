@@ -1,6 +1,9 @@
 packages:
   - dashboard
 
+overrides:
+  'launch-editor@<2.14.2': '2.14.2'
+
 allowBuilds:
   esbuild: true
   lightningcss: true
