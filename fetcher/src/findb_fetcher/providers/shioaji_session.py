@@ -263,16 +263,9 @@ def _child(conn: Any, api_key: str, secret_key: str, simulation: bool) -> None:
         conn.close()
 
 
-def _provider_environment() -> dict[str, str]:
-    # Explicit launch environment: no inherited Source/cloud/other-provider secrets.
-    names = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
-    values = {name: os.environ[name] for name in names if name in os.environ}
-    values["PROVIDER_WORK_REQUIRED"] = os.getenv("PROVIDER_WORK_REQUIRED", "false")
-    return values
-
-
 class _ProviderProcess:
     def __init__(self, fd: int) -> None:
+        from findb_fetcher.provider_process import provider_environment
         from findb_fetcher.provider_work import inherited_fds, require_acquisition
 
         require_acquisition("shioaji")
@@ -280,7 +273,7 @@ class _ProviderProcess:
         self.child = subprocess.Popen(
             [sys.executable, "-m", "findb_fetcher.providers.shioaji_session", str(fd)],
             pass_fds=(fd, *inherited_fds()),
-            env=_provider_environment(),
+            env=provider_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

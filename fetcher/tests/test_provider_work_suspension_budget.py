@@ -26,7 +26,7 @@ DAY = date(2026, 10, 15)
     [
         (lane, phase)
         for lane in ("daily", "historical")
-        for phase in ("before", "login", "previous_field", "quota_before", "quota_after")
+        for phase in ("before", "previous_field", "quota_before", "quota_after")
     ]
     + [("maintenance", "quota_before"), ("maintenance", "quota_after")],
 )
@@ -58,7 +58,6 @@ def test_suspension_retains_only_dispatched_reservation(tmp_path, monkeypatch, l
 
     def login(_):
         calls.append("login")
-        stop[0] = phase == "login"
 
     def get(_):
         calls.append("get")
@@ -146,12 +145,10 @@ def test_suspension_retains_only_dispatched_reservation(tmp_path, monkeypatch, l
                     _execute(SimpleNamespace(execute=execute), SimpleNamespace(max_attempts=3), job)
                 with owner.journal.connection() as db:
                     attempts = db.execute("SELECT attempts FROM work_budget").fetchone()[0]
-        dispatched = phase in {"login", "previous_field", "quota_after"}
+        dispatched = phase in {"previous_field", "quota_after"}
         assert attempts == int(dispatched)
         assert owner.dispatch_observations == int(dispatched)
-        assert calls == (
-            [] if not dispatched else ["login"] if phase == "login" else ["login", "get"]
-        )
+        assert calls == (["login", "get"] if dispatched else [])
         with acq.FullMarketState(path).connection() as db:
             assert db.execute(
                 "SELECT COUNT(*) FROM acquisition_intent WHERE actual_start IS NOT NULL"
@@ -165,19 +162,19 @@ def test_suspension_retains_only_dispatched_reservation(tmp_path, monkeypatch, l
         runtime.close()
 
 
-def test_daily_repeated_login_stop_reaches_original_attempt_ceiling(tmp_path, monkeypatch):
+def test_daily_repeated_dispatched_stop_reaches_original_attempt_ceiling(tmp_path, monkeypatch):
     from findb_fetcher import full_market_state
 
     monkeypatch.setattr(full_market_state, "FULL_WORK_MAX_ATTEMPTS", 2)
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(tmp_path / "account.sqlite3"))
-    logged_in = [False]
+    dispatched = [False]
     calls = []
 
     def source(method, path, body):
         if path.endswith("/prepared"):
             return {"bodies": []}
-        if path.endswith("/authorize") and logged_in[0]:
+        if path.endswith("/authorize") and dispatched[0]:
             raise FullMarketProtocolError(
                 "stopped", status_code=409, code="PROVIDER_WORK_SUSPENDED"
             )
@@ -192,16 +189,26 @@ def test_daily_repeated_login_stop_reaches_original_attempt_ceiling(tmp_path, mo
     runtime, _, _ = _runtime(tmp_path, provider="finlab")
     runtime._acquisition_allowed = lambda: True
 
-    def login(_):
-        calls.append("login")
-        logged_in[0] = True
+    def get(_):
+        calls.append("get")
+        dispatched[0] = True
+        return SimpleNamespace(index=(DAY,), columns=("2330",), loc={(DAY, "2330"): 42})
 
-    sdk = SimpleNamespace(
-        login=login, data=SimpleNamespace(get=lambda _: pytest.fail("get after stop"))
-    )
-    runtime._acquire = lambda *args: FinLabSdkGateway("offline", _sdk=sdk).fetch_dataset(
-        "price:收盤價", target_date=DAY, symbols=["2330"]
-    )
+    sdk = SimpleNamespace(login=lambda _: None, data=SimpleNamespace(get=get))
+
+    rounds = [0]
+
+    def acquire(*args):
+        # Each round dispatches a fresh dataset (durable responses would replay a
+        # repeated one); the stop then rejects the next dataset's grant.
+        rounds[0] += 1
+        for field in ("first", "second"):
+            FinLabSdkGateway("offline", _sdk=sdk).fetch_dataset(
+                f"round-{rounds[0]}-{field}", target_date=DAY, symbols=["2330"]
+            )
+        pytest.fail("suspended acquisition must not complete")
+
+    runtime._acquire = acquire
     plan = _plan()
     plan["parts"][0]["member_keys"] = ["AAPL"]
     runtime.state.record_plan(plan, "finlab")
@@ -216,7 +223,7 @@ def test_daily_repeated_login_stop_reaches_original_attempt_ceiling(tmp_path, mo
             ),
         ):
             for expected in (1, 2):
-                logged_in[0] = False
+                dispatched[0] = False
                 with runtime.state.connection() as db:
                     db.execute("UPDATE full_work SET next_at=0")
                 assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
@@ -224,9 +231,9 @@ def test_daily_repeated_login_stop_reaches_original_attempt_ceiling(tmp_path, mo
                     row = db.execute("SELECT attempts,status,reason FROM full_work").fetchone()
                 assert row[0] == expected
             assert tuple(row) == (2, "manual", "retry_exhausted")
-            logged_in[0] = False
+            dispatched[0] = False
             runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
-            assert calls == ["login", "login"]
+            assert calls == ["get", "get"]
     finally:
         queue._current.reset(token)
         owner.stop()

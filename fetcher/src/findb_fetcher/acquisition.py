@@ -422,8 +422,9 @@ class Acquisition:
     def dispatch_checkpoint(self) -> float:
         """Authorize another SDK boundary within the same charged operation.
 
-        Login may block past the original grant. Refresh authority without
-        rearming the intent, resetting its start time, or charging it twice.
+        A prior native step (FactSet connect) may block past the original
+        grant. Refresh authority without rearming the intent, resetting its
+        start time, or charging it twice.
         The child also checks the returned deadline immediately before I/O.
         """
         from findb_fetcher.provider_work import acquisition_dispatch_deadline, require_acquisition

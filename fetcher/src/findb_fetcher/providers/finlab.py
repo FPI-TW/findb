@@ -196,17 +196,18 @@ class FinLabSdkGateway:
                                 from findb_fetcher.provider_process import supervised_call
 
                                 frame = supervised_call(
-                                    lambda: get(dataset.strip()),
-                                    initialize=lambda: login(self.api_token),
+                                    "finlab.get",
+                                    {"token": self.api_token, "dataset": dataset.strip()},
                                     checkpoint=operation.dispatch_checkpoint,
                                 )
                             else:
+                                # Pinned 1.5.7 login only installs the token locally;
+                                # one grant covers it and the dataset get I/O.
                                 operation.dispatch_checkpoint()
                                 login(self.api_token)
-                                operation.dispatch_checkpoint()
                                 frame = get(dataset.strip())
                         except QuotaBlockedError:
-                            # __exit__ records whether login already dispatched;
+                            # __exit__ records whether get already dispatched;
                             # only the outer boundary may classify a quota wait.
                             raise
                         except Exception:
@@ -251,6 +252,22 @@ class FinLabSdkGateway:
         except Exception:
             # Never expose provider/credential context, including scope failures.
             raise FinLabOperationalError("FinLab acquisition failed") from None
+
+
+def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> object:
+    """Worker-side pinned SDK dataset get with one fresh grant before native I/O."""
+    sdk = importlib.import_module("finlab")
+    data = importlib.import_module("finlab.data")
+    # check_version() issues an unbounded PyPI request on every fresh process;
+    # the SDK version is pinned, so the check never informs acquisition.
+    utils: Any = importlib.import_module("finlab.utils")
+    utils.check_version = lambda: None
+    get = data.get
+    _disable_frame_cache(_file_storages(data, get))
+    authorize()
+    # Pinned 1.5.7 login only installs the token locally; get is the native I/O.
+    sdk.login(payload["token"])
+    return get(payload["dataset"])
 
 
 def _file_storages(data: object, get: object) -> tuple[Any, ...]:

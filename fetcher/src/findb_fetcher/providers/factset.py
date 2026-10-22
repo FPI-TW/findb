@@ -7,6 +7,7 @@ import math
 import os
 import re
 import ssl
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -123,65 +124,63 @@ def _safe_error(exc: Exception) -> str:
     )
 
 
+def native_query(payload: dict[str, Any], authorize: Callable[[], None]) -> bytes | dict[str, str]:
+    """Worker-side bounded MySQL query; connect and SELECT each need a fresh grant."""
+    import pymysql
+
+    config: FactSetConfig = payload["config"]
+    authorize()
+    connection = None
+    try:
+        connection = pymysql.connect(
+            host=config.host,
+            port=config.port,
+            user=config.user,
+            password=config.password,
+            database=config.database,
+            ssl=ssl.create_default_context(cafile=str(config.ca_file)),
+            connect_timeout=10,
+            read_timeout=config.query_timeout_seconds + 5,
+            write_timeout=10,
+            autocommit=False,
+            cursorclass=pymysql.cursors.SSDictCursor,
+        )
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SET SESSION MAX_EXECUTION_TIME=%s", (config.query_timeout_seconds * 1000,)
+            )
+            cursor.execute("START TRANSACTION READ ONLY")
+    except Exception as exc:
+        if connection is not None:
+            connection.close()
+        return {"error": _safe_error(exc)}
+    try:
+        authorize()
+        with connection.cursor() as cursor:
+            cursor.execute(payload["sql"], payload["parameters"])
+            rows = list(cursor.fetchmany(MAX_MEMBERS + 1))
+            if len(rows) > MAX_MEMBERS:
+                return {"error": "FACTSET_MEMBER_LIMIT"}
+            return encode_native(rows, scope=payload["scope"])
+    except Exception as exc:
+        return {"error": _safe_error(exc)}
+    finally:
+        try:
+            connection.rollback()
+        finally:
+            connection.close()
+
+
 class FactSetGateway:
     def __init__(self, config: FactSetConfig) -> None:
         self.config = config
 
     def _query(self, sql: str, parameters: tuple, *, scope: dict[str, Any]) -> bytes:
         config = self.config
-        connection = None
-        connection_error = None
-
-        def connect() -> None:
-            nonlocal connection
-            import pymysql
-
-            try:
-                connection = pymysql.connect(
-                    host=config.host,
-                    port=config.port,
-                    user=config.user,
-                    password=config.password,
-                    database=config.database,
-                    ssl=ssl.create_default_context(cafile=str(config.ca_file)),
-                    connect_timeout=10,
-                    read_timeout=config.query_timeout_seconds + 5,
-                    write_timeout=10,
-                    autocommit=False,
-                    cursorclass=pymysql.cursors.SSDictCursor,
-                )
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SET SESSION MAX_EXECUTION_TIME=%s", (config.query_timeout_seconds * 1000,)
-                    )
-                    cursor.execute("START TRANSACTION READ ONLY")
-            except Exception as exc:
-                nonlocal connection_error
-                connection_error = _safe_error(exc)
-
-        def fetch() -> bytes | dict[str, str]:
-            if connection_error is not None:
-                return {"error": connection_error}
-            assert connection is not None
-            try:
-                with connection.cursor() as cursor:
-                    cursor.execute(sql, parameters)
-                    rows = list(cursor.fetchmany(MAX_MEMBERS + 1))
-                    if len(rows) > MAX_MEMBERS:
-                        return {"error": "FACTSET_MEMBER_LIMIT"}
-                    return encode_native(rows, scope=scope)
-            except Exception as exc:
-                return {"error": _safe_error(exc)}
-            finally:
-                try:
-                    connection.rollback()
-                finally:
-                    connection.close()
-
         with Acquisition("factset", credential=config.account_identity) as operation:
             result = supervised_call(
-                fetch,
-                initialize=connect,
+                "factset.query",
+                {"config": config, "sql": sql, "parameters": parameters, "scope": scope},
                 checkpoint=operation.dispatch_checkpoint,
                 timeout=config.query_timeout_seconds + 20,
             )

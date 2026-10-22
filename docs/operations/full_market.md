@@ -355,8 +355,9 @@ SQLite transaction 只做短暫 ledger 更新，不跨 network／SDK 等待；�
 HTTP 在 transport send boundary、FinLab 在 `data.get`、Shioaji 在 child `api.kbars` 記錄 actual start。
 Twelve Data HTTP boundary 使用該 client 實際 config credential（保留 raw／normalized pin 合併），
 即使環境變數指向另一個 key，account lock、request debt 與 cooldown 都跟隨實際送出的 key。
-FinLab 1.5.7 的 headless `login(token)` 只選取 process-global token，不算上游 acquisition。
-所有 `FinLabSdkGateway` 以 process-wide SDK lock 保護 login、最後授權、`data.get`、finalization、
+FinLab 1.5.7 的 headless `login(token)` 只選取 process-global token，不算上游 acquisition；
+正式路徑的 login 與 `data.get` 在 exec'd provider worker 內執行，一次授權涵蓋兩者。
+所有 `FinLabSdkGateway` 以 process-wide SDK lock 保護最後授權、login、`data.get`、finalization、
 完整回應計量、目標投影與 FileStorage 記憶體快取清理；Acquisition 仍在 `data.get` 後完成，
 SDK lock 先於 account lock，不同 explicit tokens 在同 process 依序使用，拒絕授權會釋放 lock。
 Account identity 在 login 前建立；SDK 修改的 token environment 在離開 scope 時還原，避免

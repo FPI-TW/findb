@@ -494,9 +494,9 @@ owner、manifest、原job budget與armed／unknown／legacy floor snapshot，然
 
 ### FinLab SDK 與過期 cutover 邊界
 
-- `fetcher/tests/test_finlab_work_boundaries.py` 使用真實 supervised child／IPC，涵蓋
-  catalogue 與 data 的 login 後 stop、heartbeat／generation 失效、slow login、slow fence、
-  expired IPC grant、單次計費與 stop-reap；另驗證 negative table snapshot 跨 reopen 保留，
+- `fetcher/tests/test_finlab_work_boundaries.py` 使用真實 exec'd provider worker／IPC，涵蓋
+  catalogue 與 data 唯一授權點的 stop、heartbeat／generation 失效、slow fence、slow grant、
+  expired IPC grant、worker 不連 PyPI 與 stop-reap；另驗證 negative table snapshot 跨 reopen 保留，
   valid cache 不新增 SDK I/O，prepared bytes／budget 不變且不序列化任意 SDK 物件。
 - `backend/tests/test_provider_work_expired_cutover.py` 以 authenticated Source／fixture-owned
   PostgreSQL 跑五種 historical scopes，涵蓋 prepared expired 首項、空 expired head 加 prepared
@@ -510,13 +510,19 @@ owner、manifest、原job budget與armed／unknown／legacy floor snapshot，然
   到期邊界、兩條授權路徑、成功授權不更新 item lease、新 manifest／intent 拒絕，及 active owner
   已保存 prepared 的原 body 排空與 `BACKFILL_EXPIRED` 保留。
 - `fetcher/tests/test_provider_work_suspension_budget.py` 涵蓋 daily／historical／maintenance
-  的 predispatch wait、login 後停止、先前 field 已完成後停止／quota wait 與原 retry ceiling。
+  的 predispatch wait、先前 field 已完成後停止／quota wait 與原 retry ceiling；retry ceiling
+  每輪使用不同 dataset，避免 durable response replay 讓該輪沒有實際派送。
   Dispatch-fence lost-ACK 測試在斷言 quarantine 後只釋放該測試自行建立且無 native child 的 handles，
   可與 FinLab tests 換序執行；產品的 quarantine／recovery 行為不變。
 
 - `fetcher/tests/test_provider_process_reap.py` 注入 SIGTERM／SIGKILL 的 PermissionError，
   驗證已退出 child 仍完成 reap／group proof，活著或無法 probe 的 group 則 recovery blocked。
-  FinLab 真實 child／IPC 測試以跨程序共享時鐘精確模擬 login 與 fence 延遲，保留產品 50ms grant。
+  Worker 測試只在 parent 使用假時鐘；`tests/provider_worker_support.py` 的 `child_deadline` 把
+  有效／過期判定映射為 worker 的真實 monotonic 期限，保留產品 50ms grant 且不受 IPC 排程延遲影響。
+  同一 support 產生離線假 `finlab`／`pymysql` 套件，只經 `PYTHONPATH` 提供給 worker launch，
+  正式程式碼不加測試 hook。`fetcher/tests/test_provider_worker.py` 驗證未知操作 fail closed、
+  worker 只繼承 pipe 與 whole-work FD、credential 不在 argv／environment、多執行緒 parent
+  不觸發 fork 警告，以及 parent 被 kill 後 worker 仍持有 lock 至結束。
 
 - `backend/tests/test_provider_work_daily_manifest.py` 透過 authenticated Source API 驗證
   Pilot／Full 在 claim 後停止時拒絕首次 manifest，已凍結相同內容仍可重播與安全 close／settle。
