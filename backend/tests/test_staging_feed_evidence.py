@@ -1077,6 +1077,17 @@ def test_ssm_transport_cleanup_failure_preserves_original_error(local_ssm, tmp_p
     assert state["commands"][-1]["operation"] == "cleanup"
 
 
+@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
+def test_ssm_transport_accepts_every_native_evidence_container(profile, provider) -> None:
+    collector = _load(
+        "pilot_acceptance", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
+    )
+    # Same container naming as collect_native_feed_evidence.py.
+    container = f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}"
+    assert container in collector._transport_command(container, "0" * 32, "read")
+
+
 def test_ssm_transport_rejects_invalid_path_and_non_json_export(local_ssm, tmp_path):
     collector, state = local_ssm
     with pytest.raises(ValueError, match="invalid evidence transport target"):

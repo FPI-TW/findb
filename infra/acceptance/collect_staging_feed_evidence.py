@@ -38,7 +38,7 @@ FETCHER_CONTAINERS = {
 CURRENT_FETCHER_CONTAINERS = {
     f"findb-{profile}-{provider}"
     for profile in ("pilot", "full-market")
-    for provider in ("twelve-data", "finlab", "shioaji", "taifex")
+    for provider in ("twelve-data", "finlab", "shioaji", "taifex", "factset")
 }
 
 
