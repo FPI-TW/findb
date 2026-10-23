@@ -93,6 +93,10 @@ exit code 3；只有 completed 回傳 0。未指定 `--deliver` 仍只是 previe
 有效 data 或持久 no_data 中斷該成員的 streak；休市不計。沒有 frozen plan 時記錄 feed 缺漏，
 不推測成員範圍。
 
+切換紀錄存在後，monitor 不再追蹤 Twelve Data 的 HK 缺漏，也不建立新告警；各 profile 的
+既有 open 告警在下一次掃描時結清，保留原 details 並加上 `resolution.code=PROVIDER_RETIRED`
+與切換日期。切換前日期的資料改以 FactSet historical request 回補。
+
 來源修正後，可建立新的歷史回補 request。相同 provider／dataset／日期、相同 frozen
 上市識別碼的 historical 實際寫入，可解除 daily monitoring 的缺漏；原 daily work 的 partial
 結算與原始證據仍保留。其他 provider、不同上市識別碼、單純成功筆數或既有價格不能補足證據。

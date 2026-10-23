@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import exists, func, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import cast, exists, func, select, update
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -313,14 +313,40 @@ async def _scan_full_market_feed(
             if not cutover:
                 return 0, 0
             start_date = max(start_date, date.fromisoformat(cutover["effective_date"]))
-        elif source == "twelve_data":
-            # Retained v1 delivery has its original alert identity. Never expect
-            # new Twelve Data HK delivery after the explicit acquisition switch.
-            schema_version = 1
-            if cutover:
-                through = min(
-                    through, date.fromisoformat(cutover["effective_date"]) - timedelta(days=1)
+        elif source == "twelve_data" and cutover:
+            # The explicit acquisition switch retires Twelve Data HK monitoring.
+            # Earlier gaps are recovered through FactSet historical requests, so
+            # open retired-provider alerts are closed; their details are kept.
+            retired = await db.execute(
+                update(MissingDeliveryAlert)
+                .where(
+                    MissingDeliveryAlert.dataset_key == dataset.dataset_key,
+                    MissingDeliveryAlert.source == source,
+                    MissingDeliveryAlert.execution_profile == profile,
+                    MissingDeliveryAlert.status == "open",
                 )
+                .values(
+                    status="resolved",
+                    resolved_at=evaluated_at,
+                    details=func.coalesce(MissingDeliveryAlert.details, cast({}, JSONB)).op("||")(
+                        cast(
+                            {
+                                "resolution": {
+                                    "code": "PROVIDER_RETIRED",
+                                    "provider": cutover["provider"],
+                                    "effective_date": cutover["effective_date"],
+                                }
+                            },
+                            JSONB,
+                        )
+                    ),
+                )
+                .returning(MissingDeliveryAlert.alert_id)
+            )
+            return 0, len(retired.scalars().all())
+        elif source == "twelve_data":
+            # Retained v1 delivery keeps its original alert identity.
+            schema_version = 1
     if through < start_date:
         return 0, 0
     dates = await acquisition_dates(
