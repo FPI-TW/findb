@@ -14,10 +14,12 @@ COPY fetcher/configs ./configs
 COPY contracts ./contracts
 RUN uv sync --frozen --no-dev --extra shioaji
 
+# /app stays root-owned and read-only: runtimes run with --read-only, and a
+# recursive chown after uv sync would copy the whole venv into another layer.
 RUN groupadd --system --gid 10001 fetcher \
     && useradd --system --uid 10001 --gid fetcher --create-home --home-dir /home/fetcher fetcher \
     && mkdir -p /var/lib/findb-shioaji-fetcher \
-    && chown -R fetcher:fetcher /app /home/fetcher /var/lib/findb-shioaji-fetcher
+    && chown -R fetcher:fetcher /home/fetcher /var/lib/findb-shioaji-fetcher
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \

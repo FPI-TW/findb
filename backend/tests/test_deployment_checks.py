@@ -321,6 +321,7 @@ printf '%s' "$SSM_RESPONSE"
         "status_details:StatusDetails",
         "response_code:ResponseCode",
         "stdout:StandardOutputContent",
+        "stderr:StandardErrorContent",
     ):
         assert argument in invocation
     return completed

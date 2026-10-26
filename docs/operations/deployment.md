@@ -131,6 +131,9 @@ Staging publish 以 `ECR_BUILD_CACHE=gha` 讓 `build_ecr_image_if_missing.sh` �
 layer cache，scope 為各 ECR repository；cache 只在 push main 的 publish job 寫入，PR 無法覆寫。
 `actions/github-script` 只把 cache runtime 變數寫入 `GITHUB_ENV` 並遮罩 token，不印出數值；cache 匯出失敗不影響發布。
 Image tag／digest 契約不變：既有 exact SHA tag 仍直接重用，不重建。
+Fetcher images 的 `/app`（venv、source、configs、contracts）維持 root 擁有：runtimes 一律以
+`--read-only` 執行，只有 state、cache 與 home 掛載可寫。不得在 `uv sync` 後對 `/app` 遞迴 `chown`，
+否則整個 venv 會複製成新 layer，且位於 source layer 之後，每次程式變更都要重新拉取。
 
 Fetcher 十五個 runtimes 的替換刻意維持序列：rollback journal 存在 coordinator shell 陣列，
 同 provider 的 Pilot／Full／historical 共用同一 secret consumer tmpfs 與帳號 governor lock；
@@ -174,6 +177,10 @@ fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=full_m
 SSM gate 只從失敗 stdout 擷取此固定 reason、合法 profile 與 provider，讓 Actions 顯示
 `scheduler_not_stopped`、對應 profile／provider 及等待 desired／observed stopped 後重試的指引。
 任意 stdout、stderr、Source 回應與 credentials 都不直接轉印；其他失敗保留安全通用訊息及 command ID。
+Host scripts 的已處理失敗都以固定 `<component>=failed reason=<token>` 行結束，多半寫在 stderr。
+SSM gate 同時讀取 stdout 與 stderr，只轉印完全符合此文法的行（已知 component、小寫 reason token，
+以及選用的 `runtime=`／`container=`／`service=` 名稱或 `committed=true`），依首次出現順序去重、
+最多 8 行，並以 `遠端部署失敗原因` annotation 顯示；不符文法的 Docker 或 provider 文字一律不輸出。
 Host eligibility 拒絕某個已知 consumer 時，trusted guard 另輸出受限的
 `fetcher_host_blocked reason=runtime_not_eligible execution_profile=pilot provider=twelve_data`。
 SSM gate 只接受合法的 `pilot|full_market|historical` 與五個 provider，於 Actions 提示檢查

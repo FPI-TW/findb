@@ -14,11 +14,12 @@ COPY fetcher/configs ./configs
 COPY contracts ./contracts
 RUN uv sync --frozen --no-dev
 
+# /app stays root-owned and read-only: runtimes run with --read-only, and a
+# recursive chown after uv sync would copy the whole venv into another layer.
 RUN groupadd --system --gid 10001 fetcher \
     && useradd --system --uid 10001 --gid fetcher --home-dir /nonexistent fetcher \
     && mkdir -p /var/lib/findb-fetcher \
-    && chown fetcher:fetcher /var/lib/findb-fetcher \
-    && chown -R fetcher:fetcher /app
+    && chown fetcher:fetcher /var/lib/findb-fetcher
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \

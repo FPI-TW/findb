@@ -16,10 +16,12 @@ RUN uv sync --frozen --no-dev --extra finlab
 
 # FinLab writes SDK cache data below the account home.  The home is a dedicated
 # writable mount at runtime; no shell HOME override is used.
+# /app stays root-owned and read-only: runtimes run with --read-only, and a
+# recursive chown after uv sync would copy the whole venv into another layer.
 RUN groupadd --system --gid 10001 fetcher \
     && useradd --system --uid 10001 --gid fetcher --create-home --home-dir /home/fetcher fetcher \
     && mkdir -p /var/lib/findb-finlab-fetcher \
-    && chown -R fetcher:fetcher /app /home/fetcher /var/lib/findb-finlab-fetcher
+    && chown -R fetcher:fetcher /home/fetcher /var/lib/findb-finlab-fetcher
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \

@@ -25,7 +25,7 @@ ssm_command_marker_state() {
     --instance-id "$instance_id" \
     --cli-connect-timeout 5 \
     --cli-read-timeout 10 \
-    --query '{command_id:CommandId,instance_id:InstanceId,document_name:DocumentName,plugin_name:PluginName,status:Status,status_details:StatusDetails,response_code:ResponseCode,stdout:StandardOutputContent}' \
+    --query '{command_id:CommandId,instance_id:InstanceId,document_name:DocumentName,plugin_name:PluginName,status:Status,status_details:StatusDetails,response_code:ResponseCode,stdout:StandardOutputContent,stderr:StandardErrorContent}' \
     --output json 2>"$aws_stderr")"; then
     cat "$aws_stderr" >&2
     if grep -Fq "InvocationDoesNotExist" "$aws_stderr"; then
@@ -55,6 +55,7 @@ ssm_command_marker_state() {
         or (.response_code | type) != "number"
         or (.response_code | floor) != .response_code
         or (.stdout | type) != "string"
+        or (.stderr != null and (.stderr | type) != "string")
       then protocol_error
       elif .command_id != $command_id
         or .instance_id != $instance_id
@@ -108,6 +109,17 @@ ssm_command_marker_state() {
         echo "Fetcher host preflight blocked: runtime_not_eligible execution_profile=$profile provider=$provider. Inspect the installed consumer and safely recover its original owner before retrying; keep its scheduler stopped." >&2
         if [ "${GITHUB_ACTIONS:-false}" = true ]; then
           printf '::error title=Fetcher 主機 runtime 未通過檢查::execution_profile=%s provider=%s；請檢查既有 consumer，安全復原原 owner，保持 scheduler 停止後重試。\n' "$profile" "$provider" >&2
+        fi
+      done <<<"$diagnostic"
+      # Host scripts end each handled failure with a fixed "<component>=failed
+      # reason=<token>" line, mostly on stderr. Surface only that exact grammar,
+      # in first-seen order, so Docker/provider text never reaches the runner log.
+      diagnostic="$(jq -r '[(.stdout, (.stderr // "")) | split("\n")[] | rtrimstr("\r") | select(test("^(application_environment|fetcher_aws_deploy|fetcher_checkpoint_gate|fetcher_runtime_inventory|findb_aws_deploy|install_findb_bootstrap|release_fetcher_provider|render_nginx_runtime|runtime_secret_command)=failed reason=[a-z0-9_]+( (runtime|container|service)=[a-z0-9][a-z0-9_.-]*| committed=true)*$"))] | reduce .[] as $line ([]; if index([$line]) then . else . + [$line] end) | .[:8][]' <<<"$response")"
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        echo "Remote deployment failure: $line" >&2
+        if [ "${GITHUB_ACTIONS:-false}" = true ]; then
+          printf '::error title=遠端部署失敗原因::%s\n' "$line" >&2
         fi
       done <<<"$diagnostic"
       return 1

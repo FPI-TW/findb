@@ -12,7 +12,9 @@ ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "infra/deploy/ssm_command_marker_gate.sh"
 
 
-def run_wait(tmp_path, *, status, stdout="", seconds=5, response_delay=0, confirm=True):
+def run_wait(
+    tmp_path, *, status, stdout="", stderr=None, seconds=5, response_delay=0, confirm=True
+):
     response = {
         "command_id": "command",
         "instance_id": "instance",
@@ -23,6 +25,8 @@ def run_wait(tmp_path, *, status, stdout="", seconds=5, response_delay=0, confir
         "response_code": 0 if status == "Success" else 2,
         "stdout": stdout,
     }
+    if stderr is not None:
+        response["stderr"] = stderr
     aws = tmp_path / "aws"
     aws.write_text(
         "#!/usr/bin/env python3\n"
@@ -160,6 +164,69 @@ def test_host_preflight_block_rejects_untrusted_identity(tmp_path, identity):
     assert result.returncode != 0
     assert "Fetcher host preflight blocked:" not in result.stderr
     assert "::error title=Fetcher 主機" not in result.stderr
+    assert "secret" not in result.stderr
+
+
+def test_terminal_failure_surfaces_fixed_reason_lines_from_both_streams(tmp_path):
+    result, _ = run_wait(
+        tmp_path,
+        status="Failed",
+        stdout="docker: secret-token\nfetcher_aws_deploy=failed reason=transaction_aborted\n",
+        stderr=(
+            "Error response from daemon: secret-token\n"
+            "release_fetcher_provider=failed reason=graceful_stop\n"
+            "fetcher_aws_deploy=failed reason=runtime_retirement_failed "
+            "runtime=findb-pilot-twelve-data\n"
+            "release_fetcher_provider=failed reason=graceful_stop\n"
+        ),
+    )
+    assert result.returncode != 0
+    lines = [
+        line.removeprefix("Remote deployment failure: ")
+        for line in result.stderr.splitlines()
+        if line.startswith("Remote deployment failure: ")
+    ]
+    assert lines == [
+        "fetcher_aws_deploy=failed reason=transaction_aborted",
+        "release_fetcher_provider=failed reason=graceful_stop",
+        "fetcher_aws_deploy=failed reason=runtime_retirement_failed runtime=findb-pilot-twelve-data",
+    ]
+    assert result.stderr.count("::error title=遠端部署失敗原因::") == 3
+    assert "secret" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "fetcher_aws_deploy=failed reason=transaction_aborted secret",
+        "fetcher_aws_deploy=failed reason=Transaction_aborted",
+        "fetcher_aws_deploy=failed reason=a::error::secret",
+        "fetcher_aws_deploy=failed reason=ok runtime=a::secret",
+        "release_manifest=failed reason=bundle digest mismatch secret",
+        "unknown_component=failed reason=secret",
+        " fetcher_aws_deploy=failed reason=transaction_aborted",
+    ],
+)
+def test_terminal_failure_rejects_lines_outside_reason_grammar(tmp_path, line):
+    result, _ = run_wait(tmp_path, status="Failed", stdout=f"{line}\n", stderr=f"{line}\n")
+    assert result.returncode != 0
+    assert "Remote deployment failure:" not in result.stderr
+    assert "遠端部署失敗原因" not in result.stderr
+    assert "secret" not in result.stderr
+
+
+def test_terminal_failure_reason_output_is_bounded(tmp_path):
+    stderr = "".join(f"fetcher_aws_deploy=failed reason=reason_{index}\n" for index in range(12))
+    result, _ = run_wait(tmp_path, status="Failed", stderr=stderr)
+    assert result.stderr.count("Remote deployment failure:") == 8
+    assert "reason=reason_7" in result.stderr
+    assert "reason=reason_8" not in result.stderr
+
+
+def test_non_string_stderr_is_a_protocol_failure(tmp_path):
+    result, _ = run_wait(tmp_path, status="Failed", stderr=["secret"])
+    assert result.returncode != 0
+    assert "SSM invocation marker protocol failure" in result.stderr
     assert "secret" not in result.stderr
 
 
