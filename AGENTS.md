@@ -174,7 +174,7 @@ findb/
   tests 另以序列 session 執行；`test-db --workers 0` 可切回序列。`pnpm test:infra` 同樣使用
   Backend pytest 的兩個 workers，無 PostgreSQL dependency。直接 pytest 不隱含平行 flags。
 - `pnpm check`／`make check` 僅執行全 repo 的 lint、type check 與 format check；改動完成後及
-  commit 前必須執行。Git pre-commit 執行 `check`，pre-push 依序執行 `check` 與 `test`。
+  commit 前必須執行。Git pre-commit 與 pre-push 皆只執行 `check`，不執行測試。
 
 ## 常用命令
 

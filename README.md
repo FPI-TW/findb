@@ -157,7 +157,7 @@ make test
 - `pnpm format` 會修改檔案，`pnpm build` 則獨立驗證 build，兩者都不屬於 `check`。
 
 `pnpm setup` 會安裝 dependencies、Dashboard Chromium，以及 pre-commit / pre-push hooks。
-pre-commit 執行 `check`，pre-push 依序執行 `check` 與 `test`；也可用
+pre-commit 與 pre-push 皆只執行 `check`，不執行測試；也可用
 `pnpm hook:pre-commit`、`pnpm hook:pre-push` 手動執行相同 gate。
 
 直接執行：
