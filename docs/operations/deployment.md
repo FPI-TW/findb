@@ -102,10 +102,18 @@ Fetcher staging [38824347083](https://github.com/FPI-TW/findb/actions/runs/38824
 Runtime 優化適用於包含新版部署腳本的 release bundle；既有 accepted bundles 不覆寫，
 回退舊 bundle 仍使用其原有 runtime 腳本。新版 protected-main driver 的等待／deadline 則適用於新版 workflow 發起的 replay。
 
-Fetcher staging 先完成 images publish 與 candidate bundle upload，再等待同 SHA 的 FinDB CD 成功，
-才輸出部署契約並進入主機部署。FinDB 失敗或找不到同 SHA 執行時仍拒絕 rollout；
-手動 dispatch 維持既有操作順序。等待 job 預留 75 分鐘，其餘解析／binding、publish／promotion
-分別設定 5、15 分鐘上限；FinDB bundle prepare 上限 10 分鐘。
+Fetcher staging 先完成 images publish 與 candidate bundle upload，再由 reusable deploy job 先跑
+唯讀 SSM preflight，之後才等待同 SHA 的 FinDB CD 成功，再進入 candidate 主機變更；preflight
+不依賴 FinDB，因此與 FinDB rollout 重疊。FinDB 失敗或找不到同 SHA 執行時仍拒絕 rollout；
+手動 dispatch 與 production 不帶 `findb_rollout_sha`，維持既有操作順序。等待最多 32 分鐘，需要等待時
+deploy job 上限由 55 放寬為 87 分鐘；解析／binding、publish／promotion、Fetcher prepare 分別設定
+5、15、15 分鐘上限；FinDB bundle prepare 上限 10 分鐘。
+
+Fetcher publish 在同一 job 內平行建置四個獨立 ECR repositories，各自寫入獨立的 output 檔與 log，
+全部結束後依序以 log group 輸出；任一失敗則整個 publish 失敗，image tag／digest 契約不變。
+
+`contracts/` 變更同時選取 Fetcher staging rollout：Fetcher images 內含 `contracts/` 並以其驗證
+送出的 payload，只部署 FinDB 會讓 Fetcher 沿用舊 contract 直到下次 Fetcher 變更。
 
 Fetcher 每個 candidate／activation 階段各集中拉取、驗證三個 exact digests 一次。
 專用 `images` consumer 不讀取 application／provider secrets；各 provider wrapper 仍獨立載入、清除
