@@ -142,6 +142,11 @@ Image tag／digest 契約不變：既有 exact SHA tag 仍直接重用，不重�
 Fetcher images 的 `/app`（venv、source、configs、contracts）維持 root 擁有：runtimes 一律以
 `--read-only` 執行，只有 state、cache 與 home 掛載可寫。不得在 `uv sync` 後對 `/app` 遞迴 `chown`，
 否則整個 venv 會複製成新 layer，且位於 source layer 之後，每次程式變更都要重新拉取。
+因 `--read-only` 下 Python 無法寫入 `.pyc`，images 須附帶 bytecode，否則每次容器啟動都從原始碼重新編譯。
+相依套件在 `uv.lock` layer 以 `--compile-bytecode` 編譯，只有 lock 變更才重建；source layer 只以
+`compileall` 編譯 `src`，維持每次 commit 僅數 MB。Fetcher CI 以 `--read-only` 核對 boto3、httpx、
+jsonschema 與 runtime CLI 的 `.pyc` 存在且對應原始碼 mtime／size。2026-10-26 staging 實測每次部署
+約啟動 50 個短命 CLI containers（每個約 3–4 秒）；本機以 0.5 CPU 量測 CLI 啟動由約 500ms 降至約 220ms。
 
 Fetcher 十五個 runtimes 的替換刻意維持序列：rollback journal 存在 coordinator shell 陣列，
 同 provider 的 Pilot／Full／historical 共用同一 secret consumer tmpfs 與帳號 governor lock；

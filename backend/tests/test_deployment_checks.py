@@ -3040,6 +3040,53 @@ def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None
     assert str(test_job["timeout-minutes"]) == "15"
 
 
+@pytest.mark.parametrize(
+    ("dockerfile", "extra"),
+    [
+        ("Dockerfile", ""),
+        ("Dockerfile.finlab", " --extra finlab"),
+        ("Dockerfile.shioaji", " --extra shioaji"),
+        ("Dockerfile.factset", " --extra factset"),
+    ],
+)
+def test_fetcher_images_ship_bytecode_in_stable_layers(dockerfile: str, extra: str) -> None:
+    """Read-only runtimes need shipped bytecode, without bloating the per-commit layer."""
+    text = (REPO_ROOT / "fetcher" / dockerfile).read_text(encoding="utf-8")
+    dependencies = f"RUN uv sync --frozen --no-dev --no-install-project{extra} --compile-bytecode\n"
+    project = (
+        f"RUN uv sync --frozen --no-dev{extra} \\\n    && .venv/bin/python -m compileall -q src\n"
+    )
+    assert text.count(dependencies) == 1
+    assert text.count(project) == 1
+    # Dependencies compile before the source copy, so only lock changes rebuild
+    # that layer; the per-commit layer compiles the project source alone.
+    assert (
+        text.index("COPY fetcher/pyproject.toml fetcher/uv.lock ./")
+        < text.index(dependencies)
+        < text.index("COPY fetcher/src ./src")
+        < text.index(project)
+    )
+    assert text.count("--compile-bytecode") == 1
+    # A recursive /app chown would copy the whole venv into another layer.
+    assert not re.search(r"chown -R [^\n]*/app\b", text)
+
+
+def test_fetcher_ci_verifies_shipped_bytecode_for_every_runtime_image() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "fetcher-ci.yml").read_text(encoding="utf-8")
+    )
+    check = _named_step(workflow, "test", "Verify runtime images ship valid import bytecode")["run"]
+    assert (
+        "for image in findb-fetcher findb-fetcher-finlab findb-fetcher-shioaji "
+        "findb-fetcher-factset; do"
+    ) in check
+    assert '--read-only --user 10001:10001 "$image:${{ github.sha }}" python -' in check
+    assert "importlib.util.cache_from_source(module.__file__)" in check
+    assert "assert flags & 1 or (mtime, size) == current" in check
+    steps = [step.get("name") for step in workflow["jobs"]["test"]["steps"]]
+    assert steps[-1] == "Verify runtime images ship valid import bytecode"
+
+
 def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...]:
     """Return provider-specific function arguments for the shell state machine."""
     return (
