@@ -7,12 +7,16 @@ WORKDIR /app
 RUN pip install --no-cache-dir "uv==0.9.9"
 
 COPY fetcher/pyproject.toml fetcher/uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+# Runtimes run --read-only, so Python cannot cache bytecode at import time;
+# ship it instead. Dependencies compile here, in the layer keyed by uv.lock.
+RUN uv sync --frozen --no-dev --no-install-project --compile-bytecode
 
 COPY fetcher/src ./src
 COPY fetcher/configs ./configs
 COPY contracts ./contracts
-RUN uv sync --frozen --no-dev
+# Compile only the project source so a code change stays a small layer.
+RUN uv sync --frozen --no-dev \
+    && .venv/bin/python -m compileall -q src
 
 # /app stays root-owned and read-only: runtimes run with --read-only, and a
 # recursive chown after uv sync would copy the whole venv into another layer.

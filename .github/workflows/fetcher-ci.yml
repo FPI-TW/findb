@@ -118,3 +118,22 @@ jobs:
           docker run --rm "$image" python -c 'import importlib.util,ssl; assert importlib.util.find_spec("pymysql"); assert all(importlib.util.find_spec(n) is None for n in ("finlab","shioaji")); c=ssl.create_default_context(cafile="/app/certs/ap-southeast-1-bundle.pem"); assert c.check_hostname and c.verify_mode==ssl.CERT_REQUIRED'
           docker run --rm "$image" findb-fetch-runtime --provider factset --config /app/configs/full_market.local.v1.json --check
           docker run --rm "$image" findb-fetch-historical-backfill --help
+
+      - name: Verify runtime images ship valid import bytecode
+        working-directory: .
+        run: |
+          # Runtimes run --read-only and cannot cache bytecode, so a missing or
+          # stale .pyc would be recompiled from source on every container start.
+          for image in findb-fetcher findb-fetcher-finlab findb-fetcher-shioaji findb-fetcher-factset; do
+            docker run --rm -i --read-only --user 10001:10001 "$image:${{ github.sha }}" python - <<'PY'
+          import importlib.util, os, struct
+          import boto3, httpx, jsonschema
+          import findb_fetcher.full_market_cli as cli
+          for module in (boto3, httpx, jsonschema, cli):
+              with open(importlib.util.cache_from_source(module.__file__), "rb") as cached:
+                  _, flags, mtime, size = struct.unpack("<4I", cached.read(16))
+              stat = os.stat(module.__file__)
+              current = (int(stat.st_mtime) & 0xFFFFFFFF, stat.st_size & 0xFFFFFFFF)
+              assert flags & 1 or (mtime, size) == current, f"stale bytecode: {module.__name__}"
+          PY
+          done
