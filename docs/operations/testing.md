@@ -3,7 +3,7 @@
 `pnpm check`／`make check` 執行全 repo 的 format、lint 與 type checks，不包含測試。
 `pnpm test`／`make test` 執行 contracts、Backend、Fetcher、Infra 與 Dashboard 測試；
 只驗證 Backend 可用 `pnpm test:backend`／`make test-backend`，runner 會先確保 DB container 啟動。
-Pre-commit 執行 check，pre-push 依序執行 check 與 test；不得使用 `--no-verify`。
+Pre-commit 與 pre-push 皆只執行 check，不執行測試；不得使用 `--no-verify`。
 
 `pnpm test:backend` 的非 migration tests 預設使用兩個 pytest-xdist workers 與
 `--dist worksteal`，接著在同一 runner 的獨立序列 session 執行全部 `test_*migration*.py`。

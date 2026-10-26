@@ -9,8 +9,8 @@ repos:
         always_run: true
         stages: [pre-commit]
 
-      - id: check-test-pre-push
-        name: check and test before push
+      - id: check-pre-push
+        name: check before push
         entry: pnpm hook:pre-push
         language: system
         pass_filenames: false
