@@ -18,6 +18,10 @@ name: Reusable Fetcher deployment
         required: false
         type: string
         default: ''
+      findb_rollout_sha:
+        required: false
+        type: string
+        default: ''
     outputs:
       accepted_bundle_key:
         value: ${{ jobs.deploy.outputs.accepted_bundle_key }}
@@ -30,10 +34,12 @@ name: Reusable Fetcher deployment
 permissions:
   contents: read
   id-token: write
+  actions: read
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    # A same-revision FinDB wait adds at most 32 minutes before any host mutation.
+    timeout-minutes: ${{ inputs.findb_rollout_sha != '' && 87 || 55 }}
     env:
       FETCHER_RUNTIME_PROFILE: unified
     concurrency:
@@ -234,6 +240,35 @@ jobs:
         source .deployment-driver/infra/deploy/ssm_command_marker_gate.sh
         ssm_wait_command "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_preflight_marker=$marker status=success" "fetcher_preflight_marker=$marker status=failed" 540
         echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
+    - name: Wait for same-revision FinDB staging rollout
+      # The read-only preflight above overlaps the FinDB rollout; the host is
+      # mutated only after that exact revision's FinDB staging rollout succeeded.
+      if: ${{ inputs.findb_rollout_sha != '' }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+        HEAD_SHA: ${{ inputs.findb_rollout_sha }}
+        REVISION: ${{ inputs.revision }}
+        TARGET: ${{ inputs.deployment_target }}
+      run: |
+        set -euo pipefail
+        [ "$TARGET" = staging ] && [ "$HEAD_SHA" = "$REVISION" ]
+        run_id=""
+        for _ in $(seq 1 8); do
+          runs="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}&event=push&per_page=10")"
+          run_id="$(jq -r --arg sha "$HEAD_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .event == "push")] | sort_by(.created_at) | last | .id // empty' <<<"$runs")"
+          [ -n "$run_id" ] && break; sleep 15
+        done
+        [ -n "$run_id" ] || { echo 'same-revision FinDB rollout was not found'; exit 1; }
+        for _ in $(seq 1 120); do
+          run="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+          status="$(jq -r '.status // empty' <<<"$run")"; conclusion="$(jq -r '.conclusion // empty' <<<"$run")"
+          case "$status" in
+            completed) [ "$conclusion" = success ] && exit 0; echo "FinDB rollout concluded ${conclusion:-unknown}"; exit 1 ;;
+            queued|in_progress|pending|waiting|requested) sleep 15 ;;
+            *) echo "unexpected FinDB rollout state ${status:-empty}"; exit 1 ;;
+          esac
+        done
+        echo 'timed out waiting for same-revision FinDB rollout'; exit 1
     - name: Run candidate acceptance or accepted replay through bounded SSM
       id: ssm
       env:
@@ -368,3 +403,4 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: read

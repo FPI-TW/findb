@@ -31,7 +31,7 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
 @pytest.mark.parametrize(
     ("paths", "expected"),
     [
-        (["contracts/market_eod/v1.schema.json"], (True, True, False, False, False)),
+        (["contracts/market_eod/v1.schema.json"], (True, True, False, True, False)),
         (["backend/app/main.py"], (True, False, True, False, False)),
         (["fetcher/src/main.py"], (True, True, False, True, False)),
         (["infra/deploy/release_manifest.py"], (True, True, True, True, False)),
@@ -479,17 +479,18 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
             "id-token": "write",
         }
         assert "environment" not in jobs["prepare"]
-        prepare_permissions = {
+        assert jobs["prepare"]["permissions"] == {
+            "contents": "read",
+            "id-token": "write",
+        }
+        deploy_permissions = {
             "contents": "read",
             "id-token": "write",
         }
         if unit == "fetcher":
-            prepare_permissions["actions"] = "read"
-        assert jobs["prepare"]["permissions"] == prepare_permissions
-        assert workflow["jobs"]["deploy"]["permissions"] == {
-            "contents": "read",
-            "id-token": "write",
-        }
+            # The reusable deployment reads the same-revision FinDB rollout.
+            deploy_permissions["actions"] = "read"
+        assert workflow["jobs"]["deploy"]["permissions"] == deploy_permissions
         publish_block = re.search(
             r"^  publish:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
         ).group("body")
@@ -547,7 +548,7 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         assert "docker/setup-buildx-action@" in text
         assert "build_ecr_image_if_missing.sh" in text
-        assert "outputs.image_ref" in text
+        assert "outputs.image_ref" in text or "outputs.twelve_image_ref" in text
         publish = text.split("  publish:", 1)[1].split("  prepare:", 1)[0]
         assert "      ECR_BUILD_CACHE: gha\n" in publish
         runtime = publish.split("Expose BuildKit cache runtime without logging it", 1)[1]
@@ -557,22 +558,21 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
         assert publish.index("setup-buildx-action") < publish.index("github-script")
         assert publish.index("github-script") < publish.index("build_ecr_image_if_missing.sh")
         if unit == "fetcher":
-            assert text.count("build_ecr_image_if_missing.sh") == 4
+            assert text.count("build_ecr_image_if_missing.sh") == 1
             for repository in ("twelve-data", "finlab", "shioaji", "factset"):
                 assert f"/findb/staging/fetcher/{repository}" in text
-            for repository_var, dockerfile in (
-                ("TWELVE", "Dockerfile"),
-                ("FINLAB", "Dockerfile.finlab"),
-                ("SHIOAJI", "Dockerfile.shioaji"),
-                ("FACTSET", "Dockerfile.factset"),
+            for name, repository_var, dockerfile in (
+                ("twelve", "TWELVE", "Dockerfile"),
+                ("finlab", "FINLAB", "Dockerfile.finlab"),
+                ("shioaji", "SHIOAJI", "Dockerfile.shioaji"),
+                ("factset", "FACTSET", "Dockerfile.factset"),
             ):
-                assert (
-                    f'build_ecr_image_if_missing.sh "${repository_var}" . ./fetcher/{dockerfile}'
-                ) in text
-                assert (
-                    "build_ecr_image_if_missing.sh "
-                    f'"${repository_var}" ./fetcher ./fetcher/{dockerfile}'
-                ) not in text
+                assert f'build {name} "${repository_var}" . ./fetcher/{dockerfile} &' in text
+                assert f'"${repository_var}" ./fetcher ./fetcher/{dockerfile}' not in text
+                outputs = yaml.safe_load(text)["jobs"]["publish"]["outputs"]
+                assert outputs[f"{name}_image"] == (
+                    f"${{{{ steps.images.outputs.{name}_image_ref }}}}"
+                )
 
             ci = (ROOT / ".github" / "workflows" / "fetcher-ci.yml").read_text()
             for dockerfile in (
@@ -585,31 +585,113 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
             assert ci.count("docker build -f fetcher/") == 4
 
 
-def test_fetcher_builds_before_waiting_for_same_sha_findb_deployment() -> None:
-    text = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
-    assert "Wait for same-revision FinDB staging rollout" in text
-    assert "actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}" in text
-    assert "timed out waiting for same-revision FinDB rollout" in text
-    select_block = re.search(
-        r"^  select:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
-    ).group("body")
-    assert "Wait for same-revision FinDB staging rollout" not in select_block
-    workflow = yaml.safe_load(text)
-    prepare = workflow["jobs"]["prepare"]
-    names = [step.get("name") for step in prepare["steps"]]
+def test_fetcher_waits_for_same_sha_findb_after_read_only_preflight() -> None:
+    caller_text = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
+    caller = yaml.safe_load(caller_text)
+    assert "Wait for same-revision FinDB staging rollout" not in caller_text
+    assert caller["jobs"]["deploy"]["needs"] == "prepare"
+    assert caller["jobs"]["deploy"]["with"]["findb_rollout_sha"] == (
+        "${{ github.event_name == 'push' && needs.prepare.outputs.mode == 'candidate' "
+        "&& needs.prepare.outputs.revision || '' }}"
+    )
+    production = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "fetcher-production-cd.yml").read_text()
+    )
+    for name in ("deploy-promotion", "deploy-rollback"):
+        assert "findb_rollout_sha" not in production["jobs"][name]["with"]
+        assert production["jobs"][name]["permissions"]["actions"] == "read"
+
+    text = (ROOT / ".github" / "workflows" / "fetcher-deploy.yml").read_text()
+    reusable = yaml.safe_load(text)
+    assert reusable["on"]["workflow_call"]["inputs"]["findb_rollout_sha"]["default"] == ""
+    job = reusable["jobs"]["deploy"]
+    assert job["timeout-minutes"] == "${{ inputs.findb_rollout_sha != '' && 87 || 55 }}"
+    names = [step.get("name") for step in job["steps"]]
     assert (
-        names.index("Build and upload exact v2 staging candidate")
+        names.index("Run target-aware read-only SSM preflight")
         < names.index("Wait for same-revision FinDB staging rollout")
-        < names.index("Publish exact reusable deployment contract")
+        < names.index("Run candidate acceptance or accepted replay through bounded SSM")
     )
-    assert workflow["jobs"]["deploy"]["needs"] == "prepare"
-    wait = next(
-        step
-        for step in prepare["steps"]
-        if step.get("name") == "Wait for same-revision FinDB staging rollout"
+    wait = job["steps"][names.index("Wait for same-revision FinDB staging rollout")]
+    assert wait["if"] == "${{ inputs.findb_rollout_sha != '' }}"
+    assert wait["env"]["HEAD_SHA"] == "${{ inputs.findb_rollout_sha }}"
+    assert '[ "$TARGET" = staging ] && [ "$HEAD_SHA" = "$REVISION" ]' in wait["run"]
+    assert "actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}" in wait["run"]
+    assert "for _ in $(seq 1 120); do" in wait["run"]
+    assert "timed out waiting for same-revision FinDB rollout" in wait["run"]
+
+
+def _run_fetcher_publish(tmp_path: Path, failing: str = "") -> subprocess.CompletedProcess[str]:
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text())
+    publish = workflow["jobs"]["publish"]
+    script = next(step for step in publish["steps"] if step.get("id") == "images")["run"]
+    helper = tmp_path / "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh"
+    helper.parent.mkdir(parents=True)
+    helper.write_text(
+        """#!/usr/bin/env bash
+set -eu
+name="${1##*/}"
+echo "building $name from $3"
+[ "$name" != "$FAILING" ] || { echo "staging_ecr_build=failed reason=test"; exit 1; }
+printf 'image_digest=sha256:%064d\nimage_ref=%s@sha256:%064d\n' 0 "$1" 0 >> "$GITHUB_OUTPUT"
+""",
+        encoding="utf-8",
     )
-    assert wait["env"]["HEAD_SHA"] == "${{ needs.select.outputs.revision }}"
-    assert "Configure staging publisher credentials" not in select_block
+    helper.chmod(0o755)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "aws").write_text(
+        '#!/bin/sh\ncase "$1" in sts) echo 439622209937 ;; *) echo token ;; esac\n'
+    )
+    (fake_bin / "docker").write_text("#!/bin/sh\ncat >/dev/null\n")
+    for tool in ("aws", "docker"):
+        (fake_bin / tool).chmod(0o755)
+    output = tmp_path / "github-output"
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    environment = {
+        **script_env(),
+        **{key: str(value) for key, value in publish["env"].items()},
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "RUNNER_TEMP": str(runner_temp),
+        "FAILING": failing,
+    }
+    completed = subprocess.run(
+        ["bash", "-e", "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    completed.stdout += output.read_text() if output.exists() else ""
+    return completed
+
+
+def test_fetcher_publish_builds_images_concurrently_with_isolated_outputs(tmp_path: Path) -> None:
+    completed = _run_fetcher_publish(tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    registry = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher"
+    for name, repository in (
+        ("twelve", "twelve-data"),
+        ("finlab", "finlab"),
+        ("shioaji", "shioaji"),
+        ("factset", "factset"),
+    ):
+        assert f"::group::{name} image (exit 0)" in completed.stdout
+        assert f"{name}_image_ref={registry}/{repository}@sha256:{0:064d}\n" in completed.stdout
+    assert "image_digest=" not in completed.stdout.split("::endgroup::")[-1]
+
+
+def test_fetcher_publish_waits_for_every_build_and_fails_on_any_failure(tmp_path: Path) -> None:
+    completed = _run_fetcher_publish(tmp_path, failing="shioaji")
+    assert completed.returncode != 0
+    assert "::group::shioaji image (exit 1)" in completed.stdout
+    assert "staging_ecr_build=failed reason=test" in completed.stdout
+    for name in ("twelve", "finlab", "factset"):
+        assert f"::group::{name} image (exit 0)" in completed.stdout
+    assert "_image_ref=" not in completed.stdout
 
 
 def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> None:
@@ -750,7 +832,10 @@ def test_prepare_contracts_are_main_push_or_confirmed_manual_candidate_or_exact_
 def test_reusable_records_and_ssm_gates_are_immutable_and_bounded() -> None:
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
-        assert "timeout-minutes: 55" in text
+        assert (
+            "timeout-minutes: 55" in text
+            or "timeout-minutes: ${{ inputs.findb_rollout_sha != '' && 87 || 55 }}" in text
+        )
         assert "--if-none-match '*'" in text
         assert "ssm_wait_command" in text
         assert "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=" in text

@@ -59,6 +59,11 @@ jobs:
       release_tag: ${{ inputs.release_tag }}
       accepted_bundle_key: ${{ inputs.accepted_bundle_key }}
   deploy-promotion:
+    # The reusable deployment declares actions: read for its staging-only FinDB wait.
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
     needs:
     - release
     - verify
@@ -72,6 +77,11 @@ jobs:
       bundle_key: ${{ needs.promote.outputs.candidate_bundle_key }}
       release_tag: ${{ inputs.release_tag }}
   deploy-rollback:
+    # The reusable deployment declares actions: read for its staging-only FinDB wait.
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
     needs:
     - release
     if: ${{ inputs.mode == 'rollback' && needs.release.result == 'success' }}

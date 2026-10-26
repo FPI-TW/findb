@@ -74,7 +74,9 @@ def classify(paths: list[str]) -> dict[str, bool]:
         if path in FETCHER_CI_PATHS:
             result["fetcher_ci"] = True
         if path.startswith("contracts/"):
-            result["findb_ci"] = result["fetcher_ci"] = True
+            # Fetcher images embed contracts/ and validate outbound payloads with
+            # it, so a contract change must also roll out Fetcher.
+            result["findb_ci"] = result["fetcher_ci"] = result["fetcher_staging"] = True
             continue
         if path.startswith(FINDB_PREFIXES):
             result["findb_ci"] = result["findb_staging"] = True

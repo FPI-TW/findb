@@ -170,10 +170,10 @@ jobs:
       contents: read
       id-token: write
     outputs:
-      twelve_image: ${{ steps.twelve_image.outputs.image_ref }}
-      finlab_image: ${{ steps.finlab_image.outputs.image_ref }}
-      shioaji_image: ${{ steps.shioaji_image.outputs.image_ref }}
-      factset_image: ${{ steps.factset_image.outputs.image_ref }}
+      twelve_image: ${{ steps.images.outputs.twelve_image_ref }}
+      finlab_image: ${{ steps.images.outputs.finlab_image_ref }}
+      shioaji_image: ${{ steps.images.outputs.shioaji_image_ref }}
+      factset_image: ${{ steps.images.outputs.factset_image_ref }}
     env:
       AWS_REGION: ap-southeast-1
       ACCOUNT: '439622209937'
@@ -209,30 +209,38 @@ jobs:
           for (const name of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_RESULTS_URL', 'ACTIONS_CACHE_URL']) {
             if (process.env[name]) core.exportVariable(name, process.env[name]);
           }
-    - name: Build or reuse immutable Twelve Data image
-      id: twelve_image
+    - name: Build or reuse immutable Fetcher images
+      id: images
       env:
         ECR_IMAGE_TAG: ${{ needs.select.outputs.revision }}
       run: |
         set -euo pipefail
         [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
         aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-        infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$TWELVE" . ./fetcher/Dockerfile
-    - name: Build or reuse immutable FinLab image
-      id: finlab_image
-      env:
-        ECR_IMAGE_TAG: ${{ needs.select.outputs.revision }}
-      run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$FINLAB" . ./fetcher/Dockerfile.finlab
-    - name: Build or reuse immutable Shioaji image
-      id: shioaji_image
-      env:
-        ECR_IMAGE_TAG: ${{ needs.select.outputs.revision }}
-      run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$SHIOAJI" . ./fetcher/Dockerfile.shioaji
-    - name: Build or reuse immutable FactSet image
-      id: factset_image
-      env:
-        ECR_IMAGE_TAG: ${{ needs.select.outputs.revision }}
-      run: infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$FACTSET" . ./fetcher/Dockerfile.factset
+        # The four repositories are independent, so they build concurrently. Each
+        # build keeps its own output file and log; none can overwrite another.
+        work="$RUNNER_TEMP/fetcher-images"; mkdir -p "$work"
+        build() {
+          local name="$1"; shift
+          GITHUB_OUTPUT="$work/$name.output" infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh "$@" >"$work/$name.log" 2>&1
+        }
+        pids=()
+        build twelve "$TWELVE" . ./fetcher/Dockerfile & pids+=("twelve:$!")
+        build finlab "$FINLAB" . ./fetcher/Dockerfile.finlab & pids+=("finlab:$!")
+        build shioaji "$SHIOAJI" . ./fetcher/Dockerfile.shioaji & pids+=("shioaji:$!")
+        build factset "$FACTSET" . ./fetcher/Dockerfile.factset & pids+=("factset:$!")
+        failed=0
+        for entry in "${pids[@]}"; do
+          name="${entry%%:*}"; status=0
+          wait "${entry#*:}" || status=$?
+          echo "::group::${name} image (exit ${status})"; cat "$work/$name.log"; echo "::endgroup::"
+          [ "$status" -eq 0 ] || failed=1
+        done
+        [ "$failed" -eq 0 ]
+        for name in twelve finlab shioaji factset; do
+          [ "$(grep -c '^image_ref=' "$work/$name.output")" = 1 ]
+          printf '%s_image_ref=%s\n' "$name" "$(sed -n 's/^image_ref=//p' "$work/$name.output")" >> "$GITHUB_OUTPUT"
+        done
   prepare:
     needs:
     - select
@@ -241,11 +249,10 @@ jobs:
       always() && needs.select.result == 'success' && ((needs.select.outputs.mode == 'candidate' && needs.publish.result == 'success') ||
        (needs.select.outputs.mode == 'replay' && needs.publish.result == 'skipped'))
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
-      actions: read
     outputs:
       revision: ${{ needs.select.outputs.revision }}
       mode: ${{ needs.select.outputs.mode }}
@@ -299,30 +306,6 @@ jobs:
         sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d ' ' -f1)"; key="fetcher/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar"
         aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$key" --body "$RUNNER_TEMP/bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
         echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
-    - name: Wait for same-revision FinDB staging rollout
-      if: ${{ github.event_name == 'push' && needs.select.outputs.mode == 'candidate' }}
-      env:
-        GH_TOKEN: ${{ github.token }}
-        HEAD_SHA: ${{ needs.select.outputs.revision }}
-      run: |
-        set -euo pipefail
-        run_id=""
-        for _ in $(seq 1 8); do
-          runs="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}&event=push&per_page=10")"
-          run_id="$(jq -r --arg sha "$HEAD_SHA" '[.workflow_runs[] | select(.head_sha == $sha and .event == "push")] | sort_by(.created_at) | last | .id // empty' <<<"$runs")"
-          [ -n "$run_id" ] && break; sleep 15
-        done
-        [ -n "$run_id" ] || { echo 'same-revision FinDB rollout was not found'; exit 1; }
-        for _ in $(seq 1 240); do
-          run="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
-          status="$(jq -r '.status // empty' <<<"$run")"; conclusion="$(jq -r '.conclusion // empty' <<<"$run")"
-          case "$status" in
-            completed) [ "$conclusion" = success ] && exit 0; echo "FinDB rollout concluded ${conclusion:-unknown}"; exit 1 ;;
-            queued|in_progress|pending|waiting|requested) sleep 15 ;;
-            *) echo "unexpected FinDB rollout state ${status:-empty}"; exit 1 ;;
-          esac
-        done
-        echo 'timed out waiting for same-revision FinDB rollout'; exit 1
     - name: Publish exact reusable deployment contract
       id: contract
       env:
@@ -338,6 +321,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: read
     uses: ./.github/workflows/fetcher-deploy.yml
     with:
       deployment_target: staging
@@ -345,6 +329,9 @@ jobs:
       mode: ${{ needs.prepare.outputs.mode }}
       bundle_key: ${{ needs.prepare.outputs.bundle_key }}
       release_tag: ''
+      # A pushed candidate waits, after its read-only preflight, for the same
+      # revision's FinDB staging rollout; replays deploy an accepted bundle.
+      findb_rollout_sha: ${{ github.event_name == 'push' && needs.prepare.outputs.mode == 'candidate' && needs.prepare.outputs.revision || '' }}
   report-staging-deployment-failure:
     needs:
     - verify
