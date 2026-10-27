@@ -429,7 +429,7 @@ open alerts 以 `resolution.code=SCHEDULER_STOPPED` 關閉；Pilot 與 Full 必�
 Pilot running 而延續已停止 Full 的缺漏告警。
 
 Runtime recovery 另外檢查 shared quota reservation、prepared raw checksum、provider-scoped
-checkpoint 與 request identity。四個 provider credentials 保持隔離；不記錄 keys、tokens、
+checkpoint 與 request identity。五個 provider credentials 保持隔離；不記錄 keys、tokens、
 presigned URLs 或 provider request secrets。每個 rollout stage 保存 actual exchange
 open day 的準時 complete 證據，包括市場日曆 revision、universe digest、deadline 與 Serve
 查詢結果。這些證據須由實際運行產生，unit tests 與 IaC validation 不取代。

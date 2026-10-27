@@ -394,7 +394,8 @@ production 使用 `findb-v0.1.8`／`fetcher-v0.1.8`；DB revision 為 `91a4c7e2d
 | FinLab | `sha256:fcdef402b897e8157a95c067b33f59decd8e490b918107ace9e54b7ef4d64bb6` |
 | Shioaji | `sha256:379ed771e9a278caebdf8aaf0db45471930c488f9558101bc79a31991a4b2a7f` |
 
-兩環境 Backend configuration 均有 24 欄、Fetcher 均有 12 欄，四個 provider skip 開關皆為 `false`。
+兩環境 Backend configuration 均有 24 欄、Fetcher 均有 12 欄；五個 provider skip 開關中
+FactSet為`true`，其餘四個為`false`。
 四個舊 GitHub Environments 已移除；未再引用的 repository variables
 `STAGING_ECR_CUTOVER_ENABLED`、`STAGING_INFRA_PLAN_ROLE_ARN` 也已移除，bootstrap 定位仍由 repo 檔案保存。
 兩環境 IaC format／validate／refresh plan 通過；設定與 IAM 套用後 plan 均為 No changes。

@@ -25,7 +25,7 @@ PostgreSQL。
 | --- | --- | --- |
 | FinDB backend | `serve`、`ingest`、`dispatcher`、`worker`、`raw-cleanup` | API、durable queue orchestration、normalization、DQ、canonical與migration |
 | Dashboard | FinDB EC2上的獨立image | 透過Serve/Admin API提供營運介面，不直接連DB |
-| Fetcher | 獨立EC2上的Twelve Data、FinLab、Shioaji images | Provider抓取、contract mapping、Raw R2、retry、checkpoint與delivery status |
+| Fetcher | 獨立EC2上的Twelve Data／TAIFEX、FinLab、Shioaji、FactSet images | Provider抓取、contract mapping、Raw R2、retry、checkpoint與delivery status |
 | Infrastructure | PostgreSQL RDS、RabbitMQ、nginx | Durable data、可重建delivery與TLS／routing |
 
 FinDB backend與Dashboard同屬一個deployment unit；Fetcher為另一個deployment unit。
@@ -58,7 +58,7 @@ Serve catalog 由 active registry 動態解析，canonical 資料可跨 profile 
 Full market 在 local/staging/production 皆為 opt-in，預設 false。Registry acceptance 與 acquisition
 admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Full-only feeds 普通 ingress
 不接受，需 `fp1` frozen plan。Owner 手動 scheduler start 各自凍結當時 ready feeds，首次日期以 dataset＋profile 隔離，首日為 exchange-local
-今天且永不重設；合法 legacy cutoff 保留。啟動 eligibility 只檢查 published baseline；日曆缺日期採週一至週五預設。所有環境的新抓取不依賴 enrollment、readiness ACK／expiry 或 capacity proof；API 認證、
+今天且永不重設；合法 legacy cutoff 保留。啟動 eligibility 只檢查 published baseline；日曆缺日期依市場`weekend_days`預設，內建市場預設週六日休市。所有環境的新抓取不依賴 enrollment、readiness ACK／expiry 或 capacity proof；API 認證、
 平台配額、running control 與資料驗證保留。
 操作與部署/rollback contracts 見 [runbook](../operations/full_market.md)。
 
@@ -85,7 +85,7 @@ coverage 不等同全日 complete；mapping、quota、permission 或 source erro
 TAIFEX trade date 使用交易所歸屬日，盤後不由 timestamp 推算成隔日；無 settlement／open
 interest 保留 null。Published exchange calendar 是開市日權威，TAIFEX 使用獨立市場日曆。
 
-治理資料只要求 Owner published official baseline；日曆缺日期採週一至週五預設。平台限制為 Twelve Data
+治理資料只要求 Owner published official baseline；日曆缺日期依市場`weekend_days`預設，內建市場預設週六日休市。平台限制為 Twelve Data
 1597 credits／分鐘、FinLab API 5000 MB／日、Shioaji 500 MiB／日與 50 行情查詢／10 秒；
 TAIFEX OpenAPI 無帳號及明確數值配額，收到 429 時等待／重試。帳號 ledger 保留用量與 cooldown，
 不設跨環境分配或额外 capacity 前提；API 權限、payload 與資料驗證仍保留。
@@ -132,7 +132,7 @@ provider-scoped Source key輪詢
 建立新cycle；停止要求會讓目前cycle完成後不再啟動下一輪。
 
 市場日曆以不可變的年度revision管理。Dashboard建立draft，只有Owner可publish或rollback。
-Backend 共用有效日曆解析：published 日期優先，缺日期採週一至週五預設；draft 不影響抓取。
+Backend 共用有效日曆解析：published 日期優先，缺日期依市場`weekend_days`預設，內建市場預設週六日休市；draft 不影響抓取。
 Serve 年度／區間查詢及 Admin 顯示日期來源與可空 revision，不寫入或自動發布。
 Fetcher 每日經 Source 建立凍結決策，不依賴 Serve 日曆 credentials。FactSet 的
 `FACTSET_SKIP_NON_TRADING_DAYS` 預設 true，其餘 provider 預設 false。對應開關為 true

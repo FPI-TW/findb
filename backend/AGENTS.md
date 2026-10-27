@@ -80,7 +80,7 @@ EOD 逐批寫入後可立即查詢；minute canonical bars 可逐 sequence 查�
 寫入證據（`delivery_member_evidence`，與 normalization 同 transaction）及持久化官方 no-data 證據計算，空批次或 quota failure 不代表正常無資料。
 
 兩種 execution profile 各自隔離 controls、first dates、plans、缺漏與告警。Pilot 固定取 canonical 前兩個商品，期貨保留其 sessions；日計畫成員不可因重試或 universe 更新而改寫。
-Full market 使用環境 opt-in flag 與 Owner scheduler admission；啟動只要求 published baseline；日曆缺少時使用週一至週五預設，
+Full market 使用環境 opt-in flag 與 Owner scheduler admission；啟動只要求 published baseline；日曆缺少時依市場 `weekend_days` 預設（內建市場預設週六日休市），
 新抓取不要求 readiness/enrollment/expiry/capacity proof，保留 API 認證、平台配額與資料驗證。
 registry `is_active` 保持普通 dataset acceptance，不能代替 Full flag。部分 ready feeds 可 start，
 stopped→running transaction 以 environment→sorted datasets→calendar markets→control lock order 重查並凍結 scope/first dates/revision/audit。Baseline publish 先鎖 dataset 再 release。

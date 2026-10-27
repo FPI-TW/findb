@@ -97,7 +97,7 @@ Origin certificate secret固定使用單行 base64 欄位
 
 ## 共用 credentials 與初始化
 
-四個 provider Source scopes 在 staging／production 相同，只有 credentials values 不同：
+五個 provider Source scopes 在 staging／production 相同，只有 credentials values 不同：
 
 | Source | Dataset allowlist |
 | --- | --- |
@@ -105,9 +105,12 @@ Origin certificate secret固定使用單行 base64 欄位
 | `finlab` | `tw_equity_eod`、`tw_etf_eod` |
 | `shioaji` | `tw_equity_minute`、`tw_etf_minute` |
 | `taifex` | `tw_futures_eod` |
+| `factset` | `hk_equity_eod` |
 
 `reconcile_fetcher_credentials.py --runtime-profile unified` 只校準 allowlist／hash 並留下 audit，
-不啟動 scheduler。四把 Source keys 相互隔離；有效日曆與執行政策由 Source 提供，不再注入 calendar Serve key。
+不啟動 scheduler。五把 Source keys 相互隔離；現行execution manifest的HK feed使用FactSet，
+Twelve Data保留HK allowlist僅供既有或已凍結工作的相容交付。有效日曆與執行政策由Source提供，
+不再注入calendar Serve key。
 跨 unit bridge 只傳 SHA-256，
 instance roles 不放寬跨 unit Secrets Manager 讀取。
 TAIFEX 公開 API 不需要 provider credential，但需要獨立 Source key；IaC 固定宣告此 metadata。

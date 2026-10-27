@@ -98,7 +98,8 @@ Fetcher 透過 Source 取得政策與每日決策，不保存另一份日曆或�
 true 才略過非交易日。排程時間、交易所時區、Owner controls、平台配額、429 與既有重試規則仍有效。
 不設連續十筆失敗中斷規則。
 
-有效日曆逐日優先讀 published revision；缺市場、年份或日期採週一至週五開市／週六日休市，draft 不參與。
+有效日曆逐日優先讀 published revision；缺年份或日期時依市場`weekend_days`補足，尚未建立market row的
+內建市場採週一至週五開市／週六日休市，draft 不參與。
 TW／US／HK／CN／TAIFEX 使用固定市場時區及正常收盤時間，published 提早收盤優先。
 查詢不寫 DB、不自動發布；API 保留 `calendar_source=published|weekday_default` 與可空 revision。
 缺日曆可預設，DB／認證／通訊故障則正常報錯。部署與 Owner start 不 seed 或檢查 calendar completeness。
@@ -235,7 +236,7 @@ Pilot／Full market 均使用資料擷取用 simulation，catalogue raw evidence
 啟動資格的程式修改位於 `refactor/full-market-baseline-calendar-start`；migration
 `3553ed95cfbf` 允許 admission 的 legacy enrollment reference 為 null，保留既有歷史綁定。
 所有環境的新抓取均不讀取 readiness／enrollment／expiry／capacity proof。Owner start 只依
-published baseline；日曆缺少時使用週一至週五預設；新抓取另遵守 running control、有效旗標、Source
+published baseline；日曆缺少時依市場`weekend_days`預設，內建市場預設週六日休市；新抓取另遵守 running control、有效旗標、Source
 及 provider API 認證與資料驗證。每次部署仍須確認 installed revision、環境與有效旗標；最新 staging 資料查核見上方現況。
 Nasdaq MIC 與 publication 排序修正已隨上述 c744a36 staging release 部署；production 狀態見 deployment runbook。
 
@@ -294,7 +295,8 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 
 | Provider | Dataset | Calendar market |
 | --- | --- | --- |
-| Twelve Data | `us_equity_eod`、`hk_equity_eod` | US、HK |
+| Twelve Data | `us_equity_eod` | US |
+| FactSet | `hk_equity_eod` | HK |
 | FinLab | `tw_equity_eod`、`tw_etf_eod` | TW |
 | Shioaji | `tw_equity_minute`、`tw_etf_minute` | TW |
 | TAIFEX | `tw_futures_eod` | TAIFEX |
