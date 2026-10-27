@@ -121,6 +121,10 @@ class ProviderHTTPError(ReadinessBlockedError):
 class DatedUniversePendingError(ReadinessBlockedError):
     """A date-local prerequisite; other frozen dates may still make progress."""
 
+    def __init__(self, reason: str, *, retry_after_seconds: int = 3600) -> None:
+        super().__init__(reason)
+        self.retry_after_seconds = max(60, retry_after_seconds)
+
 
 def load_readiness(
     path: Path | None, provider: str, datasets: list[str], *, now: datetime
@@ -1307,10 +1311,13 @@ class FullMarketRuntime:
                     self._settle_queued_round(
                         owner, outcome="retry", failure_code="DAILY_ACQUISITION_DEFERRED"
                     )
-                except DatedUniversePendingError:
+                except DatedUniversePendingError as exc:
                     self.pause()
                     self._settle_queued_round(
-                        owner, outcome="retry", failure_code="DATED_UNIVERSE_PENDING"
+                        owner,
+                        outcome="retry",
+                        failure_code="DATED_UNIVERSE_PENDING",
+                        retry_delay_seconds=exc.retry_after_seconds,
                     )
                 except (ReadinessBlockedError, ValueError):
                     self._settle_queued_round(
@@ -1394,7 +1401,12 @@ class FullMarketRuntime:
         owner.settle(completion_status(evidence), proof={"eod": evidence})
 
     def _settle_queued_round(
-        self, owner, *, outcome: str | None = None, failure_code: str | None = None
+        self,
+        owner,
+        *,
+        outcome: str | None = None,
+        failure_code: str | None = None,
+        retry_delay_seconds: int = 60,
     ) -> None:
         """Close acceptance, drain every accepted run, then settle this round."""
         self.pause()
@@ -1438,6 +1450,7 @@ class FullMarketRuntime:
                     }
                 owner.settle(
                     desired,
+                    delay=retry_delay_seconds,
                     failure_code=failure_code
                     or ("MANUAL_INTERVENTION_REQUIRED" if desired == "failed" else None),
                     proof=proof,
@@ -1499,7 +1512,12 @@ class FullMarketRuntime:
                 if self.provider == "taifex" and exc.code == "taifex_dated_universe_required":
                     dataset = feed["dataset_key"]
                     if not self.state.date_prerequisite_due(self.provider, dataset, day):
-                        raise DatedUniversePendingError("dated universe retry is pending") from None
+                        raise DatedUniversePendingError(
+                            "dated universe retry is pending",
+                            retry_after_seconds=self.state.date_prerequisite_delay(
+                                self.provider, dataset, day
+                            ),
+                        ) from None
                     try:
                         release = self._dated_taifex_universe(feed, day)
                     except DatedUniversePendingError as pending:

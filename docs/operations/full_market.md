@@ -259,10 +259,34 @@ latest 日期不符時使用 TX／MTX／TMF／TE／TF 分產品歷史報表，�
 及 Source publication 流程建立目錄，再建立計畫。不能由過期週契約猜測 no_data。
 日常 cycle 不先執行 TAIFEX latest 目錄更新；明確的 maintenance refresh 仍可使用。
 報表尚未可用或目錄等待發布時，在各 profile checkpoint 保存日期、原因與一小時後的
-重試時間，CLI health 的 `date_prerequisites` 可查詢；其他已凍結日期繼續補抓。
+重試時間，provider-work `retry_at` 亦使用相同剩餘延遲，不再每 60 秒重新 claim；CLI health 的
+`date_prerequisites` 可查詢，其他已凍結日期繼續補抓。
 HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期略過。
 既有計畫、成員與 terminal work 不受新日期限制影響。此變更須先部署 Backend，再部署 Fetcher，
 部署期間維持 controls stopped；SQLite 僅新增 prerequisite table，保留原有 rows 與 quota debt。
+
+一般股票 universe 的自動發布仍使用絕對 20 筆及 2% 變更門檻。TAIFEX 到期換倉另使用
+fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週契約、regular／after_hours、
+相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
+產品、mapping、交易所、幣別、分類或月份倒退均保留 candidate 等待人工審查。Release 同時保存
+完整 `member_sha256` 與排除逐次 `raw_evidence_ref` 的 semantic digest；同日期、同語意的報表重抓
+回傳既有 release，不再因 R2 evidence reference 不同產生重複 candidate。
+
+舊版已留下的 TAIFEX candidate 先以新版 Backend image 預覽，再明確套用；工具逐日只選最新
+candidate，驗證完整與 semantic digest，並依前一份 published release 重新執行相同結構規則。
+重複 candidate 保留為不可變 audit，已有同日 published release 時不再變更：
+
+```bash
+docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
+  --deployment-target staging
+docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
+  --deployment-target staging --apply
+```
+
+預覽結果僅有 `would_publish` 才可執行 apply；`manual_review` 以 exit code 3 阻擋自動處理。
+套用後維持原 daily plan 不變，queue 下次 claim 會重新取得該日 exact-date published release 並
+建立 frozen plan。production 必須改用 `--deployment-target production`，且不得把 staging 輸出
+當作 production 核准。
 
 七個 feed 的 baseline 對應如下，每個 dataset 都需要自己的 immutable release：
 

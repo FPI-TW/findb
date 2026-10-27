@@ -672,6 +672,16 @@ class FullMarketState:
             ).fetchone()
         return row is None or row[0] <= self.clock()
 
+    def date_prerequisite_delay(self, provider: str, dataset: str, day: date) -> int:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT next_at FROM full_date_prerequisite WHERE provider=? AND dataset=? AND trade_date=?",
+                (provider, dataset, day.isoformat()),
+            ).fetchone()
+        if row is None:
+            return 0
+        return max(0, math.ceil(row[0] - self.clock()))
+
     def block_date(self, provider: str, dataset: str, day: date, reason: str) -> None:
         if reason not in {"dated_report_unavailable", "dated_universe_pending"}:
             raise FullMarketStateError("unknown dated prerequisite reason")

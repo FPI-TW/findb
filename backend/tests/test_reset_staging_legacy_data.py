@@ -437,6 +437,7 @@ async def test_reset_clears_full_admission_fk_graph_and_preserves_installation_a
                 source_timezone="America/New_York",
                 evidence=[],
                 member_sha256="e" * 64,
+                semantic_member_sha256="f" * 64,
                 member_count=1,
                 change_count=0,
                 change_ratio=0,

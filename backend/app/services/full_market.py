@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Literal, cast
@@ -70,6 +71,103 @@ def _digest(value: object) -> str:
         "utf-8"
     )
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _semantic_members(members: list[dict]) -> list[dict]:
+    """Return membership identity without per-observation evidence references."""
+    return [
+        {key: value for key, value in member.items() if key != "raw_evidence_ref"}
+        for member in sorted(members, key=lambda value: value["member_key"])
+    ]
+
+
+def _semantic_member_digest(members: list[dict]) -> str:
+    return _digest(_semantic_members(members))
+
+
+def _contract_identity(member: dict) -> tuple[str, str, str] | None:
+    product = member.get("product_code")
+    month = member.get("contract_month")
+    session = member.get("session")
+    if (
+        product not in {"TX", "MTX", "TMF", "TE", "TF"}
+        or not isinstance(month, str)
+        or not re.fullmatch(r"[0-9]{6}([WF][1-5])?", month)
+        or session not in {"regular", "after_hours"}
+    ):
+        return None
+    if any(
+        (
+            member.get("symbol") != product,
+            member.get("provider_symbol") != f"{product}:{month}",
+            member.get("contract_code") != f"{product}:{month}",
+            member.get("exchange", "").upper() not in {"TAIFEX", "XTAF"},
+            member.get("currency") != "TWD",
+            member.get("asset_class") != "future",
+            member.get("mapping_status") != "mapped",
+            member.get("classification")
+            != ("weekly" if re.search(r"[WF][1-5]$", month) else "monthly"),
+        )
+    ):
+        return None
+    return product, month, session
+
+
+def _taifex_dated_roll_is_safe(
+    previous_members: dict[str, dict],
+    current_members: dict[str, dict],
+    *,
+    effective_date: date,
+) -> bool:
+    """Allow bounded, forward-only official contract lifecycle changes.
+
+    The generic 2% universe threshold is appropriate for equity catalogues but
+    ordinary futures expiry replaces several session members at once.  This
+    policy remains fail-closed for missing products, identity drift, backwards
+    months, or more than one monthly/weekly contract roll per product.
+    """
+    if not previous_members or not current_members:
+        return False
+    previous: dict[str, dict[str, set[str]]] = {}
+    current: dict[str, dict[str, set[str]]] = {}
+    for target, members in ((previous, previous_members), (current, current_members)):
+        for member in members.values():
+            identity = _contract_identity(member)
+            if identity is None:
+                return False
+            product, month, session = identity
+            target.setdefault(product, {}).setdefault(month, set()).add(session)
+    if set(previous) != set(current):
+        return False
+    effective_month = effective_date.strftime("%Y%m")
+    for product in sorted(current):
+        if any(month[:6] < effective_month for month in current[product]):
+            return False
+        previous_monthly = {month for month in previous[product] if len(month) == 6}
+        current_monthly = {month for month in current[product] if len(month) == 6}
+        previous_weekly = set(previous[product]) - previous_monthly
+        current_weekly = set(current[product]) - current_monthly
+        if any(
+            previous[product][month] != current[product][month]
+            for month in set(previous[product]) & set(current[product])
+        ):
+            return False
+        added_monthly = current_monthly - previous_monthly
+        removed_monthly = previous_monthly - current_monthly
+        added_weekly = current_weekly - previous_weekly
+        removed_weekly = previous_weekly - current_weekly
+        if (
+            len(added_monthly) > 1
+            or len(removed_monthly) > 1
+            or len(added_weekly) > 1
+            or len(removed_weekly) > 1
+        ):
+            return False
+        if added_monthly and removed_monthly and min(added_monthly) <= max(removed_monthly):
+            return False
+        if added_weekly and removed_weekly and min(added_weekly) <= max(removed_weekly):
+            return False
+    return True
 
 
 def _member_key(member: UniverseMemberInput, session: str | None = None) -> str:
@@ -162,16 +260,23 @@ async def submit_universe(
     ):
         raise FullMarketError("Futures members require TAIFEX/XTAF exchange", 422)
     digest = _digest(members)
+    semantic_digest = _semantic_member_digest(members)
     existing = (
-        await db.execute(
-            select(UniverseRelease).where(
-                UniverseRelease.dataset_key == body.dataset_key,
-                UniverseRelease.provider == body.provider,
-                UniverseRelease.effective_date == body.effective_date,
-                UniverseRelease.member_sha256 == digest,
+        (
+            await db.execute(
+                select(UniverseRelease)
+                .where(
+                    UniverseRelease.dataset_key == body.dataset_key,
+                    UniverseRelease.provider == body.provider,
+                    UniverseRelease.effective_date == body.effective_date,
+                    UniverseRelease.semantic_member_sha256 == semantic_digest,
+                )
+                .order_by(UniverseRelease.status.desc(), UniverseRelease.created_at.desc())
             )
         )
-    ).scalar_one_or_none()
+        .scalars()
+        .first()
+    )
     if existing is not None:
         return _release_response(existing)
     prior = (
@@ -216,10 +321,20 @@ async def submit_universe(
     ratio = Decimal(change_count) / Decimal(
         len(previous_members) if previous_members else len(current_members)
     )
+    taifex_roll = bool(
+        prior is not None
+        and dataset.dataset_key == "tw_futures_eod"
+        and body.provider == "taifex"
+        and _taifex_dated_roll_is_safe(
+            previous_members,
+            current_members,
+            effective_date=body.effective_date,
+        )
+    )
     status = (
-        "candidate"
-        if prior is None or change_count > 20 or ratio > Decimal("0.02")
-        else "published"
+        "published"
+        if prior is not None and (taifex_roll or (change_count <= 20 and ratio <= Decimal("0.02")))
+        else "candidate"
     )
     now = utc_now()
     release = UniverseRelease(
@@ -231,12 +346,24 @@ async def submit_universe(
         source_timezone=body.source_timezone,
         evidence=[reference.model_dump(mode="json") for reference in body.evidence],
         member_sha256=digest,
+        semantic_member_sha256=semantic_digest,
         member_count=len(members),
         change_count=change_count,
         change_ratio=ratio,
         status=status,
         published_at=now if status == "published" else None,
-        published_by="policy" if status == "published" else None,
+        published_by=(
+            "policy:taifex_dated_roll"
+            if taifex_roll
+            else "policy"
+            if status == "published"
+            else None
+        ),
+        approval_note=(
+            "Validated bounded forward-only TAIFEX dated contract rollover."
+            if taifex_roll
+            else None
+        ),
         created_at=now,
     )
     db.add(release)
@@ -1179,6 +1306,149 @@ async def publish_universe(
     release.approval_note = body.evidence_note
     await db.flush()
     return _release_response(release)
+
+
+async def _release_member_values(db: AsyncSession, release_id: UUID) -> list[dict]:
+    members = list(
+        (
+            await db.scalars(
+                select(UniverseMember)
+                .where(UniverseMember.release_id == release_id)
+                .order_by(UniverseMember.member_key)
+            )
+        ).all()
+    )
+    return [
+        {
+            column.name: getattr(member, column.name)
+            for column in UniverseMember.__table__.columns
+            if column.name not in {"member_id", "release_id"}
+        }
+        for member in members
+    ]
+
+
+async def reconcile_taifex_rollover_candidates(
+    db: AsyncSession,
+    *,
+    apply: bool,
+    actor: str = "repair:taifex_dated_roll",
+) -> list[dict]:
+    """Preview or publish one latest safe TAIFEX candidate per date.
+
+    Existing duplicate candidates remain immutable audit records.  This repair
+    only promotes the newest structurally safe candidate when no exact-date
+    release is already published, and is therefore idempotent.
+    """
+    dataset = (
+        await db.scalars(
+            select(DatasetRegistry)
+            .where(DatasetRegistry.dataset_key == "tw_futures_eod")
+            .with_for_update()
+        )
+    ).one_or_none()
+    if dataset is None:
+        return []
+    candidates = list(
+        (
+            await db.scalars(
+                select(UniverseRelease)
+                .where(
+                    UniverseRelease.dataset_key == "tw_futures_eod",
+                    UniverseRelease.provider == "taifex",
+                    UniverseRelease.status == "candidate",
+                )
+                .order_by(UniverseRelease.effective_date, UniverseRelease.created_at)
+                .with_for_update()
+            )
+        ).all()
+    )
+    latest_by_date: dict[date, UniverseRelease] = {}
+    candidate_counts: dict[date, int] = {}
+    for candidate in candidates:
+        latest_by_date[candidate.effective_date] = candidate
+        candidate_counts[candidate.effective_date] = (
+            candidate_counts.get(candidate.effective_date, 0) + 1
+        )
+
+    results: list[dict] = []
+    for effective_date in sorted(latest_by_date):
+        candidate = latest_by_date[effective_date]
+        exact_published = await db.scalar(
+            select(UniverseRelease.release_id).where(
+                UniverseRelease.dataset_key == "tw_futures_eod",
+                UniverseRelease.provider == "taifex",
+                UniverseRelease.effective_date == effective_date,
+                UniverseRelease.status == "published",
+            )
+        )
+        if exact_published is not None:
+            results.append(
+                {
+                    "effective_date": effective_date.isoformat(),
+                    "release_id": str(candidate.release_id),
+                    "candidate_count": candidate_counts[effective_date],
+                    "action": "already_published",
+                }
+            )
+            continue
+        prior = (
+            await db.scalars(
+                select(UniverseRelease)
+                .where(
+                    UniverseRelease.dataset_key == "tw_futures_eod",
+                    UniverseRelease.provider == "taifex",
+                    UniverseRelease.status == "published",
+                    UniverseRelease.effective_date < effective_date,
+                )
+                .order_by(
+                    UniverseRelease.effective_date.desc(),
+                    UniverseRelease.created_at.desc(),
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+        candidate_values = await _release_member_values(db, candidate.release_id)
+        full_digest_valid = _digest(candidate_values) == candidate.member_sha256
+        semantic_digest_valid = (
+            _semantic_member_digest(candidate_values) == candidate.semantic_member_sha256
+        )
+        prior_values = await _release_member_values(db, prior.release_id) if prior else []
+        safe = bool(
+            prior
+            and full_digest_valid
+            and semantic_digest_valid
+            and _taifex_dated_roll_is_safe(
+                {row["member_key"]: row for row in _semantic_members(prior_values)},
+                {row["member_key"]: row for row in _semantic_members(candidate_values)},
+                effective_date=effective_date,
+            )
+        )
+        action = "would_publish" if safe else "manual_review"
+        if safe and apply:
+            candidate.status = "published"
+            candidate.published_at = utc_now()
+            candidate.published_by = actor
+            candidate.approval_note = (
+                "Reconciled bounded forward-only TAIFEX dated contract rollover."
+            )
+            await db.flush()
+            action = "published"
+        results.append(
+            {
+                "effective_date": effective_date.isoformat(),
+                "release_id": str(candidate.release_id),
+                "candidate_count": candidate_counts[effective_date],
+                "action": action,
+                "full_digest_valid": full_digest_valid,
+                "semantic_digest_valid": semantic_digest_valid,
+            }
+        )
+    if apply:
+        await db.commit()
+    else:
+        await db.rollback()
+    return results
 
 
 async def activate_feed(db: AsyncSession, dataset_key: str, body: object) -> dict:

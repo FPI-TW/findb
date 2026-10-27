@@ -17,6 +17,19 @@ async def _upgrade(url, revision):
         pytest.fail(exc.stderr)
 
 
+async def _add_current_universe_compatibility(engine) -> None:
+    """Let current setup helpers seed a pre-head schema under test."""
+    async with engine.begin() as db:
+        await db.execute(
+            text("ALTER TABLE universe_release ADD COLUMN semantic_member_sha256 VARCHAR(64)")
+        )
+
+
+async def _remove_current_universe_compatibility(engine) -> None:
+    async with engine.begin() as db:
+        await db.execute(text("ALTER TABLE universe_release DROP COLUMN semantic_member_sha256"))
+
+
 @pytest.mark.asyncio
 async def test_fifo_import_preserves_historical_scope_tokens_and_order():
     async with get_active_migration_database_factory().clone(
@@ -116,6 +129,7 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
         "3553ed95cfbf", "provider_work_receipt_import"
     ) as (url, engine):
         await _upgrade(url, "a42c89d3e610")
+        await _add_current_universe_compatibility(engine)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         async with sessions() as db:
             _, _, plan = await _activated_plan(db)
@@ -128,6 +142,7 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
             raw = await db.get(RawMarketPayload, run.raw_payload_id)
             original_payload, original_hash = raw.payload, raw.payload_sha256
             work_id, run_id = plan.plan_id, run.run_id
+        await _remove_current_universe_compatibility(engine)
         await _upgrade(url, "head")
         async with sessions() as db:
             from app.models.registry import NormalizationJob
@@ -259,6 +274,7 @@ async def test_full_upgrade_preserves_partial_minute_group_and_continues_origina
         "3553ed95cfbf", "minute_fifo_import"
     ) as (url, engine):
         await _upgrade(url, "a42c89d3e610")
+        await _add_current_universe_compatibility(engine)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         bodies, accepted_ids, raw_before = [], [], {}
         async with sessions() as db:
@@ -337,6 +353,7 @@ async def test_full_upgrade_preserves_partial_minute_group_and_continues_origina
         for body, run_id in zip(bodies, accepted_ids):
             checkpoint.save_sequence_receipt(key, json.loads(body)["idempotency_key"], str(run_id))
         checkpoint_before = checkpoint.prepared(key)
+        await _remove_current_universe_compatibility(engine)
         await _upgrade(url, "head")
         async with sessions() as db:
             imported = await queue.enqueue(

@@ -77,7 +77,7 @@ async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss()
         assert "preserve cohort and partial evidence" in error.value.stderr
         async with engine.begin() as db:
             assert (
-                await db.scalar(text("SELECT version_num FROM alembic_version")) == "d75fc12a9b43"
+                await db.scalar(text("SELECT version_num FROM alembic_version")) == "e86c1f4b2a90"
             )
             assert (
                 await db.scalar(
