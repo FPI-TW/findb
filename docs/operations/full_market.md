@@ -268,7 +268,8 @@ HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期
 一般股票 universe 的自動發布仍使用絕對 20 筆及 2% 變更門檻。TAIFEX 到期換倉另使用
 fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週契約、regular／after_hours、
 相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
-產品、mapping、交易所、幣別、分類或月份倒退均保留 candidate 等待人工審查。Release 同時保存
+共同契約可依官方報表增加 session，但不得移除既有 session。產品、mapping、交易所、幣別、
+分類、session 縮減或月份倒退均保留 candidate 等待人工審查。Release 同時保存
 完整 `member_sha256` 與排除逐次 `raw_evidence_ref` 的 semantic digest；同日期、同語意的報表重抓
 回傳既有 release，不再因 R2 evidence reference 不同產生重複 candidate。兩種 digest 的成員順序
 一律使用 application 的 Python 字串排序，不依賴 PostgreSQL collation。

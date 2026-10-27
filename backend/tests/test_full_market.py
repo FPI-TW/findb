@@ -618,6 +618,34 @@ async def test_taifex_stable_contract_session_loss_remains_candidate(test_sessio
 
 
 @pytest.mark.asyncio
+async def test_taifex_stable_contract_session_expansion_auto_publishes(test_session):
+    key = "tw_futures_eod"
+    await _dataset(test_session, key)
+    baseline_body = _universe(key)
+    baseline_body.members[0].sessions = ["regular"]
+    baseline = await submit_universe(test_session, baseline_body, allowed_datasets=[key])
+    await publish_universe(
+        test_session,
+        baseline.release_id,
+        UniversePublishRequest(
+            evidence_note="Verified official first baseline.",
+            first_baseline_approved=True,
+        ),
+        actor="test-owner",
+    )
+    current = baseline_body.model_copy(deep=True)
+    current.effective_date += timedelta(days=1)
+    current.members[0].sessions = ["regular", "after_hours"]
+
+    release = await submit_universe(test_session, current, allowed_datasets=[key])
+
+    assert release.status == "published"
+    assert release.change_count == 1
+    stored = await test_session.get(UniverseRelease, release.release_id)
+    assert stored.published_by == "policy:taifex_dated_roll"
+
+
+@pytest.mark.asyncio
 async def test_taifex_semantic_membership_deduplicates_new_raw_evidence(test_session):
     key = "tw_futures_eod"
     await _dataset(test_session, key)
