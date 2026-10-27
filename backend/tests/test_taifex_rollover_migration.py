@@ -65,6 +65,15 @@ async def test_semantic_digest_backfill_excludes_raw_evidence_reference() -> Non
                 {"member_id": member_id, "release_id": release_id, **member},
             )
 
+        await run_alembic(url, "e86c1f4b2a90")
+        async with engine.begin() as db:
+            await db.execute(
+                text(
+                    "UPDATE universe_release SET semantic_member_sha256=:legacy_digest "
+                    "WHERE release_id=:release_id"
+                ),
+                {"release_id": release_id, "legacy_digest": "b" * 64},
+            )
         await run_alembic(url, "head")
 
         expected = hashlib.sha256(
