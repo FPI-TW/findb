@@ -87,7 +87,7 @@ FactSet 的 Pilot／Full market 排程卡片、批次啟動跳過提示與確認
 ### 有效日曆與依設定略過
 
 日曆管理同時顯示可編輯修訂與「抓取使用的日曆」來源；published revision 優先，未設定日期標示
-「週一至週五預設」且 revision 為空，draft 不影響抓取。日曆 API 查詢不寫入或自動發布。
+依市場`weekend_days`顯示預設日期（內建市場預設週六日休市）且 revision 為空，draft 不影響抓取。日曆 API 查詢不寫入或自動發布。
 交付計畫在各 profile 下分開顯示有效 provider 政策及「依設定略過」日期／資料集，支援日期與資料集篩選。
 略過清單最多顯示最近 100 筆並顯示總數；略過不混入 expected、missing、blocked 或 no_data。
 人工回補的 skipped_calendar 顯示「依設定略過」，不算成功 Source run。

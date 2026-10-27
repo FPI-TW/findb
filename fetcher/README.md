@@ -7,7 +7,8 @@ Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受
 
 | Provider | Datasets |
 | --- | --- |
-| Twelve Data | `us_equity_eod`、`hk_equity_eod` |
+| Twelve Data | `us_equity_eod` |
+| FactSet | `hk_equity_eod` |
 | FinLab | `tw_equity_eod`、`tw_etf_eod` |
 | Shioaji | `tw_equity_minute`、`tw_etf_minute` |
 | TAIFEX | `tw_futures_eod` |

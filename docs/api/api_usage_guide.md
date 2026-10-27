@@ -152,11 +152,12 @@ transaction 鎖定 registry／control 並重新驗證資格；資格不符回 `4
 GET /api/v1/serve/calendar/years/{market}/{year}
 ```
 
-已發布日期優先，缺少的日期以週一至週五開市、週末休市補足；回應逐日標示
+已發布日期優先，缺少的日期依市場`weekend_days`補足；尚未建立market row的內建市場使用
+週一至週五開市、週六日休市。回應逐日標示
 `calendar_source` 與可空的 `calendar_revision`，預設資料不會寫入 DB 或發布。
 Dashboard calendar preview、draft、publish 與 rollback 由 Admin API 處理；只有 Owner 可
 publish／rollback，draft 不影響抓取。Source 依 Backend 各 provider 的 `*_SKIP_NON_TRADING_DAYS` 開關
-決定新工作是否略過非交易日，四個 provider 預設均不略過。
+決定新工作是否略過非交易日；FactSet預設略過，其餘四個provider預設不略過。
 
 `GET /api/v1/admin/market-freshness` 保留既有 freshness／heartbeat 欄位，另回傳
 `monitor_kind`（`bounded`／`full_market`）、`activation_state`（bounded 為 null；

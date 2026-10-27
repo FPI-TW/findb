@@ -58,10 +58,11 @@ def _time_or_none(value: Any) -> time | None:
 
 def _all_days(year: int, market: CalendarMarket) -> list[dict[str, Any]]:
     first = date(year, 1, 1)
+    weekend_days = set(market.weekend_days)
     values: list[dict[str, Any]] = []
     for offset in range(_expected_days(year)):
         day = first + timedelta(days=offset)
-        is_open = day.weekday() < 5
+        is_open = day.weekday() not in weekend_days
         values.append(
             {
                 "trade_date": day.isoformat(),

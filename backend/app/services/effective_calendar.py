@@ -44,15 +44,17 @@ async def effective_days(
     db: AsyncSession, market: str, start: date, end: date
 ) -> list[dict[str, Any]]:
     market = market.upper()
+    configured = await db.get(CalendarMarket, market)
     normal_open: time | None
     normal_close: time | None
     if market in MARKETS:
         zone, normal_open, normal_close = MARKETS[market]
+        weekend_days = set(configured.weekend_days) if configured is not None else {5, 6}
     else:
-        configured = await db.get(CalendarMarket, market)
         if configured is None:
             raise ValueError("unsupported calendar market")
         zone = configured.timezone
+        weekend_days = set(configured.weekend_days)
         normal_open, normal_close = (
             configured.default_session_open,
             configured.default_session_close,
@@ -90,7 +92,7 @@ async def effective_days(
         current = start + timedelta(days=offset)
         pair = published.get(current)
         day, revision = pair if pair else (None, None)
-        is_open = day.is_open if day else current.weekday() < 5
+        is_open = day.is_open if day else current.weekday() not in weekend_days
         opening = (day.session_open if day and is_open else None) or normal_open
         closing = (day.session_close if day and is_open else None) or normal_close
         result.append(
