@@ -13,7 +13,7 @@ from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.execution_profiles import ExecutionProfile, execution_profile
+from app.execution_profiles import ExecutionProfile, execution_profile, scheduler_key
 from app.models.registry import (
     DailyDeliveryPart,
     DailyDeliveryPlan,
@@ -21,6 +21,7 @@ from app.models.registry import (
     FullMarketDatasetState,
     IngestionRun,
     MissingDeliveryAlert,
+    SchedulerControl,
 )
 from app.services.delivery_policy import (
     delivery_run_coverage_condition,
@@ -288,6 +289,69 @@ async def _scan_full_market_feed(
     evaluated_at: datetime,
     profile: ExecutionProfile = "full_market",
 ) -> tuple[int, int]:
+    cutover = (
+        (dataset.config or {}).get("hk_provider_cutover")
+        if dataset.dataset_key == "hk_equity_eod"
+        else None
+    )
+    if source == "twelve_data" and cutover:
+        # The explicit acquisition switch is more specific than a stopped
+        # control and remains the durable explanation for old HK alerts.
+        retired = await db.execute(
+            update(MissingDeliveryAlert)
+            .where(
+                MissingDeliveryAlert.dataset_key == dataset.dataset_key,
+                MissingDeliveryAlert.source == source,
+                MissingDeliveryAlert.execution_profile == profile,
+                MissingDeliveryAlert.status == "open",
+            )
+            .values(
+                status="resolved",
+                resolved_at=evaluated_at,
+                details=func.coalesce(MissingDeliveryAlert.details, cast({}, JSONB)).op("||")(
+                    cast(
+                        {
+                            "resolution": {
+                                "code": "PROVIDER_RETIRED",
+                                "provider": cutover["provider"],
+                                "effective_date": cutover["effective_date"],
+                            }
+                        },
+                        JSONB,
+                    )
+                ),
+            )
+            .returning(MissingDeliveryAlert.alert_id)
+        )
+        return 0, len(retired.scalars().all())
+    control = await db.get(SchedulerControl, scheduler_key(source, profile))
+    if control is None or control.retired_at is not None or control.desired_state != "running":
+        stopped = await db.execute(
+            update(MissingDeliveryAlert)
+            .where(
+                MissingDeliveryAlert.dataset_key == dataset.dataset_key,
+                MissingDeliveryAlert.source == source,
+                MissingDeliveryAlert.execution_profile == profile,
+                MissingDeliveryAlert.status == "open",
+            )
+            .values(
+                status="resolved",
+                resolved_at=evaluated_at,
+                details=func.coalesce(MissingDeliveryAlert.details, cast({}, JSONB)).op("||")(
+                    cast(
+                        {
+                            "resolution": {
+                                "code": "SCHEDULER_STOPPED",
+                                "execution_profile": profile,
+                            }
+                        },
+                        JSONB,
+                    )
+                ),
+            )
+            .returning(MissingDeliveryAlert.alert_id)
+        )
+        return 0, len(stopped.scalars().all())
     governance = (dataset.config or {}).get("full_market") or {}
     state = await db.get(
         FullMarketDatasetState, {"dataset_key": dataset.dataset_key, "execution_profile": profile}
@@ -308,42 +372,10 @@ async def _scan_full_market_feed(
     zone, _ = feed_schedule(dataset.dataset_key)
     through = evaluated_at.astimezone(ZoneInfo(zone)).date()
     if dataset.dataset_key == "hk_equity_eod":
-        cutover = (dataset.config or {}).get("hk_provider_cutover")
         if source == "factset":
             if not cutover:
                 return 0, 0
             start_date = max(start_date, date.fromisoformat(cutover["effective_date"]))
-        elif source == "twelve_data" and cutover:
-            # The explicit acquisition switch retires Twelve Data HK monitoring.
-            # Earlier gaps are recovered through FactSet historical requests, so
-            # open retired-provider alerts are closed; their details are kept.
-            retired = await db.execute(
-                update(MissingDeliveryAlert)
-                .where(
-                    MissingDeliveryAlert.dataset_key == dataset.dataset_key,
-                    MissingDeliveryAlert.source == source,
-                    MissingDeliveryAlert.execution_profile == profile,
-                    MissingDeliveryAlert.status == "open",
-                )
-                .values(
-                    status="resolved",
-                    resolved_at=evaluated_at,
-                    details=func.coalesce(MissingDeliveryAlert.details, cast({}, JSONB)).op("||")(
-                        cast(
-                            {
-                                "resolution": {
-                                    "code": "PROVIDER_RETIRED",
-                                    "provider": cutover["provider"],
-                                    "effective_date": cutover["effective_date"],
-                                }
-                            },
-                            JSONB,
-                        )
-                    ),
-                )
-                .returning(MissingDeliveryAlert.alert_id)
-            )
-            return 0, len(retired.scalars().all())
         elif source == "twelve_data":
             # Retained v1 delivery keeps its original alert identity.
             schema_version = 1

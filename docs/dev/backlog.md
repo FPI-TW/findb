@@ -29,6 +29,12 @@ Production native 資料與實際 rollback 演練由
 
 ## Full-market external acceptance
 
+- [ ] 將 TAIFEX bounded rollover／semantic universe migration 先部署 staging Backend，再部署
+  Fetcher；controls stopped 時預覽並套用既有 2026-10-16、10-19、10-20、10-21、10-22 candidates，
+  恢復 Pilot 後驗證 provider-work attempts 不再每分鐘增加、五日 queue 依序建立 frozen plans，且
+  Source→raw→normalization→canonical→Serve terminal。Full 維持停止並確認舊 Full missing alerts
+  自動以 `SCHEDULER_STOPPED` 結清。production 未另行 promotion 前不得套用。
+
 - [ ] Account actual-start pacing v2 已在工作分支實作，待 independent Validator／Reviewer 與正式 rollout：
   舊 `BEGIN IMMEDIATE` 已先於 grant clock，但 commit、最後 Source check、SDK preparation／IPC
   仍可延後 actual invocation，使 grant-based interval／minute-day attribution 失真。新 protocol

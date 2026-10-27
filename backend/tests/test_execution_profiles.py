@@ -6,8 +6,9 @@ import pytest
 from sqlalchemy import select
 
 from app.config import get_settings
+from app.execution_profiles import scheduler_key
 from app.models.canonical import CalendarYearRevision, FuturesContractEOD
-from app.models.registry import DeliveryMemberEvidence
+from app.models.registry import DeliveryMemberEvidence, MissingDeliveryAlert, SchedulerControl
 from app.schemas.full_market import DeliveryPlanCreateRequest
 from app.services.full_market import create_plan, get_plan
 from app.services.normalize.contracts import FuturesEODContractNormalizer
@@ -189,6 +190,20 @@ async def test_outcomes_and_missing_alerts_are_profile_isolated(
         test_session, full.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
     )
     assert full_after.summary.no_data == 0 and full_after.summary.missing == 2
+
+    full_control = await test_session.get(SchedulerControl, scheduler_key("taifex", "full_market"))
+    assert full_control is not None
+    full_control.desired_state = "stopped"
+    await test_session.commit()
+    await scan_missing_deliveries(test_session, now=full.deadline_at + timedelta(minutes=2))
+    alert = await test_session.scalar(
+        select(MissingDeliveryAlert).where(MissingDeliveryAlert.execution_profile == "full_market")
+    )
+    assert alert.status == "resolved"
+    assert alert.details["resolution"] == {
+        "code": "SCHEDULER_STOPPED",
+        "execution_profile": "full_market",
+    }
 
 
 @pytest.mark.asyncio

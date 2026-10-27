@@ -169,11 +169,22 @@ class UniverseRelease(Base):
             "member_sha256",
             name="uq_universe_release_submission",
         ),
+        Index(
+            "idx_universe_release_semantic",
+            "dataset_key",
+            "provider",
+            "effective_date",
+            "semantic_member_sha256",
+        ),
         CheckConstraint(
             "status IN ('candidate', 'published')", name="universe_release_status_valid"
         ),
         CheckConstraint(
             "member_count >= 1 AND member_count <= 100000", name="universe_release_count_bounded"
+        ),
+        CheckConstraint(
+            "semantic_member_sha256 ~ '^[0-9a-f]{64}$'",
+            name="universe_release_semantic_digest_valid",
         ),
         Index("idx_universe_release_scope", "dataset_key", "provider", "status", "effective_date"),
     )
@@ -188,6 +199,7 @@ class UniverseRelease(Base):
     source_timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
     member_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    semantic_member_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     member_count: Mapped[int] = mapped_column(Integer, nullable=False)
     change_count: Mapped[int] = mapped_column(Integer, nullable=False)
     change_ratio: Mapped[Decimal] = mapped_column(NUMERIC(12, 8), nullable=False)

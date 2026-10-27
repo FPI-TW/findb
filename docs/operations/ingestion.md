@@ -174,6 +174,10 @@ TW、HK 與 TAIFEX 當日台北 23:00，US 次日台北 09:00 為 deadline；Sou
 故障後沿 activation-forward plan 查缺口：prepared raw 先保存於 R2 與 durable checkpoint，
 重啟只重送穩定 request／idempotency identity，不再耗 provider quota 重新下載已準備的 response。
 日後新增 universe release 只影響新 plan；補既有缺口仍使用當日 frozen release。
+TAIFEX exact-date universe 尚未可用時屬 prerequisite wait，不是 provider failure；SQLite prerequisite
+與 PostgreSQL provider-work 使用相同的一小時 retry boundary。只在期限到達後重新 claim，避免
+60 秒 queue retry 放大 attempts。合法的到期換倉由 bounded forward-only 結構規則自動發布；既有
+candidate 的預覽與修復命令見 [Full market runbook](full_market.md#治理資料明確需求)。
 
 ## 監控
 

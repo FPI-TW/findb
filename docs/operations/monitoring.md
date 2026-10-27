@@ -423,6 +423,11 @@ staging 原生告警不證明新範圍已上線；未執行 external capability 
 必須有 durable official/provider evidence。Quota、entitlement、mapping、source error 形成
 blocked；空 response 與缺結果不能歸為 no_data。
 
+Missing-delivery scan 只對該 execution profile 的 scheduler control 為 `desired_state=running`、
+未 retired 時建立或刷新告警。Control 停止、退役或不存在時，既有同 dataset／provider／profile
+open alerts 以 `resolution.code=SCHEDULER_STOPPED` 關閉；Pilot 與 Full 必須分開判斷，不能因
+Pilot running 而延續已停止 Full 的缺漏告警。
+
 Runtime recovery 另外檢查 shared quota reservation、prepared raw checksum、provider-scoped
 checkpoint 與 request identity。四個 provider credentials 保持隔離；不記錄 keys、tokens、
 presigned URLs 或 provider request secrets。每個 rollout stage 保存 actual exchange

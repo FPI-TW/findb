@@ -15,7 +15,13 @@ from app.models.canonical import (
     FuturesContractEOD,
     Instrument,
 )
-from app.models.registry import DailyDeliveryMember, DatasetRegistry, IngestionRun, UniverseMember
+from app.models.registry import (
+    DailyDeliveryMember,
+    DatasetRegistry,
+    IngestionRun,
+    UniverseMember,
+    UniverseRelease,
+)
 from app.schemas.full_market import (
     DeliveryOutcomeRequest,
     DeliveryPlanCreateRequest,
@@ -29,6 +35,7 @@ from app.services.full_market import (
     get_plan,
     list_universes,
     publish_universe,
+    reconcile_taifex_rollover_candidates,
     record_outcome,
     submit_universe,
 )
@@ -96,10 +103,11 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
         [
             {
                 "symbol": "TX",
-                "provider_symbol": f"TX{202608 + i}",
+                "provider_symbol": f"TX:{202608 + i}",
                 "exchange": "TAIFEX",
                 "currency": "TWD",
                 "asset_class": "future",
+                "classification": "monthly",
                 "product_code": "TX",
                 "contract_code": f"TX:{202608 + i}",
                 "contract_month": str(202608 + i),
@@ -554,6 +562,120 @@ async def test_daily_provenance_refresh_is_immutable_but_not_material(test_sessi
     assert all(member.raw_evidence_ref == daily.members[0].raw_evidence_ref for member in current)
     duplicate = await submit_universe(test_session, daily, allowed_datasets=[key])
     assert duplicate.release_id == refreshed.release_id
+
+
+@pytest.mark.asyncio
+async def test_taifex_forward_month_roll_auto_publishes_above_generic_threshold(test_session):
+    key = "tw_futures_eod"
+    await _dataset(test_session, key)
+    body, _ = await _baseline(test_session, key, 2)
+    rolled = body.model_copy(deep=True)
+    rolled.effective_date += timedelta(days=1)
+    rolled.members = rolled.members[1:]
+    successor = body.members[-1].model_copy(deep=True)
+    successor.contract_month = "202610"
+    successor.contract_code = "TX:202610"
+    successor.provider_symbol = "TX:202610"
+    rolled.members.append(successor)
+
+    release = await submit_universe(test_session, rolled, allowed_datasets=[key])
+
+    assert release.status == "published"
+    assert release.change_count == 4
+    assert release.change_ratio == pytest.approx(1.0)
+    stored = await test_session.get(UniverseRelease, release.release_id)
+    assert stored.published_by == "policy:taifex_dated_roll"
+    assert stored.approval_note.startswith("Validated bounded")
+
+
+@pytest.mark.asyncio
+async def test_taifex_backward_or_identity_drift_remains_candidate(test_session):
+    key = "tw_futures_eod"
+    await _dataset(test_session, key)
+    body, _ = await _baseline(test_session, key, 2)
+    rolled = body.model_copy(deep=True)
+    rolled.effective_date += timedelta(days=1)
+    rolled.members[0].contract_month = "202606"
+    rolled.members[0].contract_code = "TX:202606"
+    rolled.members[0].provider_symbol = "TX:202606"
+
+    release = await submit_universe(test_session, rolled, allowed_datasets=[key])
+
+    assert release.status == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_taifex_stable_contract_session_loss_remains_candidate(test_session):
+    key = "tw_futures_eod"
+    await _dataset(test_session, key)
+    body, _ = await _baseline(test_session, key, 2)
+    body.effective_date += timedelta(days=1)
+    body.members[0].sessions = ["regular"]
+
+    release = await submit_universe(test_session, body, allowed_datasets=[key])
+
+    assert release.status == "candidate"
+
+
+@pytest.mark.asyncio
+async def test_taifex_semantic_membership_deduplicates_new_raw_evidence(test_session):
+    key = "tw_futures_eod"
+    await _dataset(test_session, key)
+    body, _ = await _baseline(test_session, key, 2)
+    body.effective_date += timedelta(days=1)
+    for member in body.members:
+        member.raw_evidence_ref = "r2://official/taifex/first.json"
+    first = await submit_universe(test_session, body, allowed_datasets=[key])
+    second_body = body.model_copy(deep=True)
+    for member in second_body.members:
+        member.raw_evidence_ref = "r2://official/taifex/corrected.json"
+
+    duplicate = await submit_universe(test_session, second_body, allowed_datasets=[key])
+
+    assert duplicate.release_id == first.release_id
+    assert duplicate.member_sha256 == first.member_sha256
+
+
+@pytest.mark.asyncio
+async def test_taifex_reconciliation_previews_then_publishes_safe_candidate(test_session):
+    key = "tw_futures_eod"
+    await _dataset(test_session, key)
+    body, _ = await _baseline(test_session, key, 2)
+    rolled = body.model_copy(deep=True)
+    rolled.effective_date += timedelta(days=1)
+    rolled.members = rolled.members[1:]
+    successor = body.members[-1].model_copy(deep=True)
+    successor.contract_month = "202610"
+    successor.contract_code = "TX:202610"
+    successor.provider_symbol = "TX:202610"
+    rolled.members.append(successor)
+    release = await submit_universe(test_session, rolled, allowed_datasets=[key])
+    stored = await test_session.get(UniverseRelease, release.release_id)
+    stored.status = "candidate"
+    stored.published_at = None
+    stored.published_by = None
+    stored.approval_note = None
+    await test_session.commit()
+
+    preview = await reconcile_taifex_rollover_candidates(test_session, apply=False)
+    assert preview == [
+        {
+            "effective_date": rolled.effective_date.isoformat(),
+            "release_id": str(release.release_id),
+            "candidate_count": 1,
+            "action": "would_publish",
+            "full_digest_valid": True,
+            "semantic_digest_valid": True,
+        }
+    ]
+    await test_session.refresh(stored)
+    assert stored.status == "candidate"
+
+    applied = await reconcile_taifex_rollover_candidates(test_session, apply=True)
+    assert applied[0]["action"] == "published"
+    await test_session.refresh(stored)
+    assert stored.status == "published"
+    assert stored.published_by == "repair:taifex_dated_roll"
 
 
 @pytest.mark.asyncio

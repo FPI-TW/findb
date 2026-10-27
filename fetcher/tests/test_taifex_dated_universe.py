@@ -1,6 +1,8 @@
 """Source-first dated TAIFEX prerequisites preserve frozen work and quotas."""
 
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -199,6 +201,44 @@ def test_operational_failure_aborts_cycle_without_date_retry_state(
     with pytest.raises(type(error)):
         runtime.cycle()
     assert runtime.state.health("taifex")["date_prerequisites"] == []
+    runtime.close()
+
+
+@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+def test_queued_dated_prerequisite_uses_prerequisite_retry_delay(tmp_path, monkeypatch, profile):
+    from findb_fetcher import provider_work
+
+    runtime, _, feed = setup_runtime(tmp_path, monkeypatch, profile)
+    owner = SimpleNamespace(
+        work={
+            "kind": "daily",
+            "dataset_key": feed["dataset_key"],
+            "state": "open",
+            "trade_date": str(DAY),
+            "scope": {"feed": feed},
+        }
+    )
+
+    @contextmanager
+    def claimed(*args, **kwargs):
+        yield owner
+
+    monkeypatch.setattr(provider_work, "claimed_work", claimed)
+    runtime._plan_for_date = lambda *args: (_ for _ in ()).throw(
+        DatedUniversePendingError("dated_universe_pending", retry_after_seconds=3599)
+    )
+    settlements = []
+    runtime._settle_queued_round = lambda *args, **kwargs: settlements.append(kwargs)
+
+    runtime._queued_cycle()
+
+    assert settlements == [
+        {
+            "outcome": "retry",
+            "failure_code": "DATED_UNIVERSE_PENDING",
+            "retry_delay_seconds": 3599,
+        }
+    ]
     runtime.close()
 
 
