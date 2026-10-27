@@ -3,6 +3,10 @@
 # Release one Fetcher provider using credentials loaded by the caller.
 
 set -euo pipefail
+# FactSet permits a 60-second query and its isolated supervisor adds a
+# 20-second deadline. Leave bounded headroom for process-group reaping before
+# Docker escalates TERM to KILL; the outer deployment deadline remains stricter.
+provider_stop_timeout_seconds=90
 # A failed inspect is not proof of absence: Docker uses rc=1 for daemon and
 # permission errors too. Only a successful exact-name inventory can prove absence.
 runtime_inventory_recovery=none
@@ -296,7 +300,7 @@ remove_recovery_runtime() {
   if [ -z "$id" ] || [ "$id" = "$recovery_original_id" ]; then return 1; fi
   running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
   case "$running" in true|false) ;; *) return 1 ;; esac
-  if [ "$running" = true ]; then docker stop --time 30 "$name" >/dev/null || return 1; fi
+  if [ "$running" = true ]; then docker stop --time "$provider_stop_timeout_seconds" "$name" >/dev/null || return 1; fi
   running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
   exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$name")" || return 1
   oom="$(docker inspect --format '{{.State.OOMKilled}}' "$name")" || return 1
@@ -440,7 +444,7 @@ recover() {
         if [ "$recovery_original_running" = true ] && [ "$recovery_current" = false ]; then
           docker start "$stable" >/dev/null || recovery_failed=1
         elif [ "$recovery_original_running" = false ] && [ "$recovery_current" = true ]; then
-          docker stop --time 30 "$stable" >/dev/null || recovery_failed=1
+          docker stop --time "$provider_stop_timeout_seconds" "$stable" >/dev/null || recovery_failed=1
           recovery_current="$(docker inspect --format '{{.State.Running}}' "$stable")" || recovery_failed=1
           recovery_exit="$(docker inspect --format '{{.State.ExitCode}}' "$stable")" || recovery_failed=1
           recovery_oom="$(docker inspect --format '{{.State.OOMKilled}}' "$stable")" || recovery_failed=1
@@ -465,7 +469,7 @@ if runtime_exists "$stable"; then
   had_previous=1
   stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")" || false
   case "$stable_running" in true|false) ;; *) false ;; esac
-  if [ "$stable_running" = true ]; then docker stop --time 30 "$stable" >/dev/null; fi
+  if [ "$stable_running" = true ]; then docker stop --time "$provider_stop_timeout_seconds" "$stable" >/dev/null; fi
   stable_running="$(docker inspect --format '{{.State.Running}}' "$stable")" || false
   stable_exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$stable")" || false
   stable_oom="$(docker inspect --format '{{.State.OOMKilled}}' "$stable")" || false
