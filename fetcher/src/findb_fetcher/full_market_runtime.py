@@ -100,7 +100,13 @@ from findb_fetcher.providers.twelve_data import (
 from findb_fetcher.providers.twelve_data import (
     build_market_eod_request as td_request,
 )
-from findb_fetcher.raw_storage import RawObject, RawPayloadStore, RawStorageError, attach_raw_object
+from findb_fetcher.raw_storage import (
+    RawObject,
+    RawPayloadFormat,
+    RawPayloadStore,
+    RawStorageError,
+    attach_raw_object,
+)
 
 _TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States", "hk_equity_eod": "Hong Kong"}
 
@@ -1570,7 +1576,12 @@ class FullMarketRuntime:
                             product_raw,
                             target_date=day,
                             product=product,
-                            persist=lambda raw: self._persist(raw, dataset, product),
+                            persist=lambda raw: self._persist(
+                                raw,
+                                dataset,
+                                product,
+                                payload_format="csv_cp950",
+                            ),
                         )
                     except (ValueError, UnicodeError):
                         raise DatedUniversePendingError("dated_report_unavailable") from None
@@ -1831,9 +1842,20 @@ class FullMarketRuntime:
 
         return True
 
-    def _persist(self, raw: bytes, dataset: str, symbol: str) -> RawObject:
+    def _persist(
+        self,
+        raw: bytes,
+        dataset: str,
+        symbol: str,
+        *,
+        payload_format: RawPayloadFormat = "json",
+    ) -> RawObject:
         stored = self.raw_store.persist(
-            raw, dataset_key=dataset, source_symbol=symbol.replace("|", ":"), provider=self.provider
+            raw,
+            dataset_key=dataset,
+            source_symbol=symbol.replace("|", ":"),
+            provider=self.provider,
+            payload_format=payload_format,
         )
         if stored.sha256 != checksum(raw) or stored.size_bytes != len(raw):
             raise ReadinessBlockedError("R2 raw persistence identity differs from acquired bytes")

@@ -63,12 +63,14 @@ docker build -f fetcher/Dockerfile -t findb-fetcher:local .
 ## Provider raw storage（Cloudflare R2）
 
 Twelve Data 保存 exact HTTP bytes；FinLab 保存 deterministic SDK bundle；Shioaji 保存
-SDK-detached acquisition snapshot；TAIFEX 保存兩份官方 report 及 checksum manifest。四者都在 Source delivery 前完成 raw-first persistence，
+SDK-detached acquisition snapshot；TAIFEX 保存官方 report 及 checksum manifest。各 provider 都在 Source delivery 前完成 raw-first persistence，
 並以 `source_raw_ref` 與 `source_raw_sha256` 成對傳遞。
 
 執行順序固定為：bounded provider fetch → R2 raw write → mapping/contract validation →
 prepared request → Source delivery/terminal wait。R2 object key 由 dataset、source symbol
 hash 與 content SHA-256 確定性產生；只傳 credential-free `r2://account-id/bucket/key`。
+JSON payload使用`.json`與`application/json`；TAIFEX歷史報表保留原始CP950 bytes，使用`.csv`與
+`text/csv; charset=big5`。既有immutable refs不改寫，新物件依實際格式建立。
 Raw object lifecycle 為 30 天、bucket lock 為 7 天，由 Cloudflare R2 管理。
 
 ## Runtime 設定

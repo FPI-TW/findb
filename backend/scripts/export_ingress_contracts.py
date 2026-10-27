@@ -16,12 +16,14 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "contracts"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.schemas.source import RunFailureCode  # noqa: E402
 from app.services.ingress_contracts import (  # noqa: E402
     get_contract_json_schema,
     supported_contracts,
 )
 
 MANIFEST_VERSION = 1
+SOURCE_RUN_FAILURE_CODES_PATH = Path("source") / "run_failure_codes.v1.json"
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -60,6 +62,13 @@ def build_artifacts() -> dict[Path, bytes]:
         {
             "manifest_version": MANIFEST_VERSION,
             "contracts": contracts,
+        }
+    )
+    artifacts[SOURCE_RUN_FAILURE_CODES_PATH] = _json_bytes(
+        {
+            "artifact": "source_run_failure_codes",
+            "failure_codes": sorted(code.value for code in RunFailureCode),
+            "version": 1,
         }
     )
     return artifacts
@@ -157,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     written = export_artifacts(output_dir)
-    contract_count = len(written) - 1
+    contract_count = sum(path.name.endswith(".schema.json") for path in written)
     print(f"Exported {contract_count} ingress contract artifacts to {output_dir}")
     return 0
 

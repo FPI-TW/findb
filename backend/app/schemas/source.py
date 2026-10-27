@@ -1,6 +1,7 @@
 """Pydantic schemas for the versioned Source API surface."""
 
 from datetime import date, datetime, time
+from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
@@ -10,6 +11,18 @@ from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
 from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc
+
+
+class RunFailureCode(StrEnum):
+    """Stable terminal normalization codes exposed by Source run status."""
+
+    DATASET_CONTRACT_INVALID = "DATASET_CONTRACT_INVALID"
+    DATASET_INACTIVE = "DATASET_INACTIVE"
+    DATASET_NOT_FOUND = "DATASET_NOT_FOUND"
+    EOD_PARTITION_UNAVAILABLE = "EOD_PARTITION_UNAVAILABLE"
+    NORMALIZER_NOT_CONFIGURED = "NORMALIZER_NOT_CONFIGURED"
+    RAW_PAYLOAD_MISSING = "RAW_PAYLOAD_MISSING"
+    RETRY_EXHAUSTED = "RETRY_EXHAUSTED"
 
 
 class IngestResponse(BaseModel):
@@ -115,7 +128,7 @@ class RunStatusResponse(BaseModel):
     success_records: int = 0
     failed_records: int = 0
     error_message: str | None = None
-    failure_code: str | None = None
+    failure_code: RunFailureCode | None = None
     attempt_count: int = 0
     max_attempts: int = 5
     next_retry_at: datetime | None = None

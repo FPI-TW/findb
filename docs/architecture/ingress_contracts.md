@@ -211,6 +211,10 @@ uv --directory backend run python scripts/export_ingress_contracts.py
 uv --directory backend run python scripts/export_ingress_contracts.py --check
 ```
 
+同一export/check流程也從Backend的`RunFailureCode`單一來源發布
+`source/run_failure_codes.v1.json`。Fetcher啟動時從`FETCHER_CONTRACTS_DIR`嚴格載入；
+artifact缺失、版本不符或內容不合法時fail closed。
+
 Dataset registry必須聲明schema ID、accepted/current versions、enforcement、market、
 asset class及必要defaults／delivery expectation。Dataset scope必須與contract一致。
 

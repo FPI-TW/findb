@@ -299,6 +299,7 @@ class TaifexHistoricalRunner:
                                 dataset_key=item.dataset_key,
                                 source_symbol=product,
                                 provider="taifex",
+                                payload_format="csv_cp950",
                             ),
                         ),
                     )

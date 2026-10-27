@@ -121,6 +121,14 @@ def test_all_products_raw_first_and_source_batch_recovers_without_acquisition(tm
     with pytest.raises(KeyboardInterrupt):
         first.run(item())
     assert len(calls) == 5 and len(raw.raw) == 6
+    assert [kwargs.get("payload_format", "json") for _, kwargs in raw.raw] == [
+        "csv_cp950",
+        "csv_cp950",
+        "csv_cp950",
+        "csv_cp950",
+        "csv_cp950",
+        "json",
+    ]
     second = runner(
         tmp_path, lambda _: pytest.fail("recovery fetched provider"), source=source, raw=raw
     )

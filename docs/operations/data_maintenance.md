@@ -174,7 +174,7 @@ CLI 與 runner 讀取共用 `full_market.<environment>.v1.json`；可用
 Staging／local 亦可直接使用 Admin preview／create 及
 `findb-fetch-historical-backfill --provider taifex --run-forever`。
 
-每日期按商品下載指定日 CSV，exact bytes 先存 R2 再解析；整日 manifest 凍結 item／request、
+每日期按商品下載指定日 CSV，exact CP950 bytes以`.csv`及`text/csv; charset=big5`先存 R2 再解析；整日 manifest 凍結 item／request、
 trade date、fetched_at、五商品 raw ref／SHA-256 與完整契約／時段 observations。
 有官方觀測值的列以單一 `futures_eod.v1` backfill batch 經 Source → raw → outbox → worker →
 canonical；重新抓取沿用 source precedence／fetched_at upsert，可更新官方修正值。

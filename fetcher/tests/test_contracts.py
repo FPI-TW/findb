@@ -10,8 +10,10 @@ import pytest
 
 from findb_fetcher.contracts import (
     ContractChecksumError,
+    ContractManifestError,
     ContractRegistry,
     ContractValidationError,
+    load_source_run_failure_codes,
 )
 
 
@@ -95,3 +97,49 @@ def test_modified_contract_fails_manifest_checksum(tmp_path: Path, contracts_dir
 
     with pytest.raises(ContractChecksumError, match="checksum mismatch"):
         ContractRegistry(copied_contracts)
+
+
+def test_source_run_failure_codes_are_strict_and_versioned(contracts_dir: Path) -> None:
+    codes = load_source_run_failure_codes(contracts_dir)
+
+    assert "EOD_PARTITION_UNAVAILABLE" in codes
+    assert "RETRY_EXHAUSTED" in codes
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"artifact": "source_run_failure_codes", "failure_codes": [], "version": 1},
+        {
+            "artifact": "source_run_failure_codes",
+            "failure_codes": ["RETRY_EXHAUSTED", "RETRY_EXHAUSTED"],
+            "version": 1,
+        },
+        {
+            "artifact": "source_run_failure_codes",
+            "failure_codes": ["RETRY_EXHAUSTED"],
+            "version": 2,
+        },
+    ],
+)
+def test_invalid_source_run_failure_code_contract_fails_closed(
+    tmp_path: Path, contracts_dir: Path, payload: dict[str, Any]
+) -> None:
+    copied_contracts = tmp_path / "contracts"
+    shutil.copytree(contracts_dir, copied_contracts)
+    artifact = copied_contracts / "source" / "run_failure_codes.v1.json"
+    artifact.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ContractManifestError):
+        load_source_run_failure_codes(copied_contracts)
+
+
+def test_missing_source_run_failure_code_contract_fails_closed(
+    tmp_path: Path, contracts_dir: Path
+) -> None:
+    copied_contracts = tmp_path / "contracts"
+    shutil.copytree(contracts_dir, copied_contracts)
+    (copied_contracts / "source" / "run_failure_codes.v1.json").unlink()
+
+    with pytest.raises(ContractManifestError, match="does not exist"):
+        load_source_run_failure_codes(copied_contracts)

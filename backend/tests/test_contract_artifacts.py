@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app.schemas.source import RunFailureCode
 from app.services.ingress_contracts import get_contract_json_schema, supported_contracts
 from scripts.export_archive_contracts import (
     check_artifacts as check_archive_artifacts,
@@ -39,6 +40,15 @@ def test_checked_in_artifacts_match_registry() -> None:
             entry["schema_id"], entry["schema_version"]
         )
 
+    source_codes = json.loads(
+        (CONTRACTS_ROOT / "source" / "run_failure_codes.v1.json").read_text(encoding="utf-8")
+    )
+    assert source_codes == {
+        "artifact": "source_run_failure_codes",
+        "failure_codes": sorted(code.value for code in RunFailureCode),
+        "version": 1,
+    }
+
 
 def test_repeated_export_is_deterministic(tmp_path: Path) -> None:
     output_dir = tmp_path / "contracts"
@@ -68,6 +78,9 @@ def test_check_command_fails_for_changed_and_missing_artifacts(tmp_path: Path) -
         encoding="utf-8",
     )
     (output_dir / "market_minute" / "v1.schema.json").unlink()
+    (output_dir / "source" / "run_failure_codes.v1.json").write_text(
+        '{"changed":true}\n', encoding="utf-8"
+    )
 
     result = subprocess.run(
         [
@@ -87,6 +100,7 @@ def test_check_command_fails_for_changed_and_missing_artifacts(tmp_path: Path) -
     assert result.returncode == 1
     assert "artifact differs: market_eod/v1.schema.json" in result.stderr
     assert "missing artifact: market_minute/v1.schema.json" in result.stderr
+    assert "artifact differs: source/run_failure_codes.v1.json" in result.stderr
     assert (output_dir / "market_eod" / "v1.schema.json").read_text(
         encoding="utf-8"
     ) == '{"changed":true}\n'

@@ -8,7 +8,7 @@ import ipaddress
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
 from botocore.config import Config as BotoConfig
@@ -28,6 +28,7 @@ _SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _MAX_OBJECT_BYTES_HARD = 16 * 1024 * 1024
 _MAX_REF_LENGTH = 2048
+RawPayloadFormat = Literal["json", "csv_cp950"]
 
 
 class RawStorageError(RuntimeError):
@@ -117,6 +118,7 @@ class RawPayloadStore(Protocol):
         dataset_key: str,
         source_symbol: str,
         provider: str = "twelve_data",
+        payload_format: RawPayloadFormat = "json",
     ) -> RawObject: ...
 
 
@@ -158,6 +160,7 @@ class R2RawPayloadStore:
         dataset_key: str,
         source_symbol: str,
         provider: str = "twelve_data",
+        payload_format: RawPayloadFormat = "json",
     ) -> RawObject:
         if not isinstance(raw_bytes, bytes):
             raise RawStorageUploadError("raw provider payload must be bytes")
@@ -172,11 +175,17 @@ class R2RawPayloadStore:
         normalized_symbol = source_symbol.strip()
         if _SYMBOL_PATTERN.fullmatch(normalized_symbol) is None:
             raise RawStorageUploadError("source_symbol is not safe for raw object metadata")
+        if payload_format == "json":
+            extension, content_type = "json", "application/json"
+        elif payload_format == "csv_cp950":
+            extension, content_type = "csv", "text/csv; charset=big5"
+        else:
+            raise RawStorageUploadError("raw provider payload format is unsupported")
 
         digest_bytes = hashlib.sha256(raw_bytes).digest()
         digest = digest_bytes.hex()
         symbol_digest = hashlib.sha256(normalized_symbol.encode("utf-8")).hexdigest()[:16]
-        key = f"{provider}/{dataset_key}/{symbol_digest}/{digest}.json"
+        key = f"{provider}/{dataset_key}/{symbol_digest}/{digest}.{extension}"
         ref = f"r2://{self._config.account_id}/{self._config.bucket}/{key}"
         if len(ref) > _MAX_REF_LENGTH:
             raise RawStorageUploadError("raw object reference exceeds ingress contract limit")
@@ -186,7 +195,7 @@ class R2RawPayloadStore:
             "Key": key,
             "Body": raw_bytes,
             "ContentLength": len(raw_bytes),
-            "ContentType": "application/json",
+            "ContentType": content_type,
             "IfNoneMatch": "*",
             "ChecksumSHA256": base64.b64encode(digest_bytes).decode("ascii"),
             "Metadata": {

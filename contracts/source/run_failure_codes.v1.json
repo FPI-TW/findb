@@ -1,0 +1,13 @@
+{
+  "artifact": "source_run_failure_codes",
+  "failure_codes": [
+    "DATASET_CONTRACT_INVALID",
+    "DATASET_INACTIVE",
+    "DATASET_NOT_FOUND",
+    "EOD_PARTITION_UNAVAILABLE",
+    "NORMALIZER_NOT_CONFIGURED",
+    "RAW_PAYLOAD_MISSING",
+    "RETRY_EXHAUSTED"
+  ],
+  "version": 1
+}
