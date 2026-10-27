@@ -270,7 +270,8 @@ fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週�
 相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
 產品、mapping、交易所、幣別、分類或月份倒退均保留 candidate 等待人工審查。Release 同時保存
 完整 `member_sha256` 與排除逐次 `raw_evidence_ref` 的 semantic digest；同日期、同語意的報表重抓
-回傳既有 release，不再因 R2 evidence reference 不同產生重複 candidate。
+回傳既有 release，不再因 R2 evidence reference 不同產生重複 candidate。兩種 digest 的成員順序
+一律使用 application 的 Python 字串排序，不依賴 PostgreSQL collation。
 
 舊版已留下的 TAIFEX candidate 先以新版 Backend image 預覽，再明確套用；工具逐日只選最新
 candidate，驗證完整與 semantic digest，並依前一份 published release 重新執行相同結構規則。

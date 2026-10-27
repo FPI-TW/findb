@@ -637,7 +637,9 @@ async def test_taifex_semantic_membership_deduplicates_new_raw_evidence(test_ses
 
 
 @pytest.mark.asyncio
-async def test_taifex_reconciliation_previews_then_publishes_safe_candidate(test_session):
+async def test_taifex_reconciliation_previews_then_publishes_safe_candidate(
+    test_session, monkeypatch
+):
     key = "tw_futures_eod"
     await _dataset(test_session, key)
     body, _ = await _baseline(test_session, key, 2)
@@ -656,6 +658,17 @@ async def test_taifex_reconciliation_previews_then_publishes_safe_candidate(test
     stored.published_by = None
     stored.approval_note = None
     await test_session.commit()
+
+    original_scalars = test_session.scalars
+
+    async def alternate_collation(statement, *args, **kwargs):
+        result = await original_scalars(statement, *args, **kwargs)
+        if statement.column_descriptions[0].get("entity") is UniverseMember:
+            rows = list(result.all())
+            return type("MemberResult", (), {"all": lambda self: list(reversed(rows))})()
+        return result
+
+    monkeypatch.setattr(test_session, "scalars", alternate_collation)
 
     preview = await reconcile_taifex_rollover_candidates(test_session, apply=False)
     assert preview == [

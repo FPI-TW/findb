@@ -1318,7 +1318,7 @@ async def _release_member_values(db: AsyncSession, release_id: UUID) -> list[dic
             )
         ).all()
     )
-    return [
+    values = [
         {
             column.name: getattr(member, column.name)
             for column in UniverseMember.__table__.columns
@@ -1326,6 +1326,10 @@ async def _release_member_values(db: AsyncSession, release_id: UUID) -> list[dic
         }
         for member in members
     ]
+    # Submission uses Python string ordering; database collation can differ for
+    # punctuation, case and futures session names.
+    values.sort(key=lambda member: member["member_key"])
+    return values
 
 
 async def reconcile_taifex_rollover_candidates(
