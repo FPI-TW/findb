@@ -274,6 +274,7 @@ class TestInstrumentCacheAdmin:
         assert data["total"] == 2
         assert data["data"][0]["instrument_id"] == "instrument-us-aapl"
         assert data["data"][0]["coverage"]["eod"]["latest_close"] == "153.00"
+        assert data["data"][0]["coverage"]["futures"] is None
 
     @pytest.mark.asyncio
     async def test_get_instrument_cache_missing_file_returns_404(
@@ -312,6 +313,51 @@ class TestInstrumentCacheAdmin:
         assert stored["markets"] == ["HK", "US"]
         assert stored["data"][0]["instrument_id"] == "instrument-hk-0700"
         assert stored["data"][0]["coverage"]["eod"]["first_date"] == "2023-06-01"
+        assert stored["data"][0]["coverage"]["futures"] is None
+
+    @pytest.mark.asyncio
+    async def test_instrument_cache_accepts_futures_coverage(
+        self,
+        cache_path: Path,
+        client: AsyncClient,
+        admin_headers: dict,
+    ):
+        payload = _sample_instrument_cache()
+        payload["data"][0]["coverage"]["futures"] = {
+            "first_date": "2025-01-02",
+            "latest_date": "2025-02-03",
+            "latest_close": "22450.00",
+        }
+
+        response = await client.put(
+            "/api/v1/admin/instrument-cache", headers=admin_headers, json=payload
+        )
+
+        assert response.status_code == 200
+        futures = response.json()["data"]["data"][1]["coverage"]["futures"]
+        assert futures["latest_date"] == "2025-02-03"
+        loaded = await client.get("/api/v1/admin/instrument-cache", headers=admin_headers)
+        assert loaded.status_code == 200
+        loaded_item = next(
+            item for item in loaded.json()["data"] if item["instrument_id"] == "instrument-us-aapl"
+        )
+        assert loaded_item["coverage"]["futures"] == futures
+
+    @pytest.mark.asyncio
+    async def test_instrument_cache_rejects_unknown_coverage_domain(
+        self,
+        cache_path: Path,
+        client: AsyncClient,
+        admin_headers: dict,
+    ):
+        payload = _sample_instrument_cache()
+        payload["data"][0]["coverage"]["unknown"] = None
+
+        response = await client.put(
+            "/api/v1/admin/instrument-cache", headers=admin_headers, json=payload
+        )
+
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_patch_instrument_cache_item_updates_json(

@@ -29,7 +29,6 @@ _source_rate_limit_buckets: dict[str, list[float]] = {}
 _serve_rate_limit_lock = Lock()
 _serve_rate_limit_buckets: dict[str, list[float]] = {}
 _admin_login_rate_limit_buckets: dict[str, list[float]] = {}
-DEFAULT_SERVE_PAGE_SIZE = 100
 ROLE_LEVEL = {"viewer": 1, "operator": 2, "owner": 3}
 
 
@@ -286,7 +285,12 @@ require_operator = require_admin_role("operator")
 require_owner = require_admin_role("owner")
 
 
-def _enforce_serve_api_key_policy(request: Request, key: APIKey) -> None:
+def _enforce_serve_api_key_policy(
+    request: Request,
+    key: APIKey,
+    *,
+    default_page_size: int | None = None,
+) -> None:
     scopes = key.scopes or []
     if "serve" not in scopes:
         raise HTTPException(
@@ -294,32 +298,35 @@ def _enforce_serve_api_key_policy(request: Request, key: APIKey) -> None:
             detail="API key does not allow Serve API access",
         )
 
-    page_size = request.query_params.get("page_size")
-    if page_size:
-        try:
-            requested_page_size = int(page_size)
-        except ValueError:
-            requested_page_size = 0
-    else:
-        requested_page_size = DEFAULT_SERVE_PAGE_SIZE
+    if default_page_size is not None:
+        page_size = request.query_params.get("page_size")
+        if page_size:
+            try:
+                requested_page_size = int(page_size)
+            except ValueError:
+                requested_page_size = 0
+        else:
+            requested_page_size = default_page_size
 
-    if requested_page_size > key.page_size_limit:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"page_size exceeds API key limit of {key.page_size_limit}",
-        )
+        if requested_page_size > key.page_size_limit:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"page_size exceeds API key limit of {key.page_size_limit}",
+            )
 
     client_ip = _extract_client_ip(request) or "unknown"
     _enforce_serve_rate_limit(key, client_ip)
 
 
-async def verify_serve_api_key(
+async def _authenticate_serve_api_key(
     request: Request,
-    api_key: str = Security(api_key_header),
-    db: AsyncSession = Depends(get_db),
+    api_key: str,
+    db: AsyncSession,
+    *,
+    required: bool,
+    default_page_size: int | None = None,
 ) -> str | None:
-    """Verify API key for Serve API endpoints (optional based on config)."""
-    if not settings.SERVE_REQUIRE_AUTH:
+    if not required and not settings.SERVE_REQUIRE_AUTH:
         return None
 
     if not api_key:
@@ -337,7 +344,11 @@ async def verify_serve_api_key(
                 client_ip=_extract_client_ip(request),
             )
             raise HTTPException(status_code=403, detail="Invalid API key")
-        _enforce_serve_api_key_policy(request, db_key)
+        _enforce_serve_api_key_policy(
+            request,
+            db_key,
+            default_page_size=default_page_size,
+        )
         request.state.credential_ref = ("serve", db_key.key_id)
         return str(db_key.key_id)
 
@@ -346,12 +357,45 @@ async def verify_serve_api_key(
         endpoint=request.url.path,
         client_ip=_extract_client_ip(request),
     )
-    if not await has_active_api_keys(db):
+    if not required and not await has_active_api_keys(db):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Authentication required but no API keys configured",
         )
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key")
+
+
+async def verify_serve_api_key(
+    request: Request,
+    api_key: str = Security(api_key_header),
+    db: AsyncSession = Depends(get_db),
+) -> str | None:
+    """Verify API key for an unpaginated Serve API endpoint."""
+    return await _authenticate_serve_api_key(
+        request,
+        api_key,
+        db,
+        required=False,
+    )
+
+
+def verify_paginated_serve_api_key(default_page_size: int):
+    """Build Serve authentication with the route's effective page-size default."""
+
+    async def dependency(
+        request: Request,
+        api_key: str = Security(api_key_header),
+        db: AsyncSession = Depends(get_db),
+    ) -> str | None:
+        return await _authenticate_serve_api_key(
+            request,
+            api_key,
+            db,
+            required=False,
+            default_page_size=default_page_size,
+        )
+
+    return dependency
 
 
 async def require_serve_api_key(
@@ -360,19 +404,11 @@ async def require_serve_api_key(
     db: AsyncSession = Depends(get_db),
 ) -> str:
     """Require an active DB-backed Serve key, regardless of optional Serve auth."""
-    if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing API key",
-        )
-    db_key = await find_active_api_key(db, api_key)
-    if db_key is None or db_key.kind != "serve":
-        record_invalid_credential(
-            "serve",
-            endpoint=request.url.path,
-            client_ip=_extract_client_ip(request),
-        )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key")
-    _enforce_serve_api_key_policy(request, db_key)
-    request.state.credential_ref = ("serve", db_key.key_id)
-    return str(db_key.key_id)
+    credential = await _authenticate_serve_api_key(
+        request,
+        api_key,
+        db,
+        required=True,
+    )
+    assert credential is not None
+    return credential

@@ -597,20 +597,27 @@ class MarketFreshnessListResponse(BaseModel):
 
 
 class InstrumentCacheEODCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     first_date: Optional[date] = None
     latest_date: Optional[date] = None
     latest_close: Optional[Decimal] = None
 
 
 class InstrumentCacheMinuteCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     first_bar_at: Optional[datetime] = None
     latest_bar_at: Optional[datetime] = None
     latest_close: Optional[Decimal] = None
 
 
 class InstrumentCacheCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     eod: Optional[InstrumentCacheEODCoverage] = None
     minute: Optional[InstrumentCacheMinuteCoverage] = None
+    futures: Optional[InstrumentCacheEODCoverage] = None
 
 
 class InstrumentCacheItem(BaseModel):
