@@ -60,7 +60,12 @@ def test_workflow_gate_provenance_and_remote_order(tmp_path):
     assert "inputs.revision" not in verify
     # Freeze the workflow object's bytes separately from its mutable checkout.
     # A tampered checkout must not become the fake git-show source of truth.
-    names = ("check_full_market_checkpoint.sh", "check_fetcher_host.py", "release_manifest.py")
+    names = (
+        "check_full_market_checkpoint.sh",
+        "check_fetcher_host.py",
+        "check_fetcher_runtime_recovery.py",
+        "release_manifest.py",
+    )
     pinned = tmp_path / "pinned-git-objects"
     for name in names:
         artifact = pinned / "infra/deploy" / name
@@ -72,7 +77,7 @@ def test_workflow_gate_provenance_and_remote_order(tmp_path):
     printf '%s\n' "$checkout_sha"
   elif [ "$3" = show ]; then
     case "$4" in
-      "$WORKFLOW_SHA":infra/deploy/check_fetcher_host.py|"$WORKFLOW_SHA":infra/deploy/release_manifest.py)
+      "$WORKFLOW_SHA":infra/deploy/check_fetcher_host.py|"$WORKFLOW_SHA":infra/deploy/check_fetcher_runtime_recovery.py|"$WORKFLOW_SHA":infra/deploy/release_manifest.py)
         cat "$pinned_objects/${4#*:}" ;;
       *) return 92 ;;
     esac
@@ -84,6 +89,7 @@ def test_workflow_gate_provenance_and_remote_order(tmp_path):
         (True, False, None),
         (False, True, None),
         (False, False, "check_fetcher_host.py"),
+        (False, False, "check_fetcher_runtime_recovery.py"),
         (False, False, "release_manifest.py"),
     ):
         trusted = tmp_path / ".trusted-checkpoint-safety/infra/deploy"
