@@ -148,7 +148,7 @@ def _taifex_dated_roll_is_safe(
         previous_weekly = set(previous[product]) - previous_monthly
         current_weekly = set(current[product]) - current_monthly
         if any(
-            previous[product][month] != current[product][month]
+            not previous[product][month] <= current[product][month]
             for month in set(previous[product]) & set(current[product])
         ):
             return False
