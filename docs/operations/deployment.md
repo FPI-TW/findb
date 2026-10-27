@@ -152,7 +152,16 @@ Fetcher 十五個 runtimes 的替換刻意維持序列：rollback journal 存在
 同 provider 的 Pilot／Full／historical 共用同一 secret consumer tmpfs 與帳號 governor lock；
 平行化需重新設計交易與復原，不屬於目前可在本機驗證的範圍。
 
-兩個 reusable deploy job 上限由 90 改為 55 分鐘。Protected-main driver 負責主機 Bash wrapper 與 SSM wait，
+Staging Fetcher 在等待同 revision FinDB rollout 成功後、任何 Fetcher host mutation 前，會再執行
+post-rollout recovery gate。既有十五個 accepted runtimes 必須保持相同 container ID、image、start time
+與 restart count，並連續 running 60 秒；gate 最多等待 180 秒，讓 FinDB candidate／activation 期間因
+Source 暫停而進入 Docker restart backoff 的 consumers 恢復。歷史 restart count 可以非零，但觀察窗口內
+不得再增加。逾時以 `runtime_not_recovered_after_findb_rollout` fail closed，不停止既有 runtime、不寫入
+acceptance record，也不弱化 provider helper 對非零 exit／OOM／Docker error 的拒絕規則。
+
+兩個 reusable deploy job 的一般上限由 90 改為 55 分鐘；Staging Fetcher 同 revision 路徑因包含最多
+32 分鐘的 FinDB wait 與 bounded recovery gate，上限為 95 分鐘。Protected-main driver 負責主機
+Bash wrapper 與 SSM wait，
 避免 accepted replay 依賴舊 release 缺少的新 helper。主機 preflight／candidate／activation 分別由
 GNU timeout 限制為 240／900／900 秒，TERM 後最多保留 180 秒供原停止／復原 traps 完成；
 SSM executionTimeout 為 480／1200／1200 秒，runner wait deadline 為 540／1260／1260 秒。

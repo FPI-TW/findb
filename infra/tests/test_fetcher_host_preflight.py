@@ -549,6 +549,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         trusted.mkdir(parents=True)
         for name in (
             "check_fetcher_host.py",
+            "check_fetcher_runtime_recovery.py",
             "release_manifest.py",
             "check_full_market_checkpoint.sh",
         ):

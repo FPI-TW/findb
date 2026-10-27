@@ -605,11 +605,12 @@ def test_fetcher_waits_for_same_sha_findb_after_read_only_preflight() -> None:
     reusable = yaml.safe_load(text)
     assert reusable["on"]["workflow_call"]["inputs"]["findb_rollout_sha"]["default"] == ""
     job = reusable["jobs"]["deploy"]
-    assert job["timeout-minutes"] == "${{ inputs.findb_rollout_sha != '' && 87 || 55 }}"
+    assert job["timeout-minutes"] == "${{ inputs.findb_rollout_sha != '' && 95 || 55 }}"
     names = [step.get("name") for step in job["steps"]]
     assert (
         names.index("Run target-aware read-only SSM preflight")
         < names.index("Wait for same-revision FinDB staging rollout")
+        < names.index("Wait for installed Fetcher runtimes to recover")
         < names.index("Run candidate acceptance or accepted replay through bounded SSM")
     )
     wait = job["steps"][names.index("Wait for same-revision FinDB staging rollout")]
@@ -619,6 +620,12 @@ def test_fetcher_waits_for_same_sha_findb_after_read_only_preflight() -> None:
     assert "actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}" in wait["run"]
     assert "for _ in $(seq 1 120); do" in wait["run"]
     assert "timed out waiting for same-revision FinDB rollout" in wait["run"]
+    recovery = job["steps"][names.index("Wait for installed Fetcher runtimes to recover")]
+    assert recovery["if"] == "${{ inputs.findb_rollout_sha != '' }}"
+    assert "--stable-seconds 60 --timeout-seconds 180 --poll-seconds 5" in recovery["run"]
+    assert "ssm_bash_command.py --timeout-seconds 240" in recovery["run"]
+    assert 'executionTimeout: ["300"]' in recovery["run"]
+    assert "status=success" in recovery["run"] and "status=failed" in recovery["run"]
 
 
 def _run_fetcher_publish(tmp_path: Path, failing: str = "") -> subprocess.CompletedProcess[str]:
@@ -772,8 +779,9 @@ def test_every_ssm_run_shell_command_is_explicitly_wrapped_for_bash() -> None:
     wrapper = "python3 .deployment-driver/infra/deploy/ssm_bash_command.py"
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
-        assert text.count("--document-name AWS-RunShellScript") == 3
-        assert text.count(wrapper) == 3
+        expected = 4 if unit == "fetcher" else 3
+        assert text.count("--document-name AWS-RunShellScript") == expected
+        assert text.count(wrapper) == expected
 
     fetcher_cd = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
     assert fetcher_cd.count("--document-name AWS-RunShellScript") == 0
@@ -834,7 +842,7 @@ def test_reusable_records_and_ssm_gates_are_immutable_and_bounded() -> None:
         text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
         assert (
             "timeout-minutes: 55" in text
-            or "timeout-minutes: ${{ inputs.findb_rollout_sha != '' && 87 || 55 }}" in text
+            or "timeout-minutes: ${{ inputs.findb_rollout_sha != '' && 95 || 55 }}" in text
         )
         assert "--if-none-match '*'" in text
         assert "ssm_wait_command" in text
