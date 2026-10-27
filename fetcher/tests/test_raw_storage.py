@@ -78,6 +78,7 @@ def test_r2_store_uploads_exact_bytes_with_deterministic_metadata() -> None:
     assert client.calls[0]["Body"] == RAW_BYTES
     assert client.calls[0]["IfNoneMatch"] == "*"
     assert client.calls[0]["ContentLength"] == len(RAW_BYTES)
+    assert client.calls[0]["ContentType"] == "application/json"
     assert client.calls[0]["ChecksumSHA256"] == base64.b64encode(digest_bytes).decode("ascii")
     assert client.calls[0]["Metadata"] == {
         "sha256": digest,
@@ -88,6 +89,35 @@ def test_r2_store_uploads_exact_bytes_with_deterministic_metadata() -> None:
     assert "ServerSideEncryption" not in client.calls[0]
     assert "SSEKMSKeyId" not in client.calls[0]
     assert client.calls[0]["Key"] == client.calls[1]["Key"]
+    assert client.calls[0]["Key"].endswith(".json")
+
+
+def test_r2_store_labels_cp950_csv_without_changing_exact_bytes() -> None:
+    raw = "交易日期,契約\n2026/10/01,TX\n".encode("cp950")
+    client = FakeR2()
+
+    stored = R2RawPayloadStore(_config(), client=client).persist(
+        raw,
+        dataset_key="tw_futures_eod",
+        source_symbol="TX",
+        provider="taifex",
+        payload_format="csv_cp950",
+    )
+
+    assert client.calls[0]["Body"] == raw
+    assert client.calls[0]["ContentType"] == "text/csv; charset=big5"
+    assert client.calls[0]["Key"].endswith(".csv")
+    assert stored.sha256 == hashlib.sha256(raw).hexdigest()
+
+
+def test_r2_store_rejects_unknown_payload_format() -> None:
+    with pytest.raises(RawStorageUploadError, match="format is unsupported"):
+        R2RawPayloadStore(_config(), client=FakeR2()).persist(
+            RAW_BYTES,
+            dataset_key="us_equity_eod",
+            source_symbol="AAPL",
+            payload_format="xml",  # type: ignore[arg-type]
+        )
 
 
 class ExistingR2(FakeR2):
@@ -103,7 +133,7 @@ class ExistingR2(FakeR2):
             "Body": self.body,
             "ResponseMetadata": {"HTTPStatusCode": 200},
             "ContentLength": len(RAW_BYTES),
-            "ContentType": "application/json",
+            "ContentType": self.calls[0]["ContentType"],
             "Metadata": self.calls[0]["Metadata"],
             **self.overrides,
         }
@@ -119,6 +149,19 @@ def test_locked_or_concurrent_object_requires_exact_readback(status: int) -> Non
     assert client.reads == [{"Bucket": client.calls[0]["Bucket"], "Key": client.calls[0]["Key"]}]
     assert client.body.closed
     assert len(client.calls) == 1
+
+
+def test_existing_csv_object_with_wrong_content_type_fails_closed() -> None:
+    client = ExistingR2(412, ContentType="application/json")
+
+    with pytest.raises(RawStorageUploadError, match="metadata differs"):
+        R2RawPayloadStore(_config(), client=client).persist(
+            RAW_BYTES,
+            dataset_key="tw_futures_eod",
+            source_symbol="TX",
+            provider="taifex",
+            payload_format="csv_cp950",
+        )
 
 
 @pytest.mark.parametrize(

@@ -383,6 +383,9 @@ async def test_missing_eod_partition_fails_permanently_without_retry(
     assert run.next_retry_at is None
     assert job.status == "failed"
     assert job.attempt_count == 1
+    status_response = await client.get(f"/api/v1/source/runs/{run_id}", headers=source_headers)
+    assert status_response.status_code == 200
+    assert status_response.json()["failure_code"] == "EOD_PARTITION_UNAVAILABLE"
 
 
 @pytest.mark.asyncio

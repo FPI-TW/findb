@@ -224,6 +224,7 @@ class PilotState:
                                 dataset_key="tw_futures_eod",
                                 source_symbol=product,
                                 provider="taifex",
+                                payload_format="csv_cp950",
                             )
                             raw_refs.append(stored)
                             parsed = parse_report(raw, target_date=target, historical=True)

@@ -127,6 +127,7 @@ def test_taifex_raw_first_prepared_restart_idempotency_and_terminal_counts(
     from findb_fetcher import taifex_pilot
 
     events = []
+    raw_formats = []
     selected = _rows()
 
     def report(http, *, product, **kwargs):
@@ -143,6 +144,7 @@ def test_taifex_raw_first_prepared_restart_idempotency_and_terminal_counts(
     class Store:
         def persist(self, raw, **kwargs):
             events.append("raw")
+            raw_formats.append(kwargs.get("payload_format", "json"))
             digest = hashlib.sha256(raw).hexdigest()
             return RawObject("r2://" + "a" * 32 + "/pilot-raw/taifex/" + digest, digest, len(raw))
 
@@ -186,6 +188,7 @@ def test_taifex_raw_first_prepared_restart_idempotency_and_terminal_counts(
         stop_event=stop_event,
     )
     first = PilotState(state_path).run(**args)
+    assert raw_formats == ["csv_cp950", "csv_cp950", "json"]
     assert first["status"] == "retry_pending"
     if stop_after_acceptance:
         assert first["reason"] == "stopped"

@@ -527,11 +527,13 @@ def _runtime(
     class Raw:
         def __init__(self) -> None:
             self.calls: list[bytes] = []
+            self.formats: list[str] = []
 
         def persist(self, raw: bytes, **kwargs: Any) -> Any:
             import hashlib
 
             self.calls.append(raw)
+            self.formats.append(kwargs.get("payload_format", "json"))
             return RawObject(
                 "r2://" + "a" * 32 + "/raw-test/raw.json", hashlib.sha256(raw).hexdigest(), len(raw)
             )

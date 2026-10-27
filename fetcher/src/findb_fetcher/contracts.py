@@ -16,6 +16,8 @@ from jsonschema.validators import validator_for
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ROOT_KEYS = {"manifest_version", "contracts"}
 _ENTRY_KEYS = {"path", "schema_id", "schema_version", "sha256"}
+_SOURCE_RUN_FAILURE_CODES_PATH = Path("source") / "run_failure_codes.v1.json"
+_FAILURE_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,49}$")
 
 
 class ContractError(ValueError):
@@ -58,6 +60,10 @@ class ContractRegistry:
         self._contracts_dir = contracts_dir.resolve()
         manifest = self._read_json(self._contracts_dir / "manifest.json", "manifest")
         self._contracts = self._load_manifest(manifest)
+
+    @property
+    def contracts_dir(self) -> Path:
+        return self._contracts_dir
 
     def get(self, schema_id: str, schema_version: int) -> Contract:
         try:
@@ -180,6 +186,32 @@ class ContractRegistry:
         if not isinstance(value, dict):
             raise ContractManifestError(f"{label} must contain a JSON object")
         return value
+
+
+def load_source_run_failure_codes(contracts_dir: Path) -> frozenset[str]:
+    """Load the checked-in Source run-status failure-code contract."""
+    root = contracts_dir.resolve()
+    payload = ContractRegistry._read_json(
+        root / _SOURCE_RUN_FAILURE_CODES_PATH,
+        "Source run failure-code contract",
+    )
+    if set(payload) != {"artifact", "failure_codes", "version"}:
+        raise ContractManifestError("Source run failure-code contract keys are invalid")
+    if payload["artifact"] != "source_run_failure_codes" or payload["version"] != 1:
+        raise ContractManifestError("Source run failure-code contract identity is invalid")
+    codes = payload["failure_codes"]
+    if (
+        not isinstance(codes, list)
+        or not codes
+        or any(
+            not isinstance(code, str) or _FAILURE_CODE_PATTERN.fullmatch(code) is None
+            for code in codes
+        )
+        or len(set(codes)) != len(codes)
+        or codes != sorted(codes)
+    ):
+        raise ContractManifestError("Source run failure codes are invalid")
+    return frozenset(codes)
 
 
 def _is_safe_relative_path(value: str) -> bool:

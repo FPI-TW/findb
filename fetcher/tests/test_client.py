@@ -461,6 +461,34 @@ def test_invalid_run_status_is_rejected(
         )
 
 
+def test_backend_partition_failure_code_is_accepted(
+    contracts_dir: Path, market_request: dict[str, Any]
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_run_payload(
+                status="failed",
+                completed_at="2026-07-24T00:01:00Z",
+                failure_code="EOD_PARTITION_UNAVAILABLE",
+            ),
+            request=request,
+        )
+
+    client = SourceAPIClient(
+        _config(),
+        ContractRegistry(contracts_dir),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    status = client.get_run_status(
+        UUID(RUN_ID),
+        expected=client.prepare(market_request),
+    )
+    assert status.status == "failed"
+    assert status.failure_code == "EOD_PARTITION_UNAVAILABLE"
+
+
 def test_inconsistent_record_counts_are_rejected(
     contracts_dir: Path, market_request: dict[str, Any]
 ) -> None:

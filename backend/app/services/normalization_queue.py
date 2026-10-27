@@ -21,6 +21,7 @@ from app.models.registry import (
     NormalizationOutbox,
     NormalizationWorkerHeartbeat,
 )
+from app.schemas.source import RunFailureCode
 from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
@@ -38,7 +39,7 @@ TERMINAL_STATUSES = {"completed", "completed_with_errors", "failed"}
 class PermanentNormalizationError(RuntimeError):
     """A run-level error that retrying cannot repair."""
 
-    def __init__(self, failure_code: str):
+    def __init__(self, failure_code: RunFailureCode):
         super().__init__(failure_code)
         self.failure_code = failure_code
 
@@ -279,7 +280,7 @@ async def _schedule_retry(
         job.completed_at = now
         job.updated_at = now
         run.status = "failed"
-        run.failure_code = "RETRY_EXHAUSTED"
+        run.failure_code = RunFailureCode.RETRY_EXHAUSTED
         run.error_message = message
         run.completed_at = now
         run.next_retry_at = None
@@ -498,12 +499,12 @@ async def execute_normalization(
                         )
                         raw = raw_result.scalar_one_or_none()
                     if raw is None:
-                        raise PermanentNormalizationError("RAW_PAYLOAD_MISSING")
+                        raise PermanentNormalizationError(RunFailureCode.RAW_PAYLOAD_MISSING)
                     dataset = await session.get(DatasetRegistry, run.dataset_key)
                     if dataset is None:
-                        raise PermanentNormalizationError("DATASET_NOT_FOUND")
+                        raise PermanentNormalizationError(RunFailureCode.DATASET_NOT_FOUND)
                     if not dataset.is_active:
-                        raise PermanentNormalizationError("DATASET_INACTIVE")
+                        raise PermanentNormalizationError(RunFailureCode.DATASET_INACTIVE)
                     normalizer_cls = _select_normalizer_for_payload(
                         run.dataset_key,
                         raw.payload,
@@ -511,7 +512,7 @@ async def execute_normalization(
                         schema_version=raw.schema_version,
                     )
                     if normalizer_cls is None:
-                        raise PermanentNormalizationError("NORMALIZER_NOT_CONFIGURED")
+                        raise PermanentNormalizationError(RunFailureCode.NORMALIZER_NOT_CONFIGURED)
 
                     normalizer_config = dict(dataset.config or {})
                     if raw.schema_id is not None:
@@ -530,7 +531,9 @@ async def execute_normalization(
                                 dataset.dataset_key,
                                 exc,
                             )
-                            raise PermanentNormalizationError("DATASET_CONTRACT_INVALID") from exc
+                            raise PermanentNormalizationError(
+                                RunFailureCode.DATASET_CONTRACT_INVALID
+                            ) from exc
                         normalizer_config["defaults"] = declaration.defaults.model_dump()
                     normalizer_config["_ingest_fetched_at"] = raw.fetched_at
                     normalizer_config["_ingest_source"] = raw.source
@@ -550,7 +553,7 @@ async def execute_normalization(
                     await session.commit()
                 except EODPartitionUnavailableError as exc:
                     await session.rollback()
-                    failure = PermanentNormalizationError("EOD_PARTITION_UNAVAILABLE")
+                    failure = PermanentNormalizationError(RunFailureCode.EOD_PARTITION_UNAVAILABLE)
                     logger.warning(
                         "Normalization permanently failed (run_id=%s, code=%s): %s",
                         run_id,

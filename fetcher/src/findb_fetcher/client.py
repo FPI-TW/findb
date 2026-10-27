@@ -16,7 +16,11 @@ import httpx
 
 from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
-from findb_fetcher.contracts import ContractRegistry, ContractValidationError
+from findb_fetcher.contracts import (
+    ContractRegistry,
+    ContractValidationError,
+    load_source_run_failure_codes,
+)
 
 _MAX_RESPONSE_BYTES = 64 * 1024
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 502, 503, 504})
@@ -47,16 +51,6 @@ _ALLOWED_ERROR_CODES = frozenset(
         "INTERNAL_ERROR",
         "SOURCE_IDENTITY_MISMATCH",
         "PROVIDER_WORK_FENCE",
-    }
-)
-_ALLOWED_RUN_FAILURE_CODES = frozenset(
-    {
-        "DATASET_CONTRACT_INVALID",
-        "DATASET_INACTIVE",
-        "DATASET_NOT_FOUND",
-        "NORMALIZER_NOT_CONFIGURED",
-        "RAW_PAYLOAD_MISSING",
-        "RETRY_EXHAUSTED",
     }
 )
 
@@ -150,6 +144,7 @@ class SourceAPIClient:
     ) -> None:
         self._config = config
         self._contracts = contracts
+        self._allowed_run_failure_codes = load_source_run_failure_codes(contracts.contracts_dir)
         self._client = client or httpx.Client(timeout=config.request_timeout_seconds)
         self._owns_client = client is None
         self._sleep = sleep
@@ -286,7 +281,7 @@ class SourceAPIClient:
             raise SourceAPIProtocolError("Terminal Source API run omitted completed_at")
 
         failure_code = payload.get("failure_code")
-        if failure_code is not None and failure_code not in _ALLOWED_RUN_FAILURE_CODES:
+        if failure_code is not None and failure_code not in self._allowed_run_failure_codes:
             raise SourceAPIProtocolError("Source API run failure code was invalid")
 
         run_status = RunStatus(

@@ -352,6 +352,8 @@ def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
     assert submitted[0]["effective_date"] == str(DAY)
     assert submitted[0]["evidence"][0]["url"].startswith("https://")
     assert all(m["raw_evidence_ref"].startswith("r2://") for m in submitted[0]["members"])
+    assert runtime.raw_store.formats.count("csv_cp950") == 5
+    assert runtime.raw_store.formats[-1] == "json"
     runtime._taifex_report(DAY, feed["dataset_key"])
     assert len(requests) == 5
     runtime.close()

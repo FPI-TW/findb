@@ -386,16 +386,19 @@ async def test_enforced_source_receipts_rerun_queue_and_legacy_fail_closed(
     )
     # Failed normalization stays failed; completing the coordinator drains the
     # work as failed and leaves both original receipt and new run unchanged.
+    from app.schemas.source import RunFailureCode
     from app.services import normalization_queue
 
     def reject_retained_raw(*args, **kwargs):
-        raise normalization_queue.PermanentNormalizationError("CONTROLLED_NORMALIZER_FAILURE")
+        raise normalization_queue.PermanentNormalizationError(
+            RunFailureCode.DATASET_CONTRACT_INVALID
+        )
 
     with monkeypatch.context() as failure:
         failure.setattr(normalization_queue, "_select_normalizer_for_payload", reject_retained_raw)
         await _execute_run(test_session, test_engine, rerun_id)
     failed = await test_session.get(IngestionRun, rerun_id)
-    assert failed.status == "failed" and failed.failure_code == "CONTROLLED_NORMALIZER_FAILURE"
+    assert failed.status == "failed" and failed.failure_code == "DATASET_CONTRACT_INVALID"
     drained = await client.post(
         f"/api/v1/source/provider-work/{rerun_work['work_id']}/settle",
         headers=source_headers,
