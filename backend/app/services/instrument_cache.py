@@ -180,8 +180,12 @@ def _normalize_instrument_item(item: Any) -> dict[str, Any]:
 
 
 def _normalize_coverage(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {"eod", "minute"}:
-        raise InstrumentCacheValidationError("Instrument coverage must contain eod and minute")
+    required = {"eod", "minute"}
+    allowed = required | {"futures"}
+    if not isinstance(value, dict) or not required.issubset(value) or not set(value) <= allowed:
+        raise InstrumentCacheValidationError(
+            "Instrument coverage must contain eod and minute, with optional futures"
+        )
     return {
         "eod": _normalize_coverage_domain(
             value["eod"],
@@ -192,6 +196,11 @@ def _normalize_coverage(value: Any) -> dict[str, Any]:
             value["minute"],
             ("first_bar_at", "latest_bar_at", "latest_close"),
             "minute",
+        ),
+        "futures": _normalize_coverage_domain(
+            value.get("futures"),
+            ("first_date", "latest_date", "latest_close"),
+            "futures",
         ),
     }
 

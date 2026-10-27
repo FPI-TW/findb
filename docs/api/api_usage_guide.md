@@ -172,7 +172,7 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 
 - `GET /serve/datasets`：provider-free active catalog與coverage。
 - `GET /serve/instruments`、`GET /serve/instruments/{instrument_id}`：商品、facets與分離的
-  `coverage.eod`／`coverage.minute`。
+  `coverage.eod`／`coverage.minute`／`coverage.futures`。
 - `GET /serve/eod`：必須指定`instrument_id`，或`market`加最多50個可選symbols；使用
   opaque cursor且固定最新優先。
 - `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
@@ -188,6 +188,10 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 `DATASET_NOT_AVAILABLE`；找不到商品、日期範圍與cursor錯誤分別使用
 `INSTRUMENT_NOT_FOUND`、`INVALID_DATE_RANGE`、`INVALID_CURSOR`。Catalog若遇到未知或矛盾的
 active registry config會fail closed，不回傳provider、scheduler或credential資訊。
+
+Serve key的`page_size_limit`只套用於分頁路由，並以路由實際預設值檢查：instrument list為50，
+EOD、minute、futures EOD與calendar為100。未分頁的datasets、單筆instrument、published calendar year
+與market freshness不套用page-size限制；超過限制時回傳400，不自動縮小page size。
 
 `/serve/lookup/*`、`/serve/eod/{instrument_id}`、corporate actions、macro與bonds已移除；期貨使用獨立 `/serve/futures/eod`。
 Canonical tables仍保留，但沒有active feed的資料域不構成公開Serve contract。
@@ -247,6 +251,9 @@ Admin只供Dashboard與維運，主要能力包括：
 - scheduler desired state、queue health、missing delivery與market freshness；
 - DQ、raw payload、rerun、EOD correction與audit；
 - instrument cache及市場日曆draft／publish／rollback。
+
+Instrument cache的coverage與Serve instrument契約一致，包含`eod`、`minute`及可空的`futures`；
+既有只含前兩者的cache仍可讀取，下一次Admin替換或更新時會正規化為`futures: null`。
 
 Credential plaintext只在簽發時顯示一次。Admin machine key不得提供給Fetcher或一般
 Serve consumer；同一請求不得同時帶Bearer session與`X-API-Key`。完整端點以OpenAPI的

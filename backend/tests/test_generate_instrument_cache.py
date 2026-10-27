@@ -30,6 +30,11 @@ def instrument(instrument_id: str, market: str, symbol: str) -> dict:
                 "latest_close": "42.00000000",
             },
             "minute": None,
+            "futures": {
+                "first_date": "2026-01-02",
+                "latest_date": "2026-04-09",
+                "latest_close": "42000.00000000",
+            },
         },
         "provider": "must-not-leak",
     }
@@ -47,6 +52,7 @@ def test_build_cache_payload_sorts_and_keeps_nested_coverage():
     assert payload["markets"] == ["TW", "US"]
     assert payload["data"][0]["symbol"] == "2330"
     assert payload["data"][0]["coverage"]["eod"]["latest_close"] == "42.00000000"
+    assert payload["data"][0]["coverage"]["futures"]["latest_close"] == "42000.00000000"
     assert "provider" not in payload["data"][0]
 
 

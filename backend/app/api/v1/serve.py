@@ -7,7 +7,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_serve_api_key, verify_serve_api_key
+from app.api.deps import (
+    require_serve_api_key,
+    verify_paginated_serve_api_key,
+    verify_serve_api_key,
+)
 from app.dependencies import get_db
 from app.schemas.serve import (
     CalendarListResponse,
@@ -53,7 +57,7 @@ async def get_instruments(
     sort_dir: SortDirection = "asc",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 50,
-    _: str | None = Depends(verify_serve_api_key),
+    _: str | None = Depends(verify_paginated_serve_api_key(50)),
     db: AsyncSession = Depends(get_db),
 ) -> InstrumentListResponse:
     return await serve_queries.list_instruments(
@@ -89,7 +93,7 @@ async def get_eod(
     end_date: date | None = None,
     cursor: str | None = None,
     page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
-    _: str | None = Depends(verify_serve_api_key),
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
     db: AsyncSession = Depends(get_db),
 ) -> EODListResponse:
     return await serve_queries.list_eod(
@@ -111,7 +115,7 @@ async def get_minute(
     end_date: date | None = None,
     cursor: str | None = None,
     page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
-    _: str | None = Depends(verify_serve_api_key),
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
     db: AsyncSession = Depends(get_db),
 ) -> MinuteListResponse:
     return await serve_queries.list_minute(
@@ -133,7 +137,7 @@ async def get_futures_eod(
     session: str | None = None,
     cursor: str | None = None,
     page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
-    _: str | None = Depends(verify_serve_api_key),
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
     db: AsyncSession = Depends(get_db),
 ) -> FuturesEODListResponse:
     return await serve_queries.list_futures_eod(
@@ -193,7 +197,7 @@ async def get_calendar(
     is_open: bool | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
-    _: str | None = Depends(verify_serve_api_key),
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
     db: AsyncSession = Depends(get_db),
 ) -> CalendarListResponse:
     return await serve_queries.list_calendar(

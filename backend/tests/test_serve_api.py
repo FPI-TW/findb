@@ -757,6 +757,75 @@ async def test_serve_api_reports_server_misconfiguration(client: AsyncClient, mo
 
 
 @pytest.mark.asyncio
+async def test_serve_page_size_limit_uses_each_route_effective_default(
+    client: AsyncClient, test_session, monkeypatch
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "SERVE_REQUIRE_AUTH", True)
+    _, key = await create_api_key(
+        test_session,
+        owner="serve-page-size-test",
+        tier="standard",
+        scopes=["serve"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        page_size_limit=50,
+        kind="serve",
+        name="serve-page-size-test",
+        role=None,
+        commit=False,
+    )
+    headers = {settings.API_KEY_HEADER: key}
+
+    assert (await client.get("/api/v1/serve/instruments", headers=headers)).status_code == 200
+    for path in (
+        "/api/v1/serve/eod",
+        "/api/v1/serve/minute?instrument_id=11111111-1111-1111-1111-111111111111",
+        "/api/v1/serve/futures/eod",
+        "/api/v1/serve/calendar?market=TW",
+    ):
+        response = await client.get(path, headers=headers)
+        assert response.status_code == 400
+        assert response.json()["detail"] == "page_size exceeds API key limit of 50"
+        allowed = await client.get(
+            f"{path}{'&' if '?' in path else '?'}page_size=50", headers=headers
+        )
+        assert allowed.status_code != 400
+
+
+@pytest.mark.asyncio
+async def test_unpaginated_serve_routes_ignore_page_size_limit(
+    client: AsyncClient, test_session, monkeypatch
+):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "SERVE_REQUIRE_AUTH", True)
+    _, key = await create_api_key(
+        test_session,
+        owner="serve-unpaginated-test",
+        tier="standard",
+        scopes=["serve"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        page_size_limit=1,
+        kind="serve",
+        name="serve-unpaginated-test",
+        role=None,
+        commit=False,
+    )
+    headers = {settings.API_KEY_HEADER: key}
+    responses = [
+        await client.get("/api/v1/serve/datasets", headers=headers),
+        await client.get(
+            "/api/v1/serve/instruments/11111111-1111-1111-1111-111111111111",
+            headers=headers,
+        ),
+        await client.get("/api/v1/serve/calendar/years/TW/2026", headers=headers),
+        await client.get("/api/v1/serve/market-freshness", headers=headers),
+    ]
+    assert all(response.status_code != 400 for response in responses)
+
+
+@pytest.mark.asyncio
 async def test_openapi_publishes_exactly_the_current_serve_routes(client: AsyncClient):
     paths = (await client.get("/openapi.json")).json()["paths"]
     serve_paths = {path for path in paths if path.startswith("/api/v1/serve/")}
