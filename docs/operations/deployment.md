@@ -307,6 +307,9 @@ quota debt、unknown liability、cooldown 與 prepared delivery。不同環境�
 
 部署前 Owner 必須停止兩個 profile，等待 desired／observed 都 stopped，取消或等待 historical／maintenance
 acquiring work 完成。Idle daemon 仍顯示 running 是正常狀態；helper 會優雅停止並確認 exit 0、非 OOM、無 Docker error。
+Provider container 收到 TERM 後有 90 秒完成當前 bounded operation 與回收隔離 child；此上限涵蓋
+FactSet 最長 60 秒查詢、額外 20 秒 supervisor deadline 與 process-group reap 緩衝。超過時 Docker 才送 KILL，
+helper 會將非零 exit 視為 `graceful_stop` 失敗並觸發交易回復，不會接受或啟用候選版本。
 Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉送訊號；raw cleanup
 收到 TERM 後完成當前 transaction 並中斷每日等待。禁止用 `docker rm -f` 越過停止或 checkpoint 問題。交易保存原 container ID、image、名稱與 running state；
 失敗或 INT／TERM／HUP 依反向順序恢復已接受的統一版 runtime。查詢失敗不代表不存在。

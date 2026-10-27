@@ -21,6 +21,14 @@ def _inventory_policy(source):
     return "\n" + source[start:end] + "\n"
 
 
+def test_provider_stop_timeout_covers_bounded_factset_query_and_reap():
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
+
+    assert "provider_stop_timeout_seconds=90" in helper
+    assert helper.count('docker stop --time "$provider_stop_timeout_seconds"') == 3
+    assert "docker stop --time 30" not in helper
+
+
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji"])
 def test_production_container_arguments_bind_full_pilot_historical_inspection(
     tmp_path, monkeypatch, provider
@@ -372,7 +380,12 @@ def test_named_full_journal_restores_names_state_and_stale_backup(
                     operations += 'prepare_named_full_backup_cleanup\ntrap - ERR INT TERM HUP\ndocker rm "$previous"\ncleanup_named_full_backups\n'
                 else:
                     operations += "rollback_processed\ntrap - ERR INT TERM HUP\n"
-    shell = f"set -Eeuo pipefail\nFETCHER_DEPLOY_MODE=candidate\nprocessed=(){transaction}\nstable={stable}\nprevious={previous}\n{operations}"
+    shell = (
+        "set -Eeuo pipefail\n"
+        "FETCHER_DEPLOY_MODE=candidate\n"
+        "provider_stop_timeout_seconds=90\n"
+        f"processed=(){transaction}\nstable={stable}\nprevious={previous}\n{operations}"
+    )
     env = {
         **script_env(),
         "PATH": str(binaries) + ":" + os.environ["PATH"],
@@ -544,7 +557,8 @@ def test_actual_helper_recovery_traps_gracefully_retire_or_preserve_runtime(
 ):
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
     recovery = (
-        _inventory_policy(helper)
+        "provider_stop_timeout_seconds=90\n"
+        + _inventory_policy(helper)
         + helper[
             helper.index("remove_recovery_runtime() {") : helper.index(
                 '\nif runtime_exists "$candidate"; then'
@@ -606,7 +620,7 @@ def test_actual_helper_recovery_traps_gracefully_retire_or_preserve_runtime(
     assert result.returncode != 0
     log = (tmp_path / "docker.log").read_text().splitlines()
     assert not any(line.startswith("rm -f") for line in log)
-    stop = next(i for i, line in enumerate(log) if line == f"stop --time 30 {victim}")
+    stop = next(i for i, line in enumerate(log) if line == f"stop --time 90 {victim}")
     if retirement == "clean":
         removal = next(i for i, line in enumerate(log) if line == f"rm {victim}")
         assert stop < removal
