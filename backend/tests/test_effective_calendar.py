@@ -110,7 +110,7 @@ async def test_independent_configured_market_remains_queryable_and_editable(
     from tests.test_calendar_management import _calendar_serve_headers
 
     market = CalendarMarket(
-        market="JP", display_name="日本", timezone="Asia/Tokyo", weekend_days=[5, 6], active=True
+        market="JP", display_name="日本", timezone="Asia/Tokyo", weekend_days=[4, 5], active=True
     )
     test_session.add(market)
     await test_session.flush()
@@ -126,15 +126,47 @@ async def test_independent_configured_market_remains_queryable_and_editable(
     days = await client.get(
         "/api/v1/serve/calendar",
         headers=headers,
-        params={"market": "JP", "start_date": "2024-02-29", "end_date": "2024-03-02"},
+        params={"market": "JP", "start_date": "2024-02-29", "end_date": "2024-03-03"},
     )
     assert days.status_code == 200, days.text
     assert days.json()["data"] == [
         row
         for row in year.json()["data"]["days"]
-        if "2024-02-29" <= row["trade_date"] <= "2024-03-02"
+        if "2024-02-29" <= row["trade_date"] <= "2024-03-03"
     ]
+    assert [row["is_open"] for row in days.json()["data"]] == [True, False, False, True]
     assert await test_session.scalar(select(func.count()).select_from(CalendarYearRevision)) == 0
+
+
+@pytest.mark.asyncio
+async def test_builtin_market_uses_persisted_weekend_override_without_changing_exchange_metadata(
+    test_session,
+):
+    from app.models.canonical import CalendarMarket
+
+    test_session.add(
+        CalendarMarket(
+            market="TW",
+            display_name="臺灣",
+            timezone="UTC",
+            weekend_days=[4, 5],
+            default_session_open=time(1),
+            default_session_close=time(2),
+            active=True,
+        )
+    )
+    await test_session.flush()
+
+    rows = await effective_days(
+        test_session,
+        "TW",
+        date(2024, 3, 1),
+        date(2024, 3, 3),
+    )
+
+    assert [row["is_open"] for row in rows] == [False, False, True]
+    assert {row["timezone"] for row in rows} == {"Asia/Taipei"}
+    assert rows[-1]["session_open"] == "09:00:00"
 
 
 @pytest.mark.asyncio

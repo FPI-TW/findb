@@ -506,6 +506,38 @@ async def test_calendar_routes_enforce_viewer_operator_owner_roles(
 
 
 @pytest.mark.asyncio
+async def test_json_preview_expands_configured_weekend_days(
+    client: AsyncClient, admin_headers: dict
+):
+    market = await client.put(
+        "/api/v1/admin/calendars/markets/JP",
+        headers=admin_headers,
+        json={
+            "market": "JP",
+            "display_name": "日本",
+            "timezone": "Asia/Tokyo",
+            "weekend_days": [4, 5],
+            "default_session_open": "09:00:00",
+            "default_session_close": "15:00:00",
+            "active": True,
+        },
+    )
+    assert market.status_code == 200
+
+    preview = await client.post(
+        "/api/v1/admin/calendars/imports/json/preview",
+        headers=admin_headers,
+        json={"market": "JP", "year": 2026, "coverage_mode": "exceptions", "days": []},
+    )
+
+    assert preview.status_code == 200
+    by_date = {row["trade_date"]: row for row in preview.json()["days"]}
+    assert by_date["2026-01-02"]["status"] == "closed"
+    assert by_date["2026-01-03"]["status"] == "closed"
+    assert by_date["2026-01-04"]["status"] == "open"
+
+
+@pytest.mark.asyncio
 async def test_audit_failure_rolls_back_calendar_rollback_mutation(
     client: AsyncClient, test_session, admin_headers: dict, monkeypatch, tw_market
 ):
