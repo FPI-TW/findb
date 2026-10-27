@@ -266,6 +266,29 @@ HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期
 既有計畫、成員與 terminal work 不受新日期限制影響。此變更須先部署 Backend，再部署 Fetcher，
 部署期間維持 controls stopped；SQLite 僅新增 prerequisite table，保留原有 rows 與 quota debt。
 
+舊版若已用前一交易日 release 凍結 TAIFEX 計畫，不得把已到期且未出現在當日官方報表的契約
+改記 `no_data`，也不得改寫原 plan、成功 run 或 canonical evidence。一次性處置須先停止對應
+execution profile 的 TAIFEX control，取得當日官方歷史報表與 SHA-256，確認 provider owner 已釋放、
+provider work 已 terminal 且沒有 prepared delivery，再以 Admin prepare audit 完整封存 Backend 與
+checkpoint 原值。只有在 checkpoint snapshot digest 相符時，才能移除該 plan 的活動 SQLite
+plan/work，將該 dataset/profile 的治理起始日移到 exact-date universe 保護開始的首日，並以
+commit audit 結清舊告警。Backend 原 plan、parts、members、runs、canonical evidence 及 terminal
+provider work 必須保留；恢復 control 後至少跨兩輪自然 heartbeat/monitor 驗證告警未重開、
+checkpoint 無 unresolved plan、active provider work 為空。
+
+Staging 的 `manual-pilot-taifex-1015-activation-boundary-20261027-v1` 依上述流程處理 Pilot
+`tw_futures_eod`：10/15 plan `01a13ed6-ac22-757c-b152-ec5789a07804` 誤用 effective date
+10/14 release，凍結已到期的 `MTX:202610W2`；10/15 官方 MTX 歷史報表 SHA-256 為
+`e11e37614d41128349618522fb9d733b2b083c79b740e320d6356df4e2d9208a`，不含 W2、包含 W4。
+Prepare audit `01a17c1f-0e5f-7014-894f-4dca381161ed` 保存 checkpoint snapshot digest
+`7093d8560c349faf3f33b0e94aaa6999f324cbbaf762e34b0d05818fd12544bd`；活動 checkpoint 移除
+1 plan／4 work 後 integrity check 為 `ok`。Commit audit
+`01a17ca9-7a73-7ed3-b654-bf785a854129` 將 Pilot 起始日更正為 10/16，告警 resolution 設為
+`STALE_UNIVERSE_PLAN_OUTSIDE_ACTIVATION`。原 1 plan、1 part、4 members、2 completed runs、
+2 canonical evidence 與 failed provider work 均保留。恢復後兩輪驗證皆為 open alerts 0、active
+TAIFEX provider work 0、checkpoint `unresolved=[]`／`manual_required=0`；Full Market TAIFEX
+維持 stopped。
+
 一般股票 universe 的自動發布仍使用絕對 20 筆及 2% 變更門檻。TAIFEX 到期換倉另使用
 fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週契約、regular／after_hours、
 相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
