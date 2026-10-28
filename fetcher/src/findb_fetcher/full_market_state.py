@@ -67,6 +67,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
                 CREATE TABLE IF NOT EXISTS full_cursor (provider TEXT, dataset TEXT, trade_date TEXT NOT NULL, PRIMARY KEY(provider,dataset));
+                CREATE TABLE IF NOT EXISTS full_schedule (scope TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0, batch BLOB);
                 CREATE TABLE IF NOT EXISTS acquisition_intent(operation_id TEXT PRIMARY KEY, account TEXT NOT NULL, provider TEXT NOT NULL, armed_at REAL NOT NULL, status TEXT NOT NULL, cooldown_bound REAL NOT NULL, actual_start REAL, completed_at REAL);
                 CREATE TABLE IF NOT EXISTS acquisition_usage(operation_id TEXT NOT NULL, observed_at REAL NOT NULL, bytes INTEGER NOT NULL, limit_bytes INTEGER NOT NULL, remaining_bytes INTEGER NOT NULL, PRIMARY KEY(operation_id,observed_at));
                 CREATE TABLE IF NOT EXISTS account_alias_audit(alias TEXT PRIMARY KEY, account TEXT NOT NULL, original_quota TEXT NOT NULL, original_pacing REAL NOT NULL);
@@ -485,11 +486,29 @@ class FullMarketState:
                         (key, provider, plan["plan_id"], member),
                     )
 
-    def claim(self, key: str, *, now: float, lease_seconds: float = 600) -> bool:
+    def eligible(self, key: str, *, now: float) -> bool:
+        """Avoid remote restore probes for terminal, leased or deferred members."""
+        with self.connection() as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM full_work WHERE key=? AND status NOT IN ('complete','manual') AND lease_until<=? AND next_at<=?",
+                    (key, now, now),
+                ).fetchone()
+                is not None
+            )
+
+    def claim(
+        self,
+        key: str,
+        *,
+        now: float,
+        lease_seconds: float = 600,
+        next_cursor: int | None = None,
+    ) -> bool:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT status,lease_until,next_at FROM full_work WHERE key=?", (key,)
+                "SELECT status,lease_until,next_at,plan_id FROM full_work WHERE key=?", (key,)
             ).fetchone()
             if (
                 row is None
@@ -502,7 +521,47 @@ class FullMarketState:
                 "UPDATE full_work SET lease_until=?, attempts=attempts+1 WHERE key=?",
                 (now + lease_seconds, key),
             )
+            if next_cursor is not None:
+                db.execute(
+                    "INSERT INTO full_schedule(scope,cursor) VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET cursor=excluded.cursor",
+                    (row["plan_id"], next_cursor),
+                )
             return True
+
+    def schedule_cursor(self, scope: str) -> int:
+        with self.connection() as db:
+            row = db.execute("SELECT cursor FROM full_schedule WHERE scope=?", (scope,)).fetchone()
+            return row[0] if row else 0
+
+    def schedule_save(
+        self, scope: str, *, cursor: int | None = None, batch: dict | None = None
+    ) -> None:
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO full_schedule(scope,cursor,batch) VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET cursor=COALESCE(?,cursor),batch=COALESCE(excluded.batch,batch)",
+                (scope, cursor or 0, canonical_bytes(batch) if batch is not None else None, cursor),
+            )
+
+    def plan_progress(self, plan_id: str) -> dict[str, Any]:
+        with self.connection() as db:
+            counts = dict(
+                db.execute(
+                    "SELECT status,COUNT(*) FROM full_work WHERE plan_id=? GROUP BY status",
+                    (plan_id,),
+                ).fetchall()
+            )
+            failures = db.execute(
+                "SELECT member_key,reason,attempts FROM full_work WHERE plan_id=? AND reason IN ('source_error','source_rejected','normalization_failed','mapping_gap','retry_exhausted') ORDER BY key",
+                (plan_id,),
+            ).fetchall()
+            batch = db.execute(
+                "SELECT batch FROM full_schedule WHERE scope=?", (plan_id,)
+            ).fetchone()
+        return {
+            "counts": counts,
+            "failures": [dict(row) for row in failures],
+            "last_batch": json.loads(batch[0]) if batch and batch[0] else None,
+        }
 
     def prepared(self, key: str) -> bytes | None:
         with self.connection() as db:
@@ -712,7 +771,7 @@ class FullMarketState:
             gaps = [
                 dict(row)
                 for row in db.execute(
-                    "SELECT plan_id,trade_date,late FROM full_plan WHERE provider=? AND complete=0 ORDER BY trade_date",
+                    "SELECT plan_id,dataset AS dataset_key,trade_date,late FROM full_plan WHERE provider=? AND complete=0 ORDER BY trade_date",
                     (provider,),
                 )
             ]
@@ -736,5 +795,6 @@ class FullMarketState:
             "unresolved": gaps,
             "manual_required": manual,
             "date_prerequisites": prerequisites,
+            "plans": [{**gap, **self.plan_progress(gap["plan_id"])} for gap in gaps],
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }

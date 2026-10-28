@@ -38,7 +38,15 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("full-market config exceeds bound")
     value = json.loads(path.read_bytes())
     if (
-        set(value) != {"version", "deployment_target", "desired_state", "poll_seconds", "feeds"}
+        set(value)
+        != {
+            "version",
+            "deployment_target",
+            "desired_state",
+            "poll_seconds",
+            "feeds",
+            "daily_runtime_policies",
+        }
         or value["version"] != 1
         or value["deployment_target"] not in {"local", "staging", "production"}
         or value["desired_state"] != "stopped"
@@ -46,6 +54,9 @@ def load_config(path: Path) -> dict[str, Any]:
         or not 1 <= value["poll_seconds"] <= 30
     ):
         raise ValueError("full-market rollout config must be environment-bound/stopped v1")
+    from findb_fetcher.daily_runtime import validate_policies
+
+    validate_policies(value["daily_runtime_policies"])
     actual = set()
     for feed in value["feeds"]:
         if set(feed) != {
@@ -231,7 +242,20 @@ def main(argv: list[str] | None = None) -> int:
                 if enabled():
                     with host_lock(args.provider):
                         pass
-            print(json.dumps(state.health(args.provider), separators=(",", ":")))
+            from findb_fetcher.daily_runtime import window
+
+            print(
+                json.dumps(
+                    {
+                        **state.health(args.provider),
+                        "daily_runtime_window": window(
+                            config["daily_runtime_policies"].get(args.provider),
+                            datetime.now(timezone.utc),
+                        ),
+                    },
+                    separators=(",", ":"),
+                )
+            )
             return 0
         fetcher = FetcherConfig.from_env()
         scheduler_key = f"{args.execution_profile}_{args.provider}_v1"

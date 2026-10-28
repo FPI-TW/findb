@@ -81,5 +81,14 @@
       "completion_window_seconds": 18000,
       "slot_id": "taiwan_market_window"
     }
-  ]
+  ],
+  "daily_runtime_policies": {
+    "shioaji": {
+      "timezone": "Asia/Taipei",
+      "start": "18:00",
+      "end": "06:00",
+      "max_members": 25,
+      "max_seconds": 60
+    }
+  }
 }

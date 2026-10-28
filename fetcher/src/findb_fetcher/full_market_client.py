@@ -170,6 +170,16 @@ class FullMarketSourceClient:
                     if _authorization:
                         from findb_fetcher.acquisition import REMOTE_AGE_SECONDS, Authorization
 
+                        if (
+                            result.get("acquisition_allowed") is False
+                            and result.get("acquisition_blockers")
+                            == ["daily_acquisition_window_closed"]
+                            and result.get("daily_runtime_window", {}).get("open") is False
+                        ):
+                            raise FullMarketProtocolError(
+                                "daily acquisition window closed",
+                                code="DAILY_ACQUISITION_WINDOW_CLOSED",
+                            )
                         try:
                             header_at = datetime.fromisoformat(
                                 response.headers["X-FinDB-Acquisition-Checked-At"]

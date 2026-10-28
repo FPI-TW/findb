@@ -148,6 +148,11 @@ def _probe(provider, mode):
             self.provider = provider
 
         execution_profile = "full_market"
+        daily_policy = None
+
+        def runtime_window(self):
+            return {"open": True, "closes_at": None, "next_open_at": None}
+
         state = SimpleNamespace(path=Path(".state/full-market/state.sqlite3"))
         source = SourceDouble()
 

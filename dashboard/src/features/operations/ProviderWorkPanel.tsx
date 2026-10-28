@@ -10,6 +10,9 @@ const waitLabels: Record<string, string> = {
   not_before: "等待市場收盤或重試時間",
   suspended: "排程已暫停；讓其他可執行工作先行",
   prepared_drain: "等待排空原交付",
+  account_cooldown: "等待共用帳號配額或冷卻",
+  acquisition_window_closed: "每日抓取窗口外",
+  batch_yield: "等待下一批輪替",
 }
 
 export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
@@ -89,7 +92,7 @@ export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
                         <th className="p-2">來源 / 日期</th>
                         <th className="p-2">狀態 / 順位</th>
                         <th className="p-2">等待原因</th>
-                        <th className="p-2">重試 / 最早時間</th>
+                        <th className="p-2">輪替 / 最早時間</th>
                         <th className="p-2">心跳</th>
                       </tr>
                     </thead>
@@ -132,6 +135,30 @@ export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
                           <td className="p-2">
                             第 {work.attempt_number} 輪
                             <div className="text-muted">{work.not_before}</div>
+                            {work.last_batch?.processed !== undefined && (
+                              <div>
+                                最近批次：{work.last_batch.processed} 個成員 ·{" "}
+                                {work.last_batch.elapsed_seconds ?? 0} 秒
+                              </div>
+                            )}
+                            {work.last_batch?.counts && (
+                              <div className="text-muted">
+                                完成 {work.last_batch.counts.complete ?? 0} ·
+                                待處理{" "}
+                                {(work.last_batch.counts.pending ?? 0) +
+                                  (work.last_batch.counts.prepared ?? 0)}{" "}
+                                · 人工處理 {work.last_batch.counts.manual ?? 0}
+                              </div>
+                            )}
+                            {work.daily_runtime_window?.next_open_at && (
+                              <div>
+                                下次開窗：
+                                {work.daily_runtime_window.next_open_at}
+                              </div>
+                            )}
+                            {work.last_failure_code && (
+                              <div>最近實際失敗：{work.last_failure_code}</div>
+                            )}
                           </td>
                           <td className="p-2">{work.heartbeat_at ?? "—"}</td>
                         </tr>

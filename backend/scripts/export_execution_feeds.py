@@ -24,6 +24,7 @@ def main() -> int:
                     "desired_state": "stopped",
                     "poll_seconds": 30,
                     "feeds": catalog["feeds"],
+                    "daily_runtime_policies": catalog["daily_runtime_policies"],
                 },
                 indent=2,
             )

@@ -28,6 +28,7 @@ from findb_fetcher.client import (
     SourceAPITransportError,
     permanent_source_failure,
 )
+from findb_fetcher.daily_runtime import window
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
@@ -84,6 +85,7 @@ from findb_fetcher.providers.finlab import (
 )
 from findb_fetcher.providers.shioaji import (
     SHIOAJI_SDK_VERSION,
+    ShioajiSdkError,
     _simulation_from_env,
     build_market_minute_request,
 )
@@ -118,6 +120,10 @@ _TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States", "hk_equity_eod": "H
 
 class ReadinessBlockedError(RuntimeError):
     pass
+
+
+class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
+    """A proven daily-window wait, including authoritative Source denial."""
 
 
 class ProviderHTTPError(ReadinessBlockedError):
@@ -238,10 +244,14 @@ def _governed(method):
         if self.provider == "factset" and active() is None:
             raise ReadinessBlockedError("FactSet acquisition requires provider work enforcement")
         if not self._acquisition_allowed():
+            if not self.runtime_window()["open"]:
+                raise DailyWindowClosedError("daily acquisition window closed")
             raise ReadinessBlockedError("scheduler acquisition stopped")
 
         def authorize():
             if not self._acquisition_allowed():
+                if not self.runtime_window()["open"]:
+                    raise DailyWindowClosedError("daily acquisition window closed")
                 raise ReadinessBlockedError("scheduler acquisition stopped")
             consumer = os.getenv("FETCHER_CONSUMER_PROFILE", "full_market")
             from findb_fetcher.provider_work import active
@@ -257,22 +267,35 @@ def _governed(method):
             plan = kwargs.get("plan") or (
                 args[1] if method.__name__ == "_acquire" and len(args) > 1 else None
             )
-            return self.source.authorization(
-                "GET",
-                "full-market/authorization?consumer="
-                + consumer
-                + "&execution_profile="
-                + self.execution_profile,
-                required_dataset=(
-                    kwargs.get("dataset_key") or args[0]
-                    if method.__name__ == "_catalogue_market"
-                    else args[0]["dataset_key"]
-                    if method.__name__ == "_dated_taifex_universe"
-                    else plan["dataset_key"]
-                    if plan
-                    else None
-                ),
-            )
+            try:
+                grant = self.source.authorization(
+                    "GET",
+                    "full-market/authorization?consumer="
+                    + consumer
+                    + "&execution_profile="
+                    + self.execution_profile,
+                    required_dataset=(
+                        kwargs.get("dataset_key") or args[0]
+                        if method.__name__ == "_catalogue_market"
+                        else args[0]["dataset_key"]
+                        if method.__name__ == "_dated_taifex_universe"
+                        else plan["dataset_key"]
+                        if plan
+                        else None
+                    ),
+                )
+
+            except FullMarketProtocolError as exc:
+                if exc.code == "DAILY_ACQUISITION_WINDOW_CLOSED":
+                    raise DailyWindowClosedError("daily acquisition window closed") from None
+                raise
+            runtime_window = self.runtime_window()
+            if consumer != "maintenance" and self.daily_policy:
+                if not runtime_window["open"]:
+                    raise DailyWindowClosedError("daily acquisition window closed")
+                expires = datetime.fromisoformat(runtime_window["closes_at"]).timestamp()
+                grant = replace(grant, expires_at=min(grant.expires_at or expires, expires))
+            return grant
 
         with authorization_scope(authorize, state_path=self.state.path):
             return method(self, *args, **kwargs)
@@ -319,6 +342,8 @@ class FullMarketRuntime:
         self.futures: dict[str, tuple[bytes, list[dict[str, Any]], bool]] = {}
         self.bundles: dict[tuple[str, date], Any] = {}
         self._drain_blocked = False
+        self.daily_policy = config.get("daily_runtime_policies", {}).get(provider)
+        self.last_batch: dict[str, Any] = {}
 
     def close(self) -> None:
         if self.sdk is not None:
@@ -365,6 +390,14 @@ class FullMarketRuntime:
         return status["repair_required"]
 
     def _shioaji_request(self, operation: str, *args: Any) -> Any:
+        from findb_fetcher.provider_work import active
+
+        owner = active()
+        maintenance = (owner and owner.work["kind"] == "maintenance") or os.getenv(
+            "FETCHER_CONSUMER_PROFILE"
+        ) == "maintenance"
+        if not maintenance and not self.runtime_window()["open"]:
+            raise DailyWindowClosedError("daily acquisition window closed")
         if self.sdk is not None and not getattr(self.sdk, "is_alive", lambda: True)():
             self.sdk.close()
             self.sdk = None
@@ -382,6 +415,12 @@ class FullMarketRuntime:
                 failed.close()
             raise
 
+    def runtime_window(self) -> dict[str, Any]:
+        return window(self.daily_policy, datetime.now(timezone.utc))
+
+    def health(self) -> dict[str, Any]:
+        return {**self.state.health(self.provider), "daily_runtime_window": self.runtime_window()}
+
     def _acquisition_allowed(self) -> bool:
         from findb_fetcher.provider_work import active
 
@@ -389,7 +428,9 @@ class FullMarketRuntime:
         if owner and owner.work["kind"] == "maintenance":
             owner.authorize()
             return True
-        return self.can_acquire()
+        if os.getenv("FETCHER_CONSUMER_PROFILE") == "maintenance":
+            return self.can_acquire()
+        return self.runtime_window()["open"] and self.can_acquire()
 
     def _reserve(self, *, requests: int = 1, byte_count: int | None = None) -> tuple[int, int]:
         from findb_fetcher.account_governor import enabled, reserve
@@ -842,7 +883,7 @@ class FullMarketRuntime:
         if enabled():
             return self._queued_cycle()
         if self.provider == "factset":
-            return self.state.health(self.provider)
+            return self.health()
         self._drain_blocked = False
         for saved in self.state.pending_plans(self.provider):
             plan = json.loads(saved["body"])
@@ -862,7 +903,7 @@ class FullMarketRuntime:
             if not can_continue:
                 self._drain_blocked = True
                 break
-        return self.state.health(self.provider)
+        return self.health()
 
     def cycle(self, *, drain_prepared: bool = True) -> dict[str, Any]:
         from findb_fetcher.provider_work import enabled
@@ -870,17 +911,17 @@ class FullMarketRuntime:
         if enabled():
             return self._queued_cycle()
         if self.provider == "factset":
-            return self.state.health(self.provider)
+            return self.health()
         if drain_prepared:
             self.drain()
         if self._drain_blocked:
-            return self.state.health(self.provider)
+            return self.health()
         self._ensure_proof()
         authorization = self.source.request(
             "GET", "full-market/authorization?consumer=" + self.execution_profile
         )
         if authorization.get("acquisition_allowed") is not True:
-            return self.state.health(self.provider)
+            return self.health()
         self.feeds = [
             feed
             for feed in self.installed_feeds
@@ -928,7 +969,7 @@ class FullMarketRuntime:
                 raise ReadinessBlockedError("published universe identity invalid")
             releases.append((feed, listed, release))
         if not releases:
-            return self.state.health(self.provider)
+            return self.health()
         due_work: list[tuple[date, dict[str, Any]]] = []
         for feed, listed, release in releases:
             activation = date.fromisoformat(listed["activation"]["activation_date"])
@@ -941,10 +982,12 @@ class FullMarketRuntime:
                 for offset in range((through - activation).days + 1)
             ]
             due_work.extend((day, feed) for day in due_dates)
+        if self.daily_policy:
+            return self._fair_direct_cycle(due_work)
         for day, feed in sorted(due_work, key=lambda work: work[0], reverse=True):
             if not self._acquisition_allowed():
                 self.pause()
-                return self.state.health(self.provider)
+                return self.health()
             # Current deadline comes first; catchup retains every unresolved scheduled date.
             try:
                 plan = self._plan_for_date(feed, day)
@@ -961,11 +1004,54 @@ class FullMarketRuntime:
             evaluated = self.source.evaluate(plan["plan_id"])
             self.state.evaluate(evaluated)
             if not can_continue:
-                return self.state.health(self.provider)
+                return self.health()
             if evaluated["status"] == "complete":
                 self.bundles.pop((feed["dataset_key"], day), None)
                 self.futures.pop(day.isoformat(), None)
-        return self.state.health(self.provider)
+        return self.health()
+
+    def _fair_direct_cycle(self, due_work: list[tuple[date, dict[str, Any]]]) -> dict[str, Any]:
+        ready = []
+        for day, feed in sorted(due_work, key=lambda work: work[0], reverse=True):
+            if not self._acquisition_allowed():
+                return self.health()
+            try:
+                plan = self._plan_for_date(feed, day)
+            except DatedUniversePendingError:
+                continue
+            self.state.clear_date(self.provider, feed["dataset_key"], day)
+            if plan["status"] == "skipped_calendar":
+                continue
+            self.state.record_plan(plan, self.provider)
+            if plan["status"] != "complete":
+                ready.append((feed, plan))
+        datasets = [feed["dataset_key"] for feed in self.feeds]
+        offset = self.state.schedule_cursor(self.provider + ":feeds") % max(1, len(datasets))
+        order = datasets[offset:] + datasets[:offset]
+        ready.sort(
+            key=lambda entry: (
+                -date.fromisoformat(entry[1]["trade_date"]).toordinal(),
+                order.index(entry[0]["dataset_key"]),
+            )
+        )
+        for feed, plan in ready:
+            # Persist the next sibling before dispatch, including failed/crashed turns.
+            self.state.schedule_save(
+                self.provider + ":feeds",
+                cursor=(datasets.index(feed["dataset_key"]) + 1) % len(datasets),
+            )
+            if not self._acquisition_allowed():
+                self.pause()
+                break
+            self._deliver_plan(plan, self.source.release(plan["release_id"]), feed)
+            self.state.evaluate(self.source.evaluate(plan["plan_id"]))
+            if self.last_batch.get("reason") in {
+                "quota_wait",
+                "acquisition_window_closed",
+                "suspended",
+            }:
+                break
+        return self.health()
 
     def sync_queued_universes(self) -> list[dict[str, Any]]:
         from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
@@ -1226,7 +1312,7 @@ class FullMarketRuntime:
                 execution_profile=self.execution_profile,
             ) as owner:
                 if owner is None:
-                    return self.state.health(self.provider)
+                    return self.health()
                 try:
                     work = owner.work
                     if work["kind"] == "rerun":
@@ -1245,14 +1331,27 @@ class FullMarketRuntime:
                         )
                         if installed is None:
                             self._settle_retired_work(owner)
-                            return self.state.health(self.provider)
+                            return self.health()
                         if work["state"] != "open" and not work.get("manifest"):
                             owner.settle("retry", failure_code="RECOVERED_CLOSED_ROUND")
-                            return self.state.health(self.provider)
+                            return self.health()
                         feed = work["scope"].get("feed") or installed
                         if feed["dataset_key"] != installed["dataset_key"]:
                             raise ValueError("daily frozen feed differs from work dataset")
                         day = date.fromisoformat(work["trade_date"])
+                        if self.daily_policy and admitted and not work.get("drain_only"):
+                            # Freeze all same-date admitted siblings before any SDK
+                            # dispatch, even though only this work owns acquisition.
+                            siblings = {
+                                sibling["dataset_key"]: sibling
+                                for due_day, sibling in due
+                                if due_day == day and sibling["dataset_key"] in admitted
+                            }
+                            for sibling in siblings.values():
+                                sibling_plan = self._plan_for_date(sibling, day)
+                                self.state.clear_date(self.provider, sibling["dataset_key"], day)
+                                if sibling_plan["status"] != "skipped_calendar":
+                                    self.state.record_plan(sibling_plan, self.provider)
                         plan = self._plan_for_date(feed, day)
                         if plan["status"] == "skipped_calendar":
                             owner.freeze(
@@ -1384,7 +1483,7 @@ class FullMarketRuntime:
                     self.pause()
         except ProviderWorkWaitingError:
             pass
-        return self.state.health(self.provider)
+        return self.health()
 
     def _deliver_factset_plan(self, owner, plan: dict, release: dict, feed: dict) -> None:
         from findb_fetcher.factset_eod import FactSetEOD, completion_status
@@ -1505,6 +1604,28 @@ class FullMarketRuntime:
         """Close acceptance, drain every accepted run, then settle this round."""
         self.pause()
         owner.request("close")
+        scheduling = None
+        if self.daily_policy and owner.work["kind"] == "daily":
+            manifest = owner.journal.manifest() or {}
+            plan_id = manifest.get("plan_id")
+            if plan_id:
+                with self.state.connection() as db:
+                    manual_bodies = db.execute(
+                        "SELECT body FROM full_work WHERE plan_id=? AND status='manual' AND body IS NOT NULL",
+                        (plan_id,),
+                    ).fetchall()
+                manual_keys = {
+                    request["idempotency_key"]
+                    for row in manual_bodies
+                    for request in json.loads(row["body"])
+                }
+                owner.drain_prepared(pending_only=True, skip=manual_keys)
+                progress = self.state.plan_progress(plan_id)
+                scheduling = {
+                    **(progress["last_batch"] or {}),
+                    "counts": progress["counts"],
+                    "failures": progress["failures"],
+                }
         while True:
             desired = outcome
             if desired is None:
@@ -1523,7 +1644,7 @@ class FullMarketRuntime:
                     "completed"
                     if plan["status"] == "complete"
                     else "failed"
-                    if manual or not pending
+                    if (manual and not self.daily_policy) or not pending
                     else "retry"
                 )
             try:
@@ -1537,8 +1658,23 @@ class FullMarketRuntime:
                     if desired == "completed" and owner.work["kind"] == "maintenance"
                     else {}
                 )
+                if scheduling is not None:
+                    proof["scheduling"] = scheduling
+                    if desired == "retry" and scheduling.get("reason") == "batch_yield":
+                        retry_delay_seconds = 1
+                    if desired == "retry" and not self.runtime_window()["open"]:
+                        retry_delay_seconds = max(
+                            retry_delay_seconds,
+                            math.ceil(
+                                (
+                                    datetime.fromisoformat(self.runtime_window()["next_open_at"])
+                                    - datetime.now(timezone.utc)
+                                ).total_seconds()
+                            ),
+                        )
                 if desired == "failed":
                     proof = {
+                        **proof,
                         "manual_pending_prepared": owner.prepared_keys(),
                         "manual_reason": "frozen_scope_requires_manual_review",
                     }
@@ -1725,254 +1861,316 @@ class FullMarketRuntime:
         *,
         drain_only: bool = False,
     ) -> bool:
-        members = {member["member_key"]: member for member in release["members"]}
-        for part in plan["parts"]:
-            for member_key in part["member_keys"]:
-                member = members[member_key]
-                key = part["work_item_id"] + ":" + member_key
-                from findb_fetcher.provider_work import active
+        self._batch_started = time.monotonic()
+        self.last_batch = {"processed": 0, "reason": "scanned", "plan_id": plan["plan_id"]}
+        try:
+            return self._deliver_members(plan, release, feed, drain_only=drain_only)
+        finally:
+            if self.daily_policy:
+                self.last_batch["elapsed_seconds"] = round(
+                    time.monotonic() - self._batch_started, 3
+                )
+                self.state.schedule_save(plan["plan_id"], batch=self.last_batch)
 
-                owner = active()
-                if owner and self.state.prepared(key) is None:
-                    restored = owner.restore(member_key=member_key)
-                    if restored:
-                        self.state.prepare(
-                            key, canonical_bytes([json.loads(body) for body in restored])
-                        )
-                if self.state.prepared(key) is None and (
-                    drain_only or not self._acquisition_allowed()
+    def _deliver_members(
+        self,
+        plan: dict[str, Any],
+        release: dict[str, Any],
+        feed: dict[str, Any],
+        *,
+        drain_only: bool = False,
+    ) -> bool:
+        members = {member["member_key"]: member for member in release["members"]}
+        entries = [(part, key) for part in plan["parts"] for key in part["member_keys"]]
+        offset = (
+            self.state.schedule_cursor(plan["plan_id"]) % max(1, len(entries))
+            if self.daily_policy
+            else 0
+        )
+        ordered = list(enumerate(entries))
+        ordered = ordered[offset:] + ordered[:offset]
+        for index, (part, member_key) in ordered:
+            member = members[member_key]
+            key = part["work_item_id"] + ":" + member_key
+            if self.daily_policy:
+                if (
+                    self.last_batch["processed"] >= self.daily_policy["max_members"]
+                    or time.monotonic() - self._batch_started >= self.daily_policy["max_seconds"]
                 ):
+                    self.last_batch["reason"] = "batch_yield"
+                    return True
+                if not self.state.eligible(key, now=time.time()):
                     continue
-                if not self.state.claim(key, now=time.time()):
+            from findb_fetcher.provider_work import active
+
+            owner = active()
+            if owner and self.state.prepared(key) is None:
+                restored = owner.restore(member_key=member_key)
+                if restored:
+                    self.state.prepare(
+                        key, canonical_bytes([json.loads(body) for body in restored])
+                    )
+            if self.state.prepared(key) is None and (drain_only or not self._acquisition_allowed()):
+                continue
+            if self.daily_policy and (
+                self.last_batch["processed"] >= self.daily_policy["max_members"]
+                or time.monotonic() - self._batch_started >= self.daily_policy["max_seconds"]
+            ):
+                self.last_batch["reason"] = "batch_yield"
+                return True
+            if not self.state.claim(
+                key,
+                now=time.time(),
+                next_cursor=(index + 1) % len(entries) if self.daily_policy else None,
+            ):
+                continue
+            if self.daily_policy:
+                self.last_batch["processed"] += 1
+            dispatch_before = owner.dispatch_observations if owner else 0
+            try:
+                if member["mapping_status"] != "mapped":
+                    self.source.outcome(
+                        plan["plan_id"],
+                        work_item_id=part["work_item_id"],
+                        member_key=member_key,
+                        reason="mapping_gap",
+                    )
+                    self.state.finish(key, status="manual", reason="mapping_gap")
                     continue
-                dispatch_before = owner.dispatch_observations if owner else 0
-                try:
-                    if member["mapping_status"] != "mapped":
-                        self.source.outcome(
-                            plan["plan_id"],
-                            work_item_id=part["work_item_id"],
-                            member_key=member_key,
-                            reason="mapping_gap",
-                        )
-                        self.state.finish(key, status="manual", reason="mapping_gap")
-                        continue
-                    prepared = self.state.prepared(key)
-                    if prepared is None:
-                        if owner:
-                            if (
-                                self.provider == "finlab"
-                                and getattr(owner, "journal", None) is not None
-                                and owner.journal.has_response_observation(
-                                    "finlab_dataset:", prefix=True
-                                )
-                                and self._calendar_repair_required(owner)
-                            ):
-                                self.state.finish(
-                                    key,
-                                    status="manual",
-                                    reason="calendar_repair_required",
-                                )
-                                raise CalendarDecisionRepairRequiredError(
-                                    "published calendar is now closed"
-                                ) from None
-                            owner.authorize()
-                        requests = self._acquire(member, plan, part, release, feed)
-                        if not requests:
-                            self.state.finish(
-                                key, status="complete", reason="source_proven_no_trade"
-                            )
-                            continue
-                        if owner:
-                            for request in requests:
-                                owner.reserve(request)
-                        prepared = canonical_bytes(requests)
-                        self.state.prepare(key, prepared)
-                    normalizing = False
-                    prepared_requests = json.loads(prepared)
-                    for request in prepared_requests:
-                        immutable = self.delivery.prepare(request)
-                        request_identity = request.get("idempotency_key") or checksum(
-                            canonical_bytes(request)
-                        )
-                        saved_run = self.state.sequence_receipt(key, request_identity)
-                        if saved_run is None and len(prepared_requests) == 1:
-                            # Legacy checkpoints stored one receipt per member.
-                            # Import only the unambiguous one-request case; each
-                            # multi-sequence body replays its own immutable key.
-                            saved_run = self.state.receipt(key)
-                            if saved_run is not None:
-                                self.state.save_sequence_receipt(key, request_identity, saved_run)
-                        if saved_run is None:
-                            receipt = self.delivery.deliver(immutable)
-                            saved_run = str(receipt.run_id)
-                            self.state.save_sequence_receipt(key, request_identity, saved_run)
-                            self.state.finish(key, status="prepared", receipt=saved_run)
-                        run = self.delivery.get_run_status(UUID(saved_run), expected=immutable)
-                        if run.status in {"queued", "pending", "processing", "retrying"}:
-                            normalizing = True
-                            break
+                prepared = self.state.prepared(key)
+                if prepared is None:
+                    if owner:
                         if (
-                            run.status != "completed"
-                            or run.failed_records
-                            or run.success_records != run.total_records
-                        ):
-                            self.state.finish(key, status="manual", reason="normalization_failed")
-                            if run.status != "completed" or run.failed_records:
-                                self.source.outcome(
-                                    plan["plan_id"],
-                                    work_item_id=part["work_item_id"],
-                                    member_key=member_key,
-                                    reason="source_error",
-                                )
-                            normalizing = True
-                            saved_run = None
-                            break
-                    if normalizing:
-                        if saved_run is not None:
-                            self.state.finish(
-                                key, status="prepared", reason="normalizing", now=time.time()
+                            self.provider == "finlab"
+                            and getattr(owner, "journal", None) is not None
+                            and owner.journal.has_response_observation(
+                                "finlab_dataset:", prefix=True
                             )
+                            and self._calendar_repair_required(owner)
+                        ):
+                            self.state.finish(
+                                key,
+                                status="manual",
+                                reason="calendar_repair_required",
+                            )
+                            raise CalendarDecisionRepairRequiredError(
+                                "published calendar is now closed"
+                            ) from None
+                        owner.authorize()
+                    requests = self._acquire(member, plan, part, release, feed)
+                    if not requests:
+                        self.state.finish(key, status="complete", reason="source_proven_no_trade")
                         continue
-                    self.state.finish(key, status="complete")
-                except CalendarDecisionRepairRequiredError:
-                    raise
-                except ProviderWorkAcquisitionStopped:
-                    if owner and owner.dispatch_observations != dispatch_before:
+                    if owner:
+                        for request in requests:
+                            owner.reserve(request)
+                    prepared = canonical_bytes(requests)
+                    self.state.prepare(key, prepared)
+                normalizing = False
+                prepared_requests = json.loads(prepared)
+                for request in prepared_requests:
+                    immutable = self.delivery.prepare(request)
+                    request_identity = request.get("idempotency_key") or checksum(
+                        canonical_bytes(request)
+                    )
+                    saved_run = self.state.sequence_receipt(key, request_identity)
+                    if saved_run is None and len(prepared_requests) == 1:
+                        # Legacy checkpoints stored one receipt per member.
+                        # Import only the unambiguous one-request case; each
+                        # multi-sequence body replays its own immutable key.
+                        saved_run = self.state.receipt(key)
+                        if saved_run is not None:
+                            self.state.save_sequence_receipt(key, request_identity, saved_run)
+                    if saved_run is None:
+                        receipt = self.delivery.deliver(immutable)
+                        saved_run = str(receipt.run_id)
+                        self.state.save_sequence_receipt(key, request_identity, saved_run)
+                        self.state.finish(key, status="prepared", receipt=saved_run)
+                    run = self.delivery.get_run_status(UUID(saved_run), expected=immutable)
+                    if run.status in {"queued", "pending", "processing", "retrying"}:
+                        normalizing = True
+                        break
+                    if (
+                        run.status != "completed"
+                        or run.failed_records
+                        or run.success_records != run.total_records
+                    ):
+                        self.state.finish(key, status="manual", reason="normalization_failed")
+                        if run.status != "completed" or run.failed_records:
+                            self.source.outcome(
+                                plan["plan_id"],
+                                work_item_id=part["work_item_id"],
+                                member_key=member_key,
+                                reason="source_error",
+                            )
+                        normalizing = True
+                        saved_run = None
+                        break
+                if normalizing:
+                    if saved_run is not None:
                         self.state.finish(
-                            key,
-                            status="prepared" if self.state.prepared(key) else "pending",
-                            reason="suspended",
-                            now=time.time(),
+                            key, status="prepared", reason="normalizing", now=time.time()
                         )
-                    else:
-                        self.state.defer_wait(key, now=time.time(), reason="suspended")
-                    return False
-                except FinLabTargetNotReadyError:
-                    retry_delay = self._publication_retry_delay(owner, feed)
-                    if self._calendar_repair_required(owner):
-                        self.state.finish(
-                            key,
-                            status="manual",
-                            reason="calendar_repair_required",
-                        )
-                        raise CalendarDecisionRepairRequiredError(
-                            "published calendar is now closed"
-                        ) from None
-                    if retry_delay > 0:
-                        self.state.defer_wait(
-                            key,
-                            now=time.time(),
-                            reason="target_not_ready",
-                            delay_seconds=retry_delay,
-                        )
-                        raise ProviderPublicationPendingError(
-                            "finlab_target_not_ready",
-                            retry_after_seconds=retry_delay,
-                        ) from None
+                    continue
+                self.state.finish(key, status="complete")
+            except CalendarDecisionRepairRequiredError:
+                raise
+            except ProviderWorkAcquisitionStopped as exc:
+                window_closed = (
+                    isinstance(exc, DailyWindowClosedError) or not self.runtime_window()["open"]
+                )
+                if self.daily_policy:
+                    self.last_batch["reason"] = (
+                        "acquisition_window_closed" if window_closed else "suspended"
+                    )
+                if self.daily_policy and window_closed:
+                    self.state.defer_wait(key, now=time.time(), reason="acquisition_window_closed")
+                elif owner and owner.dispatch_observations != dispatch_before:
+                    self.state.finish(
+                        key,
+                        status="prepared" if self.state.prepared(key) else "pending",
+                        reason="suspended",
+                        now=time.time(),
+                    )
+                else:
+                    self.state.defer_wait(key, now=time.time(), reason="suspended")
+                return False
+            except FinLabTargetNotReadyError:
+                retry_delay = self._publication_retry_delay(owner, feed)
+                if self._calendar_repair_required(owner):
                     self.state.finish(
                         key,
                         status="manual",
+                        reason="calendar_repair_required",
+                    )
+                    raise CalendarDecisionRepairRequiredError(
+                        "published calendar is now closed"
+                    ) from None
+                if retry_delay > 0:
+                    self.state.defer_wait(
+                        key,
+                        now=time.time(),
                         reason="target_not_ready",
+                        delay_seconds=retry_delay,
                     )
+                    raise ProviderPublicationPendingError(
+                        "finlab_target_not_ready",
+                        retry_after_seconds=retry_delay,
+                    ) from None
+                self.state.finish(
+                    key,
+                    status="manual",
+                    reason="target_not_ready",
+                )
+                return False
+            except (QuotaBlockedError, TwelveDataResponseError) as exc:
+                limited = (
+                    exc.quota_wait and not exc.dispatched
+                    if isinstance(exc, QuotaBlockedError)
+                    else exc.is_rate_limited
+                )
+                reason = "rate_limited" if limited else "source_error"
+                if limited:
+                    self.state.rate_limited(
+                        account=self.provider,
+                        window=datetime.now(timezone.utc).date().isoformat(),
+                        until=time.time() + 60,
+                    )
+                from findb_fetcher.provider_work import enabled
+
+                predispatch_wait = (
+                    isinstance(exc, QuotaBlockedError)
+                    and limited
+                    and (
+                        self.daily_policy
+                        or owner is None
+                        or owner.dispatch_observations == dispatch_before
+                    )
+                )
+                if predispatch_wait and (enabled() or self.daily_policy):
+                    self.state.defer_wait(key, now=time.time())
+                    if self.daily_policy:
+                        self.last_batch["reason"] = "quota_wait"
                     return False
-                except (QuotaBlockedError, TwelveDataResponseError) as exc:
-                    limited = (
-                        exc.quota_wait and not exc.dispatched
-                        if isinstance(exc, QuotaBlockedError)
-                        else exc.is_rate_limited
-                    )
-                    reason = "rate_limited" if limited else "source_error"
-                    if limited:
-                        self.state.rate_limited(
-                            account=self.provider,
-                            window=datetime.now(timezone.utc).date().isoformat(),
-                            until=time.time() + 60,
-                        )
+                self.source.outcome(
+                    plan["plan_id"],
+                    work_item_id=part["work_item_id"],
+                    member_key=member_key,
+                    reason=reason,
+                )
+                self.state.finish(
+                    key,
+                    status="prepared" if self.state.prepared(key) else "pending",
+                    reason=reason,
+                    now=time.time(),
+                )
+                if limited or enabled():
+                    return False
+            except SourceAPIResponseError as exc:
+                from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+                if exc.code == "PROVIDER_WORK_FENCE":
+                    raise ProviderWorkRecoveryBlockedError(
+                        "Source provider owner fence differs"
+                    ) from None
+                if exc.status_code == 429:
                     from findb_fetcher.provider_work import enabled
 
-                    predispatch_wait = (
-                        isinstance(exc, QuotaBlockedError)
-                        and limited
-                        and (owner is None or owner.dispatch_observations == dispatch_before)
-                    )
-                    if predispatch_wait and enabled():
+                    if enabled() and (
+                        self.state.prepared(key) is not None
+                        or owner is None
+                        or owner.dispatch_observations == dispatch_before
+                    ):
                         self.state.defer_wait(key, now=time.time())
                         return False
-                    self.source.outcome(
-                        plan["plan_id"],
-                        work_item_id=part["work_item_id"],
-                        member_key=member_key,
-                        reason=reason,
-                    )
-                    self.state.finish(
-                        key,
-                        status="prepared" if self.state.prepared(key) else "pending",
-                        reason=reason,
-                        now=time.time(),
-                    )
-                    if limited or enabled():
-                        return False
-                except SourceAPIResponseError as exc:
-                    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+                self.state.finish(
+                    key,
+                    status="manual"
+                    if exc.status_code < 500 and exc.status_code != 429
+                    else "prepared"
+                    if self.state.prepared(key)
+                    else "pending",
+                    reason="source_rejected",
+                    now=time.time(),
+                )
+                from findb_fetcher.provider_work import enabled
 
-                    if exc.code == "PROVIDER_WORK_FENCE":
-                        raise ProviderWorkRecoveryBlockedError(
-                            "Source provider owner fence differs"
-                        ) from None
-                    if exc.status_code == 429:
-                        from findb_fetcher.provider_work import enabled
+                if self.provider == "taifex" or enabled():
+                    return False
+            except Exception as exc:
+                if self.daily_policy and isinstance(exc, ShioajiSdkError) and exc.quota_wait:
+                    self.state.defer_wait(key, now=time.time())
+                    self.last_batch["reason"] = "quota_wait"
+                    return False
+                # Provider/SDK diagnostics never enter durable state or logs.
+                self.state.finish(
+                    key,
+                    status="prepared" if self.state.prepared(key) else "pending",
+                    reason="source_error",
+                    now=time.time(),
+                )
+                from findb_fetcher.provider_work import enabled
 
-                        if enabled() and (
-                            self.state.prepared(key) is not None
-                            or owner is None
-                            or owner.dispatch_observations == dispatch_before
-                        ):
-                            self.state.defer_wait(key, now=time.time())
-                            return False
-                    self.state.finish(
-                        key,
-                        status="manual"
-                        if exc.status_code < 500 and exc.status_code != 429
-                        else "prepared"
-                        if self.state.prepared(key)
-                        else "pending",
-                        reason="source_rejected",
-                        now=time.time(),
-                    )
-                    from findb_fetcher.provider_work import enabled
-
-                    if self.provider == "taifex" or enabled():
-                        return False
-                except Exception as exc:
-                    # Provider/SDK diagnostics never enter durable state or logs.
-                    self.state.finish(
-                        key,
-                        status="prepared" if self.state.prepared(key) else "pending",
-                        reason="source_error",
-                        now=time.time(),
-                    )
-                    from findb_fetcher.provider_work import enabled
-
-                    if enabled():
-                        return False
-                    self.source.outcome(
-                        plan["plan_id"],
-                        work_item_id=part["work_item_id"],
-                        member_key=member_key,
-                        reason="source_error",
-                    )
-                    if self.provider == "taifex" and isinstance(
-                        exc,
-                        (
-                            TaifexOperationalError,
-                            httpx.HTTPError,
-                            SourceAPITransportError,
-                            FullMarketProtocolError,
-                            RawStorageError,
-                            ReadinessBlockedError,
-                        ),
-                    ):
-                        return False
+                if enabled():
+                    return False
+                self.source.outcome(
+                    plan["plan_id"],
+                    work_item_id=part["work_item_id"],
+                    member_key=member_key,
+                    reason="source_error",
+                )
+                if self.provider == "taifex" and isinstance(
+                    exc,
+                    (
+                        TaifexOperationalError,
+                        httpx.HTTPError,
+                        SourceAPITransportError,
+                        FullMarketProtocolError,
+                        RawStorageError,
+                        ReadinessBlockedError,
+                    ),
+                ):
+                    return False
 
         return True
 

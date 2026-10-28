@@ -223,3 +223,9 @@ Raw R2 保留完整原始 HTTP bytes，即使 provider 回傳額外日期也不�
 Raw-first 五商品報表、整日 manifest、prepared body、receipt 與有限重試均持久保存；
 停止 TAIFEX Pilot／Full 並排空後執行，操作與驗收見
 [資料維護](../docs/operations/data_maintenance.md#taifex-futures-eod-回補)。
+
+Shioaji Pilot／Full daily 採 Asia/Taipei 18:00–隔日 06:00 新抓取窗口，以及最多 25 個成員／
+60 秒（成員邊界）的有限批次輪替。窗口與批次設定由共用 execution catalog 產生；未完成
+工作保留游標、原 prepared bytes、receipts 與 retry budgets，於下個窗口續跑，23:00 逾期
+告警維持。`--health` 可查看窗口與本機批次進度；設定、交接及量測說明見
+[維運文件](../docs/operations/full_market.md#shioaji-每日窗口與公平輪替)。

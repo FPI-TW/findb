@@ -71,6 +71,10 @@ class ShioajiConfigError(ShioajiError):
 
 
 class ShioajiSdkError(ShioajiError):
+    # Proven predispatch waiting is available to unified daily consumers while
+    # legacy callers retain the established public error code and text.
+    quota_wait = False
+
     def __init__(
         self, message: str, *, code: str = "ACQUISITION", reason: str | None = None
     ) -> None:

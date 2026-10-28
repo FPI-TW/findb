@@ -398,6 +398,7 @@ class PersistentIsolatedShioajiGateway:
 
     def _run(self, kind: str, **command: Any) -> tuple[dict[str, Any], int, int]:
         from findb_fetcher.acquisition import Acquisition
+        from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
         from findb_fetcher.providers.shioaji_control import parent_fetch
 
         try:
@@ -423,6 +424,10 @@ class PersistentIsolatedShioajiGateway:
                     self._stop()
                     operation.quarantined = self.process.is_alive()
                     raise
+                except ProviderWorkAcquisitionStopped:
+                    self._stop()
+                    operation.quarantined = self.process.is_alive()
+                    raise
                 except Exception:
                     self._stop()
                     operation.quarantined = self.process.is_alive()
@@ -437,9 +442,9 @@ class PersistentIsolatedShioajiGateway:
             # without spending its frozen operation failure budget.
             if enabled() and active() is not None and exc.quota_wait and not exc.dispatched:
                 raise
-            raise ShioajiSdkError(
-                "isolated shioaji acquisition failed", code="ACQUISITION"
-            ) from None
+            error = ShioajiSdkError("isolated shioaji acquisition failed", code="ACQUISITION")
+            error.quota_wait = exc.quota_wait and not exc.dispatched
+            raise error from None
         return value, operation.requests_before, operation.requests_after
 
     def _bootstrap(self) -> None:
