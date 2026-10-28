@@ -168,6 +168,7 @@ async def claim(body: ClaimRequest, db: AsyncSession = Depends(get_db)) -> dict:
                 "execution_profile": work.execution_profile,
                 "scope": work.scope,
                 "manifest": work.manifest,
+                "created_at": work.created_at,
                 "state": attempt.state,
                 "attempt_number": attempt.attempt_number,
                 "drain_only": attempt.drain_only or attempt.state != "open",
@@ -288,6 +289,8 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
                 "checked_at": service.utc_now(),
                 "expires_at": owner.expires_at,
             }
+        elif action == "calendar-status":
+            return await service.current_calendar_status(db, work)
         elif action == "close":
             await service.close(db, **identity)
         elif action == "execute-rerun":
@@ -364,6 +367,13 @@ async def close(work_id: UUID, body: FenceRequest, db: AsyncSession = Depends(ge
 @router.post("/{work_id}/authorize")
 async def authorize(work_id: UUID, body: FenceRequest, db: AsyncSession = Depends(get_db)) -> dict:
     return await mutate(db, work_id, body, "authorize")
+
+
+@router.post("/{work_id}/calendar-status")
+async def calendar_status(
+    work_id: UUID, body: FenceRequest, db: AsyncSession = Depends(get_db)
+) -> dict:
+    return await mutate(db, work_id, body, "calendar-status")
 
 
 @router.post("/{work_id}/execute-rerun")

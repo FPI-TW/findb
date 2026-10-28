@@ -17,7 +17,11 @@ from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_runtime import load_readiness, validate_capacity
 from findb_fetcher.full_market_state import FullMarketState
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
-from findb_fetcher.providers.finlab import FinLabDatasetTable
+from findb_fetcher.provider_wait import (
+    CalendarDecisionRepairRequiredError,
+    ProviderPublicationPendingError,
+)
+from findb_fetcher.providers.finlab import FinLabDatasetTable, FinLabTargetNotReadyError
 from test_full_market import _proof, _runtime
 
 
@@ -57,6 +61,7 @@ def _finlab_runtime(
         market="TW",
         asset_class="etf" if dataset == "tw_etf_eod" else "equity",
         slot_id="taiwan_market_window",
+        completion_window_seconds=14400,
     )
     proof = {
         **_proof(clock.now()),
@@ -165,6 +170,78 @@ def test_finlab_two_feeds_share_pacing_and_ten_call_account_quota(
     assert len(raw.calls) == 2
     assert [request[0]["dataset_key"] for request in requests] == datasets
     assert source.outcomes == []
+    runtime.http.close()
+
+
+@pytest.mark.parametrize(
+    (
+        "calendar_repair",
+        "created_offset",
+        "expected_exception",
+        "expected_status",
+        "expected_reason",
+    ),
+    [
+        (False, 0, ProviderPublicationPendingError, "pending", "target_not_ready"),
+        (True, 0, CalendarDecisionRepairRequiredError, "manual", "calendar_repair_required"),
+        (
+            True,
+            -14401,
+            CalendarDecisionRepairRequiredError,
+            "manual",
+            "calendar_repair_required",
+        ),
+        (False, -14401, None, "manual", "target_not_ready"),
+    ],
+)
+def test_finlab_target_not_ready_uses_bounded_nonconsuming_wait(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    calendar_repair: bool,
+    created_offset: int,
+    expected_exception: type[Exception] | None,
+    expected_status: str,
+    expected_reason: str,
+) -> None:
+    runtime, _, _, clock, context = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
+    member_key = context.plan["parts"][0]["member_keys"][0]
+    context.plan["parts"][0]["member_keys"] = [member_key]
+    runtime._acquire = lambda *args, **kwargs: (_ for _ in ()).throw(
+        FinLabTargetNotReadyError("target date has not been published")
+    )
+    owner = SimpleNamespace(
+        work={
+            "work_id": "daily-work",
+            "kind": "daily",
+            "trade_date": context.plan["trade_date"],
+            "created_at": (clock.now() + timedelta(seconds=created_offset)).isoformat(),
+        },
+        request=lambda action: {
+            "work_id": "daily-work",
+            "trade_date": context.plan["trade_date"],
+            "repair_required": calendar_repair,
+        },
+        restore=lambda **kwargs: [],
+        authorize=lambda: None,
+        dispatch_observations=0,
+    )
+    monkeypatch.setattr("findb_fetcher.provider_work.active", lambda: owner)
+
+    if expected_exception is None:
+        assert not runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    else:
+        with pytest.raises(expected_exception):
+            runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+
+    key = context.plan["parts"][0]["work_item_id"] + ":" + member_key
+    with runtime.state.connection() as db:
+        row = db.execute(
+            "SELECT status,reason,attempts,next_at FROM full_work WHERE key=?", (key,)
+        ).fetchone()
+    assert (row["status"], row["reason"]) == (expected_status, expected_reason)
+    if expected_exception is ProviderPublicationPendingError:
+        assert row["attempts"] == 0
+        assert row["next_at"] == pytest.approx(clock.now().timestamp() + 900)
     runtime.http.close()
 
 

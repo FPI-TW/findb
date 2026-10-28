@@ -562,12 +562,21 @@ class FullMarketState:
                 (body, checksum(body), key),
             )
 
-    def defer_wait(self, key: str, *, now: float, reason: str = "rate_limited") -> None:
-        """Quota waiting retains prepared bytes and the original failure budget."""
+    def defer_wait(
+        self,
+        key: str,
+        *,
+        now: float,
+        reason: str = "rate_limited",
+        delay_seconds: int = 60,
+    ) -> None:
+        """Authorized waiting retains prepared bytes and the original failure budget."""
+        if delay_seconds < 1:
+            raise FullMarketStateError("wait delay must be positive")
         with self.connection() as db:
             db.execute(
                 "UPDATE full_work SET status=CASE WHEN body IS NULL THEN 'pending' ELSE 'prepared' END,reason=?,lease_until=0,next_at=?,attempts=MAX(0,attempts-1) WHERE key=?",
-                (reason, now + 60, key),
+                (reason, now + delay_seconds, key),
             )
 
     def finish(

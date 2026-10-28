@@ -102,6 +102,56 @@ exit code 3；只有 completed 回傳 0。未指定 `--deliver` 仍只是 previe
 結算與原始證據仍保留。其他 provider、不同上市識別碼、單純成功筆數或既有價格不能補足證據。
 任一 work 的 completed 結算仍只採認自己的 receipts，不能借用另一工作的寫入證據。
 
+### `no_source_row` 缺漏排查
+
+先依環境、execution profile、資料集與交易日定位 daily plan 及 provider work，再核對
+`provider_work_attempt.proof.eod.members` 的逐成員 reason。`no_source_row` 表示該次成功
+來源查詢沒有對應 listing 的價格列；不等同連線失敗、停牌或已證實的上游延遲。
+若整批缺列，可能沒有任何 Source ingestion run；應先查 retained snapshot，不能只從
+normalization queue 尋找原因。
+
+以唯讀 transaction／SQLite `mode=ro` 比對 frozen listing scope、交易日、snapshot
+`fetched_at`、列數與 settlement raw hash，並核對 operation budget、receipts 及 canonical
+寫入數。診斷輸出只需日期、計數、reason、hash 與識別碼，避免匯出完整原始 response。
+
+Daily work 在 immutable `work.created_at + completion_window_seconds` 截止前遇到
+`no_source_row` 時，只將該次空缺保存為 observation，不保存可 replay 的成功 snapshot；work
+安全 close／drain 後排到 provider FIFO 尾端，最長 15 分鐘後重新查詢來源。這類等待不消耗
+local `FULL_WORK_MAX_ATTEMPTS`，但每次查詢及其 hash、計數與時間仍保留稽核。截止後仍缺列
+才保存 authoritative snapshot，將 local member 標示 `manual`／`missing`，並把 daily work
+結算為 terminal `partial`。Historical work 不使用 daily publication window，缺列仍直接結算
+`partial`，後續由新的歷史回補 work 取得新證據。
+
+每次 daily publication retry 都會重新讀取目前 published calendar，但不改寫建立 work 時凍結的
+`planned` decision。若 frozen decision 之後的新 published revision 已將該日標為休市，work
+以 `CALENDAR_DECISION_REPAIR_REQUIRED` failed，停止來源重試並等待下節人工休市更正流程。
+不可藉重啟 consumer、重置 checkpoint 或清除 journal 規避截止時間或修復決策。
+
+### 重試層級與來源更新時間
+
+| 情境 | 現行處理 |
+| --- | --- |
+| Daily 來源成功回傳 `no_source_row`，且仍在 publication window | 保存 observation、不凍結空 snapshot；排至 FIFO 尾端，最長 15 分鐘後重新查詢，不消耗 local work attempt |
+| Daily `no_source_row` 超過 publication window；historical `no_source_row` | 保存 authoritative snapshot 與逐成員缺漏證據，結算 `partial` |
+| Retry 時 frozen decision 之後的新 published revision 已標示休市 | `CALENDAR_DECISION_REPAIR_REQUIRED` failed；不改寫 frozen decision，依人工休市更正流程處理 |
+| mapping gap、永久資料結構／DQ 問題 | 逐成員保留錯誤證據，結算 `partial`；不當成來源尚未發布 |
+| 暫時連線／MySQL unavailable、可重試 raw storage 或 Source 故障 | close／drain 後排至 provider FIFO 尾端，預設至少 60 秒，另遵守 cooldown 與抓取窗口 |
+| 原始 snapshot、raw persistence、各成員 receipt 操作 | 各自最多 3 次總 attempts，跨 FIFO rounds 保留預算；未 dispatch 的合法等待可退還預留次數 |
+| Source HTTP transport／408／429／502／503／504 | 預設每次呼叫最多 3 次總 attempts，退避 1、2 秒；有合法 `Retry-After` 時依其等待，預設上限 30 秒。其餘 5xx 由外層處理 FIFO retry |
+
+成功操作的回應會存入 work journal，後續相同 work 使用原 snapshot、prepared bytes 與
+receipts。唯一例外是 publication window 內的 daily `no_source_row`：只存 observation，retry
+會取得較新的來源 snapshot。Source 已接受後的 normalization retry 是另一層，只重跑既有 raw，
+不重新查詢 FactSet。
+
+查詢上游更新時間時，先確認目標 listing／`price_date` 已存在，再檢查來源表是否有逐列
+入庫時間欄位或 loader audit。`price_date` 是交易日，Fetcher `fetched_at` 是觀測時間。
+MySQL `information_schema.tables.UPDATE_TIME` 僅為整表最後異動 metadata，不能當成特定
+交易日／listing 的首次入庫時間；其值也不保證跨重啟持久保存，見
+[MySQL TABLES 說明](https://dev.mysql.com/doc/mysql-infoschema-excerpt/8.0/en/information-schema-tables-table.html)。
+缺少逐列時間、載入稽核或可用 binlog 時，只能以先前缺列與首次確認有資料的觀測建立時間
+區間；確切更新時刻需來源端同步工作紀錄佐證。
+
 ## Backend-first 切換
 
 1. 更新 backend、執行 Alembic head 與 seed。HK registry 同時保留 v1、v2 和

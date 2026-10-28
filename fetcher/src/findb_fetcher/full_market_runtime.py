@@ -57,6 +57,10 @@ from findb_fetcher.full_market_universe import (
 from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
 from findb_fetcher.provider_process import ProviderProcessError
+from findb_fetcher.provider_wait import (
+    CalendarDecisionRepairRequiredError,
+    ProviderPublicationPendingError,
+)
 from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped, durable_response
 from findb_fetcher.providers.factset import (
     FactSetConfig,
@@ -72,6 +76,7 @@ from findb_fetcher.providers.finlab import (
     FinLabSdkError,
     FinLabSdkGateway,
     FinLabSymbol,
+    FinLabTargetNotReadyError,
     build_finlab_dataset_bundle,
 )
 from findb_fetcher.providers.finlab import (
@@ -329,6 +334,35 @@ class FullMarketRuntime:
             self.sdk = None
         self.bundles.clear()
         self.futures.clear()
+
+    def _publication_retry_delay(self, owner, feed: dict[str, Any]) -> int:
+        created_at = owner.work.get("created_at")
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at)
+        if not isinstance(created_at, datetime) or created_at.tzinfo is None:
+            raise ReadinessBlockedError("provider work publication window is invalid")
+        window = feed.get("completion_window_seconds")
+        if type(window) is not int or window < 1:
+            raise ReadinessBlockedError("provider publication completion window is invalid")
+        remaining = math.ceil(
+            (created_at + timedelta(seconds=window) - datetime.now(timezone.utc)).total_seconds()
+        )
+        if remaining <= 0:
+            return 0
+        from findb_fetcher.provider_wait import PUBLICATION_RETRY_SECONDS
+
+        return min(PUBLICATION_RETRY_SECONDS, remaining)
+
+    def _calendar_repair_required(self, owner) -> bool:
+        status = owner.request("calendar-status")
+        if (
+            not isinstance(status, dict)
+            or status.get("work_id") != owner.work.get("work_id")
+            or status.get("trade_date") != owner.work.get("trade_date")
+            or type(status.get("repair_required")) is not bool
+        ):
+            raise ReadinessBlockedError("provider work calendar status is invalid")
+        return status["repair_required"]
 
     def _shioaji_request(self, operation: str, *args: Any) -> Any:
         if self.sdk is not None and not getattr(self.sdk, "is_alive", lambda: True)():
@@ -1325,6 +1359,21 @@ class FullMarketRuntime:
                         failure_code="DATED_UNIVERSE_PENDING",
                         retry_delay_seconds=exc.retry_after_seconds,
                     )
+                except ProviderPublicationPendingError as exc:
+                    self.pause()
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry",
+                        failure_code="DAILY_PROVIDER_NOT_READY",
+                        retry_delay_seconds=exc.retry_after_seconds,
+                    )
+                except CalendarDecisionRepairRequiredError:
+                    self.pause()
+                    self._settle_queued_round(
+                        owner,
+                        outcome="failed",
+                        failure_code="CALENDAR_DECISION_REPAIR_REQUIRED",
+                    )
                 except (ReadinessBlockedError, ValueError):
                     self._settle_queued_round(
                         owner, outcome="failed", failure_code="DAILY_PLANNING_FORMAT_OR_SCOPE"
@@ -1368,26 +1417,53 @@ class FullMarketRuntime:
             self.state.save_sequence_receipt(work_key, request["idempotency_key"], run_id)
             self.state.finish(work_key, status="prepared", receipt=run_id)
 
-        with authorization_scope(
-            lambda: self.source.authorization(
-                "GET",
-                "full-market/authorization?consumer=" + self.execution_profile,
-                required_dataset=plan["dataset_key"],
-            ),
-            state_path=self.state.path,
+        retry_delay = self._publication_retry_delay(owner, feed)
+        try:
+            with authorization_scope(
+                lambda: self.source.authorization(
+                    "GET",
+                    "full-market/authorization?consumer=" + self.execution_profile,
+                    required_dataset=plan["dataset_key"],
+                ),
+                state_path=self.state.path,
+            ):
+                evidence = FactSetEOD(
+                    FactSetGateway(FactSetConfig.from_env()),
+                    self.delivery,
+                    self.raw_store,
+                    on_receipt=checkpoint_receipt,
+                ).run(
+                    day=date.fromisoformat(plan["trade_date"]),
+                    members=members,
+                    dataset=plan["dataset_key"],
+                    deliveries=deliveries,
+                    historical=False,
+                    defer_missing=retry_delay > 0,
+                )
+        except ProviderPublicationPendingError:
+            if self._calendar_repair_required(owner):
+                for key, delivery in deliveries.items():
+                    self.state.finish(
+                        delivery["work_item_id"] + ":" + key,
+                        status="manual",
+                        reason="calendar_repair_required",
+                    )
+                raise CalendarDecisionRepairRequiredError(
+                    "published calendar is now closed"
+                ) from None
+            raise ProviderPublicationPendingError(
+                "factset_no_source_row", retry_after_seconds=retry_delay
+            ) from None
+        if any(row.get("reason") == "no_source_row" for row in evidence["members"]) and (
+            self._calendar_repair_required(owner)
         ):
-            evidence = FactSetEOD(
-                FactSetGateway(FactSetConfig.from_env()),
-                self.delivery,
-                self.raw_store,
-                on_receipt=checkpoint_receipt,
-            ).run(
-                day=date.fromisoformat(plan["trade_date"]),
-                members=members,
-                dataset=plan["dataset_key"],
-                deliveries=deliveries,
-                historical=False,
-            )
+            for key, delivery in deliveries.items():
+                self.state.finish(
+                    delivery["work_item_id"] + ":" + key,
+                    status="manual",
+                    reason="calendar_repair_required",
+                )
+            raise CalendarDecisionRepairRequiredError("published calendar is now closed") from None
         for result in evidence["members"]:
             key = result["member_key"]
             delivery = deliveries[key]
@@ -1740,6 +1816,34 @@ class FullMarketRuntime:
                         )
                     else:
                         self.state.defer_wait(key, now=time.time(), reason="suspended")
+                    return False
+                except FinLabTargetNotReadyError:
+                    retry_delay = self._publication_retry_delay(owner, feed)
+                    if self._calendar_repair_required(owner):
+                        self.state.finish(
+                            key,
+                            status="manual",
+                            reason="calendar_repair_required",
+                        )
+                        raise CalendarDecisionRepairRequiredError(
+                            "published calendar is now closed"
+                        ) from None
+                    if retry_delay > 0:
+                        self.state.defer_wait(
+                            key,
+                            now=time.time(),
+                            reason="target_not_ready",
+                            delay_seconds=retry_delay,
+                        )
+                        raise ProviderPublicationPendingError(
+                            "finlab_target_not_ready",
+                            retry_after_seconds=retry_delay,
+                        ) from None
+                    self.state.finish(
+                        key,
+                        status="manual",
+                        reason="target_not_ready",
+                    )
                     return False
                 except (QuotaBlockedError, TwelveDataResponseError) as exc:
                     limited = (

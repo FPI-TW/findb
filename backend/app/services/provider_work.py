@@ -608,6 +608,50 @@ async def acquisition_open(db: AsyncSession, work: ProviderWork) -> bool:
     return True
 
 
+async def current_calendar_status(db: AsyncSession, work: ProviderWork) -> dict:
+    """Compare a frozen daily decision with today's published calendar, without rewriting it."""
+    if work.kind != "daily" or work.trade_date is None or work.execution_profile is None:
+        raise ProviderWorkError("calendar status requires daily provider work")
+    from app.models.registry import DailyExecutionDecision, DatasetRegistry
+    from app.services.effective_calendar import execution_snapshot
+
+    dataset = await db.get(DatasetRegistry, work.dataset_key)
+    decision = await db.get(
+        DailyExecutionDecision,
+        (work.dataset_key, work.provider, work.trade_date, work.execution_profile),
+    )
+    if dataset is None or decision is None:
+        raise ProviderWorkError("calendar status requires a frozen daily decision")
+    current = await execution_snapshot(
+        db,
+        "TAIFEX" if dataset.dataset_key == "tw_futures_eod" else dataset.market,
+        work.trade_date,
+        work.provider,
+    )
+    frozen_source = decision.snapshot.get("calendar_source")
+    frozen_revision_id = decision.snapshot.get("calendar_revision_id")
+    repair_required = bool(
+        decision.kind == "planned"
+        and current["calendar_source"] == "published"
+        and not current["is_open"]
+        and (
+            frozen_source != "published"
+            or current.get("calendar_revision_id") != frozen_revision_id
+        )
+    )
+    return {
+        "work_id": str(work.work_id),
+        "trade_date": work.trade_date.isoformat(),
+        "frozen_kind": decision.kind,
+        "frozen_calendar_source": frozen_source,
+        "frozen_calendar_revision_id": frozen_revision_id,
+        "current_is_open": current["is_open"],
+        "current_calendar_source": current["calendar_source"],
+        "current_calendar_revision_id": current.get("calendar_revision_id"),
+        "repair_required": repair_required,
+    }
+
+
 async def register_prepared(
     db: AsyncSession, *, body: str, stage: str, job_key: str | None, **identity
 ) -> None:
