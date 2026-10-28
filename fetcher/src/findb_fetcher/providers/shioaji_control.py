@@ -183,12 +183,14 @@ def parent_fetch(
         require_acquisition,
     )
 
-    require_acquisition("shioaji")
+    # Logout/cleanup must retain the same owner descriptor but can run after
+    # the daily acquisition window closes. It cannot initiate provider data I/O.
+    require_acquisition("shioaji", local_only=operation.kind == "cleanup")
     descriptors = inherited_fds()
     work_fd = descriptors[0] if descriptors else None
     work_stat = os.fstat(work_fd) if work_fd is not None else None
     operation.prepare()  # Durable intent before child preparation/FD/READY.
-    require_acquisition("shioaji")  # Pacing may have blocked before even child usage sampling.
+    require_acquisition("shioaji", local_only=operation.kind == "cleanup")
     command = {
         **command,
         "governor": {

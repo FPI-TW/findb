@@ -103,3 +103,33 @@ def test_source_retry_exhaustion_preserves_attempt_bound(
     assert error.value.status_code == 429
     assert len(calls) == max_attempts
     assert sleeps == sleeps_expected
+
+
+@pytest.mark.parametrize(
+    ("blockers", "expected_code"),
+    [
+        (["daily_acquisition_window_closed"], "DAILY_ACQUISITION_WINDOW_CLOSED"),
+        (["daily_acquisition_window_closed", "full_market_source_binding_invalid"], None),
+    ],
+)
+def test_window_denial_is_distinct_from_other_authorization_failures(blockers, expected_code):
+    stamp = datetime.now(timezone.utc).isoformat()
+    response = httpx.Response(
+        200,
+        headers={"X-FinDB-Acquisition-Checked-At": stamp},
+        json={
+            "acquisition_allowed": False,
+            "acquisition_blockers": blockers,
+            "daily_runtime_window": {"open": False, "next_open_at": None, "closes_at": None},
+            "provider": "shioaji",
+            "checked_at": stamp,
+            "max_age_seconds": 5,
+        },
+    )
+    with httpx.Client(transport=httpx.MockTransport(lambda request: response)) as http:
+        source = FullMarketSourceClient(
+            FetcherConfig("https://source.example", "secret"), client=http
+        )
+        with pytest.raises(FullMarketProtocolError) as error:
+            source.authorization("GET", "full-market/authorization?consumer=full_market")
+    assert error.value.code == expected_code

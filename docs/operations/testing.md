@@ -19,6 +19,10 @@ UTC 分鐘時，account window 不一致會依設計 fail closed，工作延到 
 queued。`RuntimeHarness.run()` 因此在距下一分鐘不足 5 秒時先等到下一分鐘再開始 TAIFEX
 run；不得以放寬產品授權期限或 window 檢查來處理此類間歇失敗。須保留並回報完整平行 run
 的失敗，不能把單獨重跑成功描述成原完整 run 通過。
+Fetcher 的 slow owner RPC／dispatch grant 測試使用局部可控的 wall／monotonic clock，
+分別涵蓋分鐘內及跨 UTC 分鐘。跨分鐘可能合法重取 grant，但 native dispatch、actual-start
+與帳號日配額只能記一次；不能將 grant 次數固定為一，也不應放寬產品的時效或 quota window 檢查。
+可控時鐘只替換 acquisition module 的 facade，不修改全域 time 或背景 heartbeat 的等待行為。
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
 

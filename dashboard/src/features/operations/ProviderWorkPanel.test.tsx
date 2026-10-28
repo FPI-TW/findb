@@ -172,3 +172,57 @@ it("isolates provider lists and preserves selection and FIFO order on refresh", 
   fireEvent.click(screen.getByRole("tab", { name: "finlab (0)" }))
   expect(screen.getByText("此供應商目前沒有等待或執行中的工作。")).toBeVisible()
 })
+
+it("distinguishes daily window, rotation progress and actual failure", () => {
+  mocks.query.mockReturnValue({
+    data: {
+      resource: "providerWork",
+      result: providerWorkSchema.parse({
+        data: [
+          {
+            work_id: "019f98b5-ee0b-7b16-9a28-d8e2ed638a95",
+            provider: "shioaji",
+            dataset_key: "tw_equity_minute",
+            kind: "daily",
+            stable_key: "daily:full_market:fixture",
+            trade_date: "2026-10-28",
+            execution_profile: "full_market",
+            state: "queued",
+            queue_order: 5,
+            position: null,
+            active: false,
+            drain_only: false,
+            attempt_number: 42,
+            not_before: "2026-10-29T10:00:00Z",
+            heartbeat_at: null,
+            wait_reason: "acquisition_window_closed",
+            daily_runtime_window: {
+              open: false,
+              next_open_at: "2026-10-29T18:00:00+08:00",
+              closes_at: null,
+            },
+            last_batch: {
+              processed: 25,
+              elapsed_seconds: 12.5,
+              reason: "batch_yield",
+              counts: { complete: 50, pending: 150, manual: 1 },
+            },
+            last_failure_code: "retry_exhausted",
+          },
+        ],
+      }),
+    },
+    isFetching: false,
+    error: null,
+    dataUpdatedAt: Date.now(),
+    refetch: vi.fn(),
+  })
+  render(<ProviderWorkPanel />)
+  fireEvent.click(screen.getByRole("tab", { name: "shioaji (1)" }))
+  expect(screen.getByText("每日抓取窗口外")).toBeVisible()
+  expect(screen.getByText("第 42 輪")).toBeVisible()
+  expect(screen.getByText("最近批次：25 個成員 · 12.5 秒")).toBeVisible()
+  expect(screen.getByText("下次開窗：2026-10-29T18:00:00+08:00")).toBeVisible()
+  expect(screen.getByText("最近實際失敗：retry_exhausted")).toBeVisible()
+  expect(screen.getByText("完成 50 · 待處理 150 · 人工處理 1")).toBeVisible()
+})

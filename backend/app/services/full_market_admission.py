@@ -572,7 +572,14 @@ async def admission_projection(
         ):
             allowed = False
             result["blockers"].append("full_market_source_binding_invalid")
+    from app.services.daily_runtime import daily_window
+
+    runtime_window = daily_window(provider)
+    if not runtime_window["open"]:
+        allowed = False
+        result["blockers"].append("daily_acquisition_window_closed")
     return {
+        "daily_runtime_window": runtime_window,
         "full_market_enabled": get_settings().FULL_MARKET_ENABLED,
         "execution_profile": profile,
         "environment": result["environment"],

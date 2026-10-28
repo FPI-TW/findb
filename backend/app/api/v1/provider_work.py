@@ -62,6 +62,7 @@ class PreparedLookup(FenceRequest):
     member_key: str | None = None
     delivery_key: str | None = Field(default=None, max_length=100)
     keys_only: bool = False
+    pending_only: bool = False
 
 
 class SettleRequest(FenceRequest):
@@ -282,12 +283,20 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
                 )
                 if not authorization["acquisition_allowed"]:
                     raise service.ProviderWorkSuspendedError("scheduler acquisition is stopped")
+            expires_at = owner.expires_at
+            assert expires_at is not None
+            if work.kind == "daily":
+                from app.services.daily_runtime import daily_window
+
+                closes_at = daily_window(provider)["closes_at"]
+                if closes_at:
+                    expires_at = min(expires_at, datetime.fromisoformat(closes_at))
             authorization_evidence = {
                 "provider": provider,
                 "generation": owner.generation,
                 "token": str(owner.token),
                 "checked_at": service.utc_now(),
-                "expires_at": owner.expires_at,
+                "expires_at": expires_at,
             }
         elif action == "calendar-status":
             return await service.current_calendar_status(db, work)
@@ -317,7 +326,19 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
             )
         elif action == "prepared" and isinstance(body, PreparedLookup):
             if body.keys_only:
-                return {"member_keys": list(work.prepared_deliveries or {})}
+                keys = set(work.prepared_deliveries or {})
+                if body.pending_only:
+                    from sqlalchemy import select
+
+                    from app.models.provider_work import ProviderWorkReceipt
+
+                    accepted = await db.scalars(
+                        select(ProviderWorkReceipt.member_key).where(
+                            ProviderWorkReceipt.work_id == work_id
+                        )
+                    )
+                    keys.difference_update(accepted.all())
+                return {"member_keys": sorted(keys)}
             prepared = [
                 row["body"]
                 for key, row in (work.prepared_deliveries or {}).items()

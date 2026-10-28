@@ -26,6 +26,51 @@ Pilot 每條 feed 取 published universe 穩定排序的前兩個 canonical 商�
 兩種 profile 各有 controls、first dates、plans、checkpoints、缺漏與告警；同環境共用 account governor。
 只追補各自首次日期後的缺口，prepared delivery 在停止後仍可完成。
 
+### Shioaji 每日窗口與公平輪替
+
+Pilot／Full daily 的股票與 ETF 共用 `daily_runtime_policies.shioaji`，唯一設定來源是
+`backend/configs/execution_feeds.v1.json`，透過 execution-feeds exporter 產生三環境 Fetcher config。
+新抓取窗口為 **Asia/Taipei 每日 18:00（含）至隔日 06:00（不含）**。這是 Owner 指定的
+12 小時運行政策，與 feed 的 `completion_window_seconds`、每日 **23:00 交付期限**及完整性分開。
+關窗不停止 control、不延後 deadline、不把 missing／blocked 改成成功，也不撤銷逾期告警。
+人工 historical 與獨立 maintenance 不受此 daily 窗口限制，仍須遵守原授權、配額與 ownership。
+
+每個 Shioaji daily turn 最多領取 **25 個成員**，或執行滿 **60 秒**後在下一個成員邊界讓出。
+單一在途 SDK／Source 呼叫仍依既有 timeout 完成，因此 60 秒不是硬性完成 SLA；accepted
+normalization 排空也可能延長交接。成功、實際失敗與 prepared replay 都算本輪成員，尚未 eligible
+或租約未到的成員不消耗重試。直接模式先建立 sibling plans，再按日期與 feed 輪替；SQLite
+`full_schedule` 保存成員游標及下一 feed，claim 與成員游標前移在同一 transaction，當機後會繞回
+尚未完成、租約已到的成員。既有凍結成員、日期、mapping 與 plan identity 不改寫。
+
+Queue 模式仍使用 provider FIFO，每輪先停止並回收 SDK child、close acquisition，排空原 prepared
+交付及等待 accepted runs terminal，再將未完成工作以新 attempt 排到尾端。已確認接受的 body
+不在每個批次重新送出；永久失敗的原 prepared bytes 保留為 manual evidence。單一 manual
+成員不提前終結仍有 pending 成員的工作。一般 `batch_yield` 是正常輪替，attempt round 數不是
+成員失敗次數；重試上限、逐 sequence receipts、已耗盡的 retries、帳號 pacing／cooldown 與
+shared host inode 契約保留，不能藉換批次或重啟取得額外配額或無協調 SDK session。
+
+06:00 後不再啟動 daily SDK construction／login／Kbars；關窗前取得的 Source grant 也以
+06:00 封頂。已在途回應可持久化，prepared bytes 可繼續交付與 normalization。剩餘成員於
+下次 18:00 原位續跑，無須重新啟動 control，實際抓取仍取決於有效認證及共享配額。
+尚未 dispatch 的配額等待與窗口等待不記為 `source_error`，也不增加失敗預算。
+
+`--health`／cycle JSON 提供 `daily_runtime_window`，包含 `open`、`closes_at`、`next_open_at`；
+未完成 plan 的 `plans` 包含本機 counts、failures 與 last_batch。這些是本機執行進度，完整性仍
+以 Source canonical evidence 為準。Admin `/provider-work` 提供最近已結算批次的 processed、
+elapsed_seconds、counts、failures 及 last_failure_code；執行中的批次資料尚未結算時不宣稱即時成員進度。
+Dashboard 可區分等待同 provider、正常輪替、窗口外、共用配額等待、排空及最近實際失敗。
+
+部署順序為 Backend（含 additive prepared lookup）後 Fetcher／Dashboard；先依既有程序 stop／drain，
+保留 SQLite checkpoint 與 governor，不需 PostgreSQL migration。舊 frozen work 適用新窗口，
+不重建其 scope。回退前應安全 stop／drain，保留新 SQLite table；舊程式不讀取該 table，
+回退將失去有限批次及窗口行為。
+
+本機 regression 使用可控時鐘／假 provider 驗證邊界與公平性，**尚未取得 staging 的真實吞吐量證據**。
+部署驗收應保存每 feed 的 frozen member 數、批次 processed／elapsed_seconds、SDK login 次數、
+`api.usage()` 前後 bytes、quota／cooldown 等待時間、最早 ETF turn、跨日 backlog 與原 deadline／alert。
+由 actual-start／completion evidence 計算登入成本及有效抓取吞吐量，對照 12 小時窗口與每日配額。
+若無法完成全市場，記錄不足與缺漏，不自動延長窗口、不增加平台配額，也不宣稱完整交付成功。
+
 ### Scheduler scope 與有效抓取範圍
 
 Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代表 runtime 目前會抓取所有

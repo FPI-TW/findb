@@ -182,6 +182,7 @@ async def full_market_authorization(
         **account,
         "provider": provider,
         "checked_at": checked_at,
+        "lease_expires_at": account.get("daily_runtime_window", {}).get("closes_at"),
         "max_age_seconds": 5,
     }
 

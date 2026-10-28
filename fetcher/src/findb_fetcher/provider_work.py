@@ -645,7 +645,7 @@ class ProviderWorkSession:
         )
         self._preparation_request("prepare", body=body, stage="intent", job_key=job_key)
 
-    def drain_prepared(self) -> list:
+    def drain_prepared(self, *, pending_only: bool = False, skip: set[str] | None = None) -> list:
         """Replay only server-retained original bytes; never reconstruct or fetch."""
         from findb_fetcher.client import PreparedDelivery, SourceAPIClient
         from findb_fetcher.contracts import ContractRegistry
@@ -656,7 +656,9 @@ class ProviderWorkSession:
             ContractRegistry(self.source.config.contracts_dir),
             client=self.source.client,
         ) as delivery:
-            for key in self.prepared_keys():
+            for key in self.prepared_keys(pending_only=pending_only):
+                if key in (skip or set()):
+                    continue
                 bodies = self._preparation_request("prepared", delivery_key=key)["bodies"]
                 if len(bodies) != 1:
                     raise ProviderWorkRecoveryBlockedError(
@@ -674,8 +676,9 @@ class ProviderWorkSession:
                 receipts.append(delivery.deliver(prepared))
         return receipts
 
-    def prepared_keys(self) -> list[str]:
-        return self._preparation_request("prepared", keys_only=True)["member_keys"]
+    def prepared_keys(self, *, pending_only: bool = False) -> list[str]:
+        options = {"pending_only": True} if pending_only else {}
+        return self._preparation_request("prepared", keys_only=True, **options)["member_keys"]
 
     def restore(self, *, job_key: str | None = None, member_key: str | None = None) -> list[str]:
         return self._preparation_request("prepared", job_key=job_key, member_key=member_key)[

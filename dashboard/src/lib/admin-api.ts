@@ -789,6 +789,35 @@ export const providerWorkSchema = z.object({
       not_before: isoDateTime,
       heartbeat_at: isoDateTime.nullable(),
       wait_reason: z.string().nullable(),
+      daily_runtime_window: z
+        .object({
+          open: z.boolean(),
+          next_open_at: isoDateTime.nullable(),
+          closes_at: isoDateTime.nullable(),
+        })
+        .nullable()
+        .optional(),
+      last_batch: z
+        .object({
+          processed: z.number().int().nonnegative().optional(),
+          elapsed_seconds: z.number().nonnegative().optional(),
+          reason: z.string().optional(),
+          counts: z
+            .record(z.string(), z.number().int().nonnegative())
+            .optional(),
+          failures: z
+            .array(
+              z.object({
+                member_key: z.string(),
+                reason: z.string(),
+                attempts: z.number().int().nonnegative(),
+              })
+            )
+            .optional(),
+        })
+        .nullable()
+        .optional(),
+      last_failure_code: z.string().nullable().optional(),
     })
   ),
 })

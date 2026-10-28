@@ -13,7 +13,7 @@ from typing import TypedDict
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import exists, literal, or_, select, text
+from sqlalchemy import exists, func, literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -24,6 +24,7 @@ from app.models.provider_work import (
     ProviderWorkReceipt,
 )
 from app.models.registry import IngestionRun, SchedulerControl
+from app.services.daily_runtime import daily_window
 from app.utils import utc_now, uuid7
 
 HEARTBEAT_TTL = timedelta(minutes=2)
@@ -250,6 +251,23 @@ async def claim(
                     ProviderWork.state == "queued",
                     ProviderWorkAttempt.state == "queued",
                     ProviderWorkAttempt.not_before <= now,
+                    or_(
+                        ProviderWork.kind != "daily",
+                        literal(daily_window(provider, now)["open"]),
+                        text("""EXISTS (
+                          SELECT 1 FROM jsonb_object_keys(provider_work.prepared_deliveries) AS prepared(member_key)
+                          WHERE NOT EXISTS (SELECT 1 FROM provider_work_receipt receipt
+                            WHERE receipt.work_id=provider_work.work_id AND receipt.member_key=prepared.member_key)
+                        )"""),
+                        exists(
+                            select(ProviderWorkReceipt.run_id)
+                            .join(IngestionRun)
+                            .where(
+                                ProviderWorkReceipt.work_id == ProviderWork.work_id,
+                                IngestionRun.status.not_in(TERMINAL_RUNS),
+                            )
+                        ),
+                    ),
                     or_(
                         ProviderWork.kind == "rerun",
                         text("""EXISTS (
@@ -569,7 +587,9 @@ async def acceptance(
     return work
 
 
-async def acquisition_open(db: AsyncSession, work: ProviderWork) -> bool:
+async def acquisition_open(
+    db: AsyncSession, work: ProviderWork, *, check_window: bool = True
+) -> bool:
     if work.kind != "rerun" and work.dataset_key == "hk_equity_eod":
         from app.models.registry import DatasetRegistry
         from app.services.hk_provider_cutover import acquisition_allowed
@@ -583,6 +603,8 @@ async def acquisition_open(db: AsyncSession, work: ProviderWork) -> bool:
         ):
             return False
     if work.kind == "daily":
+        if check_window and not daily_window(work.provider)["open"]:
+            return False
         control = await db.get(SchedulerControl, f"{work.execution_profile}_{work.provider}_v1")
         return control is not None and control.desired_state == "running"
     if work.kind == "historical":
@@ -705,7 +727,10 @@ async def register_prepared(
         raise ProviderWorkError("prepared job identity is already bound")
     if attempt.state != "open" or attempt.drain_only:
         raise ProviderWorkError("closed work cannot create a preparation intent")
-    if not await acquisition_open(db, work):
+    # A call dispatched inside the window may finish after closure. Binding its
+    # response is persistence, not permission for another provider acquisition.
+    # Keep control/cancellation checks; only the daily clock is excluded here.
+    if not await acquisition_open(db, work, check_window=False):
         # Imported accepted receipts may bind their original local prepared
         # bytes; this never creates a new run or permits new provider I/O.
         accepted = await db.scalar(
@@ -997,6 +1022,30 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
         needs_drain = bool(
             set(work.prepared_deliveries or {}) - {receipt.member_key for receipt in receipts}
         ) or any(receipt.status not in TERMINAL_RUNS for receipt in receipts)
+        runtime_window = daily_window(work.provider, now) if work.kind == "daily" else None
+        window_closed = bool(runtime_window and not runtime_window["open"] and not needs_drain)
+        previous = await db.scalar(
+            select(ProviderWorkAttempt)
+            .where(
+                ProviderWorkAttempt.work_id == work.work_id,
+                ProviderWorkAttempt.state == "settled",
+            )
+            .order_by(ProviderWorkAttempt.attempt_number.desc())
+            .limit(1)
+        )
+        last_batch = (previous.proof or {}).get("scheduling") if previous else None
+        member_failure = ProviderWorkAttempt.proof["scheduling"]["failures"][0][
+            "reason"
+        ].as_string()
+        last_failure = await db.scalar(
+            select(func.coalesce(ProviderWorkAttempt.failure_code, member_failure))
+            .where(
+                ProviderWorkAttempt.work_id == work.work_id,
+                or_(ProviderWorkAttempt.failure_code.is_not(None), member_failure.is_not(None)),
+            )
+            .order_by(ProviderWorkAttempt.attempt_number.desc())
+            .limit(1)
+        )
         suspended = (
             work.kind == "daily"
             and controls.get(f"{work.execution_profile}_{work.provider}_v1") != "running"
@@ -1012,6 +1061,7 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
             and attempt.not_before <= now
             and not suspended
             and not cooldown_blocked
+            and not window_closed
         )
         if runnable:
             positions[work.provider] = positions.get(work.provider, 0) + 1
@@ -1032,6 +1082,14 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
                 "drain_only": drain_only,
                 "not_before": attempt.not_before,
                 "heartbeat_at": owner.heartbeat_at if active and owner else None,
+                "daily_runtime_window": runtime_window,
+                "last_batch": last_batch,
+                "last_failure_code": last_failure
+                or (
+                    last_batch["failures"][0]["reason"]
+                    if last_batch and last_batch.get("failures")
+                    else None
+                ),
                 "wait_reason": (
                     "recovery_required"
                     if active
@@ -1039,6 +1097,15 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
                     and (owner.recovery_reason or not owner.expires_at or owner.expires_at <= now)
                     else "provider_active"
                     if runnable and owner and owner.attempt_id
+                    else "acquisition_window_closed"
+                    if window_closed and not active
+                    else "account_cooldown"
+                    if cooldown_blocked and not active
+                    else "batch_yield"
+                    if last_batch
+                    and last_batch.get("reason") == "batch_yield"
+                    and not active
+                    and runnable
                     else "not_before"
                     if attempt.not_before > now
                     else "account_cooldown"
