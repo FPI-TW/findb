@@ -56,7 +56,10 @@ class RawStore:
             self.failures -= 1
             raise RawStorageUploadError("temporary", retryable=True)
         sha = checksum(raw)
-        return RawObject(f"r2://{'a' * 32}/raw/taifex/tw_futures_eod/123/{sha}.json", sha, len(raw))
+        extension = "csv" if kwargs.get("payload_format") == "csv_cp950" else "json"
+        return RawObject(
+            f"r2://{'a' * 32}/raw/taifex/tw_futures_eod/123/{sha}.{extension}", sha, len(raw)
+        )
 
 
 class Source:
@@ -135,6 +138,8 @@ def test_all_products_raw_first_and_source_batch_recovers_without_acquisition(tm
     result = second.run(replace(item(), lease_token=UUID(int=4)))
     assert result.run_id == UUID(int=10)
     assert len(result.result_evidence["rows"]) == 5
+    assert all(report["ref"].endswith(".csv") for report in result.result_evidence["reports"])
+    assert result.result_evidence["manifest"]["ref"].endswith(".json")
     assert source.requests[0] == source.requests[1]
     assert len(raw.raw) == 6
 

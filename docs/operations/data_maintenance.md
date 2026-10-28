@@ -176,6 +176,12 @@ Staging／local 亦可直接使用 Admin preview／create 及
 
 每日期按商品下載指定日 CSV，exact CP950 bytes以`.csv`及`text/csv; charset=big5`先存 R2 再解析；整日 manifest 凍結 item／request、
 trade date、fetched_at、五商品 raw ref／SHA-256 與完整契約／時段 observations。
+Historical completion 接受商品報表的 content-addressed `.csv` 引用，並相容既有 `.json`
+報表 checkpoint；整日 manifest 仍只接受 `.json`。兩類引用都驗證 SHA-256 檔名、大小限制與
+dataset 範圍，manifest 另核對完整證據的 SHA-256 與實際大小。
+若 item 顯示 `COMPLETION_EVIDENCE_INVALID` 且沒有 run 關聯，應另查 checkpoint
+receipt 與 Source run；最後結算失敗不代表抓取或 canonical 寫入失敗。修正後依下述規則另建
+request key 重跑，保留原 failed item 與 checkpoint，不直接改寫完成狀態。
 有官方觀測值的列以單一 `futures_eod.v1` backfill batch 經 Source → raw → outbox → worker →
 canonical；重新抓取沿用 source precedence／fetched_at upsert，可更新官方修正值。
 所有 OHLC／settlement／open interest 皆空且 volume 明確為零才是 no-data，保存官方列與
