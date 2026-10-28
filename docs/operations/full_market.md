@@ -26,6 +26,33 @@ Pilot 每條 feed 取 published universe 穩定排序的前兩個 canonical 商�
 兩種 profile 各有 controls、first dates、plans、checkpoints、缺漏與告警；同環境共用 account governor。
 只追補各自首次日期後的缺口，prepared delivery 在停止後仍可完成。
 
+### 停止後的低成本排空與完成確認
+
+停止 controls 阻止新 provider acquisition；常駐 consumer 仍維持必要的 prepared delivery、
+accepted normalization 完成確認、心跳及 graceful shutdown。不能直接略過整個 drain。
+
+Compatibility（`PROVIDER_WORK_REQUIRED=false`）的 idle drain 透過 SQLite partial index，
+只選取有 immutable body、非 complete／manual、且 lease／retry deadline 已到的 work。
+僅載入這些 work 所屬 plans／原 release，遍歷時跳過其他 frozen members；沒有待排空工作時
+不讀取舊 release、不逐筆查詢歷史成員，也不展開完整 health／failure details。
+既有 body checksum、逐 sequence receipt、重試預算、normalization status 與 stop 保證維持。
+
+Additive `full_plan_reconcile` 保存是否有尚未完成 Source evaluation 的本機進度。
+`finish()` 與 dirty marker 在同一 transaction 寫入；只有成功取得並保存 Source evaluation
+才清除 marker。即使最後一筆 work 已在本機 terminal、程序卻在 evaluation 前中斷，重啟後仍
+以原 plan identity 重試完成確認，無須重送已接受資料。首次開啟舊 checkpoint 時，既有未完成
+plans 會建立一次 reconciliation marker；Source 確認後不再每輪重算。Marker 不將缺漏改成成功
+或 no_data，完整性仍由 Source canonical evidence 判定。
+
+Queue（`PROVIDER_WORK_REQUIRED=true`）仍執行既有 claim／owner recovery、prepared drain 與
+settlement；只有 idle drain 丟棄的完整 health 統計被省略。明確 `--health` 與正常 cycle 的輸出
+保留，plan／provider 狀態索引降低摘要查詢成本。兩種 profile 都適用，不自動切換 deployment flag。
+
+本次 SQLite 變更僅新增索引與 reconciliation table，啟動時在原 schema lock 下建立，不需
+PostgreSQL migration，也不重建 checkpoint、清除 body／receipt 或重設 governor。
+部署後應在 controls stopped、必要交付完成時，核對 runtime CPU、owner、prepared／receipt、
+normalization terminal 與 SDK actual-start 計數；本機測試不替代 production CPU 改善驗收。
+
 ### Shioaji 每日窗口與公平輪替
 
 Pilot／Full daily 的股票與 ETF 共用 `daily_runtime_policies.shioaji`，唯一設定來源是

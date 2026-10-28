@@ -62,7 +62,13 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_capacity_violation (account TEXT PRIMARY KEY, violation_id TEXT NOT NULL, observed_bytes INTEGER NOT NULL, allocation_sha256 TEXT NOT NULL, recorded_at REAL NOT NULL, received_bytes INTEGER NOT NULL DEFAULT 0, declared_bytes INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_capacity_repair (violation_id TEXT PRIMARY KEY, account TEXT NOT NULL, observed_bytes INTEGER NOT NULL, previous_allocation_sha256 TEXT NOT NULL, corrected_allocation_sha256 TEXT NOT NULL, declaration_sha256 TEXT NOT NULL, repaired_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_work (key TEXT PRIMARY KEY, provider TEXT NOT NULL, plan_id TEXT NOT NULL, member_key TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, lease_until REAL NOT NULL DEFAULT 0, body BLOB, body_sha256 TEXT, receipt TEXT, reason TEXT, next_at REAL NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS full_work_prepared_drain ON full_work(provider,plan_id,key) WHERE body IS NOT NULL AND status IN ('pending','prepared');
+                CREATE INDEX IF NOT EXISTS full_work_plan_status ON full_work(plan_id,status);
+                CREATE INDEX IF NOT EXISTS full_work_provider_status ON full_work(provider,status);
                 CREATE TABLE IF NOT EXISTS full_plan (plan_id TEXT PRIMARY KEY, provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, body BLOB NOT NULL, complete INTEGER NOT NULL DEFAULT 0, late INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS full_plan_reconcile (plan_id TEXT PRIMARY KEY, dirty INTEGER NOT NULL);
+                CREATE INDEX IF NOT EXISTS full_plan_reconcile_dirty ON full_plan_reconcile(dirty,plan_id);
+                INSERT OR IGNORE INTO full_plan_reconcile SELECT plan_id,1 FROM full_plan WHERE complete=0;
                 CREATE TABLE IF NOT EXISTS full_work_receipt (key TEXT NOT NULL, idempotency_key TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(key,idempotency_key));
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
@@ -478,6 +484,7 @@ class FullMarketState:
                     canonical_bytes(plan),
                 ),
             )
+            db.execute("INSERT OR IGNORE INTO full_plan_reconcile VALUES(?,0)", (plan["plan_id"],))
             for part in plan["parts"]:
                 for member in part["member_keys"]:
                     key = f"{part['work_item_id']}:{member}"
@@ -666,6 +673,12 @@ class FullMarketState:
                 "UPDATE full_work SET status='manual',reason='retry_exhausted' WHERE key=? AND attempts>=? AND status IN ('pending','prepared') AND reason != 'normalizing'",
                 (key, FULL_WORK_MAX_ATTEMPTS),
             )
+            # A crash after terminal local progress must not lose the final
+            # Source evaluation just because no prepared member remains.
+            db.execute(
+                "INSERT INTO full_plan_reconcile SELECT plan_id,1 FROM full_work WHERE key=? ON CONFLICT(plan_id) DO UPDATE SET dirty=1",
+                (key,),
+            )
 
     def catchup_dates(
         self,
@@ -689,6 +702,32 @@ class FullMarketState:
                 )
             ]
 
+    def drain_plans(self, provider: str, *, now: float) -> list[dict[str, Any]]:
+        """Select only eligible immutable deliveries, without loading historical bodies."""
+        with self.connection() as db:
+            keys: dict[str, set[str]] = {}
+            # Keep the idle lookup proportional to prepared work. Otherwise the
+            # planner may prefer provider/status and scan a large pending backlog.
+            for row in db.execute(
+                "SELECT plan_id,key FROM full_work INDEXED BY full_work_prepared_drain WHERE provider=? AND body IS NOT NULL AND status IN ('pending','prepared') AND lease_until<=? AND next_at<=?",
+                (provider, now, now),
+            ):
+                keys.setdefault(row["plan_id"], set()).add(row["key"])
+            for row in db.execute(
+                "SELECT p.plan_id FROM full_plan p JOIN full_plan_reconcile r ON r.plan_id=p.plan_id WHERE p.provider=? AND p.complete=0 AND r.dirty=1",
+                (provider,),
+            ):
+                keys.setdefault(row["plan_id"], set())
+            plans = []
+            for plan_id, selected in keys.items():
+                saved = db.execute(
+                    "SELECT * FROM full_plan WHERE plan_id=? AND provider=? AND complete=0",
+                    (plan_id, provider),
+                ).fetchone()
+                if saved is not None:
+                    plans.append({**dict(saved), "drain_keys": selected})
+            return sorted(plans, key=lambda plan: (plan["trade_date"], plan["dataset"]))
+
     def evaluate(self, plan: dict[str, Any]) -> None:
         summary = plan["summary"]
         complete = (
@@ -699,6 +738,10 @@ class FullMarketState:
             db.execute(
                 "UPDATE full_plan SET complete=?,late=? WHERE plan_id=?",
                 (int(complete), int(summary["is_late"]), plan["plan_id"]),
+            )
+            db.execute(
+                "INSERT INTO full_plan_reconcile VALUES(?,0) ON CONFLICT(plan_id) DO UPDATE SET dirty=0",
+                (plan["plan_id"],),
             )
             if complete:
                 db.execute(
