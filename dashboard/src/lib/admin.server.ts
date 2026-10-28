@@ -22,10 +22,13 @@ import {
   deliveryPlansSchema,
   deliveryPlanDatasetsSchema,
   deliveryResourceResponseSchema,
+  universeCandidatesSchema,
+  universeDiffSchema,
   type DeliveryResourceRequest,
   type DeliveryPlansRequest,
   type ExecutionProfile,
   type SchedulerMutationRequest,
+  type UniverseCandidatesRequest,
   type PanelResult,
 } from "./admin-api"
 import {
@@ -56,6 +59,44 @@ export async function fetchDeliveryPlansData(
     sessionToken,
     `/api/v1/admin/delivery-plans?${params}`,
     deliveryPlansSchema,
+    fetchImplementation
+  )
+}
+
+export async function fetchUniverseCandidatesData(
+  request: UniverseCandidatesRequest,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  const params = new URLSearchParams({
+    status: "candidate",
+    page: String(request.page),
+    page_size: String(request.pageSize),
+  })
+  if (request.datasetKey) params.set("dataset_key", request.datasetKey)
+  if (request.provider) params.set("provider", request.provider)
+  if (request.effectiveDate) params.set("effective_date", request.effectiveDate)
+  return fetchTarget(
+    safeBaseUrl(baseUrlValue),
+    sessionToken,
+    `/api/v1/admin/universes?${params}`,
+    universeCandidatesSchema,
+    fetchImplementation
+  )
+}
+
+export async function fetchUniverseDiffData(
+  releaseId: string,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return fetchTarget(
+    safeBaseUrl(baseUrlValue),
+    sessionToken,
+    `/api/v1/admin/universes/${releaseId}/diff`,
+    universeDiffSchema,
     fetchImplementation
   )
 }

@@ -309,6 +309,27 @@ export const missingDeliveriesSchema = z.object({
       first_detected_at: isoDateTime,
       last_detected_at: isoDateTime,
       resolved_at: nullableDateTime,
+      details: z
+        .object({
+          code: z.string(),
+          severity: z.string().optional(),
+          candidate_count: z.number().int().nonnegative().optional(),
+          candidate_release_ids: z.array(z.uuid()).optional(),
+          wait_age_seconds: z.number().nonnegative().optional(),
+          candidate_age_seconds: z.number().nonnegative().optional(),
+          completion_deadline_at: isoDateTime.optional(),
+          oldest_candidate_at: isoDateTime.optional(),
+          latest_candidate: z
+            .object({
+              release_id: z.uuid(),
+              change_count: z.number().int().nonnegative(),
+              change_ratio: z.number().nonnegative(),
+              created_at: isoDateTime,
+            })
+            .optional(),
+        })
+        .nullable()
+        .optional(),
     })
   ),
   pagination: paginationSchema,
@@ -316,6 +337,79 @@ export const missingDeliveriesSchema = z.object({
 export type MissingDelivery = z.infer<
   typeof missingDeliveriesSchema
 >["data"][number]
+
+export const universeCandidatesRequestSchema = z.object({
+  datasetKey: z.string().trim().max(50).default(""),
+  provider: z.string().trim().max(50).default(""),
+  effectiveDate: z.union([z.iso.date(), z.literal("")]).default(""),
+  page: z.number().int().positive().default(1),
+  pageSize: z.number().int().min(1).max(100).default(25),
+})
+export type UniverseCandidatesRequest = z.infer<
+  typeof universeCandidatesRequestSchema
+>
+
+export const universeReleaseSchema = z.object({
+  release_id: z.uuid(),
+  dataset_key: z.string(),
+  provider: z.string(),
+  effective_date: z.iso.date(),
+  observed_at: isoDateTime,
+  status: z.enum(["candidate", "published"]),
+  member_count: z.number().int().positive(),
+  member_sha256: z.string(),
+  semantic_member_sha256: z.string(),
+  change_count: z.number().int().nonnegative(),
+  change_ratio: z.number().nonnegative(),
+  created_at: isoDateTime,
+  published_at: nullableDateTime,
+  published_by: z.string().nullable(),
+  approval_note: z.string().nullable(),
+  comparison_release_id: z.uuid().nullable(),
+})
+
+export const universeCandidatesSchema = z.object({
+  data: z.array(universeReleaseSchema),
+  pagination: paginationSchema,
+})
+export type UniverseCandidate = z.infer<
+  typeof universeCandidatesSchema
+>["data"][number]
+
+export const universeDiffRequestSchema = z.object({ releaseId: z.uuid() })
+export type UniverseDiffRequest = z.infer<typeof universeDiffRequestSchema>
+
+export const universeMemberSchema = z.object({
+  member_key: z.string(),
+  symbol: z.string(),
+  provider_symbol: z.string(),
+  exchange: z.string(),
+  currency: z.string(),
+  asset_class: z.string(),
+  classification: z.string().nullable(),
+  contract_code: z.string().nullable(),
+  product_code: z.string().nullable(),
+  contract_month: z.string().nullable(),
+  session: z.string().nullable(),
+  mapping_status: z.string(),
+})
+
+export const universeDiffSchema = z.object({
+  release: universeReleaseSchema,
+  comparison_release: universeReleaseSchema.nullable(),
+  added: z.array(universeMemberSchema),
+  removed: z.array(universeMemberSchema),
+  changed: z.array(
+    z.object({
+      member_key: z.string(),
+      changed_fields: z.array(z.string()),
+      before: universeMemberSchema,
+      after: universeMemberSchema,
+    })
+  ),
+  unchanged_count: z.number().int().nonnegative(),
+})
+export type UniverseDiff = z.infer<typeof universeDiffSchema>
 
 export const historicalBackfillSchema = z.object({
   request_id: z.uuid(),

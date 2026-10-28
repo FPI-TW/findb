@@ -15,7 +15,7 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 
 入口為 `/dashboard/operations/deliveries`。最外層是獨立的「Pilot」與「Full market」分頁，
 staging 預設 Pilot，production 預設 Full market；切換不寫入 controls。
-各 profile 內分為計畫、缺漏告警與歷史回補；viewer 不顯示歷史回補。
+各 profile 內分為計畫、缺漏告警、Universe 候選與歷史回補；viewer 不顯示歷史回補。
 計畫 expected、data、no_data、missing、blocked、缺漏清單與告警只計算所選 profile，不能跨頁混加。
 尚未啟動、已有啟動日期但尚無計畫、以及已建立計畫的實際缺漏分別呈現。
 
@@ -26,11 +26,14 @@ staging 預設 Pilot，production 預設 Full market；切換不寫入 controls�
 - 缺口明細最多列出 1,000 筆，介面同時顯示已列出筆數與總缺口數；完整性與逾時為不同概念。
 - 缺漏告警追蹤資料集／日期層級的交付；「帶入回補」僅切換分頁並填入條件。
   operator／owner 仍需預覽交易日、確認與送出，才會建立回補。
+- TAIFEX 同日 universe 候選超過交付截止仍未發布時，告警顯示「Universe 等待發布」與候選數，
+  不提供無效的歷史回補捷徑。Universe 候選分頁唯讀列出待發布版本，並可檢視相對最近 published
+  release 的新增、移除、欄位變更與未變更成員數；發布仍由既有 Owner API 治理。
 - 切換分頁會保留本次進入頁面後的回補草稿；重新載入頁面不保留未提交草稿。
   手動與定期更新不改寫草稿、預覽或確認狀態；修改參數或帶入新的告警會取消先前預覽與確認，
   較晚完成的舊預覽也不能授權目前草稿。建立後由回補紀錄刷新顯示已建立請求。
 
-URL 的 `profile=pilot|full_market`、`tab=plans|alerts|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、回補 `bp/bps`
+URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、Universe 候選 `cp/cps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
 兩種 profile 的計畫都是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
 
@@ -40,7 +43,7 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|backfills`、計畫 `dat
 並在固定高度狀態列顯示更新進度。失敗顯示錯誤、最後成功時間與重試；失敗請求不推進成功時間。
 新篩選無快取時使用骨架，避免把上一條件的資料誤當成新結果。
 
-頁首「重新整理」只刷新目前頁面／分頁與必要的選項查詢。概況、DQ、全市場計畫、缺漏告警及
+頁首「重新整理」只刷新目前頁面／分頁與必要的選項查詢。概況、DQ、全市場計畫、缺漏告警、Universe 候選及
 回補紀錄每 60 秒更新；隱藏分頁及瀏覽器背景停止輪詢，重新可見時只有超過 60 秒的資料才補刷新。
 稽核、交易日曆、使用者與憑證不定時輪詢，使用手動刷新及操作後失效重取。
 
@@ -64,7 +67,7 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|backfills`、計畫 `dat
   `hasData` 根據是否有成功 response，不能以資料列數判斷。
 - 表格初次載入使用共用欄位骨架；已有外部 QueryStatus 時傳入 `refreshingState={null}`，避免重複提示。
   `errorState={null}` 可將錯誤公告交給外部狀態列。表格使用穩定業務 ID，不因輪詢重設展開或頁碼。
-- 概況保留聚合查詢，以具名來源保存各自的錯誤及成功時間；交付三分頁各自查詢，不因任一分頁失敗
+- 概況保留聚合查詢，以具名來源保存各自的錯誤及成功時間；交付四分頁各自查詢，不因任一分頁失敗
   而覆蓋其他分頁的有效結果。未顯示的回補編輯器保留本地草稿但停止查詢。
 - 新增非同步頁面時，同步測試空集合重整失敗、快取隔離、隱藏查詢及錯誤恢復。
 

@@ -33,6 +33,24 @@ const columns: ColumnDef<MissingDelivery, unknown>[] = [
     meta: { minWidth: 130 },
   },
   {
+    id: "issue",
+    header: "問題",
+    meta: { minWidth: 190 },
+    cell: ({ row }) =>
+      row.original.details?.code === "DATED_UNIVERSE_PENDING" ? (
+        <span>
+          Universe 等待發布
+          {row.original.details.candidate_count
+            ? `（${row.original.details.candidate_count}）`
+            : ""}
+        </span>
+      ) : (
+        <span className="font-mono text-xs">
+          {row.original.details?.code ?? "DELIVERY_MISSING"}
+        </span>
+      ),
+  },
+  {
     accessorKey: "first_detected_at",
     header: "首次偵測",
     meta: { minWidth: 190 },
@@ -79,17 +97,20 @@ export function DeliveryAlertsPanel({
               id: "backfill",
               header: "回補",
               meta: { width: 120 },
-              cell: ({ row }) => (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  type="button"
-                  aria-label={`帶入 ${row.original.dataset_key} ${row.original.expected_data_date} 回補參數`}
-                  onClick={() => onBackfill(row.original)}
-                >
-                  帶入回補
-                </Button>
-              ),
+              cell: ({ row }) =>
+                row.original.details?.code === "DATED_UNIVERSE_PENDING" ? (
+                  <span className="text-xs text-muted">請先審核候選</span>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    aria-label={`帶入 ${row.original.dataset_key} ${row.original.expected_data_date} 回補參數`}
+                    onClick={() => onBackfill(row.original)}
+                  >
+                    帶入回補
+                  </Button>
+                ),
             } satisfies ColumnDef<MissingDelivery, unknown>,
           ],
     [role, onBackfill]
@@ -107,7 +128,8 @@ export function DeliveryAlertsPanel({
       result={{ ok: true, data: null }}
     >
       <p className="mb-3 text-sm text-muted">
-        只顯示所選模式的資料集／日期交付告警；逐成員核對請查看「交付計畫」。
+        只顯示所選模式的資料集／日期交付告警；dated universe
+        超過完成窗口仍未發布時會顯示專用提示，可前往「Universe 候選」查看差異。
       </p>
       <QueryStatus
         hasData={query.data !== undefined}

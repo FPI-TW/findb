@@ -7,6 +7,8 @@ import {
   previewHistoricalBackfillData,
   fetchDashboardData,
   patchSchedulerData,
+  fetchUniverseCandidatesData,
+  fetchUniverseDiffData,
 } from "./admin.server"
 
 const timestamp = "2026-07-23T02:00:00Z"
@@ -123,6 +125,54 @@ const responses = {
     data: [],
     pagination,
   },
+  "/api/v1/admin/universes": {
+    data: [
+      {
+        release_id: "019565d2-f838-7c91-85c1-72d4d7bbbe90",
+        dataset_key: "tw_futures_eod",
+        provider: "taifex",
+        effective_date: "2026-07-23",
+        observed_at: timestamp,
+        status: "candidate",
+        member_count: 63,
+        member_sha256: "a".repeat(64),
+        semantic_member_sha256: "b".repeat(64),
+        change_count: 2,
+        change_ratio: 0.031746,
+        created_at: timestamp,
+        published_at: null,
+        published_by: null,
+        approval_note: null,
+        comparison_release_id: "019565d2-f838-7c91-85c1-72d4d7bbbe91",
+      },
+    ],
+    pagination: { ...pagination, total_records: 1, total_pages: 1 },
+  },
+  "/api/v1/admin/universes/019565d2-f838-7c91-85c1-72d4d7bbbe90/diff": {
+    release: {
+      release_id: "019565d2-f838-7c91-85c1-72d4d7bbbe90",
+      dataset_key: "tw_futures_eod",
+      provider: "taifex",
+      effective_date: "2026-07-23",
+      observed_at: timestamp,
+      status: "candidate",
+      member_count: 63,
+      member_sha256: "a".repeat(64),
+      semantic_member_sha256: "b".repeat(64),
+      change_count: 1,
+      change_ratio: 0.015873,
+      created_at: timestamp,
+      published_at: null,
+      published_by: null,
+      approval_note: null,
+      comparison_release_id: null,
+    },
+    comparison_release: null,
+    added: [],
+    removed: [],
+    changed: [],
+    unchanged_count: 63,
+  },
   "/api/v1/admin/historical-backfills": {
     data: [],
     pagination,
@@ -196,6 +246,41 @@ function recordingFetch(
 }
 
 describe("FinDB Admin server boundary", () => {
+  it("loads universe candidates and a bounded member diff through authenticated Admin reads", async () => {
+    const calls: RecordedCall[] = []
+    const fetcher = recordingFetch(calls)
+    const candidates = await fetchUniverseCandidatesData(
+      {
+        datasetKey: "tw_futures_eod",
+        provider: "taifex",
+        effectiveDate: "2026-07-23",
+        page: 1,
+        pageSize: 25,
+      },
+      "viewer-secret",
+      "https://findb.internal:8443",
+      fetcher
+    )
+    const candidate = candidates.data[0]
+    expect(candidate).toBeDefined()
+    if (!candidate) throw new Error("Missing candidate fixture")
+    const diff = await fetchUniverseDiffData(
+      candidate.release_id,
+      "viewer-secret",
+      "https://findb.internal:8443",
+      fetcher
+    )
+
+    expect(candidate.status).toBe("candidate")
+    expect(diff.unchanged_count).toBe(63)
+    expect(calls.map(call => `${call.url.pathname}${call.url.search}`)).toEqual(
+      [
+        "/api/v1/admin/universes?status=candidate&page=1&page_size=25&dataset_key=tw_futures_eod&provider=taifex&effective_date=2026-07-23",
+        "/api/v1/admin/universes/019565d2-f838-7c91-85c1-72d4d7bbbe90/diff",
+      ]
+    )
+  })
+
   it("viewer does not request historical backfill scope or status", async () => {
     const calls: RecordedCall[] = []
     const result = await fetchDashboardData(

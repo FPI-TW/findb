@@ -428,6 +428,12 @@ Missing-delivery scan 只對該 execution profile 的 scheduler control 為 `des
 open alerts 以 `resolution.code=SCHEDULER_STOPPED` 關閉；Pilot 與 Full 必須分開判斷，不能因
 Pilot running 而延續已停止 Full 的缺漏告警。
 
+TAIFEX `tw_futures_eod` 在交易日的交付截止後仍沒有 plan、沒有同日 published universe，且已有
+同日 candidate 時，既有 missing-delivery alert 使用專用 `details.code=DATED_UNIVERSE_PENDING`。
+Details 保存截止時間、等待秒數、候選總數、最舊候選時間及最多 20 個最新 release IDs，讓
+Dashboard 明確提示先審核候選。尚無候選時維持一般 `PILOT_INCOMPLETE`／
+`FULL_MARKET_INCOMPLETE`；同日 release 發布並建立、完成 plan 後，沿用既有完整性規則結清告警。
+
 Runtime recovery 另外檢查 shared quota reservation、prepared raw checksum、provider-scoped
 checkpoint 與 request identity。五個 provider credentials 保持隔離；不記錄 keys、tokens、
 presigned URLs 或 provider request secrets。每個 rollout stage 保存 actual exchange

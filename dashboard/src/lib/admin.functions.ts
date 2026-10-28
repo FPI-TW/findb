@@ -11,6 +11,8 @@ import {
   historicalBackfillPreviewSchema,
   deliveryPlansRequestSchema,
   deliveryResourceRequestSchema,
+  universeCandidatesRequestSchema,
+  universeDiffRequestSchema,
 } from "./admin-api"
 import {
   fetchDashboardData,
@@ -22,6 +24,8 @@ import {
   fetchDeliveryPlansData,
   fetchDeliveryPlanDatasetsData,
   fetchDeliveryResourceData,
+  fetchUniverseCandidatesData,
+  fetchUniverseDiffData,
 } from "./admin.server"
 import {
   assertSameOrigin,
@@ -162,5 +166,27 @@ export const loadDeliveryResource = createServerFn({ method: "POST" })
     markPrivateResponse()
     return withDashboardAuthentication(() =>
       fetchDeliveryResourceData(data, session.token, config.apiBaseUrl)
+    )
+  })
+
+export const loadUniverseCandidates = createServerFn({ method: "POST" })
+  .validator(universeCandidatesRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    markPrivateResponse()
+    return withDashboardAuthentication(() =>
+      fetchUniverseCandidatesData(data, session.token, config.apiBaseUrl)
+    )
+  })
+
+export const loadUniverseDiff = createServerFn({ method: "POST" })
+  .validator(universeDiffRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    markPrivateResponse()
+    return withDashboardAuthentication(() =>
+      fetchUniverseDiffData(data.releaseId, session.token, config.apiBaseUrl)
     )
   })

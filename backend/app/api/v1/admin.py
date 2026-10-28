@@ -114,6 +114,9 @@ from app.schemas.admin import (
     SourceClientListResponse,
     SourceClientResponse,
     SuccessResponse,
+    UniverseReleaseAdminResponse,
+    UniverseReleaseDiffResponse,
+    UniverseReleaseListResponse,
 )
 from app.schemas.common import PaginationInfo
 from app.schemas.full_market import (
@@ -222,6 +225,7 @@ from app.services.source_clients import (
     revoke_source_client,
     rotate_source_client,
 )
+from app.services.universe_queries import get_universe_release_diff, list_universe_releases
 from app.utils import utc_now
 from app.vocabulary import normalize_market
 from scripts.generate_instrument_cache import main as run_cache_generation
@@ -262,6 +266,51 @@ async def provider_work_cutover(
     )
     await db.commit()
     return {"success": True, "environment": body.environment}
+
+
+@router.get("/universes", response_model=UniverseReleaseListResponse)
+async def list_full_market_universes(
+    universe_status: Literal["candidate", "published"] | None = Query(None, alias="status"),
+    dataset_key: str | None = Query(None, min_length=1, max_length=50),
+    provider: str | None = Query(None, min_length=1, max_length=50),
+    effective_date: date | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseReleaseListResponse:
+    """List universe candidates or published releases without mutating governance state."""
+    rows, total = await list_universe_releases(
+        db,
+        status=universe_status,
+        dataset_key=dataset_key,
+        provider=provider,
+        effective_date=effective_date,
+        page=page,
+        page_size=page_size,
+    )
+    return UniverseReleaseListResponse(
+        data=[UniverseReleaseAdminResponse.model_validate(row) for row in rows],
+        pagination=PaginationInfo(
+            page=page,
+            page_size=page_size,
+            total_records=total,
+            total_pages=(total + page_size - 1) // page_size if total else 0,
+        ),
+    )
+
+
+@router.get("/universes/{release_id}/diff", response_model=UniverseReleaseDiffResponse)
+async def get_full_market_universe_diff(
+    release_id: UUID,
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseReleaseDiffResponse:
+    """Compare one release with the latest applicable published release."""
+    response = await get_universe_release_diff(db, release_id)
+    if response is None:
+        raise HTTPException(status_code=404, detail="Universe release not found")
+    return UniverseReleaseDiffResponse.model_validate(response)
 
 
 @router.post("/universes/{release_id}/publish", response_model=UniverseReleaseResponse)

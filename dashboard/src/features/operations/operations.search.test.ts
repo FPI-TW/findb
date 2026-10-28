@@ -33,6 +33,8 @@ describe("operations route search", () => {
       date: "",
       pp: 1,
       pps: 25,
+      cp: 1,
+      cps: 25,
       bp: 1,
       bps: 25,
     })
@@ -45,6 +47,9 @@ describe("operations route search", () => {
       p: 1,
       ps: 25,
     })
+    expect(deliveriesSearchSchema.parse({ cp: "3", cps: "50" })).toEqual(
+      expect.objectContaining({ cp: 3, cps: 50 })
+    )
   })
 
   it("validates raw audit filters and maps URL keys to the server contract", () => {

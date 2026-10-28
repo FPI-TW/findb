@@ -32,7 +32,10 @@ function pageSchema(defaultPageSize: (typeof OPERATIONS_PAGE_SIZES)[number]) {
 
 export const deliveriesSearchSchema = pageSchema(100).extend({
   profile: z.enum(["pilot", "full_market"]).optional().catch(undefined),
-  tab: z.enum(["plans", "alerts", "backfills"]).catch("plans").default("plans"),
+  tab: z
+    .enum(["plans", "alerts", "candidates", "backfills"])
+    .catch("plans")
+    .default("plans"),
   dataset: z.string().trim().max(100).catch("").default(""),
   date: z
     .union([z.iso.date(), z.literal("")])
@@ -40,6 +43,8 @@ export const deliveriesSearchSchema = pageSchema(100).extend({
     .default(""),
   pp: z.coerce.number().int().positive().catch(1).default(1),
   pps: pageSchema(25).shape.ps,
+  cp: z.coerce.number().int().positive().catch(1).default(1),
+  cps: pageSchema(25).shape.ps,
   bp: z.coerce.number().int().positive().catch(1).default(1),
   bps: z.coerce
     .number()

@@ -6,6 +6,7 @@ import { DeliveryPlansPanel } from "./DeliveryPlansPanel"
 import { DeliveryAlertsPanel } from "./DeliveryAlertsPanel"
 import { HistoricalBackfillsPanel } from "./HistoricalBackfillsPanel"
 import { ProviderWorkPanel } from "./ProviderWorkPanel"
+import { UniverseCandidatesPanel } from "./UniverseCandidatesPanel"
 import { PageIntro } from "./operations.shared"
 import {
   deliveriesSearchSchema,
@@ -18,6 +19,7 @@ export type DeliveriesSearchUpdate =
 const tabs = [
   { value: "plans", label: "交付計畫" },
   { value: "alerts", label: "缺漏告警" },
+  { value: "candidates", label: "Universe 候選" },
   { value: "backfills", label: "歷史回補" },
 ] as const
 
@@ -57,7 +59,7 @@ export function DeliveriesPage({
         selected={search.profile ?? "pilot"}
         onChange={profile => {
           setSeed(undefined)
-          updateSearch({ ...search, profile, p: 1, pp: 1, bp: 1 })
+          updateSearch({ ...search, profile, p: 1, pp: 1, cp: 1, bp: 1 })
         }}
       >
         {profile =>
@@ -89,6 +91,12 @@ export function DeliveriesPage({
                       setSeed({ ...row })
                       updateSearch({ ...search, tab: "backfills" })
                     }}
+                  />
+                ) : tab === "candidates" ? (
+                  <UniverseCandidatesPanel
+                    search={search}
+                    updateSearch={updateSearch}
+                    active={selected === tab}
                   />
                 ) : (
                   <HistoricalBackfillsPanel

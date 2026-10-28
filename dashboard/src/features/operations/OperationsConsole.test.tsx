@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   loadRawPayloadDetail: vi.fn(),
   loadDeliveryPlans: vi.fn(),
   loadDeliveryPlanDatasets: vi.fn(),
+  loadUniverseCandidates: vi.fn(),
+  loadUniverseDiff: vi.fn(),
   loadDeliveryResource: vi.fn(),
   updateScheduler: vi.fn(),
   createHistoricalBackfill: vi.fn(),
@@ -2168,6 +2170,48 @@ describe("Operations presentation", () => {
     ).not.toBeInTheDocument()
     expect(
       screen.queryByRole("heading", { name: "供應商歷史回補" })
+    ).not.toBeInTheDocument()
+  })
+
+  it("directs an overdue dated-universe alert to candidate review instead of backfill", async () => {
+    mocks.loadDashboard.mockResolvedValue(
+      deliveriesResponse([
+        makeMissingDelivery({
+          dataset_key: "tw_futures_eod",
+          source: "taifex",
+          schema_id: "futures_eod",
+          expected_data_date: "2026-10-15",
+          details: {
+            code: "DATED_UNIVERSE_PENDING",
+            severity: "error",
+            candidate_count: 2,
+            candidate_release_ids: [
+              "019565d2-f838-7c91-85c1-72d4d7bbbe91",
+              "019565d2-f838-7c91-85c1-72d4d7bbbe92",
+            ],
+            wait_age_seconds: 3600,
+          },
+        }),
+      ])
+    )
+
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({ tab: "alerts" })}
+        />
+      </QueryClientProvider>
+    )
+
+    expect(
+      await screen.findByText("Universe 等待發布（2）")
+    ).toBeInTheDocument()
+    expect(screen.getByText("請先審核候選")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", {
+        name: "帶入 tw_futures_eod 2026-10-15 回補參數",
+      })
     ).not.toBeInTheDocument()
   })
 })
