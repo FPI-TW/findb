@@ -876,16 +876,17 @@ class FullMarketRuntime:
             result.append(self.source.submit(body))
         return result
 
-    def drain(self) -> dict[str, Any]:
+    def drain(self) -> None:
         """Deliver immutable prepared bodies without acquiring new provider data."""
         from findb_fetcher.provider_work import enabled
 
         if enabled():
-            return self._queued_cycle()
+            self._queued_cycle(include_health=False)
+            return
         if self.provider == "factset":
-            return self.health()
+            return
         self._drain_blocked = False
-        for saved in self.state.pending_plans(self.provider):
+        for saved in self.state.drain_plans(self.provider, now=time.time()):
             plan = json.loads(saved["body"])
             feed = next(
                 (
@@ -897,13 +898,16 @@ class FullMarketRuntime:
             )
             if feed is None:
                 continue
-            release = self.source.release(plan["release_id"])
-            can_continue = self._deliver_plan(plan, release, feed, drain_only=True)
+            can_continue = True
+            if saved["drain_keys"]:
+                release = self.source.release(plan["release_id"])
+                can_continue = self._deliver_plan(
+                    plan, release, feed, drain_only=True, drain_keys=saved["drain_keys"]
+                )
             self.state.evaluate(self.source.evaluate(plan["plan_id"]))
             if not can_continue:
                 self._drain_blocked = True
                 break
-        return self.health()
 
     def cycle(self, *, drain_prepared: bool = True) -> dict[str, Any]:
         from findb_fetcher.provider_work import enabled
@@ -1226,11 +1230,14 @@ class FullMarketRuntime:
             proof={"manual_reason": "retired_feed_requires_manual_review"},
         )
 
-    def _queued_cycle(self) -> dict[str, Any]:
+    def _queued_cycle(self, *, include_health: bool = True) -> dict[str, Any]:
         """Enqueue bounded dates before claiming; every provider call is owned."""
         from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
         from findb_fetcher.raw_storage import RawStorageUploadError
 
+        # Idle drain callers discard the result. Never rebuild every historical
+        # plan's counts/failures just to report that there was no owned work.
+        health = self.health if include_health else lambda: {}
         self._ensure_proof()
         authorization = self.source.request(
             "GET", "full-market/authorization?consumer=" + self.execution_profile
@@ -1312,7 +1319,7 @@ class FullMarketRuntime:
                 execution_profile=self.execution_profile,
             ) as owner:
                 if owner is None:
-                    return self.health()
+                    return health()
                 try:
                     work = owner.work
                     if work["kind"] == "rerun":
@@ -1331,10 +1338,10 @@ class FullMarketRuntime:
                         )
                         if installed is None:
                             self._settle_retired_work(owner)
-                            return self.health()
+                            return health()
                         if work["state"] != "open" and not work.get("manifest"):
                             owner.settle("retry", failure_code="RECOVERED_CLOSED_ROUND")
-                            return self.health()
+                            return health()
                         feed = work["scope"].get("feed") or installed
                         if feed["dataset_key"] != installed["dataset_key"]:
                             raise ValueError("daily frozen feed differs from work dataset")
@@ -1483,7 +1490,7 @@ class FullMarketRuntime:
                     self.pause()
         except ProviderWorkWaitingError:
             pass
-        return self.health()
+        return health()
 
     def _deliver_factset_plan(self, owner, plan: dict, release: dict, feed: dict) -> None:
         from findb_fetcher.factset_eod import FactSetEOD, completion_status
@@ -1860,11 +1867,14 @@ class FullMarketRuntime:
         feed: dict[str, Any],
         *,
         drain_only: bool = False,
+        drain_keys: set[str] | None = None,
     ) -> bool:
         self._batch_started = time.monotonic()
         self.last_batch = {"processed": 0, "reason": "scanned", "plan_id": plan["plan_id"]}
         try:
-            return self._deliver_members(plan, release, feed, drain_only=drain_only)
+            return self._deliver_members(
+                plan, release, feed, drain_only=drain_only, drain_keys=drain_keys
+            )
         finally:
             if self.daily_policy:
                 self.last_batch["elapsed_seconds"] = round(
@@ -1879,6 +1889,7 @@ class FullMarketRuntime:
         feed: dict[str, Any],
         *,
         drain_only: bool = False,
+        drain_keys: set[str] | None = None,
     ) -> bool:
         members = {member["member_key"]: member for member in release["members"]}
         entries = [(part, key) for part in plan["parts"] for key in part["member_keys"]]
@@ -1890,8 +1901,10 @@ class FullMarketRuntime:
         ordered = list(enumerate(entries))
         ordered = ordered[offset:] + ordered[:offset]
         for index, (part, member_key) in ordered:
-            member = members[member_key]
             key = part["work_item_id"] + ":" + member_key
+            if drain_keys is not None and key not in drain_keys:
+                continue
+            member = members[member_key]
             if self.daily_policy:
                 if (
                     self.last_batch["processed"] >= self.daily_policy["max_members"]
