@@ -3,7 +3,7 @@
 import hashlib
 import json
 from datetime import date, datetime
-from typing import Literal
+from typing import ClassVar, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -32,6 +32,7 @@ class HistoricalFuturesRow(FuturesEODRow):
 
 class HistoricalRawReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    _extensions: ClassVar[tuple[str, ...]] = ("json",)
 
     ref: str = Field(min_length=1, max_length=2048, pattern=r"^r2://[0-9a-f]{32}/")
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -42,7 +43,9 @@ class HistoricalRawReference(BaseModel):
         # R2 keys are content addressed; reject URLs carrying query/credential data.
         if any(
             token in self.ref for token in ("?", "#", "@", "%", "\\", "/../")
-        ) or not self.ref.endswith(f"/{self.sha256}.json"):
+        ) or not self.ref.endswith(
+            tuple(f"/{self.sha256}.{extension}" for extension in self._extensions)
+        ):
             raise ValueError("raw reference must identify its immutable content")
         if "/taifex/tw_futures_eod/" not in self.ref:
             raise ValueError("raw reference is outside the TAIFEX dataset")
@@ -50,6 +53,9 @@ class HistoricalRawReference(BaseModel):
 
 
 class HistoricalProductReport(HistoricalRawReference):
+    # Exact CP950 report bytes use CSV; retain older JSON-addressed checkpoints.
+    _extensions: ClassVar[tuple[str, ...]] = ("csv", "json")
+
     product_code: Literal["TX", "MTX", "TMF", "TE", "TF"]
     url: Literal["https://www.taifex.com.tw/cht/3/futDataDown"]
 

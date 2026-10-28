@@ -32,16 +32,16 @@ def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
 
 
-def reference(raw):
+def reference(raw, extension="json"):
     sha = hashlib.sha256(raw).hexdigest()
     return {
-        "ref": f"r2://{'a' * 32}/raw/taifex/tw_futures_eod/123/{sha}.json",
+        "ref": f"r2://{'a' * 32}/raw/taifex/tw_futures_eod/123/{sha}.{extension}",
         "sha256": sha,
         "size_bytes": len(raw),
     }
 
 
-def evidence(item_id, request_id, *, no_data=False):
+def evidence(item_id, request_id, *, no_data=False, report_extension="csv"):
     rows = []
     for product in PRODUCTS:
         row = {
@@ -70,7 +70,7 @@ def evidence(item_id, request_id, *, no_data=False):
         "fetched_at": "2026-10-01T10:00:00Z",
         "reports": [
             {
-                **reference(product.encode()),
+                **reference(product.encode(), report_extension),
                 "product_code": product,
                 "url": "https://www.taifex.com.tw/cht/3/futDataDown",
             }
@@ -136,13 +136,14 @@ async def claim(session):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("no_data", [False, True])
+@pytest.mark.parametrize("report_extension", ["csv", "json"])
 async def test_http_completion_validates_evidence_and_canonical_pipeline(
-    client, test_session, test_engine, monkeypatch, no_data
+    client, test_session, test_engine, monkeypatch, no_data, report_extension
 ):
     headers = await seed(test_session, monkeypatch)
     item, request = await claim(test_session)
     item_id, request_id, token = item.item_id, request.request_id, item.lease_token
-    proof = evidence(item_id, request_id, no_data=no_data)
+    proof = evidence(item_id, request_id, no_data=no_data, report_extension=report_extension)
     HistoricalResultEvidence.model_validate(proof)
     run_id = None
     if not no_data:
@@ -228,7 +229,7 @@ async def test_http_completion_validates_evidence_and_canonical_pipeline(
         )
         assert new_item is not None
         next_id, next_token = new_item.item_id, new_item.lease_token
-        corrected = evidence(next_id, new_request.request_id)
+        corrected = evidence(next_id, new_request.request_id, report_extension=report_extension)
         corrected["fetched_at"] = "2026-10-01T10:01:00Z"
         corrected["rows"][0]["close"] = "115"
         corrected["manifest"] = reference(
@@ -319,6 +320,35 @@ def test_completion_evidence_rejects_incomplete_or_ambiguous_claims(kind):
     if kind == "wrong_contract":
         proof["rows"][0]["contract_code"] = "MTX:202610F1"
     with pytest.raises(ValueError):
+        HistoricalResultEvidence.model_validate(proof)
+
+
+@pytest.mark.parametrize("report_extension", ["csv", "json"])
+def test_completion_evidence_accepts_current_and_legacy_report_references(report_extension):
+    proof = evidence(uuid7(), uuid7(), report_extension=report_extension)
+    assert HistoricalResultEvidence.model_validate(proof).model_dump(mode="json") == proof
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["report_extension", "report_digest", "report_dataset", "report_traversal", "manifest_csv"],
+)
+def test_completion_evidence_preserves_raw_reference_guards(kind):
+    proof = evidence(uuid7(), uuid7())
+    report = proof["reports"][0]
+    if kind == "report_extension":
+        report["ref"] = report["ref"].removesuffix(".csv") + ".html"
+    if kind == "report_digest":
+        report["sha256"] = "0" * 64
+    if kind == "report_dataset":
+        report["ref"] = report["ref"].replace("/taifex/", "/shioaji/")
+    if kind == "report_traversal":
+        report["ref"] = report["ref"].replace("/123/", "/123/../")
+    proof["manifest"] = reference(
+        canonical({key: value for key, value in proof.items() if key != "manifest"}),
+        "csv" if kind == "manifest_csv" else "json",
+    )
+    with pytest.raises(ValueError, match="raw reference"):
         HistoricalResultEvidence.model_validate(proof)
 
 
