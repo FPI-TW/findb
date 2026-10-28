@@ -262,20 +262,38 @@ def test_cooldown_publish_lost_ack_keeps_unknown_debt_journal_and_host_quarantin
 
 
 @pytest.mark.parametrize("always_slow", [False, True])
-def test_slow_owner_rpc_precedes_fresh_dispatch_grant(tmp_path, monkeypatch, always_slow):
+@pytest.mark.parametrize(
+    ("start_second", "expected_grants"),
+    [(10.0, 1), (59.97, 2)],
+    ids=["within-minute", "minute-rollover"],
+)
+def test_slow_owner_rpc_precedes_fresh_dispatch_grant(
+    tmp_path, monkeypatch, always_slow, start_second, expected_grants
+):
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
     path = tmp_path / "governor.sqlite3"
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
     checks = []
     grants = []
     native = []
+    # Drive only acquisition clocks: an owner RPC may legally cross the UTC
+    # quota minute and require another grant, without another native dispatch.
+    wall = [1793201220.0 + start_second]
+    monotonic = [1000.0]
+
+    def sleep(seconds):
+        wall[0] += seconds
+        monotonic[0] += seconds
+
+    clock = SimpleNamespace(time=lambda: wall[0], monotonic=lambda: monotonic[0], sleep=sleep)
+    monkeypatch.setattr(acq, "time", clock)
 
     class Source:
         def request(self, method, path, body):
             if path.endswith("/authorize"):
                 checks.append(path)
                 if len(checks) == 2 or (always_slow and len(checks) > 1):
-                    time.sleep(0.06)
+                    clock.sleep(0.06)
             return work_authorization("twelve_data", body) if path.endswith("/authorize") else {}
 
     owner = queue.ProviderWorkSession(
@@ -287,8 +305,10 @@ def test_slow_owner_rpc_precedes_fresh_dispatch_grant(tmp_path, monkeypatch, alw
     token = queue._current.set(owner)
 
     def grant():
-        grants.append(time.time())
-        return acq.Authorization(time.monotonic(), time.time(), time.time(), provider="twelve_data")
+        grants.append(clock.time())
+        return acq.Authorization(
+            clock.monotonic(), clock.time(), clock.time(), provider="twelve_data"
+        )
 
     try:
         with (
@@ -313,11 +333,19 @@ def test_slow_owner_rpc_precedes_fresh_dispatch_grant(tmp_path, monkeypatch, alw
                         )
 
                 dispatch()
-        assert len(grants) == 1 and len(native) == 1
+        assert len(grants) == expected_grants and len(native) == 1
+        assert grants[0] >= 1793201220.0 + start_second + 0.06
         with acq.FullMarketState(path).connection() as db:
             assert (
                 db.execute(
                     "SELECT count(*) FROM acquisition_intent WHERE actual_start IS NOT NULL"
+                ).fetchone()[0]
+                == 1
+            )
+            assert (
+                db.execute(
+                    "SELECT requests FROM full_quota WHERE window=?",
+                    (acq._windows(clock.time())[0],),
                 ).fetchone()[0]
                 == 1
             )
