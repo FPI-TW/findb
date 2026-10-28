@@ -48,7 +48,7 @@ FinLab daily target-not-ready 與 FactSet daily `no_source_row` 在 immutable
 `work.created_at + completion_window_seconds` 前屬 publication wait：安全 close／tail retry，最長
 15 分鐘後重新取得來源，並退還 local work attempt reservation。FactSet 此時只保存 observation，
 不保存可 replay 的空 snapshot；historical 及超過 deadline 的缺列仍依 terminal partial／manual
-處理。每次 retry 以 owner fence 重新讀取目前 published calendar；若 frozen planned decision
+處理。每次 retry 在任何新 provider I/O 前，以 owner fence 重新讀取目前 published calendar；若 frozen planned decision
 之後的新 published revision 將該日改為休市，保存 `CALENDAR_DECISION_REPAIR_REQUIRED` 並停止
 重試，等待人工修復，絕不自動改寫 frozen decision。詳見 [Full market runbook](../operations/full_market.md#來源尚未發布的等待與休市判定)。
 TAIFEX maintenance 官方 JSON 須為非空 row list，每列具有效且一致的 `Date` 字串，才可推導報表日期並

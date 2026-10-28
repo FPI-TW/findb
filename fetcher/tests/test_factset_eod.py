@@ -17,7 +17,7 @@ from findb_fetcher.provider_work import (
     ProviderWorkRecoveryBlockedError,
     WorkJournal,
 )
-from findb_fetcher.providers.factset import FactSetOperationalError, encode_native
+from findb_fetcher.providers.factset import FactSetGateway, FactSetOperationalError, encode_native
 from findb_fetcher.raw_storage import RawObject, RawStorageUploadError
 
 
@@ -51,13 +51,18 @@ def harness(tmp_path, monkeypatch):
 
     owner.reserve = reserve
     monkeypatch.setattr("findb_fetcher.factset_eod.active", lambda: owner)
+    monkeypatch.setattr("findb_fetcher.provider_work.active", lambda: owner)
     queries, deliveries = [], []
 
-    class Gateway:
+    class Gateway(FactSetGateway):
         failure = False
         include_missing = False
 
-        def prices(self, day, identities):
+        def __init__(self):
+            pass
+
+        def _query(self, sql, parameters, *, scope):
+            day, identities = parameters[0], parameters[1:]
             queries.append((day, identities))
             if self.failure:
                 raise FactSetOperationalError("FACTSET_QUERY_UNAVAILABLE", retryable=True)

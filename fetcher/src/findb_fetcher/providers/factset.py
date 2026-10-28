@@ -113,6 +113,27 @@ def encode_native(rows: list[dict[str, Any]], *, scope: dict[str, Any]) -> bytes
     return raw
 
 
+def price_scope_complete(native: object, listing_ids: tuple[str, ...]) -> bool:
+    """Return false only for a well-formed price snapshot missing requested listings."""
+    if not isinstance(native, dict):
+        return True
+    rows = native.get("rows")
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        return True
+    observed = {row.get("fsym_id") for row in rows}
+    return set(listing_ids) <= observed
+
+
+def _encoded_price_scope_complete(raw: bytes, arguments: dict[str, Any]) -> bool:
+    try:
+        native = json.loads(raw)
+    except (TypeError, ValueError):
+        # Malformed responses remain authoritative format failures; they are not
+        # publication misses that should repeatedly consume provider requests.
+        return True
+    return price_scope_complete(native, arguments["listing_ids"])
+
+
 def _safe_error(exc: Exception) -> str:
     if isinstance(exc, FactSetOperationalError):
         return exc.code
@@ -222,7 +243,11 @@ class FactSetGateway:
             },
         )
 
-    @durable_response("factset_prices", ("trade_date", "listing_ids"))
+    @durable_response(
+        "factset_prices",
+        ("trade_date", "listing_ids"),
+        target_valid=_encoded_price_scope_complete,
+    )
     def prices(self, trade_date: date, listing_ids: tuple[str, ...]) -> bytes:
         if (
             not listing_ids

@@ -1418,6 +1418,18 @@ class FullMarketRuntime:
             self.state.finish(work_key, status="prepared", receipt=run_id)
 
         retry_delay = self._publication_retry_delay(owner, feed)
+        if (
+            owner.journal.has_response_observation("factset-eod:snapshot")
+            and owner.journal.response("factset-eod:snapshot") is None
+            and self._calendar_repair_required(owner)
+        ):
+            for key, delivery in deliveries.items():
+                self.state.finish(
+                    delivery["work_item_id"] + ":" + key,
+                    status="manual",
+                    reason="calendar_repair_required",
+                )
+            raise CalendarDecisionRepairRequiredError("published calendar is now closed") from None
         try:
             with authorization_scope(
                 lambda: self.source.authorization(
@@ -1747,6 +1759,22 @@ class FullMarketRuntime:
                     prepared = self.state.prepared(key)
                     if prepared is None:
                         if owner:
+                            if (
+                                self.provider == "finlab"
+                                and getattr(owner, "journal", None) is not None
+                                and owner.journal.has_response_observation(
+                                    "finlab_dataset:", prefix=True
+                                )
+                                and self._calendar_repair_required(owner)
+                            ):
+                                self.state.finish(
+                                    key,
+                                    status="manual",
+                                    reason="calendar_repair_required",
+                                )
+                                raise CalendarDecisionRepairRequiredError(
+                                    "published calendar is now closed"
+                                ) from None
                             owner.authorize()
                         requests = self._acquire(member, plan, part, release, feed)
                         if not requests:
@@ -1806,6 +1834,8 @@ class FullMarketRuntime:
                             )
                         continue
                     self.state.finish(key, status="complete")
+                except CalendarDecisionRepairRequiredError:
+                    raise
                 except ProviderWorkAcquisitionStopped:
                     if owner and owner.dispatch_observations != dispatch_before:
                         self.state.finish(

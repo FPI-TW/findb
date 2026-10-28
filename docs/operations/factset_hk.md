@@ -122,7 +122,11 @@ local `FULL_WORK_MAX_ATTEMPTS`，但每次查詢及其 hash、計數與時間仍
 結算為 terminal `partial`。Historical work 不使用 daily publication window，缺列仍直接結算
 `partial`，後續由新的歷史回補 work 取得新證據。
 
-每次 daily publication retry 都會重新讀取目前 published calendar，但不改寫建立 work 時凍結的
+Provider query 與 EOD cohort 兩層 durable response 都只會將涵蓋完整 frozen listing scope 的
+結果保存為 replay authority；任一層都不得把 `no_source_row` observation 升級成可 replay
+snapshot。後續 publication retry 因此一定重新進入來源查詢，而不是重播首次缺列結果。
+
+每次 daily publication retry 都會在任何新 FactSet query 前重新讀取目前 published calendar，但不改寫建立 work 時凍結的
 `planned` decision。若 frozen decision 之後的新 published revision 已將該日標為休市，work
 以 `CALENDAR_DECISION_REPAIR_REQUIRED` failed，停止來源重試並等待下節人工休市更正流程。
 不可藉重啟 consumer、重置 checkpoint 或清除 journal 規避截止時間或修復決策。

@@ -127,7 +127,7 @@ local `FULL_WORK_MAX_ATTEMPTS`。FactSet 只保存缺列 observation，不將空
 authoritative snapshot，因此下輪會重新查詢。FinLab 與 FactSet 的其他永久格式、mapping、DQ、
 auth／scope 錯誤仍依原規則 failed／manual，不得誤分類成尚未發布。
 
-每次 publication retry 都透過持有 fence 的 Source operation 重新讀取有效 published calendar，
+每次 publication retry 都在任何新 provider I/O 前，透過持有 fence 的 Source operation 重新讀取有效 published calendar，
 但只比較目前狀態與 frozen decision，不自動重算或改寫原計畫。若 frozen decision 是 `planned`，
 且其後的新 published revision 已將該日標示休市，立即停止重試；這項偵測不以目前 skip flag
 作為 gate。Provider work 保存 `CALENDAR_DECISION_REPAIR_REQUIRED`，local member 標示

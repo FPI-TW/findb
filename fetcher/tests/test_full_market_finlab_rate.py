@@ -21,6 +21,7 @@ from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
     ProviderPublicationPendingError,
 )
+from findb_fetcher.provider_work import WorkJournal
 from findb_fetcher.providers.finlab import FinLabDatasetTable, FinLabTargetNotReadyError
 from test_full_market import _proof, _runtime
 
@@ -242,6 +243,53 @@ def test_finlab_target_not_ready_uses_bounded_nonconsuming_wait(
     if expected_exception is ProviderPublicationPendingError:
         assert row["attempts"] == 0
         assert row["next_at"] == pytest.approx(clock.now().timestamp() + 900)
+    runtime.http.close()
+
+
+def test_finlab_publication_retry_checks_calendar_before_provider_io(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _, _, clock, context = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
+    member_key = context.plan["parts"][0]["member_keys"][0]
+    context.plan["parts"][0]["member_keys"] = [member_key]
+    calendar_requests: list[str] = []
+
+    def request(action: str) -> dict[str, object]:
+        calendar_requests.append(action)
+        return {
+            "work_id": "daily-work",
+            "trade_date": context.plan["trade_date"],
+            "repair_required": True,
+        }
+
+    journal = WorkJournal(tmp_path / "provider-work.sqlite3", "daily-work")
+    journal.observe_response("finlab_dataset:test", b"{}", origin="native")
+    owner = SimpleNamespace(
+        work={
+            "work_id": "daily-work",
+            "kind": "daily",
+            "trade_date": context.plan["trade_date"],
+            "created_at": clock.now().isoformat(),
+        },
+        journal=journal,
+        request=request,
+        restore=lambda **kwargs: [],
+        authorize=lambda: pytest.fail("calendar repair must precede authorization"),
+        dispatch_observations=0,
+    )
+    runtime._acquire = lambda *args, **kwargs: pytest.fail(
+        "calendar repair must precede provider acquisition"
+    )
+    monkeypatch.setattr("findb_fetcher.provider_work.active", lambda: owner)
+
+    with pytest.raises(CalendarDecisionRepairRequiredError):
+        runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+
+    key = context.plan["parts"][0]["work_item_id"] + ":" + member_key
+    with runtime.state.connection() as db:
+        row = db.execute("SELECT status,reason FROM full_work WHERE key=?", (key,)).fetchone()
+    assert (row["status"], row["reason"]) == ("manual", "calendar_repair_required")
+    assert calendar_requests == ["calendar-status"]
     runtime.http.close()
 
 

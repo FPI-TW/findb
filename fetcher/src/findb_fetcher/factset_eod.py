@@ -22,6 +22,7 @@ from findb_fetcher.providers.factset import (
     FactSetOperationalError,
     FactSetRowError,
     contract_row,
+    price_scope_complete,
 )
 from findb_fetcher.raw_storage import RawObject, RawStorageUploadError, attach_raw_object
 
@@ -118,11 +119,7 @@ class FactSetEOD:
             self._saved(
                 "snapshot",
                 acquire,
-                target_valid=(
-                    lambda value: (
-                        set(listing_ids) <= {row.get("fsym_id") for row in value["native"]["rows"]}
-                    )
-                )
+                target_valid=(lambda value: price_scope_complete(value.get("native"), listing_ids))
                 if defer_missing
                 else None,
             )
@@ -132,7 +129,14 @@ class FactSetEOD:
         stored = None
         indexed: dict[str, list[dict]] = {}
         if snapshot is not None:
-            raw = canonical_bytes(snapshot["native"])
+            native = snapshot.get("native")
+            if (
+                not isinstance(native, dict)
+                or not isinstance(native.get("rows"), list)
+                or any(not isinstance(row, dict) for row in native["rows"])
+            ):
+                raise FactSetRowError("FACTSET_PRICE_RESPONSE_INVALID")
+            raw = canonical_bytes(native)
 
             def persist():
                 value = self.raw_store.persist(
@@ -143,7 +147,7 @@ class FactSetEOD:
                 return {"ref": value.ref, "sha256": value.sha256, "size_bytes": value.size_bytes}
 
             stored = RawObject(**self._saved("raw", persist))
-            for row in snapshot["native"]["rows"]:
+            for row in native["rows"]:
                 indexed.setdefault(row.get("fsym_id", ""), []).append(row)
         outcomes = []
         for member in members:

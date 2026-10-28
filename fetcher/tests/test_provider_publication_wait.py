@@ -1,7 +1,7 @@
 """Whole-work settlement distinguishes provider publication waits from failures."""
 
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -10,6 +10,7 @@ from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
     ProviderPublicationPendingError,
 )
+from findb_fetcher.provider_work import WorkJournal
 from test_full_market import _runtime
 
 
@@ -75,4 +76,71 @@ def test_publication_wait_settles_one_round_with_explicit_policy(
     runtime._queued_cycle()
 
     assert settlements == [expected]
+    runtime.close()
+
+
+def test_factset_publication_retry_checks_calendar_before_provider_io(tmp_path) -> None:
+    runtime, _, _ = _runtime(tmp_path, provider="factset", execution_profile="full_market")
+    feed = runtime.feeds[0]
+    feed.update(
+        dataset_key="hk_equity_eod",
+        slot_id="asia_pacific_markets_window",
+        completion_window_seconds=16200,
+    )
+    plan = {
+        "plan_id": "plan:hk_equity_eod",
+        "dataset_key": "hk_equity_eod",
+        "trade_date": "2026-10-23",
+        "parts": [{"work_item_id": "hk_equity_eod", "member_keys": ["00001"]}],
+    }
+    release = {
+        "members": [
+            {
+                "member_key": "00001",
+                "provider_symbol": "AAAAA1-L",
+                "mapping_status": "mapped",
+            }
+        ]
+    }
+    runtime.state.record_plan(plan, "factset")
+    calendar_requests: list[str] = []
+    work = {
+        "work_id": "daily-work",
+        "kind": "daily",
+        "trade_date": plan["trade_date"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "attempt_number": 2,
+        "manifest": None,
+    }
+
+    def request(action: str) -> dict[str, object]:
+        calendar_requests.append(action)
+        return {
+            "work_id": work["work_id"],
+            "trade_date": work["trade_date"],
+            "repair_required": True,
+        }
+
+    def freeze(manifest: dict) -> dict:
+        work["manifest"] = manifest
+        return manifest
+
+    journal = WorkJournal(tmp_path / "provider-work.sqlite3", work["work_id"])
+    journal.observe_response("factset-eod:snapshot", b"{}", origin="provider_not_ready")
+    owner = SimpleNamespace(
+        work=work,
+        request=request,
+        freeze=freeze,
+        journal=journal,
+    )
+
+    with pytest.raises(CalendarDecisionRepairRequiredError):
+        runtime._deliver_factset_plan(owner, plan, release, feed)
+
+    with runtime.state.connection() as db:
+        row = db.execute(
+            "SELECT status,reason FROM full_work WHERE key=?", ("hk_equity_eod:00001",)
+        ).fetchone()
+    assert (row["status"], row["reason"]) == ("manual", "calendar_repair_required")
+    assert calendar_requests == ["calendar-status"]
     runtime.close()
