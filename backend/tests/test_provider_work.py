@@ -240,6 +240,87 @@ async def test_source_daily_close_is_frozen_and_does_not_block_runnable_maintena
 
 
 @pytest.mark.asyncio
+async def test_daily_owner_reports_new_published_closure_without_rewriting_frozen_decision(
+    client, source_headers, test_session, monkeypatch
+):
+    from app.config import get_settings
+    from app.models.registry import DailyExecutionDecision
+    from tests.test_full_market import DAY, _activated_plan
+
+    monkeypatch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
+    dataset, body, plan = await _activated_plan(test_session, "tw_equity_eod", count=2)
+    work = await queue.enqueue(
+        test_session,
+        provider=body.provider,
+        stable_key=f"daily:full_market:{dataset.dataset_key}:{DAY}",
+        kind="daily",
+        dataset_key=dataset.dataset_key,
+        trade_date=DAY,
+        execution_profile="full_market",
+        scope={"feed": {"dataset_key": dataset.dataset_key}},
+    )
+    await attest_cutover(test_session)
+    await test_session.commit()
+    decision = await test_session.get(
+        DailyExecutionDecision,
+        (dataset.dataset_key, body.provider, DAY, "full_market"),
+    )
+    assert decision is not None
+    frozen_snapshot = dict(decision.snapshot)
+    current_revision_id = str(uuid7())
+
+    async def current_closed(*args, **kwargs):
+        return {
+            "market": "TW",
+            "trade_date": DAY.isoformat(),
+            "is_open": False,
+            "calendar_source": "published",
+            "calendar_revision_id": current_revision_id,
+            "policy": {"skip_non_trading_days": False},
+        }
+
+    monkeypatch.setattr("app.services.effective_calendar.execution_snapshot", current_closed)
+    claimed = await client.post(
+        "/api/v1/source/provider-work/claim",
+        headers=source_headers,
+        json={
+            "protocol": "provider-work-v1",
+            "host_lock_identity": "local:1:22",
+            "recover": True,
+        },
+    )
+    assert claimed.status_code == 200, claimed.text
+    owner = claimed.json()["work"]
+    assert owner["work_id"] == str(work.work_id)
+    assert owner["created_at"] is not None
+    status = await client.post(
+        f"/api/v1/source/provider-work/{work.work_id}/calendar-status",
+        headers=source_headers,
+        json={"generation": owner["generation"], "token": owner["token"]},
+    )
+    assert status.status_code == 200, status.text
+    assert status.json()["repair_required"] is True
+    assert status.json()["frozen_kind"] == "planned"
+    assert (
+        status.json()["current_calendar_revision_id"]
+        != status.json()["frozen_calendar_revision_id"]
+    )
+    await test_session.refresh(decision)
+    assert decision.kind == "planned"
+    assert decision.snapshot == frozen_snapshot
+    assert plan.status == "incomplete"
+
+    current_revision_id = frozen_snapshot["calendar_revision_id"]
+    unchanged = await client.post(
+        f"/api/v1/source/provider-work/{work.work_id}/calendar-status",
+        headers=source_headers,
+        json={"generation": owner["generation"], "token": owner["token"]},
+    )
+    assert unchanged.status_code == 200, unchanged.text
+    assert unchanged.json()["repair_required"] is False
+
+
+@pytest.mark.asyncio
 async def test_enforced_source_receipts_rerun_queue_and_legacy_fail_closed(
     client, source_headers, admin_headers, test_session, test_engine, monkeypatch
 ):

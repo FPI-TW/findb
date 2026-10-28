@@ -327,6 +327,17 @@ class WorkJournal:
                 (self.key, key, time.time(), origin, body, hashlib.sha256(body).hexdigest()),
             )
 
+    def has_response_observation(self, key: str, *, prefix: bool = False) -> bool:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT 1 FROM work_response_observation "
+                "WHERE work_key=? AND "
+                + ("substr(response_key,1,?)=?" if prefix else "response_key=?")
+                + " LIMIT 1",
+                (self.key, len(key), key) if prefix else (self.key, key),
+            ).fetchone()
+        return row is not None
+
     def cooldown_until(self) -> float:
         with self.connection() as db:
             row = db.execute(

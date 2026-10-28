@@ -44,6 +44,13 @@ TAIFEX 首次日期在 plan／manifest 尚不存在時的 latest official 或 da
 也先停止 I/O、安全 close／tail retry；predispatch quota 不耗 failure budget，not-published 仍保留原
 `DATED_UNIVERSE_PENDING`。永久 HTTP auth／scope 或明確格式拒絕 failed/manual；未知 child／fence
 保持 recovery blocked。dated universe 的 Admin publication／threshold exception 不因 retry 自動批准。
+FinLab daily target-not-ready 與 FactSet daily `no_source_row` 在 immutable
+`work.created_at + completion_window_seconds` 前屬 publication wait：安全 close／tail retry，最長
+15 分鐘後重新取得來源，並退還 local work attempt reservation。FactSet 此時只保存 observation，
+不保存可 replay 的空 snapshot；historical 及超過 deadline 的缺列仍依 terminal partial／manual
+處理。每次 retry 在任何新 provider I/O 前，以 owner fence 重新讀取目前 published calendar；若 frozen planned decision
+之後的新 published revision 將該日改為休市，保存 `CALENDAR_DECISION_REPAIR_REQUIRED` 並停止
+重試，等待人工修復，絕不自動改寫 frozen decision。詳見 [Full market runbook](../operations/full_market.md#來源尚未發布的等待與休市判定)。
 TAIFEX maintenance 官方 JSON 須為非空 row list，每列具有效且一致的 `Date` 字串，才可推導報表日期並
 進行完整 report validation。空／錯誤形狀、缺欄位、錯誤日期或永久 body 格式錯誤會保留 safe failure
 code 並安全結束 failed/manual、釋放 owner；空報表不構成 no-trade／no_data 證據，也不外洩原 exception details。
@@ -165,8 +172,9 @@ expected=2、data=0、missing=2、no_data=blocked=0：首個 503 已停止第二
 
 ## API 與營運觀測
 
-Source `/provider-work` 提供 enqueue、claim、authorize、heartbeat、manifest、prepare／prepared、close、settle 與
-execute-rerun；historical claim 只是取得同一 owner 中的 item，不再有獨立 lease authority。
+Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
+prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，
+不再有獨立 lease authority。
 未啟用時 Source queue claim 拒絕；啟用也須已有 Owner cutover 保存的相同 shared inode identity，
 單獨改 flag 無法開始 claim。啟用後 legacy ingest／historical claim 缺少 work protocol 一律 fail closed。
 Source `/provider-work/{work_id}/authorize` 在既有 provider transaction lock 下回傳原 work ID、provider、

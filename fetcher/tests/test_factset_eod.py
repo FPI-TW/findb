@@ -11,12 +11,13 @@ import pytest
 from findb_fetcher.factset_eod import FactSetEOD, completion_status
 from findb_fetcher.full_market_universe import checksum
 from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
+from findb_fetcher.provider_wait import ProviderPublicationPendingError
 from findb_fetcher.provider_work import (
     ProviderWorkAcquisitionStopped,
     ProviderWorkRecoveryBlockedError,
     WorkJournal,
 )
-from findb_fetcher.providers.factset import FactSetOperationalError, encode_native
+from findb_fetcher.providers.factset import FactSetGateway, FactSetOperationalError, encode_native
 from findb_fetcher.raw_storage import RawObject, RawStorageUploadError
 
 
@@ -50,12 +51,18 @@ def harness(tmp_path, monkeypatch):
 
     owner.reserve = reserve
     monkeypatch.setattr("findb_fetcher.factset_eod.active", lambda: owner)
+    monkeypatch.setattr("findb_fetcher.provider_work.active", lambda: owner)
     queries, deliveries = [], []
 
-    class Gateway:
+    class Gateway(FactSetGateway):
         failure = False
+        include_missing = False
 
-        def prices(self, day, identities):
+        def __init__(self):
+            pass
+
+        def _query(self, sql, parameters, *, scope):
+            day, identities = parameters[0], parameters[1:]
             queries.append((day, identities))
             if self.failure:
                 raise FactSetOperationalError("FACTSET_QUERY_UNAVAILABLE", retryable=True)
@@ -70,7 +77,7 @@ def harness(tmp_path, monkeypatch):
                         "price_low": 9,
                         "volume": -1 if i == 3 else 100,
                     }
-                    for i in (1, 2, 3)  # fourth listing is absent, never no_data
+                    for i in ((1, 2, 3, 4) if self.include_missing else (1, 2, 3))
                 ],
                 scope={"trade_date": day, "listing_ids": identities},
             )
@@ -169,6 +176,46 @@ def test_transient_query_does_not_become_missing_or_partial(tmp_path, monkeypatc
         runner.run(**arguments)
     assert deliveries == [] and len(queries) == 1
     assert owner.journal.response("factset-eod:snapshot") is None
+
+
+def test_daily_missing_rows_are_observed_but_requeried_before_completion_window(
+    tmp_path, monkeypatch
+):
+    runner, arguments, owner, gateway, _, queries, deliveries = harness(tmp_path, monkeypatch)
+    arguments["historical"] = False
+    arguments["defer_missing"] = True
+
+    with pytest.raises(ProviderPublicationPendingError, match="factset_no_source_row"):
+        runner.run(**arguments)
+
+    assert len(queries) == 1 and deliveries == []
+    assert owner.journal.response("factset-eod:snapshot") is None
+    with owner.journal.connection() as db:
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM work_response_observation WHERE response_key=?",
+                ("factset-eod:snapshot",),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            db.execute(
+                "SELECT attempts FROM work_budget WHERE operation_key=?",
+                ("factset-eod:snapshot",),
+            ).fetchone()[0]
+            == 0
+        )
+
+    gateway.include_missing = True
+    evidence = runner.run(**arguments)
+    assert len(queries) == 2
+    assert [row["outcome"] for row in evidence["members"]] == [
+        "data",
+        "invalid",
+        "invalid",
+        "data",
+        "mapping_gap",
+    ]
 
 
 @pytest.mark.parametrize("dispatched", [False, True])

@@ -118,6 +118,28 @@ Claim 不重算政策；可先建立當日請求，但必須到凍結快照的�
 Migration `91a4c7e2d630` 保留既有計畫及歷史項目，用升級當時有效日曆建立 `legacy_migration_snapshot`，
 不聲稱它是原始建立時的日曆；不補入舊回補範圍中原本省略的日期。這是新的 rollback 下限。
 
+### 來源尚未發布的等待與休市判定
+
+FinLab daily 回傳 target-not-ready，或 FactSet daily 成功查詢但出現 `no_source_row` 時，以
+provider work 建立時間加上 feed `completion_window_seconds` 作為 immutable publication deadline。
+截止前安全 close／drain 並排到 provider FIFO 尾端，單次最長等待 15 分鐘；這種等待不消耗
+local `FULL_WORK_MAX_ATTEMPTS`。FactSet 只保存缺列 observation，不將空結果保存成可 replay 的
+authoritative snapshot，因此下輪會重新查詢。FinLab 與 FactSet 的其他永久格式、mapping、DQ、
+auth／scope 錯誤仍依原規則 failed／manual，不得誤分類成尚未發布。
+
+每次 publication retry 都在任何新 provider I/O 前，透過持有 fence 的 Source operation 重新讀取有效 published calendar，
+但只比較目前狀態與 frozen decision，不自動重算或改寫原計畫。若 frozen decision 是 `planned`，
+且其後的新 published revision 已將該日標示休市，立即停止重試；這項偵測不以目前 skip flag
+作為 gate。Provider work 保存 `CALENDAR_DECISION_REPAIR_REQUIRED`，local member 標示
+`calendar_repair_required`。Operator 依下節流程核對並取得授權後，才可更正 frozen decision；
+不得以新 revision 自動覆寫。若目前 skip flag 為 false，work 仍維持人工處理；須先明確決定是否
+透過部署啟用政策，不能跳過下節對目前政策與證據的檢查直接修復。
+
+到 publication deadline 後，FinLab target-not-ready 成為 terminal manual；FactSet
+`no_source_row` 保存 authoritative snapshot 並以 terminal `partial` 結算。Provider work 的等待、
+截止時間、failure code 與每次 observation 都須留在原 work 證據中；重啟、
+清除 journal 或重置 checkpoint 不得延長窗口。若之後來源補齊，使用正常歷史回補建立新 work。
+
 ### 凍結計畫的人工休市更正
 
 現有版本沒有獨立的休市處置或告警 acknowledgement API。只將 `missing_delivery_alert`

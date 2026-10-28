@@ -15,12 +15,14 @@ from findb_fetcher.full_market_state import QuotaBlockedError
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
 from findb_fetcher.provider_process import ProviderProcessError
+from findb_fetcher.provider_wait import ProviderPublicationPendingError
 from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped, active
 from findb_fetcher.providers.factset import (
     FactSetGateway,
     FactSetOperationalError,
     FactSetRowError,
     contract_row,
+    price_scope_complete,
 )
 from findb_fetcher.raw_storage import RawObject, RawStorageUploadError, attach_raw_object
 
@@ -32,7 +34,13 @@ class FactSetEOD:
         self.gateway, self.delivery, self.raw_store = gateway, delivery, raw_store
         self.on_receipt = on_receipt
 
-    def _saved(self, key: str, action: Callable[[], dict]) -> dict:
+    def _saved(
+        self,
+        key: str,
+        action: Callable[[], dict],
+        *,
+        target_valid: Callable[[dict], bool] | None = None,
+    ) -> dict:
         """A successful side effect is replayed; a failed operation keeps its budget."""
         owner = active()
         if owner is None or owner.provider != "factset":
@@ -72,7 +80,12 @@ class FactSetEOD:
                     "FactSet operation requires FIFO tail retry"
                 ) from None
             raise
-        saved = owner.journal.response(key, canonical_bytes(result))
+        encoded = canonical_bytes(result)
+        if target_valid is not None and not target_valid(result):
+            owner.journal.observe_response(key, encoded, origin="provider_not_ready")
+            owner.journal.release_wait_attempt(key)
+            raise ProviderPublicationPendingError("factset_no_source_row")
+        saved = owner.journal.response(key, encoded)
         assert saved is not None
         return json.loads(saved)
 
@@ -84,6 +97,7 @@ class FactSetEOD:
         dataset: str,
         deliveries: dict[str, dict],
         historical: bool,
+        defer_missing: bool = False,
     ) -> dict:
         owner = active()
         if owner is None or owner.provider != "factset" or not owner.work.get("manifest"):
@@ -101,11 +115,28 @@ class FactSetEOD:
             raw = self.gateway.prices(day, listing_ids)
             return {"native": json.loads(raw), "fetched_at": datetime.now(timezone.utc).isoformat()}
 
-        snapshot = self._saved("snapshot", acquire) if listing_ids else None
+        snapshot = (
+            self._saved(
+                "snapshot",
+                acquire,
+                target_valid=(lambda value: price_scope_complete(value.get("native"), listing_ids))
+                if defer_missing
+                else None,
+            )
+            if listing_ids
+            else None
+        )
         stored = None
         indexed: dict[str, list[dict]] = {}
         if snapshot is not None:
-            raw = canonical_bytes(snapshot["native"])
+            native = snapshot.get("native")
+            if (
+                not isinstance(native, dict)
+                or not isinstance(native.get("rows"), list)
+                or any(not isinstance(row, dict) for row in native["rows"])
+            ):
+                raise FactSetRowError("FACTSET_PRICE_RESPONSE_INVALID")
+            raw = canonical_bytes(native)
 
             def persist():
                 value = self.raw_store.persist(
@@ -116,7 +147,7 @@ class FactSetEOD:
                 return {"ref": value.ref, "sha256": value.sha256, "size_bytes": value.size_bytes}
 
             stored = RawObject(**self._saved("raw", persist))
-            for row in snapshot["native"]["rows"]:
+            for row in native["rows"]:
                 indexed.setdefault(row.get("fsym_id", ""), []).append(row)
         outcomes = []
         for member in members:
