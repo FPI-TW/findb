@@ -43,6 +43,8 @@ export const deliveriesSearchSchema = pageSchema(100).extend({
     .default(""),
   pp: z.coerce.number().int().positive().catch(1).default(1),
   pps: pageSchema(25).shape.ps,
+  cp: z.coerce.number().int().positive().catch(1).default(1),
+  cps: pageSchema(25).shape.ps,
   bp: z.coerce.number().int().positive().catch(1).default(1),
   bps: z.coerce
     .number()

@@ -59,7 +59,7 @@ export function DeliveriesPage({
         selected={search.profile ?? "pilot"}
         onChange={profile => {
           setSeed(undefined)
-          updateSearch({ ...search, profile, p: 1, pp: 1, bp: 1 })
+          updateSearch({ ...search, profile, p: 1, pp: 1, cp: 1, bp: 1 })
         }}
       >
         {profile =>
@@ -93,7 +93,11 @@ export function DeliveriesPage({
                     }}
                   />
                 ) : tab === "candidates" ? (
-                  <UniverseCandidatesPanel active={selected === tab} />
+                  <UniverseCandidatesPanel
+                    search={search}
+                    updateSearch={updateSearch}
+                    active={selected === tab}
+                  />
                 ) : (
                   <HistoricalBackfillsPanel
                     search={search}

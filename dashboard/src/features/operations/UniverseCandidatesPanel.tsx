@@ -16,7 +16,15 @@ import {
   loadUniverseCandidates,
   loadUniverseDiff,
 } from "../../lib/admin.functions"
+import type { DeliveriesSearchUpdate } from "./operations.deliveries"
+import type { DeliveriesPageSearch } from "./operations.search"
 import { formatDate, Panel } from "./operations.shared"
+
+function formatMemberValue(value: unknown) {
+  return value === null || value === undefined || value === ""
+    ? "—"
+    : String(value)
+}
 
 function MemberList({
   title,
@@ -77,9 +85,35 @@ function UniverseDiffDetails({ diff }: { diff: UniverseDiff }) {
               <p className="font-mono font-medium wrap-anywhere">
                 {change.member_key}
               </p>
-              <p className="mt-1 text-muted">
-                變更欄位：{change.changed_fields.join("、")}
-              </p>
+              <ul className="mt-2 space-y-1.5">
+                {change.changed_fields.map(field => (
+                  <li
+                    key={field}
+                    className="grid gap-1 text-muted sm:grid-cols-[minmax(8rem,0.8fr)_minmax(0,1fr)_auto_minmax(0,1fr)] sm:items-center"
+                  >
+                    <span className="font-medium text-ink">{field}</span>
+                    <span className="rounded bg-canvas px-2 py-1 font-mono wrap-anywhere">
+                      <span className="mr-1 font-sans text-muted">
+                        變更前：
+                      </span>
+                      {formatMemberValue(
+                        (change.before as Record<string, unknown>)[field]
+                      )}
+                    </span>
+                    <span aria-hidden="true" className="hidden sm:inline">
+                      →
+                    </span>
+                    <span className="rounded bg-canvas px-2 py-1 font-mono wrap-anywhere">
+                      <span className="mr-1 font-sans text-muted">
+                        變更後：
+                      </span>
+                      {formatMemberValue(
+                        (change.after as Record<string, unknown>)[field]
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </div>
           ))}
         </div>
@@ -92,16 +126,20 @@ function UniverseDiffDetails({ diff }: { diff: UniverseDiff }) {
 }
 
 export function UniverseCandidatesPanel({
+  search,
+  updateSearch,
   active = true,
 }: {
+  search: DeliveriesPageSearch
+  updateSearch: (next: DeliveriesSearchUpdate) => void
   active?: boolean
 }) {
   const loadCandidates = useServerFn(loadUniverseCandidates)
   const loadDiff = useServerFn(loadUniverseDiff)
   const scope = useProtectedQueryScope()
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(25)
   const [selectedReleaseId, setSelectedReleaseId] = useState<string>()
+  const page = search.cp
+  const pageSize = search.cps
   const request = {
     datasetKey: "",
     provider: "",
@@ -142,8 +180,8 @@ export function UniverseCandidatesPanel({
   useEffect(() => {
     if (!active || !pagination) return
     const nextPage = Math.min(page, Math.max(pagination.total_pages, 1))
-    if (nextPage !== page) setPage(nextPage)
-  }, [active, page, pagination])
+    if (nextPage !== page) updateSearch({ ...search, cp: nextPage })
+  }, [active, page, pagination, search, updateSearch])
   const columns = useMemo<ColumnDef<UniverseCandidate, unknown>[]>(
     () => [
       {
@@ -236,8 +274,11 @@ export function UniverseCandidatesPanel({
             typeof next === "function"
               ? next({ pageIndex: page - 1, pageSize })
               : next
-          setPage(value.pageSize === pageSize ? value.pageIndex + 1 : 1)
-          setPageSize(value.pageSize)
+          updateSearch({
+            ...search,
+            cp: value.pageSize === pageSize ? value.pageIndex + 1 : 1,
+            cps: value.pageSize,
+          })
         }}
       />
       {selectedReleaseId ? (

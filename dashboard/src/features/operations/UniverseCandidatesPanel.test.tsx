@@ -9,10 +9,12 @@ import {
   waitFor,
 } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { deliveriesSearchSchema } from "./operations.search"
 
 const mocks = vi.hoisted(() => ({
   loadUniverseCandidates: vi.fn(),
   loadUniverseDiff: vi.fn(),
+  updateSearch: vi.fn(),
 }))
 
 vi.mock("@tanstack/react-start", async importOriginal => ({
@@ -58,14 +60,21 @@ const member = (memberKey: string) => ({
   mapping_status: "mapped",
 })
 
-function renderPanel(active = true) {
+function renderPanel(
+  active = true,
+  search = deliveriesSearchSchema.parse({ tab: "candidates" })
+) {
   return render(
     <QueryClientProvider
       client={
         new QueryClient({ defaultOptions: { queries: { retry: false } } })
       }
     >
-      <UniverseCandidatesPanel active={active} />
+      <UniverseCandidatesPanel
+        search={search}
+        updateSearch={mocks.updateSearch}
+        active={active}
+      />
     </QueryClientProvider>
   )
 }
@@ -133,8 +142,42 @@ describe("universe candidates", () => {
     expect(await screen.findByText("TX202610")).toBeInTheDocument()
     expect(screen.getByText("TX202609")).toBeInTheDocument()
     expect(screen.getAllByText("MTX202610")).toHaveLength(2)
-    expect(screen.getByText("變更欄位：session")).toBeInTheDocument()
+    expect(screen.getByText("session")).toBeInTheDocument()
+    expect(screen.getByText("變更前：")).toBeInTheDocument()
+    expect(screen.getByText("after_hours")).toBeInTheDocument()
+    expect(screen.getByText("變更後：")).toBeInTheDocument()
+    expect(screen.getByText("regular")).toBeInTheDocument()
     expect(screen.getByText("未變更成員：18")).toBeInTheDocument()
+  })
+
+  it("writes candidate pagination through the deliveries search state", async () => {
+    mocks.loadUniverseCandidates.mockResolvedValue({
+      data: [release],
+      pagination: {
+        page: 1,
+        page_size: 25,
+        total_records: 26,
+        total_pages: 2,
+      },
+    })
+    renderPanel()
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "Universe 候選分頁下一頁",
+        })
+      ).not.toBeDisabled()
+    )
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Universe 候選分頁下一頁",
+      })
+    )
+
+    expect(mocks.updateSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ cp: 2, cps: 25 })
+    )
   })
 
   it("does not query while its tab is hidden", () => {

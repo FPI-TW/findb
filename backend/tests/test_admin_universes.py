@@ -63,7 +63,7 @@ def _member(
 
 @pytest.mark.asyncio
 async def test_admin_lists_candidates_and_returns_semantic_member_diff(
-    client, test_session, admin_headers
+    client, test_session, admin_headers, monkeypatch
 ) -> None:
     test_session.add(
         DatasetRegistry(
@@ -103,16 +103,24 @@ async def test_admin_lists_candidates_and_returns_semantic_member_diff(
     )
     await test_session.commit()
 
-    response = await client.get(
-        "/api/v1/admin/universes",
-        params={
-            "status": "candidate",
-            "dataset_key": "tw_futures_eod",
-            "provider": "TAIFEX",
-            "effective_date": DAY.isoformat(),
-        },
-        headers=admin_headers,
-    )
+    async def fail_per_release_comparison(*_args, **_kwargs):
+        raise AssertionError("universe list must not query the comparison release per row")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "app.services.universe_queries._comparison_release",
+            fail_per_release_comparison,
+        )
+        response = await client.get(
+            "/api/v1/admin/universes",
+            params={
+                "status": "candidate",
+                "dataset_key": "tw_futures_eod",
+                "provider": "TAIFEX",
+                "effective_date": DAY.isoformat(),
+            },
+            headers=admin_headers,
+        )
     assert response.status_code == 200
     body = response.json()
     assert body["pagination"]["total_records"] == 1

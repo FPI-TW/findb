@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.registry import UniverseMember, UniverseRelease
 
@@ -100,24 +101,44 @@ async def list_universe_releases(
     total = int(
         await db.scalar(select(func.count()).select_from(UniverseRelease).where(*conditions)) or 0
     )
-    releases = list(
-        await db.scalars(
-            select(UniverseRelease)
-            .where(*conditions)
-            .order_by(*order)
-            .offset((page - 1) * page_size)
-            .limit(page_size)
+    comparison_release = aliased(UniverseRelease)
+    comparison_release_id = (
+        select(comparison_release.release_id)
+        .where(
+            comparison_release.dataset_key == UniverseRelease.dataset_key,
+            comparison_release.provider == UniverseRelease.provider,
+            comparison_release.status == "published",
+            comparison_release.release_id != UniverseRelease.release_id,
+            comparison_release.effective_date <= UniverseRelease.effective_date,
         )
+        .order_by(
+            comparison_release.effective_date.desc(),
+            comparison_release.created_at.desc(),
+            comparison_release.release_id.desc(),
+        )
+        .limit(1)
+        .correlate(UniverseRelease)
+        .scalar_subquery()
+        .label("comparison_release_id")
     )
-    rows = []
-    for release in releases:
-        comparison = await _comparison_release(db, release)
-        rows.append(
-            present_universe_release(
-                release,
-                comparison_release_id=comparison.release_id if comparison else None,
+    releases = list(
+        (
+            await db.execute(
+                select(UniverseRelease, comparison_release_id)
+                .where(*conditions)
+                .order_by(*order)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
             )
+        ).all()
+    )
+    rows = [
+        present_universe_release(
+            release,
+            comparison_release_id=release_comparison_id,
         )
+        for release, release_comparison_id in releases
+    ]
     return rows, total
 
 

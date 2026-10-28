@@ -33,7 +33,7 @@ staging 預設 Pilot，production 預設 Full market；切換不寫入 controls�
   手動與定期更新不改寫草稿、預覽或確認狀態；修改參數或帶入新的告警會取消先前預覽與確認，
   較晚完成的舊預覽也不能授權目前草稿。建立後由回補紀錄刷新顯示已建立請求。
 
-URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、回補 `bp/bps`
+URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、Universe 候選 `cp/cps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
 兩種 profile 的計畫都是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
 
@@ -43,7 +43,7 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、
 並在固定高度狀態列顯示更新進度。失敗顯示錯誤、最後成功時間與重試；失敗請求不推進成功時間。
 新篩選無快取時使用骨架，避免把上一條件的資料誤當成新結果。
 
-頁首「重新整理」只刷新目前頁面／分頁與必要的選項查詢。概況、DQ、全市場計畫、缺漏告警及
+頁首「重新整理」只刷新目前頁面／分頁與必要的選項查詢。概況、DQ、全市場計畫、缺漏告警、Universe 候選及
 回補紀錄每 60 秒更新；隱藏分頁及瀏覽器背景停止輪詢，重新可見時只有超過 60 秒的資料才補刷新。
 稽核、交易日曆、使用者與憑證不定時輪詢，使用手動刷新及操作後失效重取。
 
@@ -67,7 +67,7 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、
   `hasData` 根據是否有成功 response，不能以資料列數判斷。
 - 表格初次載入使用共用欄位骨架；已有外部 QueryStatus 時傳入 `refreshingState={null}`，避免重複提示。
   `errorState={null}` 可將錯誤公告交給外部狀態列。表格使用穩定業務 ID，不因輪詢重設展開或頁碼。
-- 概況保留聚合查詢，以具名來源保存各自的錯誤及成功時間；交付三分頁各自查詢，不因任一分頁失敗
+- 概況保留聚合查詢，以具名來源保存各自的錯誤及成功時間；交付四分頁各自查詢，不因任一分頁失敗
   而覆蓋其他分頁的有效結果。未顯示的回補編輯器保留本地草稿但停止查詢。
 - 新增非同步頁面時，同步測試空集合重整失敗、快取隔離、隱藏查詢及錯誤恢復。
 
