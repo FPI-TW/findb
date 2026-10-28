@@ -29,11 +29,10 @@ Production native 資料與實際 rollback 演練由
 
 ## Full-market external acceptance
 
-- [ ] 將 TAIFEX bounded rollover／semantic universe migration 先部署 staging Backend，再部署
-  Fetcher；controls stopped 時預覽並套用既有 2026-10-16、10-19、10-20、10-21、10-22 candidates，
-  恢復 Pilot 後驗證 provider-work attempts 不再每分鐘增加、五日 queue 依序建立 frozen plans，且
-  Source→raw→normalization→canonical→Serve terminal。Full 維持停止並確認舊 Full missing alerts
-  自動以 `SCHEDULER_STOPPED` 結清。production 未另行 promotion 前不得套用。
+- [ ] 將 TAIFEX dated-universe 專用告警、Admin candidates／member-diff 唯讀入口與 Dashboard
+  提示部署至 staging，配合已完成的 bounded rollover／semantic universe 流程驗證後再 promotion
+  至 production；production 不得套用 staging 的候選或操作紀錄，並須以自身 candidate、audit 與
+  Source→raw→normalization→canonical→Serve 證據驗收。
 
 - [ ] Account actual-start pacing v2 已在工作分支實作，待 independent Validator／Reviewer 與正式 rollout：
   舊 `BEGIN IMMEDIATE` 已先於 grant clock，但 commit、最後 Source check、SDK preparation／IPC

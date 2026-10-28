@@ -262,6 +262,10 @@ latest 日期不符時使用 TX／MTX／TMF／TE／TF 分產品歷史報表，�
 報表尚未可用或目錄等待發布時，在各 profile checkpoint 保存日期、原因與一小時後的
 重試時間，provider-work `retry_at` 亦使用相同剩餘延遲，不再每 60 秒重新 claim；CLI health 的
 `date_prerequisites` 可查詢，其他已凍結日期繼續補抓。
+交付截止後若同日 candidate 仍未發布，missing-delivery alert 以
+`DATED_UNIVERSE_PENDING` 區別一般資料缺漏；Dashboard「Universe 候選」或 Admin
+`GET /admin/universes?status=candidate` 可列出候選，`GET /admin/universes/{release_id}/diff`
+可唯讀核對相對最近 published release 的成員差異。這些入口不會自動發布或改寫 plan。
 HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期略過。
 既有計畫、成員與 terminal work 不受新日期限制影響。此變更須先部署 Backend，再部署 Fetcher，
 部署期間維持 controls stopped；SQLite 僅新增 prerequisite table，保留原有 rows 與 quota debt。

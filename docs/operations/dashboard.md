@@ -15,7 +15,7 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 
 入口為 `/dashboard/operations/deliveries`。最外層是獨立的「Pilot」與「Full market」分頁，
 staging 預設 Pilot，production 預設 Full market；切換不寫入 controls。
-各 profile 內分為計畫、缺漏告警與歷史回補；viewer 不顯示歷史回補。
+各 profile 內分為計畫、缺漏告警、Universe 候選與歷史回補；viewer 不顯示歷史回補。
 計畫 expected、data、no_data、missing、blocked、缺漏清單與告警只計算所選 profile，不能跨頁混加。
 尚未啟動、已有啟動日期但尚無計畫、以及已建立計畫的實際缺漏分別呈現。
 
@@ -26,11 +26,14 @@ staging 預設 Pilot，production 預設 Full market；切換不寫入 controls�
 - 缺口明細最多列出 1,000 筆，介面同時顯示已列出筆數與總缺口數；完整性與逾時為不同概念。
 - 缺漏告警追蹤資料集／日期層級的交付；「帶入回補」僅切換分頁並填入條件。
   operator／owner 仍需預覽交易日、確認與送出，才會建立回補。
+- TAIFEX 同日 universe 候選超過交付截止仍未發布時，告警顯示「Universe 等待發布」與候選數，
+  不提供無效的歷史回補捷徑。Universe 候選分頁唯讀列出待發布版本，並可檢視相對最近 published
+  release 的新增、移除、欄位變更與未變更成員數；發布仍由既有 Owner API 治理。
 - 切換分頁會保留本次進入頁面後的回補草稿；重新載入頁面不保留未提交草稿。
   手動與定期更新不改寫草稿、預覽或確認狀態；修改參數或帶入新的告警會取消先前預覽與確認，
   較晚完成的舊預覽也不能授權目前草稿。建立後由回補紀錄刷新顯示已建立請求。
 
-URL 的 `profile=pilot|full_market`、`tab=plans|alerts|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、回補 `bp/bps`
+URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
 兩種 profile 的計畫都是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
 

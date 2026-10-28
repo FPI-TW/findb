@@ -210,6 +210,10 @@ Source 以自身 provider-scoped key 呼叫 universe／delivery plan v1；完整
 OpenAPI 為準。Universe first baseline 或異動超過 20 個成員／2% 的 candidate，需要 Owner
 呼叫 `POST /admin/universes/{release_id}/publish`，提供 `evidence_note` 與對應
 `first_baseline_approved`／`threshold_exception_approved`，並留下 audit。
+Viewer 可用 `GET /admin/universes?status=candidate` 列出待發布版本，並以
+`GET /admin/universes/{release_id}/diff` 比較該版本與同 dataset／provider、生效日不晚於候選的
+最近 published release。列表另支援 `dataset_key`、`provider`、`effective_date`、`page`、
+`page_size`；兩個端點均為唯讀，不會發布候選或建立 daily plan。
 
 Owner 使用既有 `PATCH /admin/schedulers/{scheduler_key}`，傳 `desired_state` 與
 `expected_revision`。啟動資格檢查 Owner published baseline，不要求設定日曆；通過後，

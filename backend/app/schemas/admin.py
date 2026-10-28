@@ -525,6 +525,45 @@ class MissingDeliveryAlertListResponse(PaginatedResponse[MissingDeliveryAlertRes
     pass
 
 
+class UniverseReleaseAdminResponse(BaseModel):
+    release_id: UUID
+    dataset_key: str
+    provider: str
+    effective_date: date
+    observed_at: datetime
+    status: Literal["candidate", "published"]
+    member_count: int
+    member_sha256: str
+    semantic_member_sha256: str
+    change_count: int
+    change_ratio: float
+    created_at: datetime
+    published_at: datetime | None = None
+    published_by: str | None = None
+    approval_note: str | None = None
+    comparison_release_id: UUID | None = None
+
+
+class UniverseReleaseListResponse(PaginatedResponse[UniverseReleaseAdminResponse]):
+    pass
+
+
+class UniverseMemberChangeResponse(BaseModel):
+    member_key: str
+    changed_fields: list[str]
+    before: dict[str, Any]
+    after: dict[str, Any]
+
+
+class UniverseReleaseDiffResponse(BaseModel):
+    release: UniverseReleaseAdminResponse
+    comparison_release: UniverseReleaseAdminResponse | None = None
+    added: list[dict[str, Any]]
+    removed: list[dict[str, Any]]
+    changed: list[UniverseMemberChangeResponse]
+    unchanged_count: int
+
+
 class MarketFreshnessFeedResponse(BaseModel):
     dataset_key: str
     source: str

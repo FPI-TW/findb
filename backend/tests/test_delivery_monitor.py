@@ -9,7 +9,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
-from app.models.registry import DatasetRegistry, IngestionRun, MissingDeliveryAlert
+from app.models.registry import (
+    DatasetRegistry,
+    IngestionRun,
+    MissingDeliveryAlert,
+    UniverseRelease,
+)
+from app.schemas.full_market import UniverseSubmitRequest
 from app.services.delivery_monitor import resolve_missing_delivery_for_run, scan_missing_deliveries
 from app.services.delivery_policy import (
     DeliveryExpectation,
@@ -433,6 +439,79 @@ async def test_scan_creates_once_refreshes_and_late_delivery_resolves(test_sessi
         .where(MissingDeliveryAlert.status == "open")
     )
     assert still_open == 1
+
+
+@pytest.mark.asyncio
+async def test_taifex_candidate_wait_past_deadline_uses_dedicated_alert_details(
+    test_session,
+) -> None:
+    from app.models.canonical import CalendarYearRevision
+    from app.services.full_market import submit_universe
+    from tests.full_market_fixtures import historical_admission
+    from tests.test_full_market import DAY, _baseline, _calendar, _dataset, _universe
+
+    dataset = await _dataset(test_session)
+    await _calendar(test_session, open_dates=[DAY])
+    _, baseline = await _baseline(
+        test_session,
+        effective_date=DAY - timedelta(days=1),
+    )
+    revision_id = await test_session.scalar(
+        select(CalendarYearRevision.id).where(CalendarYearRevision.market == "TAIFEX")
+    )
+    assert revision_id is not None
+    await historical_admission(
+        test_session,
+        dataset,
+        await test_session.get(UniverseRelease, baseline.release_id),
+        DAY,
+        revision_id,
+        profile="pilot",
+    )
+    candidate_payload = _universe(effective_date=DAY).model_dump(mode="json")
+    candidate_payload["members"][0]["classification"] = "manual-review"
+    candidate = await submit_universe(
+        test_session,
+        UniverseSubmitRequest.model_validate(candidate_payload),
+        allowed_datasets=[dataset.dataset_key],
+    )
+    assert candidate.status == "candidate"
+    saved = await test_session.get(UniverseRelease, candidate.release_id)
+    assert saved is not None
+    saved.created_at = datetime(2026, 7, 21, 14, 0, tzinfo=timezone.utc)
+    await test_session.commit()
+
+    evaluated_at = datetime(2026, 7, 21, 15, 1, tzinfo=timezone.utc)
+    result = await scan_missing_deliveries(test_session, now=evaluated_at)
+
+    assert result.created_or_refreshed == 1
+    alert = (await test_session.execute(select(MissingDeliveryAlert))).scalar_one()
+    assert alert.execution_profile == "pilot"
+    assert alert.expected_data_date == DAY
+    assert alert.details == {
+        "code": "DATED_UNIVERSE_PENDING",
+        "severity": "error",
+        "execution_profile": "pilot",
+        "plan_id": None,
+        "expected": None,
+        "data": 0,
+        "no_data": 0,
+        "missing": None,
+        "blocked": None,
+        "deadline_at": "2026-07-21T15:00:00+00:00",
+        "completion_deadline_at": "2026-07-21T15:00:00+00:00",
+        "wait_age_seconds": 60.0,
+        "candidate_age_seconds": 3660.0,
+        "candidate_count": 1,
+        "candidate_release_ids": [str(candidate.release_id)],
+        "oldest_candidate_at": "2026-07-21T14:00:00+00:00",
+        "latest_candidate": {
+            "release_id": str(candidate.release_id),
+            "change_count": saved.change_count,
+            "change_ratio": float(saved.change_ratio),
+            "created_at": "2026-07-21T14:00:00+00:00",
+        },
+    }
 
 
 @pytest.mark.asyncio

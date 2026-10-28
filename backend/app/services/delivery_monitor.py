@@ -22,6 +22,7 @@ from app.models.registry import (
     IngestionRun,
     MissingDeliveryAlert,
     SchedulerControl,
+    UniverseRelease,
 )
 from app.services.delivery_policy import (
     delivery_run_coverage_condition,
@@ -59,6 +60,75 @@ def _bounded_diagnostic(dataset_key: str, source: str, reason: str) -> dict[str,
         "dataset_key": dataset_key[:50],
         "source": source[:50],
         "reason": reason[:80],
+    }
+
+
+async def _dated_universe_wait_details(
+    db: AsyncSession,
+    *,
+    dataset_key: str,
+    source: str,
+    trade_date: date,
+    deadline: datetime,
+    evaluated_at: datetime,
+) -> dict[str, Any] | None:
+    if dataset_key != "tw_futures_eod" or source != "taifex":
+        return None
+    exact_published = await db.scalar(
+        select(UniverseRelease.release_id).where(
+            UniverseRelease.dataset_key == dataset_key,
+            UniverseRelease.provider == source,
+            UniverseRelease.effective_date == trade_date,
+            UniverseRelease.status == "published",
+        )
+    )
+    if exact_published is not None:
+        return None
+    candidates = list(
+        await db.scalars(
+            select(UniverseRelease)
+            .where(
+                UniverseRelease.dataset_key == dataset_key,
+                UniverseRelease.provider == source,
+                UniverseRelease.effective_date == trade_date,
+                UniverseRelease.status == "candidate",
+            )
+            .order_by(UniverseRelease.created_at.desc(), UniverseRelease.release_id.desc())
+            .limit(20)
+        )
+    )
+    if not candidates:
+        return None
+    candidate_stats = (
+        await db.execute(
+            select(func.count(), func.min(UniverseRelease.created_at)).where(
+                UniverseRelease.dataset_key == dataset_key,
+                UniverseRelease.provider == source,
+                UniverseRelease.effective_date == trade_date,
+                UniverseRelease.status == "candidate",
+            )
+        )
+    ).one()
+    candidate_count = int(candidate_stats[0])
+    oldest_created_at = candidate_stats[1]
+    if oldest_created_at is None:
+        return None
+    newest = candidates[0]
+    return {
+        "code": "DATED_UNIVERSE_PENDING",
+        "severity": "error",
+        "completion_deadline_at": deadline.isoformat(),
+        "wait_age_seconds": max(0, (evaluated_at - deadline).total_seconds()),
+        "candidate_age_seconds": max(0, (evaluated_at - oldest_created_at).total_seconds()),
+        "candidate_count": candidate_count,
+        "candidate_release_ids": [str(candidate.release_id) for candidate in candidates],
+        "oldest_candidate_at": oldest_created_at.isoformat(),
+        "latest_candidate": {
+            "release_id": str(newest.release_id),
+            "change_count": newest.change_count,
+            "change_ratio": float(newest.change_ratio),
+            "created_at": newest.created_at.isoformat(),
+        },
     }
 
 
@@ -465,6 +535,17 @@ async def _scan_full_market_feed(
             "blocked": summary.blocked if summary else None,
             "deadline_at": deadline.isoformat(),
         }
+        if plan is None:
+            dated_wait = await _dated_universe_wait_details(
+                db,
+                dataset_key=dataset.dataset_key,
+                source=source,
+                trade_date=trade_date,
+                deadline=deadline,
+                evaluated_at=evaluated_at,
+            )
+            if dated_wait is not None:
+                details.update(dated_wait)
         if source == "factset" and schema_id == "market_eod":
             threshold = get_settings().EOD_LONG_GAP_TRADING_DAYS
             long_gaps = [
