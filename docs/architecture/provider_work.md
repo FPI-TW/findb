@@ -172,8 +172,9 @@ expected=2、data=0、missing=2、no_data=blocked=0：首個 503 已停止第二
 
 ## API 與營運觀測
 
-Source `/provider-work` 提供 enqueue、claim、authorize、heartbeat、manifest、prepare／prepared、close、settle 與
-execute-rerun；historical claim 只是取得同一 owner 中的 item，不再有獨立 lease authority。
+Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
+prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，
+不再有獨立 lease authority。
 未啟用時 Source queue claim 拒絕；啟用也須已有 Owner cutover 保存的相同 shared inode identity，
 單獨改 flag 無法開始 claim。啟用後 legacy ingest／historical claim 缺少 work protocol 一律 fail closed。
 Source `/provider-work/{work_id}/authorize` 在既有 provider transaction lock 下回傳原 work ID、provider、
