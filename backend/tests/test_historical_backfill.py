@@ -786,10 +786,13 @@ async def test_claim_fails_expired_historical_item_and_cancels_following_dates(
     assert await claim_next_item(test_session, provider="shioaji", allowed_datasets=None) is None
     await test_session.refresh(request)
     expired_item = await test_session.scalar(
-        select(HistoricalBackfillItem).where(
+        select(HistoricalBackfillItem)
+        .where(
             HistoricalBackfillItem.request_id == request.request_id,
             HistoricalBackfillItem.trade_date < today - timedelta(days=MAX_BACKFILL_DAYS),
         )
+        .order_by(HistoricalBackfillItem.trade_date)
+        .limit(1)
     )
     assert request.status == "failed"
     assert expired_item is not None and expired_item.failure_code == "BACKFILL_EXPIRED"

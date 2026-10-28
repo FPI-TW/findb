@@ -72,12 +72,13 @@ async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss()
                 text("UPDATE historical_backfill_item SET status='partial' WHERE item_id=:item"),
                 ids,
             )
+            before_revision = await db.scalar(text("SELECT version_num FROM alembic_version"))
         with pytest.raises(subprocess.CalledProcessError) as error:
             await run_alembic(url, "c64eb01f8a32", command="downgrade")
         assert "preserve cohort and partial evidence" in error.value.stderr
         async with engine.begin() as db:
             assert (
-                await db.scalar(text("SELECT version_num FROM alembic_version")) == "f97d2a6c4b81"
+                await db.scalar(text("SELECT version_num FROM alembic_version")) == before_revision
             )
             assert (
                 await db.scalar(
