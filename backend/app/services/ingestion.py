@@ -449,6 +449,9 @@ class IngestionService:
         )
         self.db.add(run)
         await self.db.flush()
+        from app.services.delivery_plan_summary import refresh_summaries_for_run
+
+        await refresh_summaries_for_run(self.db, run)
         return run
 
     async def store_raw_payload(

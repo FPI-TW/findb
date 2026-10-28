@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import get_settings
 from app.services.delivery_monitor import scan_missing_deliveries
+from app.services.delivery_plan_summary import backfill_missing_summaries
 from app.services.ingestion_attempts import reconcile_stale_ingestion_attempts
 from app.services.normalization_queue import (
     claim_outbox_batch,
@@ -92,6 +93,7 @@ async def run_dispatcher() -> None:
         expire_on_commit=False,
     )
     monitor_task: asyncio.Task[None] | None = None
+    summary_task: asyncio.Task[None] | None = None
     try:
         await asyncio.to_thread(declare_topology)
         async with session_factory() as session:
@@ -101,6 +103,9 @@ async def run_dispatcher() -> None:
         monitor_task = asyncio.create_task(
             delivery_monitor_loop(session_factory),
             name="delivery-monitor",
+        )
+        summary_task = asyncio.create_task(
+            summary_backfill_loop(session_factory), name="delivery-summary-backfill"
         )
 
         broker_was_unavailable = False
@@ -156,11 +161,32 @@ async def run_dispatcher() -> None:
                         )
                         broker_was_unavailable = False
     finally:
+        if summary_task is not None:
+            summary_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await summary_task
         if monitor_task is not None:
             monitor_task.cancel()
             with suppress(asyncio.CancelledError):
                 await monitor_task
         await engine.dispose()
+
+
+async def summary_backfill_loop(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Initialize legacy summaries without doing work on the GET path."""
+    while True:
+        count = 0
+        try:
+            async with session_factory() as session:
+                async with asyncio.timeout(30):
+                    count = await backfill_missing_summaries(session)
+            if count:
+                logger.info("Initialized %s delivery plan summaries", count)
+        except Exception:
+            logger.exception("Failed to initialize delivery plan summaries")
+        await asyncio.sleep(1 if count else 60)
 
 
 if __name__ == "__main__":

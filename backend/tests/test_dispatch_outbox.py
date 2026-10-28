@@ -80,8 +80,12 @@ async def test_delivery_monitor_timeout_rolls_back_and_is_isolated(
 
 
 @pytest.mark.asyncio
-async def test_blocked_delivery_monitor_does_not_block_outbox_publish(monkeypatch) -> None:
+@pytest.mark.parametrize("blocked_loop", ["delivery_monitor_loop", "summary_backfill_loop"])
+async def test_blocked_background_maintenance_does_not_block_outbox_publish(
+    monkeypatch, blocked_loop
+) -> None:
     monitor_started = asyncio.Event()
+    maintenance_stopped = asyncio.Event()
     published = asyncio.Event()
     claimed = 0
     stale_reconciliations = 0
@@ -91,6 +95,12 @@ async def test_blocked_delivery_monitor_does_not_block_outbox_publish(monkeypatc
 
     async def blocked_scan(session, **kwargs):
         monitor_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            maintenance_stopped.set()
+
+    async def idle_loop(session_factory):
         await asyncio.Event().wait()
 
     async def claim(session):
@@ -115,7 +125,9 @@ async def test_blocked_delivery_monitor_does_not_block_outbox_publish(monkeypatc
     monkeypatch.setattr(dispatch_outbox, "declare_topology", lambda: None)
     monkeypatch.setattr(dispatch_outbox, "reconcile_stale_jobs", repair_stale)
     monkeypatch.setattr(dispatch_outbox, "reconcile_stale_attempts_safely", no_reconciliation)
-    monkeypatch.setattr(dispatch_outbox, "scan_missing_deliveries", blocked_scan)
+    monkeypatch.setattr(dispatch_outbox, "delivery_monitor_loop", idle_loop)
+    monkeypatch.setattr(dispatch_outbox, "summary_backfill_loop", idle_loop)
+    monkeypatch.setattr(dispatch_outbox, blocked_loop, blocked_scan)
     monkeypatch.setattr(dispatch_outbox, "claim_outbox_batch", claim)
     monkeypatch.setattr(dispatch_outbox, "publish_outbox_event", lambda row: None)
     monkeypatch.setattr(dispatch_outbox, "mark_outbox_published", mark_published)
@@ -124,4 +136,37 @@ async def test_blocked_delivery_monitor_does_not_block_outbox_publish(monkeypatc
     with pytest.raises(StopDispatcherError):
         await asyncio.wait_for(dispatch_outbox.run_dispatcher(), timeout=2)
     assert published.is_set()
+    assert maintenance_stopped.is_set()
     assert stale_reconciliations >= 1
+
+
+@pytest.mark.asyncio
+async def test_summary_backfill_failure_closes_transaction_and_waits_before_retry(
+    test_engine, monkeypatch, caplog
+):
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    failed = asyncio.Event()
+    attempted = 0
+
+    async def fail_after_query(session):
+        nonlocal attempted
+        attempted += 1
+        await session.execute(text("SELECT pg_advisory_xact_lock(942713)"))
+        failed.set()
+        raise RuntimeError("summary initialization failed")
+
+    monkeypatch.setattr(dispatch_outbox, "backfill_missing_summaries", fail_after_query)
+    with caplog.at_level(logging.ERROR):
+        task = asyncio.create_task(dispatch_outbox.summary_backfill_loop(session_factory))
+        try:
+            await asyncio.wait_for(failed.wait(), timeout=1)
+            # The next checkout must be able to acquire the transaction-scoped lock.
+            async with session_factory() as session:
+                async with asyncio.timeout(1):
+                    await session.execute(text("SELECT pg_advisory_xact_lock(942713)"))
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert attempted == 1
+    assert "Failed to initialize delivery plan summaries" in caplog.text

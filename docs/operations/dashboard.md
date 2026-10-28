@@ -53,6 +53,10 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、
 只導向登入頁一次。後端 401 與既有 `Invalid admin credential` 403 契約會使 session cookie 失效；
 一般角色不足、密碼更新要求及業務錯誤仍維持原處理。排程、日曆及回補的後端授權、revision／CAS、預覽與確認機制保持有效。
 
+概況的 freshness 讀取持久化 plan 摘要；資料變更與摘要同交易更新，頁面刷新不重新核對歷史
+成員或分鐘 K 線。既有資料初始化期間會顯示 `delivery_summary_pending`，操作與部署驗收見
+[Freshness 摘要維運](full_market.md#freshness-的持久化完整度摘要)。
+
 ## 前端維護契約
 
 - `OperationsRefreshProvider` 管理可見查詢的 exact keys；資料元件透過

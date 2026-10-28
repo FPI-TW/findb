@@ -76,6 +76,52 @@ async def test_request_cohort_stays_frozen_and_partial_day_continues(
     )
     request_id = request.request_id
     frozen = deepcopy(request.universe_snapshot)
+    # Historical actual writes must refresh both existing daily-profile summaries.
+    from app.models.registry import DailyDeliveryMember, DailyDeliveryPart, DailyDeliveryPlan
+    from app.services.delivery_plan_summary import refresh_plan_summary
+    from app.utils import uuid7
+
+    summaries = []
+    for profile in ("pilot", "full_market"):
+        plan = DailyDeliveryPlan(
+            plan_id=uuid7(),
+            dataset_key="hk_equity_eod",
+            provider="factset",
+            trade_date=date(2026, 10, 16),
+            release_id=UUID(frozen["release_id"]),
+            execution_profile=profile,
+            activation_cutoff=date(2026, 10, 15),
+            deadline_at=NOW,
+            member_sha256="a" * 64,
+            expected_count=2,
+        )
+        test_session.add(plan)
+        await test_session.flush()
+        part = DailyDeliveryPart(
+            part_id=uuid7(),
+            plan_id=plan.plan_id,
+            part_number=1,
+            work_item_id="fp1:" + uuid7().hex,
+            member_sha256="a" * 64,
+            expected_count=2,
+        )
+        test_session.add(part)
+        await test_session.flush()
+        for member in frozen["members"]:
+            test_session.add(
+                DailyDeliveryMember(
+                    member_id=uuid7(),
+                    plan_id=plan.plan_id,
+                    part_id=part.part_id,
+                    member_key=member["member_key"],
+                    symbol=member["symbol"],
+                    provider_symbol=member["provider_symbol"],
+                    mapping_status="mapped",
+                )
+            )
+        await refresh_plan_summary(test_session, plan.plan_id)
+        summaries.append(plan.plan_id)
+    await test_session.commit()
     # Daily refresh removes one member. The existing historical request retains both.
     universe.members = universe.members[:1]
     newer = await submit_universe(test_session, universe, allowed_datasets=["hk_equity_eod"])
@@ -209,6 +255,11 @@ async def test_request_cohort_stays_frozen_and_partial_day_continues(
             json={"status": "partial", "lease_token": owner["token"], "result_evidence": changed},
         )
         assert rejected.status_code == 409
+    from app.models.registry import DailyDeliveryPlanSummary
+
+    for plan_id in summaries:
+        stored = await test_session.get(DailyDeliveryPlanSummary, plan_id)
+        assert (stored.data_count, stored.missing_count) == (1, 1)
     await test_session.refresh(request)
     assert request.status == "partial" and request.universe_snapshot == frozen
     loaded = await test_session.get(HistoricalBackfillRequest, request_id)

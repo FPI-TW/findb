@@ -384,6 +384,52 @@ Overview／交付監控以 `profile=pilot|full_market` 分頁。Staging 預設 P
 未指定 profile 的既有 plan API 維持 Full market 語意，新 runtime／Dashboard 必須明確傳入。
 細節見 [dashboard.md](dashboard.md)。
 
+### Freshness 的持久化完整度摘要
+
+`market-freshness` 的 Pilot／Full market 完整度與最新 run metadata 讀自
+`daily_delivery_plan_summary`，不在 GET 中載入歷史成員、canonical K 線或執行
+`reconcile_plan`。每個 feed 的當期數量、最新完整日期與 run metadata 使用同一個 SQL
+snapshot；交易日曆、首次日期與 deadline 仍依查詢時間計算，停止 scheduler 不會凍結
+時間判斷。頁面更新不會觸發抓取或摘要寫入。
+
+摘要以 immutable plan ID 隔離兩種 profile。建立 plan、接受新 run／分鐘重試、
+normalization 完成或失敗、retry／retry exhausted、no-data／blocked outcome 變更時，
+只刷新受影響的 plan，與原始資料／run／實際寫入證據在同一 transaction commit。
+Plan row lock 串行化同 plan 的競爭寫入；失敗 rollback 不得先公布摘要。
+FactSet 具合法 historical receipt 的修復會更新同 dataset／provider／date 的兩種 profile。
+OHLCV 人工修正不改變 member 身份或完整度，無須重算摘要。
+
+`expected = data + no_data + missing + blocked` 與原 canonical／durable evidence 規則相同。
+分鐘資料仍要求所屬 snapshot/update 的所有最新 sequence attempts 都完成；新 queued
+或 failed attempt 必須使該 group 失效，不能沿用之前完整的計數。No-data 仍需原本的
+官方證據驗證，canonical 實際寫入可優先於既有 no-data。
+
+Migration 只建立摘要表，保留 frozen plans、成員、outcomes 與 canonical 資料。
+Dispatcher 以獨立維護 task、每批最多五個 plan 初始化既有資料，每批 transaction 上限
+30 秒；已初始化後只檢查缺少摘要的 plan，不循環重建全部歷史。初始化未完成時 freshness
+回報 `delivery_summary_pending`，不在 GET 回退至昂貴的重新計算，也不宣稱未知 plan 完整。
+部署驗收須等下列查詢為零：
+
+```sql
+SELECT count(*) FROM daily_delivery_plan p
+LEFT JOIN daily_delivery_plan_summary s USING (plan_id)
+WHERE s.plan_id IS NULL;
+```
+
+受控 SQL 維修若直接改動 runs／member evidence／canonical lineage，須重建受影響 scope。
+下列工具預設 dry-run；`--apply` 才寫入，只使用 Backend application DB 身份，在 Backend
+host／container 執行，不能交給 Fetcher。每批獨立 commit，可安全重跑；不要與 schema
+升降版同時執行。先 migration，再完成初始化／重建與驗收，不能只以 `/health` 判定完成。
+
+```bash
+uv --directory backend run python scripts/rebuild_delivery_plan_summaries.py --provider shioaji --profile full_market
+uv --directory backend run python scripts/rebuild_delivery_plan_summaries.py --provider shioaji --profile full_market --apply
+```
+
+工具也接受 `--dataset` 與 `--batch-size`（1–100，預設 5）。Canonical／證據的直接維修應在
+維護時段完成並重建，避免讓已維修但尚未重建的摘要對外顯示。一般 application 寫入不需要
+人工重建，所有 GET 仍保持唯讀。Schema 為 additive；移除摘要表前須停止新版 application。
+
 ## 用量與傳輸保護
 
 正常抓取使用 `platform_limits.py` 中的已確認限制。Twelve Data 按 1597 credits／分鐘 pacing；

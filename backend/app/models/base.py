@@ -108,6 +108,7 @@ async def _verify_required_objects(conn) -> None:
         "public.universe_release",
         "public.universe_member",
         "public.daily_delivery_plan",
+        "public.daily_delivery_plan_summary",
         "public.daily_execution_decision",
         "public.daily_delivery_part",
         "public.daily_delivery_member",

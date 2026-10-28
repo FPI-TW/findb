@@ -22,6 +22,7 @@ from app.models.registry import (
     NormalizationWorkerHeartbeat,
 )
 from app.schemas.source import RunFailureCode
+from app.services.delivery_plan_summary import refresh_summaries_for_run
 from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
@@ -284,6 +285,7 @@ async def _schedule_retry(
         run.error_message = message
         run.completed_at = now
         run.next_retry_at = None
+        await refresh_summaries_for_run(session, run)
         await session.commit()
         return
 
@@ -319,6 +321,7 @@ async def _schedule_retry(
             updated_at=now,
         )
     )
+    await refresh_summaries_for_run(session, run)
     await session.commit()
 
 
@@ -344,6 +347,7 @@ async def _mark_permanent_failure(
     run.error_message = message
     run.completed_at = now
     run.next_retry_at = None
+    await refresh_summaries_for_run(session, run)
     await session.commit()
 
 
@@ -488,6 +492,7 @@ async def execute_normalization(
                     run.next_retry_at = None
                     if run.started_at is None:
                         run.started_at = now
+                    await refresh_summaries_for_run(session, run)
                     await session.commit()
 
                     raw = None
@@ -550,6 +555,7 @@ async def execute_normalization(
                     run.attempt_count = attempt_count
                     run.failure_code = None
                     run.next_retry_at = None
+                    await refresh_summaries_for_run(session, run)
                     await session.commit()
                 except EODPartitionUnavailableError as exc:
                     await session.rollback()

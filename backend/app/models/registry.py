@@ -286,6 +286,38 @@ class DailyDeliveryPlan(Base):
     )
 
 
+class DailyDeliveryPlanSummary(Base):
+    """Transactionally maintained completeness projection; GET never rebuilds it."""
+
+    __tablename__ = "daily_delivery_plan_summary"
+    __table_args__ = (
+        CheckConstraint(
+            "expected_count >= 0 AND data_count >= 0 AND no_data_count >= 0 "
+            "AND missing_count >= 0 AND blocked_count >= 0 AND "
+            "expected_count = data_count + no_data_count + missing_count + blocked_count",
+            name="delivery_plan_summary_counts",
+        ),
+    )
+
+    plan_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("daily_delivery_plan.plan_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    data_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    no_data_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    missing_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    blocked_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    latest_run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    latest_run_created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_fetched_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_failure_code: Mapped[Optional[str]] = mapped_column(String(50))
+    policy_outcome: Mapped[Optional[str]] = mapped_column(String(20))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class DailyExecutionDecision(Base):
     """Immutable Source decision; a date is either planned or skipped, never both."""
 

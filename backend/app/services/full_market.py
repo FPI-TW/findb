@@ -732,6 +732,9 @@ async def create_plan(
                     mapping_status=member.mapping_status,
                 )
             )
+    from app.services.delivery_plan_summary import refresh_plan_summary
+
+    await refresh_plan_summary(db, plan.plan_id)
     await db.commit()
     return await get_plan(
         db, plan.plan_id, provider=body.provider, allowed_datasets=allowed_datasets
@@ -843,6 +846,7 @@ async def reconcile_plan(
                     IngestionRun.delivery_part_id.in_(part_ids),
                     IngestionRun.status.in_(("completed", "completed_with_errors")),
                 )
+                .distinct()
             )
         ).all()
         canonical_keys = {
@@ -1098,6 +1102,9 @@ async def record_outcome(
     member.outcome_reason = body.reason
     member.outcome_evidence = evidence
     member.outcome_at = utc_now()
+    from app.services.delivery_plan_summary import refresh_plan_summary
+
+    await refresh_plan_summary(db, plan.plan_id)
     await db.commit()
     return await reconcile_plan(db, plan)
 

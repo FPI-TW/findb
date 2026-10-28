@@ -13,16 +13,15 @@ from typing import Any, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
-    DailyDeliveryPart,
     DailyDeliveryPlan,
+    DailyDeliveryPlanSummary,
     DatasetRegistry,
-    DeliveryMemberEvidence,
     IngestionRun,
     MissingDeliveryAlert,
     SchedulerControl,
@@ -453,7 +452,6 @@ async def _profile_feed_freshness(
     first_date: str | None,
 ) -> FreshnessFeed:
     from app.services.effective_calendar import acquisition_dates
-    from app.services.full_market import reconcile_plan
     from app.services.full_market_governance import feed_schedule
 
     timezone_name, scheduled_time = feed_schedule(feed.dataset.dataset_key)
@@ -475,62 +473,80 @@ async def _profile_feed_freshness(
         else []
     )
     expected = max(dates) if dates else None
-    plans = list(
-        await db.scalars(
-            select(DailyDeliveryPlan)
-            .where(
-                DailyDeliveryPlan.dataset_key == feed.dataset.dataset_key,
-                DailyDeliveryPlan.provider == feed.source,
-                DailyDeliveryPlan.execution_profile == profile,
-                DailyDeliveryPlan.trade_date <= through,
-            )
-            .order_by(DailyDeliveryPlan.trade_date.desc())
-        )
+    scope = (
+        DailyDeliveryPlan.dataset_key == feed.dataset.dataset_key,
+        DailyDeliveryPlan.provider == feed.source,
+        DailyDeliveryPlan.execution_profile == profile,
     )
-    latest_complete = None
-    current = None
-    for plan in plans:
-        summary = await reconcile_plan(db, plan, now=evaluated_at)
-        if plan.trade_date == expected:
-            current = summary
-        if latest_complete is None and summary.data + summary.no_data == summary.expected:
-            latest_complete = plan.trade_date
-        if latest_complete is not None and (expected is None or plan.trade_date <= expected):
-            break
-    last_run = await db.scalar(
-        select(IngestionRun)
-        .join(DailyDeliveryPart, DailyDeliveryPart.part_id == IngestionRun.delivery_part_id)
-        .join(DailyDeliveryPlan, DailyDeliveryPlan.plan_id == DailyDeliveryPart.plan_id)
-        .where(
-            DailyDeliveryPlan.dataset_key == feed.dataset.dataset_key,
-            DailyDeliveryPlan.provider == feed.source,
-            DailyDeliveryPlan.execution_profile == profile,
+    # One statement gives counts, coverage and latest-run metadata one snapshot.
+    projection = (
+        select(
+            *DailyDeliveryPlanSummary.__table__.columns,
+            DailyDeliveryPlan.trade_date,
+            DailyDeliveryPlan.deadline_at,
         )
-        .order_by(IngestionRun.created_at.desc(), IngestionRun.run_id.desc())
+        .select_from(DailyDeliveryPlan)
+        .outerjoin(
+            DailyDeliveryPlanSummary, DailyDeliveryPlanSummary.plan_id == DailyDeliveryPlan.plan_id
+        )
+        .where(*scope)
+        .cte("feed_plan_summaries")
+    )
+    totals = select(
+        func.max(
+            case(
+                (
+                    (projection.c.trade_date <= through)
+                    & (
+                        projection.c.data_count + projection.c.no_data_count
+                        == projection.c.expected_count
+                    ),
+                    projection.c.trade_date,
+                )
+            )
+        ).label("latest_complete"),
+        func.max(projection.c.last_completed_at).label("last_successful_update"),
+        func.count()
+        .filter((projection.c.trade_date <= through) & projection.c.plan_id.is_(None))
+        .label("pending"),
+    ).subquery()
+    current = (
+        select(
+            projection.c.expected_count,
+            projection.c.data_count,
+            projection.c.no_data_count,
+            projection.c.blocked_count,
+            projection.c.deadline_at,
+        )
+        .where(projection.c.trade_date == expected)
+        .subquery()
+    )
+    latest = (
+        select(
+            projection.c.latest_run_id,
+            projection.c.last_fetched_at,
+            projection.c.last_failure_code,
+            projection.c.policy_outcome,
+        )
+        .where(projection.c.latest_run_id.is_not(None))
+        .order_by(
+            projection.c.latest_run_created_at.desc(),
+            projection.c.latest_run_id.desc(),
+        )
         .limit(1)
+        .subquery()
     )
-    last_successful_update = await db.scalar(
-        select(func.max(IngestionRun.completed_at))
-        .join(DailyDeliveryPart, DailyDeliveryPart.part_id == IngestionRun.delivery_part_id)
-        .join(DailyDeliveryPlan, DailyDeliveryPlan.plan_id == DailyDeliveryPart.plan_id)
-        .where(
-            DailyDeliveryPlan.dataset_key == feed.dataset.dataset_key,
-            DailyDeliveryPlan.provider == feed.source,
-            DailyDeliveryPlan.execution_profile == profile,
-            IngestionRun.status.in_(["completed", "completed_with_errors"]),
-            select(DeliveryMemberEvidence.run_id)
-            .where(DeliveryMemberEvidence.run_id == IngestionRun.run_id)
-            .exists(),
-        )
-    )
-    last_fetched = (
-        await db.scalar(
-            select(RawMarketPayload.fetched_at).where(
-                RawMarketPayload.raw_payload_id == last_run.raw_payload_id
+    snapshot = (
+        (
+            await db.execute(
+                select(totals, current, latest)
+                .select_from(totals)
+                .outerjoin(current, true())
+                .outerjoin(latest, true())
             )
         )
-        if last_run and last_run.raw_payload_id
-        else None
+        .mappings()
+        .one()
     )
     alert = (
         await db.scalar(
@@ -548,14 +564,15 @@ async def _profile_feed_freshness(
         else None
     )
     state: FreshnessStatus = "not_due" if expected is None else "never_received"
-    if current:
+    has_current = snapshot["expected_count"] is not None
+    if has_current:
         state = (
             "fresh"
-            if current.data + current.no_data == current.expected
+            if snapshot["data_count"] + snapshot["no_data_count"] == snapshot["expected_count"]
             else "partial"
-            if current.data or current.no_data
+            if snapshot["data_count"] or snapshot["no_data_count"]
             else "late"
-            if current.is_late
+            if evaluated_at > ensure_utc(snapshot["deadline_at"])
             else "not_due"
         )
     return FreshnessFeed(
@@ -564,17 +581,27 @@ async def _profile_feed_freshness(
         schema_id=feed.schema_id,
         schema_version=feed.schema_version,
         expected_data_date=expected,
-        latest_successful_data_date=latest_complete,
-        last_fetched_at=ensure_utc(last_fetched) if last_fetched else None,
-        last_completed_at=ensure_utc(last_successful_update) if last_successful_update else None,
-        last_run_id=last_run.run_id if last_run else None,
-        total_records=current.expected if current else None,
-        success_records=current.data if current else None,
-        failed_records=current.blocked if current else None,
-        policy_outcome=last_run.policy_outcome if last_run else None,
+        latest_successful_data_date=snapshot["latest_complete"],
+        last_fetched_at=ensure_utc(snapshot["last_fetched_at"])
+        if snapshot["last_fetched_at"]
+        else None,
+        last_completed_at=ensure_utc(snapshot["last_successful_update"])
+        if snapshot["last_successful_update"]
+        else None,
+        last_run_id=snapshot["latest_run_id"],
+        total_records=snapshot["expected_count"],
+        success_records=snapshot["data_count"],
+        failed_records=snapshot["blocked_count"],
+        policy_outcome=snapshot["policy_outcome"],
         open_missing_delivery_alert=alert is not None,
-        last_failure_code=last_run.failure_code if last_run else None,
-        configuration_error="; ".join(feed.configuration_errors) or None,
+        last_failure_code=snapshot["last_failure_code"],
+        configuration_error="; ".join(
+            (
+                *feed.configuration_errors,
+                *(("delivery_summary_pending",) if snapshot["pending"] else ()),
+            )
+        )
+        or None,
         status=state,
     )
 
