@@ -3,7 +3,9 @@
 所有五個 providers（Twelve Data、FinLab、Shioaji、TAIFEX、FactSet）只使用 provider-work-v1。
 Pilot／Full daily、historical、maintenance 與 retained-raw rerun 共用同 provider 的 FIFO、owner fence
 與 whole-work host lock。`PROVIDER_WORK_REQUIRED` 保留為部署相容性斷言：缺省為 `true`，
-明確 `false` 或其他值會拒絕啟動，不再選擇另一套執行協定。
+Backend／Fetcher 接受一般布林 true 寫法（不分大小寫的 `true`、`1`、`yes`、`on`、`t`、`y`）；
+明確 false 拒絕停用協定，空字串／無效值則回報布林解析錯誤。部署檔案仍統一使用 `true`，
+不再選擇另一套執行協定。
 
 程式碼退役不代表環境已完成切換；production 仍須完成
 [deployment runbook](../operations/deployment.md#provider-work-切換) 的 drain、備份、單 host／
@@ -30,7 +32,9 @@ PostgreSQL `provider_work` 保存穩定工作，`provider_work_attempt` 以 sequ
 重複 enqueue 不改寫原 scope／順序；不同 profile、historical item 與 retained-raw rerun 決策分開保存。
 
 Daily 的粒度是 dataset／trade_date／execution profile；historical 是原 request 中的單日 item。
-同批日期由早到晚 enqueue。FIFO 只比較 runnable attempts，不給 daily deadline 額外優先權。
+同批日期由早到晚 enqueue；較早日期進入延遲 tail retry 後，後續 runnable 日期可以先執行，
+不保證同 request 依日期完成。Historical claim 只投影已 fenced 的 queue owner，不另選日期或 lease。
+FIFO 只比較 runnable attempts，不給 daily deadline 額外優先權。
 未收盤、`not_before`、已停止且沒有待排空交付的 daily controls，或未開始且沒有待排空交付的
 cancelled historical work 不阻擋其他 runnable work。先在 provider transaction 中選全域 runnable head，
 再檢查 consumer 的 dataset scope、kind 與 profile；較窄的 Source key 不能跳過無權處理的 head，
@@ -46,6 +50,16 @@ Daily 七條 feeds 與 historical adapters 在觀察到第一個 retryable provi
 unknown 或 terminal polling timeout 後，即停止該輪的新 provider I/O 與新 prepared intent；不繼續後續
 member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain，再安全 tail retry。
 原 controls／request 仍允許抓取時，下一 attempt 才可接續同一 frozen scope 的剩餘 members。
+Daily member 的一般例外會先持久保存 `source_error_pending`，再回報 Source `source_error`；
+回報成功才套用原 local attempt ceiling。回報失敗／重啟時，先補報原 outcome，該輪不再抓取
+其他 members，不增加或退還 acquisition attempts，也不改寫 prepared bytes／receipts。
+此 continuation 即使在最後一次 acquisition attempt 或 drain-only round 仍須先完成。
+Tail retry 的 settlement proof 同時保存 canonical `pending_source_errors` member keys，Source
+驗證其屬於原 daily frozen manifest，將待補報資訊帶入下一 attempt。FIFO／唯讀 projection
+將它視為待排空工作：即使 control 停止、daily window 關閉或帳號 cooldown 中，仍可取得
+drain-only owner 補報，但 acquisition fence 繼續拒絕新抓取／intent。補報使用一般短 backoff，
+不延至下一抓取窗口或 cooldown 結束；原帳號 cooldown 不清除。ACK 後下一次 settlement
+不再攜帶此 continuation，恢復一般 FIFO gate，不能永久保留補報例外。
 Maintenance explicit refresh 與 daily cycle 自動領取 refresh 共用同一 round executor：已知 catalogue／
 official HTTP 503、transport 與 quota wait 會先停止 SDK／證明 reap、close、排空 accepted runs，再 tail
 retry；格式、auth／scope 永久拒絕安全結束 failed/manual。只有 owner fence、失聯或無法證明 child

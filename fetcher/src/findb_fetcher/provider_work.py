@@ -742,7 +742,8 @@ class ProviderWorkSession:
 
             from findb_fetcher.acquisition import time as account_time
 
-            delay = max(delay, math.ceil(self.journal.cooldown_until() - account_time.time()))
+            if not body["proof"].get("pending_source_errors"):
+                delay = max(delay, math.ceil(self.journal.cooldown_until() - account_time.time()))
             body["retry_at"] = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
         from findb_fetcher.full_market_client import FullMarketProtocolError
 

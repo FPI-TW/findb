@@ -645,6 +645,32 @@ class FullMarketState:
                 (reason, now + delay_seconds, key),
             )
 
+    def pending_source_error_keys(self, plan_id: str) -> set[str]:
+        with self.connection() as db:
+            return {
+                row[0]
+                for row in db.execute(
+                    "SELECT key FROM full_work WHERE plan_id=? AND reason='source_error_pending'",
+                    (plan_id,),
+                )
+            }
+
+    def stage_source_error(self, key: str) -> None:
+        """Retain a report continuation without spending or refunding attempts.
+
+        Even the last acquisition attempt must report before terminalization.
+        Prepared bytes and receipts stay untouched while Source is unavailable.
+        """
+        with self.connection() as db:
+            db.execute(
+                "UPDATE full_work SET status=CASE WHEN body IS NULL THEN 'pending' ELSE 'prepared' END,reason='source_error_pending',lease_until=0,next_at=0 WHERE key=?",
+                (key,),
+            )
+            db.execute(
+                "INSERT INTO full_plan_reconcile SELECT plan_id,1 FROM full_work WHERE key=? ON CONFLICT(plan_id) DO UPDATE SET dirty=1",
+                (key,),
+            )
+
     def finish(
         self,
         key: str,

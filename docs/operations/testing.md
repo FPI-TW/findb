@@ -91,6 +91,21 @@ Account unit decorator 以 worker 明確傳入的 `path` 決定 lock 根目錄�
 對應 ledger environment；不使用平台專屬 tmp fallback。Spawn 測試覆蓋父程序未設定或帶錯 ledger
 的情況，SDK／FD inheritance 測試仍執行。
 
+`test_full_market_error_outcomes.py` 覆蓋一般 provider／transport 錯誤的 Source outcome、
+第一個失敗後停止本輪，以及最後一次 attempt 的回報失敗／重啟／drain-only continuation；
+必須先補報、保留原 attempts／prepared／receipts，不能再抓取下一 member。
+Backend `test_provider_work_error_reports.py` 以真實 Source／claim／settle 覆蓋 reporter 503
+與 lost ACK，且在 settlement 前施加 stopped／window／cooldown，驗證短 report backoff、
+唯讀 projection、drain-only claim、acquisition 拒絕、冪等 outcome、原 cooldown 保留，以及 ACK
+後移除補報例外、其他 eligible work 能前進。Malformed／重複／越界 member 或錯誤 kind 的
+補報 proof 必須拒絕。TAIFEX snapshot decorator 與函式本體間的 stop／window 競態不回報
+來源錯誤，也不消耗 acquisition failure budget。
+Shioaji coordinator 的 attempt ceiling 在 governor、SDK、一般與 dispatched quota 例外都使用
+同一 `terminal_on_exhaustion`：預設 staging 為 false，耗盡後維持 `ATTEMPT_BLOCKED`；
+production subclass 為 true，最後一次失敗即保存 `ACQUISITION_ATTEMPTS_EXHAUSTED`。
+Predispatch quota wait 不耗 budget，也不能轉 terminal。設定測試同時核對 Backend／Fetcher
+truthy 解析、false 與 invalid boolean 診斷，且 owner／descriptor 檢查不能被任一 truthy 值繞過。
+
 原 compatibility cycle／獨立 lease orchestration 測試由正式 FIFO lifecycle／native adapter
 integration 測試取代；不保留已退役 CLI 的成功抓取預期。跨環境／profile 的 frozen membership
 仍由 `test_execution_profile_parity.py` 直接驗證原 plan identity，calendar／normalizer 測試沿用。

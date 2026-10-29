@@ -666,8 +666,70 @@ def test_terminal_stage_is_not_retried_and_retryable_stops_after_three(
         True,
         True,
     ]
-    assert coordinator.run(date(2026, 7, 29))[0].code == "ACQUISITION_ATTEMPTS_EXHAUSTED"
+    assert coordinator.run(date(2026, 7, 29))[0].code == "ATTEMPT_BLOCKED"
     assert retryable.calls == 3
+    state.close()
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("failure", ["sdk", "generic", "dispatched-quota"])
+def test_coordinator_exhaustion_policy_is_consistent_across_failures(tmp_path, terminal, failure):
+    from findb_fetcher.full_market_state import QuotaBlockedError
+
+    class Gateway:
+        calls = 0
+
+        def fetch_kbars(self, symbol, day):
+            self.calls += 1
+            if failure == "sdk":
+                raise ShioajiSdkError("private provider detail")
+            if failure == "dispatched-quota":
+                error = QuotaBlockedError("private quota detail", quota_wait=True)
+                error.dispatched = True
+                raise error
+            raise RuntimeError("private provider detail")
+
+    gateway = Gateway()
+    path = tmp_path / "attempts.sqlite3"
+    daily_id = "shioaji_tw_staging_v1:2026-07-29"
+    for attempt in range(1, 5):
+        state = ShioajiStagingState(path)
+        result = Coordinator(
+            state, _single_manifest(), gateway, now=_taipei_now, terminal_on_exhaustion=terminal
+        ).run(date(2026, 7, 29))[0]
+        exhausted = terminal and attempt >= 3
+        assert result.code == (
+            "ACQUISITION_ATTEMPTS_EXHAUSTED"
+            if exhausted
+            else "ATTEMPT_BLOCKED"
+            if attempt == 4
+            else "ACQUISITION_FAILED"
+        )
+        assert result.retryable is not exhausted
+        assert state.budget_used(daily_id, "2330") == min(attempt, 3)
+        assert (state.get_terminal(daily_id, "2330") is not None) is exhausted
+        state.close()
+    assert gateway.calls == 3
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_predispatch_quota_wait_never_terminalizes_or_spends_failure_budget(tmp_path, terminal):
+    from findb_fetcher.full_market_state import QuotaBlockedError
+
+    class Gateway:
+        def fetch_kbars(self, symbol, day):
+            raise QuotaBlockedError("cooldown", quota_wait=True)
+
+    state = ShioajiStagingState(tmp_path / "waits.sqlite3")
+    coordinator = Coordinator(
+        state, _single_manifest(), Gateway(), now=_taipei_now, terminal_on_exhaustion=terminal
+    )
+    for _ in range(6):
+        result = coordinator.run(date(2026, 7, 29))[0]
+        assert result.code == "QUOTA_WAIT" and result.retryable
+    daily_id = "shioaji_tw_staging_v1:2026-07-29"
+    assert state.budget_used(daily_id, "2330") == 0
+    assert state.get_terminal(daily_id, "2330") is None
     state.close()
 
 

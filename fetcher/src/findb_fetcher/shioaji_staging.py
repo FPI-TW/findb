@@ -297,7 +297,7 @@ class Coordinator:
                     max_requests=gov["max_requests"],
                     rolling_seconds=gov["rolling_seconds"],
                     max_attempts=gov["max_attempts_per_sequence"],
-                    terminal_on_exhaustion=True,
+                    terminal_on_exhaustion=self.terminal_on_exhaustion,
                 )
                 if not ok:
                     terminal = self.state.get_terminal(daily_id, symbol)
@@ -360,19 +360,32 @@ class Coordinator:
                     break
                 except QuotaBlockedError as exc:
                     waiting = exc.quota_wait and not exc.dispatched
+                    exhausted = (
+                        not waiting
+                        and self.terminal_on_exhaustion
+                        and self.state.budget_used(daily_id, symbol)
+                        >= int(gov["max_attempts_per_sequence"])
+                    )
+                    code = (
+                        "QUOTA_WAIT"
+                        if waiting
+                        else "ACQUISITION_ATTEMPTS_EXHAUSTED"
+                        if exhausted
+                        else "ACQUISITION_FAILED"
+                    )
                     self.state.finish_attempt(
                         daily_id,
                         symbol,
                         attempt,
                         "waiting" if waiting else "failed",
-                        "QUOTA_WAIT" if waiting else "ACQUISITION_FAILED",
-                        retryable=True,
+                        code,
+                        retryable=not exhausted,
                     )
                     out.append(
                         Result(
-                            "QUOTA_WAIT" if waiting else "ACQUISITION_FAILED",
+                            code,
                             "acquisition",
-                            retryable=True,
+                            retryable=not exhausted,
                         )
                     )
                     break

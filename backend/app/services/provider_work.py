@@ -253,6 +253,7 @@ async def claim(
                     ProviderWorkAttempt.not_before <= now,
                     or_(
                         ProviderWork.kind != "daily",
+                        ProviderWorkAttempt.proof["source_error_pending"].as_boolean().is_(True),
                         literal(daily_window(provider, now)["open"]),
                         text("""EXISTS (
                           SELECT 1 FROM jsonb_object_keys(provider_work.prepared_deliveries) AS prepared(member_key)
@@ -270,6 +271,7 @@ async def claim(
                     ),
                     or_(
                         ProviderWork.kind == "rerun",
+                        ProviderWorkAttempt.proof["source_error_pending"].as_boolean().is_(True),
                         text("""EXISTS (
                           SELECT 1 FROM jsonb_object_keys(provider_work.prepared_deliveries) AS prepared(member_key)
                           WHERE NOT EXISTS (SELECT 1 FROM provider_work_receipt receipt
@@ -290,6 +292,7 @@ async def claim(
                     ),
                     or_(
                         ProviderWork.kind != "daily",
+                        ProviderWorkAttempt.proof["source_error_pending"].as_boolean().is_(True),
                         text("""EXISTS (
                           SELECT 1 FROM jsonb_object_keys(provider_work.prepared_deliveries) AS prepared(member_key)
                           WHERE NOT EXISTS (SELECT 1 FROM provider_work_receipt receipt
@@ -958,6 +961,20 @@ async def settle(
             )
     if outcome not in {"completed", "partial", "failed", "cancelled", "retry"}:
         raise ProviderWorkError("invalid provider work outcome")
+    pending_errors = proof.get("pending_source_errors", [])
+    if "pending_source_errors" in proof:
+        members = {row["key"] for row in (work.manifest or {}).get("members", [])}
+        if (
+            outcome != "retry"
+            or work.kind != "daily"
+            or not (work.manifest or {}).get("plan_id")
+            or not isinstance(pending_errors, list)
+            or not pending_errors
+            or any(not isinstance(key, str) for key in pending_errors)
+            or len(pending_errors) != len(set(pending_errors))
+            or not set(pending_errors) <= members
+        ):
+            raise ProviderWorkError("pending Source outcomes differ from frozen daily scope")
     attempt.state, attempt.outcome, attempt.settled_at = "settled", outcome, utc_now()
     attempt.proof, attempt.failure_code = proof, failure_code
     if outcome == "retry":
@@ -971,6 +988,9 @@ async def settle(
                 attempt_number=attempt.attempt_number + 1,
                 not_before=retry_at,
                 drain_only=attempt.drain_only or not await acquisition_open(db, work),
+                proof={"source_error_pending": True, "pending_source_errors": pending_errors}
+                if pending_errors
+                else {},
             )
         )
     else:
@@ -1005,7 +1025,8 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
         if attempt.state == "settled":
             continue
         drain_only = attempt.drain_only or (
-            bool(work.prepared_deliveries) and not await acquisition_open(db, work)
+            bool(work.prepared_deliveries or (attempt.proof or {}).get("source_error_pending"))
+            and not await acquisition_open(db, work)
         )
         owner = owners.get((work.environment, work.provider))
         active = owner is not None and owner.attempt_id == attempt.attempt_id
@@ -1016,9 +1037,11 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
                 .where(ProviderWorkReceipt.work_id == work.work_id)
             )
         ).all()
-        needs_drain = bool(
-            set(work.prepared_deliveries or {}) - {receipt.member_key for receipt in receipts}
-        ) or any(receipt.status not in TERMINAL_RUNS for receipt in receipts)
+        needs_drain = (
+            bool(set(work.prepared_deliveries or {}) - {receipt.member_key for receipt in receipts})
+            or any(receipt.status not in TERMINAL_RUNS for receipt in receipts)
+            or bool((attempt.proof or {}).get("source_error_pending"))
+        )
         runtime_window = daily_window(work.provider, now) if work.kind == "daily" else None
         window_closed = bool(runtime_window and not runtime_window["open"] and not needs_drain)
         previous = await db.scalar(

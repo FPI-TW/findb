@@ -21,10 +21,13 @@ _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 def require_provider_work_protocol() -> None:
     """Reject obsolete deployment configuration before any external operation."""
-    if os.getenv("PROVIDER_WORK_REQUIRED", "true") != "true":
+    value = os.getenv("PROVIDER_WORK_REQUIRED", "true").lower()
+    if value in {"0", "off", "f", "false", "n", "no"}:
         raise ConfigError(
-            "legacy provider execution is retired; PROVIDER_WORK_REQUIRED must be true"
+            "PROVIDER_WORK_REQUIRED cannot be false; provider work protocol is required"
         )
+    if value not in {"1", "on", "t", "true", "y", "yes"}:
+        raise ConfigError("PROVIDER_WORK_REQUIRED must be a valid boolean; use true")
 
 
 def app_environment(default: str = "local") -> str:

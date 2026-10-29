@@ -163,6 +163,8 @@ terminal且沒有running item；scheduler停止狀態不代表historical worker�
 只有重新取得相同 shared host-lock inode、確認原 child／descendants 已停止後，才可旋轉
 generation／token 並恢復原 work。先排空原 prepared／accepted runs；需要重試時安全 close／
 settle 至 FIFO 尾端，保留原日期 scope、immutable identity、checkpoint、receipts、budgets 與 cooldown。
+日期僅保證首次由早到晚入列；延遲 retry 不阻擋同 request 的後續 runnable 日期，
+因此完成日期可能不連續。請以每個 item／work 的 terminal evidence 判斷完成，不能只看最後日期。
 不要手動刪除 raw／SQLite 或縮短 lease 來跳過此恢復邊界。僅已確認staging舊historical映像有exit `137`過渡例外，範圍與digest
 見[部署流程](deployment.md)；新historical worker、日常scheduler、OOM或Docker Error仍fail closed。
 

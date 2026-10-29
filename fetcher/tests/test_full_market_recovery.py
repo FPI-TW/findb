@@ -13,6 +13,7 @@ import pytest
 
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
+from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
 from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot, ShioajiSdkError
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 from test_full_market import _member, _runtime
@@ -263,7 +264,7 @@ def test_shioaji_failed_child_recreated_shared_feeds_and_stopped(
     runtime.can_acquire = lambda: False
     runtime.pause()
     assert runtime.sdk is None and gateways[1].closed
-    with pytest.raises(Exception, match="stopped"):
+    with pytest.raises(ProviderWorkAcquisitionStopped, match="stopped"):
         runtime._acquire(etf, plan, plan["parts"][0], {"release_id": "etf"}, runtime.feeds[0])
     assert len(gateways) == 2
     runtime.http.close()

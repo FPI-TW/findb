@@ -473,6 +473,12 @@ Staging 已部署至 `d75fc12a9b43`，runtime 包含 provider-work-v1 protocol�
 Owner cutover 與兩端 enforcement 的實際狀態見下方 FactSet 章節。
 `infra/env/deployment.schema.json`、兩環境 deployment examples、Compose 與 Fetcher `.env.example`
 均使用 `PROVIDER_WORK_REQUIRED=true`；缺省 true，明確 false 會拒絕啟動／部署。
+Backend／Fetcher 的環境解析接受一般 truthy 布林寫法（例如 `True`、`1`、`yes`），
+但 deployment manifest／runtime configuration 的正式值維持字面 `true`。
+空值不視同缺省，會報布林格式錯誤；明確 false 的訊息則指出協定不得停用。
+Source outcome 的 report-only continuation 需要 Backend 與 Fetcher 都使用本版實作；
+回退到不認得 continuation 的版本前，須先確認 `source_error_pending` 已補報排空，
+不能以清除 SQLite reason、帳號 cooldown 或重設 queue 來處理待回報工作。
 新版本不再提供舊 acquiring／無 fence acceptance fallback。這是 repository 契約，並未修改遠端設定。
 Backend 與全部 Fetcher consumers 必須一起切換；
 `FULL_MARKET_ENABLED` 是另一個獨立旗標，不能替代 queue cutover。完整邊界見

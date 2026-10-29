@@ -110,7 +110,6 @@ from findb_fetcher.raw_storage import (
     RawObject,
     RawPayloadFormat,
     RawPayloadStore,
-    RawStorageError,
     attach_raw_object,
 )
 
@@ -244,13 +243,13 @@ def _governed(method):
         if not self._acquisition_allowed():
             if not self.runtime_window()["open"]:
                 raise DailyWindowClosedError("daily acquisition window closed")
-            raise ReadinessBlockedError("scheduler acquisition stopped")
+            raise ProviderWorkAcquisitionStopped("scheduler acquisition stopped")
 
         def authorize():
             if not self._acquisition_allowed():
                 if not self.runtime_window()["open"]:
                     raise DailyWindowClosedError("daily acquisition window closed")
-                raise ReadinessBlockedError("scheduler acquisition stopped")
+                raise ProviderWorkAcquisitionStopped("scheduler acquisition stopped")
             consumer = os.getenv("FETCHER_CONSUMER_PROFILE", "full_market")
 
             owner = active()
@@ -530,7 +529,9 @@ class FullMarketRuntime:
     @durable_response("official_snapshot", ("url",))
     def _snapshot(self, url: str, *, provider_response: bool = False) -> bytes:
         if not self._acquisition_allowed():
-            raise ReadinessBlockedError("scheduler acquisition stopped")
+            if not self.runtime_window()["open"]:
+                raise DailyWindowClosedError("daily acquisition window closed")
+            raise ProviderWorkAcquisitionStopped("scheduler acquisition stopped")
         # Official listings consume the same enrolled response bound and account
         # bytes as provider data; the parser ceiling is an additional constraint.
         bound = min(int(self.proof["max_response_bytes"]), MAX_SNAPSHOT_BYTES)
@@ -1442,6 +1443,17 @@ class FullMarketRuntime:
         self.pause()
         owner.request("close")
         scheduling = None
+        pending_errors = []
+        plan_id = (owner.journal.manifest() or {}).get("plan_id")
+        if owner.work["kind"] == "daily" and plan_id:
+            with self.state.connection() as db:
+                pending_errors = sorted(
+                    row[0]
+                    for row in db.execute(
+                        "SELECT member_key FROM full_work WHERE plan_id=? AND reason='source_error_pending'",
+                        (plan_id,),
+                    )
+                )
         if self.daily_policy and owner.work["kind"] == "daily":
             manifest = owner.journal.manifest() or {}
             plan_id = manifest.get("plan_id")
@@ -1499,7 +1511,11 @@ class FullMarketRuntime:
                     proof["scheduling"] = scheduling
                     if desired == "retry" and scheduling.get("reason") == "batch_yield":
                         retry_delay_seconds = 1
-                    if desired == "retry" and not self.runtime_window()["open"]:
+                    if (
+                        desired == "retry"
+                        and not pending_errors
+                        and not self.runtime_window()["open"]
+                    ):
                         retry_delay_seconds = max(
                             retry_delay_seconds,
                             math.ceil(
@@ -1515,6 +1531,8 @@ class FullMarketRuntime:
                         "manual_pending_prepared": owner.prepared_keys(),
                         "manual_reason": "frozen_scope_requires_manual_review",
                     }
+                if desired == "retry" and pending_errors:
+                    proof["pending_source_errors"] = pending_errors
                 owner.settle(
                     desired,
                     delay=retry_delay_seconds,
@@ -1726,6 +1744,15 @@ class FullMarketRuntime:
         require_owner(self.provider)
         members = {member["member_key"]: member for member in release["members"]}
         entries = [(part, key) for part in plan["parts"] for key in part["member_keys"]]
+        # Replay reports before eligibility, cursor rotation or any new provider
+        # I/O. A failed final attempt must not hide an unacknowledged outcome.
+        pending_reports = self.state.pending_source_error_keys(plan["plan_id"])
+        if pending_reports:
+            for part, member_key in entries:
+                key = part["work_item_id"] + ":" + member_key
+                if key in pending_reports:
+                    self._report_source_error(plan, part, member_key, key)
+                    return False
         offset = (
             self.state.schedule_cursor(plan["plan_id"]) % max(1, len(entries))
             if self.daily_policy
@@ -1978,39 +2005,38 @@ class FullMarketRuntime:
 
                 return False
             except Exception as exc:
+                if isinstance(exc, FullMarketProtocolError) and exc.code == "PROVIDER_WORK_FENCE":
+                    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+                    raise ProviderWorkRecoveryBlockedError(
+                        "Source provider owner fence differs"
+                    ) from None
                 if self.daily_policy and isinstance(exc, ShioajiSdkError) and exc.quota_wait:
                     self.state.defer_wait(key, now=time.time())
                     self.last_batch["reason"] = "quota_wait"
                     return False
                 # Provider/SDK diagnostics never enter durable state or logs.
-                self.state.finish(
-                    key,
-                    status="prepared" if self.state.prepared(key) else "pending",
-                    reason="source_error",
-                    now=time.time(),
-                )
-
+                self.state.stage_source_error(key)
+                self._report_source_error(plan, part, member_key, key)
                 return False
-                self.source.outcome(
-                    plan["plan_id"],
-                    work_item_id=part["work_item_id"],
-                    member_key=member_key,
-                    reason="source_error",
-                )
-                if self.provider == "taifex" and isinstance(
-                    exc,
-                    (
-                        TaifexOperationalError,
-                        httpx.HTTPError,
-                        SourceAPITransportError,
-                        FullMarketProtocolError,
-                        RawStorageError,
-                        ReadinessBlockedError,
-                    ),
-                ):
-                    return False
 
         return True
+
+    def _report_source_error(
+        self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
+    ) -> None:
+        self.source.outcome(
+            plan["plan_id"],
+            work_item_id=part["work_item_id"],
+            member_key=member_key,
+            reason="source_error",
+        )
+        self.state.finish(
+            key,
+            status="prepared" if self.state.prepared(key) else "pending",
+            reason="source_error",
+            now=time.time(),
+        )
 
     def _persist(
         self,

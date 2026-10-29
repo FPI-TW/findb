@@ -581,7 +581,11 @@ async def claim_next_item(
     allowed_datasets: list[str] | None,
     now: datetime | None = None,
 ) -> HistoricalBackfillItem | None:
-    """Lease one date only when its request has no earlier unfinished item."""
+    """Project the fenced FIFO owner's historical date into its item lease.
+
+    Dates initially enqueue in order, but a delayed tail retry does not block
+    later runnable dates. This projection never selects an independent lease.
+    """
     now = now or utc_now()
 
     from app.services.provider_work import ProviderWorkError, fence, lock_provider

@@ -551,7 +551,9 @@ def test_real_finlab_gateway_oversized_field_rejects_and_records_observable_over
     assert _quota(runtime, "2026-10-01")[1] == 0
     assert raw.calls == [] and runtime.bundles == {}
     assert runtime.state.prepared("tw_equity_eod:" + symbols[0]) is None
-    assert source.outcomes == []
+    assert source.outcomes == [
+        {"work_item_id": "tw_equity_eod", "member_key": symbols[0], "reason": "source_error"}
+    ]
     runtime.http.close()
 
 

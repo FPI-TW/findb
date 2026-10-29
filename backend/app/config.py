@@ -29,12 +29,12 @@ class Settings(BaseSettings):
     # Kept as a deployment assertion: the legacy execution protocol is retired.
     PROVIDER_WORK_REQUIRED: bool = True
 
-    @field_validator("PROVIDER_WORK_REQUIRED", mode="before")
+    @field_validator("PROVIDER_WORK_REQUIRED", mode="after")
     @classmethod
     def require_provider_work_protocol(cls, value: Any) -> bool:
-        if value is not True and value != "true":
+        if not value:
             raise ValueError(
-                "legacy provider execution is retired; PROVIDER_WORK_REQUIRED must be true"
+                "PROVIDER_WORK_REQUIRED cannot be false; provider work protocol is required"
             )
         return True
 
