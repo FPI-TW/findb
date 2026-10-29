@@ -56,6 +56,9 @@ def owned_unit_work(provider, root, *, lock=True):
 def account_boundary_unit(function):
     """Keep spawned account-ledger harnesses isolated from the queue layer."""
     from functools import wraps
+    from inspect import signature
+
+    parameters = signature(function)
 
     @wraps(function)
     def run(*args, **kwargs):
@@ -66,11 +69,12 @@ def account_boundary_unit(function):
 
         from findb_fetcher import provider_work
 
-        root = Path(
-            os.environ.get("FETCHER_ACCOUNT_STATE_PATH", "/private/tmp/findb-unit-governor.sqlite3")
-        ).parent
+        state_path = Path(parameters.bind(*args, **kwargs).arguments["path"])
         with (
-            provider_work.host_lock(f"unit-{os.getpid()}-{threading.get_ident()}", root=root),
+            patch.dict(os.environ, {"FETCHER_ACCOUNT_STATE_PATH": str(state_path)}),
+            provider_work.host_lock(
+                f"unit-{os.getpid()}-{threading.get_ident()}", root=state_path.parent
+            ),
             patch.object(provider_work, "require_acquisition", lambda provider, **kw: True),
             patch.object(
                 provider_work, "acquisition_dispatch_deadline", lambda provider, deadline: deadline

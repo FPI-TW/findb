@@ -238,11 +238,9 @@ def main(argv: list[str] | None = None) -> int:
             state.bind_profile(args.execution_profile)
         if args.initialize_state or args.health:
             if args.initialize_state:
-                from findb_fetcher.provider_work import enabled, host_lock
+                from findb_fetcher.provider_work import initialize_host_lock
 
-                if enabled():
-                    with host_lock(args.provider):
-                        pass
+                initialize_host_lock(args.provider)
             from findb_fetcher.daily_runtime import window
 
             print(
@@ -303,7 +301,6 @@ def main(argv: list[str] | None = None) -> int:
             if args.sync_universes:
                 os.environ["FETCHER_CONSUMER_PROFILE"] = "maintenance"
                 # Publishing remains an Admin-only action.
-                from findb_fetcher.provider_work import enabled
 
                 print(
                     json.dumps(

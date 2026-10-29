@@ -59,6 +59,10 @@ debt、cooldown 與相關 allocation，不能以空白新檔取代已知 ledger�
 ledger 時才使用範本的新路徑。本機 `.env` 僅供 local，staging／production 繼續使用各自
 部署設定與 durable mounts；未明確設定路徑的 deployed fallback 維持 `/var/lib/findb-account/governor.sqlite3`。
 
+FinLab、Shioaji、FactSet images 的預設命令均為 `findb-fetch-runtime --help`；
+不帶覆寫命令啟動時只印出 help 並 exit 0，不載入 credentials 或抓取資料。CI 直接執行 image
+預設命令，另驗證正式 runtime／historical CLI 與 optional SDK 隔離。
+
 從 repository root 建置：
 
 ```bash

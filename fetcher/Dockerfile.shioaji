@@ -38,4 +38,4 @@ VOLUME ["/home/fetcher", "/var/lib/findb-shioaji-fetcher"]
 
 USER fetcher
 
-CMD ["findb-fetch-shioaji-scheduler", "--help"]
+CMD ["findb-fetch-runtime", "--help"]

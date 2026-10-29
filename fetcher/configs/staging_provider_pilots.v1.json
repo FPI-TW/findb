@@ -14,10 +14,18 @@
         }
       ],
       "schema_version": 1,
-      "runtime_command": "findb-fetch-scheduler",
+      "runtime_command": "findb-fetch-runtime",
       "state_directory": "/var/lib/findb-fetcher/staging-pilot-v2",
       "fixture_acceptance": "test_staging_pilots:twelve_data",
-      "live_acceptance": "source_raw_terminal_canonical_serve"
+      "live_acceptance": "source_raw_terminal_canonical_serve",
+      "runtime_arguments": [
+        "--execution-profile",
+        "pilot",
+        "--provider",
+        "twelve_data",
+        "--config",
+        "configs/full_market.staging.v1.json"
+      ]
     },
     "finlab": {
       "instruments": [
@@ -31,10 +39,18 @@
         }
       ],
       "schema_version": 1,
-      "runtime_command": "findb-fetch-finlab-scheduler",
+      "runtime_command": "findb-fetch-runtime",
       "state_directory": "/var/lib/findb-finlab-fetcher",
       "fixture_acceptance": "test_staging_pilots:finlab",
-      "live_acceptance": "source_raw_terminal_canonical_serve"
+      "live_acceptance": "source_raw_terminal_canonical_serve",
+      "runtime_arguments": [
+        "--execution-profile",
+        "pilot",
+        "--provider",
+        "finlab",
+        "--config",
+        "configs/full_market.staging.v1.json"
+      ]
     },
     "shioaji": {
       "instruments": [
@@ -52,10 +68,18 @@
         }
       ],
       "schema_version": 1,
-      "runtime_command": "findb-fetch-shioaji-scheduler",
+      "runtime_command": "findb-fetch-runtime",
       "state_directory": "/var/lib/findb-shioaji-fetcher/staging-pilot-v3",
       "fixture_acceptance": "test_staging_pilots:shioaji",
-      "live_acceptance": "source_raw_terminal_canonical_serve"
+      "live_acceptance": "source_raw_terminal_canonical_serve",
+      "runtime_arguments": [
+        "--execution-profile",
+        "pilot",
+        "--provider",
+        "shioaji",
+        "--config",
+        "configs/full_market.staging.v1.json"
+      ]
     },
     "taifex": {
       "instruments": [
@@ -69,10 +93,18 @@
         }
       ],
       "schema_version": 1,
-      "runtime_command": "findb-fetch-taifex-pilot",
+      "runtime_command": "findb-fetch-runtime",
       "state_directory": "/var/lib/findb-taifex-fetcher/staging-pilot-v1",
       "fixture_acceptance": "test_staging_pilots:taifex",
-      "live_acceptance": "source_raw_terminal_canonical_serve"
+      "live_acceptance": "source_raw_terminal_canonical_serve",
+      "runtime_arguments": [
+        "--execution-profile",
+        "pilot",
+        "--provider",
+        "taifex",
+        "--config",
+        "configs/full_market.staging.v1.json"
+      ]
     }
   },
   "files": {
@@ -80,6 +112,7 @@
     "twelve_data_us_staging_pilot.v2.json": "8ddb523add543b11131708ac0df44c281e0a6200ad1a9b58087a808f96641a1b",
     "finlab_tw_review_required.v1.json": "15dc19a8d76ed66eaa5fe1bd8e41fcb5e09e69a21da44303264dcd2c6c959f8d",
     "shioaji_tw_staging_pilot.v3.json": "ef9cab60128892589f949347cf8263ce394d751849c7fb2550a3f9110eac5dbe",
-    "taifex_tw_staging_pilot.v1.json": "d3adbcd5c0b6d102ff6ad1074a5a128f50d8f326d044dca38d90b4360dd96b46"
+    "taifex_tw_staging_pilot.v1.json": "d3adbcd5c0b6d102ff6ad1074a5a128f50d8f326d044dca38d90b4360dd96b46",
+    "full_market.staging.v1.json": "7adee36c6a2d02634f29600493698558edb98ea414dd275e8665b34746e088e2"
   }
 }

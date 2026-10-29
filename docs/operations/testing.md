@@ -82,6 +82,15 @@ checkpoint bytes 不變，以及 daily cycle／drain 只呼叫 queue dispatcher�
 bootstrap shared account path 分別由 Infra `test_provider_work_retirement.py`、
 `test_aws_configuration.py`、`test_full_market_deployment_repairs.py` 覆蓋。
 
+`test_runtime_image_defaults.py` 讀取 provider Dockerfile 的實際 CMD 並執行，不以另一個
+CLI 覆蓋命令。CI 對 FinLab／Shioaji／FactSet 也使用無參數 `docker run`，確保預設入口可用。
+`test_runtime_initialization.py` 在同 provider 的真實 flock 已被持有時啟動獨立 CLI，核對另一
+profile checkpoint 可初始化、inode／原 bytes 不變且原 owner 仍排他；symlink fail closed。
+Infra preflight regression 同時確認初始化不能令 held lock 通過 attestation。
+Account unit decorator 以 worker 明確傳入的 `path` 決定 lock 根目錄，進入 worker 前設定
+對應 ledger environment；不使用平台專屬 tmp fallback。Spawn 測試覆蓋父程序未設定或帶錯 ledger
+的情況，SDK／FD inheritance 測試仍執行。
+
 原 compatibility cycle／獨立 lease orchestration 測試由正式 FIFO lifecycle／native adapter
 integration 測試取代；不保留已退役 CLI 的成功抓取預期。跨環境／profile 的 frozen membership
 仍由 `test_execution_profile_parity.py` 直接驗證原 plan identity，calendar／normalizer 測試沿用。
@@ -280,6 +289,12 @@ probe 送 EOF 並收完輸出。EOF grace 45 秒逾時後，僅對該測試建�
 Staging provider functional acceptance 由 `fetcher/tests/test_staging_pilots.py`、
 `backend/tests/test_staging_provider_pilots.py` 與 staging evidence probes 覆蓋。CI 必須核對 catalog 與
 runtime/schema/Source scope，缺少 future provider pilot／startup acceptance 時 fail closed。
+此 legacy diagnostic catalog 的 runtime metadata 必須綁定 `findb-fetch-runtime`、明確
+`--execution-profile pilot --provider ... --config configs/full_market.staging.v1.json` 與 config hash。
+Validator 與 evidence collector 共用相同驗證，拒絕已退役 CLI、錯誤 profile/provider/config 或 hash。
+`--check` subprocess 僅證明入口與設定可用；保留的舊固定 cohort 仍只供診斷，不代表新 runtime
+目前的 frozen members、七 feeds native 驗收或部署 gate 已通過。
+
 Fixture tests 與 live pipeline observations 分開；live 門檻是四個 providers／五個 feeds 各自最新 eligible 已完成
 交易日的 exact pilot instrument coverage（TAIFEX 兩 actual monthly contracts／四 session rows）、同 run lineage
 的 Source 202、raw、completed queue/canonical 與 Serve proof。兩日期觀測不要求歷史 backfill，也不套用

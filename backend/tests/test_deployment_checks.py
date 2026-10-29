@@ -3030,10 +3030,10 @@ def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None
     assert 'docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .' in finlab
     assert 'find_spec("finlab") is not None' in finlab
     assert 'find_spec("shioaji") is None' in finlab
-    assert "findb-fetch-runtime --help" in finlab
+    assert 'docker run --rm "$finlab_image"\n' in finlab
     assert 'docker build -f fetcher/Dockerfile.shioaji -t "$shioaji_image" .' in shioaji
     assert 'find_spec("shioaji") is not None' in shioaji
-    assert "findb-fetch-runtime --help" in shioaji
+    assert 'docker run --rm "$shioaji_image"\n' in shioaji
     assert "Dockerfile.shioaji" in shioaji
     shioaji_dockerfile = (REPO_ROOT / "fetcher" / "Dockerfile.shioaji").read_text(encoding="utf-8")
     assert "--create-home --home-dir /home/fetcher" in shioaji_dockerfile

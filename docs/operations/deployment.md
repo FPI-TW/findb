@@ -498,7 +498,9 @@ receipts 與子程序狀態時停止切換，不能清檔或重新初始化。Pr
 3. 保持所有 consumer 停止，準備含 `com.findb.provider-work.protocol=v1` label 的新 images／containers，
    設定 `APP_ENVIRONMENT` 與 `PROVIDER_WORK_REQUIRED=true`，但尚不啟動 provider I/O。
    所有 profile／historical containers 必須 bind 同一 host 的 `/var/lib/findb-account/{environment}`。
-   對每個 provider 執行新 CLI 的 `--initialize-state`，只建立／驗證原 profile state 與 shared lock inode；
+   對每個 provider 執行新 CLI 的 `--initialize-state`，只建立／驗證原 profile state 與 shared lock inode，
+   不取得或解除 provider flock，也不代表已排空。一般部署補建另一 profile checkpoint 時，
+   同 provider 的其他 profile 可仍持有工作鎖；本節的首次 cutover 仍要求全部 consumers 停止。
    不得重建遺失的既有 checkpoint。保留單環境唯一 Fetcher host 的 trusted deployment inventory。
 4. 保存完整 consumer `docker inspect` JSON（不可將含 secrets 的原始內容貼進 audit／chat），以及只包含
    該環境 Fetcher host IDs 的可信 inventory JSON。以 host local 的 `infra/deploy/provider_work_preflight.py`

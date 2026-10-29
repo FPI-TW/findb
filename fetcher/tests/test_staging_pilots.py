@@ -421,3 +421,59 @@ def test_new_daily_state_never_claims_legacy_nvda_or_old_pending_dates(tmp_path)
         assert db.execute("SELECT status FROM scheduled_job WHERE symbol='NVDA'").fetchone() == (
             "pending",
         )
+
+
+@pytest.mark.parametrize("provider", list(SUPPORTED_PILOTS))
+def test_catalog_runtime_arguments_execute_supported_offline_check(provider, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    spec = validate_staging_pilots(CONFIGS)["providers"][provider]
+    original_files = set(tmp_path.iterdir())
+    result = subprocess.run(
+        [sys.executable, "-m", PILOT_RUNTIMES[provider][1], *spec["runtime_arguments"], "--check"],
+        cwd=CONFIGS.parent,
+        env={
+            "PATH": os.environ["PATH"],
+            "APP_ENVIRONMENT": "staging",
+            "FETCHER_ACCOUNT_STATE_PATH": str(tmp_path / "account/governor.sqlite3"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "status": "valid",
+        "desired_state": "stopped",
+        "provider": provider,
+    }
+    assert set(tmp_path.iterdir()) == original_files
+
+
+@pytest.mark.parametrize("provider", list(SUPPORTED_PILOTS))
+@pytest.mark.parametrize("mutation", ["retired-command", "profile", "provider", "config"])
+def test_catalog_rejects_retired_or_mismatched_runtime_binding(tmp_path, provider, mutation):
+    for source in CONFIGS.glob("*.json"):
+        shutil.copy(source, tmp_path / source.name)
+    path = tmp_path / "staging_provider_pilots.v1.json"
+    catalog = json.loads(path.read_bytes())
+    spec = catalog["providers"][provider]
+    if mutation == "retired-command":
+        spec["runtime_command"] = {
+            "twelve_data": "findb-fetch-scheduler",
+            "finlab": "findb-fetch-finlab-scheduler",
+            "shioaji": "findb-fetch-shioaji-scheduler",
+            "taifex": "findb-fetch-taifex-pilot",
+        }[provider]
+    else:
+        argument = {
+            "profile": "--execution-profile",
+            "provider": "--provider",
+            "config": "--config",
+        }[mutation]
+        spec["runtime_arguments"][spec["runtime_arguments"].index(argument) + 1] = "mismatched"
+    path.write_text(json.dumps(catalog))
+    with pytest.raises(ValueError, match="scope or acceptance metadata"):
+        validate_staging_pilots(tmp_path)

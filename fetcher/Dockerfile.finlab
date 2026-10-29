@@ -35,4 +35,4 @@ VOLUME ["/home/fetcher", "/var/lib/findb-finlab-fetcher"]
 
 USER fetcher
 
-CMD ["findb-fetch-finlab-scheduler", "--help"]
+CMD ["findb-fetch-runtime", "--help"]

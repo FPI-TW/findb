@@ -137,8 +137,7 @@ def scoped_identity(seed: bytes) -> bytes:
     return seed + b"\0provider-work:" + owner.work["work_id"].encode() if owner else seed
 
 
-@contextmanager
-def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int, str]]:
+def _open_host_lock(provider: str, *, root: Path | None = None) -> int:
     env = os.getenv("APP_ENVIRONMENT", "local")
     folder = (
         root
@@ -148,7 +147,22 @@ def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int,
     )
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"provider-work-{env}-{provider}.lock"
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+
+
+def initialize_host_lock(provider: str, *, root: Path | None = None) -> None:
+    """Ensure the shared inode exists without acquiring or releasing ownership.
+
+    A separate open file description can be closed while a sibling consumer
+    owns the inode. Never truncate, replace, unlink or LOCK_UN the holder's file.
+    """
+    os.close(_open_host_lock(provider, root=root))
+
+
+@contextmanager
+def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int, str]]:
+    env = os.getenv("APP_ENVIRONMENT", "local")
+    fd = _open_host_lock(provider, root=root)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

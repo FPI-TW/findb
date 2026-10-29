@@ -123,6 +123,11 @@ FactSet MySQL、FinLab blocking SDK 與 Shioaji isolated session 在有 timeout�
 無法證明 child／descendant group 已停止時，保留 flock 並標示 recovery blocked；timeout 不是死亡證據。
 FD 只 close，不對與 child 共用的 open file description 呼叫 `LOCK_UN`，因此 orphan child 仍會阻擋下一 owner。
 
+`--initialize-state` 只建立／開啟 shared inode，再關閉此次獨立取得的 descriptor，
+不取得 flock、不宣告 ownership，也不解除另一 profile／child 正持有的鎖。部署補建另一 profile 的
+checkpoint 不必等待該 provider 空閒；原 inode、原工作鎖與帳號用量不變。真正 claim 與 cutover
+preflight 仍必須成功取得同一 inode 的排他鎖；初始化成功不是 drain／attestation 證據。
+
 Owner 每 20 秒 heartbeat，兩分鐘沒有心跳後需復原。TTL **不釋放 owner，也不自動選下一工作**。
 重啟先取得相同 shared lock inode，旋轉 fencing generation／token 並恢復原 work。
 Closed／draining round 可重送完全相同的 frozen manifest、確認／交付原 prepared、replay receipt 與
