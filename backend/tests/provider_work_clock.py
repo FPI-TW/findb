@@ -79,6 +79,22 @@ def account_clock(monkeypatch):
     return offset
 
 
+def shioaji_dispatch_clock(monkeypatch):
+    """Keep nominal multi-member IPC dispatch in one controlled clock domain.
+
+    The forked fake SDK checks the parent's monotonic grant deadline. It must
+    inherit the same facade, including virtual account retry offsets. Real IPC
+    waits and process termination retain their wall-clock timeouts.
+    """
+    from findb_fetcher import acquisition
+    from findb_fetcher.providers import shioaji_control
+
+    dispatch_clock(monkeypatch)
+    offset = account_clock(monkeypatch)
+    monkeypatch.setattr(shioaji_control, "time", acquisition.time)
+    return offset
+
+
 async def drain_retained_rerun_during_cooldown(h):
     """A seeded pre-cutover retained raw can normalize while new native I/O waits."""
     from datetime import timedelta

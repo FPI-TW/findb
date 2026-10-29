@@ -8,6 +8,9 @@
 Production native 資料與實際 rollback 演練由
 [未完成驗收](production-foundation-cutover-plan.md)單獨追蹤，不在此重複列項。
 
+- [ ] 修正已失敗且不再重試的任務仍堆積於供應商工作佇列：同步任務／attempt 終態，
+  保留仍可重試與待排空交付的工作，提供既有殘留的安全修復與回歸測試。追蹤 [#373](https://github.com/FPI-TW/findb/issues/373)。
+
 - [ ] 修正 production `DeploymentFailure` control-plane/all 測點缺測：告警自 2026-09-17 因
   `TreatMissingData=breaching` 維持 ALARM。需補足 publisher／告警契約與 live 後驗；不得以靜默重設
   ALARM 或忽略 missing data 代替修正。v0.1.6 部署與查核證據見 deployment runbook。

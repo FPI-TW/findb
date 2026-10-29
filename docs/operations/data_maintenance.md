@@ -93,7 +93,7 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 - Retention必須長於正常延遲、事故調查及contract migration窗口。
 - Raw刪除不影響canonical，但會失去rerun與provider payload audit能力。
 
-## Production universe與EOD backfill
+## Production universe與historical backfill
 
 Production universe是reviewed、versioned artifact，不在runtime自動換股：
 
@@ -112,15 +112,50 @@ production/staging target混用都會fail closed。`source_sha256`是該次revie
 `symbols_sha256`是依manifest順序、每行一個canonical symbol（Shioaji為
 `dataset_key:symbol`）且結尾換行的摘要。
 
-Production EOD control plane允許最近366個calendar days，仍依published market calendar只建立
+Production EOD historical control plane允許最近366個calendar days；Shioaji minute 各環境均維持最近 31 天。
+仍依published market calendar與 provider policy 建立
 open-day work items；Twelve Data逐symbol、FinLab逐trade date保存lease/checkpoint並沿用raw-first、
-immutable idempotency與Source terminal驗證。Production不接受Shioaji historical scope。建立正式
+immutable idempotency與Source terminal驗證。Shioaji 支援 `tw_equity_minute` 與 `tw_etf_minute`，
+依已驗證 production v2 manifest 分別回補完整 50 檔股票與 3 檔 ETF；不接受 staging／舊 pilot manifest。
+建立正式
 request前先使用`findb-fetch-backfill-plan --provider ... --dataset-key ... --start-date ...
 --end-date ...`（預設dry-run）保存日期、預估calls／rows及無效日期；只有核對計畫後才加
 `--deliver`，需要等待terminal state時再加`--wait`。CLI使用production Admin machine key呼叫既有
 preview／create／list API，不持有provider secret；Fetcher worker只消費
 已核准request。任何scheduler在backfill期間仍保持`stopped`，未驗證Raw R2、Source、outbox、DQ、
 canonical與Serve前不可擴大下一批。
+
+### Shioaji 股票／ETF 分鐘回補
+
+Dashboard「歷史回補」的供應商與資料集清單由後端 scopes API 產生；需有 active dataset 與
+對應 Shioaji scheduler scope，production 不再另行排除 Shioaji。各環境的申請日期範圍皆為最近 31 個日曆日
+（含當日，最早為台北當日往前 30 天）；超出範圍或未來日期一律拒絕。當日新抓取仍須已過凍結日曆的收盤時間。
+每次 request 只涵蓋一個 dataset，日期依序執行，股票與 ETF 須分別申請。例如：
+
+```bash
+findb-fetch-backfill-plan --provider shioaji --dataset-key tw_equity_minute \
+  --start-date 2026-10-01 --end-date 2026-10-05
+findb-fetch-backfill-plan --provider shioaji --dataset-key tw_etf_minute \
+  --start-date 2026-10-01 --end-date 2026-10-05
+```
+
+預設只 preview，確認後加 `--deliver`，需要等待完成時加 `--wait`。預估 provider calls 為
+有效日期數乘以股票 50／ETF 3，分鐘 rows 無法事先確定，回傳 `null`。CLI 與 historical worker
+使用同一個 `FETCHER_SHIOAJI_PRODUCTION_MANIFEST`（預設 reviewed production v2）；
+維持 `SHIOAJI_SIMULATION=true`、Source credential dataset scope、R2 raw-first 與帳號 governor。
+Worker 使用既有 `findb-fetch-historical-backfill --provider shioaji --run-forever`。
+
+每個日期先凍結完整成員、sequence／sequence_count 與 universe identity，重試不替換成員。
+Checkpoint 位於 `FETCHER_HISTORICAL_STATE_DIR/<request_id>.sqlite3`，沿用既有 acquisition 與
+checkpoint 的 31 天驗證，不延長 production Shioaji 的回補範圍；daily checkpoint 與 cutoff 不受歷史模式影響。
+全部 sequences 必須取得 Source `completed` 且 total／success／failed counts 完全符合才可完成，
+不完整或 DQ 失敗不得當作成功／no-data。已保存的 prepared bytes／receipts 依原流程恢復。
+
+`PROVIDER_WORK_REQUIRED=true` 的環境與 Pilot／Full 共用同 provider FIFO／host lock，可在
+daily controls running 時申請，無須刪除或重設 daily terminal checkpoint。舊 compatibility 模式
+仍先停止日常排程並排空。既有 terminal failed request 不會因部署自動重試；另建 request key
+只申請待補日期，驗證 Raw R2 → Source → outbox／worker → canonical → Serve 與完整成員證據，
+再處理對應 alerts／DQ；不得直接改寫舊 checkpoint 或告警狀態。
 
 Historical CLI收到`SIGTERM`／`SIGINT`後立即停止新日期claim，完成當前日期的raw-first交付與
 terminal回報；idle時立即退出。部署停止期限仍為30秒，執行中的日期可能較久，應先等待request
@@ -182,6 +217,8 @@ dataset 範圍，manifest 另核對完整證據的 SHA-256 與實際大小。
 若 item 顯示 `COMPLETION_EVIDENCE_INVALID` 且沒有 run 關聯，應另查 checkpoint
 receipt 與 Source run；最後結算失敗不代表抓取或 canonical 寫入失敗。修正後依下述規則另建
 request key 重跑，保留原 failed item 與 checkpoint，不直接改寫完成狀態。
+部署完成證據驗證的相容性修正不會自動重試 terminal failed request；新 request 應僅涵蓋
+未完成區間，並再次驗證 data／no-data 證據與 Source terminal 結果。
 有官方觀測值的列以單一 `futures_eod.v1` backfill batch 經 Source → raw → outbox → worker →
 canonical；重新抓取沿用 source precedence／fetched_at upsert，可更新官方修正值。
 所有 OHLC／settlement／open interest 皆空且 volume 明確為零才是 no-data，保存官方列與
@@ -245,7 +282,8 @@ migration-owned partition。Staging monitoring以一筆為告警門檻，因此�
 `PROVIDER_WORK_REQUIRED=true` 後，本文前述 TAIFEX stopped-controls 維護窗口與獨立 historical TTL lease
 只屬舊 compatibility protocol。新模式可在 Pilot／Full desired running 時提交所有既有支援 scope 的回補。
 它們依同 provider FIFO 排隊；日期由早到晚入列，profile／request 決策與證據不互相覆蓋。
-本分支未新增 HK／TW ETF EOD historical、未開放 production Shioaji，也尚未啟用任何遠端環境。
+可用 scope 以後端 capability matrix 與 active scheduler scope 為準；包含 FactSet HK EOD 與
+production Shioaji 股票／ETF minute，TW ETF EOD 仍不支援 historical。
 
 Twelve Data／FinLab historical 會保存 frozen universe、native response、immutable prepared jobs 與所有 receipts；
 Shioaji 保存全部 minute sequences，TAIFEX 保存五報表與 whole-day manifest。Queue retry 重用原 scope／budget，
@@ -255,3 +293,10 @@ Shioaji 保存全部 minute sequences，TAIFEX 保存五報表與 whole-day mani
 Source／Admin 單筆與 bulk retained-raw rerun 都建立新的 audited run／work，維持原 raw body 與失敗 receipt；
 排到 provider owner 後才 dispatch normalization。不能以 receipt replay 重設 terminal failed run，或繞過同 provider
 的 active daily work。Dashboard「交付監控」的 provider queue 可查看等待順位、active work、retry time 與 heartbeat。
+
+清理舊 compatibility protocol 留下的 queued 投影時，先核對 request／item 終態與原 daily plan，
+不可僅由工作日期判定失效。經 Owner 指定取消的舊工作，須在同 provider transaction lock 下重查
+owner idle、controls stopped、沒有在途 run，且 queued attempt 未開始、沒有 prepared delivery／receipt。
+符合條件時，已結束的 historical 投影同步原 item 終態；經授權不再執行的舊 daily 投影標記 cancelled，
+attempt 標記 settled 並保存 outcome。逐筆記錄具名 operator、原因、變更前後狀態與 audit，保留
+request／item、daily plan、checkpoint、raw 與 canonical 資料；有待交付證據的工作須走原 drain 流程。

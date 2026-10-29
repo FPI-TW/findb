@@ -214,6 +214,17 @@ CLI、universe 與 scheduler/runtime 的 canonical mapping 只納入要求的日
 Raw R2 保留完整原始 HTTP bytes，即使 provider 回傳額外日期也不改寫原始證據。
 空回應或範圍內無資料仍按既有錯誤／重試規則處理，不直接標示成功或 no_data。
 
+## Shioaji historical backfill
+
+Production 支援 `tw_equity_minute`／`tw_etf_minute` 的最近 31 個日曆日回補（含台北當日）。
+`findb-fetch-backfill-plan --provider shioaji --dataset-key ... --start-date ... --end-date ...`
+預設只 preview；確認後加 `--deliver`，使用既有 historical worker 消費。
+Planner 與 runner 共用已驗證 production v2 manifest，分別為完整 50 檔股票／3 檔 ETF，
+不接受 staging／舊 pilot manifest。預估 calls 依成員數計算，分鐘 rows 回傳 `null`。
+`FETCHER_HISTORICAL_STATE_DIR/<request_id>.sqlite3` 與 daily state 分離；保留原 sequence、
+R2 raw-first、Source terminal count gates 與 provider-work FIFO／host lock。
+詳細操作、舊缺口恢復與驗收見 [資料維護](../docs/operations/data_maintenance.md#shioaji-股票etf-分鐘回補)。
+
 ## TAIFEX historical backfill
 
 `findb-fetch-historical-backfill --provider taifex --run-forever` 消費 Admin 核准的逐日工作，

@@ -14,6 +14,18 @@ Pre-commit 與 pre-push 皆只執行 check，不執行測試；不得使用 `--n
 而不是耗盡 job timeout。
 直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
 因此測試中的 nested pytest subprocess 不會意外再建立 workers。
+本機比對 [FinDB CI](../../.github/workflows/findb-ci.yml)／[Fetcher CI](../../.github/workflows/fetcher-ci.yml)
+時，Backend 非 migration 與 Infra suites 使用 CI 的四個 workers，migration 維持獨立序列
+session；另外執行 published contract checks、全 repo check、Node.js 22／pnpm 11.15.1 下的
+Dashboard unit／browser／e2e 與 build。Fetcher 使用 frozen `shioaji` extra 執行真 SDK 介面契約
+測試，並建置 generic／FinLab／Shioaji／FactSet images，檢查 SDK 隔離、CLI、TLS 與唯讀 bytecode。
+Backend production image 的 migration regression 使用獨立容器 DB，涵蓋 fresh／accepted-upgrade；
+不在指定的本機基底 DB 直接執行 migration smoke。這些是本機 CI 同等檢查，不代表遠端 Actions 狀態。
+Backend 的三個 FactSet captured-native cases 需提供 `FINDB_FACTSET_NATIVE_SNAPSHOT_DIR`
+才會執行，未提供真實 HKEX／FactSet bytes 時依既定規則 skipped。兩個 ORM／migration parity
+cases 維持既有 xfail：check constraint naming／ORM-only constraint，以及 migration server defaults
+與 ORM Python defaults 差異；不把它們列為通過。Infra 一般 job 的兩個 container cases 因未設
+image 而 skipped，應在建置 Backend image 後以 `FINDB_TEST_BACKEND_IMAGE` 另跑並確認通過。
 TAIFEX historical 只有一次 authorization dispatch attempt；prepare 與 authorize 之間跨越
 UTC 分鐘時，account window 不一致會依設計 fail closed，工作延到 FIFO 尾端重試並維持
 queued。`RuntimeHarness.run()` 因此在距下一分鐘不足 5 秒時先等到下一分鐘再開始 TAIFEX
@@ -23,6 +35,12 @@ Fetcher 的 slow owner RPC／dispatch grant 測試使用局部可控的 wall／m
 分別涵蓋分鐘內及跨 UTC 分鐘。跨分鐘可能合法重取 grant，但 native dispatch、actual-start
 與帳號日配額只能記一次；不能將 grant 次數固定為一，也不應放寬產品的時效或 quota window 檢查。
 可控時鐘只替換 acquisition module 的 facade，不修改全域 time 或背景 heartbeat 的等待行為。
+Backend 的 `daily_runtime_clock` fixture 預設將日常 policy 時鐘固定在台北當日 20:00，
+讓一般 admission／queue／migration 測試不依賴執行時是否落在 Shioaji 18:00–隔日 06:00 窗口。
+Queue 即使收到獨立 lease clock，policy 判定仍使用相同的受控時鐘；UTC grant、quota、lease、
+heartbeat 與 IPC timeout 保持原有時鐘。窗口邊界案例應明確調整 fixture clock 或覆寫
+`daily_runtime.utc_now`／`daily_window`；pure policy tests 可直接傳入 aware datetime，
+驗證開窗、關窗與跨日，不把窗口判定改成永遠允許。
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
 
@@ -418,7 +436,25 @@ Twelve Data US equity EOD、FinLab TW equity EOD、Shioaji TW equity minute／TW
 TAIFEX TW futures EOD；使用真 adapter、Source client、authenticated ASGI、worker 與 canonical proof，
 僅以 fixtures 取代 native SDK／HTTP 回應與 R2。Shioaji fixture 仍執行實際隔離 child 的 IPC／FD protocol，
 不需下載 provider SDK 或持有 live credentials。Harness 將 Shioaji 5/s 的帳號 pacing 間隔縮為 10 ms；
-pacing floor 與等待路徑仍執行，實際間隔由 Fetcher 單元測試覆蓋。Fault cases 包含 intent commit ACK 遺失、local save 後
+pacing floor 與等待路徑仍執行，實際間隔由 Fetcher 單元測試覆蓋。
+
+Production Shioaji 另以真實 reviewed v2 manifest 驗證股票 50／ETF 3 條 sequences 經
+FIFO → authenticated Source → worker → canonical，逐一對帳 receipts、member evidence 與
+sequence_count；既有 recovery cases 明確使用四成員 pilot fixture。Backend historical tests
+涵蓋 production scopes、preview／create／idempotency／cancel、credential scope／撤銷／lease、
+台北日期跨 UTC 邊界與 Shioaji 最近 31 天上下界，以及凍結日曆收盤授權。
+Fetcher tests 驗證 production manifest／dataset 拒絕、dry-run／deliver 的 50／3 calls 與未知 rows、
+當日／30 天前的完整 raw-first 交付及 checkpoint 重開不新增 SDK calls；超過 31 天與未來日期不抓取。
+Production 50 成員 nominal 驗收使用 `shioaji_dispatch_clock`，讓 parent、forked fake SDK child
+與 Source client 共用 monotonic clock domain，避免平行 suite 的程序排程延遲耗盡每成員的
+50ms dispatch budget；durable quota／window wait 仍依 FIFO 重試並由局部 account clock 推進。
+這只改變測試時鐘座標；產品 grant／quota／lease 下限、IPC timeout 與 process termination
+不放寬。過期、FD／owner fencing、真實授權失效及跨分鐘案例由獨立 dispatch boundary tests 覆蓋。
+50 成員的 harness 設定 `execution_timeout=90`；`RuntimeHarness.run()` 會依此重設 deadline，
+不能只改 `deadline` 而沿用四成員 pilot 的 25 秒預設，否則平行執行可能在中途造成 heartbeat
+與 settlement 被測試本身截斷。
+
+Fault cases 包含 intent commit ACK 遺失、local save 後
 confirm 前取消、local save crash、intent／cancel transaction barrier，以及 daily stop 後 prepared 排空。
 取消／停止期間不新增 provider I/O，accepted nonterminal run 仍保留 whole-work owner；取消狀態與缺漏保持真實。
 Admin single／bulk endpoint 測試驗證新 run／audit／FIFO fence；failed rerun 使用實際 worker failure path，

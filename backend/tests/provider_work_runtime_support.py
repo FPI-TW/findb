@@ -39,11 +39,21 @@ SCOPES = [
 
 class RuntimeHarness:
     def __init__(
-        self, client, session, engine, monkeypatch, path, provider, dataset, historical_days=1
+        self,
+        client,
+        session,
+        engine,
+        monkeypatch,
+        path,
+        provider,
+        dataset,
+        historical_days=1,
+        *,
+        environment="staging",
     ):
         self.client, self.db, self.engine, self.patch = client, session, engine, monkeypatch
         self.path, self.provider, self.dataset = path, provider, dataset
-        self.environment = "staging"
+        self.environment = environment
         self.historical_days = historical_days
         self.loop = asyncio.get_running_loop()
         self.trace = path / "native-calls.jsonl"
@@ -80,6 +90,16 @@ class RuntimeHarness:
             # The 5/s platform pacing adds ~0.2s of real sleep per native call.
             # Pacing floors and waits still run; only the interval is shortened.
             patch.setattr(acquisition, "interval", lambda value: SHIOAJI_TEST_PACING_SECONDS)
+            # Existing recovery tests use the four-member pilot. Production
+            # acceptance exercises the real 50-equity/3-ETF manifest instead.
+            filename = (
+                "shioaji_tw50_2026_09_21.v2.json"
+                if self.environment == "production"
+                else "shioaji_tw_pilot.v1.json"
+            )
+            patch.setenv(
+                "FETCHER_SHIOAJI_PRODUCTION_MANIFEST", str(root / "fetcher/configs" / filename)
+            )
         self.queue = coordinator
         patch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
         patch.setattr(get_settings(), "APP_ENVIRONMENT", self.environment)
@@ -367,9 +387,16 @@ class RuntimeHarness:
     def install_shioaji_native(self):
         from multiprocessing.connection import Connection
 
+        from findb_fetcher import shioaji_historical
         from findb_fetcher.providers import shioaji_session as sdk
 
         harness = self
+
+        shioaji_symbols = (
+            [row["symbol"] for row in shioaji_historical.load_historical_manifest()["sequences"]]
+            if self.provider == "shioaji"
+            else []
+        )
 
         class API:
             def __init__(self, **kwargs):
@@ -378,7 +405,7 @@ class RuntimeHarness:
                     Stocks=SimpleNamespace(
                         TSE=[
                             SimpleNamespace(code=symbol, exchange="TSE")
-                            for symbol in ("2330", "2317", "0050", "0056", "006201")
+                            for symbol in {"2317", *shioaji_symbols}
                         ],
                         OTC=[],
                     )

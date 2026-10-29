@@ -91,13 +91,68 @@ def test_deliver_creates_only_after_successful_preview(
     assert output["created"]["status"] == "queued"
 
 
-def test_shioaji_history_and_wait_without_deliver_fail_closed(
+def test_wait_without_deliver_fails_closed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
     assert production_backfill_cli.main([*_args(), "--wait"]) == 2
-    assert production_backfill_cli.main(_args("shioaji", "tw_equity_minute")) == 2
     assert "production_backfill_failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("dataset,calls", [("tw_equity_minute", 50), ("tw_etf_minute", 3)])
+@pytest.mark.parametrize("deliver", [False, True])
+def test_shioaji_plan_uses_production_sequences_and_only_creates_after_preview(
+    monkeypatch, capsys, dataset, calls, deliver
+):
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    monkeypatch.delenv("FETCHER_SHIOAJI_PRODUCTION_MANIFEST", raising=False)
+    monkeypatch.setenv("FINDB_ADMIN_API_URL", "https://findb.example")
+    monkeypatch.setenv("FINDB_BACKFILL_ADMIN_API_KEY", "secret")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert json.loads(request.content)["dataset_key"] == dataset
+        if request.url.path.endswith("/preview"):
+            return httpx.Response(200, json={"scope_valid": True, "days": [{"valid": True}]})
+        return httpx.Response(202, json={"request_id": "shioaji-request", "status": "queued"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        args = [*_args("shioaji", dataset), *(["--deliver"] if deliver else [])]
+        assert production_backfill_cli.main(args, client=client) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["estimated_provider_calls"] == calls
+    assert output["estimated_rows"] is None
+    assert [request.url.path for request in requests] == [
+        "/api/v1/admin/historical-backfills/preview",
+        *(["/api/v1/admin/historical-backfills"] if deliver else []),
+    ]
+
+
+@pytest.mark.parametrize("failure", ["dataset", "environment", "manifest", "preview"])
+def test_shioaji_plan_rejects_invalid_scope_without_creating(monkeypatch, capsys, failure):
+    monkeypatch.setenv("APP_ENVIRONMENT", "staging" if failure == "environment" else "production")
+    monkeypatch.delenv("FETCHER_SHIOAJI_PRODUCTION_MANIFEST", raising=False)
+    if failure == "manifest":
+        monkeypatch.setenv(
+            "FETCHER_SHIOAJI_PRODUCTION_MANIFEST", str(SCHEDULE.parent / "shioaji_tw_pilot.v1.json")
+        )
+    monkeypatch.setenv("FINDB_ADMIN_API_URL", "https://findb.example")
+    monkeypatch.setenv("FINDB_BACKFILL_ADMIN_API_KEY", "secret")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"scope_valid": False, "days": []})
+
+    dataset = "tw_equity_eod" if failure == "dataset" else "tw_equity_minute"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert (
+            production_backfill_cli.main([*_args("shioaji", dataset), "--deliver"], client=client)
+            == 2
+        )
+    assert len(requests) == (1 if failure == "preview" else 0)
+    assert "secret" not in capsys.readouterr().err
 
 
 def test_taifex_preview_uses_shared_catalog_and_unknown_rows(monkeypatch, capsys):
