@@ -8,12 +8,13 @@ which can only be acquired after every inheriting provider subprocess has exited
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta
-from typing import TypedDict
+from typing import Any, TypedDict
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import exists, func, literal, or_, select, text
+from sqlalchemy import Row, exists, func, literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -999,73 +1000,223 @@ async def settle(
     await db.flush()
 
 
+async def _projection_acquisition_states(
+    db: AsyncSession,
+    rows: Sequence[Row[Any]],
+    controls: dict[str, str],
+    now: datetime,
+) -> dict[UUID, bool]:
+    """Batch the read-only acquisition checks used for drain classification.
+
+    This mirrors acquisition_open without loading work bodies, scopes or one
+    historical request per row. It grants no ownership or acquisition authority.
+    """
+    from app.models.registry import (
+        DatasetRegistry,
+        HistoricalBackfillItem,
+        HistoricalBackfillRequest,
+    )
+    from app.services.historical_backfill import expiry_cutoff
+    from app.services.hk_provider_cutover import acquisition_allowed
+
+    relevant = [
+        row for row in rows if not row.drain_only and (row.has_prepared or row.source_error_pending)
+    ]
+    item_ids = {}
+    for row in relevant:
+        if row.kind == "historical":
+            value = row.item_id if row.has_item_id else row.legacy_id
+            try:
+                item_ids[row.work_id] = UUID(value)
+            except (ValueError, TypeError, AttributeError):
+                pass
+    historical_dates = (
+        {
+            row.item_id: row.trade_date
+            for row in (
+                await db.execute(
+                    select(HistoricalBackfillItem.item_id, HistoricalBackfillItem.trade_date)
+                    .join(HistoricalBackfillRequest)
+                    .where(
+                        HistoricalBackfillItem.item_id.in_(item_ids.values()),
+                        HistoricalBackfillItem.status.in_(("pending", "running")),
+                        HistoricalBackfillRequest.status.in_(("queued", "running")),
+                    )
+                )
+            ).all()
+        }
+        if item_ids
+        else {}
+    )
+    hk_dataset = (
+        await db.get(DatasetRegistry, "hk_equity_eod")
+        if any(row.dataset_key == "hk_equity_eod" and row.kind != "rerun" for row in relevant)
+        else None
+    )
+    result = {}
+    for row in relevant:
+        allowed = True
+        if row.kind != "rerun" and row.dataset_key == "hk_equity_eod":
+            allowed = hk_dataset is not None and acquisition_allowed(
+                hk_dataset,
+                row.provider,
+                trade_date=row.trade_date if row.kind == "daily" else None,
+                maintenance=row.kind == "maintenance",
+            )
+        if row.kind == "daily":
+            allowed = (
+                allowed
+                and daily_window(row.provider, now)["open"]
+                and controls.get(f"{row.execution_profile}_{row.provider}_v1") == "running"
+            )
+        elif row.kind == "historical":
+            trade_date = historical_dates.get(item_ids.get(row.work_id))
+            allowed = (
+                allowed
+                and trade_date is not None
+                and trade_date >= expiry_cutoff(row.provider, now)
+            )
+        result[row.work_id] = allowed
+    return result
+
+
 async def projection(db: AsyncSession, *, provider: str | None = None) -> list[dict]:
+    # A prepared JSON object can contain many MB of immutable delivery bodies.
+    # Never select that object (or repeat it for historical retry rounds) for a
+    # monitoring page: return only booleans computed beside the durable records.
+    prepared = (
+        func.jsonb_object_keys(ProviderWork.prepared_deliveries)
+        .table_valued("member_key")
+        .render_derived(name="prepared")
+    )
+    accepted = (
+        select(ProviderWorkReceipt.run_id)
+        .where(
+            ProviderWorkReceipt.work_id == ProviderWork.work_id,
+            ProviderWorkReceipt.member_key == prepared.c.member_key,
+        )
+        .correlate(ProviderWork, prepared)
+        .exists()
+    )
+    previous = (
+        select(ProviderWorkAttempt.proof["scheduling"])
+        .where(
+            ProviderWorkAttempt.work_id == ProviderWork.work_id,
+            ProviderWorkAttempt.state == "settled",
+        )
+        .order_by(ProviderWorkAttempt.attempt_number.desc())
+        .limit(1)
+        .correlate(ProviderWork)
+        .scalar_subquery()
+    )
+    member_failure = ProviderWorkAttempt.proof["scheduling"]["failures"][0]["reason"].as_string()
+    last_failure = (
+        select(func.coalesce(ProviderWorkAttempt.failure_code, member_failure))
+        .where(
+            ProviderWorkAttempt.work_id == ProviderWork.work_id,
+            or_(ProviderWorkAttempt.failure_code.is_not(None), member_failure.is_not(None)),
+        )
+        .order_by(ProviderWorkAttempt.attempt_number.desc())
+        .limit(1)
+        .correlate(ProviderWork)
+        .scalar_subquery()
+    )
     stmt = (
-        select(ProviderWork, ProviderWorkAttempt)
+        select(
+            ProviderWork.work_id,
+            ProviderWork.provider,
+            ProviderWork.dataset_key,
+            ProviderWork.kind,
+            ProviderWork.stable_key,
+            ProviderWork.trade_date,
+            ProviderWork.execution_profile,
+            ProviderWork.scope["item_id"].label("item_id"),
+            ProviderWork.scope["legacy_id"].label("legacy_id"),
+            ProviderWork.scope.bool_op("?")("item_id").label("has_item_id"),
+            ProviderWorkAttempt.attempt_id,
+            ProviderWorkAttempt.state,
+            ProviderWorkAttempt.queue_order,
+            ProviderWorkAttempt.attempt_number,
+            ProviderWorkAttempt.drain_only,
+            ProviderWorkAttempt.not_before,
+            ProviderWorkAttempt.proof["source_error_pending"].label("source_error_pending"),
+            select(literal(1))
+            .select_from(prepared)
+            .correlate(ProviderWork)
+            .exists()
+            .label("has_prepared"),
+            select(literal(1))
+            .select_from(prepared)
+            .where(~accepted)
+            .correlate(ProviderWork)
+            .exists()
+            .label("pending_prepared"),
+            select(ProviderWorkReceipt.run_id)
+            .join(IngestionRun)
+            .where(
+                ProviderWorkReceipt.work_id == ProviderWork.work_id,
+                IngestionRun.status.not_in(TERMINAL_RUNS),
+            )
+            .correlate(ProviderWork)
+            .exists()
+            .label("pending_run"),
+            previous.label("last_batch"),
+            last_failure.label("last_failure_code"),
+        )
         .join(ProviderWorkAttempt)
-        .where(ProviderWork.environment == environment())
+        .where(ProviderWork.environment == environment(), ProviderWorkAttempt.state != "settled")
         .order_by(ProviderWork.provider, ProviderWorkAttempt.queue_order)
     )
     if provider:
         stmt = stmt.where(ProviderWork.provider == provider)
     owners = {
-        (row.environment, row.provider): row
-        for row in (await db.scalars(select(ProviderWorkOwner))).all()
+        row.provider: row
+        for row in (
+            await db.execute(
+                select(
+                    ProviderWorkOwner.provider,
+                    ProviderWorkOwner.attempt_id,
+                    ProviderWorkOwner.heartbeat_at,
+                    ProviderWorkOwner.expires_at,
+                    ProviderWorkOwner.recovery_reason,
+                    ProviderWorkOwner.acquisition_not_before,
+                ).where(ProviderWorkOwner.environment == environment())
+            )
+        ).all()
     }
-    controls = {
-        row.scheduler_key: row.desired_state
-        for row in await db.scalars(
-            select(SchedulerControl).where(SchedulerControl.retired_at.is_(None))
+    control_rows = (
+        await db.execute(
+            select(
+                SchedulerControl.scheduler_key,
+                SchedulerControl.desired_state,
+                SchedulerControl.retired_at,
+            )
         )
+    ).all()
+    controls = {
+        row.scheduler_key: row.desired_state for row in control_rows if row.retired_at is None
     }
     rows = []
     positions: dict[str, int] = {}
     now = utc_now()
-    for work, attempt in (await db.execute(stmt)).all():
-        if attempt.state == "settled":
-            continue
-        drain_only = attempt.drain_only or (
-            bool(work.prepared_deliveries or (attempt.proof or {}).get("source_error_pending"))
-            and not await acquisition_open(db, work)
+    pending = (await db.execute(stmt)).all()
+    acquisition_states = await _projection_acquisition_states(
+        db,
+        pending,
+        {row.scheduler_key: row.desired_state for row in control_rows},
+        now,
+    )
+    for work in pending:
+        drain_only = work.drain_only or (
+            bool(work.has_prepared or work.source_error_pending)
+            and not acquisition_states[work.work_id]
         )
-        owner = owners.get((work.environment, work.provider))
-        active = owner is not None and owner.attempt_id == attempt.attempt_id
-        receipts = (
-            await db.execute(
-                select(ProviderWorkReceipt.member_key, IngestionRun.status)
-                .join(IngestionRun)
-                .where(ProviderWorkReceipt.work_id == work.work_id)
-            )
-        ).all()
-        needs_drain = (
-            bool(set(work.prepared_deliveries or {}) - {receipt.member_key for receipt in receipts})
-            or any(receipt.status not in TERMINAL_RUNS for receipt in receipts)
-            or bool((attempt.proof or {}).get("source_error_pending"))
-        )
+        owner = owners.get(work.provider)
+        active = owner is not None and owner.attempt_id == work.attempt_id
+        needs_drain = work.pending_prepared or work.pending_run or bool(work.source_error_pending)
         runtime_window = daily_window(work.provider, now) if work.kind == "daily" else None
         window_closed = bool(runtime_window and not runtime_window["open"] and not needs_drain)
-        previous = await db.scalar(
-            select(ProviderWorkAttempt)
-            .where(
-                ProviderWorkAttempt.work_id == work.work_id,
-                ProviderWorkAttempt.state == "settled",
-            )
-            .order_by(ProviderWorkAttempt.attempt_number.desc())
-            .limit(1)
-        )
-        last_batch = (previous.proof or {}).get("scheduling") if previous else None
-        member_failure = ProviderWorkAttempt.proof["scheduling"]["failures"][0][
-            "reason"
-        ].as_string()
-        last_failure = await db.scalar(
-            select(func.coalesce(ProviderWorkAttempt.failure_code, member_failure))
-            .where(
-                ProviderWorkAttempt.work_id == work.work_id,
-                or_(ProviderWorkAttempt.failure_code.is_not(None), member_failure.is_not(None)),
-            )
-            .order_by(ProviderWorkAttempt.attempt_number.desc())
-            .limit(1)
-        )
+        last_batch = work.last_batch
         suspended = (
             work.kind == "daily"
             and controls.get(f"{work.execution_profile}_{work.provider}_v1") != "running"
@@ -1077,8 +1228,8 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
         cooldown_blocked = cooling and not needs_drain and work.kind != "rerun"
         drain_only = drain_only or bool(cooling and needs_drain)
         runnable = (
-            attempt.state == "queued"
-            and attempt.not_before <= now
+            work.state == "queued"
+            and work.not_before <= now
             and not suspended
             and not cooldown_blocked
             and not window_closed
@@ -1094,17 +1245,17 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
                 "stable_key": work.stable_key,
                 "trade_date": work.trade_date,
                 "execution_profile": work.execution_profile,
-                "state": attempt.state,
-                "queue_order": attempt.queue_order,
+                "state": work.state,
+                "queue_order": work.queue_order,
                 "position": positions[work.provider] if runnable else None,
                 "active": active,
-                "attempt_number": attempt.attempt_number,
+                "attempt_number": work.attempt_number,
                 "drain_only": drain_only,
-                "not_before": attempt.not_before,
+                "not_before": work.not_before,
                 "heartbeat_at": owner.heartbeat_at if active and owner else None,
                 "daily_runtime_window": runtime_window,
                 "last_batch": last_batch,
-                "last_failure_code": last_failure
+                "last_failure_code": work.last_failure_code
                 or (
                     last_batch["failures"][0]["reason"]
                     if last_batch and last_batch.get("failures")
@@ -1127,7 +1278,7 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
                     and not active
                     and runnable
                     else "not_before"
-                    if attempt.not_before > now
+                    if work.not_before > now
                     else "account_cooldown"
                     if cooldown_blocked and not active
                     else "suspended"

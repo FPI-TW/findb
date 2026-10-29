@@ -469,8 +469,9 @@ Hard crash 在 commit 前會回復完整 v9；commit 後由 v10 reopen。升級�
 usage／cooldown 不得退回較舊用量。Staging 已部署此版本；provider-work 啟用進度見下方 FactSet 章節。
 
 `b53da90e7f21` 與 `c64eb01f8a32` 為 expand-only migrations（後者保存 provider account cooldown floor）。
-Staging 已部署至 `d75fc12a9b43`，runtime 包含 provider-work-v1 protocol。
-Owner cutover 與兩端 enforcement 的實際狀態見下方 FactSet 章節。
+Runtime 包含 provider-work-v1 protocol。Staging 的既有啟用紀錄見下方 FactSet 章節；
+production 的 Owner attestation、enforcement、備份與 release 證據見
+[production 維運](production.md#provider-work-切換與舊流程退役發布2026-10-29)。
 `infra/env/deployment.schema.json`、兩環境 deployment examples、Compose 與 Fetcher `.env.example`
 均使用 `PROVIDER_WORK_REQUIRED=true`；缺省 true，明確 false 會拒絕啟動／部署。
 Backend／Fetcher 的環境解析接受一般 truthy 布林寫法（例如 `True`、`1`、`yes`），
@@ -479,7 +480,8 @@ Backend／Fetcher 的環境解析接受一般 truthy 布林寫法（例如 `True
 Source outcome 的 report-only continuation 需要 Backend 與 Fetcher 都使用本版實作；
 回退到不認得 continuation 的版本前，須先確認 `source_error_pending` 已補報排空，
 不能以清除 SQLite reason、帳號 cooldown 或重設 queue 來處理待回報工作。
-新版本不再提供舊 acquiring／無 fence acceptance fallback。這是 repository 契約，並未修改遠端設定。
+新版本不再提供舊 acquiring／無 fence acceptance fallback。程式碼變更本身不會同步遠端設定，
+實際環境的部署與設定值須依上述驗收紀錄核對。
 Backend 與全部 Fetcher consumers 必須一起切換；
 `FULL_MARKET_ENABLED` 是另一個獨立旗標，不能替代 queue cutover。完整邊界見
 [provider work 架構](../architecture/provider_work.md)。
@@ -527,6 +529,13 @@ receipts 與子程序狀態時停止切換，不能清檔或重新初始化。Pr
    啟動新 consumers。Source 未啟用前拒絕 queue claim；啟用後拒絕沒有 fence headers 的 legacy acceptance
    與 historical lease claim。從同一共享 inode 取得 lock 後，先恢復原 owner，再選下一 runnable FIFO。
    保留各 profile desired state、first dates 與 frozen plan。切換後 historical 不要求停止 Pilot／Full controls。
+   若原環境已安裝 accepted protocol-v1 images，重建 enforced consumers 後尚未啟動的真實狀態是
+   `created`；它不能代替原 workers graceful stop 的證據，也不能直接通過 installed-host guard。
+   先保留原十五個 workers 的 exit 0／完整 inspect／備份，完成 Owner attestation，再依 Backend-first
+   順序部署 Backend。只有 controls 已停止、historical requests terminal、無 maintenance／rerun 或
+   其他可 acquisition／待 drain 工作時，才啟動相同 exact accepted images 的 enforced consumers，
+   驗證真實 running／零重啟與完整 installed-host guard，接著發布新 Fetcher。不得修改 Docker State、
+   換 entrypoint 假造退出、跳過 guard，或啟動 false consumers。
 7. 驗證同 provider daily → historical → daily 的完整 canonical proof、不同 provider 並行、heartbeat-loss
    恢復原 owner、cancel／prepared drain，以及 Dashboard queue projection，才宣告該環境完成 cutover。
 

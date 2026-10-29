@@ -7,10 +7,14 @@ Backend／Fetcher 接受一般布林 true 寫法（不分大小寫的 `true`、`
 明確 false 拒絕停用協定，空字串／無效值則回報布林解析錯誤。部署檔案仍統一使用 `true`，
 不再選擇另一套執行協定。
 
-程式碼退役不代表環境已完成切換；production 仍須完成
-[deployment runbook](../operations/deployment.md#provider-work-切換) 的 drain、備份、單 host／
+程式碼退役不代表環境已完成切換；環境升級仍須依
+[deployment runbook](../operations/deployment.md#provider-work-切換) 完成 drain、備份、單 host／
 shared inode preflight 與 Owner attestation。未 attested 的 Source claim 一律拒絕。
-2026-10-29 production 唯讀快照與未結束工作見 [production 維運](../operations/production.md)。
+Production 已於 2026-10-29 完成 Owner attestation、兩端 enforcement 與 v0.1.12 部署，十五個
+consumers 均正常且原 checkpoint／prepared／receipts／budgets 保留；切換驗收時 controls 全部停止。
+後續 control 啟停與不可重試堆積的保留證據結案紀錄，見下述 production 維運文件。
+此為部署與保留性驗證，native canonical／recovery 驗收仍未完成。原唯讀快照、未結束工作與本次
+發布證據見 [production 維運](../operations/production.md)。
 
 舊 acquiring CLI（provider-specific scheduler、Twelve Data one-shot、FinLab／Shioaji smoke、
 Shioaji staging 與 TAIFEX pilot）只回傳 exit 2 的安全退役訊息，不載入 secrets、不建立 state、不抓取。
@@ -221,6 +225,14 @@ expected=2、data=0、missing=2、no_data=blocked=0：首個 503 已停止第二
 該 member 沒有 prepared；第一 member 的原 bytes 被 precedence 跳過，保持明確 manual failure。
 
 ## API 與營運觀測
+
+Admin queue projection 在 SQL 先排除 settled attempts，僅讀取未結案工作與 owner 的必要欄位。
+不將完整 prepared body、manifest、scope、owner token 或每輪 proof 載入監控程序；
+prepared／receipt 是否仍需排空由 SQL 計算布林摘要，最近 settled batch 與最近實際失敗保留原語意。
+一般列表固定三次 SELECT，需要 historical／HK eligibility 時最多五次；查詢次數不隨工作數增加。
+歷史 request／item 的 eligibility 批次查詢，daily window／controls、HK cutover、原 FIFO 順位、
+cooldown、drain-only、report continuation 與 recovery 顯示不改變。此為唯讀投影，不取得 provider
+lock、不結案或修改任何 work／attempt，不授予新 acquisition；正式執行仍由原 owner fence 判定。
 
 Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
 prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，
