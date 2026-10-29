@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -223,7 +223,16 @@ class _ShioajiGateway:
         self.events.append("fetch")
         return SimpleNamespace(
             kbars={
-                "ts": (1785286860000000000,),
+                "ts": (
+                    int(
+                        datetime.combine(
+                            _target, datetime.min.time(), ZoneInfo("Asia/Taipei")
+                        ).timestamp()
+                        * 10**9
+                    )
+                    + 9 * 3600 * 10**9
+                    + 60 * 10**9,
+                ),
                 "Open": (1,),
                 "High": (1,),
                 "Low": (1,),
@@ -267,6 +276,68 @@ def _configure_shioaji_runner(
             return datetime(2026, 7, 29, 17, 1, tzinfo=tz)
 
     monkeypatch.setattr(shioaji_historical, "datetime", AfterCutoffClock)
+
+
+@pytest.mark.parametrize("dataset,count", [("tw_equity_minute", 50), ("tw_etf_minute", 3)])
+@pytest.mark.parametrize("age", [0, 30])
+def test_production_shioaji_historical_uses_all_manifest_sequences_within_31_days(
+    monkeypatch, tmp_path, dataset, count, age
+):
+    events = []
+    source = _Source(events, record_count=1)
+    _configure_shioaji_runner(monkeypatch, tmp_path, source, events)
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    # Restore the real manifest loader: selecting old pilot constants would
+    # silently deliver only one of the fifty production equities.
+    from findb_fetcher.shioaji_scheduler import load_manifest
+
+    monkeypatch.setattr(shioaji_historical, "load_manifest", load_manifest)
+    monkeypatch.setattr(
+        shioaji_historical,
+        "default_manifest_path",
+        lambda: CONFIG_DIR / "shioaji_tw50_2026_09_21.v2.json",
+    )
+    item = _item("shioaji", dataset, "TW", date(2026, 7, 29) - timedelta(days=age))
+    runner = shioaji_historical.ExecutableShioajiHistoricalRunner(
+        fetcher=cast(FetcherConfig, SimpleNamespace()), contracts=ContractRegistry(CONTRACTS_DIR)
+    )
+    assert runner.run(item) == RUN_ID
+    assert events == ["fetch", "raw", "prepare", "deliver", "terminal"] * count
+    requests = source.requests
+    assert len(requests) == count
+    assert {request["dataset_key"] for request in requests} == {dataset}
+    batches = [request["payload"]["batch"] for request in requests]
+    assert [batch["sequence"] for batch in batches] == list(range(1, count + 1))
+    assert {batch["sequence_count"] for batch in batches} == {count}
+    # Completed request checkpoints replay receipts without another SDK call.
+    events.clear()
+    assert runner.run(item) == RUN_ID
+    assert events == []
+
+
+@pytest.mark.parametrize("age", [32, 365, -1])
+def test_production_shioaji_historical_rejects_dates_outside_window_before_acquisition(
+    monkeypatch, tmp_path, age
+):
+    events = []
+    source = _Source(events, record_count=1)
+    _configure_shioaji_runner(monkeypatch, tmp_path, source, events)
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    from findb_fetcher.shioaji_scheduler import load_manifest
+
+    monkeypatch.setattr(shioaji_historical, "load_manifest", load_manifest)
+    monkeypatch.setattr(
+        shioaji_historical,
+        "default_manifest_path",
+        lambda: CONFIG_DIR / "shioaji_tw50_2026_09_21.v2.json",
+    )
+    item = _item("shioaji", "tw_equity_minute", "TW", date(2026, 7, 29) - timedelta(days=age))
+    with pytest.raises(shioaji_historical.ShioajiHistoricalBridgeUnavailableError):
+        shioaji_historical.ExecutableShioajiHistoricalRunner(
+            fetcher=cast(FetcherConfig, SimpleNamespace()),
+            contracts=ContractRegistry(CONTRACTS_DIR),
+        ).run(item)
+    assert events == []
 
 
 def test_shioaji_historical_runtime_bypasses_cutoff_isolates_state_and_requires_sequence(

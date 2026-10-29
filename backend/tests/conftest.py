@@ -3,8 +3,10 @@ Pytest configuration and fixtures.
 """
 
 import os
+from datetime import datetime
 from inspect import signature
 from typing import AsyncGenerator
+from zoneinfo import ZoneInfo
 
 import pytest
 import pytest_asyncio
@@ -27,6 +29,29 @@ TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://findb:findb@localhost:5435/findb_test",
 )
+
+
+@pytest.fixture(autouse=True)
+def daily_runtime_clock(monkeypatch):
+    """Keep ordinary daily admission tests inside a defined acquisition window.
+
+    Only the daily policy clock moves; grant, quota, lease and wall clocks stay
+    real. Boundary tests can override this clock or pass an explicit datetime.
+    """
+    from app.services import daily_runtime, provider_work
+
+    clock = [
+        datetime.now(ZoneInfo("Asia/Taipei")).replace(hour=20, minute=0, second=0, microsecond=0)
+    ]
+    monkeypatch.setattr(daily_runtime, "utc_now", lambda: clock[0])
+    # Queue eligibility supplies an explicit lease clock. Keep its policy
+    # decision on this same clock without moving lease or heartbeat timestamps.
+    monkeypatch.setattr(
+        provider_work,
+        "daily_window",
+        lambda provider, now=None: daily_runtime.daily_window(provider),
+    )
+    return clock
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)

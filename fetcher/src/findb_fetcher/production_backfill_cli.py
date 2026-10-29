@@ -1,4 +1,4 @@
-"""Dry-run-first operator CLI for production EOD backfill requests."""
+"""Dry-run-first operator CLI for production historical backfill requests."""
 
 from __future__ import annotations
 
@@ -73,7 +73,16 @@ def _scope(path: Path, provider: str, dataset_key: str) -> tuple[int, int | None
             raise BackfillCLIError("requested production EOD scope is not enabled")
         return (1 if provider == "factset" else 5), None
     if provider == "shioaji":
-        raise BackfillCLIError("Shioaji historical backfill is not supported")
+        from findb_fetcher.config import app_environment
+        from findb_fetcher.shioaji_historical import load_historical_manifest
+
+        if app_environment() != "production":
+            raise BackfillCLIError("backfill planner requires production")
+        shioaji_manifest = load_historical_manifest()
+        symbols = sum(row["dataset_key"] == dataset_key for row in shioaji_manifest["sequences"])
+        if not symbols:
+            raise BackfillCLIError("requested production historical scope is not enabled")
+        return symbols, None
     manifest = load_schedule_manifest(path)
     if manifest.deployment_target != "production":
         raise BackfillCLIError("backfill planner requires the production schedule")

@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -47,7 +48,9 @@ class ProviderWork(Base):
     execution_profile: Mapped[str | None] = mapped_column(String(20), nullable=True)
     scope: Mapped[dict] = mapped_column(JSONB, default=dict)
     manifest: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    prepared_deliveries: Mapped[dict] = mapped_column(JSONB, default=dict)
+    prepared_deliveries: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
     state: Mapped[str] = mapped_column(String(30), default="queued")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

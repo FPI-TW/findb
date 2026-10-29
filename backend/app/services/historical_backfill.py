@@ -57,7 +57,9 @@ PROVIDER_TIMEZONES: dict[str, str] = {
 }
 
 
-def _max_backfill_days() -> int:
+def _max_backfill_days(provider: str | None = None) -> int:
+    if provider == "shioaji":
+        return STAGING_MAX_BACKFILL_DAYS
     return (
         PRODUCTION_MAX_BACKFILL_DAYS
         if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
@@ -66,11 +68,6 @@ def _max_backfill_days() -> int:
 
 
 def _supports_backfill(provider: str, dataset_key: str) -> bool:
-    if (
-        os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
-        and provider == "shioaji"
-    ):
-        return False
     return (provider, dataset_key) in CAPABILITIES
 
 
@@ -111,7 +108,7 @@ def _provider_current_date(provider: str, now: datetime) -> date:
 def expiry_cutoff(provider: str, now: datetime) -> date:
     """One read-only provider-local boundary for claims and live acquisition."""
     return _provider_current_date(provider, now) - timedelta(
-        days=_max_backfill_days() - (1 if provider in {"taifex", "factset"} else 0)
+        days=_max_backfill_days(provider) - (1 if provider in {"taifex", "factset"} else 0)
     )
 
 
@@ -153,10 +150,10 @@ async def create_request(
         await lock_provider(db, provider)
     today = today or (
         _provider_current_date(provider, utc_now())
-        if provider in {"taifex", "factset"}
+        if provider in {"shioaji", "taifex", "factset"}
         else utc_now().date()
     )
-    max_days = _max_backfill_days()
+    max_days = _max_backfill_days(provider)
     if start_date < today - timedelta(days=max_days - 1) or end_date > today:
         raise HistoricalBackfillError(
             f"backfill dates must be within the latest {max_days} calendar days"
@@ -384,15 +381,18 @@ async def preview_request(
     """Return a no-write operator preview; every selected day is explained."""
     provider = provider.lower()
     today = today or (
-        _provider_current_date(provider, utc_now()) if provider == "taifex" else utc_now().date()
+        _provider_current_date(provider, utc_now())
+        if provider in {"shioaji", "taifex"}
+        else utc_now().date()
     )
     dataset = await db.get(DatasetRegistry, dataset_key)
     market = dataset.market if dataset is not None else None
+    max_days = _max_backfill_days(provider)
     scope_reason: str | None = None
     if end_date < start_date:
         scope_reason = "date_order_invalid"
-    elif start_date < today - timedelta(days=_max_backfill_days() - 1) or end_date > today:
-        scope_reason = f"outside_latest_{_max_backfill_days()}_days"
+    elif start_date < today - timedelta(days=max_days - 1) or end_date > today:
+        scope_reason = f"outside_latest_{max_days}_days"
     elif dataset is None or not dataset.is_active:
         scope_reason = "dataset_inactive"
     elif not _supports_backfill(provider, dataset_key):

@@ -27,10 +27,12 @@ Provider fallback 已改為 [官方合約文件](https://sinotrade.github.io/tut
 以及 `2330`、`0050`、`0056`、`006201` 四個已驗證 `BaseContract` identity shortcut。
 Production 53 商品 manifest、sequence 順序與 cutoff／terminal 政策維持原設定。
 
-修復 provider 不會自動重設既有 terminal checkpoint 或補送上述缺口。現有 production
-backfill 流程排除 Shioaji，且沒有已核准的 production terminal reset 路徑；上述六筆
-alerts 與舊日期缺口仍待 recovery 設計及驗收。不可刪除 SQLite state、鬆綁 cutoff 或把
-terminal error 自動轉為 retry。部署驗證與歷史缺口復原須各自留下驗收證據。
+修復 provider 不會自動重設既有 terminal checkpoint 或補送上述缺口。Production 現可透過
+[Shioaji 歷史回補](data_maintenance.md#shioaji-股票etf-分鐘回補) 分別申請股票／ETF minute，
+以 reviewed production 50／3 成員 manifest 建立新 request，保留 daily terminal checkpoint。
+上述六筆 alerts 是當次調查紀錄；實際缺口須重新查證並完成回補驗收後，再人工處理對應 alerts／DQ。
+不可刪除 SQLite state、鬆綁 daily cutoff 或把 terminal error 自動轉為 retry。
+部署驗證與歷史缺口復原須各自留下驗收證據。
 
 同次唯讀調查的 26 筆未解決 DQ issues 均為 `INGRESS_DELIVERY_POLICY_WARNING`，severity
 為 `warning`。其中 16 筆為 Shioaji 09-21 至 09-24 的 historical payload 在 09-30 送達，

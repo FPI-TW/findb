@@ -14,6 +14,18 @@ Pre-commit 與 pre-push 皆只執行 check，不執行測試；不得使用 `--n
 而不是耗盡 job timeout。
 直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
 因此測試中的 nested pytest subprocess 不會意外再建立 workers。
+本機比對 [FinDB CI](../../.github/workflows/findb-ci.yml)／[Fetcher CI](../../.github/workflows/fetcher-ci.yml)
+時，Backend 非 migration 與 Infra suites 使用 CI 的四個 workers，migration 維持獨立序列
+session；另外執行 published contract checks、全 repo check、Node.js 22／pnpm 11.15.1 下的
+Dashboard unit／browser／e2e 與 build。Fetcher 使用 frozen `shioaji` extra 執行真 SDK 介面契約
+測試，並建置 generic／FinLab／Shioaji／FactSet images，檢查 SDK 隔離、CLI、TLS 與唯讀 bytecode。
+Backend production image 的 migration regression 使用獨立容器 DB，涵蓋 fresh／accepted-upgrade；
+不在指定的本機基底 DB 直接執行 migration smoke。這些是本機 CI 同等檢查，不代表遠端 Actions 狀態。
+Backend 的三個 FactSet captured-native cases 需提供 `FINDB_FACTSET_NATIVE_SNAPSHOT_DIR`
+才會執行，未提供真實 HKEX／FactSet bytes 時依既定規則 skipped。兩個 ORM／migration parity
+cases 必須直接通過：CHECK 名稱／缺少約束與 server defaults 均納入比對，不保留 xfail。
+Infra 一般 job 的兩個 container cases 因未設
+image 而 skipped，應在建置 Backend image 後以 `FINDB_TEST_BACKEND_IMAGE` 另跑並確認通過。
 TAIFEX historical 只有一次 authorization dispatch attempt；prepare 與 authorize 之間跨越
 UTC 分鐘時，account window 不一致會依設計 fail closed，工作延到 FIFO 尾端重試並維持
 queued。`RuntimeHarness.run()` 因此在距下一分鐘不足 5 秒時先等到下一分鐘再開始 TAIFEX
@@ -22,7 +34,43 @@ run；不得以放寬產品授權期限或 window 檢查來處理此類間歇失
 Fetcher 的 slow owner RPC／dispatch grant 測試使用局部可控的 wall／monotonic clock，
 分別涵蓋分鐘內及跨 UTC 分鐘。跨分鐘可能合法重取 grant，但 native dispatch、actual-start
 與帳號日配額只能記一次；不能將 grant 次數固定為一，也不應放寬產品的時效或 quota window 檢查。
-可控時鐘只替換 acquisition module 的 facade，不修改全域 time 或背景 heartbeat 的等待行為。
+可控時鐘不修改全域 time、asyncio、IPC poll／join 或背景 heartbeat 的真實等待行為。
+`test_actual_processes_merge_proven_debt_exactly_once` 同樣將 seeded quota 與父程序 admission
+固定在相同 UTC 分鐘，三個 identity merge 子程序仍以真實 spawn 併發執行；避免啟動成本跨分鐘
+後，合法的新分鐘額度使舊債務阻擋斷言失效。產品的 quota rollover 規則維持不變。
+Backend 的 `daily_runtime_clock` fixture 預設將日常 policy 時鐘固定在台北當日 20:00，
+讓一般 admission／queue／migration 測試不依賴執行時是否落在 Shioaji 18:00–隔日 06:00 窗口。
+Queue 即使收到獨立 lease clock，policy 判定仍使用相同的受控時鐘；一般案例的 UTC grant、
+quota 與 lease 保持原有時鐘，Shioaji native 功能驗收則使用下述共用邏輯 UTC。
+窗口邊界案例應明確調整 fixture clock 或覆寫
+`daily_runtime.utc_now`／`daily_window`；pure policy tests 可直接傳入 aware datetime，
+驗證開窗、關窗與跨日，不把窗口判定改成永遠允許。
+`RuntimeHarness` 的 Shioaji 功能驗收預設使用 `shioaji_dispatch_clock`：Backend 的標準
+`utc_now` aliases、Source checked-at／lease、Fetcher queue、account governor、SDK child 及
+historical coordinator／SQLite checkpoint 共用邏輯 UTC；明確覆寫的時間邊界 clock 保留。
+UTC 起點位於當下分鐘的第 30 秒，避免真實分鐘 rollover；pacing sleep 推進邏輯 UTC，
+FIFO 重試的 `offset += 61` 同時釋放 account 與 checkpoint 的 rolling window。
+Grant monotonic clock 在功能案例中受控，因此 ASGI／DB 排程延遲不會意外觸發 50ms 到期。
+實際 Source 認證、scope、fence、header/body 一致性及 expiry 判定仍執行，沒有放寬產品限制。
+功能 fake SDK 沿用 runtime 的 30 秒 IPC 上限，不使用任意縮短的 2 秒上限。
+
+`test_shioaji_historical_functional.py` 注入第一檔／最後一檔 acquisition 失敗，驗證原始
+50-member manifest、FIFO receipts、canonical evidence 與 snapshot 重用，並驗證逐檔診斷不含
+provider 訊息或 credentials。Heartbeat 重疊案例用事件強制與 delivery 同時進入，不等待
+真實 20 秒 interval；harness 僅序列化共用測試 AsyncSession 的 HTTP／normalization 使用，
+保留 request 前的故障 barriers、真實 heartbeat thread 與正式程式的並行行為。
+`test_shioaji_time_limits.py` 以顯式 clock 獨立驗證 50ms grant
+及 50 次／60 秒 rolling limit；日常 18:00–06:00 窗口、31 天日期限制／台北跨日與 SDK timeout
+分別由 `test_shioaji_daily_runtime.py`、`test_historical_backfill.py` 與 Fetcher 的
+`test_shioaji.py`／`test_shioaji_smoke_cli.py` 驗證。時間限制案例不依賴跑測試當下的時刻。
+
+Shioaji 每輪輸出逐檔 `code`／`stage`／`retryable`、checkpoint attempts／status／terminal code
+及安全的 attempt history；即使 coordinator 拋出例外，也保存安全的 exception type、Source
+失敗路徑／status 與 checkpoint。不輸出 provider exception text、raw payload、Source body 或 credentials。
+Captured warning 保存在失敗的 `pytest.log`，不受 assertion repr 截短影響。
+`FINDB_TEST_DIAGNOSTICS_DIR` 可指定 JSONL 目錄；CI 設為
+`$RUNNER_TEMP/findb-ci-backend/diagnostics`，隨既有 Backend artifact 成功或失敗均保存 14 天。
+每個 harness 使用獨立 UUID 檔名供 xdist 並行；本機未設定時寫入該測試自己的暫存目錄。
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
 
@@ -74,23 +122,10 @@ Shioaji SDK 版本集中於 `providers/shioaji.py` 的 `SHIOAJI_SDK_VERSION`，�
 不建立連線、不登入。其餘 Shioaji 測試使用離線替身；login、contract lookup、kbars 與 usage
 的實際行為仍須於 staging 以真實帳號驗收。
 
-目前安全依賴驗收（2026-10-23）：frozen 安裝、`pnpm check`、`pnpm test`、
-`pnpm build:dashboard` 與 `pnpm audit` 通過。
-
-| 範圍 | 結果 |
-| --- | --- |
-| Backend | 1,967 passed、3 skipped |
-| Migration | 11 passed、2 xfailed |
-| Infra | 849 passed、2 skipped，另有 352 個子測試通過 |
-| Fetcher | 1,648 passed、1 skipped |
-| Dashboard | unit 197、browser 10、E2E 16 全部通過 |
-
 Production SSR、匿名權限導向、登入 POST RPC、已登入營運台與 Lookup hydration smoke
 通過。Smoke fixture 須先呼叫 `/fixture/reset` 初始化資料；未初始化時不應期待有執行中的
-Pilot。Backend 略過三個需 captured HKEX／FactSet bytes 的案例，Infra 略過兩個需指定
-runtime image 的案例，Fetcher 未安裝 Shioaji SDK 因而略過其 contract suite；migration
-兩個 xfail 為已知 schema drift。這些項目不算通過，真實 provider 驗收與 runtime image
-驗證仍依各自流程執行。最終 `pnpm audit` 各嚴重度皆為零；這是 npm 依賴掃描結果，
+Pilot。真實 provider 驗收與 runtime image 驗證仍依各自流程執行。
+安全依賴驗收（2026-10-23）的 `pnpm audit` 各嚴重度皆為零；這是 npm 依賴掃描結果，
 不代表 GitHub 告警已關閉。
 
 ## CI 與測試隔離
@@ -108,7 +143,15 @@ suites（Fetcher inventory、full-market repair 與 checkpoint entry）放在 `i
 GitHub 4 vCPU runner 上 Backend 與 Infra 固定四個
 workers；migration job 維持序列執行。Migration tests 只涵蓋 rollback 下限
 （`docs/operations/deployment.md`）及之後的 revisions；`test_schema_drift_migration.py`
-比對 `alembic upgrade head` 與 ORM metadata，已知差異以 strict xfail 標示。
+比對 `alembic upgrade head` 與 ORM metadata 的結構、CHECK 名稱及 server defaults，
+三類差異均直接使測試失敗。Partition children 僅由 migration 管理，不當成 ORM drift。
+
+Schema reconciliation revision `1e68a0c9b3d2` 的回歸測試涵蓋前一版 populated DB 升級、
+16 個 CHECK 的 OID／定義保留、缺少的市場代碼 CHECK、降版再升級與既有資料保留。
+既存無效市場代碼會使升級 transaction 完整回滾；revision、原約束及資料必須維持原值。
+Raw SQL INSERT 同時驗證 ORM 建表與 migration 建表的 boolean／integer／string／JSONB
+預設值，並以 `Asia/Taipei` session 驗證日曆時間戳代表正確 instant，不能由 Python defaults
+掩蓋 DB default 缺漏。這些測試只操作 session 自行建立的資料庫。
 
 Fetcher deployment transaction harness 以 fake Docker／sudo／sleep 驗證十五個 consumers；
 每個案例保留 90 秒程序上限，供 CI 四個 workers 下數百次模擬 CLI 啟動使用。此上限不是正式
@@ -418,7 +461,25 @@ Twelve Data US equity EOD、FinLab TW equity EOD、Shioaji TW equity minute／TW
 TAIFEX TW futures EOD；使用真 adapter、Source client、authenticated ASGI、worker 與 canonical proof，
 僅以 fixtures 取代 native SDK／HTTP 回應與 R2。Shioaji fixture 仍執行實際隔離 child 的 IPC／FD protocol，
 不需下載 provider SDK 或持有 live credentials。Harness 將 Shioaji 5/s 的帳號 pacing 間隔縮為 10 ms；
-pacing floor 與等待路徑仍執行，實際間隔由 Fetcher 單元測試覆蓋。Fault cases 包含 intent commit ACK 遺失、local save 後
+pacing floor 與等待路徑仍執行，實際間隔由 Fetcher 單元測試覆蓋。
+
+Production Shioaji 另以真實 reviewed v2 manifest 驗證股票 50／ETF 3 條 sequences 經
+FIFO → authenticated Source → worker → canonical，逐一對帳 receipts、member evidence 與
+sequence_count；既有 recovery cases 明確使用四成員 pilot fixture。Backend historical tests
+涵蓋 production scopes、preview／create／idempotency／cancel、credential scope／撤銷／lease、
+台北日期跨 UTC 邊界與 Shioaji 最近 31 天上下界，以及凍結日曆收盤授權。
+Fetcher tests 驗證 production manifest／dataset 拒絕、dry-run／deliver 的 50／3 calls 與未知 rows、
+當日／30 天前的完整 raw-first 交付及 checkpoint 重開不新增 SDK calls；超過 31 天與未來日期不抓取。
+Production 50 成員 nominal 驗收使用 `shioaji_dispatch_clock`，讓 parent、forked fake SDK child
+與 Source client 共用 monotonic clock domain，避免平行 suite 的程序排程延遲耗盡每成員的
+50ms dispatch budget；durable quota／window wait 仍依 FIFO 重試並由局部 account clock 推進。
+這只改變測試時鐘座標；產品 grant／quota／lease 下限、IPC timeout 與 process termination
+不放寬。過期、FD／owner fencing、真實授權失效及跨分鐘案例由獨立 dispatch boundary tests 覆蓋。
+50 成員的 harness 設定 `execution_timeout=90`；`RuntimeHarness.run()` 會依此重設 deadline，
+不能只改 `deadline` 而沿用四成員 pilot 的 25 秒預設，否則平行執行可能在中途造成 heartbeat
+與 settlement 被測試本身截斷。
+
+Fault cases 包含 intent commit ACK 遺失、local save 後
 confirm 前取消、local save crash、intent／cancel transaction barrier，以及 daily stop 後 prepared 排空。
 取消／停止期間不新增 provider I/O，accepted nonterminal run 仍保留 whole-work owner；取消狀態與缺漏保持真實。
 Admin single／bulk endpoint 測試驗證新 run／audit／FIFO fence；failed rerun 使用實際 worker failure path，

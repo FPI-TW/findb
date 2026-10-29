@@ -15,6 +15,7 @@ from app.utils import uuid7
     "provider,dataset,market,zone,normal_close",
     [
         ("shioaji", "tw_equity_minute", "TW", "Asia/Taipei", time(13, 30)),
+        ("shioaji", "tw_etf_minute", "TW", "Asia/Taipei", time(13, 30)),
         ("finlab", "tw_equity_eod", "TW", "Asia/Taipei", time(13, 30)),
         ("twelve_data", "us_equity_eod", "US", "America/New_York", time(16)),
     ],
@@ -32,9 +33,6 @@ async def test_historical_acquisition_uses_frozen_close(
     calendar_kind,
 ):
     monkeypatch.setenv("APP_ENVIRONMENT", environment)
-    if environment == "production" and provider == "shioaji":
-        assert not history._supports_backfill(provider, dataset)
-        return
     day = date(2026, 9, 5) if calendar_kind == "weekend" else date(2026, 9, 1)
     close = time(11) if calendar_kind == "early_close" else normal_close
     closed_at = datetime.combine(day, close, ZoneInfo(zone)).astimezone(timezone.utc)

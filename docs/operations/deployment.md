@@ -265,6 +265,18 @@ Backend image 以 `uv sync --frozen --no-dev --no-install-project` 安裝 runtim
 repo checkout 的 migration tests 與 image build 成功不足以覆蓋這個邊界。
 此錯誤若發生在 `writers_stopped` 之後，candidate cleanup 會維持服務停止，不能視為已恢復舊版。
 
+Schema reconciliation migration `1e68a0c9b3d2`（前版 `0d57f9b8a2c1`）將 16 個重複前綴的
+CHECK 改名，保留其定義與 OID，並新增 `calendar_market.market` 的格式約束
+`^[A-Z][A-Z0-9_]{1,9}$`。此格式允許新增市場，並非固定市場清單。升級會驗證既有資料；
+可在升級前唯讀查詢 `SELECT market FROM calendar_market WHERE market !~ '^[A-Z][A-Z0-9_]{1,9}$'`。
+若有無效代碼，升級會完整回滾，須釐清資料與引用關係後修正再重試；migration 不改寫或刪除資料。
+DDL 會取得相關 tables 的 locks；沿用停止 writers 後執行 migration 的部署程序。
+`trading_calendar.created_at`／`updated_at` 的 server defaults 改為 timestamptz `now()`，
+避免非 UTC session 將舊 `timezone('utc', now())` 的無時區結果錯誤轉換；既有時間戳不改寫。
+ORM 同步宣告其餘既有 DB defaults，兩種建表方式維持相同預設值。
+此 revision 可降回前版，恢復舊 CHECK 名稱及時間戳 defaults、移除新增 CHECK，保留資料；
+不改變既有 rollback 下限，也不代表較舊 accepted image 可略過 DB compatibility 檢查。
+
 Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使用
 `!cancelled() && needs.prepare.result == 'success'`，避免被略過的 publish ancestor 連帶略過，
 並保留取消整個 workflow 時不繼續部署的行為。

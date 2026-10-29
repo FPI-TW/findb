@@ -105,10 +105,12 @@ async def test_live_historical_acquisition_denies_invalid_db_credential_scope(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["staging", "production"])
 @pytest.mark.parametrize("deny", [None, "cancel", "expired", "token", "revoked", "scope"])
 async def test_historical_acquisition_probe_is_current_scoped_and_never_renews(
-    client, test_session, historical_backfill_clock, deny
+    client, test_session, historical_backfill_clock, deny, monkeypatch, environment
 ):
+    monkeypatch.setenv("APP_ENVIRONMENT", environment)
     from app.services.source_clients import revoke_source_client
 
     today = historical_backfill_clock.date()
@@ -183,23 +185,101 @@ def historical_backfill_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
     return now
 
 
-def test_production_allows_one_year_eod_and_disables_shioaji_history(
+def test_production_keeps_one_year_eod_and_31_day_shioaji_minute_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
 
     assert historical_backfill._max_backfill_days() == 366
+    assert historical_backfill._max_backfill_days("shioaji") == 31
+    assert historical_backfill.expiry_cutoff(
+        "shioaji", datetime(2026, 8, 31, 16, 1, tzinfo=timezone.utc)
+    ) == date(2026, 8, 1)
     assert historical_backfill._supports_backfill("twelve_data", "us_equity_eod") is True
     assert historical_backfill._supports_backfill("finlab", "tw_equity_eod") is True
-    assert historical_backfill._supports_backfill("shioaji", "tw_equity_minute") is False
+    assert historical_backfill._supports_backfill("shioaji", "tw_equity_minute") is True
+    assert historical_backfill._supports_backfill("shioaji", "tw_etf_minute") is True
+    assert historical_backfill._supports_backfill("shioaji", "tw_equity_eod") is False
 
 
-async def _seed_scope(session, today: date) -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dataset_key", ["tw_equity_minute", "tw_etf_minute"])
+async def test_production_shioaji_date_window_uses_taipei_date_and_rejects_invalid_scopes(
+    test_session, monkeypatch, dataset_key
+):
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    # UTC still says August 31 while the TW exchange has entered September 1.
+    now = datetime(2026, 8, 31, 16, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(historical_backfill, "utc_now", lambda: now)
+    today = date(2026, 9, 1)
+    await _seed_scope(test_session, today, dataset_key=dataset_key)
+    oldest = today - timedelta(days=30)
+    _, reason, days = await preview_request(
+        test_session,
+        provider="shioaji",
+        dataset_key=dataset_key,
+        start_date=oldest,
+        end_date=today,
+    )
+    assert reason is None and len(days) == 31
+    request, duplicate = await create_request(
+        test_session,
+        provider="shioaji",
+        dataset_key=dataset_key,
+        start_date=oldest,
+        end_date=today,
+        request_key="production-shioaji-month",
+        created_by="operator",
+    )
+    assert not duplicate and len(request.items) == 31
+    for start, end, expected in (
+        (oldest - timedelta(days=1), oldest, "outside_latest_31_days"),
+        (today, today + timedelta(days=1), "outside_latest_31_days"),
+    ):
+        _, reason, _ = await preview_request(
+            test_session,
+            provider="shioaji",
+            dataset_key=dataset_key,
+            start_date=start,
+            end_date=end,
+        )
+        assert reason == expected
+        with pytest.raises(HistoricalBackfillError, match="latest 31"):
+            await create_request(
+                test_session,
+                provider="shioaji",
+                dataset_key=dataset_key,
+                start_date=start,
+                end_date=end,
+                request_key="outside",
+                created_by="operator",
+            )
+    _, reason, _ = await preview_request(
+        test_session,
+        provider="finlab",
+        dataset_key=dataset_key,
+        start_date=oldest,
+        end_date=oldest,
+    )
+    assert reason == "provider_dataset_unsupported"
+    with pytest.raises(HistoricalBackfillError, match="does not support"):
+        await create_request(
+            test_session,
+            provider="finlab",
+            dataset_key=dataset_key,
+            start_date=oldest,
+            end_date=oldest,
+            request_key="wrong-provider",
+            created_by="operator",
+        )
+
+
+async def _seed_scope(session, today: date, *, dataset_key: str = "tw_equity_minute") -> None:
     session.add(
         DatasetRegistry(
-            dataset_key="tw_equity_minute",
+            dataset_key=dataset_key,
             name="TW",
-            asset_class="equity",
+            asset_class="etf" if dataset_key == "tw_etf_minute" else "equity",
             market="TW",
             is_active=True,
         )
@@ -212,7 +292,7 @@ async def _seed_scope(session, today: date) -> None:
             timezone="Asia/Taipei",
         )
     )
-    session.add(SchedulerDataset(scheduler_key="shioaji-tw", dataset_key="tw_equity_minute"))
+    session.add(SchedulerDataset(scheduler_key="shioaji-tw", dataset_key=dataset_key))
     await session.flush()
     revision = CalendarYearRevision(
         id=uuid7(),
@@ -1081,21 +1161,33 @@ async def test_operator_historical_endpoints_reject_viewer(client, test_session)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["staging", "production"])
+@pytest.mark.parametrize("dataset_key", ["tw_equity_minute", "tw_etf_minute"])
 async def test_operator_can_preview_create_list_scope_and_cancel_historical_backfill(
-    client, test_session, admin_headers, historical_backfill_clock
+    client,
+    test_session,
+    admin_headers,
+    historical_backfill_clock,
+    monkeypatch,
+    environment,
+    dataset_key,
 ) -> None:
+    monkeypatch.setenv("APP_ENVIRONMENT", environment)
     today = historical_backfill_clock.date()
-    await _seed_scope(test_session, today)
+    await _seed_scope(test_session, today, dataset_key=dataset_key)
     body = {
         "provider": "shioaji",
-        "dataset_key": "tw_equity_minute",
+        "dataset_key": dataset_key,
         "start_date": today.isoformat(),
         "end_date": today.isoformat(),
         "request_key": "historic-operator-flow",
     }
-    assert (
-        await client.get("/api/v1/admin/historical-backfills/scopes", headers=admin_headers)
-    ).status_code == 200
+    scopes = await client.get("/api/v1/admin/historical-backfills/scopes", headers=admin_headers)
+    assert scopes.status_code == 200
+    assert any(
+        scope["provider"] == "shioaji" and scope["dataset_key"] == dataset_key
+        for scope in scopes.json()["data"]
+    )
     preview = await client.post(
         "/api/v1/admin/historical-backfills/preview", headers=admin_headers, json=body
     )
@@ -1106,6 +1198,11 @@ async def test_operator_can_preview_create_list_scope_and_cancel_historical_back
         "/api/v1/admin/historical-backfills", headers=admin_headers, json=body
     )
     assert created.status_code == 202
+    replay = await client.post(
+        "/api/v1/admin/historical-backfills", headers=admin_headers, json=body
+    )
+    assert replay.status_code == 202
+    assert replay.json()["request_id"] == created.json()["request_id"]
     assert (
         await client.get("/api/v1/admin/historical-backfills", headers=admin_headers)
     ).status_code == 200

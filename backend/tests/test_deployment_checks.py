@@ -3873,6 +3873,10 @@ def test_findb_ci_reports_are_retained_even_after_failure(job_name: str) -> None
     assert "/usr/bin/time -p -o" in test["run"]
     assert f'--junitxml="$RUNNER_TEMP/findb-ci-{job_name}/junit.xml"' in test["run"]
     assert "continue-on-error" not in test
+    if job_name == "backend":
+        assert test["env"]["FINDB_TEST_DIAGNOSTICS_DIR"] == (
+            "${{ runner.temp }}/findb-ci-backend/diagnostics"
+        )
     timing = next(step for step in steps if step.get("name") == "Record total job timing")
     assert timing["if"] == "always()"
     assert "FINDB_CI_JOB_STARTED_AT" in timing["run"]

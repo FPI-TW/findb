@@ -993,8 +993,12 @@ class SourceClient(Base):
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     fingerprint: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     allowed_datasets: Mapped[Optional[list[str]]] = mapped_column(JSONB, nullable=True)
-    rate_limit_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
-    rate_limit_window: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    rate_limit_requests: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=100, server_default=text("100")
+    )
+    rate_limit_window: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=60, server_default=text("60")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -1004,7 +1008,9 @@ class SourceClient(Base):
     rotated_from_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("source_client.client_id"), nullable=True
     )
-    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    usage_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -1084,7 +1090,9 @@ class HistoricalBackfillItem(Base):
     lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    lease_attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    lease_attempt: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     failure_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     failure_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -1257,7 +1265,9 @@ class IngestionRun(Base):
     sequence_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     policy_outcome: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     policy_details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
-    is_rerun: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_rerun: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     raw_records: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="pending")
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1267,8 +1277,12 @@ class IngestionRun(Base):
     failed_records: Mapped[int] = mapped_column(Integer, default=0)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     failure_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5, server_default=text("5")
+    )
     next_retry_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -1347,8 +1361,12 @@ class NormalizationJob(Base):
     )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued")
     delivery_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, default=uuid7)
-    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5, server_default=text("5")
+    )
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     lease_expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -1392,7 +1410,9 @@ class NormalizationOutbox(Base):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     claim_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    publish_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    publish_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -1465,7 +1485,9 @@ class APIKey(Base):
     key_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     fingerprint: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
-    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="serve")
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="serve", server_default="serve"
+    )
     name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     owner: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -1500,8 +1522,12 @@ class AdminUser(Base):
     display_name: Mapped[str] = mapped_column(String(100), nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -1547,7 +1573,9 @@ class CredentialUsageRollup(Base):
     usage_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     credential_kind: Mapped[str] = mapped_column(String(20), nullable=False)
     credential_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
-    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    request_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_endpoint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

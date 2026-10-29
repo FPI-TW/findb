@@ -9,21 +9,23 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import FetcherConfig
+from findb_fetcher.config import FetcherConfig, app_environment
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.historical_backfill import HistoricalWorkItem
 from findb_fetcher.providers.shioaji import IsolatedShioajiGateway, ShioajiKbarsSnapshot
 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
 from findb_fetcher.shioaji_scheduler import (
-    EXPECTED,
     ProductionCoordinator,
+    ProductionManifestError,
     default_manifest_path,
     load_manifest,
 )
@@ -34,6 +36,15 @@ class ShioajiHistoricalBridgeUnavailableError(RuntimeError):
     """Fail closed when deployment has not supplied the normal delivery bridge."""
 
 
+def load_historical_manifest() -> dict[str, Any]:
+    manifest = load_manifest(default_manifest_path())
+    if app_environment("staging") == "production" and manifest["version"] != 2:
+        raise ProductionManifestError(
+            "production historical backfill requires the reviewed production manifest"
+        )
+    return manifest
+
+
 @dataclass(slots=True)
 class ShioajiHistoricalRunner:
     gateway: IsolatedShioajiGateway
@@ -42,7 +53,11 @@ class ShioajiHistoricalRunner:
     def run(self, item: HistoricalWorkItem) -> UUID:
         if item.provider != "shioaji":
             raise ShioajiHistoricalBridgeUnavailableError("provider mismatch")
-        sequences = [row for row in EXPECTED if row["dataset_key"] == item.dataset_key]
+        sequences = [
+            row
+            for row in load_historical_manifest()["sequences"]
+            if row["dataset_key"] == item.dataset_key
+        ]
         if not sequences:
             raise ShioajiHistoricalBridgeUnavailableError(
                 "dataset is outside fixed Shioaji universe"
@@ -73,7 +88,10 @@ class ExecutableShioajiHistoricalRunner:
     def run(self, item: HistoricalWorkItem) -> UUID:
         if item.provider != "shioaji":
             raise ShioajiHistoricalBridgeUnavailableError("provider mismatch")
-        rows = [dict(row) for row in EXPECTED if row["dataset_key"] == item.dataset_key]
+        manifest = load_historical_manifest()
+        rows = [
+            dict(row) for row in manifest["sequences"] if row["dataset_key"] == item.dataset_key
+        ]
         from findb_fetcher.provider_work import active
 
         owner = active()
@@ -81,16 +99,20 @@ class ExecutableShioajiHistoricalRunner:
             frozen = owner.freeze(
                 {
                     "mode": "canonical",
+                    "universe_id": manifest["universe_id"],
                     "members": [{"key": row["symbol"]} for row in rows],
                     "sequences": rows,
                 }
             )
             rows = frozen["sequences"]
+            manifest = {
+                **manifest,
+                "universe_id": frozen.get("universe_id", manifest["universe_id"]),
+            }
         if not rows:
             raise ShioajiHistoricalBridgeUnavailableError(
                 "dataset is outside fixed Shioaji universe"
             )
-        manifest = load_manifest(default_manifest_path())
         # Preserve fixed provider sequence semantics, but lease only the one
         # requested dataset. The SQLite state cannot overlap recurring state.
         manifest = {
@@ -102,7 +124,7 @@ class ExecutableShioajiHistoricalRunner:
         state = ShioajiStagingState(root / f"{item.request_id}.sqlite3")
         gateway = IsolatedShioajiGateway.from_env()
         raw_store = R2RawPayloadStore(RawStorageConfig.from_env())
-        with SourceAPIClient(self.fetcher, self.contracts) as source:
+        with closing(state), SourceAPIClient(self.fetcher, self.contracts) as source:
             coordinator = ProductionCoordinator(
                 state,
                 manifest,

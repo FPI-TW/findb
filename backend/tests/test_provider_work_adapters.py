@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import sqlite3
 import time
 
 import pytest
@@ -54,6 +55,10 @@ async def test_enabled_historical_native_runtime_completes_every_supported_scope
 ):
     h = native_runtime
     assert await h.run()
+    await _assert_historical_completed(h)
+
+
+async def _assert_historical_completed(h):
     h.db.expire_all()
     work = await h.db.scalar(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
@@ -86,6 +91,60 @@ async def test_enabled_historical_native_runtime_completes_every_supported_scope
         )
     )
     assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dataset,count", [("tw_equity_minute", 50), ("tw_etf_minute", 3)])
+async def test_production_shioaji_historical_manifest_reaches_canonical_with_fifo_receipts(
+    client, test_session, test_engine, monkeypatch, tmp_path, dataset, count
+):
+    h = await RuntimeHarness(
+        client,
+        test_session,
+        test_engine,
+        monkeypatch,
+        tmp_path,
+        "shioaji",
+        dataset,
+        environment="production",
+    ).initialize()
+    # run() resets its deadline from execution_timeout. Fifty isolated SDK
+    # members need more headroom than the four-member pilot's 25-second bound.
+    h.execution_timeout = 90
+    try:
+        offset = h.shioaji_clock
+        assert offset is not None
+        # Nominal 50-member acceptance uses a controlled parent/child grant
+        # clock. Durable quota/window waits still advance through FIFO retries.
+        for _ in range(4):
+            assert await h.run()
+            h.db.expire_all()
+            work = await h.db.scalar(
+                select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
+            )
+            if work.state == "completed":
+                break
+            with sqlite3.connect(h.path / "historical" / f"{h.request_id}.sqlite3") as checkpoint:
+                statuses = checkpoint.execute(
+                    "SELECT symbol,attempts,status,terminal_status,terminal_reason "
+                    "FROM snapshot_sequences WHERE terminal_status IS NOT NULL "
+                    "AND terminal_status != 'completed'"
+                ).fetchall()
+            assert work.state == "queued", (h.failure, statuses)
+            offset[0] += 61
+        await _assert_historical_completed(h)
+        work = await h.db.scalar(
+            select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
+        )
+        assert len(work.manifest["sequences"]) == count
+        assert len(h.runs) == count
+        assert work.manifest["universe_id"] == "shioaji_tw50_2026_09_21_v2"
+        assert [row["sequence"] for row in work.manifest["sequences"]] == list(range(1, count + 1))
+        assert {row["sequence_count"] for row in work.manifest["sequences"]} == {count}
+    finally:
+        h.allow_confirm.set()
+        h.allow_terminal.set()
+        h.release_process_lock()
 
 
 @pytest.mark.asyncio
