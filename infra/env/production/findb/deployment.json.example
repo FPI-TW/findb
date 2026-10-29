@@ -16,6 +16,6 @@
     "DEPLOY_BUNDLE_BUCKET": "findb-production-deployment-bundles-289112218471",
     "DEPLOY_BUNDLE_KMS_KEY_ARN": "arn:aws:kms:ap-southeast-1:289112218471:key/00000000-0000-0000-0000-000000000000",
     "RDS_DB_INSTANCE_IDENTIFIER": "findb-production",
-    "PROVIDER_WORK_REQUIRED": "false"
+    "PROVIDER_WORK_REQUIRED": "true"
   }
 }

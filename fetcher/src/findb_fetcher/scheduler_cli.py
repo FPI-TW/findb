@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -13,18 +12,16 @@ from pathlib import Path
 from typing import Any
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import ConfigError, FetcherConfig, MarketCalendarConfig, app_environment
-from findb_fetcher.contracts import ContractError, ContractRegistry
-from findb_fetcher.market_calendar import MarketCalendarError, PublishedCalendarClient
+from findb_fetcher.config import FetcherConfig, MarketCalendarConfig, app_environment
+from findb_fetcher.contracts import ContractRegistry
+from findb_fetcher.market_calendar import PublishedCalendarClient
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
-    TwelveDataError,
 )
 from findb_fetcher.raw_storage import (
     R2RawPayloadStore,
     RawStorageConfig,
-    RawStorageError,
 )
 from findb_fetcher.schedule import (
     ScheduleConfig,
@@ -34,21 +31,18 @@ from findb_fetcher.schedule import (
 from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
-    require_scheduler_stopped,
     scheduler_stop_event,
     validate_scheduler_definition,
 )
 from findb_fetcher.scheduler_state import (
     SchedulerState,
-    SchedulerStateError,
-    validate_scheduler_state_read_only,
 )
 from findb_fetcher.twelve_data_scheduler import (
     SchedulerRun,
     SchedulerService,
     TwelveDataScheduledExecutor,
 )
-from findb_fetcher.universe import SymbolUniverse, UniverseError, load_symbol_universe
+from findb_fetcher.universe import SymbolUniverse
 
 EXIT_OK = 0
 EXIT_CONFIG_ERROR = 2
@@ -108,107 +102,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        schedule = _load_selected_schedule(
-            args.schedule_file,
-            args.slot_id,
-            args.dataset_key,
-            reject_disabled=not args.run_forever,
-        )
-        universe = load_symbol_universe(schedule.universe_file)
-        _validate_schedule_universe(schedule, universe)
-        if schedule.outputsize > universe.limits.max_records_per_symbol:
-            raise ScheduleError("schedule outputsize exceeds universe limit")
-        fetcher_config = FetcherConfig.from_env()
-        calendar_config = MarketCalendarConfig.from_env()
-        registry = ContractRegistry(fetcher_config.contracts_dir)
-        if args.require_stopped:
-            validate_scheduler_state_read_only(args.state_path)
-            require_scheduler_stopped(
-                fetcher_config,
-                SCHEDULER_CONTROL_KEY,
-                definition_validator=lambda response: validate_scheduler_definition(
-                    response,
-                    provider="twelve_data",
-                    dataset_keys=(schedule.dataset_key,),
-                    slot_id=schedule.slot_id,
-                    scheduled_local_time=schedule.scheduled_local_time.isoformat(),
-                    timezone_name=schedule.timezone_name,
-                ),
-            )
-            _emit_json({"mode": "require_stopped", "status": "ok"}, stream=sys.stdout)
-            return EXIT_OK
+    """Retired acquiring entrypoint; retained state must use the queue runtime."""
+    from findb_fetcher.legacy_cli import retired
 
-        if universe.universe_id == "twelve_data_us_staging_pilot_v2" and args.state_path.exists():
-            with sqlite3.connect(f"file:{args.state_path}?mode=ro", uri=True) as db:
-                if any(
-                    row[0] != universe.universe_id
-                    for row in db.execute("SELECT DISTINCT universe_id FROM scheduled_job")
-                ):
-                    raise SchedulerStateError("staging pilot requires an isolated universe state")
-        state = SchedulerState(args.state_path)
-        if args.check:
-            _emit_json(
-                {"mode": "scheduler_check", "status": "ok"},
-                stream=sys.stdout,
-            )
-            return EXIT_OK
-
-        if args.run_forever:
-            return _run_forever(
-                fetcher_config,
-                lambda: _run_cycle(
-                    schedule=schedule,
-                    universe=universe,
-                    state=state,
-                    registry=registry,
-                    fetcher_config=fetcher_config,
-                    calendar_config=calendar_config,
-                ),
-                expected_definition=_expected_definition(schedule),
-            )
-
-        raw_storage_config = RawStorageConfig.from_env()
-        twelve_data_config = TwelveDataConfig.from_env()
-        raw_store = R2RawPayloadStore(raw_storage_config)
-        with ExitStack() as stack:
-            calendar = stack.enter_context(PublishedCalendarClient(calendar_config))
-            provider = stack.enter_context(TwelveDataClient(twelve_data_config))
-            source = stack.enter_context(SourceAPIClient(fetcher_config, registry))
-            executor = TwelveDataScheduledExecutor(
-                schedule=schedule,
-                universe=universe,
-                provider=provider,
-                source=source,
-                registry=registry,
-                raw_store=raw_store,
-                state=state,
-            )
-            service = SchedulerService(
-                schedule=schedule,
-                universe=universe,
-                state=state,
-                executor=executor,
-                calendar=calendar,
-            )
-            execution = service.run_once(now=args.as_of or datetime.now(timezone.utc))
-        _emit_summary(execution)
-        return _exit_code(execution)
-    except (
-        ConfigError,
-        ContractError,
-        MarketCalendarError,
-        ScheduleError,
-        RawStorageError,
-        SchedulerStateError,
-        TwelveDataError,
-        UniverseError,
-        OSError,
-        ValueError,
-    ):
-        _emit_json({"error": "scheduler_configuration_failed"}, stream=sys.stderr)
-        return EXIT_CONFIG_ERROR
+    return retired("findb-fetch-scheduler")
 
 
 def _run_forever(

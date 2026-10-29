@@ -21,7 +21,6 @@ import pytest
 from findb_fetcher.acquisition import Acquisition, Authorization
 from findb_fetcher.full_market_runtime import _governed
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
-from findb_fetcher.historical_backfill import run_once
 
 FETCHER_DIR = Path(__file__).resolve().parents[1]
 PROFILES = ("pilot", "full_market", "maintenance", "historical")
@@ -94,15 +93,6 @@ def test_documented_local_profiles_share_writable_ledger_and_restart_state(local
     assert not (local_setup / ".state/full-market/state.sqlite3").exists()
 
 
-def test_documented_local_finlab_scheduler_reaches_governed_sdk_boundary(local_setup):
-    result = _process(local_setup, "finlab", "finlab-cli")
-    assert result["status"] == "completed"
-    assert result["provider_calls"] == 5
-    assert result["source_calls"] == 5  # One fresh grant covers local login and get.
-    assert result["path"] == str(local_setup / ".state/account/governor.sqlite3")
-    assert sum(row[2] for row in result["snapshot"]["quota"]) == 10
-
-
 def test_documented_local_config_still_requires_current_source_authorization(local_setup):
     result = _process(local_setup, "finlab", "denied")
     assert result["provider_calls"] == 0
@@ -111,6 +101,11 @@ def test_documented_local_config_still_requires_current_source_authorization(loc
 
 
 def _probe(provider, mode):
+    from findb_fetcher import provider_work
+
+    provider_work.require_owner = lambda provider: None
+    provider_work.require_acquisition = lambda provider, **kwargs: True
+    provider_work.acquisition_dispatch_deadline = lambda provider, deadline: deadline
     events = {"provider_calls": 0, "source_calls": 0}
     expected = (Path.cwd() / ".state/account/governor.sqlite3").resolve()
     assert os.environ["APP_ENVIRONMENT"] == "local"
@@ -170,6 +165,7 @@ def _probe(provider, mode):
         if profile == "historical":
             item = SimpleNamespace(provider=provider)
             control = SimpleNamespace(
+                provider=provider,
                 claim=lambda: item,
                 authorize=lambda _item: SourceDouble().authorization(
                     "GET", "full-market/authorization?consumer=historical"
@@ -183,7 +179,9 @@ def _probe(provider, mode):
                 operations.append(acquire())
                 return UUID(int=1)
 
-            assert run_once(control, SimpleNamespace(run=run))
+            from findb_fetcher.historical_backfill import _run_once
+
+            assert _run_once(control, SimpleNamespace(run=run))
             return operations[0]
         return acquire()
 

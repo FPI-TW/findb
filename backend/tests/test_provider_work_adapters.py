@@ -501,7 +501,7 @@ async def test_real_shioaji_gateway_and_legacy_smoke_cannot_bypass_owner_or_fail
             finally:
                 gateway.close()
         with h.queue.host_lock("shioaji"):
-            assert smoke(["--target-date", "2026-10-15", "--symbol", "2330"]) == 4
+            assert smoke(["--target-date", "2026-10-15", "--symbol", "2330"]) == 2
 
     await asyncio.to_thread(without_owner)
     assert not h.native_calls()
@@ -536,7 +536,7 @@ async def test_real_shioaji_gateway_and_legacy_smoke_cannot_bypass_owner_or_fail
 
     await asyncio.to_thread(failed_heartbeat)
     assert not h.native_calls()
-    assert "provider_work_required" in capsys.readouterr().out
+    assert "PROVIDER_WORK_REQUIRED" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio

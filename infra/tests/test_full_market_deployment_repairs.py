@@ -216,6 +216,7 @@ preflight_name=preflight
 image=reviewed-image
 cache_mount=()
 account_mount=()
+account_dir="$state_dir/account"
 readiness_mount=()
 runtime_env_args=(--env SOURCE_SECRET=must-not-be-injected)
 sudo() {
@@ -271,7 +272,10 @@ docker() {
             key, separator, value = arguments[index + 1].partition("=")
             assert separator
             environment[key] = value
-    assert environment == {"APP_ENVIRONMENT": target}
+    assert environment == {
+        "APP_ENVIRONMENT": target,
+        "FETCHER_ACCOUNT_STATE_PATH": str(tmp_path / "account/governor.sqlite3"),
+    }
     assert "SOURCE_SECRET=must-not-be-injected" not in arguments
     state.unlink()  # Execute the real CLI with exactly the extracted Docker environment.
     cli = arguments[arguments.index("findb-fetch-runtime") + 1 :]

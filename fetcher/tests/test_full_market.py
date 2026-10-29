@@ -794,7 +794,7 @@ def test_empty_provider_values_are_blocked_source_error_not_no_trade(tmp_path: P
         {"members": [_member(), {**_member(), "member_key": "MSFT", "symbol": "MSFT"}]},
         runtime.feeds[0],
     )
-    assert source.outcomes[0]["reason"] == "source_error"
+    assert source.outcomes == []
     assert runtime.state.health("twelve_data")["unresolved"]
     runtime.http.close()
 

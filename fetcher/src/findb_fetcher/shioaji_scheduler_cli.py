@@ -7,27 +7,20 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Never, Sequence
+from typing import Any, Never
 
 from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
-    require_scheduler_stopped,
     scheduler_stop_event,
     validate_scheduler_definition,
 )
 from findb_fetcher.shioaji_scheduler import (
     MAX_OUTPUT_BYTES,
-    PILOT_DUE,
     SchedulerRun,
     build_runtime,
     default_manifest_path,
     default_state_path,
-    load_manifest,
-    open_production_state,
-    validate_contracts,
-    validate_production_runtime,
-    validate_production_state_path,
 )
 
 EXIT_OK = 0
@@ -58,97 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    try:
-        args = build_parser().parse_args(argv)
-        manifest = load_manifest(args.manifest)
-        if args.initialize_state:
-            # First-deploy bootstrap is deliberately offline. It creates only
-            # the reviewed SQLite schema and must not construct any provider,
-            # Source, calendar, or R2 client.
-            validate_production_state_path(args.state_path, manifest=manifest)
-            state = open_production_state(args.state_path, manifest)
-            state.close()
-            validate_production_state_path(
-                args.state_path,
-                read_only=True,
-                require_existing=True,
-                manifest=manifest,
-            )
-            return _emit({"code": "STATE_READY", "stage": "state", "count": 0})
-        validate_production_state_path(
-            args.state_path,
-            read_only=args.check or args.require_stopped,
-            require_existing=args.require_stopped,
-            manifest=manifest,
-        )
-        fetcher, calendar_config, raw_config = validate_production_runtime()
-        contracts = validate_contracts(fetcher.contracts_dir)
-        if args.check:
-            # Check mode intentionally stops before SQLite opening and before
-            # any provider, R2, Source, or published-calendar client exists.
-            return _emit(
-                {"code": "CHECK_OK", "stage": "manifest", "count": len(manifest["sequences"])}
-            )
+def main(argv: list[str] | None = None) -> int:
+    """Retired acquiring entrypoint; retained state must use the queue runtime."""
+    from findb_fetcher.legacy_cli import retired
 
-        if args.require_stopped:
-            require_scheduler_stopped(
-                fetcher,
-                SCHEDULER_CONTROL_KEY,
-                definition_validator=lambda response: validate_scheduler_definition(
-                    response,
-                    provider="shioaji",
-                    dataset_keys=("tw_equity_minute", "tw_etf_minute"),
-                    slot_id="taiwan_market_window",
-                    scheduled_local_time=PILOT_DUE.isoformat(),
-                    timezone_name="Asia/Taipei",
-                ),
-            )
-            return _emit({"code": "STOPPED_OK", "stage": "control", "count": 0})
-
-        state = open_production_state(args.state_path, manifest)
-        try:
-            if args.run_forever:
-                return _run_forever(
-                    fetcher,
-                    lambda: _run_cycle(
-                        manifest,
-                        state,
-                        fetcher=fetcher,
-                        calendar_config=calendar_config,
-                        raw_config=raw_config,
-                        contracts=contracts,
-                    ),
-                    expected_definition=(
-                        "shioaji",
-                        ("tw_equity_minute", "tw_etf_minute"),
-                        "taiwan_market_window",
-                        PILOT_DUE.isoformat(),
-                        "Asia/Taipei",
-                    ),
-                )
-            scheduler, clients = build_runtime(
-                manifest,
-                state,
-                fetcher=fetcher,
-                calendar_config=calendar_config,
-                raw_config=raw_config,
-                contracts=contracts,
-            )
-            execution = scheduler.run_once(
-                now=datetime.now(timezone.utc),
-            )
-        finally:
-            state.close()
-            # Source and calendar own HTTP clients; R2's boto client has no
-            # required lifecycle hook and is intentionally not touched here.
-            _close_clients(locals().get("clients"))
-        return _emit_run(execution)
-    except Exception:
-        return _emit(
-            {"code": "SAFE_FAILURE", "stage": "setup", "count": 0},
-            status=EXIT_CONFIG_ERROR,
-        )
+    return retired("findb-fetch-shioaji-scheduler")
 
 
 def _run_forever(

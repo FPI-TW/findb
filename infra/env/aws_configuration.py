@@ -70,6 +70,8 @@ def validate(document: Any, *, target: str, unit: str) -> dict[str, str]:
         for name in ("FULL_MARKET_ENABLED", "PROVIDER_WORK_REQUIRED")
     ):
         raise ConfigurationError("configuration_flag_invalid")
+    if result["PROVIDER_WORK_REQUIRED"] != "true":
+        raise ConfigurationError("legacy_provider_execution_retired")
     if (
         result["ECR_REGISTRY"]
         != f"{route['AWS_ACCOUNT_ID']}.dkr.ecr.{route['AWS_REGION']}.amazonaws.com"

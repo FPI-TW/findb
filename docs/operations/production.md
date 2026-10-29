@@ -5,6 +5,55 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
+## Twelve Data 供應商工作佇列積壓（2026-10-29）
+
+2026-10-29 唯讀查核 production DB、Fetcher checkpoint 與實際 Dashboard
+projection，確認 Twelve Data 有 25 筆 Full market daily work，並非人工 historical backfill：
+
+| Dataset | 筆數 | 凍結資料日期 |
+| --- | --- | --- |
+| `us_equity_eod` | 13 | 2026-10-12 至 2026-10-24 |
+| `hk_equity_eod` | 12 | 2026-10-13 至 2026-10-24 |
+
+全部 work 都帶 `scope.legacy_id`，符合 migration `b53da90e7f21` 匯入未完成 daily plan 的規則；
+各自只有第一輪 queued attempt，`started_at` 與 `failure_code` 均為空。Dashboard projection 的
+25 筆 `wait_reason` 全為 `suspended`，沒有 active owner；`recovery_reason`、帳號 cooldown 亦為空，
+查核當下 daily window 為 open。因此目前等待原因是排程停止，並非正在重試或等待失聯 owner。
+
+Backend 與 Twelve Data 的 Pilot／Full／historical 三個 consumers 實際均設定
+`PROVIDER_WORK_REQUIRED=false`，仍走 compatibility runtime，不會消費新 FIFO；三個容器雖有
+protocol v1 label 且正常 running，不能據此認定已完成 cutover。Pilot／Full controls 的
+desired／observed 均 stopped，DB 未查到 cutover audit。Expand migration 建立佇列不等於啟用 consumer，
+單純重啟容器不會讓這 25 筆工作執行。
+
+原 Full checkpoint 另保存 98,374 個 `pending / source_error`、12,810 個
+`manual / mapping_gap` 與 980 個 `manual / retry_exhausted` 成員。這是舊執行結果，不能與 FIFO
+尚未開始的 attempt 混為一談；`source_error` 是多類例外共用分類，未保留足以確認特定 HTTP code、
+provider entitlement 或連線故障的診斷，不能直接歸因為 429、金鑰失效或無資料。
+
+後續處理須先核對原 prepared／receipts／terminal 證據，再依
+[provider-work 切換程序](deployment.md#provider-work-切換) 完成 production cutover 與明確的 control 啟用。
+現行 HK feed 已由 FactSet 負責，舊 Twelve Data HK work 須走退役 feed 的保留證據／人工處理流程，
+不能整批重試、刪除 checkpoint 或改成 completed／no_data。本次僅診斷，未變更 production
+旗標、controls、工作狀態或觸發 provider I/O。
+
+SSM 證據：DB／旗標 `7c8bc889-fa9c-43d9-bacb-b8d8b288d847`、SQLite／consumers
+`b398ef09-5a3d-4f54-b529-0dfade9069e6`、日期與 Dashboard projection
+`088522b4-2b34-4e5b-aff0-e1f54ee78628`。
+
+## 五 provider 舊流程退役評估（2026-10-29）
+
+同日 03:53 UTC 全 provider 唯讀查核：Backend 與全部 15 個 consumers 的
+`PROVIDER_WORK_REQUIRED` 仍為 false；Twelve Data 25 筆與 FinLab 30 筆 daily work 均 suspended。
+Shioaji Full 的 desired／observed 仍 running，其餘九個現行 Pilot／Full controls 均 stopped。
+所有既有 provider owner slots 均未 attested，未查到 cutover audit；零 nonterminal ingestion run
+只代表當下狀態，不能當作停止新 acquisition 後的 drain 證據。
+
+全 provider 程式碼、production 函式雜湊與隔離重現結果支持退役舊 acquiring／無 work fence
+acceptance，但必須先完成五 provider cutover、原交付保留與環境驗收。各 provider 差異與已實作的
+退役邊界見 [provider-work 架構](../architecture/provider_work.md)。Repository 已移除舊執行入口，
+但 production cutover、native 驗收與部署仍未執行；沒有停止 Shioaji、改 flag 或清理 queue。
+
 ## Shioaji 缺口與 DQ 調查（2026-10-05）
 
 Production 2026-10-01、10-02、10-05 共六筆未結案 missing alerts，分別對應每日的

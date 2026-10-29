@@ -370,7 +370,7 @@ def test_futures_nullable_prices_require_a_provided_observation(product, observa
 
 @pytest.mark.asyncio
 async def test_nullable_futures_ingest_serve_and_rerun_preserve_session_metrics(
-    client, test_session
+    owned_client, test_session
 ):
     dataset, _, plan = await _activated_plan(test_session, count=1)
     headers = await _source_headers(test_session)
@@ -393,10 +393,10 @@ async def test_nullable_futures_ingest_serve_and_rerun_preserve_session_metrics(
         "volume": None,
     }
     request = _ingress(plan, [regular, after_hours])
-    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert response.status_code == 202, response.text
     run_id = UUID(response.json()["run_id"])
-    duplicate = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    duplicate = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert duplicate.json()["run_id"] == str(run_id)
     normalizer = FuturesEODContractNormalizer(
         test_session,
@@ -409,14 +409,16 @@ async def test_nullable_futures_ingest_serve_and_rerun_preserve_session_metrics(
         )
     ).summary
     assert (summary.data, summary.no_data, summary.missing) == (2, 0, 0)
-    rerun = await client.post(f"/api/v1/source/runs/{run_id}/rerun", headers=headers)
+    rerun = await owned_client.post(f"/api/v1/source/runs/{run_id}/rerun", headers=headers)
     assert rerun.status_code == 202, rerun.text
     rerun_id = UUID(rerun.json()["run_id"])
     assert (await normalizer.process(request["payload"], rerun_id)).success_records == 2
     quotes = (await test_session.scalars(select(FuturesContractEOD))).all()
     assert len(quotes) == 2 and len({quote.contract_id for quote in quotes}) == 1
     assert {quote.session for quote in quotes} == {"regular", "after_hours"}
-    served = await client.get("/api/v1/serve/futures/eod", params={"contract_code": "TX:202608"})
+    served = await owned_client.get(
+        "/api/v1/serve/futures/eod", params={"contract_code": "TX:202608"}
+    )
     assert served.status_code == 200, served.text
     by_session = {row["session"]: row for row in served.json()["data"]}
     for field in ("open", "high", "low", "close"):
@@ -428,7 +430,7 @@ async def test_nullable_futures_ingest_serve_and_rerun_preserve_session_metrics(
     assert Decimal(by_session["after_hours"]["high"]) == Decimal("106")
     for field in ("low", "close", "volume", "settlement_price", "open_interest"):
         assert by_session["after_hours"][field] is None
-    filtered = await client.get(
+    filtered = await owned_client.get(
         "/api/v1/serve/futures/eod", params={"contract_code": "TX:202608", "session": "regular"}
     )
     assert [row["session"] for row in filtered.json()["data"]] == ["regular"]
@@ -847,16 +849,18 @@ async def test_source_routes_auth_provider_scope_and_inactive_feed(
 
 
 @pytest.mark.asyncio
-async def test_ingest_links_part_canonical_incremental_and_idempotent_rerun(client, test_session):
+async def test_ingest_links_part_canonical_incremental_and_idempotent_rerun(
+    owned_client, test_session
+):
     dataset, _, plan = await _activated_plan(test_session)
     headers = await _source_headers(test_session)
     request = _ingress(plan, [_quote()])
-    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert response.status_code == 202, response.text
     run_id = UUID(response.json()["run_id"])
     run = await test_session.get(IngestionRun, run_id)
     assert run.delivery_part_id == plan.parts[0].part_id
-    duplicate = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    duplicate = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert duplicate.status_code == 202 and duplicate.json()["run_id"] == str(run_id)
     normalizer = FuturesEODContractNormalizer(
         test_session,
@@ -873,7 +877,7 @@ async def test_ingest_links_part_canonical_incremental_and_idempotent_rerun(clie
     await normalizer.process(request["payload"], run_id)
     assert await test_session.scalar(select(func.count()).select_from(FuturesContractEOD)) == 1
     assert (await test_session.scalars(select(Instrument))).one().symbol == "TX"
-    rerun = await client.post(f"/api/v1/source/runs/{run_id}/rerun", headers=headers)
+    rerun = await owned_client.post(f"/api/v1/source/runs/{run_id}/rerun", headers=headers)
     assert rerun.status_code == 202, rerun.text
     rerun_id = UUID(rerun.json()["run_id"])
     assert (await test_session.get(IngestionRun, rerun_id)).delivery_part_id == plan.parts[
@@ -885,7 +889,7 @@ async def test_ingest_links_part_canonical_incremental_and_idempotent_rerun(clie
     changed["payload"]["data"][0]["contract_code"] = "TX:202610"
     changed["payload"]["data"][0]["contract_month"] = "202610"
     assert (
-        await client.post("/api/v1/source/ingest", headers=headers, json=changed)
+        await owned_client.post("/api/v1/source/ingest", headers=headers, json=changed)
     ).status_code == 409
 
 

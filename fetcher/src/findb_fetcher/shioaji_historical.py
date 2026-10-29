@@ -51,6 +51,9 @@ class ShioajiHistoricalRunner:
     deliver_snapshot: Callable[[HistoricalWorkItem, str, ShioajiKbarsSnapshot], UUID]
 
     def run(self, item: HistoricalWorkItem) -> UUID:
+        from findb_fetcher.provider_work import require_owner
+
+        require_owner(item.provider)
         if item.provider != "shioaji":
             raise ShioajiHistoricalBridgeUnavailableError("provider mismatch")
         sequences = [

@@ -554,9 +554,7 @@ class IngestionService:
             raise RawPayloadNotFoundError(f"Raw payload not found for run {run_id}")
         from app.services import provider_work as queue
 
-        coordinated = get_settings().PROVIDER_WORK_REQUIRED
-        if coordinated:
-            await queue.lock_provider(self.db, raw_payload.source)
+        await queue.lock_provider(self.db, raw_payload.source)
         if (
             self.bound_source is not None
             and raw_payload.source.strip().lower() != self.bound_source
@@ -654,38 +652,34 @@ class IngestionService:
                 schema_id=raw_payload.schema_id,
             ),
         )
-        if coordinated:
-            work = await queue.enqueue(
-                self.db,
-                provider=raw_payload.source,
-                stable_key=f"rerun:{new_run_id}",
-                kind="rerun",
-                dataset_key=raw_payload.dataset_key,
-                trade_date=original_run.batch_data_date,
-                scope={"run_id": str(new_run_id), "rerun_from_run_id": str(run_id)},
-            )
-            work.manifest = {
-                "members": [{"key": "retained_raw"}],
-                "retained_raw_payload_id": str(raw_payload.raw_payload_id),
-            }
-            from app.models.provider_work import ProviderWorkAttempt, ProviderWorkReceipt
+        work = await queue.enqueue(
+            self.db,
+            provider=raw_payload.source,
+            stable_key=f"rerun:{new_run_id}",
+            kind="rerun",
+            dataset_key=raw_payload.dataset_key,
+            trade_date=original_run.batch_data_date,
+            scope={"run_id": str(new_run_id), "rerun_from_run_id": str(run_id)},
+        )
+        work.manifest = {
+            "members": [{"key": "retained_raw"}],
+            "retained_raw_payload_id": str(raw_payload.raw_payload_id),
+        }
+        from app.models.provider_work import ProviderWorkAttempt, ProviderWorkReceipt
 
-            attempt = await self.db.scalar(
-                select(ProviderWorkAttempt).where(ProviderWorkAttempt.work_id == work.work_id)
+        attempt = await self.db.scalar(
+            select(ProviderWorkAttempt).where(ProviderWorkAttempt.work_id == work.work_id)
+        )
+        assert attempt is not None
+        self.db.add(
+            ProviderWorkReceipt(
+                run_id=new_run_id,
+                work_id=work.work_id,
+                attempt_id=attempt.attempt_id,
+                member_key="retained_raw",
+                payload_sha256=raw_payload.payload_sha256 or payload_sha256(raw_payload.payload),
             )
-            assert attempt is not None
-            self.db.add(
-                ProviderWorkReceipt(
-                    run_id=new_run_id,
-                    work_id=work.work_id,
-                    attempt_id=attempt.attempt_id,
-                    member_key="retained_raw",
-                    payload_sha256=raw_payload.payload_sha256
-                    or payload_sha256(raw_payload.payload),
-                )
-            )
-        else:
-            await self.create_normalization_job(run)
+        )
         if self.admin_principal is not None:
             from app.services.admin_audit import record_admin_audit
 
@@ -699,7 +693,7 @@ class IngestionService:
                 details={
                     "rerun_from_run_id": str(run_id),
                     "raw_payload_id": str(raw_payload.raw_payload_id),
-                    "provider_work_id": str(work.work_id) if coordinated else None,
+                    "provider_work_id": str(work.work_id),
                 },
                 commit=False,
             )

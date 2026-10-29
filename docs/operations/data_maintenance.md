@@ -151,18 +151,19 @@ checkpoint 的 31 天驗證，不延長 production Shioaji 的回補範圍；dai
 全部 sequences 必須取得 Source `completed` 且 total／success／failed counts 完全符合才可完成，
 不完整或 DQ 失敗不得當作成功／no-data。已保存的 prepared bytes／receipts 依原流程恢復。
 
-`PROVIDER_WORK_REQUIRED=true` 的環境與 Pilot／Full 共用同 provider FIFO／host lock，可在
-daily controls running 時申請，無須刪除或重設 daily terminal checkpoint。舊 compatibility 模式
-仍先停止日常排程並排空。既有 terminal failed request 不會因部署自動重試；另建 request key
+Historical 與 Pilot／Full 共用同 provider FIFO／host lock，可在
+daily controls running 時申請，無須刪除或重設 daily terminal checkpoint。既有 terminal failed request 不會因部署自動重試；另建 request key
 只申請待補日期，驗證 Raw R2 → Source → outbox／worker → canonical → Serve 與完整成員證據，
 再處理對應 alerts／DQ；不得直接改寫舊 checkpoint 或告警狀態。
 
 Historical CLI收到`SIGTERM`／`SIGINT`後立即停止新日期claim，完成當前日期的raw-first交付與
 terminal回報；idle時立即退出。部署停止期限仍為30秒，執行中的日期可能較久，應先等待request
 terminal且沒有running item；scheduler停止狀態不代表historical worker已排空。若程序被強制終止，
-running item保留到15分鐘lease到期，後續claim將其改為pending並核發新token／增加attempt；
-同一日期交付保持immutable identity，舊token不能覆寫重試結果。不要手動刪除raw、SQLite或
-縮短lease以跳過此恢復邊界。僅已確認staging舊historical映像有exit `137`過渡例外，範圍與digest
+原 provider owner 與 running item 保留；heartbeat 到期不釋放 owner，也不將 item 改為 pending。
+只有重新取得相同 shared host-lock inode、確認原 child／descendants 已停止後，才可旋轉
+generation／token 並恢復原 work。先排空原 prepared／accepted runs；需要重試時安全 close／
+settle 至 FIFO 尾端，保留原日期 scope、immutable identity、checkpoint、receipts、budgets 與 cooldown。
+不要手動刪除 raw／SQLite 或縮短 lease 來跳過此恢復邊界。僅已確認staging舊historical映像有exit `137`過渡例外，範圍與digest
 見[部署流程](deployment.md)；新historical worker、日常scheduler、OOM或Docker Error仍fail closed。
 
 維護 historical backfill API 與 service 測試時，涉及日期視窗或 claim／lease 的案例應明確使用
@@ -182,21 +183,17 @@ regular／after_hours；production 最近 366 個 calendar days，local／stagin
 使用既有 Admin／Dashboard「歷史回補」與 `findb-fetch-backfill-plan`，不建立或結清另一
 profile 的 daily plan。Historical 完成後，恢復的日常 runtime 仍自行交付／對帳。
 
-1. 停止 **TAIFEX** Pilot／Full controls，等待 observed stopped 並排空在途 normalization。
-   Backend 在 claim／每次新 acquisition authorization 重查 controls；不要求停止其他 providers。
-2. 使用下列 production CLI 預覽，檢查 scope、日期與 calendar source；預設不下載 provider。
+1. 確認環境已完成 provider-work cutover、shared inode attestation 與 Source credential scope。
+   Historical 與 daily 共用 owner，不要求停止 TAIFEX Pilot／Full controls。
+2. 預覽 production CLI，檢查 scope、日期與 calendar source；預設不下載 provider。
    正常下載預估為每有效日期五次，rows 為 `null`（未知），實際重試可能增加 calls。
-3. 加 `--deliver` 建立 request；可加 `--wait` 等待結果。歷史 consumer 獨立於 Full flag，
-   仍需有效 Source credential／dataset scope、lease 與 account governor。
-4. 驗證 raw manifest、Source run／outbox、DQ、canonical 與 Serve，才恢復 TAIFEX controls。
+3. 加 `--deliver` 建立 request；可加 `--wait` 等待結果。Historical consumer 獨立於 Full flag，
+   仍需有效 Source credential、owner fence、已收盤日期與 account governor。
+4. 驗證 raw manifest、全部 Source receipts／outbox、DQ、canonical 與 Serve。
 
-若 request 長時間維持 `queued`，先唯讀檢查日期 item 的 `lease_attempt`、`started_at` 與
-`run_id`；`lease_attempt=0` 且其餘兩者為空表示尚未領取。建立 request 成功不代表已進入
-維護窗口：所有未 retired 的 TAIFEX controls 都須同時滿足 `desired_state=stopped` 與
-`observed_state=stopped`，且沒有屬於其他 work item 的 queued／pending／processing／retrying
-TAIFEX `tw_futures_eod` ingestion run，才可領取已收盤日期。Pilot 在兩次 cycle 間暫時回報
-observed stopped，若 desired 仍為 running，仍不符合條件。Historical worker 空閒時每
-15 秒輪詢一次；應另核對 consumer 存活與最近 claim 存取紀錄，不能只由 queued 推定 worker 故障。
+Request 長時間 queued 時，先唯讀檢查 provider-work projection 的 FIFO head、scope、not_before、
+owner heartbeat／recovery_reason 與 attested inode，並核對 consumer 存活。Historical item 的
+lease 欄位只是 queue owner 投影，TTL 到期不能證明原 child 已死，也不會自動重派。
 
 ```bash
 findb-fetch-backfill-plan --provider taifex --dataset-key tw_futures_eod \
@@ -230,10 +227,12 @@ canonical；重新抓取沿用 source precedence／fetched_at upsert，可更新
 
 `findb-historical-taifex` 使用 `/var/lib/findb-taifex-fetcher/historical/state.sqlite3`，與日常
 checkpoint 隔離並共用 account governor。商品 bytes／references、manifest、prepared body、
-receipt 與重試狀態跨重啟／lease reclaim 保留；不得刪檔重置工作。Source key／origin／environment
+receipt 與重試狀態跨重啟／fenced owner recovery 保留；不得刪檔重置工作。Source key／origin／environment
 改變時 checkpoint fail closed，應在排空後另建 request／checkpoint，保留原檔供稽核。
 429、transport、5xx 與暫時 R2／Source 故障最多三次，預設等待 30／120 秒且遵守較晚的
-平台 cooldown；不足剩餘 lease 時保存狀態等待 15 分鐘 lease 到期重新 claim。
+平台 cooldown。授權期限不足時停止新 I/O、保存原狀態，安全 close／drain／settle 後將
+下一 attempt 排至 FIFO 尾端，依 not_before 與原 account cooldown 再領取；不等待 TTL 到期重派。
+若 heartbeat／程序狀態無法確認，保留 owner，依相同 shared inode 的 fenced recovery 處理。
 格式、契約、大小限制、DQ 錯誤或重試耗盡會停止 request，保留已完成日期並取消後續日期；
 修復後另建 request key 重跑未完成區間。取消／失效 lease 禁止新抓取，舊 token 不得完成。
 
@@ -278,9 +277,9 @@ migration-owned partition。Staging monitoring以一筆為告警門檻，因此�
 
 ## Provider work 模式的 historical／raw rerun
 
-當環境完成 [provider-work cutover](deployment.md#provider-work-切換) 並同步啟用
-`PROVIDER_WORK_REQUIRED=true` 後，本文前述 TAIFEX stopped-controls 維護窗口與獨立 historical TTL lease
-只屬舊 compatibility protocol。新模式可在 Pilot／Full desired running 時提交所有既有支援 scope 的回補。
+所有環境須完成 [provider-work cutover](deployment.md#provider-work-切換)。
+TAIFEX stopped-controls 維護窗口與獨立 historical TTL lease 已退役；
+可在 Pilot／Full desired running 時提交所有既有支援 scope 的回補。
 它們依同 provider FIFO 排隊；日期由早到晚入列，profile／request 決策與證據不互相覆蓋。
 可用 scope 以後端 capability matrix 與 active scheduler scope 為準；包含 FactSet HK EOD 與
 production Shioaji 股票／ETF minute，TW ETF EOD 仍不支援 historical。

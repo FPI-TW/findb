@@ -74,6 +74,32 @@ Captured warning 保存在失敗的 `pytest.log`，不受 assertion repr 截短�
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
 
+## Provider-work 退役驗證
+
+所有五 provider 的設定／無 owner 拒絕矩陣在 Backend `test_provider_work_retirement.py`
+與 Fetcher `test_twelve_data_cli.py`；後者覆蓋八個舊 acquiring CLI 的 exit 2、無新檔案與原
+checkpoint bytes 不變，以及 daily cycle／drain 只呼叫 queue dispatcher。部署的 false 拒絕與
+bootstrap shared account path 分別由 Infra `test_provider_work_retirement.py`、
+`test_aws_configuration.py`、`test_full_market_deployment_repairs.py` 覆蓋。
+
+原 compatibility cycle／獨立 lease orchestration 測試由正式 FIFO lifecycle／native adapter
+integration 測試取代；不保留已退役 CLI 的成功抓取預期。跨環境／profile 的 frozen membership
+仍由 `test_execution_profile_parity.py` 直接驗證原 plan identity，calendar／normalizer 測試沿用。
+Backend `test_provider_work*` 與 `test_shioaji_historical_functional.py` 使用真實 DB fence、Source、
+prepared intent／confirm、receipts、normalization、canonical／Serve 與 native subprocess 替身，
+涵蓋 crash/recovery、cancel/expiry drain、429/503、完整 sequence proof 與 durable retry budget。
+Migration tests 只在建立 pre-queue schema fixture 時模擬舊 acceptance；升級後 replay 使用正式 fence，
+核對 raw hash／prepared bodies／receipt lineage／部分 sequence checkpoint 保留。
+
+一般 payload-focused tests 明確使用 `owned_client`／`OwnedHistoricalClient` 建立隔離的 owned scope；
+protocol rejection tests 保留 raw client。Account governor／SDK／mapper layer unit tests以 fixture
+替換獨立測試過的 ownership boundary，仍執行真實 account locks、pacing、quota、dispatch 與子程序回收。
+這些 layer stubs 不設定 false 模式，不構成 production ownership 或 native 驗收證據。
+
+本機驗證使用 `pnpm check`、`pnpm test:contracts`、`pnpm test:backend`、`pnpm test:fetcher` 與
+`pnpm test:infra`。未提供 private FactSet native captures 的案例明確 skipped；真實 provider entitlement、
+production drain／attestation／native 驗收與 rollback 均須另依部署 runbook 執行。
+
 ## 依賴安全更新
 
 套件版本以 `pnpm-lock.yaml`、`backend/uv.lock` 與 `fetcher/uv.lock` 為準。修復間接依賴前，

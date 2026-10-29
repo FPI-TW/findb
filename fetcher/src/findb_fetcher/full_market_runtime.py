@@ -11,7 +11,6 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
-from datetime import time as clock_time
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -239,10 +238,9 @@ def split_rows(
 def _governed(method):
     @wraps(method)
     def run(self, *args, **kwargs):
-        from findb_fetcher.provider_work import active
+        from findb_fetcher.provider_work import active, require_owner
 
-        if self.provider == "factset" and active() is None:
-            raise ReadinessBlockedError("FactSet acquisition requires provider work enforcement")
+        require_owner(self.provider)
         if not self._acquisition_allowed():
             if not self.runtime_window()["open"]:
                 raise DailyWindowClosedError("daily acquisition window closed")
@@ -254,7 +252,6 @@ def _governed(method):
                     raise DailyWindowClosedError("daily acquisition window closed")
                 raise ReadinessBlockedError("scheduler acquisition stopped")
             consumer = os.getenv("FETCHER_CONSUMER_PROFILE", "full_market")
-            from findb_fetcher.provider_work import active
 
             owner = active()
             consumer = (
@@ -398,7 +395,7 @@ class FullMarketRuntime:
         ) == "maintenance"
         if not maintenance and not self.runtime_window()["open"]:
             raise DailyWindowClosedError("daily acquisition window closed")
-        if self.sdk is not None and not getattr(self.sdk, "is_alive", lambda: True)():
+        if self.sdk is not None and (not getattr(self.sdk, "is_alive", lambda: True)()):
             self.sdk.close()
             self.sdk = None
         try:
@@ -877,185 +874,18 @@ class FullMarketRuntime:
         return result
 
     def drain(self) -> None:
-        """Deliver immutable prepared bodies without acquiring new provider data."""
+        """Drain retained deliveries only through the original fenced owner."""
         from findb_fetcher.provider_work import enabled
 
-        if enabled():
-            self._queued_cycle(include_health=False)
-            return
-        if self.provider == "factset":
-            return
-        self._drain_blocked = False
-        for saved in self.state.drain_plans(self.provider, now=time.time()):
-            plan = json.loads(saved["body"])
-            feed = next(
-                (
-                    item
-                    for item in self.installed_feeds
-                    if item["dataset_key"] == plan["dataset_key"]
-                ),
-                None,
-            )
-            if feed is None:
-                continue
-            can_continue = True
-            if saved["drain_keys"]:
-                release = self.source.release(plan["release_id"])
-                can_continue = self._deliver_plan(
-                    plan, release, feed, drain_only=True, drain_keys=saved["drain_keys"]
-                )
-            self.state.evaluate(self.source.evaluate(plan["plan_id"]))
-            if not can_continue:
-                self._drain_blocked = True
-                break
+        enabled()
+        self._queued_cycle(include_health=False)
 
     def cycle(self, *, drain_prepared: bool = True) -> dict[str, Any]:
+        """All providers use the same durable queue, including retained work."""
         from findb_fetcher.provider_work import enabled
 
-        if enabled():
-            return self._queued_cycle()
-        if self.provider == "factset":
-            return self.health()
-        if drain_prepared:
-            self.drain()
-        if self._drain_blocked:
-            return self.health()
-        self._ensure_proof()
-        authorization = self.source.request(
-            "GET", "full-market/authorization?consumer=" + self.execution_profile
-        )
-        if authorization.get("acquisition_allowed") is not True:
-            return self.health()
-        self.feeds = [
-            feed
-            for feed in self.installed_feeds
-            if feed["dataset_key"] in authorization["admitted_dataset_keys"]
-        ]
-        now = datetime.now(timezone.utc)
-        if self.provider != "taifex" and self.state.refresh_due(self.provider, now.timestamp()):
-            try:
-                refreshed = self.sync_universes(
-                    dataset_keys=[feed["dataset_key"] for feed in self.feeds]
-                )
-                next_refresh = []
-                for feed in self.feeds:
-                    local_now = now.astimezone(ZoneInfo(feed["source_timezone"]))
-                    trigger = datetime.combine(
-                        local_now.date(),
-                        clock_time.fromisoformat(feed["scheduled_time"]),
-                        local_now.tzinfo,
-                    )
-                    if trigger <= local_now:
-                        trigger += timedelta(days=1)
-                    next_refresh.append(trigger.timestamp())
-                self.state.refresh(
-                    self.provider, now=now.timestamp(), result=refreshed, next_at=min(next_refresh)
-                )
-            except Exception:
-                self.state.refresh(
-                    self.provider,
-                    now=now.timestamp(),
-                    result=[{"status": "blocked", "reason": "official_universe_refresh_failed"}],
-                )
-        releases = []
-        for feed in self.feeds:
-            listed = self.source.universes(feed["dataset_key"], self.provider)
-            if listed.get("activation", {}).get("enabled") is not True or not listed.get(
-                "published_release_id"
-            ):
-                continue
-            release = self.source.release(listed["published_release_id"])
-            if (
-                release["provider"] != self.provider
-                or release["dataset_key"] != feed["dataset_key"]
-                or release["status"] != "published"
-            ):
-                raise ReadinessBlockedError("published universe identity invalid")
-            releases.append((feed, listed, release))
-        if not releases:
-            return self.health()
-        due_work: list[tuple[date, dict[str, Any]]] = []
-        for feed, listed, release in releases:
-            activation = date.fromisoformat(listed["activation"]["activation_date"])
-            local = now.astimezone(ZoneInfo(feed["source_timezone"]))
-            through = local.date() - timedelta(days=feed["target_date_lag_days"])
-            if local.strftime("%H:%M") < feed["scheduled_time"]:
-                through -= timedelta(days=1)
-            due_dates = [
-                activation + timedelta(days=offset)
-                for offset in range((through - activation).days + 1)
-            ]
-            due_work.extend((day, feed) for day in due_dates)
-        if self.daily_policy:
-            return self._fair_direct_cycle(due_work)
-        for day, feed in sorted(due_work, key=lambda work: work[0], reverse=True):
-            if not self._acquisition_allowed():
-                self.pause()
-                return self.health()
-            # Current deadline comes first; catchup retains every unresolved scheduled date.
-            try:
-                plan = self._plan_for_date(feed, day)
-            except DatedUniversePendingError:
-                continue
-            self.state.clear_date(self.provider, feed["dataset_key"], day)
-            if plan["status"] == "skipped_calendar":
-                continue
-            self.state.record_plan(plan, self.provider)
-            can_continue = True
-            if plan["status"] != "complete":
-                pinned = self.source.release(plan["release_id"])
-                can_continue = self._deliver_plan(plan, pinned, feed)
-            evaluated = self.source.evaluate(plan["plan_id"])
-            self.state.evaluate(evaluated)
-            if not can_continue:
-                return self.health()
-            if evaluated["status"] == "complete":
-                self.bundles.pop((feed["dataset_key"], day), None)
-                self.futures.pop(day.isoformat(), None)
-        return self.health()
-
-    def _fair_direct_cycle(self, due_work: list[tuple[date, dict[str, Any]]]) -> dict[str, Any]:
-        ready = []
-        for day, feed in sorted(due_work, key=lambda work: work[0], reverse=True):
-            if not self._acquisition_allowed():
-                return self.health()
-            try:
-                plan = self._plan_for_date(feed, day)
-            except DatedUniversePendingError:
-                continue
-            self.state.clear_date(self.provider, feed["dataset_key"], day)
-            if plan["status"] == "skipped_calendar":
-                continue
-            self.state.record_plan(plan, self.provider)
-            if plan["status"] != "complete":
-                ready.append((feed, plan))
-        datasets = [feed["dataset_key"] for feed in self.feeds]
-        offset = self.state.schedule_cursor(self.provider + ":feeds") % max(1, len(datasets))
-        order = datasets[offset:] + datasets[:offset]
-        ready.sort(
-            key=lambda entry: (
-                -date.fromisoformat(entry[1]["trade_date"]).toordinal(),
-                order.index(entry[0]["dataset_key"]),
-            )
-        )
-        for feed, plan in ready:
-            # Persist the next sibling before dispatch, including failed/crashed turns.
-            self.state.schedule_save(
-                self.provider + ":feeds",
-                cursor=(datasets.index(feed["dataset_key"]) + 1) % len(datasets),
-            )
-            if not self._acquisition_allowed():
-                self.pause()
-                break
-            self._deliver_plan(plan, self.source.release(plan["release_id"]), feed)
-            self.state.evaluate(self.source.evaluate(plan["plan_id"]))
-            if self.last_batch.get("reason") in {
-                "quota_wait",
-                "acquisition_window_closed",
-                "suspended",
-            }:
-                break
-        return self.health()
+        enabled()
+        return self._queued_cycle()
 
     def sync_queued_universes(self) -> list[dict[str, Any]]:
         from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
@@ -1891,6 +1721,9 @@ class FullMarketRuntime:
         drain_only: bool = False,
         drain_keys: set[str] | None = None,
     ) -> bool:
+        from findb_fetcher.provider_work import require_owner
+
+        require_owner(self.provider)
         members = {member["member_key"]: member for member in release["members"]}
         entries = [(part, key) for part in plan["parts"] for key in part["member_keys"]]
         offset = (
@@ -2089,7 +1922,6 @@ class FullMarketRuntime:
                         window=datetime.now(timezone.utc).date().isoformat(),
                         until=time.time() + 60,
                     )
-                from findb_fetcher.provider_work import enabled
 
                 predispatch_wait = (
                     isinstance(exc, QuotaBlockedError)
@@ -2100,7 +1932,7 @@ class FullMarketRuntime:
                         or owner.dispatch_observations == dispatch_before
                     )
                 )
-                if predispatch_wait and (enabled() or self.daily_policy):
+                if predispatch_wait:
                     self.state.defer_wait(key, now=time.time())
                     if self.daily_policy:
                         self.last_batch["reason"] = "quota_wait"
@@ -2117,8 +1949,7 @@ class FullMarketRuntime:
                     reason=reason,
                     now=time.time(),
                 )
-                if limited or enabled():
-                    return False
+                return False
             except SourceAPIResponseError as exc:
                 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
 
@@ -2127,9 +1958,7 @@ class FullMarketRuntime:
                         "Source provider owner fence differs"
                     ) from None
                 if exc.status_code == 429:
-                    from findb_fetcher.provider_work import enabled
-
-                    if enabled() and (
+                    if (
                         self.state.prepared(key) is not None
                         or owner is None
                         or owner.dispatch_observations == dispatch_before
@@ -2146,10 +1975,8 @@ class FullMarketRuntime:
                     reason="source_rejected",
                     now=time.time(),
                 )
-                from findb_fetcher.provider_work import enabled
 
-                if self.provider == "taifex" or enabled():
-                    return False
+                return False
             except Exception as exc:
                 if self.daily_policy and isinstance(exc, ShioajiSdkError) and exc.quota_wait:
                     self.state.defer_wait(key, now=time.time())
@@ -2162,10 +1989,8 @@ class FullMarketRuntime:
                     reason="source_error",
                     now=time.time(),
                 )
-                from findb_fetcher.provider_work import enabled
 
-                if enabled():
-                    return False
+                return False
                 self.source.outcome(
                     plan["plan_id"],
                     work_item_id=part["work_item_id"],

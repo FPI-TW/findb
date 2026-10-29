@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.models.canonical import Instrument, MarketDataEOD
 from app.models.registry import AdminAuditEvent, DatasetRegistry, SchedulerControl, UniverseRelease
 from app.services.provider_work import lock_provider
@@ -25,7 +24,7 @@ def acquisition_allowed(
         return True
     # FactSet catalogue maintenance must precede baseline publication/cutover.
     if maintenance and provider == "factset":
-        return get_settings().PROVIDER_WORK_REQUIRED
+        return True
     cutover = (dataset.config or {}).get("hk_provider_cutover")
     today = utc_now().astimezone(ZoneInfo("Asia/Hong_Kong")).date()
     if cutover is None:
@@ -38,17 +37,11 @@ def acquisition_allowed(
         return False
     if today < boundary:
         return provider == "twelve_data"
-    return (
-        provider == "factset"
-        and get_settings().PROVIDER_WORK_REQUIRED
-        and (trade_date is None or trade_date >= boundary)
-    )
+    return provider == "factset" and (trade_date is None or trade_date >= boundary)
 
 
 async def apply_cutover(db: AsyncSession, *, effective_date: date, actor: str) -> dict:
     """One operator transaction, after all acquisition owners and controls stop."""
-    if not get_settings().PROVIDER_WORK_REQUIRED:
-        raise ValueError("HK cutover requires enforced provider work")
     # Same FIFO -> environment -> dataset -> controls order as Owner start.
     owners = [await lock_provider(db, provider) for provider in ("factset", "twelve_data")]
     if any(owner.attempt_id or not owner.host_lock_identity for owner in owners):

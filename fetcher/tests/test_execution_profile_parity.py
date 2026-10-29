@@ -75,29 +75,13 @@ def test_same_calendar_date_retry_and_frozen_membership(
             ]
         )
     )
-    seen = []
-
-    def deliver(plan, pinned, current_feed, **kwargs):
-        if not kwargs.get("drain_only"):
-            seen.append((plan["trade_date"], plan["parts"][0]["member_keys"], pinned["release_id"]))
-        return True
-
-    runtime._deliver_plan = deliver
-    if feed["provider"] == "factset":
-        # FactSet has no legacy, unfenced acquisition path in either profile.
-        runtime.cycle()
-        runtime.drain()
-        assert seen == []
-        return
-    for _ in range(2):
-        runtime.cycle()
-        # New universe members cannot change either profile's existing plans.
-        release["members"].append({**_member(), "member_key": "D", "symbol": "D"})
     expected_members = ["A", "B"] if profile == "pilot" else ["A", "B", "C"]
-    assert seen == [
-        (day, expected_members, "published-original")
-        for day in ("2026-07-22", "2026-07-21", "2026-07-22", "2026-07-21")
-    ]
+    for _ in range(2):
+        for day in (date(2026, 7, 21), date(2026, 7, 22)):
+            existing = runtime._existing_plan(selected, day)
+            assert existing["parts"][0]["member_keys"] == expected_members
+            assert existing["release_id"] == "published-original"
+        release["members"].append({**_member(), "member_key": "D", "symbol": "D"})
     frozen["2026-07-22"]["execution_profile"] = "full_market" if profile == "pilot" else "pilot"
     with pytest.raises(ReadinessBlockedError, match="identity invalid"):
         runtime._existing_plan(selected, date(2026, 7, 22))

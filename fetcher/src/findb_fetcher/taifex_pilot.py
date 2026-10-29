@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
 import fcntl
 import hashlib
 import json
 import os
 import re
 import sqlite3
-import threading
 import time
-from contextlib import ExitStack
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as clock_time
 from pathlib import Path
@@ -20,23 +17,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import FetcherConfig, MarketCalendarConfig, app_environment
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.market_calendar import PublishedCalendarClient
-from findb_fetcher.pilot_catalog import validate_staging_pilots
 from findb_fetcher.providers.taifex import fetch_report, parse_report
 from findb_fetcher.raw_storage import (
-    R2RawPayloadStore,
-    RawStorageConfig,
     attach_raw_object,
     require_raw_provenance,
 )
 from findb_fetcher.scheduler_control import (
-    SchedulerControlClient,
-    SchedulerControlLoop,
-    require_scheduler_stopped,
-    scheduler_stop_event,
     validate_scheduler_definition,
 )
 from findb_fetcher.twelve_data_scheduler import _wait_for_terminal
@@ -358,86 +345,10 @@ def _definition(response: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--config", type=Path, default=Path("/app/configs/taifex_tw_staging_pilot.v1.json")
-    )
-    parser.add_argument(
-        "--state-path",
-        type=Path,
-        default=Path(
-            os.getenv(
-                "FETCHER_STATE_PATH", "/var/lib/findb-taifex-fetcher/staging-pilot-v1/state.sqlite3"
-            )
-        ),
-    )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--check", action="store_true")
-    mode.add_argument("--initialize-state", action="store_true")
-    mode.add_argument("--require-stopped", action="store_true")
-    mode.add_argument("--run-forever", action="store_true")
-    args = parser.parse_args(argv)
-    try:
-        if app_environment("") != "staging":
-            raise ValueError("TAIFEX pilot requires the explicit staging deployment target")
-        validate_staging_pilots(args.config.parent)
-        config = json.loads(args.config.read_bytes())
-        expected = json.loads((args.config.parent / "taifex_tw_staging_pilot.v1.json").read_bytes())
-        if config != expected:
-            raise ValueError("TAIFEX config differs from validated pilot")
-        state = PilotState(args.state_path, read_only=args.require_stopped)
-        if args.initialize_state:
-            return 0
-        fetcher = FetcherConfig.from_env()
-        calendars = MarketCalendarConfig.from_env()
-        registry = ContractRegistry(fetcher.contracts_dir)
-        raw_config = RawStorageConfig.from_env()
-        if args.check:
-            print('{"mode":"taifex_pilot_check","status":"ok"}')
-            return 0
-        if args.require_stopped:
-            require_scheduler_stopped(fetcher, CONTROL_KEY, definition_validator=_definition)
-            return 0
+    """Retired acquiring entrypoint; retained state must use the queue runtime."""
+    from findb_fetcher.legacy_cli import retired
 
-        stop_signal = threading.Event()
-
-        def cycle() -> dict[str, Any]:
-            with ExitStack() as stack:
-                calendar = stack.enter_context(PublishedCalendarClient(calendars))
-                http = stack.enter_context(httpx.Client(timeout=30, follow_redirects=False))
-                source = stack.enter_context(SourceAPIClient(fetcher, registry))
-                result = state.run(
-                    now=datetime.now(timezone.utc),
-                    calendar=calendar,
-                    http=http,
-                    source=source,
-                    raw_store=R2RawPayloadStore(raw_config),
-                    registry=registry,
-                    config=config,
-                    stop_event=stop_signal,
-                )
-                print(json.dumps(result, sort_keys=True))
-                return result
-
-        def controlled_cycle() -> None:
-            result = cycle()
-            if result["status"] != "completed":
-                raise RuntimeError(
-                    f"taifex_pilot:{result['status']}:{result.get('reason', 'incomplete')}"
-                )
-
-        if args.run_forever:
-            with scheduler_stop_event() as stop:
-                stop_signal = stop
-                with SchedulerControlClient(fetcher, CONTROL_KEY) as control:
-                    return SchedulerControlLoop(control, definition_validator=_definition).run(
-                        controlled_cycle, stop_event=stop
-                    )
-        result = cycle()
-        return 0 if result["status"] == "completed" else 9 if result["status"] == "blocked" else 8
-    except (ValueError, OSError, RuntimeError, sqlite3.Error):
-        print('{"error":"taifex_pilot_configuration_failed"}')
-        return 2
+    return retired("findb-fetch-taifex-pilot")
 
 
 if __name__ == "__main__":

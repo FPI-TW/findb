@@ -8,6 +8,13 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
+- Production 五 provider 的 provider-work cutover：新版本已退役 false 執行模式，不能直接 promotion
+  到仍為 false／未 attested 的環境。先停止新 acquisition（包含 Shioaji Full）、排空並保存
+  RDS／各 profile 與 historical SQLite＋sidecars／原 prepared／receipts／account budgets 與 cooldown，
+  核對 55 筆 migration daily backlog 與退役 Twelve Data HK scope，再依正式 runbook 完成全部 15 consumers、
+  五個 shared inodes／單 host preflight 與 Owner attestation、兩端 true。不得以本機測試取代 native 驗收，
+  不得刪除 state、重設預算或重新執行全部舊工作；實際 cutover／啟停／部署需另獲授權。
+
 - Owner 於台北時間 2026-10-16 將香港排除本次 native 驗收；本次 staging Pilot 目標為其餘六條，
   尚未全部通過，因此 production native 驗收保持未開始。七條 feed 架構與香港失敗紀錄仍保留。
   R2 診斷 prefix 的鎖定與相同 bytes 重試已驗證；不能據此宣稱整個 bucket 或七條 feeds 通過。

@@ -21,15 +21,16 @@ from app.services.historical_backfill import (
     HistoricalBackfillError,
     HistoricalBackfillValidationError,
     cancel_request,
-    claim_next_item,
     complete_item,
     create_request,
     list_requests,
     preview_request,
 )
 from app.services.normalize.base import BaseNormalizer
+from app.services.provider_work import ProviderWorkError
 from app.services.source_clients import create_source_client
 from app.utils import uuid7
+from tests.owned_history import claim_next_item
 
 
 @pytest.mark.asyncio
@@ -161,7 +162,7 @@ async def test_historical_acquisition_probe_is_current_scoped_and_never_renews(
         assert response.status_code in {401, 403, 404}
     else:
         assert response.status_code == 200
-        assert response.json()["acquisition_allowed"] is (deny is None)
+        assert response.json()["acquisition_allowed"] is (deny in {None, "expired", "token"})
         assert response.json()["max_age_seconds"] == 5
         assert datetime.fromisoformat(response.json()["checked_at"]) == datetime.fromisoformat(
             response.headers["X-FinDB-Acquisition-Checked-At"]
@@ -678,23 +679,22 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
     )
     test_session.add_all([successful_run, alert])
     await test_session.flush()
-    completed = await complete_item(
-        test_session,
-        item.item_id,
-        provider="shioaji",
-        outcome="completed",
-        lease_token=item.lease_token,
-        run_id=successful_run.run_id,
-        failure_code=None,
-        failure_message=None,
-    )
+    with pytest.raises(ProviderWorkError, match="complete expected scope"):
+        async with test_session.begin_nested():
+            await complete_item(
+                test_session,
+                item.item_id,
+                provider="shioaji",
+                outcome="completed",
+                lease_token=item.lease_token,
+                run_id=successful_run.run_id,
+                failure_code=None,
+                failure_message=None,
+            )
     await test_session.refresh(request)
-    await test_session.refresh(completed)
+    await test_session.refresh(item)
     await test_session.refresh(alert)
-    assert completed.status == request.status == "completed"
-    # Control-plane completion is not the normalization terminal transition.
-    # A Source-accepted run only resolves delivery alerts after canonical work
-    # has completed successfully.
+    assert request.status == item.status == "running"
     assert alert.status == "open"
 
 
@@ -748,7 +748,7 @@ async def test_full_snapshot_alert_waits_for_normalizer_terminal_success(test_se
 
 
 @pytest.mark.asyncio
-async def test_expired_lease_is_reclaimed_and_late_completion_cannot_overwrite(
+async def test_expired_legacy_projection_never_reclaims_whole_work_owner(
     test_session, historical_backfill_clock
 ) -> None:
     today = historical_backfill_clock.date()
@@ -770,33 +770,21 @@ async def test_expired_lease_is_reclaimed_and_late_completion_cannot_overwrite(
     first_token = first.lease_token
     first.lease_expires_at = historical_backfill_clock - timedelta(seconds=1)
     await test_session.flush()
-    reclaimed = await claim_next_item(
-        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
-    )
-    assert reclaimed is not None and reclaimed.lease_token is not None
-    assert reclaimed.item_id == first.item_id
-    assert reclaimed.lease_token != first_token and reclaimed.lease_attempt == 2
-    with pytest.raises(HistoricalBackfillConflictError, match="not leased"):
-        await complete_item(
-            test_session,
-            first.item_id,
-            provider="shioaji",
-            outcome="failed",
-            lease_token=first_token,
-            run_id=None,
-            failure_code="OLD_WORKER",
-            failure_message="safe",
+    from app.models.provider_work import ProviderWorkOwner
+    from app.services import provider_work
+
+    owner = await test_session.get(ProviderWorkOwner, (provider_work.environment(), "shioaji"))
+    owner.expires_at = historical_backfill_clock - timedelta(seconds=1)
+    owner_identity = (owner.attempt_id, owner.generation, owner.token)
+    assert (
+        await claim_next_item(
+            test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
         )
-    await complete_item(
-        test_session,
-        reclaimed.item_id,
-        provider="shioaji",
-        outcome="failed",
-        lease_token=reclaimed.lease_token,
-        run_id=None,
-        failure_code="PROVIDER_FAILED",
-        failure_message="safe",
+        is None
     )
+    assert (owner.attempt_id, owner.generation, owner.token) == owner_identity
+    assert first.lease_token == first_token
+    assert owner.recovery_reason == "heartbeat_missing"
 
 
 @pytest.mark.asyncio
@@ -820,7 +808,7 @@ async def test_cancelled_request_rejects_inflight_completion(
     )
     assert item is not None and item.lease_token is not None
     await cancel_request(test_session, request.request_id, actor="operator")
-    with pytest.raises(HistoricalBackfillConflictError, match="not leased"):
+    with pytest.raises((HistoricalBackfillConflictError, ProviderWorkError)):
         await complete_item(
             test_session,
             item.item_id,
@@ -831,7 +819,7 @@ async def test_cancelled_request_rejects_inflight_completion(
             failure_code=None,
             failure_message=None,
         )
-    with pytest.raises(HistoricalBackfillConflictError, match="not leased"):
+    with pytest.raises((HistoricalBackfillConflictError, ProviderWorkError)):
         await complete_item(
             test_session,
             item.item_id,
@@ -920,6 +908,18 @@ async def test_claim_uses_shioaji_market_date_at_utc_taipei_boundary(test_sessio
         **valid_request.items[0].calendar_snapshot,
         "trade_date": valid_request.items[0].trade_date.isoformat(),
     }
+    from app.models.provider_work import ProviderWork, ProviderWorkAttempt
+
+    queued = await test_session.scalar(
+        select(ProviderWork).where(
+            ProviderWork.stable_key == f"historical:{valid_request.items[0].item_id}"
+        )
+    )
+    queued.trade_date = valid_request.items[0].trade_date
+    attempt = await test_session.scalar(
+        select(ProviderWorkAttempt).where(ProviderWorkAttempt.work_id == queued.work_id)
+    )
+    attempt.not_before = utc_previous_day
     await test_session.flush()
 
     claimed = await claim_next_item(
@@ -1041,7 +1041,7 @@ async def test_source_claim_and_terminal_failure_are_authenticated_and_serial(
     assert complete.status_code == 200
     assert (
         await client.post("/api/v1/source/historical-backfills/claim", headers={"X-API-Key": key})
-    ).json()["item_id"] is None
+    ).status_code == 409
 
 
 @pytest.mark.asyncio
@@ -1107,7 +1107,7 @@ async def test_source_complete_requires_matching_terminal_run_and_lease_token(
         headers=headers,
         json={"status": "completed", "lease_token": lease_token, "run_id": str(run.run_id)},
     )
-    assert complete.status_code == 200
+    assert complete.status_code == 409
     assert (
         await client.post(
             f"/api/v1/source/historical-backfills/{item_id}/complete",
@@ -1326,3 +1326,17 @@ async def test_create_endpoint_calendar_gap_uses_default(
         await test_session.scalar(select(func.count()).select_from(HistoricalBackfillRequest))
     ) == 1
     assert await test_session.scalar(select(func.count()).select_from(HistoricalBackfillItem)) == 2
+
+
+@pytest.fixture(autouse=True)
+def queue_clock(monkeypatch):
+    from app.services import historical_backfill, provider_work
+
+    monkeypatch.setattr(provider_work, "utc_now", lambda: historical_backfill.utc_now())
+
+
+@pytest.fixture
+def client(client, test_session):
+    from tests.owned_history import OwnedHistoricalClient
+
+    return OwnedHistoricalClient(client, test_session)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from findb_fetcher import finlab_scheduler_cli
@@ -21,58 +20,6 @@ def _env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FINLAB_API_TOKEN", "token")
     monkeypatch.setenv("FETCHER_CONTRACTS_DIR", str(CONTRACTS_DIR))
     monkeypatch.setenv("FETCHER_FINLAB_STATE_PATH", str(tmp_path / "state.sqlite3"))
-
-
-def test_check_mode_does_not_construct_network_or_sdk_clients(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    _env(monkeypatch, tmp_path)
-
-    class Unexpected:
-        def __init__(self, *_args, **_kwargs):
-            raise AssertionError("external client constructed in --check")
-
-    monkeypatch.setattr(finlab_scheduler_cli, "PublishedCalendarClient", Unexpected)
-    monkeypatch.setattr(finlab_scheduler_cli, "SourceAPIClient", Unexpected)
-    monkeypatch.setattr(finlab_scheduler_cli, "R2RawPayloadStore", Unexpected)
-    monkeypatch.setattr(finlab_scheduler_cli.FinLabSdkGateway, "from_env", Unexpected)
-
-    result = finlab_scheduler_cli.main(
-        [
-            "--check",
-            "--schedule-file",
-            str(CONFIG_DIR / "daily_scheduler.v2.json"),
-            "--state-path",
-            str(tmp_path / "state.sqlite3"),
-        ]
-    )
-
-    assert result == finlab_scheduler_cli.EXIT_OK
-    payload = json.loads(capsys.readouterr().out)
-    assert payload == {
-        "dataset_key": "tw_equity_eod",
-        "mode": "finlab_scheduler_check",
-        "slot_id": "taiwan_market_window",
-        "status": "ok",
-        "work_item_count": 1,
-    }
-
-
-def test_disabled_or_mismatched_feed_is_rejected_before_runtime_config(
-    monkeypatch, tmp_path, capsys
-) -> None:
-    schedule = json.loads((CONFIG_DIR / "daily_scheduler.v2.json").read_text(encoding="utf-8"))
-    feed = next(item for item in schedule["feeds"] if item["slot_id"] == "taiwan_market_window")
-    feed["enabled"] = False
-    path = tmp_path / "disabled.json"
-    path.write_text(json.dumps(schedule), encoding="utf-8")
-
-    # No environment is set: a disabled feed must fail before runtime config
-    # (and before any provider/R2/Source/calendar client) is touched.
-    result = finlab_scheduler_cli.main(["--check", "--schedule-file", str(path)])
-
-    assert result == finlab_scheduler_cli.EXIT_CONFIG_ERROR
-    assert json.loads(capsys.readouterr().err) == {"error": "finlab_scheduler_configuration_failed"}
 
 
 def test_parser_normalizes_aware_as_of_to_utc() -> None:

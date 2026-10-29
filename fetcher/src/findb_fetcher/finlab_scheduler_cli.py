@@ -12,21 +12,17 @@ from pathlib import Path
 from typing import Any
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import ConfigError, FetcherConfig, MarketCalendarConfig, app_environment
-from findb_fetcher.contracts import ContractError, ContractRegistry
-from findb_fetcher.finlab_credentials import effective_token, installed_token
+from findb_fetcher.config import FetcherConfig, MarketCalendarConfig, app_environment
+from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.finlab_scheduler import FinLabSchedulerService
 from findb_fetcher.finlab_universe import (
     FinLabPilotUniverse,
-    FinLabUniverseError,
-    load_finlab_universe,
 )
-from findb_fetcher.market_calendar import MarketCalendarError, PublishedCalendarClient
-from findb_fetcher.providers.finlab import FinLabError, FinLabSdkGateway
+from findb_fetcher.market_calendar import PublishedCalendarClient
+from findb_fetcher.providers.finlab import FinLabSdkGateway
 from findb_fetcher.raw_storage import (
     R2RawPayloadStore,
     RawStorageConfig,
-    RawStorageError,
 )
 from findb_fetcher.schedule import (
     ScheduleConfig,
@@ -36,14 +32,11 @@ from findb_fetcher.schedule import (
 from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
-    require_scheduler_stopped,
     scheduler_stop_event,
     validate_scheduler_definition,
 )
 from findb_fetcher.scheduler_state import (
     SchedulerState,
-    SchedulerStateError,
-    validate_scheduler_state_read_only,
 )
 from findb_fetcher.twelve_data_scheduler import SchedulerRun
 
@@ -98,110 +91,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        schedule = _load_selected_schedule(
-            args.schedule_file,
-            args.slot_id,
-            args.dataset_key,
-            reject_disabled=not args.run_forever,
-        )
-        universe = load_finlab_universe(schedule.universe_file)
-        state_universe = _validate_schedule_universe(schedule, universe)
+    """Retired acquiring entrypoint; retained state must use the queue runtime."""
+    from findb_fetcher.legacy_cli import retired
 
-        # These constructors only validate local environment values.  They are
-        # deliberately before the check return but do not create network/SDK
-        # clients.  Client construction and all side effects are below it.
-        fetcher_config = FetcherConfig.from_env()
-        calendar_config = MarketCalendarConfig.from_env()
-        registry = ContractRegistry(fetcher_config.contracts_dir)
-        if not effective_token(installed_token()):
-            raise ConfigError("FINLAB_API_TOKEN is required for FinLab scheduler execution")
-
-        if args.require_stopped:
-            validate_scheduler_state_read_only(args.state_path)
-            require_scheduler_stopped(
-                fetcher_config,
-                SCHEDULER_CONTROL_KEY,
-                definition_validator=lambda response: validate_scheduler_definition(
-                    response,
-                    provider="finlab",
-                    dataset_keys=(universe.dataset_key,),
-                    slot_id=schedule.slot_id,
-                    scheduled_local_time=schedule.scheduled_local_time.isoformat(),
-                    timezone_name=schedule.timezone_name,
-                ),
-            )
-            _emit_json({"mode": "require_stopped", "status": "ok"}, stream=sys.stdout)
-            return EXIT_OK
-
-        state = SchedulerState(args.state_path)
-        if args.check:
-            _emit_json(
-                {
-                    "mode": "finlab_scheduler_check",
-                    "status": "ok",
-                    "slot_id": schedule.slot_id,
-                    "dataset_key": universe.dataset_key,
-                    "work_item_count": len(state_universe.symbols),
-                },
-                stream=sys.stdout,
-            )
-            return EXIT_OK
-
-        if args.run_forever:
-            return _run_forever(
-                fetcher_config,
-                lambda: _run_cycle(
-                    schedule=schedule,
-                    universe=universe,
-                    state=state,
-                    registry=registry,
-                    fetcher_config=fetcher_config,
-                    calendar_config=calendar_config,
-                ),
-                expected_definition=(
-                    schedule.provider,
-                    (schedule.dataset_key,),
-                    schedule.slot_id,
-                    schedule.scheduled_local_time.isoformat(),
-                    schedule.timezone_name,
-                ),
-            )
-
-        raw_storage_config = RawStorageConfig.from_env()
-        with ExitStack() as stack:
-            calendar = stack.enter_context(PublishedCalendarClient(calendar_config))
-            provider = FinLabSdkGateway.from_env()
-            source = stack.enter_context(SourceAPIClient(fetcher_config, registry))
-            raw_store = R2RawPayloadStore(raw_storage_config)
-            service = FinLabSchedulerService(
-                schedule=schedule,
-                universe=universe,
-                state=state,
-                provider=provider,
-                source=source,
-                registry=registry,
-                raw_store=raw_store,
-                calendar=calendar,
-            )
-            execution = service.run_once(now=args.as_of or datetime.now(timezone.utc))
-        _emit_summary(execution)
-        return _exit_code(execution)
-    except (
-        ConfigError,
-        ContractError,
-        FinLabError,
-        FinLabUniverseError,
-        MarketCalendarError,
-        RawStorageError,
-        ScheduleError,
-        SchedulerStateError,
-        OSError,
-        ValueError,
-    ):
-        _emit_json({"error": "finlab_scheduler_configuration_failed"}, stream=sys.stderr)
-        return EXIT_CONFIG_ERROR
+    return retired("findb-fetch-finlab-scheduler")
 
 
 def _load_selected_schedule(

@@ -250,10 +250,7 @@ class HistoricalControlClient:
 def run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner) -> bool:
     from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work, enabled
 
-    if not enabled():
-        return (
-            False if getattr(control, "provider", None) == "factset" else _run_once(control, runner)
-        )
+    enabled()
     if not control.provider:
         raise HistoricalControlError("historical provider identity is required")
     try:
@@ -277,6 +274,11 @@ def run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner)
 
 def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner) -> bool:
     """Run one serial date; a failed date ends its request server-side."""
+    from findb_fetcher.provider_work import require_owner
+
+    if control.provider is None:
+        raise HistoricalControlError("historical provider identity is required")
+    require_owner(control.provider)
     item = control.claim()
     if item is None:
         return False

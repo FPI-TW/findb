@@ -336,17 +336,7 @@ class SourceAPIClient:
                 }
             )
             content = delivery.body
-            from findb_fetcher.provider_work import (
-                ProviderWorkRecoveryBlockedError,
-                active,
-                enabled,
-            )
-
-            owner = active()
-            if owner is not None:
-                headers.update(owner.headers(delivery))
-            elif enabled():
-                raise ProviderWorkRecoveryBlockedError("delivery requires provider work ownership")
+            headers.update(_provider_work_headers(delivery))
 
         for attempt in range(1, self._config.max_attempts + 1):
             source_permit(self._config.source_client_key)
@@ -606,3 +596,13 @@ def _check_deadline(
 ) -> None:
     if deadline is not None:
         _remaining(deadline, monotonic)
+
+
+def _provider_work_headers(delivery: PreparedDelivery) -> dict[str, str]:
+    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError, active, enabled
+
+    enabled()
+    owner = active()
+    if owner is None:
+        raise ProviderWorkRecoveryBlockedError("delivery requires provider work ownership")
+    return owner.headers(delivery)

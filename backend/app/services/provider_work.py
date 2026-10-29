@@ -554,13 +554,11 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
 
 async def acceptance(
     db: AsyncSession, *, provider: str, dataset_key: str, trade_date: date | None
-) -> ProviderWork | None:
+) -> ProviderWork:
     """Lock before any other ingest locks, even on duplicate fast paths."""
     identity = db.info.get("provider_work")
     if identity is None:
-        if get_settings().PROVIDER_WORK_REQUIRED or provider == "factset":
-            raise ProviderWorkError("provider work protocol is required")
-        return None
+        raise ProviderWorkError("provider work protocol is required")
     owner = await lock_provider(db, provider)
     work = await db.get(ProviderWork, identity["work_id"])
     if (
@@ -575,10 +573,9 @@ async def acceptance(
     if descriptor and descriptor["body_sha256"] != db.info.get("provider_work_body_sha256"):
         raise ProviderWorkError("prepared delivery bytes differ from retained descriptor")
     if (
-        get_settings().PROVIDER_WORK_REQUIRED
-        and work.state not in {"completed", "partial", "failed", "cancelled"}
-        and not await acquisition_open(db, work)
-        and descriptor is None
+        work.state not in {"completed", "partial", "failed", "cancelled"}
+        and (not await acquisition_open(db, work))
+        and (descriptor is None)
     ):
         raise ProviderWorkError("stopped work only accepts previously registered prepared bytes")
     # Receipt replay is checked separately after exact idempotency lookup. A

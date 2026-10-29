@@ -19,7 +19,12 @@ from uuid import UUID
 from findb_fetcher import historical_backfill_cli as cli
 
 mode = sys.argv[1]
+from findb_fetcher import historical_backfill as dispatch
+from findb_fetcher import provider_work
+provider_work.require_owner = lambda provider: None
+cli.run_once = dispatch._run_once
 class Control:
+    provider = "twelve_data"
     def __enter__(self): return self
     def __exit__(self, *args): print("closed", flush=True)
     def claim(self):

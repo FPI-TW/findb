@@ -36,7 +36,7 @@ async def attest_cutover(db, identities=None):
 
 @pytest.mark.asyncio
 async def test_authenticated_admin_single_and_bulk_reruns_wait_for_own_fence_and_audit_lineage(
-    client, source_headers, admin_headers, test_session, test_engine, monkeypatch
+    owned_client, source_headers, admin_headers, test_session, test_engine, monkeypatch
 ):
     from app.config import get_settings
     from app.models.provider_work import ProviderWorkReceipt
@@ -45,7 +45,7 @@ async def test_authenticated_admin_single_and_bulk_reruns_wait_for_own_fence_and
     from tests.test_canonical_ingest_api import _canonical_request, _execute_run, _seed_dataset
 
     await _seed_dataset(test_session)
-    original = await client.post(
+    original = await owned_client.post(
         "/api/v1/source/ingest", headers=source_headers, json=_canonical_request()
     )
     original_id = UUID(original.json()["run_id"])
@@ -55,6 +55,9 @@ async def test_authenticated_admin_single_and_bulk_reruns_wait_for_own_fence_and
     raw = await test_session.get(RawMarketPayload, raw_id)
     original_body, original_digest = raw.payload, raw.payload_sha256
     monkeypatch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
+    from tests.owned_ingest import finish_contract_scope
+
+    await finish_contract_scope(test_session, "finlab")
     await attest_cutover(test_session)
     work = await queue.enqueue(
         test_session,
@@ -70,11 +73,13 @@ async def test_authenticated_admin_single_and_bulk_reruns_wait_for_own_fence_and
     active_id = work.work_id
     active_fence = identity(claimed)
     await test_session.commit()
-    denied = await client.post(f"/api/v1/admin/runs/{original_id}/rerun")
+    denied = await owned_client.post(f"/api/v1/admin/runs/{original_id}/rerun")
     assert denied.status_code == 401
-    single = await client.post(f"/api/v1/admin/runs/{original_id}/rerun", headers=admin_headers)
+    single = await owned_client.post(
+        f"/api/v1/admin/runs/{original_id}/rerun", headers=admin_headers
+    )
     assert single.status_code == 202, single.text
-    bulk = await client.post(
+    bulk = await owned_client.post(
         "/api/v1/admin/runs/bulk-rerun?dataset_key=tw_equity_eod&status=completed&limit=1",
         headers=admin_headers,
     )
@@ -95,7 +100,7 @@ async def test_authenticated_admin_single_and_bulk_reruns_wait_for_own_fence_and
             is None
         )
         receipt = await test_session.get(ProviderWorkReceipt, new_id)
-        invalid = await client.post(
+        invalid = await owned_client.post(
             f"/api/v1/source/provider-work/{receipt.work_id}/execute-rerun",
             headers=source_headers,
             json={"generation": active_fence["generation"], "token": str(active_fence["token"])},
@@ -115,7 +120,7 @@ async def test_authenticated_admin_single_and_bulk_reruns_wait_for_own_fence_and
     await queue.settle(test_session, **active_fence, outcome="cancelled", proof={})
     await test_session.commit()
     for new_id in reruns:
-        response = await client.post(
+        response = await owned_client.post(
             "/api/v1/source/provider-work/claim",
             headers=source_headers,
             json={
@@ -131,19 +136,19 @@ async def test_authenticated_admin_single_and_bulk_reruns_wait_for_own_fence_and
             and owner["work_id"] != str(active_id)
         )
         fence = {"generation": owner["generation"], "token": owner["token"]}
-        execute = await client.post(
+        execute = await owned_client.post(
             f"/api/v1/source/provider-work/{owner['work_id']}/execute-rerun",
             headers=source_headers,
             json=fence,
         )
         assert execute.status_code == 200
         await _execute_run(test_session, test_engine, new_id)
-        await client.post(
+        await owned_client.post(
             f"/api/v1/source/provider-work/{owner['work_id']}/close",
             headers=source_headers,
             json=fence,
         )
-        settled = await client.post(
+        settled = await owned_client.post(
             f"/api/v1/source/provider-work/{owner['work_id']}/settle",
             headers=source_headers,
             json={**fence, "outcome": "completed", "proof": {}},
@@ -1000,7 +1005,7 @@ async def test_authenticated_subset_claim_waits_for_global_provider_head_and_oth
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["source", "admin", "bulk"])
 async def test_authenticated_retained_raw_precedence_skip_settles_failed_and_replays_lost_ack(
-    client, source_headers, admin_headers, test_session, test_engine, monkeypatch, endpoint
+    owned_client, source_headers, admin_headers, test_session, test_engine, monkeypatch, endpoint
 ):
     from app.config import get_settings
     from app.models.provider_work import ProviderWork, ProviderWorkReceipt
@@ -1009,7 +1014,7 @@ async def test_authenticated_retained_raw_precedence_skip_settles_failed_and_rep
     from tests.test_canonical_ingest_api import _canonical_request, _execute_run, _seed_dataset
 
     await _seed_dataset(test_session)
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest", headers=source_headers, json=_canonical_request()
     )
     original_id = UUID(response.json()["run_id"])
@@ -1020,12 +1025,15 @@ async def test_authenticated_retained_raw_precedence_skip_settles_failed_and_rep
     frozen_raw = (raw.payload_sha256, dict(raw.payload))
     newer = _canonical_request(idempotency_key="newer-canonical")
     newer["fetched_at"] = "2026-07-21T09:00:00Z"
-    response = await client.post("/api/v1/source/ingest", headers=source_headers, json=newer)
+    response = await owned_client.post("/api/v1/source/ingest", headers=source_headers, json=newer)
     await _execute_run(test_session, test_engine, UUID(response.json()["run_id"]))
     monkeypatch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
+    from tests.owned_ingest import finish_contract_scope
+
+    await finish_contract_scope(test_session, "finlab")
     await attest_cutover(test_session)
     if endpoint == "bulk":
-        response = await client.post(
+        response = await owned_client.post(
             "/api/v1/admin/runs/bulk-rerun?dataset_key=tw_equity_eod&status=completed&limit=2",
             headers=admin_headers,
         )
@@ -1033,7 +1041,7 @@ async def test_authenticated_retained_raw_precedence_skip_settles_failed_and_rep
         new_ids = [UUID(value) for value in response.json()["new_run_ids"]]
         assert len(new_ids) == 2
     else:
-        response = await client.post(
+        response = await owned_client.post(
             f"/api/v1/{endpoint}/runs/{original_id}/rerun",
             headers=source_headers if endpoint == "source" else admin_headers,
         )
@@ -1041,7 +1049,7 @@ async def test_authenticated_retained_raw_precedence_skip_settles_failed_and_rep
         new_ids = [UUID(response.json()["run_id"])]
     old_rerun = None
     for _ in new_ids:
-        response = await client.post(
+        response = await owned_client.post(
             "/api/v1/source/provider-work/claim",
             headers=source_headers,
             json={"protocol": "provider-work-v1", "host_lock_identity": "local:1:22"},
@@ -1053,7 +1061,7 @@ async def test_authenticated_retained_raw_precedence_skip_settles_failed_and_rep
         fence = {"generation": owner["generation"], "token": owner["token"]}
         path = f"/api/v1/source/provider-work/{owner['work_id']}"
         assert (
-            await client.post(path + "/execute-rerun", headers=source_headers, json=fence)
+            await owned_client.post(path + "/execute-rerun", headers=source_headers, json=fence)
         ).status_code == 200
         await _execute_run(test_session, test_engine, run_id)
         run = await test_session.get(IngestionRun, run_id)
@@ -1068,12 +1076,12 @@ async def test_authenticated_retained_raw_precedence_skip_settles_failed_and_rep
             )
             assert run.raw_payload_id == raw_id
         assert (
-            await client.post(path + "/close", headers=source_headers, json=fence)
+            await owned_client.post(path + "/close", headers=source_headers, json=fence)
         ).status_code == 200
         request = {**fence, "outcome": "completed", "proof": {}}
-        settled = await client.post(path + "/settle", headers=source_headers, json=request)
+        settled = await owned_client.post(path + "/settle", headers=source_headers, json=request)
         assert settled.status_code == 200, settled.text
-        replay = await client.post(path + "/settle", headers=source_headers, json=request)
+        replay = await owned_client.post(path + "/settle", headers=source_headers, json=request)
         assert replay.status_code == 200 and replay.json() == settled.json()
         work = await test_session.get(ProviderWork, UUID(owner["work_id"]))
         if skipped:

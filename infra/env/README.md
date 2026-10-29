@@ -32,9 +32,9 @@ AWS_PROFILE=staging uv --directory backend run python ../infra/env/aws_configura
 相同工具支援 `--target production` 與 `--unit fetcher`。`sync` 會覆寫該 unit 的單一 SSM parameter；
 先保留原 parameter version，部署前對四組設定執行相同驗證。不得在此 JSON 加入 application secrets。
 `FULL_MARKET_ENABLED` 預設 `false`，只接受 `true`／`false`；它不選擇安裝程式，也不啟動抓取。
-`PROVIDER_WORK_REQUIRED` 在 deployment SSM 與 runtime configuration 皆可缺省為 `false`。
-核對缺項時須區分 schema 必填欄位與這類選填旗標；只有完成完整 provider-work cutover 後，
-才能同步切為 `true`。Session tokens 與 TAIFEX endpoint／timeout 等選填欄位缺省亦不代表部署設定失效。
+`PROVIDER_WORK_REQUIRED` 在 deployment SSM 與 runtime configuration 缺省為 `true`；
+明確 `false` 會在設定驗證／部署前拒絕。升級既有 false 環境前，須完成完整 provider-work
+drain、備份與 cutover attestation，兩端同步 true；本機範本更新不會修改遠端設定。Session tokens 與 TAIFEX endpoint／timeout 等選填欄位缺省亦不代表部署設定失效。
 
 應用設定與 credentials 由 host loader 在 tmpfs 建立短期檔案，結束即清除；TLS／nginx 敏感檔案留在
 `/run/findb-runtime-secrets/nginx`，開機由 systemd 重新載入。詳細部署契約見

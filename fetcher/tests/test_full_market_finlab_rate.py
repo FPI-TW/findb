@@ -383,7 +383,7 @@ def test_finlab_partial_bundle_remains_durable_unresolved(
     # Pre-start minute rejection creates no known request debt.
     assert _quota(runtime, "2026-10-01")[0] == (3 if boundary == "failure" else 2)
     assert _quota(runtime, "2026-10-01T12:01")[0] == expected_calls
-    assert source.outcomes[-1]["reason"] != "no_trade"
+    assert source.outcomes == []
     assert all(wait <= 1 for wait in clock.waits)
     runtime.http.close()
 

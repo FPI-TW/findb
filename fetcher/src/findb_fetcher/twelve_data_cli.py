@@ -8,35 +8,28 @@ import math
 import os
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from contextlib import ExitStack
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
-
-import httpx
 
 from findb_fetcher.client import (
     PreparedDelivery,
     RunStatus,
     SourceAPIClient,
     SourceAPIDeadlineExceeded,
-    SourceAPIProtocolError,
-    SourceAPIResponseError,
-    SourceAPITransportError,
 )
-from findb_fetcher.config import ConfigError, FetcherConfig
-from findb_fetcher.contracts import ContractError, ContractRegistry
+from findb_fetcher.config import FetcherConfig
+from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
-    TwelveDataError,
     build_market_eod_request,
 )
 from findb_fetcher.raw_storage import (
     R2RawPayloadStore,
     RawStorageConfig,
-    RawStorageError,
     attach_raw_object,
 )
 from findb_fetcher.twelve_data_universe import (
@@ -108,51 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    if args.wait and not args.deliver:
-        parser.error("--wait requires --deliver")
-    if args.wait and args.poll_interval_seconds > args.wait_timeout_seconds:
-        parser.error("--poll-interval-seconds must not exceed --wait-timeout-seconds")
-    if args.universe_file is not None and (args.canonical_symbol or args.exchange):
-        parser.error("--canonical-symbol and --exchange are single-symbol options")
+def main(argv: list[str] | None = None) -> int:
+    """Retired acquiring entrypoint; retained state must use the queue runtime."""
+    from findb_fetcher.legacy_cli import retired
 
-    try:
-        if args.universe_file is not None:
-            return _run_universe(args)
-        request, registry = _fetch_and_validate(args)
-        if not args.deliver:
-            _emit_summary(_request_summary(request, mode="dry_run", status="validated"))
-            return EXIT_OK
-        return _deliver(args, request, registry)
-    except (
-        TwelveDataError,
-        ContractError,
-        ConfigError,
-        RawStorageError,
-        UniverseError,
-        ValueError,
-    ):
-        _emit_error("local_validation_failed")
-        return EXIT_LOCAL_ERROR
-    except SourceAPIDeadlineExceeded:
-        _emit_error("wait_timeout")
-        return EXIT_WAIT_TIMEOUT if args.wait else EXIT_DELIVERY_ERROR
-    except SourceAPIResponseError as exc:
-        _emit_error(
-            "source_rejected" if _is_permanent_rejection(exc.status_code) else "delivery_failed",
-            http_status=exc.status_code,
-            failure_code=exc.code,
-        )
-        return (
-            EXIT_SOURCE_REJECTED
-            if _is_permanent_rejection(exc.status_code)
-            else EXIT_DELIVERY_ERROR
-        )
-    except (SourceAPIProtocolError, SourceAPITransportError, httpx.TransportError):
-        _emit_error("delivery_failed")
-        return EXIT_DELIVERY_ERROR
+    return retired("findb-fetch-twelve-data")
 
 
 def _fetch_and_validate(args: argparse.Namespace) -> tuple[dict[str, Any], ContractRegistry]:

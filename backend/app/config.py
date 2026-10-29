@@ -26,7 +26,18 @@ class Settings(BaseSettings):
     APP_ENVIRONMENT: Literal["local", "staging", "production"] = "local"
     FULL_MARKET_ENABLED: bool = False
     EOD_LONG_GAP_TRADING_DAYS: int = Field(default=5, ge=1, le=366)
-    PROVIDER_WORK_REQUIRED: bool = False
+    # Kept as a deployment assertion: the legacy execution protocol is retired.
+    PROVIDER_WORK_REQUIRED: bool = True
+
+    @field_validator("PROVIDER_WORK_REQUIRED", mode="before")
+    @classmethod
+    def require_provider_work_protocol(cls, value: Any) -> bool:
+        if value is not True and value != "true":
+            raise ValueError(
+                "legacy provider execution is retired; PROVIDER_WORK_REQUIRED must be true"
+            )
+        return True
+
     TWELVE_DATA_SKIP_NON_TRADING_DAYS: bool = False
     FINLAB_SKIP_NON_TRADING_DAYS: bool = False
     SHIOAJI_SKIP_NON_TRADING_DAYS: bool = False

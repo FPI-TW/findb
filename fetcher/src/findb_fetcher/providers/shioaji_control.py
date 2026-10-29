@@ -55,18 +55,20 @@ class ChildBoundary:
     def __init__(self, conn: Any, metadata: dict[str, Any]) -> None:
         self.conn, self.metadata = conn, metadata
         self.fd = recv_handle(conn)
-        if os.getenv("PROVIDER_WORK_REQUIRED") == "true" or metadata.get("work_required"):
-            work_fd = metadata.get("work_fd")
-            identity = metadata.get("work_identity")
-            try:
-                if type(work_fd) is not int or not isinstance(identity, list) or len(identity) != 2:
-                    raise ValueError
-                info = os.fstat(work_fd)
-                if (info.st_dev, info.st_ino) != tuple(identity):
-                    raise ValueError
-            except (TypeError, OSError, ValueError):
-                os.close(self.fd)
-                raise QuotaBlockedError("whole-work descriptor is unavailable") from None
+        from findb_fetcher.config import ConfigError, require_provider_work_protocol
+
+        work_fd = metadata.get("work_fd")
+        identity = metadata.get("work_identity")
+        try:
+            require_provider_work_protocol()
+            if type(work_fd) is not int or not isinstance(identity, list) or len(identity) != 2:
+                raise ValueError
+            info = os.fstat(work_fd)
+            if (info.st_dev, info.st_ino) != tuple(identity):
+                raise ValueError
+        except (ConfigError, TypeError, OSError, ValueError):
+            os.close(self.fd)
+            raise QuotaBlockedError("whole-work descriptor is unavailable") from None
         self.started_at: float | None = None
         self.before: dict[str, Any] | None = None
         self.after: dict[str, Any] | None = None

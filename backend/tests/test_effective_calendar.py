@@ -12,8 +12,9 @@ from app.schemas.full_market import DeliveryPlanCreateRequest
 from app.services.effective_calendar import MARKETS, PROVIDER_CALENDAR_SWITCHES, effective_days
 from app.services.full_market import create_plan
 from app.services.full_market_admission import eligibility
-from app.services.historical_backfill import claim_next_item, create_request
+from app.services.historical_backfill import create_request
 from tests.full_market_fixtures import historical_admission
+from tests.owned_history import claim_next_item
 from tests.test_full_market import DAY, _baseline, _dataset
 from tests.test_historical_backfill import _seed_scope
 
@@ -343,3 +344,10 @@ async def test_frozen_skip_and_plan_override_later_policy_in_monitor_projection(
         == 0
     )
     assert await test_session.scalar(select(func.count()).select_from(DailyDeliveryPlan)) == 0
+
+
+@pytest.fixture(autouse=True)
+def queue_clock(monkeypatch):
+    from app.services import historical_backfill, provider_work
+
+    monkeypatch.setattr(provider_work, "utc_now", lambda: historical_backfill.utc_now())

@@ -551,7 +551,7 @@ def test_real_finlab_gateway_oversized_field_rejects_and_records_observable_over
     assert _quota(runtime, "2026-10-01")[1] == 0
     assert raw.calls == [] and runtime.bundles == {}
     assert runtime.state.prepared("tw_equity_eod:" + symbols[0]) is None
-    assert source.outcomes[-1]["reason"] == "source_error"
+    assert source.outcomes == []
     runtime.http.close()
 
 
@@ -1118,7 +1118,9 @@ def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, mo
 
     def status(*args, **kwargs):
         calls.append("status")
-        return SimpleNamespace(status="completed", failed_records=0)
+        return SimpleNamespace(
+            status="completed", failed_records=0, success_records=1, total_records=1
+        )
 
     runtime.can_acquire = can_acquire
     runtime.delivery = SimpleNamespace(

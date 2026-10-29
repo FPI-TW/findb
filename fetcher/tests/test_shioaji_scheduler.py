@@ -261,13 +261,14 @@ def test_production_retry_exhaustion_is_terminal_on_the_last_attempt(
     assert all(item.retryable for item in coordinator.run(date(2026, 8, 3), deliver=True))
     exhausted = coordinator.run(date(2026, 8, 3), deliver=True)
 
-    assert len(exhausted) == len(EXPECTED)
+    assert len(exhausted) == 1
     assert {item.code for item in exhausted} == {"ACQUISITION_ATTEMPTS_EXHAUSTED"}
     assert not any(item.retryable for item in exhausted)
-    assert gateway.calls == 3 * len(EXPECTED)
+    assert gateway.calls == 3
     replayed = coordinator.run(date(2026, 8, 3), deliver=True)
-    assert {item.code for item in replayed} == {"ACQUISITION_ATTEMPTS_EXHAUSTED"}
-    assert gateway.calls == 3 * len(EXPECTED)
+    assert replayed[0].code == "ACQUISITION_ATTEMPTS_EXHAUSTED"
+    assert replayed[-1].code == "ACQUISITION_FAILED"
+    assert gateway.calls == 4
     state.close()
 
 
@@ -297,7 +298,7 @@ def test_cutoff_terminalizes_same_day_retry_pending_state(tmp_path: Path) -> Non
 
     pending = scheduler.run_once(now=datetime(2026, 8, 3, 16, 59, tzinfo=TAIPEI))
     assert pending.status == "retry_pending"
-    assert gateway.calls == len(EXPECTED)
+    assert gateway.calls == 1
     cutoff = scheduler.run_once(now=datetime(2026, 8, 3, 17, 0, tzinfo=TAIPEI))
 
     assert cutoff.status == "skipped" and cutoff.skip_reason == "cutoff_reached"
@@ -305,5 +306,5 @@ def test_cutoff_terminalizes_same_day_retry_pending_state(tmp_path: Path) -> Non
     assert {state.get_terminal(daily_id, str(item["symbol"])) for item in EXPECTED} == {
         ("CUTOFF_REACHED", None)
     }
-    assert gateway.calls == len(EXPECTED)
+    assert gateway.calls == 1
     state.close()

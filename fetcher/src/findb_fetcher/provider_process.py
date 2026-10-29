@@ -22,7 +22,10 @@ def provider_environment() -> dict[str, str]:
     # Explicit launch environment: no inherited Source/cloud/other-provider secrets.
     names = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
     values = {name: os.environ[name] for name in names if name in os.environ}
-    values["PROVIDER_WORK_REQUIRED"] = os.getenv("PROVIDER_WORK_REQUIRED", "false")
+    from findb_fetcher.config import require_provider_work_protocol
+
+    require_provider_work_protocol()
+    values["PROVIDER_WORK_REQUIRED"] = "true"
     return values
 
 

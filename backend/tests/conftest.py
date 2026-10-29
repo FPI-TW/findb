@@ -162,6 +162,14 @@ async def client(test_session: AsyncSession) -> AsyncGenerator[AsyncClient, None
     app.dependency_overrides.clear()
 
 
+@pytest.fixture
+def owned_client(client, test_session):
+    """Opt in to real owned-work setup for payload-focused tests."""
+    from tests.owned_ingest import OwnedIngestClient
+
+    return OwnedIngestClient(client, test_session)
+
+
 @pytest.fixture(autouse=True)
 def reset_source_rate_limiter():
     reset_source_rate_limit_state()

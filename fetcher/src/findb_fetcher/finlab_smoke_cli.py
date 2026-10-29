@@ -9,14 +9,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.metadata
 import json
 import math
 import multiprocessing
 import os
 import sys
 import time
-from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from multiprocessing.connection import Connection
@@ -24,7 +22,6 @@ from multiprocessing.process import BaseProcess
 from typing import NoReturn
 
 from findb_fetcher.providers.finlab import (
-    FinLabConfigError,
     FinLabDatasetTable,
     FinLabSdkGateway,
 )
@@ -67,53 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    try:
-        args = build_parser().parse_args(argv)
-        symbols = _parse_symbols(args.symbols)
-    except (SmokeArgumentError, ValueError, TypeError):
-        _emit_error("invalid_arguments")
-        return EXIT_ARGUMENT_ERROR
+def main(argv: list[str] | None = None) -> int:
+    """Retired acquiring entrypoint; retained state must use the queue runtime."""
+    from findb_fetcher.legacy_cli import retired
 
-    try:
-        version = importlib.metadata.version("finlab")
-    except importlib.metadata.PackageNotFoundError:
-        _emit_error("sdk_unavailable")
-        return EXIT_RUNTIME_ERROR
-    if version != EXPECTED_FINLAB_VERSION:
-        _emit_error("sdk_version_mismatch")
-        return EXIT_RUNTIME_ERROR
-
-    try:
-        # Validate the credential before forking, but leave SDK import/login and
-        # all provider work to the isolated child process.
-        FinLabSdkGateway.from_env()
-    except FinLabConfigError:
-        _emit_error("token_unavailable")
-        return EXIT_RUNTIME_ERROR
-
-    try:
-        result = _run_acquisition(args.target_date, symbols)
-    except Exception:
-        # Fork/Pipe/process cleanup errors must not escape the bounded CLI.
-        result = None
-    if result is None:
-        _emit_error("acquisition_failed")
-        return EXIT_ACQUISITION_ERROR
-    checksum, count = result
-
-    _emit(
-        {
-            "content_sha256": checksum,
-            "count": count,
-            "dataset": SMOKE_DATASET,
-            "date": args.target_date.isoformat(),
-            "sdk_version": version,
-            "status": "ok",
-            "symbols": list(symbols),
-        }
-    )
-    return EXIT_OK
+    return retired("findb-fetch-finlab-smoke")
 
 
 def _parse_date(value: str) -> date:

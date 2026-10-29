@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from datetime import date, datetime
 from pathlib import Path
@@ -9,8 +8,6 @@ import pytest
 
 from findb_fetcher import shioaji_smoke_cli
 from findb_fetcher.providers.shioaji import (
-    SHIOAJI_SDK_VERSION,
-    ShioajiConfigError,
     ShioajiKbarsSnapshot,
     ShioajiSdkError,
 )
@@ -20,64 +17,6 @@ SECRET_MARKER = "credential-and-account-context-must-not-appear"
 
 def _wall_clock_ns(value: datetime) -> int:
     return int((value - datetime(1970, 1, 1)).total_seconds() * 1_000_000_000)
-
-
-def test_rejects_unsafe_arguments_before_sdk(capsys: pytest.CaptureFixture[str]) -> None:
-    assert shioaji_smoke_cli.main(["--target-date", "2020-01-01", "--symbol", "9999"]) == 2
-    assert json.loads(capsys.readouterr().out) == {"status": "error", "code": "invalid_arguments"}
-
-
-def test_rejects_sdk_version_without_provider_work(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(shioaji_smoke_cli.importlib.metadata, "version", lambda _: "1.7.0")
-    assert (
-        shioaji_smoke_cli.main(["--target-date", date.today().isoformat(), "--symbol", "2330"]) == 3
-    )
-    assert json.loads(capsys.readouterr().out) == {
-        "status": "error",
-        "code": "sdk_version_mismatch",
-    }
-
-
-def test_sanitizes_missing_credentials(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        shioaji_smoke_cli.importlib.metadata, "version", lambda _: SHIOAJI_SDK_VERSION
-    )
-    monkeypatch.setattr(
-        shioaji_smoke_cli.ShioajiSdkGateway,
-        "from_env",
-        classmethod(
-            lambda cls, **_: (_ for _ in ()).throw(ShioajiConfigError("credential-secret"))
-        ),
-    )
-    assert (
-        shioaji_smoke_cli.main(["--target-date", date.today().isoformat(), "--symbol", "2330"]) == 3
-    )
-    output = capsys.readouterr().out
-    assert "credential-secret" not in output
-    assert json.loads(output) == {"status": "error", "code": "credentials_unavailable"}
-
-
-def test_success_output_is_bounded_and_excludes_payload(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        shioaji_smoke_cli.importlib.metadata, "version", lambda _: SHIOAJI_SDK_VERSION
-    )
-    monkeypatch.setattr(
-        shioaji_smoke_cli.ShioajiSdkGateway, "from_env", classmethod(lambda cls, **_: object())
-    )
-    monkeypatch.setattr(shioaji_smoke_cli, "_run_child", lambda *_: ("a" * 64, 1, 12))
-    assert (
-        shioaji_smoke_cli.main(["--target-date", date.today().isoformat(), "--symbol", "2330"]) == 0
-    )
-    output = capsys.readouterr().out
-    assert len(output.encode()) <= shioaji_smoke_cli.MAX_OUTPUT_BYTES
-    assert json.loads(output)["content_sha256"] == "a" * 64
-    assert json.loads(output)["usage_bytes_delta"] == 12
 
 
 def test_worker_failures_and_malformed_child_messages_are_sanitized() -> None:

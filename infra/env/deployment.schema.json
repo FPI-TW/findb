@@ -18,7 +18,7 @@
         "STAGING_PROMOTION_READ_ROLE_ARN": "",
         "STAGING_ECR_REGISTRY": "",
         "STAGING_DEPLOY_BUNDLE_BUCKET": "",
-        "PROVIDER_WORK_REQUIRED": "false"
+        "PROVIDER_WORK_REQUIRED": "true"
       }
     },
     "fetcher": {
@@ -37,7 +37,7 @@
         "STAGING_PROMOTION_READ_ROLE_ARN": "",
         "STAGING_ECR_REGISTRY": "",
         "STAGING_DEPLOY_BUNDLE_BUCKET": "",
-        "PROVIDER_WORK_REQUIRED": "false"
+        "PROVIDER_WORK_REQUIRED": "true"
       }
     }
   }

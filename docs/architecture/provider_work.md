@@ -1,11 +1,26 @@
 # Provider work FIFO
 
-統一 provider work protocol 已在 staging 完成 Owner cutover 與 enforcement 部署；
-FactSet 首次原生驗收仍在進行，production 尚未啟用。當前環境狀態見
-[deployment runbook](../operations/deployment.md#provider-work-切換)。
-`PROVIDER_WORK_REQUIRED=false` 仍是已提交的 local、staging、production 預設設定。
-啟用須先完成 [deployment runbook](../operations/deployment.md#provider-work-切換) 的 drain、單 host／
-shared inode preflight 與 Owner attestation；不能只改旗標便宣稱環境已完成切換。
+所有五個 providers（Twelve Data、FinLab、Shioaji、TAIFEX、FactSet）只使用 provider-work-v1。
+Pilot／Full daily、historical、maintenance 與 retained-raw rerun 共用同 provider 的 FIFO、owner fence
+與 whole-work host lock。`PROVIDER_WORK_REQUIRED` 保留為部署相容性斷言：缺省為 `true`，
+明確 `false` 或其他值會拒絕啟動，不再選擇另一套執行協定。
+
+程式碼退役不代表環境已完成切換；production 仍須完成
+[deployment runbook](../operations/deployment.md#provider-work-切換) 的 drain、備份、單 host／
+shared inode preflight 與 Owner attestation。未 attested 的 Source claim 一律拒絕。
+2026-10-29 production 唯讀快照與未結束工作見 [production 維運](../operations/production.md)。
+
+舊 acquiring CLI（provider-specific scheduler、Twelve Data one-shot、FinLab／Shioaji smoke、
+Shioaji staging 與 TAIFEX pilot）只回傳 exit 2 的安全退役訊息，不載入 secrets、不建立 state、不抓取。
+使用 `findb-fetch-runtime`、`findb-fetch-historical-backfill` 與 runtime 的 queued universe refresh。
+共用 mapper／executor、舊 checkpoint parser、prepared bytes、receipts、raw lineage、operation budgets、
+account pins／debt／cooldown 全部保留；不執行清檔、重新入列全部 backlog 或資料 migration。
+
+退役移除以下已重現的分歧：跨 request 的獨立 historical lease 可並行且 TTL 自動重派；
+FinLab publication wait 存取不存在的 owner；TD／FinLab 無 durable historical retry authority；
+TD／FinLab／Shioaji 只憑最後單筆 run 即完成；Source 暫時錯誤後繼續抓取；domain 與 FIFO 終態分離；
+以及 FactSet false 模式僅健康回報卻無抓取。現在 completion 一律須通過原 work 的完整 manifest、
+receipts／canonical proof；lease 欄位僅為同一 queue owner 的歷史投影，不能獨立授權或重派。
 
 ## 權威、範圍與排序
 
@@ -175,8 +190,8 @@ expected=2、data=0、missing=2、no_data=blocked=0：首個 503 已停止第二
 Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
 prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，
 不再有獨立 lease authority。
-未啟用時 Source queue claim 拒絕；啟用也須已有 Owner cutover 保存的相同 shared inode identity，
-單獨改 flag 無法開始 claim。啟用後 legacy ingest／historical claim 缺少 work protocol 一律 fail closed。
+Source queue claim 須已有 Owner cutover 保存的相同 shared inode identity，
+單獨改 flag 無法開始 claim。所有 ingest／historical claim 缺少 work protocol 一律 fail closed。
 Source `/provider-work/{work_id}/authorize` 在既有 provider transaction lock 下回傳原 work ID、provider、
 generation／token、UTC-aware checked_at 與目前 owner expires_at；此 projection 不續約 owner。
 Fetcher 嚴格驗證身份及時間欄位，缺少或 malformed 的證據 fail closed；heartbeat 仍以既有流程續約，
@@ -189,7 +204,7 @@ Dashboard 的「僅排空原交付」獨立於等待原因顯示；未到 `not_b
 
 Shioaji 的實際 parent READY／GO handshake 在送出 SDK command 及 GO 前都檢查 whole-work fence、
 shared FD 與 heartbeat failure；child 在 usage／SDK I/O 前驗證繼承 FD identity。一般 account governor
-與 acquisition locks 繼續保留。啟用 queue 後，legacy smoke CLI fail closed，不提供 FIFO 外的 SDK 入口。
+與 acquisition locks 繼續保留。legacy smoke CLI 一律 fail closed，不提供 FIFO 外的 SDK 入口。
 
 ## 新增 provider 的必要條件
 

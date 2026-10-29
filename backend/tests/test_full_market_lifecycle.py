@@ -77,7 +77,7 @@ print(json.dumps(request))
 @pytest.mark.asyncio
 @pytest.mark.parametrize("partial", [False, True])
 async def test_member_snapshot_completeness_is_independent_within_one_plan_part(
-    client, test_session, test_engine, partial
+    owned_client, test_session, test_engine, partial
 ):
     _, _, plan = await _activated_plan(test_session, "tw_equity_minute", count=2)
     assert len(plan.parts) == 1
@@ -91,7 +91,7 @@ async def test_member_snapshot_completeness_is_independent_within_one_plan_part(
         validated = MarketMinuteIngressRequest.model_validate(request)
         assert validated.payload.data[0].volume == 2000
         assert validated.payload.batch.daily_update_id == str(plan.plan_id)
-        response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+        response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert response.status_code == 202, response.text
         run_id = UUID(response.json()["run_id"])
         await _execute_run(test_session, test_engine, run_id)
@@ -264,7 +264,7 @@ async def test_monitor_only_emits_post_activation_real_exchange_gaps(test_sessio
     [("hk_equity_eod", "twelve_data"), ("tw_etf_eod", "finlab"), ("tw_futures_eod", "taifex")],
 )
 async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
-    client, test_session, dataset_key, provider
+    owned_client, test_session, dataset_key, provider
 ):
     import hashlib
 
@@ -311,7 +311,7 @@ async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
                 "volume": 5,
             }
         ]
-    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert response.status_code == 202, response.text
     run = await test_session.get(IngestionRun, UUID(response.json()["run_id"]))
     assert run.delivery_part_id == plan.parts[0].part_id and dataset.is_active
@@ -319,5 +319,5 @@ async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
     ordinary.pop("delivery")
     ordinary["idempotency_key"] = "ordinary-full-only"
     assert (
-        await client.post("/api/v1/source/ingest", headers=headers, json=ordinary)
+        await owned_client.post("/api/v1/source/ingest", headers=headers, json=ordinary)
     ).status_code == 409

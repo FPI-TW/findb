@@ -19,6 +19,14 @@ class ConfigError(ValueError):
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+def require_provider_work_protocol() -> None:
+    """Reject obsolete deployment configuration before any external operation."""
+    if os.getenv("PROVIDER_WORK_REQUIRED", "true") != "true":
+        raise ConfigError(
+            "legacy provider execution is retired; PROVIDER_WORK_REQUIRED must be true"
+        )
+
+
 def app_environment(default: str = "local") -> str:
     """Canonical input; legacy metadata is only a same-value compatibility bridge."""
     value = os.getenv("APP_ENVIRONMENT")
@@ -47,6 +55,7 @@ class FetcherConfig:
 
     @classmethod
     def from_env(cls) -> "FetcherConfig":
+        require_provider_work_protocol()
         app_environment()
         source_api_url = _https_origin_env("SOURCE_API_URL")
         source_client_key = _required_env("SOURCE_CLIENT_KEY")

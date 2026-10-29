@@ -24,6 +24,7 @@ from app.models.registry import (
     NormalizationOutbox,
     SourceClient,
 )
+from app.services import provider_work as work_queue
 from app.services.canonical_ingestion import (
     CanonicalIngestRejectionError,
     accept_canonical_ingest,
@@ -46,6 +47,7 @@ from app.services.normalization_queue import execute_normalization
 from app.services.normalize.base import EODPartitionUnavailableError
 from app.services.source_clients import create_source_client
 from app.utils import utc_now, uuid7
+from tests.owned_ingest import owned_headers, set_owned_identity
 
 
 def _dataset_config() -> dict:
@@ -122,7 +124,15 @@ async def _execute_run(test_session, test_engine, run_id: UUID) -> None:
         await test_session.execute(
             select(NormalizationJob).where(NormalizationJob.run_id == run_id)
         )
-    ).scalar_one()
+    ).scalar_one_or_none()
+    if job is None:
+        from tests.owned_ingest import execute_owned_rerun
+
+        await execute_owned_rerun(test_session, run_id)
+        job = await test_session.scalar(
+            select(NormalizationJob).where(NormalizationJob.run_id == run_id)
+        )
+        assert job is not None
     await execute_normalization(
         run_id,
         job.delivery_id,
@@ -133,13 +143,13 @@ async def _execute_run(test_session, test_engine, run_id: UUID) -> None:
 
 @pytest.mark.asyncio
 async def test_canonical_ingest_persists_attempt_raw_run_and_job(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_dataset(test_session)
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -178,7 +188,7 @@ async def test_canonical_ingest_persists_attempt_raw_run_and_job(
 
 @pytest.mark.asyncio
 async def test_canonical_ingest_and_retained_rerun_persist_eod_coverage(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
@@ -192,7 +202,7 @@ async def test_canonical_ingest_and_retained_rerun_persist_eod_coverage(
         }
     )
 
-    accepted = await client.post(
+    accepted = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=request,
@@ -203,7 +213,7 @@ async def test_canonical_ingest_and_retained_rerun_persist_eod_coverage(
     assert original.coverage_start_date == date(2026, 7, 20)
     assert original.coverage_end_date == date(2026, 7, 21)
 
-    rerun_response = await client.post(
+    rerun_response = await owned_client.post(
         f"/api/v1/source/runs/{original_run_id}/rerun",
         headers=source_headers,
     )
@@ -216,7 +226,7 @@ async def test_canonical_ingest_and_retained_rerun_persist_eod_coverage(
 
 @pytest.mark.asyncio
 async def test_canonical_full_snapshot_acceptance_does_not_resolve_missing_delivery_alert(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
@@ -234,7 +244,7 @@ async def test_canonical_full_snapshot_acceptance_does_not_resolve_missing_deliv
     test_session.add(alert)
     await test_session.commit()
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(idempotency_key="resolve_missing_alert"),
@@ -250,13 +260,13 @@ async def test_canonical_full_snapshot_acceptance_does_not_resolve_missing_deliv
 
 @pytest.mark.asyncio
 async def test_dataset_discovery_exposes_contract_declaration(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_dataset(test_session)
 
-    response = await client.get("/api/v1/source/datasets", headers=source_headers)
+    response = await owned_client.get("/api/v1/source/datasets", headers=source_headers)
 
     assert response.status_code == 200
     dataset = response.json()["data"][0]
@@ -269,15 +279,15 @@ async def test_dataset_discovery_exposes_contract_declaration(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("schema_id", "schema_version"), sorted(CONTRACT_NORMALIZER_MAP))
 async def test_versioned_contract_schema_endpoint_is_deterministic(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     schema_id: str,
     schema_version: int,
 ):
     url = f"/api/v1/source/contracts/{schema_id}/versions/{schema_version}"
 
-    first = await client.get(url, headers=source_headers)
-    second = await client.get(url, headers=source_headers)
+    first = await owned_client.get(url, headers=source_headers)
+    second = await owned_client.get(url, headers=source_headers)
 
     assert first.status_code == 200
     assert first.content == second.content
@@ -289,10 +299,10 @@ async def test_versioned_contract_schema_endpoint_is_deterministic(
 
 @pytest.mark.asyncio
 async def test_unknown_contract_schema_returns_404(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
 ):
-    response = await client.get(
+    response = await owned_client.get(
         "/api/v1/source/contracts/market_eod/versions/99",
         headers=source_headers,
     )
@@ -303,9 +313,9 @@ async def test_unknown_contract_schema_returns_404(
 
 @pytest.mark.asyncio
 async def test_openapi_publishes_contract_route_without_prevalidating_ingest_body(
-    client: AsyncClient,
+    owned_client: AsyncClient,
 ):
-    schema = (await client.get("/openapi.json")).json()
+    schema = (await owned_client.get("/openapi.json")).json()
 
     assert "/api/v1/source/contracts/{schema_id}/versions/{schema_version}" in schema["paths"]
     assert "requestBody" not in schema["paths"]["/api/v1/source/ingest"]["post"]
@@ -313,13 +323,13 @@ async def test_openapi_publishes_contract_route_without_prevalidating_ingest_bod
 
 @pytest.mark.asyncio
 async def test_canonical_market_eod_normalizes_without_provider_specific_fields(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     test_engine,
 ):
     await _seed_dataset(test_session)
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -347,13 +357,13 @@ async def test_canonical_market_eod_normalizes_without_provider_specific_fields(
 
 @pytest.mark.asyncio
 async def test_missing_eod_partition_fails_permanently_without_retry(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     test_engine,
 ):
     await _seed_dataset(test_session)
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -383,31 +393,60 @@ async def test_missing_eod_partition_fails_permanently_without_retry(
     assert run.next_retry_at is None
     assert job.status == "failed"
     assert job.attempt_count == 1
-    status_response = await client.get(f"/api/v1/source/runs/{run_id}", headers=source_headers)
+    status_response = await owned_client.get(
+        f"/api/v1/source/runs/{run_id}", headers=source_headers
+    )
     assert status_response.status_code == 200
     assert status_response.json()["failure_code"] == "EOD_PARTITION_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
 async def test_canonical_raw_rerun_preserves_schema_lineage_and_routing(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     test_engine,
 ):
     await _seed_dataset(test_session)
-    accepted = await client.post(
+    accepted = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
     )
     original_run_id = UUID(accepted.json()["run_id"])
-    rerun = await client.post(
+    await _execute_run(test_session, test_engine, original_run_id)
+    owner = await work_queue.lock_provider(test_session, "finlab")
+    from app.models.provider_work import ProviderWorkAttempt
+
+    attempt = await test_session.get(ProviderWorkAttempt, owner.attempt_id)
+    identity = dict(
+        provider="finlab", work_id=attempt.work_id, generation=owner.generation, token=owner.token
+    )
+    await work_queue.close(test_session, **identity)
+    await work_queue.settle(test_session, **identity, outcome="completed", proof={})
+    await test_session.commit()
+    rerun = await owned_client.post(
         f"/api/v1/source/runs/{original_run_id}/rerun",
         headers=source_headers,
     )
     rerun_id = UUID(rerun.json()["run_id"])
 
+    claim = await owned_client.post(
+        "/api/v1/source/provider-work/claim",
+        headers=source_headers,
+        json={
+            "protocol": "provider-work-v1",
+            "host_lock_identity": f"{work_queue.environment()}:1:22",
+            "recover": True,
+        },
+    )
+    claimed = claim.json()["work"]
+    execute = await owned_client.post(
+        f"/api/v1/source/provider-work/{claimed['work_id']}/execute-rerun",
+        headers=source_headers,
+        json={"generation": claimed["generation"], "token": claimed["token"]},
+    )
+    assert execute.status_code == 200, execute.text
     await _execute_run(test_session, test_engine, rerun_id)
 
     rerun_row = await test_session.get(IngestionRun, rerun_id)
@@ -419,12 +458,12 @@ async def test_canonical_raw_rerun_preserves_schema_lineage_and_routing(
 
 @pytest.mark.asyncio
 async def test_canonical_raw_rerun_rechecks_current_dataset_scope(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_dataset(test_session)
-    accepted = await client.post(
+    accepted = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -435,7 +474,7 @@ async def test_canonical_raw_rerun_rechecks_current_dataset_scope(
     source_client.allowed_datasets = []
     await test_session.commit()
 
-    rerun = await client.post(
+    rerun = await owned_client.post(
         f"/api/v1/source/runs/{original_run_id}/rerun",
         headers=source_headers,
     )
@@ -447,12 +486,12 @@ async def test_canonical_raw_rerun_rechecks_current_dataset_scope(
 
 @pytest.mark.asyncio
 async def test_canonical_raw_rerun_rechecks_current_source_binding(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_dataset(test_session)
-    accepted = await client.post(
+    accepted = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -463,7 +502,7 @@ async def test_canonical_raw_rerun_rechecks_current_source_binding(
     source_client.source_name = "shioaji"
     await test_session.commit()
 
-    rerun = await client.post(
+    rerun = await owned_client.post(
         f"/api/v1/source/runs/{original_run_id}/rerun",
         headers=source_headers,
     )
@@ -475,13 +514,13 @@ async def test_canonical_raw_rerun_rechecks_current_source_binding(
 
 @pytest.mark.asyncio
 async def test_worker_routes_using_persisted_schema_version(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     test_engine,
 ):
     await _seed_dataset(test_session)
-    accepted = await client.post(
+    accepted = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -502,14 +541,14 @@ async def test_worker_routes_using_persisted_schema_version(
 
 @pytest.mark.asyncio
 async def test_schema_invalid_request_is_durably_rejected(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     value = _canonical_request()
     value["payload"]["data"][0]["price"] = {"last": 1015, "secret": "do-not-leak"}
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -539,7 +578,7 @@ async def test_schema_invalid_request_is_durably_rejected(
     ],
 )
 async def test_market_currency_resolves_from_dataset_default_or_every_row(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     default_currency: str | None,
@@ -555,7 +594,7 @@ async def test_market_currency_resolves_from_dataset_default_or_every_row(
     else:
         value["payload"]["data"][0]["currency"] = row_currency
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -585,7 +624,7 @@ async def test_market_currency_resolves_from_dataset_default_or_every_row(
 
 @pytest.mark.asyncio
 async def test_market_currency_rejects_mixed_rows_without_dataset_default(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
@@ -599,7 +638,7 @@ async def test_market_currency_rejects_mixed_rows_without_dataset_default(
     value["payload"]["data"].append(second_row)
     value["payload"]["batch"]["declared_record_count"] = 2
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -622,7 +661,7 @@ async def test_market_currency_rejects_mixed_rows_without_dataset_default(
     ],
 )
 async def test_semantic_validation_uses_stable_codes_and_durable_attempts(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     mutation: str,
@@ -635,7 +674,7 @@ async def test_semantic_validation_uses_stable_codes_and_durable_attempts(
         value["payload"]["data"].append(dict(value["payload"]["data"][0]))
         value["payload"]["batch"]["declared_record_count"] = 2
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -669,7 +708,7 @@ async def test_semantic_validation_uses_stable_codes_and_durable_attempts(
     ],
 )
 async def test_special_validation_code_and_message_select_the_same_error(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     mutation: str,
@@ -684,7 +723,7 @@ async def test_special_validation_code_and_message_select_the_same_error(
         value["payload"]["data"].append(dict(value["payload"]["data"][0]))
         value["payload"]["batch"]["declared_record_count"] = 2
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -711,7 +750,7 @@ async def test_special_validation_code_and_message_select_the_same_error(
     ],
 )
 async def test_representative_semantic_rules_are_enforced_after_attempt_creation(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     mutation: str,
@@ -725,7 +764,7 @@ async def test_representative_semantic_rules_are_enforced_after_attempt_creation
     else:
         value["payload"]["data"][0]["trade_date"] = "2026-07-20"
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -743,11 +782,11 @@ async def test_representative_semantic_rules_are_enforced_after_attempt_creation
 
 @pytest.mark.asyncio
 async def test_invalid_json_is_durably_rejected(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers={**source_headers, "Content-Type": "application/json"},
         content=b'{"dataset_key":',
@@ -764,14 +803,14 @@ async def test_invalid_json_is_durably_rejected(
 
 @pytest.mark.asyncio
 async def test_unknown_dataset_rejection_has_attempt_id(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     value = _canonical_request()
     value["dataset_key"] = "unknown_dataset"
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -787,13 +826,13 @@ async def test_unknown_dataset_rejection_has_attempt_id(
 
 @pytest.mark.asyncio
 async def test_dataset_without_contract_is_rejected_and_recorded(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_dataset(test_session, config={"source_format": "legacy"})
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -816,7 +855,7 @@ async def test_dataset_without_contract_is_rejected_and_recorded(
     ],
 )
 async def test_invalid_or_conflicting_contract_scope_is_rejected_before_queueing(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     config_update: dict,
@@ -825,7 +864,7 @@ async def test_invalid_or_conflicting_contract_scope_is_rejected_before_queueing
     config.update(config_update)
     await _seed_dataset(test_session, config=config)
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -839,17 +878,17 @@ async def test_invalid_or_conflicting_contract_scope_is_rejected_before_queueing
 
 @pytest.mark.asyncio
 async def test_duplicate_contract_creates_new_attempt_but_reuses_run(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_dataset(test_session)
-    first = await client.post(
+    first = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
     )
-    second = await client.post(
+    second = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -870,19 +909,19 @@ async def test_duplicate_contract_creates_new_attempt_but_reuses_run(
 
 @pytest.mark.asyncio
 async def test_idempotency_mismatch_is_rejected_without_new_run(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_dataset(test_session)
-    first = await client.post(
+    first = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
     )
     changed = _canonical_request()
     changed["payload"]["data"][0]["close"] = "1016"
-    second = await client.post(
+    second = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=changed,
@@ -898,19 +937,19 @@ async def test_idempotency_mismatch_is_rejected_without_new_run(
 
 @pytest.mark.asyncio
 async def test_idempotency_key_cannot_be_reused_by_different_source(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_dataset(test_session)
-    first = await client.post(
+    first = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
     )
     changed_source = _canonical_request()
     changed_source["source"] = "twelve_data"
-    second = await client.post(
+    second = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=changed_source,
@@ -923,14 +962,14 @@ async def test_idempotency_key_cannot_be_reused_by_different_source(
 
 @pytest.mark.asyncio
 async def test_unbounded_schema_version_does_not_break_attempt_persistence(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     value = _canonical_request()
     value["schema_version"] = 10**100
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -944,14 +983,14 @@ async def test_unbounded_schema_version_does_not_break_attempt_persistence(
 
 @pytest.mark.asyncio
 async def test_whitespace_schema_id_is_exact_dispatch_and_durably_unsupported(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     value = _canonical_request()
     value["schema_id"] = " market_eod "
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -969,18 +1008,18 @@ async def test_whitespace_schema_id_is_exact_dispatch_and_durably_unsupported(
 
 @pytest.mark.asyncio
 async def test_attempt_status_endpoint_returns_rejection(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
 ):
     value = _canonical_request()
     value["schema_version"] = 99
-    rejected = await client.post(
+    rejected = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
     )
 
-    response = await client.get(
+    response = await owned_client.get(
         f"/api/v1/source/attempts/{rejected.json()['attempt_id']}",
         headers=source_headers,
     )
@@ -992,7 +1031,7 @@ async def test_attempt_status_endpoint_returns_rejection(
 
 @pytest.mark.asyncio
 async def test_attempt_status_is_scoped_to_authenticated_source_client(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
@@ -1014,18 +1053,18 @@ async def test_attempt_status_is_scoped_to_authenticated_source_client(
         rate_limit_window=60,
     )
     header_name = next(iter(source_headers))
-    rejected = await client.post(
+    rejected = await owned_client.post(
         "/api/v1/source/ingest",
         headers={header_name: finlab_key},
         json={**_canonical_request(), "source": "twelve_data"},
     )
     attempt_id = rejected.json()["attempt_id"]
 
-    owner_response = await client.get(
+    owner_response = await owned_client.get(
         f"/api/v1/source/attempts/{attempt_id}",
         headers={header_name: finlab_key},
     )
-    other_response = await client.get(
+    other_response = await owned_client.get(
         f"/api/v1/source/attempts/{attempt_id}",
         headers={header_name: other_key},
     )
@@ -1038,7 +1077,7 @@ async def test_attempt_status_is_scoped_to_authenticated_source_client(
 
 @pytest.mark.asyncio
 async def test_unexpected_processing_error_marks_attempt_rejected(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     monkeypatch,
@@ -1052,7 +1091,7 @@ async def test_unexpected_processing_error_marks_attempt_rejected(
         "app.services.canonical_ingestion.IngestionService.ingest_contract",
         fail_ingest,
     )
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -1068,7 +1107,7 @@ async def test_unexpected_processing_error_marks_attempt_rejected(
 
 @pytest.mark.asyncio
 async def test_database_failure_before_attempt_returns_retryable_503(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     monkeypatch,
 ):
@@ -1079,7 +1118,7 @@ async def test_database_failure_before_attempt_returns_retryable_503(
         "app.services.canonical_ingestion.IngestionAttemptService.begin",
         fail_begin,
     )
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -1099,7 +1138,7 @@ async def test_database_failure_before_attempt_returns_retryable_503(
 
 @pytest.mark.asyncio
 async def test_claim_failure_after_commit_returns_persisted_attempt_id(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     monkeypatch,
@@ -1109,7 +1148,7 @@ async def test_claim_failure_after_commit_returns_persisted_attempt_id(
 
     monkeypatch.setattr(test_session, "scalar", fail_claim)
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -1129,7 +1168,7 @@ async def test_claim_failure_after_commit_returns_persisted_attempt_id(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("claim_failure", ["exception", "missing"])
 async def test_non_database_claim_failure_returns_internal_error_with_attempt_id(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     monkeypatch,
@@ -1142,7 +1181,7 @@ async def test_non_database_claim_failure_returns_internal_error_with_attempt_id
 
     monkeypatch.setattr(test_session, "scalar", fail_claim)
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -1162,7 +1201,7 @@ async def test_non_database_claim_failure_returns_internal_error_with_attempt_id
 
 @pytest.mark.asyncio
 async def test_non_database_rejection_audit_failure_returns_internal_error(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     monkeypatch,
@@ -1175,7 +1214,7 @@ async def test_non_database_rejection_audit_failure_returns_internal_error(
 
     monkeypatch.setattr(IngestionAttemptService, "reject", fail_reject)
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=value,
@@ -1202,7 +1241,7 @@ async def test_non_database_rejection_audit_failure_returns_internal_error(
     ],
 )
 async def test_reconciler_winning_after_rollback_preserves_stable_error_envelope(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     test_engine,
@@ -1212,6 +1251,9 @@ async def test_reconciler_winning_after_rollback_preserves_stable_error_envelope
     expected_code: str,
 ):
     await _seed_dataset(test_session)
+    ownership = await owned_headers(
+        test_session, locals().get("request_body", locals().get("first_body")), {}
+    )
     session_factory = async_sessionmaker(
         test_engine,
         class_=AsyncSession,
@@ -1246,7 +1288,7 @@ async def test_reconciler_winning_after_rollback_preserves_stable_error_envelope
     )
     monkeypatch.setattr(IngestionAttemptService, "reject", abort_before_reject)
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_canonical_request(),
@@ -1327,6 +1369,9 @@ async def test_live_attempt_claim_is_skipped_until_owner_releases(
     )
     test_session.add(stale)
     await test_session.commit()
+    ownership = await owned_headers(
+        test_session, locals().get("request_body", locals().get("first_body")), {}
+    )
     session_factory = async_sessionmaker(
         test_engine,
         class_=AsyncSession,
@@ -1415,7 +1460,7 @@ def _policy_config(*, count_action: str, minimum: int) -> dict:
 
 @pytest.mark.asyncio
 async def test_delivery_policy_reject_persists_only_bounded_attempt_details(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session: AsyncSession,
 ) -> None:
@@ -1424,7 +1469,7 @@ async def test_delivery_policy_reject_persists_only_bounded_attempt_details(
         config=_policy_config(count_action="reject", minimum=2),
     )
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest", headers=source_headers, json=_canonical_request()
     )
 
@@ -1444,7 +1489,7 @@ async def test_delivery_policy_reject_persists_only_bounded_attempt_details(
 
 @pytest.mark.asyncio
 async def test_delivery_policy_warning_persists_one_aggregate_dq_issue(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session: AsyncSession,
 ) -> None:
@@ -1453,7 +1498,7 @@ async def test_delivery_policy_warning_persists_one_aggregate_dq_issue(
         config=_policy_config(count_action="warn", minimum=2),
     )
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest", headers=source_headers, json=_canonical_request()
     )
 
@@ -1473,7 +1518,7 @@ async def test_delivery_policy_warning_persists_one_aggregate_dq_issue(
     assert len(issues) == 1
     assert issues[0].issue_type == "INGRESS_DELIVERY_POLICY_WARNING"
     assert issues[0].raw_data["violations"][0]["code"] == "BATCH_RECORD_COUNT_DROP"
-    attempt_response = await client.get(
+    attempt_response = await owned_client.get(
         f"/api/v1/source/attempts/{attempt.attempt_id}", headers=source_headers
     )
     assert attempt_response.status_code == 200
@@ -1482,7 +1527,7 @@ async def test_delivery_policy_warning_persists_one_aggregate_dq_issue(
 
 @pytest.mark.asyncio
 async def test_exact_duplicate_is_returned_before_dynamic_policy_changes(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session: AsyncSession,
 ) -> None:
@@ -1491,13 +1536,15 @@ async def test_exact_duplicate_is_returned_before_dynamic_policy_changes(
         config=_policy_config(count_action="reject", minimum=1),
     )
     request = _canonical_request()
-    first = await client.post("/api/v1/source/ingest", headers=source_headers, json=request)
+    first = await owned_client.post("/api/v1/source/ingest", headers=source_headers, json=request)
     assert first.status_code == 202
     dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
     dataset.config = _policy_config(count_action="reject", minimum=2)
     await test_session.commit()
 
-    duplicate = await client.post("/api/v1/source/ingest", headers=source_headers, json=request)
+    duplicate = await owned_client.post(
+        "/api/v1/source/ingest", headers=source_headers, json=request
+    )
 
     assert duplicate.status_code == 202
     assert duplicate.json()["run_id"] == first.json()["run_id"]
@@ -1515,6 +1562,9 @@ async def test_concurrent_exact_deliveries_create_one_run_without_duplicate_warn
     )
     request_body = _canonical_request(idempotency_key="concurrent-policy-delivery")
     request = validate_ingress_request(request_body)
+    ownership = await owned_headers(
+        test_session, locals().get("request_body", locals().get("first_body")), {}
+    )
     session_factory = async_sessionmaker(
         test_engine,
         class_=AsyncSession,
@@ -1522,6 +1572,8 @@ async def test_concurrent_exact_deliveries_create_one_run_without_duplicate_warn
     )
 
     async with session_factory() as first_session, session_factory() as second_session:
+        for owned_session in (first_session, second_session):
+            set_owned_identity(owned_session, ownership)
         for session in (first_session, second_session):
             session.info.update(
                 {
@@ -1561,6 +1613,9 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
     )
     request_body = _canonical_request(idempotency_key="lock-waiter-policy-bypass")
     request = validate_ingress_request(request_body)
+    ownership = await owned_headers(
+        test_session, locals().get("request_body", locals().get("first_body")), {}
+    )
     session_factory = async_sessionmaker(
         test_engine,
         class_=AsyncSession,
@@ -1568,6 +1623,8 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
     )
 
     async with session_factory() as first_session, session_factory() as second_session:
+        for owned_session in (first_session, second_session):
+            set_owned_identity(owned_session, ownership)
         for session in (first_session, second_session):
             session.info.update(
                 {
@@ -1581,6 +1638,7 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
         second_attempt = await IngestionAttemptService(second_session).begin(
             request_body, json.dumps(request_body).encode()
         )
+        await work_queue.lock_provider(first_session, "finlab")
         await lock_ingestion_idempotency_scope(
             first_session,
             source_client_id=None,
@@ -1590,6 +1648,14 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
 
         second_reached_idempotency_lock = asyncio.Event()
         second_policy_calls = 0
+        original_provider_lock = work_queue.lock_provider
+
+        async def observed_provider_lock(db, provider):
+            if db is second_session:
+                second_reached_idempotency_lock.set()
+            return await original_provider_lock(db, provider)
+
+        monkeypatch.setattr(work_queue, "lock_provider", observed_provider_lock)
 
         async def observed_idempotency_lock(
             db,
@@ -1674,6 +1740,9 @@ async def test_cross_source_waiter_returns_mismatch_before_dynamic_policy(
     second_body["request_key"] = "finlab-cross-source-lock-waiter"
     second_body["payload"]["data"][0]["close"] = "1016"
     first_request = validate_ingress_request(first_body)
+    ownership = await owned_headers(
+        test_session, locals().get("request_body", locals().get("first_body")), {}
+    )
     session_factory = async_sessionmaker(
         test_engine,
         class_=AsyncSession,
@@ -1681,6 +1750,8 @@ async def test_cross_source_waiter_returns_mismatch_before_dynamic_policy(
     )
 
     async with session_factory() as first_session, session_factory() as second_session:
+        for owned_session in (first_session, second_session):
+            set_owned_identity(owned_session, ownership)
         first_session.info["source_client_id"] = source_client_id
         second_session.info["source_client_id"] = source_client_id
         first_session.info["source_name"] = "finlab"
@@ -1690,6 +1761,7 @@ async def test_cross_source_waiter_returns_mismatch_before_dynamic_policy(
         first_attempt = await IngestionAttemptService(first_session).begin(
             first_body, json.dumps(first_body).encode()
         )
+        await work_queue.lock_provider(first_session, "finlab")
         await lock_ingestion_idempotency_scope(
             first_session,
             source_client_id=source_client_id,
@@ -1699,6 +1771,14 @@ async def test_cross_source_waiter_returns_mismatch_before_dynamic_policy(
 
         second_reached_idempotency_lock = asyncio.Event()
         second_policy_calls = 0
+        original_provider_lock = work_queue.lock_provider
+
+        async def observed_provider_lock(db, provider):
+            if db is second_session:
+                second_reached_idempotency_lock.set()
+            return await original_provider_lock(db, provider)
+
+        monkeypatch.setattr(work_queue, "lock_provider", observed_provider_lock)
 
         async def observed_idempotency_lock(
             db,

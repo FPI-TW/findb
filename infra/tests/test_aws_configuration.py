@@ -71,3 +71,17 @@ def test_full_market_flag_is_explicit_or_defaults_stopped(target, unit, flag):
     else:
         with pytest.raises(module.ConfigurationError):
             module.validate(value, target=target, unit=unit)
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+@pytest.mark.parametrize("unit", ["findb", "fetcher"])
+@pytest.mark.parametrize("flag", [None, "true", "false", "0", ""])
+def test_provider_work_protocol_cannot_be_disabled(target, unit, flag):
+    value = document(target, unit)
+    if flag is not None:
+        value["values"]["PROVIDER_WORK_REQUIRED"] = flag
+    if flag in {None, "true"}:
+        assert module.validate(value, target=target, unit=unit)["PROVIDER_WORK_REQUIRED"] == "true"
+    else:
+        with pytest.raises(module.ConfigurationError):
+            module.validate(value, target=target, unit=unit)

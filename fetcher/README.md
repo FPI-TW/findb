@@ -18,11 +18,15 @@ Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受
 Pilot 建立 daily plan 時按 canonical 商品識別排序取前兩項，期貨以 product／contract 取樣並保留所有 sessions。
 樣本建立後凍結；重試、重啟、補抓及 universe 發布不得改寫它。
 
-新版部署在兩環境固定安裝八個 recurring consumers，以及四個獨立 historical consumers。
+部署在兩環境固定安裝十個 recurring consumers，以及五個獨立 historical consumers。
 `FULL_MARKET_ENABLED=false` 只禁止 full market 新抓取，不影響安裝、pilot 或 prepared delivery。
 部署只接受 stopped controls；Owner 操作啟停。Staging 常態開 pilot，上版可短暫開 full market；production 常態只開 full market。
 `pilot_<provider>_v1` 與 `full_market_<provider>_v1` 各自有 first dates、plans、checkpoint；同環境共用帳號 governor。
-舊 provider-specific pilot CLI 僅為既有診斷工具，已退出正式部署。
+所有 provider-specific scheduler、Twelve Data one-shot、FinLab／Shioaji smoke、Shioaji staging 與
+TAIFEX pilot CLI 都只回報退役（exit 2）。`PROVIDER_WORK_REQUIRED` 缺省 true，明確 false 拒絕啟動。
+所有新 I/O 與 prepared delivery 須持有 provider-work owner；缺少 attestation 不能 claim。
+現有環境升級前依 [切換程序](../docs/operations/deployment.md#provider-work-切換) 排空與備份。
+原 checkpoint、prepared bytes、receipts、budgets 與 cooldown 不會刪除或重設。
 
 ## 開發
 
@@ -78,6 +82,7 @@ Raw object lifecycle 為 30 天、bucket lock 為 7 天，由 Cloudflare R2 管�
 
 | 變數 | 必填 | 用途 |
 | --- | --- | --- |
+| `PROVIDER_WORK_REQUIRED` | 否 | 缺省 `true`；明確 `false` 拒絕啟動，所有 providers 須使用 queue owner |
 | `SOURCE_API_URL` | 是 | FinDB Source API HTTPS origin |
 | `SOURCE_CLIENT_KEY` | 是 | 當前 provider 專用 DB-backed Source client key |
 | `FETCHER_CONTRACTS_DIR` | 否 | Contract manifest 目錄（container 預設 `/app/contracts`） |

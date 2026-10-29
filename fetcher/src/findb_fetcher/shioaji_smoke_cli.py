@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import importlib.metadata
 import json
 import multiprocessing
 import os
 import sys
-from collections.abc import Sequence
 from datetime import date, timedelta
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -59,44 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    from findb_fetcher.provider_work import enabled
+def main(argv: list[str] | None = None) -> int:
+    """Retired acquiring entrypoint; retained state must use the queue runtime."""
+    from findb_fetcher.legacy_cli import retired
 
-    if enabled():
-        return _error("provider_work_required", 4)
-    try:
-        args = build_parser().parse_args(argv)
-        if args.symbol not in REVIEWED_SYMBOLS or not _within_provider_window(args.target_date):
-            raise SmokeArgumentError("unsafe scope")
-    except (SmokeArgumentError, ValueError, TypeError):
-        return _error("invalid_arguments", 2)
-    try:
-        version = importlib.metadata.version("shioaji")
-    except importlib.metadata.PackageNotFoundError:
-        return _error("sdk_unavailable", 3)
-    if version != EXPECTED_SHIOAJI_VERSION:
-        return _error("sdk_version_mismatch", 3)
-    try:
-        ShioajiSdkGateway.from_env(simulation=True)
-    except ShioajiConfigError:
-        return _error("credentials_unavailable", 3)
-    result = _run_child(args.target_date, args.symbol)
-    if result is None:
-        return _error("timeout", 4)
-    if result[0] == "error":
-        return _error(str(result[1]), 4)
-    output: dict[str, object] = {
-        "status": "ok",
-        "sdk_version": version,
-        "date": args.target_date.isoformat(),
-        "symbol": args.symbol,
-        "count": result[1],
-        "content_sha256": result[0],
-    }
-    if result[2] is not None:
-        output["usage_bytes_delta"] = result[2]
-    _emit(output)
-    return 0
+    return retired("findb-fetch-shioaji-smoke")
 
 
 def _parse_date(value: str) -> date:

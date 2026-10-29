@@ -8,6 +8,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from multiprocessing.reduction import DupFd
 
 import httpx
 import pytest
@@ -19,6 +20,7 @@ from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.platform_limits import account_identity
 from findb_fetcher.providers.shioaji_control import usage_sample
 from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
+from provider_work_support import account_boundary_unit
 from sdk_bootstrap_harness import SDK_CHILD as _FAKE_PROVIDER_CHILD
 
 
@@ -36,6 +38,7 @@ def governor(tmp_path, monkeypatch):
     return path
 
 
+@account_boundary_unit
 def _worker(path: str, queue, count: int = 2) -> None:
     os.environ["FETCHER_ACCOUNT_STATE_PATH"] = path
     os.environ["TWELVE_DATA_API_KEY"] = "shared-key"
@@ -48,6 +51,7 @@ def _worker(path: str, queue, count: int = 2) -> None:
                 queue.put(("complete", time.time()))
 
 
+@account_boundary_unit
 def _crash(path: str, queue) -> None:
     os.environ["FETCHER_ACCOUNT_STATE_PATH"] = path
     os.environ["TWELVE_DATA_API_KEY"] = "shared-key"
@@ -59,6 +63,7 @@ def _crash(path: str, queue) -> None:
         os._exit(9)
 
 
+@account_boundary_unit
 def _headers_then_body(path: str, queue) -> None:
     os.environ["FETCHER_ACCOUNT_STATE_PATH"] = path
     os.environ["TWELVE_DATA_API_KEY"] = "shared-key"
@@ -81,12 +86,14 @@ def _headers_then_body(path: str, queue) -> None:
         TwelveDataClient(TwelveDataConfig(api_key="shared-key"), client=http).fetch_daily("AAPL")
 
 
-def _sdk_child(conn, queue, delay: float):
+def _sdk_child(conn, queue, delay: float, work_descriptor):
     import json
 
     from findb_fetcher.providers.shioaji_control import ChildBoundary
 
     command = json.loads(conn.recv_bytes(4096))
+    work_fd = work_descriptor.detach()
+    command["governor"]["work_fd"] = work_fd
     boundary = ChildBoundary(conn, command["governor"])
 
     class API:
@@ -115,6 +122,7 @@ def _sdk_child(conn, queue, delay: float):
         conn.close()
 
 
+@account_boundary_unit
 def _sdk_parent(path: str, queue):
     from findb_fetcher.providers.shioaji_control import parent_fetch
 
@@ -122,7 +130,19 @@ def _sdk_parent(path: str, queue):
     os.environ["SHIOAJI_API_KEY"] = "shared-shioaji"
     ctx = multiprocessing.get_context("spawn")
     parent, child = ctx.Pipe()
-    process = ctx.Process(target=_sdk_child, args=(child, queue, 0.4))
+    process = ctx.Process(
+        target=_sdk_child,
+        args=(
+            child,
+            queue,
+            0.4,
+            DupFd(
+                __import__(
+                    "findb_fetcher.provider_work", fromlist=["inherited_fds"]
+                ).inherited_fds()[0]
+            ),
+        ),
+    )
     process.start()
     child.close()
     with authorization_scope(_grant), Acquisition("shioaji") as operation:
@@ -164,7 +184,19 @@ def test_expired_child_go_refreshes_without_duplicate_sdk_start(governor):
     ctx = multiprocessing.get_context("spawn")
     queue = ctx.Queue()
     parent, child = ctx.Pipe()
-    process = ctx.Process(target=_sdk_child, args=(child, queue, 0))
+    process = ctx.Process(
+        target=_sdk_child,
+        args=(
+            child,
+            queue,
+            0,
+            DupFd(
+                __import__(
+                    "findb_fetcher.provider_work", fromlist=["inherited_fds"]
+                ).inherited_fds()[0]
+            ),
+        ),
+    )
     process.start()
     child.close()
     calls = []
@@ -555,6 +587,7 @@ def test_mixed_legacy_protocol_bypasses_lock_and_rollback_inspection_denies(
     assert __import__("json").loads(capsys.readouterr().out)["legacy_rollback_safe"] is False
 
 
+@account_boundary_unit
 def _launch_parent(path, output, queue):
     import subprocess
     import sys
