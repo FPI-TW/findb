@@ -23,7 +23,6 @@ from findb_fetcher.shioaji_scheduler import (
     open_production_state,
     validate_production_state_path,
 )
-from findb_fetcher.taifex_pilot import PilotState, latest_completed_day, select_near_month
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -63,38 +62,6 @@ def test_staging_minute_identity_rejects_legacy_sequence_state(tmp_path: Path) -
         validate_production_state_path(tmp_path / "state.sqlite3", manifest=new)
 
 
-def _rows() -> list[dict]:
-    return [
-        {
-            "product_code": p,
-            "contract_code": f"{p}:{month}",
-            "contract_month": month,
-            "trade_date": "2026-10-02",
-            "session": session,
-            "open": "100",
-            "high": "110",
-            "low": "90",
-            "close": "105",
-            "volume": 10,
-            "settlement_price": "105",
-            "open_interest": 10,
-        }
-        for p in ("TX", "MTX")
-        for month in ("202610W1", "202610", "202611")
-        for session in ("regular", "after_hours")
-    ]
-
-
-def test_actual_monthly_near_expiry_and_session_selection() -> None:
-    result = select_near_month(_rows(), date(2026, 10, 2))
-    assert len(result) == 4
-    assert {row["contract_code"] for row in result} == {"TX:202610", "MTX:202610"}
-    with pytest.raises(ValueError):
-        select_near_month(
-            [row for row in _rows() if row["session"] == "regular"], date(2026, 10, 2)
-        )
-
-
 def _calendar() -> SimpleNamespace:
     return SimpleNamespace(
         get_day=lambda market, day: (
@@ -104,122 +71,6 @@ def _calendar() -> SimpleNamespace:
             1,
         )
     )
-
-
-def test_latest_completed_trading_day_uses_separate_taifex_calendar() -> None:
-    assert latest_completed_day(_calendar(), datetime(2026, 10, 5, 2, tzinfo=timezone.utc)) == date(
-        2026, 10, 2
-    )
-
-
-@pytest.mark.parametrize(
-    ("source_denied", "stop_after_acceptance"), [(False, False), (True, False), (False, True)]
-)
-def test_taifex_raw_first_prepared_restart_idempotency_and_terminal_counts(
-    tmp_path: Path,
-    contracts_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    source_denied: bool,
-    stop_after_acceptance: bool,
-) -> None:
-    import threading
-
-    from findb_fetcher import taifex_pilot
-
-    events = []
-    raw_formats = []
-    selected = _rows()
-
-    def report(http, *, product, **kwargs):
-        events.append("fetch")
-        return product.encode()
-
-    monkeypatch.setattr(taifex_pilot, "fetch_report", report)
-    monkeypatch.setattr(
-        taifex_pilot,
-        "parse_report",
-        lambda raw, **kwargs: [row for row in selected if row["product_code"] == raw.decode()],
-    )
-
-    class Store:
-        def persist(self, raw, **kwargs):
-            events.append("raw")
-            raw_formats.append(kwargs.get("payload_format", "json"))
-            digest = hashlib.sha256(raw).hexdigest()
-            return RawObject("r2://" + "a" * 32 + "/pilot-raw/taifex/" + digest, digest, len(raw))
-
-    requests = []
-    stop_event = threading.Event()
-
-    class DeniedError(RuntimeError):
-        status_code = 401
-
-    class Source:
-        def prepare(self, request):
-            requests.append(request)
-            return request
-
-        def deliver(self, prepared, **kwargs):
-            events.append("deliver")
-            if source_denied:
-                raise DeniedError("secret provider detail must never escape")
-            if len(requests) == 1 and not stop_after_acceptance:
-                raise ValueError("temporary fixture failure")
-            return SimpleNamespace(run_id=UUID(int=1), attempt_id=UUID(int=2))
-
-        def get_run_status(self, *args, **kwargs):
-            if len(requests) == 1 and stop_after_acceptance:
-                stop_event.set()
-                return SimpleNamespace(status="queued")
-            return SimpleNamespace(
-                status="completed", total_records=4, success_records=4, failed_records=0
-            )
-
-    config = json.loads((CONFIGS / "taifex_tw_staging_pilot.v1.json").read_bytes())
-    state_path = tmp_path / "pilot.sqlite3"
-    args = dict(
-        now=datetime(2026, 10, 2, 12, tzinfo=timezone.utc),
-        calendar=_calendar(),
-        http=object(),
-        source=Source(),
-        raw_store=Store(),
-        registry=ContractRegistry(contracts_dir),
-        config=config,
-        stop_event=stop_event,
-    )
-    first = PilotState(state_path).run(**args)
-    assert raw_formats == ["csv_cp950", "csv_cp950", "json"]
-    assert first["status"] == "retry_pending"
-    if stop_after_acceptance:
-        assert first["reason"] == "stopped"
-        with sqlite3.connect(state_path) as db:
-            assert db.execute("SELECT attempts FROM pilot_day").fetchone() == (0,)
-        stop_event.clear()
-    assert events[:5] == ["fetch", "raw", "fetch", "raw", "raw"]
-    result = PilotState(state_path).run(**args)
-    if source_denied:
-        assert result["status"] == "retry_pending"
-        result = PilotState(state_path).run(**args)
-        assert result == {
-            "target_date": "2026-10-02",
-            "status": "blocked",
-            "reason": "source:DeniedError:http_401",
-        }
-        assert PilotState(state_path).run(**args)["status"] == "blocked"
-        assert requests[0] == requests[1] == requests[2]
-        assert events.count("fetch") == 2
-        with sqlite3.connect(state_path) as db:
-            assert db.execute(
-                "SELECT record_count,requests,attempts FROM pilot_day"
-            ).fetchone() == (0, 2, 3)
-        return
-    assert result["status"] == "completed", result
-    assert requests[0] == requests[1]
-    assert events.count("fetch") == 2
-    assert PilotState(state_path).run(**args)["status"] == "completed"
-    assert len(requests) == 2
-    with sqlite3.connect(state_path) as db:
-        assert db.execute("SELECT record_count,requests FROM pilot_day").fetchone() == (4, 2)
 
 
 def test_new_minute_pilot_selects_only_latest_completed_open_day():

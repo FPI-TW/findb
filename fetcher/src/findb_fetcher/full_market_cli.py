@@ -319,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
                                 observed_state="running",
                                 cycle_started_at=datetime.now(timezone.utc),
                             )
-                            health = runtime.cycle(drain_prepared=False)
+                            health = runtime.cycle()
                             print(json.dumps(health, separators=(",", ":")), flush=True)
                             control.poll(
                                 observed_state="stopped",

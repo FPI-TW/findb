@@ -14,9 +14,25 @@ shared inode preflight 與 Owner attestation。未 attested 的 Source claim 一
 
 舊 acquiring CLI（provider-specific scheduler、Twelve Data one-shot、FinLab／Shioaji smoke、
 Shioaji staging 與 TAIFEX pilot）只回傳 exit 2 的安全退役訊息，不載入 secrets、不建立 state、不抓取。
+八個入口模組只保留 tombstone `main()` 與 `python -m` guard；舊 parser、CLI worker、排程與
+獨立 TAIFEX pilot executor 已刪除，不以成功的私人 helper 測試保留已退役的執行路徑。
 使用 `findb-fetch-runtime`、`findb-fetch-historical-backfill` 與 runtime 的 queued universe refresh。
 共用 mapper／executor、舊 checkpoint parser、prepared bytes、receipts、raw lineage、operation budgets、
 account pins／debt／cooldown 全部保留；不執行清檔、重新入列全部 backlog 或資料 migration。
+`legacy_checkpoints.read_taifex_pilot_checkpoint()` 保留舊 TAIFEX meta／pilot_day 的 schema／identity
+驗證與逐列唯讀檢查，使用既有檔案的 SQLite `mode=ro`；原 prepared、receipts、attempts 與 request
+用量照原值讀取，沒有建立、修復、抓取或交付方法。其餘仍使用的 shared mapper／executor／
+checkpoint parser 繼續放在各自模組，退役入口不再匯入它們。
+原 TAIFEX 格式使用 rollback journal。Reader 在 SQLite connect 前拒絕 WAL 格式，避免
+`mode=ro` 仍建立 sidecars；即使 sidecars 不存在也不忽略 WAL。WAL 檔須先經 SQLite
+一致性備份取得 rollback 格式的離線副本，不以 `immutable=1` 跳過尚未 checkpoint 的證據。
+
+Member executor 一開始取得 `require_owner()` 回傳的 fenced session，restore、authorize 與 reserve
+直接使用同一 owner。Queue claim 無 runnable work 時仍可回傳 `work: null`，cycle／drain／
+maintenance 保持正常 idle；它與已進入 member executor 後的必要 ownership 是不同邊界。
+Historical `_run_once()` 同樣保存 `require_owner()` 回傳的 session，停止、drain-only、closed／
+draining round 與例外處理全部使用該 owner，不重讀可為空的 `active()` 或採用無 owner fallback。
+同一 owner 取得的 historical item 仍可能為空，此時正常返回 idle，不能跳過最初的 fence 驗證。
 
 退役移除以下已重現的分歧：跨 request 的獨立 historical lease 可並行且 TTL 自動重派；
 FinLab publication wait 存取不存在的 owner；TD／FinLab 無 durable historical retry authority；

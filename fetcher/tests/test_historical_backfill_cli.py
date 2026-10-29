@@ -16,12 +16,13 @@ from findb_fetcher.historical_backfill_cli import run_worker
 PROCESS = r"""
 import sys, time
 from uuid import UUID
+from types import SimpleNamespace
 from findb_fetcher import historical_backfill_cli as cli
 
 mode = sys.argv[1]
 from findb_fetcher import historical_backfill as dispatch
 from findb_fetcher import provider_work
-provider_work.require_owner = lambda provider: None
+provider_work.require_owner = lambda provider: SimpleNamespace(work={"state": "open"})
 cli.run_once = dispatch._run_once
 class Control:
     provider = "twelve_data"

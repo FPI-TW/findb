@@ -62,7 +62,8 @@ provider 訊息或 credentials。Heartbeat 重疊案例用事件強制與 delive
 `test_shioaji_time_limits.py` 以顯式 clock 獨立驗證 50ms grant
 及 50 次／60 秒 rolling limit；日常 18:00–06:00 窗口、31 天日期限制／台北跨日與 SDK timeout
 分別由 `test_shioaji_daily_runtime.py`、`test_historical_backfill.py` 與 Fetcher 的
-`test_shioaji.py`／`test_shioaji_smoke_cli.py` 驗證。時間限制案例不依賴跑測試當下的時刻。
+`test_shioaji.py`／`test_provider_process_reap.py`／`test_provider_worker.py` 驗證。
+時間限制案例不依賴跑測試當下的時刻。
 
 Shioaji 每輪輸出逐檔 `code`／`stage`／`retryable`、checkpoint attempts／status／terminal code
 及安全的 attempt history；即使 coordinator 拋出例外，也保存安全的 exception type、Source
@@ -81,6 +82,20 @@ workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境�
 checkpoint bytes 不變，以及 daily cycle／drain 只呼叫 queue dispatcher。部署的 false 拒絕與
 bootstrap shared account path 分別由 Infra `test_provider_work_retirement.py`、
 `test_aws_configuration.py`、`test_full_market_deployment_repairs.py` 覆蓋。
+
+`test_retired_cli.py` 另外驗證 console／`python -m` 的穩定 tombstone、模組只定義 `main`，
+且在 package 既有 public exports 載入後不再匯入其它 provider／legacy 模組。
+舊 CLI parser、summary、私人 smoke IPC 與 TAIFEX standalone executor tests 已移除；
+實際隔離 worker／FD／timeout／輸出抑制仍由現行 provider process／SDK suites 驗證。
+`test_legacy_checkpoints.py` 使用舊格式資料驗證 TAIFEX 唯讀 parser，核對原 inode、permissions、
+prepared、receipt 與 request／attempt 用量均保留，缺檔、錯誤 schema／identity、symlink fail closed。
+WAL fixtures 同時覆蓋已關閉且無 sidecar，以及仍有未 checkpoint 證據的 sidecars，均須在
+connect 前明確拒絕且不新增或改動任何原檔；不得以忽略 WAL 的 immutable reader 偽裝支援。
+`test_runtime_owner_contract.py` 直接驗證真實空 claim 的 idle、缺少 owner 時不能動 retained state，
+以及 member executor 使用已驗證 owner 依序 restore／authorize／reserve，沒有 owner 可選 fallback。
+`test_historical_owner_contract.py` 覆蓋歷史 executor 的 stopped scope、drain-only、closed／draining、
+延期、suspension 與 Source retry／fence，驗證都使用 `require_owner()` 回傳的同一 session。
+空 item 可 idle，缺少 owner 則必須在 claim 前拒絕；Source fence 不得一般化成失敗或釋放 owner。
 
 `test_runtime_image_defaults.py` 讀取 provider Dockerfile 的實際 CMD 並執行，不以另一個
 CLI 覆蓋命令。CI 對 FinLab／Shioaji／FactSet 也使用無參數 `docker run`，確保預設入口可用。

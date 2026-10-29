@@ -237,9 +237,9 @@ def split_rows(
 def _governed(method):
     @wraps(method)
     def run(self, *args, **kwargs):
-        from findb_fetcher.provider_work import active, require_owner
+        from findb_fetcher.provider_work import require_owner
 
-        require_owner(self.provider)
+        owner = require_owner(self.provider)
         if not self._acquisition_allowed():
             if not self.runtime_window()["open"]:
                 raise DailyWindowClosedError("daily acquisition window closed")
@@ -252,12 +252,11 @@ def _governed(method):
                 raise ProviderWorkAcquisitionStopped("scheduler acquisition stopped")
             consumer = os.getenv("FETCHER_CONSUMER_PROFILE", "full_market")
 
-            owner = active()
             consumer = (
                 "maintenance"
                 if consumer == "maintenance"
                 or method.__name__ == "sync_universes"
-                or (owner and owner.work["kind"] == "maintenance")
+                or owner.work["kind"] == "maintenance"
                 else self.execution_profile
             )
             plan = kwargs.get("plan") or (
@@ -337,7 +336,6 @@ class FullMarketRuntime:
         self.catalogue_evidence: dict[str, bytes] = {}
         self.futures: dict[str, tuple[bytes, list[dict[str, Any]], bool]] = {}
         self.bundles: dict[tuple[str, date], Any] = {}
-        self._drain_blocked = False
         self.daily_policy = config.get("daily_runtime_policies", {}).get(provider)
         self.last_batch: dict[str, Any] = {}
 
@@ -429,10 +427,11 @@ class FullMarketRuntime:
         return self.runtime_window()["open"] and self.can_acquire()
 
     def _reserve(self, *, requests: int = 1, byte_count: int | None = None) -> tuple[int, int]:
-        from findb_fetcher.account_governor import enabled, reserve
+        from findb_fetcher.account_governor import enabled as governor_enabled
+        from findb_fetcher.account_governor import reserve
         from findb_fetcher.platform_limits import interval
 
-        if enabled():
+        if governor_enabled():
             permit = reserve(self.provider)
             if not self._acquisition_allowed() or permit is None:
                 raise ReadinessBlockedError("scheduler acquisition stopped")
@@ -876,16 +875,16 @@ class FullMarketRuntime:
 
     def drain(self) -> None:
         """Drain retained deliveries only through the original fenced owner."""
-        from findb_fetcher.provider_work import enabled
+        from findb_fetcher.config import require_provider_work_protocol
 
-        enabled()
+        require_provider_work_protocol()
         self._queued_cycle(include_health=False)
 
-    def cycle(self, *, drain_prepared: bool = True) -> dict[str, Any]:
+    def cycle(self) -> dict[str, Any]:
         """All providers use the same durable queue, including retained work."""
-        from findb_fetcher.provider_work import enabled
+        from findb_fetcher.config import require_provider_work_protocol
 
-        enabled()
+        require_provider_work_protocol()
         return self._queued_cycle()
 
     def sync_queued_universes(self) -> list[dict[str, Any]]:
@@ -1741,7 +1740,7 @@ class FullMarketRuntime:
     ) -> bool:
         from findb_fetcher.provider_work import require_owner
 
-        require_owner(self.provider)
+        owner = require_owner(self.provider)
         members = {member["member_key"]: member for member in release["members"]}
         entries = [(part, key) for part in plan["parts"] for key in part["member_keys"]]
         # Replay reports before eligibility, cursor rotation or any new provider
@@ -1774,10 +1773,7 @@ class FullMarketRuntime:
                     return True
                 if not self.state.eligible(key, now=time.time()):
                     continue
-            from findb_fetcher.provider_work import active
-
-            owner = active()
-            if owner and self.state.prepared(key) is None:
+            if self.state.prepared(key) is None:
                 restored = owner.restore(member_key=member_key)
                 if restored:
                     self.state.prepare(
@@ -1799,7 +1795,7 @@ class FullMarketRuntime:
                 continue
             if self.daily_policy:
                 self.last_batch["processed"] += 1
-            dispatch_before = owner.dispatch_observations if owner else 0
+            dispatch_before = owner.dispatch_observations
             try:
                 if member["mapping_status"] != "mapped":
                     self.source.outcome(
@@ -1812,31 +1808,27 @@ class FullMarketRuntime:
                     continue
                 prepared = self.state.prepared(key)
                 if prepared is None:
-                    if owner:
-                        if (
-                            self.provider == "finlab"
-                            and getattr(owner, "journal", None) is not None
-                            and owner.journal.has_response_observation(
-                                "finlab_dataset:", prefix=True
-                            )
-                            and self._calendar_repair_required(owner)
-                        ):
-                            self.state.finish(
-                                key,
-                                status="manual",
-                                reason="calendar_repair_required",
-                            )
-                            raise CalendarDecisionRepairRequiredError(
-                                "published calendar is now closed"
-                            ) from None
-                        owner.authorize()
+                    if (
+                        self.provider == "finlab"
+                        and getattr(owner, "journal", None) is not None
+                        and owner.journal.has_response_observation("finlab_dataset:", prefix=True)
+                        and self._calendar_repair_required(owner)
+                    ):
+                        self.state.finish(
+                            key,
+                            status="manual",
+                            reason="calendar_repair_required",
+                        )
+                        raise CalendarDecisionRepairRequiredError(
+                            "published calendar is now closed"
+                        ) from None
+                    owner.authorize()
                     requests = self._acquire(member, plan, part, release, feed)
                     if not requests:
                         self.state.finish(key, status="complete", reason="source_proven_no_trade")
                         continue
-                    if owner:
-                        for request in requests:
-                            owner.reserve(request)
+                    for request in requests:
+                        owner.reserve(request)
                     prepared = canonical_bytes(requests)
                     self.state.prepare(key, prepared)
                 normalizing = False
@@ -1898,7 +1890,7 @@ class FullMarketRuntime:
                     )
                 if self.daily_policy and window_closed:
                     self.state.defer_wait(key, now=time.time(), reason="acquisition_window_closed")
-                elif owner and owner.dispatch_observations != dispatch_before:
+                elif owner.dispatch_observations != dispatch_before:
                     self.state.finish(
                         key,
                         status="prepared" if self.state.prepared(key) else "pending",
@@ -1953,11 +1945,7 @@ class FullMarketRuntime:
                 predispatch_wait = (
                     isinstance(exc, QuotaBlockedError)
                     and limited
-                    and (
-                        self.daily_policy
-                        or owner is None
-                        or owner.dispatch_observations == dispatch_before
-                    )
+                    and (self.daily_policy or owner.dispatch_observations == dispatch_before)
                 )
                 if predispatch_wait:
                     self.state.defer_wait(key, now=time.time())
@@ -1987,7 +1975,6 @@ class FullMarketRuntime:
                 if exc.status_code == 429:
                     if (
                         self.state.prepared(key) is not None
-                        or owner is None
                         or owner.dispatch_observations == dispatch_before
                     ):
                         self.state.defer_wait(key, now=time.time())

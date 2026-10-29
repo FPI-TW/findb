@@ -278,26 +278,23 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
 
     if control.provider is None:
         raise HistoricalControlError("historical provider identity is required")
-    require_owner(control.provider)
+    owner = require_owner(control.provider)
     item = control.claim()
     if item is None:
         return False
     try:
-        from findb_fetcher.provider_work import active
-
-        owner = active()
-        if owner and owner.work.get("scope_stopped"):
+        if owner.work.get("scope_stopped"):
             receipts = owner.drain_prepared()
             if receipts:
                 control.complete(item, receipts[-1].run_id)
             else:
                 owner.settle("cancelled", proof={"reason": "historical_request_stopped"})
             return True
-        if owner and owner.work.get("drain_only") and owner.work["state"] == "open":
+        if owner.work.get("drain_only") and owner.work["state"] == "open":
             owner.drain_prepared()
             owner.settle("retry", failure_code="PROVIDER_ACCOUNT_COOLDOWN", delay=60)
             return True
-        if owner and owner.work["state"] in {"closed", "draining"}:
+        if owner.work["state"] in {"closed", "draining"}:
             receipts = owner.drain_prepared()
             if item.provider not in {"taifex", "factset"} or not owner.work.get("manifest"):
                 if receipts:
@@ -321,40 +318,27 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
         ):
             raise HistoricalControlError("historical runner did not return a Source run")
     except ProviderWorkAcquisitionStopped:
-        from findb_fetcher.provider_work import active
-
-        owner = active()
-        if owner:
-            try:
-                control.fail(item, "ACQUISITION_SUSPENDED")
-            except SourceAPIResponseError as exc:
-                if permanent_source_failure(exc):
-                    control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
-                    return True
-                if exc.status_code != 429 and exc.status_code < 500:
-                    raise
-                owner.settle("retry", failure_code="ACQUISITION_SUSPENDED", delay=60)
-        else:
+        try:
             control.fail(item, "ACQUISITION_SUSPENDED")
+        except SourceAPIResponseError as exc:
+            if permanent_source_failure(exc):
+                control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
+                return True
+            if exc.status_code != 429 and exc.status_code < 500:
+                raise
+            owner.settle("retry", failure_code="ACQUISITION_SUSPENDED", delay=60)
         return True
     except HistoricalWorkDeferredError:
-        from findb_fetcher.provider_work import active
-
-        owner = active()
-        if owner:
-            owner.settle("retry", failure_code="DEFERRED", delay=60)
+        owner.settle("retry", failure_code="DEFERRED", delay=60)
         return True
     except HistoricalPreparedManualError:
         control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
         return True
     except SourceAPIResponseError as exc:
-        from findb_fetcher.provider_work import active
-
-        owner = active()
         if permanent_source_failure(exc):
             control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
             return True
-        if owner and (exc.status_code == 429 or exc.status_code >= 500):
+        if exc.status_code == 429 or exc.status_code >= 500:
             owner.settle(
                 "retry",
                 failure_code="SOURCE_TEMPORARILY_UNAVAILABLE",

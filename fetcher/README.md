@@ -63,6 +63,12 @@ FinLab、Shioaji、FactSet images 的預設命令均為 `findb-fetch-runtime --h
 不帶覆寫命令啟動時只印出 help 並 exit 0，不載入 credentials 或抓取資料。CI 直接執行 image
 預設命令，另驗證正式 runtime／historical CLI 與 optional SDK 隔離。
 
+舊 scheduler／smoke／staging／TAIFEX pilot／Twelve Data one-shot 命令保留 console 名稱與
+`python -m` tombstone，所有參數皆回傳 exit 2；模組內不再保存舊執行器或 parser。
+需要檢查既有 TAIFEX pilot SQLite 時，使用
+`findb_fetcher.legacy_checkpoints.read_taifex_pilot_checkpoint(path)` 唯讀讀取原有證據；
+新抓取與 frozen delivery 恢復統一經現行 queue runtime。
+
 從 repository root 建置：
 
 ```bash

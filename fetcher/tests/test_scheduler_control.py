@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import signal
-import subprocess
-import sys
 import threading
 from datetime import datetime, time, timezone
 from types import SimpleNamespace
@@ -14,18 +12,6 @@ import httpx
 import pytest
 
 from findb_fetcher.config import ConfigError, FetcherConfig
-from findb_fetcher.finlab_scheduler_cli import (
-    SCHEDULER_CONTROL_KEY as FINLAB_CONTROL_KEY,
-)
-from findb_fetcher.finlab_scheduler_cli import (
-    _run_forever as run_finlab_forever,
-)
-from findb_fetcher.scheduler_cli import (
-    SCHEDULER_CONTROL_KEY as TWELVE_CONTROL_KEY,
-)
-from findb_fetcher.scheduler_cli import (
-    _run_forever as run_twelve_forever,
-)
 from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
@@ -38,13 +24,8 @@ from findb_fetcher.scheduler_control import (
     scheduler_stop_event,
     validate_scheduler_definition,
 )
-from findb_fetcher.shioaji_scheduler_cli import (
-    SCHEDULER_CONTROL_KEY as SHIOAJI_CONTROL_KEY,
-)
-from findb_fetcher.shioaji_scheduler_cli import (
-    _run_forever as run_shioaji_forever,
-)
 
+TWELVE_CONTROL_KEY = "full_market_twelve_data_v1"
 UTC = timezone.utc
 
 
@@ -200,63 +181,6 @@ def test_scheduler_stop_event_preserves_injected_event_without_signal_changes(
 
     with scheduler_stop_event(supplied) as stopper:
         assert stopper is supplied
-
-
-@pytest.mark.parametrize(
-    "module_name",
-    [
-        "findb_fetcher.scheduler_cli",
-        "findb_fetcher.finlab_scheduler_cli",
-        "findb_fetcher.shioaji_scheduler_cli",
-    ],
-)
-def test_production_cli_exits_cleanly_on_real_sigterm(module_name: str) -> None:
-    code = """
-import importlib
-import sys
-
-module = importlib.import_module(sys.argv[1])
-
-class Client:
-    def __init__(self, _config, _key):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        return None
-
-class Loop:
-    def __init__(self, _control):
-        pass
-
-    def run(self, _cycle, *, stop_event=None):
-        print("ready", flush=True)
-        # Keep the natural loop timeout beyond the parent assertion budget so
-        # a missed signal cannot race process.communicate() at the same instant.
-        return 0 if stop_event.wait(30) else 2
-
-module.SchedulerControlClient = Client
-module.SchedulerControlLoop = Loop
-sys.exit(module._run_forever(object(), lambda: None))
-"""
-    process = subprocess.Popen(
-        [sys.executable, "-c", code, module_name],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        assert process.stdout is not None
-        assert process.stdout.readline().strip() == "ready"
-        process.send_signal(signal.SIGTERM)
-        _stdout, stderr = process.communicate(timeout=10)
-        assert process.returncode == 0, stderr
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
 
 
 def test_control_client_rejects_protocol_identity_and_sends_safe_payload() -> None:
@@ -686,44 +610,3 @@ def test_successful_completion_is_not_repeated_on_later_idle_poll() -> None:
     )
     SchedulerControlLoop(control).run(lambda: None, stop_event=stop_event)
     assert control.calls[2]["cycle_completed_at"] is not None
-
-
-@pytest.mark.parametrize(
-    ("runner", "expected"),
-    [
-        (run_twelve_forever, TWELVE_CONTROL_KEY),
-        (run_finlab_forever, FINLAB_CONTROL_KEY),
-        (run_shioaji_forever, SHIOAJI_CONTROL_KEY),
-    ],
-)
-def test_all_production_clis_use_fixed_control_keys(
-    monkeypatch: pytest.MonkeyPatch,
-    runner: Any,
-    expected: str,
-) -> None:
-    seen: list[str] = []
-
-    class Client:
-        def __init__(self, _config: object, key: str) -> None:
-            seen.append(key)
-
-        def __enter__(self) -> Client:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    class Loop:
-        def __init__(self, _client: object) -> None:
-            pass
-
-        def run(self, _cycle: Any, *, stop_event: Any = None) -> int:
-            assert isinstance(stop_event, threading.Event)
-            return 0
-
-    module = runner.__module__
-    imported = __import__(module, fromlist=["SchedulerControlClient", "SchedulerControlLoop"])
-    monkeypatch.setattr(imported, "SchedulerControlClient", Client)
-    monkeypatch.setattr(imported, "SchedulerControlLoop", Loop)
-    assert runner(_config(), lambda: None) == 0
-    assert seen == [expected]

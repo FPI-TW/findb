@@ -88,7 +88,25 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         return
     from findb_fetcher import provider_work
 
-    monkeypatch.setattr(provider_work, "require_owner", lambda provider: None)
+    class UnitOwner:
+        """Explicit owner double for mapper/account tests, not queue integration."""
+
+        dispatch_observations = 0
+        journal = None
+        work = {"kind": "daily", "state": "open"}
+
+        def restore(self, *, member_key):
+            return []
+
+        def authorize(self):
+            return None
+
+        def reserve(self, request):
+            return None
+
+    monkeypatch.setattr(
+        provider_work, "require_owner", lambda provider: provider_work.active() or UnitOwner()
+    )
     if request.path.name == "test_historical_runtime_adapters.py":
         monkeypatch.setattr("findb_fetcher.historical_runtime.require_owner", lambda provider: None)
     monkeypatch.setattr(provider_work, "require_acquisition", lambda provider, **kwargs: True)
