@@ -8,11 +8,6 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
-- 供應商工作佇列查詢修正的部署驗收：Repository 已在 SQL 排除 settled、改讀 metadata／prepared
-  摘要並批次取得 historical eligibility。2026-10-30 候選函式在 production host 的獨立唯讀程序
-  實測 0.240 秒／三次 SELECT，未替換服務程式；仍須依正式流程部署並驗證 Dashboard 十秒內讀取。
-  原根因、保留證據與量測限制見 [production 維運](../operations/production.md)。
-
 - Production 五 provider 的 provider-work native／recovery 驗收：2026-10-29 已完成具名 Owner
   attestation、兩端 true 與 Backend／Fetcher v0.1.12 發布，原 DB／17 個 SQLite／prepared／receipts／
   預算／cooldown 保留；正式備份、版本與驗證證據已整併至 [production 維運](../operations/production.md)。
