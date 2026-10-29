@@ -1171,3 +1171,30 @@ def test_probe_command_preserves_environment_as_literal_data(local_ssm, tmp_path
         "value": value,
     }
     assert state["commands"][0]["nonce"] == nonce
+
+
+@pytest.mark.parametrize("mutation", ["retired-command", "profile", "runtime-config-hash"])
+def test_evidence_collector_rejects_stale_runtime_catalog(tmp_path, monkeypatch, mutation):
+    import shutil
+
+    directory = tmp_path / "fetcher/configs"
+    directory.mkdir(parents=True)
+    for source in (REPO_ROOT / "fetcher/configs").glob("*.json"):
+        shutil.copy(source, directory / source.name)
+    path = directory / "staging_provider_pilots.v1.json"
+    catalog = json.loads(path.read_bytes())
+    if mutation == "retired-command":
+        catalog["providers"]["finlab"]["runtime_command"] = "findb-fetch-finlab-scheduler"
+    elif mutation == "profile":
+        catalog["providers"]["finlab"]["runtime_arguments"][1] = "full_market"
+    else:
+        catalog["files"]["full_market.staging.v1.json"] = "0" * 64
+    path.write_text(json.dumps(catalog))
+    collector = _load(
+        "stale_catalog_evidence", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
+    )
+    monkeypatch.setattr(collector, "REPO_ROOT", tmp_path)
+    with pytest.raises(ValueError):
+        collector.catalog_feeds()
+    with pytest.raises(ValueError):
+        collector._functional_acceptance({}, {})

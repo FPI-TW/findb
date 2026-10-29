@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
-from contextlib import nullcontext
-from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,7 +18,6 @@ import pytest
 from findb_fetcher.acquisition import Acquisition, Authorization
 from findb_fetcher.full_market_runtime import _governed
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
-from findb_fetcher.historical_backfill import run_once
 
 FETCHER_DIR = Path(__file__).resolve().parents[1]
 PROFILES = ("pilot", "full_market", "maintenance", "historical")
@@ -94,15 +90,6 @@ def test_documented_local_profiles_share_writable_ledger_and_restart_state(local
     assert not (local_setup / ".state/full-market/state.sqlite3").exists()
 
 
-def test_documented_local_finlab_scheduler_reaches_governed_sdk_boundary(local_setup):
-    result = _process(local_setup, "finlab", "finlab-cli")
-    assert result["status"] == "completed"
-    assert result["provider_calls"] == 5
-    assert result["source_calls"] == 5  # One fresh grant covers local login and get.
-    assert result["path"] == str(local_setup / ".state/account/governor.sqlite3")
-    assert sum(row[2] for row in result["snapshot"]["quota"]) == 10
-
-
 def test_documented_local_config_still_requires_current_source_authorization(local_setup):
     result = _process(local_setup, "finlab", "denied")
     assert result["provider_calls"] == 0
@@ -111,6 +98,18 @@ def test_documented_local_config_still_requires_current_source_authorization(loc
 
 
 def _probe(provider, mode):
+    from findb_fetcher import provider_work
+
+    provider_work.require_owner = lambda provider: SimpleNamespace(
+        work={
+            "state": "open",
+            "kind": "maintenance"
+            if os.getenv("FETCHER_CONSUMER_PROFILE") == "maintenance"
+            else "daily",
+        }
+    )
+    provider_work.require_acquisition = lambda provider, **kwargs: True
+    provider_work.acquisition_dispatch_deadline = lambda provider, deadline: deadline
     events = {"provider_calls": 0, "source_calls": 0}
     expected = (Path.cwd() / ".state/account/governor.sqlite3").resolve()
     assert os.environ["APP_ENVIRONMENT"] == "local"
@@ -170,6 +169,7 @@ def _probe(provider, mode):
         if profile == "historical":
             item = SimpleNamespace(provider=provider)
             control = SimpleNamespace(
+                provider=provider,
                 claim=lambda: item,
                 authorize=lambda _item: SourceDouble().authorization(
                     "GET", "full-market/authorization?consumer=historical"
@@ -183,7 +183,9 @@ def _probe(provider, mode):
                 operations.append(acquire())
                 return UUID(int=1)
 
-            assert run_once(control, SimpleNamespace(run=run))
+            from findb_fetcher.historical_backfill import _run_once
+
+            assert _run_once(control, SimpleNamespace(run=run))
             return operations[0]
         return acquire()
 
@@ -219,7 +221,7 @@ def _probe(provider, mode):
             with pytest.raises(QuotaBlockedError, match="Source acquisition denied"):
                 acquire()
         else:
-            _finlab_cli_probe(events)
+            raise ValueError("unsupported account probe mode")
 
     state = FullMarketState(expected)
     with state.connection() as db:
@@ -231,64 +233,6 @@ def _probe(provider, mode):
             "pacing": [tuple(row) for row in db.execute("SELECT * FROM full_pacing ORDER BY 1")],
         }
     return {"path": str(expected), "snapshot": snapshot, "profiles": profiles, **events}
-
-
-def _finlab_cli_probe(events):
-    from findb_fetcher import finlab_scheduler_cli as cli
-    from findb_fetcher.market_calendar import CalendarDay
-    from findb_fetcher.providers.finlab import FinLabSdkGateway
-    from findb_fetcher.raw_storage import RawObject
-
-    target = date(2026, 7, 29)
-
-    def get(dataset):
-        events["provider_calls"] += 1
-        value = 1000 if dataset == "price:成交股數" else 10
-        return SimpleNamespace(
-            index=(target,),
-            columns=("2330", "2317"),
-            loc={(target, symbol): value for symbol in ("2330", "2317")},
-        )
-
-    gateway = FinLabSdkGateway.from_env()
-    object.__setattr__(
-        gateway, "_sdk", SimpleNamespace(login=lambda _token: None, data=SimpleNamespace(get=get))
-    )
-    calendar = SimpleNamespace(get_day=lambda _market, day: (CalendarDay(day, "open", True), 7))
-    source = SimpleNamespace(
-        prepare=lambda request: SimpleNamespace(
-            body=b"prepared",
-            idempotency_key=request["idempotency_key"],
-            dataset_key=request["dataset_key"],
-            schema_id="market_eod",
-            schema_version=1,
-        ),
-        deliver=lambda *_args, **_kwargs: SimpleNamespace(
-            attempt_id=UUID(int=1), run_id=UUID(int=2)
-        ),
-        get_run_status=lambda *_args, **_kwargs: SimpleNamespace(
-            run_id=UUID(int=2),
-            status="completed",
-            total_records=2,
-            success_records=2,
-            failed_records=0,
-        ),
-    )
-    raw = SimpleNamespace(
-        persist=lambda body, **_kwargs: RawObject(
-            "r2://0123456789abcdef0123456789abcdef/findb-raw/finlab.json",
-            hashlib.sha256(body).hexdigest(),
-            len(body),
-        )
-    )
-    with (
-        patch.object(cli, "PublishedCalendarClient", lambda *_args: nullcontext(calendar)),
-        patch.object(cli, "SourceAPIClient", lambda *_args: nullcontext(source)),
-        patch.object(cli, "R2RawPayloadStore", lambda *_args: raw),
-        patch.object(FinLabSdkGateway, "from_env", lambda: gateway),
-    ):
-        assert cli.main(["--as-of", "2026-07-29T08:00:00Z"]) == cli.EXIT_OK
-    events["status"] = "completed"
 
 
 if __name__ == "__main__":

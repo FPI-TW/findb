@@ -19,6 +19,17 @@ class ConfigError(ValueError):
 _DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
+def require_provider_work_protocol() -> None:
+    """Reject obsolete deployment configuration before any external operation."""
+    value = os.getenv("PROVIDER_WORK_REQUIRED", "true").lower()
+    if value in {"0", "off", "f", "false", "n", "no"}:
+        raise ConfigError(
+            "PROVIDER_WORK_REQUIRED cannot be false; provider work protocol is required"
+        )
+    if value not in {"1", "on", "t", "true", "y", "yes"}:
+        raise ConfigError("PROVIDER_WORK_REQUIRED must be a valid boolean; use true")
+
+
 def app_environment(default: str = "local") -> str:
     """Canonical input; legacy metadata is only a same-value compatibility bridge."""
     value = os.getenv("APP_ENVIRONMENT")
@@ -47,6 +58,7 @@ class FetcherConfig:
 
     @classmethod
     def from_env(cls) -> "FetcherConfig":
+        require_provider_work_protocol()
         app_environment()
         source_api_url = _https_origin_env("SOURCE_API_URL")
         source_client_key = _required_env("SOURCE_CLIENT_KEY")

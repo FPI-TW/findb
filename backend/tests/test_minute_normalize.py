@@ -360,7 +360,7 @@ async def test_market_minute_source_precedence_and_fetched_at_control_upsert(tes
     ],
 )
 async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
     test_engine,
@@ -382,7 +382,7 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
         )
     )
     await test_session.commit()
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_minute_request(dataset_key, symbol=symbol, source_symbol=source_symbol),
@@ -424,7 +424,7 @@ async def test_active_contract_ingest_and_queue_normalize_minute_dataset(
     assert instrument.symbol == symbol
     assert minute.source == "shioaji"
 
-    rerun_response = await client.post(
+    rerun_response = await owned_client.post(
         f"/api/v1/source/runs/{run_id}/rerun",
         headers=source_headers,
     )

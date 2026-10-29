@@ -2352,6 +2352,7 @@ def test_shioaji_missing_state_bootstrap_enforces_identity_guard(
     script.write_text(
         """set -euo pipefail
 provider=shioaji
+account_dir="$state_dir/account"
 stable=stable
 previous=previous
 preflight_name=preflight
@@ -2410,8 +2411,9 @@ docker() {
         assert "--initialize-state" in arguments
         assert "--state-path" in arguments
         assert str(state_path) in arguments
-        assert arguments.count("--env") == 1
+        assert arguments.count("--env") == 2
         assert arguments[arguments.index("--env") + 1] == f"APP_ENVIRONMENT={target}"
+        assert f"FETCHER_ACCOUNT_STATE_PATH={state_directory}/account/governor.sqlite3" in arguments
         assert "SOURCE_SECRET=must-not-be-injected" not in arguments
     else:
         assert completed.returncode != 0
@@ -3023,15 +3025,15 @@ def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None
     )["run"]
 
     assert 'docker build -f fetcher/Dockerfile -t "$image" .' in build
-    assert "findb-fetch-scheduler --help" in build
+    assert "findb-fetch-runtime --help" in build
     assert "exit 0" not in build
     assert 'docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .' in finlab
     assert 'find_spec("finlab") is not None' in finlab
     assert 'find_spec("shioaji") is None' in finlab
-    assert "findb-fetch-finlab-scheduler --help" in finlab
+    assert 'docker run --rm "$finlab_image"\n' in finlab
     assert 'docker build -f fetcher/Dockerfile.shioaji -t "$shioaji_image" .' in shioaji
     assert 'find_spec("shioaji") is not None' in shioaji
-    assert "findb-fetch-shioaji-scheduler --help" in shioaji
+    assert 'docker run --rm "$shioaji_image"\n' in shioaji
     assert "Dockerfile.shioaji" in shioaji
     shioaji_dockerfile = (REPO_ROOT / "fetcher" / "Dockerfile.shioaji").read_text(encoding="utf-8")
     assert "--create-home --home-dir /home/fetcher" in shioaji_dockerfile

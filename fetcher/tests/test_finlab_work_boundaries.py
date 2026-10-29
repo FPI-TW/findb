@@ -259,7 +259,9 @@ def test_predispatch_quota_wait_retains_typed_zero_dispatch_result(tmp_path, mon
         login=lambda _: calls.append("login"),
         data=SimpleNamespace(get=lambda _: calls.append("get")),
     )
-    with pytest.raises(QuotaBlockedError) as failure:
+    from provider_work_support import owned_unit_work
+
+    with owned_unit_work("finlab", tmp_path), pytest.raises(QuotaBlockedError) as failure:
         finlab.FinLabSdkGateway("offline", _sdk=sdk).fetch_dataset(
             "price:收盤價", target_date=DAY, symbols=["2330"]
         )

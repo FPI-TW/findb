@@ -31,11 +31,9 @@ Pilot 每條 feed 取 published universe 穩定排序的前兩個 canonical 商�
 停止 controls 阻止新 provider acquisition；常駐 consumer 仍維持必要的 prepared delivery、
 accepted normalization 完成確認、心跳及 graceful shutdown。不能直接略過整個 drain。
 
-Compatibility（`PROVIDER_WORK_REQUIRED=false`）的 idle drain 透過 SQLite partial index，
-只選取有 immutable body、非 complete／manual、且 lease／retry deadline 已到的 work。
-僅載入這些 work 所屬 plans／原 release，遍歷時跳過其他 frozen members；沒有待排空工作時
-不讀取舊 release、不逐筆查詢歷史成員，也不展開完整 health／failure details。
-既有 body checksum、逐 sequence receipt、重試預算、normalization status 與 stop 保證維持。
+所有 consumers 只透過 queue claim／owner recovery 取得工作。停止後只排空原本已持久化的
+immutable prepared bodies／receipts，accepted runs terminal 且原 proof 成立才 settle；
+無 ownership 的舊 SQLite backlog scanner 不再作為 acquiring／drain 入口。
 
 Additive `full_plan_reconcile` 保存是否有尚未完成 Source evaluation 的本機進度。
 `finish()` 與 dirty marker 在同一 transaction 寫入；只有成功取得並保存 Source evaluation
@@ -44,7 +42,7 @@ Additive `full_plan_reconcile` 保存是否有尚未完成 Source evaluation 的
 plans 會建立一次 reconciliation marker；Source 確認後不再每輪重算。Marker 不將缺漏改成成功
 或 no_data，完整性仍由 Source canonical evidence 判定。
 
-Queue（`PROVIDER_WORK_REQUIRED=true`）仍執行既有 claim／owner recovery、prepared drain 與
+Runtime 執行既有 claim／owner recovery、prepared drain 與
 settlement；只有 idle drain 丟棄的完整 health 統計被省略。明確 `--health` 與正常 cycle 的輸出
 保留，plan／provider 狀態索引降低摘要查詢成本。兩種 profile 都適用，不自動切換 deployment flag。
 
@@ -655,7 +653,7 @@ TAIFEX 共用既有公開資料 governor、Source key 與 Twelve Data image，�
 
 ## Provider work FIFO（待環境啟用）
 
-本分支的 `PROVIDER_WORK_REQUIRED=true` 路徑將 Pilot／Full daily work 拆成 dataset/date，與同 provider
+唯一 provider-work 路徑將 Pilot／Full daily work 拆成 dataset/date，與同 provider
 historical／maintenance／retained-raw rerun 共用 PostgreSQL FIFO；整批日期由早到晚入列，沒有 daily
 優先權。相同 provider 從官方 universe／catalogue acquisition 前就取得 shared whole-work flock 與
 fenced DB owner，一直到所有 accepted runs terminal、完整 proof 與 round settlement committed 才釋放。

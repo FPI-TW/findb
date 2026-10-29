@@ -378,12 +378,26 @@ def test_finlab_partial_bundle_remains_durable_unresolved(
         row = db.execute("SELECT status, reason FROM full_work WHERE key=?", (key,)).fetchone()
         assert row["status"] == "pending"
         assert row["reason"] == (
-            "rate_limited" if boundary in {"daily", "minute"} else "source_error"
+            "rate_limited"
+            if boundary in {"daily", "minute"}
+            else "suspended"
+            if boundary == "stop"
+            else "source_error"
         )
     # Pre-start minute rejection creates no known request debt.
     assert _quota(runtime, "2026-10-01")[0] == (3 if boundary == "failure" else 2)
     assert _quota(runtime, "2026-10-01T12:01")[0] == expected_calls
-    assert source.outcomes[-1]["reason"] != "no_trade"
+    assert source.outcomes == (
+        [
+            {
+                "work_item_id": context.plan["parts"][0]["work_item_id"],
+                "member_key": context.plan["parts"][0]["member_keys"][0],
+                "reason": "source_error",
+            }
+        ]
+        if boundary == "failure"
+        else []
+    )
     assert all(wait <= 1 for wait in clock.waits)
     runtime.http.close()
 

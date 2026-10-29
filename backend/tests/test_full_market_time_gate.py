@@ -196,7 +196,7 @@ async def test_resume_preserves_original_activation_and_existing_gaps(test_sessi
 @pytest.mark.asyncio
 @pytest.mark.parametrize("invalid", ["trade_date", "fetched_at"])
 async def test_actual_full_market_ingress_rejects_future_date_or_fetch_time(
-    client, test_session, monkeypatch, invalid
+    owned_client, test_session, monkeypatch, invalid
 ):
     future = DAY + timedelta(days=1)
     dataset, body, first = await _activated_plan(test_session, count=1, open_dates=[DAY, future])
@@ -220,7 +220,7 @@ async def test_actual_full_market_ingress_rejects_future_date_or_fetch_time(
         clock + timedelta(minutes=6 if invalid == "fetched_at" else 0)
     ).isoformat()
     headers = await _source_headers(test_session)
-    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert response.status_code == 409, response.text
     assert ("future exchange" if invalid == "trade_date" else "clock skew") in response.text
     assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
@@ -230,7 +230,7 @@ async def test_actual_full_market_ingress_rejects_future_date_or_fetch_time(
 @pytest.mark.parametrize("key", ["tw_etf_eod", "tw_equity_minute"])
 @pytest.mark.parametrize("preclose_clock", ["server", "fetched_at"])
 async def test_governed_market_ingress_requires_both_clocks_after_close(
-    client, test_session, monkeypatch, key, preclose_clock
+    owned_client, test_session, monkeypatch, key, preclose_clock
 ):
     _, body, plan = await _activated_plan(test_session, key, count=1)
     close = datetime.combine(DAY, time(13, 30), ZoneInfo("Asia/Taipei"))
@@ -268,7 +268,7 @@ async def test_governed_market_ingress_requires_both_clocks_after_close(
         ]
     request["fetched_at"] = fetched_at.isoformat()
     headers = await _source_headers(test_session, body.provider, [key])
-    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert response.status_code == 409 and "has not closed" in response.text, response.text
     assert await test_session.scalar(select(func.count()).select_from(RawMarketPayload)) == 0
 
@@ -284,7 +284,7 @@ async def test_governed_market_ingress_requires_both_clocks_after_close(
     ],
 )
 async def test_taifex_source_respects_actual_session_cutoff(
-    client, test_session, monkeypatch, session, at, accepted
+    owned_client, test_session, monkeypatch, session, at, accepted
 ):
     _, _, plan = await _activated_plan(test_session, count=1)
     clock = datetime.combine(DAY, at, ZoneInfo("Asia/Taipei"))
@@ -292,7 +292,7 @@ async def test_taifex_source_respects_actual_session_cutoff(
     request = _ingress(plan, [_quote(session=session)])
     request["fetched_at"] = clock.isoformat()
     headers = await _source_headers(test_session)
-    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert response.status_code == (202 if accepted else 409), response.text
     if not accepted:
         assert "has not closed" in response.text
@@ -301,7 +301,7 @@ async def test_taifex_source_respects_actual_session_cutoff(
 
 @pytest.mark.asyncio
 async def test_friday_expiry_preserves_product_through_universe_source_and_canonical(
-    client, test_session
+    owned_client, test_session
 ):
     dataset = await _dataset(test_session)
     await _calendar(test_session)
@@ -345,7 +345,7 @@ async def test_friday_expiry_preserves_product_through_universe_source_and_canon
         FuturesEODIngressRequest.model_validate(request).payload.data[0], FuturesEODRow
     )
     headers = await _source_headers(test_session)
-    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert response.status_code == 202, response.text
     run_id = UUID(response.json()["run_id"])
     assert (await test_session.get(IngestionRun, run_id)).delivery_part_id == plan.parts[0].part_id

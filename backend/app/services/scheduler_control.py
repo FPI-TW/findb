@@ -91,16 +91,14 @@ async def update_scheduler_desired_state(
     )
 
     datasets = None
-    from app.config import get_settings
 
-    if get_settings().PROVIDER_WORK_REQUIRED:
-        from app.services.provider_work import lock_provider
+    from app.services.provider_work import lock_provider
 
-        provider = await db.scalar(
-            select(SchedulerControl.provider).where(SchedulerControl.scheduler_key == scheduler_key)
-        )
-        if provider is not None:
-            await lock_provider(db, provider)
+    provider = await db.scalar(
+        select(SchedulerControl.provider).where(SchedulerControl.scheduler_key == scheduler_key)
+    )
+    if provider is not None:
+        await lock_provider(db, provider)
     if unified_scheduler(scheduler_key):
         await lock_environment(db)
     if desired_state == "running" and unified_scheduler(scheduler_key):

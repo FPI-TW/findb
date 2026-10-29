@@ -16,7 +16,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import FetcherConfig, app_environment
+from findb_fetcher.config import FetcherConfig, app_environment, require_provider_work_protocol
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_client import FullMarketSourceClient
 from findb_fetcher.full_market_runtime import FullMarketRuntime
@@ -170,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     source = None
     delivery = None
     try:
+        require_provider_work_protocol()
         account_path = Path(
             os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3")
         )
@@ -237,11 +238,9 @@ def main(argv: list[str] | None = None) -> int:
             state.bind_profile(args.execution_profile)
         if args.initialize_state or args.health:
             if args.initialize_state:
-                from findb_fetcher.provider_work import enabled, host_lock
+                from findb_fetcher.provider_work import initialize_host_lock
 
-                if enabled():
-                    with host_lock(args.provider):
-                        pass
+                initialize_host_lock(args.provider)
             from findb_fetcher.daily_runtime import window
 
             print(
@@ -302,11 +301,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.sync_universes:
                 os.environ["FETCHER_CONSUMER_PROFILE"] = "maintenance"
                 # Publishing remains an Admin-only action.
-                from findb_fetcher.provider_work import enabled
 
                 print(
                     json.dumps(
-                        runtime.sync_queued_universes() if enabled() else runtime.sync_universes(),
+                        runtime.sync_queued_universes(),
                         separators=(",", ":"),
                     )
                 )
@@ -321,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
                                 observed_state="running",
                                 cycle_started_at=datetime.now(timezone.utc),
                             )
-                            health = runtime.cycle(drain_prepared=False)
+                            health = runtime.cycle()
                             print(json.dumps(health, separators=(",", ":")), flush=True)
                             control.poll(
                                 observed_state="stopped",

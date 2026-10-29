@@ -144,7 +144,7 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
                 _ingress(plan, [_quote()]), sort_keys=True, separators=(",", ":")
             ).encode()
             source_info = dict(db.info)
-            accepted = await accept_canonical_ingest(db, body)
+            accepted = await _seed_legacy_ingest(monkeypatch, db, body)
             run = await db.get(IngestionRun, accepted.run_id)
             raw = await db.get(RawMarketPayload, run.raw_payload_id)
             original_payload, original_hash = raw.payload, raw.payload_sha256
@@ -314,7 +314,7 @@ async def test_full_upgrade_preserves_partial_minute_group_and_continues_origina
                 )
             source_info = dict(db.info)
             for body in bodies[:2]:
-                accepted = await accept_canonical_ingest(db, body)
+                accepted = await _seed_legacy_ingest(monkeypatch, db, body)
                 accepted_ids.append(accepted.run_id)
                 run = await db.get(IngestionRun, accepted.run_id)
                 raw = await db.get(RawMarketPayload, run.raw_payload_id)
@@ -495,3 +495,20 @@ async def test_account_cooldown_expand_upgrade_preserves_installed_owner_and_reo
                 )
             ).one()
             assert tuple(row) == (19, "shared:1:23", floor)
+
+
+async def _seed_legacy_ingest(monkeypatch, db, body):
+    """Construct pre-protocol fixtures under an actual pre-queue schema.
+
+    Only the fixture creation models the former acceptance boundary; replay after
+    upgrade always uses the current fenced production implementation.
+    """
+    from app.services import provider_work
+    from app.services.canonical_ingestion import accept_canonical_ingest
+
+    async def prior_protocol_acceptance(*args, **kwargs):
+        return None
+
+    with monkeypatch.context() as setup:
+        setup.setattr(provider_work, "acceptance", prior_protocol_acceptance)
+        return await accept_canonical_ingest(db, body)

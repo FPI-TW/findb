@@ -69,9 +69,12 @@ def test_enforced_daily_quota_waits_do_not_publish_failure_or_consume_retry_budg
     plan = _plan()
     runtime.state.record_plan(plan, runtime.provider)
     try:
-        for _ in range(12):
-            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
-            now[0] += 61
+        from provider_work_support import owned_unit_work
+
+        with owned_unit_work(runtime.provider, tmp_path):
+            for _ in range(12):
+                assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+                now[0] += 61
         assert source.outcomes == []
         with runtime.state.connection() as db:
             row = db.execute("SELECT attempts,status,reason FROM full_work").fetchone()
@@ -197,8 +200,12 @@ def test_persistent_shioaji_supervisor_reaps_real_isolated_process_group(tmp_pat
         PersistentIsolatedShioajiGateway,
         _ProviderProcess,
     )
+    from provider_work_support import owned_unit_work
 
-    with queue.host_lock("shioaji", root=tmp_path):
+    with (
+        queue.host_lock("shioaji", root=tmp_path),
+        owned_unit_work("shioaji", tmp_path, lock=False),
+    ):
         parent, child = multiprocessing.Pipe()
         gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
         gateway.parent, gateway.process = parent, _ProviderProcess(child.fileno())

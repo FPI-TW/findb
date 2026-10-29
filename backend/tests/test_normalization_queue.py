@@ -167,6 +167,9 @@ async def test_burst_requests_are_durably_accepted(
     source_client.rate_limit_requests = request_count
     await test_session.commit()
     reset_source_rate_limit_state()
+    from tests.owned_ingest import owned_headers
+
+    source_headers = await owned_headers(test_session, _request("burst-scope"), source_headers)
     app.dependency_overrides[get_db] = request_scoped_db
     try:
         async with AsyncClient(
@@ -205,13 +208,13 @@ async def test_burst_requests_are_durably_accepted(
 
 @pytest.mark.asyncio
 async def test_202_atomically_creates_raw_run_job_and_outbox(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_eod_dataset(test_session)
 
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("durable-accept-1"),
@@ -246,17 +249,17 @@ async def test_202_atomically_creates_raw_run_job_and_outbox(
 
 @pytest.mark.asyncio
 async def test_scoped_idempotency_payload_mismatch_returns_409(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_eod_dataset(test_session)
-    first = await client.post(
+    first = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("conflicting-key", close=100.0),
     )
-    second = await client.post(
+    second = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("conflicting-key", close=101.0),
@@ -270,13 +273,13 @@ async def test_scoped_idempotency_payload_mismatch_returns_409(
 
 @pytest.mark.asyncio
 async def test_source_client_is_bound_to_source_dataset_and_own_runs(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     admin_headers: dict,
     source_headers: dict,
     test_session,
 ):
     await _seed_eod_dataset(test_session)
-    issued = await client.post(
+    issued = await owned_client.post(
         "/api/v1/admin/source-clients",
         headers=admin_headers,
         json={
@@ -290,7 +293,7 @@ async def test_source_client_is_bound_to_source_dataset_and_own_runs(
     assert issued.status_code == 200
     provider_headers = {"X-API-Key": issued.json()["api_key"]}
 
-    accepted = await client.post(
+    accepted = await owned_client.post(
         "/api/v1/source/ingest",
         headers=provider_headers,
         json=_request("source-owned-run-1"),
@@ -298,14 +301,14 @@ async def test_source_client_is_bound_to_source_dataset_and_own_runs(
     assert accepted.status_code == 202
     run_id = accepted.json()["run_id"]
 
-    own_status = await client.get(f"/api/v1/source/runs/{run_id}", headers=provider_headers)
-    legacy_status = await client.get(f"/api/v1/source/runs/{run_id}", headers=source_headers)
+    own_status = await owned_client.get(f"/api/v1/source/runs/{run_id}", headers=provider_headers)
+    legacy_status = await owned_client.get(f"/api/v1/source/runs/{run_id}", headers=source_headers)
     assert own_status.status_code == 200
     assert legacy_status.status_code == 404
 
     mismatched = _request("source-mismatch-1")
     mismatched["source"] = "twelve_data"
-    forbidden = await client.post(
+    forbidden = await owned_client.post(
         "/api/v1/source/ingest",
         headers=provider_headers,
         json=mismatched,
@@ -315,12 +318,12 @@ async def test_source_client_is_bound_to_source_dataset_and_own_runs(
 
 @pytest.mark.asyncio
 async def test_reconciliation_replays_published_delivery_after_broker_loss(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_eod_dataset(test_session)
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("broker-wipe-1"),
@@ -354,12 +357,12 @@ async def test_reconciliation_replays_published_delivery_after_broker_loss(
 
 @pytest.mark.asyncio
 async def test_reconciliation_resets_expired_processing_lease(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_eod_dataset(test_session)
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("expired-lease-1"),
@@ -392,12 +395,12 @@ async def test_reconciliation_resets_expired_processing_lease(
 
 @pytest.mark.asyncio
 async def test_reconciliation_preserves_delivery_id_when_active_outbox_exists(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_eod_dataset(test_session)
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("expired-active-delivery"),
@@ -428,12 +431,12 @@ async def test_reconciliation_preserves_delivery_id_when_active_outbox_exists(
 
 @pytest.mark.asyncio
 async def test_reconciliation_never_rewrites_mismatched_active_generation(
-    client: AsyncClient,
+    owned_client: AsyncClient,
     source_headers: dict,
     test_session,
 ):
     await _seed_eod_dataset(test_session)
-    response = await client.post(
+    response = await owned_client.post(
         "/api/v1/source/ingest",
         headers=source_headers,
         json=_request("mismatched-active-delivery"),

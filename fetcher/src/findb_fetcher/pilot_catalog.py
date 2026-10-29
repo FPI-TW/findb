@@ -17,17 +17,32 @@ SUPPORTED_PILOTS = {
     "taifex": (("tw_futures_eod", "futures_eod"),),
 }
 PILOT_RUNTIMES = {
-    "twelve_data": ("findb-fetch-scheduler", "findb_fetcher.scheduler_cli"),
-    "finlab": ("findb-fetch-finlab-scheduler", "findb_fetcher.finlab_scheduler_cli"),
-    "shioaji": ("findb-fetch-shioaji-scheduler", "findb_fetcher.shioaji_scheduler_cli"),
-    "taifex": ("findb-fetch-taifex-pilot", "findb_fetcher.taifex_pilot"),
+    provider: ("findb-fetch-runtime", "findb_fetcher.full_market_cli")
+    for provider in SUPPORTED_PILOTS
 }
+RUNTIME_CONFIG = "full_market.staging.v1.json"
+
+
+def pilot_runtime_arguments(provider: str) -> list[str]:
+    return [
+        "--execution-profile",
+        "pilot",
+        "--provider",
+        provider,
+        "--config",
+        f"configs/{RUNTIME_CONFIG}",
+    ]
 
 
 def validate_staging_pilots(directory: Path) -> dict[str, Any]:
     """Every provider needs a bounded pilot, supported schema and startup acceptance."""
     if app_environment("staging") != "staging":
         raise ValueError("staging pilots require the exact staging deployment target")
+    return load_staging_pilot_catalog(directory)
+
+
+def load_staging_pilot_catalog(directory: Path) -> dict[str, Any]:
+    """Validate diagnostic metadata without authorizing any runtime execution."""
     raw = (directory / "staging_provider_pilots.v1.json").read_bytes()
     if len(raw) > 16384:
         raise ValueError("pilot catalog exceeds byte bound")
@@ -45,12 +60,14 @@ def validate_staging_pilots(directory: Path) -> dict[str, Any]:
             or tuple((feed["dataset_key"], feed["schema_id"]) for feed in spec["feeds"]) != feeds
             or spec.get("schema_version") != 1
             or spec.get("runtime_command") != command
+            or spec.get("runtime_arguments") != pilot_runtime_arguments(provider)
             or importlib.util.find_spec(module) is None
             or spec.get("fixture_acceptance") != f"test_staging_pilots:{provider}"
             or spec.get("live_acceptance") != "source_raw_terminal_canonical_serve"
         ):
             raise ValueError("provider pilot scope or acceptance metadata invalid")
     required_files = {
+        RUNTIME_CONFIG,
         "daily_scheduler.staging.v3.json",
         "twelve_data_us_staging_pilot.v2.json",
         "finlab_tw_review_required.v1.json",

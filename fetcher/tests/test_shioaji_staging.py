@@ -29,7 +29,6 @@ from findb_fetcher.shioaji_staging import (
     StagingManifestError,
     load_manifest,
 )
-from findb_fetcher.shioaji_staging_cli import main
 from findb_fetcher.shioaji_staging_state import (
     SCHEMA_VERSION,
     ShioajiStagingState,
@@ -130,18 +129,6 @@ def test_raw_storage_binding_rejects_legacy_delivery_refs_and_allows_safe_rebind
         state.bind_raw_storage("c" * 32, "raw-c")
     state.bind_raw_storage("b" * 32, "raw-b")
     state.close()
-
-
-def test_shioaji_delivery_cli_binds_raw_storage_before_constructing_coordinator() -> None:
-    source = (
-        Path(__file__).resolve().parents[1] / "src/findb_fetcher/shioaji_staging_cli.py"
-    ).read_text(encoding="utf-8")
-    config = source.index("raw_storage_config = RawStorageConfig.from_env()")
-    bind = source.index(
-        "state.bind_raw_storage(raw_storage_config.account_id, raw_storage_config.bucket)"
-    )
-    coordinator = source.index("Coordinator(", config)
-    assert config < bind < coordinator
 
 
 def test_rolling_limiter_survives_restart(tmp_path: Path) -> None:
@@ -681,6 +668,68 @@ def test_terminal_stage_is_not_retried_and_retryable_stops_after_three(
     ]
     assert coordinator.run(date(2026, 7, 29))[0].code == "ATTEMPT_BLOCKED"
     assert retryable.calls == 3
+    state.close()
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+@pytest.mark.parametrize("failure", ["sdk", "generic", "dispatched-quota"])
+def test_coordinator_exhaustion_policy_is_consistent_across_failures(tmp_path, terminal, failure):
+    from findb_fetcher.full_market_state import QuotaBlockedError
+
+    class Gateway:
+        calls = 0
+
+        def fetch_kbars(self, symbol, day):
+            self.calls += 1
+            if failure == "sdk":
+                raise ShioajiSdkError("private provider detail")
+            if failure == "dispatched-quota":
+                error = QuotaBlockedError("private quota detail", quota_wait=True)
+                error.dispatched = True
+                raise error
+            raise RuntimeError("private provider detail")
+
+    gateway = Gateway()
+    path = tmp_path / "attempts.sqlite3"
+    daily_id = "shioaji_tw_staging_v1:2026-07-29"
+    for attempt in range(1, 5):
+        state = ShioajiStagingState(path)
+        result = Coordinator(
+            state, _single_manifest(), gateway, now=_taipei_now, terminal_on_exhaustion=terminal
+        ).run(date(2026, 7, 29))[0]
+        exhausted = terminal and attempt >= 3
+        assert result.code == (
+            "ACQUISITION_ATTEMPTS_EXHAUSTED"
+            if exhausted
+            else "ATTEMPT_BLOCKED"
+            if attempt == 4
+            else "ACQUISITION_FAILED"
+        )
+        assert result.retryable is not exhausted
+        assert state.budget_used(daily_id, "2330") == min(attempt, 3)
+        assert (state.get_terminal(daily_id, "2330") is not None) is exhausted
+        state.close()
+    assert gateway.calls == 3
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_predispatch_quota_wait_never_terminalizes_or_spends_failure_budget(tmp_path, terminal):
+    from findb_fetcher.full_market_state import QuotaBlockedError
+
+    class Gateway:
+        def fetch_kbars(self, symbol, day):
+            raise QuotaBlockedError("cooldown", quota_wait=True)
+
+    state = ShioajiStagingState(tmp_path / "waits.sqlite3")
+    coordinator = Coordinator(
+        state, _single_manifest(), Gateway(), now=_taipei_now, terminal_on_exhaustion=terminal
+    )
+    for _ in range(6):
+        result = coordinator.run(date(2026, 7, 29))[0]
+        assert result.code == "QUOTA_WAIT" and result.retryable
+    daily_id = "shioaji_tw_staging_v1:2026-07-29"
+    assert state.budget_used(daily_id, "2330") == 0
+    assert state.get_terminal(daily_id, "2330") is None
     state.close()
 
 
@@ -1236,86 +1285,3 @@ def test_source_polling_has_interval_call_cap_and_safe_deadline_result(
     ).run(date(2026, 7, 29), True)
     assert result[0].code == "SOURCE_TERMINAL_TIMEOUT" and result[0].retryable
     state.close()
-
-
-def test_cutoff_and_cli_fail_closed_with_valid_secret_free_json(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = ShioajiStagingState(tmp_path / "cutoff.sqlite")
-    gateway = _Gateway()
-    result = Coordinator(
-        state,
-        _single_manifest(),  # type: ignore[arg-type]
-        gateway,
-        now=lambda: datetime(2026, 7, 29, 9, tzinfo=timezone.utc),
-    ).run(date(2026, 7, 29))
-    assert result[0].code == "CUTOFF_REACHED" and gateway.calls == 0
-    assert state.db.execute("SELECT count(*) FROM daily_updates").fetchone()[0] == 0
-    state.close()
-
-    monkeypatch.setenv("SHIOAJI_SECRET_KEY", "must-never-escape")
-    assert main(["--unknown"]) == 1
-    output = capsys.readouterr()
-    assert json.loads(output.out)["code"] == "SAFE_FAILURE"
-    assert output.err == "" and "must-never-escape" not in output.out
-
-    offline_state = tmp_path / "must-not-exist.sqlite"
-    manifest = Path(__file__).resolve().parents[1] / "configs/shioaji_tw_staging.v1.json"
-    assert main(["--check", "--manifest", str(manifest), "--state-path", str(offline_state)]) == 0
-    output = capsys.readouterr()
-    assert json.loads(output.out) == {"code": "CHECK_OK", "stage": "manifest", "count": 4}
-    assert output.err == "" and not offline_state.exists()
-
-    missing_target_state = tmp_path / "missing-target.sqlite"
-    assert main(["--manifest", str(manifest), "--state-path", str(missing_target_state)]) == 1
-    output = capsys.readouterr()
-    assert json.loads(output.out) == {
-        "code": "TARGET_DATE_INVALID",
-        "stage": "setup",
-        "count": 0,
-    }
-    assert output.err == "" and not missing_target_state.exists()
-
-
-def test_cli_returns_nonzero_for_non_successful_run(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FailedCoordinator:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def run(self, *_args: object, **_kwargs: object) -> list[Result]:
-            return [Result("KBARS_PAYLOAD", "payload", reason="ipc_schema")]
-
-    monkeypatch.setattr(
-        "findb_fetcher.shioaji_staging_cli.Coordinator",
-        FailedCoordinator,
-    )
-    monkeypatch.setattr(
-        "findb_fetcher.shioaji_staging_cli._valid_target_date",
-        lambda *_args: True,
-    )
-    state_path = tmp_path / "cli.sqlite"
-    manifest = Path(__file__).resolve().parents[1] / "configs/shioaji_tw_staging.v1.json"
-    assert (
-        main(
-            [
-                "--manifest",
-                str(manifest),
-                "--state-path",
-                str(state_path),
-                "--target-date",
-                "2026-07-29",
-            ]
-        )
-        == 1
-    )
-    output = capsys.readouterr()
-    value = json.loads(output.out)
-    assert value["code"] == "RUN_FAILED"
-    assert value["results"][0]["reason"] == "ipc_schema"
-    assert output.err == "" and "must-never-escape" not in output.out

@@ -6,6 +6,12 @@
 set -euo pipefail
 set +x
 
+if [ "${PROVIDER_WORK_REQUIRED:-true}" != true ]; then
+  echo "findb_aws_deploy=failed reason=legacy_provider_execution_retired" >&2
+  exit 1
+fi
+export PROVIDER_WORK_REQUIRED=true
+
 : "${FINDB_RELEASE_ROOT:?validated immutable release root is required}"
 release_root="$FINDB_RELEASE_ROOT"
 runtime_dir="$release_root/infra/deploy/runtime-secrets"

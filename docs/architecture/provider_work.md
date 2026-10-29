@@ -1,11 +1,44 @@
 # Provider work FIFO
 
-統一 provider work protocol 已在 staging 完成 Owner cutover 與 enforcement 部署；
-FactSet 首次原生驗收仍在進行，production 尚未啟用。當前環境狀態見
-[deployment runbook](../operations/deployment.md#provider-work-切換)。
-`PROVIDER_WORK_REQUIRED=false` 仍是已提交的 local、staging、production 預設設定。
-啟用須先完成 [deployment runbook](../operations/deployment.md#provider-work-切換) 的 drain、單 host／
-shared inode preflight 與 Owner attestation；不能只改旗標便宣稱環境已完成切換。
+所有五個 providers（Twelve Data、FinLab、Shioaji、TAIFEX、FactSet）只使用 provider-work-v1。
+Pilot／Full daily、historical、maintenance 與 retained-raw rerun 共用同 provider 的 FIFO、owner fence
+與 whole-work host lock。`PROVIDER_WORK_REQUIRED` 保留為部署相容性斷言：缺省為 `true`，
+Backend／Fetcher 接受一般布林 true 寫法（不分大小寫的 `true`、`1`、`yes`、`on`、`t`、`y`）；
+明確 false 拒絕停用協定，空字串／無效值則回報布林解析錯誤。部署檔案仍統一使用 `true`，
+不再選擇另一套執行協定。
+
+程式碼退役不代表環境已完成切換；production 仍須完成
+[deployment runbook](../operations/deployment.md#provider-work-切換) 的 drain、備份、單 host／
+shared inode preflight 與 Owner attestation。未 attested 的 Source claim 一律拒絕。
+2026-10-29 production 唯讀快照與未結束工作見 [production 維運](../operations/production.md)。
+
+舊 acquiring CLI（provider-specific scheduler、Twelve Data one-shot、FinLab／Shioaji smoke、
+Shioaji staging 與 TAIFEX pilot）只回傳 exit 2 的安全退役訊息，不載入 secrets、不建立 state、不抓取。
+八個入口模組只保留 tombstone `main()` 與 `python -m` guard；舊 parser、CLI worker、排程與
+獨立 TAIFEX pilot executor 已刪除，不以成功的私人 helper 測試保留已退役的執行路徑。
+使用 `findb-fetch-runtime`、`findb-fetch-historical-backfill` 與 runtime 的 queued universe refresh。
+共用 mapper／executor、舊 checkpoint parser、prepared bytes、receipts、raw lineage、operation budgets、
+account pins／debt／cooldown 全部保留；不執行清檔、重新入列全部 backlog 或資料 migration。
+`legacy_checkpoints.read_taifex_pilot_checkpoint()` 保留舊 TAIFEX meta／pilot_day 的 schema／identity
+驗證與逐列唯讀檢查，使用既有檔案的 SQLite `mode=ro`；原 prepared、receipts、attempts 與 request
+用量照原值讀取，沒有建立、修復、抓取或交付方法。其餘仍使用的 shared mapper／executor／
+checkpoint parser 繼續放在各自模組，退役入口不再匯入它們。
+原 TAIFEX 格式使用 rollback journal。Reader 在 SQLite connect 前拒絕 WAL 格式，避免
+`mode=ro` 仍建立 sidecars；即使 sidecars 不存在也不忽略 WAL。WAL 檔須先經 SQLite
+一致性備份取得 rollback 格式的離線副本，不以 `immutable=1` 跳過尚未 checkpoint 的證據。
+
+Member executor 一開始取得 `require_owner()` 回傳的 fenced session，restore、authorize 與 reserve
+直接使用同一 owner。Queue claim 無 runnable work 時仍可回傳 `work: null`，cycle／drain／
+maintenance 保持正常 idle；它與已進入 member executor 後的必要 ownership 是不同邊界。
+Historical `_run_once()` 同樣保存 `require_owner()` 回傳的 session，停止、drain-only、closed／
+draining round 與例外處理全部使用該 owner，不重讀可為空的 `active()` 或採用無 owner fallback。
+同一 owner 取得的 historical item 仍可能為空，此時正常返回 idle，不能跳過最初的 fence 驗證。
+
+退役移除以下已重現的分歧：跨 request 的獨立 historical lease 可並行且 TTL 自動重派；
+FinLab publication wait 存取不存在的 owner；TD／FinLab 無 durable historical retry authority；
+TD／FinLab／Shioaji 只憑最後單筆 run 即完成；Source 暫時錯誤後繼續抓取；domain 與 FIFO 終態分離；
+以及 FactSet false 模式僅健康回報卻無抓取。現在 completion 一律須通過原 work 的完整 manifest、
+receipts／canonical proof；lease 欄位僅為同一 queue owner 的歷史投影，不能獨立授權或重派。
 
 ## 權威、範圍與排序
 
@@ -15,7 +48,9 @@ PostgreSQL `provider_work` 保存穩定工作，`provider_work_attempt` 以 sequ
 重複 enqueue 不改寫原 scope／順序；不同 profile、historical item 與 retained-raw rerun 決策分開保存。
 
 Daily 的粒度是 dataset／trade_date／execution profile；historical 是原 request 中的單日 item。
-同批日期由早到晚 enqueue。FIFO 只比較 runnable attempts，不給 daily deadline 額外優先權。
+同批日期由早到晚 enqueue；較早日期進入延遲 tail retry 後，後續 runnable 日期可以先執行，
+不保證同 request 依日期完成。Historical claim 只投影已 fenced 的 queue owner，不另選日期或 lease。
+FIFO 只比較 runnable attempts，不給 daily deadline 額外優先權。
 未收盤、`not_before`、已停止且沒有待排空交付的 daily controls，或未開始且沒有待排空交付的
 cancelled historical work 不阻擋其他 runnable work。先在 provider transaction 中選全域 runnable head，
 再檢查 consumer 的 dataset scope、kind 與 profile；較窄的 Source key 不能跳過無權處理的 head，
@@ -31,6 +66,16 @@ Daily 七條 feeds 與 historical adapters 在觀察到第一個 retryable provi
 unknown 或 terminal polling timeout 後，即停止該輪的新 provider I/O 與新 prepared intent；不繼續後續
 member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain，再安全 tail retry。
 原 controls／request 仍允許抓取時，下一 attempt 才可接續同一 frozen scope 的剩餘 members。
+Daily member 的一般例外會先持久保存 `source_error_pending`，再回報 Source `source_error`；
+回報成功才套用原 local attempt ceiling。回報失敗／重啟時，先補報原 outcome，該輪不再抓取
+其他 members，不增加或退還 acquisition attempts，也不改寫 prepared bytes／receipts。
+此 continuation 即使在最後一次 acquisition attempt 或 drain-only round 仍須先完成。
+Tail retry 的 settlement proof 同時保存 canonical `pending_source_errors` member keys，Source
+驗證其屬於原 daily frozen manifest，將待補報資訊帶入下一 attempt。FIFO／唯讀 projection
+將它視為待排空工作：即使 control 停止、daily window 關閉或帳號 cooldown 中，仍可取得
+drain-only owner 補報，但 acquisition fence 繼續拒絕新抓取／intent。補報使用一般短 backoff，
+不延至下一抓取窗口或 cooldown 結束；原帳號 cooldown 不清除。ACK 後下一次 settlement
+不再攜帶此 continuation，恢復一般 FIFO gate，不能永久保留補報例外。
 Maintenance explicit refresh 與 daily cycle 自動領取 refresh 共用同一 round executor：已知 catalogue／
 official HTTP 503、transport 與 quota wait 會先停止 SDK／證明 reap、close、排空 accepted runs，再 tail
 retry；格式、auth／scope 永久拒絕安全結束 failed/manual。只有 owner fence、失聯或無法證明 child
@@ -108,6 +153,11 @@ FactSet MySQL、FinLab blocking SDK 與 Shioaji isolated session 在有 timeout�
 無法證明 child／descendant group 已停止時，保留 flock 並標示 recovery blocked；timeout 不是死亡證據。
 FD 只 close，不對與 child 共用的 open file description 呼叫 `LOCK_UN`，因此 orphan child 仍會阻擋下一 owner。
 
+`--initialize-state` 只建立／開啟 shared inode，再關閉此次獨立取得的 descriptor，
+不取得 flock、不宣告 ownership，也不解除另一 profile／child 正持有的鎖。部署補建另一 profile 的
+checkpoint 不必等待該 provider 空閒；原 inode、原工作鎖與帳號用量不變。真正 claim 與 cutover
+preflight 仍必須成功取得同一 inode 的排他鎖；初始化成功不是 drain／attestation 證據。
+
 Owner 每 20 秒 heartbeat，兩分鐘沒有心跳後需復原。TTL **不釋放 owner，也不自動選下一工作**。
 重啟先取得相同 shared lock inode，旋轉 fencing generation／token 並恢復原 work。
 Closed／draining round 可重送完全相同的 frozen manifest、確認／交付原 prepared、replay receipt 與
@@ -175,8 +225,8 @@ expected=2、data=0、missing=2、no_data=blocked=0：首個 503 已停止第二
 Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
 prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，
 不再有獨立 lease authority。
-未啟用時 Source queue claim 拒絕；啟用也須已有 Owner cutover 保存的相同 shared inode identity，
-單獨改 flag 無法開始 claim。啟用後 legacy ingest／historical claim 缺少 work protocol 一律 fail closed。
+Source queue claim 須已有 Owner cutover 保存的相同 shared inode identity，
+單獨改 flag 無法開始 claim。所有 ingest／historical claim 缺少 work protocol 一律 fail closed。
 Source `/provider-work/{work_id}/authorize` 在既有 provider transaction lock 下回傳原 work ID、provider、
 generation／token、UTC-aware checked_at 與目前 owner expires_at；此 projection 不續約 owner。
 Fetcher 嚴格驗證身份及時間欄位，缺少或 malformed 的證據 fail closed；heartbeat 仍以既有流程續約，
@@ -189,7 +239,7 @@ Dashboard 的「僅排空原交付」獨立於等待原因顯示；未到 `not_b
 
 Shioaji 的實際 parent READY／GO handshake 在送出 SDK command 及 GO 前都檢查 whole-work fence、
 shared FD 與 heartbeat failure；child 在 usage／SDK I/O 前驗證繼承 FD identity。一般 account governor
-與 acquisition locks 繼續保留。啟用 queue 後，legacy smoke CLI fail closed，不提供 FIFO 外的 SDK 入口。
+與 acquisition locks 繼續保留。legacy smoke CLI 一律 fail closed，不提供 FIFO 外的 SDK 入口。
 
 ## 新增 provider 的必要條件
 

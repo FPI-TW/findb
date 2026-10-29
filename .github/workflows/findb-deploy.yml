@@ -199,7 +199,7 @@ jobs:
         TARGET_ID: ${{ steps.release.outputs.target_id }}
         VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}
         FULL_MARKET_ENABLED: ${{ env.FULL_MARKET_ENABLED || 'false' }}
-        PROVIDER_WORK_REQUIRED: ${{ env.PROVIDER_WORK_REQUIRED || 'false' }}
+        PROVIDER_WORK_REQUIRED: ${{ env.PROVIDER_WORK_REQUIRED || 'true' }}
         DNS_CHECK_NAME: ${{ env.AWS_DNS_CHECK_NAME }}
       run: |
         set -euo pipefail
@@ -276,7 +276,7 @@ jobs:
         MIGRATION: ${{ steps.release.outputs.migration }}
         RDS_ENDPOINT: ${{ steps.release.outputs.rds_endpoint }}
         FULL_MARKET_ENABLED: ${{ env.FULL_MARKET_ENABLED || 'false' }}
-        PROVIDER_WORK_REQUIRED: ${{ env.PROVIDER_WORK_REQUIRED || 'false' }}
+        PROVIDER_WORK_REQUIRED: ${{ env.PROVIDER_WORK_REQUIRED || 'true' }}
         TARGET: ${{ inputs.deployment_target }}
       run: |
         set -euo pipefail

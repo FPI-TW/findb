@@ -372,7 +372,9 @@ def test_live_authorization_transients_use_durable_single_dispatch_retries(tmp_p
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
         control = HistoricalControlClient(
-            FetcherConfig("https://source.example", "test-key", max_attempts=9), client=http
+            FetcherConfig("https://source.example", "test-key", max_attempts=9),
+            provider="taifex",
+            client=http,
         )
         runtime = runner(
             tmp_path, lambda _: pytest.fail("unexpected provider request"), clock=clock
@@ -398,7 +400,9 @@ def test_authorization_retry_after_survives_lease_reclaim(tmp_path):
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
         control = HistoricalControlClient(
-            FetcherConfig("https://source.example", "test-key", max_attempts=9), client=http
+            FetcherConfig("https://source.example", "test-key", max_attempts=9),
+            provider="taifex",
+            client=http,
         )
         runtime = runner(
             tmp_path, lambda _: pytest.fail("unexpected provider request"), clock=clock
@@ -473,7 +477,8 @@ def test_run_once_slow_authorization_body_has_one_dispatch_per_durable_attempt(
     import time
 
     from findb_fetcher.config import FetcherConfig
-    from findb_fetcher.historical_backfill import HistoricalControlClient, run_once
+    from findb_fetcher.historical_backfill import HistoricalControlClient
+    from findb_fetcher.historical_backfill import _run_once as run_once
 
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(tmp_path / "account.sqlite3"))
     calls = []
@@ -528,7 +533,9 @@ def test_run_once_slow_authorization_body_has_one_dispatch_per_durable_attempt(
     runtime = runner(tmp_path, lambda _: pytest.fail("expired dispatch grant reached provider"))
     with httpx.Client(transport=httpx.MockTransport(respond)) as http:
         control = HistoricalControlClient(
-            FetcherConfig("https://source.example", "test-key", max_attempts=9), client=http
+            FetcherConfig("https://source.example", "test-key", max_attempts=9),
+            provider="taifex",
+            client=http,
         )
         assert run_once(control, runtime)
     assert len(calls) == 3

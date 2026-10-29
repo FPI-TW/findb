@@ -74,3 +74,24 @@ def test_cutover_rejects_ambiguous_external_io_ownership(tmp_path, fault):
         preflight.inspect_cutover(
             environment="staging", host_id="one", host_ids=hosts, containers=rows
         )
+
+
+@pytest.mark.parametrize("provider", preflight.PROVIDERS)
+def test_inode_bootstrap_does_not_make_a_held_work_lock_attestable(tmp_path, monkeypatch, provider):
+    from findb_fetcher import provider_work
+
+    monkeypatch.setenv("APP_ENVIRONMENT", "staging")
+    rows = inventory(tmp_path)
+    with provider_work.host_lock(provider, root=tmp_path):
+        provider_work.initialize_host_lock(provider, root=tmp_path)
+        with pytest.raises(BlockingIOError):
+            preflight.inspect_cutover(
+                environment="staging", host_id="one", host_ids=["one"], containers=rows
+            )
+        with pytest.raises(provider_work.ProviderWorkWaitingError):
+            with provider_work.host_lock(provider, root=tmp_path):
+                pytest.fail("preflight or initialization released an active work lock")
+    proof = preflight.inspect_cutover(
+        environment="staging", host_id="one", host_ids=["one"], containers=rows
+    )
+    assert set(proof["host_lock_identities"]) == set(preflight.PROVIDERS)

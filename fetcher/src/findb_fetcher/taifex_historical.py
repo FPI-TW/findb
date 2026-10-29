@@ -233,6 +233,9 @@ class TaifexHistoricalRunner:
             )
 
     def run(self, item: HistoricalWorkItem) -> HistoricalRunResult:
+        from findb_fetcher.provider_work import require_owner
+
+        require_owner(item.provider)
         if item.lease_expires_at is None or item.lease_expires_at.tzinfo is None:
             raise ValueError("TAIFEX requires a timezone-aware historical lease expiry")
         if item.provider != "taifex" or item.dataset_key != "tw_futures_eod":

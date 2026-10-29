@@ -42,10 +42,14 @@ CURRENT_FETCHER_CONTAINERS = {
 }
 
 
+def _pilot_catalog() -> dict[str, Any]:
+    from findb_fetcher.pilot_catalog import load_staging_pilot_catalog
+
+    return load_staging_pilot_catalog(REPO_ROOT / "fetcher/configs")
+
+
 def catalog_feeds() -> tuple[tuple[str, str], ...]:
-    catalog = json.loads(
-        (REPO_ROOT / "fetcher/configs/staging_provider_pilots.v1.json").read_bytes()
-    )
+    catalog = _pilot_catalog()
     if set(catalog["providers"]) != set(FETCHER_CONTAINERS):
         raise ValueError("pilot provider readiness metadata missing")
     return tuple(
@@ -631,9 +635,7 @@ def _functional_acceptance(
     findb: dict[str, Any], fetcher: dict[str, Any], *, observed_at: datetime | None = None
 ) -> dict[str, bool]:
     observed_at = observed_at or datetime.now(timezone.utc)
-    catalog = json.loads(
-        (REPO_ROOT / "fetcher/configs/staging_provider_pilots.v1.json").read_bytes()
-    )
+    catalog = _pilot_catalog()
     feeds = {(item["source"], item["dataset_key"]): item for item in findb["feeds"]}
     result = {}
     for provider, spec in catalog["providers"].items():

@@ -52,7 +52,11 @@ class ProviderWorkAcquisitionStopped(BaseException):
 
 
 def enabled() -> bool:
-    return os.getenv("PROVIDER_WORK_REQUIRED", "false") == "true"
+    """Compatibility assertion for callers; there is no legacy execution mode."""
+    from findb_fetcher.config import require_provider_work_protocol
+
+    require_provider_work_protocol()
+    return True
 
 
 def inherited_fds() -> tuple[int, ...]:
@@ -66,8 +70,7 @@ def require_acquisition(provider: str, *, local_only: bool = False) -> bool:
     False means the prior remote check is too old and needs a fresh bounded
     authorization attempt. Missing or changed ownership always raises.
     """
-    if not enabled():
-        return True
+    enabled()
     owner = active()
     fd = _fd.get()
     identity = _fd_identity.get()
@@ -110,14 +113,22 @@ def acquisition_dispatch_deadline(provider: str, account_deadline: float) -> flo
     if not require_acquisition(provider, local_only=True):
         return account_time.monotonic()
     owner = active()
-    if enabled():
-        assert owner is not None and owner._authorization_deadline is not None
-        return min(account_deadline, owner._authorization_deadline)
-    return account_deadline
+    assert owner is not None and owner._authorization_deadline is not None
+    return min(account_deadline, owner._authorization_deadline)
 
 
 def active() -> ProviderWorkSession | None:
     return _current.get()
+
+
+def require_owner(provider: str) -> ProviderWorkSession:
+    """Require ownership even when resuming prepared bytes without new I/O."""
+    enabled()
+    owner = active()
+    if owner is None or owner.provider != provider:
+        raise ProviderWorkRecoveryBlockedError("provider execution requires a fenced work owner")
+    owner._check_local_fence()
+    return owner
 
 
 def scoped_identity(seed: bytes) -> bytes:
@@ -126,8 +137,7 @@ def scoped_identity(seed: bytes) -> bytes:
     return seed + b"\0provider-work:" + owner.work["work_id"].encode() if owner else seed
 
 
-@contextmanager
-def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int, str]]:
+def _open_host_lock(provider: str, *, root: Path | None = None) -> int:
     env = os.getenv("APP_ENVIRONMENT", "local")
     folder = (
         root
@@ -137,7 +147,22 @@ def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int,
     )
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"provider-work-{env}-{provider}.lock"
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+
+
+def initialize_host_lock(provider: str, *, root: Path | None = None) -> None:
+    """Ensure the shared inode exists without acquiring or releasing ownership.
+
+    A separate open file description can be closed while a sibling consumer
+    owns the inode. Never truncate, replace, unlink or LOCK_UN the holder's file.
+    """
+    os.close(_open_host_lock(provider, root=root))
+
+
+@contextmanager
+def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int, str]]:
+    env = os.getenv("APP_ENVIRONMENT", "local")
+    fd = _open_host_lock(provider, root=root)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -717,7 +742,8 @@ class ProviderWorkSession:
 
             from findb_fetcher.acquisition import time as account_time
 
-            delay = max(delay, math.ceil(self.journal.cooldown_until() - account_time.time()))
+            if not body["proof"].get("pending_source_errors"):
+                delay = max(delay, math.ceil(self.journal.cooldown_until() - account_time.time()))
             body["retry_at"] = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
         from findb_fetcher.full_market_client import FullMarketProtocolError
 
@@ -761,6 +787,7 @@ def claimed_work(
     execution_profile: str | None = None,
     root: Path | None = None,
 ) -> Iterator[ProviderWorkSession | None]:
+    enabled()
     with host_lock(provider, root=root) as (_, inode):
         claimed = source.request(
             "POST",

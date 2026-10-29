@@ -26,7 +26,7 @@ from tests.test_staging_feed_evidence import _sample_record
     ],
 )
 async def test_native_evidence_binds_profile_after_canonical_overwrite(
-    test_session, test_engine, client, monkeypatch, environment, key
+    test_session, test_engine, owned_client, monkeypatch, environment, key
 ):
     # This regression exercises retained v1 plans. Current FactSet v2 acquisition
     # is covered by the fenced FactSet integration acceptance tests.
@@ -48,7 +48,7 @@ async def test_native_evidence_binds_profile_after_canonical_overwrite(
             return raw
 
         monkeypatch.setattr(Path, "read_text", retained_catalog)
-    original_post = client.post
+    original_post = owned_client.post
 
     async def post_with_raw_provenance(url, **kwargs):
         if url == "/api/v1/source/ingest":
@@ -68,8 +68,8 @@ async def test_native_evidence_binds_profile_after_canonical_overwrite(
             batch["source_raw_sha256"] = "b" * 64
         return await original_post(url, **kwargs)
 
-    monkeypatch.setattr(client, "post", post_with_raw_provenance)
-    await populate_pipeline(test_session, test_engine, client, monkeypatch, environment, key)
+    monkeypatch.setattr(owned_client, "post", post_with_raw_provenance)
+    await populate_pipeline(test_session, test_engine, owned_client, monkeypatch, environment, key)
     monkeypatch.setattr(evidence.get_settings(), "APP_ENVIRONMENT", environment)
     await test_session.execute(text("UPDATE normalization_outbox SET status='published'"))
     await test_session.commit()

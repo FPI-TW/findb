@@ -83,7 +83,7 @@ jobs:
             echo "::warning title=Fetcher container build retry::Attempt ${attempt} failed; retrying in ${delay}s"
             sleep "$delay"
           done
-          docker run --rm "$image" findb-fetch-scheduler --help
+          docker run --rm "$image" findb-fetch-runtime --help
 
       - name: Build and inspect isolated FinLab scheduler container
         working-directory: .
@@ -95,8 +95,8 @@ jobs:
           docker run --rm "$generic_image" python -c 'import importlib.util, sys; sys.exit(0 if all(importlib.util.find_spec(name) is None for name in ("finlab", "shioaji")) else 1)'
           docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .
           docker run --rm "$finlab_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is not None and importlib.util.find_spec("shioaji") is None else 1)'
-          docker run --rm "$finlab_image" findb-fetch-finlab-scheduler --help
-          docker run --rm "$finlab_image" findb-fetch-finlab-smoke --help
+          docker run --rm "$finlab_image"
+          docker run --rm "$finlab_image" findb-fetch-historical-backfill --help
 
       - name: Build and inspect isolated Shioaji scheduler container
         working-directory: .
@@ -108,7 +108,7 @@ jobs:
           # The Shioaji runtime carries only its explicitly requested optional
           # SDK.  Keep the generic and FinLab images hermetic as well.
           docker run --rm "$shioaji_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("shioaji") is not None and importlib.util.find_spec("finlab") is None else 1)'
-          docker run --rm "$shioaji_image" findb-fetch-shioaji-scheduler --help
+          docker run --rm "$shioaji_image"
 
       - name: Build and inspect isolated FactSet runtime
         working-directory: .
@@ -116,6 +116,7 @@ jobs:
           image="findb-fetcher-factset:${{ github.sha }}"
           docker build -f fetcher/Dockerfile.factset -t "$image" .
           docker run --rm "$image" python -c 'import importlib.util,ssl; assert importlib.util.find_spec("pymysql"); assert all(importlib.util.find_spec(n) is None for n in ("finlab","shioaji")); c=ssl.create_default_context(cafile="/app/certs/ap-southeast-1-bundle.pem"); assert c.check_hostname and c.verify_mode==ssl.CERT_REQUIRED'
+          docker run --rm "$image"
           docker run --rm "$image" findb-fetch-runtime --provider factset --config /app/configs/full_market.local.v1.json --check
           docker run --rm "$image" findb-fetch-historical-backfill --help
 

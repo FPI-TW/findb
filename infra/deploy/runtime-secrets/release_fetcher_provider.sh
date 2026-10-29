@@ -375,6 +375,7 @@ if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ] && ! sudo test -e "$state_p
   docker run --rm \
     --name "$state_bootstrap_name" \
     --env "APP_ENVIRONMENT=$APP_ENVIRONMENT" \
+    --env "FETCHER_ACCOUNT_STATE_PATH=$account_dir/governor.sqlite3" \
     --user 10001:10001 \
     --read-only \
     --cap-drop ALL \

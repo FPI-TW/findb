@@ -14,7 +14,12 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt
-from app.models.registry import DatasetRegistry, FullMarketEnvironment, SchedulerControl
+from app.models.registry import (
+    DailyDeliveryMember,
+    DatasetRegistry,
+    FullMarketEnvironment,
+    SchedulerControl,
+)
 from app.services import provider_work
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
@@ -298,6 +303,17 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         )
     )
     assert first_attempt.outcome == "retry"
+    if fault == "native-network":
+        reported = list(
+            await h.db.scalars(
+                select(DailyDeliveryMember).where(
+                    DailyDeliveryMember.plan_id == db_plan.plan_id,
+                    DailyDeliveryMember.outcome_reason == "source_error",
+                )
+            )
+        )
+        assert len(reported) == 1
+        assert reported[0].outcome == "blocked"
     attempt = await h.db.scalar(
         select(ProviderWorkAttempt).where(
             ProviderWorkAttempt.work_id == work_id, ProviderWorkAttempt.state == "queued"

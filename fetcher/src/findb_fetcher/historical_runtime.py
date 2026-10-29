@@ -22,7 +22,7 @@ from findb_fetcher.historical_backfill import (
     HistoricalWorkDeferredError,
     HistoricalWorkItem,
 )
-from findb_fetcher.provider_work import active
+from findb_fetcher.provider_work import active, require_owner
 from findb_fetcher.providers.finlab import FinLabSdkGateway, FinLabSymbol
 from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
@@ -111,6 +111,7 @@ class TwelveDataHistoricalRunner:
         return cls()
 
     def run(self, item: HistoricalWorkItem) -> UUID:
+        require_owner(item.provider)
         if item.provider != "twelve_data":
             raise HistoricalRuntimeError("provider mismatch")
         schedule = _schedule(item.provider, item.dataset_key)
@@ -177,6 +178,7 @@ class FinLabHistoricalRunner:
         return cls()
 
     def run(self, item: HistoricalWorkItem) -> UUID:
+        require_owner(item.provider)
         if item.provider != "finlab":
             raise HistoricalRuntimeError("provider mismatch")
         schedule = _schedule(item.provider, item.dataset_key)

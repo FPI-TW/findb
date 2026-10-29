@@ -21,6 +21,7 @@ from findb_fetcher.providers.shioaji import (
     ShioajiSdkGateway,
 )
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+from provider_work_support import account_boundary_unit
 from sdk_bootstrap_harness import SDK_CHILD, install_launcher
 
 
@@ -208,7 +209,8 @@ def test_actual_kbars_outcome_is_durable_without_refunding_request(sdk, monkeypa
 def test_second_real_child_cannot_construct_while_b_account_locked(sdk):
     path, output = sdk
 
-    def run():
+    @account_boundary_unit
+    def run(path):
         gateway = PersistentIsolatedShioajiGateway("actual-B", "private-key")
         with authorization_scope(grant):
             gateway.catalogue()
@@ -216,7 +218,7 @@ def test_second_real_child_cannot_construct_while_b_account_locked(sdk):
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with Acquisition("shioaji", credential="actual-B"):
-            future = pool.submit(run)
+            future = pool.submit(run, path)
             deadline = time.monotonic() + 5
             while not output.exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
@@ -225,6 +227,7 @@ def test_second_real_child_cannot_construct_while_b_account_locked(sdk):
         future.result(timeout=10)
 
 
+@account_boundary_unit
 def _bootstrap_parent(path, output, mode):
     import subprocess
     import sys

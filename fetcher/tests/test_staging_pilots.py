@@ -23,7 +23,6 @@ from findb_fetcher.shioaji_scheduler import (
     open_production_state,
     validate_production_state_path,
 )
-from findb_fetcher.taifex_pilot import PilotState, latest_completed_day, select_near_month
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -63,38 +62,6 @@ def test_staging_minute_identity_rejects_legacy_sequence_state(tmp_path: Path) -
         validate_production_state_path(tmp_path / "state.sqlite3", manifest=new)
 
 
-def _rows() -> list[dict]:
-    return [
-        {
-            "product_code": p,
-            "contract_code": f"{p}:{month}",
-            "contract_month": month,
-            "trade_date": "2026-10-02",
-            "session": session,
-            "open": "100",
-            "high": "110",
-            "low": "90",
-            "close": "105",
-            "volume": 10,
-            "settlement_price": "105",
-            "open_interest": 10,
-        }
-        for p in ("TX", "MTX")
-        for month in ("202610W1", "202610", "202611")
-        for session in ("regular", "after_hours")
-    ]
-
-
-def test_actual_monthly_near_expiry_and_session_selection() -> None:
-    result = select_near_month(_rows(), date(2026, 10, 2))
-    assert len(result) == 4
-    assert {row["contract_code"] for row in result} == {"TX:202610", "MTX:202610"}
-    with pytest.raises(ValueError):
-        select_near_month(
-            [row for row in _rows() if row["session"] == "regular"], date(2026, 10, 2)
-        )
-
-
 def _calendar() -> SimpleNamespace:
     return SimpleNamespace(
         get_day=lambda market, day: (
@@ -104,122 +71,6 @@ def _calendar() -> SimpleNamespace:
             1,
         )
     )
-
-
-def test_latest_completed_trading_day_uses_separate_taifex_calendar() -> None:
-    assert latest_completed_day(_calendar(), datetime(2026, 10, 5, 2, tzinfo=timezone.utc)) == date(
-        2026, 10, 2
-    )
-
-
-@pytest.mark.parametrize(
-    ("source_denied", "stop_after_acceptance"), [(False, False), (True, False), (False, True)]
-)
-def test_taifex_raw_first_prepared_restart_idempotency_and_terminal_counts(
-    tmp_path: Path,
-    contracts_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    source_denied: bool,
-    stop_after_acceptance: bool,
-) -> None:
-    import threading
-
-    from findb_fetcher import taifex_pilot
-
-    events = []
-    raw_formats = []
-    selected = _rows()
-
-    def report(http, *, product, **kwargs):
-        events.append("fetch")
-        return product.encode()
-
-    monkeypatch.setattr(taifex_pilot, "fetch_report", report)
-    monkeypatch.setattr(
-        taifex_pilot,
-        "parse_report",
-        lambda raw, **kwargs: [row for row in selected if row["product_code"] == raw.decode()],
-    )
-
-    class Store:
-        def persist(self, raw, **kwargs):
-            events.append("raw")
-            raw_formats.append(kwargs.get("payload_format", "json"))
-            digest = hashlib.sha256(raw).hexdigest()
-            return RawObject("r2://" + "a" * 32 + "/pilot-raw/taifex/" + digest, digest, len(raw))
-
-    requests = []
-    stop_event = threading.Event()
-
-    class DeniedError(RuntimeError):
-        status_code = 401
-
-    class Source:
-        def prepare(self, request):
-            requests.append(request)
-            return request
-
-        def deliver(self, prepared, **kwargs):
-            events.append("deliver")
-            if source_denied:
-                raise DeniedError("secret provider detail must never escape")
-            if len(requests) == 1 and not stop_after_acceptance:
-                raise ValueError("temporary fixture failure")
-            return SimpleNamespace(run_id=UUID(int=1), attempt_id=UUID(int=2))
-
-        def get_run_status(self, *args, **kwargs):
-            if len(requests) == 1 and stop_after_acceptance:
-                stop_event.set()
-                return SimpleNamespace(status="queued")
-            return SimpleNamespace(
-                status="completed", total_records=4, success_records=4, failed_records=0
-            )
-
-    config = json.loads((CONFIGS / "taifex_tw_staging_pilot.v1.json").read_bytes())
-    state_path = tmp_path / "pilot.sqlite3"
-    args = dict(
-        now=datetime(2026, 10, 2, 12, tzinfo=timezone.utc),
-        calendar=_calendar(),
-        http=object(),
-        source=Source(),
-        raw_store=Store(),
-        registry=ContractRegistry(contracts_dir),
-        config=config,
-        stop_event=stop_event,
-    )
-    first = PilotState(state_path).run(**args)
-    assert raw_formats == ["csv_cp950", "csv_cp950", "json"]
-    assert first["status"] == "retry_pending"
-    if stop_after_acceptance:
-        assert first["reason"] == "stopped"
-        with sqlite3.connect(state_path) as db:
-            assert db.execute("SELECT attempts FROM pilot_day").fetchone() == (0,)
-        stop_event.clear()
-    assert events[:5] == ["fetch", "raw", "fetch", "raw", "raw"]
-    result = PilotState(state_path).run(**args)
-    if source_denied:
-        assert result["status"] == "retry_pending"
-        result = PilotState(state_path).run(**args)
-        assert result == {
-            "target_date": "2026-10-02",
-            "status": "blocked",
-            "reason": "source:DeniedError:http_401",
-        }
-        assert PilotState(state_path).run(**args)["status"] == "blocked"
-        assert requests[0] == requests[1] == requests[2]
-        assert events.count("fetch") == 2
-        with sqlite3.connect(state_path) as db:
-            assert db.execute(
-                "SELECT record_count,requests,attempts FROM pilot_day"
-            ).fetchone() == (0, 2, 3)
-        return
-    assert result["status"] == "completed", result
-    assert requests[0] == requests[1]
-    assert events.count("fetch") == 2
-    assert PilotState(state_path).run(**args)["status"] == "completed"
-    assert len(requests) == 2
-    with sqlite3.connect(state_path) as db:
-        assert db.execute("SELECT record_count,requests FROM pilot_day").fetchone() == (4, 2)
 
 
 def test_new_minute_pilot_selects_only_latest_completed_open_day():
@@ -325,74 +176,6 @@ def test_new_minute_pilot_delivers_complete_bars_for_both_single_instrument_sequ
     state.close()
 
 
-@pytest.mark.parametrize("target", [None, "production"])
-def test_taifex_production_rejected_before_clients(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str | None
-) -> None:
-    from findb_fetcher.taifex_pilot import main
-
-    if target is None:
-        monkeypatch.delenv("APP_ENVIRONMENT", raising=False)
-    else:
-        monkeypatch.setenv("APP_ENVIRONMENT", target)
-    assert (
-        main(
-            [
-                "--initialize-state",
-                "--config",
-                str(CONFIGS / "taifex_tw_staging_pilot.v1.json"),
-                "--state-path",
-                str(tmp_path / "state.sqlite3"),
-            ]
-        )
-        == 2
-    )
-    assert not (tmp_path / "state.sqlite3").exists()
-
-
-@pytest.mark.parametrize("provider", list(SUPPORTED_PILOTS))
-def test_each_provider_real_cli_starts_offline_readiness(
-    provider, tmp_path, monkeypatch, contracts_dir
-):
-    import importlib
-
-    modules = {
-        "twelve_data": "scheduler_cli",
-        "finlab": "finlab_scheduler_cli",
-        "shioaji": "shioaji_scheduler_cli",
-        "taifex": "taifex_pilot",
-    }
-    env = {
-        "APP_ENVIRONMENT": "staging",
-        "SOURCE_API_URL": "https://source.example",
-        "SOURCE_CLIENT_KEY": "fixture-source",
-        "FINDB_SERVE_BASE_URL": "https://serve.example",
-        "FETCHER_CALENDAR_SERVE_API_KEY": "fixture-calendar",
-        "CLOUDFLARE_R2_ACCOUNT_ID": "a" * 32,
-        "CLOUDFLARE_R2_RAW_BUCKET": "pilot-raw",
-        "CLOUDFLARE_R2_RAW_ACCESS_KEY_ID": "fixture-r2",
-        "CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY": "fixture-r2-secret",
-        "FINLAB_API_TOKEN": "fixture-finlab",
-        "SHIOAJI_API_KEY": "fixture-shioaji",
-        "SHIOAJI_SECRET_KEY": "fixture-shioaji-secret",
-        "SHIOAJI_SIMULATION": "true",
-        "FETCHER_CONTRACTS_DIR": str(contracts_dir),
-    }
-    for name, value in env.items():
-        monkeypatch.setenv(name, value)
-    module = importlib.import_module(f"findb_fetcher.{modules[provider]}")
-    args = ["--check", "--state-path", str(tmp_path / "state.sqlite3")]
-    if provider in {"twelve_data", "finlab"}:
-        args.extend(["--schedule-file", str(CONFIGS / "daily_scheduler.staging.v3.json")])
-    if provider == "twelve_data":
-        args.extend(["--slot-id", "western_markets_window", "--dataset-key", "us_equity_eod"])
-    if provider == "shioaji":
-        args.extend(["--manifest", str(CONFIGS / "shioaji_tw_staging_pilot.v3.json")])
-    if provider == "taifex":
-        args.extend(["--config", str(CONFIGS / "taifex_tw_staging_pilot.v1.json")])
-    assert module.main(args) == 0
-
-
 @pytest.mark.parametrize("provider", list(SUPPORTED_PILOTS))
 def test_each_provider_stopped_idle_then_running_acknowledgement_delivers(provider):
     import threading
@@ -489,3 +272,59 @@ def test_new_daily_state_never_claims_legacy_nvda_or_old_pending_dates(tmp_path)
         assert db.execute("SELECT status FROM scheduled_job WHERE symbol='NVDA'").fetchone() == (
             "pending",
         )
+
+
+@pytest.mark.parametrize("provider", list(SUPPORTED_PILOTS))
+def test_catalog_runtime_arguments_execute_supported_offline_check(provider, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    spec = validate_staging_pilots(CONFIGS)["providers"][provider]
+    original_files = set(tmp_path.iterdir())
+    result = subprocess.run(
+        [sys.executable, "-m", PILOT_RUNTIMES[provider][1], *spec["runtime_arguments"], "--check"],
+        cwd=CONFIGS.parent,
+        env={
+            "PATH": os.environ["PATH"],
+            "APP_ENVIRONMENT": "staging",
+            "FETCHER_ACCOUNT_STATE_PATH": str(tmp_path / "account/governor.sqlite3"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "status": "valid",
+        "desired_state": "stopped",
+        "provider": provider,
+    }
+    assert set(tmp_path.iterdir()) == original_files
+
+
+@pytest.mark.parametrize("provider", list(SUPPORTED_PILOTS))
+@pytest.mark.parametrize("mutation", ["retired-command", "profile", "provider", "config"])
+def test_catalog_rejects_retired_or_mismatched_runtime_binding(tmp_path, provider, mutation):
+    for source in CONFIGS.glob("*.json"):
+        shutil.copy(source, tmp_path / source.name)
+    path = tmp_path / "staging_provider_pilots.v1.json"
+    catalog = json.loads(path.read_bytes())
+    spec = catalog["providers"][provider]
+    if mutation == "retired-command":
+        spec["runtime_command"] = {
+            "twelve_data": "findb-fetch-scheduler",
+            "finlab": "findb-fetch-finlab-scheduler",
+            "shioaji": "findb-fetch-shioaji-scheduler",
+            "taifex": "findb-fetch-taifex-pilot",
+        }[provider]
+    else:
+        argument = {
+            "profile": "--execution-profile",
+            "provider": "--provider",
+            "config": "--config",
+        }[mutation]
+        spec["runtime_arguments"][spec["runtime_arguments"].index(argument) + 1] = "mismatched"
+    path.write_text(json.dumps(catalog))
+    with pytest.raises(ValueError, match="scope or acceptance metadata"):
+        validate_staging_pilots(tmp_path)

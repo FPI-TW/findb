@@ -67,6 +67,11 @@ COMMAND
 
 set +x
 
+if [ "${PROVIDER_WORK_REQUIRED:-true}" != true ]; then
+  echo "fetcher_aws_deploy=failed reason=legacy_provider_execution_retired" >&2
+  exit 1
+fi
+
 : "${AWS_REGION:?AWS_REGION is required}"
 : "${AWS_ACCOUNT_ID:?AWS_ACCOUNT_ID is required}"
 : "${APP_ENVIRONMENT:?APP_ENVIRONMENT is required}"
@@ -86,7 +91,7 @@ FETCHER_RUNTIME_PROFILE=unified
 export FETCHER_RUNTIME_PROFILE
 FULL_MARKET_ENABLED="${FULL_MARKET_ENABLED:-false}"
 export FULL_MARKET_ENABLED
-PROVIDER_WORK_REQUIRED="${PROVIDER_WORK_REQUIRED:-false}"
+PROVIDER_WORK_REQUIRED="${PROVIDER_WORK_REQUIRED:-true}"
 export PROVIDER_WORK_REQUIRED
 export FETCHER_ACCOUNT_STATE_PATH="/var/lib/findb-account/$APP_ENVIRONMENT/governor.sqlite3"
 if [[ ! "$FETCHER_RUNTIME_PROFILE" =~ ^unified$ ]]; then

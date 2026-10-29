@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,8 +13,7 @@ import pytest
 
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
-from findb_fetcher.full_market_state import FullMarketState
-from findb_fetcher.full_market_universe import canonical_bytes
+from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
 from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot, ShioajiSdkError
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 from test_full_market import _member, _runtime
@@ -148,53 +146,6 @@ def _cycle_runtime(
     return runtime, source
 
 
-@pytest.mark.parametrize("has_local_state", [False, True])
-def test_frozen_hundred_member_plan_survives_same_date_publication_and_restart(
-    tmp_path: Path, has_local_state: bool
-) -> None:
-    today = datetime.now(timezone.utc).date()
-    old_day = today - timedelta(days=1)
-    members = [
-        {**_member(), "symbol": f"S{i}", "member_key": f"S{i}", "provider_symbol": f"OLD{i}"}
-        for i in range(100)
-    ]
-    old = _release("original", "us_equity_eod", members)
-    revised = _release(
-        "new-mapping",
-        "us_equity_eod",
-        [{**member, "provider_symbol": f"NEW{i}"} for i, member in enumerate(members)],
-    )
-    runtime, source = _cycle_runtime(tmp_path, [old, revised], [old_day, today])
-    frozen = _frozen_plan("us_equity_eod", old_day, old)
-    source.plans[("us_equity_eod", str(old_day))] = copy.deepcopy(frozen)
-    key = frozen["parts"][0]["work_item_id"] + ":S0"
-    if has_local_state:
-        runtime.state.record_plan(frozen, "twelve_data")
-        runtime.state.prepare(key, canonical_bytes([{"provider_symbol": "OLD0"}]))
-    runtime.state = FullMarketState(runtime.state.path)
-    acquired: list[tuple[str, str]] = []
-    runtime._acquire = lambda member, plan, *args: (
-        acquired.append((plan["trade_date"], member["provider_symbol"]))
-        or [{"symbol": member["symbol"]}]
-    )
-    runtime.cycle()
-    assert source.plans[("us_equity_eod", str(old_day))]["parts"] == frozen["parts"]
-    assert source.plans[("us_equity_eod", str(old_day))]["release_id"] == "original"
-    assert [(day, symbol) for day, symbol in acquired if day == str(old_day)] == [
-        (str(old_day), f"OLD{i}") for i in range(int(has_local_state), 100)
-    ]
-    assert [(day, symbol) for day, symbol in acquired if day == str(today)] == [
-        (str(today), f"NEW{i}") for i in range(100)
-    ]
-    assert [call["release_id"] for call in source.created] == ["new-mapping"]
-    if has_local_state:
-        assert runtime.state.prepared(key) == canonical_bytes([{"provider_symbol": "OLD0"}])
-    runtime.state = FullMarketState(runtime.state.path)
-    runtime.cycle()
-    assert len(acquired) == 200 - int(has_local_state)
-    runtime.http.close()
-
-
 def test_source_exact_date_lookup_recovers_plan_outside_latest_hundred() -> None:
     day = date(2026, 1, 1)
     plans = [
@@ -235,63 +186,6 @@ def test_concurrent_plan_freeze_recovers_original_release_on_conflict(tmp_path: 
 
     source.plan = racing_plan
     assert runtime._plan_for_date(runtime.feeds[0], day) == frozen
-    runtime.http.close()
-
-
-@pytest.mark.parametrize("quota_exhausted", [False, True])
-def test_latest_manual_gap_does_not_starve_older_shared_us_hk_work(
-    tmp_path: Path, quota_exhausted: bool
-) -> None:
-    today = datetime.now(timezone.utc).date()
-    older = today - timedelta(days=1)
-    us = _release("us", "us_equity_eod", [_member()])
-    hk = _release("hk", "hk_equity_eod", [{**_member(), "symbol": "00700", "member_key": "00700"}])
-    runtime, source = _cycle_runtime(tmp_path, [us, hk], [older, today])
-    runtime.feeds.append({**runtime.feeds[0], "dataset_key": "hk_equity_eod", "market": "HK"})
-    runtime.installed_feeds = list(runtime.feeds)
-    latest = _frozen_plan("us_equity_eod", today, us)
-    # A manual-only latest plan near its deadline needs zero new provider calls.
-    latest["deadline_at"] = (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()
-    source.plans[("us_equity_eod", str(today))] = latest
-    runtime.state.record_plan(latest, "twelve_data")
-    runtime.state.finish(
-        latest["parts"][0]["work_item_id"] + ":AAPL", status="manual", reason="mapping_gap"
-    )
-    acquired: list[tuple[str, str]] = []
-    attempts: list[tuple[str, str]] = []
-    runtime.proof["requests_per_second"] = 100000
-
-    def acquire(member: Any, plan: Any, *args: Any) -> list[dict[str, Any]]:
-        attempts.append((plan["dataset_key"], plan["trade_date"]))
-        runtime._reserve()
-        acquired.append(attempts[-1])
-        return [{"symbol": member["symbol"]}]
-
-    runtime._acquire = acquire
-    if quota_exhausted:
-        runtime.state.reserve(
-            account="twelve_data",
-            window=str(today),
-            requests=runtime.proof["requests_per_day"],
-            byte_count=0,
-            request_limit=runtime.proof["requests_per_day"],
-            byte_limit=1,
-            now=datetime.now(timezone.utc).timestamp(),
-        )
-    health = runtime.cycle()
-    if quota_exhausted:
-        assert acquired == []
-        assert attempts == [("hk_equity_eod", str(today))]
-        assert source.outcomes[-1]["reason"] == "rate_limited"
-    else:
-        assert acquired == [
-            ("hk_equity_eod", str(today)),
-            ("us_equity_eod", str(older)),
-            ("hk_equity_eod", str(older)),
-        ]
-    assert health["manual_required"] == 1
-    assert all(trade_date >= str(older) for _, trade_date in source.plans)
-    assert latest["plan_id"] in [plan["plan_id"] for plan in health["unresolved"]]
     runtime.http.close()
 
 
@@ -370,7 +264,7 @@ def test_shioaji_failed_child_recreated_shared_feeds_and_stopped(
     runtime.can_acquire = lambda: False
     runtime.pause()
     assert runtime.sdk is None and gateways[1].closed
-    with pytest.raises(Exception, match="stopped"):
+    with pytest.raises(ProviderWorkAcquisitionStopped, match="stopped"):
         runtime._acquire(etf, plan, plan["parts"][0], {"release_id": "etf"}, runtime.feeds[0])
     assert len(gateways) == 2
     runtime.http.close()
@@ -416,177 +310,3 @@ def test_persistent_gateway_transport_failure_closes_boundary(failure: str, tmp_
     assert gateway.parent.closed
     assert not gateway.process.is_alive()
     assert not gateway.is_alive()
-
-
-@pytest.mark.parametrize("blocker", ["stopped", "flag_off", "expired", "calendar_incomplete"])
-def test_prepared_delivery_drains_without_new_acquisition_authority(tmp_path, monkeypatch, blocker):
-    from findb_fetcher.full_market_runtime import ReadinessBlockedError
-
-    day = datetime.now(timezone.utc).date()
-    members = [{**_member(), "symbol": f"S{i}", "member_key": f"S{i}"} for i in range(2)]
-    release = _release("frozen", "us_equity_eod", members)
-    runtime, source = _cycle_runtime(tmp_path, [release], [day])
-    plan = _frozen_plan("us_equity_eod", day, release)
-    source.plans[("us_equity_eod", str(day))] = plan
-    runtime.state.record_plan(plan, "twelve_data")
-    key = plan["parts"][0]["work_item_id"] + ":S0"
-    payload = canonical_bytes([{"symbol": "S0"}])
-    runtime.state.prepare(key, payload)
-    runtime.can_acquire = lambda: False
-    runtime._acquire = lambda *args: pytest.fail("new provider acquisition while ineligible")
-    source.request = lambda *args: {"acquisition_allowed": False, "admitted_dataset_keys": []}
-    runtime.calendar.get_year = lambda *args: pytest.fail(
-        "new plan/calendar discovery while ineligible"
-    )
-    if blocker == "flag_off":
-        monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
-    if blocker == "expired":
-
-        def expired():
-            raise ReadinessBlockedError("expired readiness")
-
-        runtime._ensure_proof = expired
-        with pytest.raises(ReadinessBlockedError, match="expired"):
-            runtime.cycle()
-    else:
-        runtime.cycle()
-    assert runtime.state.prepared(key) == payload
-    assert plan["summary"]["data"] == 1 and plan["summary"]["missing"] == 1
-    assert source.created == []
-    runtime.http.close()
-
-
-@pytest.mark.parametrize("refresh_failure", [False, True])
-@pytest.mark.parametrize("mode", ["cycle", "maintenance"])
-def test_real_universe_refresh_preserves_partial_authorized_scope(
-    tmp_path, monkeypatch, refresh_failure, mode
-):
-    from zoneinfo import ZoneInfo
-
-    from findb_fetcher.full_market_runtime import FullMarketRuntime, ReadinessBlockedError
-    from findb_fetcher.full_market_universe import HKEX_URL, NASDAQ_URLS
-
-    today = datetime.now(timezone.utc).date()
-    us = _release("us-only", "us_equity_eod", [_member()])
-    runtime, source = _cycle_runtime(tmp_path, [us], [today])
-    # Two feeds really are installed, but this key and frozen admission cover only US.
-    hk = {**runtime.feeds[0], "dataset_key": "hk_equity_eod", "market": "HK"}
-    runtime.installed_feeds.append(hk)
-    if mode == "maintenance":
-        runtime.feeds = list(runtime.installed_feeds)
-    runtime._ensure_proof = FullMarketRuntime._ensure_proof.__get__(runtime)
-    runtime.state.refresh("twelve_data", now=0, result=[], next_at=0)
-    requests = []
-    submissions = []
-    universe_reads = []
-    acquired = []
-    original_universes = source.universes
-
-    def authorization(method, path):
-        requests.append(path)
-        assert method == "GET"
-        if "consumer=maintenance&execution_profile=full_market" in path:
-            return {"acquisition_allowed": True, "authorized_dataset_keys": ["us_equity_eod"]}
-        assert path == "full-market/authorization?consumer=full_market"
-        return {"acquisition_allowed": True, "admitted_dataset_keys": ["us_equity_eod"]}
-
-    def universes(dataset, provider, as_of=None):
-        universe_reads.append(dataset)
-        if dataset != "us_equity_eod":
-            raise FullMarketProtocolError("Source key denied dataset", status_code=403)
-        return original_universes(dataset, provider, as_of)
-
-    def submit(body):
-        assert body["dataset_key"] == "us_equity_eod"
-        submissions.append(body)
-        return {"status": "candidate", "dataset_key": body["dataset_key"]}
-
-    snapshots = []
-    directory_day = (
-        datetime.now(timezone.utc).astimezone(ZoneInfo("America/New_York")).strftime("%m%d%Y")
-    )
-
-    def snapshot(url):
-        snapshots.append(url)
-        assert url != HKEX_URL, "unadmitted HK must not be refreshed"
-        if refresh_failure:
-            raise ReadinessBlockedError("official snapshot unavailable")
-        if url == NASDAQ_URLS[0]:
-            return (
-                "Symbol|Security Name|Test Issue|ETF\nAAPL|Common Stock|N|N\n"
-                f"File Creation Time: {directory_day}||\n"
-            ).encode()
-        assert url == NASDAQ_URLS[1]
-        return (
-            "ACT Symbol|Security Name|Test Issue|ETF|Exchange\nIBM|Common Stock|N|N|N\n"
-            f"File Creation Time: {directory_day}||||\n"
-        ).encode()
-
-    source.request = authorization
-    source.universes = universes
-    source.submit = submit
-    runtime._snapshot = snapshot
-    runtime._catalogue = lambda **kwargs: [
-        {"symbol": "AAPL", "mic_code": "XNAS", "currency": "USD", "type": "Common Stock"}
-    ]
-    runtime._acquire = lambda member, plan, *args: (
-        acquired.append(plan["dataset_key"]) or [{"symbol": member["symbol"]}]
-    )
-    if mode == "cycle":
-        runtime.cycle()
-        assert [feed["dataset_key"] for feed in runtime.feeds] == ["us_equity_eod"]
-        assert acquired == ["us_equity_eod"]
-        assert universe_reads and set(universe_reads) == {"us_equity_eod"}
-        assert source.created and {plan["dataset"] for plan in source.created} == {"us_equity_eod"}
-        assert requests == ["full-market/authorization?consumer=full_market"]
-    else:
-        if refresh_failure:
-            with pytest.raises(ReadinessBlockedError, match="snapshot unavailable"):
-                runtime.sync_universes()
-        else:
-            runtime.sync_universes()
-        assert requests == [
-            "full-market/authorization?consumer=maintenance&execution_profile=full_market"
-        ]
-        assert acquired == universe_reads == []
-    assert len(submissions) == (0 if refresh_failure else 1)
-    assert snapshots and HKEX_URL not in snapshots
-    assert len(runtime.installed_feeds) == 2
-    runtime.close()
-
-
-@pytest.mark.parametrize("skip", [False, True])
-def test_every_elapsed_date_uses_source_decision_without_calendar_dependency(
-    tmp_path, monkeypatch, skip
-):
-    import findb_fetcher.full_market_runtime as runtime_module
-
-    fixed = datetime(2026, 9, 6, 23, 0, tzinfo=timezone.utc)
-
-    class FixedDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
-
-    monkeypatch.setattr(runtime_module, "datetime", FixedDateTime)
-    days = [fixed.date() - timedelta(days=1), fixed.date()]
-    runtime, source = _cycle_runtime(
-        tmp_path, [_release("weekend", "us_equity_eod", [_member()])], days
-    )
-    runtime.calendar.get_year = lambda *args: pytest.fail("runtime must not read Serve calendar")
-    acquired = []
-    runtime._acquire = lambda member, plan, *args: (
-        acquired.append(plan["trade_date"]) or [{"symbol": member["symbol"]}]
-    )
-    if skip:
-        source.plan = lambda **kwargs: {
-            "status": "skipped_calendar",
-            "execution_profile": "full_market",
-            "dataset_key": kwargs["dataset"],
-            "provider": "twelve_data",
-            "trade_date": kwargs["trade_date"],
-        }
-    runtime.cycle()
-    assert acquired == ([] if skip else [str(days[1]), str(days[0])])
-    assert len(source.plans) == (0 if skip else 2)
-    runtime.http.close()

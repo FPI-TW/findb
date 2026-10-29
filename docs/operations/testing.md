@@ -62,7 +62,8 @@ provider 訊息或 credentials。Heartbeat 重疊案例用事件強制與 delive
 `test_shioaji_time_limits.py` 以顯式 clock 獨立驗證 50ms grant
 及 50 次／60 秒 rolling limit；日常 18:00–06:00 窗口、31 天日期限制／台北跨日與 SDK timeout
 分別由 `test_shioaji_daily_runtime.py`、`test_historical_backfill.py` 與 Fetcher 的
-`test_shioaji.py`／`test_shioaji_smoke_cli.py` 驗證。時間限制案例不依賴跑測試當下的時刻。
+`test_shioaji.py`／`test_provider_process_reap.py`／`test_provider_worker.py` 驗證。
+時間限制案例不依賴跑測試當下的時刻。
 
 Shioaji 每輪輸出逐檔 `code`／`stage`／`retryable`、checkpoint attempts／status／terminal code
 及安全的 attempt history；即使 coordinator 拋出例外，也保存安全的 exception type、Source
@@ -73,6 +74,70 @@ Captured warning 保存在失敗的 `pytest.log`，不受 assertion repr 截短�
 每個 harness 使用獨立 UUID 檔名供 xdist 並行；本機未設定時寫入該測試自己的暫存目錄。
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
+
+## Provider-work 退役驗證
+
+所有五 provider 的設定／無 owner 拒絕矩陣在 Backend `test_provider_work_retirement.py`
+與 Fetcher `test_twelve_data_cli.py`；後者覆蓋八個舊 acquiring CLI 的 exit 2、無新檔案與原
+checkpoint bytes 不變，以及 daily cycle／drain 只呼叫 queue dispatcher。部署的 false 拒絕與
+bootstrap shared account path 分別由 Infra `test_provider_work_retirement.py`、
+`test_aws_configuration.py`、`test_full_market_deployment_repairs.py` 覆蓋。
+
+`test_retired_cli.py` 另外驗證 console／`python -m` 的穩定 tombstone、模組只定義 `main`，
+且在 package 既有 public exports 載入後不再匯入其它 provider／legacy 模組。
+舊 CLI parser、summary、私人 smoke IPC 與 TAIFEX standalone executor tests 已移除；
+實際隔離 worker／FD／timeout／輸出抑制仍由現行 provider process／SDK suites 驗證。
+`test_legacy_checkpoints.py` 使用舊格式資料驗證 TAIFEX 唯讀 parser，核對原 inode、permissions、
+prepared、receipt 與 request／attempt 用量均保留，缺檔、錯誤 schema／identity、symlink fail closed。
+WAL fixtures 同時覆蓋已關閉且無 sidecar，以及仍有未 checkpoint 證據的 sidecars，均須在
+connect 前明確拒絕且不新增或改動任何原檔；不得以忽略 WAL 的 immutable reader 偽裝支援。
+`test_runtime_owner_contract.py` 直接驗證真實空 claim 的 idle、缺少 owner 時不能動 retained state，
+以及 member executor 使用已驗證 owner 依序 restore／authorize／reserve，沒有 owner 可選 fallback。
+`test_historical_owner_contract.py` 覆蓋歷史 executor 的 stopped scope、drain-only、closed／draining、
+延期、suspension 與 Source retry／fence，驗證都使用 `require_owner()` 回傳的同一 session。
+空 item 可 idle，缺少 owner 則必須在 claim 前拒絕；Source fence 不得一般化成失敗或釋放 owner。
+
+`test_runtime_image_defaults.py` 讀取 provider Dockerfile 的實際 CMD 並執行，不以另一個
+CLI 覆蓋命令。CI 對 FinLab／Shioaji／FactSet 也使用無參數 `docker run`，確保預設入口可用。
+`test_runtime_initialization.py` 在同 provider 的真實 flock 已被持有時啟動獨立 CLI，核對另一
+profile checkpoint 可初始化、inode／原 bytes 不變且原 owner 仍排他；symlink fail closed。
+Infra preflight regression 同時確認初始化不能令 held lock 通過 attestation。
+Account unit decorator 以 worker 明確傳入的 `path` 決定 lock 根目錄，進入 worker 前設定
+對應 ledger environment；不使用平台專屬 tmp fallback。Spawn 測試覆蓋父程序未設定或帶錯 ledger
+的情況，SDK／FD inheritance 測試仍執行。
+
+`test_full_market_error_outcomes.py` 覆蓋一般 provider／transport 錯誤的 Source outcome、
+第一個失敗後停止本輪，以及最後一次 attempt 的回報失敗／重啟／drain-only continuation；
+必須先補報、保留原 attempts／prepared／receipts，不能再抓取下一 member。
+Backend `test_provider_work_error_reports.py` 以真實 Source／claim／settle 覆蓋 reporter 503
+與 lost ACK，且在 settlement 前施加 stopped／window／cooldown，驗證短 report backoff、
+唯讀 projection、drain-only claim、acquisition 拒絕、冪等 outcome、原 cooldown 保留，以及 ACK
+後移除補報例外、其他 eligible work 能前進。Malformed／重複／越界 member 或錯誤 kind 的
+補報 proof 必須拒絕。TAIFEX snapshot decorator 與函式本體間的 stop／window 競態不回報
+來源錯誤，也不消耗 acquisition failure budget。
+Shioaji coordinator 的 attempt ceiling 在 governor、SDK、一般與 dispatched quota 例外都使用
+同一 `terminal_on_exhaustion`：預設 staging 為 false，耗盡後維持 `ATTEMPT_BLOCKED`；
+production subclass 為 true，最後一次失敗即保存 `ACQUISITION_ATTEMPTS_EXHAUSTED`。
+Predispatch quota wait 不耗 budget，也不能轉 terminal。設定測試同時核對 Backend／Fetcher
+truthy 解析、false 與 invalid boolean 診斷，且 owner／descriptor 檢查不能被任一 truthy 值繞過。
+
+原 compatibility cycle／獨立 lease orchestration 測試由正式 FIFO lifecycle／native adapter
+integration 測試取代；不保留已退役 CLI 的成功抓取預期。跨環境／profile 的 frozen membership
+仍由 `test_execution_profile_parity.py` 直接驗證原 plan identity，calendar／normalizer 測試沿用。
+Backend `test_provider_work*` 與 `test_shioaji_historical_functional.py` 使用真實 DB fence、Source、
+prepared intent／confirm、receipts、normalization、canonical／Serve 與 native subprocess 替身，
+涵蓋 crash/recovery、cancel/expiry drain、429/503、完整 sequence proof 與 durable retry budget。
+Migration tests 只在建立 pre-queue schema fixture 時模擬舊 acceptance；升級後 replay 使用正式 fence，
+核對 raw hash／prepared bodies／receipt lineage／部分 sequence checkpoint 保留。
+
+一般 payload-focused tests 明確使用 `owned_client`／`OwnedHistoricalClient` 建立隔離的 owned scope；
+protocol rejection tests 保留 raw client。Account governor／SDK／mapper layer unit tests以 fixture
+替換獨立測試過的 ownership boundary，仍執行真實 account locks、pacing、quota、dispatch 與子程序回收。
+這些 layer stubs 不設定 false 模式，不構成 production ownership 或 native 驗收證據。
+
+本機驗證使用 `pnpm check`、`pnpm test:contracts`、`pnpm test:backend`、`pnpm test:fetcher` 與
+`pnpm test:infra`。未提供 private FactSet native captures 的案例明確 skipped；真實 provider entitlement、
+production drain／attestation／native 驗收與 rollback 均須另依部署 runbook 執行。
 
 ## 依賴安全更新
 
@@ -254,6 +319,12 @@ probe 送 EOF 並收完輸出。EOF grace 45 秒逾時後，僅對該測試建�
 Staging provider functional acceptance 由 `fetcher/tests/test_staging_pilots.py`、
 `backend/tests/test_staging_provider_pilots.py` 與 staging evidence probes 覆蓋。CI 必須核對 catalog 與
 runtime/schema/Source scope，缺少 future provider pilot／startup acceptance 時 fail closed。
+此 legacy diagnostic catalog 的 runtime metadata 必須綁定 `findb-fetch-runtime`、明確
+`--execution-profile pilot --provider ... --config configs/full_market.staging.v1.json` 與 config hash。
+Validator 與 evidence collector 共用相同驗證，拒絕已退役 CLI、錯誤 profile/provider/config 或 hash。
+`--check` subprocess 僅證明入口與設定可用；保留的舊固定 cohort 仍只供診斷，不代表新 runtime
+目前的 frozen members、七 feeds native 驗收或部署 gate 已通過。
+
 Fixture tests 與 live pipeline observations 分開；live 門檻是四個 providers／五個 feeds 各自最新 eligible 已完成
 交易日的 exact pilot instrument coverage（TAIFEX 兩 actual monthly contracts／四 session rows）、同 run lineage
 的 Source 202、raw、completed queue/canonical 與 Serve proof。兩日期觀測不要求歷史 backfill，也不套用

@@ -90,12 +90,12 @@ def test_v2_only_removes_relational_ingress_semantics():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("include_valid", [False, True])
 async def test_v2_dq_preserves_raw_and_existing_prices_without_false_evidence(
-    client, source_headers, test_session, test_engine, include_valid
+    owned_client, source_headers, test_session, test_engine, include_valid
 ):
     config = _dataset_config()
     config["accepted_schema_versions"] = [1, 2]
     await _seed_dataset(test_session, config=config)
-    original = await client.post(
+    original = await owned_client.post(
         "/api/v1/source/ingest", headers=source_headers, json=_canonical_request()
     )
     assert original.status_code == 202, original.text
@@ -119,7 +119,7 @@ async def test_v2_dq_preserves_raw_and_existing_prices_without_false_evidence(
         valid.update(symbol="GOOD", source_symbol="good-listing")
         value["payload"]["data"].append(valid)
     value["payload"]["batch"]["declared_record_count"] = len(value["payload"]["data"])
-    accepted = await client.post("/api/v1/source/ingest", headers=source_headers, json=value)
+    accepted = await owned_client.post("/api/v1/source/ingest", headers=source_headers, json=value)
     assert accepted.status_code == 202, accepted.text
     run_id = UUID(accepted.json()["run_id"])
     await _execute_run(test_session, test_engine, run_id)
@@ -158,7 +158,7 @@ async def test_v2_dq_preserves_raw_and_existing_prices_without_false_evidence(
     )
     assert len(writes) == int(include_valid)
 
-    rerun_response = await client.post(
+    rerun_response = await owned_client.post(
         f"/api/v1/source/runs/{run_id}/rerun", headers=source_headers
     )
     assert rerun_response.status_code == 202, rerun_response.text

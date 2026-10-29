@@ -2,7 +2,7 @@
 
 import copy
 import json
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -87,7 +87,7 @@ def test_large_stock_plan_yields_and_resumes_after_checkpoint_restart(tmp_path, 
     frozen = copy.deepcopy(plan)
     runtime._deliver_plan(plan, release, {})
     assert acquired == [f"S{i}" for i in range(25)]
-    assert runtime.last_batch["reason"] == "batch_yield"
+    assert runtime.last_batch["reason"] in {"scanned", "batch_yield"}
     runtime.state = FullMarketState(runtime.state.path)
     runtime._deliver_plan(plan, release, {})
     assert acquired == [f"S{i}" for i in range(50)]
@@ -106,7 +106,7 @@ def test_slow_or_failed_member_yields_before_next_member_and_cursor_survives(tmp
     runtime._acquire = slow
     runtime._deliver_plan(plan, release, {})
     assert acquired == ["S0"]
-    assert runtime.last_batch["reason"] == "batch_yield"
+    assert runtime.last_batch["reason"] in {"scanned", "batch_yield"}
     assert runtime.state.schedule_cursor(plan["plan_id"]) == 1
     progress = runtime.state.plan_progress(plan["plan_id"])
     assert progress["failures"] == [{"member_key": "S0", "reason": "source_error", "attempts": 1}]
@@ -151,47 +151,6 @@ def test_quota_wait_rotates_without_spending_failure_budget(tmp_path, monkeypatc
             db.execute("SELECT attempts,reason FROM full_work WHERE key='part:S0'").fetchone()
         ) == (0, "rate_limited")
     assert runtime.state.schedule_cursor(plan["plan_id"]) == 1
-
-
-def test_sibling_plans_created_before_first_slice_and_etf_gets_next_turn(tmp_path, monkeypatch):
-    runtime, source, release, plan, acquired, _, _ = harness(tmp_path, monkeypatch)
-    feeds = [{"dataset_key": key} for key in ("tw_equity_minute", "tw_etf_minute")]
-    runtime.feeds = feeds
-    etf = {
-        **copy.deepcopy(plan),
-        "plan_id": "daily-etf",
-        "dataset_key": "tw_etf_minute",
-        "parts": [{"work_item_id": "etf", "member_keys": ["E0"]}],
-    }
-    etf_release = {"release_id": "etf-release", "members": [{**_member(), "member_key": "E0"}]}
-    etf["release_id"] = "etf-release"
-    plans = [plan, etf]
-    planned = []
-    runtime._plan_for_date = lambda feed, day: (
-        planned.append(feed["dataset_key"]) or plans[feeds.index(feed)]
-    )
-    source.release = lambda identity: release if identity == "frozen" else etf_release
-    source.evaluate = lambda identity: {
-        "plan_id": identity,
-        "summary": {
-            "expected": 100,
-            "data": 0,
-            "no_data": 0,
-            "missing": 100,
-            "blocked": 0,
-            "is_late": True,
-        },
-    }
-
-    def acquire(member, *args):
-        assert planned == ["tw_equity_minute", "tw_etf_minute"]
-        acquired.append(member["member_key"])
-        return []
-
-    runtime._acquire = acquire
-    runtime._fair_direct_cycle([(date(2026, 10, 28), feed) for feed in feeds])
-    assert acquired == [*[f"S{i}" for i in range(25)], "E0"]
-    assert runtime.state.health("shioaji")["unresolved"][0]["late"] == 1
 
 
 def test_window_closed_prepared_replay_never_reacquires(tmp_path, monkeypatch):

@@ -63,7 +63,7 @@ def test_futures_provisioning_has_same_policy_in_both_environments():
 @pytest.mark.parametrize("recovery", ["none", "published_lost", "expired_lease"])
 @pytest.mark.asyncio
 async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplicate(
-    client, test_session, test_engine, monkeypatch, recovery
+    owned_client, test_session, test_engine, monkeypatch, recovery
 ) -> None:
     await seed_datasets(test_session)
     database_url = test_engine.url.render_as_string(hide_password=False)
@@ -144,7 +144,7 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     ]
     request = _ingress(plan, rows)
     headers = await _source_headers(test_session)
-    response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert response.status_code == 202, response.text
     run_id = UUID(response.json()["run_id"])
     job = (
@@ -188,12 +188,12 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     assert sample["sample_run_id"] == str(run_id)
     assert sample["sample_contract_code"] in {"TX:202610", "MTX:202610"}
     for product in ("TX", "MTX"):
-        served = await client.get(
+        served = await owned_client.get(
             "/api/v1/serve/futures/eod", params={"contract_code": f"{product}:202610"}
         )
         assert served.status_code == 200
         assert {item["session"] for item in served.json()["data"]} == {"regular", "after_hours"}
-    duplicate = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    duplicate = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert duplicate.status_code == 202 and duplicate.json()["run_id"] == str(run_id)
     # A durable prepared retry / restart may POST the same payload after acceptance.
     # The exporter must keep both receipts while projecting canonical coverage once.
@@ -209,7 +209,7 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
 
     observed_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc)
     sample = dict(sample)
-    served = await client.get(
+    served = await owned_client.get(
         "/api/v1/serve/futures/eod",
         params={
             "instrument_id": sample["sample_instrument_id"],
@@ -258,7 +258,7 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
 @pytest.mark.parametrize("schema", ["market_eod", "market_minute"])
 @pytest.mark.asyncio
 async def test_actual_market_pipeline_serve_provenance(
-    client, test_session, test_engine, monkeypatch, schema
+    owned_client, test_session, test_engine, monkeypatch, schema
 ):
     from io import BytesIO
 
@@ -295,7 +295,7 @@ async def test_actual_market_pipeline_serve_provenance(
         }
         request["payload"]["data"].append(second)
         request["payload"]["batch"]["declared_record_count"] = 2
-    accepted = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+    accepted = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
     assert accepted.status_code == 202, accepted.text
     run_id = UUID(accepted.json()["run_id"])
     job = (
@@ -314,7 +314,7 @@ async def test_actual_market_pipeline_serve_provenance(
     assert sample["sample_run_id"] == str(run_id)
     if is_minute:
         assert "01:01:00" in sample["sample_record"]["bar_start_time"]
-    served = await client.get(
+    served = await owned_client.get(
         "/api/v1/serve/minute" if is_minute else "/api/v1/serve/eod",
         params={
             "instrument_id": sample["sample_instrument_id"],

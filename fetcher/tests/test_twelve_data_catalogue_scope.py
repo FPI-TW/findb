@@ -98,6 +98,8 @@ def test_country_catalogues_only_fetch_requested_scope(
 
 @pytest.mark.parametrize("failure", ["revoked", "stopped", "rate_limited", "oversize", "malformed"])
 def test_second_country_failure_never_publishes_partial_evidence(scoped_catalogue, failure):
+    from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
+
     runtime, _, authorized, requests, persisted, _, _ = scoped_catalogue
     allowed = True
     runtime.can_acquire = lambda: allowed
@@ -121,7 +123,12 @@ def test_second_country_failure_never_publishes_partial_evidence(scoped_catalogu
 
     runtime.http.close()
     runtime.http = httpx.Client(transport=httpx.MockTransport(handle))
-    with pytest.raises((ReadinessBlockedError, FullMarketProtocolError, QuotaBlockedError)):
+    error_type = (
+        ProviderWorkAcquisitionStopped
+        if failure == "stopped"
+        else (ReadinessBlockedError, FullMarketProtocolError, QuotaBlockedError)
+    )
+    with pytest.raises(error_type):
         runtime._catalogue(dataset_keys=["us_equity_eod", "hk_equity_eod"])
     assert len(requests) == (1 if failure in ("revoked", "stopped") else 2)
     assert runtime.catalogue_evidence == old_evidence

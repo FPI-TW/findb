@@ -173,5 +173,5 @@ retained-raw rerun 協調為 PostgreSQL stable work＋append-only attempts＋sin
 whole-work OS flock 另約束外部 provider I/O 與 descendants。Source acceptance／receipt association 與 close／settle
 共用 transaction lock／generation fence，owner 保留到 accepted runs 全部 terminal 與完整 durable proof committed。
 不同 providers 仍可並行，profile 的 controls／first dates／frozen plans／checkpoints 不合併。
-目前 checked-in `PROVIDER_WORK_REQUIRED=false`，尚未進行遠端切換；啟用須完成 deployment runbook 的 audited preflight。
+`PROVIDER_WORK_REQUIRED` 缺省 true；false 會拒絕啟動，無 legacy acquiring／acceptance fallback。遠端切換仍須完成 deployment runbook 的 audited preflight。
 新增 provider 的 acquisition、universe/catalogue、historical 與 rerun 都必須接入此 protocol。

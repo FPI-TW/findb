@@ -89,7 +89,7 @@ async def test_seven_feed_profiles_freeze_distinct_plans(test_session, key, coun
 
 @pytest.mark.asyncio
 async def test_canonical_overwrite_preserves_only_own_plan_evidence(
-    test_session, client, admin_headers
+    test_session, owned_client, admin_headers
 ):
     dataset, body, full = await _activated_plan(test_session, count=1)
     pilot = await _pilot(test_session, dataset, body, full)
@@ -98,7 +98,7 @@ async def test_canonical_overwrite_preserves_only_own_plan_evidence(
     for plan in (pilot, full):
         request = _ingress(plan, [_quote(), _quote(session="after_hours")])
         request["idempotency_key"] = request["request_key"] = str(plan.plan_id)
-        response = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+        response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert response.status_code == 202, response.text
         run_id = UUID(response.json()["run_id"])
         run_ids.append(run_id)
@@ -123,14 +123,14 @@ async def test_canonical_overwrite_preserves_only_own_plan_evidence(
     assert set(await test_session.scalars(select(FuturesContractEOD.run_id))) == {run_ids[1]}
     assert set(await test_session.scalars(select(DeliveryMemberEvidence.run_id))) == set(run_ids)
     for profile, expected in (("pilot", pilot), ("full_market", full)):
-        response = await client.get(
+        response = await owned_client.get(
             "/api/v1/admin/delivery-plans",
             params={"execution_profile": profile},
             headers=admin_headers,
         )
         assert response.status_code == 200, response.text
         assert [item["plan_id"] for item in response.json()["data"]] == [str(expected.plan_id)]
-    default = await client.get("/api/v1/admin/delivery-plans", headers=admin_headers)
+    default = await owned_client.get("/api/v1/admin/delivery-plans", headers=admin_headers)
     assert [item["plan_id"] for item in default.json()["data"]] == [str(full.plan_id)]
 
 
@@ -221,7 +221,7 @@ async def test_outcomes_and_missing_alerts_are_profile_isolated(
     ],
 )
 async def test_shared_seven_feed_source_queue_canonical_serve(
-    test_session, test_engine, client, monkeypatch, environment, key
+    test_session, test_engine, owned_client, monkeypatch, environment, key
 ):
     """Both profiles traverse the real durable pipeline in either environment."""
     import hashlib
@@ -301,7 +301,7 @@ async def test_shared_seven_feed_source_queue_canonical_serve(
         request["fetched_at"] = utc_now().isoformat()
         request["payload"]["data"] = rows
         request["payload"]["batch"]["declared_record_count"] = len(rows)
-        accepted = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+        accepted = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert accepted.status_code == 202, accepted.text
         run_id = UUID(accepted.json()["run_id"])
         job = (
@@ -320,7 +320,7 @@ async def test_shared_seven_feed_source_queue_canonical_serve(
             job.delivery_id,
             database_url=test_engine.url.render_as_string(hide_password=False),
         )
-        duplicate = await client.post("/api/v1/source/ingest", headers=headers, json=request)
+        duplicate = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert duplicate.json()["run_id"] == str(run_id)
         for frozen in (pilot, full):
             result = await get_plan(
@@ -346,7 +346,7 @@ async def test_shared_seven_feed_source_queue_canonical_serve(
                 "start_date": DAY.isoformat(),
                 "end_date": DAY.isoformat(),
             }
-        served = await client.get(endpoint, params=params)
+        served = await owned_client.get(endpoint, params=params)
         assert served.status_code == 200, served.text
         assert served.json()["data"]
         assert all(row["source"] == body.provider for row in served.json()["data"])

@@ -7,6 +7,7 @@ from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.services import historical_backfill as history
 from app.utils import uuid7
+from tests.owned_history import claim_next_item
 
 
 @pytest.mark.asyncio
@@ -92,9 +93,7 @@ async def test_historical_acquisition_uses_frozen_close(
     assert snapshot["regular_close"] == close.isoformat()
     assert snapshot["is_open"] is (calendar_kind != "weekend")
     assert (
-        await history.claim_next_item(
-            test_session, provider=provider, allowed_datasets=[dataset], now=now
-        )
+        await claim_next_item(test_session, provider=provider, allowed_datasets=[dataset], now=now)
         is None
     )
     assert item.status == "pending" and item.lease_token is None
@@ -118,13 +117,11 @@ async def test_historical_acquisition_uses_frozen_close(
     await test_session.flush()
     now = closed_at - timedelta(microseconds=1)
     assert (
-        await history.claim_next_item(
-            test_session, provider=provider, allowed_datasets=[dataset], now=now
-        )
+        await claim_next_item(test_session, provider=provider, allowed_datasets=[dataset], now=now)
         is None
     )
     now = closed_at
-    claimed = await history.claim_next_item(
+    claimed = await claim_next_item(
         test_session, provider=provider, allowed_datasets=[dataset], now=now
     )
     assert claimed is item and item.lease_token is not None
@@ -137,3 +134,10 @@ async def test_historical_acquisition_uses_frozen_close(
     )
     assert allowed is True
     assert item.calendar_snapshot == snapshot
+
+
+@pytest.fixture(autouse=True)
+def queue_clock(monkeypatch):
+    from app.services import historical_backfill, provider_work
+
+    monkeypatch.setattr(provider_work, "utc_now", lambda: historical_backfill.utc_now())

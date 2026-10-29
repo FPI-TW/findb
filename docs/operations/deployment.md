@@ -472,9 +472,23 @@ usage／cooldown 不得退回較舊用量。Staging 已部署此版本；provide
 Staging 已部署至 `d75fc12a9b43`，runtime 包含 provider-work-v1 protocol。
 Owner cutover 與兩端 enforcement 的實際狀態見下方 FactSet 章節。
 `infra/env/deployment.schema.json`、兩環境 deployment examples、Compose 與 Fetcher `.env.example`
-均明示 `PROVIDER_WORK_REQUIRED=false`。Backend 與全部 Fetcher consumers 必須一起切換；
+均使用 `PROVIDER_WORK_REQUIRED=true`；缺省 true，明確 false 會拒絕啟動／部署。
+Backend／Fetcher 的環境解析接受一般 truthy 布林寫法（例如 `True`、`1`、`yes`），
+但 deployment manifest／runtime configuration 的正式值維持字面 `true`。
+空值不視同缺省，會報布林格式錯誤；明確 false 的訊息則指出協定不得停用。
+Source outcome 的 report-only continuation 需要 Backend 與 Fetcher 都使用本版實作；
+回退到不認得 continuation 的版本前，須先確認 `source_error_pending` 已補報排空，
+不能以清除 SQLite reason、帳號 cooldown 或重設 queue 來處理待回報工作。
+新版本不再提供舊 acquiring／無 fence acceptance fallback。這是 repository 契約，並未修改遠端設定。
+Backend 與全部 Fetcher consumers 必須一起切換；
 `FULL_MARKET_ENABLED` 是另一個獨立旗標，不能替代 queue cutover。完整邊界見
 [provider work 架構](../architecture/provider_work.md)。
+
+新版本的 rollback 仍須保留 provider-work enforcement。若要退回不支援此協定的舊 binary，
+須先停止、排空並 reconcile 新版產生的全部工作與交付，保存原 DB／SQLite／raw／receipts／
+budgets／cooldown；不能將新版本設為 false 或回復較舊用量來恢復舊流程。未釐清原 prepared／
+receipts 與子程序狀態時停止切換，不能清檔或重新初始化。Production 的現場待辦見
+[production native 與回復驗收](../dev/production-foundation-cutover-plan.md)。
 
 切換順序為可重複的安全契約：
 
@@ -490,7 +504,9 @@ Owner cutover 與兩端 enforcement 的實際狀態見下方 FactSet 章節。
 3. 保持所有 consumer 停止，準備含 `com.findb.provider-work.protocol=v1` label 的新 images／containers，
    設定 `APP_ENVIRONMENT` 與 `PROVIDER_WORK_REQUIRED=true`，但尚不啟動 provider I/O。
    所有 profile／historical containers 必須 bind 同一 host 的 `/var/lib/findb-account/{environment}`。
-   對每個 provider 執行新 CLI 的 `--initialize-state`，只建立／驗證原 profile state 與 shared lock inode；
+   對每個 provider 執行新 CLI 的 `--initialize-state`，只建立／驗證原 profile state 與 shared lock inode，
+   不取得或解除 provider flock，也不代表已排空。一般部署補建另一 profile checkpoint 時，
+   同 provider 的其他 profile 可仍持有工作鎖；本節的首次 cutover 仍要求全部 consumers 停止。
    不得重建遺失的既有 checkpoint。保留單環境唯一 Fetcher host 的 trusted deployment inventory。
 4. 保存完整 consumer `docker inspect` JSON（不可將含 secrets 的原始內容貼進 audit／chat），以及只包含
    該環境 Fetcher host IDs 的可信 inventory JSON。以 host local 的 `infra/deploy/provider_work_preflight.py`
@@ -543,7 +559,7 @@ Source key 與本次 registry 註冊一致。
 首次填值前須先核對 `AWSCURRENT`；已有版本時不得以初始化流程覆寫。Operator 僅將
 Source key 的 SHA-256 傳到 FinDB application role；註冊須在同一 transaction 中鎖定
 並重驗身分衝突、限定 scope、寫入 audit，遇到衝突或意外輪替即回滾。
-初次 runtime 部署時維持 `FULL_MARKET_ENABLED=true`、`PROVIDER_WORK_REQUIRED=false`。
+以下為 staging 既有切換紀錄；當時初次 runtime 部署維持 `FULL_MARKET_ENABLED=true`、`PROVIDER_WORK_REQUIRED=false`。
 2026-10-20 的後續啟用已核對 59 筆 prepared request 的 checksum、Source 202 receipt 與 DB terminal，
 十五個 consumers 均 graceful stop／exit 0。Checkpoint 成套備份位於兩台 staging host 的
 `/var/backups/findb-provider-work/staging-20261020T1230Z`；Fetcher archive SHA-256 為

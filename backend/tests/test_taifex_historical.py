@@ -22,6 +22,7 @@ from app.services import historical_backfill
 from app.services.source_clients import create_source_client
 from app.utils import uuid7
 from scripts.seed_data import DATASETS
+from tests.owned_history import claim_next_item
 from tests.test_canonical_ingest_api import _execute_run
 
 NOW = datetime(2026, 10, 1, 10, tzinfo=timezone.utc)
@@ -124,9 +125,7 @@ async def claim(session):
         request_key="taifex-test-request",
         created_by="operator",
     )
-    item = await historical_backfill.claim_next_item(
-        session, provider="taifex", allowed_datasets=["tw_futures_eod"]
-    )
+    item = await claim_next_item(session, provider="taifex", allowed_datasets=["tw_futures_eod"])
     assert item is not None
     assert item.calendar_snapshot["market"] == "TAIFEX"
     assert item.calendar_snapshot["regular_close"] == "13:45:00"
@@ -144,7 +143,37 @@ async def test_http_completion_validates_evidence_and_canonical_pipeline(
     item, request = await claim(test_session)
     item_id, request_id, token = item.item_id, request.request_id, item.lease_token
     proof = evidence(item_id, request_id, no_data=no_data, report_extension=report_extension)
-    HistoricalResultEvidence.model_validate(proof)
+    validated = HistoricalResultEvidence.model_validate(proof)
+    from app.services import provider_work as queue
+
+    identity = dict(test_session.info["provider_work"])
+    identity.pop("member_key", None)
+    await queue.freeze_manifest(
+        test_session,
+        provider="taifex",
+        **identity,
+        manifest={
+            "mode": "canonical",
+            "members": [
+                {"key": f"{row.product_code}|{row.contract_code}|{row.session}"}
+                for row in validated.rows
+            ],
+            "no_data_evidence": {
+                f"{row.product_code}|{row.contract_code}|{row.session}": proof["manifest"]
+                for row in validated.rows
+                if row.no_trade
+            },
+        },
+    )
+    headers.update(
+        {
+            "X-FinDB-Work-Id": str(identity["work_id"]),
+            "X-FinDB-Work-Generation": str(identity["generation"]),
+            "X-FinDB-Work-Token": str(identity["token"]),
+            "X-FinDB-Work-Member": f"historical:{item_id}",
+        }
+    )
+    await test_session.commit()
     run_id = None
     if not no_data:
         data = proof["rows"][:-1]
@@ -224,11 +253,39 @@ async def test_http_completion_validates_evidence_and_canonical_pipeline(
             request_key="taifex-official-correction",
             created_by="operator",
         )
-        new_item = await historical_backfill.claim_next_item(
+        new_item = await claim_next_item(
             test_session, provider="taifex", allowed_datasets=["tw_futures_eod"]
         )
         assert new_item is not None
         next_id, next_token = new_item.item_id, new_item.lease_token
+        next_identity = dict(test_session.info["provider_work"])
+        next_identity.pop("member_key", None)
+        await queue.freeze_manifest(
+            test_session,
+            provider="taifex",
+            **next_identity,
+            manifest={
+                "mode": "canonical",
+                "members": [
+                    {"key": f"{row.product_code}|{row.contract_code}|{row.session}"}
+                    for row in validated.rows
+                ],
+                "no_data_evidence": {
+                    f"{row.product_code}|{row.contract_code}|{row.session}": proof["manifest"]
+                    for row in validated.rows
+                    if row.no_trade
+                },
+            },
+        )
+        headers.update(
+            {
+                "X-FinDB-Work-Id": str(next_identity["work_id"]),
+                "X-FinDB-Work-Generation": str(next_identity["generation"]),
+                "X-FinDB-Work-Token": str(next_identity["token"]),
+                "X-FinDB-Work-Member": f"historical:{next_id}",
+            }
+        )
+        await test_session.commit()
         corrected = evidence(next_id, new_request.request_id, report_extension=report_extension)
         corrected["fetched_at"] = "2026-10-01T10:01:00Z"
         corrected["rows"][0]["close"] = "115"
@@ -276,7 +333,7 @@ async def test_http_completion_validates_evidence_and_canonical_pipeline(
 
 
 @pytest.mark.asyncio
-async def test_claim_and_authorization_require_stopped_controls_and_1700(
+async def test_queue_claim_allows_running_controls_and_keeps_frozen_close(
     client, test_session, monkeypatch
 ):
     headers = await seed(test_session, monkeypatch)
@@ -289,11 +346,9 @@ async def test_claim_and_authorization_require_stopped_controls_and_1700(
     await test_session.commit()
     assert (await client.post(path, json=payload, headers=headers)).json()[
         "acquisition_allowed"
-    ] is False
+    ] is True
     assert (
-        await historical_backfill.claim_next_item(
-            test_session, provider="taifex", allowed_datasets=["tw_futures_eod"]
-        )
+        await claim_next_item(test_session, provider="taifex", allowed_datasets=["tw_futures_eod"])
         is None
     )
     control.desired_state = "stopped"
@@ -393,8 +448,20 @@ async def test_closed_dates_are_skipped_and_cannot_be_claimed(test_session, monk
     assert request.status == "completed"
     assert all(item.status == "skipped_calendar" for item in request.items)
     assert (
-        await historical_backfill.claim_next_item(
-            test_session, provider="taifex", allowed_datasets=["tw_futures_eod"]
-        )
+        await claim_next_item(test_session, provider="taifex", allowed_datasets=["tw_futures_eod"])
         is None
     )
+
+
+@pytest.fixture(autouse=True)
+def queue_clock(monkeypatch):
+    from app.services import historical_backfill, provider_work
+
+    monkeypatch.setattr(provider_work, "utc_now", lambda: historical_backfill.utc_now())
+
+
+@pytest.fixture
+def client(client, test_session):
+    from tests.owned_history import OwnedHistoricalClient
+
+    return OwnedHistoricalClient(client, test_session)

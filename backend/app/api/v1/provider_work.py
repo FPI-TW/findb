@@ -139,10 +139,7 @@ async def enqueue(body: EnqueueRequest, db: AsyncSession = Depends(get_db)) -> d
 @router.post("/claim")
 async def claim(body: ClaimRequest, db: AsyncSession = Depends(get_db)) -> dict:
     provider, datasets = scope(db)
-    from app.config import get_settings
 
-    if not get_settings().PROVIDER_WORK_REQUIRED:
-        raise HTTPException(status_code=409, detail="provider work protocol is not activated")
     try:
         claimed = await service.claim(
             db,

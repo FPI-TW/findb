@@ -261,7 +261,6 @@ class Coordinator:
         ):
             return [Result("PREFLIGHT_REQUIRED", "state", symbol=str(rows[0]["symbol"]))]
         processing_rows = rows[:1] if preflight else rows
-        from findb_fetcher.provider_work import enabled
 
         out = []
         for row in processing_rows:
@@ -298,7 +297,7 @@ class Coordinator:
                     max_requests=gov["max_requests"],
                     rolling_seconds=gov["rolling_seconds"],
                     max_attempts=gov["max_attempts_per_sequence"],
-                    terminal_on_exhaustion=self.terminal_on_exhaustion or enabled(),
+                    terminal_on_exhaustion=self.terminal_on_exhaustion,
                 )
                 if not ok:
                     terminal = self.state.get_terminal(daily_id, symbol)
@@ -314,10 +313,8 @@ class Coordinator:
                         if terminal_code in _GLOBAL_TERMINAL_CODES:
                             break
                         continue
-                    out.append(Result("ATTEMPT_BLOCKED", "acquisition", retryable=enabled()))
-                    if enabled():
-                        break
-                    continue
+                    out.append(Result("ATTEMPT_BLOCKED", "acquisition", retryable=True))
+                    break
                 if not historical and _past_cutoff(self.now(), str(gov["cutoff"])):
                     self.state.finish_attempt(
                         daily_id,
@@ -363,24 +360,35 @@ class Coordinator:
                     break
                 except QuotaBlockedError as exc:
                     waiting = exc.quota_wait and not exc.dispatched
+                    exhausted = (
+                        not waiting
+                        and self.terminal_on_exhaustion
+                        and self.state.budget_used(daily_id, symbol)
+                        >= int(gov["max_attempts_per_sequence"])
+                    )
+                    code = (
+                        "QUOTA_WAIT"
+                        if waiting
+                        else "ACQUISITION_ATTEMPTS_EXHAUSTED"
+                        if exhausted
+                        else "ACQUISITION_FAILED"
+                    )
                     self.state.finish_attempt(
                         daily_id,
                         symbol,
                         attempt,
                         "waiting" if waiting else "failed",
-                        "QUOTA_WAIT" if waiting else "ACQUISITION_FAILED",
-                        retryable=True,
+                        code,
+                        retryable=not exhausted,
                     )
                     out.append(
                         Result(
-                            "QUOTA_WAIT" if waiting else "ACQUISITION_FAILED",
+                            code,
                             "acquisition",
-                            retryable=True,
+                            retryable=not exhausted,
                         )
                     )
-                    if enabled():
-                        break
-                    continue
+                    break
                 except ShioajiSdkError as exc:
                     terminal_codes = {
                         "CREDENTIALS": ("CREDENTIALS_UNAVAILABLE", "login"),
@@ -421,9 +429,7 @@ class Coordinator:
                     )
                     # CREDENTIALS/LOGIN/SDK/CONTRACT/PAYLOAD are global
                     # fail-fast conditions: do not risk another provider call.
-                    if exc.code in terminal_codes or enabled():
-                        break
-                    continue
+                    break
                 except Exception:
                     # Gateway implementations must already have stripped provider text.
                     exhausted = self.terminal_on_exhaustion and self.state.budget_used(
@@ -439,9 +445,7 @@ class Coordinator:
                         retryable=not exhausted,
                     )
                     out.append(Result(code, "acquisition", retryable=not exhausted))
-                    if enabled():
-                        break
-                    continue
+                    break
             now = self.now()
             try:
                 seq = self.state.sequence(daily_id, symbol)
@@ -559,8 +563,9 @@ class Coordinator:
                         run_id=str(receipt.run_id),
                     )
                 )
-                if source_terminal == "DATASET_INACTIVE" or (
-                    enabled() and source_terminal == "SOURCE_TERMINAL_TIMEOUT"
+                if (
+                    source_terminal == "DATASET_INACTIVE"
+                    or source_terminal == "SOURCE_TERMINAL_TIMEOUT"
                 ):
                     break
             except SourceAPIDeadlineExceeded:
@@ -571,8 +576,7 @@ class Coordinator:
                         retryable=True,
                     )
                 )
-                if enabled():
-                    break
+                break
             except Exception as exc:
                 if getattr(exc, "code", None) == "PROVIDER_WORK_FENCE":
                     from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
@@ -591,8 +595,7 @@ class Coordinator:
                     or exc.status_code >= 500
                 )
                 out.append(Result(code, "source", retryable=retryable))
-                if code == "DATASET_INACTIVE" or enabled():
-                    break
+                break
         # Results intentionally expose only the reviewed universe symbol, never
         # provider details.  A run emits at most one result per reviewed row.
         return [
