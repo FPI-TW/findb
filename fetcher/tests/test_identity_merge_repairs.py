@@ -8,9 +8,11 @@ import multiprocessing
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from findb_fetcher import acquisition
 from findb_fetcher.acquisition import Acquisition
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.platform_limits import account_identity
@@ -80,9 +82,12 @@ def test_proven_merge_preserves_literal_allocations_and_excludes_other_accounts(
 
 
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
-def test_actual_processes_merge_proven_debt_exactly_once(tmp_path, provider):
+def test_actual_processes_merge_proven_debt_exactly_once(tmp_path, provider, monkeypatch):
     state = FullMarketState(tmp_path / "governor.sqlite3")
     raw = " shared-key "
+    # Keep seeded quota and the parent admission check in the same UTC minute;
+    # real spawned processes may otherwise cross a legitimate quota rollover.
+    quota_time = datetime(2026, 10, 13, 12, 0, 30, tzinfo=timezone.utc)
     with state.connection() as db:
         for key, account, count in [(raw, "raw", 1000), (raw.strip(), "normalized", 597)]:
             db.execute(
@@ -91,7 +96,7 @@ def test_actual_processes_merge_proven_debt_exactly_once(tmp_path, provider):
             )
             db.execute(
                 "INSERT INTO full_quota VALUES(?,? ,?,0,0)",
-                (account, datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M"), count),
+                (account, quota_time.strftime("%Y-%m-%dT%H:%M"), count),
             )
     ctx = multiprocessing.get_context("spawn")
     queue = ctx.Queue()
@@ -111,6 +116,11 @@ def test_actual_processes_merge_proven_debt_exactly_once(tmp_path, provider):
         )
         assert db.execute("SELECT COUNT(*) FROM account_alias_audit").fetchone()[0] == 1
     if provider == "twelve_data":
+        monkeypatch.setattr(
+            acquisition,
+            "time",
+            SimpleNamespace(time=lambda: quota_time.timestamp()),
+        )
         with Acquisition(provider, credential=raw, state_path=state.path) as operation:
             with pytest.raises(QuotaBlockedError, match="quota"):
                 operation.prepare()

@@ -23,8 +23,8 @@ Backend production image 的 migration regression 使用獨立容器 DB，涵蓋
 不在指定的本機基底 DB 直接執行 migration smoke。這些是本機 CI 同等檢查，不代表遠端 Actions 狀態。
 Backend 的三個 FactSet captured-native cases 需提供 `FINDB_FACTSET_NATIVE_SNAPSHOT_DIR`
 才會執行，未提供真實 HKEX／FactSet bytes 時依既定規則 skipped。兩個 ORM／migration parity
-cases 維持既有 xfail：check constraint naming／ORM-only constraint，以及 migration server defaults
-與 ORM Python defaults 差異；不把它們列為通過。Infra 一般 job 的兩個 container cases 因未設
+cases 必須直接通過：CHECK 名稱／缺少約束與 server defaults 均納入比對，不保留 xfail。
+Infra 一般 job 的兩個 container cases 因未設
 image 而 skipped，應在建置 Backend image 後以 `FINDB_TEST_BACKEND_IMAGE` 另跑並確認通過。
 TAIFEX historical 只有一次 authorization dispatch attempt；prepare 與 authorize 之間跨越
 UTC 分鐘時，account window 不一致會依設計 fail closed，工作延到 FIFO 尾端重試並維持
@@ -35,6 +35,9 @@ Fetcher 的 slow owner RPC／dispatch grant 測試使用局部可控的 wall／m
 分別涵蓋分鐘內及跨 UTC 分鐘。跨分鐘可能合法重取 grant，但 native dispatch、actual-start
 與帳號日配額只能記一次；不能將 grant 次數固定為一，也不應放寬產品的時效或 quota window 檢查。
 可控時鐘只替換 acquisition module 的 facade，不修改全域 time 或背景 heartbeat 的等待行為。
+`test_actual_processes_merge_proven_debt_exactly_once` 同樣將 seeded quota 與父程序 admission
+固定在相同 UTC 分鐘，三個 identity merge 子程序仍以真實 spawn 併發執行；避免啟動成本跨分鐘
+後，合法的新分鐘額度使舊債務阻擋斷言失效。產品的 quota rollover 規則維持不變。
 Backend 的 `daily_runtime_clock` fixture 預設將日常 policy 時鐘固定在台北當日 20:00，
 讓一般 admission／queue／migration 測試不依賴執行時是否落在 Shioaji 18:00–隔日 06:00 窗口。
 Queue 即使收到獨立 lease clock，policy 判定仍使用相同的受控時鐘；UTC grant、quota、lease、
@@ -92,23 +95,10 @@ Shioaji SDK 版本集中於 `providers/shioaji.py` 的 `SHIOAJI_SDK_VERSION`，�
 不建立連線、不登入。其餘 Shioaji 測試使用離線替身；login、contract lookup、kbars 與 usage
 的實際行為仍須於 staging 以真實帳號驗收。
 
-目前安全依賴驗收（2026-10-23）：frozen 安裝、`pnpm check`、`pnpm test`、
-`pnpm build:dashboard` 與 `pnpm audit` 通過。
-
-| 範圍 | 結果 |
-| --- | --- |
-| Backend | 1,967 passed、3 skipped |
-| Migration | 11 passed、2 xfailed |
-| Infra | 849 passed、2 skipped，另有 352 個子測試通過 |
-| Fetcher | 1,648 passed、1 skipped |
-| Dashboard | unit 197、browser 10、E2E 16 全部通過 |
-
 Production SSR、匿名權限導向、登入 POST RPC、已登入營運台與 Lookup hydration smoke
 通過。Smoke fixture 須先呼叫 `/fixture/reset` 初始化資料；未初始化時不應期待有執行中的
-Pilot。Backend 略過三個需 captured HKEX／FactSet bytes 的案例，Infra 略過兩個需指定
-runtime image 的案例，Fetcher 未安裝 Shioaji SDK 因而略過其 contract suite；migration
-兩個 xfail 為已知 schema drift。這些項目不算通過，真實 provider 驗收與 runtime image
-驗證仍依各自流程執行。最終 `pnpm audit` 各嚴重度皆為零；這是 npm 依賴掃描結果，
+Pilot。真實 provider 驗收與 runtime image 驗證仍依各自流程執行。
+安全依賴驗收（2026-10-23）的 `pnpm audit` 各嚴重度皆為零；這是 npm 依賴掃描結果，
 不代表 GitHub 告警已關閉。
 
 ## CI 與測試隔離
@@ -126,7 +116,15 @@ suites（Fetcher inventory、full-market repair 與 checkpoint entry）放在 `i
 GitHub 4 vCPU runner 上 Backend 與 Infra 固定四個
 workers；migration job 維持序列執行。Migration tests 只涵蓋 rollback 下限
 （`docs/operations/deployment.md`）及之後的 revisions；`test_schema_drift_migration.py`
-比對 `alembic upgrade head` 與 ORM metadata，已知差異以 strict xfail 標示。
+比對 `alembic upgrade head` 與 ORM metadata 的結構、CHECK 名稱及 server defaults，
+三類差異均直接使測試失敗。Partition children 僅由 migration 管理，不當成 ORM drift。
+
+Schema reconciliation revision `1e68a0c9b3d2` 的回歸測試涵蓋前一版 populated DB 升級、
+16 個 CHECK 的 OID／定義保留、缺少的市場代碼 CHECK、降版再升級與既有資料保留。
+既存無效市場代碼會使升級 transaction 完整回滾；revision、原約束及資料必須維持原值。
+Raw SQL INSERT 同時驗證 ORM 建表與 migration 建表的 boolean／integer／string／JSONB
+預設值，並以 `Asia/Taipei` session 驗證日曆時間戳代表正確 instant，不能由 Python defaults
+掩蓋 DB default 缺漏。這些測試只操作 session 自行建立的資料庫。
 
 Fetcher deployment transaction harness 以 fake Docker／sudo／sleep 驗證十五個 consumers；
 每個案例保留 90 秒程序上限，供 CI 四個 workers 下數百次模擬 CLI 啟動使用。此上限不是正式

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 import pytest
@@ -11,9 +12,12 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import CheckConstraint, Index, Table, inspect, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 import app.models  # noqa: F401  # register every ORM table on Base.metadata
 from app.models import Base
+from app.utils import uuid7
 from tests.migration_database import (
     BACKEND_ROOT,
     get_active_migration_database_factory,
@@ -22,6 +26,8 @@ from tests.migration_database import (
 
 # Same scope as migrations/env.py: the public schema plus the raw payload schema.
 INCLUDED_SCHEMAS = {None, "raw"}
+PREVIOUS_REVISION = "0d57f9b8a2c1"
+RECONCILED_REVISION = "1e68a0c9b3d2"
 
 
 def _include_name(name: str | None, type_: str, parent_names: dict[str, Any]) -> bool:
@@ -133,15 +139,6 @@ async def test_orm_structure_matches_upgraded_schema() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Unexplained drift: ORM check-constraint names already carrying the ck_<table>_ "
-        "prefix get it applied twice by the naming convention on scheduler_control, "
-        "ingestion_run, ingestion_attempt and missing_delivery_alert; "
-        "calendar_market.ck_calendar_market_calendar_market_code_valid exists only in the ORM."
-    ),
-)
 async def test_orm_check_constraints_match_upgraded_schema() -> None:
     _, check_diffs = await _upgraded_schema_diffs()
 
@@ -149,15 +146,240 @@ async def test_orm_check_constraints_match_upgraded_schema() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Unexplained drift: migrations set server defaults on 26 columns (e.g. "
-        "trading_calendar.day_status, ingestion_run.attempt_count, provider_work."
-        "prepared_deliveries) that the ORM declares only as Python-side defaults."
-    ),
-)
 async def test_orm_server_defaults_match_upgraded_schema() -> None:
     metadata_diffs, _ = await _upgraded_schema_diffs()
 
     assert [(diff[2], diff[3]) for diff in metadata_diffs if diff[0] == "modify_default"] == []
+
+
+async def _checks(db: AsyncConnection) -> dict[int, tuple[str, str, str]]:
+    rows = await db.execute(
+        text(
+            "SELECT c.oid, t.relname, c.conname, pg_get_constraintdef(c.oid) "
+            "FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid "
+            "JOIN pg_namespace n ON n.oid = t.relnamespace "
+            "WHERE c.contype = 'c' AND n.nspname IN ('public', 'raw')"
+        )
+    )
+    return {oid: (table, name, definition) for oid, table, name, definition in rows}
+
+
+async def _calendar_defaults(db: AsyncConnection) -> dict[str, str]:
+    return dict(
+        (
+            await db.execute(
+                text(
+                    "SELECT column_name, column_default FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'trading_calendar' "
+                    "AND column_name IN ('created_at', 'updated_at')"
+                )
+            )
+        ).all()
+    )
+
+
+async def _insert_calendar_market(db: AsyncConnection, market: str) -> None:
+    await db.execute(
+        text(
+            "INSERT INTO calendar_market "
+            "(market, display_name, timezone, weekend_days, created_at, updated_at) "
+            "VALUES (:market, 'Schema parity', 'Asia/Taipei', '[5,6]', now(), now())"
+        ),
+        {"market": market},
+    )
+
+
+async def _calendar_rows(db: AsyncConnection) -> dict[str, list[dict]]:
+    snapshots = {}
+    for table, order in (("calendar_market", "market"), ("trading_calendar", "market, trade_date")):
+        snapshots[table] = list(
+            (
+                await db.execute(text(f"SELECT to_jsonb(t) FROM {table} t ORDER BY {order}"))
+            ).scalars()
+        )
+    return snapshots
+
+
+async def _assert_raw_defaults(db: AsyncConnection) -> None:
+    """Bypass ORM Python defaults to exercise actual database INSERT behavior."""
+    user = (
+        await db.execute(
+            text(
+                "INSERT INTO admin_user "
+                "(user_id, username, display_name, password_hash, role, created_at, updated_at) "
+                "VALUES (:id, 'schema-parity', 'Parity', 'test-hash', 'viewer', now(), now()) "
+                "RETURNING is_active, must_change_password"
+            ),
+            {"id": uuid7()},
+        )
+    ).one()
+    assert user == (True, False)
+    kind = await db.scalar(
+        text(
+            "INSERT INTO api_key (key_id, key_hash, owner, tier, scopes, "
+            "rate_limit_requests, rate_limit_window, page_size_limit, usage_count, created_at) "
+            "VALUES (:id, 'schema-parity', 'parity', 'standard', '[]', 100, 60, 1000, 0, now()) "
+            "RETURNING kind"
+        ),
+        {"id": uuid7()},
+    )
+    assert kind == "serve"
+    limits = (
+        await db.execute(
+            text(
+                "INSERT INTO source_client "
+                "(client_id, name, source_name, key_hash, created_at, updated_at) "
+                "VALUES (:id, 'schema-parity', 'shioaji', 'schema-parity', now(), now()) "
+                "RETURNING rate_limit_requests, rate_limit_window, usage_count"
+            ),
+            {"id": uuid7()},
+        )
+    ).one()
+    assert limits == (100, 60, 0)
+    count = await db.scalar(
+        text(
+            "INSERT INTO credential_usage_rollup "
+            "(usage_id, credential_kind, credential_id, updated_at) "
+            "VALUES (:id, 'source', :credential, now()) RETURNING request_count"
+        ),
+        {"id": uuid7(), "credential": uuid7()},
+    )
+    assert count == 0
+    await db.execute(
+        text(
+            "INSERT INTO dataset_registry "
+            "(dataset_key, name, asset_class, market, frequency, is_active, config, "
+            "created_at, updated_at) VALUES "
+            "('schema_parity', 'Parity', 'equity', 'TW', 'daily', true, '{}', now(), now())"
+        )
+    )
+    prepared = await db.scalar(
+        text(
+            "INSERT INTO provider_work "
+            "(work_id, environment, provider, stable_key, kind, dataset_key, scope, state, created_at) "
+            "VALUES (:id, 'local', 'shioaji', 'schema-parity', 'daily', 'schema_parity', "
+            "'{}', 'queued', now()) RETURNING prepared_deliveries"
+        ),
+        {"id": uuid7()},
+    )
+    assert prepared == {}
+    await _insert_calendar_market(db, "X_NEW")
+    assert await db.scalar(text("SELECT active FROM calendar_market WHERE market = 'X_NEW'"))
+    # A timestamp-without-timezone default cast to timestamptz would shift by 8h.
+    original_timezone = await db.scalar(text("SHOW TIME ZONE"))
+    await db.execute(text("SET LOCAL TIME ZONE 'Asia/Taipei'"))
+    calendar = (
+        await db.execute(
+            text(
+                "INSERT INTO trading_calendar (id, market, trade_date, is_open) "
+                "VALUES (:id, 'X_NEW', '2026-10-29', true) "
+                "RETURNING day_status, source_kind, revision, created_at, updated_at, now()"
+            ),
+            {"id": uuid7()},
+        )
+    ).one()
+    assert calendar[:3] == ("open", "observed_ingestion", 0)
+    assert calendar.created_at == calendar.updated_at == calendar[5]
+    assert calendar.created_at.tzinfo is not None
+    await db.execute(
+        text("SELECT set_config('TimeZone', :timezone, true)"), {"timezone": original_timezone}
+    )
+
+
+@pytest.mark.asyncio
+async def test_orm_server_defaults_apply_to_raw_sql(test_engine: AsyncEngine) -> None:
+    async with test_engine.begin() as db:
+        await _assert_raw_defaults(db)
+        with pytest.raises(IntegrityError, match="calendar_market_code_valid"):
+            async with db.begin_nested():
+                await _insert_calendar_market(db, "tw")
+
+
+@pytest.mark.asyncio
+async def test_schema_reconciliation_preserves_data_and_round_trips() -> None:
+    async with get_active_migration_database_factory().clone("3553ed95cfbf", "reconcile") as (
+        url,
+        engine,
+    ):
+        await run_alembic(url, PREVIOUS_REVISION)
+        async with engine.begin() as db:
+            await _insert_calendar_market(db, "X_OLD")
+            await db.execute(
+                text(
+                    "INSERT INTO trading_calendar "
+                    "(id, market, trade_date, is_open, created_at, updated_at) "
+                    "VALUES (:id, 'X_OLD', '2026-10-28', true, "
+                    "'2026-10-27 01:00:00+00', '2026-10-28 02:00:00+00')"
+                ),
+                {"id": uuid7()},
+            )
+            checks_before = await _checks(db)
+            defaults_before = await _calendar_defaults(db)
+            rows_before = await _calendar_rows(db)
+        await run_alembic(url, RECONCILED_REVISION)
+        async with engine.begin() as db:
+            checks_after = await _checks(db)
+            assert len(checks_after) == len(checks_before) + 1
+            renamed = 0
+            for oid, (table, name, definition) in checks_before.items():
+                actual_table, actual_name, actual_definition = checks_after[oid]
+                assert (actual_table, actual_definition) == (table, definition)
+                renamed += actual_name != name
+            assert renamed == 16
+            assert await _calendar_defaults(db) == {
+                "created_at": "now()",
+                "updated_at": "now()",
+            }
+            assert await _calendar_rows(db) == rows_before
+            await _assert_raw_defaults(db)
+            for invalid in ("tw", "X", "TW-NEW"):
+                with pytest.raises(IntegrityError, match="calendar_market_code_valid"):
+                    async with db.begin_nested():
+                        await _insert_calendar_market(db, invalid)
+            rows_before_downgrade = await _calendar_rows(db)
+        await run_alembic(url, PREVIOUS_REVISION, command="downgrade")
+        async with engine.connect() as db:
+            assert await _checks(db) == checks_before
+            assert await _calendar_defaults(db) == defaults_before
+            assert await _calendar_rows(db) == rows_before_downgrade
+        await run_alembic(url, RECONCILED_REVISION)
+        async with engine.connect() as db:
+            # Pin this historical round trip to its own revision. Head/ORM
+            # parity is tested separately so future additive changes stay valid.
+            assert set((await _checks(db)).values()) == set(checks_after.values())
+            assert await _calendar_defaults(db) == {
+                "created_at": "now()",
+                "updated_at": "now()",
+            }
+            assert (
+                await db.scalar(text("SELECT version_num FROM alembic_version"))
+                == RECONCILED_REVISION
+            )
+            assert await _calendar_rows(db) == rows_before_downgrade
+
+
+@pytest.mark.asyncio
+async def test_schema_reconciliation_rejects_invalid_existing_market_atomically() -> None:
+    async with get_active_migration_database_factory().clone("3553ed95cfbf", "invalid_market") as (
+        url,
+        engine,
+    ):
+        await run_alembic(url, PREVIOUS_REVISION)
+        async with engine.begin() as db:
+            await _insert_calendar_market(db, "tw")
+            checks_before = await _checks(db)
+            defaults_before = await _calendar_defaults(db)
+        with pytest.raises(subprocess.CalledProcessError) as failure:
+            await run_alembic(url, RECONCILED_REVISION)
+        assert "calendar_market_code_valid" in failure.value.stderr
+        async with engine.connect() as db:
+            assert (
+                await db.scalar(text("SELECT version_num FROM alembic_version"))
+                == PREVIOUS_REVISION
+            )
+            assert await _checks(db) == checks_before
+            assert await _calendar_defaults(db) == defaults_before
+            assert (
+                await db.scalar(text("SELECT count(*) FROM calendar_market WHERE market = 'tw'"))
+                == 1
+            )

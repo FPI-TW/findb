@@ -178,21 +178,28 @@ class TradingCalendar(Base):
     # Existing ingestion rows are observational only.  A managed calendar row is
     # associated with a published/draft CalendarYearRevision instead.
     day_status: Mapped[Literal["open", "closed", "settlement_only"]] = mapped_column(
-        String(20), nullable=False, default="open"
+        String(20), nullable=False, default="open", server_default="open"
     )
     session_open: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
     session_close: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
     holiday_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source_kind: Mapped[str] = mapped_column(
-        String(30), nullable=False, default="observed_ingestion"
+        String(30),
+        nullable=False,
+        default="observed_ingestion",
+        server_default="observed_ingestion",
     )
     source_reference: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     import_batch_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
-    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=text("now()")
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, server_default=text("now()")
     )
 
 
@@ -210,7 +217,9 @@ class CalendarMarket(Base):
     weekend_days: Mapped[list[int]] = mapped_column(JSONB, nullable=False, default=list)
     default_session_open: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
     default_session_close: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
-    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -336,7 +345,9 @@ class MarketDataEOD(Base):
     total_ticks: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     turnover: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 4), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1000, server_default=text("1000")
+    )
     source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -496,7 +507,9 @@ class CorporateAction(Base):
     currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     extra: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1000, server_default=text("1000")
+    )
     source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -641,7 +654,9 @@ class MacroObservation(Base):
     obs_date: Mapped[date] = mapped_column(Date, nullable=False)
     value: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1000, server_default=text("1000")
+    )
     source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -700,7 +715,9 @@ class FuturesContract(Base):
     currency: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     extra: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1000, server_default=text("1000")
+    )
     source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -817,7 +834,9 @@ class FuturesContinuousEOD(Base):
     active_contract_code: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     roll_adjustment: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    source_priority: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    source_priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1000, server_default=text("1000")
+    )
     source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
