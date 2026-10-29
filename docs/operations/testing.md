@@ -553,6 +553,14 @@ Production 50 成員 nominal 驗收使用 `shioaji_dispatch_clock`，讓 parent�
 Fault cases 包含 intent commit ACK 遺失、local save 後
 confirm 前取消、local save crash、intent／cancel transaction barrier，以及 daily stop 後 prepared 排空。
 取消／停止期間不新增 provider I/O，accepted nonterminal run 仍保留 whole-work owner；取消狀態與缺漏保持真實。
+`backend/tests/test_provider_work_projection.py` 以 PostgreSQL 驗證大量 retained rounds 與約 42 MB
+minute prepared 仍只執行固定三次 SELECT（含 historical／HK eligibility 最多五次），不讀取完整
+body／manifest／scope／proof／token，不因工作數增加 N+1。涵蓋五 providers、Pilot／Full、
+terminal／nonterminal receipts、原 prepared 排空、pending error report、window／cooldown／
+not-before／batch-yield／recovery、historical expiry eligibility 與 current／historical failure 顯示，
+並透過 authenticated Viewer API 驗證原回應與 401／403。效能數據只作量測，不使用易受 CI 負載
+影響的毫秒斷言；SQL 形狀與呼叫數是回歸條件。Production endpoint 上線驗收仍須另行執行。
+
 Admin single／bulk endpoint 測試驗證新 run／audit／FIFO fence；failed rerun 使用實際 worker failure path，
 不以直接改 run status 代替 normalization。Migration case 保留舊 prepared body／raw hash／receipt，
 停止後只允許同 work 原 payload 導入 descriptor 並 replay。

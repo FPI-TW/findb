@@ -8,12 +8,18 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
-- Production 五 provider 的 provider-work cutover：新版本已退役 false 執行模式，不能直接 promotion
-  到仍為 false／未 attested 的環境。先停止新 acquisition（包含 Shioaji Full）、排空並保存
-  RDS／各 profile 與 historical SQLite＋sidecars／原 prepared／receipts／account budgets 與 cooldown，
-  核對 55 筆 migration daily backlog 與退役 Twelve Data HK scope，再依正式 runbook 完成全部 15 consumers、
-  五個 shared inodes／單 host preflight 與 Owner attestation、兩端 true。不得以本機測試取代 native 驗收，
-  不得刪除 state、重設預算或重新執行全部舊工作；實際 cutover／啟停／部署需另獲授權。
+- 供應商工作佇列查詢修正的部署驗收：Repository 已在 SQL 排除 settled、改讀 metadata／prepared
+  摘要並批次取得 historical eligibility。2026-10-30 候選函式在 production host 的獨立唯讀程序
+  實測 0.240 秒／三次 SELECT，未替換服務程式；仍須依正式流程部署並驗證 Dashboard 十秒內讀取。
+  原根因、保留證據與量測限制見 [production 維運](../operations/production.md)。
+
+- Production 五 provider 的 provider-work native／recovery 驗收：2026-10-29 已完成具名 Owner
+  attestation、兩端 true 與 Backend／Fetcher v0.1.12 發布，原 DB／17 個 SQLite／prepared／receipts／
+  預算／cooldown 保留；正式備份、版本與驗證證據已整併至 [production 維運](../operations/production.md)。
+  切換驗收時 controls 全停止，後續啟停見 production 維運紀錄；尚需受控驗證同 provider daily → historical → daily 的 canonical proof、跨 provider
+  並行、heartbeat-loss recovery、cancel／prepared drain 與 rollback。舊 Twelve Data HK scope 及既有
+  failed／manual／raw_uploading 證據不得整批重試、清檔或重設預算。實際 native 抓取與 fault／rollback
+  演練須另獲授權，不能以部署健康、原 rows 比對或本機測試代替。
 
 - Owner 於台北時間 2026-10-16 將香港排除本次 native 驗收；本次 staging Pilot 目標為其餘六條，
   尚未全部通過，因此 production native 驗收保持未開始。七條 feed 架構與香港失敗紀錄仍保留。

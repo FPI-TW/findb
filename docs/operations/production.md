@@ -41,6 +41,108 @@ SSM 證據：DB／旗標 `7c8bc889-fa9c-43d9-bacb-b8d8b288d847`、SQLite／consu
 `b398ef09-5a3d-4f54-b529-0dfade9069e6`、日期與 Dashboard projection
 `088522b4-2b34-4e5b-aff0-e1f54ee78628`。
 
+## 退役後不可重試堆積的結案查核（2026-10-29）
+
+v0.1.12 部署後再次以 Admin projection、Source DB read-only transaction 與原 SQLite
+`mode=ro` 查核全部五個 providers。15 個實際 consumers 均使用統一 daily／historical 入口、
+`PROVIDER_WORK_REQUIRED=true` 與本次 accepted image；舊 acquiring CLI 已無執行實作。
+Shioaji 與 TAIFEX Full controls 已另行啟動，這不是切換驗收時的停止快照。
+
+| 分類 | 數量 | 處理界線 |
+| --- | --- | --- |
+| FinLab 舊 daily 全成員 complete／manual | 22 | 原成員已無 pending／prepared；可依原預算與交付證據結案 failed |
+| Twelve Data 舊 HK daily | 12 | 現行 HK feed 屬 FactSet；只結案退役 work，不重新抓取、不改成 no_data |
+| FinLab 仍可重試 daily | 8 | 保留 queued／suspended 與剩餘預算 |
+| Twelve Data US 仍可重試 daily | 13 | 保留 queued／suspended 與剩餘預算 |
+| Shioaji、TAIFEX、FactSet | 0 筆符合本批清理 | 保留 active／retryable work 與既有 terminal history |
+
+本批 34 筆候選的完整 frozen member 集合及 15,497 筆原始 sequence receipts 已逐筆比對。
+Local prepared bytes 的原 SHA 保留；Source raw payload 的 SHA 必須與原 receipt 一致。
+跨兩端 payload 比對只將契約預設的 nullable 欄位省略與 `null` 視為等價，避免將 Source
+`model_dump` 補上的 null 誤判為內容不同；所有非 null 值、run ID、idempotency key 都須一致。
+此查核不更改原 bytes、raw 或 receipts。
+
+清理僅允許將上述 imported daily 的未開始第一輪 queued projection 標記 failed／settled，
+逐筆追加具名 AWS IAM operator audit。執行前須持有原 FinLab／Twelve Data flock inodes，
+在同一 transaction 依 provider 排序取得 advisory locks，確認兩個 provider 的 controls 仍 stopped、
+owner idle、無未回報 source error、未交付 prepared 或 nonterminal run。任一不一致整批 rollback。
+Checkpoint、prepared、receipts、raw、frozen plans／members、原預算及其它工作均保留；
+stable-key enqueue 再執行不能復活已結案 work。這不是刪除錯誤歷史或重設失敗額度。
+
+Production 已於 2026-10-29 13:09 UTC 完成結案與複查：34 筆 work 為 failed、attempt 為
+settled，同一 transaction 追加 34 筆 `reconcile_queue` operator audits。FinLab 使用
+`LEGACY_RETRY_EXHAUSTED`，退役 TD HK 使用 `RETIRED_FEED_MANUAL_REVIEW`。
+交易前後 13 組 Source DB 保留性雜湊一致；持鎖期間再次讀取原 SQLite，34 筆候選的
+plan／member／body／receipt／attempt rows 與原 journal 均未變。兩個原 inode 的 FD 已正常釋放。
+
+執行後 Admin API 顯示 27 筆待處理工作：FinLab 8、Twelve Data US 13、Shioaji 6。
+前兩者仍為 queued／suspended；Shioaji 的可執行與 batch-yield 工作照常保留。已結案的 34 個
+IDs 全部離開 projection，未清除可重試項目。TAIFEX／FactSet 沒有本批清理項目。
+
+證據保存在兩個 hosts 的 root-only
+`/var/backups/findb-provider-work-cleanup/production-20261029T130718Z`：Fetcher 的 fresh lock proof
+與保留性結果、Backend 的原 projection 備份、實際程式及 transaction 結果。
+SSM：持鎖 `f1b8c5d9-ff4f-4548-a9bd-4aed7d7f2287`、鎖驗證
+`d0222e46-2f19-46cc-afd5-d0e0581a5098`、結案
+`a54c93a5-c9da-453b-a6ba-0f05c919ff64`、釋放
+`b69c8a19-6113-4276-b064-f3cf2a6c0202`，均 Success。
+驗證包含 15 項隔離 PostgreSQL 維護 transaction 測試、125 項退役／原預算／錯誤回報相關測試，
+以及全 repo `pnpm check`；獨立實作審查 CLEAR，另重跑 15＋46＋39 項測試通過。
+
+歷史 `source_error` 未留下精確 HTTP／SDK 例外，仍不能聲稱已找出每筆來源錯誤的根因，
+也不能保證供應商、網路或 mapping 錯誤不再發生；已封住的是退役的雙執行路徑與無 owner
+的抓取／接受入口。Mapping gaps 保留人工處理，不因清理改為成功。
+
+## 供應商工作佇列讀取逾時（2026-10-30，修正待部署）
+
+台北時間 2026-10-30 00:32 起的唯讀調查，已重現 Dashboard 的
+`供應商佇列更新失敗：FinDB API request timed out`。直接以合法 Admin credential 呼叫
+`GET /api/v1/admin/provider-work` 可回傳 HTTP 200、27 筆工作，實測耗時 10.612 秒；
+相同回應通過 Dashboard 的 `providerWorkSchema`。Dashboard `fetchTarget` 的
+`UPSTREAM_TIMEOUT_MS=10_000` 先取消請求，因此即使 Backend 最後完成，面板仍顯示失敗。
+
+已部署 v0.1.12 的根因在 `backend/app/services/provider_work.py:projection()`：初始 ORM query 將
+`ProviderWork` 全欄位與**所有** `ProviderWorkAttempt` join，取得結果後才在 Python 跳過
+settled attempts。每輪 join 都重新傳輸／解碼 work 的完整 `prepared_deliveries`；它包含原始
+prepared body，而監控列表只需要狀態摘要。當時 Shioaji 已有 183 輪 settled attempts，
+current attempts 為第 26～27 輪；六筆工作約 40,436,313 bytes 的 prepared JSON 在該 join
+中被放大到約 1,077,959,230 bytes。頁面只回傳約 18.7 KB，並不代表查詢本身很小。
+
+獨立唯讀程序執行 production 原函式，得到 27 筆、耗時 13.655 秒、89 個 SQL calls、
+peak RSS 1,106,884 KiB。其中初始 work／attempt join 耗時 13.039 秒；27 次 receipts 查詢
+合計 0.124 秒，54 次 previous-attempt 查詢合計 0.061 秒。相同 read-only snapshot 的
+查詢對照：在 SQL 先排除 settled、仍選取完整 ORM 的初始查詢為 0.509 秒；只選取未結案
+work／attempt metadata 的初始查詢為 0.006 秒。這些是初始查詢對照，尚非修正後完整 endpoint
+的效能驗收。
+
+Backend／Dashboard／nginx 均 healthy、零重啟、無 OOM；DB 基本彙總查詢為 2～7 ms，
+Shioaji owner heartbeat 正常。前次結案的 22 筆 FinLab、12 筆 TD HK 仍為 failed，
+其餘佇列／prepared／receipts 持續保留；本次未清理資料、停止 runtime、調整 timeout 或部署。
+修正方向為 SQL 先篩掉 settled、監控只讀摘要／必要欄位，並批次讀取 receipts 與最近 attempt；
+驗證需包含大量歷史 rounds、minute prepared bytes 與十秒以內的完整 Dashboard 讀取。
+不得以刪除歷史 attempts／prepared 或單純提高 timeout 取代查詢修正。
+
+Repository 已將 projection 改為在 SQL 排除 settled，僅選取必要 metadata；prepared 有無、
+未接受交付與 nonterminal receipt 由 SQL 計算布林摘要，最近批次與失敗代碼以同一查詢的
+相關子查詢取得。Historical eligibility 批次讀取 request／item，HK cutover 沿用正式 eligibility
+判定。一般 projection 為固定三次 SELECT；同時需要 historical／HK eligibility 時最多五次，
+不隨工作數或歷史輪次新增 SQL round trips。原工作、receipts、prepared bytes 與 budgets 不改寫。
+
+候選函式於 production host 的**獨立程序**、READ ONLY transaction 中量測，未替換 module、
+未更新服務或部署：當下 26 筆未結案工作全部回傳，完整 projection 0.240 秒、三次 SELECT、
+peak RSS 81,504 KiB、回應約 19.3 KB。當時原服務仍使用舊版，這不是已部署 endpoint 的驗收。
+本機六筆 minute fixture 保存 42,062,340 bytes prepared 與各 28 輪歷史，projection 為三次 SELECT、
+0.028 秒；測試以禁止選取完整 body／manifest／proof／token 與固定 SQL 次數防回歸，
+不以依賴機器負載的毫秒門檻判定正確性。合併後仍須按部署流程驗證正式 Dashboard 十秒內讀取。
+
+另曾觀察公網 `/health` 單次 Cloudflare 525、耗時 43.787 秒。Origin certificate 有效至
+2041-09-13，當下沒有足夠證據定位該次 TLS handshake failure；不能將它與已獨立重現的
+佇列查詢膨脹混為同一根因。
+
+SSM：健康與規模 `7fc31a56-dea4-4283-b622-d2d78ec663f1`、實際 profiler 與對照
+`88bf68d2-c39a-4095-b0e4-98d0ef906009`。所有診斷為 read-only，沒有改寫 production 程式或資料。
+候選 projection 唯讀量測：`475de304-2002-4a81-843e-8effec56bb30`。
+
 ## 五 provider 舊流程退役評估（2026-10-29）
 
 同日 03:53 UTC 全 provider 唯讀查核：Backend 與全部 15 個 consumers 的
@@ -52,7 +154,112 @@ Shioaji Full 的 desired／observed 仍 running，其餘九個現行 Pilot／Ful
 全 provider 程式碼、production 函式雜湊與隔離重現結果支持退役舊 acquiring／無 work fence
 acceptance，但必須先完成五 provider cutover、原交付保留與環境驗收。各 provider 差異與已實作的
 退役邊界見 [provider-work 架構](../architecture/provider_work.md)。Repository 已移除舊執行入口，
-但 production cutover、native 驗收與部署仍未執行；沒有停止 Shioaji、改 flag 或清理 queue。
+當時 production cutover、native 驗收與部署尚未執行；沒有停止 Shioaji、改 flag 或清理 queue。
+後續已授權的切換紀錄見下節；native 資料驗收仍獨立列管。
+
+## Provider-work 切換與舊流程退役發布（2026-10-29）
+
+本次目標版本為 staging 已 accepted 的 `f514cf32185d8d3b76784c062ec171a37665a381`
+（PR #375），使用 annotated immutable tags `findb-v0.1.12`、`fetcher-v0.1.12`。
+兩個 tags 的物件分別為 `0e4ab79fa02a178e9a04ce9f11ee108d9fa74678`、
+`ce10157602bd0bcf0d153f1501ad57293cc750bf`；發布依既有 Backend-first promotion，沿用
+staging digests，不重建 images。Backend／Fetcher 的 CI、acceptance、activation 均已成功。
+
+停機前再次確認十個 Pilot／Full controls 的 desired／observed 全為 stopped、25 個 historical
+requests 全為 terminal、沒有 running historical item 或 nonterminal ingestion run。Full／Pilot／
+governor 沒有 body 已保存但 receipt 缺失的 work；13 份 Shioaji historical checkpoint 的
+prepared-without-receipt、accepted-nonterminal 均為零。TAIFEX historical 兩筆 work 均保留原
+prepared／receipt。原 failed Shioaji request 的一筆 `raw_uploading` 仍原樣保留，不重試或猜測交付。
+
+全部十五個 consumers graceful stop，均 exit 0、無 OOM／Docker error。Fetcher host
+`i-0e94c09b2af831808` 的 `/var/backups/findb-provider-work-cutover/production-20261029T1134Z`
+保存完整原 container inspect、59 個持久化檔案、17 個 SQLite 的逐表 rows／SHA256 與
+`state.tar`（486,963,200 bytes，SHA256
+`a8223f4674605c1777aba769a30aa3426308be5ebb9d58063fce39b0b72c29c8`）。原 Full、Pilot、
+governor、五 provider historical 目錄及 sidecars、prepared、receipts、account pins／budget／
+cooldown 全部保留。RDS snapshot `findb-provider-work-production-20261029-1134` 已 available；
+加密 EBS snapshot `snap-0e76651e38bfe7101` 已 completed。
+
+離線以原 accepted protocol-v1 images 初始化五個共享鎖，再按原 image／argv／HostConfig／bind
+mounts 重建 enforced consumers，僅將 `PROVIDER_WORK_REQUIRED` 設為 true；此階段不啟動。
+原 17 個 SQLite 的所有既有 tables／rows 與備份指紋完全一致。原版 preflight 對真實 container
+inspection、唯一 Fetcher host 與五個 flock 驗證成功；11:44:03 UTC 產生 proof，隨即以具名
+Owner machine key 經正式 cutover API 提交，回覆成功。具名 audit actor 為
+`Production_admin_owner_key`（machine），event ID `01a18779-b6aa-7b61-be03-6c5148015bfc`，
+保存時間 11:44:23 UTC；Inventory SHA256 為
+`ec58b2d89525ec41d2634a1a5e320a3c66b5a12c488620f6bb37676336679f79`。
+
+| Provider | Attested shared lock identity |
+| --- | --- |
+| Twelve Data | `production:66305:302843` |
+| FinLab | `production:66305:302860` |
+| Shioaji | `production:66305:302872` |
+| TAIFEX | `production:66305:302880` |
+| FactSet | `production:66305:302881` |
+
+兩組 deployment SSM parameter 均由 version 1 更新為 version 2，唯一變更為
+`PROVIDER_WORK_REQUIRED=true`。兩組 runtime configuration 同步新增此值，其餘欄位不變；
+Backend／Fetcher 新 versions 分別為 `8da4ea8d-8891-4934-8bbc-ec2e99105453`、
+`b752d41b-d3d0-44be-b587-a961fca19c57`。
+
+新建但未啟動的容器實際為 `created`，cutover helper 接受此準備狀態，installed-host guard
+則要求 `running` 或 graceful `exited`。因此須在 Backend promotion 成功後、controls 仍停止且沒有
+可 acquisition work／maintenance／rerun 時，啟動這批 enforced accepted consumers，確認真實
+running／零重啟並執行完整 installed-host guard，再 dispatch Fetcher promotion；不偽造 Docker
+State、不跳過 guard。本次這項啟動檢查已通過：15 個 consumers 均真實 running、零重啟，完整
+guard 回報 `fetcher_host_eligibility=running`，五組 inode 與 Owner attestation 相同。
+
+Backend 的 schema-v3 production accepted bundle 為
+`findb/production/accepted/f514cf32185d8d3b76784c062ec171a37665a381/28244fc878a64439f1c879d27bf7107b019d11f228f8ad69897833467381526f.tar`。
+Fetcher accepted bundle 為
+`fetcher/production/accepted/f514cf32185d8d3b76784c062ec171a37665a381/3971df592c38b2465f7abed0679442c5f80cf5bb63520b10da81a2c722db3cd8.tar`；
+兩份 accepted records 皆為 schema-v3／production／accepted，綁定同一 commit 與各自的 tag，
+Fetcher 為 `runtime_profile=unified`。六個 digests 與 staging 完全相同：
+
+| Image | SHA256 digest |
+| --- | --- |
+| Backend | `2db1da26a45542e0fb255d6f53c41ec879ff9751892693cddec5ca9454bb35d5` |
+| Dashboard | `397166c8926c160fc6caed75d8c42bc7b8d309f63877b43a9ea0ea9b8436cbc3` |
+| Twelve Data／TAIFEX | `30bd93485ff4d210aa9f264ae3476f0878ec4eb299af4bcfa92f7f48a761d99e` |
+| FinLab | `05b8da4c683a12de3d9c2dd53dd9c87111800b78aa9a1764a76ebb870e14a1d0` |
+| Shioaji | `705717720905898479aa5e49c70ec769d6f4331f5f6d5eac679b0a504217ec3b` |
+| FactSet | `63ef339a2803732246ca8b8d0ee7d25e406fe0f8390bb7ea6b8c8f2619623ec2` |
+
+DB revision 由 `0d57f9b8a2c1` 升至 `1e68a0c9b3d2`；此 migration 僅調整 constraint 名稱／日曆
+CHECK／時間預設值，沒有改寫既有 frozen rows。部署後八個表的 rows 與完整內容指紋一致：
+7 first-date states、101 plans、101 decisions、3,699 parts、182,413 members、25 historical
+requests、32 historical items、17,772 provider-work receipts。舊 revision 的 accepted bundle
+仍須通過現行 DB compatibility gate，不能直接啟動舊 image 或 downgrade 交付證據。
+
+Enforced runtime 的既有 pending-plan projection 為 Shioaji 2026-10-27 的 equity／ETF minute
+各補上一筆 FIFO work；兩筆原 plan 均於 10/28 建立，原 plan／members／checkpoint 未改寫。
+原 Twelve Data 25 筆、FinLab 30 筆 work 保留，目前 57 筆 projection 全為 suspended、沒有 active
+owner 或 acquisition／待 drain 工作；不是重新執行全部 backlog。原 Shioaji 28 筆、TAIFEX 15 筆
+cancelled work 及兩筆 TAIFEX historical 終態也保留。公開 health 正常，normalization queue
+沒有 queued／processing、unpublished outbox、expired lease 或 retry exhausted。部署不啟動既有
+停止的 controls、不觸發 provider 資料抓取，也不宣稱 native 驗收完成。
+
+最後一輪唯讀檢查確認六個 Backend／Dashboard services 與十五個 Fetcher consumers 均 running、
+exit 0、零重啟、無 OOM／Docker error，實際 images／argv 與 installed release manifest 一致；
+五個 Backend roles 與全部 Fetcher consumers 的 `PROVIDER_WORK_REQUIRED=true`。
+完整 installed-host guard 再次通過，五組 lock inode 未變。十七個原 SQLite 的所有既有 tables／rows
+與備份 SHA256 完全一致，包含原 prepared bytes、20,102 個 Full checkpoint receipts、帳號 pins、
+acquisition intents、operation attempts、quota／pacing／cooldown；八個 DB frozen tables 指紋也再次
+一致。`pnpm check` 與 `git diff --check` 通過。本次沒有執行 native canonical／recovery 或實際 rollback
+演練，相關待辦繼續列於 [native 與回復驗收](../dev/production-foundation-cutover-plan.md)。
+
+證據：停機／state 備份 `1a791b83-37d5-4dd5-910a-f300aaac5777`、DB frozen scope 基準
+`57427f8b-9d67-41de-86b0-0ac128cf38d7`、enforced containers／原 rows 比對
+`4a18c241-691c-4967-947f-777446c2e6dd`、host proof
+`9279b1c1-4cee-43f6-a114-040a452987db`；Backend production workflow
+[40867773717](https://github.com/FPI-TW/findb/actions/runs/40867773717) 已成功，Fetcher workflow
+[40869478807](https://github.com/FPI-TW/findb/actions/runs/40869478807) 亦已成功。
+Backend 後 frozen rows gate `795d241e-1e77-491b-b242-496f0b3ea6f8`、受控啟動／完整 host guard
+`04ea1e7a-6992-4497-8e29-e3eea7d5b38b`、新增投影來源／具名 audit／原 frozen rows 比對
+`7e36eada-2a8c-4b2b-aace-df902f522728`。
+最終 Fetcher 保留性／images／完整 guard `79293c41-5839-4c31-82e0-0f7754d072da`、
+Backend／Dashboard images／服務健康 `945729ee-678b-4517-a9c2-b78e80461ed9`、
+DB frozen rows／controls／queue／Owner audit `ef962abb-4b81-4ed5-8e70-ac0d892539d8`。
 
 ## Shioaji 缺口與 DQ 調查（2026-10-05）
 
