@@ -112,9 +112,8 @@ async def test_production_shioaji_historical_manifest_reaches_canonical_with_fif
     # members need more headroom than the four-member pilot's 25-second bound.
     h.execution_timeout = 90
     try:
-        from tests.provider_work_clock import shioaji_dispatch_clock
-
-        offset = shioaji_dispatch_clock(monkeypatch)
+        offset = h.shioaji_clock
+        assert offset is not None
         # Nominal 50-member acceptance uses a controlled parent/child grant
         # clock. Durable quota/window waits still advance through FIFO retries.
         for _ in range(4):

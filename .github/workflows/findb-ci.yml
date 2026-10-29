@@ -86,6 +86,8 @@ jobs:
           uv run python scripts/export_execution_feeds.py --check
 
       - name: Run tests
+        env:
+          FINDB_TEST_DIAGNOSTICS_DIR: ${{ runner.temp }}/findb-ci-backend/diagnostics
         shell: bash
         run: |
           set -o pipefail

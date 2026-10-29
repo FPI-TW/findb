@@ -34,16 +34,43 @@ run；不得以放寬產品授權期限或 window 檢查來處理此類間歇失
 Fetcher 的 slow owner RPC／dispatch grant 測試使用局部可控的 wall／monotonic clock，
 分別涵蓋分鐘內及跨 UTC 分鐘。跨分鐘可能合法重取 grant，但 native dispatch、actual-start
 與帳號日配額只能記一次；不能將 grant 次數固定為一，也不應放寬產品的時效或 quota window 檢查。
-可控時鐘只替換 acquisition module 的 facade，不修改全域 time 或背景 heartbeat 的等待行為。
+可控時鐘不修改全域 time、asyncio、IPC poll／join 或背景 heartbeat 的真實等待行為。
 `test_actual_processes_merge_proven_debt_exactly_once` 同樣將 seeded quota 與父程序 admission
 固定在相同 UTC 分鐘，三個 identity merge 子程序仍以真實 spawn 併發執行；避免啟動成本跨分鐘
 後，合法的新分鐘額度使舊債務阻擋斷言失效。產品的 quota rollover 規則維持不變。
 Backend 的 `daily_runtime_clock` fixture 預設將日常 policy 時鐘固定在台北當日 20:00，
 讓一般 admission／queue／migration 測試不依賴執行時是否落在 Shioaji 18:00–隔日 06:00 窗口。
-Queue 即使收到獨立 lease clock，policy 判定仍使用相同的受控時鐘；UTC grant、quota、lease、
-heartbeat 與 IPC timeout 保持原有時鐘。窗口邊界案例應明確調整 fixture clock 或覆寫
+Queue 即使收到獨立 lease clock，policy 判定仍使用相同的受控時鐘；一般案例的 UTC grant、
+quota 與 lease 保持原有時鐘，Shioaji native 功能驗收則使用下述共用邏輯 UTC。
+窗口邊界案例應明確調整 fixture clock 或覆寫
 `daily_runtime.utc_now`／`daily_window`；pure policy tests 可直接傳入 aware datetime，
 驗證開窗、關窗與跨日，不把窗口判定改成永遠允許。
+`RuntimeHarness` 的 Shioaji 功能驗收預設使用 `shioaji_dispatch_clock`：Backend 的標準
+`utc_now` aliases、Source checked-at／lease、Fetcher queue、account governor、SDK child 及
+historical coordinator／SQLite checkpoint 共用邏輯 UTC；明確覆寫的時間邊界 clock 保留。
+UTC 起點位於當下分鐘的第 30 秒，避免真實分鐘 rollover；pacing sleep 推進邏輯 UTC，
+FIFO 重試的 `offset += 61` 同時釋放 account 與 checkpoint 的 rolling window。
+Grant monotonic clock 在功能案例中受控，因此 ASGI／DB 排程延遲不會意外觸發 50ms 到期。
+實際 Source 認證、scope、fence、header/body 一致性及 expiry 判定仍執行，沒有放寬產品限制。
+功能 fake SDK 沿用 runtime 的 30 秒 IPC 上限，不使用任意縮短的 2 秒上限。
+
+`test_shioaji_historical_functional.py` 注入第一檔／最後一檔 acquisition 失敗，驗證原始
+50-member manifest、FIFO receipts、canonical evidence 與 snapshot 重用，並驗證逐檔診斷不含
+provider 訊息或 credentials。Heartbeat 重疊案例用事件強制與 delivery 同時進入，不等待
+真實 20 秒 interval；harness 僅序列化共用測試 AsyncSession 的 HTTP／normalization 使用，
+保留 request 前的故障 barriers、真實 heartbeat thread 與正式程式的並行行為。
+`test_shioaji_time_limits.py` 以顯式 clock 獨立驗證 50ms grant
+及 50 次／60 秒 rolling limit；日常 18:00–06:00 窗口、31 天日期限制／台北跨日與 SDK timeout
+分別由 `test_shioaji_daily_runtime.py`、`test_historical_backfill.py` 與 Fetcher 的
+`test_shioaji.py`／`test_shioaji_smoke_cli.py` 驗證。時間限制案例不依賴跑測試當下的時刻。
+
+Shioaji 每輪輸出逐檔 `code`／`stage`／`retryable`、checkpoint attempts／status／terminal code
+及安全的 attempt history；即使 coordinator 拋出例外，也保存安全的 exception type、Source
+失敗路徑／status 與 checkpoint。不輸出 provider exception text、raw payload、Source body 或 credentials。
+Captured warning 保存在失敗的 `pytest.log`，不受 assertion repr 截短影響。
+`FINDB_TEST_DIAGNOSTICS_DIR` 可指定 JSONL 目錄；CI 設為
+`$RUNNER_TEMP/findb-ci-backend/diagnostics`，隨既有 Backend artifact 成功或失敗均保存 14 天。
+每個 harness 使用獨立 UUID 檔名供 xdist 並行；本機未設定時寫入該測試自己的暫存目錄。
 Collection 階段產生 UUID 等非決定性值的 parameters 必須提供穩定情境 ID，避免不同
 workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境。
 

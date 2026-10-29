@@ -1,5 +1,6 @@
 """Control test clock coordinates while preserving authentic Source authorization."""
 
+import sys
 import time
 from dataclasses import replace
 from datetime import date, timedelta
@@ -31,12 +32,12 @@ def dispatch_clock(monkeypatch):
     return clock
 
 
-def account_clock(monkeypatch):
+def account_clock(monkeypatch, *, wall_time=None):
     from findb_fetcher import acquisition
     from findb_fetcher.full_market_client import FullMarketSourceClient
 
     offset = [0.0]
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     from findb_fetcher import provider_work as coordinator
 
@@ -45,12 +46,14 @@ def account_clock(monkeypatch):
     class QueueClock(datetime):
         @classmethod
         def now(cls, tz=None):
-            return datetime.now(tz) + timedelta(seconds=offset[0])
+            return datetime.fromtimestamp((wall_time or time.time)() + offset[0], tz)
 
-    # The authoritative PG queue and its retry sender use the same advanced
-    # clock as the governor; contract fetched_at validation remains real UTC.
+    # The authoritative PG queue and its retry sender share the governor clock.
+    # Other providers retain real UTC; Shioaji installs a functional UTC below.
     monkeypatch.setattr(
-        queue, "utc_now", lambda: datetime.now(timezone.utc) + timedelta(seconds=offset[0])
+        queue,
+        "utc_now",
+        lambda: datetime.fromtimestamp((wall_time or time.time)() + offset[0], timezone.utc),
     )
     monkeypatch.setattr(coordinator, "datetime", QueueClock)
     real_time = time.time
@@ -59,7 +62,13 @@ def account_clock(monkeypatch):
         acquisition,
         "time",
         SimpleNamespace(
-            time=lambda: real_time() + offset[0], monotonic=monotonic, sleep=time.sleep
+            time=lambda: (wall_time or real_time)() + offset[0],
+            monotonic=monotonic,
+            sleep=(
+                time.sleep
+                if wall_time is None
+                else lambda delay: offset.__setitem__(0, offset[0] + delay)
+            ),
         ),
     )
     authorize = FullMarketSourceClient.authorization
@@ -68,14 +77,16 @@ def account_clock(monkeypatch):
         # Source still verifies the actual key/scope/control/fence in ASGI.
         # Only its returned clock coordinates move with this test governor.
         grant = authorize(source, *args, **kwargs)
+        delta = offset[0]
         return replace(
             grant,
-            receipt_utc=grant.receipt_utc + offset[0],
-            checked_at=grant.checked_at + offset[0],
-            expires_at=grant.expires_at + offset[0] if grant.expires_at is not None else None,
+            receipt_utc=grant.receipt_utc + delta,
+            checked_at=grant.checked_at + delta,
+            expires_at=grant.expires_at + delta if grant.expires_at is not None else None,
         )
 
-    monkeypatch.setattr(FullMarketSourceClient, "authorization", authorization)
+    if wall_time is None:
+        monkeypatch.setattr(FullMarketSourceClient, "authorization", authorization)
     return offset
 
 
@@ -86,12 +97,42 @@ def shioaji_dispatch_clock(monkeypatch):
     inherit the same facade, including virtual account retry offsets. Real IPC
     waits and process termination retain their wall-clock timeouts.
     """
-    from findb_fetcher import acquisition
+    from datetime import datetime, timezone
+
+    from findb_fetcher import acquisition, full_market_client, shioaji_historical
     from findb_fetcher.providers import shioaji_control
 
     dispatch_clock(monkeypatch)
-    offset = account_clock(monkeypatch)
+    # Functional SDK calls must not depend on real minute rollovers or ASGI
+    # scheduling latency. Pacing advances this local clock without real sleep.
+    # Source auth, header/body freshness and expiry checks still execute, using
+    # the same logical UTC rather than real wall/ASGI scheduling latency.
+    anchor = int(time.time() // 60) * 60 + 30
+    offset = account_clock(monkeypatch, wall_time=lambda: anchor)
     monkeypatch.setattr(shioaji_control, "time", acquisition.time)
+    monkeypatch.setattr(full_market_client, "time", acquisition.time)
+
+    def logical_utc_now():
+        return datetime.fromtimestamp(acquisition.time.time(), timezone.utc)
+
+    # utc_now is imported by value throughout the Backend and its test helpers.
+    # Replace only aliases of that exact function, preserving explicit boundary
+    # clocks (including the daily policy fixture). Never patch global datetime.
+    original_utc_now = utc_now
+    for name, module in tuple(sys.modules.items()):
+        if (
+            name.startswith(("app.", "tests."))
+            and getattr(module, "utc_now", None) is original_utc_now
+        ):
+            monkeypatch.setattr(module, "utc_now", logical_utc_now)
+
+    class CheckpointClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.fromtimestamp(acquisition.time.time(), tz)
+
+    # The rolling 50/60s checkpoint limiter must advance with SDK/account waits.
+    monkeypatch.setattr(shioaji_historical, "datetime", CheckpointClock)
     return offset
 
 
