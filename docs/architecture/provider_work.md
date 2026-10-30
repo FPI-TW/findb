@@ -338,6 +338,11 @@ attempt 恢復，舊 attempts、prepared bytes、receipts、quota、cooldown 不
 本機 terminal／prepared 成員不重開；Source resolved 不覆寫既有 complete reason。
 先保存 local installation，再冪等保存 journal grant，兩者完成才 ACK 該 repair ID；略過者不 ACK。
 重啟時 local installation 證據可接續未完成的 grant／ACK，不重發額度。
+`shioaji-repairs` 回傳各 repair 的 `acknowledged`；已 ACK 且本地已安裝、或本機已完成／prepared
+的修復只套用 effective mapping，不再查 diagnostics、restore 或 ACK。待安裝成員只先補報自身的
+pending outcome，其餘補報維持 member loop 順序。Shioaji observation guard 重用 member loop
+剛取得且仍在 freshness bound 內的 work authorization，逾時（如 calendar check 後）才重新 RPC；
+實際 native dispatch 仍有自己的 Source fence 與 cooldown 檢查。
 不把其他格式錯誤變成無限 not-published retry。新 provider 必須在 replay authority 前驗證 target，並保留
 negative observation 的 audit 與有界重試驗收。
 

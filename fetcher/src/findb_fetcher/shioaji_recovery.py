@@ -159,7 +159,11 @@ def observation_guard(arguments: dict, rejected):
             raise ProviderWorkRecoveryBlockedError("calendar evidence differs from original work")
         if calendar["repair_required"]:
             raise CalendarDecisionRepairRequiredError("published calendar is now closed")
-    owner.authorize()
+    # The member loop authorizes immediately before acquisition. Repeat the RPC
+    # only when it is no longer fresh, e.g. after the calendar check; the native
+    # dispatch boundary still performs its own remote and cooldown checks.
+    if not owner.authorization_fresh():
+        owner.authorize()
     with journal.connection() as db:
         cursor = db.execute(
             "INSERT INTO work_shioaji_probe(work_key,operation_key,grant_id,reserved_at,outcome,diagnostic) VALUES(?,?,?,?,?,?)",

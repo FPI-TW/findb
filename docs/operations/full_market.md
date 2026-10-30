@@ -319,6 +319,8 @@ attempt；不改舊 attempts、manifest、universe 或 plan。核准不啟動 co
 本機已完成（包括 `source_proven_no_trade`）與原 prepared／receipts 成員保留進度，不重新安裝
 grant。只有確實保存 local repair 與 journal grant 的 repair ID 才回傳安裝 ACK；略過的修復
 不記為已安裝。兩個 checkpoint 間中斷時，以相同 repair ID 續作，不重複發放額度。
+已 ACK 且本地已安裝的 repair 在後續回合不再查 diagnostics／restore／ACK，只套用 mapping；
+若 ACK 遺失（`acknowledged=false`），下一回合會冪等補送。
 
 先部署 Backend migration `2f79b1d0c4e3`／API，再更新 Fetcher；SQLite 只新增 tables。
 使用 repair 後須排空相關 work 才能退回不支援修復協定的 runtime；只要有 approval 證據，Alembic

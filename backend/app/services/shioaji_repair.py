@@ -242,6 +242,14 @@ async def approved(
                 and await db.get(ShioajiRepairAck, row.repair_id) is None
             ):
                 db.add(ShioajiRepairAck(repair_id=row.repair_id, generation=generation))
+        await db.flush()
+    acknowledged = set(
+        await db.scalars(
+            select(ShioajiRepairAck.repair_id).where(
+                ShioajiRepairAck.repair_id.in_([row.repair_id for row in rows])
+            )
+        )
+    )
     mappings = await effective_mappings(db, plan.plan_id)
     frozen = {
         row.member_key: row
@@ -262,6 +270,7 @@ async def approved(
                 "mapping_repaired": row.member_key in mappings,
                 "observation_limit": row.observation_limit,
                 "original_sha256": row.original_sha256,
+                "acknowledged": row.repair_id in acknowledged,
             }
             for row in rows
         ],

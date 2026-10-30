@@ -90,21 +90,7 @@ def require_acquisition(provider: str, *, local_only: bool = False) -> bool:
         raise ProviderWorkRecoveryBlockedError("provider host descriptor differs") from None
     owner._check_local_fence()
     if local_only:
-        from findb_fetcher.acquisition import REMOTE_AGE_SECONDS
-        from findb_fetcher.acquisition import time as account_time
-
-        return (
-            owner._authorization_started is not None
-            and owner._authorization_expires is not None
-            and owner._authorization_checked is not None
-            and owner._authorization_deadline is not None
-            and owner._authorization_started
-            <= account_time.monotonic()
-            < owner._authorization_deadline
-            and -0.250 <= account_time.time() - owner._authorization_checked < REMOTE_AGE_SECONDS
-            and account_time.time() < owner._authorization_expires
-            and owner._authorization_fd == (fd, *identity)
-        )
+        return owner.authorization_fresh() and owner._authorization_fd == (fd, *identity)
     owner.authorize()
     owner._authorization_fd = (fd, *identity)
     return True
@@ -604,6 +590,23 @@ class ProviderWorkSession:
             except Exception:
                 self.failed.set()
                 return
+
+    def authorization_fresh(self) -> bool:
+        """Whether the last remote check still bounds work without another RPC."""
+        from findb_fetcher.acquisition import REMOTE_AGE_SECONDS
+        from findb_fetcher.acquisition import time as account_time
+
+        return (
+            self._authorization_started is not None
+            and self._authorization_expires is not None
+            and self._authorization_checked is not None
+            and self._authorization_deadline is not None
+            and self._authorization_started
+            <= account_time.monotonic()
+            < self._authorization_deadline
+            and -0.250 <= account_time.time() - self._authorization_checked < REMOTE_AGE_SECONDS
+            and account_time.time() < self._authorization_expires
+        )
 
     def authorize(self) -> None:
         self._check_local_fence()

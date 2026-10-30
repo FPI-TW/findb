@@ -640,9 +640,12 @@ async def test_owner_required_and_source_repairs_are_fenced(
         )
     approved_rows = await approved(test_session, work)
     repair_id = approved_rows["repairs"][0]["repair_id"]
+    assert approved_rows["repairs"][0]["acknowledged"] is False
     for _ in range(2):
-        await approved(test_session, work, ack_ids=[repair_id], generation=2)
+        acked = await approved(test_session, work, ack_ids=[repair_id], generation=2)
+        assert acked["repairs"][0]["acknowledged"] is True
         await test_session.flush()
     assert len(list(await test_session.scalars(select(ShioajiRepairAck)))) == 1
+    assert (await approved(test_session, work))["repairs"][0]["acknowledged"] is True
     with pytest.raises(FullMarketError, match="ACK differs"):
         await approved(test_session, work, ack_ids=[str(uuid7())], generation=2)

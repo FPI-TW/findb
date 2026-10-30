@@ -96,6 +96,8 @@ Admin 修復回應另驗證 OpenAPI typed schemas、必要摘要欄位與格式�
 不再顯示 gap、獨立 source error 保留，以及 repair→claim 的窗口／control／Full flag 矩陣與
 Pilot 例外。本機 no-trade complete、Backend resolved、prepared／receipt 成員不得重開或新增
 安裝 ACK；混合成員僅 ACK 實際安裝者，local→grant 中斷與 ACK-loss 可用同 ID 續作。
+已 ACK 修復的後續回合不再查 diagnostics／restore／ACK，只補報待安裝成員自身的 outcome；
+observation guard 重用 fresh member authorization，逾時才重新 RPC。
 `test_provider_work_daily_faults.py` 的股票／ETF 空回應案例走正式 decorator、隔離 fake SDK、
 Source→raw→normalization→canonical，驗證後續合法回應完成原 scope；同 suite 保留 outage／
 lost-ACK 原 bytes／idempotency 驗證。測試不呼叫真實 provider，不能代替 production 根因驗收。

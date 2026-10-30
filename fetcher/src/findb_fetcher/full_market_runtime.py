@@ -1751,12 +1751,39 @@ class FullMarketRuntime:
         repairs = response["repairs"]
         if not repairs:
             return release
+        parts = {member: part for part in plan["parts"] for member in part["member_keys"]}
+        keys = {member: part["work_item_id"] + ":" + member for member, part in parts.items()}
+        members = {row["member_key"]: dict(row) for row in release["members"]}
+        for repair in repairs:
+            member_key = repair["member_key"]
+            if member_key not in keys or member_key not in members:
+                raise ProviderWorkRecoveryBlockedError("repair member differs from frozen work")
+            if repair["mapping_repaired"]:
+                members[member_key].update(
+                    mapping_status="mapped", provider_symbol=repair["provider_symbol"]
+                )
+        repaired = {**release, "members": list(members.values())}
+        # Acknowledged installations and locally settled members need no Source
+        # inventory, restore or ACK traffic; only lost ACKs and new grants do.
+        outstanding = [
+            repair
+            for repair in repairs
+            if not (
+                repair.get("acknowledged") is True
+                and self.state.member_repair_installed(repair["repair_id"])
+            )
+            and not self.state.member_complete(keys[repair["member_key"]])
+            and self.state.prepared(keys[repair["member_key"]]) is None
+        ]
+        if not outstanding:
+            return repaired
+        # Only a repaired member's own unacknowledged outcome blocks installation;
+        # every other report keeps _deliver_members' replay order.
         pending_reports = self.state.pending_source_error_keys(plan["plan_id"])
-        for part in plan["parts"]:
-            for member_key in part["member_keys"]:
-                key = part["work_item_id"] + ":" + member_key
-                if key in pending_reports:
-                    self._report_source_error(plan, part, member_key, key)
+        for repair in outstanding:
+            member_key = repair["member_key"]
+            if keys[member_key] in pending_reports:
+                self._report_source_error(plan, parts[member_key], member_key, keys[member_key])
         inventory = self.source.request(
             "GET", f"provider-work/{owner.work['work_id']}/shioaji-diagnostics"
         )
@@ -1774,21 +1801,9 @@ class FullMarketRuntime:
         resolved = {
             row["member_key"] for row in inventory["members"] if row["status"] == "resolved"
         }
-        keys = {
-            member: part["work_item_id"] + ":" + member
-            for part in plan["parts"]
-            for member in part["member_keys"]
-        }
-        members = {row["member_key"]: dict(row) for row in release["members"]}
         installed = []
-        for repair in repairs:
+        for repair in outstanding:
             member_key = repair["member_key"]
-            if member_key not in keys or member_key not in members:
-                raise ProviderWorkRecoveryBlockedError("repair member differs from frozen work")
-            if repair["mapping_repaired"]:
-                members[member_key].update(
-                    mapping_status="mapped", provider_symbol=repair["provider_symbol"]
-                )
             if member_key in resolved:
                 if not self.state.member_complete(keys[member_key]):
                     self.state.finish(keys[member_key], status="complete")
@@ -1803,7 +1818,7 @@ class FullMarketRuntime:
                 installed.append(repair["repair_id"])
         if installed:
             owner._preparation_request("shioaji-repair-ack", repair_ids=installed)
-        return {**release, "members": list(members.values())}
+        return repaired
 
     def _deliver_plan(
         self,

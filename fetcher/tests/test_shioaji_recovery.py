@@ -133,6 +133,24 @@ def test_only_proven_predispatch_wait_releases_reservation(tmp_path, wait):
         assert observation_status(owner.journal, "2330", DAY) == (0 if wait else 1, 3)
 
 
+def test_guard_reuses_fresh_member_authorization_and_renews_stale_one(tmp_path):
+    with owned_unit_work("shioaji", tmp_path) as owner:
+        routes = []
+        request = owner.source.request
+        owner.source.request = lambda method, route, body: (
+            routes.append(route.rsplit("/", 1)[-1]) or request(method, route, body)
+        )
+        # The member loop authorizes immediately before acquisition.
+        owner.authorize()
+        with observation_guard({"symbol": "2330", "target_date": DAY}, None):
+            pass
+        assert routes == ["authorize"]
+        owner._authorization_checked -= 10
+        with observation_guard({"symbol": "2317", "target_date": DAY}, None):
+            pass
+        assert routes == ["authorize", "authorize"]
+
+
 def test_recovery_keeps_eight_old_failures_and_ack_loss_continuation(tmp_path):
     from test_full_market import _plan
 
@@ -868,5 +886,81 @@ def test_repair_skips_terminal_and_prepared_members_and_only_acks_installed(tmp_
                 runtime._acquire = lambda member, *args: acquired.append(member["member_key"]) or []
                 runtime._deliver_plan(plan, result, runtime.feeds[0])
                 assert acquired == ["MSFT"]
+    finally:
+        runtime.close()
+
+
+def test_acknowledged_repairs_skip_source_traffic_and_replay_only_repaired_reports(tmp_path):
+    from test_full_market import _member, _plan, _runtime
+
+    runtime, source, _ = _runtime(tmp_path, provider="shioaji")
+    plan = _plan()
+    runtime.state.record_plan(plan, "shioaji")
+    keys = {symbol: "fp1:123:" + symbol for symbol in ["AAPL", "MSFT"]}
+    for key in keys.values():
+        runtime.state.stage_source_error(key)
+    repair = {
+        "repair_id": "approved",
+        "member_key": "AAPL",
+        "provider_symbol": "AAPL",
+        "mapping_repaired": True,
+        "observation_limit": 3,
+        "acknowledged": False,
+    }
+    inventories = []
+    source.request = lambda *args: (
+        inventories.append(args)
+        or {
+            "work_id": "owned-unit-work",
+            "plan_id": plan["plan_id"],
+            "execution_profile": runtime.execution_profile,
+            "dataset_key": plan["dataset_key"],
+            "trade_date": plan["trade_date"],
+            "members": [
+                {"member_key": "AAPL", "status": "blocked"},
+                {"member_key": "MSFT", "status": "missing"},
+            ],
+        }
+    )
+    members = [
+        {
+            **_member(),
+            "member_key": symbol,
+            "symbol": symbol,
+            "provider_symbol": symbol,
+            "mapping_status": "gap" if symbol == "AAPL" else "mapped",
+        }
+        for symbol in keys
+    ]
+    try:
+        with owned_unit_work("shioaji", tmp_path) as owner:
+            acknowledgements, restores = [], []
+
+            def request(action, **kwargs):
+                if action == "shioaji-repairs":
+                    return {
+                        "work_id": owner.work["work_id"],
+                        "plan_id": plan["plan_id"],
+                        "repairs": [dict(repair)],
+                    }
+                assert action == "shioaji-repair-ack"
+                acknowledgements.append(kwargs["repair_ids"])
+                repair["acknowledged"] = True
+                return {}
+
+            owner._preparation_request = request
+            owner.restore = lambda *, member_key: restores.append(member_key) or []
+            runtime._install_shioaji_repairs(owner, plan, {"members": members})
+            # Only the repaired member's report precedes installation; the other
+            # report stays for _deliver_members' ordered replay.
+            assert [row["member_key"] for row in source.outcomes] == ["AAPL"]
+            assert runtime.state.pending_source_error_keys(plan["plan_id"]) == {keys["MSFT"]}
+            assert runtime.state.member_repair_installed("approved")
+            for _ in range(2):
+                result = runtime._install_shioaji_repairs(owner, plan, {"members": members})
+                assert result["members"][0]["mapping_status"] == "mapped"
+                assert result["members"][0]["provider_symbol"] == "AAPL"
+            assert acknowledgements == [["approved"]]
+            assert len(inventories) == 1 and restores == ["AAPL"]
     finally:
         runtime.close()

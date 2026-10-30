@@ -727,6 +727,15 @@ class FullMarketState:
             row = db.execute("SELECT status FROM full_work WHERE key=?", (key,)).fetchone()
             return row is not None and row[0] == "complete"
 
+    def member_repair_installed(self, repair_id: str) -> bool:
+        with self.connection() as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM full_member_repair WHERE repair_id=?", (repair_id,)
+                ).fetchone()
+                is not None
+            )
+
     def apply_member_repair(self, key: str, repair_id: str) -> bool:
         """Idempotent local installation never resets an existing failure count."""
         with self.connection() as db:
