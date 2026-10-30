@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
+
+_DIAGNOSTIC_CATEGORY = re.compile(r"^[a-z][a-z0-9_]{0,39}(:[A-Za-z][A-Za-z0-9_]{0,59})?$")
 
 FULL_WORK_MAX_ATTEMPTS = 8
 
@@ -72,6 +75,8 @@ class FullMarketState:
                 CREATE INDEX IF NOT EXISTS full_plan_reconcile_dirty ON full_plan_reconcile(dirty,plan_id);
                 INSERT OR IGNORE INTO full_plan_reconcile SELECT plan_id,1 FROM full_plan WHERE complete=0;
                 CREATE TABLE IF NOT EXISTS full_work_receipt (key TEXT NOT NULL, idempotency_key TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(key,idempotency_key));
+                CREATE TABLE IF NOT EXISTS full_work_diagnostic (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, provider TEXT NOT NULL, category TEXT NOT NULL, http_status INTEGER, provider_code INTEGER, dispatched INTEGER, observed_at REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS full_work_diagnostic_key ON full_work_diagnostic(key,id);
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
                 CREATE TABLE IF NOT EXISTS full_provider_outage (plan_id TEXT PRIMARY KEY, since REAL NOT NULL);
@@ -690,6 +695,46 @@ class FullMarketState:
                 )
             }
 
+    def record_diagnostic(
+        self,
+        key: str,
+        *,
+        provider: str,
+        category: str,
+        http_status: int | None = None,
+        provider_code: int | None = None,
+        dispatched: bool | None = None,
+        now: float | None = None,
+    ) -> None:
+        """Append one bounded failure class; free-text provider messages are never kept."""
+        if not _DIAGNOSTIC_CATEGORY.fullmatch(category):
+            raise FullMarketStateError("diagnostic category is invalid")
+        codes = []
+        for code in (http_status, provider_code):
+            if code is not None and (type(code) is not int or not 0 <= code <= 999):
+                code = None
+            codes.append(code)
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO full_work_diagnostic(key,provider,category,http_status,provider_code,dispatched,observed_at) VALUES(?,?,?,?,?,?,?)",
+                (
+                    key,
+                    provider,
+                    category,
+                    *codes,
+                    None if dispatched is None else int(dispatched),
+                    self.clock() if now is None else now,
+                ),
+            )
+
+    def diagnostics(self, key: str) -> list[dict[str, Any]]:
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT category,http_status,provider_code,dispatched,observed_at FROM full_work_diagnostic WHERE key=? ORDER BY id",
+                (key,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def stage_source_error(self, key: str) -> None:
         """Retain a report continuation without spending or refunding attempts.
 
@@ -980,6 +1025,15 @@ class FullMarketState:
                     (provider,),
                 )
             ]
+            # Latest failure class of each unfinished member, for operator triage.
+            diagnostics = dict(
+                db.execute(
+                    "SELECT d.category,COUNT(*) FROM full_work_diagnostic d JOIN full_work w ON w.key=d.key "
+                    "WHERE w.provider=? AND w.status!='complete' AND d.id=(SELECT MAX(id) FROM full_work_diagnostic WHERE key=d.key) "
+                    "GROUP BY d.category ORDER BY d.category",
+                    (provider,),
+                ).fetchall()
+            )
         return {
             "acquisition_protocol_version": 2,
             "universe_refresh": json.loads(refresh["result"]) if refresh else [],
@@ -988,6 +1042,7 @@ class FullMarketState:
             "manual_required": manual,
             "date_prerequisites": prerequisites,
             "provider_outages": outages,
+            "source_error_diagnostics": diagnostics,
             "plans": [{**gap, **self.plan_progress(gap["plan_id"])} for gap in gaps],
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }

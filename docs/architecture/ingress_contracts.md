@@ -80,6 +80,9 @@ Coverage metadata會保存到run供missing-delivery判定；同日incremental或
 - 同一delivery的`(symbol, trade_date)`不可重複。
 - OHLC、volume與turnover不得為負；high/low必須包住其他已提供價格。
 - Dataset沒有default currency時，每列必須提供`currency`。
+- Canonical EOD價格為實際成交價（as-traded），不含拆股或股利調整；拆股／股利屬於
+  `corporate_action` 事實，不得先調整後寫入行情。Twelve Data daily 與 historical 一律以
+  `adjust=none` 抓取；原始 R2 回應即為未調整證據。
 
 ## `market_eod.v2`
 

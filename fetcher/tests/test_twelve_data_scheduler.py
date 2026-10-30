@@ -400,49 +400,12 @@ def test_scheduler_rejects_legacy_or_partial_prepared_raw_state(
     assert events == []
 
 
-def test_executor_delivers_only_rows_after_checkpoint(contracts_dir: Path) -> None:
-    provider = FakeProvider()
-    source = FakeSource()
-
-    result = _executor(contracts_dir, provider=provider, source=source).execute(
-        _job(date(2024, 1, 3), scheduled_date=date(2024, 1, 5)),
-        now=NOW,
-    )
-
-    assert result.outcome == "completed"
-    assert result.succeeded is True
-    assert result.record_count == 2
-    assert result.checkpoint_after == date(2024, 1, 5)
-    assert result.attempt_id == ATTEMPT_ID
-    assert provider.calls == [
-        (
-            "AAPL",
-            {
-                "start_date": date(2024, 1, 4),
-                "end_date": date(2024, 1, 5),
-                "exchange": "NASDAQ",
-            },
-        )
-    ]
-    assert [row["trade_date"] for row in source.requests[0]["payload"]["data"]] == [
-        "2024-01-04",
-        "2024-01-05",
-    ]
-
-
-@pytest.mark.parametrize(
-    ("checkpoint", "expected_start", "expected_rows"),
-    [
-        (None, date(2024, 1, 5), ["2024-01-05"]),
-        (date(2024, 1, 3), date(2024, 1, 4), ["2024-01-04", "2024-01-05"]),
-    ],
-)
+@pytest.mark.parametrize("checkpoint", [None, date(2024, 1, 3)])
 def test_v2_scheduler_uses_inclusive_client_end_date_and_filters_future_rows(
     contracts_dir: Path,
     checkpoint: date | None,
-    expected_start: date,
-    expected_rows: list[str],
 ) -> None:
+    # Historical jobs own one target date; a stale checkpoint never widens the window.
     provider = FutureRowProvider()
     source = FakeSource()
     executor = _executor(contracts_dir, provider=provider, source=source)
@@ -468,45 +431,23 @@ def test_v2_scheduler_uses_inclusive_client_end_date_and_filters_future_rows(
         (
             "AAPL",
             {
-                "start_date": expected_start,
+                "start_date": date(2024, 1, 5),
                 "end_date": date(2024, 1, 5),
                 "exchange": "NASDAQ",
             },
         )
     ]
-    assert [row["trade_date"] for row in source.requests[0]["payload"]["data"]] == expected_rows
+    assert [row["trade_date"] for row in source.requests[0]["payload"]["data"]] == ["2024-01-05"]
     assert source.requests[0]["delivery"]["target_data_date"] == "2024-01-05"
 
 
-def test_executor_marks_up_to_date_without_source_delivery(contracts_dir: Path) -> None:
+def test_executor_fetches_only_the_target_date(contracts_dir: Path) -> None:
+    provider = FakeProvider()
     source = FakeSource()
 
-    result = _executor(contracts_dir, source=source).execute(
-        _job(date(2024, 1, 5), scheduled_date=date(2024, 1, 5)),
-        now=NOW,
-    )
+    result = _executor(contracts_dir, provider=provider, source=source).execute(_job(), now=NOW)
 
-    assert result == JobExecution(
-        outcome="up_to_date",
-        succeeded=True,
-        checkpoint_after=date(2024, 1, 5),
-    )
-    assert source.requests == []
-
-
-def test_executor_bootstrap_is_bounded_and_large_checkpoint_gap_is_rejected(
-    contracts_dir: Path,
-) -> None:
-    provider = FakeProvider()
-    executor = _executor(contracts_dir, provider=provider)
-
-    bootstrap = executor.execute(_job(), now=NOW)
-    gap = executor.execute(
-        replace(_job(date(2024, 1, 3)), target_data_date=date(2026, 7, 25)),
-        now=NOW,
-    )
-
-    assert bootstrap.succeeded is True
+    assert result.succeeded is True
     assert provider.calls == [
         (
             "AAPL",
@@ -517,8 +458,7 @@ def test_executor_bootstrap_is_bounded_and_large_checkpoint_gap_is_rejected(
             },
         )
     ]
-    assert gap.outcome == "checkpoint_gap_exceeded"
-    assert gap.succeeded is False
+    assert [row["trade_date"] for row in source.requests[0]["payload"]["data"]] == ["2024-01-05"]
 
 
 @pytest.mark.parametrize("status", ["failed", "completed_with_errors"])
@@ -526,10 +466,7 @@ def test_terminal_normalization_failure_never_advances_checkpoint(
     contracts_dir: Path,
     status: str,
 ) -> None:
-    result = _executor(contracts_dir, source=FakeSource(status=status)).execute(
-        _job(date(2024, 1, 3), scheduled_date=date(2024, 1, 5)),
-        now=NOW,
-    )
+    result = _executor(contracts_dir, source=FakeSource(status=status)).execute(_job(), now=NOW)
 
     assert result.outcome == "terminal_failure"
     assert result.succeeded is False

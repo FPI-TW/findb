@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -32,6 +33,7 @@ from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarket
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FullMarketState,
+    FullMarketStateError,
     QuotaBlockedError,
 )
 from findb_fetcher.full_market_universe import (
@@ -61,7 +63,11 @@ from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
     ProviderPublicationPendingError,
 )
-from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped, durable_response
+from findb_fetcher.provider_work import (
+    ProviderWorkAcquisitionStopped,
+    ProviderWorkBasisMismatchError,
+    durable_response,
+)
 from findb_fetcher.providers.factset import (
     FactSetConfig,
     FactSetGateway,
@@ -105,6 +111,9 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataResponseError,
 )
 from findb_fetcher.providers.twelve_data import (
+    authorization_headers as td_authorization_headers,
+)
+from findb_fetcher.providers.twelve_data import (
     build_market_eod_request as td_request,
 )
 from findb_fetcher.raw_storage import (
@@ -114,7 +123,8 @@ from findb_fetcher.raw_storage import (
     attach_raw_object,
 )
 
-_TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States", "hk_equity_eod": "Hong Kong"}
+# HK EOD is owned by FactSet; Twelve Data never refreshes or acquires HK again.
+_TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States"}
 
 
 class ReadinessBlockedError(RuntimeError):
@@ -689,8 +699,8 @@ class FullMarketRuntime:
             self.http.stream(
                 "GET",
                 config.base_url + "/stocks",
-                params={"apikey": config.api_key, "country": country},
-                headers={"Accept-Encoding": "identity"},
+                params={"country": country},
+                headers=td_authorization_headers(config.api_key),
                 extensions=extensions,
             ) as response,
         ):
@@ -775,20 +785,6 @@ class FullMarketRuntime:
                     {
                         **{url: snapshots[url] for url in NASDAQ_URLS},
                         **self._catalogue_evidence_for("us_equity_eod"),
-                    },
-                )
-            if "hk_equity_eod" in dataset_keys:
-                snapshots[HKEX_URL] = self._snapshot(HKEX_URL)
-                hk_date, hk = parse_hkex(
-                    snapshots[HKEX_URL],
-                    observed_date=now.astimezone(ZoneInfo("Asia/Hong_Kong")).date(),
-                )
-                groups["hk_equity_eod"] = (
-                    hk_date,
-                    map_catalogue(hk, catalogue),
-                    {
-                        HKEX_URL: snapshots[HKEX_URL],
-                        **self._catalogue_evidence_for("hk_equity_eod"),
                     },
                 )
         elif self.provider == "factset":
@@ -1107,6 +1103,8 @@ class FullMarketRuntime:
         self.pause()
         # No manual_pending_prepared waiver: Source must see all original
         # deliveries accepted and every normalization terminal before release.
+        # The only exception is a Twelve Data body mapped from pre-basis bytes,
+        # which settle() retains under an explicit price-basis waiver.
         # Missing/manual frozen members remain missing/manual, never no_data.
         owner.settle(
             "failed",
@@ -1971,6 +1969,15 @@ class FullMarketRuntime:
                         owner.reserve(request)
                     prepared = canonical_bytes(requests)
                     self.state.prepare(key, prepared)
+                elif callable(getattr(owner, "prepared_predates_basis", None)) and any(
+                    owner.prepared_predates_basis(request) for request in json.loads(prepared)
+                ):
+                    # Bodies mapped from split-adjusted responses are retained, never replayed.
+                    owner.basis_blocked.update(
+                        request["idempotency_key"] for request in json.loads(prepared)
+                    )
+                    self._price_basis_manual(plan, part, member_key, key)
+                    continue
                 normalizing = False
                 prepared_requests = json.loads(prepared)
                 for request in prepared_requests:
@@ -2154,7 +2161,11 @@ class FullMarketRuntime:
                     reason=reason,
                     now=time.time(),
                 )
+                self._record_diagnostic(key, exc)
                 return False
+            except ProviderWorkBasisMismatchError:
+                self._price_basis_manual(plan, part, member_key, key)
+                continue
             except SourceAPIResponseError as exc:
                 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
 
@@ -2213,12 +2224,62 @@ class FullMarketRuntime:
                     )
                     self.state.finish(key, status="manual", reason="retry_exhausted")
                     return False
-                # Provider/SDK diagnostics never enter durable state or logs.
+                # Provider/SDK messages never enter durable state or logs; only
+                # the bounded failure class is retained for traceability.
                 self.state.stage_source_error(key)
+                self._record_diagnostic(key, exc)
                 self._report_source_error(plan, part, member_key, key)
                 return False
 
         return True
+
+    def _price_basis_manual(
+        self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
+    ) -> None:
+        """Retain pre-basis bytes for manual review; never retry, refetch or replay them."""
+        self.source.outcome(
+            plan["plan_id"],
+            work_item_id=part["work_item_id"],
+            member_key=member_key,
+            reason="source_error",
+        )
+        self.state.finish(key, status="manual", reason="price_basis_manual_review")
+        self._record_diagnostic(key, ProviderWorkBasisMismatchError("price basis"))
+
+    def _record_diagnostic(self, key: str, exc: BaseException) -> None:
+        """Best effort: a diagnostic write never suppresses the failure's own report."""
+        try:
+            self._write_diagnostic(key, exc)
+        except (sqlite3.Error, FullMarketStateError):
+            pass
+
+    def _write_diagnostic(self, key: str, exc: BaseException) -> None:
+        if isinstance(exc, ProviderWorkBasisMismatchError):
+            self.state.record_diagnostic(
+                key, provider=self.provider, category="price_basis_mismatch"
+            )
+        elif isinstance(exc, TwelveDataResponseError):
+            self.state.record_diagnostic(
+                key,
+                provider=self.provider,
+                category=exc.category,
+                http_status=exc.status_code,
+                provider_code=exc.provider_code,
+                dispatched=exc.dispatched,
+            )
+        elif isinstance(exc, QuotaBlockedError):
+            self.state.record_diagnostic(
+                key,
+                provider=self.provider,
+                category="quota_blocked",
+                http_status=exc.status_code,
+                dispatched=exc.dispatched,
+            )
+        else:
+            name = re.sub(r"[^A-Za-z0-9_]", "", type(exc).__name__).lstrip("_0123456789")
+            self.state.record_diagnostic(
+                key, provider=self.provider, category="exception:" + (name[:60] or "Unknown")
+            )
 
     def _report_source_error(
         self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
@@ -2326,7 +2387,7 @@ class FullMarketRuntime:
             )
             if (
                 canonical_twelve_data_mic(response["meta"]["mic_code"]) != member["exchange"]
-                or response["meta"]["currency"] != member["currency"]
+                or request["payload"]["data"][0]["currency"] != member["currency"]
             ):
                 raise ReadinessBlockedError("provider identity differs from official universe")
             raw = response.raw_bytes

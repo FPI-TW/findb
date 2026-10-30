@@ -77,7 +77,7 @@ def test_twelve_data_actual_config_key_cooldown_blocks_next_boundary(governor, m
     calls = []
 
     def upstream(request):
-        calls.append(request.url.params["apikey"])
+        calls.append(request.headers["authorization"].removeprefix("apikey "))
         return httpx.Response(429, headers={"Retry-After": "120"}, json={"status": "error"})
 
     class CooldownWaitError(Exception):
@@ -104,12 +104,32 @@ def test_twelve_data_actual_config_key_cooldown_blocks_next_boundary(governor, m
         ]
 
 
+def test_twelve_data_payload_rate_limit_writes_account_cooldown(governor):
+    _pin(governor, "twelve_data", "actual-B", "known-B")
+
+    def upstream(request):
+        return httpx.Response(
+            200, json={"code": 429, "message": "credits exhausted", "status": "error"}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(upstream)) as http:
+        client = TwelveDataClient(TwelveDataConfig(api_key="actual-B"), client=http)
+        with authorization_scope(_grant), pytest.raises(TwelveDataResponseError) as error:
+            client.fetch_daily("AAPL")
+    assert error.value.category == "rate_limited"
+    with governor.connection() as db:
+        assert (
+            db.execute("SELECT next_at FROM full_pacing WHERE account='known-B'").fetchone()[0]
+            > time.time() + 50
+        )
+
+
 def test_parallel_twelve_data_clients_same_config_key_share_boundary_lock(governor):
     _pin(governor, "twelve_data", "actual-B", "known-B")
     events = []
 
     def upstream(request):
-        assert request.url.params["apikey"] == "actual-B"
+        assert request.headers["authorization"] == "apikey actual-B"
         events.append(("start", time.monotonic()))
         time.sleep(0.04)
         events.append(("complete", time.monotonic()))

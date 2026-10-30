@@ -103,7 +103,7 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 
 | 範圍 | 權威來源 | 用途 |
 | --- | --- | --- |
-| 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 保留 US、HK |
+| 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 保留 US、HK，HK 僅供舊 prepared／raw rerun，Fetcher 不再有 HK 目錄、名單或日資料抓取路徑 |
 | 安裝 feeds | `backend/configs/execution_feeds.v1.json` 及實際部署的 Fetcher config | 目前七條 feeds；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
 | 凍結 admission | `admitted_dataset_keys`／`admission_id` | Owner 最近一次啟動時凍結的可用 datasets；停止後投影仍可能保留 |
 | 即時抓取授權 | Source `full-market/authorization?consumer=pilot\|full_market` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、profile flag、Source credential、baseline 與 provider cutover |
@@ -706,7 +706,7 @@ Prepare SSM：`477ef221-ad3e-4086-9389-76f26bfe794b`；Backend 刪除：
 
 | Provider | 適用限制 | 用量核對與超限處理 |
 | --- | --- | --- |
-| Twelve Data | 1597 API credits／分鐘 | 以 `/api_usage` 與 response credit headers 核對實際 credits；依 endpoint weight 計算，收到 429 時等待／重試 |
+| Twelve Data | 1597 API credits／分鐘 | Durable governor 依 1597／分鐘平均 pacing；HTTP 429 與 HTTP 200 payload code 429 均寫入 60 秒帳號 cooldown 後等待／重試。實際帳號用量以 readiness probe 的 `/api_usage` 人工核對；每日路徑尚未讀取 response credit headers |
 | FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置 |
 | Shioaji | 500 MB／日、行情查詢 50 次／10 秒 | 以 `api.usage()` 的 bytes／limit_bytes／remaining_bytes 核對；API 回報的 524288000 bytes 為 500 MiB；依 10 秒視窗控制查詢速率 |
 | TAIFEX | OpenAPI 不需帳號，未公布明確 requests／bytes 數值上限 | 以 HTTP 429 作為觸及平台上限的訊號，依 `Retry-After` 或既有 backoff 等待／重試，不自行設定 provider 配額數值 |
@@ -727,9 +727,77 @@ Raw R2 以內容雜湊決定 immutable object key，使用 `If-None-Match: *` �
 讀取失敗或內容不一致仍阻擋交付，查無物件的競態可重試；不移除 bucket lock 或刪除物件。
 Twelve Data 的 catalogue 與實際日資料回應共用 Nasdaq MIC 規則：僅 `XNCM`、`XNGS`、
 `XNMS` 對應官方 `XNAS`，其餘交易所與幣別仍須完全符合 frozen universe；原始回應不改寫。
-Twelve Data universe refresh 只抓取 Source 當次授權的美國／香港 country catalogue，
-不下載全球 `/stocks` 目錄。每個市場各自經過 dataset-bound fresh authorization 與 account governor；
-回應大小上限維持不變，Raw 與 evidence URL 按市場分開，API key 不寫入 evidence URL。
+Twelve Data universe refresh 只抓取 Source 當次授權的美國 country catalogue，不下載全球
+`/stocks` 目錄，也不再抓取香港 catalogue 或 HKEX 名單（港股屬 FactSet）。每個市場各自經過
+dataset-bound fresh authorization 與 account governor；回應大小上限維持不變，Raw 與 evidence URL
+按市場分開。API key 只以 `Authorization: apikey …` header 傳送，不出現在 request URL、evidence URL
+或例外訊息。
+
+### Twelve Data 日資料與失敗分類
+
+日資料以 `/time_series`、`interval=1day`、`adjust=none` 抓取當日；canonical 為實際成交價，
+拆股／股利不在行情中預先調整（見 [ingress contract](../architecture/ingress_contracts.md#market_eodv1)）。
+Twelve Data 對查無資料、代號錯誤等情況回傳 HTTP 200 加 payload `status=error`，或直接回傳 HTTP
+4xx／5xx。Fetcher 依 HTTP status、payload `code` 與固定訊息族群分類，只保存分類與數字代碼，
+不保存 provider 原文：
+
+| 分類 | 判定 | 處理 |
+| --- | --- | --- |
+| `rate_limited` | HTTP 429 或 payload code 429 | 已派送；寫入帳號 cooldown，回報 `rate_limited` |
+| `transport`／`server_error` | 無 HTTP 回應、5xx | 回報 `source_error`，依原 failure budget 重試 |
+| `auth_failed`／`plan_restricted` | 401／403 | 回報 `source_error`；需人工核對金鑰與方案權限 |
+| `no_data` | 400 且訊息為 `No data is available…` | 回報 `source_error`；不視為 `no_data` 證據（供應商缺資料不等於交易所無成交） |
+| `invalid_symbol`／`not_found`／`bad_request` | 其他 400、404 | 回報 `source_error`；需核對 mapping |
+| `response_too_large`／`malformed_response` | 超出回應上限、非 JSON、非 `ok` | 回報 `source_error` |
+
+#### 價格基準切換與舊回應快取
+
+Provider-work journal 的 Twelve Data 日資料快取（`work_response` 的 `twelve_daily:*`）以價格基準
+`adjust-none-v1` 作為識別的一部分。切換前保存的回應沒有此基準，可能是拆股調整價，Fetcher
+不重播也不靜默重抓，改以保留原 bytes 的 failed／manual 結算處理，不會把 owner 留在
+recovery blocked 而卡住同 provider 的後續工作：
+
+| 情境 | 判定 | 處理 |
+| --- | --- | --- |
+| 同一 request identity 只有舊回應 | `durable_response` 找到無基準 key | 拋出一般錯誤 `ProviderWorkBasisMismatchError`；Full／Pilot 成員標為 `manual / price_basis_manual_review` 並回報 `source_error`，同計畫其他成員照常處理；historical item 以 `PREPARED_DELIVERY_MANUAL_REVIEW` 結束 |
+| Prepared body 由舊回應產生 | body 的 `payload.batch.source_raw_sha256` 等於某筆舊回應原始 bytes 的 SHA-256 | 該 body 不送出；Full／Pilot 成員同上標為 manual；historical item 同上 |
+| 排空 prepared ledger 時遇到上述 body | 同上，逐筆判定；只擋 Source 尚未接受的 body | 跳過該 body、其餘照常交付（已接受的舊 body 重播只取回原 run）；本 session 已記錄被擋 body 時，任何非 retry 結算（含 `completed`、`cancelled`、`failed`，以及
+排空後重送的 `PREPARED_DRAINING` 結算）與 drain-only retry 都在送出前改為 `failed`，`failure_code=PRICE_BASIS_MANUAL_REVIEW`（已有 failure code 時保留），proof 帶 `manual_pending_prepared`、`price_basis_blocked` 與 `price_basis`；proof 仍有未回報的 `pending_source_errors` 時先維持 retry，回報後再轉換 |
+
+判定逐筆進行：work 只是含有舊回應、但待送 body 不是由它產生（或待送集合為空）時，不阻擋。
+Historical 的 scope stopped、drain-only 與 closed／draining 回合排空後若有被擋 body，一律以
+`PREPARED_DELIVERY_MANUAL_REVIEW` 完成 item，completion 遇到 `PREPARED_DRAINING` 也改送同一
+manual 結果，讓 item／request 與 work 一起進入終態。Full／Pilot drain-only 回合不會清除
+（Source 只在所有 prepared 都被接受後才解除 drain-only），因此被擋 body 會使該回合的 retry
+轉為 manual failed，尚未抓取的成員改由 historical 回補。
+
+判定只依該 work 自己 journal 中的 `twelve_daily` 回應：沒有 journal 回應可對照的舊 checkpoint
+body（例如 provider-work 之前匯入、且已有 prepared 的工作）無法辨識基準。2026-10-30 核對時
+production 匯入的 13 筆 US daily 均未開始、沒有 prepared，目前無此類 body。
+原 `work_response` bytes、prepared bytes、receipts 與 R2 raw 全部保留；第一次偵測時於
+`work_response_observation` 複製一列 `origin=incompatible_basis:adjust-none-v1` 作為證據，並在
+Fetcher `full_work_diagnostic` 記為 `price_basis_mismatch`。
+
+Owner 的後續處理：historical request 因 failed date 結束後，為相同日期建立新 request（新 work／
+journal 以 `adjust=none` 抓取）；Full／Pilot 計畫以 manual 成員結算 failed 後，以 historical request
+回補該日期。取消 historical request 也會在原 owner 排空時走同一 manual 結算，不需人工改 DB。
+不得刪除 journal 列、清除 prepared 或重設預算。
+
+2026-10-30 唯讀核對：production journal 沒有 `twelve_daily` 快取，13 筆 queued US daily
+尚未開始；staging 有 6 筆含舊快取的 Pilot daily 均為 completed 且 receipts 齊全，不會再被
+claim。切換當下兩環境均無受影響工作。SSM：production `312dd583-1106-43a6-a026-95efdfbf3e60`／
+`b76aca73-1d06-476d-bdeb-4b9c9ac341b3`，staging `ae01c182-e7ce-4157-9b95-9edcc361762b`／
+`17c9ba56-09c5-42c5-954f-c3d4e904a37b`。
+
+Full／Pilot daily 成員迴圈（`_deliver_plan`）中以下失敗會附加一列到 Fetcher SQLite
+`full_work_diagnostic`（work key、分類、HTTP status、provider code、是否已派送、時間）：
+Twelve Data provider 錯誤（上表分類）、已派送的 quota 失敗（`quota_blocked`）、價格基準不符
+（`price_basis_mismatch`），以及其他 provider 的未分類例外（`exception:<類別名稱>`）。
+Source 4xx 拒收、mapping gap、normalization 失敗、acquisition 停止／時間窗關閉、FinLab 尚未發布、
+FactSet 專用交付路徑與 historical 不寫診斷，仍以既有 `full_work.reason`、Source outcome 與
+historical failure code 追溯。診斷在 Source 回報之後以 best effort 寫入，寫入失敗不影響回報。
+`--health` 輸出的 `source_error_diagnostics` 為未完成成員最新分類的計數。歷史紀錄只會新增，
+不改寫 `full_work`、prepared bytes、receipts 或 failure budget。
 
 Source 的 `POST /api/v1/source/universes` 使用 16 MiB nginx 與 Backend Content-Length 上限，
 容納完整市場成員；其餘 Source 端點維持 1 MiB nginx 上限及原有

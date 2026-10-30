@@ -71,6 +71,24 @@ Production native 資料與實際 rollback 演練由
 - [ ] TW、HK、US、futures 實際 rollout 驗證 open-day 準時 complete，驗證
   expected 分母、durable no_data、partial Serve、gap catch-up、session 與 nullable futures fields。
 
+## Twelve Data 正式上線
+
+現行抓取、價格基準與失敗分類見 [Full market](../operations/full_market.md#twelve-data-日資料與失敗分類)。
+
+- [ ] 部署 `adjust=none`／header 認證／失敗分類後，先以 Pilot 兩檔、再以 Full 前 100 檔連續數個
+  美國交易日驗收 Source → R2 → canonical → Serve，並以 `--health` 的 `source_error_diagnostics`
+  核對失敗分類；通過後才開放 Full 全名單（約 6,018 筆目錄）。
+- [ ] 向 Twelve Data 書面確認：方案的美股成交量是否為 consolidated、收盤價是否為官方收盤、
+  美東 17:00 日線是否定稿及事後修正政策、400 訊息族群，以及 staging／production 是否共用帳號
+  （共用時兩環境 governor 合計會超過 1597 credits／分鐘）。
+- [ ] 匯入 Twelve Data splits／dividends 至 `corporate_action`，使 `CORP_ACTION_CONTINUITY` 對美股生效；
+  另評估 close-to-close 跳價 warning（現行 `ABNORMAL_RETURN` 只比較同日 open／close）。
+- [ ] 供應商 `no_data` 目前一律回報 `source_error` 並消耗重試；評估以停牌公告等交易所證據分流
+  `halted`，不可把供應商缺資料直接當作 durable `no_data`。
+- [ ] Historical 單一 symbol 失敗會使整個 work item 失敗，且舊 executor 的 idempotency 不含內容；
+  評估逐 symbol 隔離與內容識別，避免一檔停牌阻擋 NASDAQ-100 回補。
+- [ ] 以 FIGI／ISIN 保存美股商品永久識別，降低代號更名或重用造成的斷鏈與串錯公司。
+
 ## FactSet 港股首次環境啟用
 
 實作契約與操作見 [FactSet 港股日行情](../operations/factset_hk.md)；staging ECR、IAM／KMS

@@ -168,3 +168,176 @@ def test_last_attempt_report_failure_restarts_before_any_new_acquisition(
             assert runtime.state.receipt(key) == "original-run"
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("error", "category", "http_status", "provider_code"),
+    [
+        (
+            "no_data",
+            "no_data",
+            400,
+            400,
+        ),
+        ("plan", "plan_restricted", 200, 403),
+        ("generic", "exception:RuntimeError", None, None),
+    ],
+)
+def test_member_failure_appends_bounded_diagnostic_without_provider_text(
+    tmp_path, error, category, http_status, provider_code
+):
+    from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+
+    def acquire(*args):
+        if error == "no_data":
+            raise TwelveDataResponseError(
+                "No data is available private-detail",
+                status_code=400,
+                provider_code=400,
+                dispatched=True,
+                category="no_data",
+            )
+        if error == "plan":
+            raise TwelveDataResponseError(
+                "private-detail", status_code=200, provider_code=403, dispatched=True
+            )
+        raise RuntimeError("private-detail")
+
+    runtime._acquire = acquire
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+        assert source.outcomes == [
+            {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}
+        ]
+        diagnostics = runtime.state.diagnostics("fp1:123:AAPL")
+        assert [
+            (row["category"], row["http_status"], row["provider_code"]) for row in diagnostics
+        ] == [(category, http_status, provider_code)]
+        health = runtime.state.health(runtime.provider)
+        assert health["source_error_diagnostics"] == {category: 1}
+        with runtime.state.connection() as db:
+            dumped = json.dumps(
+                [dict(row) for row in db.execute("SELECT * FROM full_work_diagnostic")]
+            )
+        assert "private-detail" not in dumped + json.dumps(health)
+    finally:
+        runtime.close()
+
+
+def test_diagnostics_keep_history_and_summarize_latest_unfinished_class(tmp_path):
+    state = FullMarketState(tmp_path / "state.sqlite3", clock=lambda: 1.0)
+    plan = _plan()
+    state.record_plan(plan, "twelve_data")
+    key = "fp1:123:AAPL"
+    state.record_diagnostic(key, provider="twelve_data", category="server_error", http_status=503)
+    state.record_diagnostic(
+        key, provider="twelve_data", category="no_data", http_status=400, provider_code=400
+    )
+    assert [row["category"] for row in state.diagnostics(key)] == ["server_error", "no_data"]
+    assert state.health("twelve_data")["source_error_diagnostics"] == {"no_data": 1}
+    state.finish(key, status="complete")
+    assert state.health("twelve_data")["source_error_diagnostics"] == {}
+    assert len(state.diagnostics(key)) == 2
+
+
+@pytest.mark.parametrize("category", ["", "Provider message", "exception:", "x" * 41, "a;drop"])
+def test_diagnostic_category_vocabulary_is_bounded(tmp_path, category):
+    from findb_fetcher.full_market_state import FullMarketStateError
+
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    with pytest.raises(FullMarketStateError, match="category"):
+        state.record_diagnostic("k", provider="twelve_data", category=category)
+
+
+def test_out_of_range_codes_are_not_persisted(tmp_path):
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    state.record_diagnostic(
+        "k", provider="twelve_data", category="http_error", http_status=1000, provider_code=-1
+    )
+    assert state.diagnostics("k")[0]["http_status"] is None
+    assert state.diagnostics("k")[0]["provider_code"] is None
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason", "category"),
+    [
+        ("http_429", "rate_limited", "rate_limited"),
+        ("payload_429", "rate_limited", "rate_limited"),
+        ("quota_dispatched", "source_error", "quota_blocked"),
+    ],
+)
+def test_dispatched_rate_or_quota_failure_records_diagnostic(tmp_path, failure, reason, category):
+    from findb_fetcher.full_market_state import QuotaBlockedError
+    from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+
+    def acquire(*args):
+        if failure == "http_429":
+            raise TwelveDataResponseError("limited", status_code=429, dispatched=True)
+        if failure == "payload_429":
+            raise TwelveDataResponseError(
+                "limited", status_code=200, provider_code=429, dispatched=True
+            )
+        exc = QuotaBlockedError("quota", status_code=None)
+        exc.dispatched = True
+        raise exc
+
+    runtime._acquire = acquire
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+        assert source.outcomes == [
+            {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": reason}
+        ]
+        assert [row["category"] for row in runtime.state.diagnostics("fp1:123:AAPL")] == [category]
+    finally:
+        runtime.close()
+
+
+def test_predispatch_quota_wait_is_not_a_failure_diagnostic(tmp_path):
+    from findb_fetcher.full_market_state import QuotaBlockedError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+
+    def acquire(*args):
+        raise QuotaBlockedError("quota wait", quota_wait=True)
+
+    runtime._acquire = acquire
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+        assert source.outcomes == []
+        assert runtime.state.diagnostics("fp1:123:AAPL") == []
+    finally:
+        runtime.close()
+
+
+def test_existing_checkpoint_gains_diagnostic_table_without_rewriting_work(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "state.sqlite3"
+    state = FullMarketState(path)
+    state.record_plan(_plan(), "twelve_data")
+    state.prepare("fp1:123:AAPL", b"prepared delivery")
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE full_work_diagnostic")
+        before = db.execute("SELECT * FROM full_work ORDER BY key").fetchall()
+    reopened = FullMarketState(path)
+    reopened.record_diagnostic("fp1:123:AAPL", provider="twelve_data", category="server_error")
+    assert reopened.health("twelve_data")["source_error_diagnostics"] == {"server_error": 1}
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT * FROM full_work ORDER BY key").fetchall() == before
+    assert reopened.prepared("fp1:123:AAPL") == b"prepared delivery"

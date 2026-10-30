@@ -28,6 +28,29 @@ _EXCHANGE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._&/+:-]{0,99}$")
 _MIC_CODE_PATTERN = re.compile(r"^[A-Z0-9]{4}$")
 _DEFAULT_ALLOWED_TYPES = frozenset({"Common Stock"})
 _MAX_RESPONSE_BYTES_HARD = 16 * 1024 * 1024
+# Canonical EOD rows are as-traded prices; corporate actions are separate facts.
+TWELVE_DATA_PRICE_ADJUSTMENT = "none"
+# Durable response identity for the price basis; pre-basis bytes were split-adjusted.
+TWELVE_DATA_RESPONSE_BASIS = "adjust-" + TWELVE_DATA_PRICE_ADJUSTMENT + "-v1"
+TWELVE_DATA_DAILY_RESPONSE = "twelve_daily"
+_DAILY_RESPONSE_FIELDS = ("symbol", "start_date", "end_date", "outputsize", "exchange")
+# Bounded diagnostic vocabulary. Provider messages never enter durable state.
+TWELVE_DATA_ERROR_CATEGORIES = frozenset(
+    {
+        "rate_limited",
+        "transport",
+        "server_error",
+        "auth_failed",
+        "plan_restricted",
+        "not_found",
+        "no_data",
+        "invalid_symbol",
+        "bad_request",
+        "http_error",
+        "response_too_large",
+        "malformed_response",
+    }
+)
 
 
 class TwelveDataError(RuntimeError):
@@ -50,17 +73,37 @@ class TwelveDataResponseError(TwelveDataError):
         dispatched: bool | None = None,
         observed_bytes: int = 0,
         declared_bytes: int = 0,
+        category: str | None = None,
     ) -> None:
+        if category is not None and category not in TWELVE_DATA_ERROR_CATEGORIES:
+            raise ValueError("unsupported Twelve Data error category")
         self.dispatched = dispatched
         self.observed_bytes = observed_bytes
         self.declared_bytes = declared_bytes
         self.status_code = status_code
         self.provider_code = provider_code
+        self._category = category
         super().__init__(message)
 
     @property
     def is_rate_limited(self) -> bool:
         return self.status_code == 429 or self.provider_code == 429
+
+    @property
+    def category(self) -> str:
+        """Stable failure class for durable diagnostics; never provider free text."""
+        if self.is_rate_limited:
+            return "rate_limited"
+        if self._category is not None:
+            return self._category
+        code = self.provider_code or self.status_code
+        if code is None:
+            return "transport"
+        if code >= 500:
+            return "server_error"
+        return {401: "auth_failed", 403: "plan_restricted", 404: "not_found"}.get(
+            code, "bad_request" if code == 400 else "http_error"
+        )
 
 
 class TwelveDataPayloadError(TwelveDataError):
@@ -164,9 +207,10 @@ class TwelveDataClient:
         self._owns_client = client is None
 
     @durable_response(
-        "twelve_daily",
-        ("symbol", "start_date", "end_date", "outputsize", "exchange"),
+        TWELVE_DATA_DAILY_RESPONSE,
+        _DAILY_RESPONSE_FIELDS,
         target_valid=_target_rows_present,
+        basis=TWELVE_DATA_RESPONSE_BASIS,
     )
     def fetch_daily(
         self,
@@ -206,8 +250,7 @@ class TwelveDataClient:
             "interval": "1day",
             "order": "asc",
             "format": "JSON",
-            "adjust": "splits",
-            "apikey": self._config.api_key,
+            "adjust": TWELVE_DATA_PRICE_ADJUSTMENT,
         }
         if start_date is not None:
             params["start_date"] = start_date.isoformat()
@@ -240,7 +283,8 @@ class TwelveDataClient:
                     "GET",
                     f"{self._config.base_url}/time_series",
                     params=params,
-                    headers={"Accept-Encoding": "identity"},
+                    # Header credentials keep the key out of URLs, tracebacks and proxies.
+                    headers=authorization_headers(self._config.api_key),
                     extensions=extensions,
                 ) as response,
             ):
@@ -264,6 +308,11 @@ class TwelveDataClient:
                         dispatched=operation.started_at is not None or operation.possibly_started,
                         observed_bytes=exc.observed_bytes,
                         declared_bytes=exc.declared_bytes,
+                        category=(
+                            "response_too_large"
+                            if max(exc.observed_bytes, exc.declared_bytes) > bound
+                            else "malformed_response"
+                        ),
                     ) from exc
         except httpx.TransportError as exc:
             observed = getattr(exc, "observed_bytes", 0)
@@ -274,6 +323,7 @@ class TwelveDataClient:
                 status_code=response_status_code,
                 dispatched=operation.started_at is not None or operation.possibly_started,
                 observed_bytes=observed,
+                category="transport",
             ) from exc
 
         if permit:
@@ -285,6 +335,7 @@ class TwelveDataClient:
                 f"Twelve Data returned non-JSON HTTP {response_status_code}",
                 status_code=response_status_code,
                 dispatched=operation.started_at is not None or operation.possibly_started,
+                category=None if response_status_code != 200 else "malformed_response",
             ) from exc
         if response_status_code != 200:
             # Error JSON is used only for redacted diagnostics; even an 'ok'
@@ -298,12 +349,14 @@ class TwelveDataClient:
                 dispatched=operation.started_at is not None or operation.possibly_started,
                 provider_code=provider_code,
                 observed_bytes=len(raw_bytes),
+                category=_message_category(details.get("message"), provider_code),
             )
         if not isinstance(payload, dict):
             raise TwelveDataResponseError(
                 "Twelve Data response must be a JSON object",
                 status_code=response_status_code,
                 dispatched=operation.started_at is not None or operation.possibly_started,
+                category="malformed_response",
             )
 
         provider_status = payload.get("status")
@@ -320,12 +373,14 @@ class TwelveDataClient:
                 status_code=response_status_code,
                 dispatched=operation.started_at is not None or operation.possibly_started,
                 provider_code=provider_code,
+                category=_message_category(payload.get("message"), provider_code),
             )
         if provider_status != "ok":
             raise TwelveDataResponseError(
                 "Twelve Data response status must be 'ok'",
                 status_code=response_status_code,
                 dispatched=operation.started_at is not None or operation.possibly_started,
+                category="malformed_response",
             )
         return TwelveDataResponse(payload, raw_bytes=raw_bytes)
 
@@ -538,6 +593,23 @@ def _provider_code(value: object) -> int | None:
             return int(value)
         except ValueError:
             return None
+    return None
+
+
+def authorization_headers(api_key: str) -> dict[str, str]:
+    """Identity-encoded request headers carrying the provider credential."""
+    return {"Accept-Encoding": "identity", "Authorization": f"apikey {api_key}"}
+
+
+def _message_category(value: object, provider_code: int | None) -> str | None:
+    """Split generic HTTP 400 replies by their documented message families."""
+    if provider_code != 400 or not isinstance(value, str):
+        return None
+    message = value.casefold()
+    if "no data is available" in message:
+        return "no_data"
+    if "symbol" in message and ("not found" in message or "invalid" in message):
+        return "invalid_symbol"
     return None
 
 
