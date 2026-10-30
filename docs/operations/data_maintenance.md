@@ -115,7 +115,10 @@ production/staging target混用都會fail closed。`source_sha256`是該次revie
 Production EOD historical control plane允許最近366個calendar days；Shioaji minute 各環境均維持最近 31 天。
 仍依published market calendar與 provider policy 建立
 open-day work items；Twelve Data逐symbol、FinLab逐trade date保存lease/checkpoint並沿用raw-first、
-immutable idempotency與Source terminal驗證。Shioaji 支援 `tw_equity_minute` 與 `tw_etf_minute`，
+immutable idempotency與Source terminal驗證。Twelve Data historical與daily同樣以`adjust=none`抓取
+實際成交價；回補可依較新的`fetched_at`覆寫同來源舊列，但不會把拆股調整價寫入canonical。
+本變更前以`adjust=splits`完成的回補列，若之後已有拆股，可能與實際成交價不同，須依原raw
+與拆股日期個別核對後重跑，不得整批覆寫。Shioaji 支援 `tw_equity_minute` 與 `tw_etf_minute`，
 依已驗證 production v2 manifest 分別回補完整 50 檔股票與 3 檔 ETF；不接受 staging／舊 pilot manifest。
 建立正式
 request前先使用`findb-fetch-backfill-plan --provider ... --dataset-key ... --start-date ...

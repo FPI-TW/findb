@@ -121,11 +121,13 @@ def test_client_requests_bounded_daily_json_without_leaking_key() -> None:
     assert captured_request.url.params["interval"] == "1day"
     assert captured_request.url.params["order"] == "asc"
     assert captured_request.url.params["format"] == "JSON"
-    assert captured_request.url.params["adjust"] == "splits"
+    assert captured_request.url.params["adjust"] == "none"
     assert captured_request.url.params["start_date"] == "2024-01-02"
     assert captured_request.url.params["end_date"] == "2024-01-07"
     assert captured_request.url.params["exchange"] == "NASDAQ"
-    assert captured_request.url.params["apikey"] == "provider-secret"
+    assert "apikey" not in captured_request.url.params
+    assert "provider-secret" not in str(captured_request.url)
+    assert captured_request.headers["authorization"] == "apikey provider-secret"
     assert captured_request.headers["accept-encoding"] == "identity"
 
 
@@ -236,6 +238,91 @@ def test_provider_error_code_string_is_typed_for_rate_limit() -> None:
     assert error.value.status_code == 200
     assert error.value.provider_code == 429
     assert error.value.is_rate_limited is True
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "category"),
+    [
+        (
+            400,
+            {
+                "code": 400,
+                "message": "No data is available on the specified dates. Try setting "
+                "different start/end dates.",
+                "status": "error",
+            },
+            "no_data",
+        ),
+        (
+            200,
+            {
+                "code": 400,
+                "message": "No data is available on the specified dates.",
+                "status": "error",
+            },
+            "no_data",
+        ),
+        (
+            200,
+            {
+                "code": 400,
+                "message": "**symbol** not found: ZZZZ. Please specify it correctly.",
+                "status": "error",
+            },
+            "invalid_symbol",
+        ),
+        (200, {"code": 400, "message": "bad parameter", "status": "error"}, "bad_request"),
+        (401, {"code": 401, "message": "invalid key", "status": "error"}, "auth_failed"),
+        (200, {"code": 403, "message": "Pro plan required", "status": "error"}, "plan_restricted"),
+        (404, {"code": 404, "message": "missing", "status": "error"}, "not_found"),
+        (502, {"code": 502, "message": "gateway", "status": "error"}, "server_error"),
+        (200, {"code": 429, "message": "credits", "status": "error"}, "rate_limited"),
+        (418, {"message": "teapot"}, "http_error"),
+        (200, {"status": "pending"}, "malformed_response"),
+        (200, ["not", "an", "object"], "malformed_response"),
+    ],
+)
+def test_provider_errors_have_bounded_categories(status, body, category) -> None:
+    client = TwelveDataClient(
+        TwelveDataConfig(api_key="provider-secret"),
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(status, json=body, request=request)
+            )
+        ),
+    )
+
+    with pytest.raises(TwelveDataResponseError) as error:
+        client.fetch_daily("AAPL", start_date=date(2024, 1, 2), end_date=date(2024, 1, 2))
+
+    assert error.value.category == category
+    assert "provider-secret" not in str(error.value)
+
+
+def test_non_json_and_transport_failures_are_categorized() -> None:
+    def broken(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("offline", request=request)
+
+    for transport, category in (
+        (
+            lambda request: httpx.Response(200, content=b"<html>", request=request),
+            "malformed_response",
+        ),
+        (lambda request: httpx.Response(503, content=b"<html>", request=request), "server_error"),
+        (broken, "transport"),
+    ):
+        client = TwelveDataClient(
+            TwelveDataConfig(api_key="provider-secret"),
+            client=httpx.Client(transport=httpx.MockTransport(transport)),
+        )
+        with pytest.raises(TwelveDataResponseError) as error:
+            client.fetch_daily("AAPL", outputsize=1)
+        assert error.value.category == category
+
+
+def test_unknown_error_category_is_rejected() -> None:
+    with pytest.raises(ValueError, match="category"):
+        TwelveDataResponseError("x", category="provider said something")
 
 
 def test_client_rejects_ambiguous_date_window_and_outputsize() -> None:

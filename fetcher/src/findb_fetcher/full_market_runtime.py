@@ -105,6 +105,9 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataResponseError,
 )
 from findb_fetcher.providers.twelve_data import (
+    authorization_headers as td_authorization_headers,
+)
+from findb_fetcher.providers.twelve_data import (
     build_market_eod_request as td_request,
 )
 from findb_fetcher.raw_storage import (
@@ -114,7 +117,8 @@ from findb_fetcher.raw_storage import (
     attach_raw_object,
 )
 
-_TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States", "hk_equity_eod": "Hong Kong"}
+# HK EOD is owned by FactSet; Twelve Data never refreshes or acquires HK again.
+_TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States"}
 
 
 class ReadinessBlockedError(RuntimeError):
@@ -689,8 +693,8 @@ class FullMarketRuntime:
             self.http.stream(
                 "GET",
                 config.base_url + "/stocks",
-                params={"apikey": config.api_key, "country": country},
-                headers={"Accept-Encoding": "identity"},
+                params={"country": country},
+                headers=td_authorization_headers(config.api_key),
                 extensions=extensions,
             ) as response,
         ):
@@ -775,20 +779,6 @@ class FullMarketRuntime:
                     {
                         **{url: snapshots[url] for url in NASDAQ_URLS},
                         **self._catalogue_evidence_for("us_equity_eod"),
-                    },
-                )
-            if "hk_equity_eod" in dataset_keys:
-                snapshots[HKEX_URL] = self._snapshot(HKEX_URL)
-                hk_date, hk = parse_hkex(
-                    snapshots[HKEX_URL],
-                    observed_date=now.astimezone(ZoneInfo("Asia/Hong_Kong")).date(),
-                )
-                groups["hk_equity_eod"] = (
-                    hk_date,
-                    map_catalogue(hk, catalogue),
-                    {
-                        HKEX_URL: snapshots[HKEX_URL],
-                        **self._catalogue_evidence_for("hk_equity_eod"),
                     },
                 )
         elif self.provider == "factset":
@@ -2142,6 +2132,7 @@ class FullMarketRuntime:
                     if self.daily_policy:
                         self.last_batch["reason"] = "quota_wait"
                     return False
+                self._record_diagnostic(key, exc)
                 self.source.outcome(
                     plan["plan_id"],
                     work_item_id=part["work_item_id"],
@@ -2213,12 +2204,38 @@ class FullMarketRuntime:
                     )
                     self.state.finish(key, status="manual", reason="retry_exhausted")
                     return False
-                # Provider/SDK diagnostics never enter durable state or logs.
+                # Provider/SDK messages never enter durable state or logs; only
+                # the bounded failure class is retained for traceability.
+                self._record_diagnostic(key, exc)
                 self.state.stage_source_error(key)
                 self._report_source_error(plan, part, member_key, key)
                 return False
 
         return True
+
+    def _record_diagnostic(self, key: str, exc: BaseException) -> None:
+        if isinstance(exc, TwelveDataResponseError):
+            self.state.record_diagnostic(
+                key,
+                provider=self.provider,
+                category=exc.category,
+                http_status=exc.status_code,
+                provider_code=exc.provider_code,
+                dispatched=exc.dispatched,
+            )
+        elif isinstance(exc, QuotaBlockedError):
+            self.state.record_diagnostic(
+                key,
+                provider=self.provider,
+                category="quota_blocked",
+                http_status=exc.status_code,
+                dispatched=exc.dispatched,
+            )
+        else:
+            name = re.sub(r"[^A-Za-z0-9_]", "", type(exc).__name__).lstrip("_0123456789")
+            self.state.record_diagnostic(
+                key, provider=self.provider, category="exception:" + (name[:60] or "Unknown")
+            )
 
     def _report_source_error(
         self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
@@ -2326,7 +2343,7 @@ class FullMarketRuntime:
             )
             if (
                 canonical_twelve_data_mic(response["meta"]["mic_code"]) != member["exchange"]
-                or response["meta"]["currency"] != member["currency"]
+                or request["payload"]["data"][0]["currency"] != member["currency"]
             ):
                 raise ReadinessBlockedError("provider identity differs from official universe")
             raw = response.raw_bytes
