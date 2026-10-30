@@ -29,10 +29,14 @@ import httpx
 
 from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
+from findb_fetcher.source_recovery import (
+    source_retry_sleep,
+    source_stop_scope,
+    transient_source_status,
+)
 
 _MAX_RESPONSE_BYTES = 64 * 1024
 _MAX_ERROR_CHARS = 512
-_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504})
 _SCHEDULER_KEY_PATTERN = re.compile(r"^[a-z0-9_]{1,100}$")
 _SCHEDULER_KEYS = frozenset(
     {
@@ -53,8 +57,9 @@ class SchedulerControlError(RuntimeError):
 class SchedulerControlResponseError(SchedulerControlError):
     """The control endpoint returned a non-success HTTP status."""
 
-    def __init__(self, status_code: int) -> None:
+    def __init__(self, status_code: int, *, retry_after: float = 0) -> None:
         self.status_code = status_code
+        self.retry_after = retry_after
         super().__init__(f"scheduler control returned HTTP {status_code}")
 
 
@@ -78,7 +83,8 @@ def scheduler_stop_event(
     """
 
     if existing is not None:
-        yield existing
+        with source_stop_scope(existing):
+            yield existing
         return
 
     stopper = threading.Event()
@@ -92,7 +98,8 @@ def scheduler_stop_event(
             previous = signal.getsignal(signum)
             signal.signal(signum, request_stop)
             installed[signum] = previous
-        yield stopper
+        with source_stop_scope(stopper):
+            yield stopper
     finally:
         for signum, previous in installed.items():
             signal.signal(signum, previous)
@@ -275,7 +282,7 @@ class SchedulerControlClient:
                     raise SchedulerControlTransportError(
                         "scheduler control transport retries exhausted"
                     ) from None
-                self._sleep(self._backoff_seconds(attempt))
+                source_retry_sleep(self._backoff_seconds(attempt), self._sleep)
                 continue
             try:
                 retry_delay = self._retry_delay(response, attempt)
@@ -285,7 +292,7 @@ class SchedulerControlClient:
                     raise SchedulerControlTransportError(
                         "scheduler control transport retries exhausted"
                     ) from None
-                self._sleep(self._backoff_seconds(attempt))
+                source_retry_sleep(self._backoff_seconds(attempt), self._sleep)
                 continue
             finally:
                 response.close()
@@ -293,11 +300,11 @@ class SchedulerControlClient:
             if 200 <= response.status_code < 300:
                 return _decode_object(body_bytes)
             if (
-                response.status_code not in _RETRYABLE_STATUS_CODES
+                not transient_source_status(response.status_code)
                 or attempt == self._config.max_attempts
             ):
-                raise SchedulerControlResponseError(response.status_code)
-            self._sleep(retry_delay)
+                raise SchedulerControlResponseError(response.status_code, retry_after=retry_delay)
+            source_retry_sleep(retry_delay, self._sleep)
         raise AssertionError("scheduler control retry loop ended unexpectedly")
 
     def _retry_delay(self, response: httpx.Response, attempt: int) -> float:

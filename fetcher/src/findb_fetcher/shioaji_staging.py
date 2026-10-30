@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from findb_fetcher.client import PreparedDelivery, SourceAPIDeadlineExceeded, SourceAPIResponseError
 from findb_fetcher.contracts import ContractRegistry, ContractValidationError
 from findb_fetcher.full_market_state import QuotaBlockedError
+from findb_fetcher.provider_work import ProviderWorkSourceUnavailableError, active
 from findb_fetcher.providers.shioaji import (
     PAYLOAD_REASONS,
     ShioajiGateway,
@@ -326,6 +327,8 @@ class Coordinator:
                     )
                     out.append(Result("CUTOFF_REACHED", "acquisition"))
                     break
+                owner = active()
+                dispatch_before = owner.dispatch_observations if owner else 0
                 try:
                     acquired = self.gateway.fetch_kbars(symbol, target)
                     snap = snapshot_bytes(dict(acquired.kbars))
@@ -355,6 +358,17 @@ class Coordinator:
                     )
                     out.append(Result("KBARS_PAYLOAD", "payload", reason="snapshot"))
                     break
+                except ProviderWorkSourceUnavailableError:
+                    if owner and owner.dispatch_observations == dispatch_before:
+                        self.state.finish_attempt(
+                            daily_id,
+                            symbol,
+                            attempt,
+                            "waiting",
+                            "SOURCE_WAIT",
+                            retryable=True,
+                        )
+                    raise
                 except ShioajiStagingStateError:
                     out.append(Result("STATE_UNAVAILABLE", "state"))
                     break
@@ -491,8 +505,6 @@ class Coordinator:
             prepared_bytes = self.state.get_prepared(daily_id, symbol)
             try:
                 if prepared_bytes is None:
-                    from findb_fetcher.provider_work import active
-
                     owner = active()
                     if owner:
                         restored = owner.restore(member_key=symbol)

@@ -7,6 +7,7 @@ import json
 import os
 import sqlite3
 import sys
+import threading
 from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timezone
@@ -23,6 +24,11 @@ from findb_fetcher.full_market_runtime import FullMarketRuntime
 from findb_fetcher.full_market_state import FullMarketState
 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
 from findb_fetcher.scheduler_control import SchedulerControlClient, scheduler_stop_event
+from findb_fetcher.source_recovery import (
+    SourceWaitStoppedError,
+    retry_source,
+    transient_source_error,
+)
 
 _SCOPES = {
     "twelve_data": {"us_equity_eod"},
@@ -135,6 +141,63 @@ def acquisition_gate(
         )
 
     return can_acquire
+
+
+def run_worker(
+    runtime: FullMarketRuntime,
+    control: SchedulerControlClient,
+    can_acquire: Callable[[], bool],
+    *,
+    stopped: threading.Event,
+    run_forever: bool,
+    poll_seconds: float,
+) -> int:
+    def iteration() -> int:
+        runtime.drain()
+        observed = control.poll(observed_state="stopped")
+        if observed.desired_state == "running" and can_acquire():
+            control.poll(observed_state="running", cycle_started_at=datetime.now(timezone.utc))
+            try:
+                health = runtime.cycle()
+                print(json.dumps(health, separators=(",", ":")), flush=True)
+                control.poll(
+                    observed_state="stopped", cycle_completed_at=datetime.now(timezone.utc)
+                )
+            except SourceWaitStoppedError:
+                raise
+            except Exception as exc:
+                if transient_source_error(exc):
+                    raise
+                control.poll(observed_state="stopped", last_error="full_market_cycle_blocked")
+                print(
+                    json.dumps(
+                        {
+                            "provider": runtime.provider,
+                            "status": "blocked",
+                            **runtime.state.health(runtime.provider),
+                        },
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
+                if not run_forever:
+                    return 2
+        else:
+            runtime.pause()
+        return 0
+
+    while not stopped.is_set():
+        result = retry_source(
+            iteration,
+            stopped=stopped,
+            run_forever=run_forever,
+            max_delay=poll_seconds,
+            on_retry=runtime.pause,
+        )
+        if not run_forever:
+            return result
+        stopped.wait(poll_seconds)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -258,8 +321,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         fetcher = FetcherConfig.from_env()
         scheduler_key = f"{args.execution_profile}_{args.provider}_v1"
-        with SchedulerControlClient(fetcher, scheduler_key) as control:
-            observed = control.poll(observed_state="stopped")
+        with (
+            scheduler_stop_event() as stopped,
+            SchedulerControlClient(fetcher, scheduler_key) as control,
+        ):
+            observed = retry_source(
+                lambda: control.poll(observed_state="stopped"),
+                stopped=stopped,
+                run_forever=args.run_forever,
+                max_delay=config["poll_seconds"],
+            )
             if observed.provider != args.provider or set(observed.dataset_keys) != (
                 {"us_equity_eod", "hk_equity_eod"}
                 if args.provider == "twelve_data"
@@ -309,45 +380,16 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 )
                 return 0
-            with scheduler_stop_event() as stopped:
-                while not stopped.is_set():
-                    runtime.drain()
-                    observed = control.poll(observed_state="stopped")
-                    if observed.desired_state == "running" and can_acquire():
-                        try:
-                            control.poll(
-                                observed_state="running",
-                                cycle_started_at=datetime.now(timezone.utc),
-                            )
-                            health = runtime.cycle()
-                            print(json.dumps(health, separators=(",", ":")), flush=True)
-                            control.poll(
-                                observed_state="stopped",
-                                cycle_completed_at=datetime.now(timezone.utc),
-                            )
-                        except Exception:
-                            # Fixed error text avoids exposing provider/credential diagnostics.
-                            control.poll(
-                                observed_state="stopped", last_error="full_market_cycle_blocked"
-                            )
-                            print(
-                                json.dumps(
-                                    {
-                                        "provider": args.provider,
-                                        "status": "blocked",
-                                        **state.health(args.provider),
-                                    },
-                                    separators=(",", ":"),
-                                ),
-                                flush=True,
-                            )
-                            if not args.run_forever:
-                                return 2
-                    else:
-                        runtime.pause()
-                    if not args.run_forever:
-                        return 0
-                    stopped.wait(config["poll_seconds"])
+            return run_worker(
+                runtime,
+                control,
+                can_acquire,
+                stopped=stopped,
+                run_forever=args.run_forever,
+                poll_seconds=config["poll_seconds"],
+            )
+        return 0
+    except SourceWaitStoppedError:
         return 0
     except Exception:
         print(

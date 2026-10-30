@@ -16,7 +16,11 @@ from findb_fetcher.full_market_universe import canonical_bytes, checksum
 from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
 from findb_fetcher.provider_process import ProviderProcessError
 from findb_fetcher.provider_wait import ProviderPublicationPendingError
-from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped, active
+from findb_fetcher.provider_work import (
+    ProviderWorkAcquisitionStopped,
+    ProviderWorkSourceUnavailableError,
+    active,
+)
 from findb_fetcher.providers.factset import (
     FactSetGateway,
     FactSetOperationalError,
@@ -53,6 +57,10 @@ class FactSetEOD:
         dispatched_before = getattr(owner, "dispatch_observations", 0)
         try:
             result = action()
+        except ProviderWorkSourceUnavailableError:
+            if owner.dispatch_observations == dispatched_before:
+                owner.journal.release_wait_attempt(key)
+            raise
         except (Exception, ProviderWorkAcquisitionStopped) as exc:
             if (
                 isinstance(exc, QuotaBlockedError)

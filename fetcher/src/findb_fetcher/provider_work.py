@@ -51,6 +51,10 @@ class ProviderWorkAcquisitionStopped(BaseException):
     """Cross SDK sanitizers without recording a provider failure on stop/cancel."""
 
 
+class ProviderWorkSourceUnavailableError(ProviderWorkRecoveryBlockedError):
+    """A Source acquisition check failed; ownership still requires recovery."""
+
+
 def enabled() -> bool:
     """Compatibility assertion for callers; there is no legacy execution mode."""
     from findb_fetcher.config import require_provider_work_protocol
@@ -606,9 +610,14 @@ class ProviderWorkSession:
         except FullMarketProtocolError as exc:
             if exc.code == "PROVIDER_WORK_SUSPENDED":
                 raise ProviderWorkAcquisitionStopped("provider acquisition is stopped") from None
-            raise ProviderWorkRecoveryBlockedError(
-                "provider acquisition fence is unavailable"
-            ) from exc
+            from findb_fetcher.source_recovery import transient_source_error
+
+            error = (
+                ProviderWorkSourceUnavailableError
+                if transient_source_error(exc)
+                else ProviderWorkRecoveryBlockedError
+            )
+            raise error("provider acquisition fence is unavailable") from exc
         try:
             if not isinstance(response, dict) or type(response.get("generation")) is not int:
                 raise ValueError

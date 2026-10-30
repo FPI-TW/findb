@@ -337,7 +337,17 @@ class Acquisition:
     def authorize(self) -> Authorization:
         callback = _policy.get()
         if callback is not None:
-            grant = callback()
+            try:
+                grant = callback()
+            except Exception as exc:
+                from findb_fetcher.provider_work import ProviderWorkSourceUnavailableError, active
+                from findb_fetcher.source_recovery import transient_source_error
+
+                if active() is not None and transient_source_error(exc):
+                    raise ProviderWorkSourceUnavailableError(
+                        "Source acquisition policy unavailable"
+                    ) from exc
+                raise
         elif os.getenv("SOURCE_API_URL") and os.getenv("SOURCE_CLIENT_KEY"):
             from findb_fetcher.account_governor import consumer
             from findb_fetcher.config import FetcherConfig

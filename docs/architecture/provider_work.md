@@ -44,6 +44,40 @@ TD／FinLab／Shioaji 只憑最後單筆 run 即完成；Source 暫時錯誤後�
 以及 FactSet false 模式僅健康回報卻無抓取。現在 completion 一律須通過原 work 的完整 manifest、
 receipts／canonical proof；lease 欄位僅為同一 queue owner 的歷史投影，不能獨立授權或重派。
 
+## Source 暫時中斷與恢復
+
+現行 Pilot／Full／historical 的 `--run-forever` 在尚未取得工作時，對 Source transport、
+HTTP 408／429／5xx（含部署期間觀察到的 521）採可中止的指數退避，從一秒增加至
+poll interval 上限（historical 為 30 秒）。重試從完整 idle iteration 開始，重新 drain、poll
+與取得即時授權，不使用中斷前快取的 desired state 或 grant。兩個 control clients 的單次
+HTTP request 仍受 `max_attempts` 與 `max_retry_after_seconds` 限制；idle 的內層 backoff
+與外層等待均可由 SIGTERM／SIGINT 中止。401／403、格式／identity／設定錯誤不進入
+此暫時故障退避；one-shot／部署 probes 不啟用外層持續重試。
+
+持有工作後，Source acquisition check 暫時失敗以 `ProviderWorkSourceUnavailableError`
+穿過 SDK sanitizer；它仍繼承 `ProviderWorkRecoveryBlockedError(BaseException)`。
+同一 session 不能繼續取得 provider 資料，仍由原流程停止／reap、隔離 shared host FD、
+保留 DB owner，並以相同 inode 的 recovery 證據取得新 generation／token。一般 heartbeat、
+錯誤 fence、prepared／settlement ACK 不確定的 recovery error 亦不會被 idle retry 吞掉。
+停止訊號不取消 active work 的 bounded acceptance／terminal drain。
+
+Canonical daily 成員在 Source check 前已 claim 本地 attempt。若此次 reservation 的
+`dispatch_observations` 未增加、沒有 prepared body，且錯誤明確來自上述暫時 Source
+acquisition check，僅以 `defer_wait(reason=source_unavailable)` 退還這次新增的 attempt、
+清除本次 lease 並延後 60 秒；隨即重新拋出 recovery error，不繼續舊 owner。保護範圍包含
+initial owner authorize、governed acquisition gate／Source authorization 及實際派送前的
+owner recheck。一旦任一步已 started／possibly-started，原 failure budget、quota、unknown
+liability、cooldown 均保留；先前 attempts、其他成員 prepared／receipts 不重設。這不改變
+Shioaji 空回應快取與 mapping 缺口的處理，另見 [#378](https://github.com/FPI-TW/findb/issues/378)。
+
+同一個明確的 Source authorization wait 也適用於 TD／FinLab historical operation、
+universe maintenance、FactSet snapshot、TAIFEX historical operation，以及 Shioaji historical
+sequence 的獨立帳本。各層以本次 dispatch observation 差值決定是否退還當次預留，再原樣
+拋出 recovery error。Shioaji 追加 `waiting / SOURCE_WAIT` audit，與既有 `QUOTA_WAIT`
+一樣排除本地 failure budget／rolling request allowance；不重分類舊 started／unknown／failed
+紀錄，不修改既有 snapshot 或日曆／空回應決策。TAIFEX operation 亦保留 `source_wait`
+audit 與至少 60 秒的下一次時間。任一前置 SDK login／catalogue 已派送即保留整次預留。
+
 ## 權威、範圍與排序
 
 PostgreSQL `provider_work` 保存穩定工作，`provider_work_attempt` 以 sequence 保存每輪入列順序，

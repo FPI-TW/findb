@@ -17,6 +17,7 @@ from findb_fetcher.historical_backfill import (
 from findb_fetcher.historical_runtime import FinLabHistoricalRunner, TwelveDataHistoricalRunner
 from findb_fetcher.scheduler_control import scheduler_stop_event
 from findb_fetcher.shioaji_historical import ExecutableShioajiHistoricalRunner
+from findb_fetcher.source_recovery import SourceWaitStoppedError, retry_source
 from findb_fetcher.taifex_historical import TaifexHistoricalRunner
 
 
@@ -72,7 +73,15 @@ def run_worker(
     relies on the server's expiring lease and immutable delivery identity.
     """
     while not stop_event.is_set():
-        if run_once(control, runner):
+        try:
+            worked = retry_source(
+                lambda: run_once(control, runner),
+                stopped=stop_event,
+                run_forever=run_forever,
+            )
+        except SourceWaitStoppedError:
+            return
+        if worked:
             continue
         if not run_forever:
             return
