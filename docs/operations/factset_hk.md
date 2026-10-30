@@ -199,3 +199,27 @@ FactSet maintenance 成功可提供 staging 到 RDS 的 TLS／原生 catalogue S
 SHA-256、查詢範圍與 terminal 結果。只看到 container running、Secrets Manager 配置完成、
 mock TLS 測試或本機快照重播，均不足以完成 staging 實際連線驗收。
 密碼與完整 connection string 不得進入輸出。
+
+## Twelve Data 舊 HK work 結案
+
+Twelve Data 不再擁有 HK 抓取路徑：Fetcher 已移除香港 country catalogue、HKEX 名單與 HK
+日資料分支；Source 端 `twelve_data` 的 `hk_equity_eod` credential／scheduler scope 只保留給
+舊 prepared／raw rerun 依原 identity 路由，不代表可新抓取。Twelve Data 對 XHKG 的單次診斷
+（凍結商品 `0001`，含 `exchange=HKEX`）均回 HTTP／provider code 400 `no_data_response`；
+官方將 XHKG 列為需授權或未支援市場，因此港股不再列為 Twelve Data 待解項目。
+
+2026-10-30 06:10 UTC 以唯讀 transaction／SQLite `mode=ro` 核對兩環境，結案條件全部成立：
+
+| 環境 | Source work | Plans | Owner／在途 | Fetcher checkpoint |
+| --- | --- | --- | --- | --- |
+| Production | 12 筆 Full daily（10/13–10/24）均 `failed / RETIRED_FEED_MANUAL_REVIEW`，prepared 0、receipts 0、未結 attempts 0 | 12 份，expected 33,852 全為 blocked | owner 無 attempt；非 terminal runs 0、未發布 outbox 0；Pilot／Full controls stopped | Full 12 份本機 plan 仍 `complete=0`：33,288 `pending/source_error`、564 `manual/mapping_gap`，prepared bodies 0、receipts 0；Pilot 0 |
+| Staging | 2 筆 Pilot daily（10/15–10/16）均 `failed / RETIRED_FEED_MANUAL_REVIEW`，prepared 0、receipts 0、未結 attempts 0 | 2 份，expected 4 全為 blocked | owner 無 attempt；非 terminal runs 0、未發布 outbox 0；Pilot／Full controls stopped | Pilot 2 份本機 plan：4 筆 `manual/retry_exhausted`，prepared bodies 0、receipts 0；Full 0 |
+
+本機 checkpoint 的未完成 HK plans 是舊執行的保留證據，會持續出現在 `--health` 的
+`unresolved`；不得清檔、改成 complete／no_data 或重設預算。這些成員沒有 prepared bytes
+或 receipts，不會再交付。切換日前的港股資料若需補齊，一律以 FactSet historical request 處理。
+
+SSM 證據：production DB `408e1514-f6fb-4c24-bfa9-445a7675824f`、Fetcher SQLite
+`876d9006-82f7-487e-aaf8-d603e0482d20`；staging DB `57ed7c13-70c4-4552-9614-96073634aed8`、
+Fetcher SQLite `0c1d31f2-6738-4f8e-8ac8-d1d0c614c223`。核對未改動 controls、work、plans、
+checkpoint、credentials 或預算。
