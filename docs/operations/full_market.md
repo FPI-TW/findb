@@ -459,7 +459,8 @@ recovery blocked 而卡住同 provider 的後續工作：
 | --- | --- | --- |
 | 同一 request identity 只有舊回應 | `durable_response` 找到無基準 key | 拋出一般錯誤 `ProviderWorkBasisMismatchError`；Full／Pilot 成員標為 `manual / price_basis_manual_review` 並回報 `source_error`，同計畫其他成員照常處理；historical item 以 `PREPARED_DELIVERY_MANUAL_REVIEW` 結束 |
 | Prepared body 由舊回應產生 | body 的 `payload.batch.source_raw_sha256` 等於某筆舊回應原始 bytes 的 SHA-256 | 該 body 不送出；Full／Pilot 成員同上標為 manual；historical item 同上 |
-| 排空 prepared ledger 時遇到上述 body | 同上，逐筆判定；只擋 Source 尚未接受的 body | 跳過該 body、其餘照常交付（已接受的舊 body 重播只取回原 run）；provider-work 結算若被 `PREPARED_DRAINING` 拒絕或屬 drain-only retry，改為 `failed`，`failure_code=PRICE_BASIS_MANUAL_REVIEW`（已有 failure code 時保留），proof 帶 `manual_pending_prepared`、`price_basis_blocked` 與 `price_basis`；proof 仍有未回報的 `pending_source_errors` 時先維持 retry，回報後再轉換 |
+| 排空 prepared ledger 時遇到上述 body | 同上，逐筆判定；只擋 Source 尚未接受的 body | 跳過該 body、其餘照常交付（已接受的舊 body 重播只取回原 run）；本 session 已記錄被擋 body 時，任何非 retry 結算（含 `completed`、`cancelled`、`failed`，以及
+排空後重送的 `PREPARED_DRAINING` 結算）與 drain-only retry 都在送出前改為 `failed`，`failure_code=PRICE_BASIS_MANUAL_REVIEW`（已有 failure code 時保留），proof 帶 `manual_pending_prepared`、`price_basis_blocked` 與 `price_basis`；proof 仍有未回報的 `pending_source_errors` 時先維持 retry，回報後再轉換 |
 
 判定逐筆進行：work 只是含有舊回應、但待送 body 不是由它產生（或待送集合為空）時，不阻擋。
 Historical 的 scope stopped、drain-only 與 closed／draining 回合排空後若有被擋 body，一律以
@@ -486,8 +487,13 @@ claim。切換當下兩環境均無受影響工作。SSM：production `312dd583-
 `b76aca73-1d06-476d-bdeb-4b9c9ac341b3`，staging `ae01c182-e7ce-4157-9b95-9edcc361762b`／
 `17c9ba56-09c5-42c5-954f-c3d4e904a37b`。
 
-所有 provider 的成員失敗都附加一列到 Fetcher SQLite `full_work_diagnostic`（work key、分類、
-HTTP status、provider code、是否已派送、時間）；非 Twelve Data 例外記為 `exception:<類別名稱>`。
+Full／Pilot daily 成員迴圈（`_deliver_plan`）中以下失敗會附加一列到 Fetcher SQLite
+`full_work_diagnostic`（work key、分類、HTTP status、provider code、是否已派送、時間）：
+Twelve Data provider 錯誤（上表分類）、已派送的 quota 失敗（`quota_blocked`）、價格基準不符
+（`price_basis_mismatch`），以及其他 provider 的未分類例外（`exception:<類別名稱>`）。
+Source 4xx 拒收、mapping gap、normalization 失敗、acquisition 停止／時間窗關閉、FinLab 尚未發布、
+FactSet 專用交付路徑與 historical 不寫診斷，仍以既有 `full_work.reason`、Source outcome 與
+historical failure code 追溯。診斷在 Source 回報之後以 best effort 寫入，寫入失敗不影響回報。
 `--health` 輸出的 `source_error_diagnostics` 為未完成成員最新分類的計數。歷史紀錄只會新增，
 不改寫 `full_work`、prepared bytes、receipts 或 failure budget。
 

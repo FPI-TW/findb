@@ -94,8 +94,10 @@ def _observations(journal: queue.WorkJournal) -> list[tuple[str, str]]:
 class _Ledger:
     """Source preparation ledger plus settlement replies for one owned work."""
 
-    def __init__(self, bodies: dict[str, dict]) -> None:
+    def __init__(self, bodies: dict[str, dict], *, kind: str = "historical") -> None:
         self.bodies = {key: json.dumps(body) for key, body in bodies.items()}
+        self.kind = kind
+        self.closed = False
         self.settles: list[dict] = []
         self.delivered: list[str] = []
 
@@ -106,25 +108,38 @@ class _Ledger:
         return {"bodies": [self.bodies[delivery_key]]}
 
     def request(self, action, **body):
+        if action == "close":
+            self.closed = True
         if action != "settle":
             return {}
         self.settles.append(body)
+        # Mirrors backend/app/services/provider_work.py settle(); a bare 409 is a
+        # ProviderWorkError, which the session escalates to recovery.
+        if not self.closed:
+            raise FullMarketProtocolError("close acquisition first", status_code=409)
         manual = set(body["proof"].get("manual_pending_prepared", []))
         pending = set(self.bodies) - set(self.delivered)
-        # Mirrors Source: a non-retry settlement with unaccepted prepared bytes is
-        # refused unless a failed manual waiver names every pending delivery.
         if (
             pending
             and body["outcome"] != "retry"
-            and not (body["outcome"] == "failed" and body["failure_code"] and pending <= manual)
+            and not (
+                body["outcome"] == "failed"
+                and body["failure_code"]
+                and pending <= manual <= set(self.bodies)
+            )
         ):
             raise FullMarketProtocolError(
                 "drain", status_code=409, code="PROVIDER_WORK_PREPARED_DRAINING"
             )
+        if "pending_source_errors" in body["proof"] and (
+            body["outcome"] != "retry" or self.kind != "daily"
+        ):
+            raise FullMarketProtocolError("pending source errors require retry", status_code=409)
         return {}
 
 
 def _session(tmp_path, monkeypatch, ledger: _Ledger, *, provider="twelve_data", **work):
+    work.setdefault("kind", ledger.kind)
     import findb_fetcher.client as client_module
 
     class Delivery:
@@ -504,7 +519,7 @@ def test_accepted_pre_basis_body_replays_its_existing_receipt(tmp_path, monkeypa
 
 def test_unreported_member_errors_keep_retry_until_reported(tmp_path, monkeypatch):
     old = _adjusted_raw()
-    ledger = _Ledger({"old": _body(old, "old")})
+    ledger = _Ledger({"old": _body(old, "old")}, kind="daily")
     session, journal = _session(tmp_path, monkeypatch, ledger, drain_only=True)
     journal.response(_base() + ":validated-target-v1", _encoded(old))
     session.drain_prepared()
@@ -513,7 +528,9 @@ def test_unreported_member_errors_keep_retry_until_reported(tmp_path, monkeypatc
     assert ledger.settles[0]["proof"] == {"pending_source_errors": ["AAPL"]}
 
 
-def test_daily_drain_only_round_with_blocked_member_terminates(tmp_path):
+def test_daily_drain_only_round_with_blocked_member_settles_through_queued_round(
+    tmp_path, monkeypatch
+):
     from provider_work_support import owned_unit_work
     from test_full_market import _member, _plan, _runtime
 
@@ -524,11 +541,14 @@ def test_daily_drain_only_round_with_blocked_member_terminates(tmp_path):
     runtime.state.record_plan(plan, runtime.provider)
     old = _adjusted_raw()
     runtime.state.prepare("fp1:123:AAPL", json.dumps([_body(old, "full:original")]).encode())
-    settles = []
+    # Source evaluation: MSFT was never acquired in this drain-only round.
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    ledger = _Ledger({"full:original": _body(old, "full:original")}, kind="daily")
     try:
         with owned_unit_work(runtime.provider, tmp_path) as owner:
+            owner.journal.freeze({"plan_id": plan["plan_id"]})
             owner.journal.response(_base() + ":validated-target-v1", _encoded(old))
-            owner.work["drain_only"] = True
+            owner.work.update(kind="daily", drain_only=True)
             runtime._deliver_plan(
                 plan,
                 {"members": [_member(), {**_member(), "member_key": "MSFT"}]},
@@ -536,13 +556,16 @@ def test_daily_drain_only_round_with_blocked_member_terminates(tmp_path):
                 drain_only=True,
             )
             owner.publish_cooldown = lambda: None
-            owner.prepared_keys = lambda **kwargs: ["full:original"]
-            owner.request = lambda action, **body: settles.append((action, body)) or {}
-            # The scheduler would otherwise retry this drain-only round forever.
-            owner.settle("retry", failure_code="DRAIN_ONLY", delay=60)
-        final = [body for action, body in settles if action == "settle"][-1]
+            owner._preparation_request = ledger.preparation
+            owner.request = ledger.request
+            runtime._settle_queued_round(owner)
+        # Twelve Data has no daily policy: a manual member settles the round failed,
+        # and the retained pre-basis body travels under the explicit waiver.
+        final = ledger.settles[-1]
         assert final["outcome"] == "failed"
-        assert final["failure_code"] == "PRICE_BASIS_MANUAL_REVIEW"
+        assert final["failure_code"] == "MANUAL_INTERVENTION_REQUIRED"
         assert final["proof"]["manual_pending_prepared"] == ["full:original"]
+        assert final["proof"]["price_basis_blocked"] == ["full:original"]
+        assert ledger.delivered == []
     finally:
         runtime.close()
