@@ -8,6 +8,14 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
+- Shioaji 空 Kbars 與 frozen mapping 缺口修復（[#378](https://github.com/FPI-TW/findb/issues/378)）：2026-10-30 唯讀確認五筆未結案 daily 工作，
+  45 個失敗成員均保存空 Kbars；response journal 會重播同一份空內容，mapper 拒絕後
+  消耗本地 failure budget，已有一個成員達 retry_exhausted。另有 12 個已遇到的 frozen
+  mapping gap，與部署前的錯誤證據一致。須補空回應分類、保留原證據的受控快取更新、
+  no_data 證據要求、frozen scope 修復及對應回歸測試；不得藉清 cache／reset attempts
+  或退款已派送 quota 解套。Source 中斷修正無法單獨解決此問題；原始 SDK 空回應原因
+  仍待證據。現場數量、時間軸及唯讀限制見 [production 維運](../operations/production.md)。
+
 - Fetcher 對 Backend／Source 暫時不可用的恢復與重試額度修正：2026-10-30 已確認部署窗口
   HTTP 521 會穿過現行 Pilot／Full／historical 的控制迴圈而退出，Docker 因而自動重啟；
   521 亦未列入兩個 Source control clients 的 bounded retry statuses。另以零 provider I/O

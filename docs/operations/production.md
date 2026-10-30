@@ -214,6 +214,62 @@ quota、unknown debt 與 cooldown 不得退還。另補 startup、idle、active 
 prepared replay 與重試額度的回歸測試。未實作項目見 [待辦](../dev/production-foundation-cutover-plan.md)。
 本次調查只有唯讀 production 查核與本機 mock 重現，未修改線上 runtime、controls 或預算。
 
+## Shioaji 工作佇列調查（2026-10-30）
+
+台北時間約 09:10～09:18，production 有五筆 Shioaji Full market daily 工作未結案。
+全部為 queued，等待原因為 `acquisition_window_closed`；目前抓取窗口為台北 18:00～隔日
+06:00，下次開放為 10/30 18:00。Full control desired／observed 均為 running、revision 12，
+heartbeat 約十秒前更新、last_error 為空；provider owner 無 active attempt、recovery_reason
+或 acquisition cooldown。這個等待狀態符合時段設定，沒有卡住舊 owner 的證據。
+
+以下是同批工作的本地 checkpoint 成員數；pending 包含尚未嘗試與可重試失敗，manual
+包含 mapping gap 與重試耗盡，不能將整筆 queued 工作視為全部成員失敗。
+
+| 日期 | Dataset | complete | prepared | pending | manual |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 10/27 | tw_equity_minute | 1,921 | 0 | 24 | 2 |
+| 10/28 | tw_equity_minute | 0 | 635 | 1,317 | 1 |
+| 10/28 | tw_etf_minute | 355 | 0 | 4 | 5 |
+| 10/29 | tw_equity_minute | 0 | 428 | 1,524 | 1 |
+| 10/29 | tw_etf_minute | 355 | 0 | 5 | 4 |
+
+Backend 唯讀 SQL 確認這五筆工作的已接收 receipts 全部為 completed，沒有未接收的
+prepared member；其中本地仍標示 `prepared/normalizing` 的 1,063 個成員，其 run 也都已
+completed。因此這些本地標籤不能當成 Backend normalization 仍在排隊的證據；待後續
+合法回合對帳，不需重送新 payload。兩筆 equity 日期各仍有大量未嘗試成員，近期回合
+因 60 秒 batch 上限讓出，亦不能只用整筆工作的高排程回合數判定失敗。
+
+另外確認兩種會阻擋缺漏收斂的問題：
+
+- 五筆工作共有 44 個 `source_error` pending 成員及一個 `retry_exhausted` manual 成員。
+  唯讀檢查全部 45 份對應 work／symbol／date 的 response journal，checksum 均相符，
+  Kbars 七個向量皆為空。依正式 decoder 還原 tuple 後，離線 mapper 全部拋出
+  `ShioajiPayloadError: empty kbars requires calendar evidence`。`fetch_kbars()` 使用的
+  `durable_response` 未設定 target validator，空回應會成為該 work 的持久快取；同一成員
+  重試仍讀取相同 bytes，mapper 再次拒絕，外層統一記為 `source_error`。
+  本機合成資料重現一次 native fixture 呼叫、八次 mapper 失敗，最後 checkpoint 為
+  attempts 8／manual／retry_exhausted。這是實際 provider acquisition 與本地失敗額度
+  不同的情況；不能把八次失敗解讀成八次 SDK Kbars 呼叫，也不能靠重設 attempts 解決。
+- 另有 12 個已標記 manual／mapping_gap 的成員。Backend frozen universe 本身就是
+  `mapping_status=gap`，包括 equity 的 1589／4804，以及 ETF 的 00416A／00838B／009831／
+  009832（依日期不同）；這些成員沒有 Kbars cache。未嘗試的 scope 亦可能還有其他
+  frozen mapping gap，以上數量只包含目前 checkpoint 已遇到的缺口。
+
+與 Backend 部署中斷的關係：00647L（10/28 ETF）首次 `source_error` 已在台北 10/29
+21:26 的排程 proof 記為 local attempts 1，早於 10/30 01:40～01:43 的部署窗口；
+部署後首次增加至 2 是 02:29 的回合，05:56 達到 8。部署前保存的 queue projection
+亦已有相同 equity／ETF 的 source_error、mapping_gap，以及另一日期的 retry_exhausted。
+因此本次可定位的空回應快取與 frozen mapping 缺口是獨立的既有問題，沒有證據將它們
+歸因於 HTTP 521 或退役 CLI 復活。前節授權前增加 attempts 的風險仍需修正，但單獨
+修復 Source 重連／純等待額度，不會解決相同空快取反覆轉換失敗。
+
+需要另補 Shioaji 空回應分類與可恢復的 response 驗證／更新機制，以及安全的 frozen
+mapping 修復流程。空資料不能直接改報 no_data：目前仍缺少可支持 calendar／no-trade
+的 durable evidence，也未確認 SDK 為何對這些商品日期回傳空值。保留既有快取作為
+證據，任何受控重新抓取須沿用 owner fencing、原 quota／cooldown、prepared 與 receipts，
+避免盲目刪 cache 或重設預算。此次沒有發出 native provider 請求、修改線上狀態或清空佇列。
+未實作項目見 [待辦](../dev/production-foundation-cutover-plan.md)。
+
 ## 五 provider 舊流程退役評估（2026-10-29）
 
 同日 03:53 UTC 全 provider 唯讀查核：Backend 與全部 15 個 consumers 的
