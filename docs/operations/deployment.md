@@ -236,6 +236,57 @@ Pilot／Full checkpoint 檔案均存在；這不代表 provider 功能驗收。
 deadline 後不得 acceptance、取消／未確認終態、共同觀察窗口，以及健康失敗還原原 container IDs 與 pointer。
 以上為本機驗證，不代表已部署或通過 AWS 線上 rollback 演練。
 
+## Source 暫停修正的部署驗收
+
+2026-10-30 的 Fetcher 修正 revision 為 `c4effb8a64ef842dfa8aa9ed164244a852e7290a`
+（[PR #379](https://github.com/FPI-TW/findb/pull/379)）。
+[Staging Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/40989530773) 成功後，
+核對 schema-v3 acceptance、bundle SHA-256、installed manifest 與四組 image digests 一致；
+十五個 Pilot／Full／historical consumers 均 accepted、running、零重啟，無新 traceback。
+Staging 佇列 API 回傳 HTTP 200；Pilot／Full、historical、account governor 與 work journal
+的 SQLite 完整性檢查均為 `ok`。本次 FinDB CD 只有政策檢查，Backend／Dashboard rollout
+未被選中，production 也只 promotion Fetcher。
+
+在 staging 四組已安裝 images 內，以 `httpx.MockTransport` 執行共 72 項離線檢查：
+408／429／503／521／522／524 在 bounded inner retries 後由 idle loop 等待並恢復，
+401／403 立即失敗，已設定的停止旗標阻止重試，
+active owner 的 Source uncertainty 仍越過一般 Exception handler。四組 images 的
+`source_recovery.py` SHA-256 都與合併版本一致。此驗證不切斷真實 Source，亦不呼叫 provider。
+
+Production 升版前，以 Owner API 正常停止原本啟用的 Full Shioaji（revision 12→13）
+與 TAIFEX（10→11），確認所有 controls desired stopped、五個 provider 無 active owner。
+保存 PostgreSQL prepared hashes／receipts，以及主機 SQLite tables 的逐表指紋、檔案 inode
+與五組 provider host lock identity；不得以重設 checkpoint、refund 舊失敗或清空 cache 通過部署。
+Shioaji 空 Kbars／mapping 問題繼續由 [issue #378](https://github.com/FPI-TW/findb/issues/378)
+獨立追蹤，本次部署驗收不代表該問題已修復。
+
+[Production Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/40992266165) 於
+`2026-10-30 02:45 UTC` 成功完成 `fetcher-v0.1.13` promotion；指定 revision 的 Fetcher CI
+通過 1,811 項測試，production 四組 digests 與上述 staging acceptance 相同。正式 bundle 為：
+
+```text
+fetcher/production/accepted/c4effb8a64ef842dfa8aa9ed164244a852e7290a/bcfd723306836fa7cf84a3dbb290f1857e172bc1aaa8e6795e3e6429803c61d1.tar
+```
+
+Activation SSM 為 `c1bf33c2-8a69-408b-b45f-a2caf9d6a5ac`。升版後四組 installed images
+再次通過上述 72 項離線檢查；十五個 consumers accepted／running／零重啟，並以 trusted driver
+同版 recovery helper 確認 container ID、image、start time 與 restart count 連續 60 秒不變。
+Helper 不包含在 runtime bundle，獨立主機驗收須傳入可信同版 helper，不能假設 release 目錄已有該檔。
+
+恢復 controls 前，逐表比對 18 個既有 SQLite 狀態庫的 141 張表，內容指紋全部相同，
+檔案 inode 與 19 個既有 lock inode 均保留（含五組 provider whole-work lock）。
+PostgreSQL 的 110 筆 work／prepared hashes、attempt counts、owner generations、
+19,597 筆 receipts 的數量與完整內容指紋亦一致，Backend manifest 未變更。
+Governor quota 共 54,573 個 windows、1,629,066 requests，work budget 共 2 筆／2 attempts；
+全部 account quota、cooldown、acquisition liability 與各層 retry budget 逐表指紋均未變更。
+主機穩定／保留性驗收 SSM 為 `dd88a2d4-2cb3-4118-ba04-d3cd37537c54`。
+保留性驗收通過後，Owner API 已恢復 Full Shioaji（13→14）與 TAIFEX（11→12）的
+`desired_state=running`；TAIFEX 當時的 `observed_state=stopped` 表示 cycle 閒置。
+其餘 controls 的 desired state 與部署前相同，全部 heartbeat 更新且 `last_error` 為空。
+Production 供應商佇列 API 回傳 HTTP 200，原有 26 筆 queued work 的 ID 集合保留，
+其中 Shioaji 五筆工作繼續遵守原抓取窗口與 retry budget。
+本次未透過切斷線上 Backend 或實際 provider I/O 進行故障注入，不取代 native／active-owner recovery 驗收。
+
 ## 共用部署順序
 
 變更範圍不以 `github.event.before` 計算：被後續 push 取代而取消的 pending run、或部署失敗的 run，
