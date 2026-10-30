@@ -141,14 +141,28 @@ class DatedUniversePendingError(ReadinessBlockedError):
         self.retry_after_seconds = max(60, retry_after_seconds)
 
 
-def _official_report_unavailable(exc: BaseException) -> bool:
-    """Retryable TAIFEX transport/HTTP failures, as classified for queued rounds."""
-    if isinstance(exc, httpx.TransportError):
+# A TAIFEX report outage stops charging members, but only for this long per plan.
+TAIFEX_OUTAGE_RETRY_SECONDS = 12 * 3600
+
+
+def _retryable_http_status(status: int | None) -> bool:
+    """Shared retry classification for provider HTTP status codes."""
+    return status is None or status in {408, 429} or status >= 500
+
+
+def _taifex_http_retryable(exc: TaifexOperationalError | ProviderHTTPError) -> bool:
+    # A TAIFEX response-bound failure has no status and is a payload problem.
+    if isinstance(exc, TaifexOperationalError) and exc.status_code is None:
+        return False
+    return _retryable_http_status(exc.status_code)
+
+
+def _taifex_report_unavailable(exc: BaseException) -> bool:
+    """Exchange-report outages that every member of a TAIFEX plan shares."""
+    if isinstance(exc, (httpx.TransportError, DatedUniversePendingError)):
         return True
-    if isinstance(exc, TaifexOperationalError):
-        return exc.retryable or exc.status_code == 408
-    return isinstance(exc, ProviderHTTPError) and (
-        exc.status_code in {408, 429} or exc.status_code >= 500
+    return isinstance(exc, (TaifexOperationalError, ProviderHTTPError)) and _taifex_http_retryable(
+        exc
     )
 
 
@@ -1001,7 +1015,7 @@ class FullMarketRuntime:
                 if isinstance(exc, (TwelveDataResponseError, ProviderHTTPError))
                 else exc.response.status_code
             )
-            retryable = status is None or status in {408, 429} or status >= 500
+            retryable = _retryable_http_status(status)
             code = "MAINTENANCE_HTTP_" + str(status or "UNKNOWN")
         except (httpx.TransportError, SourceAPITransportError):
             retryable, code = True, "MAINTENANCE_TRANSPORT"
@@ -1284,9 +1298,9 @@ class FullMarketRuntime:
                 except (ProviderHTTPError, TwelveDataResponseError, TaifexOperationalError) as exc:
                     status = exc.status_code
                     retryable = (
-                        (exc.retryable or status == 408)
+                        _taifex_http_retryable(exc)
                         if isinstance(exc, TaifexOperationalError)
-                        else (status is None or status in {408, 429} or status >= 500)
+                        else _retryable_http_status(status)
                     )
                     self._settle_queued_round(
                         owner,
@@ -1861,6 +1875,8 @@ class FullMarketRuntime:
                         ) from None
                     owner.authorize()
                     requests = self._acquire(member, plan, part, release, feed)
+                    if self.provider == "taifex":
+                        self.state.clear_provider_outage(plan["plan_id"])
                     if not requests:
                         self.state.finish(key, status="complete", reason="source_proven_no_trade")
                         continue
@@ -2046,10 +2062,26 @@ class FullMarketRuntime:
                     self.state.defer_wait(key, now=time.time())
                     self.last_batch["reason"] = "quota_wait"
                     return False
-                if self.provider == "taifex" and _official_report_unavailable(exc):
+                if self.provider == "taifex" and _taifex_report_unavailable(exc):
                     # One exchange report serves every member: an outage keeps the
-                    # member failure budget and ends this round for a later retry.
-                    self.state.defer_wait(key, now=time.time(), reason="provider_unavailable")
+                    # member failure budget and ends this round for a later retry,
+                    # until the plan's outage exceeds its bounded retry window.
+                    delay = max(60, math.ceil(getattr(exc, "retry_after", 0) or 0))
+                    if self.state.defer_provider_outage(
+                        key,
+                        now=time.time(),
+                        delay_seconds=delay,
+                        limit_seconds=TAIFEX_OUTAGE_RETRY_SECONDS,
+                    ):
+                        return False
+                    self.state.stage_source_error(key)
+                    self.source.outcome(
+                        plan["plan_id"],
+                        work_item_id=part["work_item_id"],
+                        member_key=member_key,
+                        reason="source_error",
+                    )
+                    self.state.finish(key, status="manual", reason="retry_exhausted")
                     return False
                 # Provider/SDK diagnostics never enter durable state or logs.
                 self.state.stage_source_error(key)

@@ -32,13 +32,18 @@ EOD，一般（regular）與盤後（after_hours）分開保存；價差與 cont
 - 報表為空、格式不符、日期不符或**沒有任何一般時段列**，一律視為尚未發布：保存 date
   prerequisite，一小時後重試，不寫入 durable response、不提交 universe、不推論 no_data。
 - 日期 D 的換倉規則只與 effective date 不晚於 D 的最新 published release 比較，避免 D 在
-  D+1 已發布後重試時被判為倒退。依序處理時，2026-10-12 至 10-29 的實際週／月換倉（含 10/21
+  D+1 已發布後重試時被判為倒退；早於所有 published release 的日期才以最新一份比較。依序處理時，2026-10-12 至 10-29 的實際週／月換倉（含 10/21
   月到期）皆符合自動發布規則。
 - 計畫成員為報表中實際存在的「契約 × 時段」。成交量為 0 且 OHLC／結算價／未平倉量全空才是
   no_trade，並附報表 SHA-256 與原列摘錄；成員在報表中缺列時記為 blocked，不記 no_data。
-- 交付時官方 408／429／5xx 或網路中斷屬於整份報表不可用：不扣成員失敗額度、不回報
-  source_error，結束本輪並由一般 provider work retry 重排；403 等其他錯誤仍逐成員記 source_error，
-  成員連續 8 次後轉 `retry_exhausted` 人工處理。
+- 交付時官方 408／429／5xx、網路中斷或報表尚未發布，屬於整份報表不可用：不扣成員失敗額度、
+  不回報 source_error，成員至少延後 60 秒（429 依 `Retry-After`），結束本輪由一般 provider work
+  retry 重排。同一計畫自第一次故障起持續超過 12 小時仍未取得報表時，後續成員直接轉
+  `retry_exhausted` 並回報 source_error；任一成員成功取得報表即重設起算點。進行中的故障列於
+  health 的 `provider_outages`（plan、交易日與起始時間）。403 等其他錯誤仍逐成員記
+  source_error，連續 8 次後轉 `retry_exhausted` 人工處理。
+  故障起始時間存於各 profile checkpoint 的 `full_provider_outage` table；Fetcher 啟動時以
+  `CREATE TABLE IF NOT EXISTS` 新增，不改寫既有 rows 或 quota debt。
 - Canonical 每商品一個 instrument、每實際契約一筆 `futures_contract`，行情以契約＋交易日＋
   時段為鍵；`expiry_date` 目前不填。
 - 歷史回補每日期固定五份 CSV 加 whole-day manifest；任何商品報表為空或未發布完成，該 request

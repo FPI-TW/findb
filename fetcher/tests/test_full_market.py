@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import stat
+import time
 import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -901,14 +902,8 @@ def test_taifex_acquire_prepares_provided_metrics_with_null_close(
     runtime.http.close()
 
 
-@pytest.mark.parametrize(
-    ("latest_status", "dated_status"),
-    [(503, None), (200, 503), (200, 408), (200, 0)],
-    ids=["latest-503", "dated-503", "dated-408", "dated-network"],
-)
-def test_taifex_official_outage_keeps_member_budget_and_retries_round(
-    tmp_path: Path, latest_status: int, dated_status: int | None
-) -> None:
+def _taifex_outage(tmp_path: Path, dated: Any) -> tuple[Any, Any, list[str], Any]:
+    """Two members of one plan sharing an unavailable official report."""
     runtime, source, _ = _runtime(tmp_path, provider="taifex")
     stale = canonical_bytes([{**_taifex(month="202610", session="一般"), "Date": "20260930"}])
     calls = []
@@ -916,10 +911,10 @@ def test_taifex_official_outage_keeps_member_budget_and_retries_round(
     def native(request: httpx.Request) -> httpx.Response:
         calls.append(request.method)
         if request.method == "GET":
-            return httpx.Response(latest_status, content=stale)
-        if dated_status == 0:
-            raise httpx.ConnectError("connection reset", request=request)
-        return httpx.Response(dated_status or 200)
+            return httpx.Response(200, content=stale) if dated else httpx.Response(503)
+        if isinstance(dated, Exception):
+            raise dated
+        return dated
 
     runtime.http.close()
     runtime.http = httpx.Client(transport=httpx.MockTransport(native))
@@ -939,15 +934,79 @@ def test_taifex_official_outage_keeps_member_budget_and_retries_round(
     feed = {**runtime.feeds[0], "dataset_key": "tw_futures_eod", "slot_id": "taiwan_market_window"}
     runtime.state.record_plan(plan, runtime.provider)
 
-    assert runtime._deliver_plan(plan, {"release_id": "r", "members": members}, feed) is False
+    def deliver() -> bool:
+        return runtime._deliver_plan(plan, {"release_id": "r", "members": members}, feed)
+
+    return runtime, source, calls, deliver
+
+
+@pytest.mark.parametrize(
+    "dated",
+    [
+        None,
+        httpx.Response(503),
+        httpx.Response(408),
+        httpx.ConnectError("connection reset"),
+        httpx.Response(200, content="交易日期,契約,到期月份(週別)\n".encode("cp950")),
+    ],
+    ids=["latest-503", "dated-503", "dated-408", "dated-network", "dated-unpublished"],
+)
+def test_taifex_official_outage_keeps_member_budget_and_retries_round(
+    tmp_path: Path, dated: Any
+) -> None:
+    runtime, source, calls, deliver = _taifex_outage(tmp_path, dated)
+
+    assert deliver() is False
 
     # The shared report is requested once; no member is charged or reported failed.
-    assert calls == (["GET"] if dated_status is None else ["GET", "POST"])
+    assert calls == (["GET"] if dated is None else ["GET", "POST"])
     assert source.outcomes == []
     with runtime.state.connection() as db:
         work = [tuple(row) for row in db.execute("SELECT reason,attempts FROM full_work")]
     assert ("provider_unavailable", 0) in work
     assert all(attempts == 0 for _, attempts in work)
+    assert [outage["plan_id"] for outage in runtime.state.health("taifex")["provider_outages"]] == [
+        "p"
+    ]
+    runtime.http.close()
+
+
+def test_taifex_outage_honours_retry_after_and_clears_on_recovery(tmp_path: Path) -> None:
+    runtime, _, _, deliver = _taifex_outage(
+        tmp_path, httpx.Response(429, headers={"Retry-After": "900"})
+    )
+    before = time.time()
+
+    assert deliver() is False
+
+    with runtime.state.connection() as db:
+        deferred = db.execute(
+            "SELECT next_at FROM full_work WHERE reason='provider_unavailable'"
+        ).fetchone()
+        db.execute("UPDATE full_work SET next_at=0")
+    assert deferred["next_at"] >= before + 900
+    runtime._acquire = lambda *args: []
+    assert deliver() is True
+    assert runtime.state.health("taifex")["provider_outages"] == []
+    runtime.http.close()
+
+
+def test_taifex_outage_beyond_retry_window_hands_member_to_manual(tmp_path: Path) -> None:
+    from findb_fetcher.full_market_runtime import TAIFEX_OUTAGE_RETRY_SECONDS
+
+    runtime, source, _, deliver = _taifex_outage(tmp_path, httpx.Response(503))
+    with runtime.state.connection() as db:
+        db.execute(
+            "INSERT INTO full_provider_outage VALUES(?,?)",
+            ("p", time.time() - TAIFEX_OUTAGE_RETRY_SECONDS - 1),
+        )
+
+    assert deliver() is False
+
+    assert [outcome["reason"] for outcome in source.outcomes] == ["source_error"]
+    with runtime.state.connection() as db:
+        work = [tuple(row) for row in db.execute("SELECT status,reason FROM full_work")]
+    assert ("manual", "retry_exhausted") in work
     runtime.http.close()
 
 

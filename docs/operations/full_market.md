@@ -400,7 +400,8 @@ TAIFEX provider work 0、checkpoint `unresolved=[]`／`manual_required=0`；Full
 fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週契約、regular／after_hours、
 相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
 共同契約可依官方報表增加 session，但不得移除既有 session。兩種規則的比較基準皆為 effective date
-不晚於提交日期的最新 published release；較晚日期已發布時，重試的較早日期不以後者判定。產品、mapping、交易所、幣別、
+不晚於提交日期的最新 published release；較晚日期已發布時，重試的較早日期不以後者判定。
+提交日期早於所有 published release 時，才以最新一份比較。產品、mapping、交易所、幣別、
 分類、session 縮減或月份倒退均保留 candidate 等待人工審查。Release 同時保存
 完整 `member_sha256` 與排除逐次 `raw_evidence_ref` 的 semantic digest；同日期、同語意的報表重抓
 回傳既有 release，不再因 R2 evidence reference 不同產生重複 candidate。兩種 digest 的成員順序

@@ -618,6 +618,19 @@ async def test_taifex_late_date_compares_with_earlier_published_release(test_ses
 
 
 @pytest.mark.asyncio
+async def test_date_before_every_release_compares_with_newest_release(test_session):
+    key = "hk_equity_eod"
+    await _dataset(test_session, key)
+    body, _ = await _baseline(test_session, key, 100)
+    earlier = body.model_copy(deep=True)
+    earlier.effective_date -= timedelta(days=1)
+
+    release = await submit_universe(test_session, earlier, allowed_datasets=[key])
+
+    assert release.status == "published" and release.change_count == 0
+
+
+@pytest.mark.asyncio
 async def test_taifex_backward_or_identity_drift_remains_candidate(test_session):
     key = "tw_futures_eod"
     await _dataset(test_session, key)
