@@ -168,6 +168,52 @@ SSM：健康與規模 `7fc31a56-dea4-4283-b622-d2d78ec663f1`、實際 profiler �
 `88bf68d2-c39a-4095-b0e4-98d0ef906009`。所有診斷為 read-only，沒有改寫 production 程式或資料。
 候選 projection 唯讀量測：`475de304-2002-4a81-843e-8effec56bb30`。
 
+## Backend 部署期間 Fetcher 重啟調查（2026-10-30）
+
+台北時間 01:40～01:43 的 Backend candidate／activation 窗口，部署器停止公開 nginx 與
+Source，Fetcher 仍以公開 Source URL 輪詢。保留日誌顯示 historical worker 的
+`FullMarketProtocolError: Source governance returned HTTP 521`；同期 Pilot／Full 顯示固定的
+startup／operation blocked 訊息。Docker 保留事件有 Pilot／Full exit 2、historical exit 1，
+原 consumers 的 restart policy 為 `unless-stopped`。保留事件支持暫時 Source 不可用後的
+程序退出；未見部署器替換 Fetcher、OOM 或重新啟用已退役 CLI 的證據。部分日誌已輪替，
+Docker events 只保留局部，不能重建每一次退出的完整堆疊。
+
+`full_market_client.py` 與 `scheduler_control.py` 的 bounded status retry 清單都是
+429／502／503／504，未包含實際遇到的 521；本機 MockTransport 重現 521 只送一次且沒有
+退避，503 則按設定送三次並等待。Pilot／Full 在 initial poll、idle drain／poll 外層缺少
+長期等待處理，例外會到 CLI 最外層並退出；historical `run_worker()` 同樣未處理 claim 的
+暫時 Source 失敗。現有 `SchedulerControlLoop` 的容錯測試不代表這些現行 CLI 使用了該 loop。
+
+必須區分 idle 控制失敗與 active owner 不確定。`ProviderWorkRecoveryBlockedError` 刻意繼承
+`BaseException`，會穿過一般 SDK error sanitizer，保留 DB owner、隔離 host FD，並要求原
+shared inode 與子程序退出證據才能 recovery。修正不可用廣泛 catch／繼續舊 session 的方式
+繞過此安全邊界；heartbeat／generation 不可確認時仍須停止新 provider I/O。
+
+本次保留證據與影響：
+
+- 既有 work rows、failed 證據、prepared、receipts、原容器與持久化 mounts 保留；deployment
+  前後沒有改 desired states 或 control revisions。部署窗口的 receipts 全部完成 normalization，
+  目前 DB 沒有同 work／member 的重複 receipt，沒有卡在 recovery 的 owner。
+- Governor 與 work journal 的唯讀 integrity check 均正常；原歷史 quota／acquisition 證據仍在。
+  部署窗口未找到新的 unknown acquisition，Shioaji SDK 用量樣本持續累加，沒有重設。
+  Source poll／claim 失敗不會直接呼叫 provider acquisition；重新連線的 SDK login 與實際
+  抓取仍依原 governor 記帳。已保存的 response／prepared 可重播，但不能據此承諾中斷的
+  未持久化回應或 SDK 重連完全沒有額外用量；尚未以供應商帳單量化額外費用。
+- 另重現工作重試額度風險：Twelve Data、FinLab、Shioaji、TAIFEX 的 canonical daily 路徑在
+  `FullMarketState.claim()` 先增加 attempts，才呼叫 `owner.authorize()`。Mock Source 521
+  使授權 fail closed、provider 呼叫為零時，attempts 仍保留為 1。這與 provider 帳號 quota
+  是不同帳本；不能因帳號用量未重設而宣稱工作重試額度完全不受影響。多次此類中斷可能
+  侵蝕原 failure budget；本次 production 窗口未觀察到因此新增 terminal failed 工作。
+  Backend `attempt_number` 是排程回合，不是這個本地 failure budget，不能以高回合數推論
+  provider 請求或工作失敗次數。
+
+需要修正：補齊現行 CLI 在尚無 active owner 時的可中止退避／恢復迴圈與安全錯誤分類，
+統一處理暫時 Source status（含實際 521）；active owner 仍遵守停止、reap 與重新取 fence 的
+恢復規則；對可證明未派送的純 Source 等待保留工作 failure budget，已派送／不確定操作的
+quota、unknown debt 與 cooldown 不得退還。另補 startup、idle、active heartbeat／ACK-loss、
+prepared replay 與重試額度的回歸測試。未實作項目見 [待辦](../dev/production-foundation-cutover-plan.md)。
+本次調查只有唯讀 production 查核與本機 mock 重現，未修改線上 runtime、controls 或預算。
+
 ## 五 provider 舊流程退役評估（2026-10-29）
 
 同日 03:53 UTC 全 provider 唯讀查核：Backend 與全部 15 個 consumers 的

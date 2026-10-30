@@ -8,6 +8,14 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
+- Fetcher 對 Backend／Source 暫時不可用的恢復與重試額度修正：2026-10-30 已確認部署窗口
+  HTTP 521 會穿過現行 Pilot／Full／historical 的控制迴圈而退出，Docker 因而自動重啟；
+  521 亦未列入兩個 Source control clients 的 bounded retry statuses。另以零 provider I/O
+  重現 canonical daily 在授權前增加本地 attempts 的風險。須補 startup／idle 可中止退避、
+  active owner 停止／reap／重新取 fence、prepared／ACK-loss replay 與純等待不消耗 failure
+  budget 的測試；不得放寬舊 generation、退款已派送 quota、清理 prepared 或重設 cooldown。
+  本次尚未實作或部署此修正，根因、現場證據與限制見 [production 維運](../operations/production.md)。
+
 - Production 五 provider 的 provider-work native／recovery 驗收：2026-10-29 已完成具名 Owner
   attestation、兩端 true 與 Backend／Fetcher v0.1.12 發布，原 DB／17 個 SQLite／prepared／receipts／
   預算／cooldown 保留；正式備份、版本與驗證證據已整併至 [production 維運](../operations/production.md)。
