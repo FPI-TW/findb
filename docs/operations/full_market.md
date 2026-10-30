@@ -459,9 +459,18 @@ recovery blocked 而卡住同 provider 的後續工作：
 | --- | --- | --- |
 | 同一 request identity 只有舊回應 | `durable_response` 找到無基準 key | 拋出一般錯誤 `ProviderWorkBasisMismatchError`；Full／Pilot 成員標為 `manual / price_basis_manual_review` 並回報 `source_error`，同計畫其他成員照常處理；historical item 以 `PREPARED_DELIVERY_MANUAL_REVIEW` 結束 |
 | Prepared body 由舊回應產生 | body 的 `payload.batch.source_raw_sha256` 等於某筆舊回應原始 bytes 的 SHA-256 | 該 body 不送出；Full／Pilot 成員同上標為 manual；historical item 同上 |
-| 排空 prepared ledger 時遇到上述 body | 同上，逐筆判定 | 跳過該 body、其餘照常交付；結算若被 `PREPARED_DRAINING` 拒絕或屬 drain-only retry，改為 `failed`，`failure_code=PRICE_BASIS_MANUAL_REVIEW`（已有 failure code 時保留），proof 帶 `manual_pending_prepared`、`price_basis_blocked` 與 `price_basis` |
+| 排空 prepared ledger 時遇到上述 body | 同上，逐筆判定；只擋 Source 尚未接受的 body | 跳過該 body、其餘照常交付（已接受的舊 body 重播只取回原 run）；provider-work 結算若被 `PREPARED_DRAINING` 拒絕或屬 drain-only retry，改為 `failed`，`failure_code=PRICE_BASIS_MANUAL_REVIEW`（已有 failure code 時保留），proof 帶 `manual_pending_prepared`、`price_basis_blocked` 與 `price_basis`；proof 仍有未回報的 `pending_source_errors` 時先維持 retry，回報後再轉換 |
 
 判定逐筆進行：work 只是含有舊回應、但待送 body 不是由它產生（或待送集合為空）時，不阻擋。
+Historical 的 scope stopped、drain-only 與 closed／draining 回合排空後若有被擋 body，一律以
+`PREPARED_DELIVERY_MANUAL_REVIEW` 完成 item，completion 遇到 `PREPARED_DRAINING` 也改送同一
+manual 結果，讓 item／request 與 work 一起進入終態。Full／Pilot drain-only 回合不會清除
+（Source 只在所有 prepared 都被接受後才解除 drain-only），因此被擋 body 會使該回合的 retry
+轉為 manual failed，尚未抓取的成員改由 historical 回補。
+
+判定只依該 work 自己 journal 中的 `twelve_daily` 回應：沒有 journal 回應可對照的舊 checkpoint
+body（例如 provider-work 之前匯入、且已有 prepared 的工作）無法辨識基準。2026-10-30 核對時
+production 匯入的 13 筆 US daily 均未開始、沒有 prepared，目前無此類 body。
 原 `work_response` bytes、prepared bytes、receipts 與 R2 raw 全部保留；第一次偵測時於
 `work_response_observation` 複製一列 `origin=incompatible_basis:adjust-none-v1` 作為證據，並在
 Fetcher `full_work_diagnostic` 記為 `price_basis_mismatch`。

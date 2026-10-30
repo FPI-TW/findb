@@ -215,20 +215,18 @@ class HistoricalControlClient:
                         "code": "PROVIDER_WORK_PREPARED_DRAINING"
                     }:
                         owner.drain_prepared()
-                        if (
-                            owner.basis_blocked
-                            and (body or {}).get("failure_code")
-                            != "PREPARED_DELIVERY_MANUAL_REVIEW"
-                        ):
-                            from findb_fetcher.provider_work import (
-                                ProviderWorkBasisMismatchError,
-                            )
+                        if _basis_blocked(owner):
+                            if not path.endswith("/complete") or body is None:
+                                from findb_fetcher.provider_work import (
+                                    ProviderWorkBasisMismatchError,
+                                )
 
+                                raise ProviderWorkBasisMismatchError(
+                                    "prepared Twelve Data body predates the price basis"
+                                )
                             # Retained pre-basis bytes can never drain; end the item
-                            # through its manual-review waiver instead of looping.
-                            raise ProviderWorkBasisMismatchError(
-                                "prepared Twelve Data body predates the price basis"
-                            )
+                            # through the Source manual-review waiver instead of looping.
+                            body = _basis_manual_completion(body)
                         continue
                     draining = isinstance(error, dict) and error.get("detail") == {
                         "code": "PROVIDER_WORK_DRAINING"
@@ -266,6 +264,19 @@ class HistoricalControlClient:
             # one transaction before acknowledging this completion.
             owner.settled = True
         return value
+
+
+def _basis_manual_completion(body: dict) -> dict:
+    return {
+        "status": "failed",
+        "lease_token": body["lease_token"],
+        "failure_code": "PREPARED_DELIVERY_MANUAL_REVIEW",
+        "failure_message": "prepared Twelve Data body predates the price basis",
+    }
+
+
+def _basis_blocked(owner) -> bool:
+    return bool(getattr(owner, "basis_blocked", None))
 
 
 def run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner) -> bool:
@@ -306,6 +317,9 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
     try:
         if owner.work.get("scope_stopped"):
             receipts = owner.drain_prepared()
+            if _basis_blocked(owner):
+                control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
+                return True
             if receipts:
                 control.complete(item, receipts[-1].run_id)
             else:
@@ -313,10 +327,17 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
             return True
         if owner.work.get("drain_only") and owner.work["state"] == "open":
             owner.drain_prepared()
+            if _basis_blocked(owner):
+                # Drain-only never clears while a retained body stays unaccepted.
+                control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
+                return True
             owner.settle("retry", failure_code="PROVIDER_ACCOUNT_COOLDOWN", delay=60)
             return True
         if owner.work["state"] in {"closed", "draining"}:
             receipts = owner.drain_prepared()
+            if _basis_blocked(owner):
+                control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
+                return True
             if item.provider not in {"taifex", "factset"} or not owner.work.get("manifest"):
                 if receipts:
                     try:

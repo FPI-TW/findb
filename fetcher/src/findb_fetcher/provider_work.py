@@ -795,6 +795,7 @@ class ProviderWorkSession:
         from findb_fetcher.contracts import ContractRegistry
 
         receipts = []
+        pending: set[str] | None = None
         with SourceAPIClient(
             self.source.config,
             ContractRegistry(self.source.config.contracts_dir),
@@ -811,10 +812,13 @@ class ProviderWorkSession:
                 body = bodies[0]
                 request = json.loads(body)
                 if self.prepared_predates_basis(request):
-                    # Original bytes mapped from split-adjusted responses stay retained;
-                    # settle() turns them into an explicit manual-review waiver.
-                    self.basis_blocked.add(key)
-                    continue
+                    if pending is None:
+                        pending = set(self.prepared_keys(pending_only=True))
+                    # An accepted body replays only its existing receipt. An unaccepted
+                    # one stays retained; settle() turns it into a manual-review waiver.
+                    if key in pending:
+                        self.basis_blocked.add(key)
+                        continue
                 prepared = PreparedDelivery(
                     body.encode(),
                     request["idempotency_key"],
@@ -874,7 +878,12 @@ class ProviderWorkSession:
         while True:
             if self.failed.is_set():
                 raise ProviderWorkRecoveryBlockedError("provider work heartbeat is unavailable")
-            if self.basis_blocked and (body["outcome"] != "retry" or self.work.get("drain_only")):
+            if (
+                self.basis_blocked
+                and (body["outcome"] != "retry" or self.work.get("drain_only"))
+                # Source accepts unreported member errors only on retry; report first.
+                and not body["proof"].get("pending_source_errors")
+            ):
                 outcome = self._basis_manual_settlement(body)
             if outcome == "retry":
                 body["retry_at"] = (

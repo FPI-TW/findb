@@ -1103,6 +1103,8 @@ class FullMarketRuntime:
         self.pause()
         # No manual_pending_prepared waiver: Source must see all original
         # deliveries accepted and every normalization terminal before release.
+        # The only exception is a Twelve Data body mapped from pre-basis bytes,
+        # which settle() retains under an explicit price-basis waiver.
         # Missing/manual frozen members remain missing/manual, never no_data.
         owner.settle(
             "failed",
@@ -1971,6 +1973,9 @@ class FullMarketRuntime:
                     owner.prepared_predates_basis(request) for request in json.loads(prepared)
                 ):
                     # Bodies mapped from split-adjusted responses are retained, never replayed.
+                    owner.basis_blocked.update(
+                        request["idempotency_key"] for request in json.loads(prepared)
+                    )
                     self._price_basis_manual(plan, part, member_key, key)
                     continue
                 normalizing = False

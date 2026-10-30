@@ -99,9 +99,10 @@ class _Ledger:
         self.settles: list[dict] = []
         self.delivered: list[str] = []
 
-    def preparation(self, action, *, keys_only=False, delivery_key=None, **_):
+    def preparation(self, action, *, keys_only=False, delivery_key=None, pending_only=False, **_):
         if keys_only:
-            return {"member_keys": sorted(self.bodies)}
+            keys = set(self.bodies) - (set(self.delivered) if pending_only else set())
+            return {"member_keys": sorted(keys)}
         return {"bodies": [self.bodies[delivery_key]]}
 
     def request(self, action, **body):
@@ -376,6 +377,8 @@ def test_full_daily_pre_basis_member_is_manual_and_others_continue(tmp_path, pre
             ).fetchone()
         assert tuple(row) == ("manual", "price_basis_manual_review")
         assert runtime.state.prepared("fp1:123:AAPL") == (body if prepared else None)
+        # A retained ledger body arms the drain-only conversion so the work can terminate.
+        assert owner.basis_blocked == ({"full:original"} if prepared else set())
         assert [d["category"] for d in runtime.state.diagnostics("fp1:123:AAPL")] == [
             "price_basis_mismatch"
         ]
@@ -411,18 +414,16 @@ def test_diagnostic_write_failure_never_suppresses_the_source_report(tmp_path, m
         runtime.close()
 
 
-@pytest.mark.parametrize(
-    ("failure_code", "raises"), [(None, True), ("PREPARED_DELIVERY_MANUAL_REVIEW", False)]
-)
-def test_historical_drain_conflict_with_blocked_body_exits_instead_of_looping(failure_code, raises):
+@pytest.mark.parametrize("path", ["/historical-backfills/item/complete", "/other"])
+def test_historical_drain_conflict_with_blocked_body_ends_item_instead_of_looping(path):
     from findb_fetcher.historical_backfill import HistoricalControlClient
 
-    calls = []
+    sent = []
     drains = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request.url.path)
-        if len(calls) == 1:
+        sent.append(json.loads(request.content))
+        if len(sent) == 1:
             return httpx.Response(409, json={"detail": {"code": "PROVIDER_WORK_PREPARED_DRAINING"}})
         return httpx.Response(200, json={"success": True})
 
@@ -436,14 +437,112 @@ def test_historical_drain_conflict_with_blocked_body_exits_instead_of_looping(fa
     try:
         with httpx.Client(transport=httpx.MockTransport(handler)) as http:
             control = HistoricalControlClient(config, client=http, provider="twelve_data")
-            body = {"status": "failed", "failure_code": failure_code}
-            if raises:
-                with pytest.raises(queue.ProviderWorkBasisMismatchError):
-                    control._request("POST", "/complete", body)
+            body = {"status": "completed", "run_id": "r", "lease_token": "lease"}
+            if path.endswith("/complete"):
+                assert control._request("POST", path, body) == {"success": True}
+                # The completion is resent as the Source manual-review waiver.
+                assert sent[1] == {
+                    "status": "failed",
+                    "lease_token": "lease",
+                    "failure_code": "PREPARED_DELIVERY_MANUAL_REVIEW",
+                    "failure_message": "prepared Twelve Data body predates the price basis",
+                }
             else:
-                # The manual waiver itself is retried; Source then accepts it.
-                assert control._request("POST", "/complete", body) == {"success": True}
+                with pytest.raises(queue.ProviderWorkBasisMismatchError):
+                    control._request("POST", path, body)
+                assert len(sent) == 1
     finally:
         queue._current.reset(token)
     assert drains == ["drain"]
-    assert len(calls) == (1 if raises else 2)
+
+
+@pytest.mark.parametrize(
+    "work",
+    [
+        {"state": "open", "scope_stopped": True},
+        {"state": "open", "drain_only": True},
+        {"state": "closed"},
+        {"state": "draining"},
+    ],
+)
+def test_historical_drain_branches_end_blocked_item_through_domain_fail(monkeypatch, work):
+    from findb_fetcher.historical_backfill import _run_once
+
+    events = []
+    owner = SimpleNamespace(work=work, basis_blocked=set())
+
+    def drain():
+        events.append("drain")
+        owner.basis_blocked.add("old")
+        return []
+
+    owner.drain_prepared = drain
+    owner.settle = lambda *args, **kwargs: events.append(("settle", args))
+    monkeypatch.setattr(queue, "require_owner", lambda provider: owner)
+    item = SimpleNamespace(provider="twelve_data")
+    control = SimpleNamespace(
+        provider="twelve_data",
+        claim=lambda: item,
+        complete=lambda *args: events.append("complete"),
+        fail=lambda item, code: events.append(("fail", code)),
+    )
+    assert _run_once(control, SimpleNamespace(run=lambda item: pytest.fail("no acquisition")))
+    # The historical item/request reach their domain terminal state; no raw settle.
+    assert events == ["drain", ("fail", "PREPARED_DELIVERY_MANUAL_REVIEW")]
+
+
+def test_accepted_pre_basis_body_replays_its_existing_receipt(tmp_path, monkeypatch):
+    old = _adjusted_raw()
+    ledger = _Ledger({"old": _body(old, "old")})
+    ledger.delivered.append("old")
+    session, journal = _session(tmp_path, monkeypatch, ledger)
+    journal.response(_base() + ":validated-target-v1", _encoded(old))
+    # Source already accepted it, so replay only returns the original run.
+    assert len(session.drain_prepared()) == 1
+    assert session.basis_blocked == set()
+
+
+def test_unreported_member_errors_keep_retry_until_reported(tmp_path, monkeypatch):
+    old = _adjusted_raw()
+    ledger = _Ledger({"old": _body(old, "old")})
+    session, journal = _session(tmp_path, monkeypatch, ledger, drain_only=True)
+    journal.response(_base() + ":validated-target-v1", _encoded(old))
+    session.drain_prepared()
+    session.settle("retry", proof={"pending_source_errors": ["AAPL"]})
+    assert [body["outcome"] for body in ledger.settles] == ["retry"]
+    assert ledger.settles[0]["proof"] == {"pending_source_errors": ["AAPL"]}
+
+
+def test_daily_drain_only_round_with_blocked_member_terminates(tmp_path):
+    from provider_work_support import owned_unit_work
+    from test_full_market import _member, _plan, _runtime
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    runtime._acquire = lambda *args: pytest.fail("drain-only rounds never acquire")
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    old = _adjusted_raw()
+    runtime.state.prepare("fp1:123:AAPL", json.dumps([_body(old, "full:original")]).encode())
+    settles = []
+    try:
+        with owned_unit_work(runtime.provider, tmp_path) as owner:
+            owner.journal.response(_base() + ":validated-target-v1", _encoded(old))
+            owner.work["drain_only"] = True
+            runtime._deliver_plan(
+                plan,
+                {"members": [_member(), {**_member(), "member_key": "MSFT"}]},
+                runtime.feeds[0],
+                drain_only=True,
+            )
+            owner.publish_cooldown = lambda: None
+            owner.prepared_keys = lambda **kwargs: ["full:original"]
+            owner.request = lambda action, **body: settles.append((action, body)) or {}
+            # The scheduler would otherwise retry this drain-only round forever.
+            owner.settle("retry", failure_code="DRAIN_ONLY", delay=60)
+        final = [body for action, body in settles if action == "settle"][-1]
+        assert final["outcome"] == "failed"
+        assert final["failure_code"] == "PRICE_BASIS_MANUAL_REVIEW"
+        assert final["proof"]["manual_pending_prepared"] == ["full:original"]
+    finally:
+        runtime.close()
