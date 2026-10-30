@@ -30,6 +30,14 @@ Production native 資料與實際 rollback 演練由
   state mkdir/chown/chmod 必須在完整可信 inventory 後。目前只支援 verified coordinator child，
   上述 standalone 邊界依賴 parent inventory／journal gate，尚未提供獨立介面保證。
 
+## TAIFEX 正式上線
+
+來源行為與排查見 [TAIFEX 期貨日行情](../operations/taifex.md)；native 驗收另見
+[未完成驗收](production-foundation-cutover-plan.md)。
+
+- [ ] Pilot 只取排序前兩個契約（實際皆為 MTX），TX／TMF／TE／TF 只能由 Full 或歷史回補驗收；
+  驗收計畫須明列。
+
 ## Full-market external acceptance
 
 - [ ] 將 TAIFEX dated-universe 專用告警、Admin candidates／member-diff 唯讀入口與 Dashboard

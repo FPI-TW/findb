@@ -176,6 +176,11 @@ def parse_report(
         result.append(row)
     if not result:
         raise UniverseSnapshotError("TAIFEX report has no in-scope actual contracts")
+    # The dated report is published in stages: after-hours rows (complete at
+    # 05:00) appear before the regular session. A final report always carries
+    # regular rows; closures yield a header-only report instead.
+    if not any(row["session"] == "regular" for row in result):
+        raise UniverseSnapshotError("TAIFEX report lacks regular-session rows; publication pending")
     return sorted(
         result, key=lambda row: (row["product_code"], row["contract_code"], row["session"])
     )

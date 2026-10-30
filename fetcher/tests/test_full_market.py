@@ -810,7 +810,10 @@ def test_live_official_shape_regressions_tdr_tpex_english_and_taifex_null() -> N
         parse_tw_companies(b'[{"SecuritiesCompanyCode":"6488"}]', otc=True)[0]["exchange"] == "ROCO"
     )
     row = {**_taifex(), "SettlementPrice": "NULL", "OpenInterest": "NULL"}
-    parsed = parse_report(canonical_bytes([row]), target_date=date(2026, 10, 1))[0]
+    rows = parse_report(
+        canonical_bytes([_taifex(session="一般"), row]), target_date=date(2026, 10, 1)
+    )
+    parsed = next(row for row in rows if row["session"] == "after_hours")
     assert parsed["settlement_price"] is None and parsed["open_interest"] is None
 
 
@@ -840,13 +843,21 @@ def test_taifex_acquire_prepares_provided_metrics_with_null_close(
         "OpenInterest": "NULL",
         **observation,
     }
-    report = canonical_bytes([source_row])
+    # Published reports always carry the regular session alongside after-hours rows.
+    companion = (
+        [_taifex(product=product, month="202610", session="一般")] if session == "盤後" else []
+    )
+    report = canonical_bytes([*companion, source_row])
     runtime.http.close()
     runtime.http = httpx.Client(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, content=report))
     )
     runtime.proof["max_response_bytes"] = 10000
-    parsed = parse_report(report, target_date=day)[0]
+    parsed = next(
+        row
+        for row in parse_report(report, target_date=day)
+        if row["session"] == ("after_hours" if session == "盤後" else "regular")
+    )
     member = {
         **report_members([parsed])[0],
         "session": parsed["session"],
@@ -888,6 +899,72 @@ def test_taifex_acquire_prepares_provided_metrics_with_null_close(
     assert json.loads(runtime.state.prepared(key))[0] == prepared_requests[0]
     assert runtime.state.receipt(key) == str(UUID(int=1))
     runtime.http.close()
+
+
+@pytest.mark.parametrize(
+    ("latest_status", "dated_status"),
+    [(503, None), (200, 503), (200, 408), (200, 0)],
+    ids=["latest-503", "dated-503", "dated-408", "dated-network"],
+)
+def test_taifex_official_outage_keeps_member_budget_and_retries_round(
+    tmp_path: Path, latest_status: int, dated_status: int | None
+) -> None:
+    runtime, source, _ = _runtime(tmp_path, provider="taifex")
+    stale = canonical_bytes([{**_taifex(month="202610", session="一般"), "Date": "20260930"}])
+    calls = []
+
+    def native(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(latest_status, content=stale)
+        if dated_status == 0:
+            raise httpx.ConnectError("connection reset", request=request)
+        return httpx.Response(dated_status or 200)
+
+    runtime.http.close()
+    runtime.http = httpx.Client(transport=httpx.MockTransport(native))
+    runtime.proof["max_response_bytes"] = 10000
+    keys = ["TX:202610:regular", "TX:202610:after_hours"]
+    members = [
+        {
+            **_member(),
+            "contract_code": "TX:202610",
+            "session": key.split(":")[-1],
+            "member_key": key,
+        }
+        for key in keys
+    ]
+    plan = {**_plan(), "dataset_key": "tw_futures_eod"}
+    plan["parts"][0] = {"work_item_id": "fp1:" + "a" * 32, "member_keys": keys}
+    feed = {**runtime.feeds[0], "dataset_key": "tw_futures_eod", "slot_id": "taiwan_market_window"}
+    runtime.state.record_plan(plan, runtime.provider)
+
+    assert runtime._deliver_plan(plan, {"release_id": "r", "members": members}, feed) is False
+
+    # The shared report is requested once; no member is charged or reported failed.
+    assert calls == (["GET"] if dated_status is None else ["GET", "POST"])
+    assert source.outcomes == []
+    with runtime.state.connection() as db:
+        work = [tuple(row) for row in db.execute("SELECT reason,attempts FROM full_work")]
+    assert ("provider_unavailable", 0) in work
+    assert all(attempts == 0 for _, attempts in work)
+    runtime.http.close()
+
+
+def test_taifex_rejected_latest_report_remains_member_source_error(tmp_path: Path) -> None:
+    runtime, source, _ = _runtime(tmp_path, provider="taifex")
+    runtime.http.close()
+    runtime.http = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(403)))
+    runtime.proof["max_response_bytes"] = 10000
+    member = {**_member(), "contract_code": "TX:202610", "session": "regular"}
+    member["member_key"] = "TX:202610:regular"
+    plan = {**_plan(), "dataset_key": "tw_futures_eod"}
+    plan["parts"][0] = {"work_item_id": "fp1:" + "a" * 32, "member_keys": [member["member_key"]]}
+    feed = {**runtime.feeds[0], "dataset_key": "tw_futures_eod", "slot_id": "taiwan_market_window"}
+    runtime.state.record_plan(plan, runtime.provider)
+
+    assert runtime._deliver_plan(plan, {"release_id": "r", "members": [member]}, feed) is False
+    assert [outcome["reason"] for outcome in source.outcomes] == ["source_error"]
 
 
 @pytest.mark.parametrize("volume", ["0", "NULL"])
@@ -949,7 +1026,8 @@ def test_universe_refresh_state_backoff_and_health_restart(tmp_path: Path) -> No
 
 def test_taifex_actual_friday_week_is_preserved_without_broker_aliases() -> None:
     rows = parse_report(
-        canonical_bytes([_taifex("MTX", "202610F1")]), target_date=date(2026, 10, 1)
+        canonical_bytes([_taifex("MTX", "202610F1"), _taifex("MTX", "202610F1", "一般")]),
+        target_date=date(2026, 10, 1),
     )
     assert rows[0]["contract_code"] == "MTX:202610F1"
     assert report_members(rows)[0]["classification"] == "weekly"

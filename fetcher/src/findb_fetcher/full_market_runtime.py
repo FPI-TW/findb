@@ -141,6 +141,17 @@ class DatedUniversePendingError(ReadinessBlockedError):
         self.retry_after_seconds = max(60, retry_after_seconds)
 
 
+def _official_report_unavailable(exc: BaseException) -> bool:
+    """Retryable TAIFEX transport/HTTP failures, as classified for queued rounds."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, TaifexOperationalError):
+        return exc.retryable or exc.status_code == 408
+    return isinstance(exc, ProviderHTTPError) and (
+        exc.status_code in {408, 429} or exc.status_code >= 500
+    )
+
+
 def load_readiness(
     path: Path | None, provider: str, datasets: list[str], *, now: datetime
 ) -> dict[str, Any]:
@@ -2034,6 +2045,11 @@ class FullMarketRuntime:
                 if self.daily_policy and isinstance(exc, ShioajiSdkError) and exc.quota_wait:
                     self.state.defer_wait(key, now=time.time())
                     self.last_batch["reason"] = "quota_wait"
+                    return False
+                if self.provider == "taifex" and _official_report_unavailable(exc):
+                    # One exchange report serves every member: an outage keeps the
+                    # member failure budget and ends this round for a later retry.
+                    self.state.defer_wait(key, now=time.time(), reason="provider_unavailable")
                     return False
                 # Provider/SDK diagnostics never enter durable state or logs.
                 self.state.stage_source_error(key)

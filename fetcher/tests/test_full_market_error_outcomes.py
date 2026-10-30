@@ -73,6 +73,9 @@ def test_generic_failure_reports_source_error_and_stops_before_next_member(
     runtime._acquisition_allowed = lambda: True
     plan = _plan()
     runtime.state.record_plan(plan, provider)
+    # A TAIFEX network failure is an exchange-report outage; the round still stops
+    # but the member is neither charged nor reported.
+    outage = provider == "taifex" and network
     try:
         with owned_unit_work(provider, tmp_path):
             assert not runtime._deliver_plan(
@@ -81,9 +84,11 @@ def test_generic_failure_reports_source_error_and_stops_before_next_member(
                 runtime.feeds[0],
             )
         assert acquired == ["AAPL"]
-        assert source.outcomes == [
-            {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}
-        ]
+        assert source.outcomes == (
+            []
+            if outage
+            else [{"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}]
+        )
         assert not runtime.state.pending_source_error_keys("p")
         assert "private SDK detail" not in json.dumps(runtime.state.plan_progress("p"))
     finally:

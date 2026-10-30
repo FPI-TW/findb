@@ -21,6 +21,7 @@
 | 重跑staging query／ingest baseline或判斷何時進行效能優化 | [operations/performance.md](operations/performance.md) |
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
 | FactSet 港股 EOD、每日 HKEX 清單與現行名單回補 | [operations/factset_hk.md](operations/factset_hk.md) |
+| TAIFEX 期貨 EOD 官方來源行為、日曆維護與待發布／休市排查 | [operations/taifex.md](operations/taifex.md) |
 | 追蹤 production native 資料及 rollback 驗收 | [dev/production-foundation-cutover-plan.md](dev/production-foundation-cutover-plan.md) |
 
 ## Source of truth
