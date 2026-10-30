@@ -32,6 +32,11 @@ Production native 資料與實際 rollback 演練由
 
 ## Full-market external acceptance
 
+- [ ] 部署 [#378](https://github.com/FPI-TW/findb/issues/378) Shioaji 空 Kbars／mapping 修復後，
+  保存受控原生觀測與 catalogue 證據，確認空回應原因，逐工作核准恢復並核對 canonical／Serve
+  與既有收據；程式與離線測試完成不代表 production 工作已恢復。操作見
+  [Full market runbook](../operations/full_market.md#shioaji-空-kbars-與凍結-mapping-修復)。
+
 - [ ] 將 TAIFEX dated-universe 專用告警、Admin candidates／member-diff 唯讀入口與 Dashboard
   提示部署至 staging，配合已完成的 bounded rollover／semantic universe 流程驗證後再 promotion
   至 production；production 不得套用 staging 的候選或操作紀錄，並須以自身 candidate、audit 與

@@ -19,20 +19,44 @@ async def _upgrade(url, revision):
 
 async def _add_current_setup_compatibility(engine) -> None:
     """Let current setup helpers seed a pre-head schema under test."""
+    from sqlalchemy import Column, MetaData, Table
+
     from app.models.registry import DailyDeliveryPlanSummary
+    from app.models.shioaji_repair import ShioajiMemberRepair, ShioajiRepairAck
 
     async with engine.begin() as db:
         await db.execute(
             text("ALTER TABLE universe_release ADD COLUMN semantic_member_sha256 VARCHAR(64)")
         )
         await db.run_sync(DailyDeliveryPlanSummary.__table__.create)
+        # provider_work itself does not exist at this legacy setup revision.
+        # This empty setup-only projection permits current read helpers; the
+        # real migration below still creates and verifies every foreign key.
+        projection = Table(
+            "shioaji_member_repair",
+            MetaData(),
+            *(
+                Column(
+                    column.name,
+                    column.type,
+                    primary_key=column.primary_key,
+                    nullable=column.nullable,
+                )
+                for column in ShioajiMemberRepair.__table__.columns
+            ),
+        )
+        await db.run_sync(projection.create)
+        await db.run_sync(ShioajiRepairAck.__table__.create)
 
 
 async def _remove_current_setup_compatibility(engine) -> None:
     from app.models.registry import DailyDeliveryPlanSummary
+    from app.models.shioaji_repair import ShioajiMemberRepair, ShioajiRepairAck
 
     async with engine.begin() as db:
         # Remove setup-only projections before testing the real legacy upgrade.
+        await db.run_sync(ShioajiRepairAck.__table__.drop)
+        await db.run_sync(ShioajiMemberRepair.__table__.drop)
         await db.run_sync(DailyDeliveryPlanSummary.__table__.drop)
         await db.execute(text("ALTER TABLE universe_release DROP COLUMN semantic_member_sha256"))
 

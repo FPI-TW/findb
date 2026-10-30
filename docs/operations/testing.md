@@ -77,6 +77,16 @@ workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境�
 
 ## Provider-work 退役驗證
 
+Shioaji 空 Kbars／mapping 修復由 Fetcher `test_shioaji_recovery.py`、
+`test_shioaji_repair_cli.py` 及 Backend `test_shioaji_repair.py`、
+`test_shioaji_repair_migration.py` 驗證：legacy 快取證據保留、跨重啟三次觀測上限與十五分鐘退避、
+unknown dispatch 不退款、日曆衝突、Owner／Source fence、stale preview、mapping overlay、
+首次未知派送跨重啟的上限與退避、空回應後 calendar-status outage 的續報與 claim 保留、
+舊八次失敗及新 grant 分離、重複安裝／ACK-loss，以及 migration 保留性與 rollback floor。
+`test_provider_work_daily_faults.py` 的股票／ETF 空回應案例走正式 decorator、隔離 fake SDK、
+Source→raw→normalization→canonical，驗證後續合法回應完成原 scope；同 suite 保留 outage／
+lost-ACK 原 bytes／idempotency 驗證。測試不呼叫真實 provider，不能代替 production 根因驗收。
+
 所有五 provider 的設定／無 owner 拒絕矩陣在 Backend `test_provider_work_retirement.py`
 與 Fetcher `test_twelve_data_cli.py`；後者覆蓋八個舊 acquiring CLI 的 exit 2、無新檔案與原
 checkpoint bytes 不變，以及 daily cycle／drain 只呼叫 queue dispatcher。部署的 false 拒絕與

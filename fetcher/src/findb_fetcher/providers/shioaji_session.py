@@ -27,7 +27,9 @@ from findb_fetcher.providers.shioaji import (
     _plain_kbars,
     _usage_bytes,
     _validate_symbol,
+    kbars_target_valid,
 )
+from findb_fetcher.shioaji_recovery import observation_guard, observe_snapshot
 
 _MAX_CATALOGUE_BYTES = 4 * 1024 * 1024
 
@@ -459,19 +461,26 @@ class PersistentIsolatedShioajiGateway:
                 self._run("sdk_contracts", exchange=exchange)
             self._contracts_loaded = True
 
-    @durable_response("shioaji_kbars", ("symbol", "target_date"))
+    @durable_response(
+        "shioaji_kbars",
+        ("symbol", "target_date"),
+        target_valid=kbars_target_valid,
+        native_guard=observation_guard,
+    )
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
         _validate_symbol(symbol)
         self._bootstrap()
         value, before, after = self._run("kbars", symbol=symbol, date=target_date.isoformat())
         value = _decode_isolated_message(json.dumps(value).encode())
-        return ShioajiKbarsSnapshot(
+        snapshot = ShioajiKbarsSnapshot(
             {key: tuple(items) for key, items in value["kbars"].items()},
             value["before"],
             value["after"],
             before,
             after,
         )
+        observe_snapshot(snapshot)
+        return snapshot
 
     def _stop(self) -> None:
         try:

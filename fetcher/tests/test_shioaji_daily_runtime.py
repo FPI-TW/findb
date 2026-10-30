@@ -357,6 +357,7 @@ def test_enabled_queue_freezes_both_daily_plans_before_delivery(tmp_path, monkey
     )
     owner = SimpleNamespace(
         work={
+            "work_id": "frozen-daily-work",
             "kind": "daily",
             "dataset_key": plan["dataset_key"],
             "state": "open",
@@ -364,6 +365,11 @@ def test_enabled_queue_freezes_both_daily_plans_before_delivery(tmp_path, monkey
             "trade_date": plan["trade_date"],
         },
         freeze=lambda manifest: None,
+        _preparation_request=lambda action: {
+            "work_id": "frozen-daily-work",
+            "plan_id": plan["plan_id"],
+            "repairs": [],
+        },
     )
 
     @contextmanager

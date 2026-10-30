@@ -72,6 +72,10 @@ class SettleRequest(FenceRequest):
     failure_code: str | None = None
 
 
+class RepairAckRequest(FenceRequest):
+    repair_ids: list[UUID] = Field(max_length=5000)
+
+
 def scope(db: AsyncSession) -> tuple[str, list[str]]:
     from app.services.source_clients import PROVIDER_DATASET_SCOPE
 
@@ -297,6 +301,19 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
             }
         elif action == "calendar-status":
             return await service.current_calendar_status(db, work)
+        elif action in {"shioaji-repairs", "shioaji-repair-ack"}:
+            from app.services.shioaji_repair import approved
+
+            result = await approved(
+                db,
+                work,
+                ack_ids=[str(value) for value in body.repair_ids]
+                if isinstance(body, RepairAckRequest)
+                else None,
+                generation=body.generation,
+            )
+            await db.commit()
+            return result
         elif action == "close":
             await service.close(db, **identity)
         elif action == "execute-rerun":
@@ -358,6 +375,9 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
     except service.ProviderWorkError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/{work_id}/heartbeat")
@@ -392,6 +412,35 @@ async def calendar_status(
     work_id: UUID, body: FenceRequest, db: AsyncSession = Depends(get_db)
 ) -> dict:
     return await mutate(db, work_id, body, "calendar-status")
+
+
+@router.post("/{work_id}/shioaji-repairs")
+async def shioaji_repairs(
+    work_id: UUID, body: FenceRequest, db: AsyncSession = Depends(get_db)
+) -> dict:
+    return await mutate(db, work_id, body, "shioaji-repairs")
+
+
+@router.post("/{work_id}/shioaji-repair-ack")
+async def shioaji_repair_ack(
+    work_id: UUID, body: RepairAckRequest, db: AsyncSession = Depends(get_db)
+) -> dict:
+    return await mutate(db, work_id, body, "shioaji-repair-ack")
+
+
+@router.get("/{work_id}/shioaji-diagnostics")
+async def shioaji_diagnostics(work_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+    from app.services.full_market import FullMarketError
+    from app.services.shioaji_repair import inventory, work_scope
+
+    provider, datasets = scope(db)
+    try:
+        work, _ = await work_scope(db, work_id)
+        if work.provider != provider or work.dataset_key not in datasets:
+            raise HTTPException(status_code=403, detail="Source dataset scope denied")
+        return await inventory(db, work_id)
+    except FullMarketError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.post("/{work_id}/execute-rerun")

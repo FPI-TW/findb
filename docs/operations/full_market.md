@@ -218,6 +218,95 @@ auth／scope 錯誤仍依原規則 failed／manual，不得誤分類成尚未發
 截止時間、failure code 與每次 observation 都須留在原 work 證據中；重啟、
 清除 journal 或重置 checkpoint 不得延長窗口。若之後來源補齊，使用正常歷史回補建立新 work。
 
+### Shioaji 空 Kbars 與凍結 mapping 修復
+
+七個 Kbars 向量皆空記為 `empty_response`，原因維持 `unknown`；不能推定尚未發布、無交易或
+entitlement 不足。缺欄、長度不一致、錯誤日期及其他永久格式錯誤仍走原本有界失敗流程。
+有效日期快取沿用原 bytes；無效舊快取保留原 row／checksum，負向 observation 不授權 replay。
+
+Pilot／Full daily 每個原 work／provider symbol／日期最多三次空回應或未知派送觀測（包含首次），
+重新觀測至少間隔十五分鐘，並受既有抓取窗口、owner、quota、unknown debt 與 cooldown 限制。
+派送前的 journal reservation 在不確定邊界保守計數；只有可證明未派送的等待才釋放 reservation。
+即使尚未保存任何空回應，未知派送也受三次上限與十五分鐘退避限制；不能因未取得回應而重新
+開啟額度。未證實為空時，本地記為 `unknown_dispatch`、Source 維持 `source_error`，不偽造空回應。
+舊快取中的空回應匯入為一次既有觀測，不把歷次本地重播算成新的 native 請求。
+舊快取沒有原始觀測時間時，從首次辨識起保守等待十五分鐘；重啟不重新起算。
+等待只退回本輪新增的 local claim，既有 failure attempts 與已派送平台用量不退款。
+三次耗盡為 manual；缺漏與告警保留。新 published calendar 與原計畫衝突時，在重新抓取前停止並
+要求 calendar repair，不能自動改寫 frozen decision。no_data 仍須符合既有 durable evidence 契約。
+Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀測額度或人工恢復 grant。
+
+| 狀態 | 解讀與處置 |
+| --- | --- |
+| `acquisition_window_closed` | 等待下次窗口，不代表 provider 失敗 |
+| attempts=0／無 observation | 尚未嘗試，不能視為已被 SDK 拒絕 |
+| `empty_response` | 有空回應證據，原因未知；檢查觀測額度與下一次時間 |
+| `unknown_dispatch` | 曾保留未知派送責任，尚未證實空回應；同樣檢查觀測額度與退避 |
+| `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據 |
+| `retry_exhausted` | 本地一般失敗額度耗盡，不等於八次 native 請求 |
+| `prepared/normalizing` | 應查 Backend run 與序列收據；可能已完成，不能據此宣稱 queue 卡住 |
+
+診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source
+credential、config 與 `FETCHER_ACCOUNT_STATE_PATH` 執行，明確指定 profile／state path：
+
+```bash
+findb-fetch-runtime --provider shioaji --execution-profile full_market \
+  --config /path/to/full-market.json --state-path /path/to/state.sqlite3 \
+  --diagnose-shioaji --work-id WORK_UUID > /tmp/shioaji-diagnostic.json
+```
+
+輸出包含全部凍結成員、原始與有效 mapping、本地 attempts／狀態、prepared digest／序列收據、
+快取 SHA256、原生觀測／向量長度及 SDK／用量資訊。先對帳完成收據，再選擇仍未交付的成員。
+需要新 catalogue 時，透過正常 maintenance work 取得並保存證據；診斷工具不直接查 SDK。
+
+建立 proposal JSON，`checkpoint_sha256` 填入診斷輸出的頂層 `sha256`，`request_id` 為本次核准的
+唯一穩定識別；相同 request ID 不可換內容。下列識別與 URL／SHA256 應以實際證據取代：
+
+```json
+{
+  "checkpoint_sha256": "<diagnostic sha256>",
+  "request_id": "shioaji-reviewed-recovery-001",
+  "members": [{
+    "member_key": "<frozen member>",
+    "evidence": {"url": "https://evidence.example/observation", "sha256": "<64 lowercase hex>"},
+    "reason": "已核對原始回應與商品證據，核准受控恢復",
+    "observation_limit": 3,
+    "mapping": {
+      "symbol": "<canonical symbol>", "provider_symbol": "<reviewed provider symbol>",
+      "exchange": "<original exchange>", "currency": "TWD",
+      "reference": {"url": "https://evidence.example/catalogue", "sha256": "<64 lowercase hex>"}
+    }
+  }]
+}
+```
+
+已有正確 mapping 的空回應恢復省略 `mapping`。Mapping 只接受原 gap 的相同 canonical symbol、
+exchange、currency；Owner 須核對 reference 指向的 catalogue row 與 checksum，不能只把 symbol
+照抄成成功。既有 prepared／accepted 成員不接受更正；無法證明 legacy receipt 的 canonical
+membership 時保守拒絕核准，先完成原收據對帳。
+
+在安全環境載入具 Owner 權限的 `FINDB_ADMIN_API_KEY`，不要將 key 放在 CLI 參數或輸出。
+使用同一組 config／provider／profile／state／work 參數，先加上
+`--preview-shioaji-repair --repair-proposal /path/to/proposal.json`，核對 Backend inventory、proposal
+及回傳的 `sha256`；再改為 `--apply --repair-proposal /path/to/proposal.json --expected-sha256 HASH`。
+Admin API 為 `POST /api/v1/admin/provider-work/{work_id}/shioaji-repairs/preview` 與
+`POST /api/v1/admin/provider-work/{work_id}/shioaji-repairs`；直接呼叫時省略 CLI 專用的
+`checkpoint_sha256`，apply body 加上 `expected_sha256`。
+
+核准須等待該 work 的 active round settle；stale preview、錯誤 scope、已完成或 cancelled work
+均拒絕。Backend 附加 `shioaji_member_repair`，只對原 terminal failed／partial work 新增 queued
+attempt；不改舊 attempts、manifest、universe 或 plan。核准不啟動 control、不立即抓取。
+空回應分類與本輪 claim 退還先原子保存，再查 calendar／回報 Source；即使 calendar API 失聯，
+重啟仍先補報原 outcome、不新增 native 呼叫或重複扣除舊 attempts。
+原 coordinator 以 fenced `shioaji-repairs`／`shioaji-repair-ack` 安裝核准；先補報原 outcome、
+恢復 prepared／receipts，剩餘成員才可消耗最多三次額外觀測。重啟、ACK-loss 或重複 apply／ACK
+不補回已消耗 grant，也不重設原本八次失敗。Mapping 更正只有取得 canonical evidence 後才算 data。
+
+先部署 Backend migration `2f79b1d0c4e3`／API，再更新 Fetcher；SQLite 只新增 tables。
+使用 repair 後須排空相關 work 才能退回不支援修復協定的 runtime；只要有 approval 證據，Alembic
+downgrade 即拒絕刪除這兩張 audit tables。不得清 cache、刪 queue、reset attempts 或退款用量。
+本機離線驗證不能證實 production 空回應根因；部署、原生觀測及受影響工作恢復仍須另行驗收。
+
 ### 凍結計畫的人工休市更正
 
 現有版本沒有獨立的休市處置或告警 acknowledgement API。只將 `missing_delivery_alert`

@@ -213,6 +213,9 @@ def main(argv: list[str] | None = None) -> int:
         "--state-path", type=Path, default=Path("/var/lib/findb-full-market/state.sqlite3")
     )
     parser.add_argument("--readiness-file", type=Path)
+    parser.add_argument("--work-id")
+    parser.add_argument("--repair-proposal", type=Path)
+    parser.add_argument("--expected-sha256")
     modes = parser.add_mutually_exclusive_group()
     for mode in (
         "check",
@@ -222,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
         "once",
         "sync-universes",
         "health",
+        "diagnose-shioaji",
+        "preview-shioaji-repair",
+        "apply",
     ):
         modes.add_argument("--" + mode, action="store_true")
     args = parser.parse_args(argv)
@@ -242,6 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         if config["deployment_target"] != app_environment("local"):
             raise ValueError("runtime environment identity mismatch")
+        if args.diagnose_shioaji or args.preview_shioaji_repair or args.apply:
+            from findb_fetcher.shioaji_repair_cli import run
+
+            print(json.dumps(run(args, account_path), sort_keys=True, separators=(",", ":")))
+            return 0
         os.environ["FETCHER_CONSUMER_PROFILE"] = args.execution_profile
         os.environ["FETCHER_EXECUTION_PROFILE"] = args.execution_profile
         os.environ["FETCHER_FULL_MARKET_CONFIG"] = str(args.config)

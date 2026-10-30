@@ -203,6 +203,8 @@ class WorkJournal:
         with self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS work_manifest(work_key TEXT PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS work_shioaji_grant(work_key TEXT NOT NULL, operation_key TEXT NOT NULL, grant_id TEXT NOT NULL, maximum INTEGER NOT NULL, PRIMARY KEY(work_key,operation_key,grant_id));
+                CREATE TABLE IF NOT EXISTS work_shioaji_probe(probe_id INTEGER PRIMARY KEY, work_key TEXT NOT NULL, operation_key TEXT NOT NULL, grant_id TEXT NOT NULL, reserved_at REAL NOT NULL, outcome TEXT NOT NULL, diagnostic TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS work_cooldown(work_key TEXT PRIMARY KEY, not_before REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS work_delivery(work_key TEXT NOT NULL, member_key TEXT NOT NULL,
                     body BLOB NOT NULL, sha256 TEXT NOT NULL, receipt TEXT, terminal TEXT,
@@ -410,6 +412,7 @@ def durable_response(
     fields: tuple[str, ...],
     *,
     target_valid: Callable[[Any, dict[str, Any]], bool] | None = None,
+    native_guard: Callable[..., Any] | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """Only target-valid native snapshots authorize replay; validation performs no I/O."""
 
@@ -512,13 +515,18 @@ def durable_response(
                 # Pre-upgrade valid cache remains byte-for-byte authoritative.
                 # Invalid legacy bytes remain in place as immutable evidence.
                 saved = owner.journal.response(legacy_key)
+            rejected = None
             if saved is not None:
                 result = decode(saved)
                 if target_valid is None or target_valid(result, bound.arguments):
                     owner.journal.response(key, saved)
                     return result
                 owner.journal.observe_response(legacy_key, saved, origin="legacy_cache")
-            value = method(*args, **kwargs)
+                rejected = result
+            from contextlib import nullcontext
+
+            with native_guard(bound.arguments, rejected) if native_guard else nullcontext():
+                value = method(*args, **kwargs)
             encoded = encode(value)
             if target_valid is not None and not target_valid(value, bound.arguments):
                 owner.journal.observe_response(legacy_key, encoded, origin="native")

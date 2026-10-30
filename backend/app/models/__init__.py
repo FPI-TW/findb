@@ -70,8 +70,11 @@ from app.models.registry import (
     UniverseMember,
     UniverseRelease,
 )
+from app.models.shioaji_repair import ShioajiMemberRepair, ShioajiRepairAck
 
 __all__ = [
+    "ShioajiMemberRepair",
+    "ShioajiRepairAck",
     "Base",
     "ProviderWork",
     "ProviderWorkAttempt",
