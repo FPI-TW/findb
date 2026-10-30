@@ -155,7 +155,9 @@ Fetcher 十五個 runtimes 的替換刻意維持序列：rollback journal 存在
 Staging Fetcher 在等待同 revision FinDB rollout 成功後、任何 Fetcher host mutation 前，會再執行
 post-rollout recovery gate。既有十五個 accepted runtimes 必須保持相同 container ID、image、start time
 與 restart count，並連續 running 60 秒；gate 最多等待 180 秒，讓 FinDB candidate／activation 期間因
-Source 暫停而進入 Docker restart backoff 的 consumers 恢復。歷史 restart count 可以非零，但觀察窗口內
+Source 暫停而退避等待，或因 active owner 不確定進入 Docker restart backoff 的 consumers 恢復。
+Idle Source 521 在新版長駐 CLI 應退避重查；active owner 的 fence／ACK 無法確認仍要求安全退出／recovery。
+歷史 restart count 可以非零，但觀察窗口內
 不得再增加。逾時以 `runtime_not_recovered_after_findb_rollout` fail closed，不停止既有 runtime、不寫入
 acceptance record，也不弱化 provider helper 對非零 exit／OOM／Docker error 的拒絕規則。
 

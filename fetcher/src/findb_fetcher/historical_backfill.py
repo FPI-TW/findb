@@ -22,11 +22,17 @@ from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
 
 class HistoricalControlError(RuntimeError):
     def __init__(
-        self, message: str, *, status_code: int | None = None, retry_after: float = 0
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retry_after: float = 0,
+        retryable: bool = False,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.retry_after = retry_after
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +157,7 @@ class HistoricalControlClient:
                     "historical authorization temporarily unavailable",
                     status_code=exc.status_code,
                     retry_after=exc.retry_after,
+                    retryable=True,
                 ) from None
 
     def fail(self, item: HistoricalWorkItem, code: str) -> None:

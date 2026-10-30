@@ -163,8 +163,19 @@ class TaifexHistoricalRunner:
             delay = (30, 120, 120)[count]
             attempt["next_at"] = now + delay
             self._save(item, state)
+            from findb_fetcher.provider_work import ProviderWorkSourceUnavailableError
+
+            dispatch_before = owner.dispatch_observations if owner else 0
             try:
                 result = action()
+            except ProviderWorkSourceUnavailableError:
+                if owner and owner.dispatch_observations == dispatch_before:
+                    audit["outcome"] = "source_wait"
+                    audit["predispatch"] = True
+                    attempt["attempts"] = count
+                    attempt["next_at"] = max(self.clock() + 60, self._cooldown())
+                    self._save(item, state)
+                raise
             except Exception as exc:
                 if isinstance(exc, QuotaBlockedError) and exc.quota_wait and not exc.dispatched:
                     audit["outcome"] = "quota_wait"

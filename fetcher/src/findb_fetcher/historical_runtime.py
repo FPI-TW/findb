@@ -43,11 +43,14 @@ def _execute(executor, schedule, job):
         job = replace(
             job, attempt_count=owner.journal.reserve_attempt(job.job_key, schedule.max_attempts)
         )
-    from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
+    from findb_fetcher.provider_work import (
+        ProviderWorkAcquisitionStopped,
+        ProviderWorkSourceUnavailableError,
+    )
 
     try:
         result = executor.execute(job, now=datetime.now(timezone.utc))
-    except ProviderWorkAcquisitionStopped:
+    except (ProviderWorkAcquisitionStopped, ProviderWorkSourceUnavailableError):
         if owner and owner.dispatch_observations == dispatch_before:
             owner.journal.release_wait_attempt(job.job_key)
         raise

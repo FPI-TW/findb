@@ -15,6 +15,7 @@ import httpx
 from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.full_market_universe import canonical_bytes
+from findb_fetcher.source_recovery import source_retry_sleep, transient_source_status
 
 
 class FullMarketProtocolError(RuntimeError):
@@ -129,10 +130,10 @@ class FullMarketSourceClient:
                                 "Source governance response exceeded bound"
                             )
                     if (
-                        response.status_code in {429, 502, 503, 504}
+                        transient_source_status(response.status_code)
                         and attempt + 1 < self.config.max_attempts
                     ):
-                        time.sleep(self._retry_delay(response, attempt))
+                        source_retry_sleep(self._retry_delay(response, attempt), time.sleep)
                         continue
                     if not 200 <= response.status_code < 300:
                         code = None
@@ -161,7 +162,7 @@ class FullMarketSourceClient:
                             f"Source governance returned HTTP {response.status_code}",
                             status_code=response.status_code,
                             code=code,
-                            retryable=response.status_code == 429 or response.status_code >= 500,
+                            retryable=transient_source_status(response.status_code),
                             retry_after=self._retry_delay(response, attempt, bounded=False),
                         )
                     result = json.loads(raw)
@@ -215,6 +216,9 @@ class FullMarketSourceClient:
                     raise FullMarketProtocolError(
                         "Source governance transport failed", retryable=True
                     ) from None
+                source_retry_sleep(
+                    min(float(2**attempt), self.config.max_retry_after_seconds), time.sleep
+                )
         raise FullMarketProtocolError("Source governance retries exhausted")
 
     def _retry_delay(

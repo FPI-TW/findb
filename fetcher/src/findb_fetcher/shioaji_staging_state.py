@@ -459,11 +459,11 @@ class ShioajiStagingState:
             # Retain both histories; only proven pre-dispatch waits do not spend
             # the reviewed rolling provider request allowance.
             used -= self.db.execute(
-                "SELECT count(*) FROM provider_attempts WHERE outcome='waiting' AND code='QUOTA_WAIT' AND created_at>=?",
+                "SELECT count(*) FROM provider_attempts WHERE outcome='waiting' AND code IN ('QUOTA_WAIT','SOURCE_WAIT') AND created_at>=?",
                 (cutoff,),
             ).fetchone()[0]
             waits = self.db.execute(
-                "SELECT count(*) FROM provider_attempts WHERE daily_id=? AND symbol=? AND outcome='waiting' AND code='QUOTA_WAIT'",
+                "SELECT count(*) FROM provider_attempts WHERE daily_id=? AND symbol=? AND outcome='waiting' AND code IN ('QUOTA_WAIT','SOURCE_WAIT')",
                 (daily_id, symbol),
             ).fetchone()[0]
             budget_used = attempts - waits
@@ -513,7 +513,7 @@ class ShioajiStagingState:
 
     def budget_used(self, daily_id: str, symbol: str) -> int:
         return self.db.execute(
-            "SELECT count(*) FROM provider_attempts WHERE daily_id=? AND symbol=? AND NOT (outcome='waiting' AND code='QUOTA_WAIT')",
+            "SELECT count(*) FROM provider_attempts WHERE daily_id=? AND symbol=? AND NOT (outcome='waiting' AND code IN ('QUOTA_WAIT','SOURCE_WAIT'))",
             (daily_id, symbol),
         ).fetchone()[0]
 

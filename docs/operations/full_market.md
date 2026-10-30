@@ -118,6 +118,14 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 授權及 provider-work owner／queue 核對；心跳新鮮且 cycle 持續完成可屬正常間歇。心跳過期、
 cycle 沒有完成或授權拒絕時，保留相應證據再判定原因，不能只憑這一組狀態宣告故障或健康。
 
+Backend／Source 暫時不可用時，尚無 active owner 的長駐 runtime 會印出固定的
+`fetcher_source_wait reason=source_unavailable` 並退避重查，不因單次 521 退出。等待期間
+不會取得新 provider 資料，Source 恢復後仍重新取得 control 與授權。若已有 active owner
+且 fence／heartbeat／ACK 無法確認，程序仍可能退出並由 Docker 重啟；應核對 owner
+recovery 與原 shared inode，不能把此安全退出改成繼續舊 SDK session。Governor 用量、
+unknown debt、cooldown、checkpoint、prepared 與 receipts 均保留。詳細等待與本地 attempt
+規則見 [provider work 架構](../architecture/provider_work.md#source-暫時中斷與恢復)。
+
 Unified runtime 以工作 `dataset_key` 核對目前 `installed_feeds`，先於 closed-round retry 與
 frozen `scope.feed` 查找。退役 daily／maintenance 不規劃新 plan、不刷新名單、不執行 provider
 I/O，也不消耗 maintenance attempt；只以原 owner 排空 server-retained prepared bytes。

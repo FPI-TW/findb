@@ -237,16 +237,28 @@ def split_rows(
 def _governed(method):
     @wraps(method)
     def run(self, *args, **kwargs):
-        from findb_fetcher.provider_work import require_owner
+        from findb_fetcher.provider_work import ProviderWorkSourceUnavailableError, require_owner
+        from findb_fetcher.source_recovery import transient_source_error
 
         owner = require_owner(self.provider)
-        if not self._acquisition_allowed():
+
+        def acquisition_allowed():
+            try:
+                return self._acquisition_allowed()
+            except Exception as exc:
+                if transient_source_error(exc):
+                    raise ProviderWorkSourceUnavailableError(
+                        "Source acquisition gate unavailable"
+                    ) from exc
+                raise
+
+        if not acquisition_allowed():
             if not self.runtime_window()["open"]:
                 raise DailyWindowClosedError("daily acquisition window closed")
             raise ProviderWorkAcquisitionStopped("scheduler acquisition stopped")
 
         def authorize():
-            if not self._acquisition_allowed():
+            if not acquisition_allowed():
                 if not self.runtime_window()["open"]:
                     raise DailyWindowClosedError("daily acquisition window closed")
                 raise ProviderWorkAcquisitionStopped("scheduler acquisition stopped")
@@ -280,9 +292,16 @@ def _governed(method):
                     ),
                 )
 
-            except FullMarketProtocolError as exc:
-                if exc.code == "DAILY_ACQUISITION_WINDOW_CLOSED":
+            except Exception as exc:
+                if (
+                    isinstance(exc, FullMarketProtocolError)
+                    and exc.code == "DAILY_ACQUISITION_WINDOW_CLOSED"
+                ):
                     raise DailyWindowClosedError("daily acquisition window closed") from None
+                if transient_source_error(exc):
+                    raise ProviderWorkSourceUnavailableError(
+                        "Source acquisition authorization unavailable"
+                    ) from exc
                 raise
             runtime_window = self.runtime_window()
             if consumer != "maintenance" and self.daily_policy:
@@ -915,7 +934,10 @@ class FullMarketRuntime:
 
     def _run_queued_maintenance(self, owner) -> list[dict[str, Any]]:
         """Known catalogue failures close a safe round; uncertain ownership never does."""
-        from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+        from findb_fetcher.provider_work import (
+            ProviderWorkRecoveryBlockedError,
+            ProviderWorkSourceUnavailableError,
+        )
         from findb_fetcher.providers.shioaji import ShioajiSdkError
         from findb_fetcher.raw_storage import RawStorageUploadError
 
@@ -944,6 +966,10 @@ class FullMarketRuntime:
         dispatch_before = owner.dispatch_observations
         try:
             results = self.sync_universes(dataset_keys=[work["dataset_key"]])
+        except ProviderWorkSourceUnavailableError:
+            if owner.dispatch_observations == dispatch_before:
+                owner.journal.release_wait_attempt(operation_key)
+            raise
         except ProviderWorkRecoveryBlockedError:
             raise
         except ProviderWorkAcquisitionStopped:
@@ -1738,7 +1764,7 @@ class FullMarketRuntime:
         drain_only: bool = False,
         drain_keys: set[str] | None = None,
     ) -> bool:
-        from findb_fetcher.provider_work import require_owner
+        from findb_fetcher.provider_work import ProviderWorkSourceUnavailableError, require_owner
 
         owner = require_owner(self.provider)
         members = {member["member_key"]: member for member in release["members"]}
@@ -1879,6 +1905,13 @@ class FullMarketRuntime:
                     continue
                 self.state.finish(key, status="complete")
             except CalendarDecisionRepairRequiredError:
+                raise
+            except ProviderWorkSourceUnavailableError:
+                if (
+                    owner.dispatch_observations == dispatch_before
+                    and self.state.prepared(key) is None
+                ):
+                    self.state.defer_wait(key, now=time.time(), reason="source_unavailable")
                 raise
             except ProviderWorkAcquisitionStopped as exc:
                 window_closed = (

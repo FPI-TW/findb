@@ -106,6 +106,18 @@ Account unit decorator 以 worker 明確傳入的 `path` 決定 lock 根目錄�
 對應 ledger environment；不使用平台專屬 tmp fallback。Spawn 測試覆蓋父程序未設定或帶錯 ledger
 的情況，SDK／FD inheritance 測試仍執行。
 
+`test_source_recovery.py` 以 MockTransport 核對兩個 control clients 對 408／429／5xx
+（含 521）的 bounded retries、永久錯誤拒絕與安全日誌；直接執行現行 Pilot／Full CLI
+的五 provider 啟動，以及 drain／poll／gate／cycle／completion／error-report 中斷恢復。
+實際 subprocess 的 SIGTERM／SIGINT 測試覆蓋內層 Retry-After 與外層 outage wait；
+active work 的 bounded backoff 不因停止訊號跳過 drain。額度測試分別中斷 initial owner、
+governed gate、Source authorization 與 dispatch owner recheck，並驗證實際 acquisition
+已派送後保留用量／attempt；十二次中斷跨 checkpoint reopen 仍保留原 failure budget。
+既有 prepared／receipts、work budget 與 quota windows 不重設，Source outage 不誤報 SDK error。
+`test_source_wait_budgets.py` 另覆蓋 historical／maintenance、FactSet、TAIFEX 與 Shioaji
+各自帳本的派送前後分界；十二次 Shioaji SOURCE_WAIT 不耗 failure budget／rolling allowance。
+Historical control 的 transport cause 與缺少 status 的 protocol error 亦分開驗證。
+
 `test_full_market_error_outcomes.py` 覆蓋一般 provider／transport 錯誤的 Source outcome、
 第一個失敗後停止本輪，以及最後一次 attempt 的回報失敗／重啟／drain-only continuation；
 必須先補報、保留原 attempts／prepared／receipts，不能再抓取下一 member。
