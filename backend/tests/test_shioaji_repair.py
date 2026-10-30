@@ -261,6 +261,69 @@ async def _dataset_for(db, key):
     return await db.get(DatasetRegistry, key)
 
 
+@pytest.mark.parametrize("field", ["symbol", "provider_symbol"])
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "2330",
+        "00416A",
+        ".A--",
+        "A" * 50,
+        "TSE:2330",
+        "TW_2330",
+        "A" * 51,
+        "--",
+        ".",
+        "",
+        "２３３０",
+        " 2330 ",
+        "A\nB",
+        None,
+        42,
+    ],
+)
+def test_mapping_symbols_match_fetcher_validator(monkeypatch, field, symbol):
+    from pydantic import ValidationError
+
+    from app.schemas.shioaji_repair import MappingEvidence
+
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "fetcher/src"))
+    from findb_fetcher.providers.shioaji import ShioajiPayloadError, _validate_symbol
+
+    values = {
+        "symbol": "2330",
+        "provider_symbol": "2330",
+        "exchange": "XTAI",
+        "currency": "TWD",
+        "reference": EVIDENCE,
+        field: symbol,
+    }
+    try:
+        _validate_symbol(symbol)
+    except ShioajiPayloadError:
+        with pytest.raises(ValidationError):
+            MappingEvidence.model_validate(values)
+    else:
+        assert getattr(MappingEvidence.model_validate(values), field) == symbol
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["symbol", "provider_symbol"])
+@pytest.mark.parametrize("symbol", ["TSE:2330", "TW_2330", "A" * 51, "--", "２３３０", " 2330 "])
+async def test_owner_api_rejects_unfetchable_symbols_before_approval(
+    client, test_session, admin_headers, field, symbol
+):
+    work, member, frozen, _, _ = await setup(test_session)
+    body = proposal(member).model_dump(mode="json")
+    body["members"][0]["mapping"][field] = symbol
+    url = f"/api/v1/admin/provider-work/{work.work_id}/shioaji-repairs"
+    for endpoint, value in ((url + "/preview", body), (url, {**body, "expected_sha256": "0" * 64})):
+        response = await client.post(endpoint, json=value, headers=admin_headers)
+        assert response.status_code == 422, response.text
+    assert not list(await test_session.scalars(select(ShioajiMemberRepair)))
+    assert work.state == "failed" and member.mapping_status == frozen.mapping_status == "gap"
+
+
 @pytest.mark.asyncio
 async def test_owner_required_and_source_repairs_are_fenced(
     client, test_session, admin_headers, source_headers

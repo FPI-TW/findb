@@ -82,6 +82,8 @@ Shioaji 空 Kbars／mapping 修復由 Fetcher `test_shioaji_recovery.py`、
 `test_shioaji_repair_migration.py` 驗證：legacy 快取證據保留、跨重啟三次觀測上限與十五分鐘退避、
 unknown dispatch 不退款、日曆衝突、Owner／Source fence、stale preview、mapping overlay、
 首次未知派送跨重啟的上限與退避、空回應後 calendar-status outage 的續報與 claim 保留、
+正式 gateway／decoder 的缺欄、向量長度與 scalar 格式拒絕沿用八次一般失敗政策，
+以及 Mapping API 與 Fetcher symbol validator 的邊界一致性及核准前 `422` 拒絕、
 舊八次失敗及新 grant 分離、重複安裝／ACK-loss，以及 migration 保留性與 rollback floor。
 `test_provider_work_daily_faults.py` 的股票／ETF 空回應案例走正式 decorator、隔離 fake SDK、
 Source→raw→normalization→canonical，驗證後續合法回應完成原 scope；同 suite 保留 outage／

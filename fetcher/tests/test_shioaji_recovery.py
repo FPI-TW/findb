@@ -271,6 +271,87 @@ def test_known_malformed_observations_keep_general_failure_policy(tmp_path):
         assert observation_status(owner.journal, "2330", DAY) == (0, 3)
 
 
+@pytest.mark.parametrize("malformation", ["missing_column", "unequal_lengths", "bad_scalar"])
+def test_gateway_decoder_failure_keeps_original_eight_attempt_policy(
+    tmp_path, monkeypatch, malformation
+):
+    from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+    from test_full_market import _member, _plan, _runtime
+
+    clock = [1000.0]
+    monkeypatch.setattr("findb_fetcher.shioaji_recovery.time.time", lambda: clock[0])
+    bars = _kbars()
+    if malformation == "missing_column":
+        bars.pop("Volume")
+    elif malformation == "unequal_lengths":
+        bars["Open"] = []
+    else:
+        bars["ts"] = [True]
+    wire = {"code": "OK", "stage": "payload", "kbars": bars, "before": 10, "after": 20}
+    gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
+    monkeypatch.setattr(gateway, "_bootstrap", lambda: None)
+    runtime, source, _ = _runtime(tmp_path, provider="shioaji")
+    runtime._acquisition_allowed = lambda: True
+    plan = _plan()
+    runtime.state.record_plan(plan, "shioaji")
+    calls = []
+    try:
+        with owned_unit_work("shioaji", tmp_path) as owner:
+
+            def run(kind, **command):
+                assert kind == "kbars"
+                owner.dispatch_observations += 1
+                calls.append(command)
+                return wire, len(calls) - 1, len(calls)
+
+            monkeypatch.setattr(gateway, "_run", run)
+            runtime._acquire = lambda member, *args: gateway.fetch_kbars(
+                member["provider_symbol"], DAY
+            )
+            for attempt in range(1, 9):
+                assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+                assert len(calls) == owner.dispatch_observations == attempt
+                assert observation_status(owner.journal, "AAPL", DAY) == (0, 3)
+                with runtime.state.connection() as db:
+                    row = db.execute("SELECT attempts,status,reason FROM full_work").fetchone()
+                    assert tuple(row) == (
+                        attempt,
+                        "manual" if attempt == 8 else "pending",
+                        "retry_exhausted" if attempt == 8 else "source_error",
+                    )
+                # Restart the journal between ordinary one-minute retries.
+                owner.journal = queue.WorkJournal(owner.journal.path, owner.journal.key)
+                clock[0] += 61
+            with owner.journal.connection() as db:
+                probes = db.execute(
+                    "SELECT outcome,diagnostic FROM work_shioaji_probe ORDER BY probe_id"
+                ).fetchall()
+            assert len(probes) == 8 and all(row[0] == "invalid" for row in probes)
+            assert all(json.loads(row[1])["error_reason"] == "ipc_schema" for row in probes)
+        assert all(row["reason"] == "source_error" for row in source.outcomes)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("reason", ["ipc_transport", "child_boundary", "contract_access", None])
+def test_payload_error_without_format_evidence_retains_unknown_reservation(tmp_path, reason):
+    from findb_fetcher.providers.shioaji import ShioajiSdkError
+
+    error = ShioajiSdkError("private provider detail", code="PAYLOAD", reason=reason)
+    with owned_unit_work("shioaji", tmp_path) as owner:
+        with pytest.raises(ShioajiSdkError) as caught:
+            with observation_guard({"symbol": "2330", "target_date": DAY}, None):
+                owner.dispatch_observations += 1
+                raise error
+        assert caught.value is error
+        assert observation_status(owner.journal, "2330", DAY) == (1, 3)
+        with owner.journal.connection() as db:
+            assert (
+                "private provider detail"
+                not in db.execute("SELECT diagnostic FROM work_shioaji_probe").fetchone()[0]
+            )
+
+
 def test_calendar_outage_preserves_empty_report_and_original_attempts(tmp_path):
     from findb_fetcher.providers.shioaji import ShioajiEmptyResponseError
     from test_full_market import _member, _plan, _runtime

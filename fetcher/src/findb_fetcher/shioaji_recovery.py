@@ -15,12 +15,16 @@ from findb_fetcher.provider_work import (
 from findb_fetcher.providers.shioaji import (
     SHIOAJI_SDK_VERSION,
     ShioajiEmptyResponseError,
+    ShioajiSdkError,
     empty_kbars,
     kbars_target_valid,
 )
 
 RETRY_SECONDS = 900
 PROBE_LIMIT = 3
+_INVALID_PAYLOAD_REASONS = frozenset(
+    {"kbars_shape", "kbars_scalar", "ipc_schema", "ipc_encode", "ipc_size", "snapshot"}
+)
 _probe: ContextVar[tuple | None] = ContextVar("shioaji_probe", default=None)
 
 
@@ -172,7 +176,28 @@ def observation_guard(arguments: dict, rejected):
         proven_wait = isinstance(
             exc, (ProviderWorkAcquisitionStopped, ProviderWorkSourceUnavailableError)
         ) or (isinstance(exc, QuotaBlockedError) and exc.quota_wait and not exc.dispatched)
-        if proven_wait and owner.dispatch_observations == dispatched:
+        if (
+            isinstance(exc, ShioajiSdkError)
+            and exc.code == "PAYLOAD"
+            and exc.reason in _INVALID_PAYLOAD_REASONS
+        ):
+            # Decoder failures can precede observe_snapshot. Only reviewed
+            # format evidence clears uncertainty; transport/child failures
+            # retain it. Native/account charging is never refunded here.
+            diagnostic = {
+                "sdk_version": SHIOAJI_SDK_VERSION,
+                "symbol": arguments["symbol"],
+                "target_date": arguments["target_date"].isoformat(),
+                "origin": "native",
+                "error_code": exc.code,
+                "error_reason": exc.reason,
+            }
+            with journal.connection() as db:
+                db.execute(
+                    "UPDATE work_shioaji_probe SET outcome='invalid',diagnostic=?,reserved_at=? WHERE probe_id=? AND outcome='unknown'",
+                    (json.dumps(diagnostic, sort_keys=True), time.time(), probe_id),
+                )
+        elif proven_wait and owner.dispatch_observations == dispatched:
             with journal.connection() as db:
                 db.execute(
                     "UPDATE work_shioaji_probe SET outcome='predispatch' WHERE probe_id=? AND outcome='unknown'",

@@ -222,6 +222,9 @@ auth／scope 錯誤仍依原規則 failed／manual，不得誤分類成尚未發
 
 七個 Kbars 向量皆空記為 `empty_response`，原因維持 `unknown`；不能推定尚未發布、無交易或
 entitlement 不足。缺欄、長度不一致、錯誤日期及其他永久格式錯誤仍走原本有界失敗流程。
+正式 decoder 拒絕、尚未建立 snapshot 的已知格式錯誤亦記為 `invalid`，不占空回應／未知觀測
+額度或觸發十五分鐘退避；僅保存 reviewed error code／reason，原 native 用量與一般失敗次數保留。
+無明確格式證據的 transport／child-boundary 錯誤仍記為 `unknown`。
 有效日期快取沿用原 bytes；無效舊快取保留原 row／checksum，負向 observation 不授權 replay。
 
 Pilot／Full daily 每個原 work／provider symbol／日期最多三次空回應或未知派送觀測（包含首次），
@@ -281,7 +284,9 @@ findb-fetch-runtime --provider shioaji --execution-profile full_market \
 ```
 
 已有正確 mapping 的空回應恢復省略 `mapping`。Mapping 只接受原 gap 的相同 canonical symbol、
-exchange、currency；Owner 須核對 reference 指向的 catalogue row 與 checksum，不能只把 symbol
+exchange、currency；canonical 與 provider symbol 均須符合 Fetcher 規則：1–50 個 ASCII 字元，
+只允許英數、`.`、`-` 且至少有一個英數，不接受空白、exchange prefix、`_` 或 `:`。
+Owner 須核對 reference 指向的 catalogue row 與 checksum，不能只把 symbol
 照抄成成功。既有 prepared／accepted 成員不接受更正；無法證明 legacy receipt 的 canonical
 membership 時保守拒絕核准，先完成原收據對帳。
 
