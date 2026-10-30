@@ -436,7 +436,10 @@ function OperationsLayoutContent({
                     )}
                     <Link
                       to={item.to}
-                      activeOptions={{ exact: item.exact }}
+                      activeOptions={{
+                        exact: item.exact,
+                        includeSearch: false,
+                      }}
                       activeProps={{
                         className:
                           "bg-accent-soft text-accent ring-1 ring-accent/20",
