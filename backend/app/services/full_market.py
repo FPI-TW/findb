@@ -777,6 +777,9 @@ async def reconcile_plan(
     now: datetime | None = None,
     gap_limit: int | None = 1000,
 ) -> DeliverySummaryResponse:
+    from app.services.shioaji_repair import effective_mappings
+
+    mappings = await effective_mappings(db, plan.plan_id) if plan.provider == "shioaji" else {}
     members = list(
         (
             await db.scalars(
@@ -895,22 +898,28 @@ async def reconcile_plan(
     counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
     gaps: list[dict] = []
     for member in members:
+        mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
         if member.member_key in canonical_keys:
             state = "data"
         elif member.outcome == "no_data":
             state = "no_data"
-        elif member.outcome == "blocked" or member.mapping_status == "gap":
+        elif (
+            member.outcome == "blocked"
+            and not (member.outcome_reason == "mapping_gap" and member.member_key in mappings)
+        ) or mapping_gap:
             state = "blocked"
         else:
             state = "missing"
         counts[state] += 1
         if state in {"missing", "blocked"} and (gap_limit is None or len(gaps) < gap_limit):
+            reason = member.outcome_reason or ("mapping_gap" if mapping_gap else None)
+            if reason == "mapping_gap" and member.member_key in mappings:
+                reason = None
             gaps.append(
                 {
                     "member_key": member.member_key,
                     "status": state,
-                    "reason": member.outcome_reason
-                    or ("mapping_gap" if member.mapping_status == "gap" else None),
+                    "reason": reason,
                 }
             )
     evaluated_at = now or utc_now()
@@ -1057,11 +1066,18 @@ async def record_outcome(
     ).one_or_none()
     if member is None:
         raise FullMarketError("Outcome member is outside the frozen plan part", 409)
-    if body.outcome == "no_data" and member.mapping_status != "mapped":
+    from app.services.shioaji_repair import effective_mappings
+
+    mappings = await effective_mappings(db, plan_id) if provider == "shioaji" else {}
+    if (
+        body.outcome == "no_data"
+        and member.mapping_status != "mapped"
+        and member.member_key not in mappings
+    ):
         raise FullMarketError("Mapping gaps cannot be classified as no_data", 422)
     if body.outcome == "no_data" and body.evidence is not None:
         if (
-            body.evidence.source_symbol != member.provider_symbol
+            body.evidence.source_symbol != mappings.get(member.member_key, member.provider_symbol)
             or body.evidence.trade_date != plan.trade_date
             or body.evidence.session != member.session
         ):
@@ -1210,6 +1226,9 @@ async def validate_ingest_part(
         raise FullMarketError("Payload contains members outside the declared plan part", 409)
     declaration = parse_dataset_contract_declaration(dataset.config)
     assert declaration is not None
+    from app.services.shioaji_repair import effective_mappings
+
+    mappings = await effective_mappings(db, plan.plan_id) if plan.provider == "shioaji" else {}
     for row in request.payload.data:
         key = (
             f"{row.product_code}|{row.contract_code}|{row.session}"
@@ -1217,7 +1236,7 @@ async def validate_ingest_part(
             else row.symbol
         )
         frozen = universe[key]
-        if frozen.mapping_status != "mapped":
+        if frozen.mapping_status != "mapped" and key not in mappings:
             raise FullMarketError("Mapping-gap members cannot be submitted as data", 409)
         if isinstance(row, (MarketEODRow, MarketMinuteRow)):
             effective_currency = (
@@ -1225,7 +1244,9 @@ async def validate_ingest_part(
             ) or declaration.defaults.currency
             if effective_currency != frozen.currency:
                 raise FullMarketError("Payload currency differs from frozen universe", 409)
-            if row.source_symbol is not None and row.source_symbol != frozen.provider_symbol:
+            if row.source_symbol is not None and row.source_symbol != mappings.get(
+                key, frozen.provider_symbol
+            ):
                 raise FullMarketError("Payload provider symbol differs from frozen universe", 409)
     if any(row.trade_date != plan.trade_date for row in request.payload.data):
         raise FullMarketError("Payload row trade date differs from frozen plan", 409)

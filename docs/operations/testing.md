@@ -77,6 +77,31 @@ workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境�
 
 ## Provider-work 退役驗證
 
+Shioaji 空 Kbars／mapping 修復由 Fetcher `test_shioaji_recovery.py`、
+`test_shioaji_repair_cli.py` 及 Backend `test_shioaji_repair.py`、
+`test_shioaji_repair_migration.py` 驗證：legacy 快取證據保留、跨重啟三次觀測上限與十五分鐘退避、
+unknown dispatch 不退款、日曆衝突、Owner／Source fence、stale preview、mapping overlay、
+首次未知派送跨重啟的上限與退避、空回應後 calendar-status outage 的續報與 claim 保留、
+正式 gateway／decoder 的缺欄、向量長度與 scalar 格式拒絕沿用八次一般失敗政策，
+以及 Mapping API 與 Fetcher symbol validator 的邊界一致性及核准前 `422` 拒絕、
+舊八次失敗及新 grant 分離、重複安裝／ACK-loss，以及 migration 保留性與 rollback floor。
+Admin 修復回應另驗證 OpenAPI typed schemas、必要摘要欄位與格式、序列化後摘要相符、
+使用 preview 回應套用與重播，以及錯誤 apply 回應不得提交授權。
+觀測 gate 測試亦涵蓋舊空快取等待／耗盡、calendar conflict／outage／無效證據保留原 gateway，
+其他成員可重用 session；SDK 建立／登入／兩個 contracts 群組失敗仍採八次一般重試，
+不扣 Kbars 觀測額度，保留先前 unknown debt，後續資料不需額外 grant。
+`test_sdk_bootstrap.py` 另以正式 child protocol 與離線 SDK 驗證登入失敗仍保留 native／登入帳務，
+僅將 Kbars probe 記為 `predispatch`；dead child 仍須回收並由後續 acquisition 替換。
+修復續作另覆蓋 persisted summary 同交易更新／回滾／重播、無 outcome 的已修復 mapping
+不再顯示 gap、獨立 source error 保留，以及 repair→claim 的窗口／control／Full flag 矩陣與
+Pilot 例外。本機 no-trade complete、Backend resolved、prepared／receipt 成員不得重開或新增
+安裝 ACK；混合成員僅 ACK 實際安裝者，local→grant 中斷與 ACK-loss 可用同 ID 續作。
+已 ACK 修復的後續回合不再查 diagnostics／restore／ACK，只補報待安裝成員自身的 outcome；
+observation guard 重用 fresh member authorization，逾時才重新 RPC。
+`test_provider_work_daily_faults.py` 的股票／ETF 空回應案例走正式 decorator、隔離 fake SDK、
+Source→raw→normalization→canonical，驗證後續合法回應完成原 scope；同 suite 保留 outage／
+lost-ACK 原 bytes／idempotency 驗證。測試不呼叫真實 provider，不能代替 production 根因驗收。
+
 所有五 provider 的設定／無 owner 拒絕矩陣在 Backend `test_provider_work_retirement.py`
 與 Fetcher `test_twelve_data_cli.py`；後者覆蓋八個舊 acquiring CLI 的 exit 2、無新檔案與原
 checkpoint bytes 不變，以及 daily cycle／drain 只呼叫 queue dispatcher。部署的 false 拒絕與

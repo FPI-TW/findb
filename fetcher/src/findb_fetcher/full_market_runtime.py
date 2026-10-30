@@ -84,6 +84,7 @@ from findb_fetcher.providers.finlab import (
 )
 from findb_fetcher.providers.shioaji import (
     SHIOAJI_SDK_VERSION,
+    ShioajiEmptyResponseError,
     ShioajiSdkError,
     _simulation_from_env,
     build_market_minute_request,
@@ -414,17 +415,19 @@ class FullMarketRuntime:
         if self.sdk is not None and (not getattr(self.sdk, "is_alive", lambda: True)()):
             self.sdk.close()
             self.sdk = None
+        if self.sdk is None:
+            self.sdk = PersistentIsolatedShioajiGateway(
+                os.getenv("SHIOAJI_API_KEY", ""),
+                os.getenv("SHIOAJI_SECRET_KEY", ""),
+                simulation=_simulation_from_env(),
+            )
+        # The gateway owns transport/child failure cleanup. Local observation
+        # waits and authorization errors must not discard a healthy login.
         try:
-            if self.sdk is None:
-                self.sdk = PersistentIsolatedShioajiGateway(
-                    os.getenv("SHIOAJI_API_KEY", ""),
-                    os.getenv("SHIOAJI_SECRET_KEY", ""),
-                    simulation=_simulation_from_env(),
-                )
             return getattr(self.sdk, operation)(*args)
         except Exception:
-            failed, self.sdk = self.sdk, None
-            if failed is not None:
+            if not getattr(self.sdk, "is_alive", lambda: True)():
+                failed, self.sdk = self.sdk, None
                 failed.close()
             raise
 
@@ -1238,6 +1241,8 @@ class FullMarketRuntime:
                                         ],
                                     }
                                 )
+                                if self.provider == "shioaji":
+                                    release = self._install_shioaji_repairs(owner, plan, release)
                                 self._deliver_plan(
                                     plan,
                                     release,
@@ -1733,6 +1738,88 @@ class FullMarketRuntime:
             raise ReadinessBlockedError("no published universe applies to catchup date")
         return self.source.release(listed["published_release_id"])
 
+    def _install_shioaji_repairs(self, owner, plan: dict, release: dict) -> dict:
+        from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+        from findb_fetcher.shioaji_recovery import install_grant
+
+        response = owner._preparation_request("shioaji-repairs")
+        if (
+            response.get("work_id") != owner.work["work_id"]
+            or response.get("plan_id") != plan["plan_id"]
+        ):
+            raise ProviderWorkRecoveryBlockedError("repair scope differs from frozen work")
+        repairs = response["repairs"]
+        if not repairs:
+            return release
+        parts = {member: part for part in plan["parts"] for member in part["member_keys"]}
+        keys = {member: part["work_item_id"] + ":" + member for member, part in parts.items()}
+        members = {row["member_key"]: dict(row) for row in release["members"]}
+        for repair in repairs:
+            member_key = repair["member_key"]
+            if member_key not in keys or member_key not in members:
+                raise ProviderWorkRecoveryBlockedError("repair member differs from frozen work")
+            if repair["mapping_repaired"]:
+                members[member_key].update(
+                    mapping_status="mapped", provider_symbol=repair["provider_symbol"]
+                )
+        repaired = {**release, "members": list(members.values())}
+        # Acknowledged installations and locally settled members need no Source
+        # inventory, restore or ACK traffic; only lost ACKs and new grants do.
+        outstanding = [
+            repair
+            for repair in repairs
+            if not (
+                repair.get("acknowledged") is True
+                and self.state.member_repair_installed(repair["repair_id"])
+            )
+            and not self.state.member_complete(keys[repair["member_key"]])
+            and self.state.prepared(keys[repair["member_key"]]) is None
+        ]
+        if not outstanding:
+            return repaired
+        # Only a repaired member's own unacknowledged outcome blocks installation;
+        # every other report keeps _deliver_members' replay order.
+        pending_reports = self.state.pending_source_error_keys(plan["plan_id"])
+        for repair in outstanding:
+            member_key = repair["member_key"]
+            if keys[member_key] in pending_reports:
+                self._report_source_error(plan, parts[member_key], member_key, keys[member_key])
+        inventory = self.source.request(
+            "GET", f"provider-work/{owner.work['work_id']}/shioaji-diagnostics"
+        )
+        if any(
+            inventory.get(field) != expected
+            for field, expected in {
+                "work_id": owner.work["work_id"],
+                "plan_id": plan["plan_id"],
+                "execution_profile": self.execution_profile,
+                "dataset_key": plan["dataset_key"],
+                "trade_date": plan["trade_date"],
+            }.items()
+        ):
+            raise ProviderWorkRecoveryBlockedError("repair inventory differs from frozen work")
+        resolved = {
+            row["member_key"] for row in inventory["members"] if row["status"] == "resolved"
+        }
+        installed = []
+        for repair in outstanding:
+            member_key = repair["member_key"]
+            if member_key in resolved:
+                if not self.state.member_complete(keys[member_key]):
+                    self.state.finish(keys[member_key], status="complete")
+                continue
+            # Original prepared descriptors always win over any repair grant.
+            if self.state.prepared(keys[member_key]) is not None or owner.restore(
+                member_key=member_key
+            ):
+                continue
+            if self.state.apply_member_repair(keys[member_key], repair["repair_id"]):
+                install_grant(owner.journal, repair, date.fromisoformat(plan["trade_date"]))
+                installed.append(repair["repair_id"])
+        if installed:
+            owner._preparation_request("shioaji-repair-ack", repair_ids=installed)
+        return repaired
+
     def _deliver_plan(
         self,
         plan: dict[str, Any],
@@ -1905,6 +1992,9 @@ class FullMarketRuntime:
                     continue
                 self.state.finish(key, status="complete")
             except CalendarDecisionRepairRequiredError:
+                if self.provider == "shioaji":
+                    self.state.defer_wait(key, now=time.time(), reason="calendar_repair_required")
+                    self.state.finish(key, status="manual", reason="calendar_repair_required")
                 raise
             except ProviderWorkSourceUnavailableError:
                 if (
@@ -1932,6 +2022,46 @@ class FullMarketRuntime:
                     )
                 else:
                     self.state.defer_wait(key, now=time.time(), reason="suspended")
+                return False
+            except ShioajiEmptyResponseError as exc:
+                from findb_fetcher.shioaji_recovery import (
+                    RETRY_SECONDS,
+                    ShioajiObservationWaitError,
+                    observation_status,
+                )
+
+                count, maximum = observation_status(
+                    owner.journal, member["provider_symbol"], date.fromisoformat(plan["trade_date"])
+                )
+                exhausted = (
+                    exc.exhausted
+                    if isinstance(exc, ShioajiObservationWaitError)
+                    else count >= maximum
+                )
+                delay = (
+                    exc.delay
+                    if isinstance(exc, ShioajiObservationWaitError) and exc.delay
+                    else RETRY_SECONDS
+                )
+                reason = (
+                    "unknown_dispatch"
+                    if isinstance(exc, ShioajiObservationWaitError) and not exc.observed_empty
+                    else "empty_response"
+                )
+                # Persist classification/refund before any Source RPC so a
+                # failed calendar probe cannot lose the report continuation.
+                self.state.stage_empty_response(
+                    key, now=time.time(), delay=delay, exhausted=exhausted, reason=reason
+                )
+                if self._calendar_repair_required(owner):
+                    self._report_source_error(plan, part, member_key, key)
+                    self.state.finish(key, status="manual", reason="calendar_repair_required")
+                    raise CalendarDecisionRepairRequiredError(
+                        "published calendar is now closed"
+                    ) from None
+                self._report_source_error(plan, part, member_key, key)
+                if self.daily_policy:
+                    self.last_batch["reason"] = reason
                 return False
             except FinLabTargetNotReadyError:
                 retry_delay = self._publication_retry_delay(owner, feed)
@@ -2045,12 +2175,16 @@ class FullMarketRuntime:
     def _report_source_error(
         self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
     ) -> None:
+        observation = self.state.observation_outcome_reason(key)
         self.source.outcome(
             plan["plan_id"],
             work_item_id=part["work_item_id"],
             member_key=member_key,
-            reason="source_error",
+            reason="empty_response" if observation == "empty_response" else "source_error",
         )
+        if observation is not None:
+            self.state.acknowledge_empty(key)
+            return
         self.state.finish(
             key,
             status="prepared" if self.state.prepared(key) else "pending",
@@ -2252,6 +2386,8 @@ class FullMarketRuntime:
                 universe_id=release["release_id"],
             )
             request["delivery"] = delivery
+            for row in request["payload"]["data"]:
+                row["source_symbol"] = member["provider_symbol"]
             request["payload"]["batch"]["provider_usage_before"]["requests_limit"] = self.proof[
                 "requests_per_day"
             ]

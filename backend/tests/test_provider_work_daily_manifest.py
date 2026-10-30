@@ -20,6 +20,7 @@ async def test_authenticated_daily_stop_blocks_first_manifest_but_preserves_iden
 ):
     db = test_session
     monkeypatch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
+    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
     dataset = await seed(db, "finlab")
     control = SchedulerControl(
         scheduler_key=f"{profile}_finlab_v1",

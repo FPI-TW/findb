@@ -91,6 +91,37 @@ class ShioajiPayloadError(ShioajiError):
     pass
 
 
+class ShioajiEmptyResponseError(ShioajiPayloadError):
+    """An empty observation proves neither publication delay nor no trade."""
+
+
+def kbars_target_valid(snapshot: Any, arguments: dict[str, Any]) -> bool:
+    """Pure replay check; the mapper retains price and contract validation."""
+    try:
+        bars = snapshot.kbars
+        columns = ("ts", "Open", "High", "Low", "Close", "Volume", "Amount")
+        if any(not isinstance(bars[key], tuple) for key in columns):
+            return False
+        lengths = {len(bars[key]) for key in columns}
+        return (
+            len(lengths) == 1
+            and 0 < len(bars["ts"]) <= MAX_ROWS
+            and all(
+                _bar_end(value, index).date() == arguments["target_date"]
+                for index, value in enumerate(bars["ts"])
+            )
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, ShioajiPayloadError):
+        return False
+
+
+def empty_kbars(snapshot: Any) -> bool:
+    columns = ("ts", "Open", "High", "Low", "Close", "Volume", "Amount")
+    return isinstance(snapshot, ShioajiKbarsSnapshot) and all(
+        isinstance(snapshot.kbars.get(key), tuple) and not snapshot.kbars[key] for key in columns
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ShioajiKbarsSnapshot:
     """SDK-free bars plus optional, sanitized provider byte counters."""
@@ -476,7 +507,7 @@ def build_market_minute_request(
         raise ShioajiPayloadError("kbars rows exceed bounded scope")
 
     if count == 0:
-        raise ShioajiPayloadError("empty kbars requires calendar evidence")
+        raise ShioajiEmptyResponseError("empty kbars requires calendar evidence")
     # The smoke path uses one symbol; production callers must invoke once per
     # symbol so every Kbar remains attributable without provider metadata.
     if len(ordered_symbols) != 1:

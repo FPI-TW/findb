@@ -21,7 +21,7 @@ from findb_fetcher.providers.shioaji import (
     ShioajiSdkGateway,
 )
 from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
-from provider_work_support import account_boundary_unit
+from provider_work_support import account_boundary_unit, owned_unit_work
 from sdk_bootstrap_harness import SDK_CHILD, install_launcher
 
 
@@ -394,12 +394,31 @@ def test_unknown_login_restart_and_alias_retains_rolling_liability(sdk):
         )
 
 
-def test_actual_failed_login_is_charged_once_and_logout_is_zero_unit(sdk, monkeypatch):
+@pytest.mark.parametrize("operation", ["catalogue", "kbars"])
+def test_actual_failed_login_is_charged_once_and_logout_is_zero_unit(sdk, monkeypatch, operation):
+    from findb_fetcher.shioaji_recovery import observation_status
+
     path, output = sdk
     install_launcher(monkeypatch, output, "login-fail")
-    gateway = PersistentIsolatedShioajiGateway("actual-B", "private-key")
-    with authorization_scope(grant), pytest.raises(ShioajiSdkError):
-        gateway.catalogue()
+    with owned_unit_work("shioaji", path.parent) as owner:
+        gateway = PersistentIsolatedShioajiGateway("actual-B", "private-key")
+        try:
+            with authorization_scope(grant), pytest.raises(ShioajiSdkError):
+                if operation == "catalogue":
+                    gateway.catalogue()
+                else:
+                    gateway.fetch_kbars("2330", date(2026, 1, 1))
+            assert owner.dispatch_observations >= 2
+            assert observation_status(owner.journal, "2330", date(2026, 1, 1)) == (0, 3)
+            assert not gateway.is_alive()
+            if operation == "kbars":
+                with owner.journal.connection() as db:
+                    assert (
+                        db.execute("SELECT outcome FROM work_shioaji_probe").fetchone()[0]
+                        == "predispatch"
+                    )
+        finally:
+            gateway.close()
     rows = events(output)
     assert [r["event"] for r in rows].count("login") == 1
     assert any(r["event"] == "logout" for r in rows)

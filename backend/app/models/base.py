@@ -121,6 +121,8 @@ async def _verify_required_objects(conn) -> None:
         "public.provider_work_attempt",
         "public.provider_work_owner",
         "public.provider_work_receipt",
+        "public.shioaji_member_repair",
+        "public.shioaji_repair_ack",
     )
     for relation in required_objects:
         exists = await conn.scalar(

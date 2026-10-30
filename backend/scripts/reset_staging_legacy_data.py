@@ -123,6 +123,8 @@ TARGET_TABLES = (
     "public.provider_work_attempt",
     "public.provider_work_receipt",
     "public.roll_rule",
+    "public.shioaji_member_repair",
+    "public.shioaji_repair_ack",
     "public.trading_calendar",
     "public.tw_minute_archive_chunk",
     "public.tw_minute_archive_release",
@@ -240,7 +242,10 @@ async def _truncate_mutable_rows(connection: AsyncConnection) -> None:
     # Owner slots retain installed inode identity and monotonic generation.
     # Their FK to attempts forbids TRUNCATE attempts even with a NULL reference.
     # Delete this small queue graph explicitly, then truncate receipts alongside
-    # ingestion_run so every FK remains checked without CASCADE.
+    # ingestion_run so every FK remains checked without CASCADE. Repair audits
+    # restrict work deletion; they stay in the TRUNCATE list for their plan FK.
+    await connection.execute(text("DELETE FROM shioaji_repair_ack"))
+    await connection.execute(text("DELETE FROM shioaji_member_repair"))
     await connection.execute(text("DELETE FROM provider_work_receipt"))
     await connection.execute(text("DELETE FROM provider_work_attempt"))
     await connection.execute(text("DELETE FROM provider_work"))

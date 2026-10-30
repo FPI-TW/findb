@@ -67,6 +67,8 @@ class FullMarketState:
                 CREATE INDEX IF NOT EXISTS full_work_provider_status ON full_work(provider,status);
                 CREATE TABLE IF NOT EXISTS full_plan (plan_id TEXT PRIMARY KEY, provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, body BLOB NOT NULL, complete INTEGER NOT NULL DEFAULT 0, late INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS full_plan_reconcile (plan_id TEXT PRIMARY KEY, dirty INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS full_member_repair (repair_id TEXT PRIMARY KEY, work_key TEXT NOT NULL, original_attempts INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS full_empty_outcome (work_key TEXT PRIMARY KEY, exhausted INTEGER NOT NULL, next_at REAL NOT NULL, reason TEXT NOT NULL DEFAULT 'empty_response');
                 CREATE INDEX IF NOT EXISTS full_plan_reconcile_dirty ON full_plan_reconcile(dirty,plan_id);
                 INSERT OR IGNORE INTO full_plan_reconcile SELECT plan_id,1 FROM full_plan WHERE complete=0;
                 CREATE TABLE IF NOT EXISTS full_work_receipt (key TEXT NOT NULL, idempotency_key TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(key,idempotency_key));
@@ -78,6 +80,12 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS acquisition_usage(operation_id TEXT NOT NULL, observed_at REAL NOT NULL, bytes INTEGER NOT NULL, limit_bytes INTEGER NOT NULL, remaining_bytes INTEGER NOT NULL, PRIMARY KEY(operation_id,observed_at));
                 CREATE TABLE IF NOT EXISTS account_alias_audit(alias TEXT PRIMARY KEY, account TEXT NOT NULL, original_quota TEXT NOT NULL, original_pacing REAL NOT NULL);
             """)
+            if "reason" not in {
+                row[1] for row in db.execute("PRAGMA table_info(full_empty_outcome)")
+            }:
+                db.execute(
+                    "ALTER TABLE full_empty_outcome ADD COLUMN reason TEXT NOT NULL DEFAULT 'empty_response'"
+                )
             columns = {row[1] for row in db.execute("PRAGMA table_info(full_capacity_violation)")}
             for column in ("received_bytes", "declared_bytes"):
                 if column not in columns:
@@ -558,7 +566,7 @@ class FullMarketState:
                 ).fetchall()
             )
             failures = db.execute(
-                "SELECT member_key,reason,attempts FROM full_work WHERE plan_id=? AND reason IN ('source_error','source_rejected','normalization_failed','mapping_gap','retry_exhausted') ORDER BY key",
+                "SELECT member_key,reason,attempts FROM full_work WHERE plan_id=? AND reason IN ('source_error','source_rejected','normalization_failed','mapping_gap','retry_exhausted','empty_response','unknown_dispatch') ORDER BY key",
                 (plan_id,),
             ).fetchall()
             batch = db.execute(
@@ -670,6 +678,87 @@ class FullMarketState:
                 "INSERT INTO full_plan_reconcile SELECT plan_id,1 FROM full_work WHERE key=? ON CONFLICT(plan_id) DO UPDATE SET dirty=1",
                 (key,),
             )
+
+    def stage_empty_response(
+        self, key: str, *, now: float, delay: float, exhausted: bool, reason: str = "empty_response"
+    ) -> None:
+        if reason not in {"empty_response", "unknown_dispatch"}:
+            raise FullMarketStateError("observation reason is invalid")
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO full_empty_outcome(work_key,exhausted,next_at,reason) VALUES(?,?,?,?) ON CONFLICT(work_key) DO UPDATE SET exhausted=excluded.exhausted,next_at=excluded.next_at,reason=excluded.reason",
+                (key, int(exhausted), now + delay, reason),
+            )
+            db.execute(
+                "UPDATE full_work SET attempts=MAX(0,attempts-1),status='pending',reason='source_error_pending',lease_until=0 WHERE key=? AND body IS NULL",
+                (key,),
+            )
+
+    def empty_outcome(self, key: str) -> bool:
+        return self.observation_outcome_reason(key) is not None
+
+    def observation_outcome_reason(self, key: str) -> str | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT reason FROM full_empty_outcome WHERE work_key=?", (key,)
+            ).fetchone()
+            return row[0] if row else None
+
+    def acknowledge_empty(self, key: str) -> None:
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT exhausted,next_at,reason FROM full_empty_outcome WHERE work_key=?", (key,)
+            ).fetchone()
+            if row:
+                db.execute(
+                    "UPDATE full_work SET status=?,reason=?,next_at=?,lease_until=0 WHERE key=?",
+                    ("manual" if row[0] else "pending", row[2], row[1], key),
+                )
+                db.execute("DELETE FROM full_empty_outcome WHERE work_key=?", (key,))
+                db.execute(
+                    "INSERT INTO full_plan_reconcile SELECT plan_id,1 FROM full_work WHERE key=? ON CONFLICT(plan_id) DO UPDATE SET dirty=1",
+                    (key,),
+                )
+
+    def member_complete(self, key: str) -> bool:
+        with self.connection() as db:
+            row = db.execute("SELECT status FROM full_work WHERE key=?", (key,)).fetchone()
+            return row is not None and row[0] == "complete"
+
+    def member_repair_installed(self, repair_id: str) -> bool:
+        with self.connection() as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM full_member_repair WHERE repair_id=?", (repair_id,)
+                ).fetchone()
+                is not None
+            )
+
+    def apply_member_repair(self, key: str, repair_id: str) -> bool:
+        """Idempotent local installation never resets an existing failure count."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute(
+                "SELECT 1 FROM full_member_repair WHERE repair_id=?", (repair_id,)
+            ).fetchone():
+                return True
+            row = db.execute(
+                "SELECT attempts,body,receipt,status,reason FROM full_work WHERE key=?", (key,)
+            ).fetchone()
+            if row is None:
+                raise FullMarketStateError("repair requires an unresolved unprepared member")
+            if row[1] is not None or row[2] is not None or row[3] == "complete":
+                return False
+            if row[4] == "source_error_pending":
+                raise FullMarketStateError("repair requires pending outcome reconciliation")
+            db.execute("INSERT INTO full_member_repair VALUES(?,?,?)", (repair_id, key, row[0]))
+            db.execute(
+                "UPDATE full_work SET status='pending',reason='repair_approved',lease_until=0 WHERE key=?",
+                (key,),
+            )
+            return True
 
     def finish(
         self,

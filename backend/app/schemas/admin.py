@@ -3,7 +3,7 @@
 from base64 import b64decode
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -12,8 +12,58 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.execution_profiles import ExecutionProfile
 from app.schemas.common import PaginatedResponse, PaginationInfo
 from app.schemas.full_market import CalendarSkipResponse, DeliveryPlanResponse
+from app.schemas.shioaji_repair import RepairPreviewRequest
 from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc, utc_now
+
+RepairSHA256 = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
+
+
+class ShioajiRepairResponseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ShioajiRepairInventoryMemberResponse(ShioajiRepairResponseModel):
+    member_key: str
+    symbol: str
+    provider_symbol: str
+    original_provider_symbol: str
+    mapping_status: Literal["mapped", "gap"]
+    original_mapping_status: Literal["mapped", "gap"]
+    exchange: str
+    currency: str
+    status: Literal["missing", "blocked", "resolved"]
+    reason: str | None
+    has_prepared: bool = Field(strict=True)
+
+
+class ShioajiRepairInventoryResponse(ShioajiRepairResponseModel):
+    work_id: UUID
+    environment: Literal["local", "staging", "production"]
+    execution_profile: ExecutionProfile
+    plan_id: UUID
+    release_id: UUID
+    dataset_key: str
+    trade_date: date
+    state: str
+    manifest_sha256: RepairSHA256
+    prepared_sha256: RepairSHA256
+    repair_ids: list[UUID]
+    approved_request_ids: list[str]
+    members: list[ShioajiRepairInventoryMemberResponse]
+    sha256: RepairSHA256
+
+
+class ShioajiRepairPreviewResponse(ShioajiRepairResponseModel):
+    inventory: ShioajiRepairInventoryResponse
+    proposal: RepairPreviewRequest
+    sha256: RepairSHA256
+
+
+class ShioajiRepairApplyResponse(ShioajiRepairResponseModel):
+    repair_ids: list[UUID] = Field(min_length=1)
+    replayed: bool = Field(strict=True)
+
 
 # ── Provider historical backfill ────────────────────────────────────────────
 

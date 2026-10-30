@@ -68,7 +68,7 @@ acquisition check，僅以 `defer_wait(reason=source_unavailable)` 退還這次�
 initial owner authorize、governed acquisition gate／Source authorization 及實際派送前的
 owner recheck。一旦任一步已 started／possibly-started，原 failure budget、quota、unknown
 liability、cooldown 均保留；先前 attempts、其他成員 prepared／receipts 不重設。這不改變
-Shioaji 空回應快取與 mapping 缺口的處理，另見 [#378](https://github.com/FPI-TW/findb/issues/378)。
+Shioaji 空回應採獨立持久觀測額度與人工恢復授權，見 [修復程序](../operations/full_market.md#shioaji-空-kbars-與凍結-mapping-修復)。
 
 同一個明確的 Source authorization wait 也適用於 TD／FinLab historical operation、
 universe maintenance、FactSet snapshot、TAIFEX historical operation，以及 Shioaji historical
@@ -314,7 +314,36 @@ FinLab 缺少 target 時先保存原日期軸、reviewed symbols 與安全 scala
 再回報 target-not-ready；不保存 DataFrame attrs、SDK config 或任意物件字串。負向觀測不授權 replay，
 重啟後可依原 budget 重抓，valid legacy table 仍可沿用；已有 prepared bytes 不改寫。
 Shioaji invalid/date payload 保持既有永久 `KBARS_PAYLOAD` 規則，
-不把格式錯誤變成無限 not-published retry。新 provider 必須在 replay authority 前驗證 target，並保留
+七向量皆空則獨立分類 `empty_response / unknown`，daily 每 work／symbol／date 最多三次原生觀測、
+間隔至少十五分鐘；原始 bytes、checksum 與未知派送 debt 保留，不構成 no_data。
+`work_shioaji_probe` 保存派送前 reservation 與安全 SDK／向量／用量診斷，`work_shioaji_grant` 保存
+initial 及核准額度，均與既有 local failure／account governor 分離。明確 predispatch wait 或
+gateway 在 `_run("kbars")` 前的 validation／bootstrap 失敗，只將當前 unknown probe 記為
+`predispatch`；SDK 建立、登入與 contracts 的已派送用量及一般 failure attempts 保留，不依整體
+dispatch counter 推斷 Kbars 是否派送。崩潰未保存證據仍保守保留 unknown。
+runtime 不因觀測 gate／calendar 錯誤關閉存活的 gateway；transport／child 清理由 gateway 負責，
+dead child／pause／close 的回收保留。cache replay、重啟、換 attempt 不重置。未知派送從首次即套用上限與
+退避；尚無空回應證據時不回報 empty_response。本地 continuation 先於 calendar／outcome RPC
+保存，避免 Source calendar 失聯遺失續報或耗掉本輪 local claim。
+Backend `shioaji_member_repair` 以 environment／profile／work／plan／member 綁定 Owner 核准、
+原值摘要及證據；effective mapping 是附加覆蓋，不更新 universe／plan／manifest。Ingress、對帳與
+Fetcher 使用同一有效 mapping；有任何 prepared／accepted canonical membership 的成員拒絕更正。
+核准／冪等重播於同一交易刷新 persisted plan summary；有效 mapping 消除原 `mapping_gap`，
+但獨立 outcome reason 與 canonical completion 規則保留。重開 attempt 依 `acquisition_open`
+設定 `drain_only`，claim 重查；Full flag 明確關閉 Full acquisition，Pilot 保持獨立。
+唯讀 queue projection 的 drain 判定同步套用相同 flag／profile 條件。
+`shioaji_repair_ack` 保存 fenced 安裝證據；本地 `full_member_repair` 以 repair ID 冪等安裝，
+`full_empty_outcome` 保存 Source outcome 的 ACK-loss continuation。Original terminal work 用新
+attempt 恢復，舊 attempts、prepared bytes、receipts、quota、cooldown 不改寫。
+本機 terminal／prepared 成員不重開；Source resolved 不覆寫既有 complete reason。
+先保存 local installation，再冪等保存 journal grant，兩者完成才 ACK 該 repair ID；略過者不 ACK。
+重啟時 local installation 證據可接續未完成的 grant／ACK，不重發額度。
+`shioaji-repairs` 回傳各 repair 的 `acknowledged`；已 ACK 且本地已安裝、或本機已完成／prepared
+的修復只套用 effective mapping，不再查 diagnostics、restore 或 ACK。待安裝成員只先補報自身的
+pending outcome，其餘補報維持 member loop 順序。Shioaji observation guard 重用 member loop
+剛取得且仍在 freshness bound 內的 work authorization，逾時（如 calendar check 後）才重新 RPC；
+實際 native dispatch 仍有自己的 Source fence 與 cooldown 檢查。
+不把其他格式錯誤變成無限 not-published retry。新 provider 必須在 replay authority 前驗證 target，並保留
 negative observation 的 audit 與有界重試驗收。
 
 所有 native dispatch 在 account governor／pacing／account authorization 等阻塞返回後，必須再確認

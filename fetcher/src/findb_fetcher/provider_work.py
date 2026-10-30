@@ -90,21 +90,7 @@ def require_acquisition(provider: str, *, local_only: bool = False) -> bool:
         raise ProviderWorkRecoveryBlockedError("provider host descriptor differs") from None
     owner._check_local_fence()
     if local_only:
-        from findb_fetcher.acquisition import REMOTE_AGE_SECONDS
-        from findb_fetcher.acquisition import time as account_time
-
-        return (
-            owner._authorization_started is not None
-            and owner._authorization_expires is not None
-            and owner._authorization_checked is not None
-            and owner._authorization_deadline is not None
-            and owner._authorization_started
-            <= account_time.monotonic()
-            < owner._authorization_deadline
-            and -0.250 <= account_time.time() - owner._authorization_checked < REMOTE_AGE_SECONDS
-            and account_time.time() < owner._authorization_expires
-            and owner._authorization_fd == (fd, *identity)
-        )
+        return owner.authorization_fresh() and owner._authorization_fd == (fd, *identity)
     owner.authorize()
     owner._authorization_fd = (fd, *identity)
     return True
@@ -203,6 +189,8 @@ class WorkJournal:
         with self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS work_manifest(work_key TEXT PRIMARY KEY, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS work_shioaji_grant(work_key TEXT NOT NULL, operation_key TEXT NOT NULL, grant_id TEXT NOT NULL, maximum INTEGER NOT NULL, PRIMARY KEY(work_key,operation_key,grant_id));
+                CREATE TABLE IF NOT EXISTS work_shioaji_probe(probe_id INTEGER PRIMARY KEY, work_key TEXT NOT NULL, operation_key TEXT NOT NULL, grant_id TEXT NOT NULL, reserved_at REAL NOT NULL, outcome TEXT NOT NULL, diagnostic TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS work_cooldown(work_key TEXT PRIMARY KEY, not_before REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS work_delivery(work_key TEXT NOT NULL, member_key TEXT NOT NULL,
                     body BLOB NOT NULL, sha256 TEXT NOT NULL, receipt TEXT, terminal TEXT,
@@ -410,6 +398,7 @@ def durable_response(
     fields: tuple[str, ...],
     *,
     target_valid: Callable[[Any, dict[str, Any]], bool] | None = None,
+    native_guard: Callable[..., Any] | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """Only target-valid native snapshots authorize replay; validation performs no I/O."""
 
@@ -512,13 +501,18 @@ def durable_response(
                 # Pre-upgrade valid cache remains byte-for-byte authoritative.
                 # Invalid legacy bytes remain in place as immutable evidence.
                 saved = owner.journal.response(legacy_key)
+            rejected = None
             if saved is not None:
                 result = decode(saved)
                 if target_valid is None or target_valid(result, bound.arguments):
                     owner.journal.response(key, saved)
                     return result
                 owner.journal.observe_response(legacy_key, saved, origin="legacy_cache")
-            value = method(*args, **kwargs)
+                rejected = result
+            from contextlib import nullcontext
+
+            with native_guard(bound.arguments, rejected) if native_guard else nullcontext():
+                value = method(*args, **kwargs)
             encoded = encode(value)
             if target_valid is not None and not target_valid(value, bound.arguments):
                 owner.journal.observe_response(legacy_key, encoded, origin="native")
@@ -596,6 +590,23 @@ class ProviderWorkSession:
             except Exception:
                 self.failed.set()
                 return
+
+    def authorization_fresh(self) -> bool:
+        """Whether the last remote check still bounds work without another RPC."""
+        from findb_fetcher.acquisition import REMOTE_AGE_SECONDS
+        from findb_fetcher.acquisition import time as account_time
+
+        return (
+            self._authorization_started is not None
+            and self._authorization_expires is not None
+            and self._authorization_checked is not None
+            and self._authorization_deadline is not None
+            and self._authorization_started
+            <= account_time.monotonic()
+            < self._authorization_deadline
+            and -0.250 <= account_time.time() - self._authorization_checked < REMOTE_AGE_SECONDS
+            and account_time.time() < self._authorization_expires
+        )
 
     def authorize(self) -> None:
         self._check_local_fence()

@@ -27,6 +27,8 @@ def owned_unit_work(provider, root, *, lock=True):
         def request(self, method, route, body):
             if route.endswith("/authorize"):
                 return work_authorization(provider, body, work_id="owned-unit-work")
+            if route.endswith("/calendar-status"):
+                return {"work_id": "owned-unit-work", "trade_date": None, "repair_required": False}
             return {"bodies": [], "member_keys": []}
 
     journal = queue.WorkJournal(root / "unit-work.sqlite3", "owned-unit-work")
