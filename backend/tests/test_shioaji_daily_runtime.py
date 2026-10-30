@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.models.provider_work import ProviderWorkAttempt
 from app.models.registry import SchedulerControl
 from app.services import provider_work as queue
@@ -42,6 +43,7 @@ async def setup_queue(db, monkeypatch):
     from app.services import daily_runtime
 
     monkeypatch.setattr(daily_runtime, "utc_now", lambda: clock[0])
+    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
     keys = ["tw_equity_minute", "tw_etf_minute"]
     for key in keys:
         await _dataset(db, key)

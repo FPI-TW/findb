@@ -308,11 +308,17 @@ apply 必須回傳非空 UUID `repair_ids` 與布林 `replayed`，且提交授�
 核准須等待該 work 的 active round settle；stale preview、錯誤 scope、已完成或 cancelled work
 均拒絕。Backend 附加 `shioaji_member_repair`，只對原 terminal failed／partial work 新增 queued
 attempt；不改舊 attempts、manifest、universe 或 plan。核准不啟動 control、不立即抓取。
+新 attempt 依當前窗口、control 與 Full flag 設定 `drain_only`，claim／派送時仍重查；Pilot 維持
+不受 Full flag 控制。Mapping overlay 與 persisted plan summary 在同一交易更新，重播核准亦會
+刷新摘要；mapping 修好後不再顯示 `mapping_gap`，獨立的 source error 仍保留，完成仍須正式證據。
 空回應分類與本輪 claim 退還先原子保存，再查 calendar／回報 Source；即使 calendar API 失聯，
 重啟仍先補報原 outcome、不新增 native 呼叫或重複扣除舊 attempts。
 原 coordinator 以 fenced `shioaji-repairs`／`shioaji-repair-ack` 安裝核准；先補報原 outcome、
 恢復 prepared／receipts，剩餘成員才可消耗最多三次額外觀測。重啟、ACK-loss 或重複 apply／ACK
 不補回已消耗 grant，也不重設原本八次失敗。Mapping 更正只有取得 canonical evidence 後才算 data。
+本機已完成（包括 `source_proven_no_trade`）與原 prepared／receipts 成員保留進度，不重新安裝
+grant。只有確實保存 local repair 與 journal grant 的 repair ID 才回傳安裝 ACK；略過的修復
+不記為已安裝。兩個 checkpoint 間中斷時，以相同 repair ID 續作，不重複發放額度。
 
 先部署 Backend migration `2f79b1d0c4e3`／API，再更新 Fetcher；SQLite 只新增 tables。
 使用 repair 後須排空相關 work 才能退回不支援修復協定的 runtime；只要有 approval 證據，Alembic

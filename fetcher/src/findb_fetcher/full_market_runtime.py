@@ -1780,6 +1780,7 @@ class FullMarketRuntime:
             for member in part["member_keys"]
         }
         members = {row["member_key"]: dict(row) for row in release["members"]}
+        installed = []
         for repair in repairs:
             member_key = repair["member_key"]
             if member_key not in keys or member_key not in members:
@@ -1789,18 +1790,19 @@ class FullMarketRuntime:
                     mapping_status="mapped", provider_symbol=repair["provider_symbol"]
                 )
             if member_key in resolved:
-                self.state.finish(keys[member_key], status="complete")
+                if not self.state.member_complete(keys[member_key]):
+                    self.state.finish(keys[member_key], status="complete")
                 continue
             # Original prepared descriptors always win over any repair grant.
             if self.state.prepared(keys[member_key]) is not None or owner.restore(
                 member_key=member_key
             ):
                 continue
-            install_grant(owner.journal, repair, date.fromisoformat(plan["trade_date"]))
-            self.state.apply_member_repair(keys[member_key], repair["repair_id"])
-        owner._preparation_request(
-            "shioaji-repair-ack", repair_ids=[row["repair_id"] for row in repairs]
-        )
+            if self.state.apply_member_repair(keys[member_key], repair["repair_id"]):
+                install_grant(owner.journal, repair, date.fromisoformat(plan["trade_date"]))
+                installed.append(repair["repair_id"])
+        if installed:
+            owner._preparation_request("shioaji-repair-ack", repair_ids=installed)
         return {**release, "members": list(members.values())}
 
     def _deliver_plan(

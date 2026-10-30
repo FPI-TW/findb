@@ -898,6 +898,7 @@ async def reconcile_plan(
     counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
     gaps: list[dict] = []
     for member in members:
+        mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
         if member.member_key in canonical_keys:
             state = "data"
         elif member.outcome == "no_data":
@@ -905,20 +906,20 @@ async def reconcile_plan(
         elif (
             member.outcome == "blocked"
             and not (member.outcome_reason == "mapping_gap" and member.member_key in mappings)
-        ) or (member.mapping_status == "gap" and member.member_key not in mappings):
+        ) or mapping_gap:
             state = "blocked"
         else:
             state = "missing"
         counts[state] += 1
         if state in {"missing", "blocked"} and (gap_limit is None or len(gaps) < gap_limit):
+            reason = member.outcome_reason or ("mapping_gap" if mapping_gap else None)
+            if reason == "mapping_gap" and member.member_key in mappings:
+                reason = None
             gaps.append(
                 {
                     "member_key": member.member_key,
                     "status": state,
-                    "reason": None
-                    if member.outcome_reason == "mapping_gap" and member.member_key in mappings
-                    else member.outcome_reason
-                    or ("mapping_gap" if member.mapping_status == "gap" else None),
+                    "reason": reason,
                 }
             )
     evaluated_at = now or utc_now()

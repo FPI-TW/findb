@@ -304,6 +304,34 @@ async def test_hk_cutover_drain_classification_uses_original_eligibility(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["full_market", "pilot"])
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_prepared_projection_matches_flag_and_profile_acquisition_gate(
+    test_session, monkeypatch, profile, enabled
+):
+    from app.config import get_settings
+
+    db = test_session
+    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", enabled)
+    monkeypatch.setattr(queue, "daily_window", lambda *args: {"open": True})
+    work, _ = await seed_work(db, profile=profile, prepared={"original": {"body": "immutable"}})
+    db.add(
+        SchedulerControl(
+            scheduler_key=f"{profile}_shioaji_v1",
+            provider="shioaji",
+            execution_profile=profile,
+            desired_state="running",
+            slot_id="taiwan_market_window",
+        )
+    )
+    await db.flush()
+    expected = not await queue.acquisition_open(db, work)
+    with monitor_reads(db):
+        [row] = await queue.projection(db)
+    assert row["drain_only"] is expected is (not enabled and profile == "full_market")
+
+
+@pytest.mark.asyncio
 async def test_minute_sized_preparation_with_many_rounds_stays_a_metadata_read(test_session):
     db = test_session
     body = "retained-minute-bar:" * 1000
@@ -351,6 +379,9 @@ async def test_minute_sized_preparation_with_many_rounds_stays_a_metadata_read(t
 async def test_wait_and_report_continuation_precedence(
     test_session, monkeypatch, gate, pending_error
 ):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
     db = test_session
     work, attempt = await seed_work(db, "finlab")
     db.add(

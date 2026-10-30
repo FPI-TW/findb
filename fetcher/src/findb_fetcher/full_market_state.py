@@ -722,19 +722,26 @@ class FullMarketState:
                     (key,),
                 )
 
-    def apply_member_repair(self, key: str, repair_id: str) -> None:
+    def member_complete(self, key: str) -> bool:
+        with self.connection() as db:
+            row = db.execute("SELECT status FROM full_work WHERE key=?", (key,)).fetchone()
+            return row is not None and row[0] == "complete"
+
+    def apply_member_repair(self, key: str, repair_id: str) -> bool:
         """Idempotent local installation never resets an existing failure count."""
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             if db.execute(
                 "SELECT 1 FROM full_member_repair WHERE repair_id=?", (repair_id,)
             ).fetchone():
-                return
+                return True
             row = db.execute(
                 "SELECT attempts,body,receipt,status,reason FROM full_work WHERE key=?", (key,)
             ).fetchone()
-            if row is None or row[1] is not None or row[2] is not None or row[3] == "complete":
+            if row is None:
                 raise FullMarketStateError("repair requires an unresolved unprepared member")
+            if row[1] is not None or row[2] is not None or row[3] == "complete":
+                return False
             if row[4] == "source_error_pending":
                 raise FullMarketStateError("repair requires pending outcome reconciliation")
             db.execute("INSERT INTO full_member_repair VALUES(?,?,?)", (repair_id, key, row[0]))
@@ -742,6 +749,7 @@ class FullMarketState:
                 "UPDATE full_work SET status='pending',reason='repair_approved',lease_until=0 WHERE key=?",
                 (key,),
             )
+            return True
 
     def finish(
         self,

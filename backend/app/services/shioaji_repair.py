@@ -8,6 +8,7 @@ from app.models.registry import DailyDeliveryMember, DailyDeliveryPlan, Universe
 from app.models.shioaji_repair import ShioajiMemberRepair, ShioajiRepairAck
 from app.schemas.shioaji_repair import RepairApplyRequest, RepairPreviewRequest
 from app.services import provider_work as queue
+from app.services.delivery_plan_summary import refresh_plan_summary
 from app.services.full_market import FullMarketError, _digest
 from app.utils import utc_now
 
@@ -151,7 +152,7 @@ async def preview(db: AsyncSession, work_id, body: RepairPreviewRequest) -> dict
 
 async def apply(db: AsyncSession, work_id, body: RepairApplyRequest, *, actor: str) -> dict:
     owner = await queue.lock_provider(db, "shioaji")
-    await work_scope(db, work_id)
+    _, plan = await work_scope(db, work_id)
     proposal = RepairPreviewRequest.model_validate(body.model_dump(exclude={"expected_sha256"}))
     request_hash = _digest(body.model_dump(mode="json"))
     previous = list(
@@ -167,6 +168,7 @@ async def apply(db: AsyncSession, work_id, body: RepairApplyRequest, *, actor: s
             row.request_sha256 != request_hash for row in previous
         ):
             raise FullMarketError("Repair request ID is already bound to different bytes", 409)
+        await refresh_plan_summary(db, plan.plan_id)
         return {"repair_ids": sorted(str(row.repair_id) for row in previous), "replayed": True}
     if owner.attempt_id:
         active = await db.get(ProviderWorkAttempt, owner.attempt_id)
@@ -208,10 +210,14 @@ async def apply(db: AsyncSession, work_id, body: RepairApplyRequest, *, actor: s
         )
         db.add(
             ProviderWorkAttempt(
-                work_id=work_id, attempt_number=(last or 0) + 1, not_before=utc_now()
+                work_id=work_id,
+                attempt_number=(last or 0) + 1,
+                not_before=utc_now(),
+                drain_only=not await queue.acquisition_open(db, work),
             )
         )
         work.state, work.completed_at = "queued", None
+    await refresh_plan_summary(db, plan.plan_id)
     return {"repair_ids": sorted(ids), "replayed": False}
 
 

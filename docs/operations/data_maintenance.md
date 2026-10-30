@@ -70,9 +70,9 @@ Reset可移除mutable canonical、workflow與PostgreSQL raw，建立bounded pilo
 `full_market_dataset_state` 永久首次日期同樣保留；`full_market_admission`／`full_market_admission_feed`
 和被引用的 baseline、calendar、plan 一起清除。重建 published baseline、取得有效
 installed runtime ACK 後，Owner 才能重新手動啟動並建立新 admission；first date 不重設。
-Provider queue 的 work／attempt／receipt 屬 mutable workflow，一起清除；owner slots 的 installed inode
+Provider queue 的 work／attempt／receipt 及綁定 work 的 Shioaji repair／ACK 稽核屬 mutable workflow，一起清除；owner slots 的 installed inode
 與 monotonic fencing generation 保留。任何 active owner 都拒絕 reset，即使 heartbeat 已過期。
-為保留 owner→attempt 的 FK，先明確刪除 receipt／attempt／work，再在同一 transaction explicit
+為保留 owner→attempt 的 FK，先明確刪除 repair ACK／repair／receipt／attempt／work，再在同一 transaction explicit
 `TRUNCATE` 其餘 targets（包含 receipt 與 ingestion run）；禁止 `CASCADE`，未列出的 FK fail closed。
 Reset 後 owner 留下 `mutable_reset_requires_verified_cutover` blocker；停止 consumers，備份並重置
 provider-work journal、各 profile／historical mutable checkpoints，保留 shared lock inodes 和獨立

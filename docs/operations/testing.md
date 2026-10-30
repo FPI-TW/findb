@@ -92,6 +92,10 @@ Admin 修復回應另驗證 OpenAPI typed schemas、必要摘要欄位與格式�
 不扣 Kbars 觀測額度，保留先前 unknown debt，後續資料不需額外 grant。
 `test_sdk_bootstrap.py` 另以正式 child protocol 與離線 SDK 驗證登入失敗仍保留 native／登入帳務，
 僅將 Kbars probe 記為 `predispatch`；dead child 仍須回收並由後續 acquisition 替換。
+修復續作另覆蓋 persisted summary 同交易更新／回滾／重播、無 outcome 的已修復 mapping
+不再顯示 gap、獨立 source error 保留，以及 repair→claim 的窗口／control／Full flag 矩陣與
+Pilot 例外。本機 no-trade complete、Backend resolved、prepared／receipt 成員不得重開或新增
+安裝 ACK；混合成員僅 ACK 實際安裝者，local→grant 中斷與 ACK-loss 可用同 ID 續作。
 `test_provider_work_daily_faults.py` 的股票／ETF 空回應案例走正式 decorator、隔離 fake SDK、
 Source→raw→normalization→canonical，驗證後續合法回應完成原 scope；同 suite 保留 outage／
 lost-ACK 原 bytes／idempotency 驗證。測試不呼叫真實 provider，不能代替 production 根因驗收。

@@ -669,7 +669,10 @@ def test_calendar_authorization_outage_before_refetch_spends_no_observation(tmp_
         assert observation_status(owner.journal, "2330", DAY) == (1, 3)
 
 
-def test_repair_ack_loss_does_not_replenish_grant_or_reset_checkpoint(tmp_path):
+@pytest.mark.parametrize("failure", ["ack", "grant"])
+def test_repair_ack_loss_does_not_replenish_grant_or_reset_checkpoint(
+    tmp_path, monkeypatch, failure
+):
     from test_full_market import _member, _plan, _runtime
 
     runtime, source, _ = _runtime(tmp_path, provider="shioaji")
@@ -695,6 +698,16 @@ def test_repair_ack_loss_does_not_replenish_grant_or_reset_checkpoint(tmp_path):
     try:
         with owned_unit_work("shioaji", tmp_path) as owner:
             ack = []
+            grants = []
+            original = install_grant
+
+            def grant(*args):
+                grants.append(1)
+                if failure == "grant" and len(grants) == 1:
+                    raise queue.ProviderWorkRecoveryBlockedError("grant interrupted")
+                return original(*args)
+
+            monkeypatch.setattr("findb_fetcher.shioaji_recovery.install_grant", grant)
 
             def request(action, **kwargs):
                 if action == "shioaji-repairs":
@@ -705,8 +718,9 @@ def test_repair_ack_loss_does_not_replenish_grant_or_reset_checkpoint(tmp_path):
                     }
                 if action == "prepared":
                     return {"bodies": []}
+                assert action == "shioaji-repair-ack" and kwargs["repair_ids"] == ["approved"]
                 ack.append(1)
-                if len(ack) == 1:
+                if failure == "ack" and len(ack) == 1:
                     raise queue.ProviderWorkRecoveryBlockedError("ACK lost")
                 return {}
 
@@ -728,5 +742,131 @@ def test_repair_ack_loss_does_not_replenish_grant_or_reset_checkpoint(tmp_path):
                     8,
                     "pending",
                 )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "progress",
+    [
+        "local_complete",
+        "source_complete",
+        "both_complete",
+        "prepared",
+        "receipt",
+        "restored",
+        "all_complete",
+    ],
+)
+def test_repair_skips_terminal_and_prepared_members_and_only_acks_installed(tmp_path, progress):
+    from test_full_market import _member, _plan, _runtime
+
+    runtime, source, _ = _runtime(tmp_path, provider="shioaji")
+    plan = _plan()
+    runtime.state.record_plan(plan, "shioaji")
+    keys = {symbol: "fp1:123:" + symbol for symbol in ["AAPL", "MSFT"]}
+    with runtime.state.connection() as db:
+        db.execute("UPDATE full_work SET attempts=8,status='manual',reason='retry_exhausted'")
+    if progress in {"local_complete", "both_complete", "receipt", "all_complete"}:
+        runtime.state.finish(
+            keys["AAPL"],
+            status="complete",
+            reason="source_proven_no_trade",
+            receipt="original-receipt" if progress == "receipt" else None,
+        )
+    if progress == "all_complete":
+        runtime.state.finish(keys["MSFT"], status="complete", reason="source_proven_no_trade")
+    if progress == "prepared":
+        runtime.state.prepare(keys["AAPL"], b"original prepared bytes")
+    runtime.state.save_sequence_receipt(keys["AAPL"], "original-key", "original-run")
+    with runtime.state.connection() as db:
+        original = dict(
+            db.execute("SELECT * FROM full_work WHERE key=?", (keys["AAPL"],)).fetchone()
+        )
+    repairs = [
+        {
+            "repair_id": "repair-" + symbol,
+            "member_key": symbol,
+            "provider_symbol": symbol,
+            "mapping_repaired": True,
+            "observation_limit": 3,
+        }
+        for symbol in keys
+    ]
+    members = [
+        {**_member(), "member_key": symbol, "symbol": symbol, "provider_symbol": symbol}
+        for symbol in keys
+    ]
+    source.request = lambda *args: {
+        "work_id": "owned-unit-work",
+        "plan_id": plan["plan_id"],
+        "execution_profile": runtime.execution_profile,
+        "dataset_key": plan["dataset_key"],
+        "trade_date": plan["trade_date"],
+        "members": [
+            {
+                "member_key": symbol,
+                "status": "resolved"
+                if symbol == "AAPL" and progress in {"source_complete", "both_complete"}
+                else "blocked",
+            }
+            for symbol in keys
+        ],
+    }
+    try:
+        with owned_unit_work("shioaji", tmp_path) as owner:
+            acknowledgements = []
+
+            def request(action, **kwargs):
+                if action == "shioaji-repairs":
+                    return {
+                        "work_id": owner.work["work_id"],
+                        "plan_id": plan["plan_id"],
+                        "repairs": repairs,
+                    }
+                assert action == "shioaji-repair-ack"
+                acknowledgements.append(kwargs["repair_ids"])
+                return {}
+
+            owner._preparation_request = request
+            owner.restore = lambda *, member_key: (
+                ["original descriptor"] if progress == "restored" and member_key == "AAPL" else []
+            )
+            for _ in range(2):
+                runtime.state = FullMarketState(runtime.state.path)
+                owner.journal = queue.WorkJournal(owner.journal.path, owner.journal.key)
+                result = runtime._install_shioaji_repairs(owner, plan, {"members": members})
+                with runtime.state.connection() as db:
+                    current = dict(
+                        db.execute(
+                            "SELECT * FROM full_work WHERE key=?", (keys["AAPL"],)
+                        ).fetchone()
+                    )
+                    assert [
+                        row[0] for row in db.execute("SELECT repair_id FROM full_member_repair")
+                    ] == ([] if progress == "all_complete" else ["repair-MSFT"])
+                if progress == "source_complete":
+                    assert current["status"] == "complete" and current["attempts"] == 8
+                else:
+                    assert current == original
+                assert (
+                    runtime.state.sequence_receipt(keys["AAPL"], "original-key") == "original-run"
+                )
+                with owner.journal.connection() as db:
+                    assert [
+                        row[0]
+                        for row in db.execute(
+                            "SELECT grant_id FROM work_shioaji_grant WHERE grant_id!='initial'"
+                        )
+                    ] == ([] if progress == "all_complete" else ["repair-MSFT"])
+            assert acknowledgements == (
+                [] if progress == "all_complete" else [["repair-MSFT"], ["repair-MSFT"]]
+            )
+            if progress == "local_complete":
+                acquired = []
+                runtime._acquisition_allowed = lambda: True
+                runtime._acquire = lambda member, *args: acquired.append(member["member_key"]) or []
+                runtime._deliver_plan(plan, result, runtime.feeds[0])
+                assert acquired == ["MSFT"]
     finally:
         runtime.close()

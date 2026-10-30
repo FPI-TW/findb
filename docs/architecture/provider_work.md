@@ -328,9 +328,16 @@ dead child／pause／close 的回收保留。cache replay、重啟、換 attempt
 Backend `shioaji_member_repair` 以 environment／profile／work／plan／member 綁定 Owner 核准、
 原值摘要及證據；effective mapping 是附加覆蓋，不更新 universe／plan／manifest。Ingress、對帳與
 Fetcher 使用同一有效 mapping；有任何 prepared／accepted canonical membership 的成員拒絕更正。
+核准／冪等重播於同一交易刷新 persisted plan summary；有效 mapping 消除原 `mapping_gap`，
+但獨立 outcome reason 與 canonical completion 規則保留。重開 attempt 依 `acquisition_open`
+設定 `drain_only`，claim 重查；Full flag 明確關閉 Full acquisition，Pilot 保持獨立。
+唯讀 queue projection 的 drain 判定同步套用相同 flag／profile 條件。
 `shioaji_repair_ack` 保存 fenced 安裝證據；本地 `full_member_repair` 以 repair ID 冪等安裝，
 `full_empty_outcome` 保存 Source outcome 的 ACK-loss continuation。Original terminal work 用新
 attempt 恢復，舊 attempts、prepared bytes、receipts、quota、cooldown 不改寫。
+本機 terminal／prepared 成員不重開；Source resolved 不覆寫既有 complete reason。
+先保存 local installation，再冪等保存 journal grant，兩者完成才 ACK 該 repair ID；略過者不 ACK。
+重啟時 local installation 證據可接續未完成的 grant／ACK，不重發額度。
 不把其他格式錯誤變成無限 not-published retry。新 provider 必須在 replay authority 前驗證 target，並保留
 negative observation 的 audit 與有界重試驗收。
 

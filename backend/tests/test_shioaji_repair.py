@@ -11,12 +11,19 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt
-from app.models.registry import DailyDeliveryMember, DailyDeliveryPlan, UniverseMember
+from app.models.registry import (
+    DailyDeliveryMember,
+    DailyDeliveryPlan,
+    DailyDeliveryPlanSummary,
+    SchedulerControl,
+    UniverseMember,
+)
 from app.models.shioaji_repair import ShioajiMemberRepair, ShioajiRepairAck
 from app.schemas.admin import ShioajiRepairApplyResponse, ShioajiRepairPreviewResponse
 from app.schemas.full_market import DeliveryOutcomeRequest
 from app.schemas.shioaji_repair import RepairApplyRequest, RepairPreviewRequest
 from app.services import provider_work as queue
+from app.services.delivery_plan_summary import refresh_plan_summary
 from app.services.full_market import (
     FullMarketError,
     _digest,
@@ -140,6 +147,125 @@ async def test_mapping_overlay_preserves_frozen_rows_and_requeues_original_work(
     assert replay["replayed"] and replay["repair_ids"] == result["repair_ids"]
     assert len(list(await db.scalars(select(ShioajiMemberRepair)))) == 1
     assert len(list(await db.scalars(select(ProviderWorkAttempt)))) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [None, "mapping_gap", "source_error"])
+async def test_repair_refreshes_persisted_summary_and_effective_gap_reason(test_session, reason):
+    db = test_session
+    work, member, frozen, plan, _ = await setup(db)
+    member.outcome = "blocked" if reason else None
+    member.outcome_reason = reason
+    await refresh_plan_summary(db, plan.plan_id)
+    await db.commit()
+    before = await reconcile_plan(db, plan)
+    assert before.blocked == 1 and before.missing == 1
+    assert next(row for row in before.gaps if row["member_key"] == member.member_key)["reason"] == (
+        reason or "mapping_gap"
+    )
+    request, _ = await authorize(db, work, proposal(member))
+    after = await reconcile_plan(db, plan)
+    gap = next(row for row in after.gaps if row["member_key"] == member.member_key)
+    assert gap == {
+        "member_key": member.member_key,
+        "status": "blocked" if reason == "source_error" else "missing",
+        "reason": "source_error" if reason == "source_error" else None,
+    }
+    stored = await db.get(DailyDeliveryPlanSummary, plan.plan_id, populate_existing=True)
+    assert (
+        stored.expected_count,
+        stored.data_count,
+        stored.no_data_count,
+        stored.missing_count,
+        stored.blocked_count,
+    ) == (after.expected, 0, 0, after.missing, after.blocked)
+    assert after.expected == after.data + after.no_data + after.missing + after.blocked == 2
+    assert member.mapping_status == frozen.mapping_status == "gap"
+    assert member.outcome_reason == reason
+    # A replay also heals a summary persisted by an older approval writer.
+    stored.blocked_count, stored.missing_count = 1, 1
+    await db.flush()
+    assert (await apply(db, work.work_id, request, actor="owner"))["replayed"]
+    stored = await db.get(DailyDeliveryPlanSummary, plan.plan_id, populate_existing=True)
+    assert (stored.missing_count, stored.blocked_count) == (after.missing, after.blocked)
+    assert len(list(await db.scalars(select(ProviderWorkAttempt)))) == 2
+
+
+@pytest.mark.asyncio
+async def test_repair_summary_and_approval_rollback_together(test_session):
+    db = test_session
+    work, member, _, plan, _ = await setup(db)
+    work_id = work.work_id
+    await refresh_plan_summary(db, plan.plan_id)
+    await db.commit()
+    body = proposal(member)
+    report = await preview(db, work.work_id, body)
+    request = RepairApplyRequest(**body.model_dump(), expected_sha256=report["sha256"])
+    with pytest.raises(RuntimeError, match="abort approval"):
+        async with db.begin_nested():
+            await apply(db, work.work_id, request, actor="owner")
+            assert (
+                await db.get(DailyDeliveryPlanSummary, plan.plan_id, populate_existing=True)
+            ).blocked_count == 0
+            raise RuntimeError("abort approval")
+    assert not list(await db.scalars(select(ShioajiMemberRepair)))
+    assert len(list(await db.scalars(select(ProviderWorkAttempt)))) == 1
+    assert (
+        await db.get(DailyDeliveryPlanSummary, plan.plan_id, populate_existing=True)
+    ).blocked_count == 1
+    assert (await db.get(ProviderWork, work_id, populate_existing=True)).state == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["full_market", "pilot"])
+@pytest.mark.parametrize("gate", ["open", "window", "stopped", "flag"])
+async def test_reopened_attempt_respects_acquisition_gate_through_claim(
+    test_session, monkeypatch, profile, gate
+):
+    from app.config import get_settings
+
+    db = test_session
+    work, member, _, plan, _ = await setup(db)
+    if profile == "pilot":
+        work.execution_profile = plan.execution_profile = profile
+        (await db.get(DailyDeliveryPlan, plan.plan_id)).execution_profile = profile
+        db.add(
+            SchedulerControl(
+                scheduler_key="pilot_shioaji_v1",
+                execution_profile="pilot",
+                provider="shioaji",
+                slot_id="taiwan_market_window",
+                desired_state="running",
+            )
+        )
+        await db.flush()
+    control = await db.get(SchedulerControl, f"{profile}_shioaji_v1")
+    if gate == "stopped":
+        control.desired_state = "stopped"
+    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", gate != "flag")
+    monkeypatch.setattr(queue, "daily_window", lambda *args: {"open": gate != "window"})
+    await db.commit()
+    await authorize(db, work, proposal(member))
+    attempt = await db.scalar(
+        select(ProviderWorkAttempt).where(
+            ProviderWorkAttempt.work_id == work.work_id, ProviderWorkAttempt.state == "queued"
+        )
+    )
+    drain = gate in {"window", "stopped"} or gate == "flag" and profile == "full_market"
+    assert attempt.drain_only is drain
+    assert await queue.acquisition_open(db, work) is (not drain)
+    assert control.desired_state == ("stopped" if gate == "stopped" else "running")
+    claimed = await queue.claim(
+        db,
+        provider="shioaji",
+        datasets=[work.dataset_key],
+        host_lock_identity="test-host-lock",
+        requested_work_id=work.work_id,
+    )
+    if gate in {"window", "stopped"}:
+        assert claimed is None  # No prepared bytes or pending outcome to drain.
+    else:
+        assert claimed is not None and claimed[1].drain_only is drain
 
 
 @pytest.mark.asyncio
