@@ -3,18 +3,23 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt
 from app.models.registry import DailyDeliveryMember, DailyDeliveryPlan, UniverseMember
 from app.models.shioaji_repair import ShioajiMemberRepair, ShioajiRepairAck
+from app.schemas.admin import ShioajiRepairApplyResponse, ShioajiRepairPreviewResponse
 from app.schemas.full_market import DeliveryOutcomeRequest
 from app.schemas.shioaji_repair import RepairApplyRequest, RepairPreviewRequest
 from app.services import provider_work as queue
 from app.services.full_market import (
     FullMarketError,
+    _digest,
     reconcile_plan,
     record_outcome,
     validate_ingest_part,
@@ -259,6 +264,120 @@ async def _dataset_for(db, key):
     from app.models.registry import DatasetRegistry
 
     return await db.get(DatasetRegistry, key)
+
+
+def test_repair_openapi_uses_typed_responses():
+    from app.main import app
+
+    schema = app.openapi()
+    root = "/api/v1/admin/provider-work/{work_id}/shioaji-repairs"
+    for path, model in (
+        (root + "/preview", ShioajiRepairPreviewResponse),
+        (root, ShioajiRepairApplyResponse),
+    ):
+        response = schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ]
+        assert response == {"$ref": f"#/components/schemas/{model.__name__}"}
+    models = schema["components"]["schemas"]
+    for name, hashes in (
+        ("ShioajiRepairPreviewResponse", ["sha256"]),
+        ("ShioajiRepairInventoryResponse", ["sha256", "manifest_sha256", "prepared_sha256"]),
+    ):
+        assert models[name]["additionalProperties"] is False
+        for key in hashes:
+            assert key in models[name]["required"]
+            assert models[name]["properties"][key]["pattern"] == r"^[0-9a-f]{64}$"
+
+
+@pytest.mark.asyncio
+async def test_owner_typed_responses_preserve_digest_and_replay(
+    client, test_session, admin_headers
+):
+    work, member, _, _, _ = await setup(test_session)
+    body = proposal(member)
+    body.members[0].reason = "已核對凍結 mapping 與原始空回應證據"
+    expected = await preview(test_session, work.work_id, body)
+    url = f"/api/v1/admin/provider-work/{work.work_id}/shioaji-repairs"
+    response = await client.post(
+        url + "/preview", json=body.model_dump(mode="json"), headers=admin_headers
+    )
+    assert response.status_code == 200, response.text
+    report = response.json()
+    assert report == expected
+    assert ShioajiRepairPreviewResponse.model_validate(report).model_dump(mode="json") == expected
+    assert report["inventory"]["sha256"] == _digest(
+        {key: value for key, value in report["inventory"].items() if key != "sha256"}
+    )
+    assert report["sha256"] == _digest(
+        {"inventory": report["inventory"]["sha256"], "proposal": report["proposal"]}
+    )
+    for path, value in (
+        (("sha256",), "invalid"),
+        (("inventory", "sha256"), "A" * 64),
+        (("inventory", "manifest_sha256"), "a" * 63),
+        (("inventory", "prepared_sha256"), None),
+        (("inventory", "members", 0, "has_prepared"), "false"),
+    ):
+        invalid = deepcopy(report)
+        target = invalid
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        with pytest.raises(ValidationError):
+            ShioajiRepairPreviewResponse.model_validate(invalid)
+    for path in (("sha256",), ("inventory", "sha256"), ("inventory", "members", 0, "reason")):
+        invalid = deepcopy(report)
+        target = invalid
+        for key in path[:-1]:
+            target = target[key]
+        del target[path[-1]]
+        with pytest.raises(ValidationError):
+            ShioajiRepairPreviewResponse.model_validate(invalid)
+    invalid = deepcopy(report)
+    invalid["inventory"]["unrecognized_evidence"] = "must not be silently dropped"
+    with pytest.raises(ValidationError):
+        ShioajiRepairPreviewResponse.model_validate(invalid)
+    request = {**report["proposal"], "expected_sha256": report["sha256"]}
+    response = await client.post(url, json=request, headers=admin_headers)
+    assert response.status_code == 200, response.text
+    applied = response.json()
+    assert ShioajiRepairApplyResponse.model_validate(applied).model_dump(mode="json") == applied
+    assert applied["replayed"] is False and len(applied["repair_ids"]) == 1
+    response = await client.post(url, json=request, headers=admin_headers)
+    assert response.status_code == 200, response.text
+    assert response.json() == {**applied, "replayed": True}
+    assert len(list(await test_session.scalars(select(ShioajiMemberRepair)))) == 1
+    assert len(list(await test_session.scalars(select(ProviderWorkAttempt)))) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"repair_ids": ["invalid"], "replayed": False},
+        {"repair_ids": [], "replayed": False},
+        {"repair_ids": ["00000000-0000-0000-0000-000000000001"], "replayed": "false"},
+        {"repair_ids": ["00000000-0000-0000-0000-000000000001"]},
+    ],
+)
+async def test_invalid_apply_response_is_rejected_before_commit(monkeypatch, result):
+    from app.api.deps import AdminPrincipal
+    from app.api.v1.admin import apply_shioaji_repair
+
+    db = AsyncMock()
+    monkeypatch.setattr("app.services.shioaji_repair.apply", AsyncMock(return_value=result))
+    body = RepairApplyRequest(
+        **proposal(
+            SimpleNamespace(member_key="2330", symbol="2330", provider_symbol="2330")
+        ).model_dump(),
+        expected_sha256="a" * 64,
+    )
+    with pytest.raises(ValidationError):
+        await apply_shioaji_repair(
+            uuid7(), body, AdminPrincipal("machine_key", "test-owner", "tests", "owner"), db
+        )
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.parametrize("field", ["symbol", "provider_symbol"])

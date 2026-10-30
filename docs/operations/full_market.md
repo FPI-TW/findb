@@ -297,6 +297,9 @@ membership 時保守拒絕核准，先完成原收據對帳。
 Admin API 為 `POST /api/v1/admin/provider-work/{work_id}/shioaji-repairs/preview` 與
 `POST /api/v1/admin/provider-work/{work_id}/shioaji-repairs`；直接呼叫時省略 CLI 專用的
 `checkpoint_sha256`，apply body 加上 `expected_sha256`。
+兩個 Admin 回應均使用 OpenAPI typed schema：preview 必須包含完整的 `inventory`、`proposal`
+與 `sha256`，inventory 的摘要欄位均限制為 64 碼小寫十六進位；序列化不改動既有摘要綁定內容。
+apply 必須回傳非空 UUID `repair_ids` 與布林 `replayed`，且提交授權前先驗證回應。
 
 核准須等待該 work 的 active round settle；stale preview、錯誤 scope、已完成或 cancelled work
 均拒絕。Backend 附加 `shioaji_member_repair`，只對原 terminal failed／partial work 新增 queued
