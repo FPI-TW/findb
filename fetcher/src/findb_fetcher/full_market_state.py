@@ -74,6 +74,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_work_receipt (key TEXT NOT NULL, idempotency_key TEXT NOT NULL, run_id TEXT NOT NULL, PRIMARY KEY(key,idempotency_key));
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
+                CREATE TABLE IF NOT EXISTS full_provider_outage (plan_id TEXT PRIMARY KEY, since REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_cursor (provider TEXT, dataset TEXT, trade_date TEXT NOT NULL, PRIMARY KEY(provider,dataset));
                 CREATE TABLE IF NOT EXISTS full_schedule (scope TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0, batch BLOB);
                 CREATE TABLE IF NOT EXISTS acquisition_intent(operation_id TEXT PRIMARY KEY, account TEXT NOT NULL, provider TEXT NOT NULL, armed_at REAL NOT NULL, status TEXT NOT NULL, cooldown_bound REAL NOT NULL, actual_start REAL, completed_at REAL);
@@ -653,6 +654,32 @@ class FullMarketState:
                 (reason, now + delay_seconds, key),
             )
 
+    def defer_provider_outage(
+        self, key: str, *, now: float, delay_seconds: int, limit_seconds: float
+    ) -> bool:
+        """Defer a shared-report outage without charging the member.
+
+        The plan's continuous outage starts at its first deferral; once it
+        reaches ``limit_seconds`` the caller must stop retrying the member.
+        """
+        with self.connection() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO full_provider_outage SELECT plan_id,? FROM full_work WHERE key=?",
+                (now, key),
+            )
+            row = db.execute(
+                "SELECT o.since FROM full_provider_outage o JOIN full_work w ON w.plan_id=o.plan_id WHERE w.key=?",
+                (key,),
+            ).fetchone()
+        if row is None or now - float(row[0]) >= limit_seconds:
+            return False
+        self.defer_wait(key, now=now, reason="provider_unavailable", delay_seconds=delay_seconds)
+        return True
+
+    def clear_provider_outage(self, plan_id: str) -> None:
+        with self.connection() as db:
+            db.execute("DELETE FROM full_provider_outage WHERE plan_id=?", (plan_id,))
+
     def pending_source_error_keys(self, plan_id: str) -> set[str]:
         with self.connection() as db:
             return {
@@ -946,6 +973,13 @@ class FullMarketState:
                     (provider,),
                 )
             ]
+            outages = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT o.plan_id,p.trade_date,o.since FROM full_provider_outage o JOIN full_plan p ON p.plan_id=o.plan_id WHERE p.provider=? ORDER BY p.trade_date",
+                    (provider,),
+                )
+            ]
         return {
             "acquisition_protocol_version": 2,
             "universe_refresh": json.loads(refresh["result"]) if refresh else [],
@@ -953,6 +987,7 @@ class FullMarketState:
             "unresolved": gaps,
             "manual_required": manual,
             "date_prerequisites": prerequisites,
+            "provider_outages": outages,
             "plans": [{**gap, **self.plan_progress(gap["plan_id"])} for gap in gaps],
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }

@@ -287,7 +287,13 @@ async def submit_universe(
                 UniverseRelease.provider == body.provider,
                 UniverseRelease.status == "published",
             )
-            .order_by(UniverseRelease.effective_date.desc(), UniverseRelease.created_at.desc())
+            # A late date is judged against the newest release on or before it;
+            # only a date preceding every release falls back to the newest one.
+            .order_by(
+                (UniverseRelease.effective_date > body.effective_date).asc(),
+                UniverseRelease.effective_date.desc(),
+                UniverseRelease.created_at.desc(),
+            )
             .limit(1)
         )
     ).scalar_one_or_none()

@@ -467,6 +467,9 @@ Source 先處理既有凍結計畫與依日曆政策略過的日期，再檢查�
 `409` 與固定 `taifex_dated_universe_required` code。Fetcher 此時才取得該日官方報表，
 latest 日期不符時使用 TX／MTX／TMF／TE／TF 分產品歷史報表，透過原有 R2、governor
 及 Source publication 流程建立目錄，再建立計畫。不能由過期週契約猜測 no_data。
+官方歷史報表先發布盤後列、稍後才有一般時段列；沒有任何一般時段列的報表視同尚未發布，
+與空報表同樣保留 date prerequisite 重試，不寫入 durable response。官方來源行為見
+[TAIFEX 期貨日行情](taifex.md)。
 日常 cycle 不先執行 TAIFEX latest 目錄更新；明確的 maintenance refresh 仍可使用。
 報表尚未可用或目錄等待發布時，在各 profile checkpoint 保存日期、原因與一小時後的
 重試時間，provider-work `retry_at` 亦使用相同剩餘延遲，不再每 60 秒重新 claim；CLI health 的
@@ -505,7 +508,9 @@ TAIFEX provider work 0、checkpoint `unresolved=[]`／`manual_required=0`；Full
 一般股票 universe 的自動發布仍使用絕對 20 筆及 2% 變更門檻。TAIFEX 到期換倉另使用
 fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週契約、regular／after_hours、
 相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
-共同契約可依官方報表增加 session，但不得移除既有 session。產品、mapping、交易所、幣別、
+共同契約可依官方報表增加 session，但不得移除既有 session。兩種規則的比較基準皆為 effective date
+不晚於提交日期的最新 published release；較晚日期已發布時，重試的較早日期不以後者判定。
+提交日期早於所有 published release 時，才以最新一份比較。產品、mapping、交易所、幣別、
 分類、session 縮減或月份倒退均保留 candidate 等待人工審查。Release 同時保存
 完整 `member_sha256` 與排除逐次 `raw_evidence_ref` 的 semantic digest；同日期、同語意的報表重抓
 回傳既有 release，不再因 R2 evidence reference 不同產生重複 candidate。兩種 digest 的成員順序

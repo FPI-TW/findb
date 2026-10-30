@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -177,7 +178,6 @@ def test_report_http_errors_are_operational(status):
 def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
     tmp_path, monkeypatch, profile, status
 ):
-    from urllib.parse import parse_qs
 
     runtime, source, feed = setup_runtime(tmp_path, monkeypatch, profile)
     runtime._snapshot = lambda *a, **kw: b"[]"
@@ -247,6 +247,70 @@ def test_malformed_dated_report_never_submits_or_caches(tmp_path, monkeypatch, p
         transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body))
     )
     source.submit = lambda *a: pytest.fail("invalid report must not publish")
+    with pytest.raises(DatedUniversePendingError, match="dated_report_unavailable"):
+        runtime._dated_taifex_universe(feed, DAY)
+    assert str(DAY) not in runtime.futures
+    runtime.close()
+
+
+# Official futDataDown layout (2026-10-29/30): 19 headers, rows end with a trailing comma.
+OFFICIAL_HEADER = (
+    "交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,漲跌價,漲跌%,成交量,結算價,"
+    "未沖銷契約數,最後最佳買價,最後最佳賣價,歷史最高價,歷史最低價,是否因訊息面暫停交易,"
+    "交易時段,價差對單式委託成交量\n"
+)
+
+
+def official_report(product, *, sessions=("一般", "盤後")):
+    rows = {
+        "一般": f"{DAY:%Y/%m/%d},{product},202608  ,47187,47218,46310,46577,-672,-1.42%,"
+        "56666,46569,117523,46579,46584,50440,44435,,一般,,\n",
+        "盤後": f"{DAY:%Y/%m/%d},{product},202608  ,47280,47607,46968,47121,-128,-0.27%,"
+        "31298,-,-,47108,47127,50440,44435,,盤後,,\n",
+    }
+    spread = (
+        f"{DAY:%Y/%m/%d},{product},202608/202609    ,127,127,119,119,-,-,283,-,-,"
+        "119,122,170,119,,一般,296,\n"
+    )
+    body = OFFICIAL_HEADER + "".join(rows[session] for session in sessions)
+    return (body + (spread if sessions else "")).encode("cp950")
+
+
+def test_official_report_layout_maps_sessions_and_skips_spreads():
+    from findb_fetcher.providers.taifex import parse_report
+
+    rows = parse_report(official_report("TX"), target_date=DAY, historical=True)
+    assert [(row["contract_code"], row["session"]) for row in rows] == [
+        ("TX:202608", "after_hours"),
+        ("TX:202608", "regular"),
+    ]
+    after_hours, regular = rows
+    assert regular["settlement_price"] == "46569" and regular["open_interest"] == 117523
+    assert after_hours["settlement_price"] is None and after_hours["open_interest"] is None
+
+
+@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("sessions", [(), ("盤後",)], ids=["closure", "after_hours_only"])
+def test_unpublished_official_report_stays_pending_and_uncached(
+    tmp_path, monkeypatch, profile, sessions
+):
+    """Closures return a header-only file; the regular session is published after 05:00 rows."""
+    runtime, source, feed = setup_runtime(tmp_path, monkeypatch, profile)
+    runtime._snapshot = lambda *a, **kw: b"[]"
+    runtime.proof = {"max_response_bytes": 100000}
+    runtime._observed_response = lambda *a, **kw: None
+    runtime.http.close()
+    runtime.http = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                content=official_report(
+                    parse_qs(request.content.decode())["commodity_id"][0], sessions=sessions
+                ),
+            )
+        )
+    )
+    source.submit = lambda *a: pytest.fail("unpublished report must not publish membership")
     with pytest.raises(DatedUniversePendingError, match="dated_report_unavailable"):
         runtime._dated_taifex_universe(feed, DAY)
     assert str(DAY) not in runtime.futures

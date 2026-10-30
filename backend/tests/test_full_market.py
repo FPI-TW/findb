@@ -591,6 +591,46 @@ async def test_taifex_forward_month_roll_auto_publishes_above_generic_threshold(
 
 
 @pytest.mark.asyncio
+async def test_taifex_late_date_compares_with_earlier_published_release(test_session):
+    key = "tw_futures_eod"
+    await _dataset(test_session, key)
+    body, baseline = await _baseline(test_session, key, 2)
+    rolled = body.model_copy(deep=True)
+    rolled.effective_date += timedelta(days=2)
+    rolled.members = rolled.members[1:]
+    successor = body.members[-1].model_copy(deep=True)
+    successor.contract_month = "202610"
+    successor.contract_code = "TX:202610"
+    successor.provider_symbol = "TX:202610"
+    rolled.members.append(successor)
+    assert (await submit_universe(test_session, rolled, allowed_datasets=[key])).status == (
+        "published"
+    )
+    # A date retried after its successor published keeps the pre-roll membership.
+    late = body.model_copy(deep=True)
+    late.effective_date += timedelta(days=1)
+
+    release = await submit_universe(test_session, late, allowed_datasets=[key])
+
+    assert release.status == "published" and release.change_count == 0
+    stored = await test_session.get(UniverseRelease, release.release_id)
+    assert stored.member_sha256 == baseline.member_sha256
+
+
+@pytest.mark.asyncio
+async def test_date_before_every_release_compares_with_newest_release(test_session):
+    key = "hk_equity_eod"
+    await _dataset(test_session, key)
+    body, _ = await _baseline(test_session, key, 100)
+    earlier = body.model_copy(deep=True)
+    earlier.effective_date -= timedelta(days=1)
+
+    release = await submit_universe(test_session, earlier, allowed_datasets=[key])
+
+    assert release.status == "published" and release.change_count == 0
+
+
+@pytest.mark.asyncio
 async def test_taifex_backward_or_identity_drift_remains_candidate(test_session):
     key = "tw_futures_eod"
     await _dataset(test_session, key)

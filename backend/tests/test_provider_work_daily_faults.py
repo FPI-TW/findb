@@ -335,8 +335,12 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                 )
             )
         )
-        assert len(reported) == 1
-        assert reported[0].outcome == "blocked"
+        if h.provider == "taifex":
+            # One exchange report serves every member, so an outage blocks no member.
+            assert reported == []
+        else:
+            assert len(reported) == 1
+            assert reported[0].outcome == "blocked"
     attempt = await h.db.scalar(
         select(ProviderWorkAttempt).where(
             ProviderWorkAttempt.work_id == work_id, ProviderWorkAttempt.state == "queued"
