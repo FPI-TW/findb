@@ -327,14 +327,15 @@ grant。只有確實保存 local repair 與 journal grant 的 repair ID 才回�
 downgrade 即拒絕刪除這兩張 audit tables。不得清 cache、刪 queue、reset attempts 或退款用量。
 本機離線驗證不能證實 production 空回應根因；部署、原生觀測及受影響工作恢復仍須另行驗收。
 
-#### 2026-10-30 staging 受控驗收（已停止，10/23 舊工作待結清）
+#### 2026-10-30 staging 受控驗收（已停止，10/23 舊工作已休市結清）
 
 本次驗收於台北 20:15:05 因 `1102` 達三次空回應上限轉 manual，依授權停止 Pilot；
 Pilot revision=41、Full revision=9，desired／observed 均 stopped，owner 已排空。
-指定兩筆 10/23 work 在系統內仍未結清，但已於驗收後確認當天因颱風休市，
+指定兩筆 10/23 work 在驗收停止時尚未結清，驗收後已確認當天因颱風休市，
 沒有分鐘資料符合市場狀態；不能將當日沒有 bars 當作資料恢復失敗。
 安全退避／額度／證據保留與正常 catch-up 的交付路徑取得原生證據，
-mapping 更正及 production 其他日期的根因／恢復仍待驗收。
+mapping 更正及 production 其他日期的根因／恢復仍待驗收。兩筆舊 work 已於台北 22:18
+經 Owner 核准以新協定結清，完整保留原始證據與帳務，詳見下方部署／套用紀錄。
 
 使用者補充休市資訊後，已核對證交所 2026-10-22 發布的
 [10/23 颱風休市公告](https://investoredu.twse.com.tw/FileSystem/FileUpload/c91c7dff-afb0-42cc-9949-9f072bece31d.pdf)，
@@ -441,7 +442,7 @@ canonical evidence 皆完整，failed_records=0。使用既有 Serve key 實際�
 本次只變更營運文件，`pnpm check` 與 `git diff --check` 通過，未重跑程式／migration suites；
 沒有變更程式或 migration。未執行人工 fault injection、停止後重啟、ACK-loss／Source outage
 重現或 mapping gap 正向恢復（staging 沒有原 gap）。10/23 日曆／凍結決策已完成對帳，
-舊工作仍待保留證據的結清機制；production 其他日期的空回應根因、mapping 恢復及相關負向 native
+舊工作已由下述保留證據的結清機制處理；production 其他日期的空回應根因、mapping 恢復及相關負向 native
 驗收仍待後續處理，不將本次休市解釋外推至其他日期，不自行追加額度或重啟。
 
 #### 2026-10-30 staging 10/23 休市對帳預覽（只讀，未套用）
@@ -454,7 +455,7 @@ canonical evidence 皆完整，failed_records=0。使用既有 Serve key 實際�
 的 before／after SHA 均相符，現 decision 與 audit.after 全文相符，對應 alerts 已 resolved。
 因此日曆、決策、告警的預計更正均為零，不能再次重做休市更正。
 
-剩餘範圍仍是上表兩個 Shioaji work／兩 plan／兩 parts／四 members：Backend work queued，
+當時剩餘範圍是上表兩個 Shioaji work／兩 plan／兩 parts／四 members：Backend work queued，
 原 scope 保留 revision=5 開市快照及 canonical manifest，本地三 pending／一 manual。
 Backend prepared、receipts、linked ingestion runs，本地 prepared、sequence receipts、有效 lease
 及 journal deliveries 均為零；原 attempts、兩 repair／ACK、cache／observation checksum 保留。
@@ -534,13 +535,13 @@ findb-fetch-runtime --provider shioaji --execution-profile pilot \
 先部署 Backend migration `3a80c2e1d5f4`／API，再更新 Fetcher 工具；不得用未部署版本的
 預覽宣稱線上已可套用。離線匯出預覽可用同一 evaluator 檢查 staging 快照，但須明列 schema
 部署前置條件；部署後仍須重新取得正式預覽。只要存在 closure evidence，migration downgrade
-即拒絕，以免舊版遺失結清語意。本次實作不部署、不套用，也不啟動 Pilot／Full。
+即拒絕，以免舊版遺失結清語意。部署與預覽不啟動 Pilot／Full；實際結清仍須 Owner 明確核准。
 
 Staging mutable-data reset 的 dry-run 可列出 closure 數量；只要已有 closure evidence，
 reset apply 一律拒絕，保留其原 work／plan／attempts／修復 graph。空 closure table 才可隨
 原本明確核准的 staging reset 一併清空；本次部署與預覽不執行任何 reset。
 
-#### 2026-10-30 staging 結清流程實作與預覽
+#### 2026-10-30 staging 結清流程部署、正式預覽與套用
 
 實作分支 `fix/shioaji-calendar-work-closure`。Developer 驗證：362 項相關 Backend／Source→
 canonical→Serve 測試、29 項結清／migration／schema drift 測試、完整 Fetcher suite 1,876 項
@@ -549,28 +550,88 @@ canonical→Serve 測試、29 項結清／migration／schema drift 測試、完�
 獨立 reviewer 沿用 Developer 模型／reasoning，implementation verdict=CLEAR，無實質 findings
 或待修復項目；另跑兩端 mypy、113 項 Backend 及 8 項 CLI 測試均通過。Reviewer 未重跑完整
 suite／migration，沿用前述 Developer 證據；本次沒有 production 驗收。
+CI 初次發現 reset inventory 與 Source 路由清單遺漏，補齊後完整 Backend 非 migration suite
+2,297 passed／3 skipped、34 項相關測試與 `pnpm check` 通過。獨立聚焦 re-review=CLEAR，
+另驗證 12 項 reset／Source 測試、ruff、mypy 及 diff check；無待處理 findings。
 
-以同一 evaluator 及正式 CLI 的 `checkpoint_facts()` 對新 staging 快照產生兩筆完整
-request／expected SHA，預覽檔為 `/private/tmp/findb-378-staging-20261030/calendar-closure-v1-preview.md`。
-Equity work `01a16834-7992-75a7-b7b4-6615742cd5a5` 摘要
-`72aa7a52f2f7143967448d09c869121a5fd06afce3fb8ae01b5716c80b83d2bf`；
-ETF work `01a16834-79c1-7802-9076-163f774a9e9e` 摘要
-`87ad2a85e363f4e4fe2020eae318774e2d26f8a5930c36adcf196f544d35f08c`。
-兩筆目前線上 `apply_ready=false`，唯一 evaluator blocker 是
-`backend_schema_deployment_required`；目前新增 API 也未部署。
-只在「schema／API 已部署」的條件式評估中，兩筆均沒有資料或本機證據 blocker。
-不能以此宣稱線上已可 apply；部署後仍須重取正式預覽與明確套用授權，十五分鐘證明不延長。
+[PR #385](https://github.com/FPI-TW/findb/pull/385) 必要 CI 全通過後合併，staging release 為
+`0a7bb35c7a808c61f5b497ccade83007dc7e2b97`。
+[FinDB CD 41066064486](https://github.com/FPI-TW/findb/actions/runs/41066064486) 先成功，
+再由 [Fetcher CD 41066064471](https://github.com/FPI-TW/findb/actions/runs/41066064471) 完成同 SHA
+部署。兩台主機 current manifest／containers 已核對；Backend migration=`3a80c2e1d5f4`，
+Backend digest=`sha256:8f2e3fce76ad61af3b27b4c7f59563b1d9ce16f9fc2e58d9de3badba561bcfbd`，
+Shioaji digest=`sha256:d8390d8439367886a72c8f0946f2978d8feb25a27a4c50cb57dda1f94cb77152`。
+只部署 staging，未操作 production。
 
-只讀 Backend／Fetcher 匯出 SSM 分別為 `037101c4-6831-4b27-97be-610264137529`、
-`5b740e2c-c5c4-401d-92bb-2dca96635362`；獨立 review 後核對
-`3b257000-2ddd-4f5b-bb44-bcf37bde66ab`，均 Success／ResponseCode=0。
-完整 inventory 與原預覽相同，Pilot revision=41／Full revision=9 仍 desired／observed stopped，
-owner generation=131、attempt=NULL；Backend／checkpoint 及 native 帳務沒有套用變更。
-原驗收封包及前次預覽另存保留，本次證據仍僅保留本地與 SSM。
+首次 14:06 UTC 正式預覽透過新 Fetcher 的 Source-authenticated GET 取得 inventory，使用已部署 CLI 的
+`checkpoint_facts()`，持續鎖住原 inode `staging:66305:512068` 至 Backend Owner preview API
+回應並確認後才釋放。Owner key 僅在 Backend 容器記憶體使用，未傳到 Fetcher。兩筆均為
+實際 HTTP typed response，`schema_ready=true`、`apply_ready=true`、`blockers=[]`，
+proposed state=`calendar_closed`；該次預覽未套用，後續依 Owner 新授權刷新後套用如下。
+
+| Dataset | Work | 正式預覽 SHA-256 | 證明效期（UTC） |
+| --- | --- | --- | --- |
+| tw_equity_minute | 01a16834-7992-75a7-b7b4-6615742cd5a5 | 11bfc2398068b500b10d4e9edcd39762e2f5309469bf8956bfb365293a0529fb | 2026-10-30 14:06:12.855199–14:21:12.855199 |
+| tw_etf_minute | 01a16834-79c1-7802-9076-163f774a9e9e | fd8c1b3b1a314a601ce48a0436b6c0ff6f6397ecbaab544a48e370e0a6d9a744 | 2026-10-30 14:06:13.432316–14:21:13.432316 |
+
+完整 request／inventory 與摘要位於
+`/private/tmp/findb-378-staging-20261030/formal-calendar-closure-preview.md` 及同目錄的
+`<work-id>.calendar-closure.formal-preview.json`；過期或任一 fingerprint 改變後須重取預覽，
+不能沿用先前離線預覽。部署前封包與離線證據均另存保留。
+
+部署後 Backend／Fetcher 核對 SSM 為 `db124271-5f31-4b98-a07b-2760db92d910`、
+`1f30761e-9905-41b5-8e4d-238901143d13`；正式 Owner 預覽為
+`fb8bb5c2-22f1-4dcb-86e2-592adb41c92d`；預覽後 Backend／native 帳務確認為
+`cdad8749-fe91-48cf-87be-7b180bae5a8a`、`12b3d337-e327-44fd-9284-62a7a531949a`，
+均 Success／ResponseCode=0。完整 Backend snapshot 各欄與本機 facts 均與部署前相同；
+當時兩 work 仍 queued、Backend attempts 35／34 列，原本機 attempts=8、manifest／cache bytes／checksum、
+兩修復授權及兩 ACK、quota／cooldown 均保留。總計仍 expected=4、data=0、no_data=0、missing=0、blocked=4。
+原 native accounting fingerprint
+`9e87c508dca36c6eff6ff0c6b881c26ced1247d3df588322df37d49a7442881c` 未變，usage 仍 109 筆，
+未新增 SDK login／Kbars dispatch、未退款或再發 grant。
+
+該次預覽後 Pilot revision=41／Full revision=9 均 desired／observed stopped，owner generation=131、
+attempt=NULL，closure table=0。首次預覽及所有部署前證據另存保留，不覆寫。
+
+Owner 後續明確核准套用 staging 10/23 兩筆 work。14:17 UTC 重新產生正式預覽，核對 inventory
+及本機 facts 與前次完全相同，兩筆均 apply_ready=true／blockers=[]；整段操作持續持有原
+`staging:66305:512068` host lock，套用前再經 Source GET 重查 fingerprints 未變。
+僅以 Backend 既有 Owner key 呼叫 typed apply API，沒有直接寫 DB／checkpoint，也未啟動 controls。
+
+| Dataset | 套用預覽 SHA-256 | Closure ID | 結清時間（UTC） |
+| --- | --- | --- | --- |
+| tw_equity_minute | dd0cf73f17958c4e77c42cdfb67b867d81346a059fabde9a1c8b0db24e3e7e66 | 01a18d2c-e1cf-7f8a-a9bb-4ffa45764274 | 2026-10-30 14:18:11.279584 |
+| tw_etf_minute | 9cceec3d46eb77c8e6c9b8b325ecd65ab7c0e8920e67c42b83fde1f13f2bbd1e | 01a18d2c-e225-77f6-80d9-f388a79dbb7e | 2026-10-30 14:18:11.365813 |
+
+兩筆 work 均已 `calendar_closed`，同一 request bytes／expected SHA 重播回傳同一 closure ID／
+closed_at 且 replayed=true；closure table 恰為 2 列。Source 套用後讀取與本機檢查亦在同把
+host lock 下完成，證明每筆只改 work.state／completed_at 並附加 closure；新稽核中的原 inventory
+與套用前全文相同。原 plan／parts／members／summary、所有 attempts、修復授權／ACK、
+prepared／receipts／runs、日曆／決策／audit／alerts、checkpoint／cache bytes／checksum／
+grant／probe／budget、native quota／usage／cooldown 均未變。兩 plan 合計仍
+`expected=4 = data 0 + no_data 0 + missing 0 + blocked 4`，工作結清保留這份原統計。
+正式 Shioaji 診斷的整體 SHA 因 Backend work.state 改變而更新，原成員 attempts／status 與
+cache checksum 不變；不能將此報告摘要誤認為原快取 checksum。
+
+重新預覽 SSM=`7a99de37-cf52-4a1d-8dcb-2a3a51173ce4`；apply／相同 bytes 重播
+SSM=`0f4a2a19-904c-4828-ad03-c3a2371e6c7b`；最終 Backend／Fetcher／native 帳務核對
+SSM 分別為 `fa890d1d-1442-48a8-a907-1b3cf02384d0`、`ff06d775-9944-4731-90b2-e10982ca8c26`、
+`dae6dad9-2ead-47d0-bffa-f767abedf01d`，均 Success／ResponseCode=0。
+首次 SendCommand 的註解過長，於派送前被拒絕；縮短註解後送出同一批 request／摘要，
+沒有未知派送或另發授權。完整刷新預覽、請求、typed 收據、Source 套用後 inventory、
+保留性比對與摘要位於 `/private/tmp/findb-378-staging-20261030/calendar-closure-applied.md`
+及同目錄的 `closure-approved-*` 檔案；本次證據僅保留本地與 SSM。
+
+最終 Pilot revision=41／Full revision=9 均 desired／observed stopped，owner generation=131、
+attempt=NULL，原 native accounting fingerprint 與 109 筆 usage 完全相同；沒有新增 SDK login／
+Kbars dispatch、退款或重發 grant。歷史空回應 cause=unknown 保持原值。這兩筆已結清，
+不因預覽過期再建立新申請；ACK-loss 只重播原核准 bytes。未操作 production，其餘日期根因、
+mapping 恢復及 production native／負向恢復仍待驗收。
 
 ### 凍結計畫的人工休市更正
 
-現有版本沒有獨立的休市處置或告警 acknowledgement API。只將 `missing_delivery_alert`
+現有版本沒有首次更正凍結決策的專用休市處置或告警 acknowledgement API；上述工作結清 API
+只接受已存在且可驗證的決策更正 audit。只將 `missing_delivery_alert`
 設為 resolved，monitor 仍會依既有 planned 決策重開。永久結清需要更正每日決策，屬於
 凍結規則的人工例外，必須先取得對「修改原決策、原值完整另存稽核」的明確授權，不能因
 日曆／政策更新便自動套用，也不能以偽造 no_data 或將 blocked 改成成功替代。

@@ -216,6 +216,11 @@ prepared replay 與重試額度的回歸測試。未實作項目見 [待辦](../
 
 ## Shioaji 工作佇列調查（2026-10-30）
 
+以下為當時的 production 唯讀快照；本次 staging 結清及文件提交未重新查核或操作 production。
+修復程式已合併 #383／#385，staging 部署及 10/23 兩筆休市結清已完成，收據與資料保留核對見
+[Full market runbook](full_market.md)。#378 保持 open，production 待驗收範圍見
+[驗收矩陣](../dev/production-foundation-cutover-plan.md#issue-378-production-驗收範圍)。
+
 台北時間約 09:10～09:18，production 有五筆 Shioaji Full market daily 工作未結案。
 全部為 queued，等待原因為 `acquisition_window_closed`；目前抓取窗口為台北 18:00～隔日
 06:00，下次開放為 10/30 18:00。Full control desired／observed 均為 running、revision 12，
@@ -263,12 +268,12 @@ completed。因此這些本地標籤不能當成 Backend normalization 仍在排
 歸因於 HTTP 521 或退役 CLI 復活。前節授權前增加 attempts 的風險仍需修正，但單獨
 修復 Source 重連／純等待額度，不會解決相同空快取反覆轉換失敗。
 
-需要另補 Shioaji 空回應分類與可恢復的 response 驗證／更新機制，以及安全的 frozen
-mapping 修復流程。空資料不能直接改報 no_data：目前仍缺少可支持 calendar／no-trade
+Shioaji 空回應分類、可恢復的 response 驗證／更新及 frozen mapping 修復流程已實作並完成
+staging 部署；production 部署與原生恢復尚待另行核准及驗收。空資料不能直接改報 no_data：當時仍缺少可支持 calendar／no-trade
 的 durable evidence，也未確認 SDK 為何對這些商品日期回傳空值。保留既有快取作為
 證據，任何受控重新抓取須沿用 owner fencing、原 quota／cooldown、prepared 與 receipts，
 避免盲目刪 cache 或重設預算。此次沒有發出 native provider 請求、修改線上狀態或清空佇列。
-未實作項目見 [待辦](../dev/production-foundation-cutover-plan.md)。
+剩餘 production 驗收項目見 [待辦](../dev/production-foundation-cutover-plan.md#issue-378-production-驗收範圍)。
 
 ## 五 provider 舊流程退役評估（2026-10-29）
 
