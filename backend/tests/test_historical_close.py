@@ -3,9 +3,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from app.config import get_settings
 from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.services import historical_backfill as history
+from app.services.effective_calendar import PROVIDER_CALENDAR_SWITCHES
 from app.utils import uuid7
 from tests.owned_history import claim_next_item
 
@@ -34,6 +36,7 @@ async def test_historical_acquisition_uses_frozen_close(
     calendar_kind,
 ):
     monkeypatch.setenv("APP_ENVIRONMENT", environment)
+    monkeypatch.setattr(get_settings(), PROVIDER_CALENDAR_SWITCHES[provider], False)
     day = date(2026, 9, 5) if calendar_kind == "weekend" else date(2026, 9, 1)
     close = time(11) if calendar_kind == "early_close" else normal_close
     closed_at = datetime.combine(day, close, ZoneInfo(zone)).astimezone(timezone.utc)

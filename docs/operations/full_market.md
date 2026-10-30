@@ -171,9 +171,9 @@ normalization、canonical 與稽核可繼續；不重抓已 prepared 資料。�
 Backend 是政策權威。`runtime/configuration` 使用五個獨立開關：
 `TWELVE_DATA_SKIP_NON_TRADING_DAYS`、`FINLAB_SKIP_NON_TRADING_DAYS`、
 `SHIOAJI_SKIP_NON_TRADING_DAYS`、`TAIFEX_SKIP_NON_TRADING_DAYS`、`FACTSET_SKIP_NON_TRADING_DAYS`。
-每個開關皆為 `true`／`false` 字串，FactSet 預設 `true`，其餘預設 `false`，兩環境欄位相同，經部署生效。
-Fetcher 透過 Source 取得政策與每日決策，不保存另一份日曆或政策設定。預設每日執行，包括週末／休市；
-true 才略過非交易日。排程時間、交易所時區、Owner controls、平台配額、429 與既有重試規則仍有效。
+每個開關皆為 `true`／`false` 字串，五個 provider 預設皆為 `true`，兩環境欄位相同，經部署生效。
+Fetcher 透過 Source 取得政策與每日決策，不保存另一份日曆或政策設定。預設略過非交易日；
+明確設為 false 才在週末／休市照常執行。排程時間、交易所時區、Owner controls、平台配額、429 與既有重試規則仍有效。
 不設連續十筆失敗中斷規則。
 
 有效日曆逐日優先讀 published revision；缺年份或日期時依市場`weekend_days`補足，尚未建立market row的

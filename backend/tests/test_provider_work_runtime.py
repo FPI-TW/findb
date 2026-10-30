@@ -78,6 +78,7 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
     from findb_fetcher.raw_storage import RawObject
 
     monkeypatch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
+    monkeypatch.setattr(get_settings(), "FINLAB_SKIP_NON_TRADING_DAYS", False)
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
     monkeypatch.setenv("APP_ENVIRONMENT", "local")
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(tmp_path / "account/governor.sqlite3"))

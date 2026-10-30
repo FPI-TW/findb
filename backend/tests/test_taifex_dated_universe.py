@@ -72,9 +72,10 @@ async def test_existing_taifex_plan_remains_readable_with_legacy_older_release(
     assert await create_plan(test_session, body, allowed_datasets=[dataset.dataset_key]) == frozen
 
 
-async def test_source_exposes_only_static_dated_error_code(client, test_session):
+async def test_source_exposes_only_static_dated_error_code(client, test_session, monkeypatch):
     from tests.test_full_market import _activated_plan, _source_headers
 
+    monkeypatch.setattr(get_settings(), "TAIFEX_SKIP_NON_TRADING_DAYS", False)
     _, _, first = await _activated_plan(test_session)
     headers = await _source_headers(test_session)
     body = {
