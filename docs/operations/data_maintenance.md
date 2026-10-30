@@ -118,7 +118,8 @@ open-day work items；Twelve Data逐symbol、FinLab逐trade date保存lease/chec
 immutable idempotency與Source terminal驗證。Twelve Data historical與daily同樣以`adjust=none`抓取
 實際成交價；回補可依較新的`fetched_at`覆寫同來源舊列，但不會把拆股調整價寫入canonical。
 本變更前以`adjust=splits`完成的回補列，若之後已有拆股，可能與實際成交價不同，須依原raw
-與拆股日期個別核對後重跑，不得整批覆寫。Shioaji 支援 `tw_equity_minute` 與 `tw_etf_minute`，
+與拆股日期個別核對後重跑，不得整批覆寫。切換前已保存回應或prepared body但尚未完成的
+historical work會被阻擋，處理方式見[價格基準切換與舊回應快取](full_market.md#價格基準切換與舊回應快取)。Shioaji 支援 `tw_equity_minute` 與 `tw_etf_minute`，
 依已驗證 production v2 manifest 分別回補完整 50 檔股票與 3 檔 ETF；不接受 staging／舊 pilot manifest。
 建立正式
 request前先使用`findb-fetch-backfill-plan --provider ... --dataset-key ... --start-date ...

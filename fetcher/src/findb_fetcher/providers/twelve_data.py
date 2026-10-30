@@ -30,6 +30,10 @@ _DEFAULT_ALLOWED_TYPES = frozenset({"Common Stock"})
 _MAX_RESPONSE_BYTES_HARD = 16 * 1024 * 1024
 # Canonical EOD rows are as-traded prices; corporate actions are separate facts.
 TWELVE_DATA_PRICE_ADJUSTMENT = "none"
+# Durable response identity for the price basis; pre-basis bytes were split-adjusted.
+TWELVE_DATA_RESPONSE_BASIS = "adjust-" + TWELVE_DATA_PRICE_ADJUSTMENT + "-v1"
+TWELVE_DATA_DAILY_RESPONSE = "twelve_daily"
+_DAILY_RESPONSE_FIELDS = ("symbol", "start_date", "end_date", "outputsize", "exchange")
 # Bounded diagnostic vocabulary. Provider messages never enter durable state.
 TWELVE_DATA_ERROR_CATEGORIES = frozenset(
     {
@@ -189,6 +193,26 @@ def _target_rows_present(value: Any, arguments: dict[str, Any]) -> bool:
         return False
 
 
+def require_daily_response_basis(
+    symbol: str,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    outputsize: int | None = None,
+    exchange: str | None = None,
+) -> None:
+    """Refuse a prepared body whose durable source response predates the price basis."""
+    from findb_fetcher.provider_work import require_current_basis
+
+    values = (symbol, start_date, end_date, outputsize, exchange)
+    require_current_basis(
+        TWELVE_DATA_DAILY_RESPONSE,
+        dict(zip(_DAILY_RESPONSE_FIELDS, values, strict=True)),
+        validated=True,
+        basis=TWELVE_DATA_RESPONSE_BASIS,
+    )
+
+
 class TwelveDataClient:
     """Small synchronous client for the provider's daily time-series endpoint."""
 
@@ -203,9 +227,10 @@ class TwelveDataClient:
         self._owns_client = client is None
 
     @durable_response(
-        "twelve_daily",
-        ("symbol", "start_date", "end_date", "outputsize", "exchange"),
+        TWELVE_DATA_DAILY_RESPONSE,
+        _DAILY_RESPONSE_FIELDS,
         target_valid=_target_rows_present,
+        basis=TWELVE_DATA_RESPONSE_BASIS,
     )
     def fetch_daily(
         self,

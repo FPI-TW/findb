@@ -27,6 +27,7 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataPayloadError,
     TwelveDataResponseError,
     build_market_eod_request,
+    require_daily_response_basis,
 )
 from findb_fetcher.raw_storage import (
     RawPayloadStore,
@@ -158,6 +159,14 @@ class TwelveDataScheduledExecutor:
                     delivery=_delivery_metadata(self._schedule, job),
                 )
                 attach_raw_object(request, raw_object)
+            else:
+                # A body mapped from split-adjusted bytes must not reach canonical.
+                require_daily_response_basis(
+                    job.symbol,
+                    start_date=job.target_data_date,
+                    end_date=job.target_data_date,
+                    exchange=job.exchange,
+                )
             try:
                 require_raw_provenance(request)
             except RawStorageUploadError:

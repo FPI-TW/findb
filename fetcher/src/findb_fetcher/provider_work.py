@@ -55,6 +55,10 @@ class ProviderWorkSourceUnavailableError(ProviderWorkRecoveryBlockedError):
     """A Source acquisition check failed; ownership still requires recovery."""
 
 
+class ProviderWorkBasisMismatchError(ProviderWorkRecoveryBlockedError):
+    """A durable response predates the current request basis; neither replay nor refetch."""
+
+
 def enabled() -> bool:
     """Compatibility assertion for callers; there is no legacy execution mode."""
     from findb_fetcher.config import require_provider_work_protocol
@@ -336,6 +340,27 @@ class WorkJournal:
                 return raw
         return None
 
+    def pre_basis_responses(self, name: str, basis: str) -> list[tuple[str, bytes]]:
+        """Responses saved before ``basis`` existed and never re-acquired under it."""
+        with self.connection() as db:
+            keys = {
+                row[0]: bytes(row[1])
+                for row in db.execute(
+                    "SELECT response_key,body FROM work_response WHERE work_key=? "
+                    "AND substr(response_key,1,?)=?",
+                    (self.key, len(name) + 1, name + ":"),
+                )
+            }
+        previous = []
+        for key, body in sorted(keys.items()):
+            base, _, suffix = key[len(name) + 1 :].partition(":")
+            if suffix not in ("", "validated-target-v1"):
+                continue
+            current = f"{name}:{base}:{basis}"
+            if current not in keys and current + ":validated-target-v1" not in keys:
+                previous.append((key, body))
+        return previous
+
     def observe_response(self, key: str, body: bytes, *, origin: str) -> None:
         """Keep rejected target observations without making them replay authority."""
         with self.connection() as db:
@@ -344,14 +369,18 @@ class WorkJournal:
                 (self.key, key, time.time(), origin, body, hashlib.sha256(body).hexdigest()),
             )
 
-    def has_response_observation(self, key: str, *, prefix: bool = False) -> bool:
+    def has_response_observation(
+        self, key: str, *, prefix: bool = False, origin: str | None = None
+    ) -> bool:
         with self.connection() as db:
             row = db.execute(
                 "SELECT 1 FROM work_response_observation "
                 "WHERE work_key=? AND "
                 + ("substr(response_key,1,?)=?" if prefix else "response_key=?")
+                + (" AND origin=?" if origin is not None else "")
                 + " LIMIT 1",
-                (self.key, len(key), key) if prefix else (self.key, key),
+                ((self.key, len(key), key) if prefix else (self.key, key))
+                + ((origin,) if origin is not None else ()),
             ).fetchone()
         return row is not None
 
@@ -393,14 +422,67 @@ class WorkJournal:
             )
 
 
+def _response_keys(
+    name: str, identity: dict[str, Any], *, validated: bool, basis: str | None
+) -> tuple[str, str, tuple[str, ...]]:
+    """Return current, unvalidated and pre-basis journal keys for one request identity."""
+    encoded = json.dumps(identity, sort_keys=True, default=str, separators=(",", ":"))
+    base = name + ":" + hashlib.sha256(encoded.encode()).hexdigest()
+    pre_basis = (base + ":validated-target-v1", base) if validated else (base,)
+    legacy_key = base if basis is None else base + ":" + basis
+    key = legacy_key + ":validated-target-v1" if validated else legacy_key
+    return key, legacy_key, pre_basis if basis is not None else ()
+
+
+def _block_pre_basis(journal: "WorkJournal", name: str, basis: str, key: str, body: bytes) -> None:
+    origin = "incompatible_basis:" + basis
+    if not journal.has_response_observation(key, origin=origin):
+        journal.observe_response(key, body, origin=origin)
+    raise ProviderWorkBasisMismatchError(
+        f"durable {name} response predates request basis {basis}; recover explicitly"
+    )
+
+
+def require_work_basis(journal: "WorkJournal", name: str, basis: str) -> None:
+    """Block prepared replay for a work whose journal holds pre-basis responses."""
+    for key, body in journal.pre_basis_responses(name, basis):
+        _block_pre_basis(journal, name, basis, key, body)
+
+
+def require_current_basis(
+    name: str, identity: dict[str, Any], *, validated: bool, basis: str
+) -> None:
+    """Block replay of bytes or derived bodies acquired under an older request basis.
+
+    Pre-basis bytes stay in the journal as immutable evidence and are copied to an
+    ``incompatible_basis`` observation once. Recovery is an explicit operator action
+    (cancel/settle the work and create a new request); it never refetches silently.
+    """
+    owner = active()
+    if owner is None:
+        return
+    key, legacy_key, pre_basis = _response_keys(name, identity, validated=validated, basis=basis)
+    if owner.journal.response(key) is not None or owner.journal.response(legacy_key) is not None:
+        return
+    for previous in pre_basis:
+        saved = owner.journal.response(previous)
+        if saved is not None:
+            _block_pre_basis(owner.journal, name, basis, previous, saved)
+
+
 def durable_response(
     name: str,
     fields: tuple[str, ...],
     *,
     target_valid: Callable[[Any, dict[str, Any]], bool] | None = None,
     native_guard: Callable[..., Any] | None = None,
+    basis: str | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """Only target-valid native snapshots authorize replay; validation performs no I/O."""
+    """Only target-valid native snapshots authorize replay; validation performs no I/O.
+
+    ``basis`` names request semantics that change response bytes without changing
+    call arguments (for example a provider price adjustment mode).
+    """
 
     def decorate(method: Callable[P, T]) -> Callable[P, T]:
         signature = inspect.signature(method)
@@ -488,14 +570,14 @@ def durable_response(
                 return method(*args, **kwargs)
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
-            identity = json.dumps(
-                {key: bound.arguments[key] for key in fields},
-                sort_keys=True,
-                default=str,
-                separators=(",", ":"),
+            identity = {key: bound.arguments[key] for key in fields}
+            if basis is not None:
+                require_current_basis(
+                    name, identity, validated=target_valid is not None, basis=basis
+                )
+            key, legacy_key, _ = _response_keys(
+                name, identity, validated=target_valid is not None, basis=basis
             )
-            legacy_key = name + ":" + hashlib.sha256(identity.encode()).hexdigest()
-            key = legacy_key + ":validated-target-v1" if target_valid else legacy_key
             saved = owner.journal.response(key)
             if saved is None and target_valid:
                 # Pre-upgrade valid cache remains byte-for-byte authoritative.
@@ -695,6 +777,14 @@ class ProviderWorkSession:
         from findb_fetcher.client import PreparedDelivery, SourceAPIClient
         from findb_fetcher.contracts import ContractRegistry
 
+        if self.provider == "twelve_data":
+            from findb_fetcher.providers.twelve_data import (
+                TWELVE_DATA_DAILY_RESPONSE,
+                TWELVE_DATA_RESPONSE_BASIS,
+            )
+
+            # Original bytes mapped from split-adjusted responses stay retained, not replayed.
+            require_work_basis(self.journal, TWELVE_DATA_DAILY_RESPONSE, TWELVE_DATA_RESPONSE_BASIS)
         receipts = []
         with SourceAPIClient(
             self.source.config,

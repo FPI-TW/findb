@@ -61,7 +61,11 @@ from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
     ProviderPublicationPendingError,
 )
-from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped, durable_response
+from findb_fetcher.provider_work import (
+    ProviderWorkAcquisitionStopped,
+    durable_response,
+    require_work_basis,
+)
 from findb_fetcher.providers.factset import (
     FactSetConfig,
     FactSetGateway,
@@ -100,6 +104,8 @@ from findb_fetcher.providers.taifex import (
     report_members,
 )
 from findb_fetcher.providers.twelve_data import (
+    TWELVE_DATA_DAILY_RESPONSE,
+    TWELVE_DATA_RESPONSE_BASIS,
     TwelveDataClient,
     TwelveDataConfig,
     TwelveDataResponseError,
@@ -1961,6 +1967,11 @@ class FullMarketRuntime:
                         owner.reserve(request)
                     prepared = canonical_bytes(requests)
                     self.state.prepare(key, prepared)
+                elif self.provider == "twelve_data" and getattr(owner, "journal", None) is not None:
+                    # Bodies mapped from split-adjusted responses are retained, never replayed.
+                    require_work_basis(
+                        owner.journal, TWELVE_DATA_DAILY_RESPONSE, TWELVE_DATA_RESPONSE_BASIS
+                    )
                 normalizing = False
                 prepared_requests = json.loads(prepared)
                 for request in prepared_requests:

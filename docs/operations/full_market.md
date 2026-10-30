@@ -448,6 +448,28 @@ Twelve Data 對查無資料、代號錯誤等情況回傳 HTTP 200 加 payload `
 | `invalid_symbol`／`not_found`／`bad_request` | 其他 400、404 | 回報 `source_error`；需核對 mapping |
 | `response_too_large`／`malformed_response` | 超出回應上限、非 JSON、非 `ok` | 回報 `source_error` |
 
+#### 價格基準切換與舊回應快取
+
+Provider-work journal 的 Twelve Data 日資料快取（`work_response` 的 `twelve_daily:*`）以價格基準
+`adjust-none-v1` 作為識別的一部分。切換前保存的回應沒有此基準，可能是拆股調整價，因此：
+
+- 同一 request identity 只有舊回應時，不重播也不重新抓取；Fetcher 以
+  `ProviderWorkBasisMismatchError`（recovery blocked）停止該 work，保留 DB owner。
+- 該 work 若已有由舊回應產生的 prepared body（historical `work_job`、Full／Pilot checkpoint
+  或 Source 保留的 prepared ledger），同樣拒絕重播或排空。
+- 原 `work_response` bytes、prepared bytes、receipts 與 R2 raw 全部保留；第一次偵測時於
+  `work_response_observation` 複製一列 `origin=incompatible_basis:adjust-none-v1` 作為證據。
+- 遷移須由 Owner 明確處理：historical 以 `POST /api/v1/admin/historical-backfills/{id}/cancel`
+  取消原 request，再為相同日期建立新 request（新 work／journal 以 `adjust=none` 抓取）；
+  daily 以既有 recovery／settle 程序將原 work 結算 failed 並記錄 audit，再以 historical request
+  回補該日期。不得刪除 journal 列、清除 prepared 或重設預算來繞過阻擋。
+
+2026-10-30 唯讀核對：production journal 沒有 `twelve_daily` 快取，13 筆 queued US daily
+尚未開始；staging 有 6 筆含舊快取的 Pilot daily 均為 completed 且 receipts 齊全，不會再被
+claim。切換當下兩環境均無受影響工作。SSM：production `312dd583-1106-43a6-a026-95efdfbf3e60`／
+`b76aca73-1d06-476d-bdeb-4b9c9ac341b3`，staging `ae01c182-e7ce-4157-9b95-9edcc361762b`／
+`17c9ba56-09c5-42c5-954f-c3d4e904a37b`。
+
 所有 provider 的成員失敗都附加一列到 Fetcher SQLite `full_work_diagnostic`（work key、分類、
 HTTP status、provider code、是否已派送、時間）；非 Twelve Data 例外記為 `exception:<類別名稱>`。
 `--health` 輸出的 `source_error_diagnostics` 為未完成成員最新分類的計數。歷史紀錄只會新增，
