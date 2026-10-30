@@ -93,7 +93,7 @@ SSM：持鎖 `f1b8c5d9-ff4f-4548-a9bd-4aed7d7f2287`、鎖驗證
 也不能保證供應商、網路或 mapping 錯誤不再發生；已封住的是退役的雙執行路徑與無 owner
 的抓取／接受入口。Mapping gaps 保留人工處理，不因清理改為成功。
 
-## 供應商工作佇列讀取逾時（2026-10-30，修正待部署）
+## 供應商工作佇列讀取逾時與發布驗收（2026-10-30）
 
 台北時間 2026-10-30 00:32 起的唯讀調查，已重現 Dashboard 的
 `供應商佇列更新失敗：FinDB API request timed out`。直接以合法 Admin credential 呼叫
@@ -117,7 +117,7 @@ work／attempt metadata 的初始查詢為 0.006 秒。這些是初始查詢對�
 
 Backend／Dashboard／nginx 均 healthy、零重啟、無 OOM；DB 基本彙總查詢為 2～7 ms，
 Shioaji owner heartbeat 正常。前次結案的 22 筆 FinLab、12 筆 TD HK 仍為 failed，
-其餘佇列／prepared／receipts 持續保留；本次未清理資料、停止 runtime、調整 timeout 或部署。
+其餘佇列／prepared／receipts 持續保留；診斷階段未清理資料、停止 runtime、調整 timeout 或部署。
 修正方向為 SQL 先篩掉 settled、監控只讀摘要／必要欄位，並批次讀取 receipts 與最近 attempt；
 驗證需包含大量歷史 rounds、minute prepared bytes 與十秒以內的完整 Dashboard 讀取。
 不得以刪除歷史 attempts／prepared 或單純提高 timeout 取代查詢修正。
@@ -133,7 +133,32 @@ Repository 已將 projection 改為在 SQL 排除 settled，僅選取必要 meta
 peak RSS 81,504 KiB、回應約 19.3 KB。當時原服務仍使用舊版，這不是已部署 endpoint 的驗收。
 本機六筆 minute fixture 保存 42,062,340 bytes prepared 與各 28 輪歷史，projection 為三次 SELECT、
 0.028 秒；測試以禁止選取完整 body／manifest／proof／token 與固定 SQL 次數防回歸，
-不以依賴機器負載的毫秒門檻判定正確性。合併後仍須按部署流程驗證正式 Dashboard 十秒內讀取。
+不以依賴機器負載的毫秒門檻判定正確性；正式部署與 Dashboard 驗收見下方紀錄。
+
+PR #376 已合併至 `c1c4282795c9ee16ea0e36f418baec898760ec74`，
+[staging CD](https://github.com/FPI-TW/findb/actions/runs/40918842768) 的 immutable acceptance
+與 activation 均通過。已核對主機 manifest、Backend／Dashboard 映像與合併版本一致，
+健康檢查、未授權請求拒絕、連續三次佇列 API 讀取及前端 schema 驗證均通過。
+登入後的 Dashboard「供應商工作佇列」正常顯示最後成功時間與五個 provider 分頁。
+當時 staging 沒有未結案工作；大量 retained rounds 的讀取已驗證，含實際待處理工作的
+面板則由下方 production 發布後驗收補足。
+
+同日 [production promotion](https://github.com/FPI-TW/findb/actions/runs/40922214003)
+已成功啟用 `findb-v0.1.13`，指向相同合併 commit。Release binding、完整 CI、主機 preflight、
+candidate acceptance、immutable acceptance 保存與 activation 均通過；已核對 production
+manifest 與 staging accepted record 的 Backend／Dashboard digests 完全一致。
+
+Production 健康檢查、連續三次完整佇列 API 讀取、前端 schema 與未授權拒絕驗證均通過。
+實際待處理工作可於既有十秒上限內完整回傳；登入後的 Dashboard 五個 provider 分頁均可讀取，
+顯示新的成功時間，未出現原佇列逾時訊息。主機獨立唯讀檢查確認正式函式為三次 SELECT，
+Backend／Dashboard 與基礎服務健康，無 OOM 或新重啟。
+
+本次只發布 Backend／Dashboard；原 Fetcher 容器 ID、映像、provider-work protocol 與持久化
+mount 身分保留，scheduler desired states 與 revisions 未變更，未重設 checkpoint、預算或
+cooldown。所有既有 work rows 與 failed 證據仍保留；既有排程持續運行期間，部分 Shioaji
+prepared 增加，receipts 與 attempts 亦增加，不能宣稱整個活動資料庫指紋完全不變。
+Backend 停機窗口內觀察到原 Fetcher consumers 自動重啟；發布後全部恢復 running，
+兩次 inventory 比對的重啟計數已穩定。這次沒有發布 Fetcher，也未調整其連線失敗處理。
 
 另曾觀察公網 `/health` 單次 Cloudflare 525、耗時 43.787 秒。Origin certificate 有效至
 2041-09-13，當下沒有足夠證據定位該次 TLS handshake failure；不能將它與已獨立重現的
@@ -142,6 +167,108 @@ peak RSS 81,504 KiB、回應約 19.3 KB。當時原服務仍使用舊版，這�
 SSM：健康與規模 `7fc31a56-dea4-4283-b622-d2d78ec663f1`、實際 profiler 與對照
 `88bf68d2-c39a-4095-b0e4-98d0ef906009`。所有診斷為 read-only，沒有改寫 production 程式或資料。
 候選 projection 唯讀量測：`475de304-2002-4a81-843e-8effec56bb30`。
+
+## Backend 部署期間 Fetcher 重啟調查（2026-10-30）
+
+台北時間 01:40～01:43 的 Backend candidate／activation 窗口，部署器停止公開 nginx 與
+Source，Fetcher 仍以公開 Source URL 輪詢。保留日誌顯示 historical worker 的
+`FullMarketProtocolError: Source governance returned HTTP 521`；同期 Pilot／Full 顯示固定的
+startup／operation blocked 訊息。Docker 保留事件有 Pilot／Full exit 2、historical exit 1，
+原 consumers 的 restart policy 為 `unless-stopped`。保留事件支持暫時 Source 不可用後的
+程序退出；未見部署器替換 Fetcher、OOM 或重新啟用已退役 CLI 的證據。部分日誌已輪替，
+Docker events 只保留局部，不能重建每一次退出的完整堆疊。
+
+`full_market_client.py` 與 `scheduler_control.py` 的 bounded status retry 清單都是
+429／502／503／504，未包含實際遇到的 521；本機 MockTransport 重現 521 只送一次且沒有
+退避，503 則按設定送三次並等待。Pilot／Full 在 initial poll、idle drain／poll 外層缺少
+長期等待處理，例外會到 CLI 最外層並退出；historical `run_worker()` 同樣未處理 claim 的
+暫時 Source 失敗。現有 `SchedulerControlLoop` 的容錯測試不代表這些現行 CLI 使用了該 loop。
+
+必須區分 idle 控制失敗與 active owner 不確定。`ProviderWorkRecoveryBlockedError` 刻意繼承
+`BaseException`，會穿過一般 SDK error sanitizer，保留 DB owner、隔離 host FD，並要求原
+shared inode 與子程序退出證據才能 recovery。修正不可用廣泛 catch／繼續舊 session 的方式
+繞過此安全邊界；heartbeat／generation 不可確認時仍須停止新 provider I/O。
+
+本次保留證據與影響：
+
+- 既有 work rows、failed 證據、prepared、receipts、原容器與持久化 mounts 保留；deployment
+  前後沒有改 desired states 或 control revisions。部署窗口的 receipts 全部完成 normalization，
+  目前 DB 沒有同 work／member 的重複 receipt，沒有卡在 recovery 的 owner。
+- Governor 與 work journal 的唯讀 integrity check 均正常；原歷史 quota／acquisition 證據仍在。
+  部署窗口未找到新的 unknown acquisition，Shioaji SDK 用量樣本持續累加，沒有重設。
+  Source poll／claim 失敗不會直接呼叫 provider acquisition；重新連線的 SDK login 與實際
+  抓取仍依原 governor 記帳。已保存的 response／prepared 可重播，但不能據此承諾中斷的
+  未持久化回應或 SDK 重連完全沒有額外用量；尚未以供應商帳單量化額外費用。
+- 另重現工作重試額度風險：Twelve Data、FinLab、Shioaji、TAIFEX 的 canonical daily 路徑在
+  `FullMarketState.claim()` 先增加 attempts，才呼叫 `owner.authorize()`。Mock Source 521
+  使授權 fail closed、provider 呼叫為零時，attempts 仍保留為 1。這與 provider 帳號 quota
+  是不同帳本；不能因帳號用量未重設而宣稱工作重試額度完全不受影響。多次此類中斷可能
+  侵蝕原 failure budget；本次 production 窗口未觀察到因此新增 terminal failed 工作。
+  Backend `attempt_number` 是排程回合，不是這個本地 failure budget，不能以高回合數推論
+  provider 請求或工作失敗次數。
+
+需要修正：補齊現行 CLI 在尚無 active owner 時的可中止退避／恢復迴圈與安全錯誤分類，
+統一處理暫時 Source status（含實際 521）；active owner 仍遵守停止、reap 與重新取 fence 的
+恢復規則；對可證明未派送的純 Source 等待保留工作 failure budget，已派送／不確定操作的
+quota、unknown debt 與 cooldown 不得退還。另補 startup、idle、active heartbeat／ACK-loss、
+prepared replay 與重試額度的回歸測試。未實作項目見 [待辦](../dev/production-foundation-cutover-plan.md)。
+本次調查只有唯讀 production 查核與本機 mock 重現，未修改線上 runtime、controls 或預算。
+
+## Shioaji 工作佇列調查（2026-10-30）
+
+台北時間約 09:10～09:18，production 有五筆 Shioaji Full market daily 工作未結案。
+全部為 queued，等待原因為 `acquisition_window_closed`；目前抓取窗口為台北 18:00～隔日
+06:00，下次開放為 10/30 18:00。Full control desired／observed 均為 running、revision 12，
+heartbeat 約十秒前更新、last_error 為空；provider owner 無 active attempt、recovery_reason
+或 acquisition cooldown。這個等待狀態符合時段設定，沒有卡住舊 owner 的證據。
+
+以下是同批工作的本地 checkpoint 成員數；pending 包含尚未嘗試與可重試失敗，manual
+包含 mapping gap 與重試耗盡，不能將整筆 queued 工作視為全部成員失敗。
+
+| 日期 | Dataset | complete | prepared | pending | manual |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 10/27 | tw_equity_minute | 1,921 | 0 | 24 | 2 |
+| 10/28 | tw_equity_minute | 0 | 635 | 1,317 | 1 |
+| 10/28 | tw_etf_minute | 355 | 0 | 4 | 5 |
+| 10/29 | tw_equity_minute | 0 | 428 | 1,524 | 1 |
+| 10/29 | tw_etf_minute | 355 | 0 | 5 | 4 |
+
+Backend 唯讀 SQL 確認這五筆工作的已接收 receipts 全部為 completed，沒有未接收的
+prepared member；其中本地仍標示 `prepared/normalizing` 的 1,063 個成員，其 run 也都已
+completed。因此這些本地標籤不能當成 Backend normalization 仍在排隊的證據；待後續
+合法回合對帳，不需重送新 payload。兩筆 equity 日期各仍有大量未嘗試成員，近期回合
+因 60 秒 batch 上限讓出，亦不能只用整筆工作的高排程回合數判定失敗。
+
+另外確認兩種會阻擋缺漏收斂的問題：
+
+- 五筆工作共有 44 個 `source_error` pending 成員及一個 `retry_exhausted` manual 成員。
+  唯讀檢查全部 45 份對應 work／symbol／date 的 response journal，checksum 均相符，
+  Kbars 七個向量皆為空。依正式 decoder 還原 tuple 後，離線 mapper 全部拋出
+  `ShioajiPayloadError: empty kbars requires calendar evidence`。`fetch_kbars()` 使用的
+  `durable_response` 未設定 target validator，空回應會成為該 work 的持久快取；同一成員
+  重試仍讀取相同 bytes，mapper 再次拒絕，外層統一記為 `source_error`。
+  本機合成資料重現一次 native fixture 呼叫、八次 mapper 失敗，最後 checkpoint 為
+  attempts 8／manual／retry_exhausted。這是實際 provider acquisition 與本地失敗額度
+  不同的情況；不能把八次失敗解讀成八次 SDK Kbars 呼叫，也不能靠重設 attempts 解決。
+- 另有 12 個已標記 manual／mapping_gap 的成員。Backend frozen universe 本身就是
+  `mapping_status=gap`，包括 equity 的 1589／4804，以及 ETF 的 00416A／00838B／009831／
+  009832（依日期不同）；這些成員沒有 Kbars cache。未嘗試的 scope 亦可能還有其他
+  frozen mapping gap，以上數量只包含目前 checkpoint 已遇到的缺口。
+
+與 Backend 部署中斷的關係：00647L（10/28 ETF）首次 `source_error` 已在台北 10/29
+21:26 的排程 proof 記為 local attempts 1，早於 10/30 01:40～01:43 的部署窗口；
+部署後首次增加至 2 是 02:29 的回合，05:56 達到 8。部署前保存的 queue projection
+亦已有相同 equity／ETF 的 source_error、mapping_gap，以及另一日期的 retry_exhausted。
+因此本次可定位的空回應快取與 frozen mapping 缺口是獨立的既有問題，沒有證據將它們
+歸因於 HTTP 521 或退役 CLI 復活。前節授權前增加 attempts 的風險仍需修正，但單獨
+修復 Source 重連／純等待額度，不會解決相同空快取反覆轉換失敗。
+
+需要另補 Shioaji 空回應分類與可恢復的 response 驗證／更新機制，以及安全的 frozen
+mapping 修復流程。空資料不能直接改報 no_data：目前仍缺少可支持 calendar／no-trade
+的 durable evidence，也未確認 SDK 為何對這些商品日期回傳空值。保留既有快取作為
+證據，任何受控重新抓取須沿用 owner fencing、原 quota／cooldown、prepared 與 receipts，
+避免盲目刪 cache 或重設預算。此次沒有發出 native provider 請求、修改線上狀態或清空佇列。
+未實作項目見 [待辦](../dev/production-foundation-cutover-plan.md)。
 
 ## 五 provider 舊流程退役評估（2026-10-29）
 

@@ -8,10 +8,21 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
-- 供應商工作佇列查詢修正的部署驗收：Repository 已在 SQL 排除 settled、改讀 metadata／prepared
-  摘要並批次取得 historical eligibility。2026-10-30 候選函式在 production host 的獨立唯讀程序
-  實測 0.240 秒／三次 SELECT，未替換服務程式；仍須依正式流程部署並驗證 Dashboard 十秒內讀取。
-  原根因、保留證據與量測限制見 [production 維運](../operations/production.md)。
+- Shioaji 空 Kbars 與 frozen mapping 缺口修復（[#378](https://github.com/FPI-TW/findb/issues/378)）：2026-10-30 唯讀確認五筆未結案 daily 工作，
+  45 個失敗成員均保存空 Kbars；response journal 會重播同一份空內容，mapper 拒絕後
+  消耗本地 failure budget，已有一個成員達 retry_exhausted。另有 12 個已遇到的 frozen
+  mapping gap，與部署前的錯誤證據一致。須補空回應分類、保留原證據的受控快取更新、
+  no_data 證據要求、frozen scope 修復及對應回歸測試；不得藉清 cache／reset attempts
+  或退款已派送 quota 解套。Source 中斷修正無法單獨解決此問題；原始 SDK 空回應原因
+  仍待證據。現場數量、時間軸及唯讀限制見 [production 維運](../operations/production.md)。
+
+- Fetcher 對 Backend／Source 暫時不可用的恢復與重試額度修正：2026-10-30 已確認部署窗口
+  HTTP 521 會穿過現行 Pilot／Full／historical 的控制迴圈而退出，Docker 因而自動重啟；
+  521 亦未列入兩個 Source control clients 的 bounded retry statuses。另以零 provider I/O
+  重現 canonical daily 在授權前增加本地 attempts 的風險。須補 startup／idle 可中止退避、
+  active owner 停止／reap／重新取 fence、prepared／ACK-loss replay 與純等待不消耗 failure
+  budget 的測試；不得放寬舊 generation、退款已派送 quota、清理 prepared 或重設 cooldown。
+  本次尚未實作或部署此修正，根因、現場證據與限制見 [production 維運](../operations/production.md)。
 
 - Production 五 provider 的 provider-work native／recovery 驗收：2026-10-29 已完成具名 Owner
   attestation、兩端 true 與 Backend／Fetcher v0.1.12 發布，原 DB／17 個 SQLite／prepared／receipts／
