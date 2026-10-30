@@ -120,6 +120,12 @@ from app.schemas.admin import (
     UniverseReleaseDiffResponse,
     UniverseReleaseListResponse,
 )
+from app.schemas.calendar_closure import (
+    CalendarClosureApplyRequest,
+    CalendarClosurePreview,
+    CalendarClosureRequest,
+    CalendarClosureResult,
+)
 from app.schemas.common import PaginationInfo
 from app.schemas.full_market import (
     DeliverySummaryResponse,
@@ -2127,3 +2133,40 @@ async def rollback_calendar_year(
         },
     )
     return _calendar_revision_response(revision)
+
+
+@router.post(
+    "/provider-work/{work_id}/calendar-closure/preview", response_model=CalendarClosurePreview
+)
+async def preview_calendar_closure(
+    work_id: UUID,
+    body: CalendarClosureRequest,
+    _: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> CalendarClosurePreview:
+    from app.services.calendar_closure import preview
+    from app.services.full_market import FullMarketError
+
+    try:
+        return await preview(db, work_id, body)
+    except FullMarketError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.post("/provider-work/{work_id}/calendar-closure", response_model=CalendarClosureResult)
+async def apply_calendar_closure(
+    work_id: UUID,
+    body: CalendarClosureApplyRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> CalendarClosureResult:
+    from app.services.calendar_closure import apply
+    from app.services.full_market import FullMarketError
+
+    try:
+        result = await apply(db, work_id, body, actor=str(principal))
+        await db.commit()
+        return result
+    except FullMarketError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

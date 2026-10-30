@@ -1,5 +1,6 @@
 # Database models
 from app.models.base import Base
+from app.models.calendar_closure import ProviderWorkCalendarClosure
 from app.models.canonical import (
     BondDetails,
     BondEOD,
@@ -76,6 +77,7 @@ __all__ = [
     "ShioajiMemberRepair",
     "ShioajiRepairAck",
     "Base",
+    "ProviderWorkCalendarClosure",
     "ProviderWork",
     "ProviderWorkAttempt",
     "ProviderWorkOwner",

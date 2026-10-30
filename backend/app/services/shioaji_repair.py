@@ -125,7 +125,7 @@ async def inventory(db: AsyncSession, work_id) -> dict:
 async def preview(db: AsyncSession, work_id, body: RepairPreviewRequest) -> dict:
     current = await inventory(db, work_id)
     rows = {row["member_key"]: row for row in current["members"]}
-    if current["state"] in {"completed", "cancelled"}:
+    if current["state"] in {"completed", "cancelled", "calendar_closed"}:
         raise FullMarketError("Completed/cancelled work cannot be reopened", 409)
     for change in body.members:
         member = rows.get(change.member_key)

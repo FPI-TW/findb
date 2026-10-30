@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import verify_source_api_key
 from app.dependencies import get_db
 from app.execution_profiles import execution_profile
+from app.schemas.calendar_closure import CalendarClosureInventory
 from app.services import provider_work as service
 
 router = APIRouter(prefix="/provider-work", dependencies=[Depends(verify_source_api_key)])
@@ -472,3 +473,26 @@ async def queue(db: AsyncSession = Depends(get_db)) -> dict:
             if row["dataset_key"] in datasets
         ]
     }
+
+
+@router.get("/{work_id}/calendar-closure", response_model=CalendarClosureInventory)
+async def calendar_closure_inventory(
+    work_id: UUID, db: AsyncSession = Depends(get_db)
+) -> CalendarClosureInventory:
+    from app.models.provider_work import ProviderWork
+    from app.services.calendar_closure import inventory
+    from app.services.full_market import FullMarketError
+
+    provider, datasets = scope(db)
+    work = await db.get(ProviderWork, work_id)
+    if (
+        work is None
+        or work.environment != service.environment()
+        or work.provider != provider
+        or work.dataset_key not in datasets
+    ):
+        raise HTTPException(status_code=403, detail="Source calendar closure scope denied")
+    try:
+        return await inventory(db, work_id)
+    except FullMarketError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

@@ -44,6 +44,15 @@ Production native 資料與實際 rollback 演練由
   保存受控原生觀測與 catalogue 證據，確認空回應原因，逐工作核准恢復並核對 canonical／Serve
   與既有收據；程式與離線測試完成不代表 production 工作已恢復。操作見
   [Full market runbook](../operations/full_market.md#shioaji-空-kbars-與凍結-mapping-修復)。
+  2026-10-30 staging 已驗證修復授權／ACK、十五分鐘退避與原 attempts／cache 保留；
+  10/29、10/30 正常 catch-up 已通過 Source→canonical→Serve。10/23 已由證交所公告確認
+  颱風休市，空回應符合市場狀態；當時 `1102` 三次後 manual，已依授權停止 Pilot。
+  只讀對帳確認 TW published revision=6、原兩 decision 已於 10/24 人工更正為 skipped_calendar，
+  audit／resolved alerts 相符，無須再改日曆或決策。兩 queued work／舊 plan 仍待保留原
+  manifest、修復授權與帳務的結清協定部署／套用驗收；已新增附加式 calendar_closed 流程，
+  repair 的 RESTRICT 外鍵保留，舊刪除式封存流程不適用。staging 尚未部署新增 API／migration，
+  預覽需明列部署前置條件，不以追加抓取取得當日 bars；
+  mapping gap 與 production 其他日期的根因／恢復仍待驗收，不追加額度或自動重啟。
 
 - [ ] 將 TAIFEX dated-universe 專用告警、Admin candidates／member-diff 唯讀入口與 Dashboard
   提示部署至 staging，配合已完成的 bounded rollover／semantic universe 流程驗證後再 promotion

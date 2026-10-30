@@ -498,6 +498,19 @@ Backend 健康命令 `8789d81c-6a7b-4b26-a969-d44bde78d4f8` 確認 ingest／serv
 以及 draft、部分發布、閏年與不寫入的預設查詢。`test_effective_calendar_migration.py` 與 profile migration 測試
 驗證歷史 item／plan／首次日期保留，標記 migration 時點快照。Fetcher recovery 測試驗證週末仍取得 Source 決策，
 skipped_calendar 不建立本機抓取工作。Dashboard 驗證來源標示、政策略過與 profile cache 隔離。
+
+`test_calendar_closure.py` 驗證舊 Shioaji canonical work 的休市結清、Owner／Source scope、
+typed schemas、stale preview、競爭 owner、rollback、重播及原 manifest／attempts／grants／ACK／
+summary 保留；結清後 queue projection／claim／repair／enqueue 不得恢復 acquisition。
+負向案例涵蓋開市／政策／決策／audit 衝突、Backend prepared／receipt／run、本地 lease／
+未知派送責任與證明過期。`test_calendar_closure_migration.py` 驗證附加 schema、原值保存與
+有證據時拒絕降版；schema drift suite 核對 Alembic／ORM 一致。
+Fetcher `test_calendar_closure_cli.py` 驗證 existing inode 鎖、SQLite 唯讀、checksum、Source outage、
+stale apply 與 ACK-loss 重播，且無 SDK 呼叫。staging 匯出預覽以同一 evaluator 執行，不能
+取代新 migration／API 部署後的正式預覽與受控套用；本次不做原生派送或 production 驗收。
+`test_source_routes.py` 同步列入新唯讀 inventory；staging reset inventory 納入 closure table，
+`test_reset_staging_legacy_data.py` 驗證空表的完整 FK 清理與已有 closure evidence 時拒絕
+reset，並逐項核對原工作／計畫／attempts／授權 graph 不變。這些 reset 僅在本機隔離測試 DB 執行。
 `pnpm check`、`pnpm test` 與兩環境 IaC format／validate／plan 必須通過後才能部署。
 以上架構與 fixture 驗收不代表 provider／R2 native 資料問題已排除。
 
