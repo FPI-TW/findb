@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -55,8 +56,12 @@ class ProviderWorkSourceUnavailableError(ProviderWorkRecoveryBlockedError):
     """A Source acquisition check failed; ownership still requires recovery."""
 
 
-class ProviderWorkBasisMismatchError(ProviderWorkRecoveryBlockedError):
-    """A durable response predates the current request basis; neither replay nor refetch."""
+class ProviderWorkBasisMismatchError(RuntimeError):
+    """A durable response predates the current request basis; neither replay nor refetch.
+
+    Callers settle the affected work or member as failed/manual while retaining every
+    original byte, so the provider owner is released instead of being quarantined.
+    """
 
 
 def enabled() -> bool:
@@ -340,26 +345,36 @@ class WorkJournal:
                 return raw
         return None
 
-    def pre_basis_responses(self, name: str, basis: str) -> list[tuple[str, bytes]]:
-        """Responses saved before ``basis`` existed and never re-acquired under it."""
+    def pre_basis_raw_sha256(self, name: str) -> dict[str, tuple[str, bytes]]:
+        """Map raw SHA-256 to the pre-basis response that carried those native bytes.
+
+        Pre-basis keys are ``name:<digest>`` or ``name:<digest>:validated-target-v1``;
+        every basis-scoped key has another segment. Only matching bodies are read.
+        """
+        pattern = re.compile(re.escape(name) + r":[0-9a-f]{64}(:validated-target-v1)?")
         with self.connection() as db:
-            keys = {
-                row[0]: bytes(row[1])
+            keys = [
+                row[0]
                 for row in db.execute(
-                    "SELECT response_key,body FROM work_response WHERE work_key=? "
+                    "SELECT response_key FROM work_response WHERE work_key=? "
                     "AND substr(response_key,1,?)=?",
                     (self.key, len(name) + 1, name + ":"),
                 )
-            }
-        previous = []
-        for key, body in sorted(keys.items()):
-            base, _, suffix = key[len(name) + 1 :].partition(":")
-            if suffix not in ("", "validated-target-v1"):
+                if pattern.fullmatch(row[0])
+            ]
+        shas: dict[str, tuple[str, bytes]] = {}
+        for key in sorted(keys):
+            body = self.response(key)
+            if body is None:
                 continue
-            current = f"{name}:{base}:{basis}"
-            if current not in keys and current + ":validated-target-v1" not in keys:
-                previous.append((key, body))
-        return previous
+            try:
+                raw = base64.b64decode(json.loads(body)["data"]["raw_bytes"], validate=True)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProviderWorkRecoveryBlockedError(
+                    "durable provider response shape is unsupported"
+                ) from exc
+            shas.setdefault(hashlib.sha256(raw).hexdigest(), (key, body))
+        return shas
 
     def observe_response(self, key: str, body: bytes, *, origin: str) -> None:
         """Keep rejected target observations without making them replay authority."""
@@ -435,28 +450,27 @@ def _response_keys(
 
 
 def _block_pre_basis(journal: "WorkJournal", name: str, basis: str, key: str, body: bytes) -> None:
-    origin = "incompatible_basis:" + basis
-    if not journal.has_response_observation(key, origin=origin):
-        journal.observe_response(key, body, origin=origin)
+    record_incompatible_basis(journal, basis, key, body)
     raise ProviderWorkBasisMismatchError(
-        f"durable {name} response predates request basis {basis}; recover explicitly"
+        f"durable {name} response predates request basis {basis}; manual review required"
     )
 
 
-def require_work_basis(journal: "WorkJournal", name: str, basis: str) -> None:
-    """Block prepared replay for a work whose journal holds pre-basis responses."""
-    for key, body in journal.pre_basis_responses(name, basis):
-        _block_pre_basis(journal, name, basis, key, body)
+def record_incompatible_basis(journal: "WorkJournal", basis: str, key: str, body: bytes) -> None:
+    """Copy pre-basis bytes to one evidence observation; the original row stays intact."""
+    origin = "incompatible_basis:" + basis
+    if not journal.has_response_observation(key, origin=origin):
+        journal.observe_response(key, body, origin=origin)
 
 
 def require_current_basis(
     name: str, identity: dict[str, Any], *, validated: bool, basis: str
 ) -> None:
-    """Block replay of bytes or derived bodies acquired under an older request basis.
+    """Block replay of bytes acquired under an older request basis.
 
     Pre-basis bytes stay in the journal as immutable evidence and are copied to an
-    ``incompatible_basis`` observation once. Recovery is an explicit operator action
-    (cancel/settle the work and create a new request); it never refetches silently.
+    ``incompatible_basis`` observation once. The work is settled for manual review
+    and a new request re-acquires under the current basis; nothing refetches silently.
     """
     owner = active()
     if owner is None:
@@ -620,6 +634,9 @@ class ProviderWorkSession:
         self._authorization_expires: float | None = None
         self._authorization_fd: tuple[int, int, int] | None = None
         self.settled = False
+        # Prepared ledger keys whose bodies were mapped from pre-basis native bytes.
+        self.basis_blocked: set[str] = set()
+        self._pre_basis: dict[str, tuple[str, bytes]] | None = None
         # Only current-reservation evidence; durable budgets/account debt remain
         # in their existing journals and survive a new session or process.
         self.dispatch_observations = 0
@@ -777,14 +794,6 @@ class ProviderWorkSession:
         from findb_fetcher.client import PreparedDelivery, SourceAPIClient
         from findb_fetcher.contracts import ContractRegistry
 
-        if self.provider == "twelve_data":
-            from findb_fetcher.providers.twelve_data import (
-                TWELVE_DATA_DAILY_RESPONSE,
-                TWELVE_DATA_RESPONSE_BASIS,
-            )
-
-            # Original bytes mapped from split-adjusted responses stay retained, not replayed.
-            require_work_basis(self.journal, TWELVE_DATA_DAILY_RESPONSE, TWELVE_DATA_RESPONSE_BASIS)
         receipts = []
         with SourceAPIClient(
             self.source.config,
@@ -801,6 +810,11 @@ class ProviderWorkSession:
                     )
                 body = bodies[0]
                 request = json.loads(body)
+                if self.prepared_predates_basis(request):
+                    # Original bytes mapped from split-adjusted responses stay retained;
+                    # settle() turns them into an explicit manual-review waiver.
+                    self.basis_blocked.add(key)
+                    continue
                 prepared = PreparedDelivery(
                     body.encode(),
                     request["idempotency_key"],
@@ -860,6 +874,8 @@ class ProviderWorkSession:
         while True:
             if self.failed.is_set():
                 raise ProviderWorkRecoveryBlockedError("provider work heartbeat is unavailable")
+            if self.basis_blocked and (body["outcome"] != "retry" or self.work.get("drain_only")):
+                outcome = self._basis_manual_settlement(body)
             if outcome == "retry":
                 body["retry_at"] = (
                     datetime.now(timezone.utc) + timedelta(seconds=delay)
@@ -879,6 +895,45 @@ class ProviderWorkSession:
                 # Retain the host descriptor and DB owner through every accepted
                 # normalization, including historical retries and raw reruns.
                 time.sleep(2)
+
+    def prepared_predates_basis(self, request: dict[str, Any]) -> bool:
+        """True when a Twelve Data body was mapped from pre-basis native bytes."""
+        if self.provider != "twelve_data" or request.get("source") != "twelve_data":
+            return False
+        from findb_fetcher.providers.twelve_data import (
+            TWELVE_DATA_DAILY_RESPONSE,
+            TWELVE_DATA_RESPONSE_BASIS,
+        )
+
+        if self._pre_basis is None:
+            # New acquisitions always use basis-scoped keys, so the set never grows.
+            self._pre_basis = self.journal.pre_basis_raw_sha256(TWELVE_DATA_DAILY_RESPONSE)
+        payload = request.get("payload")
+        batch = payload.get("batch") if isinstance(payload, dict) else None
+        sha = batch.get("source_raw_sha256") if isinstance(batch, dict) else None
+        match = self._pre_basis.get(sha) if isinstance(sha, str) else None
+        if match is None:
+            return False
+        record_incompatible_basis(self.journal, TWELVE_DATA_RESPONSE_BASIS, *match)
+        return True
+
+    def _basis_manual_settlement(self, body: dict[str, Any]) -> str:
+        """Settle failed with an explicit waiver; original prepared bytes stay retained."""
+        from findb_fetcher.providers.twelve_data import TWELVE_DATA_RESPONSE_BASIS
+
+        if body["outcome"] != "failed" or not body.get("failure_code"):
+            body["failure_code"] = "PRICE_BASIS_MANUAL_REVIEW"
+        body["outcome"] = "failed"
+        body.pop("retry_at", None)
+        proof = dict(body["proof"])
+        proof["manual_pending_prepared"] = sorted(
+            set(proof.get("manual_pending_prepared", [])) | set(self.prepared_keys())
+        )
+        proof.setdefault("manual_reason", "pre_basis_prepared_requires_manual_review")
+        proof["price_basis_blocked"] = sorted(self.basis_blocked)
+        proof["price_basis"] = TWELVE_DATA_RESPONSE_BASIS
+        body["proof"] = proof
+        return "failed"
 
     def stop(self) -> None:
         self._stop.set()

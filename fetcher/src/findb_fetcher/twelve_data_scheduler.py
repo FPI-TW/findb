@@ -21,13 +21,13 @@ from findb_fetcher.client import (
 )
 from findb_fetcher.contracts import ContractError, ContractRegistry
 from findb_fetcher.full_market_state import QuotaBlockedError
+from findb_fetcher.provider_work import ProviderWorkBasisMismatchError, active
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataNoNewDataError,
     TwelveDataPayloadError,
     TwelveDataResponseError,
     build_market_eod_request,
-    require_daily_response_basis,
 )
 from findb_fetcher.raw_storage import (
     RawPayloadStore,
@@ -160,13 +160,13 @@ class TwelveDataScheduledExecutor:
                 )
                 attach_raw_object(request, raw_object)
             else:
-                # A body mapped from split-adjusted bytes must not reach canonical.
-                require_daily_response_basis(
-                    job.symbol,
-                    start_date=job.target_data_date,
-                    end_date=job.target_data_date,
-                    exchange=job.exchange,
-                )
+                # A body mapped from split-adjusted bytes must not reach canonical;
+                # historical settles it for manual review with its bytes retained.
+                owner = active()
+                if owner is not None and owner.prepared_predates_basis(request):
+                    raise ProviderWorkBasisMismatchError(
+                        "prepared Twelve Data body predates the price basis"
+                    )
             try:
                 require_raw_provenance(request)
             except RawStorageUploadError:

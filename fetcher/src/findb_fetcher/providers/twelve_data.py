@@ -193,26 +193,6 @@ def _target_rows_present(value: Any, arguments: dict[str, Any]) -> bool:
         return False
 
 
-def require_daily_response_basis(
-    symbol: str,
-    *,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    outputsize: int | None = None,
-    exchange: str | None = None,
-) -> None:
-    """Refuse a prepared body whose durable source response predates the price basis."""
-    from findb_fetcher.provider_work import require_current_basis
-
-    values = (symbol, start_date, end_date, outputsize, exchange)
-    require_current_basis(
-        TWELVE_DATA_DAILY_RESPONSE,
-        dict(zip(_DAILY_RESPONSE_FIELDS, values, strict=True)),
-        validated=True,
-        basis=TWELVE_DATA_RESPONSE_BASIS,
-    )
-
-
 class TwelveDataClient:
     """Small synchronous client for the provider's daily time-series endpoint."""
 
@@ -385,11 +365,6 @@ class TwelveDataClient:
             provider_code = _provider_code(raw_provider_code)
             if provider_code == 429:
                 operation.rate_limited()
-                # A body-level 429 exhausts the same account minute as HTTP 429.
-                if permit:
-                    permit.state.rate_limited(
-                        account=permit.account, window=permit.window, until=time.time() + 60
-                    )
                 if on_http_rate_limited is not None:
                     on_http_rate_limited()
             provider_message = _redacted_message(payload.get("message"), self._config.api_key)

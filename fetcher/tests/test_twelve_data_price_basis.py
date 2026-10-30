@@ -1,10 +1,11 @@
-"""Split-adjusted durable responses never replay after the as-traded price basis."""
+"""Split-adjusted durable responses never replay; affected work still settles for review."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -14,6 +15,7 @@ import httpx
 import pytest
 
 from findb_fetcher import provider_work as queue
+from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.providers.twelve_data import (
     TWELVE_DATA_RESPONSE_BASIS,
     TwelveDataClient,
@@ -24,6 +26,7 @@ FIXTURE_PATH = (
     Path(__file__).parent / "fixtures" / "twelve_data" / "aapl_1day_2024-01-02_2024-01-05.json"
 )
 DAY = date(2024, 1, 5)
+ORIGIN = "incompatible_basis:" + TWELVE_DATA_RESPONSE_BASIS
 
 
 def _encoded(raw: bytes) -> bytes:
@@ -49,11 +52,23 @@ def _base(symbol: str = "AAPL", exchange: str | None = None) -> str:
     return "twelve_daily:" + hashlib.sha256(encoded.encode()).hexdigest()
 
 
-def _adjusted_raw() -> bytes:
+def _adjusted_raw(close: str = "1.25") -> bytes:
     payload = json.loads(FIXTURE_PATH.read_text())
     # A pre-basis response priced under adjust=splits for a later split.
-    payload["values"] = [{**payload["values"][-1], "close": "1.25"}]
+    payload["values"] = [{**payload["values"][-1], "close": close}]
     return json.dumps(payload).encode()
+
+
+def _body(raw: bytes, key: str = "twelve_data:old") -> dict:
+    """A prepared ingress body whose provenance names the native raw bytes."""
+    return {
+        "source": "twelve_data",
+        "idempotency_key": key,
+        "dataset_key": "us_equity_eod",
+        "schema_id": "market_eod",
+        "schema_version": 1,
+        "payload": {"batch": {"source_raw_sha256": hashlib.sha256(raw).hexdigest()}},
+    }
 
 
 def _offline_client() -> TwelveDataClient:
@@ -76,6 +91,70 @@ def _observations(journal: queue.WorkJournal) -> list[tuple[str, str]]:
         ]
 
 
+class _Ledger:
+    """Source preparation ledger plus settlement replies for one owned work."""
+
+    def __init__(self, bodies: dict[str, dict]) -> None:
+        self.bodies = {key: json.dumps(body) for key, body in bodies.items()}
+        self.settles: list[dict] = []
+        self.delivered: list[str] = []
+
+    def preparation(self, action, *, keys_only=False, delivery_key=None, **_):
+        if keys_only:
+            return {"member_keys": sorted(self.bodies)}
+        return {"bodies": [self.bodies[delivery_key]]}
+
+    def request(self, action, **body):
+        if action != "settle":
+            return {}
+        self.settles.append(body)
+        manual = set(body["proof"].get("manual_pending_prepared", []))
+        pending = set(self.bodies) - set(self.delivered)
+        # Mirrors Source: a non-retry settlement with unaccepted prepared bytes is
+        # refused unless a failed manual waiver names every pending delivery.
+        if (
+            pending
+            and body["outcome"] != "retry"
+            and not (body["outcome"] == "failed" and body["failure_code"] and pending <= manual)
+        ):
+            raise FullMarketProtocolError(
+                "drain", status_code=409, code="PROVIDER_WORK_PREPARED_DRAINING"
+            )
+        return {}
+
+
+def _session(tmp_path, monkeypatch, ledger: _Ledger, *, provider="twelve_data", **work):
+    import findb_fetcher.client as client_module
+
+    class Delivery:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def deliver(self, prepared):
+            ledger.delivered.append(json.loads(prepared.body)["idempotency_key"])
+            return SimpleNamespace(run_id="run")
+
+    monkeypatch.setattr(client_module, "SourceAPIClient", Delivery)
+    monkeypatch.setattr("findb_fetcher.contracts.ContractRegistry", lambda *a, **kw: None)
+    journal = queue.WorkJournal(tmp_path / "journal.sqlite3", "original")
+    session = queue.ProviderWorkSession(
+        SimpleNamespace(config=SimpleNamespace(contracts_dir=tmp_path), client=None),
+        provider,
+        {"work_id": "original", "generation": 1, "token": "t", **work},
+        journal,
+    )
+    session._preparation_request = ledger.preparation
+    session.request = ledger.request
+    session.publish_cooldown = lambda: None
+    return session, journal
+
+
 @pytest.mark.parametrize("suffix", [":validated-target-v1", ""])
 def test_pre_basis_daily_response_blocks_without_replay_or_refetch(tmp_path, suffix):
     journal = queue.WorkJournal(tmp_path / "journal.sqlite3", "original")
@@ -92,12 +171,11 @@ def test_pre_basis_daily_response_blocks_without_replay_or_refetch(tmp_path, suf
         queue._current.reset(token)
     # Original bytes stay authoritative evidence; one observation marks them incompatible.
     assert journal.response(legacy_key) == legacy
-    assert _observations(journal) == [
-        (legacy_key, "incompatible_basis:" + TWELVE_DATA_RESPONSE_BASIS)
-    ]
-    assert journal.pre_basis_responses("twelve_daily", TWELVE_DATA_RESPONSE_BASIS) == [
-        (legacy_key, legacy)
-    ]
+    assert _observations(journal) == [(legacy_key, ORIGIN)]
+    # An ordinary failure that callers settle, never an owner-quarantining recovery block.
+    assert not issubclass(
+        queue.ProviderWorkBasisMismatchError, queue.ProviderWorkRecoveryBlockedError
+    )
 
 
 def test_current_basis_response_replays_without_provider_io(tmp_path):
@@ -106,115 +184,266 @@ def test_current_basis_response_replays_without_provider_io(tmp_path):
     journal.response(
         _base() + ":" + TWELVE_DATA_RESPONSE_BASIS + ":validated-target-v1", _encoded(raw)
     )
-    # A re-acquired identity supersedes its pre-basis bytes without deleting them.
-    journal.response(_base() + ":validated-target-v1", _encoded(_adjusted_raw()))
     token = queue._current.set(SimpleNamespace(journal=journal))
     try:
         replay = _offline_client().fetch_daily("AAPL", start_date=DAY, end_date=DAY)
     finally:
         queue._current.reset(token)
     assert replay.raw_bytes == raw
-    assert journal.pre_basis_responses("twelve_daily", TWELVE_DATA_RESPONSE_BASIS) == []
+    assert _observations(journal) == []
+
+
+def test_pre_basis_scan_reads_only_unscoped_daily_keys(tmp_path):
+    journal = queue.WorkJournal(tmp_path / "journal.sqlite3", "original")
+    old, new = _adjusted_raw(), _adjusted_raw("9.99")
+    journal.response(_base() + ":validated-target-v1", _encoded(old))
+    journal.response(
+        _base("MSFT") + ":" + TWELVE_DATA_RESPONSE_BASIS + ":validated-target-v1", _encoded(new)
+    )
+    journal.response("twelve_catalogue:" + "0" * 64, b"not a daily response")
+    assert set(journal.pre_basis_raw_sha256("twelve_daily")) == {hashlib.sha256(old).hexdigest()}
+
+
+def test_cancelled_work_with_pre_basis_prepared_settles_failed_and_releases_owner(
+    tmp_path, monkeypatch
+):
+    old, fresh = _adjusted_raw(), _adjusted_raw("2.00")
+    ledger = _Ledger({"old": _body(old, "old"), "fresh": _body(fresh, "fresh")})
+    session, journal = _session(tmp_path, monkeypatch, ledger)
+    journal.response(_base() + ":validated-target-v1", _encoded(old))
+
+    session.settle("cancelled", proof={"reason": "historical_request_stopped"})
+
+    assert session.settled is True
+    # Only the current-basis body is replayed; the pre-basis body stays retained.
+    assert ledger.delivered == ["fresh"]
+    first, final = ledger.settles
+    assert first["outcome"] == "cancelled"
+    assert final["outcome"] == "failed"
+    assert final["failure_code"] == "PRICE_BASIS_MANUAL_REVIEW"
+    assert final["proof"]["manual_pending_prepared"] == ["fresh", "old"]
+    assert final["proof"]["price_basis_blocked"] == ["old"]
+    assert final["proof"]["reason"] == "historical_request_stopped"
+    assert _observations(journal) == [(_base() + ":validated-target-v1", ORIGIN)]
+    assert journal.response(_base() + ":validated-target-v1") == _encoded(old)
+
+
+def test_drain_only_retry_with_pre_basis_prepared_becomes_manual_failure(tmp_path, monkeypatch):
+    old = _adjusted_raw()
+    ledger = _Ledger({"old": _body(old, "old")})
+    session, journal = _session(tmp_path, monkeypatch, ledger, drain_only=True)
+    journal.response(_base() + ":validated-target-v1", _encoded(old))
+    session.drain_prepared()
+    session.settle("retry", failure_code="PROVIDER_ACCOUNT_COOLDOWN", delay=60)
+    assert [body["outcome"] for body in ledger.settles] == ["failed"]
+    assert "retry_at" not in ledger.settles[0]
+    assert ledger.settles[0]["failure_code"] == "PRICE_BASIS_MANUAL_REVIEW"
+
+
+def test_existing_failure_code_keeps_identity_and_gains_waiver(tmp_path, monkeypatch):
+    old = _adjusted_raw()
+    ledger = _Ledger({"old": _body(old, "old")})
+    session, journal = _session(tmp_path, monkeypatch, ledger)
+    journal.response(_base() + ":validated-target-v1", _encoded(old))
+    session.settle(
+        "failed",
+        failure_code="RETIRED_FEED_MANUAL_REVIEW",
+        proof={"manual_reason": "retired_feed_requires_manual_review"},
+    )
+    final = ledger.settles[-1]
+    assert final["failure_code"] == "RETIRED_FEED_MANUAL_REVIEW"
+    assert final["proof"]["manual_reason"] == "retired_feed_requires_manual_review"
+    assert final["proof"]["manual_pending_prepared"] == ["old"]
+
+
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
+def test_drain_replays_bodies_without_pre_basis_provenance(tmp_path, monkeypatch, provider):
+    # A pre-basis response exists, but no pending body was mapped from it.
+    ledger = _Ledger({"fresh": _body(_adjusted_raw("2.00"), "fresh")})
+    session, journal = _session(tmp_path, monkeypatch, ledger, provider=provider)
+    journal.response(_base() + ":validated-target-v1", _encoded(_adjusted_raw()))
+    assert len(session.drain_prepared(pending_only=True)) == 1
+    assert ledger.delivered == ["fresh"] and session.basis_blocked == set()
+    session.settle("completed")
+    assert [body["outcome"] for body in ledger.settles] == ["completed"]
+
+
+def test_empty_pending_set_never_blocks_a_work_with_pre_basis_history(tmp_path, monkeypatch):
+    ledger = _Ledger({})
+    session, journal = _session(tmp_path, monkeypatch, ledger)
+    journal.response(_base() + ":validated-target-v1", _encoded(_adjusted_raw()))
+    assert session.drain_prepared(pending_only=True) == []
+    session.settle("completed")
+    assert ledger.settles[0]["outcome"] == "completed"
     assert _observations(journal) == []
 
 
 def test_historical_prepared_body_from_pre_basis_response_is_not_delivered(tmp_path, contracts_dir):
-    from test_twelve_data_scheduler import FakeProvider, FakeSource, _executor, _job
+    from test_twelve_data_scheduler import NOW, FakeProvider, FakeSource, _executor, _job
 
-    journal = queue.WorkJournal(tmp_path / "journal.sqlite3", "original")
     source = FakeSource()
-    first = _executor(contracts_dir, source=source)
-    assert first.execute(_job(), now=_now()).succeeded
+    assert _executor(contracts_dir, source=source).execute(_job(), now=NOW).succeeded
     prepared = source.requests[0]
-    journal.response(_base(exchange="NASDAQ") + ":validated-target-v1", _encoded(_adjusted_raw()))
+    old = _adjusted_raw()
+    prepared["payload"]["batch"]["source_raw_sha256"] = hashlib.sha256(old).hexdigest()
+    journal = queue.WorkJournal(tmp_path / "journal.sqlite3", "original")
+    journal.response(_base(exchange="NASDAQ") + ":validated-target-v1", _encoded(old))
+    owner = queue.ProviderWorkSession(
+        None, "twelve_data", {"work_id": "original", "generation": 1, "token": "t"}, journal
+    )
     replaying = FakeSource()
     provider = FakeProvider(AssertionError("prepared replay must not refetch"))
-    token = queue._current.set(SimpleNamespace(journal=journal))
+    token = queue._current.set(owner)
     try:
         with pytest.raises(queue.ProviderWorkBasisMismatchError):
             _executor(contracts_dir, provider=provider, source=replaying).execute(
-                replace(_job(), prepared_request=prepared), now=_now()
+                replace(_job(), prepared_request=prepared), now=NOW
             )
         assert replaying.requests == []
-        # The same body proceeds once its source response exists under the current basis.
-        journal.response(
-            _base(exchange="NASDAQ") + ":" + TWELVE_DATA_RESPONSE_BASIS + ":validated-target-v1",
-            _encoded(FIXTURE_PATH.read_bytes()),
-        )
+        # A body whose raw bytes were acquired under the current basis still replays.
+        prepared["payload"]["batch"]["source_raw_sha256"] = "f" * 64
         assert (
             _executor(contracts_dir, provider=provider, source=replaying)
-            .execute(replace(_job(), prepared_request=prepared), now=_now())
+            .execute(replace(_job(), prepared_request=prepared), now=NOW)
             .succeeded
         )
     finally:
         queue._current.reset(token)
 
 
-@pytest.mark.parametrize(("provider", "blocked"), [("twelve_data", True), ("finlab", False)])
-def test_prepared_drain_refuses_twelve_data_work_with_pre_basis_responses(
-    tmp_path, monkeypatch, provider, blocked
-):
-    import findb_fetcher.client as client_module
+def test_historical_basis_failure_ends_item_through_manual_waiver(monkeypatch):
+    from findb_fetcher.historical_backfill import _run_once
 
-    class OfflineDelivery:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return None
-
-    monkeypatch.setattr(client_module, "SourceAPIClient", OfflineDelivery)
-    monkeypatch.setattr("findb_fetcher.contracts.ContractRegistry", lambda *args, **kwargs: None)
-    delivered = []
-
-    class Source:
-        config = SimpleNamespace(contracts_dir=tmp_path)
-        client = None
-
-        def request(self, method, route, body):
-            return {"bodies": [], "member_keys": []}
-
-    journal = queue.WorkJournal(tmp_path / "journal.sqlite3", "original")
-    journal.response(_base() + ":validated-target-v1", _encoded(_adjusted_raw()))
-    session = queue.ProviderWorkSession(
-        Source(), provider, {"work_id": "original", "generation": 1, "token": "t"}, journal
+    events = []
+    monkeypatch.setattr(
+        queue, "require_owner", lambda provider: SimpleNamespace(work={"state": "open"})
     )
-    session._preparation_request = lambda *args, **kwargs: (
-        delivered.append(kwargs) or {"bodies": [], "member_keys": []}
+    item = SimpleNamespace(provider="twelve_data")
+    control = SimpleNamespace(
+        provider="twelve_data",
+        claim=lambda: item,
+        authorize=lambda item: None,
+        fail=lambda item, code: events.append(("fail", code)),
     )
-    if blocked:
-        with pytest.raises(queue.ProviderWorkBasisMismatchError):
-            session.drain_prepared(pending_only=True)
-        assert delivered == []
-    else:
-        assert session.drain_prepared(pending_only=True) == []
+
+    def run(item):
+        raise queue.ProviderWorkBasisMismatchError("prepared body predates basis")
+
+    assert _run_once(control, SimpleNamespace(run=run))
+    assert events == [("fail", "PREPARED_DELIVERY_MANUAL_REVIEW")]
 
 
-def test_full_daily_prepared_replay_refuses_pre_basis_work(tmp_path):
+@pytest.mark.parametrize("prepared", [False, True])
+def test_full_daily_pre_basis_member_is_manual_and_others_continue(tmp_path, prepared):
     from provider_work_support import owned_unit_work
     from test_full_market import _member, _plan, _runtime
 
     runtime, source, _ = _runtime(tmp_path)
     runtime._acquisition_allowed = lambda: True
-    runtime._acquire = lambda *args: pytest.fail("prepared replay must not reacquire")
+    acquired = []
+    old = _adjusted_raw()
+
+    def acquire(member, *args):
+        acquired.append(member["member_key"])
+        if member["member_key"] == "AAPL":
+            raise queue.ProviderWorkBasisMismatchError("response predates basis")
+        raise RuntimeError("stop after the next member")
+
+    runtime._acquire = acquire
     plan = _plan()
     runtime.state.record_plan(plan, runtime.provider)
-    runtime.state.prepare("fp1:123:AAPL", b'[{"idempotency_key":"full:original"}]')
+    body = json.dumps([_body(old, "full:original")]).encode()
+    if prepared:
+        runtime.state.prepare("fp1:123:AAPL", body)
     try:
         with owned_unit_work(runtime.provider, tmp_path) as owner:
-            owner.journal.response(_base() + ":validated-target-v1", _encoded(_adjusted_raw()))
-            with pytest.raises(queue.ProviderWorkBasisMismatchError):
-                runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
-        assert source.outcomes == []
-        assert runtime.state.prepared("fp1:123:AAPL") == b'[{"idempotency_key":"full:original"}]'
+            owner.journal.response(_base() + ":validated-target-v1", _encoded(old))
+            assert not runtime._deliver_plan(
+                plan,
+                {"members": [_member(), {**_member(), "member_key": "MSFT"}]},
+                runtime.feeds[0],
+            )
+        # The pre-basis member is retained for review; the next member is still processed.
+        assert acquired == (["MSFT"] if prepared else ["AAPL", "MSFT"])
+        assert source.outcomes[0] == {
+            "work_item_id": "fp1:123",
+            "member_key": "AAPL",
+            "reason": "source_error",
+        }
+        with runtime.state.connection() as db:
+            row = db.execute(
+                "SELECT status,reason FROM full_work WHERE member_key='AAPL'"
+            ).fetchone()
+        assert tuple(row) == ("manual", "price_basis_manual_review")
+        assert runtime.state.prepared("fp1:123:AAPL") == (body if prepared else None)
+        assert [d["category"] for d in runtime.state.diagnostics("fp1:123:AAPL")] == [
+            "price_basis_mismatch"
+        ]
     finally:
         runtime.close()
 
 
-def _now():
-    from test_twelve_data_scheduler import NOW
+def test_diagnostic_write_failure_never_suppresses_the_source_report(tmp_path, monkeypatch):
+    from provider_work_support import owned_unit_work
+    from test_full_market import _member, _plan, _runtime
 
-    return NOW
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+
+    def acquire(*args):
+        raise RuntimeError("private provider detail")
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    runtime._acquire = acquire
+    monkeypatch.setattr(runtime.state, "record_diagnostic", locked)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+        assert source.outcomes == [
+            {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}
+        ]
+        assert not runtime.state.pending_source_error_keys("p")
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("failure_code", "raises"), [(None, True), ("PREPARED_DELIVERY_MANUAL_REVIEW", False)]
+)
+def test_historical_drain_conflict_with_blocked_body_exits_instead_of_looping(failure_code, raises):
+    from findb_fetcher.historical_backfill import HistoricalControlClient
+
+    calls = []
+    drains = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(409, json={"detail": {"code": "PROVIDER_WORK_PREPARED_DRAINING"}})
+        return httpx.Response(200, json={"success": True})
+
+    owner = SimpleNamespace(
+        work={"work_id": "w", "generation": 1, "token": "t"},
+        basis_blocked={"old"},
+        drain_prepared=lambda: drains.append("drain") or [],
+    )
+    config = SimpleNamespace(source_client_key="key", source_api_url="https://findb.example.test")
+    token = queue._current.set(owner)
+    try:
+        with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+            control = HistoricalControlClient(config, client=http, provider="twelve_data")
+            body = {"status": "failed", "failure_code": failure_code}
+            if raises:
+                with pytest.raises(queue.ProviderWorkBasisMismatchError):
+                    control._request("POST", "/complete", body)
+            else:
+                # The manual waiver itself is retried; Source then accepts it.
+                assert control._request("POST", "/complete", body) == {"success": True}
+    finally:
+        queue._current.reset(token)
+    assert drains == ["drain"]
+    assert len(calls) == (1 if raises else 2)

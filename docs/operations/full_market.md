@@ -451,18 +451,25 @@ Twelve Data 對查無資料、代號錯誤等情況回傳 HTTP 200 加 payload `
 #### 價格基準切換與舊回應快取
 
 Provider-work journal 的 Twelve Data 日資料快取（`work_response` 的 `twelve_daily:*`）以價格基準
-`adjust-none-v1` 作為識別的一部分。切換前保存的回應沒有此基準，可能是拆股調整價，因此：
+`adjust-none-v1` 作為識別的一部分。切換前保存的回應沒有此基準，可能是拆股調整價，Fetcher
+不重播也不靜默重抓，改以保留原 bytes 的 failed／manual 結算處理，不會把 owner 留在
+recovery blocked 而卡住同 provider 的後續工作：
 
-- 同一 request identity 只有舊回應時，不重播也不重新抓取；Fetcher 以
-  `ProviderWorkBasisMismatchError`（recovery blocked）停止該 work，保留 DB owner。
-- 該 work 若已有由舊回應產生的 prepared body（historical `work_job`、Full／Pilot checkpoint
-  或 Source 保留的 prepared ledger），同樣拒絕重播或排空。
-- 原 `work_response` bytes、prepared bytes、receipts 與 R2 raw 全部保留；第一次偵測時於
-  `work_response_observation` 複製一列 `origin=incompatible_basis:adjust-none-v1` 作為證據。
-- 遷移須由 Owner 明確處理：historical 以 `POST /api/v1/admin/historical-backfills/{id}/cancel`
-  取消原 request，再為相同日期建立新 request（新 work／journal 以 `adjust=none` 抓取）；
-  daily 以既有 recovery／settle 程序將原 work 結算 failed 並記錄 audit，再以 historical request
-  回補該日期。不得刪除 journal 列、清除 prepared 或重設預算來繞過阻擋。
+| 情境 | 判定 | 處理 |
+| --- | --- | --- |
+| 同一 request identity 只有舊回應 | `durable_response` 找到無基準 key | 拋出一般錯誤 `ProviderWorkBasisMismatchError`；Full／Pilot 成員標為 `manual / price_basis_manual_review` 並回報 `source_error`，同計畫其他成員照常處理；historical item 以 `PREPARED_DELIVERY_MANUAL_REVIEW` 結束 |
+| Prepared body 由舊回應產生 | body 的 `payload.batch.source_raw_sha256` 等於某筆舊回應原始 bytes 的 SHA-256 | 該 body 不送出；Full／Pilot 成員同上標為 manual；historical item 同上 |
+| 排空 prepared ledger 時遇到上述 body | 同上，逐筆判定 | 跳過該 body、其餘照常交付；結算若被 `PREPARED_DRAINING` 拒絕或屬 drain-only retry，改為 `failed`，`failure_code=PRICE_BASIS_MANUAL_REVIEW`（已有 failure code 時保留），proof 帶 `manual_pending_prepared`、`price_basis_blocked` 與 `price_basis` |
+
+判定逐筆進行：work 只是含有舊回應、但待送 body 不是由它產生（或待送集合為空）時，不阻擋。
+原 `work_response` bytes、prepared bytes、receipts 與 R2 raw 全部保留；第一次偵測時於
+`work_response_observation` 複製一列 `origin=incompatible_basis:adjust-none-v1` 作為證據，並在
+Fetcher `full_work_diagnostic` 記為 `price_basis_mismatch`。
+
+Owner 的後續處理：historical request 因 failed date 結束後，為相同日期建立新 request（新 work／
+journal 以 `adjust=none` 抓取）；Full／Pilot 計畫以 manual 成員結算 failed 後，以 historical request
+回補該日期。取消 historical request 也會在原 owner 排空時走同一 manual 結算，不需人工改 DB。
+不得刪除 journal 列、清除 prepared 或重設預算。
 
 2026-10-30 唯讀核對：production journal 沒有 `twelve_daily` 快取，13 筆 queued US daily
 尚未開始；staging 有 6 筆含舊快取的 Pilot daily 均為 completed 且 receipts 齊全，不會再被

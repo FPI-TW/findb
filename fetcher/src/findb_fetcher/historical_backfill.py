@@ -215,6 +215,20 @@ class HistoricalControlClient:
                         "code": "PROVIDER_WORK_PREPARED_DRAINING"
                     }:
                         owner.drain_prepared()
+                        if (
+                            owner.basis_blocked
+                            and (body or {}).get("failure_code")
+                            != "PREPARED_DELIVERY_MANUAL_REVIEW"
+                        ):
+                            from findb_fetcher.provider_work import (
+                                ProviderWorkBasisMismatchError,
+                            )
+
+                            # Retained pre-basis bytes can never drain; end the item
+                            # through its manual-review waiver instead of looping.
+                            raise ProviderWorkBasisMismatchError(
+                                "prepared Twelve Data body predates the price basis"
+                            )
                         continue
                     draining = isinstance(error, dict) and error.get("detail") == {
                         "code": "PROVIDER_WORK_DRAINING"
@@ -281,7 +295,7 @@ def run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner)
 
 def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner) -> bool:
     """Run one serial date; a failed date ends its request server-side."""
-    from findb_fetcher.provider_work import require_owner
+    from findb_fetcher.provider_work import ProviderWorkBasisMismatchError, require_owner
 
     if control.provider is None:
         raise HistoricalControlError("historical provider identity is required")
@@ -338,7 +352,8 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
     except HistoricalWorkDeferredError:
         owner.settle("retry", failure_code="DEFERRED", delay=60)
         return True
-    except HistoricalPreparedManualError:
+    except (HistoricalPreparedManualError, ProviderWorkBasisMismatchError):
+        # The Source waiver settles the work failed with every original byte retained.
         control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
         return True
     except SourceAPIResponseError as exc:

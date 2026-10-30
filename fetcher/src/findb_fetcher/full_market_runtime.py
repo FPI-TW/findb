@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -32,6 +33,7 @@ from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarket
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FullMarketState,
+    FullMarketStateError,
     QuotaBlockedError,
 )
 from findb_fetcher.full_market_universe import (
@@ -63,8 +65,8 @@ from findb_fetcher.provider_wait import (
 )
 from findb_fetcher.provider_work import (
     ProviderWorkAcquisitionStopped,
+    ProviderWorkBasisMismatchError,
     durable_response,
-    require_work_basis,
 )
 from findb_fetcher.providers.factset import (
     FactSetConfig,
@@ -104,8 +106,6 @@ from findb_fetcher.providers.taifex import (
     report_members,
 )
 from findb_fetcher.providers.twelve_data import (
-    TWELVE_DATA_DAILY_RESPONSE,
-    TWELVE_DATA_RESPONSE_BASIS,
     TwelveDataClient,
     TwelveDataConfig,
     TwelveDataResponseError,
@@ -1967,11 +1967,12 @@ class FullMarketRuntime:
                         owner.reserve(request)
                     prepared = canonical_bytes(requests)
                     self.state.prepare(key, prepared)
-                elif self.provider == "twelve_data" and getattr(owner, "journal", None) is not None:
+                elif callable(getattr(owner, "prepared_predates_basis", None)) and any(
+                    owner.prepared_predates_basis(request) for request in json.loads(prepared)
+                ):
                     # Bodies mapped from split-adjusted responses are retained, never replayed.
-                    require_work_basis(
-                        owner.journal, TWELVE_DATA_DAILY_RESPONSE, TWELVE_DATA_RESPONSE_BASIS
-                    )
+                    self._price_basis_manual(plan, part, member_key, key)
+                    continue
                 normalizing = False
                 prepared_requests = json.loads(prepared)
                 for request in prepared_requests:
@@ -2143,7 +2144,6 @@ class FullMarketRuntime:
                     if self.daily_policy:
                         self.last_batch["reason"] = "quota_wait"
                     return False
-                self._record_diagnostic(key, exc)
                 self.source.outcome(
                     plan["plan_id"],
                     work_item_id=part["work_item_id"],
@@ -2156,7 +2156,11 @@ class FullMarketRuntime:
                     reason=reason,
                     now=time.time(),
                 )
+                self._record_diagnostic(key, exc)
                 return False
+            except ProviderWorkBasisMismatchError:
+                self._price_basis_manual(plan, part, member_key, key)
+                continue
             except SourceAPIResponseError as exc:
                 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
 
@@ -2217,15 +2221,39 @@ class FullMarketRuntime:
                     return False
                 # Provider/SDK messages never enter durable state or logs; only
                 # the bounded failure class is retained for traceability.
-                self._record_diagnostic(key, exc)
                 self.state.stage_source_error(key)
+                self._record_diagnostic(key, exc)
                 self._report_source_error(plan, part, member_key, key)
                 return False
 
         return True
 
+    def _price_basis_manual(
+        self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
+    ) -> None:
+        """Retain pre-basis bytes for manual review; never retry, refetch or replay them."""
+        self.source.outcome(
+            plan["plan_id"],
+            work_item_id=part["work_item_id"],
+            member_key=member_key,
+            reason="source_error",
+        )
+        self.state.finish(key, status="manual", reason="price_basis_manual_review")
+        self._record_diagnostic(key, ProviderWorkBasisMismatchError("price basis"))
+
     def _record_diagnostic(self, key: str, exc: BaseException) -> None:
-        if isinstance(exc, TwelveDataResponseError):
+        """Best effort: a diagnostic write never suppresses the failure's own report."""
+        try:
+            self._write_diagnostic(key, exc)
+        except (sqlite3.Error, FullMarketStateError):
+            pass
+
+    def _write_diagnostic(self, key: str, exc: BaseException) -> None:
+        if isinstance(exc, ProviderWorkBasisMismatchError):
+            self.state.record_diagnostic(
+                key, provider=self.provider, category="price_basis_mismatch"
+            )
+        elif isinstance(exc, TwelveDataResponseError):
             self.state.record_diagnostic(
                 key,
                 provider=self.provider,
