@@ -33,6 +33,10 @@ test("normal login, deep links and browser history select profiles without mutat
   await page.goto("/dashboard/operations/?profile=full_market")
   await expect(page).toHaveURL(/\/login/)
   await login(page)
+  const navigation = page.getByRole("navigation", { name: "營運資料分類" })
+  const overviewLink = navigation.getByRole("link", { name: "導入概況" })
+  const deliveriesLink = navigation.getByRole("link", { name: "交付監控" })
+  await expect(overviewLink).toHaveAttribute("aria-current", "page")
   await expect(
     page.getByRole("tab", { name: "Pilot（1 執行中）" })
   ).toHaveAttribute("aria-selected", "true")
@@ -41,6 +45,7 @@ test("normal login, deep links and browser history select profiles without mutat
   ).toHaveCount(0)
   await page.getByRole("tab", { name: "Full market（1 執行中）" }).click()
   await expect(page).toHaveURL(/profile=full_market/)
+  await expect(overviewLink).toHaveAttribute("aria-current", "page")
   await expect(page.getByRole("region", { name: "Pilot 排程" })).toHaveCount(0)
   await expect(
     page.getByText("FULL_MARKET_ENABLED：true · production").first()
@@ -69,6 +74,13 @@ test("normal login, deep links and browser history select profiles without mutat
   await expect(
     page.getByRole("region", { name: "Full market 排程" })
   ).toBeVisible()
+  await expect(overviewLink).toHaveAttribute("aria-current", "page")
+  await deliveriesLink.click()
+  await expect(deliveriesLink).toHaveAttribute("aria-current", "page")
+  await expect(overviewLink).not.toHaveAttribute("aria-current", "page")
+  await overviewLink.click()
+  await expect(overviewLink).toHaveAttribute("aria-current", "page")
+  await expect(deliveriesLink).not.toHaveAttribute("aria-current", "page")
   expect((await state(request)).mutations).toEqual([])
 })
 

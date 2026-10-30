@@ -59,6 +59,8 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、
 
 ## 前端維護契約
 
+- 側邊欄依路徑標示目前頁面，不將 profile、篩選或分頁等查詢參數納入選取比對；
+  導入概況只精確匹配 `/operations`，進入其他營運子頁時不會同時選取概況。
 - `OperationsRefreshProvider` 管理可見查詢的 exact keys；資料元件透過
   `useRegisterOperationsQuery(key, enabled)` 註冊，隱藏分頁同時停用查詢及註冊。
   可見性註冊只限制頁首刷新；認證監看涵蓋所有 operations／calendar／admin 查詢，
