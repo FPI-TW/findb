@@ -214,6 +214,19 @@ def observation_guard(arguments: dict, rejected):
         _probe.reset(token)
 
 
+def record_kbars_not_dispatched() -> None:
+    """Record positive proof from the gateway's validation/bootstrap boundary."""
+    current = _probe.get()
+    if current is None:
+        return
+    journal, probe_id, _ = current
+    with journal.connection() as db:
+        db.execute(
+            "UPDATE work_shioaji_probe SET outcome='predispatch' WHERE probe_id=? AND outcome='unknown'",
+            (probe_id,),
+        )
+
+
 def observe_snapshot(snapshot) -> None:
     current = _probe.get()
     if current is None:

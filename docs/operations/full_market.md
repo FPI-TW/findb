@@ -229,12 +229,16 @@ entitlement 不足。缺欄、長度不一致、錯誤日期及其他永久格�
 
 Pilot／Full daily 每個原 work／provider symbol／日期最多三次空回應或未知派送觀測（包含首次），
 重新觀測至少間隔十五分鐘，並受既有抓取窗口、owner、quota、unknown debt 與 cooldown 限制。
-派送前的 journal reservation 在不確定邊界保守計數；只有可證明未派送的等待才釋放 reservation。
+派送前的 journal reservation 在不確定邊界保守計數；可證明 Kbars 未派送的等待或 bootstrap
+失敗記為 `predispatch`，不占三次觀測額度。SDK 建立、登入、contracts 載入失敗仍依八次一般
+失敗政策處理，已發出的 bootstrap native／登入用量不退款。程序中斷未能保存未派送證據時仍為 unknown。
 即使尚未保存任何空回應，未知派送也受三次上限與十五分鐘退避限制；不能因未取得回應而重新
 開啟額度。未證實為空時，本地記為 `unknown_dispatch`、Source 維持 `source_error`，不偽造空回應。
 舊快取中的空回應匯入為一次既有觀測，不把歷次本地重播算成新的 native 請求。
 舊快取沒有原始觀測時間時，從首次辨識起保守等待十五分鐘；重啟不重新起算。
 等待只退回本輪新增的 local claim，既有 failure attempts 與已派送平台用量不退款。
+觀測等待、額度耗盡與派送前 calendar 授權錯誤會保留仍存活的 SDK session；gateway 自行清理
+transport／child 故障，runtime 仍在偵測 child 死亡、pause 或 close 時回收，避免無效重登入。
 三次耗盡為 manual；缺漏與告警保留。新 published calendar 與原計畫衝突時，在重新抓取前停止並
 要求 calendar repair，不能自動改寫 frozen decision。no_data 仍須符合既有 durable evidence 契約。
 Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀測額度或人工恢復 grant。

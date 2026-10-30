@@ -87,6 +87,11 @@ unknown dispatch 不退款、日曆衝突、Owner／Source fence、stale preview
 舊八次失敗及新 grant 分離、重複安裝／ACK-loss，以及 migration 保留性與 rollback floor。
 Admin 修復回應另驗證 OpenAPI typed schemas、必要摘要欄位與格式、序列化後摘要相符、
 使用 preview 回應套用與重播，以及錯誤 apply 回應不得提交授權。
+觀測 gate 測試亦涵蓋舊空快取等待／耗盡、calendar conflict／outage／無效證據保留原 gateway，
+其他成員可重用 session；SDK 建立／登入／兩個 contracts 群組失敗仍採八次一般重試，
+不扣 Kbars 觀測額度，保留先前 unknown debt，後續資料不需額外 grant。
+`test_sdk_bootstrap.py` 另以正式 child protocol 與離線 SDK 驗證登入失敗仍保留 native／登入帳務，
+僅將 Kbars probe 記為 `predispatch`；dead child 仍須回收並由後續 acquisition 替換。
 `test_provider_work_daily_faults.py` 的股票／ETF 空回應案例走正式 decorator、隔離 fake SDK、
 Source→raw→normalization→canonical，驗證後續合法回應完成原 scope；同 suite 保留 outage／
 lost-ACK 原 bytes／idempotency 驗證。測試不呼叫真實 provider，不能代替 production 根因驗收。

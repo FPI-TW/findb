@@ -317,8 +317,12 @@ Shioaji invalid/date payload 保持既有永久 `KBARS_PAYLOAD` 規則，
 七向量皆空則獨立分類 `empty_response / unknown`，daily 每 work／symbol／date 最多三次原生觀測、
 間隔至少十五分鐘；原始 bytes、checksum 與未知派送 debt 保留，不構成 no_data。
 `work_shioaji_probe` 保存派送前 reservation 與安全 SDK／向量／用量診斷，`work_shioaji_grant` 保存
-initial 及核准額度，均與既有 local failure／account governor 分離。只有明確 predispatch wait
-可釋放本輪 reservation；cache replay、重啟、換 attempt 不重置。未知派送從首次即套用上限與
+initial 及核准額度，均與既有 local failure／account governor 分離。明確 predispatch wait 或
+gateway 在 `_run("kbars")` 前的 validation／bootstrap 失敗，只將當前 unknown probe 記為
+`predispatch`；SDK 建立、登入與 contracts 的已派送用量及一般 failure attempts 保留，不依整體
+dispatch counter 推斷 Kbars 是否派送。崩潰未保存證據仍保守保留 unknown。
+runtime 不因觀測 gate／calendar 錯誤關閉存活的 gateway；transport／child 清理由 gateway 負責，
+dead child／pause／close 的回收保留。cache replay、重啟、換 attempt 不重置。未知派送從首次即套用上限與
 退避；尚無空回應證據時不回報 empty_response。本地 continuation 先於 calendar／outcome RPC
 保存，避免 Source calendar 失聯遺失續報或耗掉本輪 local claim。
 Backend `shioaji_member_repair` 以 environment／profile／work／plan／member 綁定 Owner 核准、

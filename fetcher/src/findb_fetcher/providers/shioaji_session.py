@@ -29,7 +29,11 @@ from findb_fetcher.providers.shioaji import (
     _validate_symbol,
     kbars_target_valid,
 )
-from findb_fetcher.shioaji_recovery import observation_guard, observe_snapshot
+from findb_fetcher.shioaji_recovery import (
+    observation_guard,
+    observe_snapshot,
+    record_kbars_not_dispatched,
+)
 
 _MAX_CATALOGUE_BYTES = 4 * 1024 * 1024
 
@@ -468,8 +472,14 @@ class PersistentIsolatedShioajiGateway:
         native_guard=observation_guard,
     )
     def fetch_kbars(self, symbol: str, target_date: date) -> ShioajiKbarsSnapshot:
-        _validate_symbol(symbol)
-        self._bootstrap()
+        try:
+            _validate_symbol(symbol)
+            self._bootstrap()
+        except BaseException:
+            # SDK create/login/contracts may have spent native quota, but the
+            # Kbars command below has definitely not been submitted yet.
+            record_kbars_not_dispatched()
+            raise
         value, before, after = self._run("kbars", symbol=symbol, date=target_date.isoformat())
         value = _decode_isolated_message(json.dumps(value).encode())
         snapshot = ShioajiKbarsSnapshot(

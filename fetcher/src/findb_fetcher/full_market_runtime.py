@@ -415,17 +415,19 @@ class FullMarketRuntime:
         if self.sdk is not None and (not getattr(self.sdk, "is_alive", lambda: True)()):
             self.sdk.close()
             self.sdk = None
+        if self.sdk is None:
+            self.sdk = PersistentIsolatedShioajiGateway(
+                os.getenv("SHIOAJI_API_KEY", ""),
+                os.getenv("SHIOAJI_SECRET_KEY", ""),
+                simulation=_simulation_from_env(),
+            )
+        # The gateway owns transport/child failure cleanup. Local observation
+        # waits and authorization errors must not discard a healthy login.
         try:
-            if self.sdk is None:
-                self.sdk = PersistentIsolatedShioajiGateway(
-                    os.getenv("SHIOAJI_API_KEY", ""),
-                    os.getenv("SHIOAJI_SECRET_KEY", ""),
-                    simulation=_simulation_from_env(),
-                )
             return getattr(self.sdk, operation)(*args)
         except Exception:
-            failed, self.sdk = self.sdk, None
-            if failed is not None:
+            if not getattr(self.sdk, "is_alive", lambda: True)():
+                failed, self.sdk = self.sdk, None
                 failed.close()
             raise
 

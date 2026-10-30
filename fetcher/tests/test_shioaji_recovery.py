@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict
 from datetime import date
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from findb_fetcher.shioaji_recovery import (
     observation_guard,
     observation_status,
     observe_snapshot,
+    record_kbars_not_dispatched,
 )
 from provider_work_support import owned_unit_work
 from test_shioaji import _kbars
@@ -350,6 +352,237 @@ def test_payload_error_without_format_evidence_retains_unknown_reservation(tmp_p
                 "private provider detail"
                 not in db.execute("SELECT diagnostic FROM work_shioaji_probe").fetchone()[0]
             )
+
+
+@pytest.mark.parametrize("stage", ["sdk_create", "sdk_login", "TSE", "OTC"])
+def test_bootstrap_failures_keep_eight_failure_attempts_without_kbars_debt(
+    tmp_path, monkeypatch, stage
+):
+    from findb_fetcher.providers.shioaji import ShioajiSdkError
+    from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+    from test_full_market import _member, _plan, _runtime
+
+    clock = [1000.0]
+    monkeypatch.setattr("findb_fetcher.shioaji_recovery.time.time", lambda: clock[0])
+    gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
+    gateway._constructed = gateway._logged_in = gateway._contracts_loaded = False
+    runtime, source, _ = _runtime(tmp_path, provider="shioaji")
+    runtime._acquisition_allowed = lambda: True
+    plan = _plan()
+    runtime.state.record_plan(plan, "shioaji")
+    calls = []
+    try:
+        with owned_unit_work("shioaji", tmp_path) as owner:
+
+            def run(kind, **command):
+                assert kind != "kbars"
+                owner.dispatch_observations += 1
+                calls.append((kind, command))
+                if command.get("exchange", kind) == stage:
+                    raise ShioajiSdkError("bootstrap failed", code="ACQUISITION")
+                return {}, len(calls) - 1, len(calls)
+
+            monkeypatch.setattr(gateway, "_run", run)
+            runtime._acquire = lambda member, *args: gateway.fetch_kbars(
+                member["provider_symbol"], DAY
+            )
+            for attempt in range(1, 9):
+                assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+                assert observation_status(owner.journal, "AAPL", DAY) == (0, 3)
+                assert owner.dispatch_observations == len(calls) >= attempt
+                with runtime.state.connection() as db:
+                    assert tuple(
+                        db.execute("SELECT attempts,status,reason FROM full_work").fetchone()
+                    ) == (
+                        attempt,
+                        "manual" if attempt == 8 else "pending",
+                        "retry_exhausted" if attempt == 8 else "source_error",
+                    )
+                owner.journal = queue.WorkJournal(owner.journal.path, owner.journal.key)
+                clock[0] += 61
+            with owner.journal.connection() as db:
+                assert [row[0] for row in db.execute("SELECT outcome FROM work_shioaji_probe")] == [
+                    "predispatch"
+                ] * 8
+        assert len(source.outcomes) == 8
+    finally:
+        runtime.close()
+
+
+def test_bootstrap_predispatch_proof_preserves_prior_unknown_and_allows_later_data(
+    tmp_path, monkeypatch
+):
+    from findb_fetcher.providers.shioaji import ShioajiSdkError
+    from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+
+    clock = [1000.0]
+    monkeypatch.setattr("findb_fetcher.shioaji_recovery.time.time", lambda: clock[0])
+    gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
+    with owned_unit_work("shioaji", tmp_path) as owner:
+        with pytest.raises(RuntimeError):
+            with observation_guard({"symbol": "2330", "target_date": DAY}, None):
+                raise RuntimeError("uncertain dispatch")
+        clock[0] += 900
+
+        def failed_bootstrap():
+            owner.dispatch_observations += 1
+            raise ShioajiSdkError("bootstrap failed", code="ACQUISITION")
+
+        monkeypatch.setattr(gateway, "_bootstrap", failed_bootstrap)
+        for _ in range(3):
+            with pytest.raises(ShioajiSdkError):
+                gateway.fetch_kbars("2330", DAY)
+            assert observation_status(owner.journal, "2330", DAY) == (1, 3)
+            owner.journal = queue.WorkJournal(owner.journal.path, owner.journal.key)
+        record_kbars_not_dispatched()  # No active probe must not touch prior debt.
+        with owner.journal.connection() as db:
+            assert [row[0] for row in db.execute("SELECT outcome FROM work_shioaji_probe")] == [
+                "unknown",
+                "predispatch",
+                "predispatch",
+                "predispatch",
+            ]
+        monkeypatch.setattr(gateway, "_bootstrap", lambda: None)
+
+        def run(kind, **command):
+            owner.dispatch_observations += 1
+            return (
+                {"code": "OK", "stage": "payload", "kbars": _kbars(), "before": 10, "after": 20},
+                3,
+                4,
+            )
+
+        monkeypatch.setattr(gateway, "_run", run)
+        assert gateway.fetch_kbars("2330", DAY).kbars["ts"]
+        assert owner.dispatch_observations == 4
+        assert observation_status(owner.journal, "2330", DAY) == (1, 3)
+
+
+@pytest.mark.parametrize(
+    "failure", ["wait", "exhausted", "calendar_closed", "calendar_outage", "calendar_invalid"]
+)
+def test_runtime_preserves_logged_in_gateway_on_observation_gate(tmp_path, monkeypatch, failure):
+    from findb_fetcher.provider_wait import CalendarDecisionRepairRequiredError
+    from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+    from test_full_market import _runtime
+
+    clock = [1000.0]
+    monkeypatch.setattr("findb_fetcher.shioaji_recovery.time.time", lambda: clock[0])
+    runtime, _, _ = _runtime(tmp_path, provider="shioaji")
+    runtime.runtime_window = lambda: {"open": True}
+    gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
+    gateway.is_alive = Mock(return_value=True)
+    gateway.close = Mock()
+    gateway._bootstrap = Mock()
+    runtime.sdk = gateway
+    identity = json.dumps(
+        {"symbol": "2330", "target_date": str(DAY)}, sort_keys=True, separators=(",", ":")
+    )
+    key = "shioaji_kbars:" + hashlib.sha256(identity.encode()).hexdigest()
+    raw = json.dumps(
+        {"type": "ShioajiKbarsSnapshot", "data": asdict(snapshot(empty=True))}
+    ).encode()
+    try:
+        with owned_unit_work("shioaji", tmp_path) as owner:
+            owner.journal.response(key, raw)
+            with pytest.raises(ShioajiObservationWaitError):
+                runtime._shioaji_request("fetch_kbars", "2330", DAY)
+            assert runtime.sdk is gateway
+            if failure == "exhausted":
+                for _ in range(2):
+                    clock[0] += 900
+                    with observation_guard({"symbol": "2330", "target_date": DAY}, None):
+                        observe_snapshot(snapshot(empty=True))
+            elif failure.startswith("calendar"):
+                clock[0] += 900
+                request = owner.request
+
+                def calendar(action, **kwargs):
+                    if action != "calendar-status":
+                        return request(action, **kwargs)
+                    if failure == "calendar_outage":
+                        raise httpx.ReadError("unavailable")
+                    return {
+                        "work_id": "wrong"
+                        if failure == "calendar_invalid"
+                        else owner.work["work_id"],
+                        "trade_date": owner.work.get("trade_date"),
+                        "repair_required": failure == "calendar_closed",
+                    }
+
+                owner.request = calendar
+            error = {
+                "wait": ShioajiObservationWaitError,
+                "exhausted": ShioajiObservationWaitError,
+                "calendar_closed": CalendarDecisionRepairRequiredError,
+                "calendar_outage": queue.ProviderWorkSourceUnavailableError,
+                "calendar_invalid": queue.ProviderWorkRecoveryBlockedError,
+            }[failure]
+            for _ in range(3):
+                with pytest.raises(error):
+                    runtime._shioaji_request("fetch_kbars", "2330", DAY)
+                assert runtime.sdk is gateway
+                gateway.close.assert_not_called()
+                gateway._bootstrap.assert_not_called()
+            # A different eligible member uses the same authenticated gateway.
+            gateway._run = Mock(
+                return_value=(
+                    {
+                        "code": "OK",
+                        "stage": "payload",
+                        "kbars": _kbars(),
+                        "before": 10,
+                        "after": 20,
+                    },
+                    0,
+                    1,
+                )
+            )
+            assert runtime._shioaji_request("fetch_kbars", "2317", DAY).kbars["ts"]
+            gateway._bootstrap.assert_called_once()
+            assert runtime.sdk is gateway and owner.journal.response(key) == raw
+            gateway.close.assert_not_called()
+    finally:
+        runtime.close()
+    gateway.close.assert_called_once()
+
+
+def test_runtime_replaces_dead_gateway_and_unknown_kbars_is_still_reserved(tmp_path, monkeypatch):
+    from findb_fetcher import full_market_runtime as module
+    from findb_fetcher.providers.shioaji import ShioajiSdkError
+    from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
+    from test_full_market import _runtime
+
+    runtime, _, _ = _runtime(tmp_path, provider="shioaji")
+    runtime.runtime_window = lambda: {"open": True}
+    gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
+    gateway.is_alive = Mock(return_value=True)
+    gateway.close = Mock()
+    gateway._bootstrap = Mock()
+    replacement = Mock()
+    factory = Mock(return_value=replacement)
+    monkeypatch.setattr(module, "PersistentIsolatedShioajiGateway", factory)
+    runtime.sdk = gateway
+    try:
+        with owned_unit_work("shioaji", tmp_path) as owner:
+
+            def failed_kbars(*args, **kwargs):
+                owner.dispatch_observations += 1
+                # Native gateway failure cleanup reaps its child before returning.
+                gateway.is_alive.return_value = False
+                raise ShioajiSdkError("unknown native result", code="ACQUISITION")
+
+            gateway._run = Mock(side_effect=failed_kbars)
+            with pytest.raises(ShioajiSdkError):
+                runtime._shioaji_request("fetch_kbars", "2330", DAY)
+            assert observation_status(owner.journal, "2330", DAY) == (1, 3)
+            runtime._shioaji_request("fetch_kbars", "2317", DAY)
+            gateway.close.assert_called_once()
+            factory.assert_called_once()
+            replacement.fetch_kbars.assert_called_once_with("2317", DAY)
+            assert runtime.sdk is replacement
+    finally:
+        runtime.close()
 
 
 def test_calendar_outage_preserves_empty_report_and_original_attempts(tmp_path):
