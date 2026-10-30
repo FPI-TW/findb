@@ -573,6 +573,8 @@ async def acceptance(
         or work.trade_date != trade_date
     ):
         raise ProviderWorkError("provider work delivery scope differs")
+    if work.state == "calendar_closed":
+        raise ProviderWorkError("calendar-closed work cannot accept delivery")
     descriptor = (work.prepared_deliveries or {}).get(identity["member_key"])
     if descriptor and descriptor["body_sha256"] != db.info.get("provider_work_body_sha256"):
         raise ProviderWorkError("prepared delivery bytes differ from retained descriptor")
@@ -591,6 +593,17 @@ async def acceptance(
 async def acquisition_open(
     db: AsyncSession, work: ProviderWork, *, check_window: bool = True
 ) -> bool:
+    if work.state == "calendar_closed":
+        return False
+    if work.kind == "daily" and (work.manifest or {}).get("plan_id"):
+        from app.models.registry import DailyExecutionDecision
+
+        decision = await db.get(
+            DailyExecutionDecision,
+            (work.dataset_key, work.provider, work.trade_date, work.execution_profile),
+        )
+        if decision is not None and decision.kind == "skipped_calendar":
+            return False
     if work.kind != "rerun" and work.dataset_key == "hk_equity_eod":
         from app.models.registry import DatasetRegistry
         from app.services.hk_provider_cutover import acquisition_allowed
@@ -656,12 +669,15 @@ async def current_calendar_status(db: AsyncSession, work: ProviderWork) -> dict:
     frozen_source = decision.snapshot.get("calendar_source")
     frozen_revision_id = decision.snapshot.get("calendar_revision_id")
     repair_required = bool(
-        decision.kind == "planned"
-        and current["calendar_source"] == "published"
-        and not current["is_open"]
-        and (
-            frozen_source != "published"
-            or current.get("calendar_revision_id") != frozen_revision_id
+        (decision.kind == "skipped_calendar" and bool((work.manifest or {}).get("plan_id")))
+        or (
+            decision.kind == "planned"
+            and current["calendar_source"] == "published"
+            and not current["is_open"]
+            and (
+                frozen_source != "published"
+                or current.get("calendar_revision_id") != frozen_revision_id
+            )
         )
     )
     return {
@@ -787,6 +803,8 @@ async def associate_receipt(
         generation=identity["generation"],
         token=identity["token"],
     )
+    if work.state == "calendar_closed":
+        raise ProviderWorkError("calendar-closed work cannot accept delivery")
     descriptor = (work.prepared_deliveries or {}).get(identity["member_key"])
     retained = descriptor and descriptor["body_sha256"] == db.info.get("provider_work_body_sha256")
     if (attempt.state != "open" or attempt.drain_only or work.state != "running") and not retained:
@@ -1167,7 +1185,11 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
             last_failure.label("last_failure_code"),
         )
         .join(ProviderWorkAttempt)
-        .where(ProviderWork.environment == environment(), ProviderWorkAttempt.state != "settled")
+        .where(
+            ProviderWork.environment == environment(),
+            ProviderWorkAttempt.state != "settled",
+            ProviderWork.state != "calendar_closed",
+        )
         .order_by(ProviderWork.provider, ProviderWorkAttempt.queue_order)
     )
     if provider:

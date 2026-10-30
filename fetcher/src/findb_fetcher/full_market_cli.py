@@ -215,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--readiness-file", type=Path)
     parser.add_argument("--work-id")
     parser.add_argument("--repair-proposal", type=Path)
+    parser.add_argument("--calendar-closure", action="store_true")
+    parser.add_argument("--closure-proposal", type=Path)
     parser.add_argument("--expected-sha256")
     modes = parser.add_mutually_exclusive_group()
     for mode in (
@@ -248,6 +250,30 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         if config["deployment_target"] != app_environment("local"):
             raise ValueError("runtime environment identity mismatch")
+        if args.calendar_closure:
+            if any(
+                getattr(args, mode.replace("-", "_"))
+                for mode in (
+                    "check",
+                    "require-stopped",
+                    "initialize-state",
+                    "run-forever",
+                    "once",
+                    "sync-universes",
+                    "health",
+                    "diagnose-shioaji",
+                    "preview-shioaji-repair",
+                )
+            ):
+                raise ValueError("calendar closure cannot start or initialize runtime")
+            from findb_fetcher.calendar_closure_cli import run as close_calendar
+
+            print(
+                json.dumps(
+                    close_calendar(args, account_path), sort_keys=True, separators=(",", ":")
+                )
+            )
+            return 0
         if args.diagnose_shioaji or args.preview_shioaji_repair or args.apply:
             from findb_fetcher.shioaji_repair_cli import run
 

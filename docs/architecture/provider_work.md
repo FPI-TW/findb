@@ -134,6 +134,19 @@ FinLab daily target-not-ready 與 FactSet daily `no_source_row` 在 immutable
 處理。每次 retry 在任何新 provider I/O 前，以 owner fence 重新讀取目前 published calendar；若 frozen planned decision
 之後的新 published revision 將該日改為休市，保存 `CALENDAR_DECISION_REPAIR_REQUIRED` 並停止
 重試，等待人工修復，絕不自動改寫 frozen decision。詳見 [Full market runbook](../operations/full_market.md#來源尚未發布的等待與休市判定)。
+
+已人工改為 `skipped_calendar` 的舊 Shioaji daily canonical work 也拒絕 acquisition，
+即使仍有原 plan／manifest；calendar_skip manifest 與 prepared drain 保持原行為。
+Owner 可在 Pilot／Full 都停止、owner 閒置且 Backend／checkpoint 均無交付／在途證據時，
+經 typed preview／expected SHA 將原 work 結清為 `calendar_closed`。
+`provider_work_calendar_closure` 附加保存原 work／plan／attempts／修復授權、既有休市決策
+audit 與 Owner 本機 attestation；同 transaction 只修改 work.state／completed_at。
+原 manifest、attempt rows、plan members／summary、grants／ACK、checkpoint 及 native 帳務不變，
+不產生 canonical、no_data 或 synthetic receipt。FIFO projection 排除該 work，stable enqueue
+保留其 terminal 身分。十五分鐘證明與 provider-first 鎖序阻止 stale／active-owner 套用；
+同請求重播回傳原 closure，降版不得丟失既有結清證據。CLI 只讀 Source inventory 與 SQLite，
+持有既有 shared host lock 至 Owner API 回應，不取得 provider SDK。
+詳見 [舊工作結清操作](../operations/full_market.md#已更正休市決策的舊工作結清)。
 TAIFEX maintenance 官方 JSON 須為非空 row list，每列具有效且一致的 `Date` 字串，才可推導報表日期並
 進行完整 report validation。空／錯誤形狀、缺欄位、錯誤日期或永久 body 格式錯誤會保留 safe failure
 code 並安全結束 failed/manual、釋放 owner；空報表不構成 no-trade／no_data 證據，也不外洩原 exception details。
