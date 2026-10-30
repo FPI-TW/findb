@@ -527,3 +527,47 @@ async def test_reset_refuses_active_queue_owner_even_without_ingestion_runs(test
                     db_writers_stopped=True,
                     target_fingerprint=await get_target_fingerprint(connection),
                 )
+
+
+@pytest.mark.asyncio
+async def test_reset_preserves_calendar_closure_and_its_original_work_graph(
+    test_engine, monkeypatch
+):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.config import get_settings
+    from app.schemas.calendar_closure import CalendarClosureApplyRequest
+    from app.services.calendar_closure import apply, inventory, preview
+    from tests.test_calendar_closure import setup_closure
+
+    monkeypatch.setattr(get_settings(), "SHIOAJI_SKIP_NON_TRADING_DAYS", True)
+    sessions = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with sessions() as db:
+        work, _, _, _, proposal = await setup_closure(db)
+        wid = work.work_id
+        report = await preview(db, wid, proposal)
+        assert report.apply_ready, report.blockers
+        await apply(
+            db,
+            wid,
+            CalendarClosureApplyRequest(**proposal.model_dump(), expected_sha256=report.sha256),
+            actor="reset-test-owner",
+        )
+        await db.commit()
+        original = (await inventory(db, wid)).snapshot
+    async with test_engine.begin() as connection:
+        dry = await reset_staging_legacy_data(connection, apply=False)
+        assert dry.before["public.provider_work_calendar_closure"] == 1
+        with pytest.raises(ResetSafetyError, match="closure evidence must be retained"):
+            await reset_staging_legacy_data(
+                connection,
+                apply=True,
+                db_writers_stopped=True,
+                target_fingerprint=dry.target_fingerprint,
+            )
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM provider_work_calendar_closure"))
+            == 1
+        )
+    async with sessions() as db:
+        assert (await inventory(db, wid)).snapshot == original

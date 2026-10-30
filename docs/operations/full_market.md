@@ -536,6 +536,10 @@ findb-fetch-runtime --provider shioaji --execution-profile pilot \
 部署前置條件；部署後仍須重新取得正式預覽。只要存在 closure evidence，migration downgrade
 即拒絕，以免舊版遺失結清語意。本次實作不部署、不套用，也不啟動 Pilot／Full。
 
+Staging mutable-data reset 的 dry-run 可列出 closure 數量；只要已有 closure evidence，
+reset apply 一律拒絕，保留其原 work／plan／attempts／修復 graph。空 closure table 才可隨
+原本明確核准的 staging reset 一併清空；本次部署與預覽不執行任何 reset。
+
 #### 2026-10-30 staging 結清流程實作與預覽
 
 實作分支 `fix/shioaji-calendar-work-closure`。Developer 驗證：362 項相關 Backend／Source→

@@ -31,6 +31,7 @@ def test_source_openapi_contains_only_retained_operational_routes() -> None:
         "/api/v1/source/provider-work/claim",
         "/api/v1/source/provider-work/{work_id}/authorize",
         "/api/v1/source/provider-work/{work_id}/calendar-status",
+        "/api/v1/source/provider-work/{work_id}/calendar-closure",
         "/api/v1/source/provider-work/{work_id}/shioaji-diagnostics",
         "/api/v1/source/provider-work/{work_id}/shioaji-repairs",
         "/api/v1/source/provider-work/{work_id}/shioaji-repair-ack",

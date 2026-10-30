@@ -18,6 +18,8 @@ The reset deliberately preserves only schema/configuration/authentication data:
 * ``public.full_market_dataset_state``
 * ``public.provider_work_owner`` (installed inode and fencing generation)
 
+Nonempty calendar-closure evidence blocks apply: its immutable plan/work graph
+requires retention. An empty closure table participates in the FK-complete reset.
 Every other current application data table is cleared, including canonical,
 raw, workflow, audit, alert, calendar, roll-rule, and worker-heartbeat data.
 
@@ -122,6 +124,8 @@ TARGET_TABLES = (
     "public.provider_work",
     "public.provider_work_attempt",
     "public.provider_work_receipt",
+    # Empty-only reset: nonempty immutable closure evidence refuses apply below.
+    "public.provider_work_calendar_closure",
     "public.roll_rule",
     "public.shioaji_member_repair",
     "public.shioaji_repair_ack",
@@ -291,6 +295,9 @@ async def reset_staging_legacy_data(
             before=before,
             after=before,
         )
+
+    if before["public.provider_work_calendar_closure"] > 0:
+        raise ResetSafetyError("staging reset refused: calendar closure evidence must be retained")
 
     await _truncate_mutable_rows(connection)
     after = await _snapshot(connection)

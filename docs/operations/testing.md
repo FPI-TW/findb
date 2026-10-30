@@ -508,6 +508,9 @@ summary 保留；結清後 queue projection／claim／repair／enqueue 不得恢
 Fetcher `test_calendar_closure_cli.py` 驗證 existing inode 鎖、SQLite 唯讀、checksum、Source outage、
 stale apply 與 ACK-loss 重播，且無 SDK 呼叫。staging 匯出預覽以同一 evaluator 執行，不能
 取代新 migration／API 部署後的正式預覽與受控套用；本次不做原生派送或 production 驗收。
+`test_source_routes.py` 同步列入新唯讀 inventory；staging reset inventory 納入 closure table，
+`test_reset_staging_legacy_data.py` 驗證空表的完整 FK 清理與已有 closure evidence 時拒絕
+reset，並逐項核對原工作／計畫／attempts／授權 graph 不變。這些 reset 僅在本機隔離測試 DB 執行。
 `pnpm check`、`pnpm test` 與兩環境 IaC format／validate／plan 必須通過後才能部署。
 以上架構與 fixture 驗收不代表 provider／R2 native 資料問題已排除。
 
