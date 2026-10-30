@@ -35,11 +35,6 @@ from findb_fetcher.scheduler_control import (
     SchedulerControlResponseError,
     SchedulerControlTransportError,
 )
-from findb_fetcher.twelve_data_universe import (
-    SymbolExecution,
-    UniverseExecution,
-    execute_twelve_data_universe,
-)
 from findb_fetcher.universe import (
     SymbolUniverse,
     UniverseError,
@@ -70,7 +65,6 @@ __all__ = [
     "SourceAPIProtocolError",
     "SourceAPIResponseError",
     "SourceAPITransportError",
-    "SymbolExecution",
     "SymbolUniverse",
     "TwelveDataClient",
     "TwelveDataConfig",
@@ -78,10 +72,8 @@ __all__ = [
     "TwelveDataPayloadError",
     "TwelveDataResponseError",
     "UniverseError",
-    "UniverseExecution",
     "UniverseLimits",
     "UniverseSymbol",
     "build_market_eod_request",
-    "execute_twelve_data_universe",
     "load_symbol_universe",
 ]

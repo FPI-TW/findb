@@ -641,7 +641,7 @@ def test_raw_persisted_before_provider_mapping_failure(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("mic", ["XNAS", "XNCM", "XNGS", "XNMS", "XNYS", "XHKG"])
-@pytest.mark.parametrize("currency", ["USD", "HKD"])
+@pytest.mark.parametrize("currency", ["USD", "usd", "HKD"])
 def test_native_twelve_data_identity_uses_catalogue_mic_rules(
     tmp_path: Path, mic: str, currency: str
 ) -> None:
@@ -677,7 +677,8 @@ def test_native_twelve_data_identity_uses_catalogue_mic_rules(
     )
     plan = _plan()
     try:
-        if currency == "USD" and mic in {"XNAS", "XNCM", "XNGS", "XNMS"}:
+        # Provider currency is normalized before comparison with the frozen universe.
+        if currency.upper() == "USD" and mic in {"XNAS", "XNCM", "XNGS", "XNMS"}:
             requests = runtime._acquire(
                 _member(), plan, plan["parts"][0], {"release_id": "r"}, runtime.feeds[0]
             )

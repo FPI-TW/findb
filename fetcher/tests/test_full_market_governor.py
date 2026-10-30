@@ -78,11 +78,10 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
         ).fetchone()[:] == (1, 0)
         assert db.execute("SELECT * FROM full_quota WHERE window='2026-10-02'").fetchone() is None
     assert raw.calls == [] and first.catalogue_evidence == {}
-    # Cross midnight before a second HK runtime opens the same account state.
+    # Cross midnight before a second runtime opens the same account state.
     clock.elapsed = max(clock.elapsed, 43201)
     second, _, _ = _runtime(tmp_path)
     second.proof = first.proof.copy()
-    second.feeds[0]["dataset_key"] = "hk_equity_eod"
     second.proof["expires_at"] = (clock.now() + timedelta(seconds=2)).isoformat()
     second._reserve()  # Expired legacy evidence cannot bypass or shorten cooldown.
     assert clock.now().timestamp() >= cooldown_until
@@ -94,11 +93,9 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
 
     with httpx.Client(transport=httpx.MockTransport(acquired)) as http:
         second.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
-        hk_plan = {**_plan(), "dataset_key": "hk_equity_eod"}
+        plan = _plan()
         with pytest.raises(TwelveDataResponseError):
-            second._acquire(
-                _member(), hk_plan, hk_plan["parts"][0], {"release_id": "r"}, second.feeds[0]
-            )
+            second._acquire(_member(), plan, plan["parts"][0], {"release_id": "r"}, second.feeds[0])
     assert len(calls) == 2 and calls[-1][1].timestamp() == pytest.approx(cooldown_until + 0.1)
     assert all(wait <= 1 for wait in clock.waits)
     with second.state.connection() as db:
@@ -333,11 +330,10 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
     with first.state.connection() as db:
         permit = db.execute("SELECT next_at FROM full_pacing").fetchone()[0]
         assert permit == pytest.approx(started_at + (60 if status == 429 else 60 / 1597))
-    # A fresh HK runtime must respect the remaining account cooldown after restart.
+    # A fresh runtime must respect the remaining account cooldown after restart.
     clock.elapsed += 1
     second, _, _ = _runtime(tmp_path)
     second.proof = first.proof.copy()
-    second.feeds[0]["dataset_key"] = "hk_equity_eod"
     second._reserve()
     assert clock.now().timestamp() == started_at + (60 if status == 429 else 1)
     assert clock.waits == ([1] * 59 if status == 429 else [])

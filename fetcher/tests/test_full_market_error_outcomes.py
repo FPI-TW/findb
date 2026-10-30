@@ -262,3 +262,82 @@ def test_out_of_range_codes_are_not_persisted(tmp_path):
     )
     assert state.diagnostics("k")[0]["http_status"] is None
     assert state.diagnostics("k")[0]["provider_code"] is None
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason", "category"),
+    [
+        ("http_429", "rate_limited", "rate_limited"),
+        ("payload_429", "rate_limited", "rate_limited"),
+        ("quota_dispatched", "source_error", "quota_blocked"),
+    ],
+)
+def test_dispatched_rate_or_quota_failure_records_diagnostic(tmp_path, failure, reason, category):
+    from findb_fetcher.full_market_state import QuotaBlockedError
+    from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+
+    def acquire(*args):
+        if failure == "http_429":
+            raise TwelveDataResponseError("limited", status_code=429, dispatched=True)
+        if failure == "payload_429":
+            raise TwelveDataResponseError(
+                "limited", status_code=200, provider_code=429, dispatched=True
+            )
+        exc = QuotaBlockedError("quota", status_code=None)
+        exc.dispatched = True
+        raise exc
+
+    runtime._acquire = acquire
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+        assert source.outcomes == [
+            {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": reason}
+        ]
+        assert [row["category"] for row in runtime.state.diagnostics("fp1:123:AAPL")] == [category]
+    finally:
+        runtime.close()
+
+
+def test_predispatch_quota_wait_is_not_a_failure_diagnostic(tmp_path):
+    from findb_fetcher.full_market_state import QuotaBlockedError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+
+    def acquire(*args):
+        raise QuotaBlockedError("quota wait", quota_wait=True)
+
+    runtime._acquire = acquire
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+        assert source.outcomes == []
+        assert runtime.state.diagnostics("fp1:123:AAPL") == []
+    finally:
+        runtime.close()
+
+
+def test_existing_checkpoint_gains_diagnostic_table_without_rewriting_work(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "state.sqlite3"
+    state = FullMarketState(path)
+    state.record_plan(_plan(), "twelve_data")
+    state.prepare("fp1:123:AAPL", b"prepared delivery")
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TABLE full_work_diagnostic")
+        before = db.execute("SELECT * FROM full_work ORDER BY key").fetchall()
+    reopened = FullMarketState(path)
+    reopened.record_diagnostic("fp1:123:AAPL", provider="twelve_data", category="server_error")
+    assert reopened.health("twelve_data")["source_error_diagnostics"] == {"server_error": 1}
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT * FROM full_work ORDER BY key").fetchall() == before
+    assert reopened.prepared("fp1:123:AAPL") == b"prepared delivery"

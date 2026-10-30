@@ -130,41 +130,15 @@ class TwelveDataScheduledExecutor:
         try:
             request = job.prepared_request
             if request is None:
-                query: dict[str, Any]
-                mapping_after_date = job.checkpoint_before
+                # Historical work owns exactly one open target date per job; the
+                # retired checkpoint-range daily scheduler no longer exists.
                 target_date = job.target_data_date
-                if (
-                    job.checkpoint_before is None
-                    or self._universe.universe_id == "twelve_data_us_staging_pilot_v2"
-                ):
-                    query = {
-                        "start_date": target_date,
-                        # The client accepts inclusive date bounds.
-                        "end_date": target_date,
-                    }
-                    mapping_after_date = target_date - timedelta(days=1)
-                else:
-                    start_date = job.checkpoint_before + timedelta(days=1)
-                    if start_date > target_date:
-                        return JobExecution(
-                            outcome="up_to_date",
-                            succeeded=True,
-                            checkpoint_after=job.checkpoint_before,
-                        )
-                    if (target_date - start_date).days > self._universe.limits.max_date_span_days:
-                        return JobExecution(
-                            outcome="checkpoint_gap_exceeded",
-                            succeeded=False,
-                        )
-                    query = {
-                        "start_date": start_date,
-                        # The client accepts inclusive date bounds.
-                        "end_date": target_date,
-                    }
                 response = self._provider.fetch_daily(
                     job.symbol,
                     exchange=job.exchange,
-                    **query,
+                    # The client accepts inclusive date bounds.
+                    start_date=target_date,
+                    end_date=target_date,
                 )
                 raw_object = self._raw_store.persist(
                     response.raw_bytes,
@@ -179,7 +153,7 @@ class TwelveDataScheduledExecutor:
                     requested_exchange=job.exchange,
                     canonical_symbol=job.canonical_symbol,
                     allowed_instrument_types=(self._universe.instrument_type,),
-                    after_trade_date=mapping_after_date,
+                    after_trade_date=target_date - timedelta(days=1),
                     through_trade_date=target_date,
                     delivery=_delivery_metadata(self._schedule, job),
                 )
@@ -244,17 +218,10 @@ class TwelveDataScheduledExecutor:
                 run_id=run.run_id,
             )
         except TwelveDataNoNewDataError:
-            target_date = job.target_data_date
-            if job.checkpoint_before is None or job.checkpoint_before < target_date:
-                return JobExecution(
-                    outcome="target_not_ready",
-                    succeeded=False,
-                    retryable=True,
-                )
             return JobExecution(
-                outcome="up_to_date",
-                succeeded=True,
-                checkpoint_after=job.checkpoint_before,
+                outcome="target_not_ready",
+                succeeded=False,
+                retryable=True,
             )
         except TwelveDataResponseError as exc:
             retryable = (
