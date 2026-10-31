@@ -617,8 +617,14 @@ def test_calendar_outage_preserves_empty_report_and_original_attempts(tmp_path):
 
     runtime._acquire = acquire
 
+    probes = []
+
     def unavailable(owner):
-        raise httpx.ReadError("calendar unavailable")
+        # The pre-claim probe succeeds; the post-empty probe hits the outage.
+        probes.append(1)
+        if len(probes) > 1:
+            raise httpx.ReadError("calendar unavailable")
+        return False
 
     runtime._calendar_repair_required = unavailable
     plan = _plan()

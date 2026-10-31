@@ -260,6 +260,7 @@ def test_terminal_members_never_issue_restore_rpc_on_later_slices(tmp_path, monk
         dispatch_observations=0,
         restore=lambda **kwargs: restored.append(kwargs["member_key"]) or [],
         authorize=lambda: None,
+        request=lambda action: {"work_id": None, "trade_date": None, "repair_required": False},
     )
     monkeypatch.setattr(provider_work, "active", lambda: owner)
     runtime._deliver_plan(plan, release, {})
@@ -277,6 +278,7 @@ def test_sdk_bootstrap_does_not_spend_member_budget_for_later_predispatch_quota_
         dispatch_observations=0,
         restore=lambda **kwargs: [],
         authorize=lambda: None,
+        request=lambda action: {"work_id": None, "trade_date": None, "repair_required": False},
     )
     monkeypatch.setattr(provider_work, "active", lambda: owner)
 

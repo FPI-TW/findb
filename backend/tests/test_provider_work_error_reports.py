@@ -16,6 +16,7 @@ from app.models.registry import (
     SchedulerControl,
 )
 from app.services import provider_work
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
 from tests.test_provider_work_adapters import native_runtime as native_runtime
@@ -184,7 +185,7 @@ async def test_report_continuation_uses_real_queue_and_cannot_reopen_acquisition
     await asyncio.wait_for(asyncio.to_thread(run_round), 30)
     h.db.expire_all()
     work = await h.db.get(ProviderWork, work_id)
-    assert work.state == "queued" and not work.prepared_deliveries
+    assert work.state == "queued" and not (await prepared_map(h.db, work.work_id))
     original_manifest = work.manifest
     attempt = await h.db.scalar(
         select(ProviderWorkAttempt).where(

@@ -104,6 +104,11 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         def reserve(self, request):
             return None
 
+        def request(self, action):
+            # Daily rounds probe the current calendar before the first acquisition.
+            assert action == "calendar-status"
+            return {"work_id": None, "trade_date": None, "repair_required": False}
+
     monkeypatch.setattr(
         provider_work, "require_owner", lambda provider: provider_work.active() or UnitOwner()
     )

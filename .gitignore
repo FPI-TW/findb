@@ -71,6 +71,9 @@ todos.json
 .playwright-mcp/
 docs/superpowers/
 
+# graphify 本機圖譜、報告與快取（包含所有子目錄）
+graphify-out/
+
 # pyenv local pin
 .python-version
 

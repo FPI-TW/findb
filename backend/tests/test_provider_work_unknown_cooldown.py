@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import HistoricalBackfillItem
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_clock import account_clock, drain_retained_rerun_during_cooldown
 from tests.test_provider_work_adapters import native_runtime as native_runtime
@@ -41,7 +42,7 @@ async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_origin
     retained = await h.db.scalar(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
-    retained_id, prepared = retained.work_id, dict(retained.prepared_deliveries)
+    retained_id, prepared = retained.work_id, dict((await prepared_map(h.db, retained.work_id)))
     calls = h.native_calls()
     assert prepared and not h.runs
     state = FullMarketState(h.path / "account/governor.sqlite3")
@@ -220,7 +221,7 @@ async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_origin
         await h.db.commit()
         assert await h.run()
         h.db.expire_all()
-        assert (await h.db.get(ProviderWork, retained_id)).prepared_deliveries == prepared
+        assert (await prepared_map(h.db, retained_id)) == prepared
         assert h.runs and h.native_calls() == calls
         await drain_retained_rerun_during_cooldown(h)
         assert (

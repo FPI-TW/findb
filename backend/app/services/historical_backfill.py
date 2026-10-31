@@ -444,7 +444,7 @@ async def _cancel_queued_item_work(
     Callers hold the provider transaction lock before locking request/item rows.
     """
     from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkReceipt
-    from app.services.provider_work import environment
+    from app.services.provider_work import environment, has_prepared
 
     work = await db.scalar(
         select(ProviderWork).where(
@@ -455,7 +455,7 @@ async def _cancel_queued_item_work(
     )
     if work is None or work.state != "queued":
         return
-    retained = bool(work.prepared_deliveries) or bool(
+    retained = await has_prepared(db, work.work_id) or bool(
         await db.scalar(
             select(ProviderWorkReceipt.run_id)
             .where(ProviderWorkReceipt.work_id == work.work_id)
@@ -588,7 +588,7 @@ async def claim_next_item(
     """
     now = now or utc_now()
 
-    from app.services.provider_work import ProviderWorkError, fence, lock_provider
+    from app.services.provider_work import ProviderWorkError, fence, has_prepared, lock_provider
 
     await lock_provider(db, provider)
     await expire_requests(db, provider=provider, now=now)
@@ -620,7 +620,7 @@ async def claim_next_item(
     )
     from app.models.provider_work import ProviderWorkReceipt
 
-    retained = bool(work.prepared_deliveries) or bool(
+    retained = await has_prepared(db, work.work_id) or bool(
         await db.scalar(
             select(ProviderWorkReceipt.run_id)
             .where(ProviderWorkReceipt.work_id == work.work_id)
@@ -787,7 +787,7 @@ async def complete_item(
         raise HistoricalBackfillValidationError("partial is restricted to fenced FactSet EOD v2")
 
     from app.models.provider_work import ProviderWorkOwner
-    from app.services.provider_work import environment, fence
+    from app.services.provider_work import environment, fence, prepared_keys
 
     owner = await db.get(ProviderWorkOwner, (environment(), provider))
     identity = db.info.get("provider_work")
@@ -842,7 +842,7 @@ async def complete_item(
                 ),
                 **(
                     {
-                        "manual_pending_prepared": list(owned_work.prepared_deliveries),
+                        "manual_pending_prepared": await prepared_keys(db, owned_work.work_id),
                         "manual_reason": "permanent_prepared_delivery_rejection",
                         "source_rejection": failure_message,
                     }
@@ -924,7 +924,7 @@ async def complete_item(
             **({"eod": eod_evidence.model_dump(mode="json")} if eod_evidence else {}),
             **(
                 {
-                    "manual_pending_prepared": list(owned_work.prepared_deliveries),
+                    "manual_pending_prepared": await prepared_keys(db, owned_work.work_id),
                     "manual_reason": "permanent_prepared_delivery_rejection",
                     "source_rejection": failure_message,
                 }
@@ -966,7 +966,7 @@ async def complete_item(
 async def validate_factset_historical_delivery(
     db: AsyncSession, request: MarketEODIngressRequestV2
 ) -> None:
-    from app.services.provider_work import fence
+    from app.services.provider_work import fence, prepared_descriptors
 
     if request.delivery is None:
         raise HistoricalBackfillValidationError("FactSet historical delivery requires fenced work")
@@ -985,7 +985,9 @@ async def validate_factset_historical_delivery(
     work, _, _ = await fence(
         db, provider="factset", **{key: identity[key] for key in ("work_id", "generation", "token")}
     )
-    descriptor = (work.prepared_deliveries or {}).get(request.idempotency_key)
+    descriptor = (await prepared_descriptors(db, work.work_id, request.idempotency_key)).get(
+        request.idempotency_key
+    )
     retained = descriptor is not None and descriptor["body_sha256"] == db.info.get(
         "provider_work_body_sha256"
     )
@@ -1139,9 +1141,15 @@ async def validate_taifex_historical_delivery(db: AsyncSession, request) -> None
             or item.request.status == "failed"
             and item.status in {"cancelled", "failed"}
         ):
+            from app.services.provider_work import prepared_descriptors
+
             work = await db.get(ProviderWork, identity["work_id"])
             descriptor = (
-                (work.prepared_deliveries or {}).get(request.idempotency_key) if work else None
+                (await prepared_descriptors(db, work.work_id, request.idempotency_key)).get(
+                    request.idempotency_key
+                )
+                if work
+                else None
             )
             if (
                 work

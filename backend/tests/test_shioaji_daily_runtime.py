@@ -11,6 +11,7 @@ from app.models.provider_work import ProviderWorkAttempt
 from app.models.registry import SchedulerControl
 from app.services import provider_work as queue
 from app.services.daily_runtime import daily_window
+from app.services.provider_work import prepared_map
 from tests.test_full_market import _dataset
 from tests.test_provider_work import identity
 from tests.test_provider_work_adapters import native_runtime as native_runtime
@@ -417,7 +418,7 @@ async def test_owned_native_slice_drains_receipt_yields_to_etf_and_resumes_same_
     h.db.expire_all()
     work = await h.db.get(ProviderWork, work_id)
     assert work.state == "queued"
-    frozen, prepared = work.manifest, dict(work.prepared_deliveries)
+    frozen, prepared = work.manifest, dict((await prepared_map(h.db, work.work_id)))
     if close_during_authorization:
         assert not h.runs
         assert not [call for call in h.native_calls() if json.loads(call)[0] == "kbars"]
@@ -464,7 +465,8 @@ async def test_owned_native_slice_drains_receipt_yields_to_etf_and_resumes_same_
     work = await h.db.get(ProviderWork, work_id)
     assert work.state == "completed"
     assert work.manifest == frozen
-    assert all(work.prepared_deliveries[key] == value for key, value in prepared.items())
+    saved = await prepared_map(h.db, work.work_id)
+    assert all(saved[key] == value for key, value in prepared.items())
     assert len(h.runs) == 2
     assert (
         len(

@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import HistoricalBackfillRequest
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_clock import account_clock
 from tests.test_provider_work_adapters import native_runtime as native_runtime
@@ -71,7 +72,9 @@ async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_
         assert charged == expected_budget
         if recover and number == maximum:
             break
-        assert work.state == "queued" and not work.prepared_deliveries and not h.runs
+        assert (
+            work.state == "queued" and not (await prepared_map(h.db, work.work_id)) and not h.runs
+        )
         with closing(sqlite3.connect(governor)) as db:
             assert (
                 db.execute(
@@ -99,7 +102,7 @@ async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_
         assert work.state == "failed" and len(calls) == maximum
         assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "failed"
     else:
-        assert work.state == "completed" and h.runs and work.prepared_deliveries
+        assert work.state == "completed" and h.runs and (await prepared_map(h.db, work.work_id))
         assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "completed"
     assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
     successful.close()

@@ -298,12 +298,12 @@ async def test_repair_rejects_unsafe_or_unproven_changes(test_session, variant):
     work, member, _, _, _ = await setup(test_session)
     body = proposal(member, mapping=variant != "missing_mapping")
     if variant == "prepared":
-        work.prepared_deliveries = {
-            "opaque-delivery-key": {
-                "canonical_members": [member.member_key],
-                "body_sha256": "c" * 64,
-            }
-        }
+        await queue.store_prepared(
+            test_session,
+            work.work_id,
+            "opaque-delivery-key",
+            {"canonical_members": [member.member_key], "body_sha256": "c" * 64},
+        )
     elif variant == "wrong_identity":
         body.members[0].mapping.currency = "USD"
     else:

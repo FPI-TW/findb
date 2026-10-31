@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
 from tests.test_provider_work_adapters import native_runtime as native_runtime
@@ -47,7 +48,7 @@ async def test_historical_target_not_published_observation_allows_fresh_native_a
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
     work_id = work.work_id
-    assert work.state == "queued" and not work.prepared_deliveries and not h.runs
+    assert work.state == "queued" and not (await prepared_map(h.db, work.work_id)) and not h.runs
     frozen = work.manifest
     journal = h.queue.WorkJournal(h.path / "account/provider-work.sqlite3", str(work_id))
     with journal.connection() as db:
@@ -126,7 +127,7 @@ async def test_finlab_native_negative_table_survives_restart_and_completes_froze
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
     work_id, frozen = work.work_id, work.manifest
-    assert work.state == "queued" and not work.prepared_deliveries and not h.runs
+    assert work.state == "queued" and not (await prepared_map(h.db, work.work_id)) and not h.runs
     journal = h.queue.WorkJournal(h.path / "account/provider-work.sqlite3", str(work_id))
     with journal.connection() as db:
         rejected = db.execute(

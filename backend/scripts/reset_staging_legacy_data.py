@@ -123,6 +123,7 @@ TARGET_TABLES = (
     "public.normalization_worker_heartbeat",
     "public.provider_work",
     "public.provider_work_attempt",
+    "public.provider_work_prepared",
     "public.provider_work_receipt",
     # Empty-only reset: nonempty immutable closure evidence refuses apply below.
     "public.provider_work_calendar_closure",
@@ -251,6 +252,7 @@ async def _truncate_mutable_rows(connection: AsyncConnection) -> None:
     await connection.execute(text("DELETE FROM shioaji_repair_ack"))
     await connection.execute(text("DELETE FROM shioaji_member_repair"))
     await connection.execute(text("DELETE FROM provider_work_receipt"))
+    await connection.execute(text("DELETE FROM provider_work_prepared"))
     await connection.execute(text("DELETE FROM provider_work_attempt"))
     await connection.execute(text("DELETE FROM provider_work"))
     await connection.execute(
@@ -261,7 +263,12 @@ async def _truncate_mutable_rows(connection: AsyncConnection) -> None:
     table_list = ", ".join(
         table
         for table in TARGET_TABLES
-        if table not in {"public.provider_work", "public.provider_work_attempt"}
+        if table
+        not in {
+            "public.provider_work",
+            "public.provider_work_attempt",
+            "public.provider_work_prepared",
+        }
     )
     await connection.execute(text(f"TRUNCATE TABLE {table_list} RESTART IDENTITY"))
 

@@ -19,6 +19,7 @@ from app.models.registry import (
     SchedulerControl,
 )
 from app.services import provider_work
+from app.services.provider_work import prepared_map
 from tests.provider_work_runtime_support import SCOPES, RuntimeHarness
 
 
@@ -164,7 +165,7 @@ async def test_cancel_after_local_prepared_save_before_confirmation_drains_exact
     work = await h.db.scalar(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
-    descriptor = next(iter(work.prepared_deliveries.values()))
+    descriptor = next(iter((await prepared_map(h.db, work.work_id)).values()))
     work_id = work.work_id
     assert (
         not descriptor["confirmed"]
@@ -276,7 +277,7 @@ async def test_committed_intent_lost_ack_recovers_original_body_after_cancel_wit
     work = await h.db.scalar(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
-    original = next(iter(work.prepared_deliveries.values()))["body"]
+    original = next(iter((await prepared_map(h.db, work.work_id)).values()))["body"]
     work_id = work.work_id
     calls = h.native_calls()
     assert not h.runs
@@ -290,7 +291,7 @@ async def test_committed_intent_lost_ack_recovers_original_body_after_cancel_wit
     work = await h.db.get(ProviderWork, work_id)
     assert (
         work.state == "cancelled"
-        and next(iter(work.prepared_deliveries.values()))["body"] == original
+        and next(iter((await prepared_map(h.db, work.work_id)).values()))["body"] == original
     )
     assert h.runs and h.native_calls() == calls
 
@@ -412,7 +413,7 @@ async def test_shioaji_retry_preserves_original_sequences_and_later_dates(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
     work_id = work.work_id
-    frozen, prepared = work.manifest, dict(work.prepared_deliveries)
+    frozen, prepared = work.manifest, dict((await prepared_map(h.db, work.work_id)))
     assert injected and prepared
     assert h.native_calls() == native_at_fault, (
         "retryable failure must stop new native acquisition in this round"
@@ -454,10 +455,8 @@ async def test_shioaji_retry_preserves_original_sequences_and_later_dates(
         work = await h.db.get(ProviderWork, work_id)
         assert work.state == ("cancelled" if cancelled else "completed"), h.failure
         assert work.manifest == frozen
-        assert all(
-            work.prepared_deliveries[key]["body"] == descriptor["body"]
-            for key, descriptor in prepared.items()
-        )
+        saved = await prepared_map(h.db, work.work_id)
+        assert all(saved[key]["body"] == descriptor["body"] for key, descriptor in prepared.items())
         if cancelled:
             assert h.native_calls() == calls, "cancelled retry may only drain original prepared"
         else:
@@ -579,7 +578,11 @@ async def test_historical_restart_after_close_commit_replays_frozen_scope_withou
     work = await h.db.scalar(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
-    work_id, frozen, bodies = work.work_id, work.manifest, dict(work.prepared_deliveries)
+    work_id, frozen, bodies = (
+        work.work_id,
+        work.manifest,
+        dict((await prepared_map(h.db, work.work_id))),
+    )
     attempt = await h.db.scalar(
         select(ProviderWorkAttempt).where(ProviderWorkAttempt.work_id == work_id)
     )
@@ -607,7 +610,8 @@ async def test_historical_restart_after_close_commit_replays_frozen_scope_withou
         h.db.expire_all()
         work = await h.db.get(ProviderWork, work_id)
     assert work.state == "completed", h.failure
-    assert all(work.prepared_deliveries[key]["body"] == row["body"] for key, row in bodies.items())
+    saved = await prepared_map(h.db, work.work_id)
+    assert all(saved[key]["body"] == row["body"] for key, row in bodies.items())
 
 
 @pytest.mark.asyncio
@@ -644,13 +648,18 @@ async def test_permanent_prepared_rejection_retains_body_and_explicit_manual_fai
     attempt = await h.db.scalar(
         select(ProviderWorkAttempt).where(ProviderWorkAttempt.work_id == work.work_id)
     )
-    assert work.state == "failed" and work.prepared_deliveries
+    assert work.state == "failed" and (await prepared_map(h.db, work.work_id))
     assert attempt.failure_code == "PREPARED_DELIVERY_MANUAL_REVIEW"
     error = json.loads(attempt.proof["source_rejection"])
     assert error["http_status"] == 409 and error["code"] == "DATASET_INACTIVE"
-    assert error["delivery_key"] in work.prepared_deliveries
-    assert error["body_sha256"] == work.prepared_deliveries[error["delivery_key"]]["body_sha256"]
-    assert set(attempt.proof["manual_pending_prepared"]) == set(work.prepared_deliveries)
+    assert error["delivery_key"] in (await prepared_map(h.db, work.work_id))
+    assert (
+        error["body_sha256"]
+        == (await prepared_map(h.db, work.work_id))[error["delivery_key"]]["body_sha256"]
+    )
+    assert set(attempt.proof["manual_pending_prepared"]) == set(
+        (await prepared_map(h.db, work.work_id))
+    )
     assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "failed"
     assert not h.runs
     owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
@@ -725,7 +734,11 @@ async def test_cancel_queued_prepared_retry_preserves_executable_drain_without_n
     work = await h.db.scalar(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
-    work_id, frozen, original = work.work_id, work.manifest, dict(work.prepared_deliveries)
+    work_id, frozen, original = (
+        work.work_id,
+        work.manifest,
+        dict((await prepared_map(h.db, work.work_id))),
+    )
     assert work.state == "queued" and original and not h.runs, (h.failure, h.source_events)
     if fence_delay:
         assert delayed_checks, "the prepared retry must survive actual slow work authorization"
@@ -766,7 +779,7 @@ async def test_cancel_queued_prepared_retry_preserves_executable_drain_without_n
     h.db.expire_all()
     work = await h.db.get(ProviderWork, work_id)
     assert work.state == "cancelled" and h.native_calls() == calls
-    assert work.manifest == frozen and work.prepared_deliveries == {
+    assert work.manifest == frozen and (await prepared_map(h.db, work.work_id)) == {
         key: {**value, "confirmed": True} for key, value in original.items()
     }
     assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "cancelled"

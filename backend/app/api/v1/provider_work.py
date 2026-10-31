@@ -342,7 +342,7 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
             )
         elif action == "prepared" and isinstance(body, PreparedLookup):
             if body.keys_only:
-                keys = set(work.prepared_deliveries or {})
+                keys = set(await service.prepared_keys(db, work_id))
                 if body.pending_only:
                     from sqlalchemy import select
 
@@ -355,15 +355,15 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
                     )
                     keys.difference_update(accepted.all())
                 return {"member_keys": sorted(keys)}
-            prepared = [
-                row["body"]
-                for key, row in (work.prepared_deliveries or {}).items()
-                if (body.job_key is None and body.member_key is None and body.delivery_key is None)
-                or body.delivery_key == key
-                or (body.job_key is not None and row.get("job_key") == body.job_key)
-                or (body.member_key is not None and body.member_key in row["canonical_members"])
-            ]
-            return {"bodies": prepared}
+            return {
+                "bodies": await service.prepared_bodies(
+                    db,
+                    work_id,
+                    delivery_key=body.delivery_key,
+                    job_key=body.job_key,
+                    member_key=body.member_key,
+                )
+            }
         elif action == "settle" and isinstance(body, SettleRequest):
             await service.settle(db, **body.model_dump(), provider=provider, work_id=work_id)
         await db.commit()

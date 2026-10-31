@@ -210,6 +210,8 @@ def test_finlab_target_not_ready_uses_bounded_nonconsuming_wait(
     runtime._acquire = lambda *args, **kwargs: (_ for _ in ()).throw(
         FinLabTargetNotReadyError("target date has not been published")
     )
+    # The pre-claim round probe sees an open date; the publication wait probes again.
+    probes = iter([False, calendar_repair])
     owner = SimpleNamespace(
         work={
             "work_id": "daily-work",
@@ -220,7 +222,7 @@ def test_finlab_target_not_ready_uses_bounded_nonconsuming_wait(
         request=lambda action: {
             "work_id": "daily-work",
             "trade_date": context.plan["trade_date"],
-            "repair_required": calendar_repair,
+            "repair_required": next(probes),
         },
         restore=lambda **kwargs: [],
         authorize=lambda: None,
@@ -256,10 +258,11 @@ def test_finlab_publication_retry_checks_calendar_before_provider_io(
 
     def request(action: str) -> dict[str, object]:
         calendar_requests.append(action)
+        # The pre-claim round probe sees an open date; the observed retry probes again.
         return {
             "work_id": "daily-work",
             "trade_date": context.plan["trade_date"],
-            "repair_required": True,
+            "repair_required": len(calendar_requests) > 1,
         }
 
     journal = WorkJournal(tmp_path / "provider-work.sqlite3", "daily-work")
@@ -289,7 +292,7 @@ def test_finlab_publication_retry_checks_calendar_before_provider_io(
     with runtime.state.connection() as db:
         row = db.execute("SELECT status,reason FROM full_work WHERE key=?", (key,)).fetchone()
     assert (row["status"], row["reason"]) == ("manual", "calendar_repair_required")
-    assert calendar_requests == ["calendar-status"]
+    assert calendar_requests == ["calendar-status", "calendar-status"]
     runtime.http.close()
 
 

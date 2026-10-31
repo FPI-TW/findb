@@ -601,6 +601,17 @@ Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_coo
 只延長 debt；rollback 仍須依上述完整停止／排空／成套checkpoint備份程序，不可倒退 usage／cooldown
 或混用未通過此 dispatch gate 的 consumer。Runtime 部署成功不代表 provider-work queue 已啟用。
 
+## Prepared 逐列儲存的 rollback 下限
+
+Migration `9c1e4f7a2b6d` 將 `provider_work.prepared_deliveries` 搬到 `provider_work_prepared` 並刪除
+舊欄位。部署前先以唯讀查詢確認每筆 entry 都是 object、`body` 若存在必為字串；否則 upgrade 會整批
+失敗並保留原 schema。Backend 先部署；Fetcher 協定不變，可在 Backend 後更新。
+成功 accepted 後此版本即為新的 rollback 下限：workflow 不執行 `alembic downgrade`，較舊 accepted
+bundle 遇到新 revision 會拒絕啟動。須回到更早版本時，依上節採 forward fix，或在 controls stopped、
+consumers 排空後以已核對備份復原；migration 的 downgrade 只供停止狀態下的人工復原，執行前須有
+同一停止時點的 RDS snapshot。部署前產生的 Shioaji repair 預覽與休市結清盤點 digest 改以新的
+prepared descriptor 計算，部署後會以 stale preview 拒絕，須重新取得正式預覽。
+
 ## FactSet 港股版本下限
 
 新 Fetcher bundle v2 包含 FactSet 第四個 image、第五個 provider 與十五個 consumers。

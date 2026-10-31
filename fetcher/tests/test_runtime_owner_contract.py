@@ -98,3 +98,53 @@ def test_member_uses_returned_owner_for_restore_authorization_and_reservation(
         assert events == ["restore", "authorize", "acquire", "reserve", "deliver"]
     finally:
         runtime.http.close()
+
+
+def test_cycles_replay_each_acknowledged_stable_enqueue_once(tmp_path, monkeypatch):
+    from datetime import date, datetime, timezone
+
+    monkeypatch.setenv("APP_ENVIRONMENT", "local")
+    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(tmp_path / "account/governor.sqlite3"))
+    runtime, source, _ = _runtime(tmp_path)
+    runtime.installed_feeds = [
+        {
+            **runtime.feeds[0],
+            "source_timezone": "UTC",
+            "target_date_lag_days": 0,
+            "scheduled_time": "00:00",
+        }
+    ]
+    first = datetime.now(timezone.utc).date().toordinal() - 3
+    enqueued = []
+    failures = {"daily:full_market:us_equity_eod:" + date.fromordinal(first).isoformat()}
+
+    def request(method, path, body=None):
+        if path.startswith("full-market/authorization"):
+            return {"acquisition_allowed": True, "admitted_dataset_keys": ["us_equity_eod"]}
+        if path == "provider-work/claim":
+            return {"work": None}
+        assert path == "provider-work/enqueue"
+        if body["stable_key"] in failures:
+            failures.remove(body["stable_key"])
+            raise RuntimeError("Source unavailable")
+        enqueued.append(body["stable_key"])
+        return {}
+
+    source.request = request
+    source.universes = lambda dataset, provider: {
+        "activation": {"enabled": True, "activation_date": date.fromordinal(first).isoformat()},
+        "published_release_id": "release",
+    }
+    runtime._ensure_proof = lambda: None
+    runtime._acquire = lambda *args: pytest.fail("idle runtime acquired provider data")
+    try:
+        with pytest.raises(RuntimeError):
+            runtime.cycle()
+        runtime.cycle()
+        runtime.drain()
+        runtime.cycle()
+        daily = [key for key in enqueued if key.startswith("daily:")]
+        assert len(daily) == len(set(daily)) == 4
+        assert len(enqueued) == len(set(enqueued))
+    finally:
+        runtime.http.close()

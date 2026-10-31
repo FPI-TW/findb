@@ -120,6 +120,7 @@ async def _verify_required_objects(conn) -> None:
         "public.provider_work",
         "public.provider_work_attempt",
         "public.provider_work_owner",
+        "public.provider_work_prepared",
         "public.provider_work_receipt",
         "public.provider_work_calendar_closure",
         "public.shioaji_member_repair",

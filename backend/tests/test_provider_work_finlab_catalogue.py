@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import FullMarketEnvironment, SchedulerControl
+from app.services.provider_work import prepared_map
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
 
@@ -129,7 +130,7 @@ async def test_finlab_native_catalogue_known_failure_settles(
         "MAINTENANCE_FINLAB_OPERATIONAL" if fault == "network" else "MAINTENANCE_FINLAB_CONFIG"
     )
     assert bool(h.native_calls()) == (fault == "network")
-    assert not work.prepared_deliveries and not h.runs
+    assert not (await prepared_map(h.db, work.work_id)) and not h.runs
     with h.queue.host_lock(h.provider) as (_, inode):
         response = await h.client.post(
             "/api/v1/source/provider-work/claim",

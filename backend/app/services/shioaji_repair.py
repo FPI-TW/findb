@@ -69,7 +69,7 @@ async def inventory(db: AsyncSession, work_id) -> dict:
     }
     summary = await reconcile_plan(db, plan, gap_limit=None)
     gaps = {row["member_key"]: row for row in summary.gaps}
-    prepared = work.prepared_deliveries or {}
+    prepared = await queue.prepared_descriptors(db, work_id)
     bound = {member for row in prepared.values() for member in row.get("canonical_members", [])}
     accepted = set(
         await db.scalars(
