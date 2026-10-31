@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt
 from app.models.registry import DatasetRegistry, HistoricalBackfillItem, HistoricalBackfillRequest
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import SCOPES
 from tests.test_provider_work_adapters import native_runtime as native_runtime
@@ -58,7 +59,7 @@ async def test_failed_request_cancels_empty_siblings_without_historical_consumer
     assert len(retained) == int(retained_earlier)
     for work in works:
         if work.state == "queued":
-            assert work.prepared_deliveries
+            assert await prepared_map(h.db, work.work_id)
             attempt = await h.db.scalar(
                 select(ProviderWorkAttempt).where(
                     ProviderWorkAttempt.work_id == work.work_id,
@@ -71,7 +72,7 @@ async def test_failed_request_cancels_empty_siblings_without_historical_consumer
             ).status == "cancelled"
         elif work.state != "failed":
             assert work.state == "cancelled"
-            assert not work.prepared_deliveries
+            assert not (await prepared_map(h.db, work.work_id))
     dataset = await h.db.get(DatasetRegistry, h.dataset)
     dataset.is_active = True
     await h.db.commit()
@@ -114,7 +115,7 @@ async def test_failed_request_cancels_empty_siblings_without_historical_consumer
         ).status_code == 200
     if retained:
         work_id = retained[0].work_id
-        original = json.loads(json.dumps(retained[0].prepared_deliveries))
+        original = json.loads(json.dumps((await prepared_map(h.db, retained[0].work_id))))
         attempt.not_before = utc_now() - timedelta(seconds=1)
         await h.db.commit()
         calls = h.native_calls()
@@ -122,7 +123,7 @@ async def test_failed_request_cancels_empty_siblings_without_historical_consumer
         assert await h.run()
         h.db.expire_all()
         work = await h.db.get(ProviderWork, work_id)
-        assert work.state == "cancelled" and work.prepared_deliveries == original
+        assert work.state == "cancelled" and (await prepared_map(h.db, work.work_id)) == original
         assert h.native_calls() == calls
         assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "failed"
 

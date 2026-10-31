@@ -11,6 +11,7 @@ from app.models.provider_work import ProviderWork, ProviderWorkAttempt, Provider
 from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
 from app.services import provider_work as queue
 from app.services.historical_backfill import expire_requests
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import SCOPES
 from tests.test_provider_work import attest_cutover
@@ -47,7 +48,7 @@ async def test_repeated_cutover_retains_expired_prepared_and_authenticated_drain
     work = await h.db.scalar(select(ProviderWork).where(ProviderWork.prepared_deliveries != {}))
     assert work is not None and work.state == "queued" and not h.runs
     work_id = work.work_id
-    prepared = json.loads(json.dumps(work.prepared_deliveries))
+    prepared = json.loads(json.dumps((await prepared_map(h.db, work.work_id))))
     frozen = json.loads(json.dumps(work.manifest))
     retry = await h.db.scalar(
         select(ProviderWorkAttempt).where(
@@ -71,7 +72,7 @@ async def test_repeated_cutover_retains_expired_prepared_and_authenticated_drain
         await h.db.refresh(retry)
         assert work.state == retry.state == "queued" and retry.drain_only
         assert retry.attempt_id == retry_id and retry.not_before == retry_at
-        assert work.prepared_deliveries == prepared and work.manifest == frozen
+        assert (await prepared_map(h.db, work.work_id)) == prepared and work.manifest == frozen
         assert (
             failed_item.status,
             failed_item.failure_code,
@@ -79,7 +80,7 @@ async def test_repeated_cutover_retains_expired_prepared_and_authenticated_drain
         ) == failed_details
     if empty_head:
         await h.db.refresh(head)
-        assert head.state == "cancelled" and not head.prepared_deliveries
+        assert head.state == "cancelled" and not (await prepared_map(h.db, head.work_id))
     calls = h.native_calls()
     retry.not_before = utc_now() - timedelta(seconds=1)
     await h.db.commit()
@@ -89,7 +90,7 @@ async def test_repeated_cutover_retains_expired_prepared_and_authenticated_drain
     work = await h.db.get(ProviderWork, work_id)
     assert work.state == "cancelled"
     assert h.native_calls() == calls and h.runs
-    assert work.prepared_deliveries == prepared and work.manifest == frozen
+    assert (await prepared_map(h.db, work.work_id)) == prepared and work.manifest == frozen
     request = await h.db.get(HistoricalBackfillRequest, h.request_id)
     failed_item = await h.db.get(HistoricalBackfillItem, h.item_id)
     assert request.status == "failed" and request.failure_code == "BACKFILL_EXPIRED"
@@ -155,14 +156,14 @@ async def test_cutover_does_not_revive_manual_failure_with_retained_bytes(
     work = await h.db.scalar(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
-    prepared = json.loads(json.dumps(work.prepared_deliveries))
+    prepared = json.loads(json.dumps((await prepared_map(h.db, work.work_id))))
     identities = {
         owner.provider: owner.host_lock_identity
         for owner in await h.db.scalars(select(ProviderWorkOwner))
     }
     await attest_cutover(h.db, identities)
     await h.db.refresh(work)
-    assert work.state == "failed" and work.prepared_deliveries == prepared
+    assert work.state == "failed" and (await prepared_map(h.db, work.work_id)) == prepared
     assert not await h.db.scalar(
         select(ProviderWorkAttempt).where(
             ProviderWorkAttempt.work_id == work.work_id, ProviderWorkAttempt.state == "queued"

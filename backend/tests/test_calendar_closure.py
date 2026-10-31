@@ -23,6 +23,7 @@ from app.services import provider_work as queue
 from app.services.calendar_closure import apply, evaluate, inventory, preview
 from app.services.effective_calendar import execution_snapshot
 from app.services.full_market import FullMarketError, _digest
+from app.services.provider_work import prepared_map
 from app.services.shioaji_repair import preview as repair_preview
 from app.utils import utc_now, uuid7
 from tests.test_shioaji_repair import proposal, setup
@@ -238,10 +239,12 @@ async def test_corrected_calendar_blocks_acquisition_before_closure_but_keeps_pr
     assert not await queue.acquisition_open(test_session, work)
     assert (await queue.current_calendar_status(test_session, work))["repair_required"] is True
     # Existing preparation remains readable and is not mutated by either gate.
-    work.prepared_deliveries = {"original": {"body": "original-bytes", "body_sha256": "a" * 64}}
+    await queue.store_prepared(
+        test_session, work.work_id, "original", {"body": "original-bytes", "body_sha256": "a" * 64}
+    )
     await test_session.flush()
     assert not await queue.acquisition_open(test_session, work)
-    assert work.prepared_deliveries["original"]["body"] == "original-bytes"
+    assert (await prepared_map(test_session, work.work_id))["original"]["body"] == "original-bytes"
 
 
 @pytest.mark.asyncio

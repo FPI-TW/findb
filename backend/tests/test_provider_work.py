@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.models.provider_work import ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import DatasetRegistry, IngestionRun
 from app.services import provider_work as queue
+from app.services.provider_work import prepared_map
 from app.utils import utc_now, uuid7
 from tests.provider_work_clock import recent_backfill_day
 
@@ -882,7 +883,7 @@ async def test_unaccepted_original_intent_prevents_terminal_abandon_but_retains_
         retry_at=utc_now() + timedelta(seconds=60),
         proof={},
     )
-    assert claimed[0].state == "queued" and claimed[0].prepared_deliveries
+    assert claimed[0].state == "queued" and (await prepared_map(test_session, claimed[0].work_id))
 
 
 @pytest.mark.asyncio

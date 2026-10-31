@@ -48,8 +48,14 @@ class ProviderWork(Base):
     execution_profile: Mapped[str | None] = mapped_column(String(20), nullable=True)
     scope: Mapped[dict] = mapped_column(JSONB, default=dict)
     manifest: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Retained bodies can total tens of MB per work. Never load them with the
+    # fence/claim/enqueue row; use the provider_work prepared helpers instead.
     prepared_deliveries: Mapped[dict] = mapped_column(
-        JSONB, default=dict, server_default=text("'{}'::jsonb")
+        JSONB,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+        deferred=True,
+        deferred_raiseload=True,
     )
     state: Mapped[str] = mapped_column(String(30), default="queued")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

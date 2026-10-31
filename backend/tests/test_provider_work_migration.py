@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.services.provider_work import prepared_map
 from app.utils import uuid7
 from tests.migration_database import get_active_migration_database_factory, run_alembic
 
@@ -219,7 +220,7 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
                 "generation": owner.generation,
                 "token": owner.token,
             }
-            assert imported.prepared_deliveries == {}
+            assert (await prepared_map(db, imported.work_id)) == {}
             members = list(
                 await db.scalars(
                     select(DailyDeliveryMember.member_key).where(
@@ -245,8 +246,10 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
             await queue.register_prepared(
                 db, **fence, body=body.decode(), stage="confirm", job_key="legacy-prepared"
             )
-            assert imported.prepared_deliveries["full-market-test"]["body"].encode() == body
-            assert imported.prepared_deliveries["full-market-test"]["confirmed"]
+            assert (await prepared_map(db, imported.work_id))["full-market-test"][
+                "body"
+            ].encode() == body
+            assert (await prepared_map(db, imported.work_id))["full-market-test"]["confirmed"]
             db.info.update(source_info)
             db.info["provider_work"] = {
                 "work_id": work_id,

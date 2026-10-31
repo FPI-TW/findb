@@ -21,6 +21,7 @@ from app.models.canonical import CalendarYearRevision
 from app.models.provider_work import ProviderWork
 from app.models.registry import SchedulerControl, SchedulerDataset
 from app.services import historical_backfill, provider_work
+from app.services.provider_work import prepared_map
 from app.services.source_clients import create_source_client
 from app.utils import utc_now
 from tests.full_market_fixtures import historical_admission
@@ -538,7 +539,9 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         )
         assert round.outcome == "failed" and round.failure_code == "MANUAL_INTERVENTION_REQUIRED"
         assert round.proof["manual_reason"] == "frozen_scope_requires_manual_review"
-        assert work[0].prepared_deliveries and len(work[0].prepared_deliveries) == 1
+        assert (await prepared_map(test_session, work[0].work_id)) and len(
+            (await prepared_map(test_session, work[0].work_id))
+        ) == 1
         assert await test_session.scalar(
             select(IngestionRun.run_id).where(
                 IngestionRun.success_records == 0, IngestionRun.status == "completed"
@@ -564,7 +567,7 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         from app.models.registry import FullMarketDatasetState
         from app.services.full_market import get_plan
 
-        retained = dict(work[0].prepared_deliveries)
+        retained = dict((await prepared_map(test_session, work[0].work_id)))
         frozen_manifest = dict(work[0].manifest)
         first_date = (
             await test_session.get(FullMarketDatasetState, ("full_market", "tw_equity_eod"))
@@ -643,10 +646,8 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         test_session.expire_all()
         resumed = await test_session.get(ProviderWork, expected[0])
         assert resumed.state == "completed" and resumed.manifest == frozen_manifest
-        assert all(
-            resumed.prepared_deliveries[key]["body"] == value["body"]
-            for key, value in retained.items()
-        )
+        saved = await prepared_map(test_session, resumed.work_id)
+        assert all(saved[key]["body"] == value["body"] for key, value in retained.items())
         assert [event[0] for event in events[before:]] == ["full_market-acquisition"]
         assert events[-1][1] == str(expected[0]), "legal start resumes the same stable frozen work"
         assert (

@@ -289,6 +289,12 @@ prepared／receipt 是否仍需排空由 SQL 計算布林摘要，最近 settled
 cooldown、drain-only、report continuation 與 recovery 顯示不改變。此為唯讀投影，不取得 provider
 lock、不結案或修改任何 work／attempt，不授予新 acquisition；正式執行仍由原 owner fence 判定。
 
+控制路徑同樣不搬運 prepared body。ORM 永不隨 work row 載入 prepared 欄位（存取即報錯）；
+fence、claim、acceptance、receipt、settle 與 Shioaji repair 只在 SQL 端讀取 delivery key 或
+不含 body 的 descriptor，intent／confirm 只寫入單一 delivery。只有 Source `prepared` lookup
+回傳原 bytes。已存在 stable key 的 enqueue 重播只讀 identity，不取得 provider lock；新建 work
+仍在 lock 內再次確認。
+
 Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
 prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，
 不再有獨立 lease authority。
