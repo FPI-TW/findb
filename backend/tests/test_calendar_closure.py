@@ -314,7 +314,10 @@ async def test_evaluator_rejects_each_unsafe_snapshot(test_session, variant):
     current = current.model_copy(update={"snapshot": s, "sha256": _digest(s)})
     b.checkpoint.inventory_sha256 = current.sha256
     b.checkpoint.sha256 = _digest(b.checkpoint.facts)
-    assert not evaluate(current, b, now=utc_now()).apply_ready
+    report = evaluate(current, b, now=utc_now())
+    assert not report.apply_ready
+    if variant in {"prepared", "prepared_rows", "receipt", "runs"}:
+        assert report.blockers == ["delivery_evidence_present"]
 
 
 @pytest.mark.asyncio

@@ -216,3 +216,72 @@ def test_retained_prepared_drain_and_historical_rounds_skip_calendar_probe(tmp_p
         assert "calendar-status" not in events
     finally:
         runtime.http.close()
+
+
+class _SnapshotStopError(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("kind", "repair_required", "expected"),
+    [
+        ("daily", True, ["calendar-status"]),
+        ("daily", False, ["calendar-status", "snapshot"]),
+        ("historical", True, ["snapshot"]),
+    ],
+)
+def test_factset_first_snapshot_checks_calendar_only_for_daily_work(
+    tmp_path, monkeypatch, kind, repair_required, expected
+):
+    from findb_fetcher import factset_eod, full_market_runtime
+    from findb_fetcher.provider_work import WorkJournal
+
+    runtime, _, _ = _runtime(tmp_path, provider="factset", execution_profile="full_market")
+    feed = runtime.feeds[0]
+    feed.update(
+        dataset_key="hk_equity_eod",
+        slot_id="asia_pacific_markets_window",
+        completion_window_seconds=16200,
+    )
+    plan = {
+        "plan_id": "plan:hk_equity_eod",
+        "dataset_key": "hk_equity_eod",
+        "trade_date": "2026-10-01",
+        "parts": [{"work_item_id": "hk_equity_eod", "member_keys": ["00001"]}],
+    }
+    release = {
+        "members": [
+            {"member_key": "00001", "provider_symbol": "AAAAA1-L", "mapping_status": "mapped"}
+        ]
+    }
+    runtime.state.record_plan(plan, "factset")
+    events = []
+    owner = _owner(events, kind=kind, repair_required=repair_required)
+    owner.freeze = lambda manifest: manifest
+    owner.journal = WorkJournal(tmp_path / "provider-work.sqlite3", "work")
+    owner.work["created_at"] = "2026-10-01T00:00:00+00:00"
+
+    class Snapshot:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, **kwargs):
+            events.append("snapshot")
+            raise _SnapshotStopError
+
+    monkeypatch.setattr(factset_eod, "FactSetEOD", Snapshot)
+    monkeypatch.setattr(full_market_runtime, "FactSetConfig", SimpleNamespace(from_env=dict))
+    monkeypatch.setattr(full_market_runtime, "FactSetGateway", lambda config: None)
+    runtime.source.authorization = lambda *args, **kwargs: {}
+    try:
+        stopped = (
+            _SnapshotStopError
+            if expected[-1] == "snapshot"
+            else CalendarDecisionRepairRequiredError
+        )
+        with pytest.raises(stopped):
+            runtime._deliver_factset_plan(owner, plan, release, feed)
+        assert events == expected
+        assert _attempts(runtime) == {"00001": ("pending", None, 0)}
+    finally:
+        runtime.close()

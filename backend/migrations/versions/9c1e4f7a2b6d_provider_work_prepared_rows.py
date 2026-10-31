@@ -78,13 +78,23 @@ def downgrade():
             FROM ({REBUILT}) r WHERE r.work_id = w.work_id"""
         )
     )
-    restored, rows = bind.execute(
+    # Decompose the rebuilt objects again and compare every row and per-work count.
+    changed = bind.execute(
         sa.text(
             """SELECT
-                (SELECT count(*) FROM provider_work, jsonb_each(prepared_deliveries)),
-                (SELECT count(*) FROM provider_work_prepared)"""
+                (SELECT count(*) FROM provider_work_prepared p
+                 JOIN provider_work w ON w.work_id = p.work_id
+                 WHERE (w.prepared_deliveries -> p.delivery_key) IS NULL
+                    OR (w.prepared_deliveries -> p.delivery_key) - 'body' <> p.descriptor
+                    OR (w.prepared_deliveries -> p.delivery_key ->> 'body')
+                       IS DISTINCT FROM p.body)
+              + (SELECT count(*) FROM provider_work w
+                 LEFT JOIN (SELECT work_id, count(*) AS n FROM provider_work_prepared
+                            GROUP BY work_id) r ON r.work_id = w.work_id
+                 WHERE (SELECT count(*) FROM jsonb_object_keys(w.prepared_deliveries))
+                       <> COALESCE(r.n, 0))"""
         )
-    ).one()
-    if restored != rows:
+    ).scalar_one()
+    if changed:
         raise RuntimeError("provider work prepared rows did not round-trip to JSONB")
     op.drop_table("provider_work_prepared")

@@ -1423,6 +1423,15 @@ class FullMarketRuntime:
                     reason="calendar_repair_required",
                 )
             raise CalendarDecisionRepairRequiredError("published calendar is now closed") from None
+        if (
+            owner.work.get("kind") == "daily"
+            and not owner.journal.has_response_observation("factset-eod:snapshot")
+            and any(member["mapping_status"] == "mapped" for member in members)
+            and self._calendar_repair_required(owner)
+        ):
+            # The first snapshot is new provider I/O. A legacy planned decision
+            # that is now a published closure stops here without a request.
+            raise CalendarDecisionRepairRequiredError("published calendar is now closed")
         try:
             with authorization_scope(
                 lambda: self.source.authorization(
