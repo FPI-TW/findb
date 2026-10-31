@@ -900,6 +900,7 @@ class ProviderWorkSession:
                 if exc.code != "PROVIDER_WORK_DRAINING":
                     raise ProviderWorkRecoveryBlockedError(
                         "provider settlement requires recovery"
+                        + (f" ({exc.code})" if exc.code else "")
                     ) from exc
                 # Retain the host descriptor and DB owner through every accepted
                 # normalization, including historical retries and raw reruns.

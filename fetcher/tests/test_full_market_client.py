@@ -10,6 +10,41 @@ from findb_fetcher.config import FetcherConfig
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 
 
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("PROVIDER_WORK_FENCE_MISMATCH", "PROVIDER_WORK_FENCE_MISMATCH"),
+        ("PROVIDER_WORK_INVALID_PROOF", "PROVIDER_WORK_INVALID_PROOF"),
+        ("PROVIDER_WORK_INVALID_RETRY", "PROVIDER_WORK_INVALID_RETRY"),
+        ("PROVIDER_WORK_REPLAY_MISMATCH", "PROVIDER_WORK_REPLAY_MISMATCH"),
+        ("private-token-from-untrusted-header", None),
+        (None, None),
+    ],
+)
+def test_conflict_diagnostics_use_only_safe_protocol_codes(reported, expected):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(
+            409,
+            headers={"X-FinDB-Error-Code": reported} if reported else {},
+            json={"detail": "private-token-from-response-detail"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+        client = FullMarketSourceClient(
+            FetcherConfig("https://source.example", "secret"), client=http
+        )
+        with pytest.raises(FullMarketProtocolError) as error:
+            client.request("POST", "provider-work/original/settle", {})
+    assert len(calls) == 1, "unknown conflicts must not become ordinary retries"
+    assert error.value.code == expected and not error.value.retryable
+    assert "private-token" not in str(error.value)
+    if expected:
+        assert expected in str(error.value)
+
+
 def test_source_429_recovers_frozen_plan_without_acquisition_authority(monkeypatch):
     monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")

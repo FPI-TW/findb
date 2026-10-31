@@ -33,7 +33,12 @@ TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
 
 
 class ProviderWorkError(ValueError):
-    pass
+    code = "PROVIDER_WORK_CONFLICT"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
 
 
 class ProviderWorkDrainingError(ProviderWorkError):
@@ -398,11 +403,15 @@ async def fence(
         or owner.generation != generation
         or owner.token != token
     ):
-        raise ProviderWorkError("provider work owner fence differs")
+        raise ProviderWorkError(
+            "provider work owner fence differs", code="PROVIDER_WORK_FENCE_MISMATCH"
+        )
     work = await db.get(ProviderWork, work_id)
     assert work is not None
     if owner.recovery_reason or owner.expires_at is None or owner.expires_at <= utc_now():
-        raise ProviderWorkError("provider work requires host recovery")
+        raise ProviderWorkError(
+            "provider work requires host recovery", code="PROVIDER_WORK_RECOVERY_REQUIRED"
+        )
     if (
         acquisition
         and work.kind != "rerun"
@@ -847,7 +856,9 @@ async def settle(
 ) -> None:
     work, attempt, owner = await fence(db, **identity)
     if attempt.state not in {"closed", "draining"}:
-        raise ProviderWorkError("close acquisition before settling provider work")
+        raise ProviderWorkError(
+            "close acquisition before settling provider work", code="PROVIDER_WORK_NOT_CLOSED"
+        )
     receipts = (
         await db.execute(
             select(ProviderWorkReceipt, IngestionRun)
@@ -897,7 +908,9 @@ async def settle(
                 db, work, [run for _, run in receipts], evidence, outcome=outcome
             )
         except ValueError as exc:
-            raise ProviderWorkError("EOD v2 completion evidence is invalid") from exc
+            raise ProviderWorkError(
+                "EOD v2 completion evidence is invalid", code="PROVIDER_WORK_INVALID_PROOF"
+            ) from exc
         if (
             work.kind == "historical"
             and db.info.get("historical_completion_validated") != work.work_id
@@ -962,7 +975,10 @@ async def settle(
                 or plan.execution_profile != work.execution_profile
                 or plan.status != "complete"
             ):
-                raise ProviderWorkError("frozen daily plan has not completed its expected scope")
+                raise ProviderWorkError(
+                    "frozen daily plan has not completed its expected scope",
+                    code="PROVIDER_WORK_INVALID_PROOF",
+                )
             no_data = expected - completed
         if (
             not expected
@@ -972,7 +988,10 @@ async def settle(
                 and no_data - set((work.manifest or {}).get("no_data_evidence", {}))
             )
         ):
-            raise ProviderWorkError("complete expected scope lacks durable terminal evidence")
+            raise ProviderWorkError(
+                "complete expected scope lacks durable terminal evidence",
+                code="PROVIDER_WORK_INVALID_PROOF",
+            )
         if (
             work.kind == "historical"
             and db.info.get("historical_completion_validated") != work.work_id
@@ -995,12 +1014,24 @@ async def settle(
             or len(pending_errors) != len(set(pending_errors))
             or not set(pending_errors) <= members
         ):
-            raise ProviderWorkError("pending Source outcomes differ from frozen daily scope")
-    attempt.state, attempt.outcome, attempt.settled_at = "settled", outcome, utc_now()
+            raise ProviderWorkError(
+                "pending Source outcomes differ from frozen daily scope",
+                code="PROVIDER_WORK_INVALID_PROOF",
+            )
+    settled_at = utc_now()
+    if outcome == "retry":
+        if retry_at is None or retry_at.tzinfo is None:
+            raise ProviderWorkError(
+                "retry requires timezone-aware not_before", code="PROVIDER_WORK_INVALID_RETRY"
+            )
+        # not_before is an eligibility floor, not an expiring authorization.
+        # Network, FIFO lock and receipt drain may outlast a one-second batch
+        # yield. Keep later window/cooldown floors; elapsed ones tail-retry with
+        # a small server-side delay instead of quarantining a valid owner.
+        retry_at = max(retry_at, settled_at + timedelta(seconds=1))
+    attempt.state, attempt.outcome, attempt.settled_at = "settled", outcome, settled_at
     attempt.proof, attempt.failure_code = proof, failure_code
     if outcome == "retry":
-        if retry_at is None or retry_at.tzinfo is None or retry_at <= utc_now():
-            raise ProviderWorkError("retry requires future not_before")
         # Retry budget belongs to frozen scope, not this queue attempt.
         work.state = "queued"
         db.add(

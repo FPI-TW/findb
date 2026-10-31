@@ -243,6 +243,13 @@ raw／run／job／outbox 的 commit 都在該鎖內，duplicate fast path 也不
 不重設 terminal failed run。
 等待 terminal drain 回傳 `PROVIDER_WORK_DRAINING`；consumer 保留 host FD 與 heartbeat，不能將其他
 `409` 當作一般等待。未取得 durable settlement acknowledgement 就退出會保留 recovery blocker。
+`retry_at` 為 aware UTC eligibility floor；完整結算檢查後建立的 retry attempt 使用
+`max(retry_at, settled_at + 1 秒)`，避免短批次的 1 秒 floor 在 transport／鎖等待／receipt drain
+期間經過後，被誤認為失效授權。缺少或 naive timestamp 仍拒絕；future window／cooldown floor、
+FIFO tail、新一輪 acquisition 檢查與原 budget 均保留。原 settlement ACK 重播不新增 attempt，
+也不因舊 retry timestamp 已經過期而拒絕；變更 proof 的重播仍拒絕。
+Source provider-work mutation 的一般衝突保留原 detail shape，另以 `X-FinDB-Error-Code`
+提供固定分類；Fetcher 只輸出允許清單中的 code，不把任意 response body／header 帶入日誌。
 Source／Admin／bulk retained-raw rerun 會建立新的 audited run／work，
 輪到 owner 後才建立 normalization job，不繞過 FIFO。
 若 real normalization 因較新 canonical precedence 完成但未實際寫入全部 records，rerun work 明確

@@ -17,6 +17,20 @@ from findb_fetcher.config import FetcherConfig
 from findb_fetcher.full_market_universe import canonical_bytes
 from findb_fetcher.source_recovery import source_retry_sleep, transient_source_status
 
+# Only fixed protocol vocabulary may enter logs; response details can contain
+# private scope or credentials and must never be copied into an exception.
+PROVIDER_WORK_CONFLICT_CODES = frozenset(
+    {
+        "PROVIDER_WORK_CONFLICT",
+        "PROVIDER_WORK_FENCE_MISMATCH",
+        "PROVIDER_WORK_RECOVERY_REQUIRED",
+        "PROVIDER_WORK_NOT_CLOSED",
+        "PROVIDER_WORK_INVALID_PROOF",
+        "PROVIDER_WORK_INVALID_RETRY",
+        "PROVIDER_WORK_REPLAY_MISMATCH",
+    }
+)
+
 
 class FullMarketProtocolError(RuntimeError):
     def __init__(
@@ -138,6 +152,9 @@ class FullMarketSourceClient:
                     if not 200 <= response.status_code < 300:
                         code = None
                         if response.status_code == 409:
+                            reported = response.headers.get("X-FinDB-Error-Code")
+                            if reported in PROVIDER_WORK_CONFLICT_CODES:
+                                code = reported
                             try:
                                 error = json.loads(raw)
                             except (ValueError, UnicodeError):
@@ -159,7 +176,8 @@ class FullMarketSourceClient:
                             }:
                                 code = "PROVIDER_WORK_SUSPENDED"
                         raise FullMarketProtocolError(
-                            f"Source governance returned HTTP {response.status_code}",
+                            f"Source governance returned HTTP {response.status_code}"
+                            + (f" ({code})" if code else ""),
                             status_code=response.status_code,
                             code=code,
                             retryable=transient_source_status(response.status_code),
