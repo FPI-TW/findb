@@ -293,7 +293,8 @@ lock、不結案或修改任何 work／attempt，不授予新 acquisition；正�
 fence、claim、acceptance、receipt、settle 與 Shioaji repair 只在 SQL 端讀取 delivery key 或
 不含 body 的 descriptor，intent／confirm 只寫入單一 delivery。只有 Source `prepared` lookup
 回傳原 bytes。已存在 stable key 的 enqueue 重播只讀 identity，不取得 provider lock；新建 work
-仍在 lock 內再次確認。
+仍在 lock 內再次確認。Fetcher 每個程序對同一 stable key 只送出一次已確認的 enqueue，Source 失敗
+未確認者下輪重送；重啟後第一輪會再確認一次，不影響原 FIFO 順位。
 
 Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
 prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，
