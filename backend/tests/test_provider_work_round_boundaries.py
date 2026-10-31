@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
 from app.services import provider_work
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY, SCOPES
 from tests.test_provider_work_adapters import native_runtime as native_runtime
@@ -95,7 +96,10 @@ async def test_daily_prefetch_source_failure_closes_and_requeues_without_native(
         )
     )
     assert (
-        reads and work.state == "queued" and not work.prepared_deliveries and work.manifest is None
+        reads
+        and work.state == "queued"
+        and not (await prepared_map(h.db, work.work_id))
+        and work.manifest is None
     )
     assert attempts[0].outcome == "retry" and attempts[0].failure_code == "DAILY_SOURCE_UNAVAILABLE"
     assert attempts[1].not_before > utc_now()
@@ -132,7 +136,7 @@ async def test_account_cooldown_skips_other_unprepared_dates_but_allows_retained
         retained = await h.db.scalar(
             select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
         )
-        retained_id, original = retained.work_id, dict(retained.prepared_deliveries)
+        retained_id, original = retained.work_id, dict((await prepared_map(h.db, retained.work_id)))
         assert original
     calls = []
 
@@ -173,7 +177,9 @@ async def test_account_cooldown_skips_other_unprepared_dates_but_allows_retained
         assert await h.run(), "original bytes drain under cooldown without a new provider operation"
         h.db.expire_all()
         retained = await h.db.get(ProviderWork, retained_id)
-        assert retained.state == "queued" and retained.prepared_deliveries == original
+        assert (
+            retained.state == "queued" and (await prepared_map(h.db, retained.work_id)) == original
+        )
         assert calls == ["AAPL"] and h.runs
         assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
     await drain_retained_rerun_during_cooldown(h)
@@ -245,7 +251,7 @@ async def test_expiry_preserves_original_prepared_date_as_failed_domain_drain(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
     work_id = work.work_id
-    original = dict(work.prepared_deliveries)
+    original = dict((await prepared_map(h.db, work.work_id)))
     assert original
     calls = h.native_calls()
     later = utc_now() + timedelta(days=90)
@@ -258,7 +264,7 @@ async def test_expiry_preserves_original_prepared_date_as_failed_domain_drain(
     work = await h.db.get(ProviderWork, work_id)
     assert item.status == request.status == "failed"
     assert request.failure_code == "BACKFILL_EXPIRED"
-    assert work.prepared_deliveries == original and work.state == "cancelled", [
+    assert (await prepared_map(h.db, work.work_id)) == original and work.state == "cancelled", [
         event for event in h.source_events if event[1] >= 400
     ]
     assert h.native_calls() == calls

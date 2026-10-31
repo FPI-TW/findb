@@ -9,6 +9,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from tests.migration_database import get_active_migration_database_factory, run_alembic
 from tests.test_shioaji_repair_migration import current_dataset_fixture
 
+# Later revisions (prepared rows) reshape provider_work; isolate this expansion.
+CLOSURE_REVISION = "3a80c2e1d5f4"
+
 
 @pytest.mark.asyncio
 async def test_calendar_closure_migration_preserves_originals_and_blocks_evidence_downgrade(
@@ -45,11 +48,11 @@ async def test_calendar_closure_migration_preserves_originals_and_blocks_evidenc
                 }
 
         before = await snapshot()
-        await run_alembic(url, "head")
+        await run_alembic(url, CLOSURE_REVISION)
         assert await snapshot() == before
         await run_alembic(url, "2f79b1d0c4e3", command="downgrade")
         assert await snapshot() == before
-        await run_alembic(url, "head")
+        await run_alembic(url, CLOSURE_REVISION)
         async with engine.begin() as db:
             from app.utils import uuid7
 

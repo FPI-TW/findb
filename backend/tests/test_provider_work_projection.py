@@ -23,6 +23,7 @@ from app.models.registry import (
 )
 from app.services import provider_work as queue
 from app.services.historical_backfill import expiry_cutoff
+from app.services.provider_work import prepared_map
 from app.utils import utc_now, uuid7
 
 PROVIDERS = {
@@ -49,10 +50,11 @@ async def seed_work(db, provider="shioaji", *, kind="daily", prepared=None, prof
         dataset_key=dataset,
         trade_date=utc_now().date(),
         execution_profile=profile,
-        prepared_deliveries=prepared or {},
     )
     db.add(work)
     await db.flush()
+    for key, row in (prepared or {}).items():
+        await queue.store_prepared(db, work.work_id, key, row)
     attempt = ProviderWorkAttempt(work_id=work.work_id, not_before=utc_now() - timedelta(seconds=1))
     db.add(attempt)
     await db.flush()
@@ -67,7 +69,7 @@ def monitor_reads(db):
         assert statement.lstrip().upper().startswith("SELECT"), statement
         selected = context.compiled.statement.selected_columns
         # Reject transporting an ORM entity/full JSON object, even under aliases.
-        assert not {"prepared_deliveries", "manifest", "scope", "proof", "token"} & {
+        assert not {"body", "descriptor", "manifest", "scope", "proof", "token"} & {
             column.key for column in selected
         }
         statements.append(statement)
@@ -116,7 +118,7 @@ async def test_retained_rounds_and_bodies_do_not_expand_queue_reads(test_session
         rows = await queue.projection(db)
     assert len(rows) == 26 and len(statements) == first_count == 3
     assert len(rows[0]["last_batch"]["counts"]) == 1
-    assert work.prepared_deliveries["saved"]["body"].startswith("private-large-body")
+    assert (await prepared_map(db, work.work_id))["saved"]["body"].startswith("private-large-body")
     assert (
         len(
             (
@@ -163,7 +165,7 @@ async def test_original_prepared_and_run_drain_states(test_session, provider, re
             )
         )
     await db.flush()
-    original = (work.prepared_deliveries, work.manifest, attempt.state)
+    original = ((await prepared_map(db, work.work_id)), work.manifest, attempt.state)
     expected_open = await queue.acquisition_open(db, work)
     with monitor_reads(db):
         rows = await queue.projection(db, provider=provider)
@@ -171,7 +173,7 @@ async def test_original_prepared_and_run_drain_states(test_session, provider, re
     assert rows[0]["wait_reason"] == (
         "prepared_drain" if receipt_state is None or receipt_state == "processing" else "suspended"
     )
-    assert (work.prepared_deliveries, work.manifest, attempt.state) == original
+    assert ((await prepared_map(db, work.work_id)), work.manifest, attempt.state) == original
 
 
 @pytest.mark.asyncio

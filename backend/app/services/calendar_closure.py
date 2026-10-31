@@ -35,6 +35,7 @@ SNAPSHOT_QUERIES = {
     "attempts": "SELECT to_jsonb(t) AS value FROM provider_work_attempt t WHERE work_id=:work_id ORDER BY attempt_number",
     "repairs": "SELECT to_jsonb(t) AS value FROM shioaji_member_repair t WHERE work_id=:work_id ORDER BY repair_id",
     "repair_acks": "SELECT to_jsonb(a) AS value FROM shioaji_repair_ack a JOIN shioaji_member_repair r USING(repair_id) WHERE r.work_id=:work_id ORDER BY a.repair_id",
+    "prepared": "SELECT jsonb_build_object('delivery_key',delivery_key,'descriptor',descriptor) AS value FROM provider_work_prepared WHERE work_id=:work_id ORDER BY delivery_key",
     "receipts": "SELECT to_jsonb(t) AS value FROM provider_work_receipt t WHERE work_id=:work_id ORDER BY run_id",
     "runs": "SELECT jsonb_build_object('run_id',run_id,'status',status) AS value FROM ingestion_run WHERE delivery_part_id IN (SELECT part_id FROM daily_delivery_part WHERE plan_id=:plan_id) OR (source='shioaji' AND dataset_key=:dataset AND batch_data_date=:day) ORDER BY run_id",
     "decision": "SELECT to_jsonb(t) AS value FROM daily_execution_decision t WHERE provider='shioaji' AND dataset_key=:dataset AND execution_profile=:profile AND trade_date=:day",
@@ -225,7 +226,10 @@ def evaluate(
         "owner_not_idle",
     )
     require(
-        not w.get("prepared_deliveries") and not s.get("receipts") and not s.get("runs"),
+        not w.get("prepared_deliveries")
+        and not s.get("prepared")
+        and not s.get("receipts")
+        and not s.get("runs"),
         "delivery_evidence_present",
     )
     require(

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import FullMarketEnvironment, SchedulerControl
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
@@ -175,7 +176,7 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
         assert attempts[0].failure_code == "MAINTENANCE_HTTP_503"
     if isinstance(fault, str) and fault.startswith("format"):
         assert attempts[0].failure_code == "MAINTENANCE_FORMAT_OR_SCOPE"
-        assert work.manifest is None and not work.prepared_deliveries
+        assert work.manifest is None and not (await prepared_map(h.db, work.work_id))
         assert attempts[0].proof["manual_pending_prepared"] == []
         assert "no_data" not in attempts[0].proof
     if work.state == "queued":

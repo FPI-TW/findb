@@ -9,6 +9,7 @@ from app.models.provider_work import ProviderWorkOwner
 from app.models.registry import HistoricalBackfillItem
 from app.services import historical_backfill as historical
 from app.services import provider_work as queue
+from app.services.provider_work import prepared_map
 from tests.provider_work_runtime_support import DAY, SCOPES
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
@@ -130,7 +131,7 @@ async def test_owner_expiry_blocks_new_intent_but_drains_original_prepared_body(
             select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
         )
         work_id = work.work_id
-        descriptor = next(iter(work.prepared_deliveries.values()))
+        descriptor = next(iter((await prepared_map(h.db, work.work_id)).values()))
         body = descriptor["body"]
         owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
         later = queue.utc_now() + timedelta(days=90)
@@ -156,7 +157,7 @@ async def test_owner_expiry_blocks_new_intent_but_drains_original_prepared_body(
         assert item.status == request.status == "failed"
         assert item.failure_code == request.failure_code == "BACKFILL_EXPIRED"
         work = await h.db.get(ProviderWork, work_id)
-        assert next(iter(work.prepared_deliveries.values()))["body"] == body
+        assert next(iter((await prepared_map(h.db, work.work_id)).values()))["body"] == body
         assert h.native_calls() == calls and h.runs
         assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
     finally:

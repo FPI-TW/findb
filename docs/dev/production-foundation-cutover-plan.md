@@ -8,19 +8,31 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
+- Provider-work 控制／交付路徑效能：repository 已實作抓取前日曆防護、控制路徑只讀
+  key／descriptor、enqueue 重播免鎖與 Fetcher 每程序單次 enqueue，以及 migration
+  `9c1e4f7a2b6d` 的逐筆 prepared 資料列（[provider-work 架構](../architecture/provider_work.md#api-與營運觀測)）。
+  尚未部署；須依 Backend-first 發布 staging／production，保留 DB／SQLite 備份與 prepared
+  bytes／receipts 指紋，再以成員／回合分段耗時、enqueue 與 SQL 次數、TOAST 寫入量、
+  receipt／bytes 保留及原生帳本驗收。減少 preparation 往返（authorize／intent／confirm）
+  僅在部署後量測仍為瓶頸時再評估。原始證據見 [production 維運](../operations/production.md#其他-provider-複查與控制路徑實測2026-11-01)。
+
+- 舊 `planned` 休市日工作：部署上述防護後，production Twelve Data 美股 10/17、10/18、10/24
+  與 FinLab 10/24、10/25 會在不呼叫 provider、不扣 member attempts 的情況下以
+  `CALENDAR_DECISION_REPAIR_REQUIRED` 結算 failed。Frozen decision 更正仍走人工流程；
+  休市結清工具目前只接受 Shioaji，需依各 provider 的交付／帳務盤點推廣後，才能對上述
+  工作結清及處理對應告警。
+
+- 11/01 唯讀查核的其他後續：FactSet daily 每成員同步等待 normalization（每 2 秒輪詢、
+  最多 30 秒）限制吞吐；同一份有效快取被 mapper 確定拒絕時仍會用滿一般失敗額度，需依
+  永久錯誤分類提早轉 manual；TAIFEX 健康輸出仍計入 Backend 已 cancelled 的 10/13～10/27
+  本地 plan（944 個 manual）。另待 Owner 決定 FinLab（change ratio 1.003）與 TAIFEX（0.397）
+  待審 universe candidate，以及 production FactSet 港股啟用時程。
+
 - Shioaji 空 Kbars 與 frozen mapping 缺口修復（[#378](https://github.com/FPI-TW/findb/issues/378)）：
   程式／回歸測試及 staging 10/23 兩筆休市結清已完成，正式收據與保留性核對見
   [Full market runbook](../operations/full_market.md)。Issue 保持 open；production 版本、
   空回應根因、受控恢復、mapping 與端到端 native 證據仍待驗收，範圍見下方矩陣。
   本次只整理文件及 issue，不操作 production，不沿用 staging 的額度或休市結論。
-
-- Fetcher 對 Backend／Source 暫時不可用的恢復與重試額度修正：2026-10-30 已確認部署窗口
-  HTTP 521 會穿過現行 Pilot／Full／historical 的控制迴圈而退出，Docker 因而自動重啟；
-  521 亦未列入兩個 Source control clients 的 bounded retry statuses。另以零 provider I/O
-  重現 canonical daily 在授權前增加本地 attempts 的風險。須補 startup／idle 可中止退避、
-  active owner 停止／reap／重新取 fence、prepared／ACK-loss replay 與純等待不消耗 failure
-  budget 的測試；不得放寬舊 generation、退款已派送 quota、清理 prepared 或重設 cooldown。
-  本次尚未實作或部署此修正，根因、現場證據與限制見 [production 維運](../operations/production.md)。
 
 - Production 五 provider 的 provider-work native／recovery 驗收：2026-10-29 已完成具名 Owner
   attestation、兩端 true 與 Backend／Fetcher v0.1.12 發布，原 DB／17 個 SQLite／prepared／receipts／
@@ -56,7 +68,11 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 ## Issue #378 production 驗收範圍
 
-以下均未執行，production 操作須另行核准具體環境、work／plan／member、額度與時段。
+以下為待正式驗收範圍，production 寫入、native 觀測與控制操作須另行核准具體環境、
+work／plan／member、額度與時段。10/31 已完成獲授權的原始 response／receipt 唯讀續查，
+確認兩端 manifest 為 v0.1.14、DB revision `3a80c2e1d5f4`；五筆舊 failed 共 40 個耗盡
+成員均有 checksum 正確的空 Kbars，另 14 個為 frozen mapping gaps。供應商空值原因仍
+unknown，未執行受控恢復或新增 native 請求；完整分時快照見 [production 維運](../operations/production.md#原始-responsereceipt-與慢速路徑續查)。
 調查基準為 2026-10-30 台北約 09:10–09:18 的唯讀快照：五筆 Full daily work
 （10/27 equity、10/28 equity／ETF、10/29 equity／ETF）、45 份空 Kbars cache、
 12 個已遇到的 mapping gap，以及本地標為 prepared／normalizing、但 Backend run 已 completed

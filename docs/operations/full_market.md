@@ -231,6 +231,13 @@ auth／scope 錯誤仍依原規則 failed／manual，不得誤分類成尚未發
 不得以新 revision 自動覆寫。若目前 skip flag 為 false，work 仍維持人工處理；須先明確決定是否
 透過部署啟用政策，不能跳過下節對目前政策與證據的檢查直接修復。
 
+五個 provider 的 Pilot／Full daily canonical 回合，另在第一個需要新 provider I/O 的成員 claim
+前查詢一次同一 calendar status；本地已有 prepared bytes 的排空與 historical 回合不查詢。
+若結果為 `repair_required`，該成員標示 manual `calendar_repair_required`、work 以
+`CALENDAR_DECISION_REPAIR_REQUIRED` failed，不授權、不呼叫 provider，也不消耗 member attempts；
+查詢本身失敗時同樣在 claim 前停止，不扣額度。這保護舊 `planned` 決策在略過政策啟用後的休市日，
+不會用滿一般失敗額度；frozen decision 仍只經下節人工流程更正。
+
 到 publication deadline 後，FinLab target-not-ready 成為 terminal manual；FactSet
 `no_source_row` 保存 authoritative snapshot 並以 terminal `partial` 結算。Provider work 的等待、
 截止時間、failure code 與每次 observation 都須留在原 work 證據中；重啟、
@@ -680,7 +687,7 @@ audit before 相符，Backend／Fetcher images 和 SQLite checkpoints 不變。�
 `0d81ba54-4c29-4e13-8db1-d7191a9aae86`、`071c705c-0270-4a99-a132-7d79873874b6`。
 
 後驗應跨至少兩次自然 monitor scan，核對告警不重開、audit hashes 與前後資料一致，並確認
-其他日期／profiles 的告警仍正常。現版沒有新增 plan acquisition guard；既有 checkpoint 的
+其他日期／profiles 的告警仍正常。daily 回合在新抓取前會查詢 calendar status（見上節），但不會自動更正 decision；既有 checkpoint 的
 manual 狀態仍保留，不應重置後直接重跑舊 plan。如需撤回，以新 operation ID 和新 audit
 在單一交易恢復原 decision／alert，先核對目前狀態；不得刪除原 repair audit。
 

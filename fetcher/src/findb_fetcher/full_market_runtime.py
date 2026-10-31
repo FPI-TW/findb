@@ -391,6 +391,9 @@ class FullMarketRuntime:
         self.catalogue_evidence: dict[str, bytes] = {}
         self.futures: dict[str, tuple[bytes, list[dict[str, Any]], bool]] = {}
         self.bundles: dict[tuple[str, date], Any] = {}
+        # Source stable work identity is immutable, so one acknowledged enqueue
+        # per process is enough; every later cycle would only replay it.
+        self.enqueued_keys: set[str] = set()
         self.daily_policy = config.get("daily_runtime_policies", {}).get(provider)
         self.last_batch: dict[str, Any] = {}
 
@@ -935,15 +938,13 @@ class FullMarketRuntime:
 
         self._ensure_proof()
         for feed in self.installed_feeds:
-            self.source.request(
-                "POST",
-                "provider-work/enqueue",
+            self._enqueue(
                 {
                     "stable_key": f"maintenance:{feed['dataset_key']}:{datetime.now(timezone.utc).date()}",
                     "kind": "maintenance",
                     "dataset_key": feed["dataset_key"],
                     "scope": {"dataset_key": feed["dataset_key"]},
-                },
+                }
             )
         try:
             with claimed_work(self.source, self.provider, accepted_kinds=["maintenance"]) as owner:
@@ -1112,6 +1113,12 @@ class FullMarketRuntime:
             proof={"manual_reason": "retired_feed_requires_manual_review"},
         )
 
+    def _enqueue(self, body: dict[str, Any]) -> None:
+        if body["stable_key"] in self.enqueued_keys:
+            return
+        self.source.request("POST", "provider-work/enqueue", body)
+        self.enqueued_keys.add(body["stable_key"])
+
     def _queued_cycle(self, *, include_health: bool = True) -> dict[str, Any]:
         """Enqueue bounded dates before claiming; every provider call is owned."""
         from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
@@ -1164,9 +1171,7 @@ class FullMarketRuntime:
             if feed:
                 due.append((date.fromisoformat(plan["trade_date"]), feed))
         for day, feed in sorted(due, key=lambda value: (value[0], value[1]["dataset_key"])):
-            self.source.request(
-                "POST",
-                "provider-work/enqueue",
+            self._enqueue(
                 {
                     "stable_key": f"daily:{self.execution_profile}:{feed['dataset_key']}:{day}",
                     "kind": "daily",
@@ -1174,7 +1179,7 @@ class FullMarketRuntime:
                     "trade_date": day.isoformat(),
                     "execution_profile": self.execution_profile,
                     "scope": {"feed": feed},
-                },
+                }
             )
         if (
             admitted
@@ -1183,15 +1188,13 @@ class FullMarketRuntime:
         ):
             for feed in self.installed_feeds:
                 if feed["dataset_key"] in admitted:
-                    self.source.request(
-                        "POST",
-                        "provider-work/enqueue",
+                    self._enqueue(
                         {
                             "stable_key": f"maintenance:{feed['dataset_key']}:{now.date()}",
                             "kind": "maintenance",
                             "dataset_key": feed["dataset_key"],
                             "scope": {"dataset_key": feed["dataset_key"]},
-                        },
+                        }
                     )
         try:
             with claimed_work(
@@ -1895,6 +1898,7 @@ class FullMarketRuntime:
         )
         ordered = list(enumerate(entries))
         ordered = ordered[offset:] + ordered[:offset]
+        calendar_checked = False
         for index, (part, member_key) in ordered:
             key = part["work_item_id"] + ":" + member_key
             if drain_keys is not None and key not in drain_keys:
@@ -1923,6 +1927,18 @@ class FullMarketRuntime:
             ):
                 self.last_batch["reason"] = "batch_yield"
                 return True
+            if (
+                not calendar_checked
+                and self.state.prepared(key) is None
+                and (getattr(owner, "work", None) or {}).get("kind") == "daily"
+            ):
+                # A legacy planned decision may now be a published closure. Probe
+                # once per round before claiming, so neither a closed date nor an
+                # unavailable probe spends native calls or member failure budgets.
+                calendar_checked = True
+                if self._calendar_repair_required(owner):
+                    self.state.finish(key, status="manual", reason="calendar_repair_required")
+                    raise CalendarDecisionRepairRequiredError("published calendar is now closed")
             if not self.state.claim(
                 key,
                 now=time.time(),

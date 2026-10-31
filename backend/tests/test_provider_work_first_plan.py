@@ -12,6 +12,7 @@ from app.models.canonical import CalendarYearRevision
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import DatasetRegistry, FullMarketEnvironment
 from app.services import provider_work
+from app.services.provider_work import prepared_map
 from tests.provider_work_runtime_support import DAY
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
@@ -161,7 +162,7 @@ async def test_daily_taifex_first_plan_known_native_failure_retries_original_wor
         work.state == ("failed" if failure_site == "permanent" else "queued")
         and work.manifest is None
     )
-    assert not work.prepared_deliveries and not h.runs
+    assert not (await prepared_map(h.db, work.work_id)) and not h.runs
     owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
     assert owner.attempt_id is None and owner.recovery_reason is None
     assert calls == (

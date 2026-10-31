@@ -253,16 +253,6 @@ async def _assert_raw_defaults(db: AsyncConnection) -> None:
             "('schema_parity', 'Parity', 'equity', 'TW', 'daily', true, '{}', now(), now())"
         )
     )
-    prepared = await db.scalar(
-        text(
-            "INSERT INTO provider_work "
-            "(work_id, environment, provider, stable_key, kind, dataset_key, scope, state, created_at) "
-            "VALUES (:id, 'local', 'shioaji', 'schema-parity', 'daily', 'schema_parity', "
-            "'{}', 'queued', now()) RETURNING prepared_deliveries"
-        ),
-        {"id": uuid7()},
-    )
-    assert prepared == {}
     await _insert_calendar_market(db, "X_NEW")
     assert await db.scalar(text("SELECT active FROM calendar_market WHERE market = 'X_NEW'"))
     # A timestamp-without-timezone default cast to timestamptz would shift by 8h.

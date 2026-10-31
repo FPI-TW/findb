@@ -21,6 +21,7 @@ from app.models.registry import (
     SchedulerControl,
 )
 from app.services import provider_work
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
 from tests.test_provider_work_adapters import native_runtime as native_runtime
@@ -310,7 +311,10 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     h.db.expire_all()
     work = await h.db.get(ProviderWork, work_id)
     assert work.state == "queued"
-    frozen, descriptors = work.manifest, json.loads(json.dumps(work.prepared_deliveries))
+    frozen, descriptors = (
+        work.manifest,
+        json.loads(json.dumps((await prepared_map(h.db, work.work_id)))),
+    )
     assert len(acquired_members) == 1, (
         "a retryable round cannot acquire another frozen member",
         h.source_events,
@@ -378,7 +382,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                 ).fetchone()[0]
                 floor = ledger.execute("SELECT MAX(next_at) FROM full_pacing").fetchone()[0]
             assert dispatched == number and floor > time.time() + offset[0]
-            assert not work.prepared_deliveries and work.manifest == frozen
+            assert not (await prepared_map(h.db, work.work_id)) and work.manifest == frozen
             if number == FULL_WORK_MAX_ATTEMPTS:
                 break
             offset[0] += 121
@@ -437,9 +441,8 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     if empty_response:
         assert len(observed) == 3 and observed[0] == observed[1]
         assert len(h.runs) == 2
-    assert all(
-        work.prepared_deliveries[key]["body"] == value["body"] for key, value in descriptors.items()
-    )
+    saved = await prepared_map(h.db, work.work_id)
+    assert all(saved[key]["body"] == value["body"] for key, value in descriptors.items())
     if not_published:
         assert observed_calls == (
             ["AAPL", "AAPL", "MSFT"]

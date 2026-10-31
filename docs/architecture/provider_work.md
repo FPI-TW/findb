@@ -133,7 +133,8 @@ FinLab daily target-not-ready 與 FactSet daily `no_source_row` 在 immutable
 不保存可 replay 的空 snapshot；historical 及超過 deadline 的缺列仍依 terminal partial／manual
 處理。每次 retry 在任何新 provider I/O 前，以 owner fence 重新讀取目前 published calendar；若 frozen planned decision
 之後的新 published revision 將該日改為休市，保存 `CALENDAR_DECISION_REPAIR_REQUIRED` 並停止
-重試，等待人工修復，絕不自動改寫 frozen decision。詳見 [Full market runbook](../operations/full_market.md#來源尚未發布的等待與休市判定)。
+重試，等待人工修復，絕不自動改寫 frozen decision。五個 provider 的 daily canonical 回合也在
+第一個新抓取成員 claim 前查詢一次，命中時不授權、不派送、不消耗 member attempts。詳見 [Full market runbook](../operations/full_market.md#來源尚未發布的等待與休市判定)。
 
 已人工改為 `skipped_calendar` 的舊 Shioaji daily canonical work 也拒絕 acquisition，
 即使仍有原 plan／manifest；calendar_skip manifest 與 prepared drain 保持原行為。
@@ -287,6 +288,17 @@ prepared／receipt 是否仍需排空由 SQL 計算布林摘要，最近 settled
 歷史 request／item 的 eligibility 批次查詢，daily window／controls、HK cutover、原 FIFO 順位、
 cooldown、drain-only、report continuation 與 recovery 顯示不改變。此為唯讀投影，不取得 provider
 lock、不結案或修改任何 work／attempt，不授予新 acquisition；正式執行仍由原 owner fence 判定。
+
+控制路徑同樣不搬運 prepared body。每筆 prepared delivery 是 `provider_work_prepared` 的一列
+（`work_id`、`delivery_key`、不含 body 的 `descriptor` 與原 `body`），intent 只插入新列、confirm 只
+更新該列 descriptor，不會重寫同一 work 的其他 bodies。fence、claim、acceptance、receipt、settle、
+projection、Shioaji repair 與休市結清盤點只讀 delivery key 或 descriptor；只有 Source `prepared`
+lookup 回傳原 bytes。讀取順序沿用舊 JSONB 物件的 key 順序（長度後位元組）。
+Migration `9c1e4f7a2b6d` 逐 work 驗證搬移後可無損重建原 JSONB 才刪除舊欄位，任何不一致即整批
+失敗；downgrade 以相同方式重建原物件並核對筆數後才刪表。Runtime 要求 Alembic revision 完全相符，
+舊 image 不能直接連新 schema，退版須先 downgrade。已存在 stable key 的 enqueue 重播只讀 identity，不取得 provider lock；新建 work
+仍在 lock 內再次確認。Fetcher 每個程序對同一 stable key 只送出一次已確認的 enqueue，Source 失敗
+未確認者下輪重送；重啟後第一輪會再確認一次，不影響原 FIFO 順位。
 
 Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
 prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，

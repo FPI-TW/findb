@@ -15,6 +15,7 @@ from app.models.provider_work import (
 )
 from app.models.registry import IngestionRun, SchedulerControl
 from app.services import provider_work
+from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
 from tests.test_canonical_ingest_api import _canonical_request
@@ -198,7 +199,7 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
     )
     assert len(receipts) == int(prepared)
     if prepared:
-        assert saved.prepared_deliveries["retired-original"]["body"] == original
+        assert (await prepared_map(h.db, saved.work_id))["retired-original"]["body"] == original
         run = await h.db.get(IngestionRun, receipts[0].run_id)
         assert run.status == "completed" and run.success_records == 1
     # The next original stable work is claimable after retired settlement.

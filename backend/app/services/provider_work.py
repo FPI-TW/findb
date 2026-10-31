@@ -14,14 +14,17 @@ from typing import Any, TypedDict
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Row, exists, func, literal, or_, select, text
+from sqlalchemy import Row, Select, exists, func, insert, literal, or_, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.config import get_settings
 from app.models.provider_work import (
     ProviderWork,
     ProviderWorkAttempt,
     ProviderWorkOwner,
+    ProviderWorkPrepared,
     ProviderWorkReceipt,
 )
 from app.models.registry import IngestionRun, SchedulerControl
@@ -62,14 +65,10 @@ async def daily_readiness(db: AsyncSession, *, provider: str, values: dict) -> d
     from app.models.registry import DatasetRegistry
     from app.services.effective_calendar import effective_days
 
-    await lock_provider(db, provider)
-    existing = await db.scalar(
-        select(ProviderWork).where(
-            ProviderWork.environment == environment(),
-            ProviderWork.provider == provider,
-            ProviderWork.stable_key == values["stable_key"],
-        )
-    )
+    existing = await _existing_work(db, provider, values["stable_key"])
+    if existing is None:
+        await lock_provider(db, provider)
+        existing = await _existing_work(db, provider, values["stable_key"])
     if existing is not None:
         # Enqueue replays cannot rewrite a previously frozen calendar or an
         # imported legacy scope. The ordinary immutable-scope check still runs.
@@ -111,6 +110,111 @@ def environment() -> str:
     return get_settings().APP_ENVIRONMENT
 
 
+# Prepared bodies stay in PostgreSQL. Control paths read keys/descriptors only;
+# bodies leave the database only for an explicit prepared lookup. Rows keep the
+# original per-work JSONB key order (length, then bytes) for every caller.
+def _prepared(*columns: Any, work_id: UUID) -> Select:
+    return (
+        select(*columns)
+        .where(ProviderWorkPrepared.work_id == work_id)
+        .order_by(
+            func.octet_length(ProviderWorkPrepared.delivery_key),
+            ProviderWorkPrepared.delivery_key.collate("C"),
+        )
+    )
+
+
+async def prepared_keys(db: AsyncSession, work_id: UUID) -> list[str]:
+    return list(await db.scalars(_prepared(ProviderWorkPrepared.delivery_key, work_id=work_id)))
+
+
+async def has_prepared(db: AsyncSession, work_id: UUID) -> bool:
+    return bool(await db.scalar(select(exists().where(ProviderWorkPrepared.work_id == work_id))))
+
+
+async def prepared_descriptors(
+    db: AsyncSession, work_id: UUID, key: str | None = None, *, job_key: str | None = None
+) -> dict[str, dict]:
+    """Descriptors without bodies, optionally narrowed to one delivery or job key."""
+    query = _prepared(
+        ProviderWorkPrepared.delivery_key, ProviderWorkPrepared.descriptor, work_id=work_id
+    )
+    if key is not None:
+        query = query.where(ProviderWorkPrepared.delivery_key == key)
+    if job_key is not None:
+        query = query.where(ProviderWorkPrepared.descriptor["job_key"].astext == job_key)
+    return {row.delivery_key: row.descriptor for row in await db.execute(query)}
+
+
+async def prepared_bodies(
+    db: AsyncSession,
+    work_id: UUID,
+    *,
+    delivery_key: str | None = None,
+    job_key: str | None = None,
+    member_key: str | None = None,
+) -> list[str]:
+    """Original bytes matching any given identity, or every body without one."""
+    matches = [
+        *([ProviderWorkPrepared.delivery_key == delivery_key] if delivery_key is not None else []),
+        *(
+            [ProviderWorkPrepared.descriptor["job_key"].astext == job_key]
+            if job_key is not None
+            else []
+        ),
+        *(
+            [ProviderWorkPrepared.descriptor["canonical_members"].has_key(member_key)]
+            if member_key is not None
+            else []
+        ),
+    ]
+    query = _prepared(ProviderWorkPrepared.body, work_id=work_id)
+    if matches:
+        query = query.where(or_(*matches))
+    return list(await db.scalars(query))
+
+
+async def prepared_map(db: AsyncSession, work_id: UUID) -> dict[str, dict]:
+    """Complete retained preparation, including bodies, for evidence and tests."""
+    rows = await db.execute(
+        _prepared(
+            ProviderWorkPrepared.delivery_key,
+            ProviderWorkPrepared.descriptor,
+            ProviderWorkPrepared.body,
+            work_id=work_id,
+        )
+    )
+    return {
+        row.delivery_key: row.descriptor
+        if row.body is None
+        else {**row.descriptor, "body": row.body}
+        for row in rows
+    }
+
+
+async def store_prepared(db: AsyncSession, work_id: UUID, key: str, row: dict) -> None:
+    """Bind one immutable delivery as its own row; earlier bodies are never rewritten."""
+    await db.execute(
+        insert(ProviderWorkPrepared).values(
+            work_id=work_id,
+            delivery_key=key,
+            descriptor={name: value for name, value in row.items() if name != "body"},
+            body=row.get("body"),
+        )
+    )
+
+
+async def confirm_prepared(db: AsyncSession, work_id: UUID, key: str) -> None:
+    await db.execute(
+        update(ProviderWorkPrepared)
+        .where(ProviderWorkPrepared.work_id == work_id, ProviderWorkPrepared.delivery_key == key)
+        .values(
+            descriptor=ProviderWorkPrepared.descriptor.op("||")(literal({"confirmed": True}, JSONB))
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+
 async def lock_provider(db: AsyncSession, provider: str) -> ProviderWorkOwner:
     """Serialize enqueue, claim, acceptance, close and settlement until commit."""
     env = environment()
@@ -124,6 +228,16 @@ async def lock_provider(db: AsyncSession, provider: str) -> ProviderWorkOwner:
         db.add(owner)
         await db.flush()
     return owner
+
+
+async def _existing_work(db: AsyncSession, provider: str, stable_key: str) -> ProviderWork | None:
+    return await db.scalar(
+        select(ProviderWork).where(
+            ProviderWork.environment == environment(),
+            ProviderWork.provider == provider,
+            ProviderWork.stable_key == stable_key,
+        )
+    )
 
 
 async def enqueue(
@@ -140,14 +254,12 @@ async def enqueue(
 ) -> ProviderWork:
     if not_before is not None and not_before.tzinfo is None:
         raise ProviderWorkError("not_before must be timezone-aware")
-    await lock_provider(db, provider)
-    existing = await db.scalar(
-        select(ProviderWork).where(
-            ProviderWork.environment == environment(),
-            ProviderWork.provider == provider,
-            ProviderWork.stable_key == stable_key,
-        )
-    )
+    # Identity rows are immutable once created, so an idempotent replay needs
+    # neither the provider FIFO lock nor any retained preparation bytes.
+    existing = await _existing_work(db, provider, stable_key)
+    if existing is None:
+        await lock_provider(db, provider)
+        existing = await _existing_work(db, provider, stable_key)
     immutable = (kind, dataset_key, trade_date, execution_profile, scope or {})
     if existing is not None:
         if (
@@ -190,6 +302,14 @@ async def enqueue(
     )
     await db.flush()
     return work
+
+
+_UNACCEPTED_PREPARED = """EXISTS (
+  SELECT 1 FROM provider_work_prepared prepared
+  WHERE prepared.work_id=provider_work.work_id AND NOT EXISTS (
+    SELECT 1 FROM provider_work_receipt receipt
+    WHERE receipt.work_id=provider_work.work_id AND receipt.member_key=prepared.delivery_key)
+)"""
 
 
 async def claim(
@@ -261,11 +381,7 @@ async def claim(
                         ProviderWork.kind != "daily",
                         ProviderWorkAttempt.proof["source_error_pending"].as_boolean().is_(True),
                         literal(daily_window(provider, now)["open"]),
-                        text("""EXISTS (
-                          SELECT 1 FROM jsonb_object_keys(provider_work.prepared_deliveries) AS prepared(member_key)
-                          WHERE NOT EXISTS (SELECT 1 FROM provider_work_receipt receipt
-                            WHERE receipt.work_id=provider_work.work_id AND receipt.member_key=prepared.member_key)
-                        )"""),
+                        text(_UNACCEPTED_PREPARED),
                         exists(
                             select(ProviderWorkReceipt.run_id)
                             .join(IngestionRun)
@@ -278,11 +394,7 @@ async def claim(
                     or_(
                         ProviderWork.kind == "rerun",
                         ProviderWorkAttempt.proof["source_error_pending"].as_boolean().is_(True),
-                        text("""EXISTS (
-                          SELECT 1 FROM jsonb_object_keys(provider_work.prepared_deliveries) AS prepared(member_key)
-                          WHERE NOT EXISTS (SELECT 1 FROM provider_work_receipt receipt
-                            WHERE receipt.work_id=provider_work.work_id AND receipt.member_key=prepared.member_key)
-                        )"""),
+                        text(_UNACCEPTED_PREPARED),
                         exists(
                             select(ProviderWorkReceipt.run_id)
                             .join(IngestionRun)
@@ -299,11 +411,7 @@ async def claim(
                     or_(
                         ProviderWork.kind != "daily",
                         ProviderWorkAttempt.proof["source_error_pending"].as_boolean().is_(True),
-                        text("""EXISTS (
-                          SELECT 1 FROM jsonb_object_keys(provider_work.prepared_deliveries) AS prepared(member_key)
-                          WHERE NOT EXISTS (SELECT 1 FROM provider_work_receipt receipt
-                            WHERE receipt.work_id=provider_work.work_id AND receipt.member_key=prepared.member_key)
-                        )"""),
+                        text(_UNACCEPTED_PREPARED),
                         exists(
                             select(ProviderWorkReceipt.run_id)
                             .join(IngestionRun)
@@ -357,9 +465,9 @@ async def claim(
                     .where(ProviderWorkReceipt.work_id == work.work_id)
                 )
             ).all()
-            if set(work.prepared_deliveries or {}) <= {row.member_key for row in accepted} and all(
-                row.status in TERMINAL_RUNS for row in accepted
-            ):
+            if set(await prepared_keys(db, work.work_id)) <= {
+                row.member_key for row in accepted
+            } and all(row.status in TERMINAL_RUNS for row in accepted):
                 attempt.drain_only = False
         attempt.drain_only = (
             attempt.drain_only
@@ -584,7 +692,9 @@ async def acceptance(
         raise ProviderWorkError("provider work delivery scope differs")
     if work.state == "calendar_closed":
         raise ProviderWorkError("calendar-closed work cannot accept delivery")
-    descriptor = (work.prepared_deliveries or {}).get(identity["member_key"])
+    descriptor = (await prepared_descriptors(db, work.work_id, identity["member_key"])).get(
+        identity["member_key"]
+    )
     if descriptor and descriptor["body_sha256"] != db.info.get("provider_work_body_sha256"):
         raise ProviderWorkError("prepared delivery bytes differ from retained descriptor")
     if (
@@ -735,23 +845,20 @@ async def register_prepared(
         "payload_sha256": payload_sha256(payload),
         "canonical_members": sorted(members),
     }
-    previous = (work.prepared_deliveries or {}).get(request.idempotency_key)
+    previous = (await prepared_descriptors(db, work.work_id, request.idempotency_key)).get(
+        request.idempotency_key
+    )
     if previous is not None:
         if any(previous[key] != value for key, value in descriptor.items()) or (
             job_key is not None and previous.get("job_key") != job_key
         ):
             raise ProviderWorkError("prepared delivery descriptor cannot change")
         if stage == "confirm" and not previous.get("confirmed"):
-            work.prepared_deliveries = {
-                **work.prepared_deliveries,
-                request.idempotency_key: {**previous, "confirmed": True},
-            }
+            await confirm_prepared(db, work.work_id, request.idempotency_key)
         return
     if stage != "intent":
         raise ProviderWorkError("durable preparation intent is required before local save")
-    if job_key is not None and any(
-        row.get("job_key") == job_key for row in (work.prepared_deliveries or {}).values()
-    ):
+    if job_key is not None and await prepared_descriptors(db, work.work_id, job_key=job_key):
         raise ProviderWorkError("prepared job identity is already bound")
     if attempt.state != "open" or attempt.drain_only:
         raise ProviderWorkError("closed work cannot create a preparation intent")
@@ -772,15 +879,12 @@ async def register_prepared(
         )
         if accepted is None:
             raise ProviderWorkError("new preparation is stopped")
-    work.prepared_deliveries = {
-        **(work.prepared_deliveries or {}),
-        request.idempotency_key: {
-            **descriptor,
-            "body": body,
-            "job_key": job_key,
-            "confirmed": False,
-        },
-    }
+    await store_prepared(
+        db,
+        work.work_id,
+        request.idempotency_key,
+        {**descriptor, "body": body, "job_key": job_key, "confirmed": False},
+    )
 
 
 async def associate_receipt(
@@ -814,7 +918,9 @@ async def associate_receipt(
     )
     if work.state == "calendar_closed":
         raise ProviderWorkError("calendar-closed work cannot accept delivery")
-    descriptor = (work.prepared_deliveries or {}).get(identity["member_key"])
+    descriptor = (await prepared_descriptors(db, work.work_id, identity["member_key"])).get(
+        identity["member_key"]
+    )
     retained = descriptor and descriptor["body_sha256"] == db.info.get("provider_work_body_sha256")
     if (attempt.state != "open" or attempt.drain_only or work.state != "running") and not retained:
         raise ProviderWorkError("provider work acceptance is closed")
@@ -866,14 +972,13 @@ async def settle(
             .where(ProviderWorkReceipt.work_id == work.work_id)
         )
     ).all()
-    pending = set(work.prepared_deliveries or {}) - {receipt.member_key for receipt, _ in receipts}
+    prepared = set(await prepared_keys(db, work.work_id))
+    pending = prepared - {receipt.member_key for receipt, _ in receipts}
     if pending and outcome != "retry":
         manual = (
             outcome == "failed"
             and failure_code
-            and pending
-            <= set(proof.get("manual_pending_prepared", []))
-            <= set(work.prepared_deliveries)
+            and pending <= set(proof.get("manual_pending_prepared", [])) <= prepared
         )
         if not manual:
             attempt.state = "draining"
@@ -1133,19 +1238,15 @@ async def _projection_acquisition_states(
 
 
 async def projection(db: AsyncSession, *, provider: str | None = None) -> list[dict]:
-    # A prepared JSON object can contain many MB of immutable delivery bodies.
-    # Never select that object (or repeat it for historical retry rounds) for a
-    # monitoring page: return only booleans computed beside the durable records.
-    prepared = (
-        func.jsonb_object_keys(ProviderWork.prepared_deliveries)
-        .table_valued("member_key")
-        .render_derived(name="prepared")
-    )
+    # Prepared rows can hold many MB of immutable delivery bodies. Never select
+    # them (or repeat them for historical retry rounds) for a monitoring page:
+    # return only booleans computed beside the durable records.
+    prepared = aliased(ProviderWorkPrepared, name="prepared")
     accepted = (
         select(ProviderWorkReceipt.run_id)
         .where(
             ProviderWorkReceipt.work_id == ProviderWork.work_id,
-            ProviderWorkReceipt.member_key == prepared.c.member_key,
+            ProviderWorkReceipt.member_key == prepared.delivery_key,
         )
         .correlate(ProviderWork, prepared)
         .exists()
@@ -1193,13 +1294,12 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
             ProviderWorkAttempt.not_before,
             ProviderWorkAttempt.proof["source_error_pending"].label("source_error_pending"),
             select(literal(1))
-            .select_from(prepared)
+            .where(prepared.work_id == ProviderWork.work_id)
             .correlate(ProviderWork)
             .exists()
             .label("has_prepared"),
             select(literal(1))
-            .select_from(prepared)
-            .where(~accepted)
+            .where(prepared.work_id == ProviderWork.work_id, ~accepted)
             .correlate(ProviderWork)
             .exists()
             .label("pending_prepared"),
@@ -1409,7 +1509,7 @@ async def apply_cutover(db: AsyncSession, proof: dict) -> None:
                 item.status == "failed" and item.failure_code == "BACKFILL_EXPIRED"
             )
             if retained_transition and (
-                work.prepared_deliveries
+                await has_prepared(db, work.work_id)
                 or await db.scalar(
                     select(ProviderWorkReceipt.run_id)
                     .where(ProviderWorkReceipt.work_id == work.work_id)
