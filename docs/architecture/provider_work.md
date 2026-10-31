@@ -133,7 +133,8 @@ FinLab daily target-not-ready 與 FactSet daily `no_source_row` 在 immutable
 不保存可 replay 的空 snapshot；historical 及超過 deadline 的缺列仍依 terminal partial／manual
 處理。每次 retry 在任何新 provider I/O 前，以 owner fence 重新讀取目前 published calendar；若 frozen planned decision
 之後的新 published revision 將該日改為休市，保存 `CALENDAR_DECISION_REPAIR_REQUIRED` 並停止
-重試，等待人工修復，絕不自動改寫 frozen decision。詳見 [Full market runbook](../operations/full_market.md#來源尚未發布的等待與休市判定)。
+重試，等待人工修復，絕不自動改寫 frozen decision。五個 provider 的 daily canonical 回合也在
+第一個新抓取成員 claim 前查詢一次，命中時不授權、不派送、不消耗 member attempts。詳見 [Full market runbook](../operations/full_market.md#來源尚未發布的等待與休市判定)。
 
 已人工改為 `skipped_calendar` 的舊 Shioaji daily canonical work 也拒絕 acquisition，
 即使仍有原 plan／manifest；calendar_skip manifest 與 prepared drain 保持原行為。

@@ -1895,6 +1895,7 @@ class FullMarketRuntime:
         )
         ordered = list(enumerate(entries))
         ordered = ordered[offset:] + ordered[:offset]
+        calendar_checked = False
         for index, (part, member_key) in ordered:
             key = part["work_item_id"] + ":" + member_key
             if drain_keys is not None and key not in drain_keys:
@@ -1923,6 +1924,18 @@ class FullMarketRuntime:
             ):
                 self.last_batch["reason"] = "batch_yield"
                 return True
+            if (
+                not calendar_checked
+                and self.state.prepared(key) is None
+                and (getattr(owner, "work", None) or {}).get("kind") == "daily"
+            ):
+                # A legacy planned decision may now be a published closure. Probe
+                # once per round before claiming, so neither a closed date nor an
+                # unavailable probe spends native calls or member failure budgets.
+                calendar_checked = True
+                if self._calendar_repair_required(owner):
+                    self.state.finish(key, status="manual", reason="calendar_repair_required")
+                    raise CalendarDecisionRepairRequiredError("published calendar is now closed")
             if not self.state.claim(
                 key,
                 now=time.time(),
