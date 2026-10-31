@@ -231,7 +231,8 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
                     or (body.failure_code != previous.failure_code and not failed_rerun_completion)
                 ):
                     raise service.ProviderWorkError(
-                        "settlement replay differs from durable round proof"
+                        "settlement replay differs from durable round proof",
+                        code="PROVIDER_WORK_REPLAY_MISMATCH",
                     )
                 return {"work_id": str(work_id), "state": replay_work.state}
         work, _, owner = await service.fence(db, **identity)
@@ -375,7 +376,9 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
         raise HTTPException(status_code=409, detail={"code": "PROVIDER_WORK_SUSPENDED"}) from exc
     except service.ProviderWorkError as exc:
         await db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409, detail=str(exc), headers={"X-FinDB-Error-Code": exc.code}
+        ) from exc
     except ValueError as exc:
         await db.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc

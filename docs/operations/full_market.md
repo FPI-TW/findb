@@ -74,6 +74,24 @@ Queue 模式仍使用 provider FIFO，每輪先停止並回收 SDK child、close
 成員失敗次數；重試上限、逐 sequence receipts、已耗盡的 retries、帳號 pacing／cooldown 與
 shared host inode 契約保留，不能藉換批次或重啟取得額外配額或無協調 SDK session。
 
+`batch_yield` 的 queue retry 只延後 1 秒；`retry_at` 是最早 eligibility 時間，並非授權到期時間。
+Source 在 fence、close、prepared／accepted terminal drain 與 proof 驗證後，以
+`max(retry_at, Source 結算時間 + 1 秒)` 建立尾端 attempt。網路、provider lock 或 receipt 查詢
+超過 1 秒時，合法的已過期 retry floor 不再產生 409；較晚的 cooldown／下次開窗時間仍保留。
+這不允許新的窗口外 acquisition，也不清除 checkpoint、manual、失敗預算或帳號 cooldown。
+
+結算拒絕的 HTTP 409 透過 `X-FinDB-Error-Code` 提供固定 reason，例如
+`PROVIDER_WORK_FENCE_MISMATCH`、`PROVIDER_WORK_RECOVERY_REQUIRED`、
+`PROVIDER_WORK_NOT_CLOSED`、`PROVIDER_WORK_INVALID_PROOF`、`PROVIDER_WORK_INVALID_RETRY`、
+`PROVIDER_WORK_REPLAY_MISMATCH`；未分類者為 `PROVIDER_WORK_CONFLICT`。
+Fetcher 只將允許清單中的 code 寫入 exception，不記錄任意 response detail。
+只有既有 `PREPARED_DRAINING`／`DRAINING` 排空路徑會等待重試；其他 409 仍保留 owner recovery
+blocker，不可為了讓 runtime 存活而放過 fence 或 proof 錯誤。
+舊 Backend 沒有 reason header 時仍只顯示 HTTP status，故部署依原順序先 Backend 再 Fetcher。
+此修正不需 migration、queue 重建或 retry reset；正式驗收仍須核對完整運行窗口的結算與重啟數。
+[#367](https://github.com/FPI-TW/findb/issues/367) 的既有 production 日誌未保留拒絕細節，
+已重現的 retry floor 競態不能直接當作所有歷史退出的已確認原因。
+
 06:00 後不再啟動 daily SDK construction／login／Kbars；關窗前取得的 Source grant 也以
 06:00 封頂。已在途回應可持久化，prepared bytes 可繼續交付與 normalization。剩餘成員於
 下次 18:00 原位續跑，無須重新啟動 control，實際抓取仍取決於有效認證及共享配額。

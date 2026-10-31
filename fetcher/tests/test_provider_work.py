@@ -52,6 +52,37 @@ def test_settlement_retains_host_lock_until_accepted_normalization_drains(tmp_pa
             owner.stop()
 
 
+@pytest.mark.parametrize(
+    "code", ["PROVIDER_WORK_FENCE_MISMATCH", "PROVIDER_WORK_INVALID_PROOF", None]
+)
+def test_settlement_conflict_remains_recovery_blocked_with_safe_reason(tmp_path, code):
+    from findb_fetcher.full_market_client import FullMarketProtocolError
+
+    calls = []
+
+    class Source:
+        def request(self, method, path, body):
+            calls.append(path.rsplit("/", 1)[-1])
+            if path.endswith("/settle"):
+                raise FullMarketProtocolError("Source conflict", status_code=409, code=code)
+            return {}
+
+    owner = queue.ProviderWorkSession(
+        Source(),
+        "shioaji",
+        {"work_id": "original", "generation": 1, "token": "fence"},
+        queue.WorkJournal(tmp_path / "journal.sqlite3", "original"),
+    )
+    try:
+        with pytest.raises(queue.ProviderWorkRecoveryBlockedError) as error:
+            owner.settle("retry", delay=1)
+        assert not owner.settled and calls == ["close", "settle"]
+        if code:
+            assert code in str(error.value)
+    finally:
+        owner.stop()
+
+
 def test_enforced_daily_quota_waits_do_not_publish_failure_or_consume_retry_budget(
     tmp_path, monkeypatch
 ):
