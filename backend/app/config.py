@@ -38,10 +38,10 @@ class Settings(BaseSettings):
             )
         return True
 
-    TWELVE_DATA_SKIP_NON_TRADING_DAYS: bool = False
-    FINLAB_SKIP_NON_TRADING_DAYS: bool = False
-    SHIOAJI_SKIP_NON_TRADING_DAYS: bool = False
-    TAIFEX_SKIP_NON_TRADING_DAYS: bool = False
+    TWELVE_DATA_SKIP_NON_TRADING_DAYS: bool = True
+    FINLAB_SKIP_NON_TRADING_DAYS: bool = True
+    SHIOAJI_SKIP_NON_TRADING_DAYS: bool = True
+    TAIFEX_SKIP_NON_TRADING_DAYS: bool = True
     FACTSET_SKIP_NON_TRADING_DAYS: bool = True
 
     @field_validator(

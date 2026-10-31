@@ -134,8 +134,8 @@ provider-scoped Source key輪詢
 市場日曆以不可變的年度revision管理。Dashboard建立draft，只有Owner可publish或rollback。
 Backend 共用有效日曆解析：published 日期優先，缺日期依市場`weekend_days`預設，內建市場預設週六日休市；draft 不影響抓取。
 Serve 年度／區間查詢及 Admin 顯示日期來源與可空 revision，不寫入或自動發布。
-Fetcher 每日經 Source 建立凍結決策，不依賴 Serve 日曆 credentials。FactSet 的
-`FACTSET_SKIP_NON_TRADING_DAYS` 預設 true，其餘 provider 預設 false。對應開關為 true
+Fetcher 每日經 Source 建立凍結決策，不依賴 Serve 日曆 credentials。
+五個 provider 的 `*_SKIP_NON_TRADING_DAYS` 預設皆為 true。對應開關為 true
 時略過非交易日並保存 durable skip。
 部署與啟動不要求日曆完整；其他認證、時區、收盤、Owner controls、配額與交付證據規則保留。
 

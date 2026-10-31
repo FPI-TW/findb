@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 from sqlalchemy import delete, func, null, select, update
 
+from app.config import get_settings
 from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import (
     DatasetRegistry,
@@ -446,9 +447,11 @@ async def test_calendar_gap_defaults_without_blocking_request(
 
 
 @pytest.mark.asyncio
-async def test_closed_days_default_to_acquisition(
+async def test_closed_days_acquired_when_skip_disabled(
     test_session,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(get_settings(), "SHIOAJI_SKIP_NON_TRADING_DAYS", False)
     today = date(2026, 9, 1)
     await _seed_scope(test_session, today)
     closed = today - timedelta(days=1)

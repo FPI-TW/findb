@@ -27,10 +27,7 @@ def test_provider_switch_defaults_and_independence(monkeypatch, provider):
     for key in PROVIDER_CALENDAR_SWITCHES.values():
         monkeypatch.delenv(key, raising=False)
     defaults = Settings(_env_file=None)
-    assert all(
-        getattr(defaults, key) is (name == "factset")
-        for name, key in PROVIDER_CALENDAR_SWITCHES.items()
-    )
+    assert all(getattr(defaults, key) is True for key in PROVIDER_CALENDAR_SWITCHES.values())
     for key in PROVIDER_CALENDAR_SWITCHES.values():
         monkeypatch.setenv(key, "false")
     monkeypatch.setenv(PROVIDER_CALENDAR_SWITCHES[provider], "true")
