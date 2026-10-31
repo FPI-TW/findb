@@ -7,7 +7,12 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
+from app.models.provider_work import (
+    ProviderWork,
+    ProviderWorkAttempt,
+    ProviderWorkOwner,
+    ProviderWorkPrepared,
+)
 from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
 from app.services import provider_work as queue
 from app.services.historical_backfill import expire_requests
@@ -45,7 +50,9 @@ async def test_repeated_cutover_retains_expired_prepared_and_authenticated_drain
     h.handle = outage
     assert await h.run()
     h.db.expire_all()
-    work = await h.db.scalar(select(ProviderWork).where(ProviderWork.prepared_deliveries != {}))
+    work = await h.db.scalar(
+        select(ProviderWork).where(ProviderWork.work_id.in_(select(ProviderWorkPrepared.work_id)))
+    )
     assert work is not None and work.state == "queued" and not h.runs
     work_id = work.work_id
     prepared = json.loads(json.dumps((await prepared_map(h.db, work.work_id))))

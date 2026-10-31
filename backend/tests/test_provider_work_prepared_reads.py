@@ -13,13 +13,8 @@ from app.utils import utc_now
 from tests.test_canonical_ingest_api import _canonical_request
 from tests.test_provider_work import identity, seed
 
-# A full ORM row renders "provider_work.prepared_deliveries AS ..."; a body read
-# renders "->>'body'". Control paths may only use server-side key/descriptor SQL.
-BODY_TRANSFER = re.compile(
-    r"provider_work\.prepared_deliveries\s+AS\b|SELECT\s+provider_work\.prepared_deliveries\b"
-    r"|->>\s*'body'",
-    re.IGNORECASE,
-)
+# Only Source prepared lookup selects bodies; control paths read keys/descriptors.
+BODY_TRANSFER = re.compile(r"^\s*SELECT\b.*\bprovider_work_prepared\.body\b", re.I | re.S)
 
 
 @contextmanager

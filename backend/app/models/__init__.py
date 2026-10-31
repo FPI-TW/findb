@@ -27,6 +27,7 @@ from app.models.provider_work import (
     ProviderWork,
     ProviderWorkAttempt,
     ProviderWorkOwner,
+    ProviderWorkPrepared,
     ProviderWorkReceipt,
 )
 from app.models.raw import RawMarketPayload
@@ -81,6 +82,7 @@ __all__ = [
     "ProviderWork",
     "ProviderWorkAttempt",
     "ProviderWorkOwner",
+    "ProviderWorkPrepared",
     "ProviderWorkReceipt",
     "RawMarketPayload",
     "Instrument",

@@ -16,7 +16,6 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -48,15 +47,6 @@ class ProviderWork(Base):
     execution_profile: Mapped[str | None] = mapped_column(String(20), nullable=True)
     scope: Mapped[dict] = mapped_column(JSONB, default=dict)
     manifest: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    # Retained bodies can total tens of MB per work. Never load them with the
-    # fence/claim/enqueue row; use the provider_work prepared helpers instead.
-    prepared_deliveries: Mapped[dict] = mapped_column(
-        JSONB,
-        default=dict,
-        server_default=text("'{}'::jsonb"),
-        deferred=True,
-        deferred_raiseload=True,
-    )
     state: Mapped[str] = mapped_column(String(30), default="queued")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -104,6 +94,22 @@ class ProviderWorkOwner(Base):
     acquisition_not_before: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class ProviderWorkPrepared(Base):
+    """One retained delivery per row: binding a new body never rewrites earlier ones.
+
+    ``descriptor`` holds the immutable digests, canonical members, job key and the
+    confirmation flag; ``body`` (TOASTed separately) is read only by prepared lookup.
+    """
+
+    __tablename__ = "provider_work_prepared"
+    work_id: Mapped[UUID] = mapped_column(
+        ForeignKey("provider_work.work_id", ondelete="RESTRICT"), primary_key=True
+    )
+    delivery_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    descriptor: Mapped[dict] = mapped_column(JSONB)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ProviderWorkReceipt(Base):

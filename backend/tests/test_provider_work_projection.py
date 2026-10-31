@@ -69,7 +69,7 @@ def monitor_reads(db):
         assert statement.lstrip().upper().startswith("SELECT"), statement
         selected = context.compiled.statement.selected_columns
         # Reject transporting an ORM entity/full JSON object, even under aliases.
-        assert not {"prepared_deliveries", "manifest", "scope", "proof", "token"} & {
+        assert not {"body", "descriptor", "manifest", "scope", "proof", "token"} & {
             column.key for column in selected
         }
         statements.append(statement)

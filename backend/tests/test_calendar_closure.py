@@ -256,6 +256,7 @@ async def test_corrected_calendar_blocks_acquisition_before_closure_but_keeps_pr
         "decision_planned",
         "audit_changed",
         "prepared",
+        "prepared_rows",
         "receipt",
         "runs",
         "owner",
@@ -284,6 +285,8 @@ async def test_evaluator_rejects_each_unsafe_snapshot(test_session, variant):
         s["audit"][0]["details"]["after_sha256"] = "a" * 64
     elif variant == "prepared":
         s["work"][0]["prepared_deliveries"] = {"bytes": "retained"}
+    elif variant == "prepared_rows":
+        s["prepared"] = [{"delivery_key": "retained", "descriptor": {"body_sha256": "a" * 64}}]
     elif variant == "receipt":
         s["receipts"] = [{"run_id": str(uuid7())}]
     elif variant == "runs":
