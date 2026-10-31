@@ -5,6 +5,48 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
+## 其他 provider 複查與控制路徑實測（2026-11-01）
+
+台北 11/01 00:23～00:40 經 Owner 授權，以 PostgreSQL `REPEATABLE READ READ ONLY`、Fetcher
+SQLite `mode=ro`／`query_only`、容器日誌與 nginx 存取紀錄複查五個 provider；沒有修改
+controls、工作、預算或部署，也沒有 native provider 請求。兩端仍為 v0.1.14、DB revision
+`3a80c2e1d5f4`，Full market 首次日期為 10/12～10/13。
+
+| Provider | Full control | 未結案 work | 近 1 小時 receipts | 結論 |
+| --- | --- | ---: | ---: | --- |
+| Twelve Data | running | 20（10/13 running） | 654 | 受控制路徑放大影響；另有舊週末工作待處理 |
+| Shioaji | running | 3 | 61 | 受控制路徑放大影響 |
+| TAIFEX | running（cycle 間回報 stopped 屬正常） | 0 | 0 | 10/28～10/30 completed |
+| FinLab | 10/28 起 stopped | 8 | 0 | prepared 為空；恢復前須先處理舊週末工作 |
+| FactSet | 從未啟動 | 0 | 0 | production 港股目前沒有抓取中的 provider |
+
+**控制路徑放大：** 十分鐘 Source 請求為 enqueue 1,896、authorization 799、prepare 544、
+authorize 513、claim 265，實際 ingest 只有 136。Fetcher 每輪從首次日期逐日 enqueue，且
+`run_worker` 先 drain 再 cycle，兩者都會重送整個範圍；Backend 每次 enqueue 先取得 provider lock
+並讀取完整 work row。`provider_work` 的 TOAST 累計插入 11,951,818 個 chunk，現存僅 45 MB，
+表本身 127 列、累計 17,099 次更新，證實 prepared JSONB 被反覆整份重寫。活動 Shioaji work 壓縮後
+5.0～5.5 MB、Twelve Data 10/13 為 1.75 MB；FinLab、TAIFEX、FactSet 目前沒有累積 prepared。
+
+**舊休市日工作：** Twelve Data 美股 10/17（六）、10/18（日）、10/24（六）與 FinLab 10/24、
+10/25 仍 queued，皆帶 `legacy_id`，frozen decision 為 `planned`；以正式 `current_calendar_status`
+唯讀評估七筆均為 `repair_required=true`。SQLite 中 Twelve Data 這三日各有 5,082 個
+pending／source_error 成員，attempts 最大值為 7／6／1，依現行程式至少還會再派送約 5 萬次。
+Fetcher 原本只在 FinLab 觀測後與 Shioaji 空回應路徑查詢 calendar status。過去 FinLab 10/17、
+10/18 全部 1,947 個、Shioaji 週末全部 1,945 個與 TAIFEX 週末全部 63 個成員都已用滿 8 次
+一般失敗額度；新日期因五個 provider 的略過非交易日開關皆為 true，已正確記為 `skipped_calendar`。
+
+**其他狀態：** FinLab 帳號 cooldown 標示 `legacy`，另有 change ratio 1.003（1,953 個成員全變）
+的 universe candidate；TAIFEX 有 change ratio 0.397 的 candidate。TAIFEX 健康輸出持續回報
+10/13～10/27 本地 plan 的 944 個 manual 成員，但對應 Backend work 已 cancelled。
+`full_work_diagnostic` 全庫只有一筆 Shioaji `exception:ShioajiSdkError`，Twelve Data 舊 source_error
+早於分類診斷，無法回推例外類別。修正與後續項目見
+[待辦](../dev/production-foundation-cutover-plan.md)。
+
+SSM：DB 快照 `32176e52-17d5-4705-a4ce-bf2429ccb70e`、決策與開關
+`e9e3c385-fa83-46a3-81e7-84805eedfa83`／`52376a5e-779d-47f6-8fea-786b443e8e57`、calendar status
+`78504d47-4d44-4cdf-b308-3604ca77b085`、SQLite `6e1c524c-a26c-4e25-a8ee-7cfb7541cce2`、TAIFEX
+日誌 `3029a593-7896-42d7-ac9e-5c45f7bb610b`、nginx `0d498e28-1390-45e4-ba18-73c87493f3d8`，均 Success。
+
 ## Twelve Data／Shioaji 遺留工作複查（2026-10-31）
 
 台北 21:33～21:36 以 production PostgreSQL `REPEATABLE READ READ ONLY`、Fetcher SQLite
@@ -375,7 +417,8 @@ shared inode 與子程序退出證據才能 recovery。修正不可用廣泛 cat
 統一處理暫時 Source status（含實際 521）；active owner 仍遵守停止、reap 與重新取 fence 的
 恢復規則；對可證明未派送的純 Source 等待保留工作 failure budget，已派送／不確定操作的
 quota、unknown debt 與 cooldown 不得退還。另補 startup、idle、active heartbeat／ACK-loss、
-prepared replay 與重試額度的回歸測試。未實作項目見 [待辦](../dev/production-foundation-cutover-plan.md)。
+prepared replay 與重試額度的回歸測試。修正已由 PR #379 實作並於 v0.1.13 發布，驗收見
+[部署文件](deployment.md#source-暫停修正的部署驗收)。
 本次調查只有唯讀 production 查核與本機 mock 重現，未修改線上 runtime、controls 或預算。
 
 ## Shioaji 工作佇列調查（2026-10-30）
