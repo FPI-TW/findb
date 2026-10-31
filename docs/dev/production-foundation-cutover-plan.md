@@ -8,6 +8,13 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 尚未完成：
 
+- Provider-work 控制／交付路徑效能：10/31 production 唯讀續查確認活動 Shioaji work
+  保留約 47～61 MB prepared JSON，fence／claim／enqueue 仍選取完整 ORM，preparation
+  亦重寫整個 JSONB；已觀察資料傳輸與 advisory lock 等待。須拆分 metadata／body 讀取、
+  避免全量 prepared 重寫並檢視重複 preparation 往返，保留 fencing、durable intent／confirm
+  與 ACK-loss 語意。以成員／回合分段耗時、SQL／傳輸量、receipt／bytes 保留及原生帳本
+  驗收；目前只是診斷，尚未實作。原始證據與限制見 [production 維運](../operations/production.md#原始-responsereceipt-與慢速路徑續查)。
+
 - Shioaji 空 Kbars 與 frozen mapping 缺口修復（[#378](https://github.com/FPI-TW/findb/issues/378)）：
   程式／回歸測試及 staging 10/23 兩筆休市結清已完成，正式收據與保留性核對見
   [Full market runbook](../operations/full_market.md)。Issue 保持 open；production 版本、
@@ -56,7 +63,11 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
 
 ## Issue #378 production 驗收範圍
 
-以下均未執行，production 操作須另行核准具體環境、work／plan／member、額度與時段。
+以下為待正式驗收範圍，production 寫入、native 觀測與控制操作須另行核准具體環境、
+work／plan／member、額度與時段。10/31 已完成獲授權的原始 response／receipt 唯讀續查，
+確認兩端 manifest 為 v0.1.14、DB revision `3a80c2e1d5f4`；五筆舊 failed 共 40 個耗盡
+成員均有 checksum 正確的空 Kbars，另 14 個為 frozen mapping gaps。供應商空值原因仍
+unknown，未執行受控恢復或新增 native 請求；完整分時快照見 [production 維運](../operations/production.md#原始-responsereceipt-與慢速路徑續查)。
 調查基準為 2026-10-30 台北約 09:10–09:18 的唯讀快照：五筆 Full daily work
 （10/27 equity、10/28 equity／ETF、10/29 equity／ETF）、45 份空 Kbars cache、
 12 個已遇到的 mapping gap，以及本地標為 prepared／normalizing、但 Backend run 已 completed

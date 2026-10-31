@@ -5,6 +5,170 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
+## Twelve Data／Shioaji 遺留工作複查（2026-10-31）
+
+台北 21:33～21:36 以 production PostgreSQL `REPEATABLE READ READ ONLY`、Fetcher SQLite
+`mode=ro`／`query_only` 與 runtime inventory 複查。以下是活動系統的分時快照，不能當作同一
+transaction 的跨主機指紋。本次只調查，沒有變更 controls、工作、預算或部署，也沒有觸發
+native provider I/O。
+
+Fetcher 現版為 `fetcher-v0.1.14`，manifest commit
+`e710782d59100f403a634977a27a64410df17408`；DB revision 為 `3a80c2e1d5f4`。
+兩 provider 的 Pilot／Full／historical 共六個 containers 都 running、零重啟、無 OOM，且
+`PROVIDER_WORK_REQUIRED=true`。Full controls 均 desired／observed running，Twelve Data
+revision 8、Shioaji revision 16，心跳均新鮮且 last_error 為空；Pilot 均 stopped。
+兩 provider 無 recovery_reason 或 acquisition cooldown，不能再沿用 10/29 的 suspended 結論。
+
+### Twelve Data
+
+共 20 筆未結案：19 筆美股 daily（10/12～10/30）與一筆 universe maintenance。
+其中 13 筆 daily 帶 legacy_id，另六筆 10/25～10/30 daily 與 maintenance 於本日
+11:14 UTC 入列。10/13 work `01a13897-a16e-7c30-8bab-08c2220e66ba` 自
+11:14:20 UTC 持有第一輪 open attempt；owner 心跳有效，其餘 19 筆為 `provider_active`。
+FIFO 依 queue_order 排序，所以 10/14、10/12 排在其後，不是日期排序錯誤或 owner 失聯。
+
+10/13 的 completed receipts 在 13:34:07 UTC 為 1,855，13:36:27 UTC 增至 1,890，
+證明 active work 有實際交付進度。21:35 的本地 checkpoint 為 1,873 prepared、
+2,868 pending／source_error、341 manual／retry_exhausted、942 manual／mapping_gap，
+合計 6,024 個 frozen members；prepared 的數字與前後 DB 快照不同是取樣時間不同。
+942 個 mapping gaps 與其餘 legacy daily 的既有失敗預算仍在；queued 第一輪不代表每個
+成員尚未嘗試。舊 HK 的 12 筆 work 仍 failed，沒有復活或進入活動佇列。
+
+目前可確認為「正在消化舊美股工作，後續工作等待同 provider owner」，尚不能宣稱舊錯誤
+全數恢復；source_error 未保留精確 provider 例外，不能由此判定為 429、權限或商品無資料。
+
+### Shioaji
+
+活動佇列剩三筆股票 minute daily，均為 `batch_yield`，抓取窗口 open；下次關閉為
+台北 11/01 06:00。21:34 的 Backend summary 與收據如下，所有已接受 runs 均 completed：
+
+| 日期 | Work ID | expected | data／completed receipts | missing | blocked | 排程輪次 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 10/28 | `01a187a3-e339-75a0-a8d3-194b76b6a5e4` | 1,953 | 1,142 | 792 | 19 | 211 |
+| 10/29 | `01a187a3-e767-7ecf-8b2e-5a67d198b48a` | 1,953 | 766 | 1,177 | 10 | 210 |
+| 10/30 | `01a18c40-f5a8-7a2f-ae0c-24ab72edadda` | 1,955 | 553 | 1,394 | 8 | 127 |
+
+最近一輪分別處理 2／1／1 個成員，elapsed 82.566／86.991／61.452 秒後讓出。
+60 秒是成員間檢查的 batch 邊界，不能推論單次操作會在 60 秒內中止；本次沒有足夠分段
+計時把耗時定位為 SDK、網路或對帳。高排程輪次不等於 native 呼叫次數或本地失敗預算。
+三日 SQLite 仍為 prepared／normalizing 的 2,461 個成員，在對應 DB 快照已有相同數量的
+completed receipts；目前沒有 normalization queue 積壓，不能把本地標籤當作 worker 卡住。
+
+21:35 的三個股票 checkpoint 另有 24 個 pending／source_error（attempts=1）、三個
+pending／empty_response（attempts=0），以及四個 manual／mapping_gap。Frozen DB scope
+尚有六個未被本地遇到的 mapping gaps，所以缺口不只已列出的四個 manual 成員。
+
+另外五筆舊工作已終止為 failed，最後 failure_code 均為 `MANUAL_INTERVENTION_REQUIRED`：
+
+| 日期 | Dataset | complete | mapping_gap | retry_exhausted |
+| --- | --- | ---: | ---: | ---: |
+| 10/27 | tw_equity_minute | 1,921 | 2 | 24 |
+| 10/27 | tw_etf_minute | 355 | 2 | 4 |
+| 10/28 | tw_etf_minute | 355 | 4 | 5 |
+| 10/29 | tw_etf_minute | 355 | 4 | 5 |
+| 10/30 | tw_etf_minute | 360 | 2 | 2 |
+
+這五筆合計 54 個 manual 成員（14 mapping gaps、40 retry exhausted），不會因離開活動
+佇列而自動補齊；需按原 work／member 的診斷與 reviewed repair 流程處理，不重設 attempts、
+清 cache 或改報 no_data。本次僅確認最新狀態與分類，沒有執行 production 恢復驗收。
+
+Source 當日截至 13:36 UTC 的 Twelve Data／Shioaji attempts 摘要未見 rejected；
+normalization_job 當下全部 27,399 筆為 completed。後續應分別追蹤 Twelve Data 的 owner
+交付速率、Shioaji 三筆股票的 missing 收斂，以及五筆 failed 的人工恢復，不能只看佇列數下降。
+原始 response body／receipt 內容查核被自動審核拒絕，已改用不含內容的狀態彙總；本次沒有
+重驗舊空回應 checksum／根因，下方既有證據亦不等於本次新的 native 驗收。
+
+SSM 證據：runtime inventory `83c52a26-5747-483d-b5c8-b93189dd5681`、完整 DB 摘要
+`a723538f-3259-4a8d-8a7a-cb18d0b9d67c`、SQLite 狀態彙總
+`3991a348-dc7c-44f3-931a-dea1ea1a7d0e`、終態與進度複查
+`b5eb62ae-6a6b-4e13-b27b-6e4389e4a4f5`，均 Success。
+
+### 原始 response／receipt 與慢速路徑續查
+
+Owner 隨後明確授權唯讀查核原始 response 與 receipt。台北 23:25～23:38 的續查使用
+SQLite `mode=ro`／`query_only`、PostgreSQL READ ONLY 與既有日誌；mapper 在獨立程序
+停用 socket 後重播。沒有修改線上工作、controls、cache、預算、runtime 或部署，也沒有
+新增 native provider 請求。此前被拒絕的原始內容查核，已在本次授權範圍內完成下述核對。
+
+23:36 的 completed receipts 為 Twelve Data 10/13 共 3,061 筆；Shioaji 股票
+10/28、10/29、10/30 分別 1,188／800／585 筆。相較 21:34 快照，Twelve Data
+增加 1,206、Shioaji 增加 112，約為每分鐘 9.9／0.9 個成員；不是停止工作。
+Shioaji 的 missing 降至 744／1,141／1,359，blocked 為 21／12／11，no_data 均為零。
+normalization_job 此時全部 28,717 筆 completed，沒有 normalization 積壓。
+
+**收斂慢的已確認成本與限制：**
+
+- Governor 近兩小時帳本：Twelve Data 1,167 次 acquisition，actual-start 到完成平均
+  0.306 秒；Shioaji 110 次 Kbars 平均 0.302 秒、55 次 SDK login 平均 0.794 秒。
+  這些只涵蓋原生操作，不涵蓋前後授權、R2 persistence、交付與對帳，不能用作完整成員耗時。
+  近半小時 Kbars 的 armed→actual-start 平均另等 1.895 秒，SDK login 為 2.706 秒。
+- Backend 將所有 prepared bodies 放在同一 `ProviderWork.prepared_deliveries` JSONB。
+  三筆活動 Shioaji work 的 JSON 文字已達 46,772,318／61,084,189／56,387,356 bytes；
+  Twelve Data 10/13 為 4,462,809 bytes。`fence()`、active-owner `claim()` 與既有 work
+  enqueue 仍讀取完整 ORM；prepared intent／confirm 更新則重寫同一個大 JSONB。
+  claim 甚至在判定 kind／profile 不符、回傳無工作之前就載入完整 work。
+- 獨立唯讀量測：10/28 Shioaji 完整 ORM 讀取 0.729 秒，metadata 讀取 0.089 秒
+  （本次第一個 ORM query，含冷啟成本）；Twelve Data 分別 0.084／0.0014 秒。
+  這不是修改過的 endpoint，也不是已實作效能修正的驗收。
+- 既有十分鐘 access log 樣本含 427 次 authorize、444 次 prepare、133 次 prepared lookup、
+  269 次 claim、1,900 次 enqueue；所選日誌均 HTTP 200。這是跨 consumer 計數，不能
+  全部歸給某一 provider。PostgreSQL 八次唯讀採樣均見 work SELECT 或相關交易，亦見
+  ClientWrite 及約 0.37～0.52 秒的 provider advisory lock 等待。Ingest 容器累計 NetIO
+  接收約 857 GB，為容器生命週期累計值，不能當作本次十分鐘的流量。
+- 因此已確認完整 prepared JSON 的重複搬運、解碼、重寫及持鎖是持續放大的控制路徑成本；
+  仍缺少 live request 的完整分段耗時，不能將每輪 60～90 秒全部歸因於這一項。
+  當下未見主機 memory／IO pressure；此快照也不足以保證其他時段沒有資源或網路問題。
+
+後續效能修正應先將 fence／claim／enqueue 所需 metadata 與 prepared body 讀取分開，
+避免同一 work 的每個新成員重寫全部舊 bodies，並減少重複 preparation 往返；不得移除
+owner fencing、原子接受、durable intent／confirm、ACK-loss 或原始 bytes 保留。
+需以完整成員／回合耗時、實際 Source SQL／傳輸量與原生帳本共同驗收，不只提高 batch 秒數。
+
+**遺留失敗的來源：**
+
+Twelve Data 切換前封存
+`/var/backups/findb-provider-work-cutover/production-20261029T1134Z/state.tar`
+中的 Full SQLite，原 SHA256 為
+`07b50f06be6164fcfa5d89b353e3d1ab12e1c6488b522ddaec312a8933ac0651`，archive WAL 為零。
+僅在匿名記憶體讀取其副本，確認 10/13 的 341 個、10/14 的 639 個
+manual／retry_exhausted 成員，與目前集合完全一致；兩日各 942 個 mapping_gap 亦已存在。
+它們早於本次 Full 啟動，不是本次抓取新耗盡的成員。341 個成員在 current work journal
+沒有 response 或 response observation；舊 checkpoint 只留下共用 source_error／耗盡分類，
+無法據此補證特定 HTTP code、entitlement 或資料格式根因。不得用重設 attempts 猜測恢復。
+
+目前保存的 3,018 份 Twelve Data 成功 response，以部署版純 mapper 重播全部通過；
+部署版確實傳入次日午夜的 end_date 與 `adjust=none`。這支持現行成功路徑，不能反推
+上述沒有原始 response 的舊失敗都由同一日期問題造成，也不能令其自動恢復。
+
+Shioaji 五筆 failed 的 40 個 retry_exhausted 成員，逐 work／symbol／date 找到對應的
+checksum 正確 cache；七欄向量全空，部署版 mapper 全數拋出
+`ShioajiEmptyResponseError: empty kbars requires calendar evidence`，且沒有 prepared body
+或 receipt。舊空快取經一般失敗額度反覆拒絕的機制，與既有調查吻合；另外 14 個 manual
+則是 frozen mapping_gap。五筆 terminal 時間均早於 10/31 07:36 UTC 的現版 Fetcher 啟動，
+所以新版部署不會重新 claim 或自動修復這些 terminal work。
+
+活動股票工作另有 23 個 pending／source_error 能配對相同空 cache；3492（10/28）與
+3498（10/29）則無可重播 response，後者保有 unknown observation，不能當作已確認空值。
+新觀測另有九個 pending／empty_response；保存的 native diagnostic 包含 SDK 1.7.9、
+symbol／date、七欄長度、request counters 與 usage bytes，但 cause 仍為 unknown。
+因此已定位「空回應如何造成舊失敗」，尚未證明供應商為何回傳空值；不可改報 no_data。
+既有 terminal／mapping 修復仍須沿用 [受控恢復流程](full_market.md)，另行核准 scope 與額度。
+
+**交付證據：**23:29 範圍內 6,632 筆 receipt 的 raw payload hash 與 idempotency key
+均相符（含當下唯一一筆 processing，後續已完成）。兩筆量測 work 共 4,181 份 prepared
+body 重算 SHA 全相符，receipt／descriptor hash 無差異；四份最新 raw payload 抽樣重算
+hash 亦相符。沒有以清 cache、刪收據或重送新 payload 來取得這些結果。
+
+SSM：原始快取／帳本 `f9900197-fcbd-4cad-beff-81b0ee734931`、純 mapper
+`6d953034-8663-4832-9747-64fc13fc7d6b`、ORM／receipt 核對
+`058be999-f029-407a-951a-7be0b3ab9ec2`、日誌／資源
+`bbc4621b-decf-4ace-8b7c-f06a05996b7d`、DB waits
+`53cdb783-d4b0-4a88-a447-1f3d18b71b4a`、封存集合比對
+`4ed9ddda-0167-4eaa-b5f5-26210f3485cf`、最新佇列
+`e93ec2df-c863-4cdc-af33-473a1568183a`，均 Success。
+初次逐 receipt 存取完整 prepared JSON 的診斷 SQL 觸及 25 秒 statement timeout，已改為
+每 work 讀取一次後在記憶體比對；沒有提高線上 timeout 或重跑該放大查詢。
+
 ## Twelve Data 供應商工作佇列積壓（2026-10-29）
 
 2026-10-29 唯讀查核 production DB、Fetcher checkpoint 與實際 Dashboard
