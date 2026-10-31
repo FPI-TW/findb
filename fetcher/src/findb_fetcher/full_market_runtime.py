@@ -1929,15 +1929,18 @@ class FullMarketRuntime:
                 return True
             if (
                 not calendar_checked
+                and member["mapping_status"] == "mapped"
                 and self.state.prepared(key) is None
                 and (getattr(owner, "work", None) or {}).get("kind") == "daily"
+                and self.state.eligible(key, now=time.time())
             ):
                 # A legacy planned decision may now be a published closure. Probe
-                # once per round before claiming, so neither a closed date nor an
-                # unavailable probe spends native calls or member failure budgets.
+                # once per round before the first claim that needs provider I/O,
+                # so neither a closed date nor an unavailable probe spends native
+                # calls or member budgets. Member checkpoints stay untouched: the
+                # round settles failed and finished no-trade evidence survives.
                 calendar_checked = True
                 if self._calendar_repair_required(owner):
-                    self.state.finish(key, status="manual", reason="calendar_repair_required")
                     raise CalendarDecisionRepairRequiredError("published calendar is now closed")
             if not self.state.claim(
                 key,

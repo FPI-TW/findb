@@ -61,10 +61,59 @@ def test_closed_legacy_plan_stops_before_claim_authorization_or_provider_io(
             runtime._deliver_plan(plan, _release(), runtime.feeds[0])
         assert events == ["calendar-status"]
         assert _attempts(runtime) == {
-            "AAPL": ("manual", "calendar_repair_required", 0),
+            "AAPL": ("pending", None, 0),
             "MSFT": ("pending", None, 0),
         }
         assert source.outcomes == []
+    finally:
+        runtime.http.close()
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_closed_date_probe_skips_finished_members_and_keeps_their_evidence(
+    tmp_path, monkeypatch, provider
+):
+    runtime, source, _ = _runtime(tmp_path, provider=provider)
+    events = []
+    owner = _owner(events, repair_required=True)
+    monkeypatch.setattr(provider_work, "require_owner", lambda provider: owner)
+    runtime._acquisition_allowed = lambda: True
+    runtime._acquire = lambda *args: pytest.fail("closed date acquired provider data")
+    plan = _plan()
+    runtime.state.record_plan(plan, provider)
+    runtime.state.finish("fp1:123:AAPL", status="complete", reason="source_proven_no_trade")
+    try:
+        with pytest.raises(CalendarDecisionRepairRequiredError):
+            runtime._deliver_plan(plan, _release(), runtime.feeds[0])
+        assert events == ["calendar-status"]
+        assert _attempts(runtime) == {
+            "AAPL": ("complete", "source_proven_no_trade", 0),
+            "MSFT": ("pending", None, 0),
+        }
+        assert source.outcomes == []
+    finally:
+        runtime.http.close()
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_round_without_provider_io_never_probes_calendar(tmp_path, monkeypatch, provider):
+    runtime, source, _ = _runtime(tmp_path, provider=provider)
+    events = []
+    owner = _owner(events, repair_required=True)
+    monkeypatch.setattr(provider_work, "require_owner", lambda provider: owner)
+    runtime._acquisition_allowed = lambda: True
+    runtime._acquire = lambda *args: pytest.fail("finished round acquired provider data")
+    plan = _plan()
+    runtime.state.record_plan(plan, provider)
+    runtime.state.finish("fp1:123:AAPL", status="complete", reason="source_proven_no_trade")
+    release = {
+        "members": [_member(), {**_member(), "member_key": "MSFT", "mapping_status": "unmapped"}]
+    }
+    try:
+        runtime._deliver_plan(plan, release, runtime.feeds[0])
+        assert "calendar-status" not in events
+        assert _attempts(runtime)["AAPL"] == ("complete", "source_proven_no_trade", 0)
+        assert _attempts(runtime)["MSFT"][:2] == ("manual", "mapping_gap")
     finally:
         runtime.http.close()
 

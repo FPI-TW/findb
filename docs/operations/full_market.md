@@ -232,9 +232,9 @@ auth／scope 錯誤仍依原規則 failed／manual，不得誤分類成尚未發
 透過部署啟用政策，不能跳過下節對目前政策與證據的檢查直接修復。
 
 五個 provider 的 Pilot／Full daily canonical 回合，另在第一個需要新 provider I/O 的成員 claim
-前查詢一次同一 calendar status；本地已有 prepared bytes 的排空與 historical 回合不查詢。
-若結果為 `repair_required`，該成員標示 manual `calendar_repair_required`、work 以
-`CALENDAR_DECISION_REPAIR_REQUIRED` failed，不授權、不呼叫 provider，也不消耗 member attempts；
+前查詢一次同一 calendar status。已完成、manual、deferred 或未 mapped 的成員、本地已有 prepared bytes 的排空與 historical 回合都不觸發查詢。
+若結果為 `repair_required`，work 以 `CALENDAR_DECISION_REPAIR_REQUIRED` failed，不改寫任何
+local member checkpoint（既有 no-trade 等證據保留），不授權、不呼叫 provider，也不消耗 member attempts；
 查詢本身失敗時同樣在 claim 前停止，不扣額度。這保護舊 `planned` 決策在略過政策啟用後的休市日，
 不會用滿一般失敗額度；frozen decision 仍只經下節人工流程更正。
 
