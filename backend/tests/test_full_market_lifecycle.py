@@ -259,6 +259,81 @@ async def test_monitor_only_emits_post_activation_real_exchange_gaps(test_sessio
 
 
 @pytest.mark.asyncio
+async def test_monitor_closes_retired_feed_gaps_without_hk_cutover(test_session):
+    from app.models.registry import MissingDeliveryAlert
+    from app.services.delivery_monitor import _scan_full_market_feed
+    from app.utils import uuid7
+
+    # Twelve Data HK still has registry scope and a frozen plan, but the
+    # execution manifest assigns HK to FactSet and no cutover is applied yet.
+    dataset, body, plan = await _activated_plan(test_session, "hk_equity_eod", count=1)
+    await seed_datasets(test_session)
+    control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
+    assert body.provider == "twelve_data" and control.desired_state == "running"
+    assert "hk_provider_cutover" not in dataset.config
+    evaluated_at = plan.deadline_at + timedelta(minutes=1)
+    stale = MissingDeliveryAlert(
+        alert_id=uuid7(),
+        dataset_key="hk_equity_eod",
+        source="twelve_data",
+        schema_id="market_eod",
+        schema_version=1,
+        execution_profile="full_market",
+        expected_data_date=DAY,
+        status="open",
+        first_detected_at=evaluated_at,
+        last_detected_at=evaluated_at,
+        details={"code": "FULL_MARKET_INCOMPLETE", "plan_id": None},
+    )
+    test_session.add(stale)
+    await test_session.flush()
+
+    async def scan():
+        return await _scan_full_market_feed(
+            test_session,
+            dataset=dataset,
+            source="twelve_data",
+            schema_id="market_eod",
+            schema_version=1,
+            evaluated_at=evaluated_at,
+        )
+
+    assert await scan() == (0, 1)
+    # Later scans neither reopen nor recreate retired-feed gaps.
+    assert await scan() == (0, 0)
+    await test_session.refresh(stale)
+    assert stale.status == "resolved" and stale.resolved_at == evaluated_at
+    assert stale.details == {
+        "code": "FULL_MARKET_INCOMPLETE",
+        "plan_id": None,
+        "resolution": {"code": "FEED_RETIRED", "execution_profile": "full_market"},
+    }
+    assert (await test_session.scalars(select(MissingDeliveryAlert))).all() == [stale]
+
+
+@pytest.mark.asyncio
+async def test_monitor_keeps_twelve_data_us_gaps_in_execution_manifest(test_session):
+    from app.models.registry import MissingDeliveryAlert
+    from app.services.delivery_monitor import _scan_full_market_feed
+
+    dataset, body, plan = await _activated_plan(test_session, "us_equity_eod", count=1)
+    await seed_datasets(test_session)
+    control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
+    assert body.provider == "twelve_data" and control.desired_state == "running"
+    created, resolved = await _scan_full_market_feed(
+        test_session,
+        dataset=dataset,
+        source="twelve_data",
+        schema_id="market_eod",
+        schema_version=1,
+        evaluated_at=plan.deadline_at + timedelta(minutes=1),
+    )
+    assert (created, resolved) == (1, 0)
+    alert = await test_session.scalar(select(MissingDeliveryAlert))
+    assert alert.status == "open" and alert.details["plan_id"] == str(plan.plan_id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "dataset_key,provider",
     [("hk_equity_eod", "twelve_data"), ("tw_etf_eod", "finlab"), ("tw_futures_eod", "taifex")],

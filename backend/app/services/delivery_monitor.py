@@ -359,6 +359,8 @@ async def _scan_full_market_feed(
     evaluated_at: datetime,
     profile: ExecutionProfile = "full_market",
 ) -> tuple[int, int]:
+    from app.services.full_market_governance import feed_schedule, is_execution_feed
+
     cutover = (
         (dataset.config or {}).get("hk_provider_cutover")
         if dataset.dataset_key == "hk_equity_eod"
@@ -367,61 +369,40 @@ async def _scan_full_market_feed(
     if source == "twelve_data" and cutover:
         # The explicit acquisition switch is more specific than a stopped
         # control and remains the durable explanation for old HK alerts.
-        retired = await db.execute(
-            update(MissingDeliveryAlert)
-            .where(
-                MissingDeliveryAlert.dataset_key == dataset.dataset_key,
-                MissingDeliveryAlert.source == source,
-                MissingDeliveryAlert.execution_profile == profile,
-                MissingDeliveryAlert.status == "open",
-            )
-            .values(
-                status="resolved",
-                resolved_at=evaluated_at,
-                details=func.coalesce(MissingDeliveryAlert.details, cast({}, JSONB)).op("||")(
-                    cast(
-                        {
-                            "resolution": {
-                                "code": "PROVIDER_RETIRED",
-                                "provider": cutover["provider"],
-                                "effective_date": cutover["effective_date"],
-                            }
-                        },
-                        JSONB,
-                    )
-                ),
-            )
-            .returning(MissingDeliveryAlert.alert_id)
+        return 0, await _close_open_feed_alerts(
+            db,
+            dataset_key=dataset.dataset_key,
+            source=source,
+            profile=profile,
+            resolved_at=evaluated_at,
+            resolution={
+                "code": "PROVIDER_RETIRED",
+                "provider": cutover["provider"],
+                "effective_date": cutover["effective_date"],
+            },
         )
-        return 0, len(retired.scalars().all())
+    if not is_execution_feed(dataset.dataset_key, source):
+        # Fetcher never plans a pair outside the execution manifest, so its
+        # gaps cannot close through delivery even while the provider scheduler
+        # runs other feeds. Registry scope alone does not keep it monitored.
+        return 0, await _close_open_feed_alerts(
+            db,
+            dataset_key=dataset.dataset_key,
+            source=source,
+            profile=profile,
+            resolved_at=evaluated_at,
+            resolution={"code": "FEED_RETIRED", "execution_profile": profile},
+        )
     control = await db.get(SchedulerControl, scheduler_key(source, profile))
     if control is None or control.retired_at is not None or control.desired_state != "running":
-        stopped = await db.execute(
-            update(MissingDeliveryAlert)
-            .where(
-                MissingDeliveryAlert.dataset_key == dataset.dataset_key,
-                MissingDeliveryAlert.source == source,
-                MissingDeliveryAlert.execution_profile == profile,
-                MissingDeliveryAlert.status == "open",
-            )
-            .values(
-                status="resolved",
-                resolved_at=evaluated_at,
-                details=func.coalesce(MissingDeliveryAlert.details, cast({}, JSONB)).op("||")(
-                    cast(
-                        {
-                            "resolution": {
-                                "code": "SCHEDULER_STOPPED",
-                                "execution_profile": profile,
-                            }
-                        },
-                        JSONB,
-                    )
-                ),
-            )
-            .returning(MissingDeliveryAlert.alert_id)
+        return 0, await _close_open_feed_alerts(
+            db,
+            dataset_key=dataset.dataset_key,
+            source=source,
+            profile=profile,
+            resolved_at=evaluated_at,
+            resolution={"code": "SCHEDULER_STOPPED", "execution_profile": profile},
         )
-        return 0, len(stopped.scalars().all())
     governance = (dataset.config or {}).get("full_market") or {}
     state = await db.get(
         FullMarketDatasetState, {"dataset_key": dataset.dataset_key, "execution_profile": profile}
@@ -437,7 +418,6 @@ async def _scan_full_market_feed(
     from zoneinfo import ZoneInfo
 
     from app.services.effective_calendar import acquisition_dates
-    from app.services.full_market_governance import feed_schedule
 
     zone, _ = feed_schedule(dataset.dataset_key)
     through = evaluated_at.astimezone(ZoneInfo(zone)).date()
@@ -586,6 +566,36 @@ async def _scan_full_market_feed(
         )
         created += 1
     return created, resolved
+
+
+async def _close_open_feed_alerts(
+    db: AsyncSession,
+    *,
+    dataset_key: str,
+    source: str,
+    profile: ExecutionProfile,
+    resolved_at: datetime,
+    resolution: dict[str, Any],
+) -> int:
+    """Resolve one feed/profile's open alerts, keeping their original details."""
+    closed = await db.execute(
+        update(MissingDeliveryAlert)
+        .where(
+            MissingDeliveryAlert.dataset_key == dataset_key,
+            MissingDeliveryAlert.source == source,
+            MissingDeliveryAlert.execution_profile == profile,
+            MissingDeliveryAlert.status == "open",
+        )
+        .values(
+            status="resolved",
+            resolved_at=resolved_at,
+            details=func.coalesce(MissingDeliveryAlert.details, cast({}, JSONB)).op("||")(
+                cast({"resolution": resolution}, JSONB)
+            ),
+        )
+        .returning(MissingDeliveryAlert.alert_id)
+    )
+    return len(closed.scalars().all())
 
 
 def advance_gap_streaks(previous: dict[str, int], gaps: list[dict]) -> dict[str, int]:

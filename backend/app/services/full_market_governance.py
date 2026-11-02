@@ -95,12 +95,24 @@ def full_market_configuration(
     return False, previous, errors, blockers
 
 
-def feed_schedule(dataset_key: str) -> tuple[str, str]:
-    """The same exchange-local trigger is used by both execution profiles."""
+def _execution_feeds() -> list[dict]:
     catalog = json.loads(
         (Path(__file__).resolve().parents[2] / "configs" / "execution_feeds.v1.json").read_text()
     )
-    for feed in catalog["feeds"]:
+    return catalog["feeds"]
+
+
+def feed_schedule(dataset_key: str) -> tuple[str, str]:
+    """The same exchange-local trigger is used by both execution profiles."""
+    for feed in _execution_feeds():
         if feed["dataset_key"] == dataset_key:
             return feed["source_timezone"], feed["scheduled_time"]
     raise ValueError("Unknown acquisition feed")
+
+
+def is_execution_feed(dataset_key: str, provider: str) -> bool:
+    """Whether Fetcher still plans this provider/dataset pair in either profile."""
+    return any(
+        feed["dataset_key"] == dataset_key and feed["provider"] == provider
+        for feed in _execution_feeds()
+    )
