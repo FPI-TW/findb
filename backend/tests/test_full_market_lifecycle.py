@@ -21,7 +21,14 @@ from app.services.normalize.contracts import (
 from scripts.seed_data import seed_datasets
 from tests.script_env import script_env
 from tests.test_canonical_ingest_api import _execute_run
-from tests.test_full_market import DAY, _activated_plan, _ingress, _quote, _source_headers
+from tests.test_full_market import (
+    DAY,
+    _activated_plan,
+    _dataset,
+    _ingress,
+    _quote,
+    _source_headers,
+)
 from tests.test_minute_normalize import _minute_request
 
 
@@ -201,10 +208,10 @@ async def test_retired_feed_activation_routes_return_gone(client, admin_headers,
 
 @pytest.mark.asyncio
 async def test_reseed_preserves_approved_feed_and_running_scheduler(test_session):
-    dataset, _, _ = await _activated_plan(test_session, "hk_equity_eod", count=1)
+    dataset, _, _ = await _activated_plan(test_session, "tw_etf_eod", count=1)
     previous = deepcopy(dataset.config["full_market"])
     await seed_datasets(test_session)
-    control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
+    control = await test_session.get(SchedulerControl, "full_market_finlab_v1")
     assert control.desired_state == "running"
     control.desired_state = "running"
     await test_session.commit()
@@ -219,9 +226,9 @@ async def test_audited_deactivation_retains_plan_and_restores_bounded_feed(test_
     from app.models.registry import AdminAuditEvent, DailyDeliveryPlan, UniverseRelease
     from app.services.full_market_admission import reconcile_environment
 
-    staged, _, plan = await _activated_plan(test_session, "hk_equity_eod", count=1)
+    staged, _, plan = await _activated_plan(test_session, "tw_etf_eod", count=1)
     await seed_datasets(test_session)
-    control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
+    control = await test_session.get(SchedulerControl, "full_market_finlab_v1")
     get_settings().FULL_MARKET_ENABLED = False
     await reconcile_environment(test_session, actor="test-flag-transition")
     await test_session.commit()
@@ -262,16 +269,16 @@ async def test_monitor_only_emits_post_activation_real_exchange_gaps(test_sessio
 async def test_monitor_closes_retired_feed_gaps_without_hk_cutover(test_session):
     from app.models.registry import MissingDeliveryAlert
     from app.services.delivery_monitor import _scan_full_market_feed
-    from app.utils import uuid7
+    from app.utils import utc_now, uuid7
 
-    # Twelve Data HK still has registry scope and a frozen plan, but the
-    # execution manifest assigns HK to FactSet and no cutover is applied yet.
-    dataset, body, plan = await _activated_plan(test_session, "hk_equity_eod", count=1)
+    # Twelve Data HK still has registry scope and a running provider control, but
+    # the execution manifest assigns HK to FactSet and no cutover is applied yet.
+    dataset = await _dataset(test_session, "hk_equity_eod")
+    dataset.config = {k: v for k, v in dataset.config.items() if k != "hk_provider_cutover"}
     await seed_datasets(test_session)
     control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
-    assert body.provider == "twelve_data" and control.desired_state == "running"
-    assert "hk_provider_cutover" not in dataset.config
-    evaluated_at = plan.deadline_at + timedelta(minutes=1)
+    control.desired_state = "running"
+    evaluated_at = utc_now()
     stale = MissingDeliveryAlert(
         alert_id=uuid7(),
         dataset_key="hk_equity_eod",
@@ -336,7 +343,7 @@ async def test_monitor_keeps_twelve_data_us_gaps_in_execution_manifest(test_sess
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "dataset_key,provider",
-    [("hk_equity_eod", "twelve_data"), ("tw_etf_eod", "finlab"), ("tw_futures_eod", "taifex")],
+    [("tw_etf_eod", "finlab"), ("tw_futures_eod", "taifex")],
 )
 async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
     owned_client, test_session, dataset_key, provider
@@ -376,8 +383,8 @@ async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
         request.update(schema_id="market_eod", source=provider)
         request["payload"]["data"] = [
             {
-                "symbol": "00001" if provider == "twelve_data" else "0001",
-                "currency": "HKD" if provider == "twelve_data" else "TWD",
+                "symbol": "0001",
+                "currency": "TWD",
                 "trade_date": str(plan.trade_date),
                 "open": "100",
                 "high": "110",

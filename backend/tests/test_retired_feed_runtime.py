@@ -14,7 +14,7 @@ from app.models.provider_work import (
     ProviderWorkReceipt,
 )
 from app.models.registry import IngestionRun, SchedulerControl
-from app.services import provider_work
+from app.services import hk_provider_cutover, provider_work
 from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
@@ -33,6 +33,14 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
     from findb_fetcher.full_market_state import FullMarketState
 
     h = native_runtime
+    # Legacy plans and prepared intents predate the permanent retirement of this pair.
+    gate = {"retired": not prepared}
+    retired_gate = hk_provider_cutover.acquisition_allowed
+    monkeypatch.setattr(
+        hk_provider_cutover,
+        "acquisition_allowed",
+        lambda *args, **kwargs: not gate["retired"] or retired_gate(*args, **kwargs),
+    )
     if prepared:
         from app.config import get_settings
         from app.models.registry import DatasetRegistry
@@ -42,6 +50,12 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
         from tests.full_market_fixtures import historical_admission
 
         monkeypatch.setattr(fixtures, "DAY", DAY)
+        universe = fixtures._universe
+
+        def legacy_universe(*args, **kwargs):
+            return universe(*args, **kwargs).model_copy(update={"provider": h.provider})
+
+        monkeypatch.setattr(fixtures, "_universe", legacy_universe)
         _, release = await fixtures._baseline(h.db, h.dataset, count=1, effective_date=DAY)
         dataset = await h.db.get(DatasetRegistry, h.dataset)
         await historical_admission(h.db, dataset, release, DAY, None, profile="pilot")
@@ -136,6 +150,7 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
         )
         assert intent.status_code == 200, intent.text
     assert (await h.client.post(route + "/close", headers=h.headers, json=fence)).status_code == 200
+    gate["retired"] = True
 
     def run_cycle():
         with FullMarketSourceClient(h.config, client=h.http(), execution_profile="pilot") as source:

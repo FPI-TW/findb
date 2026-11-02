@@ -15,7 +15,7 @@ from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY, SCOPES
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
-DAILY = [*SCOPES, ("twelve_data", "hk_equity_eod"), ("finlab", "tw_etf_eod")]
+DAILY = [*SCOPES, ("finlab", "tw_etf_eod")]
 
 
 @pytest.mark.asyncio

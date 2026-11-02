@@ -289,6 +289,52 @@ async def test_request_cohort_stays_frozen_and_partial_day_continues(
     assert await _factset_historical_repairs(test_session, plan, daily_members) == set()
 
 
+def _hk_dataset(cutover=None):
+    config = {} if cutover is None else {"hk_provider_cutover": cutover}
+    return DatasetRegistry(dataset_key="hk_equity_eod", config=config)
+
+
+@pytest.mark.parametrize(
+    "cutover",
+    [
+        None,
+        {
+            "provider": "factset",
+            "previous_provider": "twelve_data",
+            "effective_date": "2026-10-20",
+        },
+        {
+            "provider": "factset",
+            "previous_provider": "twelve_data",
+            "effective_date": "2026-10-21",
+        },
+    ],
+)
+@pytest.mark.parametrize("maintenance", [False, True])
+def test_twelve_data_hk_is_retired_regardless_of_cutover(monkeypatch, cutover, maintenance):
+    monkeypatch.setattr(hk_provider_cutover, "utc_now", lambda: NOW)
+    assert not hk_provider_cutover.acquisition_allowed(
+        _hk_dataset(cutover), "twelve_data", maintenance=maintenance
+    )
+
+
+@pytest.mark.parametrize("cutover", [None, {"provider": "factset"}])
+def test_hk_gate_does_not_restrict_future_sources_to_factset(cutover):
+    assert hk_provider_cutover.acquisition_allowed(_hk_dataset(cutover), "future_hk_source")
+
+
+def test_factset_gate_still_requires_cutover_except_for_maintenance(monkeypatch):
+    monkeypatch.setattr(hk_provider_cutover, "utc_now", lambda: NOW)
+    assert not hk_provider_cutover.acquisition_allowed(_hk_dataset(), "factset")
+    assert hk_provider_cutover.acquisition_allowed(_hk_dataset(), "factset", maintenance=True)
+    future = {
+        "provider": "factset",
+        "previous_provider": "twelve_data",
+        "effective_date": "2026-10-21",
+    }
+    assert not hk_provider_cutover.acquisition_allowed(_hk_dataset(future), "factset")
+
+
 @pytest.mark.asyncio
 async def test_cutover_is_explicit_and_keeps_v1_acceptance(test_session, monkeypatch):
     await setup(test_session, monkeypatch)

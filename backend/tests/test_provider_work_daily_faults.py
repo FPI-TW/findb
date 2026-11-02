@@ -32,7 +32,6 @@ CONTRACT_MONTHS = (f"{DAY:%Y%m}F1", f"{DAY.replace(day=1) + timedelta(days=32):%
 
 DAILY_NATIVE_RUNTIMES = [
     ("twelve_data", "us_equity_eod"),
-    ("twelve_data", "hk_equity_eod"),
     ("finlab", "tw_equity_eod"),
     ("finlab", "tw_etf_eod"),
     ("shioaji", "tw_equity_minute"),
@@ -134,15 +133,11 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     def native_universe(key, count=2, effective_date=DAY):
         body = universe(key, count, effective_date=DAY)
         symbols = (
-            ("00700", "00005")
-            if key == "hk_equity_eod"
-            else (
-                ("AAPL", "MSFT")
-                if h.provider == "twelve_data"
-                else ("0050", "0056")
-                if key in {"tw_etf_minute", "tw_etf_eod"}
-                else ("2330", "2317")
-            )
+            ("AAPL", "MSFT")
+            if h.provider == "twelve_data"
+            else ("0050", "0056")
+            if key in {"tw_etf_minute", "tw_etf_eod"}
+            else ("2330", "2317")
         )
         for index, member in enumerate(body.members):
             if h.provider == "taifex":
@@ -155,7 +150,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
             else:
                 member.symbol = member.provider_symbol = symbols[index]
                 if h.provider == "twelve_data":
-                    member.exchange = "XHKG" if key == "hk_equity_eod" else "XNAS"
+                    member.exchange = "XNAS"
         return body
 
     monkeypatch.setattr(fixtures, "_dataset", dataset)
@@ -167,11 +162,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     feed = {
         "provider": h.provider,
         "dataset_key": h.dataset,
-        "market": "HK"
-        if h.dataset == "hk_equity_eod"
-        else "US"
-        if h.provider == "twelve_data"
-        else "TW",
+        "market": "US" if h.provider == "twelve_data" else "TW",
         "asset_class": "future"
         if h.provider == "taifex"
         else "etf"
@@ -180,11 +171,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         "slot_id": "western_markets_window"
         if h.provider == "twelve_data"
         else "taiwan_market_window",
-        "source_timezone": "Asia/Hong_Kong"
-        if h.dataset == "hk_equity_eod"
-        else "America/New_York"
-        if h.provider == "twelve_data"
-        else "Asia/Taipei",
+        "source_timezone": "America/New_York" if h.provider == "twelve_data" else "Asia/Taipei",
     }
     work = await provider_work.enqueue(
         h.db,
@@ -475,7 +462,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime",
-    [("twelve_data", "us_equity_eod", 0), ("twelve_data", "hk_equity_eod", 0)],
+    [("twelve_data", "us_equity_eod", 0)],
     indirect=True,
 )
 async def test_daily_target_not_published_refetches_original_operation_after_restart(

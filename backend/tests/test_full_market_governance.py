@@ -13,7 +13,6 @@ from scripts.seed_data import DATASETS
 
 RUNTIME_FEEDS = [
     ("twelve_data", "us_equity_eod", "market_eod", "US", "equity", "daily"),
-    ("twelve_data", "hk_equity_eod", "market_eod", "HK", "equity", "daily"),
     ("factset", "hk_equity_eod", "market_eod", "HK", "equity", "daily"),
     ("finlab", "tw_equity_eod", "market_eod", "TW", "equity", "daily"),
     ("finlab", "tw_etf_eod", "market_eod", "TW", "etf", "daily"),
