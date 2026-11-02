@@ -87,7 +87,8 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         monkeypatch.setattr(PersistentIsolatedShioajiGateway, "_run", empty_once)
     not_published = fault == "native-not-published"
     native_rate = fault in {"native-http429", "native-payload429"}
-    if native_rate or not_published:
+    member_no_data = fault == "native-no-data"
+    if native_rate or not_published or member_no_data:
         from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 
         from tests.provider_work_clock import account_clock
@@ -101,6 +102,18 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         def rate_limited(request):
             h.native(["daily", request.url.params["symbol"]])
             observed_calls.append(request.url.params["symbol"])
+            if member_no_data:
+                if len(observed_calls) == 1:
+                    return httpx.Response(
+                        400,
+                        json={
+                            "code": 400,
+                            "message": "No data is available on the specified dates.",
+                            "status": "error",
+                        },
+                        request=request,
+                    )
+                return transport(request)
             if not_published:
                 response = transport(request)
                 if len(observed_calls) == 1:
@@ -294,7 +307,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
             finally:
                 runtime.close()
 
-    assert not await asyncio.wait_for(asyncio.to_thread(run_round), 30)
+    assert bool(await asyncio.wait_for(asyncio.to_thread(run_round), 30)) is member_no_data
     h.db.expire_all()
     work = await h.db.get(ProviderWork, work_id)
     assert work.state == "queued"
@@ -302,8 +315,8 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         work.manifest,
         json.loads(json.dumps((await prepared_map(h.db, work.work_id)))),
     )
-    assert len(acquired_members) == 1, (
-        "a retryable round cannot acquire another frozen member",
+    assert len(acquired_members) == (2 if member_no_data else 1), (
+        "only a member-scoped no_data round may acquire another frozen member",
         h.source_events,
     )
     assert len(descriptors) == (
@@ -430,6 +443,8 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         assert len(h.runs) == 2
     saved = await prepared_map(h.db, work.work_id)
     assert all(saved[key]["body"] == value["body"] for key, value in descriptors.items())
+    if member_no_data:
+        assert observed_calls == ["AAPL", "MSFT", "AAPL"]
     if not_published:
         assert observed_calls == (
             ["AAPL", "AAPL", "MSFT"]
@@ -456,6 +471,20 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         for row in await h.db.scalars(
             select(SchedulerControl).where(SchedulerControl.provider == h.provider)
         )
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "native_runtime",
+    [("twelve_data", "us_equity_eod", 0)],
+    indirect=True,
+)
+async def test_daily_member_no_data_acquires_the_rest_then_retries_only_that_member(
+    native_runtime, test_engine, admin_headers, monkeypatch
+):
+    await test_daily_actual_native_failure_stops_round_and_next_attempt_completes_original_scope(
+        native_runtime, test_engine, admin_headers, monkeypatch, "native-no-data"
     )
 
 
