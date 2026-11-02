@@ -13,6 +13,14 @@ def main() -> int:
     catalog = json.loads((root / "backend/configs/execution_feeds.v1.json").read_text())
     if catalog["version"] != 1 or len(catalog["feeds"]) != 7:
         raise ValueError("Expected the versioned seven-feed catalog")
+    # Drain-only providers keep their Source scope, but Fetcher must not plan them.
+    drain_only = set(catalog["drain_only_providers"])
+    feeds = [feed for feed in catalog["feeds"] if feed["provider"] not in drain_only]
+    policies = {
+        provider: policy
+        for provider, policy in catalog["daily_runtime_policies"].items()
+        if provider not in drain_only
+    }
     stale = []
     for target in ("local", "staging", "production"):
         path = root / f"fetcher/configs/full_market.{target}.v1.json"
@@ -23,8 +31,8 @@ def main() -> int:
                     "deployment_target": target,
                     "desired_state": "stopped",
                     "poll_seconds": 30,
-                    "feeds": catalog["feeds"],
-                    "daily_runtime_policies": catalog["daily_runtime_policies"],
+                    "feeds": feeds,
+                    "daily_runtime_policies": policies,
                 },
                 indent=2,
             )

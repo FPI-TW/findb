@@ -122,7 +122,7 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 | 範圍 | 權威來源 | 用途 |
 | --- | --- | --- |
 | 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 僅 US，HK 已永久退役 |
-| 安裝 feeds | `backend/configs/execution_feeds.v1.json` 及實際部署的 Fetcher config | 目前七條 feeds；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
+| 安裝 feeds | `backend/configs/execution_feeds.v1.json` 及實際部署的 Fetcher config | Backend catalog 七條、Fetcher config 五條（Shioaji 兩條 TW 分 K 為 `drain_only_providers`，只收尾不抓取，見 [deployment](deployment.md)）；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
 | 凍結 admission | `admitted_dataset_keys`／`admission_id` | Owner 最近一次啟動時凍結的可用 datasets；停止後投影仍可能保留 |
 | 即時抓取授權 | Source `full-market/authorization?consumer=pilot\|full_market` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、profile flag、Source credential、baseline 與 provider cutover |
 

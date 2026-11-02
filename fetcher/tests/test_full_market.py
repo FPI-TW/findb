@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import stat
 import time
 import zipfile
+from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -423,12 +425,96 @@ def test_finlab_etf_only_explicit_production_scope() -> None:
     assert config.asset_class == "etf"
 
 
-def test_manifest_stopped_seven_feeds_no_staging_changes() -> None:
+def test_manifest_stopped_acquiring_feeds_no_staging_changes() -> None:
     config = load_config(
         Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json"
     )
     assert config["desired_state"] == "stopped"
-    assert len(config["feeds"]) == 7
+    assert len(config["feeds"]) == 5
+    assert config["daily_runtime_policies"] == {}
+    assert not any(feed["provider"] == "shioaji" for feed in config["feeds"])
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            lambda config: config["feeds"].append(
+                {
+                    **config["feeds"][0],
+                    "provider": "shioaji",
+                    "dataset_key": "tw_equity_minute",
+                    "market": "TW",
+                    "asset_class": "equity",
+                    "slot_id": "taiwan_market_window",
+                }
+            ),
+            "every acquiring feed",
+        ),
+        (lambda config: config["feeds"].pop(), "every acquiring feed"),
+        (
+            lambda config: config["daily_runtime_policies"].update(
+                shioaji={
+                    "timezone": "Asia/Taipei",
+                    "start": "18:00",
+                    "end": "06:00",
+                    "max_members": 25,
+                    "max_seconds": 60,
+                }
+            ),
+            "policy scope",
+        ),
+    ],
+)
+def test_manifest_rejects_drain_only_acquisition_and_incomplete_coverage(
+    tmp_path: Path, change: Callable[[dict[str, Any]], Any], message: str
+) -> None:
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json").read_text()
+    )
+    change(config)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match=message):
+        load_config(path)
+
+
+def test_retired_feed_with_unreconciled_local_bytes_blocks_without_settling(
+    tmp_path: Path,
+) -> None:
+    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+    runtime, _, _ = _runtime(tmp_path, provider="shioaji")
+    runtime.feeds = runtime.installed_feeds = []
+    with runtime.state.connection() as db:
+        db.execute(
+            "INSERT INTO full_plan(plan_id,provider,dataset,trade_date,body,complete,late) "
+            "VALUES('plan','shioaji','tw_equity_minute','2026-10-30','{}',0,0)"
+        )
+        body = b'[{"local":"only"}]'
+        db.execute(
+            "INSERT INTO full_work(key,provider,plan_id,member_key,status,attempts,lease_until,"
+            "body,body_sha256,next_at) VALUES('work','shioaji','plan','2330','prepared',0,0,?,?,0)",
+            (body, hashlib.sha256(body).hexdigest()),
+        )
+
+    class Owner:
+        work = {"kind": "daily", "dataset_key": "tw_equity_minute", "trade_date": "2026-10-30"}
+        drained = settled = False
+
+        def restore(self) -> list[str]:
+            return ['[{"server":"original"}]']
+
+        def drain_prepared(self) -> None:
+            self.drained = True
+
+        def settle(self, *args: Any, **kwargs: Any) -> None:
+            self.settled = True
+
+    owner = Owner()
+    with pytest.raises(ProviderWorkRecoveryBlockedError):
+        runtime._settle_retired_work(owner)
+    assert not owner.drained and not owner.settled
 
 
 def test_universe_version_evidence_checksum_stable_members() -> None:

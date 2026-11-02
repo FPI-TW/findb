@@ -40,6 +40,11 @@ Production native 資料與實際 rollback 演練由
 
 ## Full-market external acceptance
 
+- [ ] Shioaji 完整退役：只收尾版本上線並排空後，依序移除 Fetcher runtime 與部署資產（Fetcher
+  先行）、Backend scope 與 credential（migration），最後清理 secret、ECR 與文件。TW 分 K 改由
+  替代 provider 供應，選型未定；停止抓取後到接手前不更新。步驟見
+  [deployment](../operations/deployment.md#shioaji-只收尾階段完整退役第一步)。
+
 - [ ] 部署 [#378](https://github.com/FPI-TW/findb/issues/378) Shioaji 空 Kbars／mapping 修復後，
   保存受控原生觀測與 catalogue 證據，確認空回應原因，逐工作核准恢復並核對 canonical／Serve
   與既有收據；程式與離線測試完成不代表 production 工作已恢復。操作見

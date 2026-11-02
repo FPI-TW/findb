@@ -3,7 +3,6 @@
 import copy
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -17,9 +16,13 @@ from findb_fetcher.full_market_state import (
 )
 from test_full_market import _member, _runtime
 
-POLICY = json.loads((Path(__file__).parents[1] / "configs/full_market.local.v1.json").read_text())[
-    "daily_runtime_policies"
-]["shioaji"]
+POLICY = {
+    "timezone": "Asia/Taipei",
+    "start": "18:00",
+    "end": "06:00",
+    "max_members": 25,
+    "max_seconds": 60,
+}
 
 
 @pytest.mark.parametrize(

@@ -49,28 +49,6 @@
       "slot_id": "taiwan_market_window"
     },
     {
-      "provider": "shioaji",
-      "dataset_key": "tw_equity_minute",
-      "market": "TW",
-      "asset_class": "equity",
-      "source_timezone": "Asia/Taipei",
-      "scheduled_time": "18:00",
-      "target_date_lag_days": 0,
-      "completion_window_seconds": 14400,
-      "slot_id": "taiwan_market_window"
-    },
-    {
-      "provider": "shioaji",
-      "dataset_key": "tw_etf_minute",
-      "market": "TW",
-      "asset_class": "etf",
-      "source_timezone": "Asia/Taipei",
-      "scheduled_time": "18:00",
-      "target_date_lag_days": 0,
-      "completion_window_seconds": 14400,
-      "slot_id": "taiwan_market_window"
-    },
-    {
       "provider": "taifex",
       "dataset_key": "tw_futures_eod",
       "market": "TW",
@@ -82,13 +60,5 @@
       "slot_id": "taiwan_market_window"
     }
   ],
-  "daily_runtime_policies": {
-    "shioaji": {
-      "timezone": "Asia/Taipei",
-      "start": "18:00",
-      "end": "06:00",
-      "max_members": 25,
-      "max_seconds": 60
-    }
-  }
+  "daily_runtime_policies": {}
 }

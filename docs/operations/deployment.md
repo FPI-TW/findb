@@ -601,6 +601,25 @@ Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_coo
 只延長 debt；rollback 仍須依上述完整停止／排空／成套checkpoint備份程序，不可倒退 usage／cooldown
 或混用未通過此 dispatch gate 的 consumer。Runtime 部署成功不代表 provider-work queue 已啟用。
 
+## Shioaji 只收尾階段（完整退役第一步）
+
+`backend/configs/execution_feeds.v1.json` 的 `drain_only_providers` 將 Shioaji 排除在匯出的
+Fetcher config 之外：Backend catalog 與 Source scope 維持七條，Fetcher config 只有五條。三個
+Shioaji consumer 繼續運作但沒有 feed，因此不登入 SDK、不 enqueue、不抓取，只 claim 既有 work 並
+經 `_settle_retired_work` 排空原始交付後以 `RETIRED_FEED_MANUAL_REVIEW` 結案；本機 prepared bytes
+與 server 保留內容不符時會 blocked，須人工處理。此階段只需部署 Fetcher，Backend 不需發布。
+
+Production 順序（每一步都需 Owner 當次核准）：
+
+1. 唯讀盤點 Shioaji 未結 work、attempt、prepared、historical request、未 ack repair 與 `tw_minute_*` 筆數。
+2. 在 Dashboard 停止 `pilot_shioaji_v1`、`full_market_shioaji_v1`，等 desired／observed 皆為 stopped。
+3. 部署此版 Fetcher，以既有 admin route 取消 queued／running 的 Shioaji historical request。
+4. 重跑盤點，確認除 `calendar_closed` 外已無未結項，由 Owner 檢視 `RETIRED_FEED_MANUAL_REVIEW` 的
+   work，並保存 checkpoint 備份後才進入移除 runtime 的下一階段。
+
+TW 分 K 從步驟 2 起不再更新，直到替代 provider 上線。回退到含 Shioaji feed 的版本前，須先確認
+Owner 未啟動 controls；已結案為 failed 的 work 不會自動重開。
+
 ## Twelve Data HK 退役的 rollback 下限
 
 Migration `c7d2e9a4f1b3` 只改資料，移除 `twelve_data` × `hk_equity_eod` 的 scheduler、未撤銷

@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "drain_only_providers": ["shioaji"],
   "feeds": [
     {
       "provider": "twelve_data",
