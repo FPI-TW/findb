@@ -1,12 +1,17 @@
 """Source error reports survive retries without another provider acquisition."""
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from findb_fetcher.full_market_client import FullMarketProtocolError
-from findb_fetcher.full_market_state import FULL_WORK_MAX_ATTEMPTS, FullMarketState
+from findb_fetcher.full_market_state import (
+    FULL_WORK_MAX_ATTEMPTS,
+    FULL_WORK_NO_DATA_BREAKER,
+    FullMarketState,
+)
 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
 from provider_work_support import owned_unit_work
 from test_full_market import _member, _plan, _runtime
@@ -208,10 +213,12 @@ def test_member_failure_appends_bounded_diagnostic_without_provider_text(
 
     runtime._acquire = acquire
     plan = _plan()
+    plan["parts"][0]["member_keys"] = ["AAPL"]
     runtime.state.record_plan(plan, runtime.provider)
     try:
         with owned_unit_work(runtime.provider, tmp_path):
-            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+            scanned = runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+        assert scanned is (error == "no_data")
         assert source.outcomes == [
             {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}
         ]
@@ -228,6 +235,265 @@ def test_member_failure_appends_bounded_diagnostic_without_provider_text(
         assert "private-detail" not in dumped + json.dumps(health)
     finally:
         runtime.close()
+
+
+def _members(*keys, gaps=()):
+    return {
+        "members": [
+            {
+                **_member(),
+                "symbol": key,
+                "provider_symbol": key,
+                "member_key": key,
+                "mapping_status": "gap" if key in gaps else "mapped",
+            }
+            for key in keys
+        ]
+    }
+
+
+def _statuses(runtime):
+    with runtime.state.connection() as db:
+        return {
+            row["member_key"]: (row["status"], row["reason"], row["attempts"])
+            for row in db.execute("SELECT member_key,status,reason,attempts FROM full_work")
+        }
+
+
+def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path):
+    from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    acquired = []
+
+    def acquire(member, *args):
+        acquired.append(member["member_key"])
+        if member["member_key"] == "ACA":
+            raise TwelveDataResponseError(
+                "private-detail",
+                status_code=400,
+                provider_code=400,
+                dispatched=True,
+                category="no_data",
+            )
+        return []
+
+    runtime._acquire = acquire
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = ["AAPL", "AACI", "ACA", "MSFT"]
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert runtime._deliver_plan(
+                plan, _members("AAPL", "AACI", "ACA", "MSFT", gaps={"AACI"}), runtime.feeds[0]
+            )
+        assert acquired == ["AAPL", "ACA", "MSFT"]
+        assert [row["member_key"] for row in source.outcomes] == ["AACI", "ACA"]
+        assert source.outcomes[1]["reason"] == "source_error"
+        statuses = _statuses(runtime)
+        assert statuses["ACA"] == ("pending", "no_data", 1)
+        assert statuses["MSFT"][0] == "complete"
+        assert statuses["AACI"][:2] == ("manual", "mapping_gap")
+        with runtime.state.connection() as db:
+            db.execute("UPDATE full_work SET next_at=0,attempts=? WHERE member_key='ACA'", (7,))
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert runtime._deliver_plan(
+                plan, _members("AAPL", "AACI", "ACA", "MSFT", gaps={"AACI"}), runtime.feeds[0]
+            )
+        assert _statuses(runtime)["ACA"] == ("manual", "no_data_exhausted", FULL_WORK_MAX_ATTEMPTS)
+        assert not runtime.state.has_blocking_manual("p")
+    finally:
+        runtime.close()
+
+
+def test_unbroken_no_data_run_is_bounded_and_ends_the_plan_as_systemic(tmp_path):
+    from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    acquired = []
+
+    def acquire(member, *args):
+        acquired.append(member["member_key"])
+        raise TwelveDataResponseError(
+            "private-detail",
+            status_code=400,
+            provider_code=400,
+            dispatched=True,
+            category="no_data",
+        )
+
+    runtime._acquire = acquire
+    keys = [f"M{index:03d}" for index in range(FULL_WORK_NO_DATA_BREAKER + 10)]
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = keys
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    owner = _SettleOwner()
+    try:
+        for number in range(1, FULL_WORK_MAX_ATTEMPTS + 1):
+            with owned_unit_work(runtime.provider, tmp_path):
+                assert not runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+            assert len(acquired) == FULL_WORK_NO_DATA_BREAKER * number
+            runtime._settle_queued_round(owner)
+            with runtime.state.connection() as db:
+                db.execute("UPDATE full_work SET next_at=0")
+        assert owner.settled[:-1] == [("retry", None)] * (FULL_WORK_MAX_ATTEMPTS - 1)
+        assert owner.settled[-1] == ("failed", "MANUAL_INTERVENTION_REQUIRED")
+        assert set(acquired) == set(keys[:FULL_WORK_NO_DATA_BREAKER])
+    finally:
+        runtime.close()
+
+
+def test_data_between_no_data_members_resets_the_breaker(tmp_path):
+    from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    keys = [f"M{index:03d}" for index in range(FULL_WORK_NO_DATA_BREAKER * 3)]
+    acquired = []
+
+    def acquire(member, *args):
+        acquired.append(member["member_key"])
+        if keys.index(member["member_key"]) % FULL_WORK_NO_DATA_BREAKER:
+            raise TwelveDataResponseError(
+                "private-detail",
+                status_code=400,
+                provider_code=400,
+                dispatched=True,
+                category="no_data",
+            )
+        return []
+
+    runtime._acquire = acquire
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = keys
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+        assert acquired == keys
+    finally:
+        runtime.close()
+
+
+def test_terminal_members_are_not_probed_again_in_a_tail_round(tmp_path):
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    runtime._acquire = lambda *args: []
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = ["AACI", "AAPL", "MSFT"]
+    runtime.state.record_plan(plan, runtime.provider)
+    runtime.state.finish("fp1:123:AACI", status="manual", reason="mapping_gap")
+    runtime.state.finish("fp1:123:AAPL", status="complete")
+    try:
+        with owned_unit_work(runtime.provider, tmp_path) as owner:
+            restored = []
+            real_restore = owner.restore
+
+            def restore(*args, **kwargs):
+                restored.append(kwargs["member_key"])
+                return real_restore(*args, **kwargs)
+
+            owner.restore = restore
+            assert runtime._deliver_plan(
+                plan, _members("AACI", "AAPL", "MSFT", gaps={"AACI"}), runtime.feeds[0]
+            )
+        assert restored == ["MSFT"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"status_code": 503, "category": "server_error"},
+        {"status_code": 429},
+        {"status_code": 400, "provider_code": 400, "category": "invalid_symbol"},
+        {"status_code": 403, "provider_code": 403, "category": "plan_restricted"},
+    ],
+)
+def test_other_provider_errors_still_stop_the_round_at_the_first_member(tmp_path, error):
+    from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    acquired = []
+
+    def acquire(member, *args):
+        acquired.append(member["member_key"])
+        raise TwelveDataResponseError("private-detail", dispatched=True, **error)
+
+    runtime._acquire = acquire
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert not runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
+        assert acquired == ["AAPL"]
+        assert len(source.outcomes) == 1
+    finally:
+        runtime.close()
+
+
+class _SettleOwner:
+    work = {"kind": "daily"}
+
+    def __init__(self):
+        self.journal = SimpleNamespace(manifest=lambda: {"plan_id": "p"})
+        self.settled = []
+
+    def request(self, *_):
+        return {}
+
+    def prepared_keys(self):
+        return []
+
+    def settle(self, desired, **kwargs):
+        self.settled.append((desired, kwargs.get("failure_code")))
+
+
+@pytest.mark.parametrize(
+    "reason,pending,expected",
+    [
+        ("mapping_gap", True, ("retry", None)),
+        ("no_data_exhausted", True, ("retry", None)),
+        ("mapping_gap", False, ("failed", "MANUAL_INTERVENTION_REQUIRED")),
+        ("retry_exhausted", True, ("failed", "MANUAL_INTERVENTION_REQUIRED")),
+        (None, True, ("failed", "MANUAL_INTERVENTION_REQUIRED")),
+        ("source_rejected", True, ("failed", "MANUAL_INTERVENTION_REQUIRED")),
+        ("normalization_failed", True, ("failed", "MANUAL_INTERVENTION_REQUIRED")),
+    ],
+)
+def test_settlement_only_lets_member_scoped_manuals_continue_the_plan(
+    tmp_path, reason, pending, expected
+):
+    runtime, source, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    runtime.state.finish("fp1:123:AAPL", status="manual", reason=reason)
+    if not pending:
+        runtime.state.finish("fp1:123:MSFT", status="complete")
+    owner = _SettleOwner()
+    try:
+        runtime._settle_queued_round(owner)
+        assert owner.settled == [expected]
+    finally:
+        runtime.close()
+
+
+def test_exhaustion_through_another_failure_after_no_data_still_blocks(tmp_path):
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    plan = _plan()
+    state.record_plan(plan, "twelve_data")
+    key = "fp1:123:AAPL"
+    state.record_diagnostic(key, provider="twelve_data", category="no_data")
+    with state.connection() as db:
+        db.execute("UPDATE full_work SET attempts=? WHERE key=?", (FULL_WORK_MAX_ATTEMPTS, key))
+    state.finish(key, status="pending", reason="source_rejected")
+    assert state.has_blocking_manual("p")
 
 
 def test_diagnostics_keep_history_and_summarize_latest_unfinished_class(tmp_path):

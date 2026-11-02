@@ -32,6 +32,7 @@ from findb_fetcher.daily_runtime import window
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
+    FULL_WORK_NO_DATA_BREAKER,
     FullMarketState,
     FullMarketStateError,
     QuotaBlockedError,
@@ -1545,11 +1546,8 @@ class FullMarketRuntime:
             if desired is None:
                 plan = self.source.evaluate(owner.journal.manifest()["plan_id"])
                 self.state.evaluate(plan)
+                manual = self.state.has_blocking_manual(plan["plan_id"])
                 with self.state.connection() as db:
-                    manual = db.execute(
-                        "SELECT 1 FROM full_work WHERE plan_id=? AND status='manual' LIMIT 1",
-                        (plan["plan_id"],),
-                    ).fetchone()
                     pending = db.execute(
                         "SELECT 1 FROM full_work WHERE plan_id=? AND status NOT IN ('complete','manual') LIMIT 1",
                         (plan["plan_id"],),
@@ -1908,6 +1906,7 @@ class FullMarketRuntime:
         ordered = list(enumerate(entries))
         ordered = ordered[offset:] + ordered[:offset]
         calendar_checked = False
+        no_data_streak = 0
         for index, (part, member_key) in ordered:
             key = part["work_item_id"] + ":" + member_key
             if drain_keys is not None and key not in drain_keys:
@@ -1920,8 +1919,8 @@ class FullMarketRuntime:
                 ):
                     self.last_batch["reason"] = "batch_yield"
                     return True
-                if not self.state.eligible(key, now=time.time()):
-                    continue
+            if not self.state.eligible(key, now=time.time()):
+                continue
             if self.state.prepared(key) is None:
                 restored = owner.restore(member_key=member_key)
                 if restored:
@@ -1988,6 +1987,7 @@ class FullMarketRuntime:
                         ) from None
                     owner.authorize()
                     requests = self._acquire(member, plan, part, release, feed)
+                    no_data_streak = 0
                     if self.provider == "taifex":
                         self.state.clear_provider_outage(plan["plan_id"])
                     if not requests:
@@ -2160,6 +2160,7 @@ class FullMarketRuntime:
                     else exc.is_rate_limited
                 )
                 reason = "rate_limited" if limited else "source_error"
+                no_data = isinstance(exc, TwelveDataResponseError) and exc.category == "no_data"
                 if limited:
                     self.state.rate_limited(
                         account=self.provider,
@@ -2186,10 +2187,17 @@ class FullMarketRuntime:
                 self.state.finish(
                     key,
                     status="prepared" if self.state.prepared(key) else "pending",
-                    reason=reason,
+                    reason="no_data" if no_data else reason,
                     now=time.time(),
                 )
                 self._record_diagnostic(key, exc)
+                # One symbol without data says nothing about the provider or account, so
+                # it keeps its bounded retries without stopping the other members. A long
+                # unbroken run does, so it stops the round to bound the calls it spends.
+                if no_data:
+                    no_data_streak += 1
+                    if no_data_streak < FULL_WORK_NO_DATA_BREAKER:
+                        continue
                 return False
             except ProviderWorkBasisMismatchError:
                 self._price_basis_manual(plan, part, member_key, key)

@@ -276,6 +276,8 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `unknown_dispatch` | 曾保留未知派送責任，尚未證實空回應；同樣檢查觀測額度與退避 |
 | `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據 |
 | `retry_exhausted` | 本地一般失敗額度耗盡，不等於八次 native 請求 |
+| `no_data` | Twelve Data 回報該檔該日無資料，不停止其他成員；依額度重試，不算成功或 no_data |
+| `no_data_exhausted` | `no_data` 額度耗盡，缺漏須另行回補；累積 20 檔即結束 plan，先查是否為未發布休市日 |
 | `prepared/normalizing` | 應查 Backend run 與序列收據；可能已完成，不能據此宣稱 queue 卡住 |
 
 診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source

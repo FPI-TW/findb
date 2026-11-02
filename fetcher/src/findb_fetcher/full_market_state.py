@@ -19,6 +19,8 @@ from findb_fetcher.full_market_universe import canonical_bytes, checksum
 _DIAGNOSTIC_CATEGORY = re.compile(r"^[a-z][a-z0-9_]{0,39}(:[A-Za-z][A-Za-z0-9_]{0,59})?$")
 
 FULL_WORK_MAX_ATTEMPTS = 8
+# Consecutive no-data members that stop a round: past this it is unlikely to be per symbol.
+FULL_WORK_NO_DATA_BREAKER = 20
 
 
 class FullMarketStateError(RuntimeError):
@@ -685,6 +687,22 @@ class FullMarketState:
         with self.connection() as db:
             db.execute("DELETE FROM full_provider_outage WHERE plan_id=?", (plan_id,))
 
+    def has_blocking_manual(self, plan_id: str) -> bool:
+        """Whether a manual member needs review before the rest of the plan may continue.
+
+        A mapping gap or a symbol out of no-data retries concerns only that member,
+        unless so many symbols ran out that the provider is the likelier cause. Any
+        other manual reason may be systemic, so it still ends the plan at once.
+        """
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT COALESCE(SUM(reason='no_data_exhausted'),0),"
+                "COALESCE(SUM(COALESCE(reason,'') NOT IN ('mapping_gap','no_data_exhausted')),0) "
+                "FROM full_work WHERE plan_id=? AND status='manual'",
+                (plan_id,),
+            ).fetchone()
+        return row[1] > 0 or row[0] >= FULL_WORK_NO_DATA_BREAKER
+
     def pending_source_error_keys(self, plan_id: str) -> set[str]:
         with self.connection() as db:
             return {
@@ -857,7 +875,7 @@ class FullMarketState:
                 ),
             )
             db.execute(
-                "UPDATE full_work SET status='manual',reason='retry_exhausted' WHERE key=? AND attempts>=? AND status IN ('pending','prepared') AND reason != 'normalizing'",
+                "UPDATE full_work SET status='manual',reason=CASE WHEN reason='no_data' THEN 'no_data_exhausted' ELSE 'retry_exhausted' END WHERE key=? AND attempts>=? AND status IN ('pending','prepared') AND reason != 'normalizing'",
                 (key, FULL_WORK_MAX_ATTEMPTS),
             )
             # A crash after terminal local progress must not lose the final
