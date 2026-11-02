@@ -37,6 +37,8 @@ _SCOPES = {
     "shioaji": {"tw_equity_minute", "tw_etf_minute"},
     "taifex": {"tw_futures_eod"},
 }
+# Source still reports this scope, but the runtime only settles retained work.
+_DRAIN_ONLY_PROVIDERS = {"shioaji"}
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -105,10 +107,15 @@ def load_config(path: Path) -> dict[str, Any]:
         if feed["target_date_lag_days"] != 0 or feed["completion_window_seconds"] < 1:
             raise ValueError("full-market feed clock invalid")
     expected = {
-        (provider, dataset) for provider, datasets in _SCOPES.items() for dataset in datasets
+        (provider, dataset)
+        for provider, datasets in _SCOPES.items()
+        if provider not in _DRAIN_ONLY_PROVIDERS
+        for dataset in datasets
     }
     if actual != expected:
-        raise ValueError("full-market coverage must contain all seven feeds")
+        raise ValueError("full-market coverage must contain every acquiring feed")
+    if not set(value["daily_runtime_policies"]) <= {provider for provider, _ in actual}:
+        raise ValueError("daily runtime policy scope invalid")
     return value
 
 

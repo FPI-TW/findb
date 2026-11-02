@@ -6,24 +6,24 @@ from zoneinfo import ZoneInfo
 
 
 def validate_policies(policies: dict[str, Any]) -> None:
-    if not isinstance(policies, dict) or set(policies) != {"shioaji"}:
+    if not isinstance(policies, dict):
         raise ValueError("daily runtime policy scope invalid")
-    policy = policies["shioaji"]
-    if not isinstance(policy, dict) or set(policy) != {
-        "timezone",
-        "start",
-        "end",
-        "max_members",
-        "max_seconds",
-    }:
-        raise ValueError("daily runtime policy shape invalid")
-    ZoneInfo(policy["timezone"])
-    start, end = time.fromisoformat(policy["start"]), time.fromisoformat(policy["end"])
-    if start.tzinfo or end.tzinfo or start == end:
-        raise ValueError("daily runtime window invalid")
-    for key in ("max_members", "max_seconds"):
-        if type(policy[key]) is not int or policy[key] < 1:
-            raise ValueError("daily runtime slice bound invalid")
+    for policy in policies.values():
+        if not isinstance(policy, dict) or set(policy) != {
+            "timezone",
+            "start",
+            "end",
+            "max_members",
+            "max_seconds",
+        }:
+            raise ValueError("daily runtime policy shape invalid")
+        ZoneInfo(policy["timezone"])
+        start, end = time.fromisoformat(policy["start"]), time.fromisoformat(policy["end"])
+        if start.tzinfo or end.tzinfo or start == end:
+            raise ValueError("daily runtime window invalid")
+        for key in ("max_members", "max_seconds"):
+            if type(policy[key]) is not int or policy[key] < 1:
+                raise ValueError("daily runtime slice bound invalid")
 
 
 def window(policy: dict[str, Any] | None, now: datetime) -> dict[str, Any]:

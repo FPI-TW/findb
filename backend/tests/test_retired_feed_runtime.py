@@ -239,3 +239,71 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
     )
     assert next_claim.status_code == 200, next_claim.text
     assert next_claim.json()["work"]["work_id"] == str(following_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_runtime", [("shioaji", "tw_equity_minute", 0)], indirect=True)
+async def test_drain_only_provider_without_feeds_settles_retained_work_without_provider_io(
+    native_runtime,
+):
+    from findb_fetcher.full_market_client import FullMarketSourceClient
+    from findb_fetcher.full_market_runtime import FullMarketRuntime
+    from findb_fetcher.full_market_state import FullMarketState
+
+    h = native_runtime
+    daily = await provider_work.enqueue(
+        h.db,
+        provider=h.provider,
+        stable_key=f"daily:pilot:{h.dataset}:{DAY}",
+        kind="daily",
+        dataset_key=h.dataset,
+        trade_date=DAY,
+        execution_profile="pilot",
+        scope={"legacy_id": "drain-only-daily"},
+    )
+    following = await provider_work.enqueue(
+        h.db,
+        provider=h.provider,
+        stable_key=f"daily:pilot:{h.dataset}:{DAY + timedelta(days=1)}",
+        kind="daily",
+        dataset_key=h.dataset,
+        trade_date=DAY + timedelta(days=1),
+        execution_profile="pilot",
+        scope={"legacy_id": "drain-only-following"},
+    )
+    work_ids = [daily.work_id, following.work_id]
+    await h.db.commit()
+
+    def run_cycles():
+        with FullMarketSourceClient(h.config, client=h.http(), execution_profile="pilot") as source:
+            runtime = FullMarketRuntime(
+                provider=h.provider,
+                config={"feeds": [], "daily_runtime_policies": {}},
+                state=FullMarketState(h.path / "pilot.sqlite3"),
+                source=source,
+                delivery=None,
+                raw_store=h.raw,
+                execution_profile="pilot",
+            )
+            try:
+                runtime._queued_cycle()
+                runtime._queued_cycle()
+                assert runtime.sdk is None
+            finally:
+                runtime.close()
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(run_cycles), 20)
+    except BaseException as exc:
+        raise AssertionError(h.source_events) from exc
+    h.db.expire_all()
+    for work_id in work_ids:
+        saved = await h.db.get(ProviderWork, work_id)
+        assert saved.state == "failed"
+        attempt = await h.db.scalar(
+            select(ProviderWorkAttempt).where(ProviderWorkAttempt.work_id == work_id)
+        )
+        assert attempt.failure_code == "RETIRED_FEED_MANUAL_REVIEW"
+    assert not h.native_calls()
+    assert not any(path.endswith("/enqueue") for path, _, _ in h.source_events)
+    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
