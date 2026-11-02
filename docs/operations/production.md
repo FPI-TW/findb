@@ -706,7 +706,7 @@ Origin certificate secret固定使用單行 base64 欄位
 
 `reconcile_fetcher_credentials.py --runtime-profile unified` 只校準 allowlist／hash 並留下 audit，
 不啟動 scheduler。五把 Source keys 相互隔離；現行execution manifest的HK feed使用FactSet，
-Twelve Data保留HK allowlist僅供既有或已凍結工作的相容交付。有效日曆與執行政策由Source提供，
+Twelve Data只有US allowlist。有效日曆與執行政策由Source提供，
 不再注入calendar Serve key。
 跨 unit bridge 只傳 SHA-256，
 instance roles 不放寬跨 unit Secrets Manager 讀取。

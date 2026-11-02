@@ -46,7 +46,7 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
   尚未全部通過，因此 production native 驗收保持未開始。七條 feed 架構與香港失敗紀錄仍保留。
   R2 診斷 prefix 的鎖定與相同 bytes 重試已驗證；不能據此宣稱整個 bucket 或七條 feeds 通過。
   Twelve Data 的美國 6,018 筆目錄已成功發布，413 問題已排除；港股已改由 FactSet 負責，
-  Twelve Data 舊 HK work 的結案核對見 [FactSet 港股日行情](../operations/factset_hk.md#twelve-data-舊-hk-work-結案)。
+  Twelve Data HK 已永久退役，舊 work 的結案核對見 [FactSet 港股日行情](../operations/factset_hk.md#twelve-data-舊-hk-work-結案)。
   美股及 FinLab／Shioaji 四條的 native 證據已核對，本次範圍為 5／6（原七條 assembler 為 5／7）；
   已完成的美股日期修正、部署資料保留與 Source／R2／canonical／Serve 證據見
   [正式測試文件](../operations/testing.md)。Pilot 已停止並 drain，剩餘 TAIFEX 通過前不進行 production 驗收。

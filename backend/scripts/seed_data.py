@@ -373,7 +373,7 @@ DATASETS.extend(
             market="HK",
             asset_class="equity",
             currency=None,
-            provider="twelve_data",
+            provider="factset",
             schema_id="market_eod",
             calendar_market="HK",
         ),
@@ -401,12 +401,11 @@ DATASETS.extend(
 )
 
 
-# Backend-first expansion retains every v1 delivery/rerun. New acquisition is
-# separately gated by the explicit HK cutover transaction.
+# Retained v1 raw stays schema-valid; new FactSet acquisition is separately gated
+# by the explicit HK cutover transaction.
 _hk = next(item for item in DATASETS if item["dataset_key"] == "hk_equity_eod")
 _hk["config"]["accepted_schema_versions"] = [1, 2]
 _hk["config"]["current_schema_version"] = 2
-_hk["config"]["allowed_sources"] = ["twelve_data", "factset"]
 
 
 _LEGACY_CONFIG_KEYS = {
@@ -519,7 +518,7 @@ async def seed_datasets(session: AsyncSession) -> None:
         existing.updated_at = utc_now()
     await session.flush()
     for provider, datasets, slot, clock in (
-        ("twelve_data", ["us_equity_eod", "hk_equity_eod"], "western_markets_window", time(8)),
+        ("twelve_data", ["us_equity_eod"], "western_markets_window", time(8)),
         ("finlab", ["tw_equity_eod", "tw_etf_eod"], "taiwan_market_window", time(18)),
         ("shioaji", ["tw_equity_minute", "tw_etf_minute"], "taiwan_market_window", time(18)),
         ("taifex", ["tw_futures_eod"], "taiwan_market_window", time(18)),

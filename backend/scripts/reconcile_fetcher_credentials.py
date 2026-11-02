@@ -74,11 +74,7 @@ SOURCE_SPECS = (
     ),
 )
 FULL_MARKET_SOURCE_SPECS = (
-    replace(
-        SOURCE_SPECS[0],
-        allowed_datasets=("us_equity_eod", "hk_equity_eod"),
-        rate_limit_requests=2400,
-    ),
+    replace(SOURCE_SPECS[0], rate_limit_requests=2400),
     replace(
         SOURCE_SPECS[1], allowed_datasets=("tw_equity_eod", "tw_etf_eod"), rate_limit_requests=2400
     ),

@@ -42,8 +42,7 @@ def test_shared_feed_catalog_matches_source_scope_and_supported_contracts(target
         acquisition = {
             feed["dataset_key"] for feed in catalog["feeds"] if feed["provider"] == spec.source_name
         }
-        retained = {"hk_equity_eod"} if spec.source_name == "twelve_data" else set()
-        assert set(spec.allowed_datasets) == acquisition | retained
+        assert set(spec.allowed_datasets) == acquisition
         for key in spec.allowed_datasets:
             assert spec.source_name in declarations[key]["allowed_sources"]
 

@@ -16,10 +16,20 @@ from app.models.provider_work import (
 from app.models.registry import IngestionRun, SchedulerControl
 from app.services import hk_provider_cutover, provider_work
 from app.services.provider_work import prepared_map
+from app.services.source_clients import PROVIDER_DATASET_SCOPE
 from app.utils import utc_now
+from scripts.seed_data import DATASETS
 from tests.provider_work_runtime_support import DAY
 from tests.test_canonical_ingest_api import _canonical_request
 from tests.test_provider_work_adapters import native_runtime as native_runtime
+
+
+@pytest.fixture(autouse=True)
+def retired_pair_scope(monkeypatch):
+    """Restore pre-retirement scope so the generic drain path keeps real coverage."""
+    hk = next(item for item in DATASETS if item["dataset_key"] == "hk_equity_eod")
+    monkeypatch.setitem(hk["config"], "allowed_sources", ["twelve_data", "factset"])
+    monkeypatch.setitem(PROVIDER_DATASET_SCOPE, "twelve_data", ("us_equity_eod", "hk_equity_eod"))
 
 
 @pytest.mark.asyncio

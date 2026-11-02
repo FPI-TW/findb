@@ -366,21 +366,6 @@ async def _scan_full_market_feed(
         if dataset.dataset_key == "hk_equity_eod"
         else None
     )
-    if source == "twelve_data" and cutover:
-        # The explicit acquisition switch is more specific than a stopped
-        # control and remains the durable explanation for old HK alerts.
-        return 0, await _close_open_feed_alerts(
-            db,
-            dataset_key=dataset.dataset_key,
-            source=source,
-            profile=profile,
-            resolved_at=evaluated_at,
-            resolution={
-                "code": "PROVIDER_RETIRED",
-                "provider": cutover["provider"],
-                "effective_date": cutover["effective_date"],
-            },
-        )
     if not is_execution_feed(dataset.dataset_key, source):
         # Fetcher never plans a pair outside the execution manifest, so its
         # gaps cannot close through delivery even while the provider scheduler
@@ -421,14 +406,10 @@ async def _scan_full_market_feed(
 
     zone, _ = feed_schedule(dataset.dataset_key)
     through = evaluated_at.astimezone(ZoneInfo(zone)).date()
-    if dataset.dataset_key == "hk_equity_eod":
-        if source == "factset":
-            if not cutover:
-                return 0, 0
-            start_date = max(start_date, date.fromisoformat(cutover["effective_date"]))
-        elif source == "twelve_data":
-            # Retained v1 delivery keeps its original alert identity.
-            schema_version = 1
+    if dataset.dataset_key == "hk_equity_eod" and source == "factset":
+        if not cutover:
+            return 0, 0
+        start_date = max(start_date, date.fromisoformat(cutover["effective_date"]))
     if through < start_date:
         return 0, 0
     dates = await acquisition_dates(

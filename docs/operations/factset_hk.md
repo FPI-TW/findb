@@ -93,10 +93,9 @@ exit code 3；只有 completed 回傳 0。未指定 `--deliver` 仍只是 previe
 有效 data 或持久 no_data 中斷該成員的 streak；休市不計。沒有 frozen plan 時記錄 feed 缺漏，
 不推測成員範圍。
 
-切換紀錄存在後，monitor 不再追蹤 Twelve Data 的 HK 缺漏，也不建立新告警；各 profile 的
-既有 open 告警在下一次掃描時結清，保留原 details 並加上 `resolution.code=PROVIDER_RETIRED`
-與切換日期。切換紀錄存在前，Twelve Data HK 已不在 execution manifest，既有 open 告警以
-`resolution.code=FEED_RETIRED` 結清，不再建立新告警；套用切換後改以 `PROVIDER_RETIRED` 為準。
+Monitor 依 dataset 的 `allowed_sources` 掃描，Twelve Data 已不在 HK scope，不會建立新告警。
+Migration `c7d2e9a4f1b3` 結清既有 open 告警，保留原 details 並加上
+`resolution.code=FEED_RETIRED`；歷史紀錄上的 `PROVIDER_RETIRED` 不再新增。
 切換前日期的資料改以 FactSet historical request 回補。
 
 來源修正後，可建立新的歷史回補 request。相同 provider／dataset／日期、相同 frozen
@@ -205,15 +204,24 @@ mock TLS 測試或本機快照重播，均不足以完成 staging 實際連線�
 ## Twelve Data 舊 HK work 結案
 
 Twelve Data 不再擁有 HK 抓取路徑：Fetcher 已移除香港 country catalogue、HKEX 名單與 HK
-日資料分支；Source 端 `twelve_data` 的 `hk_equity_eod` credential／scheduler scope 只保留給
-舊 prepared／raw rerun 依原 identity 路由，不代表可新抓取。Twelve Data 對 XHKG 的單次診斷
+日資料分支；Migration `c7d2e9a4f1b3` 移除 scheduler、未撤銷 credential 與 `allowed_sources`
+上的 `twelve_data` × `hk_equity_eod` scope。Twelve Data 對 XHKG 的單次診斷
 （凍結商品 `0001`，含 `exchange=HKEX`）均回 HTTP／provider code 400 `no_data_response`；
 官方將 XHKG 列為需授權或未支援市場，因此港股不再列為 Twelve Data 待解項目。
 
 方案沒有 HK 權限，此退役為永久決定：Source 的抓取閘門不論 HK cutover 是否已套用，一律拒絕
-`twelve_data` × `hk_equity_eod` 的新 plan、manifest、prepare 與 claim 取得權限。此閘門只封鎖
-這個組合，cutover 判斷也只適用 FactSet；未來新增的 HK 來源依 provider scope、
-`allowed_sources` 與 execution manifest 治理，不受此處限制。
+`twelve_data` × `hk_equity_eod` 的新 plan、manifest、prepare 與 claim 取得權限；新交付與舊 raw
+rerun 也因不在 `allowed_sources` 而 fail closed。此閘門只封鎖這個組合，cutover 判斷也只適用
+FactSet；未來新增的 HK 來源依 provider scope、`allowed_sources` 與 execution manifest 治理，
+不受此處限制。
+
+Migration 只處理 scope 與 open 告警，保留 raw、run、plan、work、universe release、canonical
+列及已撤銷 credential。若此組合仍有非 terminal work／run、未結算 attempt、未交付 prepared 或
+進行中的 historical request，migration 會中止，不代為結算。Downgrade 為 no-op。
+
+2026-11-02 以唯讀 transaction 核對，兩環境此組合的 accepted runs 與 raw 皆為 0，canonical 也沒有
+Twelve Data HK 列，關閉 rerun 沒有資料受影響。Staging 已套用 HK cutover；production 當時尚未
+套用，也沒有 FactSet release、work 或 HK canonical 資料，需另依前述切換程序上線。
 
 2026-10-30 06:10 UTC 以唯讀 transaction／SQLite `mode=ro` 核對兩環境，結案條件全部成立：
 

@@ -96,8 +96,7 @@ OHLC 衝突列保留原 raw 與 error DQ（含 symbol、trade_date、source_symb
 批次的 run 均為 `completed_with_errors`，可依原 v2 raw 重跑；這不是完整交付或 no_data 證明。
 Source precedence 仍適用，既有其他來源行情不能充當本次寫入證據。
 
-HK seed 同時接受 v1／v2；明確切換後的新 FactSet 抓取輸出 v2，舊 Twelve Data frozen
-prepared／raw rerun 保留 v1 identity。Serve 對 `market_eod` 明確支援版本 1／2，使用相同唯讀
+HK seed 同時接受 v1／v2；明確切換後的新 FactSet 抓取輸出 v2。Serve 對 `market_eod` 明確支援版本 1／2，使用相同唯讀
 canonical read model；不支援的版本仍 fail closed。
 
 EOD v2 daily／historical 可結算 `partial`：所有 accepted runs 必須 terminal，原 prepared 已交付

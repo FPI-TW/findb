@@ -121,14 +121,13 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 
 | 範圍 | 權威來源 | 用途 |
 | --- | --- | --- |
-| 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 保留 US、HK，HK 僅供舊 prepared／raw rerun，Fetcher 不再有 HK 目錄、名單或日資料抓取路徑 |
+| 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 僅 US，HK 已永久退役 |
 | 安裝 feeds | `backend/configs/execution_feeds.v1.json` 及實際部署的 Fetcher config | 目前七條 feeds；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
 | 凍結 admission | `admitted_dataset_keys`／`admission_id` | Owner 最近一次啟動時凍結的可用 datasets；停止後投影仍可能保留 |
 | 即時抓取授權 | Source `full-market/authorization?consumer=pilot\|full_market` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、profile flag、Source credential、baseline 與 provider cutover |
 
 新 daily 入列使用安裝 feeds 與 admission 的交集；新抓取仍須通過即時授權、交易日期／窗口及平台配額。
-不應刪除 Twelve Data 的 HK 相容 scope 來表示切換完成；舊 prepared／raw rerun 仍依原 identity
-交付。FactSet 的安裝 feed 也不代表已獲准取得 HK 新資料，仍須發布 baseline 並明確 cutover。
+FactSet 的安裝 feed 也不代表已獲准取得 HK 新資料，仍須發布 baseline 並明確 cutover。
 
 `desired_state=running` 是 Owner 的持續意圖。統一 CLI 在 idle poll 與 cycle 完成後回報
 `observed_state=stopped`，進入 cycle 時才回報 `running`。因此 running／stopped 組合須連同
@@ -1190,6 +1189,5 @@ wait reason、retry／heartbeat；GET projection 不更動 controls、lease 或 
 
 ## FactSet 港股 EOD
 
-HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 保留 US 與舊 HK immutable delivery／raw rerun
-acceptance。每日 HKEX 清單、申請時現行 cohort 回補、partial 結算、五日長缺漏與明確 provider
+HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 只負責 US，HK 已永久退役。每日 HKEX 清單、申請時現行 cohort 回補、partial 結算、五日長缺漏與明確 provider
 切換規則見 [FactSet 港股日行情](factset_hk.md)。安裝新版 image 不會自動啟動 controls 或切換來源。

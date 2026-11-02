@@ -8,6 +8,10 @@ from sqlalchemy import text
 from app.utils import uuid7
 from tests.migration_database import get_active_migration_database_factory, run_alembic
 
+# The legacy Twelve Data HK request below stays running, which the later scope
+# retirement (c7d2e9a4f1b3) refuses by design.
+COHORT_HEAD = "9c1e4f7a2b6d"
+
 
 @pytest.mark.asyncio
 async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss():
@@ -41,7 +45,7 @@ async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss()
             before = await db.scalar(
                 text("SELECT to_jsonb(i) FROM historical_backfill_item i WHERE item_id=:item"), ids
             )
-        await run_alembic(url, "head")
+        await run_alembic(url, COHORT_HEAD)
         async with engine.begin() as db:
             assert (
                 await db.scalar(
@@ -60,7 +64,7 @@ async def test_eod_cohort_expansion_preserves_legacy_and_refuses_evidence_loss()
                 is None
             )
         await run_alembic(url, "c64eb01f8a32", command="downgrade")
-        await run_alembic(url, "head")
+        await run_alembic(url, COHORT_HEAD)
         async with engine.begin() as db:
             await db.execute(
                 text(

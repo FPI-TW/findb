@@ -340,7 +340,7 @@ async def test_cutover_is_explicit_and_keeps_v1_acceptance(test_session, monkeyp
     await setup(test_session, monkeypatch)
     dataset = await test_session.get(DatasetRegistry, "hk_equity_eod")
     assert dataset.config["accepted_schema_versions"] == [1, 2]
-    assert dataset.config["allowed_sources"] == ["twelve_data", "factset"]
+    assert dataset.config["allowed_sources"] == ["factset"]
     assert not hk_provider_cutover.acquisition_allowed(dataset, "twelve_data")
     assert hk_provider_cutover.acquisition_allowed(dataset, "factset")
     assert not hk_provider_cutover.acquisition_allowed(
