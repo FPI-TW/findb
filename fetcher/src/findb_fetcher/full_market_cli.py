@@ -368,11 +368,11 @@ def main(argv: list[str] | None = None) -> int:
                 run_forever=args.run_forever,
                 max_delay=config["poll_seconds"],
             )
-            if observed.provider != args.provider or set(observed.dataset_keys) != (
-                {"us_equity_eod", "hk_equity_eod"}
-                if args.provider == "twelve_data"
-                else _SCOPES[args.provider]
-            ):
+            observed_scope = set(observed.dataset_keys)
+            if args.provider == "twelve_data":
+                # Source drops its retired HK scope after this Fetcher is deployed.
+                observed_scope.discard("hk_equity_eod")
+            if observed.provider != args.provider or observed_scope != _SCOPES[args.provider]:
                 raise ValueError("full-market control scope mismatch")
             if args.require_stopped:
                 if observed.desired_state != "stopped":

@@ -22,13 +22,19 @@ def acquisition_allowed(
 ) -> bool:
     if dataset.dataset_key != "hk_equity_eod":
         return True
+    # Twelve Data's plan has no HK entitlement; this retirement is permanent.
+    if provider == "twelve_data":
+        return False
+    # The cutover decision governs FactSet only, not any future HK source.
+    if provider != "factset":
+        return True
     # FactSet catalogue maintenance must precede baseline publication/cutover.
-    if maintenance and provider == "factset":
+    if maintenance:
         return True
     cutover = (dataset.config or {}).get("hk_provider_cutover")
-    today = utc_now().astimezone(ZoneInfo("Asia/Hong_Kong")).date()
     if cutover is None:
-        return provider == "twelve_data"
+        return False
+    today = utc_now().astimezone(ZoneInfo("Asia/Hong_Kong")).date()
     try:
         boundary = date.fromisoformat(cutover["effective_date"])
         if cutover["provider"] != "factset" or cutover["previous_provider"] != "twelve_data":
@@ -36,8 +42,8 @@ def acquisition_allowed(
     except (ValueError, KeyError, TypeError):
         return False
     if today < boundary:
-        return provider == "twelve_data"
-    return provider == "factset" and (trade_date is None or trade_date >= boundary)
+        return False
+    return trade_date is None or trade_date >= boundary
 
 
 async def apply_cutover(db: AsyncSession, *, effective_date: date, actor: str) -> dict:

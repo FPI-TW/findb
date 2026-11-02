@@ -64,38 +64,31 @@ def probe_twelve_data(key: str, *, client: httpx.Client | None = None) -> dict[s
                 **result,
                 "status": "blocked",
                 "reason": "daily_quota_insufficient_for_us_alone",
-                "hk_permission": "unverified",
             }
-        # Two single-symbol EOD permissions probes only if remaining limits prove headroom.
+        # One single-symbol EOD permissions probe only if remaining limits prove headroom.
         remaining = result.get("plan_limit", 0) - result.get("current_usage", 0)
         daily_remaining = daily - result.get("daily_usage", daily) if daily is not None else 0
-        if remaining < 2 or daily_remaining < 2:
+        if remaining < 1 or daily_remaining < 1:
             return {**result, "reason": "sample_budget_or_daily_limit_unknown"}
-        samples = {}
-        for market, symbol, exchange in (("US", "AAPL", "NASDAQ"), ("HK", "700", "HKEX")):
-            sampled = client.get(
-                "https://api.twelvedata.com/time_series",
-                params={
-                    "symbol": symbol,
-                    "exchange": exchange,
-                    "interval": "1day",
-                    "outputsize": 1,
-                },
-                headers={"Authorization": f"apikey {key}"},
-            )
-            result["requests_made"] += 1
-            if sampled.status_code == 200 and len(sampled.content) <= 65536:
-                payload = sampled.json()
-                samples[market] = (
-                    "permitted"
-                    if payload.get("status") == "ok" and payload.get("values")
-                    else "unavailable"
-                )
-            else:
-                samples[market] = "unavailable"
+        sampled = client.get(
+            "https://api.twelvedata.com/time_series",
+            params={
+                "symbol": "AAPL",
+                "exchange": "NASDAQ",
+                "interval": "1day",
+                "outputsize": 1,
+            },
+            headers={"Authorization": f"apikey {key}"},
+        )
+        result["requests_made"] += 1
+        permission = "unavailable"
+        if sampled.status_code == 200 and len(sampled.content) <= 65536:
+            payload = sampled.json()
+            if payload.get("status") == "ok" and payload.get("values"):
+                permission = "permitted"
         return {
             **result,
-            "sample_permissions": samples,
+            "sample_permissions": {"US": permission},
             "reason": "full_symbol_mapping_and_rate_window_not_yet_verified",
         }
     except Exception:

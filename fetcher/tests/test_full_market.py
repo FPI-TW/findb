@@ -345,7 +345,7 @@ def _proof(now: datetime) -> dict[str, Any]:
 def test_unknown_or_insufficient_readiness_blocks_no_false_subset(tmp_path: Path) -> None:
     now = datetime.now(timezone.utc)
     with pytest.raises(ReadinessBlockedError, match="unknown"):
-        load_readiness(None, "twelve_data", ["us_equity_eod", "hk_equity_eod"], now=now)
+        load_readiness(None, "twelve_data", ["us_equity_eod"], now=now)
     path = tmp_path / "proof.json"
     proof = _proof(now)
     path.write_text(json.dumps(proof))
@@ -500,6 +500,39 @@ def test_live_readiness_probe_stops_after_one_credit_if_insufficient() -> None:
     assert result["requests_made"] == 1
     assert len(calls) == 3  # One provider account call, two public official snapshots.
     assert "secret" not in json.dumps(result)
+
+
+def test_live_readiness_probe_samples_us_only() -> None:
+    samples = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api_usage":
+            return httpx.Response(
+                200,
+                json={
+                    "plan_limit": 8,
+                    "current_usage": 1,
+                    "plan_daily_limit": 800,
+                    "daily_usage": 0,
+                },
+            )
+        if request.url.path == "/time_series":
+            samples.append(request.url.params["exchange"])
+            return httpx.Response(200, json={"status": "ok", "values": [{}]})
+        if "nasdaqlisted" in request.url.path:
+            return httpx.Response(
+                200, content=b"Symbol|Security Name|Test Issue|ETF\nAAPL|Common Stock|N|N\n"
+            )
+        return httpx.Response(
+            200,
+            content=b"ACT Symbol|Security Name|Test Issue|ETF|Exchange\nIBM|Common Stock|N|N|N\n",
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        result = probe_twelve_data("secret", client=client)
+    assert samples == ["NASDAQ"]
+    assert result["sample_permissions"] == {"US": "permitted"}
+    assert result["requests_made"] == 2
 
 
 def _runtime(
@@ -1255,6 +1288,53 @@ def test_require_stopped_never_recreates_unavailable_checkpoint(
         assert not (tmp_path / "absent-target").exists()
     else:
         assert state_path.read_bytes() == (b"" if kind == "empty" else b"invalid SQLite")
+
+
+@pytest.mark.parametrize(
+    "scope,accepted",
+    [
+        (["us_equity_eod"], True),
+        (["us_equity_eod", "hk_equity_eod"], True),
+        (["hk_equity_eod"], False),
+        (["us_equity_eod", "tw_equity_eod"], False),
+    ],
+)
+def test_twelve_data_control_scope_tolerates_only_source_side_hk_retirement(
+    tmp_path, monkeypatch, scope, accepted, capsys
+):
+    from findb_fetcher import full_market_cli
+
+    class Control:
+        def __init__(self, _config, _key):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def poll(self, **_):
+            return SimpleNamespace(
+                provider="twelve_data", dataset_keys=scope, desired_state="stopped"
+            )
+
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
+    monkeypatch.setattr(full_market_cli.FetcherConfig, "from_env", lambda: object())
+    monkeypatch.setattr(full_market_cli, "SchedulerControlClient", Control)
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    args = [
+        "--config",
+        str(Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json"),
+        "--provider",
+        "twelve_data",
+        "--state-path",
+        str(state.path),
+        "--require-stopped",
+    ]
+    assert (full_market_cli.main(args) == 0) is accepted
+    assert ("startup or operation blocked" in capsys.readouterr().err) is not accepted
 
 
 @pytest.mark.parametrize("desired", ["stopped", "running"])

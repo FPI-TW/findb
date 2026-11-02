@@ -204,7 +204,7 @@ describe("governance pages", () => {
         name: "fetcher",
         owner: "data-platform",
         source_name: "twelve_data",
-        allowed_datasets: ["us_equity_eod", "hk_equity_eod"],
+        allowed_datasets: ["us_equity_eod"],
       }),
     })
     fireEvent.click(screen.getByRole("button", { name: "關閉" }))

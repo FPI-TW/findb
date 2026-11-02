@@ -210,6 +210,11 @@ Twelve Data 不再擁有 HK 抓取路徑：Fetcher 已移除香港 country catal
 （凍結商品 `0001`，含 `exchange=HKEX`）均回 HTTP／provider code 400 `no_data_response`；
 官方將 XHKG 列為需授權或未支援市場，因此港股不再列為 Twelve Data 待解項目。
 
+方案沒有 HK 權限，此退役為永久決定：Source 的抓取閘門不論 HK cutover 是否已套用，一律拒絕
+`twelve_data` × `hk_equity_eod` 的新 plan、manifest、prepare 與 claim 取得權限。此閘門只封鎖
+這個組合，cutover 判斷也只適用 FactSet；未來新增的 HK 來源依 provider scope、
+`allowed_sources` 與 execution manifest 治理，不受此處限制。
+
 2026-10-30 06:10 UTC 以唯讀 transaction／SQLite `mode=ro` 核對兩環境，結案條件全部成立：
 
 | 環境 | Source work | Plans | Owner／在途 | Fetcher checkpoint |

@@ -28,7 +28,7 @@ from tests.test_staging_feed_evidence import _sample_record
 async def test_native_evidence_binds_profile_after_canonical_overwrite(
     test_session, test_engine, owned_client, monkeypatch, environment, key
 ):
-    # This regression exercises retained v1 plans. Current FactSet v2 acquisition
+    # This regression exercises the v1 evidence path. Current FactSet v2 acquisition
     # is covered by the fenced FactSet integration acceptance tests.
     if key == "hk_equity_eod":
         import json
@@ -42,7 +42,6 @@ async def test_native_evidence_binds_profile_after_canonical_overwrite(
                 catalog = json.loads(raw)
                 for feed in catalog["feeds"]:
                     if feed["dataset_key"] == key:
-                        feed["provider"] = "twelve_data"
                         feed["schema_version"] = 1
                 return json.dumps(catalog)
             return raw

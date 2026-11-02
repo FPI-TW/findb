@@ -2,8 +2,7 @@
   "provider": "twelve_data",
   "status": "unknown",
   "datasets": [
-    "us_equity_eod",
-    "hk_equity_eod"
+    "us_equity_eod"
   ],
   "verified_at": null,
   "expires_at": null,

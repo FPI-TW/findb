@@ -50,6 +50,12 @@ EVIDENCE = {"url": "https://www.taifex.com.tw/cht/3/futDailyMarketReport", "sha2
 
 async def _dataset(db, key="tw_futures_eod"):
     values = deepcopy(next(item for item in DATASETS if item["dataset_key"] == key))
+    if key == "hk_equity_eod":
+        values["config"]["hk_provider_cutover"] = {
+            "provider": "factset",
+            "previous_provider": "twelve_data",
+            "effective_date": (DAY - timedelta(days=1)).isoformat(),
+        }
     dataset = DatasetRegistry(**values)
     db.add(dataset)
     await db.commit()
@@ -93,8 +99,10 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
     provider = (
         "taifex"
         if futures
+        else "factset"
+        if key == "hk_equity_eod"
         else "twelve_data"
-        if key in {"hk_equity_eod", "us_equity_eod"}
+        if key == "us_equity_eod"
         else "shioaji"
         if key.endswith("minute")
         else "finlab"
@@ -120,7 +128,7 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
             {
                 "symbol": f"{i + 1:05d}" if key == "hk_equity_eod" else f"{i + 1:04d}",
                 "provider_symbol": f"{i + 1:05d}" if key == "hk_equity_eod" else f"{i + 1:04d}",
-                "exchange": "HKEX"
+                "exchange": "XHKG"
                 if key == "hk_equity_eod"
                 else "NASDAQ"
                 if key == "us_equity_eod"
@@ -131,6 +139,7 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
                 if key == "us_equity_eod"
                 else "TWD",
                 "asset_class": "etf" if key in {"tw_etf_eod", "tw_etf_minute"} else "equity",
+                **({"classification": "hk_main_ordinary"} if key == "hk_equity_eod" else {}),
             }
             for i in range(count)
         ]
@@ -769,7 +778,7 @@ async def test_taifex_reconciliation_previews_then_publishes_safe_candidate(
         ("provider_symbol", "changed-source-symbol"),
         ("mapping_status", "gap"),
         ("currency", "USD"),
-        ("exchange", "XHKG"),
+        ("exchange", "HKEX"),
     ],
 )
 async def test_member_metadata_changes_still_trigger_ratio_threshold(test_session, field, value):

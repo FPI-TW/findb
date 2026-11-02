@@ -51,7 +51,7 @@ describe("admin governance wire contracts", () => {
       "factset",
     ])
     expect(SOURCE_PROVIDER_DATASETS).toEqual({
-      twelve_data: ["us_equity_eod", "hk_equity_eod"],
+      twelve_data: ["us_equity_eod"],
       finlab: ["tw_equity_eod", "tw_etf_eod"],
       shioaji: ["tw_equity_minute", "tw_etf_minute"],
       taifex: ["tw_futures_eod"],

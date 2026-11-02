@@ -328,12 +328,10 @@ class RuntimeHarness:
                 json={
                     "meta": {
                         "symbol": symbol,
-                        "currency": "HKD" if self.dataset == "hk_equity_eod" else "USD",
-                        "exchange": "HKEX" if self.dataset == "hk_equity_eod" else "NASDAQ",
-                        "mic_code": "XHKG" if self.dataset == "hk_equity_eod" else "XNAS",
-                        "exchange_timezone": "Asia/Hong_Kong"
-                        if self.dataset == "hk_equity_eod"
-                        else "America/New_York",
+                        "currency": "USD",
+                        "exchange": "NASDAQ",
+                        "mic_code": "XNAS",
+                        "exchange_timezone": "America/New_York",
                         "type": "Common Stock",
                         "interval": "1day",
                     },
