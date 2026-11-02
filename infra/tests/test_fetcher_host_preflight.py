@@ -85,13 +85,6 @@ def production_args(command, provider=None):
             f"/var/lib/findb-account/readiness/{provider}.json",
             "--run-forever",
         ]
-    if command == "findb-fetch-shioaji-scheduler":
-        return [
-            command,
-            "--manifest",
-            "/app/configs/shioaji_tw50_2026_09_21.v2.json",
-            "--run-forever",
-        ]
     slot, dataset = {
         "findb-fetch-scheduler": ("western_markets_window", "us_equity_eod"),
         "findb-fetch-finlab-scheduler": ("taiwan_market_window", "tw_equity_eod"),
@@ -136,7 +129,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.manifest = {
             "schema_version": 3,
             "runtime_profile": "unified",
-            "fetcher_bundle_version": 2,
+            "fetcher_bundle_version": 3,
             "deployment_target": "production",
             "unit": "fetcher",
             "commit_sha": "b" * 40,
@@ -162,7 +155,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.write_manifest()
         self.rows = []
         for profile in ("pilot", "full_market"):
-            for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset"):
+            for provider in ("twelve_data", "finlab", "taifex", "factset"):
                 prefix = profile.replace("_", "-")
                 name = f"findb-{prefix}-{provider.replace('_', '-')}"
                 state = f"/var/lib/findb-{prefix}/production"
@@ -184,7 +177,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                     self.row(name, "twelve_data" if provider == "taifex" else provider, args)
                 )
 
-        for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset"):
+        for provider in ("twelve_data", "finlab", "taifex", "factset"):
             self.rows.append(
                 self.row(
                     "findb-historical-" + provider.replace("_", "-"),
@@ -261,7 +254,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         return result
 
     def test_complete_unified_installation_is_drained(self):
-        self.assertEqual(len(self.rows), 15)
+        self.assertEqual(len(self.rows), 12)
         self.assertEqual(self.check(), "drained")
 
     def test_restarting_runtime_reports_only_trusted_consumer_identity(self):
@@ -278,7 +271,65 @@ class FetcherHostPreflightTests(unittest.TestCase):
         )
         self.assertNotIn("secret", output.getvalue())
 
+    def install_version_two(self):
+        """Hosts awaiting this release still run the Shioaji consumers of version 2."""
+        image = REGISTRY + "/findb/production/fetcher/shioaji@sha256:" + "c" * 64
+        self.manifest["fetcher_bundle_version"] = 2
+        self.manifest["images"]["shioaji"] = image
+        for profile in ("pilot", "full_market"):
+            prefix = profile.replace("_", "-")
+            state = (
+                "/var/lib/findb-full-market"
+                if profile == "full_market"
+                else (f"/var/lib/findb-{prefix}/production")
+            )
+            self.rows.append(
+                self.row(
+                    f"findb-{prefix}-shioaji",
+                    "shioaji",
+                    [
+                        "findb-fetch-runtime",
+                        "--execution-profile",
+                        profile,
+                        "--config",
+                        "/app/configs/full_market.production.v1.json",
+                        "--state-path",
+                        state + "/state.sqlite3",
+                        "--provider",
+                        "shioaji",
+                        "--run-forever",
+                    ],
+                )
+            )
+        self.rows.append(
+            self.row(
+                "findb-historical-shioaji",
+                "shioaji",
+                ["findb-fetch-historical-backfill", "--provider", "shioaji", "--run-forever"],
+            )
+        )
+        path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+        path.write_text(path.read_text().replace("# shioaji-retired-v1:", "# previous-providers:"))
+        with release.SourceBundleReader(self.root) as source:
+            self.manifest["deployment_source_bundle_sha256"] = (
+                source.deployment_source_bundle_sha256("fetcher")
+            )
+        self.write_manifest()
+
+    def test_version_two_host_still_requires_its_shioaji_consumers(self):
+        self.install_version_two()
+        self.assertEqual(len(self.rows), 15)
+        self.assertEqual(self.check(), "drained")
+        self.rows = [row for row in self.rows if row["Name"] != "/findb-pilot-shioaji"]
+        with self.assertRaises((ValueError, KeyError)):
+            self.check()
+
+    def test_retired_shioaji_consumers_are_not_required_after_version_three(self):
+        self.assertFalse(any("shioaji" in row["Name"] for row in self.rows))
+        self.assertEqual(self.check(), "drained")
+
     def test_accepted_eleven_consumer_installation_can_upgrade(self):
+        self.install_version_two()
         self.manifest["fetcher_bundle_version"] = 1
         self.manifest["images"].pop("factset")
         self.rows = [row for row in self.rows if not row["Name"].endswith("-factset")]
@@ -406,7 +457,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                         self.check()
 
     def test_drained_requires_exact_pilot_format_identity(self):
-        for version in (None, False, True, 0, 3, "1", 1.0):
+        for version in (None, False, True, 0, 4, "1", 1.0):
             with self.subTest(version=version):
                 self.manifest["fetcher_bundle_version"] = version
                 if version is None:
@@ -414,7 +465,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 self.write_manifest()
                 with self.assertRaisesRegex(ValueError, "format identity invalid"):
                     self.check()
-        self.manifest["fetcher_bundle_version"] = 2
+        self.manifest["fetcher_bundle_version"] = 3
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 
@@ -657,7 +708,6 @@ class FetcherHostPreflightTests(unittest.TestCase):
             ).hexdigest(),
             "TWELVE_IMAGE": self.manifest["images"]["twelve_data"],
             "FINLAB_IMAGE": self.manifest["images"]["finlab"],
-            "SHIOAJI_IMAGE": self.manifest["images"]["shioaji"],
             "FACTSET_IMAGE": self.manifest["images"].get(
                 "factset",
                 REGISTRY + "/findb/production/fetcher/factset@sha256:" + "e" * 64,

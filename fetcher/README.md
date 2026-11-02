@@ -10,7 +10,6 @@ Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受
 | Twelve Data | `us_equity_eod` |
 | FactSet | `hk_equity_eod` |
 | FinLab | `tw_equity_eod`、`tw_etf_eod` |
-| Shioaji | `tw_equity_minute`、`tw_etf_minute` |
 | TAIFEX | `tw_futures_eod` |
 
 唯一 recurring runtime 是 `findb-fetch-runtime --execution-profile pilot|full_market`。
@@ -18,12 +17,12 @@ Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受
 Pilot 建立 daily plan 時按 canonical 商品識別排序取前兩項，期貨以 product／contract 取樣並保留所有 sessions。
 樣本建立後凍結；重試、重啟、補抓及 universe 發布不得改寫它。
 
-部署在兩環境固定安裝十個 recurring consumers，以及五個獨立 historical consumers。
+部署在兩環境固定安裝八個 recurring consumers，以及四個獨立 historical consumers。
 `FULL_MARKET_ENABLED=false` 只禁止 full market 新抓取，不影響安裝、pilot 或 prepared delivery。
 部署只接受 stopped controls；Owner 操作啟停。Staging 常態開 pilot，上版可短暫開 full market；production 常態只開 full market。
 `pilot_<provider>_v1` 與 `full_market_<provider>_v1` 各自有 first dates、plans、checkpoint；同環境共用帳號 governor。
-所有 provider-specific scheduler、Twelve Data one-shot、FinLab／Shioaji smoke、Shioaji staging 與
-TAIFEX pilot CLI 都只回報退役（exit 2）。`PROVIDER_WORK_REQUIRED` 缺省 true，明確 false 拒絕啟動。
+所有 provider-specific scheduler、Twelve Data one-shot、FinLab smoke 與 TAIFEX pilot CLI 都只回報退役（exit 2）；
+Shioaji 已完整退役，其舊 CLI 回報 `PROVIDER_RETIRED`。`PROVIDER_WORK_REQUIRED` 缺省 true，明確 false 拒絕啟動。
 所有新 I/O 與 prepared delivery 須持有 provider-work owner；缺少 attestation 不能 claim。
 現有環境升級前依 [切換程序](../docs/operations/deployment.md#provider-work-切換) 排空與備份。
 原 checkpoint、prepared bytes、receipts、budgets 與 cooldown 不會刪除或重設。
@@ -59,7 +58,7 @@ debt、cooldown 與相關 allocation，不能以空白新檔取代已知 ledger�
 ledger 時才使用範本的新路徑。本機 `.env` 僅供 local，staging／production 繼續使用各自
 部署設定與 durable mounts；未明確設定路徑的 deployed fallback 維持 `/var/lib/findb-account/governor.sqlite3`。
 
-FinLab、Shioaji、FactSet images 的預設命令均為 `findb-fetch-runtime --help`；
+FinLab、FactSet images 的預設命令均為 `findb-fetch-runtime --help`；
 不帶覆寫命令啟動時只印出 help 並 exit 0，不載入 credentials 或抓取資料。CI 直接執行 image
 預設命令，另驗證正式 runtime／historical CLI 與 optional SDK 隔離。
 
@@ -77,8 +76,7 @@ docker build -f fetcher/Dockerfile -t findb-fetcher:local .
 
 ## Provider raw storage（Cloudflare R2）
 
-Twelve Data 保存 exact HTTP bytes；FinLab 保存 deterministic SDK bundle；Shioaji 保存
-SDK-detached acquisition snapshot；TAIFEX 保存官方 report 及 checksum manifest。各 provider 都在 Source delivery 前完成 raw-first persistence，
+Twelve Data 保存 exact HTTP bytes；FinLab 保存 deterministic SDK bundle；TAIFEX 保存官方 report 及 checksum manifest。各 provider 都在 Source delivery 前完成 raw-first persistence，
 並以 `source_raw_ref` 與 `source_raw_sha256` 成對傳遞。
 
 執行順序固定為：bounded provider fetch → R2 raw write → mapping/contract validation →
@@ -99,8 +97,6 @@ Raw object lifecycle 為 30 天、bucket lock 為 7 天，由 Cloudflare R2 管�
 | `--state-path` | 部署是 | 各 provider／execution profile 的獨立 durable SQLite checkpoint 檔案 |
 | `FETCHER_ACCOUNT_STATE_PATH` | 本機新抓取是 | 全 providers／Pilot／Full／historical 共用 durable account governor；本機範本從 `fetcher/` 使用 `.state/account/governor.sqlite3` |
 | `FINLAB_API_TOKEN` | FinLab 是 | FinLab headless SDK token |
-| `SHIOAJI_API_KEY` / `SHIOAJI_SECRET_KEY` | Shioaji 是 | 該環境的 Shioaji credentials |
-| `SHIOAJI_SIMULATION` | Shioaji 是 | 預設 `true`；明確 `false` fail closed |
 | `TWELVE_DATA_API_KEY` | Twelve Data 是 | Twelve Data runtime secret |
 | `CLOUDFLARE_R2_ACCOUNT_ID` | delivery/scheduler 是 | Cloudflare account ID |
 | `CLOUDFLARE_R2_RAW_BUCKET` | delivery/scheduler 是 | Fetcher-owned private raw bucket |
@@ -121,22 +117,18 @@ canonical 更新的持久化寫入證據按 plan 保留，另一 profile 的寫�
 
 已設定 account state 的 consumers 共用 durable governor，沿用既有
 account ID 或使用 credential fingerprint；不設跨環境分配、所有行情的日請求預算、deadline capacity proof
-或 enrolled response bounds。Shioaji login 另採本地保守 rolling 86400 秒最多 1000 次，非 UTC／provider reset epoch；
-僅計 actual login start／unknown login liability，SDK error 亦計，Kbars／其他 bootstrap／cleanup 不占 login 次數。只套用 Twelve Data 1597 credits／分鐘、FinLab API 每日 5000 MB、
-Shioaji 每日 500 MiB 與 50 行情查詢／10 秒；TAIFEX 為公開 OpenAPI，以 429 cooldown 處理。
+或 enrolled response bounds。只套用 Twelve Data 1597 credits／分鐘、FinLab API 每日 5000 MB；TAIFEX 為公開 OpenAPI，以 429 cooldown 處理。
 首次升級以可用的舊 allocation account ID 建立持久化對照；完成 pin 後，證據檔變動不重設
 ledger。Twelve Data fingerprint 跟隨 provider config 去除 credential 前後空白；FinLab 1.5.7
 的 gateway、identity 與 allocation 比對一致使用 `credential.strip()[:64]`，符合 native
 `LoginPanel.login`／`get_token` 的前 64 字元選取。非空白長 token 的後綴不代表另一帳號，
-同一有效 credential 的格式變動沿用已 pin 的用量、配額與 cooldown；Full／Pilot／historical Shioaji
-也一致去除 key／secret 前後空白。所有 SDK 入口依實際傳入的 key 綁定 account，顯式 key 不受其他
+同一有效 credential 的格式變動沿用已 pin 的用量、配額與 cooldown。所有 SDK 入口依實際傳入的 key 綁定 account，顯式 key 不受其他
 environment key 覆蓋；FinLab 保留明確提供與 SDK 等值 installed token 的 raw、舊去空白、
 新 SDK 等值 fingerprints，proven pins 以 literal allocation prefix 冪等合併已知 debt／cooldown。若首次 pin 前 allocation 遺失、損壞或缺少可用 account ID，無法辨識舊 ledger，
 則使用 credential fingerprint 與平台實際配額，保留原匿名用量／cooldown 供稽核。
 此例外接受舊用量與 cooldown 無法接續的風險，不猜測合併舊債務；升級前保留 allocation
 與 governor 可維持接續。並行 pin／merge 使用 identity mutex、排序 account locks 與短 SQLite transaction。
-FinLab 用量以平台 SDK API 為權威，detached bytes 不代表 network usage；Shioaji 在抓取前查
-實際 SDK 累計 bytes。Source API 自行執行 DB-backed key rate limit 與 429。
+FinLab 用量以平台 SDK API 為權威，detached bytes 不代表 network usage。Source API 自行執行 DB-backed key rate limit 與 429。
 Twelve Data HTTP transport boundary 同樣使用 client 的實際 config key，環境 key 不得改寫帳號
 lock／debt／cooldown。FinLab 1.5.7 的 `login` 只修改 process-global token，所有 gateways
 以 process-wide SDK lock 保護 token 選取至 `data.get` 完成與 durable finalization；SDK lock
@@ -150,42 +142,10 @@ environment 快照。其他 thread 等待還原完成，同 thread authorization
 外部 account lock 內不允許巢狀 SDK dispatch；snapshot 不等待 SDK lock，busy 時拒絕以維持鎖順序。
 Governor rollback inspection 也計入跨 UTC 換日仍有效的 unknown rolling login liability。
 
-Shioaji child 啟動為 dormant；SDK construction、login、lazy TSE／OTC contracts 與 Kbars 都先取得
-同帳號 lock、durable armed intent、child FD 與 current scoped Source GO，才開始該 SDK operation。
-Source header receipt 起最多 50ms，且受 actual minute／historical lease expiry 限制；不得由 dispatch
-時間更新 origin。Source 取消／停止／撤銷後不登入。首次 login 前 authenticated usage 不可用，只記錄
-`not_authenticated`；login 後 current SDK bytes／connections 必須有效，才可查 contracts／行情。
-已知 fresh connections=5 不重新登入；有效既有 session 可沿用。未知其他 key 的 person_id 不推定關聯，
-首次連線由平台拒絕／接受，native acceptance 另留 official connections 與 login/cleanup evidence。
-Parent SIGKILL 後 child 持有同一 lock FD 至 durable completion／cleanup；logout 只關閉既有資源，
-不登入或抓新資料，不要求 Source running，採 zero-unit cleanup intent 與同帳號 lock。已知 SDK login
-失敗、Kbars 實際成功／錯誤與 cleanup 結果在首次 durable finalization 保留 audit；
-Kbars 錯誤仍計一次 actual request，cleanup 為 zero-unit，原 request debt／cooldown 不退款。
-SDK child argv／env／GO 沒有
-Source、cloud 或其他 provider secrets，只有 private credential pipe 傳 provider keys。
-
-官方名單來源為 Nasdaq Trader 的兩份 symbol directories、HKEX `ListOfSecurities.xlsx`、
-TWSE／TPEx 公司資料及 ISIN 的精確 ETF sections，以及 TAIFEX `DailyMarketReportFut`。
-US 排除 ETF、OTC、preferred（含 ACT `$` suffix）、warrants、rights 等；普通股／ADR 分類仍有
-歧義時保留 `classification_gap`。HK 股票代號保留五位前導零及官方交易幣別；Equity 中無法
-證明為 Main Board／GEM 普通股的子分類保留缺口。TW 普通股以 ISIN 精確股票 section 與 CFI ES 分類為準，並以公司表交叉核對；CFI ED 的 TDR
-（含四位代號）與 CFI EP 特別股排除，無法核實的分類保留缺口。ETF section
-包含主動式、槓桿／反向與債券 ETF。官方日期在未來或欄位改變時拒絕生效，不以空名單替代。
-
-Universe 的 official/provider 原始來源會先存入 R2，以 SHA-256 與不可變參考提交 Source。
-名單與 mapping 改動超過 20 筆**或** 2% 時由 Backend 保留原 published release，新的 candidate
-等待 Admin；Fetcher 不自行接受第一個 baseline 或重大變更。Running process 每日刷新官方名單，
-失敗時保存阻擋原因並隔一小時重試。TW ISIN 原始檔可超過 8 MiB，因此全市場 process 必須設定
-`CLOUDFLARE_R2_MAX_OBJECT_BYTES=16777216`；取得與 ZIP 解壓縮皆有明確上限。
-
-正常抓取不讀 readiness／account allocation 的配額、expiry 或 proof；`--readiness-file` 與
-舊 enrollment/repair 工具保留相容診斷用途。治理資料只要求 published baseline 與完整 calendar。
-已有 identity 對照的 account usage、pacing、429 cooldown、prepared payload 與 checkpoint
 不因重啟或升級重設；首次 pin 無法辨識舊 ledger 的例外與風險見上文。
 舊 capacity violation 不再封鎖新抓取；HTTP identity encoding、Content-Length、串流大小、
 SDK／IPC／R2 bounds、schema 與 provenance 驗證保留。不合法 response 不建立成功 raw 或 prepared body。
 FinLab 1.5.7 對 dataset/date 取得五個 OHLCV 欄位，再投影成各商品 bundle，成功 cache 供商品共用。
-Shioaji（版本見 `SHIOAJI_SDK_VERSION`）由靜默常駐 child process 執行 data API，SDK usage 無法確認時拒絕交付。
 
 TAIFEX 保留 `TX/MTX/TMF/TE/TF` 實際月／週代碼，排除含 `/` 的價差合約，保留一般／盤後及
 官方 attribution date、各時段 volume；不推算 expiry date、不產生 continuous series，也不以
@@ -229,17 +189,6 @@ CLI、universe 與 scheduler/runtime 的 canonical mapping 只納入要求的日
 Raw R2 保留完整原始 HTTP bytes，即使 provider 回傳額外日期也不改寫原始證據。
 空回應或範圍內無資料仍按既有錯誤／重試規則處理，不直接標示成功或 no_data。
 
-## Shioaji historical backfill
-
-Production 支援 `tw_equity_minute`／`tw_etf_minute` 的最近 31 個日曆日回補（含台北當日）。
-`findb-fetch-backfill-plan --provider shioaji --dataset-key ... --start-date ... --end-date ...`
-預設只 preview；確認後加 `--deliver`，使用既有 historical worker 消費。
-Planner 與 runner 共用已驗證 production v2 manifest，分別為完整 50 檔股票／3 檔 ETF，
-不接受 staging／舊 pilot manifest。預估 calls 依成員數計算，分鐘 rows 回傳 `null`。
-`FETCHER_HISTORICAL_STATE_DIR/<request_id>.sqlite3` 與 daily state 分離；保留原 sequence、
-R2 raw-first、Source terminal count gates 與 provider-work FIFO／host lock。
-詳細操作、舊缺口恢復與驗收見 [資料維護](../docs/operations/data_maintenance.md#shioaji-股票etf-分鐘回補)。
-
 ## TAIFEX historical backfill
 
 `findb-fetch-historical-backfill --provider taifex --run-forever` 消費 Admin 核准的逐日工作，
@@ -250,8 +199,5 @@ Raw-first 五商品報表、整日 manifest、prepared body、receipt 與有限�
 停止 TAIFEX Pilot／Full 並排空後執行，操作與驗收見
 [資料維護](../docs/operations/data_maintenance.md#taifex-futures-eod-回補)。
 
-Shioaji Pilot／Full daily 採 Asia/Taipei 18:00–隔日 06:00 新抓取窗口，以及最多 25 個成員／
-60 秒（成員邊界）的有限批次輪替。窗口與批次設定由共用 execution catalog 產生；未完成
-工作保留游標、原 prepared bytes、receipts 與 retry budgets，於下個窗口續跑，23:00 逾期
-告警維持。`--health` 可查看窗口與本機批次進度；設定、交接及量測說明見
-[維運文件](../docs/operations/full_market.md#shioaji-每日窗口與公平輪替)。
+`daily_runtime_policies` 可為 provider 設定新抓取窗口與有限批次輪替，目前沒有 provider 使用。
+未完成工作保留游標、原 prepared bytes、receipts 與 retry budgets，於下個窗口續跑。

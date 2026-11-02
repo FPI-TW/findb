@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.models.provider_work import ProviderWorkAttempt, ProviderWorkOwner
 from app.services import provider_work as queue
 from app.utils import utc_now
+from tests.provider_work_clock import logical_dispatch_clock
 from tests.test_provider_work import add, identity, seed
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
@@ -47,13 +48,14 @@ async def test_elapsed_retry_floor_keeps_fifo_and_durable_owner_settlement(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("native_runtime", [("shioaji", "tw_equity_minute", 0)], indirect=True)
-async def test_real_shioaji_consumer_survives_slow_settlement_and_ack_replay(
+@pytest.mark.parametrize("native_runtime", [("finlab", "tw_equity_eod", 0)], indirect=True)
+async def test_real_consumer_survives_slow_settlement_and_ack_replay(
     native_runtime, test_engine, monkeypatch
 ):
     from findb_fetcher.full_market_client import FullMarketSourceClient
 
     h = native_runtime
+    clock = logical_dispatch_clock(monkeypatch)
     first = await add(h.db, h.provider, h.dataset, "first")
     second = await add(h.db, h.provider, h.dataset, "second")
     first_id, second_id = first.work_id, second.work_id
@@ -62,8 +64,8 @@ async def test_real_shioaji_consumer_survives_slow_settlement_and_ack_replay(
 
     async def slow_settle(*args, **kwargs):
         # Move only the shared test clock, simulating lock/receipt-query latency
-        # after the client has serialized retry_at. No real sleeps or SDK calls.
-        h.shioaji_clock[0] += 2
+        # after the client has serialized retry_at. No real sleeps or native calls.
+        clock[0] += 2
         return await settle(*args, **kwargs)
 
     monkeypatch.setattr(queue, "settle", slow_settle)
@@ -123,7 +125,7 @@ async def test_real_shioaji_consumer_survives_slow_settlement_and_ack_replay(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("native_runtime", [("shioaji", "tw_equity_minute", 0)], indirect=True)
+@pytest.mark.parametrize("native_runtime", [("finlab", "tw_equity_eod", 0)], indirect=True)
 @pytest.mark.parametrize(
     ("fault", "code"),
     [

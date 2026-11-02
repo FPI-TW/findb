@@ -39,7 +39,6 @@ TAIFEX_INVALID_REPORTS = {
         ((provider, dataset, 0), fault)
         for provider, dataset in [
             ("finlab", "tw_equity_eod"),
-            ("shioaji", "tw_equity_minute"),
             ("taifex", "tw_futures_eod"),
         ]
         for fault in [503, "503-invalid", "transport", "quota", 403, "format"]
@@ -190,11 +189,7 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
             "SELECT attempts FROM work_budget WHERE work_key=?", (work_id,)
         ).fetchone()[0] == (0 if fault == "quota" else 1)
     expected_calls = (
-        0
-        if fault == "quota"
-        else 4
-        if fault == "format" and h.provider in {"finlab", "shioaji"}
-        else 1
+        0 if fault == "quota" else 4 if fault == "format" and h.provider == "finlab" else 1
     )
     assert len(calls) == expected_calls, (
         attempts[0].failure_code,

@@ -36,13 +36,13 @@ def test_retired_entrypoints_never_touch_existing_state(
     output = capsys.readouterr()
     body = json.loads(output.err)
     assert body["status"] == "retired"
-    assert body["code"] == "PROVIDER_WORK_REQUIRED"
+    assert body["code"] == ("PROVIDER_RETIRED" if "shioaji" in module else "PROVIDER_WORK_REQUIRED")
     assert output.out == ""
     assert state.read_bytes() == original
     assert list(tmp_path.iterdir()) == [state]
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
 @pytest.mark.parametrize("setting", [None, "True", "1", "yes"])
 def test_owner_is_required_for_every_provider(provider, setting, monkeypatch):
     if setting is None:
@@ -113,7 +113,7 @@ def test_absent_setting_propagates_required_protocol_to_children(monkeypatch):
     assert provider_environment()["PROVIDER_WORK_REQUIRED"] == "true"
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
 @pytest.mark.parametrize("drain", [False, True])
 def test_daily_cycle_and_drain_only_dispatch_queue(provider, drain, monkeypatch):
     from findb_fetcher.full_market_runtime import FullMarketRuntime
@@ -136,22 +136,3 @@ def test_source_delivery_without_owner_rejects_before_transport(monkeypatch):
         _provider_work_headers(
             PreparedDelivery(b"original-bytes", "original", "scope", "market_eod", 1)
         )
-
-
-@pytest.mark.parametrize("setting", [None, "false", "true"])
-def test_child_cannot_select_legacy_descriptor_bypass(setting, tmp_path, monkeypatch):
-    import os
-
-    from findb_fetcher.full_market_state import QuotaBlockedError
-    from findb_fetcher.providers import shioaji_control
-
-    if setting is None:
-        monkeypatch.delenv("PROVIDER_WORK_REQUIRED", raising=False)
-    else:
-        monkeypatch.setenv("PROVIDER_WORK_REQUIRED", setting)
-    fd = os.open(tmp_path / "account-lock", os.O_CREAT | os.O_RDWR, 0o600)
-    monkeypatch.setattr(shioaji_control, "recv_handle", lambda conn: fd)
-    with pytest.raises(QuotaBlockedError, match="whole-work descriptor"):
-        shioaji_control.ChildBoundary(object(), {"work_required": False})
-    with pytest.raises(OSError):
-        os.fstat(fd)

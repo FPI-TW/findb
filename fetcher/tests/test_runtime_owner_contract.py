@@ -41,7 +41,7 @@ def test_real_empty_claim_keeps_idle_runtime_non_acquiring(tmp_path, monkeypatch
         runtime.http.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 def test_missing_owner_cannot_restore_deliver_or_change_retained_state(tmp_path, provider):
     runtime, source, _ = _runtime(tmp_path, provider=provider)
     plan = _plan()

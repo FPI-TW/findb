@@ -247,7 +247,7 @@ def test_production_promotion_maps_each_unit_to_its_exact_image_set() -> None:
     assert "findb) echo 'images=backend:backend dashboard:dashboard'" in unit_step
     assert (
         "fetcher) echo 'images=twelve_data:fetcher/twelve-data finlab:fetcher/finlab "
-        "shioaji:fetcher/shioaji factset:fetcher/factset'"
+        "factset:fetcher/factset'"
     ) in unit_step
     assert "*) exit 1 ;;" in unit_step
     validate = next(
@@ -559,12 +559,11 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
         assert publish.index("github-script") < publish.index("build_ecr_image_if_missing.sh")
         if unit == "fetcher":
             assert text.count("build_ecr_image_if_missing.sh") == 1
-            for repository in ("twelve-data", "finlab", "shioaji", "factset"):
+            for repository in ("twelve-data", "finlab", "factset"):
                 assert f"/findb/staging/fetcher/{repository}" in text
             for name, repository_var, dockerfile in (
                 ("twelve", "TWELVE", "Dockerfile"),
                 ("finlab", "FINLAB", "Dockerfile.finlab"),
-                ("shioaji", "SHIOAJI", "Dockerfile.shioaji"),
                 ("factset", "FACTSET", "Dockerfile.factset"),
             ):
                 assert f'build {name} "${repository_var}" . ./fetcher/{dockerfile} &' in text
@@ -578,11 +577,10 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
             for dockerfile in (
                 "Dockerfile",
                 "Dockerfile.finlab",
-                "Dockerfile.shioaji",
                 "Dockerfile.factset",
             ):
                 assert f"docker build -f fetcher/{dockerfile}" in ci
-            assert ci.count("docker build -f fetcher/") == 4
+            assert ci.count("docker build -f fetcher/") == 3
 
 
 def test_fetcher_waits_for_same_sha_findb_after_read_only_preflight() -> None:
@@ -683,7 +681,6 @@ def test_fetcher_publish_builds_images_concurrently_with_isolated_outputs(tmp_pa
     for name, repository in (
         ("twelve", "twelve-data"),
         ("finlab", "finlab"),
-        ("shioaji", "shioaji"),
         ("factset", "factset"),
     ):
         assert f"::group::{name} image (exit 0)" in completed.stdout
@@ -692,11 +689,11 @@ def test_fetcher_publish_builds_images_concurrently_with_isolated_outputs(tmp_pa
 
 
 def test_fetcher_publish_waits_for_every_build_and_fails_on_any_failure(tmp_path: Path) -> None:
-    completed = _run_fetcher_publish(tmp_path, failing="shioaji")
+    completed = _run_fetcher_publish(tmp_path, failing="finlab")
     assert completed.returncode != 0
-    assert "::group::shioaji image (exit 1)" in completed.stdout
+    assert "::group::finlab image (exit 1)" in completed.stdout
     assert "staging_ecr_build=failed reason=test" in completed.stdout
-    for name in ("twelve", "finlab", "factset"):
+    for name in ("twelve", "factset"):
         assert f"::group::{name} image (exit 0)" in completed.stdout
     assert "_image_ref=" not in completed.stdout
 

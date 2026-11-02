@@ -156,7 +156,7 @@ def test_window_denial_is_distinct_from_other_authorization_failures(blockers, e
             "acquisition_allowed": False,
             "acquisition_blockers": blockers,
             "daily_runtime_window": {"open": False, "next_open_at": None, "closes_at": None},
-            "provider": "shioaji",
+            "provider": "finlab",
             "checked_at": stamp,
             "max_age_seconds": 5,
         },

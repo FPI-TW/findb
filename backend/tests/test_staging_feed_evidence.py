@@ -36,7 +36,7 @@ def _load(name: str, path: Path) -> ModuleType:
     return module
 
 
-def _sample_record(schema, *, provider="shioaji", run_id="run"):
+def _sample_record(schema, *, provider="finlab", run_id="run"):
     record = {
         "instrument_id": "0199aabb-ccdd-7000-8000-000000000001",
         "trade_date": "2026-10-02",
@@ -204,7 +204,6 @@ def _pilot_package():
     for provider, filename in {
         "twelve_data": "twelve_data_us_staging_pilot.v2.json",
         "finlab": "finlab_tw_review_required.v1.json",
-        "shioaji": "shioaji_tw_staging_pilot.v3.json",
         "taifex": "taifex_tw_staging_pilot.v1.json",
     }.items():
         fetcher[provider]["config"] = {
@@ -264,7 +263,7 @@ def test_one_completed_day_all_five_pilots_requires_exact_scope_and_run_lineage(
     assessment = module._assessment(findb, fetcher, observed_at=observed_at)
     assert assessment["pilot_functional_complete"] is True
     assert assessment["serve_boundary_complete"] is True
-    assert len(assessment["pilot_functional_acceptance"]) == 5
+    assert len(assessment["pilot_functional_acceptance"]) == 3
     assert assessment["backend_multi_trade_date_complete"] is False
     unbound = deepcopy(fetcher)
     unbound["twelve_data"]["config"]["universe_sha256"] = "old-config"
@@ -342,12 +341,10 @@ def test_serve_samples_are_selected_from_pilot_canonical_scope_with_run_lineage(
 
     assert "sample_run_id" in sql
     assert "AAPL" in sql and "MSFT" in sql
-    assert "2330" in sql and "0050" in sql
+    assert "2330" in sql
     assert "market_data_eod" in sql
-    assert "market_data_minute" in sql
     assert "i.market = 'US' AND i.asset_class = 'equity'" in sql
     assert "i.market = 'TW' AND i.asset_class = 'equity'" in sql
-    assert "i.market = 'TW' AND i.asset_class = 'etf'" in sql
 
 
 def test_assessment_requires_persistent_202_and_two_dates() -> None:
@@ -359,8 +356,6 @@ def test_assessment_requires_persistent_202_and_two_dates() -> None:
     for source, dataset, schema in (
         ("twelve_data", "us_equity_eod", "market_eod"),
         ("finlab", "tw_equity_eod", "market_eod"),
-        ("shioaji", "tw_equity_minute", "market_minute"),
-        ("shioaji", "tw_etf_minute", "market_minute"),
         ("taifex", "tw_futures_eod", "futures_eod"),
     ):
         feeds.append(
@@ -388,14 +383,6 @@ def test_assessment_requires_persistent_202_and_two_dates() -> None:
         }
         for provider in ("twelve_data", "finlab")
     }
-    fetcher["shioaji"] = {
-        "provider": "shioaji",
-        "recent_trade_dates": [
-            {"target_date": "2026-09-08"},
-            {"target_date": "2026-09-05"},
-        ],
-    }
-
     fetcher["taifex"] = {
         "provider": "taifex",
         "recent_trade_dates": [{"target_date": "2026-09-08"}, {"target_date": "2026-09-05"}],
@@ -408,8 +395,6 @@ def test_assessment_requires_persistent_202_and_two_dates() -> None:
     assert assessment["persistent_source_202"] == {
         "finlab/tw_equity_eod": True,
         "twelve_data/us_equity_eod": True,
-        "shioaji/tw_equity_minute": True,
-        "shioaji/tw_etf_minute": True,
         "taifex/tw_futures_eod": True,
     }
     # An unbound success label cannot prove the HTTP response's provenance.
@@ -531,7 +516,7 @@ def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) 
     observed_at = datetime(2026, 10, 5, 10, tzinfo=timezone.utc)
     findb["target_calendar_evidence"] = _calendar_evidence(observed_at)
     if status:
-        for provider in ("finlab", "shioaji", "taifex"):
+        for provider in ("finlab", "taifex"):
             for dataset in fetcher[provider].get("datasets", []) or [
                 row["dataset_key"] for row in fetcher[provider]["recent_trade_dates"]
             ]:
@@ -555,7 +540,6 @@ def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) 
             {
                 "twelve_data": "2026-10-02",
                 "finlab": "2026-10-05",
-                "shioaji": "2026-10-05",
                 "taifex": "2026-10-05",
             },
         ),
@@ -564,7 +548,6 @@ def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) 
             {
                 "twelve_data": "2026-10-05",
                 "finlab": "2026-10-05",
-                "shioaji": "2026-10-05",
                 "taifex": "2026-10-05",
             },
         ),
@@ -573,7 +556,6 @@ def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) 
             {
                 "twelve_data": "2026-10-05",
                 "finlab": "2026-10-05",
-                "shioaji": "2026-10-05",
                 "taifex": "2026-10-05",
             },
         ),
@@ -582,7 +564,6 @@ def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) 
             {
                 "twelve_data": "2026-10-05",
                 "finlab": "2026-10-05",
-                "shioaji": "2026-10-05",
                 "taifex": "2026-10-05",
             },
         ),
@@ -591,7 +572,6 @@ def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) 
             {
                 "twelve_data": "2026-10-05",
                 "finlab": "2026-10-06",
-                "shioaji": "2026-10-06",
                 "taifex": "2026-10-05",
             },
         ),
@@ -600,7 +580,6 @@ def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) 
             {
                 "twelve_data": "2026-10-05",
                 "finlab": "2026-10-06",
-                "shioaji": "2026-10-06",
                 "taifex": "2026-10-05",
             },
         ),
@@ -609,7 +588,6 @@ def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) 
             {
                 "twelve_data": "2026-10-05",
                 "finlab": "2026-10-06",
-                "shioaji": "2026-10-06",
                 "taifex": "2026-10-06",
             },
         ),
@@ -964,10 +942,12 @@ def test_ssm_transport_preserves_two_date_five_feed_proof(local_ssm, tmp_path):
         for receipt in old_run["outbox_receipts"]:
             receipt["run_id"] = old_run["run_id"]
         feed["runs"].append(old_run)
-    assert sum(len(feed["runs"]) for feed in package["feeds"]) == 10
+    assert sum(len(feed["runs"]) for feed in package["feeds"]) == 6
     assert collector._assessment(package, fetcher, observed_at=observed_at)[
         "pilot_functional_complete"
     ]
+    # The proof must span more than one 24 kB SSM output window.
+    package["transport_padding"] = "x" * 8_000
     result, raw = _transport_probe(collector, tmp_path, package)
     assert len(raw) > 24_000
     assert result["payload"] == package
@@ -1078,7 +1058,7 @@ def test_ssm_transport_cleanup_failure_preserves_original_error(local_ssm, tmp_p
 
 
 @pytest.mark.parametrize("profile", ["pilot", "full_market"])
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
 def test_ssm_transport_accepts_every_native_evidence_container(profile, provider) -> None:
     collector = _load(
         "pilot_acceptance", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
@@ -1163,11 +1143,11 @@ def test_probe_command_preserves_environment_as_literal_data(local_ssm, tmp_path
         instance_id="test",
         deadline=collector.time.monotonic() + 60,
         command=collector._probe_command(
-            script, "findb-fetcher-shioaji-scheduler", "shioaji", {"LITERAL": value}, nonce=nonce
+            script, "findb-fetcher-finlab-scheduler", "finlab", {"LITERAL": value}, nonce=nonce
         ),
     )
     assert collector._decode_transport(envelope, [envelope["data"]], nonce) == {
-        "provider": "shioaji",
+        "provider": "finlab",
         "value": value,
     }
     assert state["commands"][0]["nonce"] == nonce

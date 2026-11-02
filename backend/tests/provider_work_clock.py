@@ -49,7 +49,7 @@ def account_clock(monkeypatch, *, wall_time=None):
             return datetime.fromtimestamp((wall_time or time.time)() + offset[0], tz)
 
     # The authoritative PG queue and its retry sender share the governor clock.
-    # Other providers retain real UTC; Shioaji installs a functional UTC below.
+    # Providers retain real UTC unless a test installs logical_dispatch_clock.
     monkeypatch.setattr(
         queue,
         "utc_now",
@@ -90,26 +90,19 @@ def account_clock(monkeypatch, *, wall_time=None):
     return offset
 
 
-def shioaji_dispatch_clock(monkeypatch):
-    """Keep nominal multi-member IPC dispatch in one controlled clock domain.
-
-    The forked fake SDK checks the parent's monotonic grant deadline. It must
-    inherit the same facade, including virtual account retry offsets. Real IPC
-    waits and process termination retain their wall-clock timeouts.
-    """
+def logical_dispatch_clock(monkeypatch):
+    """Keep dispatch, Source and Backend timestamps in one controlled clock domain."""
     from datetime import datetime, timezone
 
-    from findb_fetcher import acquisition, full_market_client, shioaji_historical
-    from findb_fetcher.providers import shioaji_control
+    from findb_fetcher import acquisition, full_market_client
 
     dispatch_clock(monkeypatch)
-    # Functional SDK calls must not depend on real minute rollovers or ASGI
+    # Functional calls must not depend on real minute rollovers or ASGI
     # scheduling latency. Pacing advances this local clock without real sleep.
     # Source auth, header/body freshness and expiry checks still execute, using
     # the same logical UTC rather than real wall/ASGI scheduling latency.
     anchor = int(time.time() // 60) * 60 + 30
     offset = account_clock(monkeypatch, wall_time=lambda: anchor)
-    monkeypatch.setattr(shioaji_control, "time", acquisition.time)
     monkeypatch.setattr(full_market_client, "time", acquisition.time)
 
     def logical_utc_now():
@@ -126,13 +119,6 @@ def shioaji_dispatch_clock(monkeypatch):
         ):
             monkeypatch.setattr(module, "utc_now", logical_utc_now)
 
-    class CheckpointClock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return datetime.fromtimestamp(acquisition.time.time(), tz)
-
-    # The rolling 50/60s checkpoint limiter must advance with SDK/account waits.
-    monkeypatch.setattr(shioaji_historical, "datetime", CheckpointClock)
     return offset
 
 

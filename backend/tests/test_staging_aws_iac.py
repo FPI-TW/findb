@@ -440,7 +440,9 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             for secret in consumer["secrets"]
             if "staging" in secret.get("targets", ["staging", "production"])
         )
-    assert tofu_secret_ids == catalog_secret_ids
+    # Shioaji secrets outlive its consumers until the rollback floor is accepted.
+    retained_secret_ids = {"fetcher/api/source/shioaji", "fetcher/provider/shioaji"}
+    assert tofu_secret_ids == catalog_secret_ids | retained_secret_ids
     assert "fetcher/api/source/taifex" in tofu_secret_ids
     assert "fetcher/runtime/configuration" in tofu_secret_ids
     assert "registry/ghcr-pull" not in secrets
@@ -499,7 +501,7 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
     # state addresses keep their existing moves; it has no legacy address.
     assert moved_pairs == {
         (secret_id, secret_id)
-        for secret_id in (catalog_secret_ids | {"fetcher/api/calendar-serve"})
+        for secret_id in (catalog_secret_ids | retained_secret_ids | {"fetcher/api/calendar-serve"})
         - {
             "fetcher/api/source/taifex",
             "fetcher/api/source/factset",

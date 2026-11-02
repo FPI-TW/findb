@@ -62,7 +62,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             "release_tag": f"{unit}-v1.0.0" if target == "production" else "",
         }
         if unit == "fetcher":
-            manifest.update(runtime_profile="unified", fetcher_bundle_version=2)
+            manifest.update(runtime_profile="unified", fetcher_bundle_version=3)
         if target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": f"{unit}/accepted/{'a' * 40}/{'b' * 64}.tar",
@@ -167,7 +167,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             ):
                 with self.subTest(target=target, profile=profile):
                     manifest = self.manifest(target)
-                    manifest["fetcher_bundle_version"] = 2
+                    manifest["fetcher_bundle_version"] = 3
                     manifest["runtime_profile"] = profile
                     with release.SourceBundleReader(ROOT) as sources:
                         contracts = sources.load_selected_contract_manifest(
@@ -261,9 +261,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             },
         )
         self.assertFalse(any("provider/" in name for name in fetched))
-        self.assertFalse(
-            {"TWELVE_DATA_API_KEY", "FINLAB_API_TOKEN", "SHIOAJI_API_KEY"} & values.keys()
-        )
+        self.assertFalse({"TWELVE_DATA_API_KEY", "FINLAB_API_TOKEN"} & values.keys())
 
     def test_factset_credentials_are_isolated_to_its_consumers(self):
         catalog = json.loads((ROOT / "infra/deploy/runtime-secrets/fetcher.json").read_text())
@@ -298,9 +296,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             }
             <= values.keys()
         )
-        self.assertFalse(
-            {"TWELVE_DATA_API_KEY", "FINLAB_API_TOKEN", "SHIOAJI_API_KEY"} & values.keys()
-        )
+        self.assertFalse({"TWELVE_DATA_API_KEY", "FINLAB_API_TOKEN"} & values.keys())
         for name, consumer in catalog["consumers"].items():
             if name != "factset":
                 self.assertFalse(
@@ -318,7 +314,6 @@ class FullMarketDeploymentTests(unittest.TestCase):
             "FETCHER_DEPLOY_MODE": "candidate",
             "TWELVE_IMAGE_REF": "unused",
             "FINLAB_IMAGE_REF": "unused",
-            "SHIOAJI_IMAGE_REF": "unused",
             "FACTSET_IMAGE_REF": "unused",
             "FETCHER_RUNTIME_PROFILE": "full-market",
         }
@@ -335,7 +330,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
     def test_fixed_topology_installs_both_profiles_with_full_flag_off(self):
         source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
         self.assertIn("for execution_profile in pilot full_market; do", source)
-        self.assertIn("for provider in twelve-data finlab shioaji taifex factset; do", source)
+        self.assertIn("for provider in twelve-data finlab taifex factset; do", source)
         self.assertIn('findb-fetch-runtime --execution-profile "$execution_profile"', source)
         self.assertNotIn('[ "$FULL_MARKET_ENABLED" =', source)
 

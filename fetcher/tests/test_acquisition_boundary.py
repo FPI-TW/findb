@@ -8,7 +8,6 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from multiprocessing.reduction import DupFd
 
 import httpx
 import pytest
@@ -18,10 +17,8 @@ from findb_fetcher.config import FetcherConfig
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.platform_limits import account_identity
-from findb_fetcher.providers.shioaji_control import usage_sample
 from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 from provider_work_support import account_boundary_unit
-from sdk_bootstrap_harness import SDK_CHILD as _FAKE_PROVIDER_CHILD
 
 
 def _grant() -> Authorization:
@@ -34,7 +31,6 @@ def governor(tmp_path, monkeypatch):
     path = tmp_path / "governor.sqlite3"
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
     monkeypatch.setenv("TWELVE_DATA_API_KEY", "shared-key")
-    monkeypatch.setenv("SHIOAJI_API_KEY", "shared-shioaji")
     return path
 
 
@@ -84,137 +80,6 @@ def _headers_then_body(path: str, queue) -> None:
         ) as http,
     ):
         TwelveDataClient(TwelveDataConfig(api_key="shared-key"), client=http).fetch_daily("AAPL")
-
-
-def _sdk_child(conn, queue, delay: float, work_descriptor):
-    import json
-
-    from findb_fetcher.providers.shioaji_control import ChildBoundary
-
-    command = json.loads(conn.recv_bytes(4096))
-    work_fd = work_descriptor.detach()
-    command["governor"]["work_fd"] = work_fd
-    boundary = ChildBoundary(conn, command["governor"])
-
-    class API:
-        def usage(self):
-            return {
-                "bytes": 10,
-                "limit_bytes": 524288000,
-                "remaining_bytes": 524287990,
-                "connections": 1,
-            }
-
-    api = API()
-    try:
-        boundary.start(api)
-        queue.put(("kbars", time.time()))
-        time.sleep(delay)
-        boundary.finish(api)
-        queue.put(("done", time.time()))
-        conn.send_bytes(
-            json.dumps(
-                {"stage": "result", "actual_start": boundary.started_at, "payload": {}}
-            ).encode()
-        )
-    finally:
-        boundary.close()
-        conn.close()
-
-
-@account_boundary_unit
-def _sdk_parent(path: str, queue):
-    from findb_fetcher.providers.shioaji_control import parent_fetch
-
-    os.environ["FETCHER_ACCOUNT_STATE_PATH"] = path
-    os.environ["SHIOAJI_API_KEY"] = "shared-shioaji"
-    ctx = multiprocessing.get_context("spawn")
-    parent, child = ctx.Pipe()
-    process = ctx.Process(
-        target=_sdk_child,
-        args=(
-            child,
-            queue,
-            0.4,
-            DupFd(
-                __import__(
-                    "findb_fetcher.provider_work", fromlist=["inherited_fds"]
-                ).inherited_fds()[0]
-            ),
-        ),
-    )
-    process.start()
-    child.close()
-    with authorization_scope(_grant), Acquisition("shioaji") as operation:
-        parent_fetch(parent, process, {"op": "test"}, operation, timeout=5, max_bytes=4096)
-    process.join(5)
-
-
-def test_parent_kill_keeps_child_lock_until_known_sdk_finalization(governor):
-    ctx = multiprocessing.get_context("spawn")
-    queue = ctx.Queue()
-    parent = ctx.Process(target=_sdk_parent, args=(str(governor), queue))
-    parent.start()
-    kind, start = queue.get(timeout=10)
-    assert kind == "kbars"
-    parent.kill()
-    parent.join(10)
-    with authorization_scope(_grant), Acquisition("shioaji"):
-        # Constructor/entry must wait for the surviving child's locked descriptor.
-        assert time.time() - start >= 0.35
-    assert queue.get(timeout=10)[0] == "done"
-    with FullMarketState(governor).connection() as db:
-        assert (
-            db.execute(
-                "SELECT COUNT(*) FROM acquisition_intent WHERE status='finalized'"
-            ).fetchone()[0]
-            == 1
-        )
-        assert (
-            db.execute("SELECT COUNT(*) FROM acquisition_intent WHERE status='unknown'").fetchone()[
-                0
-            ]
-            == 0
-        )
-
-
-def test_expired_child_go_refreshes_without_duplicate_sdk_start(governor):
-    from findb_fetcher.providers.shioaji_control import parent_fetch
-
-    ctx = multiprocessing.get_context("spawn")
-    queue = ctx.Queue()
-    parent, child = ctx.Pipe()
-    process = ctx.Process(
-        target=_sdk_child,
-        args=(
-            child,
-            queue,
-            0,
-            DupFd(
-                __import__(
-                    "findb_fetcher.provider_work", fromlist=["inherited_fds"]
-                ).inherited_fds()[0]
-            ),
-        ),
-    )
-    process.start()
-    child.close()
-    calls = []
-
-    def authorize():
-        grant = _grant()
-        calls.append(grant)
-        if len(calls) == 1:
-            time.sleep(0.06)
-        return grant
-
-    with authorization_scope(authorize), Acquisition("shioaji") as operation:
-        parent_fetch(parent, process, {"op": "test"}, operation, timeout=5, max_bytes=4096)
-    process.join(5)
-    parent.close()
-    assert process.exitcode == 0
-    assert len(calls) == 2
-    assert [queue.get(timeout=5)[0] for _ in range(2)] == ["kbars", "done"]
 
 
 def test_processes_space_actual_starts_from_confirmed_completion(governor):
@@ -413,36 +278,10 @@ def test_lease_and_minute_bound_cap_grant_even_before_50ms():
     assert Authorization(100, 179.999, 179.999).deadline() == pytest.approx(100.001)
 
 
-def test_sdk_counter_samples_preserve_reset_and_unavailable_is_rejected(governor):
-    class API:
-        def __init__(self, value):
-            self.value = value
-
-        def usage(self):
-            return {
-                "bytes": self.value,
-                "limit_bytes": 524288000,
-                "remaining_bytes": 524288000 - self.value,
-            }
-
-    with authorization_scope(_grant), Acquisition("shioaji") as operation:
-        before, after_reset = usage_sample(API(1234)), usage_sample(API(10))
-        operation.usage(before)
-        operation.usage(after_reset)
-        operation.start()
-    with FullMarketState(governor).connection() as db:
-        assert [
-            row[0] for row in db.execute("SELECT bytes FROM acquisition_usage ORDER BY observed_at")
-        ] == [1234, 10]
-        assert all(row[0] == 0 for row in db.execute("SELECT bytes FROM full_quota"))
-    with pytest.raises(QuotaBlockedError, match="unavailable"):
-        usage_sample(type("API", (), {"usage": lambda _: {"bytes": 1}})())
-
-
 def test_proven_whitespace_identity_merges_debt_once_without_current_byte_gate(
     governor, monkeypatch
 ):
-    raw, normalized = " shared-shioaji ", "shared-shioaji"
+    raw, normalized = " shared-key ", "shared-key"
     state = FullMarketState(governor)
     with state.connection() as db:
         for key, account, requests, byte_count in (
@@ -450,7 +289,7 @@ def test_proven_whitespace_identity_merges_debt_once_without_current_byte_gate(
             (normalized, "legacy-normal", 4, 700000000),
         ):
             db.execute(
-                "INSERT INTO full_account_identity VALUES('shioaji',?,?)",
+                "INSERT INTO full_account_identity VALUES('twelve_data',?,?)",
                 (hashlib.sha256(key.encode()).hexdigest(), account),
             )
             db.execute(
@@ -458,9 +297,9 @@ def test_proven_whitespace_identity_merges_debt_once_without_current_byte_gate(
                 (account, "2026-10-01", requests, byte_count),
             )
         db.execute("INSERT INTO full_pacing VALUES('legacy-raw',1234)")
-    monkeypatch.setenv("SHIOAJI_API_KEY", raw)
-    assert account_identity("shioaji", state) == "legacy-normal"
-    assert account_identity("shioaji", state) == "legacy-normal"
+    monkeypatch.setenv("TWELVE_DATA_API_KEY", raw)
+    assert account_identity("twelve_data", state) == "legacy-normal"
+    assert account_identity("twelve_data", state) == "legacy-normal"
     with state.connection() as db:
         assert tuple(
             db.execute(
@@ -474,8 +313,8 @@ def test_proven_whitespace_identity_merges_debt_once_without_current_byte_gate(
             ]
             == 1234
         )
-    with authorization_scope(_grant), Acquisition("shioaji") as operation:
-        # Historic incomparable scalar bytes never masquerade as current SDK traffic.
+    with authorization_scope(_grant), Acquisition("twelve_data") as operation:
+        # Historic incomparable scalar bytes never gate current acquisition.
         operation.start()
 
 
@@ -585,78 +424,3 @@ def test_mixed_legacy_protocol_bypasses_lock_and_rollback_inspection_denies(
         operation.possibly_started = True
     main()
     assert __import__("json").loads(capsys.readouterr().out)["legacy_rollback_safe"] is False
-
-
-@account_boundary_unit
-def _launch_parent(path, output, queue):
-    import subprocess
-    import sys
-
-    from findb_fetcher.providers import shioaji_session
-
-    original = subprocess.Popen
-
-    def launch(args, **kwargs):
-        assert "SOURCE_CLIENT_KEY" not in kwargs["env"]
-        assert not any("source-secret-marker" in value for value in args)
-        return original(
-            [sys.executable, "-c", _FAKE_PROVIDER_CHILD, args[-1], output, "kbars-slow"], **kwargs
-        )
-
-    shioaji_session.subprocess.Popen = launch
-    os.environ["FETCHER_ACCOUNT_STATE_PATH"] = path
-    os.environ["SHIOAJI_API_KEY"] = "shared-shioaji"
-    os.environ["SOURCE_CLIENT_KEY"] = "source-secret-marker"
-    os.environ["TWELVE_DATA_API_KEY"] = "other-provider-marker"
-    os.environ["FINLAB_API_TOKEN"] = "other-provider-marker"
-    os.environ["AWS_SECRET_ACCESS_KEY"] = "cloud-marker"
-    gateway = shioaji_session.PersistentIsolatedShioajiGateway("shared-shioaji", "provider-secret")
-    queue.put(gateway.process.pid)
-    with authorization_scope(_grant):
-        assert len(gateway.catalogue()) == 2
-        gateway.fetch_kbars("2330", __import__("datetime").date(2026, 1, 1))
-    gateway.close()
-
-
-def test_real_allowlisted_launch_excludes_secrets_and_retains_fd_after_parent_kill(
-    governor, tmp_path
-):
-    import json
-
-    ctx = multiprocessing.get_context("spawn")
-    queue = ctx.Queue()
-    output = tmp_path / "child-evidence.jsonl"
-    parent = ctx.Process(target=_launch_parent, args=(str(governor), str(output), queue))
-    parent.start()
-    queue.get(timeout=10)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        rows = (
-            [json.loads(line) for line in output.read_text().splitlines()]
-            if output.exists()
-            else []
-        )
-        if any("start" in row for row in rows):
-            break
-        time.sleep(0.01)
-    else:
-        pytest.fail("SDK boundary did not start")
-    assert rows[0]["environment_present"] == []
-    start = next(row["start"] for row in rows if "start" in row)
-    parent.kill()
-    parent.join(10)
-    with Acquisition("shioaji"):
-        assert time.time() - start >= 0.35
-    with FullMarketState(governor).connection() as db:
-        assert (
-            db.execute(
-                "SELECT status FROM acquisition_intent WHERE operation_kind='kbars'"
-            ).fetchone()[0]
-            == "finalized"
-        )
-        assert (
-            db.execute(
-                "SELECT COUNT(*) FROM acquisition_intent WHERE operation_kind='sdk_login' AND login_units=1"
-            ).fetchone()[0]
-            == 1
-        )

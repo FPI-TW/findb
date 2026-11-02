@@ -1296,7 +1296,7 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
             "bash",
             str(fetcher_helper),
             "finlab",
-            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji:"
+            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/factset:"
             + "a" * 40,
             "/tmp/state",
             "/tmp/state/state.sqlite3",
@@ -1339,12 +1339,12 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
     assert accepted_fetcher.returncode != 0
     assert "reason=required_value_missing" in accepted_fetcher.stderr
 
-    unsafe_shioaji = subprocess.run(
+    retired_provider = subprocess.run(
         [
             "bash",
             str(fetcher_helper),
             "shioaji",
-            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji:"
+            "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab:"
             + "a" * 40,
             "/tmp/state",
             "/tmp/state/state.sqlite3",
@@ -1358,10 +1358,10 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
         capture_output=True,
         text=True,
         check=False,
-        env={**environment, "SHIOAJI_SIMULATION": "false"},
+        env=environment,
     )
-    assert unsafe_shioaji.returncode != 0
-    assert "reason=shioaji_simulation_required" in unsafe_shioaji.stderr
+    assert retired_provider.returncode != 0
+    assert "reason=provider_not_allowed" in retired_provider.stderr
     assert not docker_log.exists()
 
     runtime_command = (
@@ -2311,7 +2311,8 @@ def test_aws_fetcher_release_preserves_provider_specific_nonsecret_runtime_input
     deploy_helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text(
         encoding="utf-8"
     )
-    assert "/var/lib/findb-shioaji-fetcher/cache" in deploy_helper
+    assert "/var/lib/findb-finlab-fetcher/cache" in deploy_helper
+    assert "shioaji-fetcher" not in deploy_helper
 
 
 def _runtime_inventory_policy(source: str) -> str:
@@ -2335,7 +2336,7 @@ def test_unified_state_bootstrap_is_offline_and_preserves_existing_checkpoints()
 @pytest.mark.parametrize("target", ["staging", "production"])
 @pytest.mark.parametrize("profile", ["pilot", "full_market"])
 @pytest.mark.parametrize("stable_present", [False, True])
-def test_shioaji_missing_state_bootstrap_enforces_identity_guard(
+def test_missing_state_bootstrap_enforces_identity_guard(
     tmp_path: Path,
     target: str,
     profile: str,
@@ -2351,7 +2352,7 @@ def test_shioaji_missing_state_bootstrap_enforces_identity_guard(
     # state file and command log are temporary; no Docker or secret API runs.
     script.write_text(
         """set -euo pipefail
-provider=shioaji
+provider=finlab
 account_dir="$state_dir/account"
 stable=stable
 previous=previous
@@ -2386,7 +2387,7 @@ docker() {
     )
     state_path = tmp_path / "state.sqlite3"
     command_log = tmp_path / "command.log"
-    state_directory = "/var/lib/findb-shioaji-fetcher"
+    state_directory = "/var/lib/findb-finlab-fetcher"
     completed = subprocess.run(
         ["bash", str(script)],
         env={
@@ -2434,10 +2435,6 @@ def test_aws_fetcher_release_preserves_staging_raw_marker_identities() -> None:
         "finlab": (
             "finlab",
             "99b6f6dde7c65ac33573f3d766ba6fd0686e4303641c0cf23e44d7819931b812",
-        ),
-        "shioaji": (
-            "shioaji",
-            "d5d296ea62e87b971916f6e0ec7025c172aba9cbe0a0060dc8ac3675970bffcc",
         ),
     }
     account_id = "ef6190725fbf3a4331203b901a2d2961"
@@ -3013,32 +3010,20 @@ def test_findb_candidate_migrates_and_checks_internal_health_before_acceptance()
     assert '"$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"' in live_render_branch
 
 
-def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None:
+def test_fetcher_ci_builds_and_inspects_isolated_provider_images() -> None:
     workflow = _load_workflow(FETCHER_CI_WORKFLOW)
     test_job = workflow["jobs"]["test"]
     build = _named_step(workflow, "test", "Build container")["run"]
     finlab = _named_step(workflow, "test", "Build and inspect isolated FinLab scheduler container")[
         "run"
     ]
-    shioaji = _named_step(
-        workflow, "test", "Build and inspect isolated Shioaji scheduler container"
-    )["run"]
 
     assert 'docker build -f fetcher/Dockerfile -t "$image" .' in build
     assert "findb-fetch-runtime --help" in build
     assert "exit 0" not in build
     assert 'docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .' in finlab
     assert 'find_spec("finlab") is not None' in finlab
-    assert 'find_spec("shioaji") is None' in finlab
     assert 'docker run --rm "$finlab_image"\n' in finlab
-    assert 'docker build -f fetcher/Dockerfile.shioaji -t "$shioaji_image" .' in shioaji
-    assert 'find_spec("shioaji") is not None' in shioaji
-    assert 'docker run --rm "$shioaji_image"\n' in shioaji
-    assert "Dockerfile.shioaji" in shioaji
-    shioaji_dockerfile = (REPO_ROOT / "fetcher" / "Dockerfile.shioaji").read_text(encoding="utf-8")
-    assert "--create-home --home-dir /home/fetcher" in shioaji_dockerfile
-    assert "HOME=/home/fetcher" in shioaji_dockerfile
-    assert 'VOLUME ["/home/fetcher", "/var/lib/findb-shioaji-fetcher"]' in (shioaji_dockerfile)
     assert str(test_job["timeout-minutes"]) == "15"
 
 
@@ -3047,7 +3032,6 @@ def test_fetcher_ci_builds_and_inspects_three_isolated_provider_images() -> None
     [
         ("Dockerfile", ""),
         ("Dockerfile.finlab", " --extra finlab"),
-        ("Dockerfile.shioaji", " --extra shioaji"),
         ("Dockerfile.factset", " --extra factset"),
     ],
 )
@@ -3078,10 +3062,7 @@ def test_fetcher_ci_verifies_shipped_bytecode_for_every_runtime_image() -> None:
         (REPO_ROOT / ".github" / "workflows" / "fetcher-ci.yml").read_text(encoding="utf-8")
     )
     check = _named_step(workflow, "test", "Verify runtime images ship valid import bytecode")["run"]
-    assert (
-        "for image in findb-fetcher findb-fetcher-finlab findb-fetcher-shioaji "
-        "findb-fetcher-factset; do"
-    ) in check
+    assert ("for image in findb-fetcher findb-fetcher-finlab findb-fetcher-factset; do") in check
     assert '--read-only --user 10001:10001 "$image:${{ github.sha }}" python -' in check
     assert "importlib.util.cache_from_source(module.__file__)" in check
     assert "assert flags & 1 or (mtime, size) == current" in check

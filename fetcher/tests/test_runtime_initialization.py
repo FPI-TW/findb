@@ -13,7 +13,7 @@ from findb_fetcher import provider_work
 CONFIG = Path(__file__).resolve().parents[1] / "configs/full_market.local.v1.json"
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
 @pytest.mark.parametrize("profile", ["pilot", "full_market"])
 def test_checkpoint_bootstrap_preserves_live_owner_and_shared_inode(
     tmp_path, monkeypatch, provider, profile

@@ -8,23 +8,19 @@ from typing import Any
 
 from findb_fetcher.full_market_state import FullMarketState
 
-SHIOAJI_DAILY_BYTES = 500 * 1024 * 1024
-
 
 def limits(provider: str, datasets: list[str] | None = None) -> dict[str, Any]:
-    if provider not in {"twelve_data", "finlab", "shioaji", "taifex", "factset"}:
+    if provider not in {"twelve_data", "finlab", "taifex", "factset"}:
         raise ValueError("unsupported provider")
     return {
         "provider": provider,
         "datasets": datasets or [],
         "requests_per_day": None,
         "requests_per_minute": 1597 if provider == "twelve_data" else None,
-        "requests_per_second": 1597 / 60
-        if provider == "twelve_data"
-        else (5 if provider == "shioaji" else None),
+        "requests_per_second": 1597 / 60 if provider == "twelve_data" else None,
         # FinLab enforces its 5000 MB daily quota in the authenticated SDK API.
         # Detached dataframe size is not a network usage measurement.
-        "bytes_per_day": SHIOAJI_DAILY_BYTES if provider == "shioaji" else None,
+        "bytes_per_day": None,
         "max_response_bytes": 2 * 1024**3 if provider == "finlab" else 16 * 1024**2,
         "platform_limits": True,
     }
@@ -41,7 +37,6 @@ def account_identity(
     name = {
         "twelve_data": "TWELVE_DATA_API_KEY",
         "finlab": "FINLAB_API_TOKEN",
-        "shioaji": "SHIOAJI_API_KEY",
         "taifex": "",
         "factset": "",
     }[provider]
@@ -56,7 +51,7 @@ def account_identity(
     actual: str = credential if credential is not None else environment
     legacy_digest = hashlib.sha256(actual.encode()).hexdigest()
     # The supported SDK boundaries normalize surrounding credential whitespace.
-    if provider in {"twelve_data", "finlab", "shioaji"}:
+    if provider in {"twelve_data", "finlab"}:
         actual = actual.strip()
     known_credentials = {actual}
     if provider == "finlab":

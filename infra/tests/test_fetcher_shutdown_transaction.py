@@ -26,8 +26,9 @@ PROVIDERS = tuple(
         profile,
     )
     for profile in ("pilot", "full_market", "historical")
-    for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset")
+    for provider in ("twelve_data", "finlab", "taifex", "factset")
 )
+RETIRED = ("findb-pilot-shioaji", "findb-full-market-shioaji", "findb-historical-shioaji")
 
 
 def fake_call(state, command, args, parent, environ):
@@ -153,6 +154,8 @@ def fake_call(state, command, args, parent, environ):
                         output.append(field_fault[1])
                 elif ".State.Running" in template:
                     output.append(str(row["running"]).lower())
+                elif ".State.Restarting" in template:
+                    output.append(str(row.get("restarting", False)).lower())
                 elif ".RestartCount" in template:
                     output.append("1" if state.get("fault") == "activation-restarts" else "0")
                 elif ".State.ExitCode" in template:
@@ -204,6 +207,13 @@ def fake_call(state, command, args, parent, environ):
                     and fault[2] in template
                 ):
                     status = int(fault[3][2:])
+        elif args[0] == "exec":
+            if rows[args[1]].get("control") == "running":
+                output.append(
+                    "fetcher_deployment_blocked reason=scheduler_not_stopped "
+                    "execution_profile=full_market provider=shioaji"
+                )
+                status = 2
         elif args[0] == "stop":
             row = rows[args[-1]]
             if row.get("stop_error"):
@@ -305,6 +315,12 @@ def execute(
                 with (state_dir / "state.sqlite3").open("r+b") as raw:
                     raw.seek((page - 1) * size)
                     raw.write(b"\0")
+            elif checkpoint_kind == "retired_prepared":
+                with sqlite3.connect(state_dir / "state.sqlite3") as db:
+                    db.execute(
+                        "INSERT INTO full_work(key,provider,plan_id,member_key,body) "
+                        "VALUES('retired','shioaji','plan1','2330',X'7072657061726564')"
+                    )
             elif checkpoint_kind == "unusable":
                 with sqlite3.connect(state_dir / "state.sqlite3") as db:
                     db.executescript("DROP TABLE full_work; CREATE TABLE full_work(unusable TEXT);")
@@ -349,7 +365,6 @@ def execute(
             "FETCHER_ACCEPTED_REPLAY": str(accepted_replay).lower(),
             "TWELVE_IMAGE_REF": f"{registry}/findb/{target}/fetcher/twelve-data@sha256:{'c' * 64}",
             "FINLAB_IMAGE_REF": f"{registry}/findb/{target}/fetcher/finlab@sha256:{'c' * 64}",
-            "SHIOAJI_IMAGE_REF": f"{registry}/findb/{target}/fetcher/shioaji@sha256:{'c' * 64}",
             "FACTSET_IMAGE_REF": f"{registry}/findb/{target}/fetcher/factset@sha256:{'c' * 64}",
         }
         with fake_daemon.serve(
@@ -489,6 +504,157 @@ def test_both_profiles_have_same_deployment_path(mode):
         assert all(row["id"].startswith("new-") for row in state["rows"].values())
 
 
+def rows_with_retired(**change):
+    """A host on the previous bundle, which still runs the Shioaji consumers."""
+    rows = original_rows()
+    for name in RETIRED:
+        rows[name] = dict(
+            id="old-" + name,
+            running=True,
+            exit=0,
+            oom=False,
+            error="",
+            accepted="true",
+            cmd=(
+                "findb-fetch-historical-backfill --provider shioaji --run-forever"
+                if "historical" in name
+                else "findb-fetch-runtime --execution-profile pilot --provider shioaji --run-forever"
+            ),
+        )
+    rows[RETIRED[1]].update(change)
+    return rows
+
+
+def retired_calls(state):
+    return [
+        call
+        for call in state["log"]
+        if call[0] == "docker"
+        and call[1] in {"stop", "rename", "rm"}
+        and any("shioaji" in argument for argument in call)
+    ]
+
+
+def test_candidate_never_touches_retired_consumers():
+    before = rows_with_retired()
+    completed, state, pointer = execute(before, mode="candidate")
+    assert completed.returncode == 0, completed.stderr
+    assert_restored(before, state)
+    assert retired_calls(state) == []
+    assert pointer == "b" * 64 + "-122-1"
+
+
+def test_activation_retires_consumers_after_kept_ones_are_healthy():
+    completed, state, pointer = execute(rows_with_retired(), mode="activate")
+    assert completed.returncode == 0, completed.stderr
+    assert pointer == "a" * 64 + "-123-1"
+    assert set(state["rows"]) == {name for name, *_ in PROVIDERS}
+    assert all(row["id"].startswith("new-") for row in state["rows"].values())
+    assert not any("shioaji" in image for _, image in state["provider_images"])
+    last_observation = max(i for i, call in enumerate(state["log"]) if call[0] == "sleep")
+    first_stop = next(i for i, call in enumerate(state["log"]) if call in retired_calls(state))
+    assert last_observation < first_stop
+    removed = [call[-1] for call in retired_calls(state) if call[1] == "rm"]
+    assert sorted(removed) == sorted("old-" + name for name in RETIRED)
+
+
+def test_activation_on_already_retired_host_is_a_no_op():
+    completed, state, pointer = execute(original_rows(), mode="activate")
+    assert completed.returncode == 0, completed.stderr
+    assert pointer == "a" * 64 + "-123-1"
+    assert retired_calls(state) == []
+
+
+def test_unhealthy_kept_consumer_leaves_retired_consumers_running():
+    before = rows_with_retired()
+    completed, state, pointer = execute(before, mode="activate", fault="activation-restarts")
+    assert completed.returncode != 0
+    assert_restored(before, state)
+    assert retired_calls(state) == []
+    assert pointer == "b" * 64 + "-122-1"
+
+
+@pytest.mark.parametrize("change", [{"stop_exit": 137}, {"oom": True}, {"error": "private-error"}])
+def test_failed_retirement_restores_every_consumer_and_pointer(change):
+    before = rows_with_retired(**change)
+    completed, state, pointer = execute(before, mode="activate")
+    assert completed.returncode != 0
+    assert "reason=runtime_retirement_failed" in completed.stderr
+    assert "private-error" not in completed.stderr
+    assert_restored(before, state)
+    assert pointer == "b" * 64 + "-122-1"
+    assert not any(call[:2] == ["docker", "rm"] for call in retired_calls(state))
+
+
+def test_retirement_failure_after_an_earlier_retirement_restarts_it():
+    before = rows_with_retired(stop_exit=137)
+    completed, state, _ = execute(before, mode="activate")
+    assert completed.returncode != 0
+    assert ["docker", "stop", "--time", "90", RETIRED[0]] in state["log"]
+    assert before[RETIRED[0]]["id"] in state["started_ids"]
+    assert state["rows"][RETIRED[0]]["running"] is True
+
+
+@pytest.mark.parametrize("mode", ["candidate", "activate"])
+@pytest.mark.parametrize(
+    ("change", "kind", "reason"),
+    [
+        ({"control": "running"}, "valid", "retired_provider_control_not_stopped"),
+        ({"restarting": True}, "valid", "retired_runtime_unhealthy"),
+        ({"running": False, "exit": 137}, "valid", "runtime_retirement_failed"),
+        ({}, "retired_prepared", "retired_provider_undelivered"),
+    ],
+)
+def test_undrained_retired_provider_blocks_before_any_mutation(mode, change, kind, reason):
+    before = rows_with_retired(**change)
+    completed, state, pointer = execute(before, mode=mode, checkpoint_kind=kind)
+    assert completed.returncode != 0
+    assert f"reason={reason}" in completed.stderr
+    assert_restored(before, state)
+    assert not state.get("provider_images")
+    assert retired_calls(state) == []
+    assert pointer == "b" * 64 + "-122-1"
+
+
+def test_running_control_surfaces_only_the_bounded_block_line():
+    completed, _, _ = execute(rows_with_retired(control="running"), mode="candidate")
+    assert (
+        "fetcher_deployment_blocked reason=scheduler_not_stopped "
+        "execution_profile=full_market provider=shioaji"
+    ) in completed.stdout
+
+
+def test_stopped_retired_consumer_needs_no_control_probe():
+    before = rows_with_retired()
+    for name in RETIRED:
+        before[name]["running"] = False
+    completed, state, _ = execute(before, mode="activate")
+    assert completed.returncode == 0, completed.stderr
+    assert not any(call[:2] == ["docker", "exec"] for call in state["log"])
+    assert set(state["rows"]) == {name for name, *_ in PROVIDERS}
+
+
+@pytest.mark.parametrize("suffix", ["candidate", "transaction-backup", "preflight-state"])
+def test_retired_consumer_residue_fails_closed(suffix):
+    before = rows_with_retired()
+    name = f"{RETIRED[0]}-{suffix}"
+    before[name] = {**before[RETIRED[0]], "id": "residue", "running": False}
+    completed, state, pointer = execute(before, mode="activate")
+    assert completed.returncode != 0
+    assert f"reason=retired_runtime_residue runtime={name}" in completed.stderr
+    assert_restored(before, state)
+    assert pointer == "b" * 64 + "-122-1"
+
+
+def test_unaccepted_retired_consumer_fails_closed():
+    before = rows_with_retired(accepted="false")
+    completed, state, pointer = execute(before, mode="activate")
+    assert completed.returncode != 0
+    assert f"reason=unaccepted_retired_runtime runtime={RETIRED[1]}" in completed.stderr
+    assert_restored(before, state)
+    assert pointer == "b" * 64 + "-122-1"
+
+
 @pytest.mark.parametrize(
     "change", [{"stop_exit": 137}, {"stop_exit": 1}, {"oom": True}, {"error": "private-error"}]
 )
@@ -518,7 +684,7 @@ def test_shared_activation_observation_keeps_all_originals_until_healthy():
     wrappers = [entry for entry in state["log"] if entry[0] == "sudo" and "--consumer" in entry]
     assert sum(entry[entry.index("--consumer") + 1] == "images" for entry in wrappers) == 1
     providers = [entry for entry in wrappers if entry[entry.index("--consumer") + 1] != "images"]
-    assert len(providers) == 15
+    assert len(providers) == 12
     assert all("--docker-login" not in entry for entry in providers)
     last_observation = max(i for i, entry in enumerate(state["log"]) if entry[0] == "sleep")
     first_retirement = next(

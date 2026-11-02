@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("provider", ["finlab", "shioaji", "factset"])
+@pytest.mark.parametrize("provider", ["finlab", "factset"])
 def test_provider_image_default_command_prints_help_without_credentials(provider, tmp_path):
     dockerfile = Path(__file__).resolve().parents[1] / f"Dockerfile.{provider}"
     command = json.loads(

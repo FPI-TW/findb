@@ -61,13 +61,11 @@ def test_catalogs_are_v2_and_use_target_derived_relative_names() -> None:
             "runtime/configuration",
             "api/source/twelve-data",
             "api/source/finlab",
-            "api/source/shioaji",
             "api/source/taifex",
             "api/source/factset",
             "provider/factset",
             "provider/twelve-data",
             "provider/finlab",
-            "provider/shioaji",
             "r2/raw",
         },
     }
@@ -111,13 +109,11 @@ def test_active_staging_catalog_matches_exact_metadata_and_no_ghcr_runtime_secre
         "findb/r2/canonical-reader",
         "fetcher/api/source/twelve-data",
         "fetcher/api/source/finlab",
-        "fetcher/api/source/shioaji",
         "fetcher/api/source/taifex",
         "fetcher/api/source/factset",
         "fetcher/provider/factset",
         "fetcher/provider/twelve-data",
         "fetcher/provider/finlab",
-        "fetcher/provider/shioaji",
         "fetcher/r2/raw",
     }
     assert "GHCR_USERNAME" not in json.dumps([_catalog("findb"), _catalog("fetcher")])
@@ -305,7 +301,7 @@ def test_fetcher_production_runtime_configuration_schema_is_consumer_consistent(
     catalog = _catalog("fetcher")
     runtime_definitions = [
         secret
-        for consumer_name in ("twelve-data", "finlab", "shioaji")
+        for consumer_name in ("twelve-data", "finlab", "taifex")
         for secret in catalog["consumers"][consumer_name]["secrets"]
         if secret["name"] == "runtime/configuration"
     ]

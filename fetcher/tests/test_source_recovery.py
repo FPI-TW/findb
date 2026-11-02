@@ -408,7 +408,7 @@ def test_active_owned_client_backoff_finishes_instead_of_cancelling_drain(tmp_pa
     assert sleeps == [2]
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 @pytest.mark.parametrize(
     "phase", ["initial_owner", "gate", "source_authorization", "dispatch_owner", "after_dispatch"]
 )
@@ -522,7 +522,7 @@ def test_authorization_outages_preserve_only_proven_undispatched_member_budget(
         runtime.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 def test_repeated_source_outages_never_exhaust_original_member_budget(
     tmp_path, monkeypatch, provider
 ):

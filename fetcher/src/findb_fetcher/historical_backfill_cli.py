@@ -16,7 +16,6 @@ from findb_fetcher.historical_backfill import (
 )
 from findb_fetcher.historical_runtime import FinLabHistoricalRunner, TwelveDataHistoricalRunner
 from findb_fetcher.scheduler_control import scheduler_stop_event
-from findb_fetcher.shioaji_historical import ExecutableShioajiHistoricalRunner
 from findb_fetcher.source_recovery import SourceWaitStoppedError, retry_source
 from findb_fetcher.taifex_historical import TaifexHistoricalRunner
 
@@ -29,7 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--provider",
         required=True,
-        choices=("twelve_data", "finlab", "shioaji", "taifex", "factset"),
+        choices=("twelve_data", "finlab", "taifex", "factset"),
     )
     parser.add_argument("--run-forever", action="store_true")
     parser.add_argument(
@@ -45,7 +44,6 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "twelve_data": TwelveDataHistoricalRunner.from_env,
                 "finlab": FinLabHistoricalRunner.from_env,
-                "shioaji": ExecutableShioajiHistoricalRunner.from_env,
                 "taifex": TaifexHistoricalRunner.from_env,
                 "factset": FactSetHistoricalRunner.from_env,
             }[args.provider](),

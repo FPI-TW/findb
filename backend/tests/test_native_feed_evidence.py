@@ -20,8 +20,6 @@ from tests.test_staging_feed_evidence import _sample_record
         "hk_equity_eod",
         "tw_equity_eod",
         "tw_etf_eod",
-        "tw_equity_minute",
-        "tw_etf_minute",
         "tw_futures_eod",
     ],
 )
@@ -91,8 +89,8 @@ async def test_native_evidence_binds_profile_after_canonical_overwrite(
                 "trade_date": DAY.isoformat(),
             }
         )
-        assert len(result["feeds"]) == 7
-        assert result["passed"] is False  # Other six feeds lack plans.
+        assert len(result["feeds"]) == 5
+        assert result["passed"] is False  # Other feeds lack plans.
         feed = next(f for f in result["feeds"] if f["dataset_key"] == key)
         assert feed["passed"] is True, feed
         assert feed["plan"]["execution_profile"] == profile
@@ -103,24 +101,6 @@ async def test_native_evidence_binds_profile_after_canonical_overwrite(
     assert results[0]["sample"]["run_id"] != results[1]["sample"]["run_id"]
     assert results[0]["sample"]["sample_run_id"] == results[1]["sample"]["run_id"]
     assert results[0]["plan"]["parts_sha256"] != results[1]["plan"]["parts_sha256"]
-    if key.endswith("_minute"):
-        await test_session.execute(
-            text("UPDATE ingestion_run SET sequence_count=2 WHERE run_id=CAST(:run_id AS uuid)"),
-            {"run_id": results[1]["sample"]["run_id"]},
-        )
-        await test_session.commit()
-        incomplete = await evidence.export(
-            {
-                "environment": environment,
-                "execution_profile": "pilot",
-                "trade_date": DAY.isoformat(),
-            }
-        )
-        feed = next(f for f in incomplete["feeds"] if f["dataset_key"] == key)
-        assert feed["plan"]["summary"]["data"] > 0  # Original durable proof survives.
-        assert feed["passed"] is False
-        assert feed["sample"] is None
-        assert feed["reason"] == "nonzero_native_sample_missing"
 
 
 @pytest.mark.parametrize("schema", ["market_eod", "market_minute", "futures_eod"])

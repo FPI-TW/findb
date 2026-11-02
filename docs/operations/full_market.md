@@ -53,6 +53,8 @@ normalization terminal 與 SDK actual-start 計數；本機測試不替代 produ
 
 ### Shioaji 每日窗口與公平輪替
 
+> Shioaji Fetcher runtime 已移除（見 [rollback 下限](deployment.md#shioaji-退役的-rollback-下限)）。本節 CLI 只存在於 `fetcher-v0.1.21` 以前，Backend API 待 Backend 退役時移除；內容僅供稽核既有紀錄。
+
 Pilot／Full daily 的股票與 ETF 共用 `daily_runtime_policies.shioaji`，唯一設定來源是
 `backend/configs/execution_feeds.v1.json`，透過 execution-feeds exporter 產生三環境 Fetcher config。
 新抓取窗口為 **Asia/Taipei 每日 18:00（含）至隔日 06:00（不含）**。這是 Owner 指定的
@@ -244,6 +246,8 @@ local member checkpoint（既有 no-trade 等證據保留），不授權、不�
 清除 journal 或重置 checkpoint 不得延長窗口。若之後來源補齊，使用正常歷史回補建立新 work。
 
 ### Shioaji 空 Kbars 與凍結 mapping 修復
+
+> Shioaji Fetcher runtime 已移除（見 [rollback 下限](deployment.md#shioaji-退役的-rollback-下限)）。本節 CLI 只存在於 `fetcher-v0.1.21` 以前，Backend API 待 Backend 退役時移除；內容僅供稽核既有紀錄。
 
 七個 Kbars 向量皆空記為 `empty_response`，原因維持 `unknown`；不能推定尚未發布、無交易或
 entitlement 不足。缺欄、長度不一致、錯誤日期及其他永久格式錯誤仍走原本有界失敗流程。
@@ -509,6 +513,8 @@ JSON SHA-256 為 `0deb444465eae99d60705b2b29c595b911be8d8e5b5b8a7bf56e9dddb50299
 文件更新後 `pnpm check` 與 `git diff --check` 通過，未重跑程式／migration suites。
 
 ### 已更正休市決策的舊工作結清
+
+> Shioaji Fetcher runtime 已移除（見 [rollback 下限](deployment.md#shioaji-退役的-rollback-下限)）。本節 CLI 只存在於 `fetcher-v0.1.21` 以前，Backend API 待 Backend 退役時移除；內容僅供稽核既有紀錄。
 
 Shioaji Pilot／Full daily 的舊 canonical work 可經 Owner 明確核准改為 `calendar_closed`。
 此狀態只表示休市工作已結清，不代表取得 canonical 或 no_data；原 plan／parts／members、

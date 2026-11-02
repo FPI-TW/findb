@@ -45,7 +45,6 @@ IMAGE_REPOSITORIES = {
     "fetcher": {
         "twelve_data": f"{REGISTRY}/findb/staging/fetcher/twelve-data",
         "finlab": f"{REGISTRY}/findb/staging/fetcher/finlab",
-        "shioaji": f"{REGISTRY}/findb/staging/fetcher/shioaji",
         "factset": f"{REGISTRY}/findb/staging/fetcher/factset",
     },
 }
@@ -67,7 +66,6 @@ def image_repositories(target: str, unit: str, registry: str = REGISTRY) -> dict
         "fetcher": {
             "twelve_data": "fetcher/twelve-data",
             "finlab": "fetcher/finlab",
-            "shioaji": "fetcher/shioaji",
             "factset": "fetcher/factset",
         },
     }[unit]
@@ -486,11 +484,14 @@ def _validate_images_for_unit(
     *,
     target: str = "staging",
     registry: str = REGISTRY,
-    fetcher_bundle_version: int = 2,
+    fetcher_bundle_version: int = 3,
 ) -> None:
     expected_images = image_repositories(target, unit, registry)
     if unit == "fetcher" and fetcher_bundle_version == 1:
         expected_images.pop("factset")
+    if unit == "fetcher" and fetcher_bundle_version < 3:
+        # Retained accepted bundles still name the retired provider's repository.
+        expected_images["shioaji"] = f"{registry}/findb/{target}/fetcher/shioaji"
     if not isinstance(images, dict) or set(images) != set(expected_images):
         raise ManifestError("images keys do not match the unit contract")
     for name, repository in expected_images.items():
@@ -544,7 +545,7 @@ def validate_manifest(
         if (
             manifest.get("unit") != "fetcher"
             or type(manifest.get("fetcher_bundle_version")) is not int
-            or manifest.get("fetcher_bundle_version") not in {1, 2}
+            or manifest.get("fetcher_bundle_version") not in {1, 2, 3}
         ):
             raise ManifestError("fetcher_bundle_version invalid")
     unknown = set(manifest) - required
@@ -607,7 +608,7 @@ def validate_manifest(
         images,
         target=target,
         registry=registry,
-        fetcher_bundle_version=manifest.get("fetcher_bundle_version", 2),
+        fetcher_bundle_version=manifest.get("fetcher_bundle_version", 3),
     )
     migration = manifest["migration_revision"]
     if not isinstance(migration, str) or not migration:
@@ -641,10 +642,11 @@ def validate_manifest(
     ):
         raise ManifestError("deployment source bundle checksum mismatch")
     if source_bundle is not None and unit == "fetcher":
-        topology = b"# factset-consumers-v1:" in source_bundle.read(
-            "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-        )
-        if topology != (manifest["fetcher_bundle_version"] == 2):
+        deployment = source_bundle.read("infra/deploy/runtime-secrets/deploy_fetcher_aws.sh")
+        version = manifest["fetcher_bundle_version"]
+        if (b"# factset-consumers-v1:" in deployment) != (version >= 2) or (
+            b"# shioaji-retired-v1:" in deployment
+        ) != (version == 3):
             raise ManifestError("fetcher bundle version differs from deployment topology")
 
 
@@ -666,7 +668,7 @@ def validate_expected_release_inputs(
         images,
         target=target,
         registry=registry,
-        fetcher_bundle_version=manifest.get("fetcher_bundle_version", 2),
+        fetcher_bundle_version=manifest.get("fetcher_bundle_version", 3),
     )
     expected = {
         "unit": unit,
@@ -1188,7 +1190,7 @@ def generate(args: argparse.Namespace) -> None:
         if args.unit == "fetcher":
             manifest["runtime_profile"] = "unified"
         if args.unit == "fetcher":
-            manifest["fetcher_bundle_version"] = 2
+            manifest["fetcher_bundle_version"] = 3
         if args.deployment_target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": args.promotion_source_bundle_key,

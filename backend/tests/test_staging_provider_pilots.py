@@ -254,7 +254,7 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     assert dataset.is_active is True and dataset.config["full_market"]["required"] is True
 
 
-@pytest.mark.parametrize("schema", ["market_eod", "market_minute"])
+@pytest.mark.parametrize("schema", ["market_eod"])
 @pytest.mark.asyncio
 async def test_actual_market_pipeline_serve_provenance(
     owned_client, test_session, test_engine, monkeypatch, schema

@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROVIDERS = ("twelve_data", "finlab", "shioaji", "taifex", "factset")
+PROVIDERS = ("twelve_data", "finlab", "taifex", "factset")
 
 
 def inspect_cutover(*, environment, host_id, host_ids, containers):

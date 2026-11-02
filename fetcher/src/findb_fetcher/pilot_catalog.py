@@ -13,7 +13,6 @@ from findb_fetcher.config import app_environment
 SUPPORTED_PILOTS = {
     "twelve_data": (("us_equity_eod", "market_eod"),),
     "finlab": (("tw_equity_eod", "market_eod"),),
-    "shioaji": (("tw_equity_minute", "market_minute"), ("tw_etf_minute", "market_minute")),
     "taifex": (("tw_futures_eod", "futures_eod"),),
 }
 PILOT_RUNTIMES = {
@@ -71,7 +70,6 @@ def load_staging_pilot_catalog(directory: Path) -> dict[str, Any]:
         "daily_scheduler.staging.v3.json",
         "twelve_data_us_staging_pilot.v2.json",
         "finlab_tw_review_required.v1.json",
-        "shioaji_tw_staging_pilot.v3.json",
         "taifex_tw_staging_pilot.v1.json",
     }
     if set(catalog.get("files", {})) != required_files:
@@ -85,20 +83,16 @@ def load_staging_pilot_catalog(directory: Path) -> dict[str, Any]:
     # Scope counts are actual config counts, including all minute sequences.
     twelve = json.loads((directory / "twelve_data_us_staging_pilot.v2.json").read_bytes())
     finlab = json.loads((directory / "finlab_tw_review_required.v1.json").read_bytes())
-    minute = json.loads((directory / "shioaji_tw_staging_pilot.v3.json").read_bytes())
     futures = json.loads((directory / "taifex_tw_staging_pilot.v1.json").read_bytes())
     actual = {
         "twelve_data": [row["symbol"] for row in twelve["symbols"]],
         "finlab": [row["source_symbol"] for row in finlab["symbols"]],
-        "shioaji": [row["symbol"] for row in minute["sequences"]],
         "taifex": futures["products"],
     }
     if any(
         actual[provider] != spec["instruments"] for provider, spec in catalog["providers"].items()
     ):
         raise ValueError("pilot instruments differ from validated catalog")
-    if any(row["sequence"] != 1 or row["sequence_count"] != 1 for row in minute["sequences"]):
-        raise ValueError("staging minute snapshots must each contain one instrument")
     if twelve["limits"] != {
         "max_symbols_per_run": 2,
         "max_records_per_symbol": 1,
