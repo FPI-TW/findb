@@ -485,6 +485,34 @@ async def test_canonical_raw_rerun_rechecks_current_dataset_scope(
 
 
 @pytest.mark.asyncio
+async def test_admin_raw_rerun_rejects_source_removed_from_dataset_scope(
+    owned_client: AsyncClient,
+    source_headers: dict,
+    admin_headers: dict,
+    test_session,
+):
+    await _seed_dataset(test_session)
+    accepted = await owned_client.post(
+        "/api/v1/source/ingest",
+        headers=source_headers,
+        json=_canonical_request(),
+    )
+    original_run_id = UUID(accepted.json()["run_id"])
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_eod")
+    dataset.config = {**dataset.config, "allowed_sources": ["other_source"]}
+    await test_session.commit()
+
+    rerun = await owned_client.post(
+        f"/api/v1/admin/runs/{original_run_id}/rerun",
+        headers=admin_headers,
+    )
+
+    assert rerun.status_code >= 400
+    assert "retained source is not allowed" in rerun.text
+    assert await test_session.scalar(select(func.count()).select_from(IngestionRun)) == 1
+
+
+@pytest.mark.asyncio
 async def test_canonical_raw_rerun_rechecks_current_source_binding(
     owned_client: AsyncClient,
     source_headers: dict,

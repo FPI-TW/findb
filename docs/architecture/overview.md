@@ -64,7 +64,7 @@ admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Fu
 
 | Provider | 目標範圍 | Contract |
 | --- | --- | --- |
-| `twelve_data` | US 主要交易所普通股與 ADR；保留舊 HK delivery／rerun acceptance | `market_eod.v1` |
+| `twelve_data` | US 主要交易所普通股與 ADR | `market_eod.v1` |
 | `factset` | HKEX 現行主板／GEM 普通股；切換後的新 HK 抓取 | `market_eod.v2` |
 | `finlab` | TW 上市／上櫃普通股與各類 ETF 日線 | `market_eod.v1` |
 | `shioaji` | 相同 TW 股票／ETF 的一分鐘 bars | `market_minute.v1` |

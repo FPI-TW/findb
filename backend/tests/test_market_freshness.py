@@ -28,7 +28,7 @@ FULL_MARKET_SCOPES = {
     "finlab": ["tw_equity_eod", "tw_etf_eod"],
     "shioaji": ["tw_equity_minute", "tw_etf_minute"],
     "taifex": ["tw_futures_eod"],
-    "twelve_data": ["us_equity_eod", "hk_equity_eod"],
+    "twelve_data": ["us_equity_eod"],
 }
 
 
@@ -260,11 +260,9 @@ async def test_dormant_full_market_reports_prerequisites_without_runtime_failure
     assert all("full_market_baseline_missing" in feed.blockers for feed in row.pending_feeds)
     assert all("full_market_flag_disabled" not in feed.blockers for feed in row.pending_feeds)
     assert all(not feed.runtime_eligible for feed in row.feeds)
-    if provider in {"taifex", "twelve_data"}:
+    if provider == "taifex":
         unavailable = next(
-            feed
-            for feed in row.pending_feeds
-            if feed.dataset_key in {"tw_futures_eod", "hk_equity_eod"}
+            feed for feed in row.pending_feeds if feed.dataset_key == "tw_futures_eod"
         )
         assert "full_market_calendar_missing" not in unavailable.blockers
 

@@ -94,7 +94,7 @@ async def test_unified_credentials_cover_seven_feeds_without_profile_branch(test
     )
     assert len(results) == 5
     rows = (await test_session.scalars(select(SourceClient))).all()
-    assert sum(len(row.allowed_datasets) for row in rows) == 8
+    assert sum(len(row.allowed_datasets) for row in rows) == 7
     assert {row.source_name for row in rows} == {
         "twelve_data",
         "finlab",

@@ -601,6 +601,14 @@ Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_coo
 只延長 debt；rollback 仍須依上述完整停止／排空／成套checkpoint備份程序，不可倒退 usage／cooldown
 或混用未通過此 dispatch gate 的 consumer。Runtime 部署成功不代表 provider-work queue 已啟用。
 
+## Twelve Data HK 退役的 rollback 下限
+
+Migration `c7d2e9a4f1b3` 只改資料，移除 `twelve_data` × `hk_equity_eod` 的 scheduler、未撤銷
+credential 與 `allowed_sources` scope，並結清 open 告警。Fetcher 須先更新到容忍 Source 只回傳
+US scope 的版本（`fetcher-v0.1.16` 以上）；較舊 Fetcher 會以 `control scope mismatch` 停止。
+部署前以唯讀查詢確認此組合沒有未結證據，否則 migration 中止且不變更資料。成功 accepted 後此版本
+即為新的 rollback 下限；downgrade 為 no-op，須回退時採 forward fix。
+
 ## Prepared 逐列儲存的 rollback 下限
 
 Migration `9c1e4f7a2b6d` 將 `provider_work.prepared_deliveries` 搬到 `provider_work_prepared` 並刪除

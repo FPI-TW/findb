@@ -431,7 +431,8 @@ Pilot running 而延續已停止 Full 的缺漏告警。
 Registry scope 不足以維持監控：provider／dataset 不在 `backend/configs/execution_feeds.v1.json`
 時，Fetcher 不會為其建立 plan，scan 不建立或刷新告警，即使 scheduler 仍為 running；既有 open
 alerts 保留原 details 並以 `resolution.code=FEED_RETIRED` 關閉，後續掃描不重開。Twelve Data
-港股在 HK cutover 前即依此處理，cutover 後仍以 `PROVIDER_RETIRED` 為準。
+港股已從 registry scope 移除，既有 open alerts 由 migration 以同一 code 關閉；歷史紀錄的
+`PROVIDER_RETIRED` 不再新增。
 
 TAIFEX `tw_futures_eod` 在交易日的交付截止後仍沒有 plan、沒有同日 published universe，且已有
 同日 candidate 時，既有 missing-delivery alert 使用專用 `details.code=DATED_UNIVERSE_PENDING`。

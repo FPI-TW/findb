@@ -152,11 +152,7 @@ async def test_cutover_retires_twelve_data_hk_gap_alerts(test_session, monkeypat
     assert retired.details == {
         "code": "FULL_MARKET_INCOMPLETE",
         "plan_id": None,
-        "resolution": {
-            "code": "PROVIDER_RETIRED",
-            "provider": "factset",
-            "effective_date": dataset.config["hk_provider_cutover"]["effective_date"],
-        },
+        "resolution": {"code": "FEED_RETIRED", "execution_profile": "full_market"},
     }
     assert "resolution" not in already.details
     assert other_profile.status == other_dataset.status == "open"
