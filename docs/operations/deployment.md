@@ -617,6 +617,9 @@ Production 順序（每一步都需 Owner 當次核准）：
 4. 重跑盤點，確認除 `calendar_closed` 外已無未結項，由 Owner 檢視 `RETIRED_FEED_MANUAL_REVIEW` 的
    work，並保存 checkpoint 備份後才進入移除 runtime 的下一階段。
 
+若 controls 已 stopped 且步驟 1 查無未結項與未交付 prepared bytes，可經 Owner 核准跳過此版的
+production 部署。2026-11-02 production 符合此條件，Owner 已核准跳過。
+
 TW 分 K 從步驟 2 起不再更新，直到替代 provider 上線。回退到含 Shioaji feed 的版本前，須先確認
 Owner 未啟動 controls；已結案為 failed 的 work 不會自動重開。
 
