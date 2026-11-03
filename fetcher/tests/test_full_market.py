@@ -1380,14 +1380,12 @@ def test_require_stopped_never_recreates_unavailable_checkpoint(
     "scope,accepted",
     [
         (["us_equity_eod"], True),
-        (["us_equity_eod", "hk_equity_eod"], True),
+        (["us_equity_eod", "hk_equity_eod"], False),
         (["hk_equity_eod"], False),
         (["us_equity_eod", "tw_equity_eod"], False),
     ],
 )
-def test_twelve_data_control_scope_tolerates_only_source_side_hk_retirement(
-    tmp_path, monkeypatch, scope, accepted, capsys
-):
+def test_twelve_data_control_scope_is_us_only(tmp_path, monkeypatch, scope, accepted, capsys):
     from findb_fetcher import full_market_cli
 
     class Control:
@@ -1452,7 +1450,7 @@ def test_require_stopped_checks_existing_control_without_mutating_prepared_check
             calls.append(kwargs)
             return SimpleNamespace(
                 provider="twelve_data",
-                dataset_keys=["us_equity_eod", "hk_equity_eod"],
+                dataset_keys=["us_equity_eod"],
                 desired_state=desired,
             )
 

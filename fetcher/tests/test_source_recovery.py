@@ -233,9 +233,7 @@ def test_actual_daily_cli_retries_initial_poll_before_runtime_creation(
             return SimpleNamespace(
                 provider=provider,
                 dataset_keys=(
-                    ["us_equity_eod", "hk_equity_eod"]
-                    if provider == "twelve_data"
-                    else daily._SCOPES[provider]
+                    ["us_equity_eod"] if provider == "twelve_data" else daily._SCOPES[provider]
                 ),
                 desired_state="running",
             )

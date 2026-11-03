@@ -626,8 +626,9 @@ Owner 未啟動 controls；已結案為 failed 的 work 不會自動重開。
 ## Twelve Data HK 退役的 rollback 下限
 
 Migration `c7d2e9a4f1b3` 只改資料，移除 `twelve_data` × `hk_equity_eod` 的 scheduler、未撤銷
-credential 與 `allowed_sources` scope，並結清 open 告警。Fetcher 須先更新到容忍 Source 只回傳
-US scope 的版本（`fetcher-v0.1.16` 以上）；較舊 Fetcher 會以 `control scope mismatch` 停止。
+credential 與 `allowed_sources` scope，並結清 open 告警。Fetcher 只接受 Source 回傳 US scope；
+`fetcher-v0.1.16` 之前的版本與 Source 不相容，會以 `control scope mismatch` 停止。此後的 Fetcher
+也不再容忍此 revision 之前的 Source，因此 Backend 不可回退到 `c7d2e9a4f1b3` 之前。
 部署前以唯讀查詢確認此組合沒有未結證據，否則 migration 中止且不變更資料。成功 accepted 後此版本
 即為新的 rollback 下限；downgrade 為 no-op，須回退時採 forward fix。
 
