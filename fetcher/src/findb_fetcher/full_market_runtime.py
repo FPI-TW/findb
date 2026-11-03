@@ -33,6 +33,7 @@ from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarket
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_BREAKER,
+    FULL_WORK_NO_DATA_RETRY_SECONDS,
     FullMarketState,
     FullMarketStateError,
     QuotaBlockedError,
@@ -1559,6 +1560,14 @@ class FullMarketRuntime:
                     if (manual and not self.daily_policy) or not pending
                     else "retry"
                 )
+                if desired == "retry":
+                    # Idle rounds would only add attempts while every retry is in backoff.
+                    retry_delay_seconds = max(
+                        retry_delay_seconds,
+                        math.ceil(
+                            self.state.no_data_wait_seconds(plan["plan_id"], now=time.time())
+                        ),
+                    )
             try:
                 proof: dict[str, Any] = (
                     {
@@ -2189,6 +2198,11 @@ class FullMarketRuntime:
                     status="prepared" if self.state.prepared(key) else "pending",
                     reason="no_data" if no_data else reason,
                     now=time.time(),
+                    # Once the plan has results this symbol is simply late or absent, so
+                    # its retries spread out and later members get their turn first.
+                    retry_after=FULL_WORK_NO_DATA_RETRY_SECONDS
+                    if no_data and self.state.has_member_results(plan["plan_id"])
+                    else 60,
                 )
                 self._record_diagnostic(key, exc)
                 # One symbol without data says nothing about the provider or account, so

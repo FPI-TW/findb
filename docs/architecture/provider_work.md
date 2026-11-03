@@ -105,14 +105,17 @@ unknown 或 terminal polling timeout 後，即停止該輪的新 provider I/O �
 member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain，再安全 tail retry。
 例外是 Twelve Data 的成員層級 `no_data`（HTTP 400 "No data is available"）：它不代表 provider 或帳號
 異常，回報 `source_error` 並保存診斷後繼續下一個 member，該 member 依原 attempt 上限重試，耗盡後為
-`manual / no_data_exhausted`。同一輪連續 20 個 member 都是 `no_data` 且其間沒有取得資料時視為系統性
-問題（例如未發布日曆的休市日），停止該輪以限制呼叫量。其他 Twelve Data 錯誤類別（含 `invalid_symbol`、
+`manual / no_data_exhausted`。同一輪連續 20 個 member 都是 `no_data` 且其間沒有取得資料時，停止該輪以
+限制呼叫量。Plan 已有任一 member 取得結果後，`no_data` 視為該檔晚發布或確實沒有資料，重試間隔為 60 分鐘，
+使下一輪接續尚未輪到的 member，第一次 `no_data` 到耗盡約 7 小時；全部重試都在等待時，下一個 attempt 的
+`retry_at` 延至最近的重試時間，不增加空轉 attempt。其他 Twelve Data 錯誤類別（含 `invalid_symbol`、
 `plan_restricted`）維持停止該輪。
 
 非 Shioaji 的 daily 結算：plan 尚有未結成員時，`mapping_gap` 與 `no_data_exhausted` 的 manual 成員只影響
 自身，該輪 tail retry 繼續處理其餘成員；其他 manual 原因可能是系統性問題，仍立即
-`failed`／`MANUAL_INTERVENTION_REQUIRED`。`no_data_exhausted` 累積達 20 個時同樣立即 `failed`，全面
-無資料最多花費 20 個 member 各 8 次呼叫。沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source
+`failed`／`MANUAL_INTERVENTION_REQUIRED`。Plan 沒有任何 member 取得結果時，`no_data` 維持 60 秒重試，
+`no_data_exhausted` 累積達 20 個即立即 `failed`，全面無資料（例如未發布日曆的休市日）最多花費 20 個
+member 各 8 次呼叫。沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source
 canonical evidence 判定，不計為成功或 no_data。Tail round 不再對已終結或退避中的 member 查詢 prepared。
 原 controls／request 仍允許抓取時，下一 attempt 才可接續同一 frozen scope 的剩餘 members。
 Daily member 的一般例外會先持久保存 `source_error_pending`，再回報 Source `source_error`；

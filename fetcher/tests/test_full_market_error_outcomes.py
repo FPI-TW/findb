@@ -1,6 +1,7 @@
 """Source error reports survive retries without another provider acquisition."""
 
 import json
+import time
 from types import SimpleNamespace
 
 import httpx
@@ -10,6 +11,7 @@ from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_BREAKER,
+    FULL_WORK_NO_DATA_RETRY_SECONDS,
     FullMarketState,
 )
 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
@@ -378,6 +380,145 @@ def test_data_between_no_data_members_resets_the_breaker(tmp_path):
         runtime.close()
 
 
+def _no_data_error():
+    from findb_fetcher.providers.twelve_data import TwelveDataResponseError
+
+    return TwelveDataResponseError(
+        "private-detail",
+        status_code=400,
+        provider_code=400,
+        dispatched=True,
+        category="no_data",
+    )
+
+
+def test_every_no_data_member_is_retried_and_only_exhaustion_ends_the_plan(tmp_path):
+    # Production 11/02 shape: data first, then more no-data members than one round covers.
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    silent = [f"M{index:03d}" for index in range(FULL_WORK_NO_DATA_BREAKER * 2 + 5)]
+    keys = ["AAPL", *silent, "LATE"]
+    acquired = []
+    published = {"AAPL"}
+
+    def acquire(member, *args):
+        acquired.append(member["member_key"])
+        if member["member_key"] not in published:
+            raise _no_data_error()
+        return []
+
+    runtime._acquire = acquire
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = keys
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    owner = _SettleOwner()
+    release = _members(*keys)
+
+    def run_round():
+        with owned_unit_work(runtime.provider, tmp_path):
+            runtime._deliver_plan(plan, release, runtime.feeds[0])
+        runtime._settle_queued_round(owner)
+        # Production rounds took about two minutes, longer than the old 60-second backoff.
+        with runtime.state.connection() as db:
+            db.execute("UPDATE full_work SET next_at=next_at-120 WHERE reason='no_data'")
+        return _statuses(runtime)
+
+    try:
+        # Rounds stopped by the breaker move on instead of repeating the same members.
+        run_round()
+        run_round()
+        statuses = run_round()
+        assert acquired == keys
+        assert all(statuses[key] == ("pending", "no_data", 1) for key in silent)
+        assert owner.delays[:2] == [60, 60]
+        assert (
+            FULL_WORK_NO_DATA_RETRY_SECONDS - 300
+            < owner.delays[-1]
+            <= (FULL_WORK_NO_DATA_RETRY_SECONDS)
+        )
+
+        # Nothing is called again while the whole retry set is in backoff.
+        run_round()
+        assert acquired == keys
+
+        published.add("LATE")
+        rounds = 0
+        while owner.settled[-1][0] == "retry":
+            with runtime.state.connection() as db:
+                db.execute("UPDATE full_work SET next_at=0 WHERE reason='no_data'")
+            run_round()
+            rounds += 1
+            assert rounds < 100
+        statuses = _statuses(runtime)
+        assert statuses["LATE"][0] == "complete"
+        assert all(
+            statuses[key] == ("manual", "no_data_exhausted", FULL_WORK_MAX_ATTEMPTS)
+            for key in silent
+        )
+        assert owner.settled[-1] == ("failed", "MANUAL_INTERVENTION_REQUIRED")
+    finally:
+        runtime.close()
+
+
+def test_no_data_retries_stay_short_until_the_plan_has_a_result(tmp_path):
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+
+    def acquire(member, *args):
+        if member["member_key"] == "ACA":
+            raise _no_data_error()
+        return []
+
+    runtime._acquire = acquire
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = ["ACA", "MSFT", "ZZZ"]
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            runtime._deliver_plan(plan, _members("ACA", "MSFT", "ZZZ"), runtime.feeds[0])
+
+        def wait():
+            with runtime.state.connection() as db:
+                row = db.execute("SELECT next_at FROM full_work WHERE member_key='ACA'")
+                return row.fetchone()[0] - time.time()
+
+        assert 0 < wait() <= 60
+        with runtime.state.connection() as db:
+            db.execute("UPDATE full_work SET next_at=0 WHERE member_key='ACA'")
+        with owned_unit_work(runtime.provider, tmp_path):
+            runtime._deliver_plan(plan, _members("ACA", "MSFT", "ZZZ"), runtime.feeds[0])
+        assert FULL_WORK_NO_DATA_RETRY_SECONDS - 60 < wait() <= FULL_WORK_NO_DATA_RETRY_SECONDS
+    finally:
+        runtime.close()
+
+
+def test_no_data_wait_only_applies_when_nothing_else_remains(tmp_path):
+    state = FullMarketState(tmp_path / "state.sqlite3", clock=lambda: 1000.0)
+    plan = _plan()
+    state.record_plan(plan, "twelve_data")
+    state.finish("fp1:123:AAPL", status="pending", reason="no_data", now=1000, retry_after=3600)
+    assert state.no_data_wait_seconds("p", now=1000) == 0
+    state.finish("fp1:123:MSFT", status="complete")
+    assert state.no_data_wait_seconds("p", now=1000) == 3600
+    assert state.no_data_wait_seconds("p", now=5000) == 0
+    state.finish("fp1:123:AAPL", status="manual", reason="no_data_exhausted")
+    assert state.no_data_wait_seconds("p", now=1000) == 0
+
+
+def test_no_data_exhaustion_only_ends_a_plan_that_obtained_nothing(tmp_path):
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    plan = _plan()
+    keys = [f"M{index:03d}" for index in range(FULL_WORK_NO_DATA_BREAKER)]
+    plan["parts"][0]["member_keys"] = [*keys, "AAPL"]
+    state.record_plan(plan, "twelve_data")
+    for key in keys:
+        state.finish(f"fp1:123:{key}", status="manual", reason="no_data_exhausted")
+    assert state.has_blocking_manual("p")
+    state.finish("fp1:123:AAPL", status="complete")
+    assert not state.has_blocking_manual("p")
+
+
 def test_terminal_members_are_not_probed_again_in_a_tail_round(tmp_path):
     runtime, source, _ = _runtime(tmp_path)
     runtime._acquisition_allowed = lambda: True
@@ -443,6 +584,7 @@ class _SettleOwner:
     def __init__(self):
         self.journal = SimpleNamespace(manifest=lambda: {"plan_id": "p"})
         self.settled = []
+        self.delays = []
 
     def request(self, *_):
         return {}
@@ -452,6 +594,7 @@ class _SettleOwner:
 
     def settle(self, desired, **kwargs):
         self.settled.append((desired, kwargs.get("failure_code")))
+        self.delays.append(kwargs.get("delay"))
 
 
 @pytest.mark.parametrize(

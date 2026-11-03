@@ -21,6 +21,8 @@ _DIAGNOSTIC_CATEGORY = re.compile(r"^[a-z][a-z0-9_]{0,39}(:[A-Za-z][A-Za-z0-9_]{
 FULL_WORK_MAX_ATTEMPTS = 8
 # Consecutive no-data members that stop a round: past this it is unlikely to be per symbol.
 FULL_WORK_NO_DATA_BREAKER = 20
+# A symbol the provider has not published yet needs hours, not another call a minute later.
+FULL_WORK_NO_DATA_RETRY_SECONDS = 3600
 
 
 class FullMarketStateError(RuntimeError):
@@ -687,12 +689,24 @@ class FullMarketState:
         with self.connection() as db:
             db.execute("DELETE FROM full_provider_outage WHERE plan_id=?", (plan_id,))
 
+    def has_member_results(self, plan_id: str) -> bool:
+        """Whether any member of the plan has already obtained a provider result."""
+        with self.connection() as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM full_work WHERE plan_id=? AND status IN ('complete','prepared') LIMIT 1",
+                    (plan_id,),
+                ).fetchone()
+                is not None
+            )
+
     def has_blocking_manual(self, plan_id: str) -> bool:
         """Whether a manual member needs review before the rest of the plan may continue.
 
         A mapping gap or a symbol out of no-data retries concerns only that member,
-        unless so many symbols ran out that the provider is the likelier cause. Any
-        other manual reason may be systemic, so it still ends the plan at once.
+        unless so many symbols ran out while none obtained anything, which points at
+        the provider. Any other manual reason may be systemic, so it still ends the
+        plan at once.
         """
         with self.connection() as db:
             row = db.execute(
@@ -701,7 +715,21 @@ class FullMarketState:
                 "FROM full_work WHERE plan_id=? AND status='manual'",
                 (plan_id,),
             ).fetchone()
-        return row[1] > 0 or row[0] >= FULL_WORK_NO_DATA_BREAKER
+        if row[1] > 0:
+            return True
+        return row[0] >= FULL_WORK_NO_DATA_BREAKER and not self.has_member_results(plan_id)
+
+    def no_data_wait_seconds(self, plan_id: str, *, now: float) -> float:
+        """How long the plan can sleep when only no-data retries in backoff remain."""
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT MIN(next_at),COALESCE(SUM(COALESCE(reason,'')!='no_data'),0) "
+                "FROM full_work WHERE plan_id=? AND status NOT IN ('complete','manual')",
+                (plan_id,),
+            ).fetchone()
+        if row[0] is None or row[1] > 0:
+            return 0
+        return max(0, row[0] - now)
 
     def pending_source_error_keys(self, plan_id: str) -> set[str]:
         with self.connection() as db:
@@ -858,6 +886,7 @@ class FullMarketState:
         reason: str | None = None,
         receipt: str | None = None,
         now: float = 0,
+        retry_after: float = 60,
     ) -> None:
         if status not in {"pending", "prepared", "complete", "manual"}:
             raise FullMarketStateError("work status is invalid")
@@ -870,7 +899,7 @@ class FullMarketState:
                     status,
                     reason,
                     receipt,
-                    now + 60 if status in {"pending", "prepared"} else 0,
+                    now + retry_after if status in {"pending", "prepared"} else 0,
                     key,
                 ),
             )
