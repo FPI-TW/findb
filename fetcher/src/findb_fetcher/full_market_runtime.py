@@ -33,6 +33,7 @@ from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarket
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_BREAKER,
+    FULL_WORK_NO_DATA_RETRY_SECONDS,
     FullMarketState,
     FullMarketStateError,
     QuotaBlockedError,
@@ -1559,6 +1560,12 @@ class FullMarketRuntime:
                     if (manual and not self.daily_policy) or not pending
                     else "retry"
                 )
+                no_data_retry_at = self.state.no_data_retry_at(plan["plan_id"])
+                if desired == "retry" and no_data_retry_at is not None and not pending_errors:
+                    # Every remaining member is backing off, so an earlier round would be empty.
+                    retry_delay_seconds = max(
+                        retry_delay_seconds, math.ceil(no_data_retry_at - time.time())
+                    )
             try:
                 proof: dict[str, Any] = (
                     {
@@ -1988,6 +1995,7 @@ class FullMarketRuntime:
                     owner.authorize()
                     requests = self._acquire(member, plan, part, release, feed)
                     no_data_streak = 0
+                    self.state.clear_no_data_trips(plan["plan_id"])
                     if self.provider == "taifex":
                         self.state.clear_provider_outage(plan["plan_id"])
                     if not requests:
@@ -2193,11 +2201,15 @@ class FullMarketRuntime:
                 self._record_diagnostic(key, exc)
                 # One symbol without data says nothing about the provider or account, so
                 # it keeps its bounded retries without stopping the other members. A long
-                # unbroken run does, so it stops the round to bound the calls it spends.
+                # unbroken run does, so it holds the plan to bound the calls it spends.
                 if no_data:
-                    no_data_streak += 1
+                    if self.state.counts_toward_no_data_breaker(key):
+                        no_data_streak += 1
                     if no_data_streak < FULL_WORK_NO_DATA_BREAKER:
                         continue
+                    self.state.record_no_data_trip(
+                        plan["plan_id"], until=time.time() + FULL_WORK_NO_DATA_RETRY_SECONDS
+                    )
                 return False
             except ProviderWorkBasisMismatchError:
                 self._price_basis_manual(plan, part, member_key, key)

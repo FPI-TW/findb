@@ -20,7 +20,10 @@ _DIAGNOSTIC_CATEGORY = re.compile(r"^[a-z][a-z0-9_]{0,39}(:[A-Za-z][A-Za-z0-9_]{
 
 FULL_WORK_MAX_ATTEMPTS = 8
 # Consecutive no-data members that stop a round: past this it is unlikely to be per symbol.
+# Also the acquired members that prove the date is open and the provider is serving it.
 FULL_WORK_NO_DATA_BREAKER = 20
+# A symbol's end-of-day row can publish later than the rest, so its retries span hours.
+FULL_WORK_NO_DATA_RETRY_SECONDS = 1800
 
 
 class FullMarketStateError(RuntimeError):
@@ -82,6 +85,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
                 CREATE TABLE IF NOT EXISTS full_provider_outage (plan_id TEXT PRIMARY KEY, since REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS full_no_data_trip (plan_id TEXT PRIMARY KEY, trips INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_cursor (provider TEXT, dataset TEXT, trade_date TEXT NOT NULL, PRIMARY KEY(provider,dataset));
                 CREATE TABLE IF NOT EXISTS full_schedule (scope TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0, batch BLOB);
                 CREATE TABLE IF NOT EXISTS acquisition_intent(operation_id TEXT PRIMARY KEY, account TEXT NOT NULL, provider TEXT NOT NULL, armed_at REAL NOT NULL, status TEXT NOT NULL, cooldown_bound REAL NOT NULL, actual_start REAL, completed_at REAL);
@@ -691,17 +695,63 @@ class FullMarketState:
         """Whether a manual member needs review before the rest of the plan may continue.
 
         A mapping gap or a symbol out of no-data retries concerns only that member,
-        unless so many symbols ran out that the provider is the likelier cause. Any
-        other manual reason may be systemic, so it still ends the plan at once.
+        and so does any other no-data reply until the breaker keeps tripping with no
+        data in between. Any other manual reason may be systemic, so it still ends the
+        plan at once.
+        """
+        with self.connection() as db:
+            manual = db.execute(
+                "SELECT 1 FROM full_work WHERE plan_id=? AND status='manual' "
+                "AND COALESCE(reason,'') NOT IN ('mapping_gap','no_data_exhausted') LIMIT 1",
+                (plan_id,),
+            ).fetchone()
+            trips = db.execute(
+                "SELECT trips FROM full_no_data_trip WHERE plan_id=?", (plan_id,)
+            ).fetchone()
+        return manual is not None or (trips is not None and trips[0] >= FULL_WORK_MAX_ATTEMPTS)
+
+    def counts_toward_no_data_breaker(self, key: str) -> bool:
+        """Whether this no-data reply can still point at the provider rather than the symbol.
+
+        Retry rounds hold mostly members that already returned no data, so an unbroken
+        run there is expected once the plan has proven the date is open and served.
         """
         with self.connection() as db:
             row = db.execute(
-                "SELECT COALESCE(SUM(reason='no_data_exhausted'),0),"
-                "COALESCE(SUM(COALESCE(reason,'') NOT IN ('mapping_gap','no_data_exhausted')),0) "
-                "FROM full_work WHERE plan_id=? AND status='manual'",
+                "SELECT w.attempts,("
+                "SELECT COUNT(*) FROM full_work p WHERE p.plan_id=w.plan_id "
+                "AND p.status IN ('complete','prepared')"
+                ") FROM full_work w WHERE w.key=?",
+                (key,),
+            ).fetchone()
+        return row[0] <= 1 or row[1] < FULL_WORK_NO_DATA_BREAKER
+
+    def record_no_data_trip(self, plan_id: str, *, until: float) -> None:
+        """Hold members awaiting provider I/O; prepared bytes keep draining."""
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO full_no_data_trip VALUES(?,1) "
+                "ON CONFLICT(plan_id) DO UPDATE SET trips=trips+1",
+                (plan_id,),
+            )
+            db.execute(
+                "UPDATE full_work SET next_at=MAX(next_at,?) WHERE plan_id=? AND status='pending'",
+                (until, plan_id),
+            )
+
+    def clear_no_data_trips(self, plan_id: str) -> None:
+        with self.connection() as db:
+            db.execute("DELETE FROM full_no_data_trip WHERE plan_id=?", (plan_id,))
+
+    def no_data_retry_at(self, plan_id: str) -> float | None:
+        """Earliest next action of a plan with members in no-data backoff, if any."""
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT MIN(next_at),COALESCE(SUM(reason='no_data'),0) FROM full_work "
+                "WHERE plan_id=? AND status NOT IN ('complete','manual')",
                 (plan_id,),
             ).fetchone()
-        return row[1] > 0 or row[0] >= FULL_WORK_NO_DATA_BREAKER
+        return row[0] if row[1] else None
 
     def pending_source_error_keys(self, plan_id: str) -> set[str]:
         with self.connection() as db:
@@ -870,7 +920,9 @@ class FullMarketState:
                     status,
                     reason,
                     receipt,
-                    now + 60 if status in {"pending", "prepared"} else 0,
+                    now + (FULL_WORK_NO_DATA_RETRY_SECONDS if reason == "no_data" else 60)
+                    if status in {"pending", "prepared"}
+                    else 0,
                     key,
                 ),
             )
