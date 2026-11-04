@@ -298,7 +298,10 @@ def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path):
         assert statuses["MSFT"][0] == "complete"
         assert statuses["AACI"][:2] == ("manual", "mapping_gap")
         with runtime.state.connection() as db:
-            db.execute("UPDATE full_work SET next_at=0,attempts=? WHERE member_key='ACA'", (7,))
+            db.execute(
+                "UPDATE full_work SET next_at=0,attempts=? WHERE member_key='ACA'",
+                (FULL_WORK_MAX_ATTEMPTS - 1,),
+            )
         with owned_unit_work(runtime.provider, tmp_path):
             assert runtime._deliver_plan(
                 plan, _members("AAPL", "AACI", "ACA", "MSFT", gaps={"AACI"}), runtime.feeds[0]

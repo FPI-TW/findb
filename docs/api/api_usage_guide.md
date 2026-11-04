@@ -207,7 +207,7 @@ curl -H "X-API-Key: $SERVE_KEY" \
 ## Full-market control API
 
 Source 以自身 provider-scoped key 呼叫 universe／delivery plan v1；完整 request 型別以部署版本
-OpenAPI 為準。Universe first baseline 或異動超過 20 個成員／2% 的 candidate，需要 Owner
+OpenAPI 為準。Universe first baseline 或異動超過 2% 的 candidate，需要 Owner
 呼叫 `POST /admin/universes/{release_id}/publish`，提供 `evidence_note` 與對應
 `first_baseline_approved`／`threshold_exception_approved`，並留下 audit。
 Viewer 可用 `GET /admin/universes?status=candidate` 列出待發布版本，並以

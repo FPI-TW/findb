@@ -32,10 +32,12 @@ from findb_fetcher.full_market_universe import (
     UniverseSnapshotError,
     canonical_bytes,
     map_catalogue,
+    nasdaq_security_names,
     parse_hkex,
     parse_nasdaq,
     parse_tw_companies,
     parse_tw_etfs,
+    scope_us_members,
     universe_request,
 )
 from findb_fetcher.providers.finlab import FinLabDatasetConfig, FinLabSymbol
@@ -54,6 +56,129 @@ def test_nasdaq_major_common_adr_excludes_other_instruments() -> None:
     other = b"ACT Symbol|Security Name|Test Issue|ETF|Exchange\nBRK.B|Class B Common Stock|N|N|N\nOTC|Common Stock|N|N|O\n"
     assert parse_nasdaq(other, other=True)[0]["symbol"] == "BRK.B"
     assert len(parse_nasdaq(other, other=True)) == 1
+
+
+def test_nasdaq_excludes_singular_rights_and_units_without_touching_adrs() -> None:
+    raw = (
+        b"Symbol|Security Name|Test Issue|ETF\n"
+        b"RGHT|Some Acquisition Corp - Right|N|N\n"
+        b"SERZ|Some Group, Inc. - Series B Right|N|N\n"
+        b"UNTU|Some Acquisition Corp - Unit.|N|N\n"
+        b"UNT|Unit Corporation Common Stock|N|N\n"
+        b"BSBR|Bank American Depositary Shares, each representing one Unit|N|N\n"
+    )
+    members = {item["symbol"]: item for item in parse_nasdaq(raw)}
+    assert sorted(members) == ["BSBR", "UNT"]
+    assert members["BSBR"]["classification"] == "adr"
+
+
+def _us_member(symbol: str, classification: str = "ordinary") -> dict[str, str]:
+    return {
+        "symbol": symbol,
+        "provider_symbol": symbol,
+        "exchange": "XNYS",
+        "currency": "USD",
+        "asset_class": "equity",
+        "classification": classification,
+        "mapping_status": "gap",
+    }
+
+
+def _us_row(symbol: str, kind: str, mic: str = "XNYS") -> dict[str, str]:
+    return {"symbol": symbol, "mic_code": mic, "currency": "USD", "type": kind}
+
+
+def test_us_scope_drops_excluded_types_and_uncatalogued_funds_only() -> None:
+    raw = (
+        b"Symbol|Security Name|Test Issue|ETF\n"
+        b"CEF|Global Income Fund Common Shares|N|N\n"
+        b"TRST|Municipal Income Trust|N|N\n"
+        b"SBI|Credit Company Shares of Beneficial Interest|N|N\n"
+        b"BDC|Capital Corp - Closed End Fund|N|N\n"
+        b"NEW|Brand New Corp Common Stock|N|N\n"
+        b"REIT|Realty Income Trust Common Stock|N|N\n"
+    )
+    names = nasdaq_security_names(raw)
+    catalogue = [
+        _us_row("BDC", "Common Stock"),
+        _us_row("REIT", "REIT"),
+        _us_row("PFD", "Preferred Stock"),
+        _us_row("WRT", "Warrant"),
+        _us_row("LP", "Limited Partnership"),
+        _us_row("OTHER", "Preferred Stock", mic="XNAS"),
+    ]
+    members = [
+        _us_member(symbol)
+        for symbol in ("CEF", "TRST", "SBI", "BDC", "NEW", "REIT", "PFD", "WRT", "LP", "OTHER")
+    ]
+    scoped = scope_us_members(members, catalogue, official_names=names)
+    # Absence alone or an unconfirmed type is a gap to resolve, never a reason to shrink the scope.
+    assert [member["symbol"] for member in scoped] == ["BDC", "NEW", "REIT", "LP", "OTHER"]
+
+
+def test_another_exchange_maps_only_when_it_names_the_same_company() -> None:
+    catalogue = [
+        {**_us_row("MOVED", "Common Stock", mic="XNGS"), "name": "Fifth Third Bancorp"},
+        {**_us_row("REUSED", "Common Stock", mic="OTCB"), "name": "Aero Grow International, Inc."},
+        {
+            **_us_row("NEAR", "Common Stock", mic="PINX"),
+            "name": "Twelve Seas Investment Company II",
+        },
+        {**_us_row("TWICE", "Common Stock", mic="XNAS"), "name": "Twice Corp"},
+        {**_us_row("TWICE", "Common Stock", mic="ARCX"), "name": "Twice Corp"},
+        {**_us_row("EXACT", "Common Stock"), "name": "Name The Catalogue Gets Wrong"},
+    ]
+    names = {
+        "MOVED": "Fifth Third Bancorp Common Stock",
+        "REUSED": "Grupo Aeromexico, S.A.B. de C.V. American Depositary Shares",
+        "NEAR": "Twelve Seas Investment Company III - Class A Ordinary Shares",
+        "TWICE": "Twice Corp Common Stock",
+        "EXACT": "Exact Holdings Common Stock",
+    }
+    mapped = map_catalogue(
+        [_us_member(symbol) for symbol in names], catalogue, us_official_names=names
+    )
+    assert {member["symbol"]: member["mapping_status"] for member in mapped} == {
+        "MOVED": "mapped",
+        "REUSED": "gap",
+        "NEAR": "gap",
+        "TWICE": "gap",
+        "EXACT": "mapped",
+    }
+    # The member keeps the official exchange; only the provider listing may differ.
+    assert mapped[0]["exchange"] == "XNYS"
+
+
+def test_catalogue_type_maps_reits_and_settles_unclassified_names() -> None:
+    catalogue = [
+        _us_row("REIT", "REIT"),
+        _us_row("PLAIN", "Common Stock"),
+        _us_row("ASML", "Depositary Receipt"),
+        _us_row("TSM", "American Depositary Receipt"),
+        _us_row("LP", "Limited Partnership"),
+        _us_row("MOVED", "Common Stock", mic="XNAS"),
+    ]
+    members = [
+        _us_member("REIT"),
+        _us_member("PLAIN", "classification_gap"),
+        _us_member("ASML", "classification_gap"),
+        _us_member("TSM", "classification_gap"),
+        _us_member("LP", "classification_gap"),
+        _us_member("MOVED"),
+        _us_member("ABSENT", "classification_gap"),
+    ]
+    assert {
+        member["symbol"]: (member["mapping_status"], member["classification"])
+        for member in map_catalogue(members, catalogue)
+    } == {
+        "REIT": ("mapped", "ordinary"),
+        "PLAIN": ("mapped", "ordinary"),
+        "ASML": ("mapped", "adr"),
+        "TSM": ("mapped", "adr"),
+        "LP": ("gap", "classification_gap"),
+        "MOVED": ("gap", "ordinary"),
+        "ABSENT": ("gap", "classification_gap"),
+    }
 
 
 def _hk_workbook(day: str) -> bytes:
@@ -759,10 +884,11 @@ def test_raw_persisted_before_provider_mapping_failure(tmp_path: Path) -> None:
     runtime.http.close()
 
 
-@pytest.mark.parametrize("mic", ["XNAS", "XNCM", "XNGS", "XNMS", "XNYS", "XHKG"])
+@pytest.mark.parametrize("instrument_type", ["Common Stock", "REIT"])
+@pytest.mark.parametrize("mic", ["XNAS", "XNCM", "XNGS", "XNMS", "XNYS", "PINX"])
 @pytest.mark.parametrize("currency", ["USD", "usd", "HKD"])
-def test_native_twelve_data_identity_uses_catalogue_mic_rules(
-    tmp_path: Path, mic: str, currency: str
+def test_native_twelve_data_identity_checks_currency_on_any_exchange(
+    tmp_path: Path, mic: str, currency: str, instrument_type: str
 ) -> None:
     from findb_fetcher.full_market_runtime import ReadinessBlockedError
     from findb_fetcher.providers.twelve_data import TwelveDataResponse
@@ -772,7 +898,7 @@ def test_native_twelve_data_identity_uses_catalogue_mic_rules(
         "status": "ok",
         "meta": {
             "symbol": "AAPL",
-            "type": "Common Stock",
+            "type": instrument_type,
             "currency": currency,
             "exchange": "NASDAQ",
             "mic_code": mic,
@@ -797,7 +923,7 @@ def test_native_twelve_data_identity_uses_catalogue_mic_rules(
     plan = _plan()
     try:
         # Provider currency is normalized before comparison with the frozen universe.
-        if currency.upper() == "USD" and mic in {"XNAS", "XNCM", "XNGS", "XNMS"}:
+        if currency.upper() == "USD":
             requests = runtime._acquire(
                 _member(), plan, plan["parts"][0], {"release_id": "r"}, runtime.feeds[0]
             )

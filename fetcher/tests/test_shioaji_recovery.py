@@ -10,7 +10,11 @@ import httpx
 import pytest
 
 from findb_fetcher import provider_work as queue
-from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
+from findb_fetcher.full_market_state import (
+    FULL_WORK_MAX_ATTEMPTS,
+    FullMarketState,
+    QuotaBlockedError,
+)
 from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot, kbars_target_valid
 from findb_fetcher.shioaji_recovery import (
     ShioajiObservationWaitError,
@@ -292,7 +296,7 @@ def test_known_malformed_observations_keep_general_failure_policy(tmp_path):
 
 
 @pytest.mark.parametrize("malformation", ["missing_column", "unequal_lengths", "bad_scalar"])
-def test_gateway_decoder_failure_keeps_original_eight_attempt_policy(
+def test_gateway_decoder_failure_keeps_the_general_attempt_policy(
     tmp_path, monkeypatch, malformation
 ):
     from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
@@ -328,7 +332,7 @@ def test_gateway_decoder_failure_keeps_original_eight_attempt_policy(
             runtime._acquire = lambda member, *args: gateway.fetch_kbars(
                 member["provider_symbol"], DAY
             )
-            for attempt in range(1, 9):
+            for attempt in range(1, FULL_WORK_MAX_ATTEMPTS + 1):
                 assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
                 assert len(calls) == owner.dispatch_observations == attempt
                 assert observation_status(owner.journal, "AAPL", DAY) == (0, 3)
@@ -336,8 +340,8 @@ def test_gateway_decoder_failure_keeps_original_eight_attempt_policy(
                     row = db.execute("SELECT attempts,status,reason FROM full_work").fetchone()
                     assert tuple(row) == (
                         attempt,
-                        "manual" if attempt == 8 else "pending",
-                        "retry_exhausted" if attempt == 8 else "source_error",
+                        "manual" if attempt == FULL_WORK_MAX_ATTEMPTS else "pending",
+                        "retry_exhausted" if attempt == FULL_WORK_MAX_ATTEMPTS else "source_error",
                     )
                 # Restart the journal between ordinary one-minute retries.
                 owner.journal = queue.WorkJournal(owner.journal.path, owner.journal.key)
@@ -346,7 +350,9 @@ def test_gateway_decoder_failure_keeps_original_eight_attempt_policy(
                 probes = db.execute(
                     "SELECT outcome,diagnostic FROM work_shioaji_probe ORDER BY probe_id"
                 ).fetchall()
-            assert len(probes) == 8 and all(row[0] == "invalid" for row in probes)
+            assert len(probes) == FULL_WORK_MAX_ATTEMPTS and all(
+                row[0] == "invalid" for row in probes
+            )
             assert all(json.loads(row[1])["error_reason"] == "ipc_schema" for row in probes)
         assert all(row["reason"] == "source_error" for row in source.outcomes)
     finally:
@@ -373,7 +379,7 @@ def test_payload_error_without_format_evidence_retains_unknown_reservation(tmp_p
 
 
 @pytest.mark.parametrize("stage", ["sdk_create", "sdk_login", "TSE", "OTC"])
-def test_bootstrap_failures_keep_eight_failure_attempts_without_kbars_debt(
+def test_bootstrap_failures_keep_the_general_attempts_without_kbars_debt(
     tmp_path, monkeypatch, stage
 ):
     from findb_fetcher.providers.shioaji import ShioajiSdkError
@@ -404,7 +410,7 @@ def test_bootstrap_failures_keep_eight_failure_attempts_without_kbars_debt(
             runtime._acquire = lambda member, *args: gateway.fetch_kbars(
                 member["provider_symbol"], DAY
             )
-            for attempt in range(1, 9):
+            for attempt in range(1, FULL_WORK_MAX_ATTEMPTS + 1):
                 assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
                 assert observation_status(owner.journal, "AAPL", DAY) == (0, 3)
                 assert owner.dispatch_observations == len(calls) >= attempt
@@ -413,16 +419,16 @@ def test_bootstrap_failures_keep_eight_failure_attempts_without_kbars_debt(
                         db.execute("SELECT attempts,status,reason FROM full_work").fetchone()
                     ) == (
                         attempt,
-                        "manual" if attempt == 8 else "pending",
-                        "retry_exhausted" if attempt == 8 else "source_error",
+                        "manual" if attempt == FULL_WORK_MAX_ATTEMPTS else "pending",
+                        "retry_exhausted" if attempt == FULL_WORK_MAX_ATTEMPTS else "source_error",
                     )
                 owner.journal = queue.WorkJournal(owner.journal.path, owner.journal.key)
                 clock[0] += 61
             with owner.journal.connection() as db:
                 assert [row[0] for row in db.execute("SELECT outcome FROM work_shioaji_probe")] == [
                     "predispatch"
-                ] * 8
-        assert len(source.outcomes) == 8
+                ] * FULL_WORK_MAX_ATTEMPTS
+        assert len(source.outcomes) == FULL_WORK_MAX_ATTEMPTS
     finally:
         runtime.close()
 

@@ -113,9 +113,9 @@ member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain
 
 非 Shioaji 的 daily 結算：plan 尚有未結成員時，`mapping_gap` 與 `no_data_exhausted` 的 manual 成員只影響
 自身，該輪 tail retry 繼續處理其餘成員；其他 manual 原因可能是系統性問題，仍立即
-`failed`／`MANUAL_INTERVENTION_REQUIRED`。Breaker 連續觸發 8 次且其間沒有取得任何資料時同樣 `failed`；取得資料
-即重新計算，provider 恢復後可接續。全面無資料最多花費 20 個 member 各 8 次呼叫；已取得足夠資料後才全面無資料，
-最多約 720 次呼叫。沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source
+`failed`／`MANUAL_INTERVENTION_REQUIRED`。Breaker 連續觸發 5 次且其間沒有取得任何資料時同樣 `failed`；取得資料
+即重新計算，provider 恢復後可接續。全面無資料最多花費 20 個 member 各 5 次呼叫；已取得足夠資料後才全面無資料，
+最多約 300 次呼叫。沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source
 canonical evidence 判定，不計為成功或 no_data。Tail round 不再對已終結或退避中的 member 查詢 prepared。
 原 controls／request 仍允許抓取時，下一 attempt 才可接續同一 frozen scope 的剩餘 members。
 Daily member 的一般例外會先持久保存 `source_error_pending`，再回報 Source `source_error`；
