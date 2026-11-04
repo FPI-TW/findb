@@ -58,6 +58,9 @@ from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
 
+# Relative so large official lists can absorb routine listing churn between publications.
+UNIVERSE_AUTO_PUBLISH_MAX_CHANGE_RATIO = Decimal("0.02")
+
 
 class FullMarketError(ValueError):
     def __init__(self, message: str, status_code: int = 409, *, code: str | None = None):
@@ -339,7 +342,7 @@ async def submit_universe(
     )
     status = (
         "published"
-        if prior is not None and (taifex_roll or (change_count <= 20 and ratio <= Decimal("0.02")))
+        if prior is not None and (taifex_roll or ratio <= UNIVERSE_AUTO_PUBLISH_MAX_CHANGE_RATIO)
         else "candidate"
     )
     now = utc_now()
@@ -1307,7 +1310,7 @@ async def publish_universe(
         raise FullMarketError("First full-market baseline requires explicit audited approval", 409)
     if prior is not None and body.first_baseline_approved:
         raise FullMarketError("First baseline approval is invalid after publication", 409)
-    if prior is not None and (release.change_count > 20 or release.change_ratio > Decimal("0.02")):
+    if prior is not None and release.change_ratio > UNIVERSE_AUTO_PUBLISH_MAX_CHANGE_RATIO:
         if not body.threshold_exception_approved:
             raise FullMarketError(
                 "Candidate exceeds change limit and requires explicit exception", 409

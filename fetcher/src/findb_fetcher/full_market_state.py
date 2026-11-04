@@ -18,7 +18,7 @@ from findb_fetcher.full_market_universe import canonical_bytes, checksum
 
 _DIAGNOSTIC_CATEGORY = re.compile(r"^[a-z][a-z0-9_]{0,39}(:[A-Za-z][A-Za-z0-9_]{0,59})?$")
 
-FULL_WORK_MAX_ATTEMPTS = 8
+FULL_WORK_MAX_ATTEMPTS = 5
 # Consecutive no-data members that stop a round: past this it is unlikely to be per symbol.
 # Also the acquired members that prove the date is open and the provider is serving it.
 FULL_WORK_NO_DATA_BREAKER = 20

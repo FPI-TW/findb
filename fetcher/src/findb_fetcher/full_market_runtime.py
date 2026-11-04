@@ -46,16 +46,18 @@ from findb_fetcher.full_market_universe import (
     TAIFEX_URL,
     TW_COMPANY_URLS,
     TW_ISIN_URLS,
+    TWELVE_DATA_EQUITY_TYPES,
     canonical_bytes,
-    canonical_twelve_data_mic,
     checksum,
     map_catalogue,
     nasdaq_effective_date,
+    nasdaq_security_names,
     parse_hkex,
     parse_nasdaq,
     parse_tw_companies,
     parse_tw_etfs,
     parse_tw_ordinary,
+    scope_us_members,
     universe_request,
 )
 from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
@@ -784,9 +786,16 @@ class FullMarketRuntime:
                     raise ReadinessBlockedError(
                         "Nasdaq official directories have different effective dates"
                     )
+                names = nasdaq_security_names(snapshots[NASDAQ_URLS[0]]) | nasdaq_security_names(
+                    snapshots[NASDAQ_URLS[1]], other=True
+                )
                 groups["us_equity_eod"] = (
                     next(iter(us_dates)),
-                    map_catalogue(us, catalogue),
+                    map_catalogue(
+                        scope_us_members(us, catalogue, official_names=names),
+                        catalogue,
+                        us_official_names=names,
+                    ),
                     {
                         **{url: snapshots[url] for url in NASDAQ_URLS},
                         **self._catalogue_evidence_for("us_equity_eod"),
@@ -2424,19 +2433,12 @@ class FullMarketRuntime:
                 fetched_at=now,
                 requested_symbol=member["provider_symbol"],
                 canonical_symbol=member["symbol"],
-                allowed_instrument_types=(
-                    "Common Stock",
-                    "American Depositary Receipt",
-                    "Depositary Receipt",
-                ),
+                allowed_instrument_types=tuple(TWELVE_DATA_EQUITY_TYPES),
                 after_trade_date=day - timedelta(days=1),
                 through_trade_date=day,
                 delivery=delivery,
             )
-            if (
-                canonical_twelve_data_mic(response["meta"]["mic_code"]) != member["exchange"]
-                or request["payload"]["data"][0]["currency"] != member["currency"]
-            ):
+            if request["payload"]["data"][0]["currency"] != member["currency"]:
                 raise ReadinessBlockedError("provider identity differs from official universe")
             raw = response.raw_bytes
         elif self.provider == "finlab":

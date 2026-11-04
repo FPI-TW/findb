@@ -82,13 +82,13 @@ Shioaji 空 Kbars／mapping 修復由 Fetcher `test_shioaji_recovery.py`、
 `test_shioaji_repair_migration.py` 驗證：legacy 快取證據保留、跨重啟三次觀測上限與十五分鐘退避、
 unknown dispatch 不退款、日曆衝突、Owner／Source fence、stale preview、mapping overlay、
 首次未知派送跨重啟的上限與退避、空回應後 calendar-status outage 的續報與 claim 保留、
-正式 gateway／decoder 的缺欄、向量長度與 scalar 格式拒絕沿用八次一般失敗政策，
+正式 gateway／decoder 的缺欄、向量長度與 scalar 格式拒絕沿用 `FULL_WORK_MAX_ATTEMPTS` 一般失敗政策，
 以及 Mapping API 與 Fetcher symbol validator 的邊界一致性及核准前 `422` 拒絕、
-舊八次失敗及新 grant 分離、重複安裝／ACK-loss，以及 migration 保留性與 rollback floor。
+舊失敗次數及新 grant 分離、重複安裝／ACK-loss，以及 migration 保留性與 rollback floor。
 Admin 修復回應另驗證 OpenAPI typed schemas、必要摘要欄位與格式、序列化後摘要相符、
 使用 preview 回應套用與重播，以及錯誤 apply 回應不得提交授權。
 觀測 gate 測試亦涵蓋舊空快取等待／耗盡、calendar conflict／outage／無效證據保留原 gateway，
-其他成員可重用 session；SDK 建立／登入／兩個 contracts 群組失敗仍採八次一般重試，
+其他成員可重用 session；SDK 建立／登入／兩個 contracts 群組失敗仍採 `FULL_WORK_MAX_ATTEMPTS` 一般重試，
 不扣 Kbars 觀測額度，保留先前 unknown debt，後續資料不需額外 grant。
 `test_sdk_bootstrap.py` 另以正式 child protocol 與離線 SDK 驗證登入失敗仍保留 native／登入帳務，
 僅將 Kbars probe 記為 `predispatch`；dead child 仍須回收並由後續 acquisition 替換。
@@ -676,7 +676,7 @@ reap 邊界維持原設定。完成 normalization 的測試 stub 必須提供與
 都能安全結束 round、tail retry、釋放 host FD 並直接 claim 下一工作；另有 transport、403、格式拒絕、
 真正 predispatch quota 四次等待及跨 runtime restart 原預算耗盡驗證。
 Daily native 十二資料 HTTP 429／200-code429 測試只涵蓋已支援的 US／HK daily feeds，historical 只用
-US scope；以 native MockTransport、真 Source／normalization／proof，分別驗證原 daily 8 次與 historical
+US scope；以 native MockTransport、真 Source／normalization／proof，分別驗證 daily `FULL_WORK_MAX_ATTEMPTS` 與 historical
 schedule 上限、cooldown 跨 tail／重啟保存、耗盡 manual 或最後合法 attempt 成功，沒有增加 historical scopes。
 Account clock fixture 只移動 governor、PG queue／retry sender 與已由 Source 驗證的回傳 authorization 時間座標，不清除 usage、
 cooldown、audits 或原 failure counter。

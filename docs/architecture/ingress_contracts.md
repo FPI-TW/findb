@@ -173,7 +173,7 @@ Control protocol v1 定義在 `backend/app/schemas/full_market.py`，與 ingest 
 - `/source/delivery-plans/{plan_id}/outcomes` 記錄 no_data／blocked。
 
 Universe material change 計入新增／刪除與 mapping、分類、幣別、exchange、契約身分等欄位變更；
-僅每日 `raw_evidence_ref` 更新不計入 `>20` 或 `>2%` 異常門檻。Provenance 仍保留於
+僅每日 `raw_evidence_ref` 更新不計入 `>2%` 異常門檻。Provenance 仍保留於
 不可變 release 成員與 digest，重送相同內容仍使用既有 release。
 
 每 part 最多 50 成員，work item identity 為 `fp1:<part UUID hex>`。Ingest 的 `delivery.work_item_id`

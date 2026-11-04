@@ -247,7 +247,7 @@ receipt 與重試狀態跨重啟／fenced owner recovery 保留；不得刪檔�
 Full-market 清單與既有 reviewed bounded manifests 分開。官方 US、HKEX、TWSE／TPEx 與 TAIFEX
 快照保留不可變原始來源 checksum、effective date、分類、provider symbol／contract mapping；
 不得在 runtime 靜默改集合。第一份完整 baseline 先由 Owner 依官方證據發布；之後相對已
-published release 異動超過 20 或 2% 時需明確 exception approval，未通過的 candidate 不改
+published release 異動超過 2% 時需明確 exception approval，未通過的 candidate 不改
 既有 plan。
 
 TW ordinary equity 與各種 ETF 分開 dataset，ETF 不限 0050／0056 等 pilot；US ADR 與多股類，

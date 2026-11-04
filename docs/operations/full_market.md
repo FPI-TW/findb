@@ -255,7 +255,7 @@ entitlement 不足。缺欄、長度不一致、錯誤日期及其他永久格�
 Pilot／Full daily 每個原 work／provider symbol／日期最多三次空回應或未知派送觀測（包含首次），
 重新觀測至少間隔十五分鐘，並受既有抓取窗口、owner、quota、unknown debt 與 cooldown 限制。
 派送前的 journal reservation 在不確定邊界保守計數；可證明 Kbars 未派送的等待或 bootstrap
-失敗記為 `predispatch`，不占三次觀測額度。SDK 建立、登入、contracts 載入失敗仍依八次一般
+失敗記為 `predispatch`，不占三次觀測額度。SDK 建立、登入、contracts 載入失敗仍依 `FULL_WORK_MAX_ATTEMPTS` 一般
 失敗政策處理，已發出的 bootstrap native／登入用量不退款。程序中斷未能保存未派送證據時仍為 unknown。
 即使尚未保存任何空回應，未知派送也受三次上限與十五分鐘退避限制；不能因未取得回應而重新
 開啟額度。未證實為空時，本地記為 `unknown_dispatch`、Source 維持 `source_error`，不偽造空回應。
@@ -275,9 +275,9 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `empty_response` | 有空回應證據，原因未知；檢查觀測額度與下一次時間 |
 | `unknown_dispatch` | 曾保留未知派送責任，尚未證實空回應；同樣檢查觀測額度與退避 |
 | `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據 |
-| `retry_exhausted` | 本地一般失敗額度耗盡，不等於八次 native 請求 |
+| `retry_exhausted` | 本地一般失敗額度（`FULL_WORK_MAX_ATTEMPTS`，5 次，所有 provider 一致）耗盡，不等於五次 native 請求 |
 | `no_data` | Twelve Data 回報該檔該日無資料，不停止其他成員；依額度重試，不算成功或 no_data |
-| `no_data_exhausted` | `no_data` 額度耗盡（重試間隔 30 分鐘），缺漏須另行回補；只影響該檔。Breaker 連續觸發 8 次且其間沒有資料才結束 plan，此時先查是否為未發布休市日 |
+| `no_data_exhausted` | `no_data` 額度耗盡（重試間隔 30 分鐘），缺漏須另行回補；只影響該檔。Breaker 連續觸發 5 次且其間沒有資料才結束 plan，此時先查是否為未發布休市日 |
 | `prepared/normalizing` | 應查 Backend run 與序列收據；可能已完成，不能據此宣稱 queue 卡住 |
 
 診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source
@@ -342,7 +342,7 @@ attempt；不改舊 attempts、manifest、universe 或 plan。核准不啟動 co
 重啟仍先補報原 outcome、不新增 native 呼叫或重複扣除舊 attempts。
 原 coordinator 以 fenced `shioaji-repairs`／`shioaji-repair-ack` 安裝核准；先補報原 outcome、
 恢復 prepared／receipts，剩餘成員才可消耗最多三次額外觀測。重啟、ACK-loss 或重複 apply／ACK
-不補回已消耗 grant，也不重設原本八次失敗。Mapping 更正只有取得 canonical evidence 後才算 data。
+不補回已消耗 grant，也不重設原本的失敗次數。Mapping 更正只有取得 canonical evidence 後才算 data。
 本機已完成（包括 `source_proven_no_trade`）與原 prepared／receipts 成員保留進度，不重新安裝
 grant。只有確實保存 local repair 與 journal grant 的 repair ID 才回傳安裝 ACK；略過的修復
 不記為已安裝。兩個 checkpoint 間中斷時，以相同 repair ID 續作，不重複發放額度。
@@ -752,8 +752,16 @@ Raw R2 以內容雜湊決定 immutable object key，使用 `If-None-Match: *` �
 已鎖定物件。409／412 不直接視為成功；必須在同一 bucket/key 讀回完整且有大小上限的 bytes，
 核對長度、內容、content type 與 provider/dataset/symbol/SHA-256 metadata 後才可重用。
 讀取失敗或內容不一致仍阻擋交付，查無物件的競態可重試；不移除 bucket lock 或刪除物件。
-Twelve Data 的 catalogue 與實際日資料回應共用 Nasdaq MIC 規則：僅 `XNCM`、`XNGS`、
-`XNMS` 對應官方 `XNAS`，其餘交易所與幣別仍須完全符合 frozen universe；原始回應不改寫。
+Twelve Data 的 catalogue 以 Nasdaq MIC 規則比對：`XNCM`、`XNGS`、`XNMS` 對應官方 `XNAS`。
+目錄的交易所常落後於實際轉板，因此不要求一致：同交易所優先；沒有時，其他交易所只有一筆同幣別
+商品且公司名稱相符才 mapped。同代號在其他交易所可能是無關的公司，名稱不符維持 mapping gap。
+成員保留官方交易所；日資料回應僅核對幣別與 frozen universe 相符，原始回應不改寫。
+美股 universe 只含普通股、REIT 與 ADR：目錄 `type` 為 `Common Stock`、`REIT`、
+`American Depositary Receipt`、`Depositary Receipt` 才可 mapped，官方名稱未標明股類的成員由此
+`type` 決定分類。範圍外不列入 expected：名稱為 right、unit、warrant、特別股或債券類的官方成員，
+目錄 `type` 為 `Preferred Stock`、`Warrant`、`Right`、`Unit`、`Exchange-Traded Note` 的成員，
+以及名稱標示 fund、closed-end、trust 或 beneficial interest 且不在 Twelve Data 美股目錄的封閉式
+基金與信託。其餘無法對應的成員（目錄無此商品、公司名稱不符、合夥與信託類型）維持 mapping gap。
 Twelve Data universe refresh 只抓取 Source 當次授權的美國 country catalogue，不下載全球
 `/stocks` 目錄，也不再抓取香港 catalogue 或 HKEX 名單（港股屬 FactSet）。每個市場各自經過
 dataset-bound fresh authorization 與 account governor；回應大小上限維持不變，Raw 與 evidence URL
@@ -902,7 +910,8 @@ Prepare audit `01a17c1f-0e5f-7014-894f-4dca381161ed` 保存 checkpoint snapshot 
 TAIFEX provider work 0、checkpoint `unresolved=[]`／`manual_required=0`；Full Market TAIFEX
 維持 stopped。
 
-一般股票 universe 的自動發布仍使用絕對 20 筆及 2% 變更門檻。TAIFEX 到期換倉另使用
+一般股票 universe 的自動發布使用 2% 變更門檻，不另設絕對筆數上限；異動比例超過時保留 candidate，
+由 Owner 附 exception approval 發布。TAIFEX 到期換倉另使用
 fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週契約、regular／after_hours、
 相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
 共同契約可依官方報表增加 session，但不得移除既有 session。兩種規則的比較基準皆為 effective date

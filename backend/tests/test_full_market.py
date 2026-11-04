@@ -794,7 +794,7 @@ async def test_member_metadata_changes_still_trigger_ratio_threshold(test_sessio
 
 
 @pytest.mark.asyncio
-async def test_new_listings_count_toward_absolute_threshold(test_session):
+async def test_new_listings_count_toward_change_threshold(test_session):
     key = "hk_equity_eod"
     await _dataset(test_session, key)
     _, baseline = await _baseline(test_session, key, 1000)
@@ -805,6 +805,28 @@ async def test_new_listings_count_toward_absolute_threshold(test_session):
     held = await submit_universe(test_session, body, allowed_datasets=[key])
     assert held.status == "candidate" and held.change_count == 21
     assert held.release_id != baseline.release_id
+
+
+@pytest.mark.asyncio
+async def test_large_universe_churn_auto_publishes_within_the_ratio_only(test_session):
+    key = "hk_equity_eod"
+    await _dataset(test_session, key)
+    await _baseline(test_session, key, 2000)
+    accepted = await submit_universe(
+        test_session, _universe(key, 2040, DAY + timedelta(days=1)), allowed_datasets=[key]
+    )
+    assert accepted.status == "published" and accepted.change_count == 40
+    held = await submit_universe(
+        test_session, _universe(key, 2082, DAY + timedelta(days=2)), allowed_datasets=[key]
+    )
+    assert held.status == "candidate" and held.change_count == 42
+    with pytest.raises(FullMarketError, match="exception"):
+        await publish_universe(
+            test_session,
+            held.release_id,
+            UniversePublishRequest(evidence_note="Anomalous change reviewed by owner."),
+            actor="test-owner",
+        )
 
 
 @pytest.mark.asyncio

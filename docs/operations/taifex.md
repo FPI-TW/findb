@@ -41,7 +41,7 @@ EOD，一般（regular）與盤後（after_hours）分開保存；價差與 cont
   retry 重排。同一計畫自第一次故障起持續超過 12 小時仍未取得報表時，後續成員直接轉
   `retry_exhausted` 並回報 source_error；任一成員成功取得報表即重設起算點。進行中的故障列於
   health 的 `provider_outages`（plan、交易日與起始時間）。403 等其他錯誤仍逐成員記
-  source_error，連續 8 次後轉 `retry_exhausted` 人工處理。
+  source_error，連續 5 次後轉 `retry_exhausted` 人工處理。
   故障起始時間存於各 profile checkpoint 的 `full_provider_outage` table；Fetcher 啟動時以
   `CREATE TABLE IF NOT EXISTS` 新增，不改寫既有 rows 或 quota debt。
 - Canonical 每商品一個 instrument、每實際契約一筆 `futures_contract`，行情以契約＋交易日＋

@@ -72,8 +72,9 @@ admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Fu
 
 Universe 由官方清單建立 immutable release，保留來源 URL、checksum、觀測時間、effective
 date、classification 與 provider mapping。第一份 baseline 需要 Owner 明確 audited approval；
-相對上一份 published release 異動超過 20 個成員或 2% 時保留 candidate，須明確 exception
-approval 才可發布。Mapping gap 仍列為 expected，不能刪除成員來降低分母。
+相對上一份 published release 異動超過 2% 時保留 candidate，須明確 exception approval 才可發布。
+Mapping gap 仍列為 expected，不能刪除成員來降低分母；範圍排除只依明文類別，見
+[Full market 維運](../operations/full_market.md)。
 
 每個 profile／已到排程時間的日期建立 frozen daily delivery plan，以 release 固定成員、日期與 work item；
 只有 provider 明確設定跳過非交易日時才記錄 durable skip。TAIFEX 新計畫使用同日期官方報表的 published release。

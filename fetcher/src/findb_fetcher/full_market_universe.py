@@ -34,6 +34,19 @@ TAIFEX_HISTORY_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 # ISO 10383 links these Nasdaq listing segments to operating MIC XNAS.
 NASDAQ_LISTING_SEGMENTS = frozenset({"XNCM", "XNGS", "XNMS"})
+TWELVE_DATA_EQUITY_TYPES = frozenset(
+    {"Common Stock", "REIT", "American Depositary Receipt", "Depositary Receipt"}
+)
+# Explicitly outside the US equity scope; any other unmappable listing stays an expected gap.
+TWELVE_DATA_OUT_OF_SCOPE_TYPES = frozenset(
+    {"Preferred Stock", "Warrant", "Right", "Unit", "Exchange-Traded Note"}
+)
+_NASDAQ_TRAILING_RIGHT_OR_UNIT = re.compile(r"\b(?:right|unit)s?\b[.\s]*$")
+_NASDAQ_FUND_NAME = re.compile(r"\bfund\b|\bclosed[- ]end\b|\btrust\b|\bbeneficial interest\b")
+_COMPANY_NAME_FILLER = re.compile(
+    r"\b(?:inc|corp|corporation|company|co|ltd|limited|plc|the|class|common|stock|shares?|ordinary"
+    r"|a|b|holdings?|group|llc|sa|nv|adr|american|depositary|and|of|acquisition)\b"
+)
 
 
 class UniverseSnapshotError(ValueError):
@@ -106,6 +119,9 @@ def parse_nasdaq(raw: bytes, *, other: bool = False) -> list[dict[str, Any]]:
             )
         ):
             continue
+        # An ADR name can end with the unit it represents ("each representing one Unit").
+        if _NASDAQ_TRAILING_RIGHT_OR_UNIT.search(name) and "depositar" not in name:
+            continue
         exchange = exchanges.get(row.get("Exchange", "")) if other else "XNAS"
         if exchange is None:  # OTC/unknown markets are outside the requested major exchanges.
             continue
@@ -127,6 +143,15 @@ def parse_nasdaq(raw: bytes, *, other: bool = False) -> list[dict[str, Any]]:
     if not members:
         raise UniverseSnapshotError("Nasdaq directory is empty")
     return members
+
+
+def nasdaq_security_names(raw: bytes, *, other: bool = False) -> dict[str, str]:
+    """Official security names, which members leave out of the published contract."""
+    column = "ACT Symbol" if other else "Symbol"
+    return {
+        row[column]: row.get("Security Name") or ""
+        for row in csv.DictReader(io.StringIO(raw.decode("utf-8-sig")), delimiter="|")
+    }
 
 
 def _xlsx_rows(raw: bytes) -> list[dict[str, str]]:
@@ -325,13 +350,9 @@ def canonical_twelve_data_mic(mic: str) -> str:
     return "XNAS" if mic in NASDAQ_LISTING_SEGMENTS else mic
 
 
-def map_catalogue(
-    members: Iterable[dict[str, Any]],
-    catalogue: Iterable[Mapping[str, Any]],
-    *,
-    shioaji: bool = False,
-) -> list[dict[str, Any]]:
-    """Retain every expected member; only exact exchange/currency mappings become mapped."""
+def _index_catalogue(
+    catalogue: Iterable[Mapping[str, Any]], *, shioaji: bool = False
+) -> dict[tuple[str, str, str], list[Mapping[str, Any]]]:
     indexed: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
     for row in catalogue:
         symbol = str(row.get("symbol", ""))
@@ -343,11 +364,84 @@ def map_catalogue(
             exchange = {"TSE": "XTAI", "OTC": "ROCO"}.get(exchange, exchange)
             currency = currency or "TWD"
         indexed.setdefault((symbol, exchange, currency), []).append(row)
+    return indexed
+
+
+def _same_company(official_name: str, catalogue_name: object) -> bool:
+    def core(name: str) -> str:
+        return " ".join(
+            _COMPANY_NAME_FILLER.sub(" ", re.sub(r"[^a-z0-9 ]", " ", name.lower())).split()
+        )
+
+    return bool(core(official_name)) and core(official_name) == core(str(catalogue_name or ""))
+
+
+def _us_candidates(
+    member: Mapping[str, Any],
+    indexed: Mapping[tuple[str, str, str], list[Mapping[str, Any]]],
+    official_names: Mapping[str, str],
+) -> list[Mapping[str, Any]]:
+    """The exact listing, else the only one under another exchange naming the same company.
+
+    The catalogue lags exchange transfers, but a ticker on another venue is often an unrelated
+    issuer, so a different exchange only maps when the company name also agrees.
+    """
+    exact = indexed.get((member["symbol"], member["exchange"], member["currency"]), [])
+    if exact:
+        return exact
+    elsewhere = [
+        row
+        for (symbol, _, currency), rows in indexed.items()
+        if symbol == member["symbol"] and currency == member["currency"]
+        for row in rows
+    ]
+    official_name = official_names.get(member["symbol"], "")
+    if len(elsewhere) == 1 and _same_company(official_name, elsewhere[0].get("name")):
+        return elsewhere
+    return []
+
+
+def scope_us_members(
+    members: Iterable[dict[str, Any]],
+    catalogue: Iterable[Mapping[str, Any]],
+    *,
+    official_names: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Drop only listings the US equity scope excludes; other gaps stay expected."""
+    indexed = _index_catalogue(catalogue)
+    listed = {symbol for symbol, _, _ in indexed}
+    result = []
+    for member in members:
+        candidates = _us_candidates(member, indexed, official_names)
+        if len(candidates) == 1 and candidates[0].get("type") in TWELVE_DATA_OUT_OF_SCOPE_TYPES:
+            continue
+        # A fund the provider also lists as an equity (such as a BDC) remains in scope.
+        if member["symbol"] not in listed and _NASDAQ_FUND_NAME.search(
+            official_names.get(member["symbol"], "").lower()
+        ):
+            continue
+        result.append(member)
+    return result
+
+
+def map_catalogue(
+    members: Iterable[dict[str, Any]],
+    catalogue: Iterable[Mapping[str, Any]],
+    *,
+    shioaji: bool = False,
+    us_official_names: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Retain every expected member; only verified catalogue listings become mapped."""
+    indexed = _index_catalogue(catalogue, shioaji=shioaji)
     result = []
     for member in members:
         member = dict(member)
         # HKEX numeric canonical code keeps zeros; provider catalogue is joined by numeric code.
-        candidates = indexed.get((member["symbol"], member["exchange"], member["currency"]), [])
+        candidates = (
+            _us_candidates(member, indexed, us_official_names)
+            if us_official_names is not None
+            else indexed.get((member["symbol"], member["exchange"], member["currency"]), [])
+        )
         if member["exchange"] == "XHKG" and not candidates:
             candidates = [
                 row
@@ -358,13 +452,19 @@ def map_catalogue(
                 and currency == member["currency"]
                 for row in rows
             ]
-        if len(candidates) == 1 and member["classification"] != "classification_gap":
+        if len(candidates) == 1:
             row = candidates[0]
-            if shioaji or row.get("type") in {
-                "Common Stock",
-                "American Depositary Receipt",
-                "Depositary Receipt",
-            }:
+            unclassified = member["classification"] == "classification_gap"
+            if shioaji:
+                mapped = not unclassified
+            else:
+                mapped = row.get("type") in TWELVE_DATA_EQUITY_TYPES
+                # Directory names are free text; the provider type settles what they leave open.
+                if mapped and unclassified:
+                    member["classification"] = (
+                        "adr" if "Depositary" in str(row["type"]) else "ordinary"
+                    )
+            if mapped:
                 member["provider_symbol"] = str(row.get("provider_symbol", row["symbol"]))
                 member["mapping_status"] = "mapped"
         result.append(member)
