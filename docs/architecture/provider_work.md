@@ -105,7 +105,9 @@ unknown 或 terminal polling timeout 後，即停止該輪的新 provider I/O �
 member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain，再安全 tail retry。
 例外是 Twelve Data 的成員層級 `no_data`（HTTP 400 "No data is available"）：它不代表 provider 或帳號
 異常，回報 `source_error` 並保存診斷後繼續下一個 member，該 member 依原 attempt 上限重試，耗盡後為
-`manual / no_data_exhausted`。部分標的的資料可能較晚發布，所以 `no_data` 重試至少間隔 30 分鐘；只剩退避中
+`manual / no_data_exhausted`。部分標的的資料可能晚數小時才發布，所以每次 `no_data` 失敗後依序至少等待 30、60、60、
+120 分鐘再試（5 次含第一次抓取）。美股第一輪約 3.5 小時，最後一次約在隔日 05:30–06:05 UTC，work 也在這時才結算。
+重試不增加呼叫次數，晚到的列多半是成交量 0、價格不變的占位資料，仍照常寫入。只剩退避中
 的成員時，下一 attempt 排到最近的重試時間，不空轉。同一輪連續 20 個 `no_data` 且其間沒有取得資料時視為
 系統性問題（例如未發布日曆的休市日），停止該輪，並讓所有待抓成員一起退避 30 分鐘。plan 已取得 20 個以上成員
 後，日期與 provider 都已證實正常，重試中的 `no_data` 不再計入，只有第一次嘗試才算。其他 Twelve Data 錯誤類別

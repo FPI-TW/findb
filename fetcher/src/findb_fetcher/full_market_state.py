@@ -22,8 +22,10 @@ FULL_WORK_MAX_ATTEMPTS = 5
 # Consecutive no-data members that stop a round: past this it is unlikely to be per symbol.
 # Also the acquired members that prove the date is open and the provider is serving it.
 FULL_WORK_NO_DATA_BREAKER = 20
-# A symbol's end-of-day row can publish later than the rest, so its retries span hours.
-FULL_WORK_NO_DATA_RETRY_SECONDS = 1800
+# A symbol's end-of-day row can publish hours later than the rest, so its retries span hours.
+# One wait after each failed attempt but the last; FULL_WORK_MAX_ATTEMPTS includes the first fetch.
+FULL_WORK_NO_DATA_RETRY_DELAYS = (1800, 3600, 3600, 7200)
+FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS = 1800
 
 
 class FullMarketStateError(RuntimeError):
@@ -914,15 +916,20 @@ class FullMarketState:
         with self.connection() as db:
             if reason == "normalizing":
                 db.execute("UPDATE full_work SET attempts=MAX(0,attempts-1) WHERE key=?", (key,))
+            retry_delay = 60
+            if reason == "no_data":
+                row = db.execute("SELECT attempts FROM full_work WHERE key=?", (key,)).fetchone()
+                spent = row[0] if row else 1
+                retry_delay = FULL_WORK_NO_DATA_RETRY_DELAYS[
+                    min(max(spent, 1), len(FULL_WORK_NO_DATA_RETRY_DELAYS)) - 1
+                ]
             db.execute(
                 "UPDATE full_work SET status=?,reason=?,receipt=COALESCE(?,receipt),lease_until=0,next_at=? WHERE key=?",
                 (
                     status,
                     reason,
                     receipt,
-                    now + (FULL_WORK_NO_DATA_RETRY_SECONDS if reason == "no_data" else 60)
-                    if status in {"pending", "prepared"}
-                    else 0,
+                    now + retry_delay if status in {"pending", "prepared"} else 0,
                     key,
                 ),
             )

@@ -33,7 +33,7 @@ from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarket
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_BREAKER,
-    FULL_WORK_NO_DATA_RETRY_SECONDS,
+    FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS,
     FullMarketState,
     FullMarketStateError,
     QuotaBlockedError,
@@ -2217,7 +2217,7 @@ class FullMarketRuntime:
                     if no_data_streak < FULL_WORK_NO_DATA_BREAKER:
                         continue
                     self.state.record_no_data_trip(
-                        plan["plan_id"], until=time.time() + FULL_WORK_NO_DATA_RETRY_SECONDS
+                        plan["plan_id"], until=time.time() + FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS
                     )
                 return False
             except ProviderWorkBasisMismatchError:
