@@ -11,7 +11,8 @@ from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_BREAKER,
-    FULL_WORK_NO_DATA_RETRY_SECONDS,
+    FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS,
+    FULL_WORK_NO_DATA_RETRY_DELAYS,
     FullMarketState,
 )
 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
@@ -493,7 +494,7 @@ def test_breaker_holds_every_pending_member_instead_of_advancing(tmp_path):
             assert not runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
         assert acquired == keys[:FULL_WORK_NO_DATA_BREAKER]
         runtime._settle_queued_round(owner)
-        assert owner.delays[-1] > FULL_WORK_NO_DATA_RETRY_SECONDS - 60
+        assert owner.delays[-1] > FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS - 60
         with owned_unit_work(runtime.provider, tmp_path):
             assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
         assert acquired == keys[:FULL_WORK_NO_DATA_BREAKER]
@@ -532,9 +533,67 @@ def test_no_data_member_recovers_on_a_later_round(tmp_path):
         runtime.close()
 
 
+def test_no_data_retries_wait_longer_until_the_budget_is_spent(tmp_path):
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    calls = 0
+
+    def acquire(member, *args):
+        nonlocal calls
+        if member["member_key"] == "AAPL":
+            calls += 1
+            raise _no_data_error()
+        return []
+
+    runtime._acquire = acquire
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    assert FULL_WORK_NO_DATA_RETRY_DELAYS == (1800, 3600, 3600, 7200)
+    assert len(FULL_WORK_NO_DATA_RETRY_DELAYS) == FULL_WORK_MAX_ATTEMPTS - 1
+    try:
+        for attempt, delay in enumerate(FULL_WORK_NO_DATA_RETRY_DELAYS, start=1):
+            before = time.time()
+            with owned_unit_work(runtime.provider, tmp_path):
+                runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
+            after = time.time()
+            assert _statuses(runtime)["AAPL"] == ("pending", "no_data", attempt)
+            with runtime.state.connection() as db:
+                next_at = db.execute(
+                    "SELECT next_at FROM full_work WHERE member_key='AAPL'"
+                ).fetchone()[0]
+                db.execute("UPDATE full_work SET next_at=0 WHERE member_key='AAPL'")
+            assert before + delay <= next_at <= after + delay
+        with owned_unit_work(runtime.provider, tmp_path):
+            runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
+        assert _statuses(runtime)["AAPL"] == (
+            "manual",
+            "no_data_exhausted",
+            FULL_WORK_MAX_ATTEMPTS,
+        )
+        assert calls == FULL_WORK_MAX_ATTEMPTS
+    finally:
+        runtime.close()
+
+
+def test_only_no_data_uses_the_long_retry_schedule(tmp_path):
+    runtime, _, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    now = time.time()
+    runtime.state.finish("fp1:123:AAPL", status="pending", reason="source_error", now=now)
+    try:
+        with runtime.state.connection() as db:
+            next_at = db.execute(
+                "SELECT next_at FROM full_work WHERE member_key='AAPL'"
+            ).fetchone()[0]
+        assert next_at == now + 60
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     "other_status,expected_delay_above",
-    [(None, FULL_WORK_NO_DATA_RETRY_SECONDS - 60), ("prepared", None)],
+    [(None, FULL_WORK_NO_DATA_RETRY_DELAYS[0] - 60), ("prepared", None)],
 )
 def test_retry_round_waits_only_when_every_remaining_member_is_backing_off(
     tmp_path, other_status, expected_delay_above
