@@ -26,6 +26,10 @@ FULL_WORK_NO_DATA_BREAKER = 20
 # One wait after each failed attempt but the last; FULL_WORK_MAX_ATTEMPTS includes the first fetch.
 FULL_WORK_NO_DATA_RETRY_DELAYS = (1800, 3600, 3600, 7200)
 FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS = 1800
+# Settled intents and past quota windows outlive every liability, login and cooldown read.
+ACCOUNT_LEDGER_RETENTION_SECONDS = 7 * 86400
+ACCOUNT_LEDGER_PRUNE_INTERVAL_SECONDS = 86400
+ACCOUNT_LEDGER_PRUNE_BATCH = 5000
 
 
 class FullMarketStateError(RuntimeError):
@@ -93,6 +97,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS acquisition_intent(operation_id TEXT PRIMARY KEY, account TEXT NOT NULL, provider TEXT NOT NULL, armed_at REAL NOT NULL, status TEXT NOT NULL, cooldown_bound REAL NOT NULL, actual_start REAL, completed_at REAL);
                 CREATE TABLE IF NOT EXISTS acquisition_usage(operation_id TEXT NOT NULL, observed_at REAL NOT NULL, bytes INTEGER NOT NULL, limit_bytes INTEGER NOT NULL, remaining_bytes INTEGER NOT NULL, PRIMARY KEY(operation_id,observed_at));
                 CREATE TABLE IF NOT EXISTS account_alias_audit(alias TEXT PRIMARY KEY, account TEXT NOT NULL, original_quota TEXT NOT NULL, original_pacing REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS account_ledger_retention (id INTEGER PRIMARY KEY CHECK(id=1), next_at REAL NOT NULL);
             """)
             if "reason" not in {
                 row[1] for row in db.execute("PRAGMA table_info(full_empty_outcome)")
@@ -123,6 +128,11 @@ class FullMarketState:
             db.execute(
                 "CREATE INDEX IF NOT EXISTS acquisition_login_window ON acquisition_intent(account,operation_kind,actual_start)"
             )
+            # Armed recovery and unknown liability run on every request; an
+            # account-prefix scan grows with the whole settled history.
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS acquisition_intent_status ON acquisition_intent(account,status,completed_at)"
+            )
             # Promote cooldowns written by older runtimes out of dated quota rows.
             for row in db.execute(
                 "SELECT account,MAX(blocked_until) FROM full_quota WHERE blocked_until>0 GROUP BY account"
@@ -140,6 +150,83 @@ class FullMarketState:
             "INSERT INTO full_account_cooldown VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET not_before=MAX(not_before,excluded.not_before),reason=CASE WHEN excluded.not_before>=not_before THEN excluded.reason ELSE reason END",
             (account, until, reason),
         )
+
+    def prune_account_ledger(
+        self, *, batch: int = ACCOUNT_LEDGER_PRUNE_BATCH
+    ) -> dict[str, int] | None:
+        """Drop settled account history past retention, at most once a day per ledger.
+
+        Recovery reads armed intents, liability reads unknown ones and quota reads
+        current windows, so finalized/cancelled history and past windows count
+        nowhere. Open debt is never pruned and usage is never refunded. Shioaji
+        history stays as evidence for its retirement tooling.
+        """
+        now = self.clock()
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT next_at FROM account_ledger_retention WHERE id=1").fetchone()
+            if row is not None and now < row[0]:
+                return None
+            # Claim before deleting so concurrent consumers skip; a crash resumes tomorrow.
+            db.execute(
+                "INSERT INTO account_ledger_retention VALUES(1,?) ON CONFLICT(id) DO UPDATE SET next_at=excluded.next_at",
+                (now + ACCOUNT_LEDGER_PRUNE_INTERVAL_SECONDS,),
+            )
+        cutoff = now - ACCOUNT_LEDGER_RETENTION_SECONDS
+        cutoff_day = datetime.fromtimestamp(cutoff, timezone.utc).date().isoformat()
+        with self.connection() as db:
+            retained = {
+                str(row[0])
+                for row in db.execute(
+                    "SELECT account FROM full_account_identity WHERE provider='shioaji' "
+                    "UNION SELECT account FROM acquisition_intent WHERE provider='shioaji'"
+                )
+            }
+            intent_accounts = [
+                str(row[0]) for row in db.execute("SELECT DISTINCT account FROM acquisition_intent")
+            ]
+            quota_accounts = [
+                str(row[0]) for row in db.execute("SELECT DISTINCT account FROM full_quota")
+            ]
+        removed = {"intents": 0, "quota_windows": 0}
+        for account in intent_accounts:
+            if account in retained:
+                continue
+            for status in ("finalized", "cancelled"):
+                while True:
+                    with self.connection() as db:
+                        db.execute("BEGIN IMMEDIATE")
+                        ids = [
+                            (row[0],)
+                            for row in db.execute(
+                                "SELECT operation_id FROM acquisition_intent WHERE account=? AND status=? AND completed_at<? LIMIT ?",
+                                (account, status, cutoff, batch),
+                            )
+                        ]
+                        db.executemany("DELETE FROM acquisition_usage WHERE operation_id=?", ids)
+                        db.executemany("DELETE FROM acquisition_intent WHERE operation_id=?", ids)
+                    removed["intents"] += len(ids)
+                    if len(ids) < batch:
+                        break
+        for account in quota_accounts:
+            if account in retained:
+                continue
+            while True:
+                with self.connection() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    # Day and minute windows both sort by their leading ISO date.
+                    windows = [
+                        (account, row[0])
+                        for row in db.execute(
+                            "SELECT window FROM full_quota WHERE account=? AND window<? AND blocked_until<? LIMIT ?",
+                            (account, cutoff_day, now, batch),
+                        )
+                    ]
+                    db.executemany("DELETE FROM full_quota WHERE account=? AND window=?", windows)
+                removed["quota_windows"] += len(windows)
+                if len(windows) < batch:
+                    break
+        return removed
 
     def bind_profile(self, profile: str) -> None:
         """Bind a checkpoint once; legacy full checkpoints retain all state verbatim."""

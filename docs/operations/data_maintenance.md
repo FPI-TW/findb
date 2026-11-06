@@ -93,6 +93,17 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 - Retention必須長於正常延遲、事故調查及contract migration窗口。
 - Raw刪除不影響canonical，但會失去rerun與provider payload audit能力。
 
+## Account governor保留
+
+共用帳號governor每日由Full／Pilot worker清理一次，同主機以`account_ledger_retention`記錄下次時間，
+多個consumer不重複執行；失敗只輸出`account_ledger_retention`診斷，不阻擋抓取。
+
+- 只刪`completed_at`超過7天的`finalized`／`cancelled` intent與其usage樣本。
+- 只刪7天前、`blocked_until`已過的`full_quota` window；當日window與未到期cooldown保留。
+- `armed`／`unknown` intent一律保留，用量不退款；Shioaji帳號全部保留，待退役流程處理。
+- 熱路徑以`acquisition_intent_status(account,status,completed_at)`查armed recovery與unknown liability。
+- 刪除後不自動VACUUM，空間由SQLite重用。
+
 ## Production universe與historical backfill
 
 Production universe是reviewed、versioned artifact，不在runtime自動換股：

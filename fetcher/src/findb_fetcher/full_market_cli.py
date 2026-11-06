@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from findb_fetcher.account_governor import prune_ledger
 from findb_fetcher.client import SourceAPIClient
 from findb_fetcher.config import FetcherConfig, app_environment, require_provider_work_protocol
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_client import FullMarketSourceClient
 from findb_fetcher.full_market_runtime import FullMarketRuntime
-from findb_fetcher.full_market_state import FullMarketState
+from findb_fetcher.full_market_state import FullMarketState, FullMarketStateError
 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
 from findb_fetcher.scheduler_control import SchedulerControlClient, scheduler_stop_event
 from findb_fetcher.source_recovery import (
@@ -160,6 +161,13 @@ def run_worker(
     poll_seconds: float,
 ) -> int:
     def iteration() -> int:
+        try:
+            pruned = prune_ledger()
+        except (sqlite3.Error, OSError, FullMarketStateError):
+            # Retention is housekeeping; a failure must not stop acquisition.
+            pruned = {"failed": 1}
+        if pruned is not None:
+            print(json.dumps({"account_ledger_retention": pruned}), flush=True)
         runtime.drain()
         observed = control.poll(observed_state="stopped")
         if observed.desired_state == "running" and can_acquire():
