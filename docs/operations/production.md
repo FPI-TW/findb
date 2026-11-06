@@ -678,7 +678,8 @@ DQ／delivery policy。
 ## External resources 與 secrets
 
 Cloudflare 帳號中建立 private `findb-production-raw` 與 `findb-production-canonical` R2 buckets。
-Raw lifecycle 30 日並保護前 7 日；Fetcher raw credential只可讀寫 raw。Canonical publisher只可
+Production raw 全桶由 Cloudflare lifecycle 在物件滿 90 天後刪除，bucket lock 保護前 7 天。
+Fetcher raw credential只可讀寫 raw。Canonical publisher只可
 讀寫 canonical，Serve reader只可讀 canonical，三組 access key/secret不得相同。管理 credential
 不得注入 runtime。
 
