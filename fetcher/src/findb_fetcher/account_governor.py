@@ -214,6 +214,14 @@ def reserve(provider: str, *, force: bool = False) -> Permit | None:
         time.sleep(min(wait, 1))
 
 
+def prune_ledger() -> dict[str, int] | None:
+    """Daily host-wide retention for the shared ledger; never creates one."""
+    path = Path(os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3"))
+    if not path.is_file():
+        return None
+    return FullMarketState(path).prune_account_ledger()
+
+
 def provider_permit(provider: str) -> Permit | None:
     # Acquisition is governed at the actual invocation boundary. Detached
     # reserve() remains a legacy ledger API, never a production provider gate.
