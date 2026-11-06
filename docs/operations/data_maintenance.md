@@ -86,12 +86,17 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 
 ## Raw retention
 
-- PostgreSQL `raw.market_payload`與Raw R2正式保存期為30天。
-- PostgreSQL由`RAW_RETENTION_ENABLED`／`RAW_RETENTION_DAYS`每日清理。
-- R2由Cloudflare lifecycle刪除，bucket lock保護前7天；application不主動刪object。
-- 事故、queue recovery或migration期間先暫停cleanup，避免失去rerun與audit evidence。
-- Retention必須長於正常延遲、事故調查及contract migration窗口。
-- Raw刪除不影響canonical，但會失去rerun與provider payload audit能力。
+- R2 是 provider 原始 bytes 的主要保存處。Staging 與 production 的 raw bucket 由 Cloudflare
+  lifecycle 在物件滿 90 天後刪除，由控制台管理。應用程式不主動刪除物件。
+- Production raw 全桶的 bucket lock 保護前 7 天。Staging 的 7 天鎖定套用於
+  `acceptance/raw_lock_probe/`。
+- PostgreSQL `raw.market_payload` 保存 Source ingress payload 30 天，由
+  `RAW_RETENTION_ENABLED`／`RAW_RETENTION_DAYS` 控制每日清理。Contract-only rerun
+  依賴仍在 PostgreSQL 的 raw。R2 的 90 天窗口保留 provider bytes 供稽核及重新映射。
+- Fetcher SQLite journal 與 checkpoint 是供工作重啟與恢復使用的暫存。其清理條件另依
+  Source 工作終態、恢復需求及 R2 證據判定。
+- 事故、queue recovery 或 migration 期間，先保留需要的 R2 證據，並暫停相關
+  PostgreSQL cleanup，以保留 rerun 能力。Canonical 資料依獨立規則保存。
 
 ## Production universe與historical backfill
 
@@ -228,8 +233,9 @@ canonical；重新抓取沿用 source precedence／fetched_at upsert，可更新
 報表 references，不建立零價格行情。空回應、缺商品、未知格式或未知成交量不得算 no-data。
 完成驗證要求 expected = data + no_data；有 data 時核對 run identity、raw manifest、成功筆數
 與 canonical keys，全日皆為已證明 no-data 時不建立空 Source run。
-完成證據另存 PostgreSQL historical item，不受 30 天 raw retention 影響；R2 到期後仍無法讀回
-原 CSV，證據摘要不取代原始檔。
+完成證據另存 PostgreSQL historical item，獨立於 Source ingress raw 的 30 天保存期。
+官方 CSV 與 manifest 依 R2 物件的 90 天 lifecycle 保存。R2 物件到期刪除後，historical item
+仍保留完成證據摘要，原 CSV 與 manifest 的 bytes 隨物件刪除。
 
 `findb-historical-taifex` 使用 `/var/lib/findb-taifex-fetcher/historical/state.sqlite3`，與日常
 checkpoint 隔離並共用 account governor。商品 bytes／references、manifest、prepared body、

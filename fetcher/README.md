@@ -86,7 +86,8 @@ prepared request → Source delivery/terminal wait。R2 object key 由 dataset�
 hash 與 content SHA-256 確定性產生；只傳 credential-free `r2://account-id/bucket/key`。
 JSON payload使用`.json`與`application/json`；TAIFEX歷史報表保留原始CP950 bytes，使用`.csv`與
 `text/csv; charset=big5`。既有immutable refs不改寫，新物件依實際格式建立。
-Raw object lifecycle 為 30 天、bucket lock 為 7 天，由 Cloudflare R2 管理。
+Staging 與 production 的 raw object lifecycle 為 90 天。Bucket lock 的適用範圍見
+[Raw retention](../docs/operations/data_maintenance.md#raw-retention)。
 
 ## Runtime 設定
 
