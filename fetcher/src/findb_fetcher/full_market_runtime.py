@@ -2177,7 +2177,12 @@ class FullMarketRuntime:
                     else exc.is_rate_limited
                 )
                 reason = "rate_limited" if limited else "source_error"
-                no_data = isinstance(exc, TwelveDataResponseError) and exc.category == "no_data"
+                # A symbol the catalogue lists before its series is served answers 404,
+                # so it shares the member-scoped no-data budget; diagnostics keep the class.
+                no_data = isinstance(exc, TwelveDataResponseError) and exc.category in {
+                    "no_data",
+                    "not_found",
+                }
                 if limited:
                     self.state.rate_limited(
                         account=self.provider,

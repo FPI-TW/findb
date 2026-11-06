@@ -187,6 +187,7 @@ def test_last_attempt_report_failure_restarts_before_any_new_acquisition(
             400,
             400,
         ),
+        ("not_found", "not_found", 404, 404),
         ("plan", "plan_restricted", 200, 403),
         ("generic", "exception:RuntimeError", None, None),
     ],
@@ -208,6 +209,10 @@ def test_member_failure_appends_bounded_diagnostic_without_provider_text(
                 dispatched=True,
                 category="no_data",
             )
+        if error == "not_found":
+            raise TwelveDataResponseError(
+                "private-detail", status_code=404, provider_code=404, dispatched=True
+            )
         if error == "plan":
             raise TwelveDataResponseError(
                 "private-detail", status_code=200, provider_code=403, dispatched=True
@@ -221,7 +226,7 @@ def test_member_failure_appends_bounded_diagnostic_without_provider_text(
     try:
         with owned_unit_work(runtime.provider, tmp_path):
             scanned = runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
-        assert scanned is (error == "no_data")
+        assert scanned is (error in {"no_data", "not_found"})
         assert source.outcomes == [
             {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}
         ]
@@ -263,7 +268,15 @@ def _statuses(runtime):
         }
 
 
-def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path):
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"status_code": 400, "provider_code": 400, "category": "no_data"},
+        {"status_code": 404, "provider_code": 404},
+    ],
+    ids=["no_data", "not_found"],
+)
+def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path, reply):
     from findb_fetcher.providers.twelve_data import TwelveDataResponseError
 
     runtime, source, _ = _runtime(tmp_path)
@@ -273,13 +286,7 @@ def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path):
     def acquire(member, *args):
         acquired.append(member["member_key"])
         if member["member_key"] == "ACA":
-            raise TwelveDataResponseError(
-                "private-detail",
-                status_code=400,
-                provider_code=400,
-                dispatched=True,
-                category="no_data",
-            )
+            raise TwelveDataResponseError("private-detail", dispatched=True, **reply)
         return []
 
     runtime._acquire = acquire
@@ -309,11 +316,21 @@ def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path):
             )
         assert _statuses(runtime)["ACA"] == ("manual", "no_data_exhausted", FULL_WORK_MAX_ATTEMPTS)
         assert not runtime.state.has_blocking_manual("p")
+        expected = reply.get("category", "not_found")
+        assert {row["category"] for row in runtime.state.diagnostics("fp1:123:ACA")} == {expected}
     finally:
         runtime.close()
 
 
-def test_unbroken_no_data_run_is_bounded_and_ends_the_plan_as_systemic(tmp_path):
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"status_code": 400, "provider_code": 400, "category": "no_data"},
+        {"status_code": 404, "provider_code": 404},
+    ],
+    ids=["no_data", "not_found"],
+)
+def test_unbroken_no_data_run_is_bounded_and_ends_the_plan_as_systemic(tmp_path, reply):
     from findb_fetcher.providers.twelve_data import TwelveDataResponseError
 
     runtime, source, _ = _runtime(tmp_path)
@@ -322,13 +339,7 @@ def test_unbroken_no_data_run_is_bounded_and_ends_the_plan_as_systemic(tmp_path)
 
     def acquire(member, *args):
         acquired.append(member["member_key"])
-        raise TwelveDataResponseError(
-            "private-detail",
-            status_code=400,
-            provider_code=400,
-            dispatched=True,
-            category="no_data",
-        )
+        raise TwelveDataResponseError("private-detail", dispatched=True, **reply)
 
     runtime._acquire = acquire
     keys = [f"M{index:03d}" for index in range(FULL_WORK_NO_DATA_BREAKER + 10)]

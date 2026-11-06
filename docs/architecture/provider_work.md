@@ -110,8 +110,10 @@ member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain
 重試不增加呼叫次數，晚到的列多半是成交量 0、價格不變的占位資料，仍照常寫入。只剩退避中
 的成員時，下一 attempt 排到最近的重試時間，不空轉。同一輪連續 20 個 `no_data` 且其間沒有取得資料時視為
 系統性問題（例如未發布日曆的休市日），停止該輪，並讓所有待抓成員一起退避 30 分鐘。plan 已取得 20 個以上成員
-後，日期與 provider 都已證實正常，重試中的 `no_data` 不再計入，只有第一次嘗試才算。其他 Twelve Data 錯誤類別
-（含 `invalid_symbol`、`plan_restricted`）維持停止該輪。
+後，日期與 provider 都已證實正常，重試中的 `no_data` 不再計入，只有第一次嘗試才算。單檔 HTTP 404
+（`not_found`）同樣依此處理：商品清單可能先列出新代號（例如改名後的新 ticker），日線卻尚未提供；
+`full_work.reason` 與 `no_data` 相同，`full_work_diagnostic` 保留 `not_found` 類別以便分辨。其他 Twelve Data
+錯誤類別（含 `invalid_symbol`、`plan_restricted`）維持停止該輪。
 
 非 Shioaji 的 daily 結算：plan 尚有未結成員時，`mapping_gap` 與 `no_data_exhausted` 的 manual 成員只影響
 自身，該輪 tail retry 繼續處理其餘成員；其他 manual 原因可能是系統性問題，仍立即
