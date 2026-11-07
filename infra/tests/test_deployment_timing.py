@@ -108,7 +108,7 @@ def test_unconfirmed_remote_termination_reports_command_identity(tmp_path):
 
 
 @pytest.mark.parametrize("profile", ["pilot", "full_market"])
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 def test_scheduler_block_surfaces_only_safe_profile_and_provider(tmp_path, profile, provider):
     diagnostic = (
         "fetcher_deployment_blocked reason=scheduler_not_stopped "
@@ -128,7 +128,7 @@ def test_scheduler_block_surfaces_only_safe_profile_and_provider(tmp_path, profi
 
 
 @pytest.mark.parametrize("profile", ["pilot", "full_market", "historical"])
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
 def test_host_preflight_block_surfaces_identity_without_raw_output(tmp_path, profile, provider):
     diagnostic = (
         "fetcher_host_blocked reason=runtime_not_eligible "

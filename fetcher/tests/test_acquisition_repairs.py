@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from findb_fetcher.account_governor import main
-from findb_fetcher.acquisition import Acquisition, Authorization, authorization_scope
+from findb_fetcher.acquisition import Authorization, authorization_scope
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.providers.finlab import FinLabSdkError, FinLabSdkGateway
 from findb_fetcher.providers.twelve_data import (
@@ -170,11 +170,11 @@ def test_rollback_inspection_matches_rolling_unknown_login_across_midnight(
     monkeypatch.setattr("time.time", lambda: now)
     with governor.connection() as db:
         db.execute(
-            "INSERT INTO acquisition_intent(operation_id,account,provider,armed_at,status,cooldown_bound,operation_kind,request_units,login_units,completed_at) VALUES('unknown','sdk-account','shioaji',?,'unknown',300,'sdk_login',1,1,?)",
+            "INSERT INTO acquisition_intent(operation_id,account,provider,armed_at,status,cooldown_bound,operation_kind,request_units,login_units,completed_at) VALUES('unknown','sdk-account','finlab',?,'unknown',300,'sdk_login',1,1,?)",
             (unknown, unknown),
         )
         db.executemany(
-            "INSERT INTO acquisition_intent(operation_id,account,provider,armed_at,status,cooldown_bound,operation_kind,request_units,login_units,actual_start,completed_at) VALUES(?,'sdk-account','shioaji',?,'finalized',300,'sdk_login',1,1,?,?)",
+            "INSERT INTO acquisition_intent(operation_id,account,provider,armed_at,status,cooldown_bound,operation_kind,request_units,login_units,actual_start,completed_at) VALUES(?,'sdk-account','finlab',?,'finalized',300,'sdk_login',1,1,?,?)",
             [(f"known-{i}", unknown + 3600, unknown + 3600, unknown + 3600) for i in range(999)],
         )
     monkeypatch.setattr(
@@ -185,22 +185,13 @@ def test_rollback_inspection_matches_rolling_unknown_login_across_midnight(
             "--governor",
             str(governor.path),
             "--provider",
-            "shioaji",
+            "finlab",
         ],
     )
     main()
     inspection = json.loads(capsys.readouterr().out)
     assert inspection["legacy_rollback_safe"] is (not blocked)
     assert inspection["current_unknown_or_armed"] == int(blocked)
-    with (
-        authorization_scope(_grant),
-        Acquisition("shioaji", account="sdk-account", kind="sdk_login") as operation,
-    ):
-        if blocked:
-            with pytest.raises(QuotaBlockedError, match="rolling 24h"):
-                operation.start()
-        else:
-            operation.start()
 
 
 def _finlab_sdk(http, logins):

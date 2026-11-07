@@ -560,15 +560,6 @@ def durable_response(
                     tuple(data["symbols"]),
                     tuple(tuple(row) for row in data["values"]),
                 )
-            elif kind == "ShioajiKbarsSnapshot":
-                from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot
-
-                result = ShioajiKbarsSnapshot(
-                    **{
-                        **data,
-                        "kbars": {key: tuple(values) for key, values in data["kbars"].items()},
-                    }
-                )
             elif kind in {"dict", "list", "tuple"}:
                 result = tuple(data) if kind == "tuple" else data
             else:

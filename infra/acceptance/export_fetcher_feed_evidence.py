@@ -113,64 +113,6 @@ def _daily_provider(provider: str) -> dict[str, Any]:
     }
 
 
-def _shioaji() -> dict[str, Any]:
-    default_manifest = (
-        "/app/configs/shioaji_tw50_2026_09_21.v2.json"
-        if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
-        else "/app/configs/shioaji_tw_staging_pilot.v3.json"
-    )
-    manifest_path = Path(
-        os.getenv(
-            "FETCHER_SHIOAJI_PRODUCTION_MANIFEST",
-            default_manifest,
-        )
-    )
-    state_path = Path(
-        os.getenv(
-            "FETCHER_SHIOAJI_STATE_PATH",
-            "/var/lib/findb-shioaji-fetcher/staging-pilot-v3/state.sqlite3",
-        )
-    )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    with _open_read_only(state_path) as db:
-        db.row_factory = sqlite3.Row
-        rows = db.execute(
-            """
-            SELECT u.target_date, u.execution_date, u.status AS daily_status,
-                   s.dataset_key, s.status, s.terminal_status, s.terminal_reason,
-                   group_concat(s.source_run_id) AS run_ids, count(*) AS work_items, sum(s.attempts) AS provider_attempts,
-                   sum(CASE WHEN s.raw_ref IS NOT NULL THEN 1 ELSE 0 END) AS raw_receipts,
-                   sum(CASE WHEN s.source_attempt_id IS NOT NULL AND s.source_run_id IS NOT NULL
-                            THEN 1 ELSE 0 END) AS source_receipts
-            FROM daily_updates u
-            JOIN snapshot_sequences s USING (daily_id)
-            GROUP BY u.target_date, u.execution_date, u.status, s.dataset_key,
-                     s.status, s.terminal_status, s.terminal_reason
-            ORDER BY u.target_date DESC, s.dataset_key, s.status
-            """
-        ).fetchall()
-    selected_dates = sorted({str(row["target_date"]) for row in rows}, reverse=True)[:2]
-    return {
-        "provider": "shioaji",
-        "datasets": ["tw_equity_minute", "tw_etf_minute"],
-        "config": {
-            "manifest_sha256": _sha256(manifest_path),
-            "universe_id": manifest["universe_id"],
-            "governance": manifest["governance"],
-            "sequences": manifest["sequences"],
-        },
-        "credits": {
-            "kind": "not_applicable",
-            "estimated_per_run": None,
-            "configured_cap": None,
-            "reason": "provider_not_credit_metered",
-        },
-        "recent_trade_dates": [
-            dict(row) for row in rows if str(row["target_date"]) in selected_dates
-        ],
-    }
-
-
 def _taifex() -> dict[str, Any]:
     config_path = Path("/app/configs/taifex_tw_staging_pilot.v1.json")
     state_path = Path(
@@ -220,10 +162,8 @@ def main() -> int:
         result = _daily_provider(provider)
     elif provider == "taifex":
         result = _taifex()
-    elif provider == "shioaji":
-        result = _shioaji()
     else:
-        raise SystemExit("FINDB_EVIDENCE_PROVIDER must be twelve_data, finlab, shioaji, or taifex")
+        raise SystemExit("FINDB_EVIDENCE_PROVIDER must be twelve_data, finlab, or taifex")
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))
     return 0
 

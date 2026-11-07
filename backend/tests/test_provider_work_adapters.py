@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import json
-import sqlite3
 import time
 
 import pytest
@@ -95,63 +94,9 @@ async def _assert_historical_completed(h):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("dataset,count", [("tw_equity_minute", 50), ("tw_etf_minute", 3)])
-async def test_production_shioaji_historical_manifest_reaches_canonical_with_fifo_receipts(
-    client, test_session, test_engine, monkeypatch, tmp_path, dataset, count
-):
-    h = await RuntimeHarness(
-        client,
-        test_session,
-        test_engine,
-        monkeypatch,
-        tmp_path,
-        "shioaji",
-        dataset,
-        environment="production",
-    ).initialize()
-    # run() resets its deadline from execution_timeout. Fifty isolated SDK
-    # members need more headroom than the four-member pilot's 25-second bound.
-    h.execution_timeout = 90
-    try:
-        offset = h.shioaji_clock
-        assert offset is not None
-        # Nominal 50-member acceptance uses a controlled parent/child grant
-        # clock. Durable quota/window waits still advance through FIFO retries.
-        for _ in range(4):
-            assert await h.run()
-            h.db.expire_all()
-            work = await h.db.scalar(
-                select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
-            )
-            if work.state == "completed":
-                break
-            with sqlite3.connect(h.path / "historical" / f"{h.request_id}.sqlite3") as checkpoint:
-                statuses = checkpoint.execute(
-                    "SELECT symbol,attempts,status,terminal_status,terminal_reason "
-                    "FROM snapshot_sequences WHERE terminal_status IS NOT NULL "
-                    "AND terminal_status != 'completed'"
-                ).fetchall()
-            assert work.state == "queued", (h.failure, statuses)
-            offset[0] += 61
-        await _assert_historical_completed(h)
-        work = await h.db.scalar(
-            select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
-        )
-        assert len(work.manifest["sequences"]) == count
-        assert len(h.runs) == count
-        assert work.manifest["universe_id"] == "shioaji_tw50_2026_09_21_v2"
-        assert [row["sequence"] for row in work.manifest["sequences"]] == list(range(1, count + 1))
-        assert {row["sequence_count"] for row in work.manifest["sequences"]} == {count}
-    finally:
-        h.allow_confirm.set()
-        h.allow_terminal.set()
-        h.release_process_lock()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime",
-    [("finlab", "tw_equity_eod"), ("taifex", "tw_futures_eod"), ("shioaji", "tw_etf_minute")],
+    [("finlab", "tw_equity_eod"), ("taifex", "tw_futures_eod")],
     indirect=True,
 )
 async def test_cancel_after_local_prepared_save_before_confirmation_drains_exact_bytes_and_blocks_next_owner(
@@ -354,194 +299,9 @@ async def test_preparation_intent_transaction_serializes_cancel_before_local_sav
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("native_runtime", [("shioaji", "tw_etf_minute", 2)], indirect=True)
-@pytest.mark.parametrize("cancelled", [False, True], ids=["running", "cancelled"])
-@pytest.mark.parametrize("fault", [503, 429, "lost-ack", "poll-timeout"])
-async def test_shioaji_retry_preserves_original_sequences_and_later_dates(
-    native_runtime, test_engine, admin_headers, cancelled, fault, monkeypatch
-):
-    from datetime import timedelta
-
-    import httpx
-
-    from app.models.provider_work import ProviderWorkAttempt
-    from app.utils import utc_now
-
-    h = native_runtime
-    handle = h.handle
-    injected = False
-    original_body = None
-    native_at_fault = None
-
-    def temporary_failure(request):
-        nonlocal injected, original_body, native_at_fault
-        should_fail = (
-            request.url.path == "/api/v1/source/ingest"
-            if fault != "poll-timeout"
-            else request.url.path.startswith("/api/v1/source/runs/")
-        )
-        if should_fail and not injected:
-            injected = True
-            native_at_fault = h.native_calls()
-            if cancelled:
-                response = asyncio.run_coroutine_threadsafe(
-                    h.client.post(
-                        f"/api/v1/admin/historical-backfills/{h.request_id}/cancel",
-                        headers=admin_headers,
-                    ),
-                    h.loop,
-                ).result(timeout=15)
-                assert response.status_code == 200
-            if fault in (503, 429):
-                original_body = request.content
-                return httpx.Response(
-                    fault, json={"detail": "temporary Source rejection"}, request=request
-                )
-            if fault == "lost-ack":
-                original_body = request.content
-                handle(request)
-                raise httpx.ReadError("simulated lost accepted acknowledgement")
-            from findb_fetcher.client import SourceAPIDeadlineExceeded
-
-            raise SourceAPIDeadlineExceeded("simulated terminal polling deadline")
-        return handle(request)
-
-    h.handle = temporary_failure
-    assert await h.run()
-    h.db.expire_all()
-    work = await h.db.scalar(
-        select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
-    )
-    work_id = work.work_id
-    frozen, prepared = work.manifest, dict((await prepared_map(h.db, work.work_id)))
-    assert injected and prepared
-    assert h.native_calls() == native_at_fault, (
-        "retryable failure must stop new native acquisition in this round"
-    )
-    assert len(prepared) == 1, "later frozen members must not gain new intents after the failure"
-    if cancelled and work.state == "cancelled":
-        # Lost acknowledgement/poll timeout may have already durably accepted
-        # the only original before cancellation; no original may be abandoned.
-        keys = set(
-            await h.db.scalars(
-                select(ProviderWorkReceipt.member_key).where(ProviderWorkReceipt.work_id == work_id)
-            )
-        )
-        assert set(prepared) <= keys
-    else:
-        assert work.state == "queued", h.failure
-        next_attempt = await h.db.scalar(
-            select(ProviderWorkAttempt).where(
-                ProviderWorkAttempt.work_id == work_id, ProviderWorkAttempt.state == "queued"
-            )
-        )
-        assert next_attempt and next_attempt.attempt_number == 2
-        assert next_attempt.drain_only == cancelled
-        next_attempt.not_before = utc_now() - timedelta(seconds=1)
-        await h.db.commit()
-        calls = h.native_calls()
-        h.handle = handle
-        if not cancelled:
-            assert (await h.db.get(HistoricalBackfillItem, h.item_ids[1])).status == "pending"
-            assert await h.run(), "the later date precedes the safe tail retry"
-            h.db.expire_all()
-            assert (await h.db.get(HistoricalBackfillItem, h.item_ids[1])).status == "completed", (
-                h.failure
-            )
-            assert (await h.db.get(ProviderWork, work_id)).state == "queued"
-            calls = h.native_calls()
-        assert await h.run()
-        h.db.expire_all()
-        work = await h.db.get(ProviderWork, work_id)
-        assert work.state == ("cancelled" if cancelled else "completed"), h.failure
-        assert work.manifest == frozen
-        saved = await prepared_map(h.db, work.work_id)
-        assert all(saved[key]["body"] == descriptor["body"] for key, descriptor in prepared.items())
-        if cancelled:
-            assert h.native_calls() == calls, "cancelled retry may only drain original prepared"
-        else:
-            original_symbol = json.loads(next(iter(prepared.values()))["body"])["payload"]["data"][
-                0
-            ]["symbol"]
-            assert h.native_calls().count(json.dumps(["kbars", original_symbol])) == calls.count(
-                json.dumps(["kbars", original_symbol])
-            ), "prepared retry must reuse the original native snapshot"
-    if original_body:
-        assert any(row["body"].encode() == original_body for row in prepared.values())
-    request = await h.db.get(HistoricalBackfillRequest, h.request_id)
-    assert request.status == ("cancelled" if cancelled else "completed")
-    assert all(
-        row.desired_state == "running"
-        for row in await h.db.scalars(
-            select(SchedulerControl).where(SchedulerControl.provider == h.provider)
-        )
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("native_runtime", [("shioaji", "tw_equity_minute")], indirect=True)
-@pytest.mark.parametrize("heartbeat_phase", ["before_dispatch", "before_go"])
-async def test_real_shioaji_gateway_and_legacy_smoke_cannot_bypass_owner_or_failed_heartbeat(
-    native_runtime, test_engine, capsys, heartbeat_phase
-):
-    from findb_fetcher.full_market_client import FullMarketSourceClient
-    from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
-    from findb_fetcher.shioaji_smoke_cli import main as smoke
-
-    h = native_runtime
-
-    def without_owner():
-        with pytest.raises(h.queue.ProviderWorkRecoveryBlockedError):
-            gateway = PersistentIsolatedShioajiGateway(
-                "offline", "offline", simulation=True, timeout_seconds=2
-            )
-            try:
-                gateway.catalogue()
-            finally:
-                gateway.close()
-        with h.queue.host_lock("shioaji"):
-            assert smoke(["--target-date", "2026-10-15", "--symbol", "2330"]) == 2
-
-    await asyncio.to_thread(without_owner)
-    assert not h.native_calls()
-
-    def failed_heartbeat():
-        with FullMarketSourceClient(h.config, client=h.http()) as source:
-            with pytest.raises(h.queue.ProviderWorkRecoveryBlockedError):
-                with h.queue.claimed_work(
-                    source, "shioaji", accepted_kinds=["historical"]
-                ) as owner:
-                    if heartbeat_phase == "before_dispatch":
-                        owner.failed.set()
-                    else:
-                        authorize = owner.authorize
-                        dispatches = 0
-
-                        def lose_heartbeat_at_ready():
-                            nonlocal dispatches
-                            dispatches += 1
-                            if dispatches == 2:
-                                owner.failed.set()
-                            authorize()
-
-                        owner.authorize = lose_heartbeat_at_ready
-                    gateway = PersistentIsolatedShioajiGateway(
-                        "offline", "offline", simulation=True, timeout_seconds=2
-                    )
-                    try:
-                        gateway.catalogue()
-                    finally:
-                        gateway.close()
-
-    await asyncio.to_thread(failed_heartbeat)
-    assert not h.native_calls()
-    assert "PROVIDER_WORK_REQUIRED" in capsys.readouterr().err
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime",
-    [("finlab", "tw_equity_eod"), ("shioaji", "tw_etf_minute"), ("twelve_data", "us_equity_eod")],
+    [("finlab", "tw_equity_eod"), ("twelve_data", "us_equity_eod")],
     indirect=True,
 )
 async def test_historical_restart_after_close_commit_replays_frozen_scope_without_provider_io(

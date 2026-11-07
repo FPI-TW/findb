@@ -3,21 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
 
 import findb_fetcher.historical_runtime as runtime
-import findb_fetcher.shioaji_historical as shioaji_historical
 from findb_fetcher.client import PreparedDelivery
-from findb_fetcher.config import FetcherConfig
-from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.finlab_universe import load_finlab_universe
 from findb_fetcher.historical_backfill import HistoricalWorkItem
 from findb_fetcher.providers.finlab import FinLabDatasetTable
@@ -27,9 +23,6 @@ from findb_fetcher.providers.twelve_data import (
 )
 from findb_fetcher.raw_storage import RawObject
 from findb_fetcher.schedule import load_schedule_manifest
-from findb_fetcher.shioaji_scheduler import EXPECTED as SHIOAJI_EXPECTED
-from findb_fetcher.shioaji_scheduler import GOVERNANCE, PILOT_UNIVERSE_ID, ProductionCoordinator
-from findb_fetcher.shioaji_staging_state import ShioajiStagingState
 from findb_fetcher.universe import load_symbol_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
@@ -213,181 +206,3 @@ def test_finlab_historical_runtime_uses_raw_first_prepared_terminal_delivery(
     assert run_id == RUN_ID
     assert events == ["fetch"] * 5 + ["raw", "prepare", "deliver", "terminal"]
     assert str(source.requests[0]["idempotency_key"]).startswith("finlab:")
-
-
-class _ShioajiGateway:
-    def __init__(self, events: list[str]) -> None:
-        self.events = events
-
-    def fetch_kbars(self, _symbol: str, _target: date) -> SimpleNamespace:
-        self.events.append("fetch")
-        return SimpleNamespace(
-            kbars={
-                "ts": (
-                    int(
-                        datetime.combine(
-                            _target, datetime.min.time(), ZoneInfo("Asia/Taipei")
-                        ).timestamp()
-                        * 10**9
-                    )
-                    + 9 * 3600 * 10**9
-                    + 60 * 10**9,
-                ),
-                "Open": (1,),
-                "High": (1,),
-                "Low": (1,),
-                "Close": (1,),
-                "Volume": (1,),
-                "Amount": (1,),
-            }
-        )
-
-
-def _historical_manifest() -> dict[str, object]:
-    return {
-        "version": 1,
-        "universe_id": PILOT_UNIVERSE_ID,
-        "governance": GOVERNANCE,
-        "sequences": [dict(row) for row in SHIOAJI_EXPECTED],
-    }
-
-
-def _configure_shioaji_runner(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    source: _Source,
-    events: list[str],
-) -> None:
-    monkeypatch.setenv("FETCHER_HISTORICAL_STATE_DIR", str(tmp_path / "historical"))
-    monkeypatch.setattr(shioaji_historical, "SourceAPIClient", lambda *_args: _Context(source))
-    monkeypatch.setattr(shioaji_historical, "R2RawPayloadStore", lambda _config: _RawStore(events))
-    monkeypatch.setattr(shioaji_historical.RawStorageConfig, "from_env", lambda: object())
-    monkeypatch.setattr(
-        shioaji_historical,
-        "IsolatedShioajiGateway",
-        SimpleNamespace(from_env=lambda: _ShioajiGateway(events)),
-    )
-    monkeypatch.setattr(shioaji_historical, "load_manifest", lambda _path: _historical_manifest())
-    monkeypatch.setattr(shioaji_historical, "default_manifest_path", lambda: Path("pilot.json"))
-
-    class AfterCutoffClock:
-        @staticmethod
-        def now(tz: ZoneInfo) -> datetime:
-            return datetime(2026, 7, 29, 17, 1, tzinfo=tz)
-
-    monkeypatch.setattr(shioaji_historical, "datetime", AfterCutoffClock)
-
-
-@pytest.mark.parametrize("dataset,count", [("tw_equity_minute", 50), ("tw_etf_minute", 3)])
-@pytest.mark.parametrize("age", [0, 30])
-def test_production_shioaji_historical_uses_all_manifest_sequences_within_31_days(
-    monkeypatch, tmp_path, dataset, count, age
-):
-    events = []
-    source = _Source(events, record_count=1)
-    _configure_shioaji_runner(monkeypatch, tmp_path, source, events)
-    monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    # Restore the real manifest loader: selecting old pilot constants would
-    # silently deliver only one of the fifty production equities.
-    from findb_fetcher.shioaji_scheduler import load_manifest
-
-    monkeypatch.setattr(shioaji_historical, "load_manifest", load_manifest)
-    monkeypatch.setattr(
-        shioaji_historical,
-        "default_manifest_path",
-        lambda: CONFIG_DIR / "shioaji_tw50_2026_09_21.v2.json",
-    )
-    item = _item("shioaji", dataset, "TW", date(2026, 7, 29) - timedelta(days=age))
-    runner = shioaji_historical.ExecutableShioajiHistoricalRunner(
-        fetcher=cast(FetcherConfig, SimpleNamespace()), contracts=ContractRegistry(CONTRACTS_DIR)
-    )
-    assert runner.run(item) == RUN_ID
-    assert events == ["fetch", "raw", "prepare", "deliver", "terminal"] * count
-    requests = source.requests
-    assert len(requests) == count
-    assert {request["dataset_key"] for request in requests} == {dataset}
-    batches = [request["payload"]["batch"] for request in requests]
-    assert [batch["sequence"] for batch in batches] == list(range(1, count + 1))
-    assert {batch["sequence_count"] for batch in batches} == {count}
-    # Completed request checkpoints replay receipts without another SDK call.
-    events.clear()
-    assert runner.run(item) == RUN_ID
-    assert events == []
-
-
-@pytest.mark.parametrize("age", [32, 365, -1])
-def test_production_shioaji_historical_rejects_dates_outside_window_before_acquisition(
-    monkeypatch, tmp_path, age
-):
-    events = []
-    source = _Source(events, record_count=1)
-    _configure_shioaji_runner(monkeypatch, tmp_path, source, events)
-    monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    from findb_fetcher.shioaji_scheduler import load_manifest
-
-    monkeypatch.setattr(shioaji_historical, "load_manifest", load_manifest)
-    monkeypatch.setattr(
-        shioaji_historical,
-        "default_manifest_path",
-        lambda: CONFIG_DIR / "shioaji_tw50_2026_09_21.v2.json",
-    )
-    item = _item("shioaji", "tw_equity_minute", "TW", date(2026, 7, 29) - timedelta(days=age))
-    with pytest.raises(shioaji_historical.ShioajiHistoricalBridgeUnavailableError):
-        shioaji_historical.ExecutableShioajiHistoricalRunner(
-            fetcher=cast(FetcherConfig, SimpleNamespace()),
-            contracts=ContractRegistry(CONTRACTS_DIR),
-        ).run(item)
-    assert events == []
-
-
-def test_shioaji_historical_runtime_bypasses_cutoff_isolates_state_and_requires_sequence(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    events: list[str] = []
-    source = _Source(events, record_count=1)
-    _configure_shioaji_runner(monkeypatch, tmp_path, source, events)
-    item = _item("shioaji", "tw_etf_minute", "TW", date(2026, 7, 29))
-
-    run_id = shioaji_historical.ExecutableShioajiHistoricalRunner(
-        fetcher=cast(FetcherConfig, SimpleNamespace()), contracts=ContractRegistry(CONTRACTS_DIR)
-    ).run(item)
-
-    assert run_id == RUN_ID
-    assert events == ["fetch", "raw", "prepare", "deliver", "terminal"] * 3
-    state_path = tmp_path / "historical" / f"{item.request_id}.sqlite3"
-    assert state_path.is_file()
-
-    # The normal scheduler remains cut off and never receives the request-scoped rows.
-    recurring_state = ShioajiStagingState(tmp_path / "recurring.sqlite")
-    recurring = ProductionCoordinator(
-        recurring_state,
-        _historical_manifest(),
-        _ShioajiGateway([]),
-        now=lambda: datetime(2026, 7, 29, 17, 1, tzinfo=ZoneInfo("Asia/Taipei")),
-    ).run(item.trade_date, deliver=True)
-    assert [result.code for result in recurring] == ["CUTOFF_REACHED"]
-    assert recurring_state.db.execute("SELECT count(*) FROM daily_updates").fetchone() == (0,)
-    recurring_state.close()
-
-
-def test_shioaji_historical_runtime_rejects_incomplete_terminal_sequence(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    events: list[str] = []
-    # A completed Source status with the wrong record count is not a completed
-    # sequence, so the adapter must fail the control item rather than complete it.
-    source = _Source(events, record_count=0)
-    _configure_shioaji_runner(monkeypatch, tmp_path, source, events)
-    item = _item("shioaji", "tw_etf_minute", "TW", date(2026, 7, 29))
-
-    from findb_fetcher.historical_backfill import HistoricalPreparedManualError
-
-    with pytest.raises(
-        HistoricalPreparedManualError, match="prepared delivery requires manual review"
-    ):
-        shioaji_historical.ExecutableShioajiHistoricalRunner(
-            fetcher=cast(FetcherConfig, SimpleNamespace()),
-            contracts=ContractRegistry(CONTRACTS_DIR),
-        ).run(item)
-
-    assert events == ["fetch", "raw", "prepare", "deliver", "terminal"] * 3

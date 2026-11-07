@@ -157,7 +157,7 @@ def test_empty_first_bootstrap_does_not_wait_for_installed_runtimes():
 def test_runtime_parser_requires_exact_accepted_inventory():
     parsed = recovery._parse_runtime_rows(docker_rows())
 
-    assert len(parsed) == 15
+    assert len(parsed) == 12
     assert all(row[-1] for row in parsed)
     with pytest.raises(ValueError, match="inventory is incomplete"):
         recovery._parse_runtime_rows(docker_rows()[:-1])

@@ -52,7 +52,7 @@ def _manifest(unit: str = "findb") -> dict[str, object]:
         "deployment_source_bundle_sha256": "d" * 64,
         "created_by_run_id": "123456",
         **(
-            {"fetcher_bundle_version": 2, "runtime_profile": "unified"} if unit == "fetcher" else {}
+            {"fetcher_bundle_version": 3, "runtime_profile": "unified"} if unit == "fetcher" else {}
         ),
     }
 
@@ -63,7 +63,11 @@ def _write_selected_source_bundle(root: Path, unit: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             relative
-            + ("\n# factset-consumers-v1:" if relative.endswith("deploy_fetcher_aws.sh") else ""),
+            + (
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                if relative.endswith("deploy_fetcher_aws.sh")
+                else ""
+            ),
             encoding="utf-8",
         )
     manifest_path = root / "contracts" / "manifest.json"
@@ -83,7 +87,7 @@ def test_pre_unification_manifest_is_below_rollback_floor(unit, version):
         release_manifest.validate_manifest(manifest, CONTRACT_DATA)
 
 
-@pytest.mark.parametrize("value", [False, 0, 3, "1"])
+@pytest.mark.parametrize("value", [False, 0, 4, "1"])
 def test_fetcher_bundle_version_rejects_unknown_or_malformed_format(value) -> None:
     manifest = _manifest("fetcher")
     manifest["fetcher_bundle_version"] = value
@@ -642,7 +646,11 @@ def test_bundle_digest_is_sorted_and_rejects_symlink_or_content_mutation(tmp_pat
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             relative
-            + ("\n# factset-consumers-v1:" if relative.endswith("deploy_fetcher_aws.sh") else ""),
+            + (
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                if relative.endswith("deploy_fetcher_aws.sh")
+                else ""
+            ),
             encoding="utf-8",
         )
     first = release_manifest.deployment_source_bundle_sha256(root, "findb")
@@ -1140,8 +1148,6 @@ def test_manifest_cli_rejects_non_file_bundle_input(tmp_path: Path) -> None:
             "--image",
             f"finlab={REGISTRY}/findb/staging/fetcher/finlab@sha256:{DIGEST}",
             "--image",
-            f"shioaji={REGISTRY}/findb/staging/fetcher/shioaji@sha256:{DIGEST}",
-            "--image",
             f"factset={REGISTRY}/findb/staging/fetcher/factset@sha256:{DIGEST}",
             "--created-by-run-id",
             "123",
@@ -1184,8 +1190,6 @@ def test_manifest_cli_rejects_a_symlinked_repo_root_for_generate_and_validate(
             "--image",
             f"finlab={REGISTRY}/findb/staging/fetcher/finlab@sha256:{DIGEST}",
             "--image",
-            f"shioaji={REGISTRY}/findb/staging/fetcher/shioaji@sha256:{DIGEST}",
-            "--image",
             f"factset={REGISTRY}/findb/staging/fetcher/factset@sha256:{DIGEST}",
             "--created-by-run-id",
             "123",
@@ -1225,8 +1229,6 @@ def test_manifest_cli_rejects_a_symlinked_repo_root_for_generate_and_validate(
             "--image",
             f"finlab={REGISTRY}/findb/staging/fetcher/finlab@sha256:{DIGEST}",
             "--image",
-            f"shioaji={REGISTRY}/findb/staging/fetcher/shioaji@sha256:{DIGEST}",
-            "--image",
             f"factset={REGISTRY}/findb/staging/fetcher/factset@sha256:{DIGEST}",
             "--created-by-run-id",
             "123",
@@ -1249,7 +1251,11 @@ def test_bundle_checksum_rejects_external_hardlink(tmp_path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             relative
-            + ("\n# factset-consumers-v1:" if relative.endswith("deploy_fetcher_aws.sh") else ""),
+            + (
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                if relative.endswith("deploy_fetcher_aws.sh")
+                else ""
+            ),
             encoding="utf-8",
         )
     target = root / release_manifest.FETCHER_BUNDLE_FILES[-1]
@@ -1268,7 +1274,11 @@ def test_bundle_checksum_rejects_directory_input(tmp_path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             relative
-            + ("\n# factset-consumers-v1:" if relative.endswith("deploy_fetcher_aws.sh") else ""),
+            + (
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                if relative.endswith("deploy_fetcher_aws.sh")
+                else ""
+            ),
             encoding="utf-8",
         )
     (root / "contracts" / "manifest.json").write_bytes(CONTRACT_MANIFEST.read_bytes())
@@ -1287,7 +1297,11 @@ def test_source_bundle_rejects_unsafe_parent_paths(tmp_path: Path, parent_kind: 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             relative
-            + ("\n# factset-consumers-v1:" if relative.endswith("deploy_fetcher_aws.sh") else ""),
+            + (
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                if relative.endswith("deploy_fetcher_aws.sh")
+                else ""
+            ),
             encoding="utf-8",
         )
     if parent_kind == "symlink":
@@ -1375,7 +1389,11 @@ def test_bundle_checksum_keeps_one_open_root_across_a_root_path_replacement(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             relative
-            + ("\n# factset-consumers-v1:" if relative.endswith("deploy_fetcher_aws.sh") else ""),
+            + (
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                if relative.endswith("deploy_fetcher_aws.sh")
+                else ""
+            ),
             encoding="utf-8",
         )
     expected = release_manifest.deployment_source_bundle_sha256(root, "fetcher")

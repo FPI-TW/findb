@@ -147,6 +147,8 @@ canonical與Serve前不可擴大下一批。
 
 ### Shioaji 股票／ETF 分鐘回補
 
+> Shioaji historical consumer 已移除，本節不再可執行（`--provider shioaji` 會被拒絕），僅供稽核既有回補紀錄；TW 分 K 回補待替代 provider 上線。
+
 Dashboard「歷史回補」的供應商與資料集清單由後端 scopes API 產生；需有 active dataset 與
 對應 Shioaji scheduler scope，production 不再另行排除 Shioaji。各環境的申請日期範圍皆為最近 31 個日曆日
 （含當日，最早為台北當日往前 30 天）；超出範圍或未來日期一律拒絕。當日新抓取仍須已過凍結日曆的收盤時間。

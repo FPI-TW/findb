@@ -2,7 +2,6 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -33,6 +32,7 @@ from app.services.full_market import (
 )
 from app.services.shioaji_repair import apply, approved, effective_mappings, inventory, preview
 from app.utils import utc_now, uuid7
+from tests.market_minute_fixture import market_minute_request
 from tests.test_full_market import DAY, _activated_plan
 
 EVIDENCE = {"url": "https://example.org/reviewed-evidence", "sha256": "a" * 64}
@@ -319,30 +319,13 @@ async def test_effective_mapping_is_used_by_ingress_and_no_data_still_requires_e
     test_session, monkeypatch
 ):
     work, member, _, plan, _ = await setup(test_session)
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "fetcher/src"))
-    from findb_fetcher.providers.shioaji import build_market_minute_request
-
     from app.services.ingress_contracts import validate_ingress_request
 
-    ts = int(
-        (datetime(DAY.year, DAY.month, DAY.day, 9, 1) - datetime(1970, 1, 1)).total_seconds() * 1e9
-    )
-    raw = build_market_minute_request(
-        {
-            "ts": (ts,),
-            "Open": (100,),
-            "High": (101,),
-            "Low": (99,),
-            "Close": (100,),
-            "Volume": (1,),
-            "Amount": (100,),
-        },
+    raw = market_minute_request(
+        member.symbol,
         dataset_key=work.dataset_key,
         target_date=DAY,
-        symbols=(member.symbol,),
         fetched_at=utc_now(),
-        usage_before_requests=0,
-        usage_after_requests=1,
         snapshot_id="original-snapshot",
         daily_update_id=str(plan.plan_id),
         universe_id=str(plan.release_id),
@@ -527,13 +510,10 @@ async def test_invalid_apply_response_is_rejected_before_commit(monkeypatch, res
         42,
     ],
 )
-def test_mapping_symbols_match_fetcher_validator(monkeypatch, field, symbol):
+def test_mapping_symbols_match_fetched_symbol_rules(field, symbol):
     from pydantic import ValidationError
 
     from app.schemas.shioaji_repair import MappingEvidence
-
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "fetcher/src"))
-    from findb_fetcher.providers.shioaji import ShioajiPayloadError, _validate_symbol
 
     values = {
         "symbol": "2330",
@@ -543,13 +523,16 @@ def test_mapping_symbols_match_fetcher_validator(monkeypatch, field, symbol):
         "reference": EVIDENCE,
         field: symbol,
     }
-    try:
-        _validate_symbol(symbol)
-    except ShioajiPayloadError:
+    if (
+        isinstance(symbol, str)
+        and 0 < len(symbol) <= 50
+        and symbol.isascii()
+        and symbol.replace(".", "").replace("-", "").isalnum()
+    ):
+        assert getattr(MappingEvidence.model_validate(values), field) == symbol
+    else:
         with pytest.raises(ValidationError):
             MappingEvidence.model_validate(values)
-    else:
-        assert getattr(MappingEvidence.model_validate(values), field) == symbol
 
 
 @pytest.mark.asyncio

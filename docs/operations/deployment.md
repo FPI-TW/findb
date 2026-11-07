@@ -16,7 +16,7 @@ Job 先 checkout immutable release，再於 `.deployment-driver` checkout protec
 | Unit | Staging | Production |
 | --- | --- | --- |
 | Backend＋Dashboard | `findb-cd.yml`，main 自動部署 | `findb-production-cd.yml`，人工 promotion |
-| Fetcher 四個 images、五個 providers | `fetcher-cd.yml`，main 自動部署 | `fetcher-production-cd.yml`，人工 promotion |
+| Fetcher 三個 images、四個 providers | `fetcher-cd.yml`，main 自動部署 | `fetcher-production-cd.yml`，人工 promotion |
 
 兩個 production 入口只保留各自的 dispatch inputs、concurrency、unit CI、部署器與失敗回報；
 tag 解析／binding 共用 `production-release.yml`，跨帳號 digest 複製與 production candidate bundle
@@ -148,12 +148,12 @@ Fetcher images 的 `/app`（venv、source、configs、contracts）維持 root �
 jsonschema 與 runtime CLI 的 `.pyc` 存在且對應原始碼 mtime／size。2026-10-26 staging 實測每次部署
 約啟動 50 個短命 CLI containers（每個約 3–4 秒）；本機以 0.5 CPU 量測 CLI 啟動由約 500ms 降至約 220ms。
 
-Fetcher 十五個 runtimes 的替換刻意維持序列：rollback journal 存在 coordinator shell 陣列，
+Fetcher 十二個 runtimes 的替換刻意維持序列：rollback journal 存在 coordinator shell 陣列，
 同 provider 的 Pilot／Full／historical 共用同一 secret consumer tmpfs 與帳號 governor lock；
 平行化需重新設計交易與復原，不屬於目前可在本機驗證的範圍。
 
 Staging Fetcher 在等待同 revision FinDB rollout 成功後、任何 Fetcher host mutation 前，會再執行
-post-rollout recovery gate。既有十五個 accepted runtimes 必須保持相同 container ID、image、start time
+post-rollout recovery gate。既有十二個 accepted runtimes 必須保持相同 container ID、image、start time
 與 restart count，並連續 running 60 秒；gate 最多等待 180 秒，讓 FinDB candidate／activation 期間因
 Source 暫停而退避等待，或因 active owner 不確定進入 Docker restart backoff 的 consumers 恢復。
 Idle Source 521 在新版長駐 CLI 應退避重查；active owner 的 fence／ACK 無法確認仍要求安全退出／recovery。
@@ -359,8 +359,8 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 ## Runtime 與持久化狀態
 
-每次 Fetcher 部署固定安裝十個 recurring runtimes：五個 `findb-pilot-*` 與五個 `findb-full-market-*`。
-兩者使用同一 `findb-fetch-runtime --execution-profile pilot|full_market` CLI、相同七條 feeds 與 calendar。
+每次 Fetcher 部署固定安裝八個 recurring runtimes：四個 `findb-pilot-*` 與四個 `findb-full-market-*`。
+兩者使用同一 `findb-fetch-runtime --execution-profile pilot|full_market` CLI、相同五條 feeds 與 calendar。
 `FULL_MARKET_ENABLED` 只控制 full market 的新抓取資格，不影響安裝拓撲。
 
 | 狀態 | 路徑 |
@@ -617,11 +617,52 @@ Production 順序（每一步都需 Owner 當次核准）：
 4. 重跑盤點，確認除 `calendar_closed` 外已無未結項，由 Owner 檢視 `RETIRED_FEED_MANUAL_REVIEW` 的
    work，並保存 checkpoint 備份後才進入移除 runtime 的下一階段。
 
-若 controls 已 stopped 且步驟 1 查無未結項與未交付 prepared bytes，可經 Owner 核准跳過此版的
-production 部署。2026-11-02 production 符合此條件，Owner 已核准跳過。
+若 controls 已 stopped 且步驟 1 查無未結項與未交付 prepared bytes，步驟 3 的取消可省略。
+2026-11-02 production 符合此條件：盤點後 Owner 原核准跳過此版，staging 驗證後改為部署。Owner 先在
+Dashboard 停止 `full_market_taifex_v1`（18→19）與 `full_market_twelve_data_v1`（14→15），
+[Fetcher Production CD 41472977839](https://github.com/FPI-TW/findb/actions/runs/41472977839) 以
+`fetcher-v0.1.18`（`8956e5e`）成功 promotion 後恢復兩者（→20、→16），Shioaji controls 維持 stopped。
+十五個 consumers 均 accepted、running、零重啟，三個 SQLite 通過 `quick_check`；Full checkpoint 保留的 36 個
+未完成 Shioaji plan 不變。此次未逐表比對部署前後指紋，也未實際觸發收尾（當時沒有未結 work）。
+Bundle：
+
+```text
+fetcher/production/accepted/8956e5e3f8b6555b39c2e4ef565685937c5a2530/48e6359be172b69063ca3b1a180eacd1a45fc36642d614d9484c3cc4f318f4d7.tar
+```
 
 TW 分 K 從步驟 2 起不再更新，直到替代 provider 上線。回退到含 Shioaji feed 的版本前，須先確認
 Owner 未啟動 controls；已結案為 failed 的 work 不會自動重開。
+
+## Shioaji 退役的 rollback 下限
+
+Fetcher bundle v3（marker `# shioaji-retired-v1:`）只含三個 images、四個 providers、十二個 consumers。
+`fetcher-v0.1.21` 是最後包含 Shioaji adapter、`market_minute` builder 與休市結清 CLI 的版本；需要時由
+此 tag 取回，替代 provider 不直接沿用。
+
+Candidate 與 activation 都會先在任何變更前檢查：三個 consumer 未在 restart 循環、已停止者為 exit 0，
+Pilot／Full 仍在執行者以自身 image 跑 `--require-stopped`，兩份 checkpoint 沒有未收到 receipt 的 Shioaji
+prepared bytes。任一未通過即以 `scheduler_not_stopped` 或 `retired_provider_*` 失敗，主機不變。此檢查碰不到
+Source 上的未結 work 與 historical checkpoint，下方步驟 1 仍須人工確認。
+
+部署腳本平常不會移除 consumer，因此此版在 activation 明確退役三個 `findb-*-shioaji`：其餘十二個
+consumers 通過觀察窗後才以 90 秒期限停止，須 exit 0，再改名為 `-previous` 留在 journal；後續任一步失敗
+都會還原並重新啟動原 consumer 與 current pointer，commit 後才移除。Candidate 不動它們。若存在
+`-candidate`、`-transaction-backup`、`-legacy-previous`、`-preflight*` 殘留或未 accepted 的 consumer，一律
+失敗，須人工確認。`provider-work-backup-*` 來源不明，不在此範圍。
+
+Host guard 由 workflow commit 執行，主機已安裝 v2 時仍要求 Shioaji consumers，已安裝 v3 才略過，因此
+v2→v3 不會死結。`check_full_market_checkpoint.sh` 與 SSM gate 為同一過渡保留 Shioaji 名稱。
+
+順序與限制：
+
+1. 先確認無 Shioaji 未結 work（`calendar_closed` 除外）與未交付 prepared bytes，Owner 停止所有 controls，
+   依 staging→production 部署；Backend 不需同步發布，catalog 與 Source scope 仍維持七條，直到 Backend 退役。
+2. Accepted 後此版成為新下限。`fetcher-deploy.yml` 拒絕 v3 以外的 bundle，v2 不再 replay，須回退時採 forward fix。
+3. `SHIOAJI_SIMULATION` 仍為 `runtime/configuration` 的 optional key，Shioaji secrets 與 ECR 也保留，
+   待 Backend 退役驗收後才清理；Shioaji CloudWatch alarm 指向更早的舊容器名稱，不受此版影響，同批移除。
+4. Backend `apply_cutover` 仍要求五個 provider lock，而 `provider_work_preflight.py` 只回報四個；
+   Backend 退役前不可重新做 provider-work cutover attestation。Shioaji controls 的 heartbeat 會停止更新，
+   Dashboard 顯示的年齡增加屬預期。
 
 ## Twelve Data HK 退役的 rollback 下限
 

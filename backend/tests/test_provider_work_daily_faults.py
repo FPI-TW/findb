@@ -34,8 +34,6 @@ DAILY_NATIVE_RUNTIMES = [
     ("twelve_data", "us_equity_eod"),
     ("finlab", "tw_equity_eod"),
     ("finlab", "tw_etf_eod"),
-    ("shioaji", "tw_equity_minute"),
-    ("shioaji", "tw_etf_minute"),
     ("taifex", "tw_futures_eod"),
 ]
 # Native rate-limit responses are Twelve Data payloads; other providers lack them.
@@ -63,28 +61,6 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     from tests import test_full_market as fixtures
 
     h = native_runtime
-    if h.provider == "shioaji":
-        from findb_fetcher import acquisition, shioaji_recovery
-
-        monkeypatch.setattr(shioaji_recovery, "time", acquisition.time)
-    empty_response = fault == "native-empty"
-    if empty_response:
-        from findb_fetcher import acquisition, shioaji_recovery
-        from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
-
-        monkeypatch.setattr(shioaji_recovery, "time", acquisition.time)
-        original_run = PersistentIsolatedShioajiGateway._run
-        observed = []
-
-        def empty_once(gateway, kind, **command):
-            value, before, after = original_run(gateway, kind, **command)
-            if kind == "kbars":
-                observed.append(command["symbol"])
-                if len(observed) == 1:
-                    value = {**value, "kbars": {key: [] for key in value["kbars"]}}
-            return value, before, after
-
-        monkeypatch.setattr(PersistentIsolatedShioajiGateway, "_run", empty_once)
     not_published = fault == "native-not-published"
     native_rate = fault in {"native-http429", "native-payload429"}
     member_no_data = fault == "native-no-data"
@@ -299,8 +275,6 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                     )
                     state.record_plan(plan, h.provider)
                     release = source.release(str(db_plan.release_id))
-                    if h.provider == "shioaji":
-                        release = runtime._install_shioaji_repairs(owner, plan, release)
                     result = runtime._deliver_plan(plan, release, feed)
                     runtime._settle_queued_round(owner)
                     return result
@@ -320,7 +294,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         h.source_events,
     )
     assert len(descriptors) == (
-        0 if fault == "native-network" or native_rate or not_published or empty_response else 1
+        0 if fault == "native-network" or native_rate or not_published else 1
     )
     if calls_at_failure is not None:
         assert h.native_calls() == calls_at_failure
@@ -419,16 +393,6 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                 "SELECT attempts FROM full_work WHERE member_key=?", (acquired_members[0],)
             ).fetchone()[0]
         assert budget_before == 1
-    if empty_response:
-        with FullMarketState(state_path).connection() as db:
-            assert (
-                db.execute(
-                    "SELECT attempts FROM full_work WHERE member_key=?", (acquired_members[0],)
-                ).fetchone()[0]
-                == 0
-            )
-    if h.provider == "shioaji" and (empty_response or fault == "native-network"):
-        h.shioaji_clock[0] += 901
     attempt.not_before = utc_now() - timedelta(seconds=1)
     await h.db.commit()
     with FullMarketState(state_path).connection() as db:
@@ -438,9 +402,6 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     h.db.expire_all()
     work = await h.db.get(ProviderWork, work_id)
     assert work.state == "completed" and work.manifest == frozen
-    if empty_response:
-        assert len(observed) == 3 and observed[0] == observed[1]
-        assert len(h.runs) == 2
     saved = await prepared_map(h.db, work.work_id)
     assert all(saved[key]["body"] == value["body"] for key, value in descriptors.items())
     if member_no_data:
@@ -499,18 +460,4 @@ async def test_daily_target_not_published_refetches_original_operation_after_res
 ):
     await test_daily_actual_native_failure_stops_round_and_next_attempt_completes_original_scope(
         native_runtime, test_engine, admin_headers, monkeypatch, "native-not-published"
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "native_runtime",
-    [("shioaji", "tw_equity_minute", 0), ("shioaji", "tw_etf_minute", 0)],
-    indirect=True,
-)
-async def test_shioaji_empty_native_observation_later_completes_original_scope(
-    native_runtime, test_engine, admin_headers, monkeypatch
-):
-    await test_daily_actual_native_failure_stops_round_and_next_attempt_completes_original_scope(
-        native_runtime, test_engine, admin_headers, monkeypatch, "native-empty"
     )

@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 PROFILES = ("pilot", "full-market", "historical")
-PROVIDERS = ("twelve-data", "finlab", "shioaji", "taifex", "factset")
+PROVIDERS = ("twelve-data", "finlab", "taifex", "factset")
 EXPECTED_RUNTIMES = tuple(
     f"findb-{profile}-{provider}" for profile in PROFILES for provider in PROVIDERS
 )

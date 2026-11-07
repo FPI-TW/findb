@@ -2,12 +2,11 @@
 
 import asyncio
 import hashlib
+import importlib.metadata
 import json
-import logging
-import multiprocessing
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs
@@ -20,7 +19,6 @@ from app.config import get_settings
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.services.historical_backfill import create_request
 from app.services.source_clients import create_source_client
-from app.utils import uuid7
 from scripts.seed_data import DATASETS
 from tests.provider_work_clock import recent_backfill_day
 from tests.test_canonical_ingest_api import _execute_run
@@ -29,12 +27,9 @@ from tests.test_provider_work import attest_cutover
 DAY = recent_backfill_day()
 # Longer than one TAIFEX harness run, including CI scheduling delay.
 MINUTE_ROLLOVER_MARGIN_SECONDS = 5
-SHIOAJI_TEST_PACING_SECONDS = 0.01
 SCOPES = [
     ("twelve_data", "us_equity_eod"),
     ("finlab", "tw_equity_eod"),
-    ("shioaji", "tw_equity_minute"),
-    ("shioaji", "tw_etf_minute"),
     ("taifex", "tw_futures_eod"),
 ]
 
@@ -78,10 +73,6 @@ class RuntimeHarness:
         self.failure = None
         self.deadline = time.monotonic() + 25
         self.dispatch_clock = None
-        self.shioaji_clock = None
-        self.shioaji_diagnostics = []
-        diagnostic_root = Path(os.getenv("FINDB_TEST_DIAGNOSTICS_DIR", str(path)))
-        self.shioaji_diagnostic_path = diagnostic_root / f"shioaji-{uuid7()}.jsonl"
 
     async def initialize(self):
         root = Path(__file__).resolve().parents[2]
@@ -95,22 +86,6 @@ class RuntimeHarness:
             from tests.provider_work_clock import dispatch_clock
 
             self.dispatch_clock = dispatch_clock(patch)
-        if self.provider == "shioaji":
-            from findb_fetcher import acquisition
-
-            # The 5/s platform pacing adds ~0.2s of real sleep per native call.
-            # Pacing floors and waits still run; only the interval is shortened.
-            patch.setattr(acquisition, "interval", lambda value: SHIOAJI_TEST_PACING_SECONDS)
-            # Existing recovery tests use the four-member pilot. Production
-            # acceptance exercises the real 50-equity/3-ETF manifest instead.
-            filename = (
-                "shioaji_tw50_2026_09_21.v2.json"
-                if self.environment == "production"
-                else "shioaji_tw_pilot.v1.json"
-            )
-            patch.setenv(
-                "FETCHER_SHIOAJI_PRODUCTION_MANIFEST", str(root / "fetcher/configs" / filename)
-            )
         self.queue = coordinator
         patch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
         patch.setattr(get_settings(), "APP_ENVIRONMENT", self.environment)
@@ -125,12 +100,11 @@ class RuntimeHarness:
             "FETCHER_FINLAB_UNIVERSE_FILE": str(
                 root / "fetcher/configs/finlab_tw_review_required.v1.json"
             ),
-            "SHIOAJI_API_KEY": "offline-shioaji",
-            "SHIOAJI_SECRET_KEY": "offline-secret",
         }.items():
             patch.setenv(key, value)
         inodes = {}
-        for provider in {provider for provider, _ in SCOPES} | {"factset"}:
+        # Backend cutover proof still names Shioaji until its scope is retired.
+        for provider in {provider for provider, _ in SCOPES} | {"factset", "shioaji"}:
             with coordinator.host_lock(provider) as (_, inode):
                 inodes[provider] = inode
         await attest_cutover(self.db, inodes)
@@ -185,10 +159,6 @@ class RuntimeHarness:
         self.registry = ContractRegistry(self.config.contracts_dir)
         patch.setattr(FetcherConfig, "from_env", classmethod(lambda cls: self.config))
         self.install_native_fakes()
-        if self.provider == "shioaji":
-            from tests.provider_work_clock import shioaji_dispatch_clock
-
-            self.shioaji_clock = shioaji_dispatch_clock(patch)
         return self
 
     def native(self, operation):
@@ -285,7 +255,6 @@ class RuntimeHarness:
     def install_native_fakes(self):
         from findb_fetcher import historical_backfill as history
         from findb_fetcher import historical_runtime as adapters
-        from findb_fetcher import shioaji_historical
         from findb_fetcher.client import SourceAPIClient
         from findb_fetcher.full_market_client import FullMarketSourceClient
         from findb_fetcher.providers.finlab import FinLabSdkGateway
@@ -314,9 +283,8 @@ class RuntimeHarness:
                 config, client=client or self.http()
             ),
         )
-        for module in (adapters, shioaji_historical):
-            self.patch.setattr(module, "SourceAPIClient", source_factory)
-            self.patch.setattr(module, "R2RawPayloadStore", lambda config: Raw())
+        self.patch.setattr(adapters, "SourceAPIClient", source_factory)
+        self.patch.setattr(adapters, "R2RawPayloadStore", lambda config: Raw())
         self.patch.setattr(adapters.RawStorageConfig, "from_env", classmethod(lambda cls: None))
         self.raw = Raw()
 
@@ -402,231 +370,21 @@ class RuntimeHarness:
                 )
             ),
         )
-        self.install_shioaji_native()
-
-    def install_shioaji_native(self):
-        from multiprocessing.connection import Connection
-
-        from findb_fetcher import shioaji_historical
-        from findb_fetcher.providers import shioaji_session as sdk
-
-        harness = self
-
-        shioaji_symbols = (
-            [row["symbol"] for row in shioaji_historical.load_historical_manifest()["sequences"]]
-            if self.provider == "shioaji"
-            else []
-        )
-
-        class API:
-            def __init__(self, **kwargs):
-                harness.native(["sdk_create"])
-                self.Contracts = SimpleNamespace(
-                    Stocks=SimpleNamespace(
-                        TSE=[
-                            SimpleNamespace(code=symbol, exchange="TSE")
-                            for symbol in {"2317", *shioaji_symbols}
-                        ],
-                        OTC=[],
-                    )
-                )
-
-            def login(self, **kwargs):
-                harness.native(["sdk_login"])
-
-            def logout(self):
-                pass
-
-            def usage(self):
-                return {
-                    "bytes": 0,
-                    "limit_bytes": 500 * 1024 * 1024,
-                    "remaining_bytes": 500 * 1024 * 1024,
-                    "connections": 1,
-                }
-
-            def kbars(self, contract, **kwargs):
-                harness.native(["kbars", contract.code])
-                timestamp = (
-                    int(datetime.fromisoformat(kwargs["start"] + "T09:01:00+00:00").timestamp())
-                    * 10**9
-                )
-                return {
-                    "ts": [timestamp],
-                    "Open": [1],
-                    "High": [1],
-                    "Low": [1],
-                    "Close": [1],
-                    "Volume": [1],
-                    "Amount": [1],
-                }
-
-        prepare = sdk.ShioajiSession.prepare_create
+        version = importlib.metadata.version
         self.patch.setattr(
-            sdk.ShioajiSession,
-            "prepare_create",
-            lambda session, native=None: prepare(session, SimpleNamespace(Shioaji=API)),
-        )
-        version = sdk.importlib.metadata.version
-        self.patch.setattr(
-            sdk.importlib.metadata,
+            importlib.metadata,
             "version",
-            lambda name: (
-                sdk.SHIOAJI_SDK_VERSION
-                if name == "shioaji"
-                else "1.5.7"
-                if name == "finlab"
-                else version(name)
-            ),
+            lambda name: "1.5.7" if name == "finlab" else version(name),
         )
-
-        class NativeProcess:
-            # Fork only injects an offline native SDK. The real isolated child,
-            # FD transfer, READY/GO/current authorization and parent coordinator
-            # all remain unchanged. No provider library/license/network is used.
-            def __init__(self, fd):
-                def entry():
-                    os.setsid()
-                    conn = Connection(fd)
-                    settings = json.loads(conn.recv_bytes())
-                    import sqlite3
-                    import sys
-                    import traceback
-
-                    def trace_sqlite(frame, event, argument):
-                        if frame.f_code is not sdk._child.__code__:
-                            return None
-                        if event == "exception" and isinstance(argument[1], sqlite3.Error):
-                            # Only the offline fake launcher traces safe SQLite
-                            # codes/frames; never SDK messages, values or keys.
-                            error = argument[1]
-                            with (harness.path / "sdk-boundary-errors.jsonl").open("a") as output:
-                                output.write(
-                                    json.dumps(
-                                        {
-                                            "sqlite_errorname": getattr(
-                                                error, "sqlite_errorname", None
-                                            ),
-                                            "frames": [
-                                                (Path(item.filename).name, item.lineno, item.name)
-                                                for item in traceback.extract_tb(argument[2])
-                                            ],
-                                        }
-                                    )
-                                    + "\n"
-                                )
-                        return trace_sqlite
-
-                    sys.settrace(trace_sqlite)
-                    sdk._child(
-                        conn, settings["api_key"], settings["secret_key"], settings["simulation"]
-                    )
-
-                self.child = multiprocessing.get_context("fork").Process(target=entry)
-                self.child.start()
-                self.pid = self.child.pid
-
-            def is_alive(self):
-                return self.child.is_alive()
-
-            def join(self, timeout):
-                self.child.join(timeout)
-
-            def terminate(self):
-                self.child.terminate()
-
-            def kill(self):
-                self.child.kill()
-
-            def reap_descendants(self):
-                self.child.join(2)
-                assert not self.child.is_alive()
-
-        self.patch.setattr(sdk, "_ProviderProcess", NativeProcess)
-        from findb_fetcher.providers.shioaji import IsolatedShioajiGateway
-
-        self.patch.setattr(
-            IsolatedShioajiGateway,
-            "from_env",
-            # IPC timeout behavior is tested independently with explicit fake
-            # connections. Functional acceptance retains the runtime's 30s bound.
-            classmethod(lambda cls: cls("offline-shioaji", "offline-secret")),
-        )
-        from findb_fetcher.shioaji_scheduler import ProductionCoordinator
-
-        run = ProductionCoordinator.run
-
-        def capture(coordinator, results, exception_type):
-            # Only reviewed, scalar control-plane fields enter CI logs. Never
-            # include exception text, Source bodies, raw payloads or credentials.
-            record = {
-                "dataset": harness.dataset,
-                "exception_type": exception_type,
-                "source_errors": list(harness.source_errors),
-                "source_failures": [
-                    {"path": path, "status": status}
-                    for path, status, _ in harness.source_events
-                    if status >= 400
-                ],
-                "round": len(harness.shioaji_diagnostics) + 1,
-                "results": [
-                    {
-                        "symbol": result.symbol,
-                        "code": result.code,
-                        "stage": result.stage,
-                        "retryable": result.retryable,
-                    }
-                    for result in results
-                ],
-                "checkpoint": [
-                    dict(zip(("symbol", "sequence", "attempts", "status", "terminal_code"), row))
-                    for row in coordinator.state.db.execute(
-                        "SELECT symbol,sequence_no,attempts,status,terminal_status "
-                        "FROM snapshot_sequences ORDER BY sequence_no,symbol"
-                    )
-                ],
-                "attempts": [
-                    dict(zip(("symbol", "attempt", "outcome", "code"), row))
-                    for row in coordinator.state.db.execute(
-                        "SELECT symbol,attempt_no,outcome,code FROM provider_attempts "
-                        "ORDER BY symbol,attempt_no"
-                    )
-                ],
-            }
-            harness.shioaji_diagnostics.append(record)
-            encoded = json.dumps(record, sort_keys=True)
-            harness.shioaji_diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
-            with harness.shioaji_diagnostic_path.open("a") as output:
-                output.write(encoded + "\n")
-            # Captured warning sections survive --tb=short and JUnit assertion
-            # truncation on failure, including each result before FIFO requeue.
-            logging.getLogger(__name__).warning("SHIOAJI_SEQUENCE_DIAGNOSTICS %s", encoded)
-
-        def diagnosed(coordinator, *args, **kwargs):
-            results = []
-            exception_type = None
-            try:
-                results = run(coordinator, *args, **kwargs)
-                return results
-            except BaseException as exc:
-                exception_type = type(exc).__name__
-                raise
-            finally:
-                capture(coordinator, results, exception_type)
-
-        self.patch.setattr(ProductionCoordinator, "run", diagnosed)
 
     def runner(self):
         from findb_fetcher import historical_runtime as adapters
-        from findb_fetcher.shioaji_historical import ExecutableShioajiHistoricalRunner
         from findb_fetcher.taifex_historical import TaifexHistoricalRunner
 
         if self.provider == "twelve_data":
             return adapters.TwelveDataHistoricalRunner()
         if self.provider == "finlab":
             return adapters.FinLabHistoricalRunner()
-        if self.provider == "shioaji":
-            return ExecutableShioajiHistoricalRunner(fetcher=self.config, contracts=self.registry)
 
         def report(request):
             query = parse_qs(request.content.decode())

@@ -141,20 +141,7 @@ async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_
 
     h = native_runtime
     native = h.native
-    from findb_fetcher.shioaji_scheduler import ProductionCoordinator
-
-    run_coordinator = ProductionCoordinator.run
-    results = []
-
-    def observe(coordinator, *args, **kwargs):
-        result = run_coordinator(coordinator, *args, **kwargs)
-        results.append([(row.code, row.symbol, row.retryable) for row in result])
-        return result
-
-    monkeypatch.setattr(ProductionCoordinator, "run", observe)
-    kind = {"taifex": "report", "shioaji": "kbars", "finlab": "dataset", "twelve_data": "daily"}[
-        h.provider
-    ]
+    kind = {"taifex": "report", "finlab": "dataset", "twelve_data": "daily"}[h.provider]
 
     def fail_first_dispatch(operation):
         native(operation)
@@ -231,13 +218,6 @@ async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_
             "retryable_failure",
             *(["quota_wait"] * 4),
         ]
-    elif h.provider == "shioaji":
-        checkpoint = h.path / "historical" / f"{h.request_id}.sqlite3"
-        with closing(sqlite3.connect(checkpoint)) as db, db:
-            audit = db.execute(
-                "SELECT outcome,code FROM provider_attempts ORDER BY attempt_no"
-            ).fetchall()
-        assert audit == [("failed", "ACQUISITION_FAILED"), *([("waiting", "QUOTA_WAIT")] * 4)]
     else:
         with closing(sqlite3.connect(Path(governor).parent / "provider-work.sqlite3")) as db, db:
             assert (
@@ -247,13 +227,11 @@ async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_
                 == 1
             )
     windows = acquisition._windows
-    from findb_fetcher.providers import shioaji_control
 
     def next_window(timestamp):
         return windows(timestamp + 86400)
 
     monkeypatch.setattr(acquisition, "_windows", next_window)
-    monkeypatch.setattr(shioaji_control, "_windows", next_window)
     h.db.expire_all()
     attempt = await h.db.scalar(
         select(ProviderWorkAttempt).where(
@@ -265,7 +243,7 @@ async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_
     clock[0] += 200
     assert await h.run()
     h.db.expire_all()
-    assert (await h.db.get(ProviderWork, work_id)).state == "completed", (h.failure, results)
+    assert (await h.db.get(ProviderWork, work_id)).state == "completed", h.failure
     request = await h.db.get(HistoricalBackfillRequest, h.request_id)
     assert request.status == "completed" and request.failure_code is None
     with closing(sqlite3.connect(governor)) as db, db:

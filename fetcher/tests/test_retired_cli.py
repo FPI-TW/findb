@@ -25,6 +25,9 @@ def assert_retired(result, command):
     assert result.stdout == ""
     body = json.loads(result.stderr)
     assert body["status"] == "retired" and body["command"] == command
+    assert body["code"] == (
+        "PROVIDER_RETIRED" if "shioaji" in command else "PROVIDER_WORK_REQUIRED"
+    )
     assert body["runtime"] == "findb-fetch-runtime"
     assert body["historical"] == "findb-fetch-historical-backfill"
     assert len(result.stderr.encode()) < 1024

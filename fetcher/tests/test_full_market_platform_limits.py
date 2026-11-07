@@ -3,21 +3,20 @@
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timezone
-from types import SimpleNamespace
+from datetime import datetime, timezone
 
 import pytest
 
 from findb_fetcher import account_governor
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
-from findb_fetcher.platform_limits import SHIOAJI_DAILY_BYTES, account_identity, interval, limits
-from findb_fetcher.providers.shioaji import SHIOAJI_SDK_VERSION, ShioajiSdkError
-from findb_fetcher.providers.shioaji_session import ShioajiSession
+from findb_fetcher.platform_limits import account_identity, interval, limits
 from test_full_market import _runtime
+
+DAILY_BYTES = 500 * 1024 * 1024
 
 
 @pytest.mark.parametrize("environment", ["local", "staging", "production"])
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 @pytest.mark.parametrize(
     "evidence",
     [
@@ -66,11 +65,16 @@ def test_native_full_acquisition_needs_no_evidence(
     runtime.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "shioaji"])
+@pytest.mark.parametrize("provider", ["twelve_data", "byte_capped"])
 def test_durable_platform_pacing_and_quota_across_restart(tmp_path, provider):
     now = [datetime.now(timezone.utc).timestamp()]
     path = tmp_path / "quota.sqlite3"
-    policy = limits(provider)
+    # No current provider publishes a byte cap, so one is synthesized to keep the path covered.
+    policy = (
+        limits(provider)
+        if provider == "twelve_data"
+        else {**limits("taifex"), "requests_per_second": 5, "bytes_per_day": DAILY_BYTES}
+    )
     state = FullMarketState(path, clock=lambda: now[0])
     args = dict(
         account="shared",
@@ -87,13 +91,13 @@ def test_durable_platform_pacing_and_quota_across_restart(tmp_path, provider):
     assert restarted.reserve_acquisition(**args)[0] == pytest.approx(
         60 / 1597 if provider == "twelve_data" else 0.2
     )
-    if provider == "shioaji":
+    if provider == "byte_capped":
         now[0] += 1
         restarted.usage_floor(
             account="shared",
             window=datetime.fromtimestamp(now[0], timezone.utc).date().isoformat(),
             requests=0,
-            byte_count=SHIOAJI_DAILY_BYTES,
+            byte_count=DAILY_BYTES,
         )
         with pytest.raises(QuotaBlockedError, match="exhausted"):
             restarted.reserve_acquisition(**args)
@@ -103,17 +107,6 @@ def test_durable_platform_pacing_and_quota_across_restart(tmp_path, provider):
         restarted.usage_floor(account="shared", window=minute, requests=1597, byte_count=0)
         with pytest.raises(QuotaBlockedError, match="exhausted"):
             restarted.reserve_acquisition(**args)
-
-
-def test_shioaji_actual_api_usage_exhaustion_prevents_kbars():
-    session = object.__new__(ShioajiSession)
-    session.contracts = {"2330": object()}
-    session.api = SimpleNamespace(
-        usage=lambda: SimpleNamespace(bytes=SHIOAJI_DAILY_BYTES),
-        kbars=lambda *args, **kwargs: pytest.fail("quota exhausted: no acquisition"),
-    )
-    with pytest.raises(ShioajiSdkError, match="quota exhausted"):
-        session.fetch_kbars("2330", date(2026, 10, 1))
 
 
 @pytest.mark.parametrize("provider", ["finlab", "taifex"])
@@ -128,18 +121,22 @@ def test_unpublished_numeric_dimensions_are_not_fabricated(provider):
 def test_optional_evidence_changes_cannot_reset_pinned_account_debt(tmp_path, monkeypatch):
     path = tmp_path / "old.account.json"
     monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(path))
-    monkeypatch.setenv("SHIOAJI_API_KEY", "same-account")
-    path.write_text(json.dumps({"provider": "shioaji", "account": {"account_id": "old-ledger"}}))
+    monkeypatch.setenv("TWELVE_DATA_API_KEY", "same-account")
+    path.write_text(
+        json.dumps({"provider": "twelve_data", "account": {"account_id": "old-ledger"}})
+    )
     database = tmp_path / "account.sqlite3"
     state = FullMarketState(database)
-    assert account_identity("shioaji", state) == "old-ledger"
+    assert account_identity("twelve_data", state) == "old-ledger"
     day = datetime.now(timezone.utc).date().isoformat()
-    state.usage_floor(account="old-ledger", window=day, requests=3, byte_count=SHIOAJI_DAILY_BYTES)
+    state.usage_floor(account="old-ledger", window=day, requests=3, byte_count=DAILY_BYTES)
     path.unlink()
     restarted = FullMarketState(database)
-    assert account_identity("shioaji", restarted) == "old-ledger"
-    path.write_text(json.dumps({"provider": "shioaji", "account": {"account_id": "new-ledger"}}))
-    assert account_identity("shioaji", restarted) == "old-ledger"
+    assert account_identity("twelve_data", restarted) == "old-ledger"
+    path.write_text(
+        json.dumps({"provider": "twelve_data", "account": {"account_id": "new-ledger"}})
+    )
+    assert account_identity("twelve_data", restarted) == "old-ledger"
     with pytest.raises(QuotaBlockedError, match="exhausted"):
         restarted.reserve_acquisition(
             account="old-ledger",
@@ -147,7 +144,7 @@ def test_optional_evidence_changes_cannot_reset_pinned_account_debt(tmp_path, mo
             requests=1,
             byte_count=0,
             request_limit=None,
-            byte_limit=SHIOAJI_DAILY_BYTES,
+            byte_limit=DAILY_BYTES,
             minute_limit=None,
             enforce_capacity=False,
         )
@@ -159,9 +156,9 @@ def test_optional_evidence_changes_cannot_reset_pinned_account_debt(tmp_path, mo
         None,
         "invalid JSON",
         "[]",
-        '{"provider":"shioaji","account":{}}',
-        '{"provider":"shioaji","account":{"account_id":null}}',
-        '{"provider":"shioaji","account":{"account_id":"legacy-account"}}',
+        '{"provider":"twelve_data","account":{}}',
+        '{"provider":"twelve_data","account":{"account_id":null}}',
+        '{"provider":"twelve_data","account":{"account_id":"legacy-account"}}',
     ],
 )
 def test_first_pin_upgrade_keeps_legacy_rows_and_enforces_platform_limits(
@@ -179,25 +176,25 @@ def test_first_pin_upgrade_keeps_legacy_rows_and_enforces_platform_limits(
         """)
         db.execute(
             "INSERT INTO full_quota VALUES(?,?,?,?,?)",
-            ("legacy-account", day, 7, SHIOAJI_DAILY_BYTES, now[0] + 60),
+            ("legacy-account", day, 7, DAILY_BYTES, now[0] + 60),
         )
         db.execute("INSERT INTO full_pacing VALUES(?,?)", ("legacy-account", now[0] + 60))
         original_quota = db.execute("SELECT * FROM full_quota").fetchall()
         original_pacing = db.execute("SELECT * FROM full_pacing").fetchall()
     path = tmp_path / "old.account.json"
     monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(path))
-    monkeypatch.setenv("SHIOAJI_API_KEY", "same-credential")
+    monkeypatch.setenv("TWELVE_DATA_API_KEY", "same-credential")
     if allocation is not None:
         path.write_text(allocation)
     state = FullMarketState(database, clock=lambda: now[0])
-    identity = account_identity("shioaji", state)
+    identity = account_identity("twelve_data", state)
     args = dict(
         account=identity,
         interval=0.2,
         requests=1,
         byte_count=0,
         request_limit=None,
-        byte_limit=SHIOAJI_DAILY_BYTES,
+        byte_limit=DAILY_BYTES,
         minute_limit=None,
         enforce_capacity=False,
     )
@@ -208,12 +205,12 @@ def test_first_pin_upgrade_keeps_legacy_rows_and_enforces_platform_limits(
     else:
         # User-approved discontinuity: unknowable legacy association stays audit
         # data, while the new fingerprint ledger starts on actual platform limits.
-        assert identity.startswith("shioaji:")
+        assert identity.startswith("twelve_data:")
         assert state.reserve_acquisition(**args)[0] == 0
         assert state.reserve_acquisition(**args)[0] == pytest.approx(0.2)
         now[0] += 0.2
         assert state.reserve_acquisition(**args)[0] == 0
-        state.usage_floor(account=identity, window=day, requests=0, byte_count=SHIOAJI_DAILY_BYTES)
+        state.usage_floor(account=identity, window=day, requests=0, byte_count=DAILY_BYTES)
         now[0] += 0.2
     with pytest.raises(QuotaBlockedError, match="exhausted"):
         state.reserve_acquisition(**args)
@@ -226,9 +223,9 @@ def test_first_pin_upgrade_keeps_legacy_rows_and_enforces_platform_limits(
             tuple(row)
             for row in db.execute("SELECT * FROM full_pacing WHERE account='legacy-account'")
         ] == original_pacing
-    path.write_text('{"provider":"shioaji","account":{"account_id":"different-account"}}')
+    path.write_text('{"provider":"twelve_data","account":{"account_id":"different-account"}}')
     restarted = FullMarketState(database, clock=lambda: now[0])
-    assert account_identity("shioaji", restarted) == identity
+    assert account_identity("twelve_data", restarted) == identity
     with pytest.raises(QuotaBlockedError, match="exhausted"):
         restarted.reserve_acquisition(**args)
 
@@ -239,8 +236,8 @@ def test_concurrent_first_pin_keeps_one_identity_without_relabeling_ledgers(tmp_
     with ThreadPoolExecutor(max_workers=4) as workers:
         identities = list(
             workers.map(
-                lambda initial: state.account_identity("shioaji", "same-digest", initial),
-                ["legacy-account", "shioaji:fingerprint", "third-account", "fourth-account"],
+                lambda initial: state.account_identity("twelve_data", "same-digest", initial),
+                ["legacy-account", "twelve_data:fingerprint", "third-account", "fourth-account"],
             )
         )
     assert len(set(identities)) == 1
@@ -354,29 +351,6 @@ def test_effective_credential_whitespace_keeps_pinned_usage_and_cooldown(
                 minute_limit=1597,
                 enforce_capacity=False,
             )
-
-
-def test_shioaji_full_session_effective_key_and_account_are_whitespace_normalized(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr("importlib.metadata.version", lambda name: SHIOAJI_SDK_VERSION)
-    login = []
-    api = SimpleNamespace(
-        login=lambda **kwargs: login.append(kwargs["api_key"]),
-        logout=lambda: None,
-        Contracts=SimpleNamespace(Stocks=SimpleNamespace(TSE=[], OTC=[])),
-    )
-    monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(tmp_path / "missing.json"))
-    state = FullMarketState(tmp_path / "account.sqlite3")
-    monkeypatch.setenv("SHIOAJI_API_KEY", "key")
-    first = account_identity("shioaji", state)
-    monkeypatch.setenv("SHIOAJI_API_KEY", " key ")
-    session = ShioajiSession(
-        " key ", "secret", simulation=False, sdk=SimpleNamespace(Shioaji=lambda **kwargs: api)
-    )
-    assert login == ["key"]
-    assert account_identity("shioaji", state) == first
-    session.close()
 
 
 @pytest.mark.parametrize(

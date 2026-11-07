@@ -351,18 +351,14 @@ def canonical_twelve_data_mic(mic: str) -> str:
 
 
 def _index_catalogue(
-    catalogue: Iterable[Mapping[str, Any]], *, shioaji: bool = False
+    catalogue: Iterable[Mapping[str, Any]],
 ) -> dict[tuple[str, str, str], list[Mapping[str, Any]]]:
     indexed: dict[tuple[str, str, str], list[Mapping[str, Any]]] = {}
     for row in catalogue:
         symbol = str(row.get("symbol", ""))
         exchange = str(row.get("mic_code", row.get("exchange", "")))
         currency = str(row.get("currency", ""))
-        if not shioaji:
-            exchange = canonical_twelve_data_mic(exchange)
-        if shioaji:
-            exchange = {"TSE": "XTAI", "OTC": "ROCO"}.get(exchange, exchange)
-            currency = currency or "TWD"
+        exchange = canonical_twelve_data_mic(exchange)
         indexed.setdefault((symbol, exchange, currency), []).append(row)
     return indexed
 
@@ -428,11 +424,10 @@ def map_catalogue(
     members: Iterable[dict[str, Any]],
     catalogue: Iterable[Mapping[str, Any]],
     *,
-    shioaji: bool = False,
     us_official_names: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Retain every expected member; only verified catalogue listings become mapped."""
-    indexed = _index_catalogue(catalogue, shioaji=shioaji)
+    indexed = _index_catalogue(catalogue)
     result = []
     for member in members:
         member = dict(member)
@@ -454,17 +449,12 @@ def map_catalogue(
             ]
         if len(candidates) == 1:
             row = candidates[0]
-            unclassified = member["classification"] == "classification_gap"
-            if shioaji:
-                mapped = not unclassified
-            else:
-                mapped = row.get("type") in TWELVE_DATA_EQUITY_TYPES
+            if row.get("type") in TWELVE_DATA_EQUITY_TYPES:
                 # Directory names are free text; the provider type settles what they leave open.
-                if mapped and unclassified:
+                if member["classification"] == "classification_gap":
                     member["classification"] = (
                         "adr" if "Depositary" in str(row["type"]) else "ordinary"
                     )
-            if mapped:
                 member["provider_symbol"] = str(row.get("provider_symbol", row["symbol"]))
                 member["mapping_status"] = "mapped"
         result.append(member)

@@ -10,7 +10,7 @@ from findb_fetcher import provider_work
 from findb_fetcher.full_market_runtime import CalendarDecisionRepairRequiredError
 from test_full_market import _member, _plan, _runtime
 
-PROVIDERS = ["twelve_data", "finlab", "shioaji", "taifex"]
+PROVIDERS = ["twelve_data", "finlab", "taifex"]
 
 
 def _owner(events, *, kind="daily", repair_required=False, probe=None):

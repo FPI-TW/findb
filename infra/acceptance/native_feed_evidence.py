@@ -21,12 +21,17 @@ def assess(backend: dict[str, Any], fetchers: dict[str, dict[str, Any]]) -> dict
         "full_market",
     ):
         raise ValueError("invalid native evidence scope")
-    catalog = json.loads((ROOT / "backend/configs/execution_feeds.v1.json").read_text())["feeds"]
-    expected = {(f["provider"], f["dataset_key"]) for f in catalog}
+    catalog = json.loads((ROOT / "backend/configs/execution_feeds.v1.json").read_text())
+    drain_only = set(catalog["drain_only_providers"])
+    expected = {
+        (f["provider"], f["dataset_key"])
+        for f in catalog["feeds"]
+        if f["provider"] not in drain_only
+    }
     rows = backend["feeds"]
     actual = [(f["provider"], f["dataset_key"]) for f in rows]
-    if len(rows) != 7 or len(set(actual)) != 7 or set(actual) != expected:
-        raise ValueError("native evidence must contain exactly seven catalog feeds")
+    if len(rows) != len(expected) or set(actual) != expected:
+        raise ValueError("native evidence must contain exactly the acquiring catalog feeds")
     results = []
     for row in rows:
         provider, dataset = row["provider"], row["dataset_key"]

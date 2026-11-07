@@ -59,7 +59,7 @@ jobs:
         # findb/<target>/; Fetcher repositories use dashed names.
         case "$UNIT" in
           findb) echo 'images=backend:backend dashboard:dashboard' >> "$GITHUB_OUTPUT" ;;
-          fetcher) echo 'images=twelve_data:fetcher/twelve-data finlab:fetcher/finlab shioaji:fetcher/shioaji factset:fetcher/factset' >> "$GITHUB_OUTPUT" ;;
+          fetcher) echo 'images=twelve_data:fetcher/twelve-data finlab:fetcher/finlab factset:fetcher/factset' >> "$GITHUB_OUTPUT" ;;
           *) exit 1 ;;
         esac
     - name: Configure staging promotion-reader credentials

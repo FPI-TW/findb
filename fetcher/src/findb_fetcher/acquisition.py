@@ -26,7 +26,6 @@ class _AuthorizationExpiredError(QuotaBlockedError):
 PROTOCOL_VERSION = 2
 LOCAL_DISPATCH_SECONDS = 0.050
 REMOTE_AGE_SECONDS = 5.0
-SDK_SAMPLE_SECONDS = 5.0
 _mutex_guard = threading.Lock()
 _mutexes: dict[str, threading.RLock] = {}
 _held_locks = threading.local()
@@ -139,7 +138,6 @@ class Acquisition:
         self.provider = provider
         self.kind = kind
         self.units = 0 if kind == "cleanup" else 1
-        self.login_units = int(kind == "sdk_login")
         self.strict = strict
         self.offline = (
             not strict
@@ -278,8 +276,6 @@ class Acquisition:
                             raise QuotaBlockedError(
                                 "durable account quota is exhausted", quota_wait=True
                             )
-                    if self.login_units:
-                        self._check_login(db, now)
                     db.execute(
                         "INSERT INTO acquisition_intent(operation_id,account,provider,armed_at,status,cooldown_bound,operation_kind,request_units,login_units) VALUES(?,?,?,?,'armed',?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET armed_at=excluded.armed_at WHERE status='armed'",
                         (
@@ -290,7 +286,7 @@ class Acquisition:
                             self.bound,
                             self.kind,
                             self.units,
-                            self.login_units,
+                            0,
                         ),
                     )
                     self.prepared_windows = (day, minute)
@@ -309,30 +305,6 @@ class Acquisition:
                 return
             self.authorization = None
             time.sleep(min(wait, 1.0))
-
-    def _check_login(self, db: Any, now: float) -> None:
-        future = db.execute(
-            "SELECT COUNT(*) FROM acquisition_intent WHERE account=? AND login_units=1 AND (actual_start>? OR armed_at>? OR completed_at>?)",
-            (self.account, now, now, now),
-        ).fetchone()[0]
-        if future:
-            raise QuotaBlockedError("login clock moved backwards")
-        used = db.execute(
-            "SELECT COALESCE(SUM(login_units),0) FROM acquisition_intent WHERE account=? AND operation_id<>? AND ((actual_start>?) OR (status='unknown' AND actual_start IS NULL AND armed_at<=? AND completed_at>?))",
-            (self.account, self.operation_id, now - 86400, now, now - 86400),
-        ).fetchone()[0]
-        if used + 1 > 1000:
-            raise QuotaBlockedError("SDK login rolling 24h quota exhausted", quota_wait=True)
-        latest = db.execute(
-            "SELECT u.* FROM acquisition_usage u JOIN acquisition_intent i USING(operation_id) WHERE i.account=? AND u.connections IS NOT NULL ORDER BY observed_at DESC LIMIT 1",
-            (self.account,),
-        ).fetchone()
-        if (
-            latest
-            and 0 <= now - latest["observed_at"] < SDK_SAMPLE_SECONDS
-            and latest["connections"] >= 5
-        ):
-            raise QuotaBlockedError("SDK current connection limit reached", quota_wait=True)
 
     def authorize(self) -> Authorization:
         callback = _policy.get()
@@ -360,7 +332,6 @@ class Acquisition:
             scheduler = {
                 "twelve_data": "twelve_data_us_common_stocks_daily_v1",
                 "finlab": "finlab_tw_equity_eod_v1",
-                "shioaji": "shioaji_tw_pilot_v1",
                 "taifex": "taifex_tw_futures_pilot_v1",
             }[self.provider]
             path = (

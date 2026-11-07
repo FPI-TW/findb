@@ -77,7 +77,9 @@ async def export(spec):
     if profile not in ("pilot", "full_market"):
         raise ValueError("invalid execution profile")
     trade_date = date.fromisoformat(spec["trade_date"])
-    catalog = json.loads(Path("configs/execution_feeds.v1.json").read_text())["feeds"]
+    manifest = json.loads(Path("configs/execution_feeds.v1.json").read_text())
+    drain_only = set(manifest["drain_only_providers"])
+    catalog = [feed for feed in manifest["feeds"] if feed["provider"] not in drain_only]
     feeds = []
     async with async_session_maker() as db:
         await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
@@ -234,7 +236,7 @@ async def export(spec):
         "execution_profile": profile,
         "trade_date": trade_date.isoformat(),
         "feeds": feeds,
-        "passed": len(feeds) == 7 and all(f["passed"] for f in feeds),
+        "passed": len(feeds) == len(catalog) and all(f["passed"] for f in feeds),
     }
 
 

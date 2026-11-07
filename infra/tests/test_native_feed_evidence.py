@@ -24,8 +24,11 @@ def complete_evidence():
         "feeds": [],
     }
     fetchers = {}
-    for feed in json.loads((ROOT / "backend/configs/execution_feeds.v1.json").read_text())["feeds"]:
+    catalog = json.loads((ROOT / "backend/configs/execution_feeds.v1.json").read_text())
+    for feed in catalog["feeds"]:
         provider, dataset = feed["provider"], feed["dataset_key"]
+        if provider in catalog["drain_only_providers"]:
+            continue
         plan = {
             "plan_id": dataset,
             "dataset_key": dataset,
@@ -84,7 +87,7 @@ def complete_evidence():
     return backend, fetchers
 
 
-def test_exact_seven_feed_evidence_passes(complete_evidence):
+def test_exact_acquiring_feed_evidence_passes(complete_evidence):
     assert module.assess(*complete_evidence)["passed"]
 
 
@@ -153,13 +156,13 @@ def test_native_coordinator_scopes_readonly_probes(
         ],
     )
     assert collector.main() == 0
-    assert len(calls) == 6
+    assert len(calls) == 5
     assert os.stat(output).st_mode & 0o777 == 0o600
     assert json.loads(output.read_text())["assessment"]["passed"]
     monkeypatch.setattr(collector, "_aws_json", lambda args: {"Account": "wrong"})
     with pytest.raises(ValueError, match="account"):
         collector.main()
-    assert len(calls) == 6
+    assert len(calls) == 5
 
 
 @pytest.mark.parametrize(

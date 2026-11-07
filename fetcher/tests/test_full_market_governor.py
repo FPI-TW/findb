@@ -22,7 +22,6 @@ from findb_fetcher.full_market_runtime import ReadinessBlockedError
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.full_market_universe import TAIFEX_URL, canonical_bytes
 from findb_fetcher.providers.finlab import FinLabSdkGateway
-from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot
 from findb_fetcher.providers.taifex import TaifexOperationalError, fetch_report
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
@@ -573,17 +572,13 @@ def test_finlab_valid_five_field_bundle_can_exceed_single_response_cap(
     runtime.http.close()
 
 
-@pytest.mark.parametrize(
-    "path", ["catalogue", "latest", "historical", "sdk_catalogue", "sdk_kbars", "sdk_usage"]
-)
+@pytest.mark.parametrize("path", ["catalogue", "latest", "historical"])
 def test_other_provider_acquisition_paths_enforce_verified_byte_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
-    provider = (
-        "twelve_data" if path == "catalogue" else "shioaji" if path.startswith("sdk") else "taifex"
-    )
+    provider = "twelve_data" if path == "catalogue" else "taifex"
     runtime, _, raw = _runtime(tmp_path, provider=provider)
     clock = _Clock(monkeypatch)
     runtime.proof = _proof(clock.now())
@@ -601,7 +596,7 @@ def test_other_provider_acquisition_paths_enforce_verified_byte_bound(
 
         def acquire() -> Any:
             return runtime._snapshot(TAIFEX_URL, provider_response=True)
-    elif path == "historical":
+    else:
         runtime._reserve()
 
         def acquire() -> Any:
@@ -612,43 +607,19 @@ def test_other_provider_acquisition_paths_enforce_verified_byte_bound(
                 max_response_bytes=1000,
                 on_observed_bytes=runtime._observed_response,
             )
-    elif path == "sdk_catalogue":
-        runtime.sdk = SimpleNamespace(catalogue=lambda: [{"symbol": "x" * 2000}])
-        acquire = runtime._catalogue
-    else:
-        kbars = {"ts": (), "Open": (), "High": (), "Low": (), "Close": (), "Volume": ()}
-        if path == "sdk_kbars":
-            kbars["padding"] = ("x" * 2000,)
-        usage = 2266 if path == "sdk_usage" else 1
-        runtime.sdk = SimpleNamespace(
-            fetch_kbars=lambda *args: ShioajiKbarsSnapshot(kbars, 0, usage)
-        )
 
-        def acquire() -> Any:
-            return runtime._acquire(
-                _member(), _plan(), _plan()["parts"][0], {"release_id": "r"}, runtime.feeds[0]
-            )
-
-    if path == "sdk_usage":
-        from findb_fetcher.providers.shioaji import ShioajiPayloadError
-
-        # Usage delta is not an enrolled response bound; malformed Kbars still fails validation.
-        with pytest.raises(ShioajiPayloadError):
-            acquire()
-        assert _daily(runtime)[1] == 0
-    else:
-        with pytest.raises(ReadinessBlockedError, match="size bound"):
-            acquire()
-        assert (
-            _daily(runtime)[1] > 1000
-            if path in {"snapshot", "latest", "historical"}
-            else _daily(runtime)[1] == 0
-        )
-        assert raw.calls == []
+    with pytest.raises(ReadinessBlockedError, match="size bound"):
+        acquire()
+    assert (
+        _daily(runtime)[1] > 1000
+        if path in {"snapshot", "latest", "historical"}
+        else _daily(runtime)[1] == 0
+    )
+    assert raw.calls == []
     runtime.http.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 def test_restart_runtime_waits_entire_durable_account_rate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -23,7 +23,7 @@ def _merge(path, provider, raw, queue):
     queue.put(account_identity(provider, state, credential=raw))
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 @pytest.mark.parametrize(
     "alias,unrelated",
     [("legacy_raw", "legacyXraw"), ("legacy%raw", "legacyZraw"), ("legacy\\raw", "legacyraw")],

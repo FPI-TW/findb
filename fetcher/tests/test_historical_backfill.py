@@ -26,7 +26,7 @@ def test_claim_and_complete_use_provider_neutral_control_contract() -> None:
                     "item_id": "01982886-b452-7c71-b166-cb74cfd1d000",
                     "request_id": "01982886-b452-7c71-b166-cb74cfd1d001",
                     "request_key": "request-001",
-                    "provider": "shioaji",
+                    "provider": "finlab",
                     "dataset_key": "tw_equity_minute",
                     "market": "TW",
                     "trade_date": "2026-08-31",
@@ -40,7 +40,7 @@ def test_claim_and_complete_use_provider_neutral_control_contract() -> None:
             return UUID("01982886-b452-7c71-b166-cb74cfd1d002")
 
     control = HistoricalControlClient(
-        _config(), provider="shioaji", client=httpx.Client(transport=httpx.MockTransport(handler))
+        _config(), provider="finlab", client=httpx.Client(transport=httpx.MockTransport(handler))
     )
     assert run_once(control, Runner()) is True
     assert [call.url.path for call in calls] == [
@@ -59,7 +59,7 @@ def test_failed_provider_reports_only_safe_failure_code() -> None:
                 "item_id": "01982886-b452-7c71-b166-cb74cfd1d000",
                 "request_id": "01982886-b452-7c71-b166-cb74cfd1d001",
                 "request_key": "request-001",
-                "provider": "shioaji",
+                "provider": "finlab",
                 "dataset_key": "tw_equity_minute",
                 "market": "TW",
                 "trade_date": "2026-08-31",
@@ -79,7 +79,7 @@ def test_failed_provider_reports_only_safe_failure_code() -> None:
             raise RuntimeError("credential=must-not-leak")
 
     control = HistoricalControlClient(
-        _config(), provider="shioaji", client=httpx.Client(transport=httpx.MockTransport(handler))
+        _config(), provider="finlab", client=httpx.Client(transport=httpx.MockTransport(handler))
     )
     assert run_once(control, Runner()) is True
     assert b"credential" not in bodies[-1]
@@ -95,7 +95,7 @@ def test_runner_without_source_run_fails_instead_of_completing() -> None:
                 "item_id": "01982886-b452-7c71-b166-cb74cfd1d000",
                 "request_id": "01982886-b452-7c71-b166-cb74cfd1d001",
                 "request_key": "request-001",
-                "provider": "shioaji",
+                "provider": "finlab",
                 "dataset_key": "tw_equity_minute",
                 "market": "TW",
                 "trade_date": "2026-08-31",
@@ -115,7 +115,7 @@ def test_runner_without_source_run_fails_instead_of_completing() -> None:
             return None
 
     control = HistoricalControlClient(
-        _config(), provider="shioaji", client=httpx.Client(transport=httpx.MockTransport(handler))
+        _config(), provider="finlab", client=httpx.Client(transport=httpx.MockTransport(handler))
     )
     assert run_once(control, Runner()) is True  # type: ignore[arg-type]
     assert b'"status":"failed"' in bodies[-1]

@@ -1,7 +1,6 @@
 """Every independent operation ledger distinguishes Source wait from dispatch."""
 
 from dataclasses import dataclass
-from datetime import date
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -15,20 +14,16 @@ from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.historical_backfill import HistoricalControlClient, HistoricalControlError
 from findb_fetcher.historical_runtime import _execute
 from findb_fetcher.provider_work import ProviderWorkSourceUnavailableError
-from findb_fetcher.shioaji_staging import Coordinator
-from findb_fetcher.shioaji_staging_state import ShioajiStagingState
 from findb_fetcher.taifex_historical import TaifexHistoricalRunner
 from provider_work_support import owned_unit_work
 from test_full_market import _runtime
-from test_shioaji_staging import _single_manifest, _taipei_now
 
 
-@pytest.mark.parametrize("lane", ["historical", "maintenance", "factset", "taifex", "shioaji"])
+@pytest.mark.parametrize("lane", ["historical", "maintenance", "factset", "taifex"])
 @pytest.mark.parametrize("dispatched", [False, True])
 def test_source_wait_retains_only_undispatched_reservation(tmp_path, lane, dispatched):
-    provider = lane if lane in {"factset", "taifex", "shioaji"} else "finlab"
+    provider = lane if lane in {"factset", "taifex"} else "finlab"
     runtime, _, _ = _runtime(tmp_path, provider=provider)
-    state = None
     try:
         with owned_unit_work(provider, tmp_path) as owner:
 
@@ -84,33 +79,11 @@ def test_source_wait_retains_only_undispatched_reservation(tmp_path, lane, dispa
                 assert audit["outcome"] == ("unknown" if dispatched else "source_wait")
                 assert len(saved) == (1 if dispatched else 2)
                 return
-            else:
-                state = ShioajiStagingState(tmp_path / "shioaji.sqlite3")
-                coordinator = Coordinator(
-                    state,
-                    _single_manifest(),
-                    SimpleNamespace(fetch_kbars=action),
-                    now=_taipei_now,
-                    terminal_on_exhaustion=True,
-                )
-                for _ in range(1 if dispatched else 12):
-                    with pytest.raises(ProviderWorkSourceUnavailableError):
-                        coordinator.run(date(2026, 7, 29))
-                daily_id = "shioaji_tw_staging_v1:2026-07-29"
-                assert state.budget_used(daily_id, "2330") == int(dispatched)
-                assert state.get_terminal(daily_id, "2330") is None
-                waiting = state.db.execute(
-                    "SELECT count(*) FROM provider_attempts WHERE outcome='waiting' AND code='SOURCE_WAIT'"
-                ).fetchone()[0]
-                assert waiting == (0 if dispatched else 12)
-                return
             with owner.journal.connection() as db:
                 assert db.execute(
                     "SELECT attempts FROM work_budget WHERE operation_key=?", (key,)
                 ).fetchone()[0] == 1 + int(dispatched)
     finally:
-        if state is not None:
-            state.close()
         runtime.close()
 
 

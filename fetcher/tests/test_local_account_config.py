@@ -46,7 +46,7 @@ def _process(local, provider, mode):
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith(("FETCHER_", "SOURCE_", "FINLAB_", "SHIOAJI_", "TWELVE_DATA_"))
+        if not key.startswith(("FETCHER_", "SOURCE_", "FINLAB_", "TWELVE_DATA_"))
         and key not in {"FULL_MARKET_ENABLED", "APP_ENVIRONMENT", "finlab_id_token"}
     }
     env["PYTHONPATH"] = str(FETCHER_DIR / "src")
@@ -72,7 +72,7 @@ def _process(local, provider, mode):
     return json.loads(result.stdout.splitlines()[-1])
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 def test_documented_local_profiles_share_writable_ledger_and_restart_state(local_setup, provider):
     first = _process(local_setup, provider, "acquire")
     restarted = _process(local_setup, provider, "restart")

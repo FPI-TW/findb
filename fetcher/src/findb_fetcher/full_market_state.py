@@ -908,86 +908,10 @@ class FullMarketState:
                 (key,),
             )
 
-    def stage_empty_response(
-        self, key: str, *, now: float, delay: float, exhausted: bool, reason: str = "empty_response"
-    ) -> None:
-        if reason not in {"empty_response", "unknown_dispatch"}:
-            raise FullMarketStateError("observation reason is invalid")
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            db.execute(
-                "INSERT INTO full_empty_outcome(work_key,exhausted,next_at,reason) VALUES(?,?,?,?) ON CONFLICT(work_key) DO UPDATE SET exhausted=excluded.exhausted,next_at=excluded.next_at,reason=excluded.reason",
-                (key, int(exhausted), now + delay, reason),
-            )
-            db.execute(
-                "UPDATE full_work SET attempts=MAX(0,attempts-1),status='pending',reason='source_error_pending',lease_until=0 WHERE key=? AND body IS NULL",
-                (key,),
-            )
-
-    def empty_outcome(self, key: str) -> bool:
-        return self.observation_outcome_reason(key) is not None
-
-    def observation_outcome_reason(self, key: str) -> str | None:
-        with self.connection() as db:
-            row = db.execute(
-                "SELECT reason FROM full_empty_outcome WHERE work_key=?", (key,)
-            ).fetchone()
-            return row[0] if row else None
-
-    def acknowledge_empty(self, key: str) -> None:
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                "SELECT exhausted,next_at,reason FROM full_empty_outcome WHERE work_key=?", (key,)
-            ).fetchone()
-            if row:
-                db.execute(
-                    "UPDATE full_work SET status=?,reason=?,next_at=?,lease_until=0 WHERE key=?",
-                    ("manual" if row[0] else "pending", row[2], row[1], key),
-                )
-                db.execute("DELETE FROM full_empty_outcome WHERE work_key=?", (key,))
-                db.execute(
-                    "INSERT INTO full_plan_reconcile SELECT plan_id,1 FROM full_work WHERE key=? ON CONFLICT(plan_id) DO UPDATE SET dirty=1",
-                    (key,),
-                )
-
     def member_complete(self, key: str) -> bool:
         with self.connection() as db:
             row = db.execute("SELECT status FROM full_work WHERE key=?", (key,)).fetchone()
             return row is not None and row[0] == "complete"
-
-    def member_repair_installed(self, repair_id: str) -> bool:
-        with self.connection() as db:
-            return (
-                db.execute(
-                    "SELECT 1 FROM full_member_repair WHERE repair_id=?", (repair_id,)
-                ).fetchone()
-                is not None
-            )
-
-    def apply_member_repair(self, key: str, repair_id: str) -> bool:
-        """Idempotent local installation never resets an existing failure count."""
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            if db.execute(
-                "SELECT 1 FROM full_member_repair WHERE repair_id=?", (repair_id,)
-            ).fetchone():
-                return True
-            row = db.execute(
-                "SELECT attempts,body,receipt,status,reason FROM full_work WHERE key=?", (key,)
-            ).fetchone()
-            if row is None:
-                raise FullMarketStateError("repair requires an unresolved unprepared member")
-            if row[1] is not None or row[2] is not None or row[3] == "complete":
-                return False
-            if row[4] == "source_error_pending":
-                raise FullMarketStateError("repair requires pending outcome reconciliation")
-            db.execute("INSERT INTO full_member_repair VALUES(?,?,?)", (repair_id, key, row[0]))
-            db.execute(
-                "UPDATE full_work SET status='pending',reason='repair_approved',lease_until=0 WHERE key=?",
-                (key,),
-            )
-            return True
 
     def finish(
         self,
