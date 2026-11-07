@@ -64,6 +64,36 @@ def test_hot_path_queries_use_status_index(ledger):
             assert "acquisition_intent_status (account=? AND status=?" in plan
 
 
+class _TempStoreRecorder(sqlite3.Connection):
+    builds: list[tuple[str, int]] = []
+
+    def execute(self, sql, *args):
+        if sql.lstrip().upper().startswith("CREATE INDEX"):
+            self.builds.append((sql, super().execute("PRAGMA temp_store").fetchone()[0]))
+        return super().execute(sql, *args)
+
+
+def test_index_builds_on_an_existing_ledger_never_spill_to_tmp(ledger, monkeypatch):
+    # Production consumers have a 16 MiB /tmp; sorting a large existing ledger
+    # there failed every governed acquisition with "database or disk is full".
+    state, clock = ledger
+    with state.connection() as db:
+        db.execute("DROP INDEX acquisition_intent_status")
+        for index in range(50):
+            _intent(db, f"settled-{index}", status="finalized", at=OLD)
+    connect = sqlite3.connect
+    monkeypatch.setattr(
+        sqlite3, "connect", lambda *a, **k: connect(*a, factory=_TempStoreRecorder, **k)
+    )
+    _TempStoreRecorder.builds = []
+
+    FullMarketState(state.path, clock=clock)
+
+    built = {sql.split(" ON ")[0].split()[-1]: store for sql, store in _TempStoreRecorder.builds}
+    assert "acquisition_intent_status" in built
+    assert set(built.values()) == {2}  # 2 = MEMORY
+
+
 def test_prune_drops_settled_history_and_keeps_open_debt(ledger):
     state, _ = ledger
     with state.connection() as db:

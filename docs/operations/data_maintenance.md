@@ -107,6 +107,8 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 - 只刪7天前、`blocked_until`已過的`full_quota` window；當日window與未到期cooldown保留。
 - `armed`／`unknown` intent一律保留，用量不退款；Shioaji帳號全部保留，待退役流程處理。
 - 熱路徑以`acquisition_intent_status(account,status,completed_at)`查armed recovery與unknown liability。
+- Schema初始化（含既有大帳本補建index）以`temp_store=MEMORY`排序；consumer rootfs唯讀、`/tmp`
+  僅16 MiB，排序溢出到`/tmp`會以`database or disk is full`讓每次受治理的抓取失敗。
 - 刪除後不自動VACUUM，空間由SQLite重用。
 
 ## Production universe與historical backfill

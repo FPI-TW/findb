@@ -67,6 +67,9 @@ class FullMarketState:
         from findb_fetcher.acquisition import account_lock
 
         with account_lock(path, "schema"), self.connection() as db:
+            # Index builds sort the whole table; consumers run with a read-only
+            # rootfs and a 16 MiB /tmp, so a spill there fails as "disk is full".
+            db.execute("PRAGMA temp_store=MEMORY")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS full_account_identity (provider TEXT NOT NULL, credential_sha256 TEXT NOT NULL, account TEXT NOT NULL, PRIMARY KEY(provider,credential_sha256));
                 CREATE TABLE IF NOT EXISTS full_quota (account TEXT, window TEXT, requests INTEGER NOT NULL, bytes INTEGER NOT NULL, blocked_until REAL NOT NULL DEFAULT 0, PRIMARY KEY(account,window));
