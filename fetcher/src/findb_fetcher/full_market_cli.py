@@ -35,11 +35,8 @@ _SCOPES = {
     "twelve_data": {"us_equity_eod"},
     "factset": {"hk_equity_eod"},
     "finlab": {"tw_equity_eod", "tw_etf_eod"},
-    "shioaji": {"tw_equity_minute", "tw_etf_minute"},
     "taifex": {"tw_futures_eod"},
 }
-# Source still reports this scope, but the runtime only settles retained work.
-_DRAIN_ONLY_PROVIDERS = {"shioaji"}
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -108,10 +105,7 @@ def load_config(path: Path) -> dict[str, Any]:
         if feed["target_date_lag_days"] != 0 or feed["completion_window_seconds"] < 1:
             raise ValueError("full-market feed clock invalid")
     expected = {
-        (provider, dataset)
-        for provider, datasets in _SCOPES.items()
-        if provider not in _DRAIN_ONLY_PROVIDERS
-        for dataset in datasets
+        (provider, dataset) for provider, datasets in _SCOPES.items() for dataset in datasets
     }
     if actual != expected:
         raise ValueError("full-market coverage must contain every acquiring feed")
@@ -228,11 +222,6 @@ def main(argv: list[str] | None = None) -> int:
         "--state-path", type=Path, default=Path("/var/lib/findb-full-market/state.sqlite3")
     )
     parser.add_argument("--readiness-file", type=Path)
-    parser.add_argument("--work-id")
-    parser.add_argument("--repair-proposal", type=Path)
-    parser.add_argument("--calendar-closure", action="store_true")
-    parser.add_argument("--closure-proposal", type=Path)
-    parser.add_argument("--expected-sha256")
     modes = parser.add_mutually_exclusive_group()
     for mode in (
         "check",
@@ -242,9 +231,6 @@ def main(argv: list[str] | None = None) -> int:
         "once",
         "sync-universes",
         "health",
-        "diagnose-shioaji",
-        "preview-shioaji-repair",
-        "apply",
     ):
         modes.add_argument("--" + mode, action="store_true")
     args = parser.parse_args(argv)
@@ -265,35 +251,6 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         if config["deployment_target"] != app_environment("local"):
             raise ValueError("runtime environment identity mismatch")
-        if args.calendar_closure:
-            if any(
-                getattr(args, mode.replace("-", "_"))
-                for mode in (
-                    "check",
-                    "require-stopped",
-                    "initialize-state",
-                    "run-forever",
-                    "once",
-                    "sync-universes",
-                    "health",
-                    "diagnose-shioaji",
-                    "preview-shioaji-repair",
-                )
-            ):
-                raise ValueError("calendar closure cannot start or initialize runtime")
-            from findb_fetcher.calendar_closure_cli import run as close_calendar
-
-            print(
-                json.dumps(
-                    close_calendar(args, account_path), sort_keys=True, separators=(",", ":")
-                )
-            )
-            return 0
-        if args.diagnose_shioaji or args.preview_shioaji_repair or args.apply:
-            from findb_fetcher.shioaji_repair_cli import run
-
-            print(json.dumps(run(args, account_path), sort_keys=True, separators=(",", ":")))
-            return 0
         os.environ["FETCHER_CONSUMER_PROFILE"] = args.execution_profile
         os.environ["FETCHER_EXECUTION_PROFILE"] = args.execution_profile
         os.environ["FETCHER_FULL_MARKET_CONFIG"] = str(args.config)

@@ -1,6 +1,5 @@
 """Real inherited flock descriptors and crash-safe provider response journaling."""
 
-import multiprocessing
 import os
 import subprocess
 import sys
@@ -12,7 +11,6 @@ import pytest
 from findb_fetcher import provider_work as queue
 from findb_fetcher.provider_process import ProviderProcessError, supervised_call
 from findb_fetcher.providers.finlab import FinLabDatasetTable
-from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot
 from findb_fetcher.providers.twelve_data import TwelveDataResponse
 from provider_work_support import work_authorization
 from provider_worker_support import fake_finlab, install_fake_sdk
@@ -69,7 +67,7 @@ def test_settlement_conflict_remains_recovery_blocked_with_safe_reason(tmp_path,
 
     owner = queue.ProviderWorkSession(
         Source(),
-        "shioaji",
+        "finlab",
         {"work_id": "original", "generation": 1, "token": "fence"},
         queue.WorkJournal(tmp_path / "journal.sqlite3", "original"),
     )
@@ -114,7 +112,7 @@ def test_enforced_daily_quota_waits_do_not_publish_failure_or_consume_retry_budg
         runtime.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex", "factset"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
 def test_orphan_provider_descendant_keeps_whole_work_lock_after_owner_exit(tmp_path, provider):
     release_read, release_write = os.pipe()
     child_script = "import os,sys; os.read(int(sys.argv[1]),1)"
@@ -169,7 +167,6 @@ with host_lock(sys.argv[1], root=Path(sys.argv[2])):
     [
         TwelveDataResponse({"values": [{"close": "1"}]}, raw_bytes=b'{"values":[{"close":"1"}]}'),
         FinLabDatasetTable(("2026-10-15",), ("2330",), ((1, None),)),
-        ShioajiKbarsSnapshot({"ts": (1,), "Close": (2,)}, 10, 20),
         b"native-taifex-report\r\n",
     ],
 )
@@ -226,35 +223,12 @@ def test_blocking_sdk_timeout_terminates_and_reaps_actual_process(tmp_path, monk
     assert [process.poll() is not None for process in launched] == [True]
 
 
-def test_persistent_shioaji_supervisor_reaps_real_isolated_process_group(tmp_path):
-    from findb_fetcher.providers.shioaji_session import (
-        PersistentIsolatedShioajiGateway,
-        _ProviderProcess,
-    )
-    from provider_work_support import owned_unit_work
-
-    with (
-        queue.host_lock("shioaji", root=tmp_path),
-        owned_unit_work("shioaji", tmp_path, lock=False),
-    ):
-        parent, child = multiprocessing.Pipe()
-        gateway = PersistentIsolatedShioajiGateway.__new__(PersistentIsolatedShioajiGateway)
-        gateway.parent, gateway.process = parent, _ProviderProcess(child.fileno())
-        child.close()
-        gateway._stop()
-        assert gateway.process.child.poll() is not None
-        with pytest.raises(ProcessLookupError):
-            os.killpg(gateway.process.pid, 0)
-    with queue.host_lock("shioaji", root=tmp_path):
-        pass
-
-
 def test_host_lock_is_quarantined_when_child_stop_cannot_be_proven(tmp_path):
     with pytest.raises(queue.ProviderWorkRecoveryBlockedError):
-        with queue.host_lock("shioaji", root=tmp_path):
+        with queue.host_lock("finlab", root=tmp_path):
             raise queue.ProviderWorkRecoveryBlockedError("unreaped child")
     with pytest.raises(queue.ProviderWorkWaitingError):
-        with queue.host_lock("shioaji", root=tmp_path):
+        with queue.host_lock("finlab", root=tmp_path):
             pytest.fail("uncertain process death cannot advance work")
 
 

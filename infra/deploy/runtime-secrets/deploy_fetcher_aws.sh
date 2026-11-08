@@ -7,6 +7,8 @@ set -Eeuo pipefail
 # A failed inspect is not proof of absence: Docker uses rc=1 for daemon and
 # permission errors too. Only a successful exact-name inventory can prove absence.
 runtime_inventory_recovery=none
+# Same bound as the provider helper: a slow graceful exit must not become SIGKILL.
+runtime_stop_timeout_seconds=90
 runtime_inventory_failure() {
   echo "fetcher_runtime_inventory=failed reason=query_unknown" >&2
   case "$runtime_inventory_recovery" in
@@ -84,7 +86,6 @@ fi
 : "${FETCHER_DEPLOY_MODE:?FETCHER_DEPLOY_MODE is required}"
 : "${TWELVE_IMAGE_REF:?TWELVE_IMAGE_REF is required}"
 : "${FINLAB_IMAGE_REF:?FINLAB_IMAGE_REF is required}"
-: "${SHIOAJI_IMAGE_REF:?SHIOAJI_IMAGE_REF is required}"
 : "${FACTSET_IMAGE_REF:?FACTSET_IMAGE_REF is required}"
 
 FETCHER_RUNTIME_PROFILE=unified
@@ -148,12 +149,11 @@ validate_image() {
 }
 validate_image "$TWELVE_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/twelve-data"
 validate_image "$FINLAB_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/finlab"
-validate_image "$SHIOAJI_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/shioaji"
 validate_image "$FACTSET_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/factset"
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
-preserve_env=PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,SHIOAJI_IMAGE_REF,FACTSET_IMAGE_REF
+preserve_env=PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,FACTSET_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -223,7 +223,7 @@ initial_runtime_exists() {
   return 1
 }
 retained_full_market=false
-for pair in "findb-pilot-twelve-data:findb-full-market-twelve-data" "findb-pilot-finlab:findb-full-market-finlab" "findb-pilot-shioaji:findb-full-market-shioaji" "findb-pilot-taifex:findb-full-market-taifex" "findb-pilot-factset:findb-full-market-factset"; do
+for pair in "findb-pilot-twelve-data:findb-full-market-twelve-data" "findb-pilot-finlab:findb-full-market-finlab" "findb-pilot-taifex:findb-full-market-taifex" "findb-pilot-factset:findb-full-market-factset"; do
   pilot_name="${pair%%:*}"
   full_name="${pair#*:}"
   for base in "$full_name" "$pilot_name" "findb-historical-${full_name#findb-full-market-}"; do
@@ -306,7 +306,7 @@ restore_named_identity() {
   if [ "$was_running" = true ] && [ "$current" != true ]; then
     docker start "$original" >/dev/null || return 1
   elif [ "$was_running" = false ] && [ "$current" = true ]; then
-    docker stop --time 30 "$original" >/dev/null || return 1
+    docker stop --time "$runtime_stop_timeout_seconds" "$original" >/dev/null || return 1
     require_retired_runtime "$original" || return 1
   fi
 }
@@ -335,7 +335,7 @@ rollback_named_full() {
       if [ "$id" = "$stable_id" ] || [ "$id" = "$previous_id" ]; then continue; fi
       running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
       case "$running" in true|false) ;; *) return 1 ;; esac
-      if [ "$running" = true ]; then docker stop --time 30 "$name" >/dev/null || return 1; fi
+      if [ "$running" = true ]; then docker stop --time "$runtime_stop_timeout_seconds" "$name" >/dev/null || return 1; fi
       require_retired_runtime "$name" || return 1
       docker rm "$name" >/dev/null || return 1
     fi
@@ -362,7 +362,7 @@ prepare_named_full_backup_cleanup() {
     [ "$actual_id" = "$original_id" ] && [ "$actual_image" = "$image" ] || return 1
     running="$(docker inspect --format '{{.State.Running}}' "$backup")" || return 1
     case "$running" in true|false) ;; *) return 1 ;; esac
-    if [ "$running" = true ]; then docker stop --time 30 "$backup" >/dev/null || return 1; fi
+    if [ "$running" = true ]; then docker stop --time "$runtime_stop_timeout_seconds" "$backup" >/dev/null || return 1; fi
     require_retired_runtime "$backup" || return 1
   done
 }
@@ -489,12 +489,58 @@ registered_original() {
   return 1
 }
 
+# Retirement removes the only consumers able to settle Shioaji work. Prove before
+# any mutation that they stop cleanly, their controls are stopped and no prepared
+# bytes wait for delivery. Each running consumer answers with its own image and env.
+require_retired_provider_drained() {
+  local name running restarting profile state
+  for name in findb-pilot-shioaji findb-full-market-shioaji findb-historical-shioaji; do
+    runtime_exists "$name" || continue
+    running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
+    restarting="$(docker inspect --format '{{.State.Restarting}}' "$name")" || return 1
+    if [ "$restarting" != false ]; then
+      echo "fetcher_aws_deploy=failed reason=retired_runtime_unhealthy runtime=$name" >&2
+      return 1
+    fi
+    [ "$running" = true ] || require_retired_runtime "$name" || return 1
+  done
+  for profile in pilot full_market; do
+    name="findb-${profile/_/-}-shioaji"
+    runtime_exists "$name" || continue
+    state="$pilot_state"
+    [ "$profile" = pilot ] || state="$full_market_state"
+    running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
+    if [ "$running" = true ] && ! docker exec "$name" findb-fetch-runtime \
+      --execution-profile "$profile" --config "/app/configs/full_market.$APP_ENVIRONMENT.v1.json" \
+      --state-path "$state/state.sqlite3" --provider shioaji --require-stopped 2>/dev/null; then
+      echo "fetcher_aws_deploy=failed reason=retired_provider_control_not_stopped runtime=$name" >&2
+      return 1
+    fi
+    if ! sudo python3 - "$state/state.sqlite3" <<'UNDELIVERED'
+import sqlite3
+import sys
+from contextlib import closing
+from pathlib import Path
+with closing(sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)) as db:
+    pending = db.execute(
+        "SELECT COUNT(*) FROM full_work WHERE provider='shioaji' AND body IS NOT NULL AND receipt IS NULL"
+    ).fetchone()[0]
+raise SystemExit(1 if pending else 0)
+UNDELIVERED
+    then
+      echo "fetcher_aws_deploy=failed reason=retired_provider_undelivered runtime=$name" >&2
+      return 1
+    fi
+  done
+}
+require_retired_provider_drained
+
 # A first cutover must drain and archive legacy pilot containers before this
 # immutable release is installed. Never restart pre-unification workers here.
 # Pull each exact image once per phase with a secret-free consumer. Individual
 # provider credentials remain confined to their own runtime wrapper invocation.
 run_runtime --consumer images --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-  bash -s -- "$TWELVE_IMAGE_REF" "$FINLAB_IMAGE_REF" "$SHIOAJI_IMAGE_REF" "$FACTSET_IMAGE_REF" <<'PREPARE_IMAGES'
+  bash -s -- "$TWELVE_IMAGE_REF" "$FINLAB_IMAGE_REF" "$FACTSET_IMAGE_REF" <<'PREPARE_IMAGES'
 set -euo pipefail
 for image in "$@"; do
   docker pull "$image" >/dev/null
@@ -538,7 +584,7 @@ for legacy in findb-fetcher-scheduler findb-fetcher-finlab-scheduler findb-fetch
     exit 1
   fi
 done
-provider_count=10
+provider_count=8
 for execution_profile in pilot full_market; do
   export FETCHER_CONSUMER_PROFILE="$execution_profile"
   state_dir="$pilot_state"
@@ -547,13 +593,12 @@ for execution_profile in pilot full_market; do
     state_dir="$full_market_state"
     name_prefix=findb-full-market
   fi
-  for provider in twelve-data finlab shioaji taifex factset; do
+  for provider in twelve-data finlab taifex factset; do
     identity="${provider//-/_}"
     case "$provider" in
       twelve-data|taifex) image="$TWELVE_IMAGE_REF"; cache_dir=- ;;
       factset) image="$FACTSET_IMAGE_REF"; cache_dir=- ;;
       finlab) image="$FINLAB_IMAGE_REF"; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
-      shioaji) image="$SHIOAJI_IMAGE_REF"; cache_dir=/var/lib/findb-shioaji-fetcher/cache ;;
     esac
     stable="$name_prefix-$provider"
     register_provider "$stable" "${stable}-previous"
@@ -572,12 +617,12 @@ done
 # They are independently journaled consumers, never side effects of pilot release.
 export FETCHER_CONSUMER_PROFILE=historical
 # historical-taifex-v1: accepted installations require the TAIFEX historical consumer.
-# factset-consumers-v1: accepted installations require five providers and fifteen consumers.
-for provider in twelve-data finlab shioaji taifex factset; do
+# factset-consumers-v1: accepted installations require the FactSet consumers.
+# shioaji-retired-v1: accepted installations require four providers and twelve consumers.
+for provider in twelve-data finlab taifex factset; do
   case "$provider" in
     twelve-data) image="$TWELVE_IMAGE_REF"; state_dir=/var/lib/findb-fetcher/historical; cache_dir=- ;;
     finlab) image="$FINLAB_IMAGE_REF"; state_dir=/var/lib/findb-finlab-fetcher/historical; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
-    shioaji) image="$SHIOAJI_IMAGE_REF"; state_dir=/var/lib/findb-shioaji-fetcher/historical; cache_dir=/var/lib/findb-shioaji-fetcher/cache ;;
     taifex) image="$TWELVE_IMAGE_REF"; state_dir=/var/lib/findb-taifex-fetcher/historical; cache_dir=- ;;
     factset) image="$FACTSET_IMAGE_REF"; state_dir=/var/lib/findb-factset-fetcher/historical; cache_dir=- ;;
   esac
@@ -598,6 +643,35 @@ if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
 fi
 
 verify_activated_runtimes
+
+# Releases never remove a consumer by omission. Only activation retires one, and
+# only after every kept consumer is healthy; the journaled original stays renamed
+# to "-previous" until commit, so a later failure restores and restarts it.
+retire_runtime() {
+  local stable="$1" previous="${1}-previous" suffix original running
+  for suffix in candidate transaction-backup legacy-previous preflight preflight-state preflight-control; do
+    if runtime_exists "${stable}-${suffix}"; then
+      echo "fetcher_aws_deploy=failed reason=retired_runtime_residue runtime=${stable}-${suffix}" >&2
+      return 1
+    fi
+  done
+  runtime_exists "$stable" || runtime_exists "$previous" || return 0
+  register_provider "$stable" "$previous" || return 1
+  original="$(registered_original "$stable")" || return 1
+  if [ "${original%%|*}" = - ]; then
+    echo "fetcher_aws_deploy=failed reason=unaccepted_retired_runtime runtime=$stable" >&2
+    return 1
+  fi
+  runtime_exists "$stable" || return 0
+  running="$(docker inspect --format '{{.State.Running}}' "$stable")" || return 1
+  case "$running" in true|false) ;; *) return 1 ;; esac
+  if [ "$running" = true ]; then docker stop --time "$runtime_stop_timeout_seconds" "$stable" >/dev/null || return 1; fi
+  require_retired_runtime "$stable" || return 1
+  docker rename "$stable" "$previous" >/dev/null || return 1
+}
+for retired in findb-pilot-shioaji findb-full-market-shioaji findb-historical-shioaji; do
+  retire_runtime "$retired"
+done
 
 commit_removals=()
 prepare_original_cleanup() {
@@ -630,7 +704,7 @@ prepare_commit_backups() {
     [ "$actual_id" = "$id" ] && [ "$actual_image" = "$image" ] || return 1
     running="$(docker inspect --format '{{.State.Running}}' "$backup")" || return 1
     case "$running" in true|false) ;; *) return 1 ;; esac
-    if [ "$running" = true ]; then docker stop --time 30 "$backup" >/dev/null || return 1; fi
+    if [ "$running" = true ]; then docker stop --time "$runtime_stop_timeout_seconds" "$backup" >/dev/null || return 1; fi
     require_retired_runtime "$backup" "${original%-previous}" || return 1
     commit_removals+=("${backup}|${id}|${image}|${original%-previous}")
   done

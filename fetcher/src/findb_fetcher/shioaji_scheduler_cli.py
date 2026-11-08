@@ -4,7 +4,7 @@ from findb_fetcher.legacy_cli import retired
 
 
 def main(argv: list[str] | None = None) -> int:
-    return retired("findb-fetch-shioaji-scheduler")
+    return retired("findb-fetch-shioaji-scheduler", code="PROVIDER_RETIRED")
 
 
 if __name__ == "__main__":

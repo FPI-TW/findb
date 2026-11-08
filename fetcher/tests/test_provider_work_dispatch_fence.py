@@ -12,13 +12,11 @@ from findb_fetcher import acquisition as acq
 from findb_fetcher import provider_work as queue
 from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.providers.finlab import FinLabSdkGateway
-from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 from provider_work_support import work_authorization
 from provider_worker_support import CA_BUNDLE, child_deadline, fake_finlab, install_fake_sdk
-from sdk_bootstrap_harness import install_launcher
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 @pytest.mark.parametrize(
     "fault",
     [
@@ -31,7 +29,7 @@ from sdk_bootstrap_harness import install_launcher
         "remote_fence",
     ],
 )
-def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
+def test_actual_http_and_finlab_sdk_go_recheck_work_after_all_waits(
     tmp_path, monkeypatch, provider, fault
 ):
     monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
@@ -46,7 +44,7 @@ def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
         def request(self, method, route, body):
             if route.endswith("/authorize"):
                 fence_checks.append(route)
-                final_check = 4 if provider == "shioaji" else 2
+                final_check = 2
                 if len(fence_checks) == final_check and fault == "heartbeat_fence":
                     owner.failed.set()
                 if len(fence_checks) == final_check and fault == "generation_fence":
@@ -76,17 +74,12 @@ def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
     monkeypatch.setattr(
         acq, "time", SimpleNamespace(time=lambda: clock[0], monotonic=lambda: clock[0], sleep=sleep)
     )
-    output = tmp_path / "sdk.jsonl"
-    if provider == "shioaji":
-        install_launcher(monkeypatch, output)
     prepare = acq.Acquisition.prepare
     preparations = []
 
     def paced(operation):
         preparations.append(operation.kind)
-        # For Shioaji this is specifically after child READY, before GO.
-        target = 2 if provider == "shioaji" and fault != "heartbeat_prepare" else 1
-        if fault in {"heartbeat_wait", "heartbeat_prepare"} and len(preparations) == target:
+        if fault in {"heartbeat_wait", "heartbeat_prepare"} and len(preparations) == 1:
             with operation.state.connection() as db:
                 operation._floor(db, clock[0] + 0.2, reason="pacing")
         return prepare(operation)
@@ -100,7 +93,6 @@ def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
             queue.WorkJournal(tmp_path / "work.sqlite3", "original"),
         )
         token = queue._current.set(owner)
-        sdk = None
         try:
             with acq.authorization_scope(grant, state_path=path):
                 with pytest.raises(queue.ProviderWorkRecoveryBlockedError):
@@ -115,7 +107,7 @@ def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
                                 provider, client, url="https://offline.test", credential="offline"
                             ) as (_, extensions):
                                 client.get("https://offline.test", extensions=extensions)
-                    elif provider == "finlab":
+                    else:
                         native = SimpleNamespace(
                             login=lambda *_: calls.append("login"),
                             data=SimpleNamespace(get=lambda *_: calls.append("get")),
@@ -123,13 +115,7 @@ def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
                         FinLabSdkGateway("offline", _sdk=native).fetch_dataset(
                             "price:收盤價", target_date=date(2026, 10, 15), symbols=["2330"]
                         )
-                    else:
-                        sdk = PersistentIsolatedShioajiGateway("offline", "offline-secret")
-                        sdk.fetch_kbars("2330", date(2026, 10, 15))
             assert calls == []
-            if output.exists():
-                events = [json.loads(row)["event"] for row in output.read_text().splitlines()]
-                assert not set(events) & {"create", "login", "contracts", "kbars"}
             with acq.FullMarketState(path).connection() as db:
                 assert (
                     db.execute(
@@ -142,8 +128,6 @@ def test_actual_http_finlab_sdk_and_shioaji_go_recheck_work_after_all_waits(
                     == 0
                 )
         finally:
-            if sdk is not None:
-                sdk.close()
             queue._current.reset(token)
             owner.stop()
 
@@ -669,63 +653,6 @@ def test_real_factset_child_connect_and_select_use_separate_fresh_grants(
             )
             assert [row[0] for row in db.execute("SELECT requests FROM full_quota")] == [1, 1]
     finally:
-        queue._current.reset(token)
-        owner.stop()
-
-
-def test_shioaji_slow_owner_rpc_does_not_consume_ready_go_grant(tmp_path, monkeypatch):
-    monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "true")
-    path = tmp_path / "governor.sqlite3"
-    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
-    output = tmp_path / "sdk.jsonl"
-    install_launcher(monkeypatch, output)
-    events = []
-
-    class Source:
-        def request(self, method, route, body):
-            events.append("owner")
-            time.sleep(0.06)
-            return work_authorization("shioaji", body)
-
-    owner = queue.ProviderWorkSession(
-        Source(),
-        "shioaji",
-        {"work_id": "original", "generation": 1, "token": "fence"},
-        queue.WorkJournal(tmp_path / "work.sqlite3", "original"),
-    )
-    token = queue._current.set(owner)
-
-    def grant():
-        assert events[-1] == "owner"
-        events.append("grant")
-        now = time.time()
-        return acq.Authorization(time.monotonic(), now, now, provider="shioaji")
-
-    sdk = None
-    try:
-        with (
-            queue.host_lock("shioaji", root=tmp_path),
-            acq.authorization_scope(grant, state_path=path),
-        ):
-            sdk = PersistentIsolatedShioajiGateway("offline", "offline-secret")
-            assert sdk.fetch_kbars("2330", date(2026, 10, 15))
-            sdk.close()
-            sdk = None
-        native_events = [json.loads(row)["event"] for row in output.read_text().splitlines()]
-        assert all(
-            native_events.count(name) == count
-            for name, count in (("create", 1), ("login", 1), ("contracts", 2), ("kbars", 1))
-        )
-        with acq.FullMarketState(path).connection() as db:
-            assert (
-                db.execute(
-                    "SELECT COUNT(*) FROM acquisition_intent WHERE actual_start IS NOT NULL AND operation_kind!='cleanup'"
-                ).fetchone()[0]
-                == 5
-            )
-    finally:
-        if sdk is not None:
-            sdk.close()
         queue._current.reset(token)
         owner.stop()
 

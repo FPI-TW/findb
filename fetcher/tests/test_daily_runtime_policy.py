@@ -1,4 +1,4 @@
-"""Bounded Shioaji daily turns, durable continuation and clock boundaries."""
+"""Bounded daily turns, durable continuation and clock boundaries."""
 
 import copy
 import json
@@ -45,11 +45,11 @@ def test_window_boundaries(clock, opened, next_open):
 def test_policy_rejects_unbounded_slices():
     for key, value in (("max_members", 0), ("max_seconds", True), ("end", "18:00")):
         with pytest.raises(ValueError):
-            validate_policies({"shioaji": {**POLICY, key: value}})
+            validate_policies({"finlab": {**POLICY, key: value}})
 
 
 def harness(tmp_path, monkeypatch, count=100):
-    runtime, source, _ = _runtime(tmp_path, provider="shioaji")
+    runtime, source, _ = _runtime(tmp_path, provider="finlab")
     runtime.daily_policy = dict(POLICY)
     clock = [datetime(2026, 10, 28, 12, tzinfo=timezone.utc)]
     elapsed = [0.0]
@@ -71,7 +71,7 @@ def harness(tmp_path, monkeypatch, count=100):
     }
     plan = {
         "plan_id": "daily-equity",
-        "dataset_key": "tw_equity_minute",
+        "dataset_key": "tw_equity_eod",
         "trade_date": "2026-10-28",
         "release_id": "frozen",
         "status": "incomplete",
@@ -79,7 +79,7 @@ def harness(tmp_path, monkeypatch, count=100):
             {"work_item_id": "part", "member_keys": [m["member_key"] for m in release["members"]]}
         ],
     }
-    runtime.state.record_plan(plan, "shioaji")
+    runtime.state.record_plan(plan, "finlab")
     acquired = []
     runtime._acquire = lambda member, *args: acquired.append(member["member_key"]) or []
     return runtime, source, release, plan, acquired, clock, elapsed
@@ -270,53 +270,6 @@ def test_terminal_members_never_issue_restore_rpc_on_later_slices(tmp_path, monk
     assert restored == acquired == ["S1"]
 
 
-def test_sdk_bootstrap_does_not_spend_member_budget_for_later_predispatch_quota_wait(
-    tmp_path, monkeypatch
-):
-    from findb_fetcher import provider_work
-
-    runtime, _, release, plan, _, _, _ = harness(tmp_path, monkeypatch)
-    owner = SimpleNamespace(
-        work={"kind": "daily"},
-        dispatch_observations=0,
-        restore=lambda **kwargs: [],
-        authorize=lambda: None,
-        request=lambda action: {"work_id": None, "trade_date": None, "repair_required": False},
-    )
-    monkeypatch.setattr(provider_work, "active", lambda: owner)
-
-    def bootstrap_then_wait(*args):
-        owner.dispatch_observations += 3
-        raise QuotaBlockedError("SDK data quota pending", quota_wait=True)
-
-    runtime._acquire = bootstrap_then_wait
-    runtime._deliver_plan(plan, release, {})
-    with runtime.state.connection() as db:
-        assert db.execute("SELECT attempts FROM full_work WHERE key='part:S0'").fetchone()[0] == 0
-    assert runtime.last_batch["reason"] == "quota_wait"
-
-
-def test_direct_sdk_predispatch_wait_preserves_legacy_error_and_member_budget(
-    tmp_path, monkeypatch
-):
-    from findb_fetcher.providers.shioaji import ShioajiSdkError
-
-    runtime, source, release, plan, _, _, _ = harness(tmp_path, monkeypatch)
-    error = ShioajiSdkError("isolated shioaji acquisition failed", code="ACQUISITION")
-    error.quota_wait = True
-
-    def waiting(*args):
-        raise error
-
-    runtime._acquire = waiting
-    runtime._deliver_plan(plan, release, {})
-    assert runtime.last_batch["reason"] == "quota_wait"
-    assert source.outcomes == []
-    assert error.code == "ACQUISITION"
-    with runtime.state.connection() as db:
-        assert db.execute("SELECT attempts FROM full_work WHERE key='part:S0'").fetchone()[0] == 0
-
-
 def test_enabled_queue_freezes_both_daily_plans_before_delivery(tmp_path, monkeypatch):
     from contextlib import contextmanager
 
@@ -325,20 +278,20 @@ def test_enabled_queue_freezes_both_daily_plans_before_delivery(tmp_path, monkey
     runtime, source, release, plan, _, _, _ = harness(tmp_path, monkeypatch)
     feeds = [
         {
-            "provider": "shioaji",
+            "provider": "finlab",
             "dataset_key": key,
             "source_timezone": "Asia/Taipei",
             "scheduled_time": "18:00",
             "target_date_lag_days": 0,
         }
-        for key in ("tw_equity_minute", "tw_etf_minute")
+        for key in ("tw_equity_eod", "tw_etf_eod")
     ]
     runtime.installed_feeds = feeds
     planned = []
     etf = {
         **copy.deepcopy(plan),
         "plan_id": "etf",
-        "dataset_key": "tw_etf_minute",
+        "dataset_key": "tw_etf_eod",
         "parts": [{"work_item_id": "etf-part", "member_keys": ["E0"]}],
     }
     plans = {plan["dataset_key"]: plan, etf["dataset_key"]: etf}
@@ -355,7 +308,7 @@ def test_enabled_queue_freezes_both_daily_plans_before_delivery(tmp_path, monkey
         "published_release_id": "frozen",
     }
     source.release = lambda identity: release
-    runtime.state.refresh("shioaji", now=0, result=[], next_at=9999999999)
+    runtime.state.refresh("finlab", now=0, result=[], next_at=9999999999)
     runtime._ensure_proof = lambda: None
     runtime._plan_for_date = lambda feed, day: (
         planned.append(feed["dataset_key"]) or plans[feed["dataset_key"]]
@@ -385,14 +338,14 @@ def test_enabled_queue_freezes_both_daily_plans_before_delivery(tmp_path, monkey
     delivered = []
 
     def deliver(*args, **kwargs):
-        assert set(planned) == {"tw_equity_minute", "tw_etf_minute"}
-        assert len(runtime.state.pending_plans("shioaji")) == 2
+        assert set(planned) == {"tw_equity_eod", "tw_etf_eod"}
+        assert len(runtime.state.pending_plans("finlab")) == 2
         delivered.append(args[0]["dataset_key"])
 
     runtime._deliver_plan = deliver
     runtime._settle_queued_round = lambda *args: None
     runtime._queued_cycle()
-    assert delivered == ["tw_equity_minute"]
+    assert delivered == ["tw_equity_eod"]
 
 
 def test_authoritative_window_denial_preserves_budget_even_if_local_clock_is_open(
@@ -402,7 +355,7 @@ def test_authoritative_window_denial_preserves_budget_even_if_local_clock_is_ope
     from findb_fetcher.full_market_client import FullMarketProtocolError
 
     runtime, source, release, plan, _, _, _ = harness(tmp_path, monkeypatch, count=1)
-    runtime._acquire = module.FullMarketRuntime._acquire.__get__(runtime)
+    runtime._acquire = module._governed(lambda self, *args: _policy.get()()).__get__(runtime)
     with runtime.state.connection() as db:
         db.execute("UPDATE full_work SET attempts=7")
 
@@ -412,7 +365,6 @@ def test_authoritative_window_denial_preserves_budget_even_if_local_clock_is_ope
         )
 
     source.authorization = denied
-    runtime.sdk = SimpleNamespace(fetch_kbars=lambda *args: _policy.get()(), close=lambda: None)
     runtime._deliver_plan(plan, release, {"slot_id": "taiwan_market_window"})
     with runtime.state.connection() as db:
         assert tuple(db.execute("SELECT attempts,reason FROM full_work").fetchone()) == (

@@ -24,8 +24,6 @@ from app.utils import utc_now
 ACTIVE_FEEDS = (
     ("twelve_data", "us_equity_eod", "market_eod"),
     ("finlab", "tw_equity_eod", "market_eod"),
-    ("shioaji", "tw_equity_minute", "market_minute"),
-    ("shioaji", "tw_etf_minute", "market_minute"),
     ("taifex", "tw_futures_eod", "futures_eod"),
 )
 
@@ -41,8 +39,6 @@ RUNS = text(
           AND (r.source, r.dataset_key) IN (
               ('twelve_data', 'us_equity_eod'),
               ('finlab', 'tw_equity_eod'),
-              ('shioaji', 'tw_equity_minute'),
-              ('shioaji', 'tw_etf_minute'),
               ('taifex', 'tw_futures_eod')
           )
           AND r.batch_data_date IS NOT NULL
@@ -145,22 +141,6 @@ SAMPLES = text(
            JOIN instruments i ON i.instrument_id = c.instrument_id
           WHERE i.market = 'TW' AND i.asset_class = 'equity' AND i.symbol IN ('2330','2317') AND c.source='finlab'
           ORDER BY c.trade_date DESC, c.instrument_id
-          LIMIT 1)
-        UNION ALL
-        (SELECT 'shioaji', 'tw_equity_minute', c.instrument_id::text, c.trade_date::text, c.run_id::text,
-                to_jsonb(c) || jsonb_build_object('open', c.open::text, 'high', c.high::text, 'low', c.low::text, 'close', c.close::text, 'turnover', c.turnover::text)
-           FROM market_data_minute c
-           JOIN instruments i ON i.instrument_id = c.instrument_id
-          WHERE i.market = 'TW' AND i.asset_class = 'equity' AND i.symbol='2330' AND c.source='shioaji'
-          ORDER BY c.bar_start_time DESC, c.instrument_id
-          LIMIT 1)
-        UNION ALL
-        (SELECT 'shioaji', 'tw_etf_minute', c.instrument_id::text, c.trade_date::text, c.run_id::text,
-                to_jsonb(c) || jsonb_build_object('open', c.open::text, 'high', c.high::text, 'low', c.low::text, 'close', c.close::text, 'turnover', c.turnover::text)
-           FROM market_data_minute c
-           JOIN instruments i ON i.instrument_id = c.instrument_id
-          WHERE i.market = 'TW' AND i.asset_class = 'etf' AND i.symbol='0050' AND c.source='shioaji'
-          ORDER BY c.bar_start_time DESC, c.instrument_id
           LIMIT 1)
     )
     SELECT source, dataset_key, sample_instrument_id, sample_trade_date, sample_run_id, sample_record

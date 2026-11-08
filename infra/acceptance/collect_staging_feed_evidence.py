@@ -32,13 +32,12 @@ FINDB_PROBE = REPO_ROOT / "backend" / "scripts" / "export_staging_feed_evidence.
 FETCHER_CONTAINERS = {
     "twelve_data": "findb-fetcher-scheduler",
     "finlab": "findb-fetcher-finlab-scheduler",
-    "shioaji": "findb-fetcher-shioaji-scheduler",
     "taifex": "findb-fetcher-taifex-scheduler",
 }
 CURRENT_FETCHER_CONTAINERS = {
     f"findb-{profile}-{provider}"
     for profile in ("pilot", "full-market")
-    for provider in ("twelve-data", "finlab", "shioaji", "taifex", "factset")
+    for provider in ("twelve-data", "finlab", "taifex", "factset")
 }
 
 
@@ -422,9 +421,7 @@ def _expected_target(findb: dict[str, Any], provider: str, *, observed_at: datet
             or abs((observed_at - sampled_at).total_seconds()) > 300
         ):
             return ""
-        market = {"twelve_data": "US", "finlab": "TW", "shioaji": "TW", "taifex": "TAIFEX"}[
-            provider
-        ]
+        market = {"twelve_data": "US", "finlab": "TW", "taifex": "TAIFEX"}[provider]
         timezone_name = "America/New_York" if market == "US" else "Asia/Taipei"
         calendar = evidence["markets"][market]
         if calendar["valid"] is not True or calendar["timezone"] != timezone_name:
@@ -447,7 +444,6 @@ def _expected_target(findb: dict[str, Any], provider: str, *, observed_at: datet
         due = {
             "twelve_data": clock_time(8, 15),
             "finlab": clock_time(14, 30),
-            "shioaji": clock_time(14, 30),
             "taifex": clock_time(18),
         }[provider]
         # US 09:00 is the delivery deadline; eligibility begins at its 08:15 trigger.
@@ -643,7 +639,6 @@ def _functional_acceptance(
         file_name = {
             "twelve_data": "twelve_data_us_staging_pilot.v2.json",
             "finlab": "finlab_tw_review_required.v1.json",
-            "shioaji": "shioaji_tw_staging_pilot.v3.json",
             "taifex": "taifex_tw_staging_pilot.v1.json",
         }[provider]
         config_bound = (
@@ -687,7 +682,6 @@ def _functional_acceptance(
             expected = {
                 "twelve_data": {"AAPL", "MSFT"},
                 "finlab": {"2330", "2317"},
-                "shioaji": {"2330"} if dataset == "tw_equity_minute" else {"0050"},
                 "taifex": {"TX", "MTX"},
             }[provider]
             okay = (

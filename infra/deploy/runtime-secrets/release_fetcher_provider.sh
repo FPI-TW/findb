@@ -108,18 +108,6 @@ case "$provider" in
     provider_key="${FINLAB_API_TOKEN:-}"
     provider_env=(--env FINLAB_API_TOKEN)
     ;;
-  shioaji)
-    marker_identity="shioaji"
-    image_repository_suffix="shioaji"
-    if [ "${SHIOAJI_SIMULATION:-}" != "true" ]; then
-      echo "release_fetcher_provider=failed reason=shioaji_simulation_required" >&2
-      exit 1
-    fi
-    source_key="${FETCHER_SHIOAJI_SOURCE_CLIENT_KEY:-}"
-    provider_key="${SHIOAJI_API_KEY:-}"
-    provider_secret_key="${SHIOAJI_SECRET_KEY:-}"
-    provider_env=(--env SHIOAJI_API_KEY --env SHIOAJI_SECRET_KEY --env SHIOAJI_SIMULATION)
-    ;;
   *)
     echo "release_fetcher_provider=failed reason=provider_not_allowed" >&2
     exit 1
@@ -153,9 +141,6 @@ require_value source_client_key "$source_key"
 if [ "$provider" != taifex ]; then
   require_value provider_credential "$provider_key"
 fi
-if [ "$provider" = "shioaji" ]; then
-  require_value provider_secret_credential "$provider_secret_key"
-fi
 require_value r2_account "${CLOUDFLARE_R2_ACCOUNT_ID:-}"
 require_value r2_bucket "${CLOUDFLARE_R2_RAW_BUCKET:-}"
 require_value r2_access_key "${CLOUDFLARE_R2_RAW_ACCESS_KEY_ID:-}"
@@ -174,7 +159,6 @@ fi
 export SOURCE_API_URL="$FETCHER_SOURCE_API_URL"
 export SOURCE_CLIENT_KEY="$source_key"
 export FETCHER_STATE_PATH="$state_path"
-export FETCHER_SHIOAJI_STATE_PATH="$state_path"
 export FETCHER_HISTORICAL_STATE_DIR="$state_dir"
 
 runtime_env_args=(
@@ -200,9 +184,6 @@ runtime_env_args=(
   --env FETCHER_HISTORICAL_STATE_DIR
   "${provider_env[@]}"
 )
-if [ "$provider" = "shioaji" ]; then
-  runtime_env_args+=(--env FETCHER_SHIOAJI_STATE_PATH)
-fi
 sudo mkdir -p "$state_dir"
 sudo chown 10001:10001 "$state_dir"
 sudo chmod 0700 "$state_dir"
@@ -388,7 +369,7 @@ if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ] && ! sudo test -e "$state_p
     "$image" "$@" --state-path "$state_path" --initialize-state
   if [ ! -f "$state_path" ] \
     || [ "$(sudo stat -c '%u:%g:%a' "$state_path")" != "10001:10001:600" ]; then
-    echo "release_fetcher_provider=failed reason=shioaji_state_bootstrap" >&2
+    echo "release_fetcher_provider=failed reason=state_bootstrap" >&2
     exit 1
   fi
 fi

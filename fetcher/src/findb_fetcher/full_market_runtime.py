@@ -92,14 +92,6 @@ from findb_fetcher.providers.finlab import (
 from findb_fetcher.providers.finlab import (
     build_market_eod_request as finlab_request,
 )
-from findb_fetcher.providers.shioaji import (
-    SHIOAJI_SDK_VERSION,
-    ShioajiEmptyResponseError,
-    ShioajiSdkError,
-    _simulation_from_env,
-    build_market_minute_request,
-)
-from findb_fetcher.providers.shioaji_session import PersistentIsolatedShioajiGateway
 from findb_fetcher.providers.taifex import (
     TaifexOperationalError,
     fetch_report,
@@ -387,7 +379,6 @@ class FullMarketRuntime:
         self.installed_feeds = list(self.feeds)
         self.http = client or httpx.Client(timeout=30)
         self.owns_http = client is None
-        self.sdk: PersistentIsolatedShioajiGateway | None = None
         self.td: TwelveDataClient | None = None
         self.proof: dict[str, Any] = {}
         self.reservation_window = ""
@@ -402,17 +393,12 @@ class FullMarketRuntime:
         self.last_batch: dict[str, Any] = {}
 
     def close(self) -> None:
-        if self.sdk is not None:
-            self.sdk.close()
         if self.td is not None:
             self.td.close()
         if self.owns_http:
             self.http.close()
 
     def pause(self) -> None:
-        if self.sdk is not None:
-            self.sdk.close()
-            self.sdk = None
         self.bundles.clear()
         self.futures.clear()
 
@@ -444,34 +430,6 @@ class FullMarketRuntime:
         ):
             raise ReadinessBlockedError("provider work calendar status is invalid")
         return status["repair_required"]
-
-    def _shioaji_request(self, operation: str, *args: Any) -> Any:
-        from findb_fetcher.provider_work import active
-
-        owner = active()
-        maintenance = (owner and owner.work["kind"] == "maintenance") or os.getenv(
-            "FETCHER_CONSUMER_PROFILE"
-        ) == "maintenance"
-        if not maintenance and not self.runtime_window()["open"]:
-            raise DailyWindowClosedError("daily acquisition window closed")
-        if self.sdk is not None and (not getattr(self.sdk, "is_alive", lambda: True)()):
-            self.sdk.close()
-            self.sdk = None
-        if self.sdk is None:
-            self.sdk = PersistentIsolatedShioajiGateway(
-                os.getenv("SHIOAJI_API_KEY", ""),
-                os.getenv("SHIOAJI_SECRET_KEY", ""),
-                simulation=_simulation_from_env(),
-            )
-        # The gateway owns transport/child failure cleanup. Local observation
-        # waits and authorization errors must not discard a healthy login.
-        try:
-            return getattr(self.sdk, operation)(*args)
-        except Exception:
-            if not getattr(self.sdk, "is_alive", lambda: True)():
-                failed, self.sdk = self.sdk, None
-                failed.close()
-            raise
 
     def runtime_window(self) -> dict[str, Any]:
         return window(self.daily_policy, datetime.now(timezone.utc))
@@ -526,12 +484,9 @@ class FullMarketRuntime:
                 return before, after
             time.sleep(min(wait, 1))
 
-    def _observed_response(
-        self, size: int, *, usage_bytes: int | None = None, declared: int = 0
-    ) -> None:
+    def _observed_response(self, size: int, *, declared: int = 0) -> None:
         bound = int(self.proof["max_response_bytes"])
-        # SDK account usage is authoritative; detached JSON is only a transport bound.
-        counted = usage_bytes if self.provider == "shioaji" else size
+        counted = size
         permit = getattr(self, "account_permit", None)
         if permit is not None:
             if counted is not None:
@@ -628,9 +583,8 @@ class FullMarketRuntime:
             elif url == TAIFEX_URL:
                 dataset = "tw_futures_eod"
             else:
-                suffix = "minute" if self.provider == "shioaji" else "eod"
                 asset = "etf" if url in TW_ISIN_URLS else "equity"
-                dataset = f"tw_{asset}_{suffix}"
+                dataset = f"tw_{asset}_eod"
             # An empty TAIFEX HTTP 200 report has no raw object; the dated
             # report resolver handles fallback/retry without fabricating evidence.
             if url == TAIFEX_URL and not body:
@@ -654,14 +608,6 @@ class FullMarketRuntime:
     @_governed
     def _catalogue(self, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
         self._ensure_proof()
-        if self.provider == "shioaji":
-            catalogue = self._shioaji_request("catalogue")
-            detached = canonical_bytes(
-                {"sdk_version": SHIOAJI_SDK_VERSION, "simulation": True, "catalogue": catalogue}
-            )
-            self._observed_response(len(detached))
-            self._persist(detached, "tw_equity_minute", "sdk_catalogue")
-            return catalogue
         if self.provider == "finlab":
             return []
         installed = {feed["dataset_key"] for feed in self.installed_feeds}
@@ -815,7 +761,7 @@ class FullMarketRuntime:
             for member in members:
                 member["raw_evidence_ref"] = stored.ref
             groups = {"hk_equity_eod": (hk_date, members, {HKEX_URL: snapshots[HKEX_URL]})}
-        elif self.provider in {"finlab", "shioaji"}:
+        elif self.provider == "finlab":
             snapshots = {url: self._snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)}
             companies = {
                 (member["symbol"], member["exchange"])
@@ -835,63 +781,53 @@ class FullMarketRuntime:
                 for index, url in enumerate(TW_ISIN_URLS)
                 for member in parse_tw_etfs(snapshots[url], otc=bool(index))
             ]
-            if self.provider == "shioaji":
-                catalogue = self._catalogue()
-                equity, etfs = (
-                    map_catalogue(equity, catalogue, shioaji=True),
-                    map_catalogue(etfs, catalogue, shioaji=True),
-                )
-            else:
-                # Catalogue presence is independent of daily OHLCV completeness.
-                catalogue_snapshots: dict[str, dict[str, bytes]] = {}
-                self._ensure_proof()
-                gateway = self._finlab_gateway()
-                for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
-                    if dataset not in dataset_keys:
-                        continue
+            # Catalogue presence is independent of daily OHLCV completeness.
+            catalogue_snapshots: dict[str, dict[str, bytes]] = {}
+            self._ensure_proof()
+            gateway = self._finlab_gateway()
+            for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
+                if dataset not in dataset_keys:
+                    continue
+                try:
                     try:
-                        try:
-                            table = gateway.fetch_catalogue(
-                                symbols=tuple(member["provider_symbol"] for member in members),
-                            )
-                        finally:
-                            self.state.pace_from_completion(
-                                account=self.provider,
-                                now=datetime.now(timezone.utc).timestamp(),
-                                interval=(
-                                    1 / self.proof["requests_per_second"]
-                                    if self.proof["requests_per_second"]
-                                    else 0
-                                ),
-                            )
-                    except FinLabOperationalError:
-                        raise
-                    except FinLabSdkError:
-                        for member in members:
-                            member["mapping_status"] = "gap"
-                        continue
-                    detached = self._finlab_table_bytes(table)
-                    self._observed_response(len(detached))
-                    url = f"https://www.finlab.tw/data/price-close?dataset={dataset}"
-                    self.snapshot_objects[url] = self._persist(
-                        detached, dataset, "provider_catalogue"
-                    )
-                    catalogue_snapshots[dataset] = {url: detached}
-                    for member in members:
-                        member["mapping_status"] = (
-                            "mapped"
-                            if member["classification"] != "classification_gap"
-                            and member["provider_symbol"] in table.symbols
-                            else "gap"
+                        table = gateway.fetch_catalogue(
+                            symbols=tuple(member["provider_symbol"] for member in members),
                         )
-            suffix = "minute" if self.provider == "shioaji" else "eod"
+                    finally:
+                        self.state.pace_from_completion(
+                            account=self.provider,
+                            now=datetime.now(timezone.utc).timestamp(),
+                            interval=(
+                                1 / self.proof["requests_per_second"]
+                                if self.proof["requests_per_second"]
+                                else 0
+                            ),
+                        )
+                except FinLabOperationalError:
+                    raise
+                except FinLabSdkError:
+                    for member in members:
+                        member["mapping_status"] = "gap"
+                    continue
+                detached = self._finlab_table_bytes(table)
+                self._observed_response(len(detached))
+                url = f"https://www.finlab.tw/data/price-close?dataset={dataset}"
+                self.snapshot_objects[url] = self._persist(detached, dataset, "provider_catalogue")
+                catalogue_snapshots[dataset] = {url: detached}
+                for member in members:
+                    member["mapping_status"] = (
+                        "mapped"
+                        if member["classification"] != "classification_gap"
+                        and member["provider_symbol"] in table.symbols
+                        else "gap"
+                    )
             groups = {
-                f"tw_equity_{suffix}": (
+                "tw_equity_eod": (
                     now.astimezone(ZoneInfo("Asia/Taipei")).date(),
                     equity,
                     {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
                 ),
-                f"tw_etf_{suffix}": (
+                "tw_etf_eod": (
                     now.astimezone(ZoneInfo("Asia/Taipei")).date(),
                     etfs,
                     {url: snapshots[url] for url in TW_ISIN_URLS},
@@ -974,7 +910,6 @@ class FullMarketRuntime:
             ProviderWorkRecoveryBlockedError,
             ProviderWorkSourceUnavailableError,
         )
-        from findb_fetcher.providers.shioaji import ShioajiSdkError
         from findb_fetcher.raw_storage import RawStorageUploadError
 
         work = owner.work
@@ -1049,9 +984,6 @@ class FullMarketRuntime:
             retryable, code = True, "MAINTENANCE_FINLAB_OPERATIONAL"
         except FinLabConfigError:
             code = "MAINTENANCE_FINLAB_CONFIG"
-        except ShioajiSdkError as exc:
-            retryable = exc.code not in {"CREDENTIALS", "LOGIN", "SDK", "CONTRACT", "PAYLOAD"}
-            code = "MAINTENANCE_SDK_" + exc.code
         except (ReadinessBlockedError, ValueError):
             pass
         else:
@@ -1278,8 +1210,6 @@ class FullMarketRuntime:
                                         ],
                                     }
                                 )
-                                if self.provider == "shioaji":
-                                    release = self._install_shioaji_repairs(owner, plan, release)
                                 self._deliver_plan(
                                     plan,
                                     release,
@@ -1787,88 +1717,6 @@ class FullMarketRuntime:
             raise ReadinessBlockedError("no published universe applies to catchup date")
         return self.source.release(listed["published_release_id"])
 
-    def _install_shioaji_repairs(self, owner, plan: dict, release: dict) -> dict:
-        from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
-        from findb_fetcher.shioaji_recovery import install_grant
-
-        response = owner._preparation_request("shioaji-repairs")
-        if (
-            response.get("work_id") != owner.work["work_id"]
-            or response.get("plan_id") != plan["plan_id"]
-        ):
-            raise ProviderWorkRecoveryBlockedError("repair scope differs from frozen work")
-        repairs = response["repairs"]
-        if not repairs:
-            return release
-        parts = {member: part for part in plan["parts"] for member in part["member_keys"]}
-        keys = {member: part["work_item_id"] + ":" + member for member, part in parts.items()}
-        members = {row["member_key"]: dict(row) for row in release["members"]}
-        for repair in repairs:
-            member_key = repair["member_key"]
-            if member_key not in keys or member_key not in members:
-                raise ProviderWorkRecoveryBlockedError("repair member differs from frozen work")
-            if repair["mapping_repaired"]:
-                members[member_key].update(
-                    mapping_status="mapped", provider_symbol=repair["provider_symbol"]
-                )
-        repaired = {**release, "members": list(members.values())}
-        # Acknowledged installations and locally settled members need no Source
-        # inventory, restore or ACK traffic; only lost ACKs and new grants do.
-        outstanding = [
-            repair
-            for repair in repairs
-            if not (
-                repair.get("acknowledged") is True
-                and self.state.member_repair_installed(repair["repair_id"])
-            )
-            and not self.state.member_complete(keys[repair["member_key"]])
-            and self.state.prepared(keys[repair["member_key"]]) is None
-        ]
-        if not outstanding:
-            return repaired
-        # Only a repaired member's own unacknowledged outcome blocks installation;
-        # every other report keeps _deliver_members' replay order.
-        pending_reports = self.state.pending_source_error_keys(plan["plan_id"])
-        for repair in outstanding:
-            member_key = repair["member_key"]
-            if keys[member_key] in pending_reports:
-                self._report_source_error(plan, parts[member_key], member_key, keys[member_key])
-        inventory = self.source.request(
-            "GET", f"provider-work/{owner.work['work_id']}/shioaji-diagnostics"
-        )
-        if any(
-            inventory.get(field) != expected
-            for field, expected in {
-                "work_id": owner.work["work_id"],
-                "plan_id": plan["plan_id"],
-                "execution_profile": self.execution_profile,
-                "dataset_key": plan["dataset_key"],
-                "trade_date": plan["trade_date"],
-            }.items()
-        ):
-            raise ProviderWorkRecoveryBlockedError("repair inventory differs from frozen work")
-        resolved = {
-            row["member_key"] for row in inventory["members"] if row["status"] == "resolved"
-        }
-        installed = []
-        for repair in outstanding:
-            member_key = repair["member_key"]
-            if member_key in resolved:
-                if not self.state.member_complete(keys[member_key]):
-                    self.state.finish(keys[member_key], status="complete")
-                continue
-            # Original prepared descriptors always win over any repair grant.
-            if self.state.prepared(keys[member_key]) is not None or owner.restore(
-                member_key=member_key
-            ):
-                continue
-            if self.state.apply_member_repair(keys[member_key], repair["repair_id"]):
-                install_grant(owner.journal, repair, date.fromisoformat(plan["trade_date"]))
-                installed.append(repair["repair_id"])
-        if installed:
-            owner._preparation_request("shioaji-repair-ack", repair_ids=installed)
-        return repaired
-
     def _deliver_plan(
         self,
         plan: dict[str, Any],
@@ -2071,9 +1919,6 @@ class FullMarketRuntime:
                     continue
                 self.state.finish(key, status="complete")
             except CalendarDecisionRepairRequiredError:
-                if self.provider == "shioaji":
-                    self.state.defer_wait(key, now=time.time(), reason="calendar_repair_required")
-                    self.state.finish(key, status="manual", reason="calendar_repair_required")
                 raise
             except ProviderWorkSourceUnavailableError:
                 if (
@@ -2101,46 +1946,6 @@ class FullMarketRuntime:
                     )
                 else:
                     self.state.defer_wait(key, now=time.time(), reason="suspended")
-                return False
-            except ShioajiEmptyResponseError as exc:
-                from findb_fetcher.shioaji_recovery import (
-                    RETRY_SECONDS,
-                    ShioajiObservationWaitError,
-                    observation_status,
-                )
-
-                count, maximum = observation_status(
-                    owner.journal, member["provider_symbol"], date.fromisoformat(plan["trade_date"])
-                )
-                exhausted = (
-                    exc.exhausted
-                    if isinstance(exc, ShioajiObservationWaitError)
-                    else count >= maximum
-                )
-                delay = (
-                    exc.delay
-                    if isinstance(exc, ShioajiObservationWaitError) and exc.delay
-                    else RETRY_SECONDS
-                )
-                reason = (
-                    "unknown_dispatch"
-                    if isinstance(exc, ShioajiObservationWaitError) and not exc.observed_empty
-                    else "empty_response"
-                )
-                # Persist classification/refund before any Source RPC so a
-                # failed calendar probe cannot lose the report continuation.
-                self.state.stage_empty_response(
-                    key, now=time.time(), delay=delay, exhausted=exhausted, reason=reason
-                )
-                if self._calendar_repair_required(owner):
-                    self._report_source_error(plan, part, member_key, key)
-                    self.state.finish(key, status="manual", reason="calendar_repair_required")
-                    raise CalendarDecisionRepairRequiredError(
-                        "published calendar is now closed"
-                    ) from None
-                self._report_source_error(plan, part, member_key, key)
-                if self.daily_policy:
-                    self.last_batch["reason"] = reason
                 return False
             except FinLabTargetNotReadyError:
                 retry_delay = self._publication_retry_delay(owner, feed)
@@ -2261,10 +2066,6 @@ class FullMarketRuntime:
                     raise ProviderWorkRecoveryBlockedError(
                         "Source provider owner fence differs"
                     ) from None
-                if self.daily_policy and isinstance(exc, ShioajiSdkError) and exc.quota_wait:
-                    self.state.defer_wait(key, now=time.time())
-                    self.last_batch["reason"] = "quota_wait"
-                    return False
                 if self.provider == "taifex" and _taifex_report_unavailable(exc):
                     # One exchange report serves every member: an outage keeps the
                     # member failure budget and ends this round for a later retry,
@@ -2346,16 +2147,12 @@ class FullMarketRuntime:
     def _report_source_error(
         self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
     ) -> None:
-        observation = self.state.observation_outcome_reason(key)
         self.source.outcome(
             plan["plan_id"],
             work_item_id=part["work_item_id"],
             member_key=member_key,
-            reason="empty_response" if observation == "empty_response" else "source_error",
+            reason="source_error",
         )
-        if observation is not None:
-            self.state.acknowledge_empty(key)
-            return
         self.state.finish(
             key,
             status="prepared" if self.state.prepared(key) else "pending",
@@ -2521,50 +2318,6 @@ class FullMarketRuntime:
             ]
             request["payload"]["batch"]["declared_record_count"] = 1
             request["payload"]["batch"]["delivery_mode"] = "incremental"
-        elif self.provider == "shioaji":
-            before, after = 0, 1
-            snapshot = self._shioaji_request("fetch_kbars", member["provider_symbol"], day)
-            raw = canonical_bytes(
-                {
-                    "kbars": dict(snapshot.kbars),
-                    "bytes_before": snapshot.usage_bytes_before,
-                    "bytes_after": snapshot.usage_bytes_after,
-                }
-            )
-            self._observed_response(len(raw), usage_bytes=0)
-            before, after = snapshot.requests_before, snapshot.requests_after
-            stored = self._persist(raw, dataset, member["provider_symbol"])
-            identity = checksum(
-                canonical_bytes({"plan": plan["plan_id"], "member": member["member_key"]})
-            )
-            request = build_market_minute_request(
-                snapshot.kbars,
-                dataset_key=dataset,
-                target_date=day,
-                symbols=(member["symbol"],),
-                fetched_at=now,
-                usage_before_requests=before,
-                usage_after_requests=after,
-                snapshot_id=identity,
-                daily_update_id=plan["plan_id"],
-                universe_id=release["release_id"],
-            )
-            request["delivery"] = delivery
-            for row in request["payload"]["data"]:
-                row["source_symbol"] = member["provider_symbol"]
-            request["payload"]["batch"]["provider_usage_before"]["requests_limit"] = self.proof[
-                "requests_per_day"
-            ]
-            request["payload"]["batch"]["provider_usage_after"]["requests_limit"] = self.proof[
-                "requests_per_day"
-            ]
-            raw = canonical_bytes(
-                {
-                    "kbars": dict(snapshot.kbars),
-                    "bytes_before": snapshot.usage_bytes_before,
-                    "bytes_after": snapshot.usage_bytes_after,
-                }
-            )
         else:
             raw, rows, historical = self._taifex_report(day, dataset)
             stored = self._persist(raw, dataset, "exchange_report")
@@ -2643,10 +2396,9 @@ class FullMarketRuntime:
                 }
             )
         )
-        if self.provider != "shioaji":
-            request["request_key"] = f"full:{identity}"
-            request["idempotency_key"] = f"full:{identity}"
-        attach_raw_object(request, stored, preserve_identity=self.provider == "shioaji")
+        request["request_key"] = f"full:{identity}"
+        request["idempotency_key"] = f"full:{identity}"
+        attach_raw_object(request, stored)
         if len(canonical_bytes(request)) >= 1024 * 1024:
             raise ReadinessBlockedError("prepared Source body exceeds byte bound")
         return [request]

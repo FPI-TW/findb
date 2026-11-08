@@ -41,8 +41,6 @@ from findb_fetcher.full_market_universe import (
     universe_request,
 )
 from findb_fetcher.providers.finlab import FinLabDatasetConfig, FinLabSymbol
-from findb_fetcher.providers.shioaji import SHIOAJI_SDK_VERSION
-from findb_fetcher.providers.shioaji_session import ShioajiSession
 from findb_fetcher.providers.taifex import fetch_report, parse_report, report_members
 from findb_fetcher.readiness_probe import probe_twelve_data
 
@@ -487,50 +485,6 @@ def test_unknown_or_insufficient_readiness_blocks_no_false_subset(tmp_path: Path
         validate_capacity(proof, 5000, seconds_available=10)
 
 
-def test_sdk_session_one_login_catalogue_tse_otc_reused(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("importlib.metadata.version", lambda name: SHIOAJI_SDK_VERSION)
-    calls: list[str] = []
-
-    class API:
-        def __init__(self, **kwargs: Any) -> None:
-            self.Contracts = SimpleNamespace(
-                Stocks=SimpleNamespace(
-                    TSE=[SimpleNamespace(code="2330", exchange="TSE")],
-                    OTC=[SimpleNamespace(code="6488", exchange="OTC")],
-                )
-            )
-
-        def login(self, **kwargs: Any) -> None:
-            calls.append("login")
-
-        def logout(self) -> None:
-            calls.append("logout")
-
-        def usage(self) -> Any:
-            return SimpleNamespace(bytes=10)
-
-        def kbars(self, contract: Any, **kwargs: Any) -> dict[str, list[Any]]:
-            calls.append(contract.code)
-            return {
-                "ts": [],
-                "Open": [],
-                "High": [],
-                "Low": [],
-                "Close": [],
-                "Volume": [],
-                "Amount": [],
-            }
-
-    session = ShioajiSession(
-        "secret", "other-secret", simulation=False, sdk=SimpleNamespace(Shioaji=API)
-    )
-    assert len(session.catalogue()) == 2
-    session.fetch_kbars("2330", date(2026, 10, 1))
-    session.fetch_kbars("6488", date(2026, 10, 1))
-    session.close()
-    assert calls == ["login", "2330", "6488", "logout"]
-
-
 def test_finlab_etf_only_explicit_production_scope() -> None:
     config = FinLabDatasetConfig(
         dataset_key="tw_etf_eod",
@@ -557,7 +511,6 @@ def test_manifest_stopped_acquiring_feeds_no_staging_changes() -> None:
     assert config["desired_state"] == "stopped"
     assert len(config["feeds"]) == 5
     assert config["daily_runtime_policies"] == {}
-    assert not any(feed["provider"] == "shioaji" for feed in config["feeds"])
 
 
 @pytest.mark.parametrize(
@@ -567,7 +520,7 @@ def test_manifest_stopped_acquiring_feeds_no_staging_changes() -> None:
             lambda config: config["feeds"].append(
                 {
                     **config["feeds"][0],
-                    "provider": "shioaji",
+                    "provider": "retired_provider",
                     "dataset_key": "tw_equity_minute",
                     "market": "TW",
                     "asset_class": "equity",
@@ -579,7 +532,7 @@ def test_manifest_stopped_acquiring_feeds_no_staging_changes() -> None:
         (lambda config: config["feeds"].pop(), "every acquiring feed"),
         (
             lambda config: config["daily_runtime_policies"].update(
-                shioaji={
+                retired_provider={
                     "timezone": "Asia/Taipei",
                     "start": "18:00",
                     "end": "06:00",
@@ -591,7 +544,7 @@ def test_manifest_stopped_acquiring_feeds_no_staging_changes() -> None:
         ),
     ],
 )
-def test_manifest_rejects_drain_only_acquisition_and_incomplete_coverage(
+def test_manifest_rejects_ungoverned_provider_and_incomplete_coverage(
     tmp_path: Path, change: Callable[[dict[str, Any]], Any], message: str
 ) -> None:
     config = json.loads(
@@ -609,22 +562,22 @@ def test_retired_feed_with_unreconciled_local_bytes_blocks_without_settling(
 ) -> None:
     from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
 
-    runtime, _, _ = _runtime(tmp_path, provider="shioaji")
+    runtime, _, _ = _runtime(tmp_path, provider="twelve_data")
     runtime.feeds = runtime.installed_feeds = []
     with runtime.state.connection() as db:
         db.execute(
             "INSERT INTO full_plan(plan_id,provider,dataset,trade_date,body,complete,late) "
-            "VALUES('plan','shioaji','tw_equity_minute','2026-10-30','{}',0,0)"
+            "VALUES('plan','twelve_data','hk_equity_eod','2026-10-30','{}',0,0)"
         )
         body = b'[{"local":"only"}]'
         db.execute(
             "INSERT INTO full_work(key,provider,plan_id,member_key,status,attempts,lease_until,"
-            "body,body_sha256,next_at) VALUES('work','shioaji','plan','2330','prepared',0,0,?,?,0)",
+            "body,body_sha256,next_at) VALUES('work','twelve_data','plan','0700','prepared',0,0,?,?,0)",
             (body, hashlib.sha256(body).hexdigest()),
         )
 
     class Owner:
-        work = {"kind": "daily", "dataset_key": "tw_equity_minute", "trade_date": "2026-10-30"}
+        work = {"kind": "daily", "dataset_key": "hk_equity_eod", "trade_date": "2026-10-30"}
         drained = settled = False
 
         def restore(self) -> list[str]:
@@ -640,6 +593,33 @@ def test_retired_feed_with_unreconciled_local_bytes_blocks_without_settling(
     with pytest.raises(ProviderWorkRecoveryBlockedError):
         runtime._settle_retired_work(owner)
     assert not owner.drained and not owner.settled
+
+
+def test_retained_retired_provider_checkpoint_reopens_and_stays_out_of_other_providers(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = FullMarketState(path)
+    with state.connection() as db:
+        db.execute(
+            "INSERT INTO full_plan(plan_id,provider,dataset,trade_date,body,complete,late) "
+            "VALUES('old','shioaji','tw_equity_minute','2026-10-30','{}',0,0)"
+        )
+        db.execute(
+            "INSERT INTO full_work(key,provider,plan_id,member_key,status,attempts,lease_until,"
+            "next_at) VALUES('old:2330','shioaji','old','2330','manual',8,0,0)"
+        )
+        db.execute(
+            "INSERT INTO full_empty_outcome(work_key,exhausted,next_at) VALUES('old:2330',1,0)"
+        )
+        db.execute("INSERT INTO full_member_repair VALUES('repair','old:2330',8)")
+    reopened = FullMarketState(path)
+    assert reopened.pending_plans("finlab") == []
+    assert reopened.health("finlab")
+    with reopened.connection() as db:
+        assert db.execute("SELECT status FROM full_work").fetchone()[0] == "manual"
+        assert db.execute("SELECT COUNT(*) FROM full_empty_outcome").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM full_member_repair").fetchone()[0] == 1
 
 
 def test_universe_version_evidence_checksum_stable_members() -> None:
@@ -819,52 +799,6 @@ def _member() -> dict[str, Any]:
         "mapping_status": "mapped",
         "member_key": "AAPL",
     }
-
-
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
-@pytest.mark.parametrize("setting", [None, "true", "false", "TRUE"])
-def test_shioaji_runtime_enforces_data_only_mode_and_catalogue_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profile: str, setting: str | None
-) -> None:
-    from findb_fetcher.providers.shioaji import ShioajiConfigError
-
-    if setting is None:
-        monkeypatch.delenv("SHIOAJI_SIMULATION", raising=False)
-    else:
-        monkeypatch.setenv("SHIOAJI_SIMULATION", setting)
-    instances = []
-    catalogue = [{"symbol": "2330", "exchange": "TSE", "currency": "TWD"}]
-
-    class Gateway:
-        def __init__(self, key: str, secret: str, *, simulation: bool) -> None:
-            assert simulation is True
-            instances.append(self)
-
-        def catalogue(self) -> list[dict[str, str]]:
-            return catalogue
-
-        def is_alive(self) -> bool:
-            return True
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(
-        "findb_fetcher.full_market_runtime.PersistentIsolatedShioajiGateway", Gateway
-    )
-    runtime, _, raw = _runtime(tmp_path, provider="shioaji", execution_profile=profile)
-    try:
-        if setting in {None, "true"}:
-            assert runtime._catalogue() == catalogue
-            assert runtime._catalogue() == catalogue
-            assert len(instances) == 1
-            assert all(json.loads(value)["simulation"] is True for value in raw.calls)
-        else:
-            with pytest.raises(ShioajiConfigError, match="must be true"):
-                runtime._catalogue()
-            assert not instances and not raw.calls
-    finally:
-        runtime.close()
 
 
 def test_raw_persisted_before_provider_mapping_failure(tmp_path: Path) -> None:
@@ -1348,57 +1282,6 @@ def test_nasdaq_effective_timestamp_uses_official_date_not_utc_today() -> None:
         nasdaq_effective_date(
             b"File Creation Time: 1002202621:31||||", observed_date=date(2026, 10, 1)
         )
-
-
-def test_full_minute_request_retains_canonical_sequence_identity(
-    tmp_path: Path, contracts_dir: Path
-) -> None:
-    from findb_fetcher.contracts import ContractRegistry
-    from findb_fetcher.providers.shioaji import ShioajiKbarsSnapshot
-
-    runtime, _, _ = _runtime(tmp_path, provider="shioaji")
-    member = {**_member(), "symbol": "2330", "provider_symbol": "2330", "member_key": "2330"}
-    day = date(2026, 10, 1)
-    end = datetime(2026, 10, 1, 9, 1)
-    nanos = int((end - datetime(1970, 1, 1)).total_seconds()) * 1000000000
-    runtime.sdk = SimpleNamespace(
-        fetch_kbars=lambda *args: ShioajiKbarsSnapshot(
-            {
-                "ts": (nanos,),
-                "Open": (100,),
-                "High": (101,),
-                "Low": (99,),
-                "Close": (100,),
-                "Volume": (1,),
-                "Amount": (100000,),
-            },
-            100,
-            200,
-        )
-    )
-    plan = {**_plan(), "dataset_key": "tw_equity_minute", "trade_date": str(day)}
-    request = runtime._acquire(
-        member, plan, plan["parts"][0], {"release_id": "r"}, runtime.feeds[0]
-    )[0]
-    ContractRegistry(contracts_dir).validate("market_minute", 1, request)
-    from findb_fetcher.providers.shioaji import build_market_minute_request
-
-    batch = request["payload"]["batch"]
-    expected = build_market_minute_request(
-        runtime.sdk.fetch_kbars().kbars,
-        dataset_key="tw_equity_minute",
-        target_date=day,
-        symbols=("2330",),
-        fetched_at=datetime.now(timezone.utc),
-        usage_before_requests=0,
-        usage_after_requests=1,
-        snapshot_id=batch["snapshot_id"],
-        daily_update_id=batch["daily_update_id"],
-        universe_id=batch["universe_id"],
-    )
-    assert request["request_key"] == expected["request_key"]
-    assert request["idempotency_key"] == expected["idempotency_key"]
-    runtime.http.close()
 
 
 def test_tw_ordinary_requires_official_stock_section_cfi_excludes_four_digit_tdr() -> None:

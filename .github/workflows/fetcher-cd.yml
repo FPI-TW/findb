@@ -172,7 +172,6 @@ jobs:
     outputs:
       twelve_image: ${{ steps.images.outputs.twelve_image_ref }}
       finlab_image: ${{ steps.images.outputs.finlab_image_ref }}
-      shioaji_image: ${{ steps.images.outputs.shioaji_image_ref }}
       factset_image: ${{ steps.images.outputs.factset_image_ref }}
     env:
       AWS_REGION: ap-southeast-1
@@ -180,7 +179,6 @@ jobs:
       REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
       TWELVE: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/twelve-data
       FINLAB: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/finlab
-      SHIOAJI: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/shioaji
       FACTSET: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com/findb/staging/fetcher/factset
       ECR_BUILD_CACHE: gha
     steps:
@@ -227,7 +225,6 @@ jobs:
         pids=()
         build twelve "$TWELVE" . ./fetcher/Dockerfile & pids+=("twelve:$!")
         build finlab "$FINLAB" . ./fetcher/Dockerfile.finlab & pids+=("finlab:$!")
-        build shioaji "$SHIOAJI" . ./fetcher/Dockerfile.shioaji & pids+=("shioaji:$!")
         build factset "$FACTSET" . ./fetcher/Dockerfile.factset & pids+=("factset:$!")
         failed=0
         for entry in "${pids[@]}"; do
@@ -237,7 +234,7 @@ jobs:
           [ "$status" -eq 0 ] || failed=1
         done
         [ "$failed" -eq 0 ]
-        for name in twelve finlab shioaji factset; do
+        for name in twelve finlab factset; do
           [ "$(grep -c '^image_ref=' "$work/$name.output")" = 1 ]
           printf '%s_image_ref=%s\n' "$name" "$(sed -n 's/^image_ref=//p' "$work/$name.output")" >> "$GITHUB_OUTPUT"
         done
@@ -294,14 +291,13 @@ jobs:
         KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
         TWELVE_IMAGE: ${{ needs.publish.outputs.twelve_image }}
         FINLAB_IMAGE: ${{ needs.publish.outputs.finlab_image }}
-        SHIOAJI_IMAGE: ${{ needs.publish.outputs.shioaji_image }}
         FACTSET_IMAGE: ${{ needs.publish.outputs.factset_image }}
       run: |
         set -euo pipefail
         [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
-        [[ "$TWELVE_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]]; [[ "$FINLAB_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]]; [[ "$SHIOAJI_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/shioaji@sha256:[0-9a-f]{64}$ ]]; [[ "$FACTSET_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/factset@sha256:[0-9a-f]{64}$ ]]
+        [[ "$TWELVE_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]]; [[ "$FINLAB_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]]; [[ "$FACTSET_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/factset@sha256:[0-9a-f]{64}$ ]]
         profile=unified
-        python3 infra/deploy/release_manifest.py generate --runtime-profile "$profile" --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "twelve_data=$TWELVE_IMAGE" --image "finlab=$FINLAB_IMAGE" --image "shioaji=$SHIOAJI_IMAGE" --image "factset=$FACTSET_IMAGE" --output "$RUNNER_TEMP/manifest.json"
+        python3 infra/deploy/release_manifest.py generate --runtime-profile "$profile" --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "twelve_data=$TWELVE_IMAGE" --image "finlab=$FINLAB_IMAGE" --image "factset=$FACTSET_IMAGE" --output "$RUNNER_TEMP/manifest.json"
         python3 infra/deploy/release_manifest.py bundle --repo-root . --unit fetcher --manifest "$RUNNER_TEMP/manifest.json" --output "$RUNNER_TEMP/bundle.tar"
         sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d ' ' -f1)"; key="fetcher/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar"
         aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$key" --body "$RUNNER_TEMP/bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null

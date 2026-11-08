@@ -405,7 +405,7 @@ def test_finlab_partial_bundle_remains_durable_unresolved(
     runtime.http.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 def test_slow_verified_rate_is_fully_waited_and_stop_rechecked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:

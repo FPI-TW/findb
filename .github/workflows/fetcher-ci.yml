@@ -46,8 +46,7 @@ jobs:
           cache-dependency-glob: "fetcher/uv.lock"
 
       - name: Install dependencies
-        # The Shioaji extra lets test_shioaji_sdk_contract.py check the real SDK API.
-        run: uv sync --frozen --extra shioaji
+        run: uv sync --frozen
 
       - name: Check contract artifacts
         working-directory: backend
@@ -90,32 +89,19 @@ jobs:
         run: |
           generic_image="findb-fetcher:${{ github.sha }}"
           finlab_image="findb-fetcher-finlab:${{ github.sha }}"
-          shioaji_image="findb-fetcher-shioaji:${{ github.sha }}"
-          # The generic runtime must not gain either optional provider SDK.
-          docker run --rm "$generic_image" python -c 'import importlib.util, sys; sys.exit(0 if all(importlib.util.find_spec(name) is None for name in ("finlab", "shioaji")) else 1)'
+          # The generic runtime must not gain the optional provider SDK.
+          docker run --rm "$generic_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is None else 1)'
           docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .
-          docker run --rm "$finlab_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is not None and importlib.util.find_spec("shioaji") is None else 1)'
+          docker run --rm "$finlab_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is not None else 1)'
           docker run --rm "$finlab_image"
           docker run --rm "$finlab_image" findb-fetch-historical-backfill --help
-
-      - name: Build and inspect isolated Shioaji scheduler container
-        working-directory: .
-        run: |
-          generic_image="findb-fetcher:${{ github.sha }}"
-          finlab_image="findb-fetcher-finlab:${{ github.sha }}"
-          shioaji_image="findb-fetcher-shioaji:${{ github.sha }}"
-          docker build -f fetcher/Dockerfile.shioaji -t "$shioaji_image" .
-          # The Shioaji runtime carries only its explicitly requested optional
-          # SDK.  Keep the generic and FinLab images hermetic as well.
-          docker run --rm "$shioaji_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("shioaji") is not None and importlib.util.find_spec("finlab") is None else 1)'
-          docker run --rm "$shioaji_image"
 
       - name: Build and inspect isolated FactSet runtime
         working-directory: .
         run: |
           image="findb-fetcher-factset:${{ github.sha }}"
           docker build -f fetcher/Dockerfile.factset -t "$image" .
-          docker run --rm "$image" python -c 'import importlib.util,ssl; assert importlib.util.find_spec("pymysql"); assert all(importlib.util.find_spec(n) is None for n in ("finlab","shioaji")); c=ssl.create_default_context(cafile="/app/certs/ap-southeast-1-bundle.pem"); assert c.check_hostname and c.verify_mode==ssl.CERT_REQUIRED'
+          docker run --rm "$image" python -c 'import importlib.util,ssl; assert importlib.util.find_spec("pymysql"); assert importlib.util.find_spec("finlab") is None; c=ssl.create_default_context(cafile="/app/certs/ap-southeast-1-bundle.pem"); assert c.check_hostname and c.verify_mode==ssl.CERT_REQUIRED'
           docker run --rm "$image"
           docker run --rm "$image" findb-fetch-runtime --provider factset --config /app/configs/full_market.local.v1.json --check
           docker run --rm "$image" findb-fetch-historical-backfill --help
@@ -125,7 +111,7 @@ jobs:
         run: |
           # Runtimes run --read-only and cannot cache bytecode, so a missing or
           # stale .pyc would be recompiled from source on every container start.
-          for image in findb-fetcher findb-fetcher-finlab findb-fetcher-shioaji findb-fetcher-factset; do
+          for image in findb-fetcher findb-fetcher-finlab findb-fetcher-factset; do
             docker run --rm -i --read-only --user 10001:10001 "$image:${{ github.sha }}" python - <<'PY'
           import importlib.util, os, struct
           import boto3, httpx, jsonschema

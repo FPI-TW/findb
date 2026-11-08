@@ -1,11 +1,9 @@
 """Canonical visibility, retired feed routes and safe registry reseeding."""
 
+import hashlib
 import json
-import subprocess
-import sys
 from copy import deepcopy
-from datetime import timedelta
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -19,7 +17,7 @@ from app.services.normalize.contracts import (
     MarketMinuteContractNormalizer,
 )
 from scripts.seed_data import seed_datasets
-from tests.script_env import script_env
+from tests.market_minute_fixture import market_minute_request
 from tests.test_canonical_ingest_api import _execute_run
 from tests.test_full_market import (
     DAY,
@@ -32,51 +30,20 @@ from tests.test_full_market import (
 from tests.test_minute_normalize import _minute_request
 
 
-def _fetcher_member_minute_request(plan, symbol, *, sequence_count=1):
-    """Use the frozen Fetcher adapter in its own process; no production coupling."""
-    source = Path(__file__).resolve().parents[2] / "fetcher" / "src"
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            """
-import json, sys, runpy
-from datetime import date, datetime, timedelta, timezone
-args = json.load(sys.stdin)
-adapter = runpy.run_path(args['source'] + '/findb_fetcher/providers/shioaji.py')
-universe = runpy.run_path(args['source'] + '/findb_fetcher/full_market_universe.py')
-build_market_minute_request = adapter['build_market_minute_request']
-canonical_bytes, checksum = universe['canonical_bytes'], universe['checksum']
-day = date.fromisoformat(args['day'])
-end = datetime.combine(day, datetime.min.time()) + timedelta(hours=9, minutes=1)
-ns = int((end - datetime(1970, 1, 1)).total_seconds()) * 1_000_000_000
-kbars = {'ts': (ns,), 'Open': (100,), 'High': (101,), 'Low': (99,),
-         'Close': (100.5,), 'Volume': (2,), 'Amount': (200000,)}
-identity = checksum(canonical_bytes({'plan': args['plan'], 'member': args['symbol']}))
-request = build_market_minute_request(
-    kbars, dataset_key='tw_equity_minute', target_date=day, symbols=(args['symbol'],),
-    fetched_at=datetime.combine(day, datetime.min.time(), timezone.utc) + timedelta(hours=10),
-    usage_before_requests=1, usage_after_requests=2, snapshot_id=identity,
-    daily_update_id=args['plan'], universe_id=args['release'], sequence_count=args['count'])
-print(json.dumps(request))
-""",
-        ],
-        input=json.dumps(
-            {
-                "day": str(DAY),
-                "plan": str(plan.plan_id),
-                "release": str(plan.release_id),
-                "symbol": symbol,
-                "count": sequence_count,
-                "source": str(source),
-            }
-        ),
-        capture_output=True,
-        text=True,
-        check=True,
-        env=script_env(),
+def _member_minute_request(plan, symbol, *, sequence_count=1):
+    identity = hashlib.sha256(
+        json.dumps({"plan": str(plan.plan_id), "member": symbol}, sort_keys=True).encode()
+    ).hexdigest()
+    request = market_minute_request(
+        symbol,
+        dataset_key="tw_equity_minute",
+        target_date=DAY,
+        fetched_at=datetime.combine(DAY, datetime.min.time(), timezone.utc) + timedelta(hours=10),
+        snapshot_id=identity,
+        daily_update_id=str(plan.plan_id),
+        universe_id=str(plan.release_id),
+        sequence_count=sequence_count,
     )
-    request = json.loads(result.stdout)
     request["delivery"] = _ingress(plan, [])["delivery"]
     return request
 
@@ -92,7 +59,7 @@ async def test_member_snapshot_completeness_is_independent_within_one_plan_part(
     # Process a partial member first, then a complete member. A later complete
     # snapshot must never promote all symbols that happen to share its part.
     for symbol in ("0002", "0001"):
-        request = _fetcher_member_minute_request(
+        request = _member_minute_request(
             plan, symbol, sequence_count=2 if partial and symbol == "0002" else 1
         )
         validated = MarketMinuteIngressRequest.model_validate(request)

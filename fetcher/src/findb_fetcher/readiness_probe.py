@@ -12,11 +12,10 @@ from typing import Any
 import httpx
 
 from findb_fetcher.full_market_universe import NASDAQ_URLS, checksum, parse_nasdaq
-from findb_fetcher.providers.shioaji import SHIOAJI_SDK_VERSION
 
 
 def provider_environment(path: Path) -> dict[str, str]:
-    allowed = {"TWELVE_DATA_API_KEY", "FINLAB_API_TOKEN", "SHIOAJI_API_KEY", "SHIOAJI_SECRET_KEY"}
+    allowed = {"TWELVE_DATA_API_KEY", "FINLAB_API_TOKEN"}
     result = {}
     for line in path.read_text().splitlines():
         key, separator, value = line.partition("=")
@@ -99,7 +98,7 @@ def probe_twelve_data(key: str, *, client: httpx.Client | None = None) -> dict[s
 
 
 def probe_installed_sdk(provider: str) -> dict[str, Any]:
-    pinned = {"finlab": "1.5.7", "shioaji": SHIOAJI_SDK_VERSION}[provider]
+    pinned = {"finlab": "1.5.7"}[provider]
     result = {
         "provider": provider,
         "status": "unknown",
@@ -125,7 +124,6 @@ def main() -> int:
     result = {
         "twelve_data": probe_twelve_data(values.get("TWELVE_DATA_API_KEY", "")),
         "finlab": probe_installed_sdk("finlab"),
-        "shioaji": probe_installed_sdk("shioaji"),
     }
     output = Path(
         os.environ.get("FINDB_PROBE_OUTPUT_FILE", "/private/tmp/findb-full-market-readiness.json")

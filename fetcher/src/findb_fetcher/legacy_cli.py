@@ -4,12 +4,12 @@ import json
 import sys
 
 
-def retired(command: str) -> int:
+def retired(command: str, *, code: str = "PROVIDER_WORK_REQUIRED") -> int:
     print(
         json.dumps(
             {
                 "status": "retired",
-                "code": "PROVIDER_WORK_REQUIRED",
+                "code": code,
                 "command": command,
                 "runtime": "findb-fetch-runtime",
                 "historical": "findb-fetch-historical-backfill",

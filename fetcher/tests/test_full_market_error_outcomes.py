@@ -63,7 +63,7 @@ def test_fence_failure_is_never_reported_as_provider_source_error(tmp_path):
         runtime.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 @pytest.mark.parametrize("network", [False, True])
 def test_generic_failure_reports_source_error_and_stops_before_next_member(
     tmp_path, provider, network

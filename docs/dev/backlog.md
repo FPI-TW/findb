@@ -40,10 +40,11 @@ Production native 資料與實際 rollback 演練由
 
 ## Full-market external acceptance
 
-- [ ] Shioaji 完整退役：只收尾版本上線並排空後，依序移除 Fetcher runtime 與部署資產（Fetcher
-  先行）、Backend scope 與 credential（migration），最後清理 secret、ECR 與文件。TW 分 K 改由
-  替代 provider 供應，選型未定；停止抓取後到接手前不更新。步驟見
-  [deployment](../operations/deployment.md#shioaji-只收尾階段完整退役第一步)。
+- [ ] Shioaji 完整退役：收尾版本已上線，Fetcher runtime 與部署資產已移除（待部署驗收）。接著
+  退役 Backend scope 與 credential（migration，含 `apply_cutover` 的 provider 清單），最後清理 secret、
+  ECR、CloudWatch alarm、`publish_staging_metrics.py`、`.env.example`、host guard 的過渡名稱與文件。TW 分 K
+  改由替代 provider 供應，選型未定；停止抓取後到接手前不更新。步驟見
+  [deployment](../operations/deployment.md#shioaji-退役的-rollback-下限)。
   替代 provider 上線時須評估回補 production 既有缺口（2026-11-02 唯讀查核）：10/13～10/26 無分 K
   （daily work 以 `OWNER_REQUESTED_CLEAN_START` 取消）；10/27～10/30 有部分資料但 daily work 為
   failed；9/30 equity historical request 為 failed。Full checkpoint 保留 36 個未完成 plan

@@ -29,7 +29,7 @@ def test_provider_stop_timeout_covers_bounded_factset_query_and_reap():
     assert "docker stop --time 30" not in helper
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 def test_production_container_arguments_bind_full_pilot_historical_inspection(
     tmp_path, monkeypatch, provider
 ):
@@ -48,7 +48,6 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
     names = {
         "twelve_data": "findb-pilot-twelve-data",
         "finlab": "findb-pilot-finlab",
-        "shioaji": "findb-pilot-shioaji",
     }
     governor = "/var/lib/findb-account/production/governor.sqlite3"
     image = "image@sha256:" + "b" * 64
@@ -100,7 +99,6 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
         provider_env = {
             "twelve_data": "TWELVE_DATA_API_KEY",
             "finlab": "FINLAB_API_TOKEN",
-            "shioaji": "SHIOAJI_API_KEY SHIOAJI_SECRET_KEY SHIOAJI_SIMULATION",
         }[provider]
         shell = "\n".join(
             [

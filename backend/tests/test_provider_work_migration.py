@@ -288,7 +288,7 @@ async def test_full_upgrade_preserves_partial_minute_group_and_continues_origina
     from scripts.seed_data import DATASETS
     from tests import test_full_market
     from tests.test_full_market import DAY, _activated_plan
-    from tests.test_full_market_lifecycle import _fetcher_member_minute_request
+    from tests.test_full_market_lifecycle import _member_minute_request
     from tests.test_provider_work import attest_cutover, identity
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "fetcher/src"))
@@ -314,7 +314,7 @@ async def test_full_upgrade_preserves_partial_minute_group_and_continues_origina
         async with sessions() as db:
             _, _, plan = await _activated_plan(db, dataset_key, count=1)
             plan_id = plan.plan_id
-            base = _fetcher_member_minute_request(plan, "0001", sequence_count=3)
+            base = _member_minute_request(plan, "0001", sequence_count=3)
             for sequence in (1, 2, 3):
                 body = deepcopy(base)
                 body["dataset_key"] = dataset_key

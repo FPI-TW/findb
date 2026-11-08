@@ -24,7 +24,6 @@ case "$image" in
   "$expected_registry/findb/staging/dashboard"|\
   "$expected_registry/findb/staging/fetcher/twelve-data"|\
   "$expected_registry/findb/staging/fetcher/finlab"|\
-  "$expected_registry/findb/staging/fetcher/shioaji"|\
   "$expected_registry/findb/staging/fetcher/factset")
     ;;
   *)
