@@ -107,7 +107,20 @@ policy，仍須通過 CI 或可信 PR evidence；production verify 保留。Fetc
 V3 manifest／acceptance 及 immutable bundles 維持可讀，replay 使用其原 candidate／activation
 腳本；不覆寫既有 evidence。Fetcher topology 的 `fetcher_bundle_version=3` 獨立於 manifest schema，
 Shioaji 退休與統一 runtime 的 rollback 下限不變。Schema-v4 reader、host guard 與 promotion binding
-驗證同步更新；先更新兩環境 S3 bucket policy，將 transactions prefix 納入不可覆寫條件，再發布新版。
+驗證同步更新；各環境發布新版前，須先更新該環境 S3 bucket policy，將 transactions prefix 納入不可覆寫條件。
+
+2026-11-09 09:55 UTC 已使用 OpenTofu 1.12.6 套用 staging 的 transactions 保護，production 尚未套用。
+來源為 `33d626b22dd82ef7ddfcfb21f5ddf1681c62149b`；完整 refresh saved plan 僅更新
+`aws_s3_bucket_policy.deploy_bundle`，結果為 **0 新增、1 更新、0 刪除**。唯一 policy 差異是在既有
+`DenyAcceptedBundleOverwrite` statement 增加 `findb/transactions/*` 與 `fetcher/transactions/*`，
+沿用 `s3:PutObject` 的 `If-None-Match: *` 強制條件；HTTPS、KMS 與原 accepted 路徑規則保持不變。
+套用的 saved plan SHA-256：
+`e50b76d3cf855a75de7afa6f189f5ef97b20aef434cc1473e0860801a004f140`。
+
+Refresh 同時更新三個 Fetcher IAM role 的既有 inline-policy 快照，反映先前 Shioaji 權限退役；
+三個 role 的 planned actions 均為 `no-op`，本次沒有 IAM 權限寫入。套用後讀回完整 bucket policy，
+確認與 reviewed plan 完全一致；再次完整 refresh plan 回報 **No changes**（exit code 0）。
+本次只套用 staging bucket policy，未啟動應用部署，也不構成五分鐘部署驗收樣本。
 
 Image prune 移至獨立 `Deployment image maintenance` workflow，每週一臺北時間 04:25 執行，也可
 人工啟動；依 environment／unit 使用與 CD 相同 concurrency group，並取得主機 transaction lock。
