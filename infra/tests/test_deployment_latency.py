@@ -167,7 +167,9 @@ def test_preparation_contract_rejects_cross_target_replay_and_unprotected_ref(
     guard = next(
         s for s in steps if s.get("name") == "Verify staging candidate preparation contract"
     )
-    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, env=script_env()
+    ).strip()
     result = subprocess.run(
         ["bash", "-c", guard["run"]],
         cwd=ROOT,
