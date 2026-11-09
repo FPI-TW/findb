@@ -84,6 +84,7 @@ jobs:
           uv run python scripts/export_ingress_contracts.py --check
           uv run python scripts/export_archive_contracts.py --check
           uv run python scripts/export_execution_feeds.py --check
+          uv run python scripts/export_provider_catalog.py --check
 
       - name: Run tests
         env:

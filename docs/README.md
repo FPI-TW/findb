@@ -8,6 +8,7 @@
 | 需求 | 文件 |
 | --- | --- |
 | 理解整體資料流、服務責任、active feeds、full-market universe／daily plan與scheduler/calendar治理 | [architecture/overview.md](architecture/overview.md) |
+| Provider catalog、生成產物、時間與非排程 metadata 的導入邊界 | [architecture/provider_metadata.md](architecture/provider_metadata.md) |
 | 協調同 provider daily／historical／maintenance／rerun、排查 FIFO／fencing 與新增 provider | [architecture/provider_work.md](architecture/provider_work.md) |
 | 實作或升級Fetcher與Source間的versioned contract | [architecture/ingress_contracts.md](architecture/ingress_contracts.md) |
 | 呼叫Source、Serve或Admin API | [api/api_usage_guide.md](api/api_usage_guide.md) |
@@ -30,6 +31,8 @@
 
 - API與schema：部署版本的OpenAPI、versioned contract endpoint及`contracts/`。
 - Active datasets與policy：`backend/scripts/seed_data.py`及Fetcher的versioned configs。
+- Provider metadata 基礎：`backend/configs/provider_catalog.v1.json`；生成產物尚未接入 runtime，
+  現況與後續切換見 [provider metadata](architecture/provider_metadata.md)。
 - DB schema：ORM與Alembic migrations。
 - Runtime topology：`docker-compose.prod.yml`。
 - Environment設定：`infra/env/`與`app.config.Settings`。

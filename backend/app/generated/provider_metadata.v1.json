@@ -1,0 +1,411 @@
+{
+  "feeds": [
+    {
+      "asset_class": "equity",
+      "bounded_monitor": {
+        "deadline": null,
+        "enabled": false
+      },
+      "calendar_market": "HK",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "23:00",
+        "timezone": "Asia/Taipei",
+        "trade_date_day_offset": 0
+      },
+      "contract": {
+        "accepted_versions": [
+          1,
+          2
+        ],
+        "current_version": 2,
+        "schema_id": "market_eod"
+      },
+      "dataset_key": "hk_equity_eod",
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "frequency": "daily",
+      "historical_execution": null,
+      "lifecycle": "active",
+      "market": "HK",
+      "provider": "factset",
+      "publication_retry_window_seconds": 16200,
+      "schedule": {
+        "local_time": "18:30",
+        "target_date_lag_days": 0,
+        "timezone": "Asia/Hong_Kong"
+      }
+    },
+    {
+      "asset_class": "equity",
+      "bounded_monitor": {
+        "deadline": {
+          "local_time": "17:00",
+          "timezone": "Asia/Taipei",
+          "trade_date_day_offset": 0
+        },
+        "enabled": true
+      },
+      "calendar_market": "TW",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "declared",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "23:00",
+        "timezone": "Asia/Taipei",
+        "trade_date_day_offset": 0
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "market_eod"
+      },
+      "dataset_key": "tw_equity_eod",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "daily",
+      "historical_execution": {
+        "local": {
+          "lease_seconds": 2400,
+          "max_attempts": 5,
+          "max_credits_per_run": 5,
+          "max_records_per_run": 2,
+          "outputsize": 2,
+          "poll_interval_seconds": 30,
+          "retry_base_seconds": 60,
+          "retry_max_seconds": 3600,
+          "universe_file": "finlab_tw_review_required.v1.json",
+          "wait_timeout_seconds": 1800
+        },
+        "production": {
+          "lease_seconds": 2400,
+          "max_attempts": 5,
+          "max_credits_per_run": 5,
+          "max_records_per_run": 50,
+          "outputsize": 50,
+          "poll_interval_seconds": 60,
+          "retry_base_seconds": 60,
+          "retry_max_seconds": 3600,
+          "universe_file": "finlab_tw50_2026_09_21.v2.json",
+          "wait_timeout_seconds": 1800
+        },
+        "staging": {
+          "lease_seconds": 2400,
+          "max_attempts": 5,
+          "max_credits_per_run": 5,
+          "max_records_per_run": 2,
+          "outputsize": 2,
+          "poll_interval_seconds": 30,
+          "retry_base_seconds": 60,
+          "retry_max_seconds": 3600,
+          "universe_file": "finlab_tw_review_required.v1.json",
+          "wait_timeout_seconds": 1800
+        }
+      },
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "finlab",
+      "publication_retry_window_seconds": 14400,
+      "schedule": {
+        "local_time": "18:00",
+        "target_date_lag_days": 0,
+        "timezone": "Asia/Taipei"
+      }
+    },
+    {
+      "asset_class": "etf",
+      "bounded_monitor": {
+        "deadline": null,
+        "enabled": false
+      },
+      "calendar_market": "TW",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "23:00",
+        "timezone": "Asia/Taipei",
+        "trade_date_day_offset": 0
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "market_eod"
+      },
+      "dataset_key": "tw_etf_eod",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "daily",
+      "historical_execution": null,
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "finlab",
+      "publication_retry_window_seconds": 14400,
+      "schedule": {
+        "local_time": "18:00",
+        "target_date_lag_days": 0,
+        "timezone": "Asia/Taipei"
+      }
+    },
+    {
+      "asset_class": "future",
+      "bounded_monitor": {
+        "deadline": null,
+        "enabled": false
+      },
+      "calendar_market": "TAIFEX",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "23:00",
+        "timezone": "Asia/Taipei",
+        "trade_date_day_offset": 0
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "futures_eod"
+      },
+      "dataset_key": "tw_futures_eod",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "daily",
+      "historical_execution": null,
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "taifex",
+      "publication_retry_window_seconds": 18000,
+      "schedule": {
+        "local_time": "17:00",
+        "target_date_lag_days": 0,
+        "timezone": "Asia/Taipei"
+      }
+    },
+    {
+      "asset_class": "equity",
+      "bounded_monitor": {
+        "deadline": {
+          "local_time": "09:15",
+          "timezone": "Asia/Taipei",
+          "trade_date_day_offset": 1
+        },
+        "enabled": true
+      },
+      "calendar_market": "US",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "declared",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "09:00",
+        "timezone": "Asia/Taipei",
+        "trade_date_day_offset": 1
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "market_eod"
+      },
+      "dataset_key": "us_equity_eod",
+      "delivery": {
+        "slot_id": "western_markets_window"
+      },
+      "frequency": "daily",
+      "historical_execution": {
+        "local": {
+          "lease_seconds": 2400,
+          "max_attempts": 5,
+          "max_credits_per_run": 5,
+          "max_records_per_run": 10000,
+          "outputsize": 20,
+          "poll_interval_seconds": 30,
+          "retry_base_seconds": 60,
+          "retry_max_seconds": 3600,
+          "universe_file": "twelve_data_us_common_stocks.v1.json",
+          "wait_timeout_seconds": 1800
+        },
+        "production": {
+          "lease_seconds": 2400,
+          "max_attempts": 5,
+          "max_credits_per_run": 5,
+          "max_records_per_run": 1830,
+          "outputsize": 20,
+          "poll_interval_seconds": 60,
+          "retry_base_seconds": 60,
+          "retry_max_seconds": 3600,
+          "universe_file": "twelve_data_nasdaq_100_2026_09_14.v2.json",
+          "wait_timeout_seconds": 1800
+        },
+        "staging": {
+          "lease_seconds": 2400,
+          "max_attempts": 5,
+          "max_credits_per_run": 5,
+          "max_records_per_run": 10000,
+          "outputsize": 20,
+          "poll_interval_seconds": 30,
+          "retry_base_seconds": 60,
+          "retry_max_seconds": 3600,
+          "universe_file": "twelve_data_us_common_stocks.v1.json",
+          "wait_timeout_seconds": 1800
+        }
+      },
+      "lifecycle": "active",
+      "market": "US",
+      "provider": "twelve_data",
+      "publication_retry_window_seconds": 10800,
+      "schedule": {
+        "local_time": "17:00",
+        "target_date_lag_days": 0,
+        "timezone": "America/New_York"
+      }
+    }
+  ],
+  "providers": [
+    {
+      "calendar_switch_env": "FACTSET_SKIP_NON_TRADING_DAYS",
+      "consumer_roles": [
+        "full_market",
+        "historical",
+        "pilot"
+      ],
+      "container_suffix": "factset",
+      "credential_env_names": [
+        "FACTSET_HOST",
+        "FACTSET_PASSWORD",
+        "FACTSET_PORT",
+        "FACTSET_USER"
+      ],
+      "display_name": "FactSet",
+      "image_key": "factset",
+      "platform_limits": {
+        "max_response_bytes": 16777216,
+        "requests_per_minute": null
+      },
+      "provider": "factset",
+      "source_credential": {
+        "description": "FactSet HK EOD Fetcher Source client",
+        "hash_env": "FETCHER_FACTSET_SOURCE_CLIENT_KEY_HASH",
+        "name": "fetcher-factset",
+        "rate_limit_requests": 2400,
+        "rate_limit_window_seconds": 60
+      }
+    },
+    {
+      "calendar_switch_env": "FINLAB_SKIP_NON_TRADING_DAYS",
+      "consumer_roles": [
+        "full_market",
+        "historical",
+        "pilot"
+      ],
+      "container_suffix": "finlab",
+      "credential_env_names": [
+        "FINLAB_API_TOKEN"
+      ],
+      "display_name": "FinLab",
+      "image_key": "finlab",
+      "platform_limits": {
+        "max_response_bytes": 2147483648,
+        "requests_per_minute": null
+      },
+      "provider": "finlab",
+      "source_credential": {
+        "description": "FinLab Fetcher Source client",
+        "hash_env": "FETCHER_FINLAB_SOURCE_CLIENT_KEY_HASH",
+        "name": "fetcher-finlab",
+        "rate_limit_requests": 2400,
+        "rate_limit_window_seconds": 60
+      }
+    },
+    {
+      "calendar_switch_env": "TAIFEX_SKIP_NON_TRADING_DAYS",
+      "consumer_roles": [
+        "full_market",
+        "historical",
+        "pilot"
+      ],
+      "container_suffix": "taifex",
+      "credential_env_names": [],
+      "display_name": "TAIFEX",
+      "image_key": "twelve_data",
+      "platform_limits": {
+        "max_response_bytes": 16777216,
+        "requests_per_minute": null
+      },
+      "provider": "taifex",
+      "source_credential": {
+        "description": "TAIFEX Fetcher Source client",
+        "hash_env": "FETCHER_TAIFEX_SOURCE_CLIENT_KEY_HASH",
+        "name": "fetcher-taifex",
+        "rate_limit_requests": 2400,
+        "rate_limit_window_seconds": 60
+      }
+    },
+    {
+      "calendar_switch_env": "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
+      "consumer_roles": [
+        "full_market",
+        "historical",
+        "pilot"
+      ],
+      "container_suffix": "twelve-data",
+      "credential_env_names": [
+        "TWELVE_DATA_API_KEY"
+      ],
+      "display_name": "Twelve Data",
+      "image_key": "twelve_data",
+      "platform_limits": {
+        "max_response_bytes": 16777216,
+        "requests_per_minute": 1597
+      },
+      "provider": "twelve_data",
+      "source_credential": {
+        "description": "Twelve Data Fetcher Source client",
+        "hash_env": "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY_HASH",
+        "name": "fetcher-twelve-data",
+        "rate_limit_requests": 2400,
+        "rate_limit_window_seconds": 60
+      }
+    }
+  ],
+  "schema_version": 1,
+  "source_scopes": {
+    "factset": [
+      "hk_equity_eod"
+    ],
+    "finlab": [
+      "tw_equity_eod",
+      "tw_etf_eod"
+    ],
+    "taifex": [
+      "tw_futures_eod"
+    ],
+    "twelve_data": [
+      "us_equity_eod"
+    ]
+  },
+  "source_sha256": "06944f12ec92a03b36c76715ac4e8d6d587252399370687ac6e18c05e98b3362"
+}

@@ -1,0 +1,89 @@
+{
+  "consumers": [
+    {
+      "image_key": "factset",
+      "name": "findb-full-market-factset",
+      "provider": "factset",
+      "role": "full_market"
+    },
+    {
+      "image_key": "finlab",
+      "name": "findb-full-market-finlab",
+      "provider": "finlab",
+      "role": "full_market"
+    },
+    {
+      "image_key": "twelve_data",
+      "name": "findb-full-market-taifex",
+      "provider": "taifex",
+      "role": "full_market"
+    },
+    {
+      "image_key": "twelve_data",
+      "name": "findb-full-market-twelve-data",
+      "provider": "twelve_data",
+      "role": "full_market"
+    },
+    {
+      "image_key": "factset",
+      "name": "findb-historical-factset",
+      "provider": "factset",
+      "role": "historical"
+    },
+    {
+      "image_key": "finlab",
+      "name": "findb-historical-finlab",
+      "provider": "finlab",
+      "role": "historical"
+    },
+    {
+      "image_key": "twelve_data",
+      "name": "findb-historical-taifex",
+      "provider": "taifex",
+      "role": "historical"
+    },
+    {
+      "image_key": "twelve_data",
+      "name": "findb-historical-twelve-data",
+      "provider": "twelve_data",
+      "role": "historical"
+    },
+    {
+      "image_key": "factset",
+      "name": "findb-pilot-factset",
+      "provider": "factset",
+      "role": "pilot"
+    },
+    {
+      "image_key": "finlab",
+      "name": "findb-pilot-finlab",
+      "provider": "finlab",
+      "role": "pilot"
+    },
+    {
+      "image_key": "twelve_data",
+      "name": "findb-pilot-taifex",
+      "provider": "taifex",
+      "role": "pilot"
+    },
+    {
+      "image_key": "twelve_data",
+      "name": "findb-pilot-twelve-data",
+      "provider": "twelve_data",
+      "role": "pilot"
+    }
+  ],
+  "images": [
+    "factset",
+    "finlab",
+    "twelve_data"
+  ],
+  "projection_sha256": "c6743fefcc63f25052cd555f3a06d80786fdb5ff3782dbb86d5078e135fe2ecc",
+  "providers": [
+    "factset",
+    "finlab",
+    "taifex",
+    "twelve_data"
+  ],
+  "schema_version": 1
+}
