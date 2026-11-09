@@ -14,7 +14,9 @@
   HTTP 400，另列快取異常／超標樣本；一般增量合格樣本仍各為 0/5。Cache v2、consumer 內有界平行
   secret 讀取、Fetcher 批次 inventory／平行 pull 與同 deploy role 的編排合併已實作，
   #424 冷快取首輪為 FinDB 322 秒、Fetcher 344 秒（另扣 200 秒 FinDB wait），仍未達標；
-  繼續減少恢復檢查的 SSM 往返，並以後續一般增量驗證暖快取效果。逐步量測與限制見操作文件。
+  #425 已合併恢復檢查的 SSM 往返，暖快取部署腳本增量為 FinDB 261 秒、Fetcher 236 秒
+  （另扣 184 秒 FinDB wait），兩者各取得 1/5 筆合格樣本。仍須累積真實應用程式增量；
+  不以空 commit 或 replay 補足。逐步量測與限制見操作文件。
 
 ## 延後：平台強化
 
