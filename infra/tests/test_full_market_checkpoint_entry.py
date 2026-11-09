@@ -25,7 +25,7 @@ def _transport(tmp_path):
     run = next(
         step["run"] for step in _workflow_steps() if "checkpoint_entry_gate=" in step.get("run", "")
     )
-    start = run.index("guard=.deployment-driver/")
+    start = run.index("guard=.deployment-driver/infra/deploy/check_full_market_checkpoint.sh")
     end = run.index("host_command=", start)
     guard = tmp_path / ".deployment-driver/infra/deploy/check_full_market_checkpoint.sh"
     guard.parent.mkdir(parents=True)

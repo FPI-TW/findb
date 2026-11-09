@@ -3,12 +3,14 @@
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 import yaml
+from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "infra/deploy/check_fetcher_runtime_recovery.py"
@@ -210,15 +212,95 @@ def test_workflow_runs_trusted_recovery_gate_after_findb_wait_before_mutation():
     names = [step.get("name") for step in steps]
 
     wait = names.index("Wait for same-revision FinDB staging rollout")
-    recovery_gate = names.index("Wait for installed Fetcher runtimes to recover")
     deployment = names.index("Run candidate acceptance or accepted replay through bounded SSM")
-    assert wait < recovery_gate < deployment
+    assert wait < deployment
 
     checkout = next(
         step for step in steps if step.get("name") == "Load deployment driver from protected main"
     )
     assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
-    run = steps[recovery_gate]["run"]
+    run = steps[deployment]["run"]
     assert ".deployment-driver/infra/deploy/check_fetcher_runtime_recovery.py" in run
     assert "--stable-seconds 0 --timeout-seconds 180 --poll-seconds 5" in run
     assert 'host_command="$(printf' in run
+
+
+@pytest.mark.parametrize("case", ["healthy", "unhealthy", "tampered", "not_required"])
+def test_embedded_recovery_must_succeed_before_any_apply_command(tmp_path, case):
+    from test_full_market_checkpoint_entry import _transport
+
+    _, binaries = _transport(tmp_path)
+    steps = yaml.load(
+        (ROOT / ".github/workflows/fetcher-deploy.yml").read_text(), Loader=yaml.BaseLoader
+    )["jobs"]["deploy"]["steps"]
+    run = next(step["run"] for step in steps if step.get("id") == "ssm")
+    setup = run[run.index('recovery_gate=""') : run.index("runtime_variable_names=")]
+    guard = tmp_path / ".deployment-driver/infra/deploy/check_fetcher_runtime_recovery.py"
+    log = tmp_path / "order"
+    wrapper = guard.with_name("ssm_bash_command.py")
+    wrapper.write_bytes((ROOT / "infra/deploy/ssm_bash_command.py").read_bytes())
+    timeout = Path(binaries) / "timeout"
+    timeout.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        '[ "$1" = --signal=TERM ]\n[ "$2" = --kill-after=180s ]\n'
+        'printf "%s\\n" "$3" >> "$TIMEOUT_LOG"\nshift 3\nexec "$@"\n'
+    )
+    timeout.chmod(0o700)
+    wrap_start = run.index('host_command="$(printf')
+    wrap = run[wrap_start : run.index("command_id=", wrap_start)]
+    apply = "printf 'apply\\n' >> " + shlex.quote(str(log))
+    setup += "\nhost_command=" + shlex.quote(apply) + "\n" + wrap
+    guard.write_text(
+        "import os, pathlib, sys\n"
+        "pathlib.Path(os.environ['ORDER_LOG']).write_text('recovery\\n')\n"
+        "pathlib.Path(os.environ['GUARD_PATH']).write_text(__file__)\n"
+        "sys.exit(2 if os.environ['RECOVERY_CASE'] == 'unhealthy' else 0)\n"
+    )
+    env = {
+        **script_env(),
+        "PATH": f"{binaries}:{os.environ['PATH']}",
+        "FINDB_ROLLOUT_SHA": "" if case == "not_required" else "a" * 40,
+        "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "RECOVERY_CASE": case,
+        "ORDER_LOG": str(log),
+        "TIMEOUT_LOG": str(tmp_path / "timeouts"),
+        "GUARD_PATH": str(tmp_path / "guard-path"),
+    }
+    built = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + setup + '\nprintf "%s" "$host_command"'],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    prefix = built.stdout
+    if case == "tampered":
+        import hashlib
+
+        prefix = prefix.replace(hashlib.sha256(guard.read_bytes()).hexdigest(), "0" * 64)
+    result = subprocess.run(
+        ["bash", "-c", prefix],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert (result.returncode == 0) == (case in ("healthy", "not_required")), result.stderr
+    expected = {
+        "healthy": "recovery\napply\n",
+        "unhealthy": "recovery\n",
+        "tampered": "",
+        "not_required": "apply\n",
+    }[case]
+    assert (log.read_text() if log.exists() else "") == expected
+    bounds = (
+        ["900s"] if case == "not_required" else ["240s"] + (["900s"] if case == "healthy" else [])
+    )
+    assert (tmp_path / "timeouts").read_text().splitlines() == bounds
+    if (tmp_path / "guard-path").exists():
+        assert not Path((tmp_path / "guard-path").read_text()).exists()
+    assert run.count("aws ssm send-command") == 1
+    assert '"set -euo pipefail; ($recovery_command); $host_command"' in run
+    assert "--timeout-seconds 240" in run and "--timeout-seconds 900" in run

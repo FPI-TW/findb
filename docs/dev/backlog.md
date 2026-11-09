@@ -13,7 +13,8 @@
   （已排除 verify/test 與 Fetcher 等待 FinDB 的 172 秒）。五個 images 的 GHA cache 均發生
   HTTP 400，另列快取異常／超標樣本；一般增量合格樣本仍各為 0/5。Cache v2、consumer 內有界平行
   secret 讀取、Fetcher 批次 inventory／平行 pull 與同 deploy role 的編排合併已實作，
-  需由 staging 新樣本確認效果；逐步量測與限制見操作文件。
+  #424 冷快取首輪為 FinDB 322 秒、Fetcher 344 秒（另扣 200 秒 FinDB wait），仍未達標；
+  繼續減少恢復檢查的 SSM 往返，並以後續一般增量驗證暖快取效果。逐步量測與限制見操作文件。
 
 ## 延後：平台強化
 

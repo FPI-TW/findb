@@ -332,31 +332,10 @@ jobs:
           esac
         done
         echo 'timed out waiting for same-revision FinDB rollout'; exit 1
-    - name: Wait for installed Fetcher runtimes to recover
-      if: ${{ inputs.findb_rollout_sha != '' }}
-      env:
-        TARGET_ID: ${{ steps.release.outputs.target_id }}
-        AWS_REGION: ${{ env.AWS_REGION }}
-        SSM_LOG_GROUP: ${{ env.AWS_SSM_LOG_GROUP }}
-      run: |
-        set -euo pipefail
-        [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
-        marker="fetcher-runtime-recovery-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-        guard=.deployment-driver/infra/deploy/check_fetcher_runtime_recovery.py
-        [ -f "$guard" ] && [ ! -L "$guard" ]
-        guard_b64="$(base64 -w0 "$guard")"
-        guard_sha="$(sha256sum "$guard" | cut -d ' ' -f1)"
-        printf -v q_guard_b64 '%q' "$guard_b64"
-        printf -v q_guard_sha '%q' "$guard_sha"
-        printf -v q_marker '%q' "$marker"
-        host_command="set -euo pipefail; trap 'printf \"fetcher_runtime_recovery_marker=%s status=failed\\n\" $q_marker' ERR; guard=\$(mktemp /tmp/fetcher-runtime-recovery.XXXXXX); trap 'rm -f \"\$guard\"' EXIT; printf '%s' $q_guard_b64 | base64 --decode > \"\$guard\"; [ \"\$(sha256sum \"\$guard\" | cut -d ' ' -f1)\" = $q_guard_sha ]; python3 \"\$guard\" --stable-seconds 0 --timeout-seconds 180 --poll-seconds 5; printf \"fetcher_runtime_recovery_marker=%s status=success\\n\" $q_marker"
-        host_command="$(printf '%s' "$host_command" | python3 .deployment-driver/infra/deploy/ssm_bash_command.py --timeout-seconds 240)"
-        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${SSM_LOG_GROUP}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command], executionTimeout: ["300"]}')" --query Command.CommandId --output text)"
-        source .deployment-driver/infra/deploy/ssm_command_marker_gate.sh
-        ssm_wait_command "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_runtime_recovery_marker=$marker status=success" "fetcher_runtime_recovery_marker=$marker status=failed" 360
     - name: Run candidate acceptance or accepted replay through bounded SSM
       id: ssm
       env:
+        FINDB_ROLLOUT_SHA: ${{ inputs.findb_rollout_sha }}
         SCHEMA_VERSION: ${{ steps.release.outputs.schema_version }}
         TARGET: ${{ inputs.deployment_target }}
         MODE: ${{ inputs.mode }}
@@ -376,6 +355,24 @@ jobs:
       run: |
         set -euo pipefail
         [[ "$TARGET_ID" =~ ^i-[0-9a-f]{8,17}$ ]]
+        # The trusted post-FinDB recovery check executes in the SAME SSM
+        # command, before materialization, transaction creation or mutation.
+        recovery_gate=""
+        ssm_timeout=1200
+        wait_timeout=1260
+        if [ -n "${FINDB_ROLLOUT_SHA:-}" ]; then
+          marker="fetcher-runtime-recovery-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          guard=.deployment-driver/infra/deploy/check_fetcher_runtime_recovery.py
+          [ -f "$guard" ] && [ ! -L "$guard" ]
+          guard_b64="$(base64 -w0 "$guard")"
+          guard_sha="$(sha256sum "$guard" | cut -d ' ' -f1)"
+          printf -v q_guard_b64 '%q' "$guard_b64"
+          printf -v q_guard_sha '%q' "$guard_sha"
+          printf -v q_marker '%q' "$marker"
+          recovery_gate="(set -euo pipefail; trap 'printf \"fetcher_runtime_recovery_marker=%s status=failed\\n\" $q_marker' ERR; guard=\$(mktemp /tmp/fetcher-runtime-recovery.XXXXXX); trap 'rm -f \"\$guard\"' EXIT; printf '%s' $q_guard_b64 | base64 --decode > \"\$guard\"; [ \"\$(sha256sum \"\$guard\" | cut -d ' ' -f1)\" = $q_guard_sha ]; python3 \"\$guard\" --stable-seconds 0 --timeout-seconds 180 --poll-seconds 5; printf \"fetcher_runtime_recovery_marker=%s status=success\\n\" $q_marker);"
+          ssm_timeout=1500
+          wait_timeout=1620
+        fi
         runtime_variable_names="FULL_MARKET_ENABLED PROVIDER_WORK_REQUIRED"
         runtime_exports=""
         for name in $runtime_variable_names; do
@@ -402,9 +399,15 @@ jobs:
         checkpoint_entry_gate="(guard=\$(mktemp /tmp/fetcher-checkpoint-guard.XXXXXX); trap 'rm -f \"\$guard\"' EXIT; printf '%s' $q_guard_b64 | base64 --decode > \"\$guard\"; [ \"\$(sha256sum \"\$guard\" | cut -d ' ' -f1)\" = $q_guard_sha ]; bash \"\$guard\");"
         host_command="set -euo pipefail; trap 'printf \"fetcher_deploy_marker=%s status=failed\\n\" $q_marker' ERR; [ \"\$(aws sts get-caller-identity --query Account --output text)\" = $q_account ]; getent ahostsv4 $q_dns >/dev/null; bundle=/tmp/fetcher-$BUNDLE_SHA256.tar; validator=/tmp/fetcher-release-manifest-$BUNDLE_SHA256.py; root=/opt/fetcher/releases/$BUNDLE_SHA256-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT; aws s3api get-object --bucket $q_bucket --key $q_key \"\$bundle\" >/dev/null; [ \"\$(sha256sum \"\$bundle\" | cut -d ' ' -f1)\" = $q_sha ]; tar -xOf \"\$bundle\" infra/deploy/release_manifest.py > \"\$validator\"; [ \"\$(sha256sum \"\$validator\" | cut -d ' ' -f1)\" = $q_validator_sha ]; chmod 0700 \"\$validator\"; python3 \"\$validator\" materialize-bundle --bundle \"\$bundle\" --expected-bundle-sha256 $q_sha --unit fetcher --output \"\$root\" --commit-sha $REVISION --migration-revision none --image twelve_data=$q_twelve --image finlab=$q_finlab --image factset=$q_factset; [ \"\${APP_ENVIRONMENT+x}\" != x ] || [ \"\$APP_ENVIRONMENT\" = $q_target ]; [ \"\${DEPLOYMENT_TARGET+x}\" != x ] || [ \"\$DEPLOYMENT_TARGET\" = $q_target ]; export AWS_REGION=ap-southeast-1 AWS_ACCOUNT_ID=$q_account APP_ENVIRONMENT=$q_target ECR_REGISTRY=$q_registry TWELVE_IMAGE_REF=$q_twelve FINLAB_IMAGE_REF=$q_finlab FACTSET_IMAGE_REF=$q_factset$runtime_exports FETCHER_RELEASE_ROOT=\"\$root\" FETCHER_DEPLOY_MODE=$q_host_mode; $checkpoint_entry_gate if [ \"$SCHEMA_VERSION\" = 4 ]; then python3 \"\$root/infra/deploy/deployment_transaction.py\" apply --root \"\$root\" --bucket $q_bucket --mode $MODE; else \"\$root/infra/deploy/runtime-secrets/deploy_fetcher_aws.sh\"; fi; printf \"fetcher_deploy_marker=%s status=success\\n\" $q_marker"
         host_command="$(printf '%s' "$host_command" | python3 .deployment-driver/infra/deploy/ssm_bash_command.py --timeout-seconds 900)"
-        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ env.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" '{commands: [$command], executionTimeout: ["1200"]}')" --query Command.CommandId --output text)"
+        if [ -n "$recovery_gate" ]; then
+          recovery_command="$(printf '%s' "$recovery_gate" | python3 .deployment-driver/infra/deploy/ssm_bash_command.py --timeout-seconds 240)"
+          # Separate process bounds and TERM cleanup remain intact; only the
+          # transport is shared. A failed recovery never executes apply.
+          host_command="$(printf '%s' "set -euo pipefail; ($recovery_command); $host_command" | python3 .deployment-driver/infra/deploy/ssm_bash_command.py)"
+        fi
+        command_id="$(aws ssm send-command --region "$AWS_REGION" --document-name AWS-RunShellScript --instance-ids "$TARGET_ID" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=${{ env.AWS_SSM_LOG_GROUP }}" --parameters "$(jq -nc --arg command "$host_command" --arg timeout "$ssm_timeout" '{commands: [$command], executionTimeout: [$timeout]}')" --query Command.CommandId --output text)"
         source .deployment-driver/infra/deploy/ssm_command_marker_gate.sh
-        ssm_wait_command "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_deploy_marker=$marker status=success" "fetcher_deploy_marker=$marker status=failed" 1260
+        ssm_wait_command "$AWS_REGION" "$command_id" "$TARGET_ID" "fetcher_deploy_marker=$marker status=success" "fetcher_deploy_marker=$marker status=failed" "$wait_timeout"
         echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
     - name: Persist immutable target-aware acceptance record
       id: acceptance

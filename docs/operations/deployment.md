@@ -233,11 +233,42 @@ SSM 正常完成輪詢改為兩秒，deadline、成功 marker、取消確認與 
 主機 wrapper 額外輸出不含 secret 的 `deployment_runtime unit=... consumers=... seconds=... status=...`，
 可區分 consumer 載入與命令的合計耗時；Actions 淨耗時計算維持原有規則。
 
-後續先驗證 cache、正常提交與部署淨耗時，再以一般增量累積樣本。Fetcher 等待同 revision
+#424 合併 revision `5bae57f2113e3a855e99ac4a303e3191999f8b85` 的首次 cache v2 部署均成功，
+五個 images 的 cache 匯入／匯出不再出現 HTTP 400，首次匯出成功。兩個 workflows 均成功
+重用 Required CI，verify/test 為 0 秒。這輪含冷快取建立成本，仍保留為超標樣本，不用暖快取
+預估值取代實測。
+
+| #424 實測 | [FinDB staging](https://github.com/FPI-TW/findb/actions/runs/42626688273) | [Fetcher staging](https://github.com/FPI-TW/findb/actions/runs/42626688275) |
+| --- | ---: | ---: |
+| 總牆鐘 | 322 秒 | 544 秒 |
+| 排除純等待 FinDB | 0 秒 | 200 秒 |
+| **部署淨耗時** | **322 秒（5:22）** | **344 秒（5:44）** |
+| Policy | 9 秒 | 8 秒 |
+| Publish（包含首次 cache 匯出） | 102 秒 | 83 秒 |
+| Deploy（扣純等待） | 205 秒 | 248 秒 |
+| Job 間隙 | 6 秒 | 5 秒 |
+| Apply／health（已含於 deploy） | 140 秒 | 186 秒 |
+
+相較 #422，FinDB 淨耗時減少 25 秒、apply 減少 28 秒；Fetcher 淨耗時減少 26 秒，但 apply
+只減少 1 秒。Fetcher wrapper 實測 images 為 25 秒，四個 provider 依序為 26、26、29、27 秒；
+不能宣稱平行 pull 或 secret 讀取已在這台主機取得明顯整體加速。五筆一般增量合格樣本仍各為 0/5。
+部署前後唯讀比對確認五個 SQLite databases 共 83 張表的 rows／SHA-256 完全一致，包含
+checkpoint、quota 與歷史狀態；十二個 runtimes 均已替換，全部 running、restart count 0、
+無 OOM，restart policy 為 `unless-stopped`。
+
+後續將 Fetcher 的即時恢復檢查放入 apply 的同一個 SSM command，位於 materialize、transaction
+建立及任何容器修改之前；仍使用 protected-main driver 的腳本與 SHA-256 驗證，且只有等待
+同 revision FinDB 的入口需要執行。保留 `stable_seconds=0`、180 秒恢復期限與失敗拒絕；
+本機腳本遭竄改或恢復失敗都不會進入 apply。恢復與 apply 各自保留原 Bash 240／900 秒上限與 TERM cleanup；只有傳輸合併。
+合併入口的 SSM／runner 上限採原兩段預算總和 1500／1620 秒；沒有恢復檢查時維持
+原 SSM 1200 秒／runner 1260 秒，不延長任何主機階段的執行期限。
+SSM gate 另記錄成功命令 elapsed seconds，方便和 Actions step 的往返成本對照。
+
+下一筆須實測暖快取與新的交接方式，不把省時預估算成已達標。Fetcher 等待同 revision
 FinDB 的 step 全部另列排除；恢復狀態、preflight、健康、cache 生成、acceptance 與 finalize
 仍計入。重用同一 SHA／image 的 replay 只能驗證相容與復原，不能補足一般增量的五筆樣本。
-尚未實作的候選包括 image digest 綁定 migration metadata、合併恢復檢查的 SSM 往返，以及
-細部 health probes 平行化；先由改善後實測判斷需求，不預先宣稱低於 300 秒。
+尚未實作的候選包括 image digest 綁定 migration metadata，以及細部 health probes 平行化；
+先由改善後實測判斷需求。
 
 2026-10-16 已透過 OpenTofu 套用兩環境 deploy role 的取消命令權限：
 
