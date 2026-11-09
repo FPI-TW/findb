@@ -645,7 +645,7 @@ scope 或 controls。不可 replay 舊 Backend／Fetcher 重新抓取；修復�
 
 ### AWS 資產與憑證收尾
 
-本 PR 的 IaC 將兩環境 Shioaji Source／provider secret metadata、ECR 標為 `RuntimeStatus=retired`，
+退役 IaC 將兩環境 Shioaji Source／provider secret metadata、ECR 標為 `RuntimeStatus=retired`，
 從 instance secret-read／decrypt scope 與 publisher／runtime image scope 移除；保留 `prevent_destroy`、
 `force_delete=false` 及原有 recovery window。原位停用 Shioaji CloudWatch alarm 通知並標記 retired；移除 collector active feeds／
 mount expectations，以及 `SHIOAJI_SIMULATION`、
@@ -659,7 +659,9 @@ mount expectations，以及 `SHIOAJI_SIMULATION`、
 Backend 驗收完成後，先審閱兩環境 OpenTofu plan：僅預期的 tag／IAM 更新與 Shioaji alarm 停用，
 標準 CI plan 維持零刪除；不可刪除 secret、ECR、alarm metadata、RDS、S3、磁碟或 canonical archive。套用後以 instance role 驗證無法讀取
 兩個 retired secrets，也無法拉取 Shioaji image；provider 端 API key 另行撤銷並記錄結果，不輸出值。
-只改 Git 不代表雲端已套用或券商端 key 已失效。
+只改 Git 不代表雲端已套用或券商端 key 已失效。2026-11-09 兩環境部署與 IaC 撤權已驗收，
+券商端撤銷依 Owner 確認；版本、保留性證據及限制見
+[production 基準](production.md#shioaji-backend-退役部署基準)。
 
 既有 EC2 user-data 保留原值，避免僅因移除空 cache 建目錄指令而觸發主機停止／啟動。
 受保護 secret／ECR metadata、停用的 alarm metadata、checkpoint／cache／備份仍屬保留資產；實體清除需先完成資料與

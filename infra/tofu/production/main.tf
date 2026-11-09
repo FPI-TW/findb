@@ -4,7 +4,7 @@ locals {
   }
   units = {
     findb = {
-      instance_type = "t3.large", subnet = "public_a", environment = "production-findb"
+      instance_type = "m7i.large", subnet = "public_a", environment = "production-findb"
       role_prefix   = "findb"
     }
     fetcher = {

@@ -5,24 +5,24 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
-## Shioaji Backend admission 退役部署基準
+## Shioaji Backend 退役部署基準
 
-`findb-v0.1.19`（`2a6bec9d4d5d240a27aa862d0178567e9653f9ff`）已於 2026-11-09
-完成 [staging 驗收](https://github.com/FPI-TW/findb/actions/runs/42557299064) 與
-[production activation](https://github.com/FPI-TW/findb/actions/runs/42560023586/attempts/2)。
-Production 直接 promotion staging 的 Backend／Dashboard digest，Alembic revision 維持
-`c7d2e9a4f1b3`，沒有新增 migration。
+`findb-v0.1.20`／`fetcher-v0.1.26`（`25ad7ba2e9e9a564d82f3d6be3a67f5826c06854`）
+於 2026-11-09 完成兩環境部署與 IaC 套用。Production 直接 promotion staging accepted
+的 Backend／Dashboard／三個 Fetcher images，逐一比對 digest 一致；Alembic revision 為
+`d8e3f0b5a2c4`，此版為 Backend rollback 下限，不能 replay 舊版本恢復 Shioaji acquisition。
 
-本版關閉 Shioaji 的新歷史回補，cutover host identities 只接受 FactSet、FinLab、TAIFEX、
-Twelve Data。保留既有回補、work／owner／receipt、canonical 分 K 與 Admin／Serve 查詢；
-Source scope、credentials 與 catalog 的完整退役已由 PR #418 實作，尚待下一版部署及 IaC 套用；
-見 [migration 與驗收順序](deployment.md#shioaji-退役的-rollback-下限)。
+| 環境 | Backend | Fetcher | IaC 實際結果 |
+| --- | --- | --- | --- |
+| Staging | [部署與啟用成功](https://github.com/FPI-TW/findb/actions/runs/42576454675) | [部署與啟用成功](https://github.com/FPI-TW/findb/actions/runs/42576454674) | 0 新增、18 更新、0 刪除；refresh plan 無變更 |
+| Production | [部署與啟用成功](https://github.com/FPI-TW/findb/actions/runs/42578616692) | [部署與啟用成功](https://github.com/FPI-TW/findb/actions/runs/42579898821) | 0 新增、19 更新、0 刪除；refresh plan 無變更 |
 
-驗收新版本時，核對已部署的 capability 與 cutover inventory、兩條分 K preview 的
-`provider_dataset_unsupported`、create service 拒絕新增，以及 Dashboard 的現役 provider
-選單與舊回補紀錄。Create 的 HTTP 422 mapping 由 API 回歸測試覆蓋；線上 create service
-驗收在唯讀 transaction 執行，不建立測試工作。Serve 查詢使用既有 Serve credential，
-不能只以 `/health` 取代歷史查詢驗收。
+兩環境已撤銷所有 Shioaji Source clients（staging 2 筆、production 3 筆），保留原 credential
+紀錄與 scopes。舊 Source key 實測回傳 HTTP 403 `Invalid API key`，現役 key 為 200；
+新建及輪替 Shioaji key 均回傳 422。兩條 minute registry 保持 `is_active=true`，
+`allowed_sources` 已清空，schedule／missing-delivery 已停用；所有 Shioaji controls 均 retired，
+沒有 open missing-delivery alert。部署內的 registry provisioning 與 credential reconciliation
+完成後再次查核，均未復活 scope、key 或 controls。
 
 | Shioaji 保留資料 | Staging | Production |
 | --- | ---: | ---: |
@@ -31,38 +31,37 @@ Source scope、credentials 與 catalog 的完整退役已由 PR #418 實作，�
 | Provider work／owner／receipts | 50／1／28 | 49／1／6,843 |
 | Canonical minute rows | 59,646 | 1,160,046 |
 
-Production 部署前後 requests、items、work、owner、receipts 的完整資料列指紋一致；
-分 K 筆數、日期範圍與抽樣資料亦一致，具認證的 Serve 分 K HTTP 查詢均為 200，回應指紋相同。
-兩環境 Shioaji owner 都無 active attempt。Staging 的兩筆 calendar-closed work 所留 queued
-attempts 保持原狀；唯一 failed normalization job 是 2026-08-28 的 FinLab 舊紀錄。
-Production normalization queue 無未結工作。
+部署前後 requests／items、runs、plans、work／attempt／owner、prepared／receipts 與
+`tw_minute_*` 資料列指紋一致；分 K 筆數、日期範圍、樣本與 Serve 回應亦一致。
+Staging 兩筆 calendar-closed work 的 queued attempts 原樣保留。兩環境 Admin 歷史查詢及
+Serve 分 K 連續兩頁皆為 HTTP 200，新回補 scopes 不含 Shioaji。`tw_minute_*` 目前皆為
+零列，僅驗證空集合保留，沒有據此宣稱 R2 archive 物件讀取成功。Raw 繼續遵守既有 TTL。
+舊 failed／mapping gap／raw_uploading 證據不改成成功或 no_data，不沿用舊 repair 授權重開 work。
 
-部署期間暫停的 TAIFEX／Twelve Data Full market 已恢復原本 running 設定（revision 36／32）；
-其他 Full、Pilot 與 Shioaji controls 維持 stopped。因瀏覽器控制失效，恢復操作使用既有
-break-glass 復原憑證，仍經正式 Admin API、expected revision 與 audit event，不直接修改 DB。
-首輪 candidate 曾因舊 Serve 等待 background tasks 而以 exit 137 停止；當時尚未 migration，
-確認原映像與 current pointer 後恢復 v0.1.18、驗證查詢與資料，再重試同一 bundle 成功。
-復原判斷見 [部署失敗處理](deployment.md#共用部署順序)。
+每個環境四個 Shioaji CloudWatch alarms 均原位保留並停用通知（`ActionsEnabled=false`、
+actions 清空、`notBreaching`、`RuntimeStatus=retired`）；殘留的歷史 ALARM state 不代表通知仍啟用。
+兩個 Shioaji secrets 與 ECR metadata 保留且標記 retired，從 Fetcher instance role 實測讀取
+兩個 secrets 與拉取 Shioaji image 均為 AccessDenied，現役 provider secrets 與三個 images
+仍可讀取。監控 collector associations 套用成功。券商端 API key 已由 Owner 於 2026-11-09
+確認撤銷；此項依 Owner 回覆記錄，與上述 AWS／FinDB 實測證據分開。
 
-### PR #418 rollout 狀態
+兩環境 runtime configuration 已移除 `SHIOAJI_SKIP_NON_TRADING_DAYS`／`SHIOAJI_SIMULATION`，
+其他設定值比對相同，舊 secret versions 保留。#418 首輪 staging 在 secret schema／Compose
+interpolation 前檢失敗，尚未 migration 或替換服務；#419 修正 Compose 後才建立本版 candidate。
+清理順序見 [部署文件](deployment.md#aws-資產與憑證收尾)。
+Staging 三個已停止的 `provider-work-backup-findb-*-shioaji` 容器已保存 rootfs export、
+inspect metadata、diff 與 SHA-256 manifest 至主機 root-only 的
+`/var/backups/findb-retirement/20261109-staging-shioaji/`，驗證後僅移除這三個容器。
+原 images、匿名 volumes、checkpoint／cache、所有 bind mount 路徑及 inode 均保留；
+未使用 `--force`／`--volumes`，十二個 active consumers 不受影響。Production 沒有同類殘留。
+兩環境新版 host guard 均通過。
 
-2026-11-09 staging 的 [FinDB CD](https://github.com/FPI-TW/findb/actions/runs/42571464832/attempts/2)
-與 [Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/42571464830/attempts/2) 尚未 accepted。
-兩個 runtime configuration secrets 的退役欄位已清理，其他值逐一比對相同；初次失敗的
-`secret_schema_invalid` 已排除。後續 Backend 在 Compose interpolation 因殘留必填的
-`SHIOAJI_SKIP_NON_TRADING_DAYS` 中止，須合併 Compose 修正後重建 candidate，不能重跑原 bundle。
-Fetcher preflight 曾拒絕三個 `provider-work-backup-findb-*-shioaji` 舊容器。已確認
-`Exited (0)`，保存各自 root filesystem export、inspect metadata、diff 與 SHA-256 manifest
-至主機 root-only 的 `/var/backups/findb-retirement/20261109-staging-shioaji/`，驗證後只移除
-這三個容器，未使用 `--force`／`--volumes`，原 images、匿名 volumes、checkpoint／cache 與
-所有 bind mount 路徑及 inode 保留。十二個 active consumers 的 ID 與運作狀態不變，
-新版 host guard 已回報 `fetcher_host_eligibility=running`；production 同類殘留仍待盤點。
-
-失敗發生在 migration 與服務替換之前，staging 仍使用原 accepted release，revision 為
-`c7d2e9a4f1b3`，十二個 active Fetcher consumers 仍運作。Shioaji 歷史 requests／items、
-work／owner／receipts 指紋、59,646 筆分 K 與認證 Serve 回應均與部署前一致。
-Staging IaC plan 通過零刪除 gate（0 新增、22 原位更新、0 刪除），尚未 apply；production
-尚未開始本版部署或 IaC apply。須先完成 staging Backend／Fetcher 與 IaC 驗收，才能 promotion。
+Production apply 前發現 FinDB EC2 已為 `m7i.large`、IaC 仍為 `t3.large`；本次同步宣告為
+現行規格，重算 plan 確認沒有 EC2／RDS／S3／磁碟變更。沒有把退役 apply 用來降級或重啟主機。
+Production 原本啟用的 TAIFEX／Twelve Data Full market 在停止與 drain 後部署，驗收完成已恢復
+running（revision 38／34）；其他 controls 維持原 stopped 狀態，Shioaji 永久 retired。
+啟停沿用正式 Admin API、expected revision 與 audit event，不直接修改 DB。這次部署健康與
+保留性驗收不取代其餘 providers 的 native 資料／fault recovery／rollback 演練。
 
 ## 其他 provider 複查與控制路徑實測（2026-11-01）
 
@@ -484,8 +483,8 @@ prepared replay 與重試額度的回歸測試。修正已由 PR #379 實作並�
 
 以下為當時的 production 唯讀快照；本次 staging 結清及文件提交未重新查核或操作 production。
 修復程式已合併 #383／#385，staging 部署及 10/23 兩筆休市結清已完成，收據與資料保留核對見
-[Full market runbook](full_market.md)。#378 保持 open，production 待驗收範圍見
-[驗收矩陣](../dev/production-foundation-cutover-plan.md#issue-378-production-驗收範圍)。
+[Full market runbook](full_market.md)。Shioaji 現已退役，以下證據保留供歷史稽核，
+不再執行舊恢復計畫；現行限制見 [退役基準](#shioaji-backend-退役部署基準)。
 
 台北時間約 09:10～09:18，production 有五筆 Shioaji Full market daily 工作未結案。
 全部為 queued，等待原因為 `acquisition_window_closed`；目前抓取窗口為台北 18:00～隔日
@@ -534,12 +533,11 @@ completed。因此這些本地標籤不能當成 Backend normalization 仍在排
 歸因於 HTTP 521 或退役 CLI 復活。前節授權前增加 attempts 的風險仍需修正，但單獨
 修復 Source 重連／純等待額度，不會解決相同空快取反覆轉換失敗。
 
-Shioaji 空回應分類、可恢復的 response 驗證／更新及 frozen mapping 修復流程已實作並完成
-staging 部署；production 部署與原生恢復尚待另行核准及驗收。空資料不能直接改報 no_data：當時仍缺少可支持 calendar／no-trade
-的 durable evidence，也未確認 SDK 為何對這些商品日期回傳空值。保留既有快取作為
-證據，任何受控重新抓取須沿用 owner fencing、原 quota／cooldown、prepared 與 receipts，
-避免盲目刪 cache 或重設預算。此次沒有發出 native provider 請求、修改線上狀態或清空佇列。
-剩餘 production 驗收項目見 [待辦](../dev/production-foundation-cutover-plan.md#issue-378-production-驗收範圍)。
+Shioaji 空回應分類與 frozen mapping 修復的歷史證據保留；退役後不再重新抓取、發放
+額外額度或沿用舊 repair 授權重開 work。空資料不能直接改報 no_data：當時缺少可支持
+calendar／no-trade 的 durable evidence，也未確認 SDK 為何對這些商品日期回傳空值。
+既有快取、quota／cooldown、prepared、receipts 與失敗缺口均保留。現行保存與查詢驗收見
+[退役基準](#shioaji-backend-退役部署基準)，替代 provider 須另建立 scope 與驗收證據。
 
 ## 五 provider 舊流程退役評估（2026-10-29）
 
@@ -719,7 +717,7 @@ DQ／delivery policy。
 ## Live foundation acceptance
 
 - VPC CIDR 必須是 `10.20.0.0/16`，無 NAT；RDS subnets 無 internet route。
-- FinDB `t3.large`、Fetcher `t3.medium`，IMDSv2 required、hop limit 2、無 key pair、無 TCP 22。
+- FinDB `m7i.large`（對齊現行主機，避免退役 apply 回退規格）、Fetcher `t3.medium`，IMDSv2 required、hop limit 2、無 key pair、無 TCP 22。
   FinDB 443 只接受 Cloudflare published CIDRs；Fetcher security group 無 ingress。兩台host都必須安裝
   Docker Engine與Compose v2；`docker compose version`是部署前必要檢查。
 - RDS 必須為 private PostgreSQL 16、`db.t4g.medium`、100 GiB gp3、KMS、Single-AZ、14 日
