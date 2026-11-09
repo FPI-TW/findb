@@ -80,6 +80,36 @@ def runtime_command(target, provider, profile):
     ]
 
 
+def committed_runtime(row, base=Path("/opt/fetcher")):
+    labels = row["Config"].get("Labels") or {}
+    transaction = labels.get("com.findb.deployment.transaction")
+    if transaction is None:
+        return labels.get("com.findb.fetcher.accepted") == "true"
+    if not re.fullmatch(r"[0-9a-f]{64}-[0-9]+-[0-9]+", transaction):
+        return False
+    directory = base / "transactions" / transaction
+    try:
+        for path in (directory, directory / "journal.json", directory / "receipt.json"):
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+                return False
+        journal = json.loads((directory / "journal.json").read_text())
+        receipt = json.loads((directory / "receipt.json").read_text())
+        return (
+            journal["phase"] == "committed"
+            and receipt["transaction_id"] == transaction
+            and receipt["schema_version"] == 4
+            and receipt["phase"] == "healthy"
+            and receipt["state"] == "accepted"
+            and any(
+                item["id"] == row["Id"] and item["image"] == row["Config"]["Image"]
+                for item in journal["healthy"]
+            )
+        )
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 def require_runtime(row, image, target, provider, profile):
     command = runtime_command(target, provider, profile)[0]
     config, state = row["Config"], row["State"]
@@ -90,7 +120,7 @@ def require_runtime(row, image, target, provider, profile):
         raise ValueError("installed runtime environment mismatch")
     args = config["Cmd"]
     if (
-        config.get("Labels", {}).get("com.findb.fetcher.accepted") != "true"
+        not committed_runtime(row)
         or config["Image"] != image
         or not isinstance(args, list)
         or args != runtime_command(target, provider, profile)

@@ -121,3 +121,24 @@ jobs:
           --dimensions DeploymentUnit=findb,Resource=github-actions \
           --value 1 \
           --unit Count
+  deployment-summary:
+    needs: [release, verify, promote, deploy-promotion, deploy-rollback]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.workflow_sha }}
+        persist-credentials: false
+    - name: Report deployment wall time
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 infra/deploy/deployment_timing.py --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --output "$RUNNER_TEMP/deployment-timing.json"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: deployment-timing-findb
+        path: ${{ runner.temp }}/deployment-timing.json

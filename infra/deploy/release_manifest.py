@@ -24,6 +24,11 @@ from typing import Any
 
 REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+TRANSACTION_BUNDLE_FILES = (
+    "infra/deploy/deployment_transaction.py",
+    "infra/deploy/deployment_receipt.py",
+)
+
 MAX_BUNDLE_BYTES = 16 * 1024 * 1024
 MAX_BUNDLE_MEMBERS = 128
 MAX_BUNDLE_MEMBER_BYTES = 4 * 1024 * 1024
@@ -189,13 +194,13 @@ class SourceBundleReader:
         """The exact selected-source paths frozen into this reader snapshot."""
         return frozenset(self._snapshot)
 
-    def deployment_source_bundle_sha256(self, unit: str) -> str:
+    def deployment_source_bundle_sha256(self, unit: str, schema_version: int = 3) -> str:
         records = [
             {
                 "path": relative,
                 "sha256": hashlib.sha256(self.read(relative)).hexdigest(),
             }
-            for relative in sorted(bundle_paths(unit))
+            for relative in sorted(bundle_paths(unit, schema_version))
         ]
         canonical = json.dumps(records, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
@@ -220,17 +225,19 @@ class SourceBundleReader:
         return contract_manifest
 
 
-def bundle_paths(unit: str) -> tuple[str, ...]:
+def bundle_paths(unit: str, schema_version: int = 3) -> tuple[str, ...]:
     try:
         return {
             "findb": FINDB_BUNDLE_FILES,
             "fetcher": FETCHER_BUNDLE_FILES,
-        }[unit]
+        }[unit] + (TRANSACTION_BUNDLE_FILES if schema_version == 4 else ())
     except KeyError as exc:
         raise ManifestError("unit must be findb or fetcher") from exc
 
 
-def bundle_source_paths(unit: str, contract_manifest: ContractManifest) -> tuple[str, ...]:
+def bundle_source_paths(
+    unit: str, contract_manifest: ContractManifest, schema_version: int = 3
+) -> tuple[str, ...]:
     """Return the complete allowlist captured in a deployable unit bundle.
 
     Contract schemas are included even though they are not runtime scripts: the
@@ -241,7 +248,7 @@ def bundle_source_paths(unit: str, contract_manifest: ContractManifest) -> tuple
     contract_paths = tuple(
         f"contracts/{contract['path']}" for contract in contract_manifest.parsed["contracts"]
     )
-    return (*bundle_paths(unit), *contract_paths)
+    return (*bundle_paths(unit, schema_version), *contract_paths)
 
 
 def bundle_file_mode(relative: str) -> int:
@@ -518,7 +525,7 @@ def validate_manifest(
     source_bundle: SourceBundleReader | None = None,
 ) -> None:
     schema_version = manifest.get("schema_version")
-    if schema_version == 3:
+    if type(schema_version) is int and schema_version in (3, 4):
         required = {
             "schema_version",
             "deployment_target",
@@ -538,7 +545,7 @@ def validate_manifest(
             required.add("promotion_source")
     else:
         raise ManifestError("schema_version invalid")
-    if schema_version == 3 and "runtime_profile" in manifest:
+    if "runtime_profile" in manifest:
         required.add("runtime_profile")
     if manifest.get("unit") == "fetcher":
         required.add("fetcher_bundle_version")
@@ -548,6 +555,10 @@ def validate_manifest(
             or manifest.get("fetcher_bundle_version") not in {1, 2, 3}
         ):
             raise ManifestError("fetcher_bundle_version invalid")
+    if schema_version == 4:
+        required.add("deployment_protocol")
+        if manifest.get("deployment_protocol") != "single-pass-v1":
+            raise ManifestError("deployment_protocol invalid")
     unknown = set(manifest) - required
     missing = required - set(manifest)
     if unknown or missing:
@@ -568,7 +579,7 @@ def validate_manifest(
         validate_runtime_profile(manifest.get("runtime_profile"), unit=unit, target=target)
     images = manifest["images"]
     registry = REGISTRY
-    if schema_version == 3:
+    if type(schema_version) is int and schema_version in (3, 4):
         registry = manifest["registry"]
         account_id = manifest["account_id"]
         release_tag = manifest["release_tag"]
@@ -638,7 +649,7 @@ def validate_manifest(
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise ManifestError("created_by_run_id must be a numeric, nonempty string")
     if source_bundle is not None and bundle_digest != source_bundle.deployment_source_bundle_sha256(
-        unit
+        unit, schema_version
     ):
         raise ManifestError("deployment source bundle checksum mismatch")
     if source_bundle is not None and unit == "fetcher":
@@ -738,6 +749,7 @@ def build_bundle(repo_root: Path, manifest_path: Path, unit: str) -> bytes:
                 bundle_source_paths(
                     unit,
                     contract_manifest,
+                    manifest["schema_version"],
                 )
             )
         )
@@ -815,7 +827,7 @@ def validate_bundle_bytes(
         manifest = _load_manifest_bytes(extracted.read())
         if manifest.get("unit") != unit:
             raise ManifestError("bundle unit does not match expected unit")
-        expected_paths = set(bundle_paths(unit))
+        expected_paths = set(bundle_paths(unit, manifest["schema_version"]))
         # The contract manifest identifies the schema members expected in the archive.
         contract_member = next(
             (member for member in members if member.name == "contracts/manifest.json"), None
@@ -827,7 +839,9 @@ def validate_bundle_bytes(
         if contract_raw is None:
             raise ManifestError("bundle contract manifest is unreadable")
         contract_manifest = _parse_contract_manifest_bytes(contract_raw.read())
-        expected_paths.update(bundle_source_paths(unit, contract_manifest))
+        expected_paths.update(
+            bundle_source_paths(unit, contract_manifest, manifest["schema_version"])
+        )
         if set(names) != ({BUNDLE_MANIFEST_PATH} | expected_paths):
             raise ManifestError("bundle members do not match the unit allowlist")
         contents: dict[str, bytes] = {}
@@ -843,7 +857,7 @@ def validate_bundle_bytes(
                 raise ManifestError(f"bundle contract schema checksum mismatch: {contract['path']}")
         source_records = [
             {"path": path, "sha256": hashlib.sha256(contents[path]).hexdigest()}
-            for path in sorted(bundle_paths(unit))
+            for path in sorted(bundle_paths(unit, manifest["schema_version"]))
         ]
         source_sha = hashlib.sha256(canonical_json_bytes(source_records)).hexdigest()
         if manifest.get("deployment_source_bundle_sha256") != source_sha:
@@ -1171,7 +1185,8 @@ def generate(args: argparse.Namespace) -> None:
     with SourceBundleReader(repo_root) as source_bundle:
         contract_manifest = source_bundle.load_selected_contract_manifest(args.contract_manifest)
         manifest: dict[str, Any] = {
-            "schema_version": 3,
+            "schema_version": 4,
+            "deployment_protocol": "single-pass-v1",
             "deployment_target": args.deployment_target,
             "unit": args.unit,
             "commit_sha": args.commit_sha,
@@ -1180,7 +1195,7 @@ def generate(args: argparse.Namespace) -> None:
             "contract_versions": list(contract_manifest.versions),
             "contract_manifest_sha256": contract_manifest.canonical_sha256,
             "deployment_source_bundle_sha256": source_bundle.deployment_source_bundle_sha256(
-                args.unit
+                args.unit, 4
             ),
             "created_by_run_id": args.created_by_run_id,
             "registry": args.registry,

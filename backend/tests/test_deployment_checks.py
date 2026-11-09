@@ -139,12 +139,12 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
         assert "--require-exact-alembic-revision" in calls[0]
         assert "alembic upgrade" not in calls[0]
         return
-    assert len(calls) == 5
+    assert len(calls) == 1
     assert "alembic upgrade head" in calls[0]
-    assert "--require-exact-alembic-revision" in calls[1]
-    assert "reconcile_database_privileges.py" in calls[2]
-    assert "reconcile_deployment_credentials.py" in calls[3]
-    assert "provision_registry.py --deployment-target production" in calls[4]
+    assert "--require-exact-alembic-revision" in calls[0]
+    assert "reconcile_database_privileges.py" in calls[0]
+    assert "reconcile_deployment_credentials.py" in calls[0]
+    assert "provision_registry.py" in calls[0]
 
 
 def test_staging_migration_requires_exact_revision_before_reconciliation_or_service_start(
@@ -169,11 +169,19 @@ def test_staging_migration_requires_exact_revision_before_reconciliation_or_serv
         "set -euo pipefail\n"
         'printf "%q " "$@" >> "$DOCKER_CALLS"\n'
         'printf "\\n" >> "$DOCKER_CALLS"\n'
-        'case "$*" in *--require-exact-alembic-revision*) exit 42 ;; esac\n'
-        "cat >/dev/null\n",
+        'while [ "$1" != sh ]; do shift; done\n'
+        'exec "$@"\n',
         encoding="utf-8",
     )
     fake_docker.chmod(0o755)
+
+    for executable in ("alembic", "python"):
+        command = fake_bin / executable
+        command.write_text(
+            '#!/bin/sh\nprintf "%s\\n" "$*" >> "$INNER_CALLS"\n'
+            'case "$*" in *--require-exact-alembic-revision*) exit 42 ;; esac\n'
+        )
+        command.chmod(0o755)
 
     completed = subprocess.run(
         ["bash", "-s", "--", "/tmp/compose.yml"],
@@ -188,14 +196,16 @@ def test_staging_migration_requires_exact_revision_before_reconciliation_or_serv
             "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "target-revision",
             "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.com",
             "DOCKER_CALLS": str(docker_calls),
+            "INNER_CALLS": str(tmp_path / "inner-calls"),
         },
         timeout=10,
     )
 
     assert completed.returncode == 42
-    calls = docker_calls.read_text(encoding="utf-8").splitlines()
+    assert len(docker_calls.read_text().splitlines()) == 1
+    calls = (tmp_path / "inner-calls").read_text().splitlines()
     assert len(calls) == 2
-    assert "alembic upgrade head" in calls[0]
+    assert calls[0] == "upgrade head"
     assert "predeploy_db_check.py" in calls[1]
     assert "--expected-alembic-revision target-revision" in calls[1]
     assert "--expected-rds-endpoint db.example.com" in calls[1]
@@ -607,6 +617,7 @@ def _uses_references(value: object) -> list[str]:
 def test_service_workflows_are_split_and_have_unique_yaml_keys() -> None:
     expected_names = {
         "required-ci.yml",
+        "deployment-maintenance.yml",
         "findb-ci.yml",
         "findb-cd.yml",
         "findb-deploy.yml",
@@ -1729,10 +1740,10 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     assert "python /app/scripts/reconcile_database_privileges.py" in second_migration_block
     assert "python /app/scripts/reconcile_deployment_credentials.py" in second_migration_block
     assert '--deployment-target "$APP_ENVIRONMENT"' in second_migration_block
-    assert "-e APPLICATION_DATABASE_URL ingest" in second_migration_block
+    assert "-e APPLICATION_DATABASE_URL" in second_migration_block
     assert "-e FINDB_QUEUE_HEALTH_ADMIN_API_KEY" in second_migration_block
     assert "-e FINDB_LOOKUP_SERVE_API_KEY" in second_migration_block
-    assert "-e FINDB_STATIC_CACHE_SERVE_API_KEY ingest" in second_migration_block
+    assert "-e FINDB_STATIC_CACHE_SERVE_API_KEY" in second_migration_block
     assert "MIGRATION_DATABASE_URL" not in findb[long_lived_start:]
     up_script = findb.split("<<'UP_SCRIPT'\n", 1)[1].split("\nUP_SCRIPT", 1)[0]
     assert "exec -T -e CELERY_BROKER_URL ingest" in up_script
@@ -1954,16 +1965,21 @@ def test_findb_runtime_secret_deploy_replaces_verified_nginx_after_rendering_loo
     )
 
     render_at = deploy.index('"$nginx_runtime" "$catalog" "$AWS_REGION" "$FINDB_PUBLIC_HOST"')
-    main_up_at = deploy.index('docker compose -f "$compose_file" up -d --remove-orphans </dev/null')
+    main_up_at = deploy.index(
+        'docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} up -d --remove-orphans </dev/null'
+    )
     old_id_at = deploy.index(
-        'nginx_old_id="$(docker compose -f "$compose_file" ps -q nginx </dev/null)"'
+        'nginx_old_id="$(docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps -q nginx </dev/null)"'
     )
     stop_at = deploy.index('docker stop --time 30 "$nginx_old_id"')
     remove_at = deploy.index('docker rm "$nginx_old_id"')
     old_absent_at = deploy.index('docker inspect "$nginx_old_id" </dev/null >/dev/null 2>&1')
-    create_at = deploy.index('docker compose -f "$compose_file" up -d --no-deps nginx </dev/null')
+    create_at = deploy.index(
+        'docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} up -d --no-deps nginx </dev/null'
+    )
     new_id_at = deploy.index(
-        'nginx_new_id="$(docker compose -f "$compose_file" ps -q nginx </dev/null)"'
+        'nginx_new_id="$(docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps -q nginx </dev/null)"',
+        create_at,
     )
     nginx_health_at = deploy.index('health_status="$(docker inspect', create_at)
     public_acceptance_at = deploy.index("for dashboard_path in /dashboard/ /dashboard/lookup")
@@ -2072,7 +2088,7 @@ def test_findb_nginx_replacement_shell_contract_is_verified_and_fail_closed(tmp_
     )
     replacement_start = deploy.index("nginx_expected_project=findb")
     replacement_end = deploy.index("ready=0", replacement_start)
-    replacement = deploy[replacement_start:replacement_end]
+    replacement = deploy[replacement_start:replacement_end].removesuffix("fi\n")
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -2986,7 +3002,9 @@ def test_findb_candidate_migrates_and_checks_internal_health_before_acceptance()
     writer_stop = helper.index(
         "writer_services=(nginx dashboard serve ingest dispatcher worker raw-cleanup)"
     )
-    compose_up = helper.index('docker compose -f "$compose_file" up -d --remove-orphans')
+    compose_up = helper.index(
+        'docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} up -d --remove-orphans'
+    )
     assert (
         writer_stop
         < helper.index("alembic upgrade head")
@@ -3412,7 +3430,8 @@ def test_activation_requires_database_at_the_single_exact_selected_revision() ->
     precheck_block = helper.split("<<'MIGRATION_CHECK_SCRIPT'\n", 1)[1].split(
         "\nMIGRATION_CHECK_SCRIPT", 1
     )[0]
-    assert 'if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then' in precheck_block
+    assert '[ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]' in precheck_block
+    assert '[ "${DEPLOYMENT_REPLAY:-false}" = true ]' in precheck_block
     assert "revision_policy=--require-exact-alembic-revision" in precheck_block
     migration_block = helper.split("<<'MIGRATION_SCRIPT'", 1)[1].split("MIGRATION_SCRIPT", 1)[0]
     assert "alembic upgrade head" in migration_block

@@ -64,7 +64,7 @@ accepted_release=true
 if [ "$provider_release_mode" = transactional ]; then
   case "${FETCHER_DEPLOY_MODE:-}" in
     candidate) accepted_release=false ;;
-    activate) accepted_release=true ;;
+    activate|apply) accepted_release=true ;;
     *)
       echo "release_fetcher_provider=failed reason=deploy_mode_invalid" >&2
       exit 1
@@ -531,8 +531,15 @@ if [ "$accepted_release" = false ]; then
   echo "release_fetcher_provider=ready provider=$provider mode=$provider_release_mode previous=$had_previous"
   exit 0
 fi
-docker run -d --name "$candidate" --label "com.findb.fetcher.accepted=$accepted_release" \
-  --restart unless-stopped "${common_args[@]}" "${runtime_env_args[@]}" \
+runtime_labels=(--label "com.findb.fetcher.accepted=$accepted_release")
+restart_policy=unless-stopped
+if [ "${FETCHER_DEPLOY_MODE:-activate}" = apply ]; then
+  : "${DEPLOYMENT_TRANSACTION_ID:?transaction identity required}"
+  runtime_labels=(--label "com.findb.deployment.transaction=$DEPLOYMENT_TRANSACTION_ID")
+  restart_policy=no
+fi
+docker run -d --name "$candidate" "${runtime_labels[@]}" \
+  --restart "$restart_policy" "${common_args[@]}" "${runtime_env_args[@]}" \
   "$image" "$@" --run-forever >/dev/null
 candidate_image="$(docker inspect --format '{{.Config.Image}}' "$candidate")"
 candidate_user="$(docker inspect --format '{{.Config.User}}' "$candidate")"

@@ -54,122 +54,79 @@ Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最�
 | 部署失敗回報 | 兩個 staging 入口皆有 failure／cancelled job，發布 `FinDB/Staging` 的 `DeploymentFailure` metric | 兩個 production 入口在 CI／promotion／deploy 任一 failure 或 cancelled 時發布 `FinDB/Production` 的 `DeploymentFailure`（`DeploymentUnit=<unit>,Resource=github-actions`）；`release`（tag 解析與 binding）失敗不回報。每個 unit 一個 alarm，單一 datapoint 即告警、缺值視為正常；需在 production 套用 OpenTofu 後 alarm 才生效 |
 
 兩環境都在 `ap-southeast-1`，共用 `findb-deploy.yml`／`fetcher-deploy.yml` 和主機部署腳本。
-兩者均執行 preflight、candidate 驗證、immutable acceptance 與 activation；replay 驗證既有 acceptance 後直接走 activation，
-不建立新的 acceptance。RDS 備份與 DB compatibility、Secrets Manager consumer isolation、controls stopped、
+新版均執行 preflight、單次 apply、健康檢查、immutable acceptance 與 finalize；replay 驗證既有 acceptance，
+仍需本次 transaction decision。舊 v3 bundle 維持 candidate／activation 協定。RDS 備份與 DB compatibility、Secrets Manager consumer isolation、controls stopped、
 checkpoint 完整性及 activation health 並未因 staging 而放寬。兩環境的 Full market checkpoint
 路徑差異見下方持久化狀態表；schema-v3／統一 runtime 的 rollback 下限也同時適用。
 
-## 部署耗時檢查（2026-10-16，優化前基準）
+## 單次部署協定與五分鐘目標
 
-以下使用 GitHub Actions 的 job／step started_at、completed_at，整體時間以 run_started_at 至 updated_at
-近似，包含編排與等待；不將平行 CI jobs 相加當成牆鐘時間。樣本限 2026-10-15～16 的成功部署，
-排除文件變更導致的 skipped rollout、失敗執行與尚未完成的執行；不是 p95 或效能 SLA。
-FinDB staging 取五次，Fetcher staging 取六次；production 各取目前統一版的一次成功 promotion。
+新版 manifest／acceptance 使用 schema v4、`deployment_protocol=single-pass-v1`。一般增量部署的
+目標為每個環境、每個 unit 低於 300 秒，包含 image build／push 或 promotion、編排、preflight、
+主機更新、健康檢查及提交。Verify/test 與純跨 unit 等待另列；不能把主機健康檢查改名為 verify
+來排除。冷快取、dependencies 大幅更新、大型 migration、故障復原及 v3 replay 另列實測。
 
-| 流程 | 實測耗時 | 判斷 |
-| --- | --- | --- |
-| FinDB staging 全流程 | 11:22～12:38，中位數 11:49 | 合理，主要是 Backend CI 與兩階段主機部署 |
-| FinDB Backend CI job | 4:29～5:42，中位數 5:03 | 合理；最新 2,201 tests 的 pytest 為 267.68 秒，20 分鐘 timeout 有充分餘裕 |
-| FinDB migration CI job | 1:36～2:16，中位數 2:06 | 合理，與其他 CI jobs 平行 |
-| FinDB Infra CI job | 1:43～2:38，中位數 2:31 | 合理，與其他 CI jobs 平行 |
-| FinDB Dashboard CI job | 0:49～1:05，中位數 0:55 | 合理 |
-| FinDB browser CI job | 2:21～2:45，中位數 2:43 | 合理，含 PostgreSQL 初始化與 hydration E2E |
-| FinDB publish | 1:39～1:50，中位數 1:43 | 兩個 images 依序發布，目前不是主要瓶頸 |
-| FinDB prepare | 0:17～0:22 | 合理 |
-| FinDB 主機部署 job | 4:07～4:19，中位數 4:17 | preflight 約 20～23 秒、candidate 99～109 秒、activation 90～101 秒 |
-| Fetcher staging 全流程，FinDB 沒有 rollout | 17:27～19:32，四次中位數 18:04 | 穩定但偏長，主要消耗在主機部署 |
-| Fetcher staging 全流程，同 SHA 有 FinDB rollout | 26:11～27:26，兩次 | 額外等待 FinDB 約 9:16～9:17，且 image publish 也被等待阻擋 |
-| Fetcher CI job | 2:08～4:21，中位數 2:26 | 合理，含 tests 與三個測試 images；15 分鐘 timeout 有餘裕 |
-| Fetcher publish／prepare | 1:51～2:24／0:18～0:21 | 合理，三個 images 依序發布 |
-| Fetcher 主機部署 job | 11:51～12:34，中位數約 12:26 | preflight 43～48 秒、candidate 221～241 秒、activation 413～435 秒；優先優化 |
-| FinDB production promotion | 13:10 | CI 5:02、promotion 1:21、主機部署 5:56；單次樣本尚不能建立穩定基準 |
-| Fetcher production promotion | 17:13 | CI 2:14、promotion 1:45、主機部署 12:24；瓶頸與 staging 一致，仍僅單次樣本 |
+流程為 `preflight → apply → 健康檢查 → runner acceptance → finalize`。Preflight 不重複拉取
+images；apply 只更新一次服務。FinDB 在停止 writers 並核對 graceful shutdown 後執行 migration／
+reconciliation，nginx mounts 就緒後只建立一次，保留 queue、worker、API、Dashboard、公開入口及
+lookup key probe。Fetcher 以 provider 分組載入 credentials，同組 profiles 序列替換；十二個
+runtimes 共用至少 25 秒健康觀察。部署不變更 Owner desired controls、quota 或 checkpoint。
 
-成功證據：FinDB staging [38836673961](https://github.com/FPI-TW/findb/actions/runs/38836673961)、
-[38775214962](https://github.com/FPI-TW/findb/actions/runs/38775214962)、
-[38720416747](https://github.com/FPI-TW/findb/actions/runs/38720416747)、
-[38715581934](https://github.com/FPI-TW/findb/actions/runs/38715581934)、
-[38706989093](https://github.com/FPI-TW/findb/actions/runs/38706989093)；
-Fetcher staging [38824347083](https://github.com/FPI-TW/findb/actions/runs/38824347083)、
-[38775214709](https://github.com/FPI-TW/findb/actions/runs/38775214709)、
-[38769679416](https://github.com/FPI-TW/findb/actions/runs/38769679416)、
-[38732467628](https://github.com/FPI-TW/findb/actions/runs/38732467628)、
-[38725255170](https://github.com/FPI-TW/findb/actions/runs/38725255170)、
-[38683048673](https://github.com/FPI-TW/findb/actions/runs/38683048673)。Production 使用下方復原基準的兩筆 runs。
+FinDB Backend／Dashboard images 及 production digest 複製平行執行，所有子程序成功才發布
+bundle；各 publisher／deploy／promotion reader 的 IAM role 邊界不變。Staging selection 合併到
+policy，仍須通過 CI 或可信 PR evidence；production verify 保留。Fetcher 仍遵守 Backend-first，
+之後只對實際 restarting runtimes 有界等待，不固定空等 60 秒；OOM、未知身分或非正常退出仍阻擋。
 
-## 部署耗時與失敗診斷調整
+### 持久化交接與復原
 
-Runtime 優化適用於包含新版部署腳本的 release bundle；既有 accepted bundles 不覆寫，
-回退舊 bundle 仍使用其原有 runtime 腳本。新版 protected-main driver 的等待／deadline 則適用於新版 workflow 發起的 replay。
+- `/opt/<unit>/transactions/<bundle-sha>-<run-id>-<attempt>/journal.json` 為 root-only、0600、原子
+  fsync 的 journal，只記錄非敏感部署身分、original IDs、phase、deadline、current pointer 與健康結果。
+- 主機修改前安裝 `findb-deployment-recovery-<unit>.timer`／`.service`，獨立於 SSM，每 15 秒巡檢，
+  重開機後亦啟動。Apply 上限沿用 900 秒，watchdog 初始期限 1080 秒含 TERM 復原餘裕；健康後交接
+  期限為 120 秒。Provisional containers 使用 `restart=no`。
+- Runner 寫入 immutable accepted bundle／acceptance，另以條件寫入保存
+  `<unit>[/production]/transactions/<transaction-id>.json`。Replay 也必須產生本次 decision，
+  舊 acceptance 不能提交新 attempt。Instance role 只有讀取權，無新增寫入權。
+- Finalize 與 watchdog 使用同一主機鎖，核對本次 decision、container IDs／images／啟動時間及健康，
+  才更新 pointer、啟用 restart policy 並提交 journal；不重新啟動服務。已提交舊容器清理可重試。
+- Runner 中斷或 acceptance 不可確認時，watchdog 停止未提交容器。Fetcher 還原原十二個 IDs 與
+  pointer；FinDB 只在舊 release 的 exact DB revision 檢查通過後復原，絕不 downgrade schema。
+  不能復原時記錄 `recovery_required`，後續部署阻擋，需操作人員處理。
+- 新 Fetcher 身分由 transaction label、root-only committed journal／receipt 共同證明；v3 的
+  `accepted=true` label 僅供舊 runtime 相容。新 preflight 不接受未提交 transaction。
 
-Fetcher staging 先完成 images publish 與 candidate bundle upload，再由 reusable deploy job 先跑
-唯讀 SSM preflight，之後才等待同 SHA 的 FinDB CD 成功，再進入 candidate 主機變更；preflight
-不依賴 FinDB，因此與 FinDB rollout 重疊。FinDB 失敗或找不到同 SHA 執行時仍拒絕 rollout；
-手動 dispatch 與 production 不帶 `findb_rollout_sha`，維持既有操作順序。等待最多 32 分鐘，需要等待時
-deploy job 上限由 55 放寬為 87 分鐘；解析／binding、publish／promotion、Fetcher prepare 分別設定
-5、15、15 分鐘上限；FinDB bundle prepare 上限 10 分鐘。
+調查交接問題時，先核對 SSM command、journal phase、S3 本次 decision 與 current pointer。
+可由 root 執行 release 內的 `python3 infra/deploy/deployment_transaction.py finalize --root <release-root>`
+重試提交；`abort --root <release-root>` 會先確認是否已有有效 decision，存在則完成提交，否則復原。
+不得刪除 journal／checkpoint 或重置 controls 來繞過未解決的 transaction。
 
-Fetcher publish 在同一 job 內平行建置四個獨立 ECR repositories，各自寫入獨立的 output 檔與 log，
-全部結束後依序以 log group 輸出；任一失敗則整個 publish 失敗，image tag／digest 契約不變。
+### 版本相容與部署順序
 
-`contracts/` 變更同時選取 Fetcher staging rollout：Fetcher images 內含 `contracts/` 並以其驗證
-送出的 payload，只部署 FinDB 會讓 Fetcher 沿用舊 contract 直到下次 Fetcher 變更。
+V3 manifest／acceptance 及 immutable bundles 維持可讀，replay 使用其原 candidate／activation
+腳本；不覆寫既有 evidence。Fetcher topology 的 `fetcher_bundle_version=3` 獨立於 manifest schema，
+Shioaji 退休與統一 runtime 的 rollback 下限不變。Schema-v4 reader、host guard 與 promotion binding
+驗證同步更新；先更新兩環境 S3 bucket policy，將 transactions prefix 納入不可覆寫條件，再發布新版。
 
-Fetcher 每個 candidate／activation 階段各集中拉取、驗證三個 exact digests 一次。
-專用 `images` consumer 不讀取 application／provider secrets；各 provider wrapper 仍獨立載入、清除
-最小 credentials，並在使用前核對本機 RepoDigest。只有成功 activation、退休舊 containers 後
-執行一次 image prune；清理失敗回報 warning，不影響已完成的 activation 身分。
-Offline check、controls stopped、checkpoint 與 rollback journal 驗證均保留。
-Loader 只允許 catalog 明確宣告 `secrets: []` 的 consumer 建立空 env 檔，仍套用 tmpfs、
-owner／mode、exclusive create 與清理規則；宣告 secrets 的 consumer 若結果為空仍拒絕。
+Image prune 移至獨立 `Deployment image maintenance` workflow，每週一臺北時間 04:25 執行，也可
+人工啟動；依 environment／unit 使用與 CD 相同 concurrency group，並取得主機 transaction lock。
+只清除未使用且超過 168 小時的 images，有未解決 journal 時拒絕清理。Cache 生成及必要健康檢查
+仍保留於部署計時內。
 
-十個 recurring 與五個 historical runtimes 仍依序替換，原 container IDs／images／running state
-保留到共同健康觀察通過後才清理。Coordinator 對全部新 runtimes 進行六次檢查，間隔五秒，
-每次比對 ID、image、running 與 restart count；觀察窗口至少 25 秒，替代逐個等待造成的 275 秒。
-任一檢查失敗則依原 journal 還原 containers 與 current pointer。這是程序存活檢查，
-不代表 provider native 資料驗收或 controls 已 start。Standalone provider helper 仍保留原有 25 秒觀察。
+### 量測與驗收
 
-FinDB candidate 執行 migration、DB grants／credentials reconciliation 與 registry provisioning。
-Activation／accepted replay 改為 exact DB revision 與 credentials check-only，停止服務前即檢查相容性，
-不再重跑 schema／registry mutations；不相容仍 fail closed。Accepted replay 與 production rollback
-不重跑 unit CI：acceptance record 只會在該 SHA 通過 CI 後產生，而以目前 main 的 CI 定義檢查舊 SHA
-可能因 CI 漂移失敗並拖延復原。尚無成功 rollback 的實測基準。
+四個 CD workflows 的 `deployment-summary` 上傳 `deployment-timing-<unit>` JSON 並寫入 Actions
+summary：總牆鐘、僅 verify/test 阻塞、僅跨 unit 等待、部署淨耗時及各 job／step 階段。平行 jobs 不相加，重疊
+部署工作的 verify／等待區間不扣除；超過 300 秒標示 warning，失敗紀錄也保留。起點為首個 job
+開始，結束為部署 jobs 完成，初始 Actions queue 與 summary job 本身不列入。
 
-Staging publish 以 `ECR_BUILD_CACHE=gha` 讓 `build_ecr_image_if_missing.sh` 使用 BuildKit GitHub Actions
-layer cache，scope 為各 ECR repository；cache 只在 push main 的 publish job 寫入，PR 無法覆寫。
-`actions/github-script` 只把 cache runtime 變數寫入 `GITHUB_ENV` 並遮罩 token，不印出數值；cache 匯出失敗不影響發布。
-Image tag／digest 契約不變：既有 exact SHA tag 仍直接重用，不重建。
-Fetcher images 的 `/app`（venv、source、configs、contracts）維持 root 擁有：runtimes 一律以
-`--read-only` 執行，只有 state、cache 與 home 掛載可寫。不得在 `uv sync` 後對 `/app` 遞迴 `chown`，
-否則整個 venv 會複製成新 layer，且位於 source layer 之後，每次程式變更都要重新拉取。
-因 `--read-only` 下 Python 無法寫入 `.pyc`，images 須附帶 bytecode，否則每次容器啟動都從原始碼重新編譯。
-相依套件在 `uv.lock` layer 以 `--compile-bytecode` 編譯，只有 lock 變更才重建；source layer 只以
-`compileall` 編譯 `src`，維持每次 commit 僅數 MB。Fetcher CI 以 `--read-only` 核對 boto3、httpx、
-jsonschema 與 runtime CLI 的 `.pyc` 存在且對應原始碼 mtime／size。2026-10-26 staging 實測每次部署
-約啟動 50 個短命 CLI containers（每個約 3–4 秒）；本機以 0.5 CPU 量測 CLI 啟動由約 500ms 降至約 220ms。
+初始預算為編排 45、建置／promotion 75、preflight 30、apply／health 130、commit 15 秒，共 295 秒；
+此為目標，尚不是達標證據。11/9 重構前成功基準：FinDB staging 約 9:01、Fetcher staging 約
+10:46（已扣純 FinDB wait）、FinDB production 約 6:31、Fetcher production 約 8:31（已扣 verify）。
+來源 runs：42576454675、42576454674、42578616692、42579898821。
 
-Fetcher 十二個 runtimes 的替換刻意維持序列：rollback journal 存在 coordinator shell 陣列，
-同 provider 的 Pilot／Full／historical 共用同一 secret consumer tmpfs 與帳號 governor lock；
-平行化需重新設計交易與復原，不屬於目前可在本機驗證的範圍。
-
-Staging Fetcher 在等待同 revision FinDB rollout 成功後、任何 Fetcher host mutation 前，會再執行
-post-rollout recovery gate。既有十二個 accepted runtimes 必須保持相同 container ID、image、start time
-與 restart count，並連續 running 60 秒；gate 最多等待 180 秒，讓 FinDB candidate／activation 期間因
-Source 暫停而退避等待，或因 active owner 不確定進入 Docker restart backoff 的 consumers 恢復。
-Idle Source 521 在新版長駐 CLI 應退避重查；active owner 的 fence／ACK 無法確認仍要求安全退出／recovery。
-歷史 restart count 可以非零，但觀察窗口內
-不得再增加。逾時以 `runtime_not_recovered_after_findb_rollout` fail closed，不停止既有 runtime、不寫入
-acceptance record，也不弱化 provider helper 對非零 exit／OOM／Docker error 的拒絕規則。
-
-兩個 reusable deploy job 的一般上限由 90 改為 55 分鐘；Staging Fetcher 同 revision 路徑因包含最多
-32 分鐘的 FinDB wait 與 bounded recovery gate，上限為 95 分鐘。Protected-main driver 負責主機
-Bash wrapper 與 SSM wait，
-避免 accepted replay 依賴舊 release 缺少的新 helper。主機 preflight／candidate／activation 分別由
-GNU timeout 限制為 240／900／900 秒，TERM 後最多保留 180 秒供原停止／復原 traps 完成；
-SSM executionTimeout 為 480／1200／1200 秒，runner wait deadline 為 540／1260／1260 秒。
-Deadline、讀取失敗、terminal failure 或 runner 收到中止訊號都不產生新的 acceptance；runner 嘗試
-cancel-command，最多另等 120 秒確認 SSM 終態。取消或 SSM terminal status 不能保證底層程序已停止，
-仍須核對主機停止／復原證據；無法確認時明確回報 command ID，禁止直接重試部署。
+完成驗收需 staging、production 的兩個 units 各累積五筆一般增量成功部署，每筆低於 300 秒，
+不得以重用同一 image 的 replay 代替一般增量樣本；冷建置與大型 migration 另外分類。合併前本機
+測試不能取代這些 AWS 實測。Linux CI 額外執行真實 Docker 替換／復原及 systemd watchdog 測試。
 
 2026-10-16 已透過 OpenTofu 套用兩環境 deploy role 的取消命令權限：
 

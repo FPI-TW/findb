@@ -96,7 +96,7 @@ def test_staging_accepted_replay_skips_ci_but_candidates_require_it() -> None:
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         policy_job = text.split("  policy:", 1)[1].split("  verify:", 1)[0]
         assert 'ci=true; [ "$DEPLOYMENT_MODE" = replay ] && ci=false' in policy_job
-        select = text.split("  select:", 1)[1].split("    runs-on:", 1)[0]
+        select = text.split("  publish:", 1)[1].split("    runs-on:", 1)[0]
         assert "!cancelled()" in select
         assert "needs.policy.result == 'success'" in select
         assert (
@@ -134,7 +134,7 @@ def test_staging_cd_reuses_identical_tree_pull_request_ci_only_on_push() -> None
         assert (
             "needs.verify.result == 'skipped' && github.event_name == 'push' && "
             f"needs.policy.outputs.{unit}_ci_evidence != ''"
-        ) in jobs["select"]["if"]
+        ) in jobs["publish"]["if"]
 
 
 def test_staging_cd_jobs_after_an_optional_verify_override_skip_propagation() -> None:
@@ -151,7 +151,7 @@ def test_staging_cd_jobs_after_an_optional_verify_override_skip_propagation() ->
             return set(direct).union(*(needs(parent) for parent in direct))
 
         downstream = [name for name in jobs if "verify" in needs(name)]
-        assert {"select", "publish", "prepare", "deploy"} <= set(downstream)
+        assert {"publish", "prepare", "deploy"} <= set(downstream)
         for name in downstream:
             condition = str(jobs[name].get("if", ""))
             assert "!cancelled()" in condition or "always()" in condition, (unit, name)
@@ -471,8 +471,8 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         workflow = yaml.safe_load(text)
         jobs = workflow["jobs"]
-        assert "environment" not in jobs["select"]
-        assert jobs["select"]["permissions"].get("id-token") is None
+        assert "environment" not in jobs["policy"]
+        assert jobs["policy"]["permissions"].get("id-token") is None
         assert "environment" not in jobs["publish"]
         assert jobs["publish"]["permissions"] == {
             "contents": "read",
@@ -548,7 +548,7 @@ def test_staging_image_builds_use_step_outputs_and_buildx() -> None:
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         assert "docker/setup-buildx-action@" in text
         assert "build_ecr_image_if_missing.sh" in text
-        assert "outputs.image_ref" in text or "outputs.twelve_image_ref" in text
+        assert "outputs.backend_image_ref" in text or "outputs.twelve_image_ref" in text
         publish = text.split("  publish:", 1)[1].split("  prepare:", 1)[0]
         assert "      ECR_BUILD_CACHE: gha\n" in publish
         runtime = publish.split("Expose BuildKit cache runtime without logging it", 1)[1]
@@ -620,7 +620,7 @@ def test_fetcher_waits_for_same_sha_findb_after_read_only_preflight() -> None:
     assert "timed out waiting for same-revision FinDB rollout" in wait["run"]
     recovery = job["steps"][names.index("Wait for installed Fetcher runtimes to recover")]
     assert recovery["if"] == "${{ inputs.findb_rollout_sha != '' }}"
-    assert "--stable-seconds 60 --timeout-seconds 180 --poll-seconds 5" in recovery["run"]
+    assert "--stable-seconds 0 --timeout-seconds 180 --poll-seconds 5" in recovery["run"]
     assert "ssm_bash_command.py --timeout-seconds 240" in recovery["run"]
     assert 'executionTimeout: ["300"]' in recovery["run"]
     assert "status=success" in recovery["run"] and "status=failed" in recovery["run"]
@@ -706,7 +706,7 @@ def test_reusable_preflight_is_before_deploy_and_checks_host_boundaries() -> Non
         )
         assert "aws s3api get-object" in text
         assert "materialize-bundle" in text
-        assert 'docker --config \\"\\$work/docker\\" pull' in text
+        assert 'docker --config \\"\\$work/docker\\" pull' not in text
         assert "load_runtime_secrets.py" in text
         assert (
             f"--output /run/findb-runtime-secrets/preflight-{unit}/runtime.env --check-only" in text
@@ -776,7 +776,7 @@ def test_every_ssm_run_shell_command_is_explicitly_wrapped_for_bash() -> None:
     wrapper = "python3 .deployment-driver/infra/deploy/ssm_bash_command.py"
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
-        expected = 4 if unit == "fetcher" else 3
+        expected = 5 if unit == "fetcher" else 4
         assert text.count("--document-name AWS-RunShellScript") == expected
         assert text.count(wrapper) == expected
 
@@ -1180,5 +1180,5 @@ def test_staging_replay_deploy_survives_skipped_publisher(unit: str) -> None:
     # GitHub does not inject success() and suppress deploy through that ancestor.
     assert jobs["deploy"]["needs"] == "prepare"
     assert jobs["deploy"]["if"] == "${{ !cancelled() && needs.prepare.result == 'success' }}"
-    assert "needs.select.outputs.mode == 'replay'" in jobs["prepare"]["if"]
+    assert "needs.policy.outputs.mode == 'replay'" in jobs["prepare"]["if"]
     assert "needs.publish.result == 'skipped'" in jobs["prepare"]["if"]

@@ -58,7 +58,7 @@ def _manifest(unit: str = "findb") -> dict[str, object]:
 
 
 def _write_selected_source_bundle(root: Path, unit: str) -> None:
-    for relative in release_manifest.bundle_paths(unit):
+    for relative in release_manifest.bundle_paths(unit, 4):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
