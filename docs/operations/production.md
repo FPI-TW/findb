@@ -5,6 +5,28 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
+## 單次部署 protocol v4 發布
+
+2026-11-09 promotion staging 已驗收 revision `c1c175b8a7496ff666472e3ee83ffcc9483f3756`，
+使用 `findb-v0.1.21`／`fetcher-v0.1.27`。發布前已透過 OpenTofu 套用 transactions 的
+不可覆寫保護，完整 refresh plan 僅一項 bucket policy update，套用後無差異；
+[計畫、hash 與部署計時](deployment.md#版本相容與部署順序)保留於共用操作文件。
+
+本次沿既有人工 promotion 入口執行，FinDB 成功且 transaction committed 後才開始 Fetcher。
+Production verify 保留；從 staging accepted bundles 複製 exact digests，不重建 images。
+DB revision 維持 `d8e3f0b5a2c4`，Shioaji 退役與 rollback 下限不變。
+
+[FinDB production](https://github.com/FPI-TW/findb/actions/runs/42637892729) 與
+[Fetcher production](https://github.com/FPI-TW/findb/actions/runs/42639305431) 皆成功並確認 committed。
+扣除 verify 後，FinDB 為 **237 秒**、Fetcher 為 **306 秒**；Fetcher 開始前等待 FinDB 的時間
+不計入。Fetcher 超標 6 秒，保留為成功但未達五分鐘的樣本，目前 production 合格樣本為
+FinDB 1/5、Fetcher 0/5。逐步耗時與 accepted bundle keys 見
+[首輪實測](deployment.md#production-單次部署首輪實測)。
+
+部署前後五個 SQLite databases、83 張表指紋完全一致，checkpoint／quota／歷史狀態未改寫。
+十二個 Fetcher runtimes 全數替換，images 與 transaction labels 正確，全部 running、
+restart count 0、無 OOM、restart policy `unless-stopped`。這不代替 native 資料與 rollback 演練。
+
 ## Shioaji Backend 退役部署基準
 
 `findb-v0.1.20`／`fetcher-v0.1.26`（`25ad7ba2e9e9a564d82f3d6be3a67f5826c06854`）

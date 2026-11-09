@@ -5,8 +5,8 @@
 
 ## CI/CD 五分鐘部署驗收
 
-- [ ] 合併 single-pass v4 後驗收 staging；production 須先套用 transactions immutable bucket policy，
-  再經既有人工 promotion 驗收。FinDB／Fetcher × staging／production 各累積五筆
+- [ ] Single-pass v4 已部署兩環境，transactions immutable bucket policy 已透過 OpenTofu 套用。
+  FinDB／Fetcher × staging／production 各累積五筆
   一般增量成功樣本，每筆部署淨耗時小於 300 秒；保留超標、失敗與特殊情境樣本。
   計時口徑、歷史基準、故障復原與驗收限制見[部署操作](../operations/deployment.md)。
   #422 首輪 staging 已確認兩個 transaction committed：FinDB 347 秒、Fetcher 370 秒
@@ -16,7 +16,10 @@
   #424 冷快取首輪為 FinDB 322 秒、Fetcher 344 秒（另扣 200 秒 FinDB wait），仍未達標；
   #425 已合併恢復檢查的 SSM 往返，暖快取部署腳本增量為 FinDB 261 秒、Fetcher 236 秒
   （另扣 184 秒 FinDB wait），兩者各取得 1/5 筆合格樣本。仍須累積真實應用程式增量；
-  不以空 commit 或 replay 補足。逐步量測與限制見操作文件。
+  不以空 commit 或 replay 補足。Production 首輪已成功 promotion：FinDB 237 秒、Fetcher 306 秒，
+  已扣 verify，Fetcher 在 FinDB 完成後才 dispatch。Production 合格樣本為 1/5、0/5，
+  Fetcher 超標 6 秒的樣本保留；後續量測 promotion 初始化／digest 複製，不減少健康檢查。
+  逐步量測與限制見操作文件。
 
 ## 延後：平台強化
 
