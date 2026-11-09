@@ -213,7 +213,7 @@ Controls／request 仍允許 acquisition 的正常 retry 可接續原 frozen sco
 明確保存 failed／manual failure code、原 bytes 與 `manual_pending_prepared` proof，不能默默丟棄。
 `expected = data + no_data + missing + blocked`、first dates、calendar decisions、profile checkpoints 與
 原 controls／admission audits 不變。Historical 可在 Pilot 與 Full desired running 時執行。
-FactSet HK historical 在建立 request 時凍結現行 HKEX cohort；EOD v2 daily／historical 可依完整成員證據結算 partial，historical 繼續下一日期。原 work 的 completed 只採認自己的 receipts。Production Shioaji historical 支援股票／ETF minute，依 reviewed production manifest 凍結 50／3 成員及 sequences；完整成功 receipts 才可完成。TW ETF EOD historical 仍不支援。詳見 [FactSet runbook](../operations/factset_hk.md) 與 [資料維護](../operations/data_maintenance.md#shioaji-股票etf-分鐘回補)。
+FactSet HK historical 在建立 request 時凍結現行 HKEX cohort；EOD v2 daily／historical 可依完整成員證據結算 partial，historical 繼續下一日期。原 work 的 completed 只採認自己的 receipts。Shioaji historical 已停止新申請；既有股票／ETF minute 的 frozen 成員、sequences 與完整 receipts 保留供查詢及稽核。TW ETF EOD historical 仍不支援。詳見 [FactSet runbook](../operations/factset_hk.md) 與 [資料維護](../operations/data_maintenance.md#shioaji-股票etf-分鐘回補)。
 
 ## 雙層排他、fencing 與復原
 

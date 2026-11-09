@@ -28,7 +28,7 @@ async def attest_cutover(db, identities=None):
             "host_lock_identities": identities
             or {
                 provider: "local:1:22"
-                for provider in ("factset", "finlab", "shioaji", "taifex", "twelve_data")
+                for provider in ("factset", "finlab", "taifex", "twelve_data")
             },
         },
     )
@@ -529,7 +529,7 @@ async def seed(db, provider):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "shioaji", "taifex"])
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 async def test_enforced_historical_bridge_authorizes_while_both_controls_running(
     client, test_session, monkeypatch, provider
 ):

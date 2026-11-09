@@ -250,11 +250,11 @@ async def test_historical_skip_is_durable_and_claim_does_not_reevaluate(test_ses
     await _seed_scope(test_session, today)
     await test_session.execute(delete(CalendarRevisionDay))
     settings = get_settings()
-    monkeypatch.setattr(settings, "SHIOAJI_SKIP_NON_TRADING_DAYS", True)
+    monkeypatch.setattr(settings, "FINLAB_SKIP_NON_TRADING_DAYS", True)
     request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=date(2026, 8, 29),
         end_date=date(2026, 8, 31),
         request_key="frozen-skip-mixed",
@@ -266,20 +266,20 @@ async def test_historical_skip_is_durable_and_claim_does_not_reevaluate(test_ses
         "skipped_calendar",
         "pending",
     ]
-    monkeypatch.setattr(settings, "SHIOAJI_SKIP_NON_TRADING_DAYS", False)
+    monkeypatch.setattr(settings, "FINLAB_SKIP_NON_TRADING_DAYS", False)
     claimed = await claim_next_item(
         test_session,
-        provider="shioaji",
-        allowed_datasets=["tw_equity_minute"],
+        provider="finlab",
+        allowed_datasets=["tw_equity_eod"],
         now=datetime.combine(today, time(0), timezone.utc),
     )
     assert claimed.item_id == request.items[2].item_id
     assert claimed.calendar_snapshot["policy"]["skip_non_trading_days"] is True
-    monkeypatch.setattr(settings, "SHIOAJI_SKIP_NON_TRADING_DAYS", True)
+    monkeypatch.setattr(settings, "FINLAB_SKIP_NON_TRADING_DAYS", True)
     skipped, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=date(2026, 8, 29),
         end_date=date(2026, 8, 30),
         request_key="frozen-skip-only",

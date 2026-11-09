@@ -17,8 +17,6 @@ from tests.owned_history import claim_next_item
 @pytest.mark.parametrize(
     "provider,dataset,market,zone,normal_close",
     [
-        ("shioaji", "tw_equity_minute", "TW", "Asia/Taipei", time(13, 30)),
-        ("shioaji", "tw_etf_minute", "TW", "Asia/Taipei", time(13, 30)),
         ("finlab", "tw_equity_eod", "TW", "Asia/Taipei", time(13, 30)),
         ("twelve_data", "us_equity_eod", "US", "America/New_York", time(16)),
     ],

@@ -77,6 +77,12 @@ workers 的 node IDs 不同；測試輸入與 assertions 仍保留原本情境�
 
 ## Provider-work 退役驗證
 
+Bundle v3 的 cutover proof 只包含 FactSet、FinLab、TAIFEX、Twelve Data；所有 runtime harness
+（包含 `test_factset_runtime.py`）建立 host lock identities 時也必須使用這四個 providers。
+Shioaji 歷史 owner／prepared／receipts 的保留與舊五-provider proof 拒絕，由
+`test_shioaji_backend_retirement.py` 驗證。修改 cutover inventory 時須執行完整 Backend
+非 migration suite，涵蓋各 provider 的獨立 harness，不能只跑 `test_provider_work*.py`。
+
 Shioaji 空 Kbars／mapping 修復由 Fetcher `test_shioaji_recovery.py`、
 `test_shioaji_repair_cli.py` 及 Backend `test_shioaji_repair.py`、
 `test_shioaji_repair_migration.py` 驗證：legacy 快取證據保留、跨重啟三次觀測上限與十五分鐘退避、

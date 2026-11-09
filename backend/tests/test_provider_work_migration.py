@@ -200,7 +200,7 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
                 "host_lock_identities": {
                     provider: f"{get_settings().APP_ENVIRONMENT}:1:{index}"
                     for index, provider in enumerate(
-                        ("factset", "finlab", "shioaji", "taifex", "twelve_data"), 1
+                        ("factset", "finlab", "taifex", "twelve_data"), 1
                     )
                 },
             }

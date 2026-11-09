@@ -40,8 +40,11 @@ Production native 資料與實際 rollback 演練由
 
 ## Full-market external acceptance
 
-- [ ] Shioaji 完整退役：收尾版本已上線，Fetcher runtime 與部署資產已移除（待部署驗收）。接著
-  退役 Backend scope 與 credential（migration，含 `apply_cutover` 的 provider 清單），最後清理 secret、
+- [ ] Shioaji 完整退役：Fetcher runtime 與部署資產已移除，staging／production #400 CD 已成功
+  （[staging](https://github.com/FPI-TW/findb/actions/runs/42461220306)、
+  [production](https://github.com/FPI-TW/findb/actions/runs/42493300346)）。Backend 新回補 capability 已移除，
+  `apply_cutover` 已改為四-provider host inventory 並保留 Shioaji 歷史狀態；待部署後驗證拒絕新申請、
+  歷史查詢與資料保留。接著退役 Backend scope 與 credential（migration），最後清理 secret、
   ECR、CloudWatch alarm、`publish_staging_metrics.py`、`.env.example`、host guard 的過渡名稱與文件。TW 分 K
   改由替代 provider 供應，選型未定；停止抓取後到接手前不更新。步驟見
   [deployment](../operations/deployment.md#shioaji-退役的-rollback-下限)。

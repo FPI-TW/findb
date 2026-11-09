@@ -40,13 +40,13 @@ from tests.owned_history import claim_next_item
     [
         None,
         [],
-        "tw_equity_minute",
+        "tw_equity_eod",
         [None],
         [1],
         [""],
-        ["tw_etf_minute"],
+        ["tw_etf_eod"],
         ["us_equity_eod"],
-        ["tw_equity_minute", "tw_equity_minute"],
+        ["tw_equity_eod", "tw_equity_eod"],
     ],
 )
 async def test_live_historical_acquisition_denies_invalid_db_credential_scope(
@@ -56,8 +56,8 @@ async def test_live_historical_acquisition_denies_invalid_db_credential_scope(
     await _seed_scope(test_session, today)
     await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today,
         end_date=today,
         request_key="invalid-historical-probe",
@@ -67,14 +67,14 @@ async def test_live_historical_acquisition_denies_invalid_db_credential_scope(
     source, key = await create_source_client(
         test_session,
         name="invalid-historical-probe",
-        source_name="shioaji",
-        allowed_datasets=["tw_equity_minute"],
+        source_name="finlab",
+        allowed_datasets=["tw_equity_eod"],
         rate_limit_requests=100,
         rate_limit_window=60,
         commit=False,
     )
     item = await claim_next_item(
-        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+        test_session, provider="finlab", allowed_datasets=["tw_equity_eod"]
     )
     assert item is not None
     path = f"/api/v1/source/historical-backfills/{item.item_id}/authorization"
@@ -96,7 +96,7 @@ async def test_live_historical_acquisition_denies_invalid_db_credential_scope(
         await historical_backfill.authorize_item(
             test_session,
             item.item_id,
-            provider="shioaji",
+            provider="finlab",
             allowed_datasets=scope,
             lease_token=token,
         )
@@ -119,8 +119,8 @@ async def test_historical_acquisition_probe_is_current_scoped_and_never_renews(
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today,
         end_date=today,
         request_key="current-acquisition-probe",
@@ -131,14 +131,14 @@ async def test_historical_acquisition_probe_is_current_scoped_and_never_renews(
         test_session,
         name="probe-worker",
         owner="tests",
-        source_name="shioaji",
-        allowed_datasets=["tw_equity_minute"],
+        source_name="finlab",
+        allowed_datasets=["tw_equity_eod"],
         rate_limit_requests=100,
         rate_limit_window=60,
         commit=False,
     )
     item = await claim_next_item(
-        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+        test_session, provider="finlab", allowed_datasets=["tw_equity_eod"]
     )
     assert item is not None
     expires, token = item.lease_expires_at, item.lease_token
@@ -151,7 +151,7 @@ async def test_historical_acquisition_probe_is_current_scoped_and_never_renews(
     elif deny == "revoked":
         await revoke_source_client(test_session, source.client_id, commit=False)
     elif deny == "scope":
-        source.allowed_datasets = ["tw_etf_minute"]
+        source.allowed_datasets = ["tw_etf_eod"]
     await test_session.flush()
     actual_expiry, actual_token = item.lease_expires_at, item.lease_token
     response = await client.post(
@@ -187,11 +187,8 @@ def historical_backfill_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
     return now
 
 
-def test_production_keeps_one_year_eod_and_31_day_shioaji_minute_history(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_production_keeps_one_year_eod_and_retained_shioaji_window(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
-
     assert historical_backfill._max_backfill_days() == 366
     assert historical_backfill._max_backfill_days("shioaji") == 31
     assert historical_backfill.expiry_cutoff(
@@ -199,102 +196,29 @@ def test_production_keeps_one_year_eod_and_31_day_shioaji_minute_history(
     ) == date(2026, 8, 1)
     assert historical_backfill._supports_backfill("twelve_data", "us_equity_eod") is True
     assert historical_backfill._supports_backfill("finlab", "tw_equity_eod") is True
-    assert historical_backfill._supports_backfill("shioaji", "tw_equity_minute") is True
-    assert historical_backfill._supports_backfill("shioaji", "tw_etf_minute") is True
-    assert historical_backfill._supports_backfill("shioaji", "tw_equity_eod") is False
+    assert historical_backfill._supports_backfill("shioaji", "tw_equity_minute") is False
+    assert historical_backfill._supports_backfill("shioaji", "tw_etf_minute") is False
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("dataset_key", ["tw_equity_minute", "tw_etf_minute"])
-async def test_production_shioaji_date_window_uses_taipei_date_and_rejects_invalid_scopes(
-    test_session, monkeypatch, dataset_key
-):
-    monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    # UTC still says August 31 while the TW exchange has entered September 1.
-    now = datetime(2026, 8, 31, 16, 1, tzinfo=timezone.utc)
-    monkeypatch.setattr(historical_backfill, "utc_now", lambda: now)
-    today = date(2026, 9, 1)
-    await _seed_scope(test_session, today, dataset_key=dataset_key)
-    oldest = today - timedelta(days=30)
-    _, reason, days = await preview_request(
-        test_session,
-        provider="shioaji",
-        dataset_key=dataset_key,
-        start_date=oldest,
-        end_date=today,
-    )
-    assert reason is None and len(days) == 31
-    request, duplicate = await create_request(
-        test_session,
-        provider="shioaji",
-        dataset_key=dataset_key,
-        start_date=oldest,
-        end_date=today,
-        request_key="production-shioaji-month",
-        created_by="operator",
-    )
-    assert not duplicate and len(request.items) == 31
-    for start, end, expected in (
-        (oldest - timedelta(days=1), oldest, "outside_latest_31_days"),
-        (today, today + timedelta(days=1), "outside_latest_31_days"),
-    ):
-        _, reason, _ = await preview_request(
-            test_session,
-            provider="shioaji",
-            dataset_key=dataset_key,
-            start_date=start,
-            end_date=end,
-        )
-        assert reason == expected
-        with pytest.raises(HistoricalBackfillError, match="latest 31"):
-            await create_request(
-                test_session,
-                provider="shioaji",
-                dataset_key=dataset_key,
-                start_date=start,
-                end_date=end,
-                request_key="outside",
-                created_by="operator",
-            )
-    _, reason, _ = await preview_request(
-        test_session,
-        provider="finlab",
-        dataset_key=dataset_key,
-        start_date=oldest,
-        end_date=oldest,
-    )
-    assert reason == "provider_dataset_unsupported"
-    with pytest.raises(HistoricalBackfillError, match="does not support"):
-        await create_request(
-            test_session,
-            provider="finlab",
-            dataset_key=dataset_key,
-            start_date=oldest,
-            end_date=oldest,
-            request_key="wrong-provider",
-            created_by="operator",
-        )
-
-
-async def _seed_scope(session, today: date, *, dataset_key: str = "tw_equity_minute") -> None:
+async def _seed_scope(session, today: date, *, dataset_key: str = "tw_equity_eod") -> None:
     session.add(
         DatasetRegistry(
             dataset_key=dataset_key,
             name="TW",
-            asset_class="etf" if dataset_key == "tw_etf_minute" else "equity",
+            asset_class="etf" if dataset_key == "tw_etf_eod" else "equity",
             market="TW",
             is_active=True,
         )
     )
     session.add(
         SchedulerControl(
-            scheduler_key="shioaji-tw",
-            provider="shioaji",
+            scheduler_key="finlab-tw",
+            provider="finlab",
             slot_id="taiwan_market_window",
             timezone="Asia/Taipei",
         )
     )
-    session.add(SchedulerDataset(scheduler_key="shioaji-tw", dataset_key=dataset_key))
+    session.add(SchedulerDataset(scheduler_key="finlab-tw", dataset_key=dataset_key))
     await session.flush()
     revision = CalendarYearRevision(
         id=uuid7(),
@@ -376,8 +300,8 @@ async def test_historical_backfill_rejects_out_of_window_and_is_idempotent(test_
     with pytest.raises(HistoricalBackfillError, match="latest 31"):
         await create_request(
             test_session,
-            provider="shioaji",
-            dataset_key="tw_equity_minute",
+            provider="finlab",
+            dataset_key="tw_equity_eod",
             start_date=today - timedelta(days=31),
             end_date=today,
             request_key="historic-window",
@@ -386,8 +310,8 @@ async def test_historical_backfill_rejects_out_of_window_and_is_idempotent(test_
         )
     first, duplicate = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today - timedelta(days=1),
         end_date=today,
         request_key="historic-duplicate",
@@ -396,8 +320,8 @@ async def test_historical_backfill_rejects_out_of_window_and_is_idempotent(test_
     )
     repeated, repeated_duplicate = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today - timedelta(days=1),
         end_date=today,
         request_key="historic-duplicate",
@@ -421,8 +345,8 @@ async def test_calendar_gap_defaults_without_blocking_request(
     )
     market, reason, days = await preview_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=missing,
         end_date=today,
         today=today,
@@ -434,8 +358,8 @@ async def test_calendar_gap_defaults_without_blocking_request(
     ]
     request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=missing,
         end_date=today,
         request_key="historic-calendar-gap",
@@ -451,7 +375,7 @@ async def test_closed_days_acquired_when_skip_disabled(
     test_session,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(get_settings(), "SHIOAJI_SKIP_NON_TRADING_DAYS", False)
+    monkeypatch.setattr(get_settings(), "FINLAB_SKIP_NON_TRADING_DAYS", False)
     today = date(2026, 9, 1)
     await _seed_scope(test_session, today)
     closed = today - timedelta(days=1)
@@ -476,8 +400,8 @@ async def test_closed_days_acquired_when_skip_disabled(
 
     request, duplicate = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=closed,
         end_date=today,
         request_key="historic-calendar-mixed",
@@ -490,8 +414,8 @@ async def test_closed_days_acquired_when_skip_disabled(
 
     closed_request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=closed,
         end_date=closed,
         request_key="historic-calendar-all-closed",
@@ -509,8 +433,8 @@ async def test_historical_backfill_requests_are_newest_first_and_paginated(test_
     for index in range(3):
         await create_request(
             test_session,
-            provider="shioaji",
-            dataset_key="tw_equity_minute",
+            provider="finlab",
+            dataset_key="tw_equity_eod",
             start_date=today,
             end_date=today,
             request_key=f"historic-pagination-{index}",
@@ -540,8 +464,8 @@ async def test_failure_stops_later_dates_without_manually_resolving_delivery_ale
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today - timedelta(days=2),
         end_date=today,
         request_key="historic-stop",
@@ -549,9 +473,9 @@ async def test_failure_stops_later_dates_without_manually_resolving_delivery_ale
         today=today,
     )
     alert = MissingDeliveryAlert(
-        dataset_key="tw_equity_minute",
-        source="shioaji",
-        schema_id="market_minute",
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_id="market_eod",
         schema_version=1,
         expected_data_date=today,
         status="open",
@@ -560,8 +484,8 @@ async def test_failure_stops_later_dates_without_manually_resolving_delivery_ale
     await test_session.flush()
     item = await claim_next_item(
         test_session,
-        provider="shioaji",
-        allowed_datasets=["tw_equity_minute"],
+        provider="finlab",
+        allowed_datasets=["tw_equity_eod"],
         now=datetime(2026, 9, 1, 0, tzinfo=timezone.utc),
     )
     assert item is not None and item.trade_date == today - timedelta(days=2)
@@ -569,7 +493,7 @@ async def test_failure_stops_later_dates_without_manually_resolving_delivery_ale
     await complete_item(
         test_session,
         item.item_id,
-        provider="shioaji",
+        provider="finlab",
         outcome="failed",
         lease_token=item.lease_token,
         run_id=None,
@@ -602,8 +526,8 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today,
         end_date=today,
         request_key="historic-source-run-validation",
@@ -611,14 +535,14 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
         today=today,
     )
     item = await claim_next_item(
-        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+        test_session, provider="finlab", allowed_datasets=["tw_equity_eod"]
     )
     assert item is not None and item.lease_token is not None
     with pytest.raises(HistoricalBackfillValidationError, match="requires a Source run"):
         await complete_item(
             test_session,
             item.item_id,
-            provider="shioaji",
+            provider="finlab",
             outcome="completed",
             lease_token=item.lease_token,
             run_id=None,
@@ -627,9 +551,9 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
         )
     foreign_run = IngestionRun(
         run_id=uuid7(),
-        dataset_key="tw_equity_minute",
+        dataset_key="tw_equity_eod",
         source="other_provider",
-        schema_id="market_minute",
+        schema_id="market_eod",
         schema_version=1,
         batch_data_date=today,
         delivery_mode="sequenced_snapshot",
@@ -648,7 +572,7 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
         await complete_item(
             test_session,
             item.item_id,
-            provider="shioaji",
+            provider="finlab",
             outcome="completed",
             lease_token=item.lease_token,
             run_id=foreign_run.run_id,
@@ -657,9 +581,9 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
         )
     successful_run = IngestionRun(
         run_id=uuid7(),
-        dataset_key="tw_equity_minute",
-        source="shioaji",
-        schema_id="market_minute",
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_id="market_eod",
         schema_version=1,
         batch_data_date=today,
         delivery_mode="sequenced_snapshot",
@@ -673,9 +597,9 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
         failed_records=0,
     )
     alert = MissingDeliveryAlert(
-        dataset_key="tw_equity_minute",
-        source="shioaji",
-        schema_id="market_minute",
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_id="market_eod",
         schema_version=1,
         expected_data_date=today,
         status="open",
@@ -687,7 +611,7 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
             await complete_item(
                 test_session,
                 item.item_id,
-                provider="shioaji",
+                provider="finlab",
                 outcome="completed",
                 lease_token=item.lease_token,
                 run_id=successful_run.run_id,
@@ -706,18 +630,18 @@ async def test_full_snapshot_alert_waits_for_normalizer_terminal_success(test_se
     today = date(2026, 9, 1)
     await _seed_scope(test_session, today)
     alert = MissingDeliveryAlert(
-        dataset_key="tw_equity_minute",
-        source="shioaji",
-        schema_id="market_minute",
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_id="market_eod",
         schema_version=1,
         expected_data_date=today,
         status="open",
     )
     failed_run = IngestionRun(
         run_id=uuid7(),
-        dataset_key="tw_equity_minute",
-        source="shioaji",
-        schema_id="market_minute",
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_id="market_eod",
         schema_version=1,
         batch_data_date=today,
         delivery_mode="full_snapshot",
@@ -735,9 +659,9 @@ async def test_full_snapshot_alert_waits_for_normalizer_terminal_success(test_se
 
     successful_run = IngestionRun(
         run_id=uuid7(),
-        dataset_key="tw_equity_minute",
-        source="shioaji",
-        schema_id="market_minute",
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_id="market_eod",
         schema_version=1,
         batch_data_date=today,
         delivery_mode="full_snapshot",
@@ -758,8 +682,8 @@ async def test_expired_legacy_projection_never_reclaims_whole_work_owner(
     await _seed_scope(test_session, today)
     await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today,
         end_date=today,
         request_key="historic-lease-reclaim",
@@ -767,7 +691,7 @@ async def test_expired_legacy_projection_never_reclaims_whole_work_owner(
         today=today,
     )
     first = await claim_next_item(
-        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+        test_session, provider="finlab", allowed_datasets=["tw_equity_eod"]
     )
     assert first is not None and first.lease_token is not None
     first_token = first.lease_token
@@ -776,13 +700,11 @@ async def test_expired_legacy_projection_never_reclaims_whole_work_owner(
     from app.models.provider_work import ProviderWorkOwner
     from app.services import provider_work
 
-    owner = await test_session.get(ProviderWorkOwner, (provider_work.environment(), "shioaji"))
+    owner = await test_session.get(ProviderWorkOwner, (provider_work.environment(), "finlab"))
     owner.expires_at = historical_backfill_clock - timedelta(seconds=1)
     owner_identity = (owner.attempt_id, owner.generation, owner.token)
     assert (
-        await claim_next_item(
-            test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
-        )
+        await claim_next_item(test_session, provider="finlab", allowed_datasets=["tw_equity_eod"])
         is None
     )
     assert (owner.attempt_id, owner.generation, owner.token) == owner_identity
@@ -798,8 +720,8 @@ async def test_cancelled_request_rejects_inflight_completion(
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today,
         end_date=today,
         request_key="historic-cancel-race",
@@ -807,7 +729,7 @@ async def test_cancelled_request_rejects_inflight_completion(
         today=today,
     )
     item = await claim_next_item(
-        test_session, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+        test_session, provider="finlab", allowed_datasets=["tw_equity_eod"]
     )
     assert item is not None and item.lease_token is not None
     await cancel_request(test_session, request.request_id, actor="operator")
@@ -815,7 +737,7 @@ async def test_cancelled_request_rejects_inflight_completion(
         await complete_item(
             test_session,
             item.item_id,
-            provider="shioaji",
+            provider="finlab",
             outcome="completed",
             lease_token=item.lease_token,
             run_id=uuid7(),
@@ -826,7 +748,7 @@ async def test_cancelled_request_rejects_inflight_completion(
         await complete_item(
             test_session,
             item.item_id,
-            provider="shioaji",
+            provider="finlab",
             outcome="failed",
             lease_token=item.lease_token,
             run_id=None,
@@ -843,8 +765,8 @@ async def test_claim_fails_expired_historical_item_and_cancels_following_dates(
     await _seed_scope(test_session, today)
     request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today - timedelta(days=1),
         end_date=today,
         request_key="historic-claim-expired",
@@ -854,7 +776,7 @@ async def test_claim_fails_expired_historical_item_and_cancels_following_dates(
     request.items[0].trade_date = today - timedelta(days=MAX_BACKFILL_DAYS + 1)
     request.items[1].trade_date = today - timedelta(days=MAX_BACKFILL_DAYS + 2)
     await test_session.flush()
-    assert await claim_next_item(test_session, provider="shioaji", allowed_datasets=None) is None
+    assert await claim_next_item(test_session, provider="finlab", allowed_datasets=None) is None
     await test_session.refresh(request)
     expired_item = await test_session.scalar(
         select(HistoricalBackfillItem)
@@ -878,15 +800,15 @@ async def test_claim_fails_expired_historical_item_and_cancels_following_dates(
 
 
 @pytest.mark.asyncio
-async def test_claim_uses_shioaji_market_date_at_utc_taipei_boundary(test_session) -> None:
+async def test_claim_uses_finlab_market_date_at_utc_taipei_boundary(test_session) -> None:
     taipei_today = date(2026, 9, 2)
     # This is still 2026-09-01 in UTC, but already 2026-09-02 in Taiwan.
     utc_previous_day = datetime(2026, 9, 1, 16, 30, tzinfo=timezone.utc)
     await _seed_scope(test_session, taipei_today)
     expired_request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=taipei_today,
         end_date=taipei_today,
         request_key="historic-taipei-expired",
@@ -895,8 +817,8 @@ async def test_claim_uses_shioaji_market_date_at_utc_taipei_boundary(test_sessio
     )
     valid_request, _ = await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=taipei_today,
         end_date=taipei_today,
         request_key="historic-taipei-valid",
@@ -905,7 +827,7 @@ async def test_claim_uses_shioaji_market_date_at_utc_taipei_boundary(test_sessio
     )
     expired_item = expired_request.items[0]
     expired_item.trade_date = taipei_today - timedelta(days=MAX_BACKFILL_DAYS + 1)
-    # Inclusive: Shioaji's own target-date gate permits local-today minus 31 days.
+    # Inclusive: FinLab's own target-date gate permits local-today minus 31 days.
     valid_request.items[0].trade_date = taipei_today - timedelta(days=MAX_BACKFILL_DAYS)
     valid_request.items[0].calendar_snapshot = {
         **valid_request.items[0].calendar_snapshot,
@@ -927,8 +849,8 @@ async def test_claim_uses_shioaji_market_date_at_utc_taipei_boundary(test_sessio
 
     claimed = await claim_next_item(
         test_session,
-        provider="shioaji",
-        allowed_datasets=["tw_equity_minute"],
+        provider="finlab",
+        allowed_datasets=["tw_equity_eod"],
         now=utc_previous_day,
     )
     await test_session.refresh(expired_request)
@@ -941,7 +863,7 @@ async def test_claim_uses_shioaji_market_date_at_utc_taipei_boundary(test_sessio
 
 
 @pytest.mark.asyncio
-async def test_shioaji_claim_does_not_expire_still_valid_twelve_request(test_session) -> None:
+async def test_finlab_claim_does_not_expire_still_valid_twelve_request(test_session) -> None:
     taipei_today = date(2026, 9, 2)
     new_york_today = date(2026, 9, 1)
     utc_previous_day = datetime(2026, 9, 1, 16, 30, tzinfo=timezone.utc)
@@ -966,8 +888,8 @@ async def test_shioaji_claim_does_not_expire_still_valid_twelve_request(test_ses
     assert (
         await claim_next_item(
             test_session,
-            provider="shioaji",
-            allowed_datasets=["tw_equity_minute"],
+            provider="finlab",
+            allowed_datasets=["tw_equity_eod"],
             now=utc_previous_day,
         )
     ) is None
@@ -984,8 +906,8 @@ async def test_preview_explains_open_and_unpublished_dates_before_create(test_se
     await _seed_scope(test_session, today)
     market, reason, days = await preview_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today - timedelta(days=1),
         end_date=today + timedelta(days=1),
         today=today,
@@ -1003,8 +925,8 @@ async def test_source_claim_and_terminal_failure_are_authenticated_and_serial(
     await _seed_scope(test_session, today)
     await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today - timedelta(days=1),
         end_date=today,
         request_key="historic-source-lease",
@@ -1013,10 +935,10 @@ async def test_source_claim_and_terminal_failure_are_authenticated_and_serial(
     )
     _, key = await create_source_client(
         test_session,
-        name="shioaji-worker",
+        name="finlab-worker",
         owner="tests",
-        source_name="shioaji",
-        allowed_datasets=["tw_equity_minute"],
+        source_name="finlab",
+        allowed_datasets=["tw_equity_eod"],
         rate_limit_requests=20,
         rate_limit_window=60,
         commit=False,
@@ -1055,8 +977,8 @@ async def test_source_complete_requires_matching_terminal_run_and_lease_token(
     await _seed_scope(test_session, today)
     await create_request(
         test_session,
-        provider="shioaji",
-        dataset_key="tw_equity_minute",
+        provider="finlab",
+        dataset_key="tw_equity_eod",
         start_date=today,
         end_date=today,
         request_key="historic-source-complete-validation",
@@ -1065,10 +987,10 @@ async def test_source_complete_requires_matching_terminal_run_and_lease_token(
     )
     _, key = await create_source_client(
         test_session,
-        name="shioaji-worker-complete",
+        name="finlab-worker-complete",
         owner="tests",
-        source_name="shioaji",
-        allowed_datasets=["tw_equity_minute"],
+        source_name="finlab",
+        allowed_datasets=["tw_equity_eod"],
         rate_limit_requests=20,
         rate_limit_window=60,
         commit=False,
@@ -1088,9 +1010,9 @@ async def test_source_complete_requires_matching_terminal_run_and_lease_token(
     assert missing_run.status_code == 422
     run = IngestionRun(
         run_id=uuid7(),
-        dataset_key="tw_equity_minute",
-        source="shioaji",
-        schema_id="market_minute",
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_id="market_eod",
         schema_version=1,
         batch_data_date=today,
         delivery_mode="sequenced_snapshot",
@@ -1140,8 +1062,8 @@ async def test_operator_historical_endpoints_reject_viewer(client, test_session)
     )
     headers = {get_settings().API_KEY_HEADER: viewer_key}
     body = {
-        "provider": "shioaji",
-        "dataset_key": "tw_equity_minute",
+        "provider": "finlab",
+        "dataset_key": "tw_equity_eod",
         "start_date": "2026-09-01",
         "end_date": "2026-09-01",
         "request_key": "historic-viewer-denied",
@@ -1165,7 +1087,7 @@ async def test_operator_historical_endpoints_reject_viewer(client, test_session)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("environment", ["staging", "production"])
-@pytest.mark.parametrize("dataset_key", ["tw_equity_minute", "tw_etf_minute"])
+@pytest.mark.parametrize("dataset_key", ["tw_equity_eod"])
 async def test_operator_can_preview_create_list_scope_and_cancel_historical_backfill(
     client,
     test_session,
@@ -1179,7 +1101,7 @@ async def test_operator_can_preview_create_list_scope_and_cancel_historical_back
     today = historical_backfill_clock.date()
     await _seed_scope(test_session, today, dataset_key=dataset_key)
     body = {
-        "provider": "shioaji",
+        "provider": "finlab",
         "dataset_key": dataset_key,
         "start_date": today.isoformat(),
         "end_date": today.isoformat(),
@@ -1188,7 +1110,7 @@ async def test_operator_can_preview_create_list_scope_and_cancel_historical_back
     scopes = await client.get("/api/v1/admin/historical-backfills/scopes", headers=admin_headers)
     assert scopes.status_code == 200
     assert any(
-        scope["provider"] == "shioaji" and scope["dataset_key"] == dataset_key
+        scope["provider"] == "finlab" and scope["dataset_key"] == dataset_key
         for scope in scopes.json()["data"]
     )
     preview = await client.post(
@@ -1226,8 +1148,8 @@ async def test_operator_lists_historical_backfills_with_requested_pagination(
     for index in range(3):
         await create_request(
             test_session,
-            provider="shioaji",
-            dataset_key="tw_equity_minute",
+            provider="finlab",
+            dataset_key="tw_equity_eod",
             start_date=today,
             end_date=today,
             request_key=f"historic-api-pagination-{index}",
@@ -1282,8 +1204,8 @@ async def test_create_endpoint_acquires_closed_dates_by_default(
         "/api/v1/admin/historical-backfills",
         headers=admin_headers,
         json={
-            "provider": "shioaji",
-            "dataset_key": "tw_equity_minute",
+            "provider": "finlab",
+            "dataset_key": "tw_equity_eod",
             "start_date": closed.isoformat(),
             "end_date": today.isoformat(),
             "request_key": "historic-api-mixed-closed-open",
@@ -1317,8 +1239,8 @@ async def test_create_endpoint_calendar_gap_uses_default(
         "/api/v1/admin/historical-backfills",
         headers=admin_headers,
         json={
-            "provider": "shioaji",
-            "dataset_key": "tw_equity_minute",
+            "provider": "finlab",
+            "dataset_key": "tw_equity_eod",
             "start_date": (today - timedelta(days=1)).isoformat(),
             "end_date": today.isoformat(),
             "request_key": "historic-api-calendar-gap",

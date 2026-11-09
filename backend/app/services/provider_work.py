@@ -33,6 +33,9 @@ from app.utils import utc_now, uuid7
 
 HEARTBEAT_TTL = timedelta(minutes=2)
 TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
+# Bundle v3 host inventory, matching infra/deploy/provider_work_preflight.py.
+CUTOVER_PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+RETIRED_CUTOVER_PROVIDERS = ("shioaji",)
 
 
 class ProviderWorkError(ValueError):
@@ -1451,7 +1454,7 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
 async def apply_cutover(db: AsyncSession, proof: dict) -> None:
     """Owner-attested host proof plus DB drain; never infer death from TTL."""
     checked = datetime.fromisoformat(proof["checked_at"])
-    providers = ("factset", "finlab", "shioaji", "taifex", "twelve_data")
+    providers = CUTOVER_PROVIDERS
     if (
         checked.tzinfo is None
         or not timedelta(0) <= utc_now() - checked <= timedelta(minutes=5)
@@ -1459,12 +1462,31 @@ async def apply_cutover(db: AsyncSession, proof: dict) -> None:
         or set(proof["host_lock_identities"]) != set(providers)
     ):
         raise ProviderWorkError("cutover host inventory is stale or outside environment scope")
-    owners = {provider: await lock_provider(db, provider) for provider in providers}
-    if any(owner.attempt_id is not None for owner in owners.values()):
+    # Retained owners are evidence, not current host inventory. Do not create,
+    # re-attest or rewrite them, but still fail closed if an old attempt is active.
+    owners = {}
+    retired_owners = []
+    for provider in sorted((*providers, *RETIRED_CUTOVER_PROVIDERS)):
+        if provider in providers:
+            owners[provider] = await lock_provider(db, provider)
+        else:
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": f"provider-work:{environment()}:{provider}"},
+            )
+            retired_owner = await db.get(
+                ProviderWorkOwner, (environment(), provider), populate_existing=True
+            )
+            if retired_owner is not None:
+                retired_owners.append(retired_owner)
+    if any(owner.attempt_id is not None for owner in [*owners.values(), *retired_owners]):
         raise ProviderWorkError("provider work is already active")
     if await db.scalar(
         select(IngestionRun.run_id)
-        .where(IngestionRun.source.in_(providers), IngestionRun.status.not_in(TERMINAL_RUNS))
+        .where(
+            IngestionRun.source.in_((*providers, *RETIRED_CUTOVER_PROVIDERS)),
+            IngestionRun.status.not_in(TERMINAL_RUNS),
+        )
         .limit(1)
     ):
         raise ProviderWorkError("legacy accepted normalization must drain before cutover")
@@ -1490,6 +1512,7 @@ async def apply_cutover(db: AsyncSession, proof: dict) -> None:
     imported = await db.scalars(
         select(ProviderWork).where(
             ProviderWork.environment == environment(),
+            ProviderWork.provider.in_(providers),
             ProviderWork.kind == "historical",
             ProviderWork.state == "queued",
         )

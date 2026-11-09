@@ -3,7 +3,7 @@
 Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受保護 Source API 交付 versioned contracts。
 環境身份由 `APP_ENVIRONMENT=local|staging|production` 載入，須符合 manifest 的 deployment_target。
 
-## 共用七條 feeds
+## 現行五條 feeds
 
 | Provider | Datasets |
 | --- | --- |
@@ -22,7 +22,8 @@ Pilot 建立 daily plan 時按 canonical 商品識別排序取前兩項，期貨
 部署只接受 stopped controls；Owner 操作啟停。Staging 常態開 pilot，上版可短暫開 full market；production 常態只開 full market。
 `pilot_<provider>_v1` 與 `full_market_<provider>_v1` 各自有 first dates、plans、checkpoint；同環境共用帳號 governor。
 所有 provider-specific scheduler、Twelve Data one-shot、FinLab smoke 與 TAIFEX pilot CLI 都只回報退役（exit 2）；
-Shioaji 已完整退役，其舊 CLI 回報 `PROVIDER_RETIRED`。`PROVIDER_WORK_REQUIRED` 缺省 true，明確 false 拒絕啟動。
+Shioaji Fetcher runtime 已退役，其舊 CLI 回報 `PROVIDER_RETIRED`；Backend 已停止新回補申請，
+歷史 scope／credentials 與資源清理仍見 [退役狀態](../docs/dev/backlog.md#full-market-external-acceptance)。`PROVIDER_WORK_REQUIRED` 缺省 true，明確 false 拒絕啟動。
 所有新 I/O 與 prepared delivery 須持有 provider-work owner；缺少 attestation 不能 claim。
 現有環境升級前依 [切換程序](../docs/operations/deployment.md#provider-work-切換) 排空與備份。
 原 checkpoint、prepared bytes、receipts、budgets 與 cooldown 不會刪除或重設。

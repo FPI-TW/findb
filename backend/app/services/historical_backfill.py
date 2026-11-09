@@ -35,11 +35,11 @@ from app.schemas.ingress import MarketEODIngressRequestV2
 from app.services.effective_calendar import effective_days, execution_policy
 from app.utils import utc_now, uuid7
 
+# New-request admission only. Retired providers' requests, receipts and query
+# paths remain available independently of this installed-executor inventory.
 CAPABILITIES: dict[tuple[str, str], str] = {
     ("twelve_data", "us_equity_eod"): "declared",
     ("finlab", "tw_equity_eod"): "declared",
-    ("shioaji", "tw_equity_minute"): "executable",
-    ("shioaji", "tw_etf_minute"): "executable",
     ("taifex", "tw_futures_eod"): "executable",
     ("factset", "hk_equity_eod"): "executable",
 }
