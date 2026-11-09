@@ -1008,6 +1008,12 @@ async def get_plan(
     allowed_datasets: list[str] | None,
 ) -> DeliveryPlanResponse:
     plan = await _plan_scope(db, plan_id, provider=provider, allowed_datasets=allowed_datasets)
+    return await plan_response(db, plan)
+
+
+async def plan_response(db: AsyncSession, plan: DailyDeliveryPlan) -> DeliveryPlanResponse:
+    """Shape a stored plan without Source scope; retired providers stay readable."""
+    plan_id = plan.plan_id
     parts = list(
         (
             await db.scalars(

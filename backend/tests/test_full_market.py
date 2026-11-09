@@ -1207,6 +1207,36 @@ async def test_admin_plan_discovery_pagination_and_legacy_limit(
 
 
 @pytest.mark.asyncio
+async def test_admin_plan_query_keeps_retired_provider_history_readable(
+    client, test_session, admin_headers
+):
+    from sqlalchemy.orm.attributes import flag_modified
+
+    _, _, plan = await _activated_plan(test_session, "tw_equity_minute")
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_minute")
+    assert dataset is not None
+    # Production retired Shioaji from Source scope while keeping frozen plans.
+    dataset.config["allowed_sources"] = []
+    flag_modified(dataset, "config")
+    await test_session.commit()
+
+    response = await client.get(
+        "/api/v1/admin/delivery-plans",
+        params={"page": 1, "page_size": 25},
+        headers=admin_headers,
+    )
+    assert response.status_code == 200
+    [item] = response.json()["data"]
+    assert item["plan_id"] == str(plan.plan_id) and item["provider"] == "shioaji"
+    assert item["summary"]["expected"] == plan.summary.expected
+    with pytest.raises(FullMarketError) as denied:
+        await get_plan(
+            test_session, plan.plan_id, provider="shioaji", allowed_datasets=["tw_equity_minute"]
+        )
+    assert denied.value.status_code == 403
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "params",
     [
