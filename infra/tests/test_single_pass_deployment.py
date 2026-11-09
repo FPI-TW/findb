@@ -413,18 +413,16 @@ def test_findb_recovery_uses_previous_exact_revision_without_downgrade(
     journal["environment"] = {"APP_ENVIRONMENT": "staging"}
     previous = manifest("findb")
     (Path(journal["previous_root"]) / "release-manifest.json").write_text(json.dumps(previous))
-    original_run = transaction.run
     restore_environments = []
 
-    def run(*args, **kwargs):
-        if args[0] == "bash":
-            restore_environments.append(kwargs["env"])
-            if not compatible:
-                raise RuntimeError("database revision incompatible")
-            return ""
-        return original_run(*args, **kwargs)
+    def execute(command, env, journal):
+        assert command.name == "deploy_findb_aws.sh"
+        assert journal["phase"] == "restoring"
+        restore_environments.append(env)
+        if not compatible:
+            raise RuntimeError("database revision incompatible")
 
-    monkeypatch.setattr(transaction, "run", run)
+    monkeypatch.setattr(tx, "execute_host", execute)
     tx.abort_locked(journal)
     assert tx.load()["phase"] == ("aborted" if compatible else "recovery_required")
     assert not any(transaction.owned(r, TX) for r in state["rows"])

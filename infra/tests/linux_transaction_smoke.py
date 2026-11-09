@@ -44,6 +44,8 @@ def main():
     source = Path(__file__).resolve().parents[1] / "deploy"
     real_run = deployment.run
     try:
+        base.mkdir(mode=0o700)
+        (base / "releases").mkdir(mode=0o700)
         for name in names:
             before[name] = real_run(
                 "docker",

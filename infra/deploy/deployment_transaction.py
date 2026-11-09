@@ -300,28 +300,8 @@ class Transaction:
                 atomic_json(self.directory / "compose.json", override)
                 environment["FINDB_TRANSACTION_COMPOSE_FILE"] = str(self.directory / "compose.json")
             command = self.root / f"infra/deploy/runtime-secrets/deploy_{self.unit}_aws.sh"
-            # The child cannot mutate until its process identity is durable.
-            child = subprocess.Popen(
-                [
-                    "bash",
-                    "-c",
-                    'read -r start; [ "$start" = apply ] || exit 1; exec bash "$1"',
-                    "transaction",
-                    str(command),
-                ],
-                stdin=subprocess.PIPE,
-                start_new_session=True,
-                env=environment,
-            )
-            journal["child_pid"] = child.pid
-            journal["child_start"] = process_identity(child.pid)
-            self.save(journal)
             try:
-                assert child.stdin is not None
-                child.stdin.write(b"apply\n")
-                child.stdin.close()
-                if child.wait(timeout=900):
-                    raise RuntimeError("host apply failed")
+                self.execute_host(command, environment, journal)
                 deadline = time.monotonic() + 60
                 while True:
                     try:
@@ -335,16 +315,47 @@ class Transaction:
                 journal["deadline"] = time.time() + 120
                 self.save(journal)
             except BaseException:
-                if child.poll() is None:
-                    os.killpg(child.pid, signal.SIGTERM)
-                    try:
-                        child.wait(timeout=180)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(child.pid, signal.SIGKILL)
-                        child.wait()
                 self.abort_locked(journal)
                 raise
         print("deployment_transaction=healthy", flush=True)
+
+    def execute_host(self, command: Path, environment: dict, journal: dict) -> None:
+        # Apply and long-running FinDB recovery both need a durable process
+        # identity. A lost SSM parent must not leave an untracked schema writer.
+        child = subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                'read -r start; [ "$start" = apply ] || exit 1; exec bash "$1"',
+                "transaction",
+                str(command),
+            ],
+            stdin=subprocess.PIPE,
+            start_new_session=True,
+            env=environment,
+        )
+        try:
+            journal.update(
+                child_pid=child.pid,
+                child_start=process_identity(child.pid),
+                boot_id=boot_id(),
+                deadline=time.time() + 1080,
+            )
+            self.save(journal)
+            assert child.stdin is not None
+            child.stdin.write(b"apply\n")
+            child.stdin.close()
+            if child.wait(timeout=900):
+                raise RuntimeError("host command failed")
+        except BaseException:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    child.wait(timeout=180)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
+            raise
 
     def decision(self, journal: dict) -> dict:
         target = self.manifest["deployment_target"]
@@ -481,16 +492,16 @@ class Transaction:
                 ):
                     env.pop(key, None)
                 try:
-                    run(
-                        "bash",
-                        str(Path(old_root) / "infra/deploy/runtime-secrets/deploy_findb_aws.sh"),
-                        timeout=900,
-                        env=env,
+                    journal["phase"] = "restoring"
+                    self.execute_host(
+                        Path(old_root) / "infra/deploy/runtime-secrets/deploy_findb_aws.sh",
+                        env,
+                        journal,
                     )
                     journal["phase"] = "aborted"
-                except (RuntimeError, subprocess.TimeoutExpired):
+                except (RuntimeError, OSError, subprocess.TimeoutExpired):
                     # Fail stopped; recovery is explicitly not reported success.
-                    pass
+                    journal["phase"] = "recovery_required"
         if journal["previous_root"]:
             temporary = self.base / ".current-restore"
             temporary.unlink(missing_ok=True)
