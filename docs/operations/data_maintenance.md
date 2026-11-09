@@ -113,6 +113,10 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 
 ## Production universe與historical backfill
 
+Historical capability 現由 provider catalog 推導；Source execution-config 是 daily 設定發布，
+不作 historical request／claim／acquisition 的額外 gate。四個 historical runners 目前仍依賴
+原有設定檔與 executor，PR3 完成前不得刪除檔案；FinLab ETF 的未開放 scope 維持不變。
+
 Production universe是reviewed、versioned artifact，不在runtime自動換股：
 
 - Twelve Data使用`daily_scheduler.production.v3.json`與

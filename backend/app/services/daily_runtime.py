@@ -1,18 +1,15 @@
-"""Authoritative daily runtime policy from the shared execution catalog."""
+"""Provider-wide acquisition windows; active providers have no extra daily gate."""
 
-import json
 from datetime import datetime, time, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app.utils import utc_now
 
 
 def _runtime_policies() -> dict:
-    catalog = json.loads(
-        (Path(__file__).resolve().parents[2] / "configs/execution_feeds.v1.json").read_text()
-    )
-    return catalog["daily_runtime_policies"]
+    # The four active providers have no additional provider-wide daily gate.
+    # Feed clocks are published by feed_schedule; do not read the legacy manifest.
+    return {}
 
 
 def daily_window(provider: str, now: datetime | None = None) -> dict:

@@ -13,6 +13,7 @@ from app.api.deps import AdminPrincipal
 from app.execution_profiles import scheduler_profile, unified_scheduler
 from app.models.registry import SchedulerControl
 from app.services.admin_audit import record_admin_audit
+from app.services.feed_schedule import feed_schedule_view
 from app.services.scheduler_start import scheduler_start_blockers, scheduler_start_datasets
 from app.utils import ensure_utc, utc_now
 
@@ -267,6 +268,11 @@ def present_scheduler_control(
         "execution_profile": scheduler_profile(row.scheduler_key),
         "provider": row.provider,
         "dataset_keys": scheduler_dataset_keys(row),
+        "feed_schedules": [
+            schedule.model_dump()
+            for key in scheduler_dataset_keys(row)
+            if (schedule := feed_schedule_view(row.provider, key, reference)) is not None
+        ],
         "slot_id": row.slot_id,
         "scheduled_local_time": row.scheduled_local_time,
         "timezone": row.timezone,

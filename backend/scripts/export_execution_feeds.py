@@ -2,7 +2,18 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from scripts.export_provider_catalog import (  # noqa: E402
+    CATALOG_PATH,
+    legacy_execution_catalog,
+    load_catalog,
+)
 
 
 def main() -> int:
@@ -10,7 +21,9 @@ def main() -> int:
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
-    catalog = json.loads((root / "backend/configs/execution_feeds.v1.json").read_text())
+    catalog = legacy_execution_catalog(
+        load_catalog(root / CATALOG_PATH, contracts_dir=root / "contracts")
+    )
     if catalog["version"] != 1 or len(catalog["feeds"]) != 5:
         raise ValueError("Expected the versioned five-feed catalog")
     # Drain-only providers keep their Source scope, but Fetcher must not plan them.

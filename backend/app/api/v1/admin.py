@@ -1212,6 +1212,7 @@ async def list_market_freshness_endpoint(
                 {
                     "dataset_key": feed.dataset_key,
                     "source": feed.source,
+                    "schedule": feed.schedule,
                     "schema_id": feed.schema_id,
                     "schema_version": feed.schema_version,
                     "expected_data_date": feed.expected_data_date,

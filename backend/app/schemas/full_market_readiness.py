@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
+from app.generated.provider_ids import ProviderId
 from app.schemas.full_market import FullMarketModel, _safe_evidence_url
 from app.utils import ensure_utc
 
@@ -28,7 +29,7 @@ class AccountAllocation(FullMarketModel):
 
 class ReadinessDeclaration(FullMarketModel):
     version: Literal[1] = 1
-    provider: Literal["twelve_data", "finlab", "shioaji", "taifex", "factset"]
+    provider: ProviderId | Literal["shioaji"]
     status: Literal["verified"]
     environment: Literal["local", "staging", "production"]
     source_client_id: UUID
@@ -75,7 +76,18 @@ class ReadinessDeclaration(FullMarketModel):
             else PROVIDER_DATASET_SCOPE[self.provider]
         ):
             raise ValueError("Readiness scope is invalid")
-        if self.provider != "finlab" and self.max_response_bytes > 16 * 1024**2:
+        from app.services.provider_metadata import provider_catalog
+
+        ceiling = (
+            16 * 1024**2
+            if self.provider == "shioaji"
+            else next(
+                p.platform_limits.max_response_bytes
+                for p in provider_catalog().providers
+                if p.provider == self.provider
+            )
+        )
+        if self.max_response_bytes > ceiling:
             raise ValueError("HTTP provider response bound exceeds supported ceiling")
         if self.expires_at <= self.verified_at:
             raise ValueError("Readiness expiry must follow verification")

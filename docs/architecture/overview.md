@@ -34,8 +34,9 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 
 ## Active feeds
 
-五條 active feeds 的唯一宣告在 `backend/configs/execution_feeds.v1.json`，由 exporter 確定性產生
-Fetcher 的三環境 manifest；兩個 execution profiles 共用宣告。
+五條 active feeds 的唯一靜態宣告在 `backend/configs/provider_catalog.v1.json`，兩個 execution profiles
+共用。Backend 消費生成 metadata 並發布 Source execution-config；舊 `execution_feeds.v1.json` 與
+Fetcher 三環境 manifest 為相容生成投影，Fetcher 尚未改讀動態快照。見 [provider metadata](provider_metadata.md)。
 
 | Provider | Datasets | Contract |
 | --- | --- | --- |

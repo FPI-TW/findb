@@ -33,15 +33,15 @@ from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
 from app.schemas.ingress import MarketEODIngressRequestV2
 from app.services.effective_calendar import effective_days, execution_policy
+from app.services.provider_metadata import provider_catalog
 from app.utils import utc_now, uuid7
 
 # New-request admission only. Retired providers' requests, receipts and query
 # paths remain available independently of this installed-executor inventory.
 CAPABILITIES: dict[tuple[str, str], str] = {
-    ("twelve_data", "us_equity_eod"): "declared",
-    ("finlab", "tw_equity_eod"): "declared",
-    ("taifex", "tw_futures_eod"): "executable",
-    ("factset", "hk_equity_eod"): "executable",
+    (feed.provider, feed.dataset_key): feed.capabilities.historical
+    for feed in provider_catalog().feeds
+    if feed.capabilities.historical != "unsupported"
 }
 STAGING_MAX_BACKFILL_DAYS = 31
 PRODUCTION_MAX_BACKFILL_DAYS = 366
