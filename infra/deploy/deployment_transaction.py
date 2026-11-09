@@ -79,22 +79,22 @@ def run(*args: str, timeout: int = 120, env: dict | None = None) -> str:
     return stdout
 
 
-def atomic_json(path: Path, value: dict) -> None:
+def atomic_write(path: Path, content: bytes, mode: int) -> None:
     temporary = path.with_name(path.name + "." + secrets.token_hex(8) + ".tmp")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(value, stream, sort_keys=True)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        sync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def atomic_json(path: Path, value: dict) -> None:
+    atomic_write(path, json.dumps(value, sort_keys=True).encode(), 0o600)
 
 
 def sync_directory(path: Path) -> None:
@@ -236,8 +236,7 @@ class Transaction:
             path = units / f"{self.timer}.{suffix}"
             if path.is_symlink():
                 raise ValueError("watchdog unit symlink")
-            path.write_text(content)
-            path.chmod(0o644)
+            atomic_write(path, content.encode(), 0o644)
         run("systemctl", "daemon-reload")
         run("systemctl", "enable", "--now", self.timer + ".timer")
         run("systemctl", "is-active", "--quiet", self.timer + ".timer")
@@ -251,6 +250,8 @@ class Transaction:
                 if previous["phase"] not in {"committed", "aborted"}:
                     raise ValueError("unresolved deployment transaction")
             self.directory.mkdir(mode=0o700)
+            sync_directory(self.directory.parent)
+            sync_directory(self.base)
             pointer = self.base / "current"
             previous_root = str(pointer.readlink()) if pointer.is_symlink() else None
             if previous_root and not re.fullmatch(
