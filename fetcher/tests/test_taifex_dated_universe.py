@@ -230,9 +230,32 @@ def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
     assert all(m["raw_evidence_ref"].startswith("r2://") for m in submitted[0]["members"])
     assert runtime.raw_store.formats.count("csv_cp950") == 5
     assert runtime.raw_store.formats[-1] == "json"
+    refresh = runtime.state.health("taifex")["universe_refresh"]
+    assert [(r["release_id"], r["status"], r["effective_date"]) for r in refresh] == [
+        ("dated", status, str(DAY))
+    ]
     runtime._taifex_report(DAY, feed["dataset_key"])
     assert len(requests) == 5
     runtime.close()
+
+
+def test_dated_release_health_replaces_stale_catalogue_and_never_regresses(tmp_path):
+    from findb_fetcher.full_market_state import FullMarketState
+
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    stale = {"dataset_key": "tw_futures_eod", "effective_date": "2026-07-01", "status": "candidate"}
+    state.refresh("taifex", now=1, result=[stale], next_at=5)
+
+    def release(day, status="published"):
+        return {"dataset_key": "tw_futures_eod", "effective_date": day, "status": status}
+
+    state.record_dated_release("taifex", now=2, release=release(str(DAY)))
+    assert state.health("taifex")["universe_refresh"] == [release(str(DAY))]
+    state.record_dated_release("taifex", now=3, release=release("2026-07-21"))
+    assert state.health("taifex")["universe_refresh"] == [release(str(DAY))]
+    state.record_dated_release("taifex", now=4, release=release(str(DAY), "candidate"))
+    assert state.health("taifex")["universe_refresh"] == [release(str(DAY), "candidate")]
+    assert not state.refresh_due("taifex", 4)
 
 
 @pytest.mark.parametrize("profile", ["pilot", "full_market"])

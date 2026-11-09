@@ -1707,6 +1707,10 @@ class FullMarketRuntime:
             or result.get("effective_date") != day.isoformat()
         ):
             raise ReadinessBlockedError("dated universe response identity invalid")
+        # TAIFEX cycles skip catalogue refresh, so health would otherwise go stale.
+        self.state.record_dated_release(
+            self.provider, now=datetime.now(timezone.utc).timestamp(), release=result
+        )
         if result.get("status") != "published":
             raise DatedUniversePendingError("dated_universe_pending")
         return result

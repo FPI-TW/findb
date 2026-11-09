@@ -29,6 +29,8 @@ EOD，一般（regular）與盤後（after_hours）分開保存；價差與 cont
   Source 回傳 `taifex_dated_universe_required` 時，Fetcher 先讀 latest JSON，日期不符再下載五份
   分商品 CSV，raw-first 存 R2 後提交 universe。latest JSON 回應非 200（例如 403）時，該日常
   工作直接判定失敗，不改用 CSV；這是現行預期行為。
+- TAIFEX 不跑每日目錄刷新；health 的 `universe_refresh` 顯示最新 effective date 的 dated
+  release（含 candidate），較舊日期的提交不會覆蓋。
 - 報表為空、格式不符、日期不符或**沒有任何一般時段列**，一律視為尚未發布：保存 date
   prerequisite，一小時後重試，不寫入 durable response、不提交 universe、不推論 no_data。
 - 日期 D 的換倉規則只與 effective date 不晚於 D 的最新 published release 比較，避免 D 在

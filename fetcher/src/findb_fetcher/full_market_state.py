@@ -1053,6 +1053,32 @@ class FullMarketState:
                 ),
             )
 
+    def record_dated_release(self, provider: str, *, now: float, release: dict[str, Any]) -> None:
+        """Report the newest dated release where cycles skip catalogue refresh."""
+        dataset = release["dataset_key"]
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT next_at,result FROM full_refresh WHERE provider=?", (provider,)
+            ).fetchone()
+            current = json.loads(row["result"]) if row else []
+            # Profiles and late dates submit out of order; never regress to an older date.
+            if any(
+                item.get("dataset_key") == dataset
+                and str(item.get("effective_date", "")) > release["effective_date"]
+                for item in current
+            ):
+                return
+            result = [item for item in current if item.get("dataset_key") != dataset]
+            db.execute(
+                "INSERT INTO full_refresh VALUES(?,?,?) ON CONFLICT(provider) DO UPDATE SET result=excluded.result",
+                (
+                    provider,
+                    row["next_at"] if row else now + 86400,
+                    canonical_bytes([*result, release]),
+                ),
+            )
+
     def date_prerequisite_due(self, provider: str, dataset: str, day: date) -> bool:
         with self.connection() as db:
             row = db.execute(
