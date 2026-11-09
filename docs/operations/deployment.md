@@ -609,6 +609,44 @@ Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_coo
 只延長 debt；rollback 仍須依上述完整停止／排空／成套checkpoint備份程序，不可倒退 usage／cooldown
 或混用未通過此 dispatch gate 的 consumer。Runtime 部署成功不代表 provider-work queue 已啟用。
 
+## Provider catalog PR1 staging 驗收
+
+2026-11-09（台北時間）[#416](https://github.com/FPI-TW/findb/pull/416) 合併至
+`266e3f2cfde77cb74bc6086d4a2197851cc52301`，
+[FinDB CD](https://github.com/FPI-TW/findb/actions/runs/42585169496) 與
+[Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/42585169341) 均成功。
+17:05 前完成下列 staging 唯讀驗收；本次未 promotion production。
+
+- 兩台主機 current manifest 均為上述 commit、staging、schema-v3，與 S3 immutable accepted record
+  的 commit、bundle SHA-256、五個 image digests 逐一一致。
+- Backend 六個 application containers（serve、ingest、worker、dispatcher、raw-cleanup、Dashboard）
+  均 running、零重啟、無 OOM，images 符合 manifest；設有 healthcheck 的四個 containers 均 healthy。
+  十二個 Fetcher consumers 均 accepted、running、零重啟、無 OOM，image 與環境身份正確。
+- Backend image 的 metadata 為四 providers／五 feeds，Source scopes 與現行 runtime 相同。
+  檔案 SHA-256 為 `e6a89f5b6f509ef73098c9109e52d11485bfc30a2bcc846ed77f2a6471c7eb44`。
+  四個 provider 的 Pilot 容器內 descriptor 同為
+  `fea4d093c2d718a2476d1f5deeccd64ad581e72a738719ee4591723928f17133`，與合併版本一致；
+  不含 schedule、timezone、date lag、deadline 或 publication retry window 欄位。
+- 四個 provider 使用容器原有 Source credential、`httpx` 與正式 HTTPS endpoint 讀取 ingress
+  contract，全部 HTTP 200。首次以 `urllib` 探測得到 403，改用 runtime 使用的 client 重驗通過；
+  未調整 API key、allowlist 或 Cloudflare 規則，也未將首次失敗列為通過。
+- 公開 `/health` HTTP 200；Dashboard lookup 正常 redirect 後 HTTP 200；依既有 Referer 規則
+  經 Serve API 讀取 US EOD，HTTP 200 且回傳一筆 canonical 資料。
+- DB 使用 read-only transaction 查核：revision 維持 `d8e3f0b5a2c4`；所有 controls 均 stopped，
+  Shioaji controls 維持 retired，未撤銷 Shioaji credentials 為零。Normalization 與 historical
+  request 皆無非終態項目；既有 failed／partial 終態未改寫或宣稱修復。
+
+| 證據 | FinDB | Fetcher |
+| --- | --- | --- |
+| Accepted bundle SHA-256 | `12b0cdddc064da643c89fefbfaab1b285d793e04bd90786bf405fac12c351783` | `2bd6c67302c98df5dace4c7455470572e886da58c51dac8f77e73be057615ded` |
+| Candidate acceptance SSM | `687d48ec-b6b8-4b14-b89c-b8938e556940` | `b1c6770b-5a4d-422b-ac06-e811a35b1686` |
+| 本次唯讀驗收 SSM | `49bf38f9-e082-48fd-937b-c307204f0556` | `aa119869-ac99-4873-83f9-5f97fe994bf3` |
+
+PR1 只驗收 catalog 產物發布及既有服務相容性；未啟動 controls、建立 daily／historical 工作、
+呼叫 provider 抓取或改寫 DB。未重跑 native 抓取、historical 完整鏈路與逐表保留性比對，
+也未宣稱完成 execution-config API、動態排程、market 分組或 slot 退役。
+後續範圍見 [provider metadata](../architecture/provider_metadata.md) 與 [backlog](../dev/backlog.md#provider-metadata-與排程統一)。
+
 ## Shioaji 退役的 rollback 下限
 
 Fetcher bundle v3（marker `# shioaji-retired-v1:`）包含三個 images、四個 providers、十二個

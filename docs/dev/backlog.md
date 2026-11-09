@@ -33,10 +33,10 @@ Production native 資料與實際 rollback 演練由
 ## Provider metadata 與排程統一
 
 追蹤 [#399](https://github.com/FPI-TW/findb/issues/399)／[#368](https://github.com/FPI-TW/findb/issues/368)。
-PR1 catalog、生成器與 CI 基礎已實作，尚未切換任何 runtime；現行契約見
+PR1 catalog、生成器與 CI 基礎已合併並完成 staging 驗收，尚未切換任何 runtime；現行契約見
 [provider metadata](../architecture/provider_metadata.md)。
 
-- [ ] PR2：Shioaji Backend 退役完成後，切換 Backend metadata 並發布唯讀 Source execution-config API。
+- [ ] PR2：切換 Backend metadata 並發布唯讀 Source execution-config API；Shioaji Backend 退役前置條件已完成。
 - [ ] PR3：解除四個 historical runners／backfill CLI 對 schedule manifest 的依賴，維持 request、lease、
   universe、attempt、cutoff 與 prepared replay 語意。
 - [ ] PR4：Fetcher 每輪讀取 Backend 排程快照，移除 image／本機排程來源，同步切換部署 inventory。

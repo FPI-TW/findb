@@ -2,14 +2,16 @@
 
 `backend/configs/provider_catalog.v1.json` 定義本次統一的四個 providers／五條 feeds：
 Twelve Data US EOD、FactSet HK EOD、FinLab TW equity／ETF EOD、TAIFEX futures EOD。
-Shioaji 正在另一條流程退役，不列入這份 catalog；Twelve Data 不提供 HK。
+Shioaji 已完成退役，不列入這份 catalog；Twelve Data 不提供 HK。
 
 ## 目前導入階段
 
 目前完成 #399／#368 的 PR1 基礎：typed loader、生成 schema、各消費端 metadata 與 CI 檢查。
 **新產物尚未接入 runtime**。既有 Backend scope、Fetcher config、Dashboard constants、Infra
-inventory 仍由舊路徑消費；舊 execution catalog 保留七條、Fetcher manifest 仍含五條。
-測試只比對維護中集合，不要求恢復 Shioaji。Backend／Dashboard 切換須等待 Shioaji Backend 退役。
+inventory 仍由舊路徑消費；既有 execution catalog 與 Fetcher manifest 均為五條 feeds。
+Shioaji Backend 退役與兩環境部署驗收已完成，PR2 的退役前置條件已解除。
+PR1 已完成 [staging 產物與服務驗收](../operations/deployment.md#provider-catalog-pr1-staging-驗收)，
+此驗收不代表已切換 Backend 排程發布或解除 historical 對舊設定的依賴。
 此過渡狀態不代表已完成單一來源切換，後續工作見 [backlog](../dev/backlog.md#provider-metadata-與排程統一)。
 
 ## 宣告與邊界
