@@ -97,6 +97,14 @@ locals {
     "twelve_data_us_common_stocks_daily_v1",
   ])
 
+  # Keep existing alarm identities under the standard zero-delete plan policy.
+  # Retired resources emit no metrics and have no notification actions.
+  retired_alarm_resources = toset(["findb-fetcher-shioaji-scheduler", "shioaji_tw_pilot_v1"])
+  retained_alarm_containers = merge(local.monitored_containers, {
+    fetcher = setunion(local.monitored_containers.fetcher, toset(["findb-fetcher-shioaji-scheduler"]))
+  })
+  retained_alarm_scheduler_keys = setunion(local.scheduler_keys, toset(["shioaji_tw_pilot_v1"]))
+
   metric_publisher_service_units = {
     for unit in sort(keys(local.unit_config)) : unit => <<-EOT
       [Unit]
@@ -172,7 +180,7 @@ locals {
       }
     },
     merge([
-      for unit, containers in local.monitored_containers : {
+      for unit, containers in local.retained_alarm_containers : {
         for container in containers : "${unit}_container_health_${container}" => {
           alarm_name          = "findb-staging-${unit}-${replace(container, "findb-", "")}-unhealthy"
           metric_name         = "DockerContainerHealthy"
@@ -189,7 +197,7 @@ locals {
       }
     ]...),
     merge([
-      for unit, containers in local.monitored_containers : {
+      for unit, containers in local.retained_alarm_containers : {
         for container in containers : "${unit}_container_restart_${container}" => {
           alarm_name          = "findb-staging-${unit}-${replace(container, "findb-", "")}-restarted"
           metric_name         = "DockerRestartCount"
@@ -206,7 +214,7 @@ locals {
       }
     ]...),
     {
-      for container in local.monitored_containers.fetcher : "fetcher_runtime_security_${container}" => {
+      for container in local.retained_alarm_containers.fetcher : "fetcher_runtime_security_${container}" => {
         alarm_name          = "findb-staging-fetcher-${replace(container, "findb-fetcher-", "")}-runtime-security"
         metric_name         = "DockerRuntimeSecurityHealthy"
         comparison_operator = "LessThanThreshold"
@@ -379,7 +387,7 @@ locals {
       }
     },
     {
-      for scheduler_key in local.scheduler_keys : "scheduler_${scheduler_key}" => {
+      for scheduler_key in local.retained_alarm_scheduler_keys : "scheduler_${scheduler_key}" => {
         alarm_name          = "findb-staging-fetcher-${replace(scheduler_key, "_", "-")}-heartbeat-stale"
         metric_name         = "SchedulerHeartbeatAgeSeconds"
         comparison_operator = "GreaterThanOrEqualToThreshold"
@@ -746,13 +754,13 @@ resource "aws_cloudwatch_metric_alarm" "custom" {
   period                    = var.monitoring_alarm_period_seconds
   evaluation_periods        = each.value.evaluation_periods
   datapoints_to_alarm       = each.value.datapoints_to_alarm
-  treat_missing_data        = each.value.treat_missing_data
-  actions_enabled           = true
-  alarm_actions             = [aws_sns_topic.operational_alerts.arn]
+  treat_missing_data        = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : each.value.treat_missing_data
+  actions_enabled           = !contains(local.retired_alarm_resources, each.value.resource)
+  alarm_actions             = contains(local.retired_alarm_resources, each.value.resource) ? [] : [aws_sns_topic.operational_alerts.arn]
   ok_actions                = []
   insufficient_data_actions = []
 
-  tags = merge(local.common_tags, { DeploymentUnit = each.value.deployment_unit })
+  tags = merge(local.common_tags, { DeploymentUnit = each.value.deployment_unit }, contains(local.retired_alarm_resources, each.value.resource) ? { RuntimeStatus = "retired" } : {})
 }
 
 resource "aws_ssm_association" "staging_metric_publisher" {

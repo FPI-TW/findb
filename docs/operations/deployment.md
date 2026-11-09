@@ -647,17 +647,17 @@ scope 或 controls。不可 replay 舊 Backend／Fetcher 重新抓取；修復�
 
 本 PR 的 IaC 將兩環境 Shioaji Source／provider secret metadata、ECR 標為 `RuntimeStatus=retired`，
 從 instance secret-read／decrypt scope 與 publisher／runtime image scope 移除；保留 `prevent_destroy`、
-`force_delete=false` 及原有 recovery window。移除 Shioaji CloudWatch alarms、collector active feeds／
+`force_delete=false` 及原有 recovery window。原位停用 Shioaji CloudWatch alarm 通知並標記 retired；移除 collector active feeds／
 mount expectations，以及 `SHIOAJI_SIMULATION`、
 `SHIOAJI_SKIP_NON_TRADING_DAYS` runtime catalog／環境範本設定。舊 secret 內多餘鍵不再載入。
 
-Backend 驗收完成後，先審閱兩環境 OpenTofu plan：僅預期的 tag／IAM 更新與 Shioaji alarm 移除，
-不可刪除 secret、ECR、RDS、S3、磁碟或 canonical archive。套用後以 instance role 驗證無法讀取
+Backend 驗收完成後，先審閱兩環境 OpenTofu plan：僅預期的 tag／IAM 更新與 Shioaji alarm 停用，
+標準 CI plan 維持零刪除；不可刪除 secret、ECR、alarm metadata、RDS、S3、磁碟或 canonical archive。套用後以 instance role 驗證無法讀取
 兩個 retired secrets，也無法拉取 Shioaji image；provider 端 API key 另行撤銷並記錄結果，不輸出值。
 只改 Git 不代表雲端已套用或券商端 key 已失效。
 
 既有 EC2 user-data 保留原值，避免僅因移除空 cache 建目錄指令而觸發主機停止／啟動。
-受保護 secret／ECR metadata、checkpoint／cache／備份仍屬保留資產；實體清除需先完成資料與
+受保護 secret／ECR metadata、停用的 alarm metadata、checkpoint／cache／備份仍屬保留資產；實體清除需先完成資料與
 接受紀錄保存、引用盤點及獨立 plan，不能使用 `force_delete` 或全域移除保護來完成退役。
 例行 `apply_cutover` 的 host proof 只接受四個 active providers，但仍檢查舊 Shioaji owner／run／
 historical 未結證據；不重新 attestation、不改寫保留的 work graph。

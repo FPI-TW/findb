@@ -24,8 +24,10 @@ are all that repository source alone can prove.
 
 ## Shioaji retirement
 
-PR #418 removes Shioaji container health/restart and scheduler heartbeat/freshness alarms
-from both environments, plus its expected container/mount entries in the collector.
+PR #418 disables notification actions for retained Shioaji alarm identities in both
+environments and tags them retired; missing metrics are non-breaching. The standard CI
+plan permits no deletes, so physical alarm deletion needs a separate approved retirement
+plan. Shioaji expected container/mount entries are removed from the collector.
 Active ingestion failure metrics now cover the five catalog feeds: Twelve Data US,
 FinLab TW equity/ETF, TAIFEX futures and FactSet HK. Retired minute datasets stay
 queryable and do not generate new missing-delivery alerts. Cloud resources change

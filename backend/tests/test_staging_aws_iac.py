@@ -705,7 +705,9 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         r"ok_actions\s+=\s+\[\]",
         r"insufficient_data_actions\s+=\s+\[\]",
     ):
-        assert len(re.findall(setting, monitoring)) == 3
+        assert len(re.findall(setting, monitoring)) == (
+            2 if "actions_enabled" in setting or "alarm_actions" in setting else 3
+        )
 
     assert 'resource "aws_cloudwatch_metric_alarm" "custom"' in monitoring
     assert 'namespace           = "FinDB/Staging"' in monitoring

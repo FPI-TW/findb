@@ -41,9 +41,9 @@ Production native 資料與實際 rollback 演練由
 ## Full-market external acceptance
 
 - [ ] Shioaji 退役部署驗收與外部收尾：PR #418 已實作 Source scope／credential migration
-  `d8e3f0b5a2c4`、active catalog／runtime 設定清理、v3 host guard 與 IaC 撤權／告警移除。
+  `d8e3f0b5a2c4`、active catalog／runtime 設定清理、v3 host guard 與 IaC 撤權／告警停用。
   尚待 staging／production migration、歷史指紋與查詢驗收、兩環境 IaC plan／apply，以及券商端
-  API key 撤銷。Protected secret／ECR metadata、checkpoint／cache 與備份刻意保留，未實體刪除；
+  API key 撤銷。Protected secret／ECR metadata、停用的 alarm metadata、checkpoint／cache 與備份刻意保留，未實體刪除；
   後續實體清除須獨立盤點。操作見 [退役 runbook](../operations/deployment.md#shioaji-退役的-rollback-下限)。
   上次已部署基準為 `findb-v0.1.19`／`fetcher-v0.1.25`，見
   [production 基準](../operations/production.md#shioaji-backend-admission-退役部署基準)。
