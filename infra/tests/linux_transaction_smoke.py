@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from script_env import script_env
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy"))
 import deployment_transaction as deployment  # noqa: E402
 
@@ -33,6 +35,7 @@ def main():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         check=True,
+        env=script_env(),
     )
     token = secrets.token_hex(6)
     names = tuple(f"findb-ci-{token}-{n}" for n in range(12))
@@ -108,7 +111,11 @@ done
                 deployment.run = commands
             tx.apply("test-bucket", "candidate")
             if args.verify_units_only:
-                subprocess.run(["systemd-analyze", "verify", *map(str, unit_paths)], check=True)
+                subprocess.run(
+                    ["systemd-analyze", "verify", *map(str, unit_paths)],
+                    check=True,
+                    env=script_env(),
+                )
             journal = tx.load()
             assert journal["phase"] == "healthy"
             if attempt == 1:
@@ -165,22 +172,25 @@ done
                 ["systemctl", "disable", "--now", timer + ".timer"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=script_env(),
             )
             subprocess.run(
                 ["systemctl", "stop", timer + ".service"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=script_env(),
             )
         for path in unit_paths:
             path.unlink(missing_ok=True)
         if not args.verify_units_only:
-            subprocess.run(["systemctl", "daemon-reload"], check=True)
+            subprocess.run(["systemctl", "daemon-reload"], check=True, env=script_env())
         for name in names:
             for suffix in ("", "-previous"):
                 subprocess.run(
                     ["docker", "rm", "-f", name + suffix],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    env=script_env(),
                 )
         shutil.rmtree(base, ignore_errors=True)
 
