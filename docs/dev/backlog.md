@@ -51,11 +51,10 @@ Production native 資料與實際 rollback 演練由
 ## Provider metadata 與排程統一
 
 追蹤 [#399](https://github.com/FPI-TW/findb/issues/399)／[#368](https://github.com/FPI-TW/findb/issues/368)。
-PR1 已完成 staging 驗收；PR2 已實作 Backend metadata 與排程發布，Fetcher 尚未切換；現行契約見
-[provider metadata](../architecture/provider_metadata.md)。
+PR1、PR2 已完成 staging 驗收；Backend metadata 與排程發布已上線，Fetcher 尚未切換；現行契約見
+[provider metadata](../architecture/provider_metadata.md)，驗收證據見
+[PR2 staging 驗收](../operations/deployment.md#provider-catalog-pr2-staging-驗收)。Production 暫緩至 PR1～5 整合完成。
 
-- [ ] PR2 staging 驗收：依 schema-v4 committed receipt 核對 Backend image／metadata 與四 provider 的
-  execution-config scope、版本、時間及 no-store；沿用停止中的 controls，不藉驗收自動啟動工作。
 - [ ] PR3：解除四個 historical runners／backfill CLI 對 schedule manifest 的依賴，維持 request、lease、
   universe、attempt、cutoff 與 prepared replay 語意。
 - [ ] PR4：Fetcher 每輪讀取 Backend 排程快照，移除 image／本機排程來源，同步切換部署 inventory。
