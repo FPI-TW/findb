@@ -316,10 +316,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
             )
         self.write_manifest()
 
-    def test_version_two_host_still_requires_its_shioaji_consumers(self):
+    def test_version_two_host_is_below_retirement_floor(self):
         self.install_version_two()
         self.assertEqual(len(self.rows), 15)
-        self.assertEqual(self.check(), "drained")
         self.rows = [row for row in self.rows if row["Name"] != "/findb-pilot-shioaji"]
         with self.assertRaises((ValueError, KeyError)):
             self.check()
@@ -328,7 +327,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.assertFalse(any("shioaji" in row["Name"] for row in self.rows))
         self.assertEqual(self.check(), "drained")
 
-    def test_accepted_eleven_consumer_installation_can_upgrade(self):
+    def test_version_one_host_is_below_retirement_floor(self):
         self.install_version_two()
         self.manifest["fetcher_bundle_version"] = 1
         self.manifest["images"].pop("factset")
@@ -346,7 +345,13 @@ class FetcherHostPreflightTests(unittest.TestCase):
             )
         self.write_manifest()
         self.assertEqual(len(self.rows), 11)
-        self.assertEqual(self.check(), "drained")
+        with self.assertRaises(ValueError):
+            self.check()
+
+    def test_retired_consumer_residue_is_rejected(self):
+        self.rows.append({"Name": "/findb-pilot-shioaji-previous"})
+        with self.assertRaises(ValueError):
+            self.check()
 
     def test_negative_runtime_identity_and_drain_branches(self):
         original = copy.deepcopy(self.rows)

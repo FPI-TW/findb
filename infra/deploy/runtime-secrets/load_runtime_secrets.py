@@ -169,8 +169,8 @@ def load_consumer(
     for key in (
         "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
         "FINLAB_SKIP_NON_TRADING_DAYS",
-        "SHIOAJI_SKIP_NON_TRADING_DAYS",
         "TAIFEX_SKIP_NON_TRADING_DAYS",
+        "FACTSET_SKIP_NON_TRADING_DAYS",
     ):
         if key in loaded and loaded[key] not in {"true", "false"}:
             raise LoaderError("provider_execution_policy_invalid")

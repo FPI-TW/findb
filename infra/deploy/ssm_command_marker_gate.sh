@@ -91,7 +91,7 @@ ssm_command_marker_state() {
       echo "SSM terminal invocation failure: status=$status status_details=$status_details response_code=$response_code" >&2
       # Surface only the allowlisted diagnostic protocol, never raw stdout/stderr.
       local diagnostic profile provider line
-      diagnostic="$(jq -r '[.stdout | split("\n")[] | rtrimstr("\r") | select(test("^fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=(pilot|full_market) provider=(twelve_data|finlab|shioaji|taifex|factset)$"))] | unique | .[:8][]' <<<"$response")"
+      diagnostic="$(jq -r '[.stdout | split("\n")[] | rtrimstr("\r") | select(test("^fetcher_deployment_blocked reason=scheduler_not_stopped execution_profile=(pilot|full_market) provider=(twelve_data|finlab|taifex|factset)$"))] | unique | .[:8][]' <<<"$response")"
       while IFS= read -r line; do
         [ -n "$line" ] || continue
         profile="${line#*execution_profile=}"; profile="${profile%% *}"
@@ -101,7 +101,7 @@ ssm_command_marker_state() {
           printf '::error title=Fetcher scheduler 尚未停止::execution_profile=%s provider=%s；請先在 Dashboard 停止該 scheduler，等待 desired/observed stopped 後重試。\n' "$profile" "$provider" >&2
         fi
       done <<<"$diagnostic"
-      diagnostic="$(jq -r '[.stdout | split("\n")[] | rtrimstr("\r") | select(test("^fetcher_host_blocked reason=runtime_not_eligible execution_profile=(pilot|full_market|historical) provider=(twelve_data|finlab|shioaji|taifex|factset)$"))] | unique | .[:15][]' <<<"$response")"
+      diagnostic="$(jq -r '[.stdout | split("\n")[] | rtrimstr("\r") | select(test("^fetcher_host_blocked reason=runtime_not_eligible execution_profile=(pilot|full_market|historical) provider=(twelve_data|finlab|taifex|factset)$"))] | unique | .[:15][]' <<<"$response")"
       while IFS= read -r line; do
         [ -n "$line" ] || continue
         profile="${line#*execution_profile=}"; profile="${profile%% *}"

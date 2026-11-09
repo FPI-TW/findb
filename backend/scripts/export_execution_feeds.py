@@ -1,4 +1,4 @@
-"""Generate identical environment manifests from the shared seven-feed catalog."""
+"""Generate identical environment manifests from the shared five-feed catalog."""
 
 import argparse
 import json
@@ -11,8 +11,8 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
     catalog = json.loads((root / "backend/configs/execution_feeds.v1.json").read_text())
-    if catalog["version"] != 1 or len(catalog["feeds"]) != 7:
-        raise ValueError("Expected the versioned seven-feed catalog")
+    if catalog["version"] != 1 or len(catalog["feeds"]) != 5:
+        raise ValueError("Expected the versioned five-feed catalog")
     # Drain-only providers keep their Source scope, but Fetcher must not plan them.
     drain_only = set(catalog["drain_only_providers"])
     feeds = [feed for feed in catalog["feeds"] if feed["provider"] not in drain_only]

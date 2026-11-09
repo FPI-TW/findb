@@ -23,7 +23,6 @@
             "CLOUDFLARE_R2_MAX_OBJECT_BYTES"
           ],
           "optional_keys": [
-            "SHIOAJI_SIMULATION",
             "TAIFEX_BASE_URL",
             "TAIFEX_TIMEOUT_SECONDS",
             "TAIFEX_MAX_RESPONSE_BYTES",
@@ -72,7 +71,6 @@
             "TWELVE_DATA_BASE_URL",
             "TWELVE_DATA_TIMEOUT_SECONDS",
             "TWELVE_DATA_MAX_RESPONSE_BYTES",
-            "SHIOAJI_SIMULATION",
             "TAIFEX_BASE_URL",
             "TAIFEX_TIMEOUT_SECONDS",
             "TAIFEX_MAX_RESPONSE_BYTES",
@@ -131,7 +129,6 @@
             "TWELVE_DATA_BASE_URL",
             "TWELVE_DATA_TIMEOUT_SECONDS",
             "TWELVE_DATA_MAX_RESPONSE_BYTES",
-            "SHIOAJI_SIMULATION",
             "TAIFEX_BASE_URL",
             "TAIFEX_TIMEOUT_SECONDS",
             "TAIFEX_MAX_RESPONSE_BYTES",
@@ -174,7 +171,6 @@
             "TWELVE_DATA_BASE_URL",
             "TWELVE_DATA_TIMEOUT_SECONDS",
             "TWELVE_DATA_MAX_RESPONSE_BYTES",
-            "SHIOAJI_SIMULATION",
             "TAIFEX_BASE_URL",
             "TAIFEX_TIMEOUT_SECONDS",
             "TAIFEX_MAX_RESPONSE_BYTES",

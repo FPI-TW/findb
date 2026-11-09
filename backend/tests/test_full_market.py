@@ -56,6 +56,9 @@ async def _dataset(db, key="tw_futures_eod"):
             "previous_provider": "twelve_data",
             "effective_date": (DAY - timedelta(days=1)).isoformat(),
         }
+    if key.endswith("minute"):
+        # These fixtures reconstruct frozen pre-retirement minute evidence.
+        values["config"]["allowed_sources"] = ["shioaji"]
     dataset = DatasetRegistry(**values)
     db.add(dataset)
     await db.commit()
@@ -172,6 +175,12 @@ async def _baseline(db, key="tw_futures_eod", count=2, effective_date=DAY):
 
 
 async def _activated_plan(db, key="tw_futures_eod", count=2, open_dates=None):
+    from app.services.source_clients import PROVIDER_DATASET_SCOPE
+    from tests.market_minute_fixture import legacy_acquisition_catalog
+
+    if key.endswith("minute") and "shioaji" not in PROVIDER_DATASET_SCOPE:
+        with legacy_acquisition_catalog():
+            return await _activated_plan(db, key, count, open_dates)
     dataset = await _dataset(db, key)
     await _calendar(
         db,
@@ -243,7 +252,10 @@ def _ingress(plan, data):
 
 
 async def _source_headers(db, provider="taifex", datasets=None):
-    _, key = await create_source_client(
+    from tests.market_minute_fixture import legacy_source_client
+
+    factory = legacy_source_client if provider == "shioaji" else create_source_client
+    _, key = await factory(
         db,
         name=f"full-market-source-{provider}",
         owner="tests",

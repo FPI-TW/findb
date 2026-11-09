@@ -440,13 +440,14 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             for secret in consumer["secrets"]
             if "staging" in secret.get("targets", ["staging", "production"])
         )
-    # Shioaji secrets outlive its consumers until the rollback floor is accepted.
+    # Retired Shioaji secret metadata is protected; runtime grants exclude it.
     retained_secret_ids = {"fetcher/api/source/shioaji", "fetcher/provider/shioaji"}
     assert tofu_secret_ids == catalog_secret_ids | retained_secret_ids
     assert "fetcher/api/source/taifex" in tofu_secret_ids
     assert "fetcher/runtime/configuration" in tofu_secret_ids
     assert "registry/ghcr-pull" not in secrets
-    assert secrets.count('status        = "active"') == len(tofu_secret_ids)
+    assert secrets.count('status        = "active"') == len(tofu_secret_ids) - 2
+    assert secrets.count('status        = "retired"') == 2
     assert secrets.count('resource "aws_kms_key" "runtime_secrets"') == 1
     assert 'name          = "alias/findb-staging-${each.key}-runtime-secrets"' in secrets
     assert 'resource "aws_secretsmanager_secret" "active_runtime"' in secrets

@@ -431,7 +431,6 @@ async def test_current_authorization_rejects_removed_associations_midcycle(clien
     [
         ("finlab", ["tw_equity_eod", "tw_etf_eod"], 200),
         ("finlab", ["tw_equity_eod"], 403),
-        ("shioaji", ["tw_equity_minute"], 403),
     ],
 )
 async def test_authorization_requires_exact_nonempty_complete_provider_scope(

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from scripts import export_native_feed_evidence as evidence
 from tests.test_execution_profiles import (
-    test_shared_seven_feed_source_queue_canonical_serve as populate_pipeline,
+    test_shared_five_feed_source_queue_canonical_serve as populate_pipeline,
 )
 from tests.test_full_market import DAY
 from tests.test_staging_feed_evidence import _sample_record

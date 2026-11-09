@@ -15,7 +15,8 @@ Production 直接 promotion staging 的 Backend／Dashboard digest，Alembic rev
 
 本版關閉 Shioaji 的新歷史回補，cutover host identities 只接受 FactSet、FinLab、TAIFEX、
 Twelve Data。保留既有回補、work／owner／receipt、canonical 分 K 與 Admin／Serve 查詢；
-Source scope、credentials 與 catalog 的完整退役仍待後續處理。
+Source scope、credentials 與 catalog 的完整退役已由 PR #418 實作，尚待下一版部署及 IaC 套用；
+見 [migration 與驗收順序](deployment.md#shioaji-退役的-rollback-下限)。
 
 驗收新版本時，核對已部署的 capability 與 cutover inventory、兩條分 K preview 的
 `provider_dataset_unsupported`、create service 拒絕新增，以及 Dashboard 的現役 provider
@@ -733,18 +734,17 @@ Origin certificate secret固定使用單行 base64 欄位
 
 ## 共用 credentials 與初始化
 
-五個 provider Source scopes 在 staging／production 相同，只有 credentials values 不同：
+四個 active provider Source scopes 在 staging／production 相同，只有 credentials values 不同：
 
 | Source | Dataset allowlist |
 | --- | --- |
-| `twelve_data` | `us_equity_eod`、`hk_equity_eod` |
+| `twelve_data` | `us_equity_eod` |
 | `finlab` | `tw_equity_eod`、`tw_etf_eod` |
-| `shioaji` | `tw_equity_minute`、`tw_etf_minute` |
 | `taifex` | `tw_futures_eod` |
 | `factset` | `hk_equity_eod` |
 
 `reconcile_fetcher_credentials.py --runtime-profile unified` 只校準 allowlist／hash 並留下 audit，
-不啟動 scheduler。五把 Source keys 相互隔離；現行execution manifest的HK feed使用FactSet，
+不啟動 scheduler。四把 Source keys 相互隔離；現行execution manifest的HK feed使用FactSet，
 Twelve Data只有US allowlist。有效日曆與執行政策由Source提供，
 不再注入calendar Serve key。
 跨 unit bridge 只傳 SHA-256，

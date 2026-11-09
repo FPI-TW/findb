@@ -17,7 +17,6 @@ from app.utils import utc_now, uuid7
 PROVIDER_DATASET_SCOPE: dict[str, tuple[str, ...]] = {
     "twelve_data": ("us_equity_eod",),
     "finlab": ("tw_equity_eod", "tw_etf_eod"),
-    "shioaji": ("tw_equity_minute", "tw_etf_minute"),
     "taifex": ("tw_futures_eod",),
     "factset": ("hk_equity_eod",),
 }

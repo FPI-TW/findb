@@ -535,124 +535,26 @@ def retired_calls(state):
     ]
 
 
-def test_candidate_never_touches_retired_consumers():
-    before = rows_with_retired()
-    completed, state, pointer = execute(before, mode="candidate")
-    assert completed.returncode == 0, completed.stderr
-    assert_restored(before, state)
-    assert retired_calls(state) == []
-    assert pointer == "b" * 64 + "-122-1"
-
-
-def test_activation_retires_consumers_after_kept_ones_are_healthy():
-    completed, state, pointer = execute(rows_with_retired(), mode="activate")
-    assert completed.returncode == 0, completed.stderr
-    assert pointer == "a" * 64 + "-123-1"
-    assert set(state["rows"]) == {name for name, *_ in PROVIDERS}
-    assert all(row["id"].startswith("new-") for row in state["rows"].values())
-    assert not any("shioaji" in image for _, image in state["provider_images"])
-    last_observation = max(i for i, call in enumerate(state["log"]) if call[0] == "sleep")
-    first_stop = next(i for i, call in enumerate(state["log"]) if call in retired_calls(state))
-    assert last_observation < first_stop
-    removed = [call[-1] for call in retired_calls(state) if call[1] == "rm"]
-    assert sorted(removed) == sorted("old-" + name for name in RETIRED)
-
-
-def test_activation_on_already_retired_host_is_a_no_op():
-    completed, state, pointer = execute(original_rows(), mode="activate")
-    assert completed.returncode == 0, completed.stderr
-    assert pointer == "a" * 64 + "-123-1"
-    assert retired_calls(state) == []
-
-
-def test_unhealthy_kept_consumer_leaves_retired_consumers_running():
-    before = rows_with_retired()
-    completed, state, pointer = execute(before, mode="activate", fault="activation-restarts")
-    assert completed.returncode != 0
-    assert_restored(before, state)
-    assert retired_calls(state) == []
-    assert pointer == "b" * 64 + "-122-1"
-
-
-@pytest.mark.parametrize("change", [{"stop_exit": 137}, {"oom": True}, {"error": "private-error"}])
-def test_failed_retirement_restores_every_consumer_and_pointer(change):
-    before = rows_with_retired(**change)
-    completed, state, pointer = execute(before, mode="activate")
-    assert completed.returncode != 0
-    assert "reason=runtime_retirement_failed" in completed.stderr
-    assert "private-error" not in completed.stderr
-    assert_restored(before, state)
-    assert pointer == "b" * 64 + "-122-1"
-    assert not any(call[:2] == ["docker", "rm"] for call in retired_calls(state))
-
-
-def test_retirement_failure_after_an_earlier_retirement_restarts_it():
-    before = rows_with_retired(stop_exit=137)
-    completed, state, _ = execute(before, mode="activate")
-    assert completed.returncode != 0
-    assert ["docker", "stop", "--time", "90", RETIRED[0]] in state["log"]
-    assert before[RETIRED[0]]["id"] in state["started_ids"]
-    assert state["rows"][RETIRED[0]]["running"] is True
-
-
 @pytest.mark.parametrize("mode", ["candidate", "activate"])
 @pytest.mark.parametrize(
-    ("change", "kind", "reason"),
-    [
-        ({"control": "running"}, "valid", "retired_provider_control_not_stopped"),
-        ({"restarting": True}, "valid", "retired_runtime_unhealthy"),
-        ({"running": False, "exit": 137}, "valid", "runtime_retirement_failed"),
-        ({}, "retired_prepared", "retired_provider_undelivered"),
-    ],
+    "change", [{}, {"running": False}, {"control": "running"}, {"oom": True}, {"exit": 137}]
 )
-def test_undrained_retired_provider_blocks_before_any_mutation(mode, change, kind, reason):
+def test_retired_provider_residue_blocks_before_mutation(mode, change):
     before = rows_with_retired(**change)
-    completed, state, pointer = execute(before, mode=mode, checkpoint_kind=kind)
+    completed, state, pointer = execute(before, mode=mode)
     assert completed.returncode != 0
-    assert f"reason={reason}" in completed.stderr
+    assert "reason=retired_provider_residue" in completed.stderr
     assert_restored(before, state)
     assert not state.get("provider_images")
     assert retired_calls(state) == []
     assert pointer == "b" * 64 + "-122-1"
 
 
-def test_running_control_surfaces_only_the_bounded_block_line():
-    completed, _, _ = execute(rows_with_retired(control="running"), mode="candidate")
-    assert (
-        "fetcher_deployment_blocked reason=scheduler_not_stopped "
-        "execution_profile=full_market provider=shioaji"
-    ) in completed.stdout
-
-
-def test_stopped_retired_consumer_needs_no_control_probe():
-    before = rows_with_retired()
-    for name in RETIRED:
-        before[name]["running"] = False
-    completed, state, _ = execute(before, mode="activate")
+def test_activation_on_retired_host_keeps_current_consumers():
+    completed, state, pointer = execute(original_rows(), mode="activate")
     assert completed.returncode == 0, completed.stderr
-    assert not any(call[:2] == ["docker", "exec"] for call in state["log"])
-    assert set(state["rows"]) == {name for name, *_ in PROVIDERS}
-
-
-@pytest.mark.parametrize("suffix", ["candidate", "transaction-backup", "preflight-state"])
-def test_retired_consumer_residue_fails_closed(suffix):
-    before = rows_with_retired()
-    name = f"{RETIRED[0]}-{suffix}"
-    before[name] = {**before[RETIRED[0]], "id": "residue", "running": False}
-    completed, state, pointer = execute(before, mode="activate")
-    assert completed.returncode != 0
-    assert f"reason=retired_runtime_residue runtime={name}" in completed.stderr
-    assert_restored(before, state)
-    assert pointer == "b" * 64 + "-122-1"
-
-
-def test_unaccepted_retired_consumer_fails_closed():
-    before = rows_with_retired(accepted="false")
-    completed, state, pointer = execute(before, mode="activate")
-    assert completed.returncode != 0
-    assert f"reason=unaccepted_retired_runtime runtime={RETIRED[1]}" in completed.stderr
-    assert_restored(before, state)
-    assert pointer == "b" * 64 + "-122-1"
+    assert pointer == "a" * 64 + "-123-1"
+    assert retired_calls(state) == []
 
 
 @pytest.mark.parametrize(

@@ -315,7 +315,6 @@ def test_fetcher_production_runtime_configuration_schema_is_consumer_consistent(
         "TWELVE_DATA_BASE_URL",
         "TWELVE_DATA_TIMEOUT_SECONDS",
         "TWELVE_DATA_MAX_RESPONSE_BYTES",
-        "SHIOAJI_SIMULATION",
         "CLOUDFLARE_R2_ACCOUNT_ID",
         "CLOUDFLARE_R2_RAW_BUCKET",
         "CLOUDFLARE_R2_MAX_OBJECT_BYTES",
@@ -928,12 +927,12 @@ def test_cli_does_not_echo_invalid_consumer_input(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("provider", ["TWELVE_DATA", "FINLAB", "SHIOAJI", "TAIFEX"])
+@pytest.mark.parametrize("provider", ["TWELVE_DATA", "FINLAB", "TAIFEX", "FACTSET"])
 @pytest.mark.parametrize("value", ["false", "true", "yes", "1", "{}"])
 def test_backend_execution_policy_uses_independent_boolean_switches(target, provider, value):
     loader = _loader()
     keys = [
-        name + "_SKIP_NON_TRADING_DAYS" for name in ("TWELVE_DATA", "FINLAB", "SHIOAJI", "TAIFEX")
+        name + "_SKIP_NON_TRADING_DAYS" for name in ("TWELVE_DATA", "FINLAB", "TAIFEX", "FACTSET")
     ]
     catalog = {
         "schema_version": 2,

@@ -39,9 +39,10 @@ def installed_manifest(base, validator, target, registry):
         raise ValueError("release root mode invalid")
     with validator.SourceBundleReader(root) as source:
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
-        if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
-            "fetcher_bundle_version"
-        ] not in {1, 2, 3}:
+        if (
+            type(manifest.get("fetcher_bundle_version")) is not int
+            or manifest["fetcher_bundle_version"] != 3
+        ):
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
         validator.validate_manifest(manifest, contracts, source)
@@ -120,28 +121,10 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
         raise ValueError("container inventory incomplete")
     manifest = installed_manifest(base, validator, target, registry)
     names = {row["Name"].removeprefix("/"): row for row in rows}
+    if any("shioaji" in name for name in names):
+        raise ValueError("retired provider container remains on host")
     for profile in ("pilot", "full_market", "historical"):
-        for provider in ("twelve_data", "finlab", "shioaji", "taifex", "factset"):
-            if provider == "factset" and "factset" not in manifest["images"]:
-                # The trusted validator of the installed bundle defines its
-                # original inventory.
-                continue
-            if provider == "shioaji" and "shioaji" not in manifest["images"]:
-                # Version 3 installations retired these consumers. This guard runs
-                # from the workflow commit, so it still meets hosts on version 2.
-                continue
-            if (
-                profile == "historical"
-                and provider == "taifex"
-                and "findb-historical-taifex" not in names
-            ):
-                # Require the consumer only after an immutable installed bundle declares it.
-                root = Path((base / "current").readlink())
-                with validator.SourceBundleReader(root) as source:
-                    deployment = source.read("infra/deploy/runtime-secrets/deploy_fetcher_aws.sh")
-                if b"# historical-taifex-v1:" in deployment:
-                    raise ValueError("installed TAIFEX historical consumer is missing")
-                continue
+        for provider in ("twelve_data", "finlab", "taifex", "factset"):
             name = f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}"
             image = manifest["images"]["twelve_data" if provider == "taifex" else provider]
             try:

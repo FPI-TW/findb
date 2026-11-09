@@ -1074,9 +1074,9 @@ async def test_attempt_status_is_scoped_to_authenticated_source_client(
     )
     _, other_key = await create_source_client(
         test_session,
-        name="Shioaji fetcher",
-        source_name="shioaji",
-        allowed_datasets=["tw_equity_minute"],
+        name="TAIFEX fetcher",
+        source_name="taifex",
+        allowed_datasets=["tw_futures_eod"],
         rate_limit_requests=100,
         rate_limit_window=60,
     )

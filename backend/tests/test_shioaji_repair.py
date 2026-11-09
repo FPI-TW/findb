@@ -35,6 +35,8 @@ from app.utils import utc_now, uuid7
 from tests.market_minute_fixture import market_minute_request
 from tests.test_full_market import DAY, _activated_plan
 
+pytestmark = pytest.mark.usefixtures("legacy_shioaji_window", "legacy_shioaji_acquisition")
+
 EVIDENCE = {"url": "https://example.org/reviewed-evidence", "sha256": "a" * 64}
 
 
@@ -563,7 +565,7 @@ async def test_owner_required_and_source_repairs_are_fenced(
     response = await client.post(url, json=body, headers=admin_headers)
     assert response.status_code == 200, response.text
     from app.services.api_keys import create_api_key
-    from app.services.source_clients import create_source_client
+    from tests.market_minute_fixture import legacy_source_client as create_source_client
 
     _, operator = await create_api_key(
         test_session,
@@ -632,3 +634,25 @@ async def test_owner_required_and_source_repairs_are_fenced(
     assert (await approved(test_session, work))["repairs"][0]["acknowledged"] is True
     with pytest.raises(FullMarketError, match="ACK differs"):
         await approved(test_session, work, ack_ids=[str(uuid7())], generation=2)
+
+
+async def test_retired_control_preserves_inventory_but_cannot_reopen_work(test_session):
+    from app.models.registry import SchedulerControl
+
+    work, member, _, _, attempt = await setup(test_session)
+    before = deepcopy(work.manifest), work.state, attempt.state
+    report = await preview(test_session, work.work_id, proposal(member))
+    controls = await test_session.scalars(
+        select(SchedulerControl).where(SchedulerControl.provider == "shioaji")
+    )
+    for control in controls:
+        control.retired_at = utc_now()
+        control.desired_state = control.observed_state = "stopped"
+    await test_session.flush()
+    body = RepairApplyRequest(**proposal(member).model_dump(), expected_sha256=report["sha256"])
+    with pytest.raises(FullMarketError, match="read-only"):
+        await apply(test_session, work.work_id, body, actor="owner:reviewer")
+    assert (work.manifest, work.state, attempt.state) == before
+    assert (await preview(test_session, work.work_id, proposal(member)))["inventory"][
+        "work_id"
+    ] == str(work.work_id)

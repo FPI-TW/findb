@@ -30,7 +30,6 @@ EXPECTED_CONTAINERS = {
     "fetcher": (
         "findb-fetcher-finlab-scheduler",
         "findb-fetcher-scheduler",
-        "findb-fetcher-shioaji-scheduler",
     ),
 }
 EXPECTED_FETCHER_MOUNTS = {
@@ -40,10 +39,6 @@ EXPECTED_FETCHER_MOUNTS = {
     "findb-fetcher-finlab-scheduler": {
         ("bind", "/var/lib/findb-finlab-fetcher", "/var/lib/findb-finlab-fetcher", True),
         ("bind", "/var/lib/findb-finlab-fetcher/cache", "/home/fetcher", True),
-    },
-    "findb-fetcher-shioaji-scheduler": {
-        ("bind", "/var/lib/findb-shioaji-fetcher", "/var/lib/findb-shioaji-fetcher", True),
-        ("bind", "/var/lib/findb-shioaji-fetcher/cache", "/home/fetcher", True),
     },
 }
 INVALID_CREDENTIAL_LOG_CONTAINERS = (
@@ -299,7 +294,7 @@ def _scheduler_metrics() -> tuple[list[dict[str, Any]], list[str]]:
 
 
 def _active_feed_ingestion_metrics() -> tuple[list[dict[str, Any]], list[str]]:
-    """Publish recent, bounded failure signals for the four staging feeds.
+    """Publish recent, bounded failure signals for the five active feeds.
 
     The ten-minute lookback overlaps the five-minute publisher interval so a
     single event cannot fall between samples. Values are deliberately
@@ -319,8 +314,9 @@ WITH active_feed(dataset_key, source) AS (
     VALUES
         ('us_equity_eod', 'twelve_data'),
         ('tw_equity_eod', 'finlab'),
-        ('tw_equity_minute', 'shioaji'),
-        ('tw_etf_minute', 'shioaji')
+        ('tw_etf_eod', 'finlab'),
+        ('tw_futures_eod', 'taifex'),
+        ('hk_equity_eod', 'factset')
 )
 SELECT
     (

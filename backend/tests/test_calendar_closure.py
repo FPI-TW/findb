@@ -7,7 +7,6 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from app.config import get_settings
 from app.models.calendar_closure import ProviderWorkCalendarClosure
 from app.models.canonical import CalendarRevisionDay
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt
@@ -28,10 +27,7 @@ from app.services.shioaji_repair import preview as repair_preview
 from app.utils import utc_now, uuid7
 from tests.test_shioaji_repair import proposal, setup
 
-
-@pytest.fixture(autouse=True)
-def closed_day_policy(monkeypatch):
-    monkeypatch.setattr(get_settings(), "SHIOAJI_SKIP_NON_TRADING_DAYS", True)
+pytestmark = pytest.mark.usefixtures("legacy_shioaji_acquisition")
 
 
 def encoded(v):
@@ -378,7 +374,7 @@ async def test_owner_api_auth_schema_and_source_inventory_scope(
         headers=admin_headers,
     )
     assert r.status_code == 200, r.text
-    from app.services.source_clients import create_source_client
+    from tests.market_minute_fixture import legacy_source_client as create_source_client
 
     _, key = await create_source_client(
         test_session,

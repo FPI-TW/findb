@@ -16,8 +16,6 @@ RUNTIME_FEEDS = [
     ("factset", "hk_equity_eod", "market_eod", "HK", "equity", "daily"),
     ("finlab", "tw_equity_eod", "market_eod", "TW", "equity", "daily"),
     ("finlab", "tw_etf_eod", "market_eod", "TW", "etf", "daily"),
-    ("shioaji", "tw_equity_minute", "market_minute", "TW", "equity", "minute"),
-    ("shioaji", "tw_etf_minute", "market_minute", "TW", "etf", "minute"),
     ("taifex", "tw_futures_eod", "futures_eod", "TW", "future", "daily"),
 ]
 

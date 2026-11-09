@@ -14,23 +14,21 @@ from app.services.daily_runtime import daily_window
 from tests.test_full_market import _dataset
 from tests.test_provider_work import identity
 
+pytestmark = pytest.mark.usefixtures("legacy_shioaji_window")
+
 
 @pytest.mark.parametrize(
     ("hour", "minute", "opened"),
     [(17, 59, False), (18, 0, True), (23, 0, True), (0, 0, True), (5, 59, True), (6, 0, False)],
 )
-def test_authoritative_window_matches_exported_fetcher_policy(hour, minute, opened):
-    import json
-    from pathlib import Path
-
+def test_historical_window_matches_generic_window_contract(
+    hour, minute, opened, legacy_shioaji_window
+):
     from findb_fetcher.daily_runtime import window
 
     clock = datetime(2026, 10, 28, hour, minute, tzinfo=ZoneInfo("Asia/Taipei"))
-    catalog = json.loads(
-        (Path(__file__).parents[1] / "configs/execution_feeds.v1.json").read_text()
-    )
     result = daily_window("shioaji", clock)
-    assert result == window(catalog["daily_runtime_policies"]["shioaji"], clock)
+    assert result == window(legacy_shioaji_window["shioaji"], clock)
     assert result["open"] is opened
     assert daily_window("finlab", clock)["open"] is True
 

@@ -10,7 +10,6 @@
             "SOURCE_ALLOWLIST_CIDRS",
             "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
             "FINLAB_SKIP_NON_TRADING_DAYS",
-            "SHIOAJI_SKIP_NON_TRADING_DAYS",
             "TAIFEX_SKIP_NON_TRADING_DAYS"
           ],
           "optional_keys": [
@@ -130,7 +129,6 @@
             "FINDB_TLS_PRIVATE_KEY_PATH",
             "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
             "FINLAB_SKIP_NON_TRADING_DAYS",
-            "SHIOAJI_SKIP_NON_TRADING_DAYS",
             "TAIFEX_SKIP_NON_TRADING_DAYS"
           ],
           "optional_keys": [

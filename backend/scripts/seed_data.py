@@ -115,17 +115,17 @@ def _minute_delivery_expectation() -> dict:
             "action": "warn",
         },
         "missing_delivery": {
-            "action": "warn",
-            "expected_sources": ["shioaji"],
+            "action": "disabled",
+            "expected_sources": [],
             "deadline_local_time": "17:00:00",
         },
         "schedule": {
-            "enabled": True,
+            "enabled": False,
             "slot_id": "taiwan_market_window",
             "local_time": "14:30:00",
             "timezone": "Asia/Taipei",
             "target_date_lag_days": 0,
-            "expected_sources": ["shioaji"],
+            "expected_sources": [],
         },
     }
 
@@ -224,7 +224,7 @@ DATASETS: list[dict[str, Any]] = [
     {
         "dataset_key": "tw_equity_minute",
         "name": "台股股票分鐘 K",
-        "description": "Shioaji provider-neutral market_minute.v1 台灣股票一分鐘 OHLCV 資料",
+        "description": "Retained historical provider-neutral market_minute.v1 台灣股票一分鐘 OHLCV 資料",
         "asset_class": "equity",
         "market": "TW",
         "frequency": "minute",
@@ -235,7 +235,7 @@ DATASETS: list[dict[str, Any]] = [
                 market="TW",
                 asset_class="equity",
                 currency="TWD",
-                allowed_sources=["shioaji"],
+                allowed_sources=[],
                 delivery_expectation=_minute_delivery_expectation(),
             ),
             "governance": {
@@ -260,7 +260,7 @@ DATASETS: list[dict[str, Any]] = [
     {
         "dataset_key": "tw_etf_minute",
         "name": "台股 ETF 分鐘 K",
-        "description": "Shioaji provider-neutral market_minute.v1 台灣 ETF 一分鐘 OHLCV 資料",
+        "description": "Retained historical provider-neutral market_minute.v1 台灣 ETF 一分鐘 OHLCV 資料",
         "asset_class": "etf",
         "market": "TW",
         "frequency": "minute",
@@ -271,7 +271,7 @@ DATASETS: list[dict[str, Any]] = [
                 market="TW",
                 asset_class="etf",
                 currency="TWD",
-                allowed_sources=["shioaji"],
+                allowed_sources=[],
                 delivery_expectation=_minute_delivery_expectation(),
             ),
             "governance": {
@@ -478,6 +478,17 @@ def _merge_operator_config(
             continue
         merged[key] = deepcopy(value)
 
+    # Operator overrides must never resurrect a retired acquisition provider.
+    for name in ("schedule", "missing_delivery"):
+        policy = merged.get("delivery_expectation", {}).get(name, {})
+        sources = policy.get("expected_sources", [])
+        if "shioaji" in sources:
+            policy["expected_sources"] = [source for source in sources if source != "shioaji"]
+            if not policy["expected_sources"]:
+                if name == "schedule":
+                    policy["enabled"] = False
+                else:
+                    policy["action"] = "disabled"
     return merged
 
 
@@ -520,7 +531,6 @@ async def seed_datasets(session: AsyncSession) -> None:
     for provider, datasets, slot, clock in (
         ("twelve_data", ["us_equity_eod"], "western_markets_window", time(8)),
         ("finlab", ["tw_equity_eod", "tw_etf_eod"], "taiwan_market_window", time(18)),
-        ("shioaji", ["tw_equity_minute", "tw_etf_minute"], "taiwan_market_window", time(18)),
         ("taifex", ["tw_futures_eod"], "taiwan_market_window", time(18)),
         ("factset", ["hk_equity_eod"], "asia_pacific_markets_window", time(18, 30)),
     ):

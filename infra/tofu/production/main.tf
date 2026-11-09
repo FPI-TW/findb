@@ -36,7 +36,7 @@ locals {
   }
   repositories_by_unit = {
     findb   = [for _, r in local.repositories : r.name if r.unit == "findb"]
-    fetcher = [for _, r in local.repositories : r.name if r.unit == "fetcher"]
+    fetcher = [for _, r in local.repositories : r.name if r.unit == "fetcher" && r.name != "findb/production/fetcher/shioaji"]
 
   }
 }

@@ -44,7 +44,6 @@ try:
         "findb-fetch-full-market": "full_market",
         "findb-fetch-scheduler": "pilot",
         "findb-fetch-finlab-scheduler": "pilot",
-        "findb-fetch-shioaji-scheduler": "pilot",
         "findb-fetch-taifex-pilot": "pilot",
         "findb-fetch-historical-backfill": "historical",
     }
@@ -489,51 +488,19 @@ registered_original() {
   return 1
 }
 
-# Retirement removes the only consumers able to settle Shioaji work. Prove before
-# any mutation that they stop cleanly, their controls are stopped and no prepared
-# bytes wait for delivery. Each running consumer answers with its own image and env.
-require_retired_provider_drained() {
-  local name running restarting profile state
-  for name in findb-pilot-shioaji findb-full-market-shioaji findb-historical-shioaji; do
-    runtime_exists "$name" || continue
-    running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
-    restarting="$(docker inspect --format '{{.State.Restarting}}' "$name")" || return 1
-    if [ "$restarting" != false ]; then
-      echo "fetcher_aws_deploy=failed reason=retired_runtime_unhealthy runtime=$name" >&2
-      return 1
-    fi
-    [ "$running" = true ] || require_retired_runtime "$name" || return 1
-  done
-  for profile in pilot full_market; do
-    name="findb-${profile/_/-}-shioaji"
-    runtime_exists "$name" || continue
-    state="$pilot_state"
-    [ "$profile" = pilot ] || state="$full_market_state"
-    running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
-    if [ "$running" = true ] && ! docker exec "$name" findb-fetch-runtime \
-      --execution-profile "$profile" --config "/app/configs/full_market.$APP_ENVIRONMENT.v1.json" \
-      --state-path "$state/state.sqlite3" --provider shioaji --require-stopped 2>/dev/null; then
-      echo "fetcher_aws_deploy=failed reason=retired_provider_control_not_stopped runtime=$name" >&2
-      return 1
-    fi
-    if ! sudo python3 - "$state/state.sqlite3" <<'UNDELIVERED'
-import sqlite3
-import sys
-from contextlib import closing
-from pathlib import Path
-with closing(sqlite3.connect(Path(sys.argv[1]).resolve().as_uri() + "?mode=ro", uri=True)) as db:
-    pending = db.execute(
-        "SELECT COUNT(*) FROM full_work WHERE provider='shioaji' AND body IS NOT NULL AND receipt IS NULL"
-    ).fetchone()[0]
-raise SystemExit(1 if pending else 0)
-UNDELIVERED
-    then
-      echo "fetcher_aws_deploy=failed reason=retired_provider_undelivered runtime=$name" >&2
-      return 1
-    fi
+# Both environments have accepted bundle v3. Old Shioaji containers must be
+# investigated, never automatically stopped or deleted by a later deployment.
+require_no_retired_provider() {
+  for retired in findb-pilot-shioaji findb-full-market-shioaji findb-historical-shioaji; do
+    for suffix in "" -previous -candidate -transaction-backup -legacy-previous -preflight -preflight-state -preflight-control; do
+      if runtime_exists "${retired}${suffix}"; then
+        echo "fetcher_aws_deploy=failed reason=retired_provider_residue" >&2
+        return 1
+      fi
+    done
   done
 }
-require_retired_provider_drained
+require_no_retired_provider
 
 # A first cutover must drain and archive legacy pilot containers before this
 # immutable release is installed. Never restart pre-unification workers here.
@@ -643,35 +610,6 @@ if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
 fi
 
 verify_activated_runtimes
-
-# Releases never remove a consumer by omission. Only activation retires one, and
-# only after every kept consumer is healthy; the journaled original stays renamed
-# to "-previous" until commit, so a later failure restores and restarts it.
-retire_runtime() {
-  local stable="$1" previous="${1}-previous" suffix original running
-  for suffix in candidate transaction-backup legacy-previous preflight preflight-state preflight-control; do
-    if runtime_exists "${stable}-${suffix}"; then
-      echo "fetcher_aws_deploy=failed reason=retired_runtime_residue runtime=${stable}-${suffix}" >&2
-      return 1
-    fi
-  done
-  runtime_exists "$stable" || runtime_exists "$previous" || return 0
-  register_provider "$stable" "$previous" || return 1
-  original="$(registered_original "$stable")" || return 1
-  if [ "${original%%|*}" = - ]; then
-    echo "fetcher_aws_deploy=failed reason=unaccepted_retired_runtime runtime=$stable" >&2
-    return 1
-  fi
-  runtime_exists "$stable" || return 0
-  running="$(docker inspect --format '{{.State.Running}}' "$stable")" || return 1
-  case "$running" in true|false) ;; *) return 1 ;; esac
-  if [ "$running" = true ]; then docker stop --time "$runtime_stop_timeout_seconds" "$stable" >/dev/null || return 1; fi
-  require_retired_runtime "$stable" || return 1
-  docker rename "$stable" "$previous" >/dev/null || return 1
-}
-for retired in findb-pilot-shioaji findb-full-market-shioaji findb-historical-shioaji; do
-  retire_runtime "$retired"
-done
 
 commit_removals=()
 prepare_original_cleanup() {

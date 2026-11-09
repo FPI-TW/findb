@@ -182,8 +182,6 @@ FEEDS = [
     "hk_equity_eod",
     "tw_equity_eod",
     "tw_etf_eod",
-    "tw_equity_minute",
-    "tw_etf_minute",
     "tw_futures_eod",
 ]
 

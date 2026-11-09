@@ -46,7 +46,7 @@ locals {
       unit = "fetcher", consumer = "finlab"
     }
     "fetcher/api/source/shioaji" = {
-      unit = "fetcher", consumer = "shioaji"
+      unit = "fetcher", consumer = "shioaji", status = "retired"
     }
     "fetcher/provider/twelve-data" = {
       unit = "fetcher", consumer = "twelve-data"
@@ -55,7 +55,7 @@ locals {
       unit = "fetcher", consumer = "finlab"
     }
     "fetcher/provider/shioaji" = {
-      unit = "fetcher", consumer = "shioaji"
+      unit = "fetcher", consumer = "shioaji", status = "retired"
     }
     "fetcher/r2/raw" = {
       unit = "fetcher", consumer = "all-providers"
@@ -67,6 +67,13 @@ locals {
     "fetcher/api/source/taifex" = {
       unit = "fetcher", consumer = "taifex"
     }
+  }
+  active_runtime_secret_arns_by_unit = {
+    for unit in keys(local.units) : unit => [
+      for name, spec in local.secret_catalog :
+      "arn:${data.aws_partition.current.partition}:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:findb/production/${name}-??????"
+      if spec.unit == unit && try(spec.status, "active") == "active"
+    ]
   }
 }
 data "aws_iam_policy_document" "runtime_kms" {
@@ -92,6 +99,11 @@ data "aws_iam_policy_document" "runtime_kms" {
       test     = "StringEquals"
       variable = "kms:ViaService"
       values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:SecretARN"
+      values   = local.active_runtime_secret_arns_by_unit[each.key]
     }
 
   }
@@ -121,7 +133,7 @@ resource "aws_secretsmanager_secret" "runtime" {
   kms_key_id              = aws_kms_key.runtime[each.value.unit].arn
   recovery_window_in_days = 30
   tags = merge(local.common_tags, {
-    DeploymentUnit = each.value.unit, Consumer = each.value.consumer, RuntimeStatus = "active"
+    DeploymentUnit = each.value.unit, Consumer = each.value.consumer, RuntimeStatus = try(each.value.status, "active")
   })
   lifecycle {
     prevent_destroy = true

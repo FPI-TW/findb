@@ -537,7 +537,7 @@ async def test_universe_thresholds_and_latest_warning_kind_are_fail_closed(test_
 
 
 @pytest.mark.asyncio
-async def test_minute_datasets_are_seeded_active_for_reviewed_pilot_with_governance(test_session):
+async def test_minute_datasets_are_seeded_active_for_historical_queries(test_session):
     await seed_datasets(test_session)
     rows = (
         (
@@ -590,8 +590,8 @@ async def test_minute_datasets_are_seeded_active_for_reviewed_pilot_with_governa
             "action": "warn",
         }
         assert expectation["missing_delivery"] == {
-            "action": "warn",
-            "expected_sources": ["shioaji"],
+            "action": "disabled",
+            "expected_sources": [],
             "deadline_local_time": "17:00:00",
         }
-        assert expectation["schedule"]["expected_sources"] == ["shioaji"]
+        assert expectation["schedule"]["expected_sources"] == []

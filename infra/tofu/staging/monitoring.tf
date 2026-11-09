@@ -89,13 +89,11 @@ locals {
     fetcher = toset([
       "findb-fetcher-finlab-scheduler",
       "findb-fetcher-scheduler",
-      "findb-fetcher-shioaji-scheduler",
     ])
   }
 
   scheduler_keys = toset([
     "finlab_tw_equity_eod_v1",
-    "shioaji_tw_pilot_v1",
     "twelve_data_us_common_stocks_daily_v1",
   ])
 

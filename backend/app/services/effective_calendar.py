@@ -21,18 +21,20 @@ MARKETS = {
 PROVIDER_CALENDAR_SWITCHES = {
     "twelve_data": "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
     "finlab": "FINLAB_SKIP_NON_TRADING_DAYS",
-    "shioaji": "SHIOAJI_SKIP_NON_TRADING_DAYS",
     "taifex": "TAIFEX_SKIP_NON_TRADING_DAYS",
     "factset": "FACTSET_SKIP_NON_TRADING_DAYS",
 }
 
 
 def execution_policy(provider: str) -> dict[str, Any]:
-    if provider not in PROVIDER_CALENDAR_SWITCHES:
+    if provider not in PROVIDER_CALENDAR_SWITCHES and provider != "shioaji":
         raise ValueError("unsupported execution provider")
     policy: dict[str, Any] = {
         "version": 1,
-        "skip_non_trading_days": getattr(get_settings(), PROVIDER_CALENDAR_SWITCHES[provider]),
+        # Historical Shioaji snapshots remain readable after removal of its runtime setting.
+        "skip_non_trading_days": True
+        if provider == "shioaji"
+        else getattr(get_settings(), PROVIDER_CALENDAR_SWITCHES[provider]),
     }
     policy["sha256"] = hashlib.sha256(
         json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()

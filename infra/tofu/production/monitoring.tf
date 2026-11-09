@@ -20,9 +20,9 @@ locals {
   }
   monitored_containers = {
     findb   = toset(["findb-dashboard", "findb-dispatcher", "findb-ingest", "findb-nginx", "findb-rabbitmq", "findb-raw-cleanup", "findb-serve", "findb-worker"])
-    fetcher = toset(["findb-fetcher-finlab-scheduler", "findb-fetcher-scheduler", "findb-fetcher-shioaji-scheduler"])
+    fetcher = toset(["findb-fetcher-finlab-scheduler", "findb-fetcher-scheduler"])
   }
-  scheduler_keys = toset(["twelve_data_us_common_stocks_daily_v1", "finlab_tw_equity_eod_v1", "shioaji_tw_pilot_v1"])
+  scheduler_keys = toset(["twelve_data_us_common_stocks_daily_v1", "finlab_tw_equity_eod_v1"])
   custom_alarms = merge(
     {
       for unit in keys(local.units) : "${unit}_disk" => { unit = unit, metric = "DiskUsedPercent", resource = "/", op = "GreaterThanOrEqualToThreshold", threshold = 85 }
