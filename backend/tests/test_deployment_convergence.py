@@ -602,7 +602,6 @@ def test_fetcher_waits_for_same_sha_findb_after_read_only_preflight() -> None:
     assert (
         names.index("Run target-aware read-only SSM preflight")
         < names.index("Wait for same-revision FinDB staging rollout")
-        < names.index("Wait for installed Fetcher runtimes to recover")
         < names.index("Run candidate acceptance or accepted replay through bounded SSM")
     )
     wait = job["steps"][names.index("Wait for same-revision FinDB staging rollout")]
@@ -612,11 +611,17 @@ def test_fetcher_waits_for_same_sha_findb_after_read_only_preflight() -> None:
     assert "actions/workflows/findb-cd.yml/runs?head_sha=${HEAD_SHA}" in wait["run"]
     assert "for _ in $(seq 1 120); do" in wait["run"]
     assert "timed out waiting for same-revision FinDB rollout" in wait["run"]
-    recovery = job["steps"][names.index("Wait for installed Fetcher runtimes to recover")]
-    assert recovery["if"] == "${{ inputs.findb_rollout_sha != '' }}"
+    recovery = job["steps"][
+        names.index("Run candidate acceptance or accepted replay through bounded SSM")
+    ]
+    assert recovery["env"]["FINDB_ROLLOUT_SHA"] == "${{ inputs.findb_rollout_sha }}"
     assert "--stable-seconds 0 --timeout-seconds 180 --poll-seconds 5" in recovery["run"]
-    assert "ssm_bash_command.py --timeout-seconds 240" in recovery["run"]
-    assert 'executionTimeout: ["300"]' in recovery["run"]
+    assert "--timeout-seconds 240" in recovery["run"]
+    assert "--timeout-seconds 900" in recovery["run"]
+    assert "ssm_timeout=1200" in recovery["run"]
+    assert "ssm_timeout=1500" in recovery["run"]
+    assert "wait_timeout=1620" in recovery["run"]
+    assert recovery["run"].count("aws ssm send-command") == 1
     assert "status=success" in recovery["run"] and "status=failed" in recovery["run"]
 
 
@@ -770,9 +775,12 @@ def test_every_ssm_run_shell_command_is_explicitly_wrapped_for_bash() -> None:
     wrapper = "python3 .deployment-driver/infra/deploy/ssm_bash_command.py"
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-deploy.yml").read_text()
-        expected = 5 if unit == "fetcher" else 4
+        expected = 4
         assert text.count("--document-name AWS-RunShellScript") == expected
-        assert text.count(wrapper) == expected
+        workflow = yaml.safe_load(text)
+        for step in workflow["jobs"]["deploy"]["steps"]:
+            if "--document-name AWS-RunShellScript" in step.get("run", ""):
+                assert wrapper in step["run"]
 
     fetcher_cd = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
     assert fetcher_cd.count("--document-name AWS-RunShellScript") == 0

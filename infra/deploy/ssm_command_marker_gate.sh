@@ -161,7 +161,7 @@ ssm_wait_command() (
     return 2
   fi
   local region="$1" command_id="$2" instance_id="$3" success_marker="$4" failed_marker="$5"
-  local deadline=$((SECONDS + $6)) state completed=false
+  local started=$SECONDS deadline=$((SECONDS + $6)) state completed=false
   trap 'if [ "$completed" != true ]; then ssm_cancel_and_confirm "$region" "$command_id" "$instance_id" || true; fi' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -171,6 +171,7 @@ ssm_wait_command() (
     [ "$SECONDS" -lt "$deadline" ] || break
     if [ "$state" = success ]; then
       completed=true
+      printf 'SSM command complete: command_id=%s elapsed_seconds=%s\n' "$command_id" "$((SECONDS - started))"
       return 0
     fi
     sleep 2
