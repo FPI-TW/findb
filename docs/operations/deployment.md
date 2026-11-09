@@ -92,7 +92,8 @@ policy，仍須通過 CI 或可信 PR evidence；production verify 保留。Fetc
 - Runner 中斷或 acceptance 不可確認時，watchdog 停止未提交容器。Fetcher 還原原十二個 IDs 與
   pointer；FinDB 只在舊 release 的 exact DB revision 檢查通過後復原，絕不 downgrade schema。
   長時間 FinDB 復原亦持久化 child PID／boot identity，避免 SSM 中斷留下無主部署程序。
-  不能復原時記錄 `recovery_required`，後續部署阻擋，需操作人員處理。
+  不能復原或容器未 graceful shutdown 時記錄 `recovery_required`，不自動重啟異常關閉的舊 runtime；
+  後續部署阻擋，需操作人員處理。
 - 新 Fetcher 身分由 transaction label、root-only committed journal／receipt 共同證明；v3 的
   `accepted=true` label 僅供舊 runtime 相容。新 preflight 不接受未提交 transaction。
 

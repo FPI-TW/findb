@@ -526,3 +526,14 @@ printf 'image_ref=%s@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
         assert not output.exists()
     else:
         assert len(output.read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize("original", [True, False])
+def test_unclean_shutdown_blocks_automatic_restart_and_requires_recovery(host, original):
+    tx, journal, state = host
+    target = state["rows"][0 if original else -1]
+    target["State"]["ExitCode"] = 137
+    with pytest.raises(ValueError, match="shutdown not graceful"):
+        tx.abort_locked(journal)
+    assert tx.load()["phase"] == "recovery_required"
+    assert not any(call[:2] == ("docker", "start") for call in state["calls"])

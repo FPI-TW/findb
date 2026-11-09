@@ -437,6 +437,14 @@ class Transaction:
         self.save(journal)
 
     def abort_locked(self, journal: dict) -> None:
+        try:
+            self._abort_locked(journal)
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError):
+            journal["phase"] = "recovery_required"
+            self.save(journal)
+            raise
+
+    def _abort_locked(self, journal: dict) -> None:
         if journal["phase"] in TERMINAL:
             return
         journal["phase"] = "aborting"
@@ -463,6 +471,12 @@ class Transaction:
                 row = present.get(original["id"])
                 if row is None or row["Config"]["Image"] != original["image"]:
                     raise ValueError("original runtime missing")
+                if (
+                    row["State"]["ExitCode"] != 0
+                    or row["State"]["OOMKilled"]
+                    or row["State"].get("Error")
+                ):
+                    raise ValueError("original runtime shutdown not graceful")
                 if row["Name"].removeprefix("/") != original["name"]:
                     run("docker", "rename", original["id"], original["name"])
                 run("docker", "update", "--restart", original["restart"], original["id"])
