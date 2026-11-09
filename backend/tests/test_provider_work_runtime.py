@@ -90,9 +90,7 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         with coordinator.host_lock(provider) as (_, inode):
             inodes[provider] = inode
     await attest_cutover(test_session, inodes)
-    monkeypatch.setenv(
-        "FETCHER_HISTORICAL_SCHEDULE_FILE", str(root / "fetcher/configs/daily_scheduler.v2.json")
-    )
+    monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", str(tmp_path / "absent-daily.json"))
     monkeypatch.setenv(
         "FETCHER_FINLAB_UNIVERSE_FILE",
         str(root / "fetcher/configs/finlab_tw_review_required.v1.json"),

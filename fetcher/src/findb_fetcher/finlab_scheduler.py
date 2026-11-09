@@ -25,6 +25,7 @@ from findb_fetcher.client import (
     permanent_source_failure,
 )
 from findb_fetcher.contracts import ContractError, ContractRegistry
+from findb_fetcher.execution_metadata import ExecutionDescriptor, historical_delivery_metadata
 from findb_fetcher.finlab_universe import FinLabPilotUniverse
 from findb_fetcher.full_market_state import QuotaBlockedError
 from findb_fetcher.providers.finlab import (
@@ -61,7 +62,8 @@ class FinLabScheduledExecutor:
     def __init__(
         self,
         *,
-        schedule: ScheduleConfig,
+        execution: ExecutionDescriptor,
+        delivery_metadata: Callable[[ScheduledJob], dict[str, str]] | None = None,
         universe: FinLabPilotUniverse,
         provider: object,
         source: SourceAPIClient,
@@ -73,11 +75,14 @@ class FinLabScheduledExecutor:
     ) -> None:
         if raw_store is None:
             raise ValueError("FinLab scheduled Source delivery requires raw object storage")
-        if schedule.provider != "finlab" or schedule.dataset_key != universe.dataset_key:
+        if execution.provider != "finlab" or execution.dataset_key != universe.dataset_key:
             raise ValueError("FinLab schedule and universe identities do not match")
-        if schedule.market != universe.market:
+        if execution.market != universe.market:
             raise ValueError("FinLab schedule and universe markets do not match")
-        self._schedule = schedule
+        self._execution = execution
+        self._delivery_metadata = delivery_metadata or (
+            lambda job: historical_delivery_metadata(execution, job)
+        )
         self._universe = universe
         self._provider = provider
         self._source = source
@@ -90,7 +95,7 @@ class FinLabScheduledExecutor:
     def execute(self, job: ScheduledJob, *, now: datetime) -> JobExecution:
         """Execute one dataset/date work item with deterministic replay semantics."""
 
-        deadline = self._monotonic() + self._schedule.wait_timeout_seconds
+        deadline = self._monotonic() + self._execution.wait_timeout_seconds
         target_date = job.target_data_date or job.scheduled_date
         try:
             request = job.prepared_request
@@ -104,7 +109,7 @@ class FinLabScheduledExecutor:
                     bundle,
                     fetched_at=now,
                     raw_store=self._raw_store,
-                    delivery=_delivery_metadata(self._schedule, job),
+                    delivery=self._delivery_metadata(job),
                 )
                 self._validate_request(request, target_date=target_date)
                 self._registry.validate("market_eod", 1, request)
@@ -136,8 +141,8 @@ class FinLabScheduledExecutor:
                 prepared,
                 deadline=deadline,
                 poll_interval_seconds=min(
-                    self._schedule.poll_interval_seconds,
-                    self._schedule.wait_timeout_seconds,
+                    self._execution.poll_interval_seconds,
+                    self._execution.wait_timeout_seconds,
                 ),
                 monotonic=self._monotonic,
                 sleep=self._sleep,
@@ -307,7 +312,8 @@ class FinLabSchedulerService:
     ) -> None:
         self._state_universe = universe.as_scheduler_universe()
         executor = FinLabScheduledExecutor(
-            schedule=schedule,
+            execution=schedule.execution_descriptor(),
+            delivery_metadata=lambda job: _delivery_metadata(schedule, job),
             universe=universe,
             provider=provider,
             source=source,

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from findb_fetcher.config import app_environment
+from findb_fetcher.execution_metadata import ExecutionDescriptor
 
 _MAX_CONFIG_BYTES = 64 * 1024
 _IDENTIFIER_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -108,6 +109,11 @@ class ScheduleConfig:
     max_credits_per_run: int = 5
     max_records_per_run: int = 10_000
     enabled: bool = True
+
+    def execution_descriptor(self) -> ExecutionDescriptor:
+        return ExecutionDescriptor(
+            **{field.name: getattr(self, field.name) for field in fields(ExecutionDescriptor)}
+        )
 
     def retry_delay_seconds(self, attempt_count: int) -> int:
         if attempt_count < 1:

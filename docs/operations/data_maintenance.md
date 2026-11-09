@@ -114,13 +114,13 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 ## Production universe與historical backfill
 
 Historical capability 現由 provider catalog 推導；Source execution-config 是 daily 設定發布，
-不作 historical request／claim／acquisition 的額外 gate。四個 historical runners 目前仍依賴
-原有設定檔與 executor，PR3 完成前不得刪除檔案；FinLab ETF 的未開放 scope 維持不變。
+不作 historical request／claim／acquisition 的額外 gate。四個 historical runners 與 production
+planner 改讀 image 隨附的 `execution_descriptors.v1.json`，不讀 daily schedule／full-market config；
+FinLab ETF 的未開放 scope 維持不變。Daily 與部署工具尚有相依，排程檔待 PR4 才移除。
 
 Production universe是reviewed、versioned artifact，不在runtime自動換股：
 
-- Twelve Data使用`daily_scheduler.production.v3.json`與
-  `twelve_data_nasdaq_100_2026_09_14.v2.json`。快照保留公開QQQ持股中的全部101個
+- Twelve Data historical descriptor 指向 `twelve_data_nasdaq_100_2026_09_14.v2.json`。快照保留公開QQQ持股中的全部101個
   securities（包括多股類），每次最多claim 5個symbol；scheduler poll及批次間隔不得短於60秒。
 - FinLab使用`finlab_tw50_2026_09_21.v2.json`，固定50檔、每個交易日只讀五個SDK datasets，
   完整50-symbol grid成立後才可送出full snapshot。
@@ -149,6 +149,19 @@ request前先使用`findb-fetch-backfill-plan --provider ... --dataset-key ... -
 preview／create／list API，不持有provider secret；Fetcher worker只消費
 已核准request。任何scheduler在backfill期間仍保持`stopped`，未驗證Raw R2、Source、outbox、DQ、
 canonical與Serve前不可擴大下一批。
+
+`APP_ENVIRONMENT=production` 是 planner 的環境前提；`--schedule-file` 已移除，
+`FETCHER_HISTORICAL_SCHEDULE_FILE` 不再被 runner 或 planner 使用，沒有舊檔 fallback。
+Twelve Data／FinLab 的 `--universe-file` 只替換本次 planner 的估算輸入，不修改 worker 或 Backend
+request 的 universe；應使用與 worker 相同的 reviewed artifact。FinLab 原有
+`FETCHER_FINLAB_UNIVERSE_FILE` 保留，runner 與 planner 預設共同使用；未設定時讀 descriptor 的同環境預設。
+FactSet／TAIFEX 的成員由既有 Backend cohort／日期資料決定，不接受 planner universe override。
+
+移除排程檔依賴不會擴大日期、權限或歷史 scope。新 Twelve Data／FinLab historical payload 的
+`delivery.scheduled_for` 為 request 交易日 UTC 00:00 的日期標記；request/job keys、target date、
+重試／等待參數、frozen universe 與 attempt 不改算，已有 prepared bytes 保持原樣。
+Daily API 失敗不阻擋 historical 啟動，但 Source claim／lease／acquisition／quota／calendar 與
+原 cutoff 檢查仍須成功。Source unavailable 時依既有等待／復原流程保留 prepared delivery。
 
 ### Shioaji 股票／ETF 分鐘回補
 
@@ -214,8 +227,8 @@ findb-fetch-backfill-plan --provider taifex --dataset-key tw_futures_eod \
 # 核對上述 dry-run 後，使用相同參數加 --deliver --wait。
 ```
 
-CLI 與 runner 讀取共用 `full_market.<environment>.v1.json`；可用
-`FETCHER_FULL_MARKET_CONFIG` 指定同環境檔案，不依賴舊 bounded scheduler manifest。
+CLI 與 runner 讀取生成的非排程 metadata；historical 不再使用 `FETCHER_FULL_MARKET_CONFIG`，
+該設定目前只屬於尚未切換的 daily runtime／工具。
 Staging／local 亦可直接使用 Admin preview／create 及
 `findb-fetch-historical-backfill --provider taifex --run-forever`。
 

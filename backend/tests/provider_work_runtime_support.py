@@ -78,6 +78,7 @@ class RuntimeHarness:
         root = Path(__file__).resolve().parents[2]
         patch = self.patch
         patch.syspath_prepend(str(root / "fetcher/src"))
+        from findb_fetcher import execution_metadata
         from findb_fetcher import provider_work as coordinator
         from findb_fetcher.config import FetcherConfig
         from findb_fetcher.contracts import ContractRegistry
@@ -86,6 +87,7 @@ class RuntimeHarness:
             from tests.provider_work_clock import dispatch_clock
 
             self.dispatch_clock = dispatch_clock(patch)
+        patch.setattr(execution_metadata, "CONFIGS_DIR", root / "fetcher/configs")
         self.queue = coordinator
         patch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
         patch.setattr(get_settings(), "APP_ENVIRONMENT", self.environment)
@@ -94,9 +96,7 @@ class RuntimeHarness:
             "PROVIDER_WORK_REQUIRED": "true",
             "FETCHER_ACCOUNT_STATE_PATH": str(self.path / "account/governor.sqlite3"),
             "FETCHER_HISTORICAL_STATE_DIR": str(self.path / "historical"),
-            "FETCHER_HISTORICAL_SCHEDULE_FILE": str(
-                root / "fetcher/configs/daily_scheduler.v2.json"
-            ),
+            "FETCHER_HISTORICAL_SCHEDULE_FILE": str(self.path / "absent-daily.json"),
             "FETCHER_FINLAB_UNIVERSE_FILE": str(
                 root / "fetcher/configs/finlab_tw_review_required.v1.json"
             ),

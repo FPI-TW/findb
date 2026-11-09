@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import replace
-from pathlib import Path
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import FetcherConfig, app_environment
+from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import ContractRegistry
+from findb_fetcher.execution_metadata import historical_feed
 from findb_fetcher.factset_eod import FactSetEOD, completion_status
 from findb_fetcher.historical_backfill import HistoricalRunResult, HistoricalWorkItem
 from findb_fetcher.provider_work import active
@@ -23,20 +22,9 @@ class FactSetHistoricalRunner:
 
     @classmethod
     def from_env(cls) -> FactSetHistoricalRunner:
-        from findb_fetcher.full_market_cli import load_config
-
         config = replace(FetcherConfig.from_env(), max_attempts=1)
-        target = app_environment()
-        manifest = load_config(
-            Path(
-                os.getenv(
-                    "FETCHER_FULL_MARKET_CONFIG", f"/app/configs/full_market.{target}.v1.json"
-                )
-            )
-        )
-        if manifest["deployment_target"] != target:
-            raise ValueError("FactSet historical environment differs")
-        feed = next(feed for feed in manifest["feeds"] if feed["provider"] == "factset")
+        metadata = historical_feed("factset", "hk_equity_eod")
+        feed = {"slot_id": metadata["delivery"]["slot_id"]}
         return cls(
             gateway=FactSetGateway(FactSetConfig.from_env()),
             delivery=SourceAPIClient(config, ContractRegistry(config.contracts_dir)),

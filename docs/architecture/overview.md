@@ -180,3 +180,8 @@ whole-work OS flock 另約束外部 provider I/O 與 descendants。Source accept
 不同 providers 仍可並行，profile 的 controls／first dates／frozen plans／checkpoints 不合併。
 `PROVIDER_WORK_REQUIRED` 缺省 true；false 會拒絕啟動，無 legacy acquiring／acceptance fallback。遠端切換仍須完成 deployment runbook 的 audited preflight。
 新增 provider 的 acquisition、universe/catalogue、historical 與 rerun 都必須接入此 protocol。
+
+四個 historical runners 與 backfill planner 使用 Fetcher package 內生成的非排程 execution metadata；
+Twelve Data／FinLab 共用 executor 只接收執行參數，request 日期與 frozen universe 決定回補內容。
+Historical 不依賴 daily execution-config API 或 running 狀態，Source acquisition authorization 與
+既有 lease／cutoff 仍有效。Daily 排程切換與發布階段見 [provider metadata](provider_metadata.md)。

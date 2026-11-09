@@ -20,6 +20,7 @@ from findb_fetcher.client import (
     permanent_source_failure,
 )
 from findb_fetcher.contracts import ContractError, ContractRegistry
+from findb_fetcher.execution_metadata import ExecutionDescriptor, historical_delivery_metadata
 from findb_fetcher.full_market_state import QuotaBlockedError
 from findb_fetcher.provider_work import ProviderWorkBasisMismatchError, active
 from findb_fetcher.providers.twelve_data import (
@@ -104,7 +105,8 @@ class TwelveDataScheduledExecutor:
     def __init__(
         self,
         *,
-        schedule: ScheduleConfig,
+        execution: ExecutionDescriptor,
+        delivery_metadata: Callable[[ScheduledJob], dict[str, str]] | None = None,
         universe: SymbolUniverse,
         provider: TwelveDataClient,
         source: SourceAPIClient,
@@ -116,7 +118,10 @@ class TwelveDataScheduledExecutor:
     ) -> None:
         if raw_store is None:
             raise ValueError("scheduled Source delivery requires raw object storage")
-        self._schedule = schedule
+        self._execution = execution
+        self._delivery_metadata = delivery_metadata or (
+            lambda job: historical_delivery_metadata(execution, job)
+        )
         self._universe = universe
         self._provider = provider
         self._source = source
@@ -127,7 +132,7 @@ class TwelveDataScheduledExecutor:
         self._sleep = sleep
 
     def execute(self, job: ScheduledJob, *, now: datetime) -> JobExecution:
-        deadline = self._monotonic() + self._schedule.wait_timeout_seconds
+        deadline = self._monotonic() + self._execution.wait_timeout_seconds
         try:
             request = job.prepared_request
             if request is None:
@@ -156,7 +161,7 @@ class TwelveDataScheduledExecutor:
                     allowed_instrument_types=(self._universe.instrument_type,),
                     after_trade_date=target_date - timedelta(days=1),
                     through_trade_date=target_date,
-                    delivery=_delivery_metadata(self._schedule, job),
+                    delivery=self._delivery_metadata(job),
                 )
                 attach_raw_object(request, raw_object)
             else:
@@ -203,8 +208,8 @@ class TwelveDataScheduledExecutor:
                 prepared,
                 deadline=deadline,
                 poll_interval_seconds=min(
-                    self._schedule.poll_interval_seconds,
-                    self._schedule.wait_timeout_seconds,
+                    self._execution.poll_interval_seconds,
+                    self._execution.wait_timeout_seconds,
                 ),
                 monotonic=self._monotonic,
                 sleep=self._sleep,

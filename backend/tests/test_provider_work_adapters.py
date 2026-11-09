@@ -58,6 +58,56 @@ async def test_enabled_historical_native_runtime_completes_every_supported_scope
     await _assert_historical_completed(h)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_runtime", SCOPES, indirect=True)
+async def test_historical_ignores_daily_config_outage_and_stopped_daily_controls(
+    native_runtime, test_engine, monkeypatch
+):
+    from findb_fetcher import schedule
+
+    from app.config import get_settings
+
+    h = native_runtime
+    controls = list(
+        await h.db.scalars(select(SchedulerControl).where(SchedulerControl.provider == h.provider))
+    )
+    for row in controls:
+        row.desired_state = row.observed_state = "stopped"
+    await h.db.commit()
+    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
+    monkeypatch.setattr(
+        schedule,
+        "load_schedule_manifest",
+        lambda *args: pytest.fail("historical loaded daily clock"),
+    )
+    handle = h.handle
+    schedule_reads = []
+
+    def unavailable(request):
+        if request.url.path == "/api/v1/source/execution-config":
+            import httpx
+
+            schedule_reads.append(request)
+            return httpx.Response(503, request=request)
+        return handle(request)
+
+    h.handle = unavailable
+    assert await h.run()
+    h.db.expire_all()
+    work = await h.db.scalar(
+        select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
+    )
+    assert work.state == "completed", (h.source_events, h.failure)
+    assert (await h.db.get(HistoricalBackfillItem, h.item_id)).status == "completed"
+    assert h.native_calls() and h.runs and not schedule_reads
+    assert all(
+        row.desired_state == "stopped"
+        for row in await h.db.scalars(
+            select(SchedulerControl).where(SchedulerControl.provider == h.provider)
+        )
+    )
+
+
 async def _assert_historical_completed(h):
     h.db.expire_all()
     work = await h.db.scalar(

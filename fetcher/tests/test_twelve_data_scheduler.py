@@ -26,6 +26,7 @@ from findb_fetcher.twelve_data_scheduler import (
     JobExecution,
     SchedulerService,
     TwelveDataScheduledExecutor,
+    _delivery_metadata,
 )
 from findb_fetcher.universe import load_symbol_universe
 
@@ -136,7 +137,8 @@ def _executor(
     state: SchedulerState | None = None,
 ) -> TwelveDataScheduledExecutor:
     return TwelveDataScheduledExecutor(
-        schedule=_schedule(),
+        execution=_schedule().execution_descriptor(),
+        delivery_metadata=lambda job: _delivery_metadata(_schedule(), job),
         universe=load_symbol_universe(UNIVERSE_PATH),
         provider=provider or FakeProvider(),  # type: ignore[arg-type]
         source=source or FakeSource(),  # type: ignore[arg-type]
@@ -185,7 +187,8 @@ class RawProvider(FakeProvider):
 def test_scheduler_executor_rejects_missing_raw_store(contracts_dir: Path) -> None:
     with pytest.raises(ValueError, match="raw object storage"):
         TwelveDataScheduledExecutor(
-            schedule=_schedule(),
+            execution=_schedule().execution_descriptor(),
+            delivery_metadata=lambda job: _delivery_metadata(_schedule(), job),
             universe=load_symbol_universe(UNIVERSE_PATH),
             provider=FakeProvider(),  # type: ignore[arg-type]
             source=FakeSource(),  # type: ignore[arg-type]
@@ -229,14 +232,8 @@ def test_scheduler_uploads_before_prepare_and_delivery(contracts_dir: Path) -> N
 def test_v2_scheduler_delivery_carries_slot_identity(contracts_dir: Path) -> None:
     source = FakeSource()
     executor = _executor(contracts_dir, source=source)
-    executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
-        executor._schedule,
-        schedule_version=2,
-        slot_id="western_markets_window",
-        timezone_name="Asia/Taipei",
-        scheduled_local_time=time(6, 30),
-        target_date_lag_days=1,
-    )
+    legacy = replace(_schedule(), scheduled_local_time=time(6, 30))
+    executor._delivery_metadata = lambda job: _delivery_metadata(legacy, job)
     executor.execute(
         replace(
             _job(scheduled_date=date(2024, 1, 6)),
@@ -260,14 +257,6 @@ def test_v2_scheduler_retries_when_target_date_is_not_ready(
 ) -> None:
     source = FakeSource()
     executor = _executor(contracts_dir, source=source)
-    executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
-        executor._schedule,
-        schedule_version=2,
-        slot_id="western_markets_window",
-        timezone_name="Asia/Taipei",
-        scheduled_local_time=time(6, 30),
-        target_date_lag_days=1,
-    )
 
     result = executor.execute(
         replace(
@@ -293,14 +282,6 @@ def test_v2_scheduler_retries_when_provider_has_no_target_data(
         contracts_dir,
         provider=FakeProvider(TwelveDataNoNewDataError("not published")),
         source=source,
-    )
-    executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
-        executor._schedule,
-        schedule_version=2,
-        slot_id="western_markets_window",
-        timezone_name="Asia/Taipei",
-        scheduled_local_time=time(6, 30),
-        target_date_lag_days=1,
     )
 
     result = executor.execute(
@@ -409,14 +390,6 @@ def test_v2_scheduler_uses_inclusive_client_end_date_and_filters_future_rows(
     provider = FutureRowProvider()
     source = FakeSource()
     executor = _executor(contracts_dir, provider=provider, source=source)
-    executor._schedule = replace(  # type: ignore[misc] - test fixture configures the v2 path
-        executor._schedule,
-        schedule_version=2,
-        slot_id="western_markets_window",
-        timezone_name="Asia/Taipei",
-        scheduled_local_time=time(6, 30),
-        target_date_lag_days=1,
-    )
 
     result = executor.execute(
         replace(
@@ -574,7 +547,8 @@ def test_delivery_retry_reuses_persisted_request_without_refetching(
     provider = FakeProvider()
     source = FakeSource(delivery_failure=SourceAPITransportError("offline"))
     executor = TwelveDataScheduledExecutor(
-        schedule=schedule,
+        execution=schedule.execution_descriptor(),
+        delivery_metadata=lambda job: _delivery_metadata(schedule, job),
         universe=universe,
         provider=provider,  # type: ignore[arg-type]
         source=source,  # type: ignore[arg-type]

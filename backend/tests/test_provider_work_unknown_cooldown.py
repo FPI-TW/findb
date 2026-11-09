@@ -47,7 +47,7 @@ async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_origin
     assert prepared and not h.runs
     state = FullMarketState(h.path / "account/governor.sqlite3")
     account = account_identity(h.provider, state, credential="offline-twelve")
-    schedule = historical_runtime._schedule(h.provider, h.dataset)
+    schedule = historical_runtime.historical_execution(h.provider, h.dataset)
     universe = load_symbol_universe(schedule.universe_file)
     manifest = {
         "mode": "canonical",
