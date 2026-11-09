@@ -1,0 +1,563 @@
+{
+  "$defs": {
+    "AcquisitionSchedule": {
+      "additionalProperties": false,
+      "properties": {
+        "local_time": {
+          "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$",
+          "title": "Local Time",
+          "type": "string"
+        },
+        "target_date_lag_days": {
+          "maximum": 366,
+          "minimum": 0,
+          "title": "Target Date Lag Days",
+          "type": "integer"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        }
+      },
+      "required": [
+        "timezone",
+        "local_time",
+        "target_date_lag_days"
+      ],
+      "title": "AcquisitionSchedule",
+      "type": "object"
+    },
+    "BoundedMonitor": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompletionDeadline"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled",
+        "deadline"
+      ],
+      "title": "BoundedMonitor",
+      "type": "object"
+    },
+    "CompletionDeadline": {
+      "additionalProperties": false,
+      "properties": {
+        "local_time": {
+          "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$",
+          "title": "Local Time",
+          "type": "string"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string"
+        },
+        "trade_date_day_offset": {
+          "maximum": 366,
+          "minimum": 0,
+          "title": "Trade Date Day Offset",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "timezone",
+        "local_time",
+        "trade_date_day_offset"
+      ],
+      "title": "CompletionDeadline",
+      "type": "object"
+    },
+    "ContractDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_versions": {
+          "items": {
+            "exclusiveMinimum": 0,
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Accepted Versions",
+          "type": "array"
+        },
+        "current_version": {
+          "exclusiveMinimum": 0,
+          "title": "Current Version",
+          "type": "integer"
+        },
+        "schema_id": {
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Schema Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_id",
+        "current_version",
+        "accepted_versions"
+      ],
+      "title": "ContractDefinition",
+      "type": "object"
+    },
+    "DeliveryCompatibility": {
+      "additionalProperties": false,
+      "properties": {
+        "slot_id": {
+          "enum": [
+            "western_markets_window",
+            "global_markets_window",
+            "taiwan_market_window",
+            "asia_pacific_markets_window"
+          ],
+          "title": "Slot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot_id"
+      ],
+      "title": "DeliveryCompatibility",
+      "type": "object"
+    },
+    "FeedCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "acquisition": {
+          "title": "Acquisition",
+          "type": "boolean"
+        },
+        "historical": {
+          "enum": [
+            "unsupported",
+            "declared",
+            "executable"
+          ],
+          "title": "Historical",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "acquisition",
+        "historical"
+      ],
+      "title": "FeedCapabilities",
+      "type": "object"
+    },
+    "FeedDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_class": {
+          "enum": [
+            "equity",
+            "etf",
+            "future"
+          ],
+          "title": "Asset Class",
+          "type": "string"
+        },
+        "bounded_monitor": {
+          "$ref": "#/$defs/BoundedMonitor"
+        },
+        "calendar_market": {
+          "enum": [
+            "US",
+            "HK",
+            "TW",
+            "TAIFEX"
+          ],
+          "title": "Calendar Market",
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/FeedCapabilities"
+        },
+        "completion_deadline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompletionDeadline"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contract": {
+          "$ref": "#/$defs/ContractDefinition"
+        },
+        "dataset_key": {
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Dataset Key",
+          "type": "string"
+        },
+        "delivery": {
+          "$ref": "#/$defs/DeliveryCompatibility"
+        },
+        "frequency": {
+          "const": "daily",
+          "title": "Frequency",
+          "type": "string"
+        },
+        "historical_execution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistoricalExecutionProfiles"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lifecycle": {
+          "enum": [
+            "active",
+            "draining",
+            "retired"
+          ],
+          "title": "Lifecycle",
+          "type": "string"
+        },
+        "market": {
+          "enum": [
+            "US",
+            "HK",
+            "TW"
+          ],
+          "title": "Market",
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "publication_retry_window_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Publication Retry Window Seconds"
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AcquisitionSchedule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "dataset_key",
+        "market",
+        "calendar_market",
+        "asset_class",
+        "frequency",
+        "contract",
+        "lifecycle",
+        "capabilities",
+        "schedule",
+        "completion_deadline",
+        "bounded_monitor",
+        "publication_retry_window_seconds",
+        "delivery",
+        "historical_execution"
+      ],
+      "title": "FeedDefinition",
+      "type": "object"
+    },
+    "HistoricalExecution": {
+      "additionalProperties": false,
+      "description": "Non-schedule inputs retained by the existing historical executors.",
+      "properties": {
+        "lease_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Lease Seconds",
+          "type": "integer"
+        },
+        "max_attempts": {
+          "exclusiveMinimum": 0,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "max_credits_per_run": {
+          "exclusiveMinimum": 0,
+          "title": "Max Credits Per Run",
+          "type": "integer"
+        },
+        "max_records_per_run": {
+          "exclusiveMinimum": 0,
+          "title": "Max Records Per Run",
+          "type": "integer"
+        },
+        "outputsize": {
+          "exclusiveMinimum": 0,
+          "title": "Outputsize",
+          "type": "integer"
+        },
+        "poll_interval_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Poll Interval Seconds",
+          "type": "integer"
+        },
+        "retry_base_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Retry Base Seconds",
+          "type": "integer"
+        },
+        "retry_max_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Retry Max Seconds",
+          "type": "integer"
+        },
+        "universe_file": {
+          "pattern": "^[a-zA-Z0-9_.-]+\\.json$",
+          "title": "Universe File",
+          "type": "string"
+        },
+        "wait_timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Wait Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "universe_file",
+        "outputsize",
+        "max_attempts",
+        "retry_base_seconds",
+        "retry_max_seconds",
+        "lease_seconds",
+        "poll_interval_seconds",
+        "wait_timeout_seconds",
+        "max_credits_per_run",
+        "max_records_per_run"
+      ],
+      "title": "HistoricalExecution",
+      "type": "object"
+    },
+    "HistoricalExecutionProfiles": {
+      "additionalProperties": false,
+      "properties": {
+        "local": {
+          "$ref": "#/$defs/HistoricalExecution"
+        },
+        "production": {
+          "$ref": "#/$defs/HistoricalExecution"
+        },
+        "staging": {
+          "$ref": "#/$defs/HistoricalExecution"
+        }
+      },
+      "required": [
+        "local",
+        "staging",
+        "production"
+      ],
+      "title": "HistoricalExecutionProfiles",
+      "type": "object"
+    },
+    "PlatformLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_response_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Max Response Bytes",
+          "type": "integer"
+        },
+        "requests_per_minute": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requests Per Minute"
+        }
+      },
+      "required": [
+        "requests_per_minute",
+        "max_response_bytes"
+      ],
+      "title": "PlatformLimits",
+      "type": "object"
+    },
+    "ProviderDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "calendar_switch_env": {
+          "maxLength": 100,
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "title": "Calendar Switch Env",
+          "type": "string"
+        },
+        "consumer_roles": {
+          "items": {
+            "enum": [
+              "pilot",
+              "full_market",
+              "historical"
+            ],
+            "type": "string"
+          },
+          "title": "Consumer Roles",
+          "type": "array"
+        },
+        "container_suffix": {
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "title": "Container Suffix",
+          "type": "string"
+        },
+        "credential_env_names": {
+          "items": {
+            "maxLength": 100,
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "type": "string"
+          },
+          "title": "Credential Env Names",
+          "type": "array"
+        },
+        "display_name": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "image_key": {
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Image Key",
+          "type": "string"
+        },
+        "platform_limits": {
+          "$ref": "#/$defs/PlatformLimits"
+        },
+        "provider": {
+          "maxLength": 100,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Provider",
+          "type": "string"
+        },
+        "source_credential": {
+          "$ref": "#/$defs/SourceCredential"
+        }
+      },
+      "required": [
+        "provider",
+        "display_name",
+        "container_suffix",
+        "image_key",
+        "consumer_roles",
+        "calendar_switch_env",
+        "credential_env_names",
+        "source_credential",
+        "platform_limits"
+      ],
+      "title": "ProviderDefinition",
+      "type": "object"
+    },
+    "SourceCredential": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "hash_env": {
+          "maxLength": 100,
+          "pattern": "^[A-Z][A-Z0-9_]*$",
+          "title": "Hash Env",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "rate_limit_requests": {
+          "exclusiveMinimum": 0,
+          "title": "Rate Limit Requests",
+          "type": "integer"
+        },
+        "rate_limit_window_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Rate Limit Window Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "hash_env",
+        "name",
+        "description",
+        "rate_limit_requests",
+        "rate_limit_window_seconds"
+      ],
+      "title": "SourceCredential",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "feeds": {
+      "items": {
+        "$ref": "#/$defs/FeedDefinition"
+      },
+      "minItems": 1,
+      "title": "Feeds",
+      "type": "array"
+    },
+    "providers": {
+      "items": {
+        "$ref": "#/$defs/ProviderDefinition"
+      },
+      "minItems": 1,
+      "title": "Providers",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "providers",
+    "feeds"
+  ],
+  "title": "ProviderCatalog",
+  "type": "object"
+}

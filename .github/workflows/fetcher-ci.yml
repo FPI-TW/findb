@@ -54,6 +54,7 @@ jobs:
           uv run --frozen python scripts/export_ingress_contracts.py --check
           uv run --frozen python scripts/export_archive_contracts.py --check
           uv run --frozen python scripts/export_execution_feeds.py --check
+          uv run --frozen python scripts/export_provider_catalog.py --check
 
       - name: Lint and format check
         run: |
