@@ -89,7 +89,7 @@ jobs:
         [ "$(sha256sum "$RUNNER_TEMP/staging-bundle.tar" | cut -d ' ' -f1)" = "$bundle_sha256" ]
         python3 infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit "$UNIT"
         tar -xOf "$RUNNER_TEMP/staging-bundle.tar" release-manifest.json > "$RUNNER_TEMP/staging-manifest.json"
-        [ "$(jq -r .schema_version "$RUNNER_TEMP/staging-manifest.json")" = 3 ]
+        [[ "$(jq -r .schema_version "$RUNNER_TEMP/staging-manifest.json")" =~ ^[34]$ ]]
         [ "$(jq -r .deployment_target "$RUNNER_TEMP/staging-manifest.json")" = staging ]
         [ "$(jq -r .release_tag "$RUNNER_TEMP/staging-manifest.json")" = "" ]
         [ "$(jq -r .registry "$RUNNER_TEMP/staging-manifest.json")" = "$SOURCE_REGISTRY" ]
@@ -110,6 +110,7 @@ jobs:
           type == "object" and .state == "accepted" and .unit == $unit and .commit_sha == $revision
           and .bundle_key == $key and .bundle_sha256 == $sha and .images == $manifest[0].images
         ' "$RUNNER_TEMP/staging-acceptance.json" >/dev/null
+        python3 .deployment-driver/infra/deploy/deployment_receipt.py --manifest "$RUNNER_TEMP/staging-manifest.json" --record "$RUNNER_TEMP/staging-acceptance.json" --bundle-sha "$bundle_sha256"
     - name: Log in to staging ECR
       uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c
       with:
@@ -145,14 +146,23 @@ jobs:
         [ "$REGISTRY" = "$ACCOUNT_ID.dkr.ecr.ap-southeast-1.amazonaws.com" ]
         short_tag="${RELEASE_TAG#"$UNIT"-}"
         manifest="$RUNNER_TEMP/staging-manifest.json"
-        args=()
+        args=(); pids=(); work="$RUNNER_TEMP/promotion-images"; mkdir -p "$work"
         for entry in $IMAGES; do
           name="${entry%%:*}"
           source_ref="$(jq -r --arg name "$name" '.images[$name]' "$manifest")"
           destination_repository="$REGISTRY/findb/production/${entry#*:}"
-          SOURCE_IMAGE_REF="$source_ref" DESTINATION_REPOSITORY="$destination_repository" RELEASE_TAG="$short_tag" infra/deploy/promote_image.sh
+          SOURCE_IMAGE_REF="$source_ref" DESTINATION_REPOSITORY="$destination_repository" RELEASE_TAG="$short_tag" infra/deploy/promote_image.sh >"$work/$name.log" 2>&1 &
+          pids+=("$name:$!")
           args+=(--image "$name=$destination_repository@${source_ref##*@}")
         done
+        failed=0
+        for entry in "${pids[@]}"; do
+          name="${entry%%:*}"; status=0
+          wait "${entry#*:}" || status=$?
+          echo "::group::${name} promotion (exit ${status})"; cat "$work/$name.log"; echo "::endgroup::"
+          [ "$status" -eq 0 ] || failed=1
+        done
+        [ "$failed" -eq 0 ]
         migration="$(jq -r .migration_revision "$manifest")"
         profile_args=()
         if [ "$UNIT" = fetcher ]; then

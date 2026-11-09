@@ -105,7 +105,7 @@ findb/
 - Router handlers 保持薄層；business logic 放在 services。
 - Source API 是 write-path ingest；Serve API 是 read-only query path。
 - Pydantic v2 model 需要 ORM hydration 時使用 `from_attributes=True`。
-- 環境身份以 `APP_ENVIRONMENT=local|staging|production` 為唯一正式輸入，須匹配已驗證 runtime/deployment；immutable `deployment_target` JSON／CLI 契約維持。統一版 schema-v3 acceptance 與 rollback 下限見 `docs/operations/deployment.md`。
+- 環境身份以 `APP_ENVIRONMENT=local|staging|production` 為唯一正式輸入，須匹配已驗證 runtime/deployment；immutable `deployment_target` JSON／CLI 契約維持。schema-v4 單次部署、v3 相容與 rollback 下限見 `docs/operations/deployment.md`。
 - secrets/config 一律經由 `app.config.Settings` 與 env 載入；不可 hardcode。
 - Source provider names 正規化為穩定 lowercase，例如 `twelve_data`、`finlab`、`shioaji`。
 - Dependencies 由 `uv` 管理，來源是 `backend/pyproject.toml` 與 `backend/uv.lock`。

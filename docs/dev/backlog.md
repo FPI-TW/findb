@@ -3,6 +3,13 @@
 > 只保存已核准範圍內的未完成工作。完成後直接移除；歷史由Git追溯。Active feeds與pilot
 > 範圍見[現行架構](../architecture/overview.md#active-feeds)。
 
+## CI/CD 五分鐘部署驗收
+
+- [ ] 合併 single-pass v4 後驗收 staging；production 須先套用 transactions immutable bucket policy，
+  再經既有人工 promotion 驗收。FinDB／Fetcher × staging／production 各累積五筆
+  一般增量成功樣本，每筆部署淨耗時小於 300 秒；保留超標、失敗與特殊情境樣本。
+  計時口徑、歷史基準、故障復原與驗收限制見[部署操作](../operations/deployment.md)。
+
 ## 延後：平台強化
 
 Production native 資料與實際 rollback 演練由

@@ -215,10 +215,10 @@ def test_workflow_runs_trusted_recovery_gate_after_findb_wait_before_mutation():
     assert wait < recovery_gate < deployment
 
     checkout = next(
-        step for step in steps if step.get("name") == "Checkout trusted checkpoint safety gate"
+        step for step in steps if step.get("name") == "Load deployment driver from protected main"
     )
-    assert "infra/deploy/check_fetcher_runtime_recovery.py" in checkout["with"]["sparse-checkout"]
+    assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
     run = steps[recovery_gate]["run"]
-    assert ".trusted-checkpoint-safety/infra/deploy/check_fetcher_runtime_recovery.py" in run
-    assert "--stable-seconds 60 --timeout-seconds 180 --poll-seconds 5" in run
+    assert ".deployment-driver/infra/deploy/check_fetcher_runtime_recovery.py" in run
+    assert "--stable-seconds 0 --timeout-seconds 180 --poll-seconds 5" in run
     assert 'host_command="$(printf' in run

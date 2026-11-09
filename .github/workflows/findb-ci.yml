@@ -261,6 +261,13 @@ jobs:
             --junitxml="$RUNNER_TEMP/findb-ci-infra-tests/junit.xml" \
             2>&1 | tee "$RUNNER_TEMP/findb-ci-infra-tests/pytest.log"
 
+      - name: Verify Docker transaction and systemd recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull postgres:16
+          sudo python3 ../infra/tests/linux_transaction_smoke.py | tee "$RUNNER_TEMP/findb-ci-infra-tests/transaction-smoke.log"
+
       - name: Record total job timing
         if: always()
         working-directory: ${{ runner.temp }}

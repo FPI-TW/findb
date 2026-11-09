@@ -54,6 +54,8 @@ jobs:
       pull-requests: read
     outputs:
       revision: ${{ steps.revision.outputs.sha }}
+      mode: ${{ steps.selection.outputs.mode }}
+      bundle_key: ${{ steps.selection.outputs.bundle_key }}
       fetcher_ci: ${{ steps.policy.outputs.fetcher_ci }}
       fetcher_staging: ${{ steps.policy.outputs.fetcher_staging }}
       fetcher_ci_evidence: ${{ steps.policy.outputs.fetcher_ci_evidence }}
@@ -101,39 +103,10 @@ jobs:
         if grep -qx 'fetcher_ci=true' "$GITHUB_OUTPUT"; then
           python3 infra/deploy/ci_evidence.py --repository "$GITHUB_REPOSITORY" --revision "$HEAD" --unit fetcher --ci-workflow .github/workflows/fetcher-ci.yml --github-output "$GITHUB_OUTPUT"
         fi
-  verify:
-    needs: policy
-    if: ${{ needs.policy.outputs.fetcher_ci == 'true' && needs.policy.outputs.fetcher_ci_evidence == '' }}
-    uses: ./.github/workflows/fetcher-ci.yml
-    with:
-      revision: ${{ needs.policy.outputs.revision }}
-  select:
-    needs:
-    - policy
-    - verify
-    if: |-
-      !cancelled() && github.ref == 'refs/heads/main' && needs.policy.result == 'success' && needs.policy.outputs.fetcher_staging == 'true' &&
-      (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay') ||
-      (needs.verify.result == 'skipped' && github.event_name == 'push' && needs.policy.outputs.fetcher_ci_evidence != ''))
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    outputs:
-      revision: ${{ steps.selection.outputs.revision }}
-      mode: ${{ steps.selection.outputs.mode }}
-      bundle_key: ${{ steps.selection.outputs.bundle_key }}
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ needs.policy.outputs.revision }}
-        fetch-depth: 0
-        persist-credentials: false
-        clean: false
     - name: Verify exact requested revision, staging-only route, and deployment selection
       id: selection
       env:
-        REVISION: ${{ needs.policy.outputs.revision }}
+        REVISION: ${{ steps.revision.outputs.sha }}
         DEPLOYMENT_MODE: ${{ inputs.deployment_mode }}
         CANDIDATE_CONFIRMATION: ${{ inputs.candidate_confirmation }}
         IMAGE_TAG: ${{ inputs.image_tag }}
@@ -161,9 +134,18 @@ jobs:
           [ "${{ github.event_name }}" = push ] && [ -z "$DEPLOYMENT_MODE" ] && [ -z "$CANDIDATE_CONFIRMATION" ] && [ -z "$IMAGE_TAG" ] && [ -z "$ACCEPTED" ] || exit 1
           echo 'mode=candidate' >> "$GITHUB_OUTPUT"
         fi
+  verify:
+    needs: policy
+    if: ${{ needs.policy.outputs.fetcher_ci == 'true' && needs.policy.outputs.fetcher_ci_evidence == '' }}
+    uses: ./.github/workflows/fetcher-ci.yml
+    with:
+      revision: ${{ needs.policy.outputs.revision }}
   publish:
-    needs: select
-    if: ${{ !cancelled() && needs.select.result == 'success' && needs.select.outputs.mode == 'candidate' }}
+    needs: [policy, verify]
+    if: |-
+      (!cancelled() && github.ref == 'refs/heads/main' && needs.policy.result == 'success' && needs.policy.outputs.fetcher_staging == 'true' &&
+      (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay') ||
+      (needs.verify.result == 'skipped' && github.event_name == 'push' && needs.policy.outputs.fetcher_ci_evidence != ''))) && needs.policy.outputs.mode == 'candidate'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -184,12 +166,12 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
-        ref: ${{ needs.select.outputs.revision }}
+        ref: ${{ needs.policy.outputs.revision }}
         persist-credentials: false
         clean: false
     - name: Verify exact requested revision for publication
       env:
-        EXPECTED_SHA: ${{ needs.select.outputs.revision }}
+        EXPECTED_SHA: ${{ needs.policy.outputs.revision }}
       run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
     - name: Configure staging publisher credentials
       uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
@@ -210,12 +192,12 @@ jobs:
     - name: Build or reuse immutable Fetcher images
       id: images
       env:
-        ECR_IMAGE_TAG: ${{ needs.select.outputs.revision }}
+        ECR_IMAGE_TAG: ${{ needs.policy.outputs.revision }}
       run: |
         set -euo pipefail
         [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
         aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY"
-        # The four repositories are independent, so they build concurrently. Each
+        # The three repositories are independent, so they build concurrently. Each
         # build keeps its own output file and log; none can overwrite another.
         work="$RUNNER_TEMP/fetcher-images"; mkdir -p "$work"
         build() {
@@ -240,19 +222,22 @@ jobs:
         done
   prepare:
     needs:
-    - select
+    - policy
+    - verify
     - publish
     if: |-
-      always() && needs.select.result == 'success' && ((needs.select.outputs.mode == 'candidate' && needs.publish.result == 'success') ||
-       (needs.select.outputs.mode == 'replay' && needs.publish.result == 'skipped'))
+      (!cancelled() && github.ref == 'refs/heads/main' && needs.policy.result == 'success' && needs.policy.outputs.fetcher_staging == 'true' &&
+      (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay') ||
+      (needs.verify.result == 'skipped' && github.event_name == 'push' && needs.policy.outputs.fetcher_ci_evidence != ''))) && ((needs.policy.outputs.mode == 'candidate' && needs.publish.result == 'success') ||
+       (needs.policy.outputs.mode == 'replay' && needs.publish.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
       id-token: write
     outputs:
-      revision: ${{ needs.select.outputs.revision }}
-      mode: ${{ needs.select.outputs.mode }}
+      revision: ${{ needs.policy.outputs.revision }}
+      mode: ${{ needs.policy.outputs.mode }}
       bundle_key: ${{ steps.contract.outputs.bundle_key }}
     env:
       AWS_REGION: ap-southeast-1
@@ -261,7 +246,7 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
-        ref: ${{ needs.select.outputs.revision }}
+        ref: ${{ needs.policy.outputs.revision }}
         persist-credentials: false
         clean: false
     - name: Load deployment driver from protected main
@@ -277,16 +262,16 @@ jobs:
         unit: fetcher
     - name: Verify exact requested revision for bundle preparation
       env:
-        EXPECTED_SHA: ${{ needs.select.outputs.revision }}
+        EXPECTED_SHA: ${{ needs.policy.outputs.revision }}
       run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
     - name: Verify deployment account
       shell: bash
       run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
     - name: Build and upload exact v2 staging candidate
-      if: ${{ needs.select.outputs.mode == 'candidate' }}
+      if: ${{ needs.policy.outputs.mode == 'candidate' }}
       id: candidate
       env:
-        REVISION: ${{ needs.select.outputs.revision }}
+        REVISION: ${{ needs.policy.outputs.revision }}
         BUNDLE_BUCKET: ${{ env.DEPLOY_BUNDLE_BUCKET }}
         KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
         TWELVE_IMAGE: ${{ needs.publish.outputs.twelve_image }}
@@ -305,8 +290,8 @@ jobs:
     - name: Publish exact reusable deployment contract
       id: contract
       env:
-        MODE: ${{ needs.select.outputs.mode }}
-        REPLAY_KEY: ${{ needs.select.outputs.bundle_key }}
+        MODE: ${{ needs.policy.outputs.mode }}
+        REPLAY_KEY: ${{ needs.policy.outputs.bundle_key }}
         CANDIDATE_KEY: ${{ steps.candidate.outputs.bundle_key }}
       run: |
         set -euo pipefail
@@ -330,16 +315,16 @@ jobs:
       findb_rollout_sha: ${{ github.event_name == 'push' && needs.prepare.outputs.mode == 'candidate' && needs.prepare.outputs.revision || '' }}
   report-staging-deployment-failure:
     needs:
+    - policy
     - verify
-    - select
     - publish
     - prepare
     - deploy
     if: |-
       always() && github.ref == 'refs/heads/main' && (inputs.deployment_target || 'staging') == 'staging' && (needs.verify.result == 'failure' ||
         needs.verify.result == 'cancelled' ||
-        needs.select.result == 'failure' ||
-        needs.select.result == 'cancelled' ||
+        needs.policy.result == 'failure' ||
+        needs.policy.result == 'cancelled' ||
         needs.publish.result == 'failure' ||
         needs.publish.result == 'cancelled' ||
         needs.prepare.result == 'failure' ||
@@ -375,3 +360,24 @@ jobs:
           --dimensions DeploymentUnit=fetcher,Resource=github-actions \
           --value 1 \
           --unit Count
+  deployment-summary:
+    needs: [policy, verify, publish, prepare, deploy]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.workflow_sha }}
+        persist-credentials: false
+    - name: Report deployment wall time
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 infra/deploy/deployment_timing.py --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --output "$RUNNER_TEMP/deployment-timing.json"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: deployment-timing-fetcher
+        path: ${{ runner.temp }}/deployment-timing.json

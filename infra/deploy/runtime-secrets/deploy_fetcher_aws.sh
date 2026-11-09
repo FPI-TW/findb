@@ -105,7 +105,7 @@ if [ "$AWS_REGION" != ap-southeast-1 ] || ! [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ 
   exit 1
 fi
 case "$FETCHER_DEPLOY_MODE" in
-  candidate|activate) ;;
+  candidate|activate|apply) ;;
   *) echo "fetcher_aws_deploy=failed reason=deploy_mode_invalid" >&2; exit 1 ;;
 esac
   if ! printf '%s' "$FETCHER_RELEASE_ROOT" | grep -Eq '^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$' \
@@ -152,7 +152,7 @@ validate_image "$FACTSET_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/factset"
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
-preserve_env=PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,FACTSET_IMAGE_REF
+preserve_env=DEPLOYMENT_TRANSACTION_ID,PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,FACTSET_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -518,13 +518,17 @@ export FETCHER_IMAGES_PREPARED=true FETCHER_HEALTH_MODE=coordinator
 activated_runtimes=()
 record_activated_runtime() {
   local stable="$1" image="$2" id
-  [ "$FETCHER_DEPLOY_MODE" = activate ] || return 0
+  [ "$FETCHER_DEPLOY_MODE" != candidate ] || return 0
   id="$(docker inspect --format '{{.Id}}' "$stable")" || return 1
   [ -n "$id" ] || return 1
   activated_runtimes+=("$stable|$id|$image")
 }
 verify_activated_runtimes() {
   local attempt entry stable id image actual_id actual_image running restarts
+  if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
+    python3 "$FETCHER_RELEASE_ROOT/infra/deploy/deployment_transaction.py" health --root "$FETCHER_RELEASE_ROOT" --observe-seconds 25
+    return 0
+  fi
   # Six checks spanning at least 25 seconds for EVERY new consumer. Mutations
   # stay serial; only observation windows overlap. Originals remain journaled.
   for attempt in 1 2 3 4 5 6; do
@@ -551,6 +555,40 @@ for legacy in findb-fetcher-scheduler findb-fetcher-finlab-scheduler findb-fetch
     exit 1
   fi
 done
+provider_count=8
+if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
+  for provider in twelve-data finlab taifex factset; do
+    case "$provider" in
+      twelve-data) image="$TWELVE_IMAGE_REF"; history=/var/lib/findb-fetcher/historical; cache=- ;;
+      taifex) image="$TWELVE_IMAGE_REF"; history=/var/lib/findb-taifex-fetcher/historical; cache=- ;;
+      factset) image="$FACTSET_IMAGE_REF"; history=/var/lib/findb-factset-fetcher/historical; cache=- ;;
+      finlab) image="$FINLAB_IMAGE_REF"; history=/var/lib/findb-finlab-fetcher/historical; cache=/var/lib/findb-finlab-fetcher/cache ;;
+    esac
+    for profile in pilot full-market historical; do
+      stable="findb-$profile-$provider"
+      register_provider "$stable" "${stable}-previous"
+    done
+    run_runtime --consumer "$provider" -- bash -s -- "$provider_helper" "$provider" "$image" "$pilot_state" "$full_market_state" "$history" "$cache" <<'PROVIDER_PROFILES'
+set -euo pipefail
+helper="$1"; provider="$2"; image="$3"; pilot="$4"; full="$5"; history="$6"; cache="$7"
+for profile in pilot full_market historical; do
+  export FETCHER_CONSUMER_PROFILE="$profile"
+  stable="findb-${profile//_/-}-$provider"
+  case "$profile" in
+    pilot) state="$pilot" ;;
+    full_market) state="$full" ;;
+    historical) state="$history" ;;
+  esac
+  command=(findb-fetch-runtime --execution-profile "$profile" --config "/app/configs/full_market.$APP_ENVIRONMENT.v1.json" --state-path "$state/state.sqlite3" --provider "${provider//-/_}")
+  if [ "$profile" = historical ]; then command=(findb-fetch-historical-backfill --provider "${provider//-/_}"); fi
+  "$helper" "$provider" "$image" "$state" "$state/state.sqlite3" "$stable" "$stable-candidate" "$stable-previous" "$stable-preflight" "$cache" "${command[@]}"
+done
+PROVIDER_PROFILES
+    for profile in pilot full-market historical; do
+      record_activated_runtime "findb-$profile-$provider" "$image"
+    done
+  done
+else
 provider_count=8
 for execution_profile in pilot full_market; do
   export FETCHER_CONSUMER_PROFILE="$execution_profile"
@@ -602,6 +640,8 @@ for provider in twelve-data finlab taifex factset; do
   record_activated_runtime "$stable" "$image"
 done
 
+fi
+
 if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
   rollback_processed
   trap - ERR INT TERM HUP
@@ -610,6 +650,12 @@ if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
 fi
 
 verify_activated_runtimes
+if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
+  # Originals and current pointer remain intact until the runner decision.
+  trap - ERR INT TERM HUP
+  echo "fetcher_aws_deploy=healthy_pending_acceptance"
+  exit 0
+fi
 
 commit_removals=()
 prepare_original_cleanup() {
@@ -675,7 +721,4 @@ if ! cleanup_originals; then
 fi
 # Only after all consumers are healthy and rollback originals are retired.
 # Never prune between consumers/phases and evict the next prepared image.
-if ! docker image prune -af >/dev/null; then
-  echo "fetcher_aws_deploy=warning reason=post_activation_image_prune_failed" >&2
-fi
 echo "fetcher_aws_deploy=activated providers=$provider_count profile=$FETCHER_RUNTIME_PROFILE"

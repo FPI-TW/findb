@@ -601,7 +601,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         candidate_bundle.write_bytes(
             candidate_validator.build_bundle(candidate_root, manifest_path, "fetcher")
         )
-        trusted = workspace / ".trusted-checkpoint-safety/infra/deploy"
+        trusted = workspace / ".deployment-driver/infra/deploy"
         trusted.mkdir(parents=True)
         for name in (
             "check_fetcher_host.py",

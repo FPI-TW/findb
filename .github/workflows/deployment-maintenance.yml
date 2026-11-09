@@ -1,0 +1,48 @@
+name: Deployment image maintenance
+'on':
+  schedule:
+  - cron: '25 20 * * 0'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prune:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [staging, production]
+        unit: [findb, fetcher]
+    concurrency:
+      group: ${{ matrix.target }}-${{ matrix.unit }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.workflow_sha }}
+        persist-credentials: false
+    - uses: ./.github/actions/aws-configuration
+      with:
+        target: ${{ matrix.target }}
+        unit: ${{ matrix.unit }}
+    - name: Remove old unused image layers
+      env:
+        TARGET: ${{ matrix.target }}
+        UNIT: ${{ matrix.unit }}
+      run: |
+        set -euo pipefail
+        [ "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID" ]
+        targets="$(aws ec2 describe-instances --filters Name=instance-state-name,Values=running Name=tag:Project,Values=findb Name=tag:Environment,Values="$TARGET" Name=tag:DeploymentUnit,Values="$UNIT" --query 'Reservations[].Instances[].InstanceId' --output json)"
+        [ "$(jq length <<<"$targets")" = 1 ]
+        target_id="$(jq -r '.[0]' <<<"$targets")"
+        code="$(base64 -w0 infra/deploy/maintain_deployment_images.py)"
+        host_command="python3 -c \"import base64; exec(base64.b64decode('$code'))\" --unit $UNIT"
+        host_command="$(printf '%s' "$host_command" | python3 infra/deploy/ssm_bash_command.py --timeout-seconds 300)"
+        command_id="$(aws ssm send-command --document-name AWS-RunShellScript --instance-ids "$target_id" --cloud-watch-output-config "CloudWatchOutputEnabled=true,CloudWatchLogGroupName=$AWS_SSM_LOG_GROUP" --parameters "$(jq -nc --arg command "$host_command" '{commands:[$command],executionTimeout:["480"]}')" --query Command.CommandId --output text)"
+        source infra/deploy/ssm_command_marker_gate.sh
+        ssm_wait_command "$AWS_REGION" "$command_id" "$target_id" deployment_image_maintenance=success deployment_image_maintenance=failed 540

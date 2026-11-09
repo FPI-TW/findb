@@ -593,7 +593,7 @@ def test_shared_activation_observation_keeps_all_originals_until_healthy():
         i for i, entry in enumerate(state["log"]) if entry[:2] == ["docker", "rm"]
     )
     assert last_observation < first_retirement
-    assert state["log"][-1] == ["docker", "image", "prune", "-af"]
+    assert not any(entry[:3] == ["docker", "image", "prune"] for entry in state["log"])
 
 
 def test_shared_health_failure_restores_original_identities_and_pointer():

@@ -25,9 +25,9 @@ def _transport(tmp_path):
     run = next(
         step["run"] for step in _workflow_steps() if "checkpoint_entry_gate=" in step.get("run", "")
     )
-    start = run.index("guard=.trusted-checkpoint-safety/")
+    start = run.index("guard=.deployment-driver/")
     end = run.index("host_command=", start)
-    guard = tmp_path / ".trusted-checkpoint-safety/infra/deploy/check_full_market_checkpoint.sh"
+    guard = tmp_path / ".deployment-driver/infra/deploy/check_full_market_checkpoint.sh"
     guard.parent.mkdir(parents=True)
     guard.write_bytes(GUARD.read_bytes())
     binaries = tmp_path / "bin"
@@ -47,9 +47,8 @@ def _transport(tmp_path):
 def test_workflow_gate_provenance_and_remote_order(tmp_path):
     steps = _workflow_steps()
     checkout = next(
-        step for step in steps if step.get("name") == "Checkout trusted checkpoint safety gate"
+        step for step in steps if step.get("name") == "Load deployment driver from protected main"
     )
-    assert checkout["with"]["repository"] == "${{ github.repository }}"
     assert checkout["with"]["ref"] == "${{ github.workflow_sha }}"
     assert checkout["with"]["persist-credentials"] == "false"
     verify = next(
@@ -72,7 +71,7 @@ def test_workflow_gate_provenance_and_remote_order(tmp_path):
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes((REPO_ROOT / "infra/deploy" / name).read_bytes())
     git_stub = r"""git() {
-  [ "$1" = -C ] && [ "$2" = .trusted-checkpoint-safety ] || return 91
+  [ "$1" = -C ] && [ "$2" = .deployment-driver ] || return 91
   if [ "$3" = rev-parse ] && [ "$4" = HEAD ]; then
     printf '%s\n' "$checkout_sha"
   elif [ "$3" = show ]; then
@@ -92,7 +91,7 @@ def test_workflow_gate_provenance_and_remote_order(tmp_path):
         (False, False, "check_fetcher_runtime_recovery.py"),
         (False, False, "release_manifest.py"),
     ):
-        trusted = tmp_path / ".trusted-checkpoint-safety/infra/deploy"
+        trusted = tmp_path / ".deployment-driver/infra/deploy"
         trusted.mkdir(parents=True, exist_ok=True)
         for name in names:
             (trusted / name).write_bytes((pinned / "infra/deploy" / name).read_bytes())
@@ -274,9 +273,7 @@ def test_transported_guard_rejects_query_failure(tmp_path, profile, query, rc):
 def test_gate_transport_integrity_fails_before_deployment_entry(tmp_path, tamper):
     builder, binaries = _transport(tmp_path)
     if tamper == "missing":
-        (
-            tmp_path / ".trusted-checkpoint-safety/infra/deploy/check_full_market_checkpoint.sh"
-        ).unlink()
+        (tmp_path / ".deployment-driver/infra/deploy/check_full_market_checkpoint.sh").unlink()
     mutate = {"digest": "q_guard_sha=bad", "payload": "q_guard_b64=invalid", "missing": ":"}[tamper]
     result = subprocess.run(
         [

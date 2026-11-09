@@ -368,7 +368,9 @@ data "aws_iam_policy_document" "deploy_bundle_bucket" {
     actions = ["s3:PutObject"]
     resources = [
       "${aws_s3_bucket.deploy_bundle.arn}/findb/accepted/*",
+      "${aws_s3_bucket.deploy_bundle.arn}/findb/transactions/*",
       "${aws_s3_bucket.deploy_bundle.arn}/fetcher/accepted/*",
+      "${aws_s3_bucket.deploy_bundle.arn}/fetcher/transactions/*",
     ]
 
     condition {

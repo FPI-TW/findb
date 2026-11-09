@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import stat
 import subprocess
 import time
 from collections.abc import Callable
@@ -21,6 +23,36 @@ RuntimeSnapshot = tuple[tuple[str, str, str, int, str, bool], ...]
 
 class RecoveryTimeoutError(RuntimeError):
     """The installed runtimes did not remain healthy for the required window."""
+
+
+def committed_runtime(row, base=Path("/opt/fetcher")):
+    labels = row["Config"].get("Labels") or {}
+    transaction = labels.get("com.findb.deployment.transaction")
+    if transaction is None:
+        return labels.get("com.findb.fetcher.accepted") == "true"
+    if not re.fullmatch(r"[0-9a-f]{64}-[0-9]+-[0-9]+", transaction):
+        return False
+    directory = base / "transactions" / transaction
+    try:
+        for path in (directory, directory / "journal.json", directory / "receipt.json"):
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077:
+                return False
+        journal = json.loads((directory / "journal.json").read_text())
+        receipt = json.loads((directory / "receipt.json").read_text())
+        return (
+            journal["phase"] == "committed"
+            and receipt["transaction_id"] == transaction
+            and receipt["schema_version"] == 4
+            and receipt["phase"] == "healthy"
+            and receipt["state"] == "accepted"
+            and any(
+                item["id"] == row["Id"] and item["image"] == row["Config"]["Image"]
+                for item in journal["healthy"]
+            )
+        )
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def _parse_runtime_rows(rows: object) -> RuntimeSnapshot:
@@ -62,13 +94,17 @@ def _parse_runtime_rows(rows: object) -> RuntimeSnapshot:
         ):
             raise ValueError("runtime recovery identity is invalid")
         healthy = (
-            labels.get("com.findb.fetcher.accepted") == "true"
+            committed_runtime(row)
             and state.get("Running") is True
             and state.get("Status") == "running"
             and state.get("ExitCode") == 0
             and state.get("OOMKilled") is False
             and state.get("Error") == ""
         )
+        if state.get("OOMKilled") is not False or state.get("Error") != "":
+            raise ValueError("runtime failed with OOM or Docker error")
+        if state.get("Status") not in ("running", "restarting") or not committed_runtime(row):
+            raise ValueError("runtime not eligible for recovery")
         snapshot.append((name, container_id, image, restart_count, started_at, healthy))
     return tuple(snapshot)
 
@@ -109,10 +145,10 @@ def wait_until_recovered(
     sleep: Callable[[float], None] = time.sleep,
 ) -> RuntimeSnapshot:
     if (
-        stable_seconds <= 0
+        stable_seconds < 0
         or timeout_seconds < stable_seconds
         or poll_seconds <= 0
-        or poll_seconds > stable_seconds
+        or (stable_seconds > 0 and poll_seconds > stable_seconds)
     ):
         raise ValueError("runtime recovery timing is invalid")
     deadline = monotonic() + timeout_seconds
@@ -122,11 +158,15 @@ def wait_until_recovered(
         try:
             snapshot = snapshot_reader()
         except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+            if stable_seconds == 0:
+                raise
             snapshot = None
         now = monotonic()
         if snapshot == ():
             return snapshot
         if snapshot is not None and all(row[-1] for row in snapshot):
+            if stable_seconds == 0:
+                return snapshot
             if snapshot != baseline:
                 baseline = snapshot
                 stable_since = now

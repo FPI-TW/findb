@@ -51,10 +51,10 @@ if [ "$ECR_REGISTRY" != "$expected_ecr_registry" ] \
   exit 1
 fi
 deploy_mode="${FINDB_DEPLOY_MODE:?deployment mode is required}"
-case "$deploy_mode" in candidate|activate) ;; *) exit 1 ;; esac
+case "$deploy_mode" in candidate|activate|apply) ;; *) exit 1 ;; esac
 # Only nonsecret deployment settings are preserved across sudo. The runtime
 # command itself creates and loads the secret environment after this boundary.
-preserve_env=PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT
+preserve_env=DEPLOYMENT_TRANSACTION_ID,DEPLOYMENT_REPLAY,FINDB_TRANSACTION_COMPOSE_FILE,PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT
 
 run_runtime() {
   sudo --preserve-env="$preserve_env" "$runtime_command" \
@@ -208,7 +208,7 @@ done
 run_runtime --consumer compose --ecr-registry "$ECR_REGISTRY" --docker-login -- bash -s -- "$compose_file" <<'PULL_SCRIPT'
 set -euo pipefail
 compose_file="$1"
-docker compose -f "$compose_file" pull
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} pull
 PULL_SCRIPT
 
 # A candidate must validate that its target-scoped nginx secret can load, but
@@ -245,15 +245,15 @@ compose_file="$1"
 expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?target revision is required}"
 expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?RDS endpoint is required}"
 revision_policy=--allow-empty-database-bootstrap
-if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then
+if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ] || [ "${DEPLOYMENT_REPLAY:-false}" = true ]; then
   revision_policy=--require-exact-alembic-revision
 fi
-docker compose -f "$compose_file" run --rm --no-deps ingest \
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} run --rm --no-deps ingest \
   python /app/scripts/predeploy_db_check.py \
     --expected-alembic-revision "$expected_revision" \
     --expected-rds-endpoint "$expected_rds_endpoint" \
     "$revision_policy" </dev/null
-docker compose -f "$compose_file" run --rm --no-deps \
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} run --rm --no-deps \
   -e APPLICATION_DATABASE_URL \
   -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
   -e FINDB_LOOKUP_SERVE_API_KEY \
@@ -272,10 +272,10 @@ set -euo pipefail
 compose_file="$1"
 shift
 read -r -a writer_services <<< "$1"
-docker compose -f "$compose_file" stop --timeout 30 "${writer_services[@]}"
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} stop --timeout 30 "${writer_services[@]}"
 
 for service in "${writer_services[@]}"; do
-  container_ids="$(docker compose -f "$compose_file" ps -aq "$service")"
+  container_ids="$(docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps -aq "$service")"
   if [ -n "$container_ids" ]; then
     while IFS= read -r container_id; do
       [ -n "$container_id" ] || continue
@@ -308,10 +308,10 @@ run_runtime --consumer migration --consumer compose --consumer credentials \
   -- bash -s -- "$compose_file" <<'MIGRATION_SCRIPT'
 set -euo pipefail
 compose_file="$1"
-if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then
+if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ] || [ "${DEPLOYMENT_REPLAY:-false}" = true ]; then
   # An accepted release is already migrated and reconciled. Replay/activation
   # must verify exact compatibility, never perform a new schema mutation.
-  docker compose -f "$compose_file" run --rm --no-deps ingest \
+  docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} run --rm --no-deps ingest \
     python /app/scripts/predeploy_db_check.py \
       --expected-alembic-revision "${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?target revision is required}" \
       --expected-rds-endpoint "${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?RDS endpoint is required}" \
@@ -319,30 +319,17 @@ if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ]; then
   echo "findb_aws_deploy=activation_schema_verified mutations=skipped"
   exit 0
 fi
-docker compose -f "$compose_file" run --rm --no-deps ingest sh -euc '
-  alembic upgrade head
-  alembic current
-' </dev/null
-  expected_revision="${PREDEPLOY_EXPECTED_ALEMBIC_REVISION:?target revision is required}"
-  expected_rds_endpoint="${PREDEPLOY_EXPECTED_RDS_ENDPOINT:?RDS endpoint is required}"
-  docker compose -f "$compose_file" run --rm --no-deps ingest \
-    python /app/scripts/predeploy_db_check.py \
-      --expected-alembic-revision "$expected_revision" \
-      --expected-rds-endpoint "$expected_rds_endpoint" \
-      --require-exact-alembic-revision </dev/null
-docker compose -f "$compose_file" run --rm --no-deps \
-  -e APPLICATION_DATABASE_URL ingest \
-  python /app/scripts/reconcile_database_privileges.py </dev/null
-docker compose -f "$compose_file" run --rm --no-deps \
-  -e APPLICATION_DATABASE_URL \
-  -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
-  -e FINDB_LOOKUP_SERVE_API_KEY \
-  -e FINDB_STATIC_CACHE_SERVE_API_KEY ingest \
-  python /app/scripts/reconcile_deployment_credentials.py \
-  --deployment-target "$APP_ENVIRONMENT" </dev/null
-docker compose -f "$compose_file" run --rm --no-deps ingest \
-  python /app/scripts/provision_registry.py \
-  --deployment-target "$APP_ENVIRONMENT" </dev/null
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} run --rm --no-deps \
+  -e APPLICATION_DATABASE_URL -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
+  -e FINDB_LOOKUP_SERVE_API_KEY -e FINDB_STATIC_CACHE_SERVE_API_KEY \
+  -e PREDEPLOY_EXPECTED_ALEMBIC_REVISION -e PREDEPLOY_EXPECTED_RDS_ENDPOINT -e APP_ENVIRONMENT \
+  ingest sh -euc '
+    alembic upgrade head
+    python /app/scripts/predeploy_db_check.py --expected-alembic-revision "$PREDEPLOY_EXPECTED_ALEMBIC_REVISION" --expected-rds-endpoint "$PREDEPLOY_EXPECTED_RDS_ENDPOINT" --require-exact-alembic-revision
+    python /app/scripts/reconcile_database_privileges.py
+    python /app/scripts/reconcile_deployment_credentials.py --deployment-target "$APP_ENVIRONMENT"
+    python /app/scripts/provision_registry.py --deployment-target "$APP_ENVIRONMENT"
+  ' </dev/null
 MIGRATION_SCRIPT
 
 # The candidate uses internal services while the public nginx entry stays stopped.
@@ -352,19 +339,22 @@ fi
 run_runtime --consumer compose -- bash -s -- "$compose_file" <<'UP_SCRIPT'
 set -euo pipefail
 compose_file="$1"
+if [ "$FINDB_DEPLOY_MODE" = apply ]; then
+  docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} rm -f nginx </dev/null
+fi
 if [ "$FINDB_DEPLOY_MODE" = candidate ]; then
-  docker compose -f "$compose_file" up -d --remove-orphans rabbitmq serve ingest dispatcher worker dashboard </dev/null
+  docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} up -d --remove-orphans rabbitmq serve ingest dispatcher worker dashboard </dev/null
 else
-  docker compose -f "$compose_file" up -d --remove-orphans </dev/null
+  docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} up -d --remove-orphans </dev/null
 fi
 
-if ! docker compose -f "$compose_file" exec -T rabbitmq rabbitmq-diagnostics -q ping </dev/null >/dev/null; then
+if ! docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T rabbitmq rabbitmq-diagnostics -q ping </dev/null >/dev/null; then
   echo "findb_aws_deploy=failed reason=rabbitmq_unhealthy" >&2
   exit 1
 fi
 topology_ready=0
 for attempt in $(seq 1 24); do
-  queue_topology="$(docker compose -f "$compose_file" exec -T rabbitmq \
+  queue_topology="$(docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T rabbitmq \
     rabbitmqctl list_queues -p /findb name durable --formatter json </dev/null 2>/dev/null || true)"
   if printf '%s' "$queue_topology" | python3 -c '
 import json, sys
@@ -388,7 +378,7 @@ fi
 for service in dispatcher worker; do
   ready=0
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    if docker compose -f "$compose_file" ps --status running --services </dev/null | grep -qx "$service"; then
+    if docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps --status running --services </dev/null | grep -qx "$service"; then
       ready=1
       break
     fi
@@ -402,7 +392,7 @@ done
 
 worker_ping_ready=0
 for attempt in $(seq 1 24); do
-  if docker compose -f "$compose_file" exec -T worker \
+  if docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T worker \
     celery -A app.task_queue inspect ping --timeout=10 </dev/null >/dev/null 2>&1; then
     worker_ping_ready=1
     break
@@ -417,7 +407,7 @@ fi
 for service in serve ingest; do
   ready=0
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    if docker compose -f "$compose_file" exec -T "$service" \
+    if docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T "$service" \
       sh -lc 'python -c "import os, urllib.request; port=os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"' \
       </dev/null >/dev/null 2>&1; then
       ready=1
@@ -433,7 +423,7 @@ done
 
 ready=0
 for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  if docker compose -f "$compose_file" exec -T dashboard wget -q --spider http://127.0.0.1:3333/dashboard/ </dev/null; then
+  if docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T dashboard wget -q --spider http://127.0.0.1:3333/dashboard/ </dev/null; then
     ready=1
     break
   fi
@@ -444,7 +434,7 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-docker compose -f "$compose_file" exec -T -e CELERY_BROKER_URL ingest \
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T -e CELERY_BROKER_URL ingest \
   python /app/scripts/check_queue_health.py \
   --attempts 12 --interval 5 --maximum-heartbeat-age 90 </dev/null >/dev/null
 
@@ -453,13 +443,20 @@ if [ "$FINDB_DEPLOY_MODE" = candidate ]; then
   exit 0
 fi
 
+if [ "$FINDB_DEPLOY_MODE" = apply ]; then
+  nginx_new_id="$(docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps -q nginx </dev/null)"
+  [ -n "$nginx_new_id" ]
+  [ "$(docker inspect --format '{{index .Config.Labels "com.findb.deployment.transaction"}}' "$nginx_new_id")" = "$DEPLOYMENT_TRANSACTION_ID" ]
+  nginx_mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/nginx/serve-key.conf"}}{{.Source}} {{.RW}}{{end}}{{end}}' "$nginx_new_id")"
+  [ "$nginx_mount" = '/run/findb-runtime-secrets/nginx/serve-key.conf false' ]
+else
 # The prior compose restart did not reliably load the newly rendered single-file
 # tmpfs bind mount. Replace the exact, verified nginx container so Docker mounts
 # the current source path; verify that replacement before health and key probes.
 nginx_expected_project=findb
 nginx_expected_service=nginx
 nginx_serve_key_source=/run/findb-runtime-secrets/nginx/serve-key.conf
-nginx_old_id="$(docker compose -f "$compose_file" ps -q nginx </dev/null)"
+nginx_old_id="$(docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps -q nginx </dev/null)"
 if [ -z "$nginx_old_id" ]; then
   echo "findb_aws_deploy=failed reason=nginx_container_missing" >&2
   exit 1
@@ -478,8 +475,8 @@ if docker inspect "$nginx_old_id" </dev/null >/dev/null 2>&1; then
   echo "findb_aws_deploy=failed reason=nginx_old_container_still_exists" >&2
   exit 1
 fi
-docker compose -f "$compose_file" up -d --no-deps nginx </dev/null >/dev/null
-nginx_new_id="$(docker compose -f "$compose_file" ps -q nginx </dev/null)"
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} up -d --no-deps nginx </dev/null >/dev/null
+nginx_new_id="$(docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps -q nginx </dev/null)"
 if [ -z "$nginx_new_id" ] || [ "$nginx_new_id" = "$nginx_old_id" ]; then
   echo "findb_aws_deploy=failed reason=nginx_container_not_replaced" >&2
   exit 1
@@ -498,6 +495,7 @@ if [ "$nginx_new_project" != "$nginx_expected_project" ] \
   echo "findb_aws_deploy=failed reason=nginx_replacement_contract_invalid" >&2
   exit 1
 fi
+fi
 ready=0
 for attempt in 1 2 3 4 5 6; do
   health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' findb-nginx </dev/null 2>/dev/null || true)"
@@ -513,7 +511,7 @@ if [ "$ready" -ne 1 ]; then
 fi
 
 for dashboard_path in /dashboard/ /dashboard/lookup; do
-  docker compose -f "$compose_file" exec -T nginx \
+  docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T nginx \
     wget -q --no-check-certificate --spider "https://127.0.0.1$dashboard_path" </dev/null
 done
 
@@ -521,14 +519,14 @@ done
 # This is a small, read-only request that only receives the key through the
 # exact same-origin Referer map used by Dashboard lookup requests.
 lookup_referer="https://$FINDB_PUBLIC_HOST/dashboard/lookup"
-docker compose -f "$compose_file" exec -T nginx \
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T nginx \
   wget -q --no-check-certificate -O /dev/null --timeout=10 --tries=1 \
     --header="Referer: $lookup_referer" \
     "https://127.0.0.1/api/v1/serve/instruments?page_size=1" </dev/null
 
-docker compose -f "$compose_file" exec -T serve \
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T serve \
   sh -lc 'python /app/scripts/generate_instrument_cache.py' </dev/null >/dev/null
-docker compose -f "$compose_file" exec -T serve \
+docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} exec -T serve \
   sh -lc 'python -c "import os, urllib.request; port=os.getenv(\"PORT\", \"8080\"); urllib.request.urlopen(f\"http://127.0.0.1:{port}/health\", timeout=5)"' \
   </dev/null >/dev/null
 if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
@@ -537,9 +535,15 @@ if [ -n "${FINDB_RELEASE_ROOT:-}" ]; then
       "https://${FINDB_PUBLIC_HOST}${dashboard_path}" >/dev/null
   done
 fi
-docker image prune -af --filter "until=168h" </dev/null >/dev/null
 echo "findb_aws_deploy=candidate_checks_passed image_refs=exact-digests"
 UP_SCRIPT
+
+if [ "$deploy_mode" = apply ]; then
+  # The independent transaction watchdog owns this healthy provisional runtime.
+  transaction_finalized=1
+  echo "findb_aws_deploy=healthy_pending_acceptance"
+  exit 0
+fi
 
 if [ "$deploy_mode" = candidate ]; then
   # No unaccepted process survives an SSM timeout or acceptance-write failure.

@@ -124,7 +124,9 @@ data "aws_iam_policy_document" "deploy_bundle" {
     actions = ["s3:PutObject"]
     resources = [
       "${aws_s3_bucket.deploy_bundle.arn}/findb/production/accepted/*",
+      "${aws_s3_bucket.deploy_bundle.arn}/findb/production/transactions/*",
       "${aws_s3_bucket.deploy_bundle.arn}/fetcher/production/accepted/*",
+      "${aws_s3_bucket.deploy_bundle.arn}/fetcher/production/transactions/*",
       "${aws_s3_bucket.deploy_bundle.arn}/findb/production/release-tags/*",
       "${aws_s3_bucket.deploy_bundle.arn}/fetcher/production/release-tags/*",
     ]

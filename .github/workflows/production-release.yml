@@ -129,10 +129,14 @@ jobs:
         bundle_sha256="${BASH_REMATCH[1]}"
         aws s3api get-object --bucket "$SOURCE_BUCKET" --key "${BUNDLE_KEY%.tar}.acceptance.json" "$RUNNER_TEMP/staging-binding-acceptance.json" >/dev/null
         jq -e --arg unit "$UNIT" --arg key "$BUNDLE_KEY" --arg sha "$bundle_sha256" --arg revision "$REVISION" '
-          type == "object" and .schema_version == 3 and .deployment_target == "staging"
+          type == "object" and (.schema_version == 3 or .schema_version == 4) and .deployment_target == "staging"
           and .release_tag == "" and .state == "accepted" and .unit == $unit
           and .commit_sha == $revision and .bundle_key == $key and .bundle_sha256 == $sha
         ' "$RUNNER_TEMP/staging-binding-acceptance.json" >/dev/null
+        aws s3api get-object --bucket "$SOURCE_BUCKET" --key "$BUNDLE_KEY" "$RUNNER_TEMP/staging-binding-bundle.tar" >/dev/null
+        python3 .deployment-driver/infra/deploy/release_manifest.py validate-bundle --bundle "$RUNNER_TEMP/staging-binding-bundle.tar" --expected-bundle-sha256 "$bundle_sha256" --unit "$UNIT"
+        tar -xOf "$RUNNER_TEMP/staging-binding-bundle.tar" release-manifest.json > "$RUNNER_TEMP/staging-binding-manifest.json"
+        python3 .deployment-driver/infra/deploy/deployment_receipt.py --manifest "$RUNNER_TEMP/staging-binding-manifest.json" --record "$RUNNER_TEMP/staging-binding-acceptance.json" --bundle-sha "$bundle_sha256"
     - name: Configure production release-binding credentials
       uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c
       with:

@@ -41,7 +41,7 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
         helper.index("common_args=(\n") : helper.index('\nif [ "$accepted_release" = false ]; then')
     ]
     normal = helper[
-        helper.index('docker run -d --name "$candidate"') : helper.index(
+        helper.index("runtime_labels=(") : helper.index(
             "\ncandidate_image=", helper.index('docker run -d --name "$candidate"')
         )
     ]

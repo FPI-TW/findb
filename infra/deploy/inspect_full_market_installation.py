@@ -78,8 +78,15 @@ def build(
         else:
             installed_environment = canonical
             environment_contracts.add("app-environment-v1")
+        labels = row["Config"].get("Labels") or {}
+        if "com.findb.deployment.transaction" in labels:
+            from deployment_receipt import committed_runtime
+
+            is_accepted = committed_runtime(row)
+        else:
+            is_accepted = labels.get("com.findb.fetcher.accepted") == "true"
         if (
-            row["Config"]["Labels"].get("com.findb.fetcher.accepted") != "true"
+            not is_accepted
             or row["Config"]["Image"]
             != manifest["images"][provider if provider != "taifex" else "twelve_data"]
             or installed_environment != target
