@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -295,6 +296,23 @@ def test_findb_production_runtime_configuration_schema_is_consumer_consistent() 
         "FINDB_TLS_CERT_PATH",
         "FINDB_TLS_PRIVATE_KEY_PATH",
     } <= declared[0]
+
+
+def test_production_compose_required_inputs_are_provided_by_runtime_contract() -> None:
+    catalog = _catalog("findb")
+    required_secret_keys = {
+        key
+        for secret in catalog["consumers"]["compose"]["secrets"]
+        for key in secret.get("required_keys", [])
+    }
+    # These inputs come from the validated deployment manifest, not Secrets Manager.
+    deployment_keys = {"APP_ENVIRONMENT", "FINDB_IMAGE_REF", "DASHBOARD_IMAGE_REF"}
+    compose = (REPO_ROOT / "docker-compose.prod.yml").read_text(encoding="utf-8")
+    required_compose_keys = set(re.findall(r"\$\{([A-Z_][A-Z0-9_]*):?\?", compose))
+    assert required_compose_keys <= required_secret_keys | deployment_keys, (
+        "Compose requires inputs that the runtime contract cannot supply: "
+        f"{sorted(required_compose_keys - required_secret_keys - deployment_keys)}"
+    )
 
 
 def test_fetcher_production_runtime_configuration_schema_is_consumer_consistent() -> None:

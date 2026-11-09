@@ -649,7 +649,12 @@ scope 或 controls。不可 replay 舊 Backend／Fetcher 重新抓取；修復�
 從 instance secret-read／decrypt scope 與 publisher／runtime image scope 移除；保留 `prevent_destroy`、
 `force_delete=false` 及原有 recovery window。原位停用 Shioaji CloudWatch alarm 通知並標記 retired；移除 collector active feeds／
 mount expectations，以及 `SHIOAJI_SIMULATION`、
-`SHIOAJI_SKIP_NON_TRADING_DAYS` runtime catalog／環境範本設定。舊 secret 內多餘鍵不再載入。
+`SHIOAJI_SKIP_NON_TRADING_DAYS` runtime catalog／環境範本設定。Runtime secret loader 嚴格拒絕 catalog 外欄位；部署前必須先從兩環境
+`findb/<environment>/findb/runtime/configuration` 移除 `SHIOAJI_SKIP_NON_TRADING_DAYS`，
+從 `findb/<environment>/fetcher/runtime/configuration` 移除 `SHIOAJI_SIMULATION`。
+只建立刪除這兩個鍵的新 secret version，核對其他值逐一相同，保留舊版本供稽核；不得輸出 secret 值。
+若未先清理，Backend 與 Fetcher 的唯讀 preflight 都會以 `secret_schema_invalid` 拒絕部署，
+此時尚未 migration／切換 containers。確認 current release 與查詢健康後，清理欄位並重跑失敗 jobs。
 
 Backend 驗收完成後，先審閱兩環境 OpenTofu plan：僅預期的 tag／IAM 更新與 Shioaji alarm 停用，
 標準 CI plan 維持零刪除；不可刪除 secret、ECR、alarm metadata、RDS、S3、磁碟或 canonical archive。套用後以 instance role 驗證無法讀取
