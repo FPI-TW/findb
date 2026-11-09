@@ -155,8 +155,16 @@ validate_image "$FACTSET_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/factset"
 preserve_env=DEPLOYMENT_TRANSACTION_ID,PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,FACTSET_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 run_runtime() {
+  local started=$SECONDS status=0 consumers="" previous="" argument
+  for argument in "$@"; do
+    [ "$argument" != -- ] || break
+    if [ "$previous" = --consumer ]; then consumers="${consumers:+$consumers,}$argument"; fi
+    previous="$argument"
+  done
   sudo --preserve-env="$preserve_env" "$runtime_command" \
-    --catalog "$catalog" --region "$AWS_REGION" --deployment-target "$APP_ENVIRONMENT" --aws-account-id "$AWS_ACCOUNT_ID" "$@"
+    --catalog "$catalog" --region "$AWS_REGION" --deployment-target "$APP_ENVIRONMENT" --aws-account-id "$AWS_ACCOUNT_ID" "$@" || status=$?
+  printf 'deployment_runtime unit=fetcher consumers=%s seconds=%s status=%s\n' "$consumers" "$((SECONDS - started))" "$status"
+  return "$status"
 }
 
 recorded_profile="$FETCHER_RUNTIME_PROFILE"
@@ -196,6 +204,30 @@ CHECKPOINT
 }
 initial_runtime_state() {
   local name="$1" id image running exit_code oom error accepted command
+  if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
+    # This immutable, non-secret snapshot is used only before host mutation.
+    # A missing/duplicate/malformed row is unknown state, never absence.
+    initial_runtime_command="$(printf '%s' "$initial_runtime_snapshot" | python3 -c '
+import json, sys
+try:
+    rows = [json.loads(line) for line in sys.stdin if line.strip()]
+    matches = [row for row in rows if row["name"] == "/" + sys.argv[1]]
+    if len(matches) != 1:
+        raise ValueError("missing or duplicate runtime")
+    row = matches[0]
+    if (not all(isinstance(row[key], str) and row[key] for key in ("id", "image"))
+        or type(row["running"]) is not bool or type(row["oom"]) is not bool
+        or type(row["exit_code"]) is not int or row["exit_code"] < 0
+        or not isinstance(row["error"], str)
+        or row["accepted"] not in (None, "true", "false", "", "<no value>")):
+        raise ValueError("invalid runtime metadata")
+    print(json.dumps(row["command"]))
+except Exception:
+    sys.exit(1)
+' "$name")" || runtime_inventory_failure
+    runtime_command_role "$initial_runtime_command" >/dev/null || runtime_inventory_failure
+    return 0
+  fi
   id="$(docker inspect --format '{{.Id}}' "$name")" || runtime_inventory_failure
   image="$(docker inspect --format '{{.Config.Image}}' "$name")" || runtime_inventory_failure
   running="$(docker inspect --format '{{.State.Running}}' "$name")" || runtime_inventory_failure
@@ -211,11 +243,19 @@ initial_runtime_state() {
   case "$accepted" in true|false|''|'<no value>') ;; *) runtime_inventory_failure ;; esac
 }
 initial_runtime_inventory="$(docker container ls --all --format '{{.Names}}' 2>/dev/null)" || runtime_inventory_failure
+initial_runtime_snapshot=""
+if [ "$FETCHER_DEPLOY_MODE" = apply ] && [ -n "$initial_runtime_inventory" ]; then
+  initial_names=()
+  while IFS= read -r name; do initial_names+=("$name"); done <<< "$initial_runtime_inventory"
+  initial_runtime_snapshot="$(docker inspect --format '{"name":{{json .Name}},"id":{{json .Id}},"image":{{json .Config.Image}},"running":{{json .State.Running}},"exit_code":{{json .State.ExitCode}},"oom":{{json .State.OOMKilled}},"error":{{json .State.Error}},"accepted":{{json (index .Config.Labels "com.findb.fetcher.accepted")}},"command":{{json .Config.Cmd}}}' "${initial_names[@]}")" || runtime_inventory_failure
+fi
 initial_runtime_exists() {
   local requested="$1" name
   while IFS= read -r name; do
     if [ "$name" = "$requested" ]; then
-      docker container inspect "$requested" >/dev/null 2>&1 || runtime_inventory_failure
+      if [ "$FETCHER_DEPLOY_MODE" != apply ]; then
+        docker container inspect "$requested" >/dev/null 2>&1 || runtime_inventory_failure
+      fi
       return 0
     fi
   done <<< "$initial_runtime_inventory"
@@ -229,7 +269,11 @@ for pair in "findb-pilot-twelve-data:findb-full-market-twelve-data" "findb-pilot
     for installed in "$base" "${base}-previous" "${base}-candidate" "${base}-transaction-backup" "${base}-legacy-previous" "${base}-preflight" "${base}-preflight-state" "${base}-preflight-control"; do
       if initial_runtime_exists "$installed"; then
         initial_runtime_state "$installed"
-        installed_command="$(docker inspect --format '{{json .Config.Cmd}}' "$installed")" || runtime_inventory_failure
+        if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
+          installed_command="$initial_runtime_command"
+        else
+          installed_command="$(docker inspect --format '{{json .Config.Cmd}}' "$installed")" || runtime_inventory_failure
+        fi
         installed_role="$(runtime_command_role "$installed_command")" || runtime_inventory_failure
         if [[ "$installed" == "$full_name"* ]] || [ "$installed_role" = full_market ]; then
           require_full_checkpoint
@@ -509,10 +553,21 @@ require_no_retired_provider
 run_runtime --consumer images --ecr-registry "$ECR_REGISTRY" --docker-login -- \
   bash -s -- "$TWELVE_IMAGE_REF" "$FINLAB_IMAGE_REF" "$FACTSET_IMAGE_REF" <<'PREPARE_IMAGES'
 set -euo pipefail
+# Only image downloads overlap. Wait for every child, including on failure,
+# before any provider mutation or Docker login cleanup.
+pull_exact() {
+  docker pull "$1" >/dev/null
+  docker image inspect "$1" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq "$1"
+}
+pids=()
 for image in "$@"; do
-  docker pull "$image" >/dev/null
-  docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq "$image"
+  pull_exact "$image" & pids+=("$!")
 done
+failed=0
+for pid in "${pids[@]}"; do
+  wait "$pid" || failed=1
+done
+[ "$failed" -eq 0 ]
 PREPARE_IMAGES
 export FETCHER_IMAGES_PREPARED=true FETCHER_HEALTH_MODE=coordinator
 activated_runtimes=()

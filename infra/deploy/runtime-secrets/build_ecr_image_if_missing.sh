@@ -55,8 +55,8 @@ case "$build_cache" in
       exit 1
     fi
     cache_args=(
-      --cache-from "type=gha,scope=$repository_name"
-      --cache-to "type=gha,mode=max,scope=$repository_name,ignore-error=true"
+      --cache-from "type=gha,version=2,scope=$repository_name"
+      --cache-to "type=gha,version=2,mode=max,scope=$repository_name,ignore-error=true"
     )
     ;;
   *)

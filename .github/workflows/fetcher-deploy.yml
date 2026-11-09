@@ -14,6 +14,22 @@ name: Reusable Fetcher deployment
       bundle_key:
         required: true
         type: string
+      prepare_candidate:
+        required: false
+        type: boolean
+        default: false
+      twelve_image:
+        required: false
+        type: string
+        default: ''
+      finlab_image:
+        required: false
+        type: string
+        default: ''
+      factset_image:
+        required: false
+        type: string
+        default: ''
       release_tag:
         required: false
         type: string
@@ -83,12 +99,63 @@ jobs:
           [ -f "$trusted" ] && [ ! -L "$trusted" ]
           [ "$(sha256sum "$trusted" | cut -d ' ' -f1)" = "$(git -C .deployment-driver show "$WORKFLOW_SHA:infra/deploy/$helper" | sha256sum | cut -d ' ' -f1)" ]
         done
+    - name: Verify staging candidate preparation contract
+      if: ${{ inputs.prepare_candidate }}
+      env:
+        TARGET: ${{ inputs.deployment_target }}
+        MODE: ${{ inputs.mode }}
+        REVISION: ${{ inputs.revision }}
+        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        RELEASE_TAG: ${{ inputs.release_tag }}
+      run: |
+        set -euo pipefail
+        [ "$GITHUB_REF" = refs/heads/main ]
+        [ "$TARGET" = staging ]
+        [ "$MODE" = candidate ]
+        [ -z "$BUNDLE_KEY" ]
+        [ -z "$RELEASE_TAG" ]
+        [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+        [ "$(git rev-parse HEAD)" = "$REVISION" ]
+    - name: Build and upload exact staging candidate
+      if: ${{ inputs.prepare_candidate }}
+      id: candidate
+      env:
+        ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
+        REGISTRY: ${{ env.ECR_REGISTRY }}
+        REVISION: ${{ inputs.revision }}
+        BUNDLE_BUCKET: ${{ env.DEPLOY_BUNDLE_BUCKET }}
+        KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+        TWELVE_IMAGE: ${{ inputs.twelve_image }}
+        FINLAB_IMAGE: ${{ inputs.finlab_image }}
+        FACTSET_IMAGE: ${{ inputs.factset_image }}
+      run: |
+        set -euo pipefail
+        [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
+        [[ "$TWELVE_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]]; [[ "$FINLAB_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]]; [[ "$FACTSET_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/factset@sha256:[0-9a-f]{64}$ ]]
+        profile=unified
+        python3 infra/deploy/release_manifest.py generate --runtime-profile "$profile" --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "twelve_data=$TWELVE_IMAGE" --image "finlab=$FINLAB_IMAGE" --image "factset=$FACTSET_IMAGE" --output "$RUNNER_TEMP/manifest.json"
+        python3 infra/deploy/release_manifest.py bundle --repo-root . --unit fetcher --manifest "$RUNNER_TEMP/manifest.json" --output "$RUNNER_TEMP/bundle.tar"
+        sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d ' ' -f1)"; key="fetcher/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar"
+        aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$key" --body "$RUNNER_TEMP/bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
+        echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
+    - name: Select exact deployment bundle
+      id: bundle
+      env:
+        PREPARE: ${{ inputs.prepare_candidate }}
+        INPUT_KEY: ${{ inputs.bundle_key }}
+        CANDIDATE_KEY: ${{ steps.candidate.outputs.bundle_key }}
+      run: |
+        set -euo pipefail
+        key="$INPUT_KEY"
+        if [ "$PREPARE" = true ]; then key="$CANDIDATE_KEY"; fi
+        [ -n "$key" ]
+        echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
     - name: Verify immutable target contract
       env:
         EXPECTED_SHA: ${{ inputs.revision }}
         TARGET: ${{ inputs.deployment_target }}
         MODE: ${{ inputs.mode }}
-        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        BUNDLE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         RELEASE_TAG: ${{ inputs.release_tag }}
       run: |
         set -euo pipefail
@@ -123,7 +190,7 @@ jobs:
         TARGET: ${{ inputs.deployment_target }}
         REVISION: ${{ inputs.revision }}
         MODE: ${{ inputs.mode }}
-        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        BUNDLE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         RELEASE_TAG: ${{ inputs.release_tag }}
         AWS_REGION: ${{ env.AWS_REGION }}
         AWS_ACCOUNT_ID: ${{ env.AWS_ACCOUNT_ID }}
@@ -200,7 +267,7 @@ jobs:
       env:
         TARGET: ${{ inputs.deployment_target }}
         REVISION: ${{ inputs.revision }}
-        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        BUNDLE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
         VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}
         TWELVE_IMAGE: ${{ steps.release.outputs.twelve_data }}
@@ -294,7 +361,7 @@ jobs:
         TARGET: ${{ inputs.deployment_target }}
         MODE: ${{ inputs.mode }}
         REVISION: ${{ inputs.revision }}
-        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        BUNDLE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
         TWELVE_IMAGE: ${{ steps.release.outputs.twelve_data }}
         FINLAB_IMAGE: ${{ steps.release.outputs.finlab }}
@@ -345,7 +412,7 @@ jobs:
       env:
         REVISION: ${{ inputs.revision }}
         RELEASE_TAG: ${{ inputs.release_tag }}
-        CANDIDATE_KEY: ${{ inputs.bundle_key }}
+        CANDIDATE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
         COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
         VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}

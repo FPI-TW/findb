@@ -9,6 +9,11 @@
   再經既有人工 promotion 驗收。FinDB／Fetcher × staging／production 各累積五筆
   一般增量成功樣本，每筆部署淨耗時小於 300 秒；保留超標、失敗與特殊情境樣本。
   計時口徑、歷史基準、故障復原與驗收限制見[部署操作](../operations/deployment.md)。
+  #422 首輪 staging 已確認兩個 transaction committed：FinDB 347 秒、Fetcher 370 秒
+  （已排除 verify/test 與 Fetcher 等待 FinDB 的 172 秒）。五個 images 的 GHA cache 均發生
+  HTTP 400，另列快取異常／超標樣本；一般增量合格樣本仍各為 0/5。Cache v2、consumer 內有界平行
+  secret 讀取、Fetcher 批次 inventory／平行 pull 與同 deploy role 的編排合併已實作，
+  需由 staging 新樣本確認效果；逐步量測與限制見操作文件。
 
 ## 延後：平台強化
 

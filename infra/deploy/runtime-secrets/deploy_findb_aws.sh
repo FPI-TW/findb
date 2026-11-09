@@ -57,12 +57,20 @@ case "$deploy_mode" in candidate|activate|apply) ;; *) exit 1 ;; esac
 preserve_env=DEPLOYMENT_TRANSACTION_ID,DEPLOYMENT_REPLAY,FINDB_TRANSACTION_COMPOSE_FILE,PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FINDB_IMAGE_REF,DASHBOARD_IMAGE_REF,FINDB_PUBLIC_HOST,FINDB_NGINX_CONFIG_DIR,COMPOSE_FILE,COMPOSE_PROJECT_NAME,FINDB_RELEASE_ROOT,FINDB_DEPLOY_MODE,PREDEPLOY_EXPECTED_ALEMBIC_REVISION,PREDEPLOY_EXPECTED_RDS_ENDPOINT
 
 run_runtime() {
+  local started=$SECONDS status=0 consumers="" previous="" argument
+  for argument in "$@"; do
+    [ "$argument" != -- ] || break
+    if [ "$previous" = --consumer ]; then consumers="${consumers:+$consumers,}$argument"; fi
+    previous="$argument"
+  done
   sudo --preserve-env="$preserve_env" "$runtime_command" \
     --catalog "$catalog" \
     --region "$AWS_REGION" \
     --deployment-target "$APP_ENVIRONMENT" \
     --aws-account-id "$AWS_ACCOUNT_ID" \
-    "$@"
+    "$@" || status=$?
+  printf 'deployment_runtime unit=findb consumers=%s seconds=%s status=%s\n' "$consumers" "$((SECONDS - started))" "$status"
+  return "$status"
 }
 
 if [ ! -f "$compose_file" ]; then
@@ -248,19 +256,15 @@ revision_policy=--allow-empty-database-bootstrap
 if [ "${FINDB_DEPLOY_MODE:-candidate}" = activate ] || [ "${DEPLOYMENT_REPLAY:-false}" = true ]; then
   revision_policy=--require-exact-alembic-revision
 fi
-docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} run --rm --no-deps ingest \
-  python /app/scripts/predeploy_db_check.py \
-    --expected-alembic-revision "$expected_revision" \
-    --expected-rds-endpoint "$expected_rds_endpoint" \
-    "$revision_policy" </dev/null
 docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} run --rm --no-deps \
   -e APPLICATION_DATABASE_URL \
   -e FINDB_QUEUE_HEALTH_ADMIN_API_KEY \
   -e FINDB_LOOKUP_SERVE_API_KEY \
   -e FINDB_STATIC_CACHE_SERVE_API_KEY ingest \
-  python /app/scripts/reconcile_deployment_credentials.py \
-  --deployment-target "$APP_ENVIRONMENT" \
-  --check-only </dev/null
+  sh -euc '
+    python /app/scripts/predeploy_db_check.py --expected-alembic-revision "$1" --expected-rds-endpoint "$2" "$3"
+    python /app/scripts/reconcile_deployment_credentials.py --deployment-target "$4" --check-only
+  ' check "$expected_revision" "$expected_rds_endpoint" "$revision_policy" "$APP_ENVIRONMENT" </dev/null
 MIGRATION_CHECK_SCRIPT
 
 # Migration and internal health precede immutable acceptance. Stop the public

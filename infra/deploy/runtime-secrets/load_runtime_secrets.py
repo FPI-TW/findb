@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -120,7 +121,8 @@ def load_consumer(
     ):
         raise LoaderError("catalog_invalid")
 
-    loaded: dict[str, str] = {}
+    # Validate the entire allowlist before starting any AWS request.
+    requests: list[tuple[str, list[str], list[str]]] = []
     for secret in consumer["secrets"]:
         if not isinstance(secret, Mapping):
             raise LoaderError("catalog_invalid")
@@ -144,8 +146,19 @@ def load_consumer(
         allowed_keys = set((*required_keys, *optional_keys))
         if len(allowed_keys) != len(required_keys) + len(optional_keys):
             raise LoaderError("catalog_invalid")
+        requests.append(
+            (f"findb/{deployment_target}/{unit}/{relative_name}", required_keys, optional_keys)
+        )
+
+    # Concurrency stays within this consumer. No disk cache, shared provider
+    # environment, or credentials surviving the bounded wrapper invocation.
+    loaded: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        payloads = list(executor.map(fetch_secret, (request[0] for request in requests)))
+    for (_, required_keys, optional_keys), raw in zip(requests, payloads, strict=True):
+        allowed_keys = set((*required_keys, *optional_keys))
         try:
-            payload = json.loads(fetch_secret(f"findb/{deployment_target}/{unit}/{relative_name}"))
+            payload = json.loads(raw)
         except (TypeError, json.JSONDecodeError) as exc:
             raise LoaderError("secret_json_invalid") from exc
         if not isinstance(payload, dict) or set(payload) - allowed_keys:
