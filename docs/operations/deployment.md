@@ -161,7 +161,7 @@ Actions timing artifact 與 jobs API 時間一致；CloudWatch 同時確認 FinD
 
 這次五個 images 的 GHA cache 匯入與匯出皆出現 HTTP 400／HTML error response；匯出設定
 `ignore-error=true`，所以發布仍成功。兩筆保留為「快取異常、部署成功但超標」樣本，不能當作
-warm-cache 一般增量的代表，也不能刪除超標紀錄。目前 staging 兩個 units 的合格一般增量樣本
+warm-cache 一般增量的代表，也不能刪除超標紀錄。截至 #422 該輪，staging 兩個 units 的合格一般增量樣本
 均為 **0/5**；production 尚未新增驗收樣本。
 
 下表按 Actions job／step 的秒級時間分解，所有列相加等於部署淨耗時；平行 images 取整個
@@ -251,12 +251,12 @@ SSM 正常完成輪詢改為兩秒，deadline、成功 marker、取消確認與 
 
 相較 #422，FinDB 淨耗時減少 25 秒、apply 減少 28 秒；Fetcher 淨耗時減少 26 秒，但 apply
 只減少 1 秒。Fetcher wrapper 實測 images 為 25 秒，四個 provider 依序為 26、26、29、27 秒；
-不能宣稱平行 pull 或 secret 讀取已在這台主機取得明顯整體加速。五筆一般增量合格樣本仍各為 0/5。
+不能宣稱平行 pull 或 secret 讀取已在這台主機取得明顯整體加速。截至 #424 該輪，一般增量合格樣本仍各為 0/5。
 部署前後唯讀比對確認五個 SQLite databases 共 83 張表的 rows／SHA-256 完全一致，包含
 checkpoint、quota 與歷史狀態；十二個 runtimes 均已替換，全部 running、restart count 0、
 無 OOM，restart policy 為 `unless-stopped`。
 
-後續將 Fetcher 的即時恢復檢查放入 apply 的同一個 SSM command，位於 materialize、transaction
+已透過 #425 將 Fetcher 的即時恢復檢查放入 apply 的同一個 SSM command，位於 materialize、transaction
 建立及任何容器修改之前；仍使用 protected-main driver 的腳本與 SHA-256 驗證，且只有等待
 同 revision FinDB 的入口需要執行。保留 `stable_seconds=0`、180 秒恢復期限與失敗拒絕；
 本機腳本遭竄改或恢復失敗都不會進入 apply。恢復與 apply 各自保留原 Bash 240／900 秒上限與 TERM cleanup；只有傳輸合併。
@@ -264,11 +264,63 @@ checkpoint、quota 與歷史狀態；十二個 runtimes 均已替換，全部 ru
 原 SSM 1200 秒／runner 1260 秒，不延長任何主機階段的執行期限。
 SSM gate 另記錄成功命令 elapsed seconds，方便和 Actions step 的往返成本對照。
 
-下一筆須實測暖快取與新的交接方式，不把省時預估算成已達標。Fetcher 等待同 revision
-FinDB 的 step 全部另列排除；恢復狀態、preflight、健康、cache 生成、acceptance 與 finalize
-仍計入。重用同一 SHA／image 的 replay 只能驗證相容與復原，不能補足一般增量的五筆樣本。
-尚未實作的候選包括 image digest 綁定 migration metadata，以及細部 health probes 平行化；
-先由改善後實測判斷需求。
+Fetcher 等待同 revision FinDB 的 step 全部另列排除；恢復狀態、preflight、健康、cache 生成、
+acceptance 與 finalize 仍計入。重用同一 SHA／image 的 replay 只能驗證相容與復原，不能補足
+一般增量的五筆樣本。
+
+### #425 staging 暖快取增量實測
+
+2026-11-09 revision `c1c175b8a7496ff666472e3ee83ffcc9483f3756` 為新的部署腳本增量 candidate，
+經 Required CI 通過後合併，未使用 replay；應用程式 layers 未變更，五個 images 都有 GHA
+cache 命中且成功發布新 revision tag，沒有 HTTP 400。這筆證明暖快取下的部署腳本增量能達標，
+尚不能代表應用程式 layers 改動、dependency 更新或冷快取的耗時。
+
+| 實測 | [FinDB staging](https://github.com/FPI-TW/findb/actions/runs/42630986468) | [Fetcher staging](https://github.com/FPI-TW/findb/actions/runs/42630986350) |
+| --- | ---: | ---: |
+| 首個 job 至部署結束 | 261 秒 | 420 秒 |
+| Verify/test 獨占區間 | 0 秒（重用 Required CI） | 0 秒（重用 Required CI） |
+| 排除純等待同 revision FinDB | 0 秒 | 184 秒 |
+| **部署淨耗時** | **261 秒（4:21）** | **236 秒（3:56）** |
+| 距離 300 秒的餘裕 | 39 秒 | 64 秒 |
+| 一般增量合格樣本 | **1/5** | **1/5** |
+
+以下各列相加等於部署淨耗時，準備／收尾包含該 job 的秒級差額，job 間隙仍計入。恢復檢查
+已包含在 Fetcher apply 的 128 秒，不因合併 SSM 或等待 FinDB 而排除。五個 images 平行建置
+以 step 牆鐘計算，未累加個別 image 時間。
+
+| 步驟 | FinDB 秒 | Fetcher 秒 | 存在理由 | 改善結果／後續方向 |
+| --- | ---: | ---: | --- | --- |
+| Policy／revision／CI gate | 9 | 9 | 驗證來源與可信 CI 證據 | 保留 |
+| Publisher 準備／收尾 | 15 | 19 | 獨立 publisher IAM、checkout、Buildx | 保留權限分離；觀察初始化波動 |
+| Image build／push／digest | 14 | 16 | 發布本 revision 的 immutable images | Cache v2 命中；上輪為 64／63 秒 |
+| Immutable migration revision | 16 | — | 從實際 backend image 解析 exact revision | 後續可評估與 digest 綁定的 build metadata；本輪保留原檢查 |
+| Deploy 準備／release 驗證／收尾 | 26 | 23 | Protected-main driver、deploy IAM、account 與 bundle 驗證 | Prepare 已併入同 IAM 的 deploy job |
+| Bundle 建立／上傳 | 4 | 5 | 精確來源、manifest、hash 與可信 validator | 保留 |
+| Read-only SSM preflight | 20 | 14 | 修改前檢查主機、secrets、DB／runtimes | 保留所有拒絕條件；使用較短正常輪詢 |
+| Apply／恢復／主機健康 | 135 | 128 | 安全更新、migration、即時恢復 gate、服務與公開入口健康 | 消除重複管理容器與 SSM 往返；保留 provider 序列修改及至少 25 秒共同觀察 |
+| Runner acceptance／decision | 6 | 6 | 本次 transaction 的唯一 runner acceptance | 保留 immutable／條件寫入 |
+| Finalize | 10 | 10 | 同鎖驗證 decision、pointer、restart policy 與清理 | 保留 watchdog 競態保護 |
+| Job 間排程間隙 | 6 | 6 | Actions job 交接 | 保留於計時內 |
+| **合計** | **261** | **236** | | |
+
+Fetcher 的主機 wrapper 實測 images 2 秒，Twelve Data／FinLab／TAIFEX／FactSet 各為
+18／20／18／19 秒；這些是 apply 的子區間，不重複加總。相較 #424，淨耗時減少 61／108 秒；
+同時存在暖快取與主機 image layers 重用，不能將所有改善歸因於單一程式變更。
+兩個主機皆回報本次 `deployment_transaction=committed`。部署前後唯讀快照確認五個 SQLite
+databases 共 83 張表的 rows／SHA-256 完全一致，checkpoint、quota 與歷史工作狀態未變。
+十二個 runtimes 的原 IDs 均已替換，全部 running、restart count 0、無 OOM，restart policy
+為 `unless-stopped`，transaction label 與本次 run 一致。
+
+[Required CI](https://github.com/FPI-TW/findb/actions/runs/42630201966) 已通過 Backend、Fetcher、
+Dashboard、完整 Infra（965 tests、289 subtests 通過），並執行真實 Docker／systemd recovery。
+本機完整 `pnpm check`、受影響部署測試與 timeout／guard 組合測試亦通過。
+本輪成功不代替 AWS 取消、主機重啟或完整故障注入演練。
+
+目前僅取得 staging 兩個 units 各一筆合格增量，尚未完成各五筆驗收；後續須保留真實應用程式
+增量、超標及失敗樣本，不能以空 commit 或同 SHA replay 補足。Production 尚未新增樣本，
+仍須先套用 transactions bucket policy，再經既有人工 promotion 入口驗收。
+尚未實作的 image digest 綁定 migration metadata、細部 health probes 平行化列為後續候選，
+先累積實際增量的分布與瓶頸證據，不縮短安全／健康觀察下限。
 
 2026-10-16 已透過 OpenTofu 套用兩環境 deploy role 的取消命令權限：
 
