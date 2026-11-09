@@ -530,17 +530,16 @@ async def test_reset_refuses_active_queue_owner_even_without_ingestion_runs(test
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_shioaji_acquisition")
 async def test_reset_preserves_calendar_closure_and_its_original_work_graph(
     test_engine, monkeypatch
 ):
     from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    from app.config import get_settings
     from app.schemas.calendar_closure import CalendarClosureApplyRequest
     from app.services.calendar_closure import apply, inventory, preview
     from tests.test_calendar_closure import setup_closure
 
-    monkeypatch.setattr(get_settings(), "SHIOAJI_SKIP_NON_TRADING_DAYS", True)
     sessions = async_sessionmaker(test_engine, expire_on_commit=False)
     async with sessions() as db:
         work, _, _, _, proposal = await setup_closure(db)

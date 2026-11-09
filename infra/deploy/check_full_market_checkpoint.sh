@@ -38,7 +38,6 @@ try:
         "findb-fetch-full-market": "full_market",
         "findb-fetch-scheduler": "pilot",
         "findb-fetch-finlab-scheduler": "pilot",
-        "findb-fetch-shioaji-scheduler": "pilot",
         "findb-fetch-taifex-pilot": "pilot",
         "findb-fetch-historical-backfill": "historical",
     }

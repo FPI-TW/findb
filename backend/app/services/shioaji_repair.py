@@ -4,7 +4,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkReceipt
-from app.models.registry import DailyDeliveryMember, DailyDeliveryPlan, UniverseMember
+from app.models.registry import (
+    DailyDeliveryMember,
+    DailyDeliveryPlan,
+    SchedulerControl,
+    UniverseMember,
+)
 from app.models.shioaji_repair import ShioajiMemberRepair, ShioajiRepairAck
 from app.schemas.shioaji_repair import RepairApplyRequest, RepairPreviewRequest
 from app.services import provider_work as queue
@@ -151,6 +156,15 @@ async def preview(db: AsyncSession, work_id, body: RepairPreviewRequest) -> dict
 
 
 async def apply(db: AsyncSession, work_id, body: RepairApplyRequest, *, actor: str) -> dict:
+    if await db.scalar(
+        select(SchedulerControl.scheduler_key)
+        .where(
+            SchedulerControl.scheduler_key.in_(("pilot_shioaji_v1", "full_market_shioaji_v1")),
+            SchedulerControl.retired_at.is_not(None),
+        )
+        .limit(1)
+    ):
+        raise FullMarketError("Shioaji is retired; historical repair evidence is read-only", 409)
     owner = await queue.lock_provider(db, "shioaji")
     _, plan = await work_scope(db, work_id)
     proposal = RepairPreviewRequest.model_validate(body.model_dump(exclude={"expected_sha256"}))

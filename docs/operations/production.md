@@ -5,6 +5,45 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
+## Shioaji Backend admission 退役部署基準
+
+`findb-v0.1.19`（`2a6bec9d4d5d240a27aa862d0178567e9653f9ff`）已於 2026-11-09
+完成 [staging 驗收](https://github.com/FPI-TW/findb/actions/runs/42557299064) 與
+[production activation](https://github.com/FPI-TW/findb/actions/runs/42560023586/attempts/2)。
+Production 直接 promotion staging 的 Backend／Dashboard digest，Alembic revision 維持
+`c7d2e9a4f1b3`，沒有新增 migration。
+
+本版關閉 Shioaji 的新歷史回補，cutover host identities 只接受 FactSet、FinLab、TAIFEX、
+Twelve Data。保留既有回補、work／owner／receipt、canonical 分 K 與 Admin／Serve 查詢；
+Source scope、credentials 與 catalog 的完整退役已由 PR #418 實作，尚待下一版部署及 IaC 套用；
+見 [migration 與驗收順序](deployment.md#shioaji-退役的-rollback-下限)。
+
+驗收新版本時，核對已部署的 capability 與 cutover inventory、兩條分 K preview 的
+`provider_dataset_unsupported`、create service 拒絕新增，以及 Dashboard 的現役 provider
+選單與舊回補紀錄。Create 的 HTTP 422 mapping 由 API 回歸測試覆蓋；線上 create service
+驗收在唯讀 transaction 執行，不建立測試工作。Serve 查詢使用既有 Serve credential，
+不能只以 `/health` 取代歷史查詢驗收。
+
+| Shioaji 保留資料 | Staging | Production |
+| --- | ---: | ---: |
+| Historical requests／items | 4／4 | 14／16 |
+| 完成的 ingestion runs | 226 | 9,367 |
+| Provider work／owner／receipts | 50／1／28 | 49／1／6,843 |
+| Canonical minute rows | 59,646 | 1,160,046 |
+
+Production 部署前後 requests、items、work、owner、receipts 的完整資料列指紋一致；
+分 K 筆數、日期範圍與抽樣資料亦一致，具認證的 Serve 分 K HTTP 查詢均為 200，回應指紋相同。
+兩環境 Shioaji owner 都無 active attempt。Staging 的兩筆 calendar-closed work 所留 queued
+attempts 保持原狀；唯一 failed normalization job 是 2026-08-28 的 FinLab 舊紀錄。
+Production normalization queue 無未結工作。
+
+部署期間暫停的 TAIFEX／Twelve Data Full market 已恢復原本 running 設定（revision 36／32）；
+其他 Full、Pilot 與 Shioaji controls 維持 stopped。因瀏覽器控制失效，恢復操作使用既有
+break-glass 復原憑證，仍經正式 Admin API、expected revision 與 audit event，不直接修改 DB。
+首輪 candidate 曾因舊 Serve 等待 background tasks 而以 exit 137 停止；當時尚未 migration，
+確認原映像與 current pointer 後恢復 v0.1.18、驗證查詢與資料，再重試同一 bundle 成功。
+復原判斷見 [部署失敗處理](deployment.md#共用部署順序)。
+
 ## 其他 provider 複查與控制路徑實測（2026-11-01）
 
 台北 11/01 00:23～00:40 經 Owner 授權，以 PostgreSQL `REPEATABLE READ READ ONLY`、Fetcher
@@ -695,18 +734,17 @@ Origin certificate secret固定使用單行 base64 欄位
 
 ## 共用 credentials 與初始化
 
-五個 provider Source scopes 在 staging／production 相同，只有 credentials values 不同：
+四個 active provider Source scopes 在 staging／production 相同，只有 credentials values 不同：
 
 | Source | Dataset allowlist |
 | --- | --- |
-| `twelve_data` | `us_equity_eod`、`hk_equity_eod` |
+| `twelve_data` | `us_equity_eod` |
 | `finlab` | `tw_equity_eod`、`tw_etf_eod` |
-| `shioaji` | `tw_equity_minute`、`tw_etf_minute` |
 | `taifex` | `tw_futures_eod` |
 | `factset` | `hk_equity_eod` |
 
 `reconcile_fetcher_credentials.py --runtime-profile unified` 只校準 allowlist／hash 並留下 audit，
-不啟動 scheduler。五把 Source keys 相互隔離；現行execution manifest的HK feed使用FactSet，
+不啟動 scheduler。四把 Source keys 相互隔離；現行execution manifest的HK feed使用FactSet，
 Twelve Data只有US allowlist。有效日曆與執行政策由Source提供，
 不再注入calendar Serve key。
 跨 unit bridge 只傳 SHA-256，

@@ -31,7 +31,6 @@ def test_expected_container_sets_are_bounded() -> None:
     assert module.EXPECTED_CONTAINERS["fetcher"] == (
         "findb-fetcher-finlab-scheduler",
         "findb-fetcher-scheduler",
-        "findb-fetcher-shioaji-scheduler",
     )
 
 

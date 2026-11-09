@@ -73,7 +73,7 @@ async def test_prepared_rows_round_trip_original_objects_and_key_order():
 
         before = await originals()
         assert before[work_ids[0]][1] == ["a", "zz", "bbb", "descriptor-only"]
-        await run_alembic(url, "head")
+        await run_alembic(url, "9c1e4f7a2b6d")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         async with sessions() as db:
             assert await queue.prepared_keys(db, work_ids[0]) == before[work_ids[0]][1]
@@ -119,7 +119,7 @@ async def test_prepared_rows_upgrade_fails_closed_when_an_object_cannot_round_tr
                 {"id": uuid7()},
             )
         with pytest.raises(subprocess.CalledProcessError) as failed:
-            await run_alembic(url, "head")
+            await run_alembic(url, "9c1e4f7a2b6d")
         assert "did not round-trip" in failed.value.stderr
         async with engine.connect() as db:
             assert await db.scalar(text("SELECT version_num FROM alembic_version")) == PREVIOUS

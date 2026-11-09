@@ -40,32 +40,17 @@ Production native 資料與實際 rollback 演練由
 
 ## Full-market external acceptance
 
-- [ ] Shioaji 完整退役：Fetcher runtime 與部署資產已移除，staging／production #400 CD 已成功
-  （[staging](https://github.com/FPI-TW/findb/actions/runs/42461220306)、
-  [production](https://github.com/FPI-TW/findb/actions/runs/42493300346)）。Backend 新回補 capability 已移除，
-  `apply_cutover` 已改為四-provider host inventory 並保留 Shioaji 歷史狀態；待部署後驗證拒絕新申請、
-  歷史查詢與資料保留。接著退役 Backend scope 與 credential（migration），最後清理 secret、
-  ECR、CloudWatch alarm、`publish_staging_metrics.py`、`.env.example`、host guard 的過渡名稱與文件。TW 分 K
-  改由替代 provider 供應，選型未定；停止抓取後到接手前不更新。步驟見
-  [deployment](../operations/deployment.md#shioaji-退役的-rollback-下限)。
-  替代 provider 上線時須評估回補 production 既有缺口（2026-11-02 唯讀查核）：10/13～10/26 無分 K
-  （daily work 以 `OWNER_REQUESTED_CLEAN_START` 取消）；10/27～10/30 有部分資料但 daily work 為
-  failed；9/30 equity historical request 為 failed。Full checkpoint 保留 36 個未完成 plan
-  （pending 16,128、manual 16,330，無未交付 prepared bytes），不會再被處理，僅作為證據。
-
-- [ ] 部署 [#378](https://github.com/FPI-TW/findb/issues/378) Shioaji 空 Kbars／mapping 修復後，
-  保存受控原生觀測與 catalogue 證據，確認空回應原因，逐工作核准恢復並核對 canonical／Serve
-  與既有收據；程式與離線測試完成不代表 production 工作已恢復。操作見
-  [Full market runbook](../operations/full_market.md#shioaji-空-kbars-與凍結-mapping-修復)。
-  2026-10-30 staging 已驗證修復授權／ACK、十五分鐘退避與原 attempts／cache 保留；
-  10/29、10/30 正常 catch-up 已通過 Source→canonical→Serve。10/23 已由證交所公告確認
-  颱風休市，空回應符合市場狀態；當時 `1102` 三次後 manual，已依授權停止 Pilot。
-  只讀對帳確認 TW published revision=6、原兩 decision 已於 10/24 人工更正為 skipped_calendar，
-  audit／resolved alerts 相符，無須再改日曆或決策。兩 queued work／舊 plan 仍待保留原
-  manifest、修復授權與帳務的結清協定部署／套用驗收；已新增附加式 calendar_closed 流程，
-  repair 的 RESTRICT 外鍵保留，舊刪除式封存流程不適用。staging 尚未部署新增 API／migration，
-  預覽需明列部署前置條件，不以追加抓取取得當日 bars；
-  mapping gap 與 production 其他日期的根因／恢復仍待驗收，不追加額度或自動重啟。
+- [ ] Shioaji 退役部署驗收與外部收尾：PR #418 已實作 Source scope／credential migration
+  `d8e3f0b5a2c4`、active catalog／runtime 設定清理、v3 host guard 與 IaC 撤權／告警停用。
+  尚待 staging／production migration、歷史指紋與查詢驗收、兩環境 IaC plan／apply，以及券商端
+  API key 撤銷。Protected secret／ECR metadata、停用的 alarm metadata、checkpoint／cache 與備份刻意保留，未實體刪除；
+  後續實體清除須獨立盤點。操作見 [退役 runbook](../operations/deployment.md#shioaji-退役的-rollback-下限)。
+  上次已部署基準為 `findb-v0.1.19`／`fetcher-v0.1.25`，見
+  [production 基準](../operations/production.md#shioaji-backend-admission-退役部署基準)。
+- [ ] TW 分 K 替代 provider 選型與缺口回補：停止抓取後到接手前不更新。Production 10/13～10/26
+  無分 K（原 daily work 取消）；10/27～10/30 為部分資料／failed，9/30 equity historical failed。
+  Full checkpoint 的 36 個未完成 Shioaji plans、原始 receipts 與 mapping／repair 證據需保留，
+  不能直接重新啟動 Shioaji 或將舊失敗改成成功。
 
 - [ ] 將 TAIFEX dated-universe 專用告警、Admin candidates／member-diff 唯讀入口與 Dashboard
   提示部署至 staging，配合已完成的 bounded rollover／semantic universe 流程驗證後再 promotion

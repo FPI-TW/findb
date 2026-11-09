@@ -100,7 +100,7 @@ locals {
       unit          = "fetcher"
       relative_name = "api/source/shioaji"
       consumer      = "shioaji"
-      status        = "active"
+      status        = "retired"
     }
     "fetcher/api/source/taifex" = {
       unit          = "fetcher"
@@ -124,7 +124,7 @@ locals {
       unit          = "fetcher"
       relative_name = "provider/shioaji"
       consumer      = "shioaji"
-      status        = "active"
+      status        = "retired"
     }
     "fetcher/r2/raw" = {
       unit          = "fetcher"

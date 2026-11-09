@@ -187,6 +187,8 @@ async def source_headers(request, test_session: AsyncSession) -> AsyncGenerator[
     provider = "finlab"
     allowed_datasets = ["tw_equity_eod"]
     if basename == "test_minute_normalize.py":
+        from tests.market_minute_fixture import legacy_source_client as create_source_client
+
         provider = "shioaji"
         allowed_datasets = ["tw_equity_minute", "tw_etf_minute"]
     _, api_key = await create_source_client(
@@ -229,3 +231,22 @@ def isolate_full_market_settings(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "FULL_MARKET_ENABLED", False)
     monkeypatch.setattr(settings, "APP_ENVIRONMENT", "local")
+
+
+@pytest.fixture
+def legacy_shioaji_window(monkeypatch):
+    """Reconstruct the old daily window when exercising retained recovery evidence."""
+    from app.services import daily_runtime
+
+    policies = {"shioaji": {"timezone": "Asia/Taipei", "start": "18:00", "end": "06:00"}}
+    monkeypatch.setattr(daily_runtime, "_runtime_policies", lambda: policies)
+    return policies
+
+
+@pytest.fixture
+def legacy_shioaji_acquisition():
+    """Exercise pre-retirement recovery protocols against explicit historical state."""
+    from tests.market_minute_fixture import legacy_acquisition_catalog
+
+    with legacy_acquisition_catalog():
+        yield

@@ -22,6 +22,19 @@ is the separate evidence for the initial apply and notification exercise. Keep
 the original safety distinction explicit: **IaC declarations, not live-apply or delivery evidence**,
 are all that repository source alone can prove.
 
+## Shioaji retirement
+
+PR #418 disables notification actions for retained Shioaji alarm identities in both
+environments and tags them retired; missing metrics are non-breaching. The standard CI
+plan permits no deletes, so physical alarm deletion needs a separate approved retirement
+plan. Shioaji expected container/mount entries are removed from the collector.
+Active ingestion failure metrics now cover the five catalog feeds: Twelve Data US,
+FinLab TW equity/ETF, TAIFEX futures and FactSet HK. Retired minute datasets stay
+queryable and do not generate new missing-delivery alerts. Cloud resources change
+only after the reviewed IaC plan is applied; see the [retirement runbook](deployment.md#shioaji-退役的-rollback-下限).
+The remaining legacy container/scheduler alarm identities need a separate inventory
+alignment with the unified runtime; this retirement does not establish their health.
+
 ## Live acceptance record (2026-09-01 to 2026-09-15)
 
 - CloudTrail records Tyler creating the private SNS topic at
@@ -127,7 +140,7 @@ breaching-on-missing alarms are created.
 | Both hosts | Root `DiskUsedPercent >= 85%`, `InodeUsedPercent >= 90%`, collector success `< 1` for 2 × 5 minutes |
 | Required containers | Health `< 1` for 2 × 5 minutes; current-container restart count `>= 3` |
 | RabbitMQ | Local disk or memory alarm flag `>= 1`; collected from `rabbitmq-diagnostics`, without credentials |
-| Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for FinLab, Shioaji, or Twelve Data |
+| Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for the retained FinLab or Twelve Data legacy alarm identities |
 | RDS recovery | `LatestRestorableTime` lag `>= 1800` seconds, providing a continuous PITR/backup-lag signal |
 | DLM control plane | Exact root-volume policy health `< 1` for 2 × 5 minutes; query failure or missing data also breaches |
 | Public TLS certificate | Verified `notAfter` days remaining `<= 30` for 2 × 5 minutes; TLS query/verification failure suppresses the healthy datum and missing data breaches |
@@ -201,7 +214,7 @@ stderr空白，輸出分別保存於既有KMS-encrypted log groups。相鄰兩�
 ## Active-feed evidence and anomaly calibration
 
 `infra/acceptance/collect_native_feed_evidence.py` 以明確的 environment、execution profile 與
-trade date 收集共用 catalog 的七條 feeds。舊五條 feed／固定商品的三個 CLI 已停用；其純函式
+trade date 收集共用 catalog 的五條 active feeds。舊五條 feed／固定商品的三個 CLI 已停用；其純函式
 保留作投影與有界 SSM transport 共用及回歸測試，不再作現行 native 驗收入口。
 
 ```bash
@@ -228,7 +241,7 @@ Shared account governor 的 recent operations、official usage 與 unknown／arm
 不得將缺少 usage 解讀為零用量，也不得抹除既有 debt 以通過驗收。
 
 每條 feed 至少有一筆真實非零資料，且該 plan 全部 expected 成員已有 data／有證據的 no_data，
-missing／blocked 為零、Fetcher 工作全部完成，才通過。七條全數通過才可將 staging native 結果用於
+missing／blocked 為零、Fetcher 工作全部完成，才通過。五條 active feeds 全數通過才可將 staging native 結果用於
 production promotion 決策；all-no_data、未到排程時間、未建立 plan、空批次、quota failure 與部署
 健康成功皆不能替代。Production 使用同工具與 `--environment production --profile full_market`；
 先完成 staging Pilot native 驗收，再依部署 runbook promotion 相同 digests。工具的 passed 只代表
@@ -237,7 +250,7 @@ production promotion 決策；all-no_data、未到排程時間、未建立 plan�
 2026-10-15 staging 診斷 prefix `acceptance/raw_lock_probe/` 已設 7 天 bucket lock；真實重複
 conditional PUT 回傳 409 後 GET 比對相同 58 bytes 成功，直接覆寫以明確
 `ObjectLockedByBucketPolicy` 拒絕。這只證明該診斷物件的鎖定與重試；不代表 staging 全 bucket
-已套保留規則，也不代表七條 native feeds 已通過。期限依 Cloudflare policy 畫面獨立核對。
+已套保留規則，也不代表五條 active native feeds 已通過。期限依 Cloudflare policy 畫面獨立核對。
 
 `infra/acceptance/calibrate_staging_provider_alerts.py` is staging-only. It
 uses a retained real Twelve Data request, generates fresh bounded request and

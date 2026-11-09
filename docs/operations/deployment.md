@@ -310,6 +310,14 @@ target instance 和 region 唯讀查詢 `ssm get-command-invocation` 的 stdout�
 必要時查對應 CloudWatch output。Exit code 本身不足以判定是 migration、configuration 或 health check。
 重試前須確認 command 已終止與主機恢復狀態；未取得遠端輸出時，不宣稱已回滾或服務健康。
 
+若 candidate 回報 `writer_shutdown_not_graceful`，cleanup 會維持 application containers 停止，
+不會自動恢復服務。先核對遠端輸出確實停在 migration 前、`current` 仍指向原 accepted release，
+且各容器的 image digest 與原 manifest 一致；符合時可重新啟動這些既有容器恢復原版，驗證健康、
+具認證的 Serve 查詢、停止的 controls 與資料指紋後，再重跑失敗的 deploy job。
+不得修改容器 exit code 或跳過 graceful-shutdown gate；若已開始 migration 或映像不符，須改走
+對應的復原流程。Serve 停止時若持續等待 background tasks，保留其 shutdown log，恢復後重測原本
+逾時的查詢，不能只用 `/health` 判定查詢已恢復。
+
 Backend image 以 `uv sync --frozen --no-dev --no-install-project` 安裝 runtime，只有 `/app`，
 不包含 Backend dev group 的 editable `../fetcher`。部署 migration 直接執行 PATH 中的
 `/app/.venv/bin/alembic`（`alembic upgrade head`、`alembic current`），不得裸用會重新處理
@@ -417,7 +425,7 @@ application role 不具 superuser／CREATEDB／CREATEROLE，授予 public／raw 
 Deployment credential reconciliation 以 SHA-256 建立 queue-health Admin viewer、lookup Serve、static-cache Serve
 固定 identity，輪替保留 audit；preflight check-only transaction rollback，migration／初始化階段才 commit。
 Fetcher Source credential bridge 只跨 unit 傳送 hashes，不授予 instance role 跨 unit讀取 secrets。
-五個 provider 的 Source scopes 必須涵蓋對應七條 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
+四個 active provider 的 Source scopes 必須涵蓋對應五條 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
 
 FinDB RDS 不公開且只接受 FinDB security group；Fetcher 不連 FinDB DB。FactSet consumer 另以 TLS 唯讀連接供應商 MySQL RDS，使用獨立 credentials。Source 經 Cloudflare／nginx 還原可信 IP 後執行 allowlist。
 nginx 非敏感設定在 `/etc/findb/nginx`，TLS、lookup key 在 `/run/findb-runtime-secrets/nginx`，
@@ -601,74 +609,58 @@ Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_coo
 只延長 debt；rollback 仍須依上述完整停止／排空／成套checkpoint備份程序，不可倒退 usage／cooldown
 或混用未通過此 dispatch gate 的 consumer。Runtime 部署成功不代表 provider-work queue 已啟用。
 
-## Shioaji 只收尾階段（完整退役第一步）
-
-`backend/configs/execution_feeds.v1.json` 的 `drain_only_providers` 將 Shioaji 排除在匯出的
-Fetcher config 之外：Backend catalog 與 Source scope 維持七條，Fetcher config 只有五條。三個
-Shioaji consumer 繼續運作但沒有 feed，因此不登入 SDK、不 enqueue、不抓取，只 claim 既有 work 並
-經 `_settle_retired_work` 排空原始交付後以 `RETIRED_FEED_MANUAL_REVIEW` 結案；本機 prepared bytes
-與 server 保留內容不符時會 blocked，須人工處理。此階段只需部署 Fetcher，Backend 不需發布。
-
-Production 順序（每一步都需 Owner 當次核准）：
-
-1. 唯讀盤點 Shioaji 未結 work、attempt、prepared、historical request、未 ack repair 與 `tw_minute_*` 筆數。
-2. 在 Dashboard 停止 `pilot_shioaji_v1`、`full_market_shioaji_v1`，等 desired／observed 皆為 stopped。
-3. 部署此版 Fetcher，以既有 admin route 取消 queued／running 的 Shioaji historical request。
-4. 重跑盤點，確認除 `calendar_closed` 外已無未結項，由 Owner 檢視 `RETIRED_FEED_MANUAL_REVIEW` 的
-   work，並保存 checkpoint 備份後才進入移除 runtime 的下一階段。
-
-若 controls 已 stopped 且步驟 1 查無未結項與未交付 prepared bytes，步驟 3 的取消可省略。
-2026-11-02 production 符合此條件：盤點後 Owner 原核准跳過此版，staging 驗證後改為部署。Owner 先在
-Dashboard 停止 `full_market_taifex_v1`（18→19）與 `full_market_twelve_data_v1`（14→15），
-[Fetcher Production CD 41472977839](https://github.com/FPI-TW/findb/actions/runs/41472977839) 以
-`fetcher-v0.1.18`（`8956e5e`）成功 promotion 後恢復兩者（→20、→16），Shioaji controls 維持 stopped。
-十五個 consumers 均 accepted、running、零重啟，三個 SQLite 通過 `quick_check`；Full checkpoint 保留的 36 個
-未完成 Shioaji plan 不變。此次未逐表比對部署前後指紋，也未實際觸發收尾（當時沒有未結 work）。
-Bundle：
-
-```text
-fetcher/production/accepted/8956e5e3f8b6555b39c2e4ef565685937c5a2530/48e6359be172b69063ca3b1a180eacd1a45fc36642d614d9484c3cc4f318f4d7.tar
-```
-
-TW 分 K 從步驟 2 起不再更新，直到替代 provider 上線。回退到含 Shioaji feed 的版本前，須先確認
-Owner 未啟動 controls；已結案為 failed 的 work 不會自動重開。
-
 ## Shioaji 退役的 rollback 下限
 
-Fetcher bundle v3（marker `# shioaji-retired-v1:`）只含三個 images、四個 providers、十二個 consumers。
-`fetcher-v0.1.21` 是最後包含 Shioaji adapter、`market_minute` builder 與休市結清 CLI 的版本；需要時由
-此 tag 取回，替代 provider 不直接沿用。
+Fetcher bundle v3（marker `# shioaji-retired-v1:`）包含三個 images、四個 providers、十二個
+consumers。兩環境已接受 v3；host guard 不再支援 v1／v2 升級過渡，發現任何 Shioaji 容器
+（包含 `-previous` 等殘留）即停止。部署腳本不再自動停止、改名或刪除 Shioaji consumers。
+保留的舊容器名稱僅用來拒絕殘留；release manifest 的舊格式讀取仍供 accepted evidence 稽核。
 
-Candidate 與 activation 都會先在任何變更前檢查：三個 consumer 未在 restart 循環、已停止者為 exit 0，
-Pilot／Full 仍在執行者以自身 image 跑 `--require-stopped`，兩份 checkpoint 沒有未收到 receipt 的 Shioaji
-prepared bytes。任一未通過即以 `scheduler_not_stopped` 或 `retired_provider_*` 失敗，主機不變。此檢查碰不到
-Source 上的未結 work 與 historical checkpoint，下方步驟 1 仍須人工確認。
+Migration `d8e3f0b5a2c4` 接在 `c7d2e9a4f1b3` 之後，只撤除 acquisition：
 
-部署腳本平常不會移除 consumer，因此此版在 activation 明確退役三個 `findb-*-shioaji`：其餘十二個
-consumers 通過觀察窗後才以 90 秒期限停止，須 exit 0，再改名為 `-previous` 留在 journal；後續任一步失敗
-都會還原並重新啟動原 consumer 與 current pointer，commit 後才移除。Candidate 不動它們。若存在
-`-candidate`、`-transaction-backup`、`-legacy-previous`、`-preflight*` 殘留或未 accepted 的 consumer，一律
-失敗，須人工確認。`provider-work-backup-*` 來源不明，不在此範圍。
+- 移除 registry `allowed_sources` 及 delivery expectation 中的 Shioaji；沒有其他來源時關閉
+  schedule／missing-delivery。保留其他來源、`source_precedence`、first dates 與 frozen config。
+- 撤銷所有尚未撤銷的 Shioaji Source credentials，保留原 hash、scope、歷史使用與輪替紀錄。
+  Create／rotate／credential reconciliation 都不再供應 Shioaji。
+- 將 Shioaji controls 標為 retired、增加 revision，保留 scheduler-dataset 關聯；關閉既有 open
+  missing-delivery alerts。Admin repair inventory／preview 仍可讀，retired control 不可核准重開 work。
+- Backend／Fetcher catalog 與 active Source scope 均為五條 feeds。兩條 minute registry 仍
+  `is_active=true`，`market_minute.v1`、normalizer、canonical／Admin／Serve／archive 查詢仍保留。
+  新版 seed 不會把 operator override 中的 Shioaji expected sources 加回去。
 
-Host guard 由 workflow commit 執行，主機已安裝 v2 時仍要求 Shioaji consumers，已安裝 v3 才略過，因此
-v2→v3 不會死結。`check_full_market_checkpoint.sh` 與 SSM gate 為同一過渡保留 Shioaji 名稱。
+部署前必須確認 Shioaji controls desired／observed 都 stopped、owner 無 active attempt、work 已
+terminal、attempt 已 settled、prepared 均有 receipt、historical request 與 ingestion run 已 terminal。
+Migration 對任一未結項整筆拒絕；唯一例外是 `calendar_closed` work 的 queued attempts，這些休市
+歷史證據原樣保留，不重新入列、不標成成功。原始 raw 繼續遵守既有 retention TTL。
 
-順序與限制：
+依 staging → production 部署 Backend，記錄並比對 canonical minute、requests／items、runs、plans、
+work／attempt／owner、prepared／receipt、repair 與 `tw_minute_*` 的筆數及不可變欄位指紋。
+驗收包含舊 Source key 失效、新 key／rotate 拒絕、Shioaji 不在新回補 scopes、歷史 Admin 頁與
+Serve minute pagination／archive 仍可查。Staging 的兩筆休市 queued attempts 不應因退役消失。
+部署完成後執行 seed／credential reconciliation 再驗證不復活。
 
-1. 先確認無 Shioaji 未結 work（`calendar_closed` 除外）與未交付 prepared bytes，Owner 停止所有 controls，
-   依 staging→production 部署；Backend 不需同步發布，catalog 與 Source scope 仍維持七條，直到 Backend 退役。
-2. Accepted 後此版成為新下限。`fetcher-deploy.yml` 拒絕 v3 以外的 bundle，v2 不再 replay，須回退時採 forward fix。
-3. `SHIOAJI_SIMULATION` 仍為 `runtime/configuration` 的 optional key，Shioaji secrets 與 ECR 也保留，
-   待 Backend 退役驗收後才清理；Shioaji CloudWatch alarm 指向更早的舊容器名稱，不受此版影響，同批移除。
-4. 本次 Backend 修正將 `apply_cutover` 的 host lock identities 改為 FactSet、FinLab、TAIFEX、Twelve Data，
-   與 bundle v3 preflight 的四個 providers 一致；缺少任一 provider 或仍含 Shioaji 的舊五-provider proof
-   一律拒絕。部署此 Backend 版本前仍不可重新 attestation；例行部署不需要重新執行 cutover。
-   Shioaji controls 的 heartbeat 停止更新、Dashboard 年齡增加屬預期。
-5. Cutover 仍以固定 provider lock order 檢查保留的 Shioaji active owner、所有舊 nonterminal runs 與
-   running historical items，未排空則拒絕；不建立／更新 Shioaji owner inode，也不重投影其舊 work／attempt。
-   既有 requests、prepared／receipts 與原始狀態均保留。此修正無 schema migration；部署後驗證
-   Shioaji 新回補不在 scopes、preview 無效、create 回傳 422，並核對既有 Admin／Serve 查詢與資料筆數。
-   Source scope／credentials 的退役仍待後續 migration；不能因四-provider cutover 通過就宣稱整體退役完成。
+接受此 migration 後 Backend rollback 下限為 `d8e3f0b5a2c4`；downgrade 不會復活 credentials、
+scope 或 controls。不可 replay 舊 Backend／Fetcher 重新抓取；修復採 forward fix。替代分 K provider
+需另建 scope、credentials 與 universe，舊 receipts／frozen plans 不可移作新 provider 成功證據。
+
+### AWS 資產與憑證收尾
+
+本 PR 的 IaC 將兩環境 Shioaji Source／provider secret metadata、ECR 標為 `RuntimeStatus=retired`，
+從 instance secret-read／decrypt scope 與 publisher／runtime image scope 移除；保留 `prevent_destroy`、
+`force_delete=false` 及原有 recovery window。原位停用 Shioaji CloudWatch alarm 通知並標記 retired；移除 collector active feeds／
+mount expectations，以及 `SHIOAJI_SIMULATION`、
+`SHIOAJI_SKIP_NON_TRADING_DAYS` runtime catalog／環境範本設定。舊 secret 內多餘鍵不再載入。
+
+Backend 驗收完成後，先審閱兩環境 OpenTofu plan：僅預期的 tag／IAM 更新與 Shioaji alarm 停用，
+標準 CI plan 維持零刪除；不可刪除 secret、ECR、alarm metadata、RDS、S3、磁碟或 canonical archive。套用後以 instance role 驗證無法讀取
+兩個 retired secrets，也無法拉取 Shioaji image；provider 端 API key 另行撤銷並記錄結果，不輸出值。
+只改 Git 不代表雲端已套用或券商端 key 已失效。
+
+既有 EC2 user-data 保留原值，避免僅因移除空 cache 建目錄指令而觸發主機停止／啟動。
+受保護 secret／ECR metadata、停用的 alarm metadata、checkpoint／cache／備份仍屬保留資產；實體清除需先完成資料與
+接受紀錄保存、引用盤點及獨立 plan，不能使用 `force_delete` 或全域移除保護來完成退役。
+例行 `apply_cutover` 的 host proof 只接受四個 active providers，但仍檢查舊 Shioaji owner／run／
+historical 未結證據；不重新 attestation、不改寫保留的 work graph。
 
 ## Twelve Data HK 退役的 rollback 下限
 

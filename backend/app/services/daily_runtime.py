@@ -8,11 +8,15 @@ from zoneinfo import ZoneInfo
 from app.utils import utc_now
 
 
-def daily_window(provider: str, now: datetime | None = None) -> dict:
+def _runtime_policies() -> dict:
     catalog = json.loads(
         (Path(__file__).resolve().parents[2] / "configs/execution_feeds.v1.json").read_text()
     )
-    policy = catalog["daily_runtime_policies"].get(provider)
+    return catalog["daily_runtime_policies"]
+
+
+def daily_window(provider: str, now: datetime | None = None) -> dict:
+    policy = _runtime_policies().get(provider)
     if policy is None:
         return {"open": True, "next_open_at": None, "closes_at": None}
     clock = now or utc_now()

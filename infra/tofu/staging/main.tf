@@ -57,7 +57,7 @@ locals {
 
   ecr_repository_keys_by_unit = {
     findb   = toset(["findb_backend", "findb_dashboard"])
-    fetcher = toset(["fetcher_twelve_data", "fetcher_finlab", "fetcher_shioaji", "fetcher_factset"])
+    fetcher = toset(["fetcher_twelve_data", "fetcher_finlab", "fetcher_factset"])
   }
 
   ecr_publisher_role_config = {

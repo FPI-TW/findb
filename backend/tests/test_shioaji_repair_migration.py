@@ -22,6 +22,8 @@ def current_dataset_fixture(monkeypatch):
         dataset.config = deepcopy(
             next(row["config"] for row in DATASETS if row["dataset_key"] == key)
         )
+        if key.endswith("minute"):
+            dataset.config["allowed_sources"] = ["shioaji"]
         await db.commit()
         return dataset
 
@@ -65,6 +67,7 @@ async def test_repair_schema_roundtrip_preserves_frozen_scope(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_shioaji_acquisition")
 async def test_repair_evidence_blocks_schema_downgrade(monkeypatch):
     current_dataset_fixture(monkeypatch)
     async with get_active_migration_database_factory().clone(
@@ -73,7 +76,7 @@ async def test_repair_evidence_blocks_schema_downgrade(monkeypatch):
         url,
         engine,
     ):
-        await run_alembic(url, "head")
+        await run_alembic(url, "c7d2e9a4f1b3")
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         async with sessions() as db:
             from tests.test_shioaji_repair import authorize, proposal, setup

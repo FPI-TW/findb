@@ -7,7 +7,7 @@ resource "aws_ecr_repository" "staging" {
 
   encryption_configuration { encryption_type = "AES256" }
   image_scanning_configuration { scan_on_push = true }
-  tags = merge(local.common_tags, { DeploymentUnit = each.value.unit })
+  tags = merge(local.common_tags, { DeploymentUnit = each.value.unit, RuntimeStatus = each.key == "fetcher_shioaji" ? "retired" : "active" })
 
   lifecycle { prevent_destroy = true }
 }

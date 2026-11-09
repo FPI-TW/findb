@@ -768,7 +768,6 @@ async def test_null_legacy_metadata_cannot_reset_existing_permanent_first_date(
     [
         ("twelve_data", {"us_equity_eod": 160}),
         ("finlab", {"tw_equity_eod": 160}),
-        ("shioaji", {"tw_equity_minute": 160}),
         ("taifex", {"tw_futures_eod": 160}),
     ],
 )

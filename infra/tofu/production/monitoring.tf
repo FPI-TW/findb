@@ -20,9 +20,17 @@ locals {
   }
   monitored_containers = {
     findb   = toset(["findb-dashboard", "findb-dispatcher", "findb-ingest", "findb-nginx", "findb-rabbitmq", "findb-raw-cleanup", "findb-serve", "findb-worker"])
-    fetcher = toset(["findb-fetcher-finlab-scheduler", "findb-fetcher-scheduler", "findb-fetcher-shioaji-scheduler"])
+    fetcher = toset(["findb-fetcher-finlab-scheduler", "findb-fetcher-scheduler"])
   }
-  scheduler_keys = toset(["twelve_data_us_common_stocks_daily_v1", "finlab_tw_equity_eod_v1", "shioaji_tw_pilot_v1"])
+  scheduler_keys = toset(["twelve_data_us_common_stocks_daily_v1", "finlab_tw_equity_eod_v1"])
+  # Keep existing alarm identities under the standard zero-delete plan policy.
+  # Retired resources emit no metrics and have no notification actions.
+  retired_alarm_resources = toset(["findb-fetcher-shioaji-scheduler", "shioaji_tw_pilot_v1"])
+  retained_alarm_containers = merge(local.monitored_containers, {
+    fetcher = setunion(local.monitored_containers.fetcher, toset(["findb-fetcher-shioaji-scheduler"]))
+  })
+  retained_alarm_scheduler_keys = setunion(local.scheduler_keys, toset(["shioaji_tw_pilot_v1"]))
+
   custom_alarms = merge(
     {
       for unit in keys(local.units) : "${unit}_disk" => { unit = unit, metric = "DiskUsedPercent", resource = "/", op = "GreaterThanOrEqualToThreshold", threshold = 85 }
@@ -33,17 +41,17 @@ locals {
     {
       for unit in keys(local.units) : "${unit}_collector" => { unit = unit, metric = "CollectorSuccess", resource = "host", op = "LessThanThreshold", threshold = 1 }
     },
-    merge([for unit, containers in local.monitored_containers : {
+    merge([for unit, containers in local.retained_alarm_containers : {
       for container in containers : "${unit}_${container}_health" => { unit = unit, metric = "DockerContainerHealthy", resource = container, op = "LessThanThreshold", threshold = 1 }
     }]...),
-    merge([for unit, containers in local.monitored_containers : {
+    merge([for unit, containers in local.retained_alarm_containers : {
       for container in containers : "${unit}_${container}_restart" => { unit = unit, metric = "DockerRestartCount", resource = container, op = "GreaterThanOrEqualToThreshold", threshold = 3 }
     }]...),
     {
-      for key in local.scheduler_keys : "scheduler_${key}_heartbeat" => { unit = "fetcher", metric = "SchedulerHeartbeatAgeSeconds", resource = key, op = "GreaterThanOrEqualToThreshold", threshold = 180 }
+      for key in local.retained_alarm_scheduler_keys : "scheduler_${key}_heartbeat" => { unit = "fetcher", metric = "SchedulerHeartbeatAgeSeconds", resource = key, op = "GreaterThanOrEqualToThreshold", threshold = 180 }
     },
     {
-      for key in local.scheduler_keys : "scheduler_${key}_freshness" => { unit = "fetcher", metric = "FeedFreshnessHealthy", resource = key, op = "LessThanThreshold", threshold = 1 }
+      for key in local.retained_alarm_scheduler_keys : "scheduler_${key}_freshness" => { unit = "fetcher", metric = "FeedFreshnessHealthy", resource = key, op = "LessThanThreshold", threshold = 1 }
     },
     {
       rabbitmq_disk        = { unit = "findb", metric = "RabbitMQDiskAlarm", resource = "findb-rabbitmq", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
@@ -160,12 +168,14 @@ resource "aws_cloudwatch_metric_alarm" "custom" {
   datapoints_to_alarm = 2
   threshold           = each.value.threshold
   comparison_operator = each.value.op
-  treat_missing_data  = "breaching"
+  treat_missing_data  = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : "breaching"
   dimensions = {
     DeploymentUnit = each.value.unit, Resource = each.value.resource
   }
-  alarm_actions = [aws_sns_topic.operations.arn]
-  ok_actions    = [aws_sns_topic.operations.arn]
+  actions_enabled = !contains(local.retired_alarm_resources, each.value.resource)
+  alarm_actions   = contains(local.retired_alarm_resources, each.value.resource) ? [] : [aws_sns_topic.operations.arn]
+  ok_actions      = contains(local.retired_alarm_resources, each.value.resource) ? [] : [aws_sns_topic.operations.arn]
+  tags            = contains(local.retired_alarm_resources, each.value.resource) ? { RuntimeStatus = "retired" } : {}
 }
 
 # Production CD publishes DeploymentFailure only when a run fails, so a single

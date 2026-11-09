@@ -26,7 +26,6 @@ NOW = datetime(2026, 7, 22, 8, tzinfo=timezone.utc)
 
 FULL_MARKET_SCOPES = {
     "finlab": ["tw_equity_eod", "tw_etf_eod"],
-    "shioaji": ["tw_equity_minute", "tw_etf_minute"],
     "taifex": ["tw_futures_eod"],
     "twelve_data": ["us_equity_eod"],
 }
@@ -291,7 +290,7 @@ async def test_partial_full_market_aggregates_enabled_scope_and_keeps_bounded_de
 
 @pytest.mark.asyncio
 async def test_running_full_market_without_enabled_scope_is_configuration_error(test_session):
-    control, _ = await _setup_full_market(test_session, "shioaji")
+    control, _ = await _setup_full_market(test_session, "finlab")
     control.desired_state = "running"
     await test_session.flush()
     row = (await list_market_freshness(test_session, now=NOW))[0]
@@ -375,15 +374,15 @@ async def test_dormant_full_market_structural_errors_are_not_hidden(test_session
 
 @pytest.mark.asyncio
 async def test_deactivated_full_market_retains_original_activation_date(test_session):
-    _, datasets = await _setup_full_market(test_session, "shioaji")
-    config = deepcopy(datasets["tw_equity_minute"].config)
+    _, datasets = await _setup_full_market(test_session, "finlab")
+    config = deepcopy(datasets["tw_equity_eod"].config)
     config["full_market"].update(activation_date="2026-07-01", mode="off")
-    datasets["tw_equity_minute"].config = config
+    datasets["tw_equity_eod"].config = config
     from app.models.registry import FullMarketDatasetState
 
     test_session.add(
         FullMarketDatasetState(
-            dataset_key="tw_equity_minute",
+            dataset_key="tw_equity_eod",
             execution_profile="full_market",
             first_start_date=date(2026, 7, 1),
         )
@@ -391,7 +390,7 @@ async def test_deactivated_full_market_retains_original_activation_date(test_ses
     await test_session.flush()
     row = (await list_market_freshness(test_session, now=NOW))[0]
     assert row.activation_state == "deactivated"
-    assert datasets["tw_equity_minute"].config["full_market"]["activation_date"] == "2026-07-01"
+    assert datasets["tw_equity_eod"].config["full_market"]["activation_date"] == "2026-07-01"
 
 
 @pytest.mark.asyncio

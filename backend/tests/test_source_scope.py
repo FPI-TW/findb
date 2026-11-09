@@ -19,7 +19,7 @@ from tests.test_canonical_ingest_api import _canonical_request
     [
         ("twelve_data", ["us_equity_eod"]),
         ("finlab", ["tw_equity_eod", "tw_etf_eod"]),
-        ("shioaji", ["tw_equity_minute", "tw_etf_minute"]),
+        ("factset", ["hk_equity_eod"]),
         ("taifex", ["tw_futures_eod"]),
     ],
 )
@@ -37,9 +37,9 @@ def test_provider_scope_rejects_unknown_or_widened_mapping():
 
 
 def test_provider_scope_allows_non_empty_least_privilege_subset():
-    assert normalize_provider_scope("shioaji", ["tw_etf_minute"]) == (
-        "shioaji",
-        ["tw_etf_minute"],
+    assert normalize_provider_scope("finlab", ["tw_etf_eod"]) == (
+        "finlab",
+        ["tw_etf_eod"],
     )
 
 
@@ -116,3 +116,77 @@ async def test_seed_schedules_hk_for_factset_but_not_twelve_data(test_session):
         )
     )
     assert schedulers == {"pilot_factset_v1", "full_market_factset_v1"}
+
+
+@pytest.mark.parametrize(
+    "scope", [None, [], ["tw_equity_minute"], ["tw_equity_minute", "tw_etf_minute"]]
+)
+def test_shioaji_source_scope_cannot_be_created(scope):
+    with pytest.raises(SourceProviderScopeError, match="Unsupported source provider"):
+        normalize_provider_scope(" Shioaji ", scope)
+
+
+async def test_retired_source_cannot_rotate_or_be_reconciled(test_session):
+    from app.services.source_clients import rotate_source_client
+    from scripts.reconcile_fetcher_credentials import SOURCE_SPECS
+    from tests.market_minute_fixture import legacy_source_client
+
+    row, _ = await legacy_source_client(
+        test_session,
+        name="old-shioaji",
+        source_name="shioaji",
+        allowed_datasets=["tw_equity_minute"],
+    )
+    with pytest.raises(SourceProviderScopeError):
+        await rotate_source_client(test_session, row)
+    assert all(spec.source_name != "shioaji" for spec in SOURCE_SPECS)
+
+
+async def test_seed_keeps_minute_query_and_removes_operator_acquisition_overrides(
+    client, test_session
+):
+    from copy import deepcopy
+    from datetime import datetime, timezone
+
+    from app.models.registry import DatasetRegistry, SchedulerControl
+    from app.services.ingress_contracts import parse_dataset_contract_declaration
+    from app.utils import uuid7
+    from tests.test_serve_api import instrument, minute
+
+    await seed_datasets(test_session)
+    dataset = await test_session.get(DatasetRegistry, "tw_equity_minute")
+    config = deepcopy(dataset.config)
+    config["allowed_sources"] = ["shioaji"]
+    config["source_precedence"] = ["shioaji"]
+    config["delivery_expectation"]["schedule"].update(enabled=True, expected_sources=["shioaji"])
+    config["delivery_expectation"]["missing_delivery"].update(
+        action="warn", expected_sources=["shioaji"]
+    )
+    dataset.config = config
+    instrument_id = uuid7()
+    test_session.add_all(
+        [
+            instrument(instrument_id, "2330"),
+            minute(instrument_id, datetime(2026, 3, 31, 5, 30, tzinfo=timezone.utc), "1301"),
+        ]
+    )
+    from app.models.canonical import MarketDataMinute
+
+    for bar in await test_session.scalars(select(MarketDataMinute)):
+        bar.source = "shioaji"
+    await test_session.flush()
+    await seed_datasets(test_session)
+    assert dataset.is_active
+    assert dataset.config["source_precedence"] == ["shioaji"]
+    assert parse_dataset_contract_declaration(dataset.config).provider_scope() == ()
+    assert dataset.config["delivery_expectation"]["schedule"]["enabled"] is False
+    assert dataset.config["delivery_expectation"]["missing_delivery"]["action"] == "disabled"
+    assert not (
+        await test_session.scalars(
+            select(SchedulerControl).where(SchedulerControl.provider == "shioaji")
+        )
+    ).all()
+    await test_session.commit()
+    response = await client.get(f"/api/v1/serve/minute?instrument_id={instrument_id}")
+    assert response.status_code == 200
+    assert response.json()["data"][0]["close"] == "1301.00000000"

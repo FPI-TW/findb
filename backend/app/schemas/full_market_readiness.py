@@ -69,7 +69,10 @@ class ReadinessDeclaration(FullMarketModel):
         from app.services.source_clients import PROVIDER_DATASET_SCOPE
 
         if len(set(self.datasets)) != len(self.datasets) or not set(self.datasets) <= set(
-            PROVIDER_DATASET_SCOPE[self.provider]
+            # Persisted readiness evidence must still hydrate after Source retirement.
+            ("tw_equity_minute", "tw_etf_minute")
+            if self.provider == "shioaji"
+            else PROVIDER_DATASET_SCOPE[self.provider]
         ):
             raise ValueError("Readiness scope is invalid")
         if self.provider != "finlab" and self.max_response_bytes > 16 * 1024**2:

@@ -41,13 +41,9 @@ data "aws_iam_policy_document" "instance_base" {
 
   }
   statement {
-    sid     = "ReadOwnSecrets"
-    actions = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
-    resources = [
-      for name, spec in local.secret_catalog :
-      "arn:${data.aws_partition.current.partition}:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:findb/production/${name}-??????"
-      if spec.unit == each.key
-    ]
+    sid       = "ReadOwnSecrets"
+    actions   = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
+    resources = local.active_runtime_secret_arns_by_unit[each.key]
 
   }
   statement {
@@ -70,7 +66,22 @@ data "aws_iam_policy_document" "instance_base" {
   statement {
     sid       = "DecryptOwnResources"
     actions   = ["kms:Decrypt"]
-    resources = [aws_kms_key.deploy_bundle.arn, aws_kms_key.runtime[each.key].arn]
+    resources = [aws_kms_key.deploy_bundle.arn]
+  }
+  statement {
+    sid       = "DecryptOwnRuntimeSecrets"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.runtime[each.key].arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.aws_region}.amazonaws.com"]
+    }
+    condition {
+      test     = "StringLike"
+      variable = "kms:EncryptionContext:SecretARN"
+      values   = local.active_runtime_secret_arns_by_unit[each.key]
+    }
   }
   statement {
     sid       = "PublishOperationalMetrics"

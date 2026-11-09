@@ -31,8 +31,6 @@ FULL_MARKET_FEEDS = MappingProxyType(
         "hk_equity_eod": FullMarketFeedDescriptor("market_eod", 1, "HK", "equity", "daily"),
         "tw_equity_eod": FullMarketFeedDescriptor("market_eod", 1, "TW", "equity", "daily"),
         "tw_etf_eod": FullMarketFeedDescriptor("market_eod", 1, "TW", "etf", "daily"),
-        "tw_equity_minute": FullMarketFeedDescriptor("market_minute", 1, "TW", "equity", "minute"),
-        "tw_etf_minute": FullMarketFeedDescriptor("market_minute", 1, "TW", "etf", "minute"),
         "tw_futures_eod": FullMarketFeedDescriptor("futures_eod", 1, "TW", "future", "daily"),
     }
 )

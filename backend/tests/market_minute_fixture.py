@@ -1,7 +1,9 @@
 """Valid market_minute.v1 request, independent of any active provider adapter."""
 
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from app.schemas.ingress import minute_sequence_key_digest
@@ -87,3 +89,36 @@ def _sha256(value: str) -> str:
 
 def _utc_text(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+async def legacy_source_client(db, **kwargs):
+    """Reconstruct a pre-retirement identity solely for historical contract tests."""
+    from app.models.registry import SourceClient
+    from app.services.source_clients import hash_source_key
+    from app.utils import uuid7
+
+    kwargs.pop("commit", None)
+    key = f"legacy-test-{uuid7()}"
+    row = SourceClient(client_id=uuid7(), key_hash=hash_source_key(key), **kwargs)
+    db.add(row)
+    await db.flush()
+    return row, key
+
+
+@contextmanager
+def legacy_acquisition_catalog():
+    """Build pre-retirement frozen plans; restore all live admission rules afterwards."""
+    from app.services import full_market_governance as governance
+    from app.services.source_clients import PROVIDER_DATASET_SCOPE
+
+    historical = {
+        key: governance.FullMarketFeedDescriptor("market_minute", 1, "TW", asset, "minute")
+        for key, asset in (("tw_equity_minute", "equity"), ("tw_etf_minute", "etf"))
+    }
+    with (
+        patch.dict(PROVIDER_DATASET_SCOPE, {"shioaji": tuple(historical)}),
+        patch.object(
+            governance, "FULL_MARKET_FEEDS", {**governance.FULL_MARKET_FEEDS, **historical}
+        ),
+    ):
+        yield

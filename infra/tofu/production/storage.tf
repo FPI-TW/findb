@@ -181,7 +181,7 @@ resource "aws_ecr_repository" "production" {
     scan_on_push = true
   }
   tags = merge(local.common_tags, {
-    DeploymentUnit = each.value.unit
+    DeploymentUnit = each.value.unit, RuntimeStatus = each.key == "fetcher_shioaji" ? "retired" : "active"
   })
   lifecycle {
     prevent_destroy = true

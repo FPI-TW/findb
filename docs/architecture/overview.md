@@ -25,7 +25,7 @@ PostgreSQL。
 | --- | --- | --- |
 | FinDB backend | `serve`、`ingest`、`dispatcher`、`worker`、`raw-cleanup` | API、durable queue orchestration、normalization、DQ、canonical與migration |
 | Dashboard | FinDB EC2上的獨立image | 透過Serve/Admin API提供營運介面，不直接連DB |
-| Fetcher | 獨立EC2上的Twelve Data／TAIFEX、FinLab、Shioaji、FactSet images | Provider抓取、contract mapping、Raw R2、retry、checkpoint與delivery status |
+| Fetcher | 獨立EC2上的Twelve Data／TAIFEX、FinLab、FactSet images | Provider抓取、contract mapping、Raw R2、retry、checkpoint與delivery status |
 | Infrastructure | PostgreSQL RDS、RabbitMQ、nginx | Durable data、可重建delivery與TLS／routing |
 
 FinDB backend與Dashboard同屬一個deployment unit；Fetcher為另一個deployment unit。
@@ -34,20 +34,24 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 
 ## Active feeds
 
-七條 feeds 的唯一宣告在 `backend/configs/execution_feeds.v1.json`，由 exporter 確定性產生
+五條 active feeds 的唯一宣告在 `backend/configs/execution_feeds.v1.json`，由 exporter 確定性產生
 Fetcher 的三環境 manifest；兩個 execution profiles 共用宣告。
 
 | Provider | Datasets | Contract |
 | --- | --- | --- |
-| `twelve_data` | `us_equity_eod`、`hk_equity_eod` | `market_eod.v1` |
+| `twelve_data` | `us_equity_eod` | `market_eod.v1` |
+| `factset` | `hk_equity_eod` | `market_eod.v2` |
 | `finlab` | `tw_equity_eod`、`tw_etf_eod` | `market_eod.v1` |
-| `shioaji` | `tw_equity_minute`、`tw_etf_minute` | `market_minute.v1` |
 | `taifex` | `tw_futures_eod` | `futures_eod.v1` |
 
 Pilot 與 Full market 使用同一 CLI、provider adapter、published universe／有效日曆、交易所時區、
 收盤判定、重試、Raw R2、Source、normalization 與 Serve 流程。Pilot 只在建立 daily plan 時依 canonical
 識別排序取前兩個商品，不足兩個取實際數量；期貨按 product／contract 選擇，保留各自所有 sessions。
 空集合阻塞；plan 建立後 universe 更新與重試不得改寫成員。
+
+Shioaji 只保留歷史分 K、契約及工作證據；兩條 minute registry 保持 active 供查詢，
+Source credentials 撤銷，controls retired，且不列入 acquisition catalog。見
+[退役 runbook](../operations/deployment.md#shioaji-退役的-rollback-下限)。
 
 Serve catalog 由 active registry 動態解析，canonical 資料可跨 profile 共用；交付完成證據不共用。
 `delivery_member_evidence` 與 canonical writes 在同一 normalization transaction 保存，另一 profile
@@ -67,7 +71,6 @@ admission 分離：Source 仍驗證 dataset existence/active/provider/scope，Fu
 | `twelve_data` | US 主要交易所普通股與 ADR | `market_eod.v1` |
 | `factset` | HKEX 現行主板／GEM 普通股；切換後的新 HK 抓取 | `market_eod.v2` |
 | `finlab` | TW 上市／上櫃普通股與各類 ETF 日線 | `market_eod.v1` |
-| `shioaji` | 相同 TW 股票／ETF 的一分鐘 bars | `market_minute.v1` |
 | `taifex` | TX、MTX、TMF、TE、TF 實際月／週到期合約，日盤與盤後分開 | `futures_eod.v1` |
 
 Universe 由官方清單建立 immutable release，保留來源 URL、checksum、觀測時間、effective

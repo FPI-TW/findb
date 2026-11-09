@@ -151,6 +151,8 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
         dataset.config = deepcopy(
             next(item["config"] for item in DATASETS if item["dataset_key"] == key)
         )
+        if key.endswith("minute"):
+            dataset.config["allowed_sources"] = ["shioaji"]
         dataset.is_active = True
         await db.commit()
         return dataset
@@ -266,7 +268,8 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("dataset_key", ["tw_equity_minute", "tw_etf_minute"])
-async def test_full_upgrade_preserves_partial_minute_group_and_continues_original_checkpoint(
+@pytest.mark.usefixtures("legacy_shioaji_acquisition")
+async def test_pre_retirement_upgrade_preserves_partial_minute_group_and_continues_checkpoint(
     dataset_key, monkeypatch, tmp_path
 ):
     import json
@@ -299,6 +302,8 @@ async def test_full_upgrade_preserves_partial_minute_group_and_continues_origina
         dataset.config = deepcopy(
             next(item["config"] for item in DATASETS if item["dataset_key"] == key)
         )
+        if key.endswith("minute"):
+            dataset.config["allowed_sources"] = ["shioaji"]
         dataset.is_active = True
         await db.commit()
         return dataset
@@ -388,7 +393,8 @@ async def test_full_upgrade_preserves_partial_minute_group_and_continues_origina
             checkpoint.save_sequence_receipt(key, json.loads(body)["idempotency_key"], str(run_id))
         checkpoint_before = checkpoint.prepared(key)
         await _remove_current_setup_compatibility(engine)
-        await _upgrade(url, "head")
+        # Retirement now rejects unfinished Shioaji sequences; test the preceding FIFO migration.
+        await _upgrade(url, "c7d2e9a4f1b3")
         async with sessions() as db:
             imported = await queue.enqueue(
                 db,

@@ -49,13 +49,11 @@ async def _pilot(db, dataset, body, full):
         "hk_equity_eod",
         "tw_equity_eod",
         "tw_etf_eod",
-        "tw_equity_minute",
-        "tw_etf_minute",
         "tw_futures_eod",
     ],
 )
 @pytest.mark.parametrize("count", [1, 3])
-async def test_seven_feed_profiles_freeze_distinct_plans(test_session, key, count):
+async def test_five_feed_profiles_freeze_distinct_plans(test_session, key, count):
     dataset, body, full = await _activated_plan(test_session, key, count=count)
     pilot = await _pilot(test_session, dataset, body, full)
     multiplier = 2 if key == "tw_futures_eod" else 1
@@ -215,12 +213,10 @@ async def test_outcomes_and_missing_alerts_are_profile_isolated(
         "hk_equity_eod",
         "tw_equity_eod",
         "tw_etf_eod",
-        "tw_equity_minute",
-        "tw_etf_minute",
         "tw_futures_eod",
     ],
 )
-async def test_shared_seven_feed_source_queue_canonical_serve(
+async def test_shared_five_feed_source_queue_canonical_serve(
     test_session, test_engine, owned_client, monkeypatch, environment, key
 ):
     """Both profiles traverse the real durable pipeline in either environment."""

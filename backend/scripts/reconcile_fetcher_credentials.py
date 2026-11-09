@@ -65,20 +65,12 @@ SOURCE_SPECS = (
         description="FinLab Fetcher Source client",
         allowed_datasets=("tw_equity_eod",),
     ),
-    SourceCredentialSpec(
-        env_name="FETCHER_SHIOAJI_SOURCE_CLIENT_KEY_HASH",
-        name="fetcher-shioaji",
-        source_name="shioaji",
-        description="Shioaji Fetcher Source client",
-        allowed_datasets=("tw_equity_minute", "tw_etf_minute"),
-    ),
 )
 FULL_MARKET_SOURCE_SPECS = (
     replace(SOURCE_SPECS[0], rate_limit_requests=2400),
     replace(
         SOURCE_SPECS[1], allowed_datasets=("tw_equity_eod", "tw_etf_eod"), rate_limit_requests=2400
     ),
-    replace(SOURCE_SPECS[2], rate_limit_requests=2400),
     SourceCredentialSpec(
         env_name="FETCHER_TAIFEX_SOURCE_CLIENT_KEY_HASH",
         name="fetcher-taifex",
