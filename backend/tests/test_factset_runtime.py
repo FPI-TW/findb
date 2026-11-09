@@ -55,7 +55,7 @@ async def factset_harness(client, db, engine, patch, path, *, members=None, snap
 
     patch.setattr(factset_eod, "datetime", Clock)
     identities = {}
-    for provider in ("factset", "finlab", "shioaji", "taifex", "twelve_data"):
+    for provider in ("factset", "finlab", "taifex", "twelve_data"):
         with coordinator.host_lock(provider) as (_, identity):
             identities[provider] = identity
     await attest_cutover(db, identities)
