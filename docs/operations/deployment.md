@@ -109,7 +109,7 @@ V3 manifest／acceptance 及 immutable bundles 維持可讀，replay 使用其�
 Shioaji 退休與統一 runtime 的 rollback 下限不變。Schema-v4 reader、host guard 與 promotion binding
 驗證同步更新；各環境發布新版前，須先更新該環境 S3 bucket policy，將 transactions prefix 納入不可覆寫條件。
 
-2026-11-09 09:55 UTC 已使用 OpenTofu 1.12.6 套用 staging 的 transactions 保護，production 尚未套用。
+2026-11-09 09:55 UTC 已使用 OpenTofu 1.12.6 套用 staging 的 transactions 保護；production 的後續套用見下文。
 來源為 `33d626b22dd82ef7ddfcfb21f5ddf1681c62149b`；完整 refresh saved plan 僅更新
 `aws_s3_bucket_policy.deploy_bundle`，結果為 **0 新增、1 更新、0 刪除**。唯一 policy 差異是在既有
 `DenyAcceptedBundleOverwrite` statement 增加 `findb/transactions/*` 與 `fetcher/transactions/*`，
@@ -121,6 +121,16 @@ Refresh 同時更新三個 Fetcher IAM role 的既有 inline-policy 快照，反
 三個 role 的 planned actions 均為 `no-op`，本次沒有 IAM 權限寫入。套用後讀回完整 bucket policy，
 確認與 reviewed plan 完全一致；再次完整 refresh plan 回報 **No changes**（exit code 0）。
 本次只套用 staging bucket policy，未啟動應用部署，也不構成五分鐘部署驗收樣本。
+
+2026-11-09 production 發布前，同樣使用 OpenTofu 1.12.6 執行完整 refresh saved plan，
+唯一 planned update 為 `aws_s3_bucket_policy.deploy_bundle`：在 `DenyImmutableReleaseOverwrite`
+新增 `findb/production/transactions/*` 與 `fetcher/production/transactions/*`，強制
+`If-None-Match: *`。逐欄位確認其餘 policy 與 bucket attributes 完全相同，套用結果為
+**0 新增、1 更新、0 刪除**；沒有 EC2、RDS 或 IAM 權限寫入。
+Saved plan SHA-256：`8e834a073a98e33e1f77b638114909d41b6cd39872a8a601c8bd0378367efc0c`。
+Refresh 另反映 RDS `latest_restorable_time` 與三個 IAM roles 的既有 inline-policy 快照，
+這些資源 planned actions 均為 `no-op`。套用後讀回完整 policy 與 saved plan 一致，
+再次完整 refresh plan 為 **No changes**。此 IaC 前置單獨記錄，不計為應用部署樣本。
 
 Image prune 移至獨立 `Deployment image maintenance` workflow，每週一臺北時間 04:25 執行，也可
 人工啟動；依 environment／unit 使用與 CD 相同 concurrency group，並取得主機 transaction lock。
@@ -316,11 +326,68 @@ Dashboard、完整 Infra（965 tests、289 subtests 通過），並執行真實 
 本機完整 `pnpm check`、受影響部署測試與 timeout／guard 組合測試亦通過。
 本輪成功不代替 AWS 取消、主機重啟或完整故障注入演練。
 
-目前僅取得 staging 兩個 units 各一筆合格增量，尚未完成各五筆驗收；後續須保留真實應用程式
-增量、超標及失敗樣本，不能以空 commit 或同 SHA replay 補足。Production 尚未新增樣本，
-仍須先套用 transactions bucket policy，再經既有人工 promotion 入口驗收。
+截至 #425 staging 實測，兩個 units 各一筆合格增量，尚未完成各五筆驗收；後續須保留真實應用程式
+增量、超標及失敗樣本，不能以空 commit 或同 SHA replay 補足。Production 後續 promotion
+與實測見下節。
 尚未實作的 image digest 綁定 migration metadata、細部 health probes 平行化列為後續候選，
 先累積實際增量的分布與瓶頸證據，不縮短安全／健康觀察下限。
+
+### Production 單次部署首輪實測
+
+2026-11-09 依人工 promotion 入口發布 staging 已驗收的
+`c1c175b8a7496ff666472e3ee83ffcc9483f3756`，版本為 `findb-v0.1.21`／`fetcher-v0.1.27`。
+先確認 FinDB workflow 與本次 transaction committed，再啟動 Fetcher；沒有並行更新兩個 units。
+Production verify 全部通過，五個 production ECR digests 與 staging accepted manifests 一致。
+兩個 schema-v4 accepted bundles、acceptance 與本次 SSM finalize committed marker 均已獨立核對。
+DB revision 維持 `d8e3f0b5a2c4`，未 downgrade 或重啟 Owner controls。
+
+| 實測 | [FinDB production](https://github.com/FPI-TW/findb/actions/runs/42637892729) | [Fetcher production](https://github.com/FPI-TW/findb/actions/runs/42639305431) |
+| --- | ---: | ---: |
+| 首個 job 至部署結束 | 448 秒 | 491 秒 |
+| 排除 verify/test 獨占區間 | 211 秒 | 185 秒 |
+| Workflow 內純跨 unit 等待 | 0 秒 | 0 秒（FinDB 完成後才 dispatch） |
+| **部署淨耗時** | **237 秒（3:57）** | **306 秒（5:06）** |
+| 五分鐘判定 | 通過 | 超標 6 秒 |
+| Production 合格一般增量樣本 | **1/5** | **0/5** |
+
+Fetcher 開始前等待 FinDB 的時間不在其 workflow 時間範圍內，沒有再次扣除；promotion、
+preflight、所有主機健康檢查、acceptance 與 finalize 仍計入。Fetcher 這筆是部署成功但超標，
+完整保留，不用 replay／重跑替代，也不宣稱 production 已全面達成五分鐘。
+
+| 步驟 | FinDB 秒 | Fetcher 秒 | 存在理由與改善方向 |
+| --- | ---: | ---: | --- |
+| Release resolve | 5 | 8 | 驗證 annotated tag、exact revision 與 main ancestry；保留 |
+| Release binding | 28 | 25 | 核對 staging acceptance，綁定 immutable tag／bundle；保留 IAM 分離與條件寫入 |
+| Promotion 準備／收尾 | 33 | 36 | Protected driver、跨帳號 roles、來源 bundle 驗證、Buildx；後續量測重複初始化成本 |
+| 平行 digest 複製／candidate bundle | 25 | 39 | 複製 exact digests 並核對目的端與 immutable tag；保留全部成功才發布 |
+| Deploy 準備／materialize／收尾 | 28 | 27 | Account、role、driver、release 驗證；維持權限邊界 |
+| Read-only preflight | 8 | 12 | DB／主機／secrets／checkpoint／既有 runtime eligibility；保留 |
+| Apply／主機健康 | 86 | 135 | Writers graceful shutdown、exact migration、runtime 替換與完整健康；保留所有拒絕條件及至少 25 秒觀察 |
+| Runner acceptance | 5 | 5 | 本次 immutable acceptance／decision；保留 |
+| Finalize | 6 | 6 | 同鎖 commit、restart policy、清理原容器；不重新部署 |
+| Job 間排程間隙 | 13 | 13 | 交接成本仍計入，不能改列 verify 排除 |
+| **合計** | **237** | **306** | |
+
+Fetcher wrapper 子區間為 images 20 秒，Twelve Data／FinLab／TAIFEX／FactSet 各
+17／16／16／16 秒；已含於 apply，不重複加總。後續優先觀察 promotion 準備與 digest 複製的
+波動，再評估可合併的同權限初始化；不為補足 6 秒而刪減健康觀察或放寬安全檢查。
+
+部署前後五個 SQLite databases 共 83 張表的 rows／SHA-256 完全一致，包含 production
+既有根路徑 `/var/lib/findb-full-market/state.sqlite3`、Pilot、account governor、provider-work
+及 TAIFEX historical state。Checkpoint、quota 與歷史工作狀態未改寫。十二個 runtimes
+原 IDs 均已替換，全部 running、restart count 0、無 OOM，restart policy 為 `unless-stopped`；
+images、transaction labels 與 current pointer 均符合本次 committed release。
+
+Production accepted bundles：
+
+```text
+findb/production/accepted/c1c175b8a7496ff666472e3ee83ffcc9483f3756/ff21ee6931d1d8066dfde8b3a9ddd428aa43b003c38f87ab1551e2161e9f7b23.tar
+fetcher/production/accepted/c1c175b8a7496ff666472e3ee83ffcc9483f3756/1cac68892f4e3b9263579fc237fd1ce0825be1927dcc04208557ff7bd3140880.tar
+```
+
+目前 staging 為 FinDB 1/5、Fetcher 1/5，production 為 FinDB 1/5、Fetcher 0/5；
+四組各五筆的整體驗收尚未完成。本次正常部署成功不替代 AWS 故障注入、取消、主機重啟與
+正式 rollback 演練；既有未完成資料與復原驗收繼續列管。
 
 2026-10-16 已透過 OpenTofu 套用兩環境 deploy role 的取消命令權限：
 
