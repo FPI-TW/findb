@@ -848,6 +848,51 @@ Production 暫緩至 PR1～5 staging 整合完成，保留中間版本的 immuta
 production transactions prefix 保護與 schema-v4 發布基準（見上文首輪實測）；本 PR 不執行 production apply 或發布。
 PR4 上線後，Backend 不得單獨回退至沒有 execution-config API 的版本。
 
+## Provider catalog PR2 staging 驗收
+
+2026-11-10 00:27（台北時間）完成 [#428](https://github.com/FPI-TW/findb/pull/428) 的 staging
+唯讀驗收，Backend current commit 為 `077ee02b5d2c26b42927ad66e236bdeb3965ddc7`。
+[FinDB CD](https://github.com/FPI-TW/findb/actions/runs/42651731380) 成功；
+[Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/42651731410) 依 change policy 跳過 publish／deploy，
+Fetcher 維持已接受的 `c1c175b8a7496ff666472e3ee83ffcc9483f3756`。本次未部署 production。
+
+- 兩台主機均為 schema-v4：current manifest、實際 image digests、committed journal／healthy receipt
+  與 S3 immutable transaction decision／accepted record 的發布身份一致。Backend 六個 application
+  containers、Fetcher 十二個 consumers 均 running、零重啟、無 OOM；設有 healthcheck 的四個
+  Backend containers 均 healthy。未使用舊 accepted label 取代 transaction／container identity 驗證。
+- Backend image 的 metadata SHA-256 為
+  `e6a89f5b6f509ef73098c9109e52d11485bfc30a2bcc846ed77f2a6471c7eb44`，與合併版本一致。
+  四個 Pilot 容器以原有 Source credentials 經正式 HTTPS endpoint 讀取 Pilot／Full 設定，八組皆
+  HTTP 200；四 providers／五 feeds 的完整內容與 catalog 相同，scope、staging 身份、schema 1、
+  profile、digest、時區、date lag、deadline、bounded monitor、retry window、`no-store` 均通過。
+  Twelve Data 只含 US，FactSet 只含 HK，FinLab 含 TW equity／ETF，TAIFEX 含 TW futures；回應無 slot。
+- 每個 provider 另驗證七種拒絕情境：缺少 profile、未知 profile、schema 2、額外 provider、額外
+  environment 參數皆 HTTP 422；缺少 key 為 401，無效 key 為 403。未更改既有 credential scope，
+  NULL／空／重複／過寬 scope 等資料異常案例沿用 PR2 自動化測試，不宣稱已於 staging 注入驗證。
+- 以既有 DB-backed viewer credential 查詢 Admin schedulers／market-freshness；Pilot、Full 各五條
+  feed 的 schedule 與 Source 使用的 catalog 描述一致，保留逐 feed UTC `next_scheduled_at`。
+  [#423](https://github.com/FPI-TW/findb/pull/423) 的退休 provider 相容性也通過：兩個 TW minute dataset
+  各回傳 11 筆 Shioaji Pilot plans，HTTP 200，deadline 與 DB frozen 值逐筆相同；Full 查詢正常回傳空集合。
+- Admin GET 前後以 read-only DB transaction 比對：14 個 controls 的 desired／observed state 均 stopped，
+  revision／retired 狀態、14 筆 first dates、70 筆 plans 的 identity／deadline／membership hash／expected
+  count 及 work／historical／normalization 狀態計數均未改變。Migration 維持 `d8e3f0b5a2c4`，未撤銷
+  Shioaji credentials 為零。既有 failed／partial 終態保留；不將認證使用紀錄或 runtime heartbeat 視為凍結資料。
+- 公開 health、Dashboard lookup redirect 後及沿既有 Referer 規則的 Serve US EOD 查詢均 HTTP 200，
+  Serve 回傳一筆 canonical 資料。探測腳本曾因 Backend image 未包含 `httpx`、查詢欄位／分頁欄位名稱
+  誤用而失敗；改用標準庫並修正腳本後完整重驗通過，未修改應用、image、DB 或部署設定。
+
+| 證據 | FinDB | Fetcher |
+| --- | --- | --- |
+| Accepted bundle SHA-256 | `2de016f2d0c05a50aef30c92a1e9004aeb97add2f789cf243f25c578b462d31c` | `7463ebd12ade03c810d1d48ff966bedbc61b6afa72cc9542e119f3b17a2c6603` |
+| Committed transaction suffix | `42651731380-1` | `42630986350-1` |
+| Receipt 原始部署 SSM | `4bf32a5f-9087-4e12-8ddd-63dc2e32c42c` | `8efc31cb-9790-427e-9ec9-ec41e54f63c9` |
+| 本次 runtime／Source 驗收 SSM | `9127f61e-c778-4898-9b84-0bfe7d7c7786` | `24c8f814-8d37-49bb-8915-e47c9ccba768` |
+
+Transaction ID 為 `<bundle SHA-256>-<suffix>`。Admin／DB 完整通過的 SSM 為
+`a2f31c30-658e-49dc-9fd6-bddadd6041f0`。本次只驗收 PR2 發布與相容性，未啟動 controls、建立或
+執行 daily／historical 工作、呼叫外部 provider 抓取。Historical 完整鏈路、動態快照換版／故障恢復、
+DB schedule／deadline 遷移與 Dashboard market 分組仍屬 PR3～5；此次查詢成功不替代後續驗收。
+
 ## Provider catalog PR1 staging 驗收
 
 2026-11-09（台北時間）[#416](https://github.com/FPI-TW/findb/pull/416) 合併至
