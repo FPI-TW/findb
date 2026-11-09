@@ -51,8 +51,12 @@ break-glass 復原憑證，仍經正式 Admin API、expected revision 與 audit 
 兩個 runtime configuration secrets 的退役欄位已清理，其他值逐一比對相同；初次失敗的
 `secret_schema_invalid` 已排除。後續 Backend 在 Compose interpolation 因殘留必填的
 `SHIOAJI_SKIP_NON_TRADING_DAYS` 中止，須合併 Compose 修正後重建 candidate，不能重跑原 bundle。
-Fetcher preflight 則拒絕三個 `provider-work-backup-findb-*-shioaji` 舊容器；它們均為
-`Exited (0)`，須先保存及核對證據，再依退役程序清理，不能放寬 host guard 或改名繞過。
+Fetcher preflight 曾拒絕三個 `provider-work-backup-findb-*-shioaji` 舊容器。已確認
+`Exited (0)`，保存各自 root filesystem export、inspect metadata、diff 與 SHA-256 manifest
+至主機 root-only 的 `/var/backups/findb-retirement/20261109-staging-shioaji/`，驗證後只移除
+這三個容器，未使用 `--force`／`--volumes`，原 images、匿名 volumes、checkpoint／cache 與
+所有 bind mount 路徑及 inode 保留。十二個 active consumers 的 ID 與運作狀態不變，
+新版 host guard 已回報 `fetcher_host_eligibility=running`；production 同類殘留仍待盤點。
 
 失敗發生在 migration 與服務替換之前，staging 仍使用原 accepted release，revision 為
 `c7d2e9a4f1b3`，十二個 active Fetcher consumers 仍運作。Shioaji 歷史 requests／items、
