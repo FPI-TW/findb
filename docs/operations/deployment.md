@@ -310,6 +310,14 @@ target instance 和 region 唯讀查詢 `ssm get-command-invocation` 的 stdout�
 必要時查對應 CloudWatch output。Exit code 本身不足以判定是 migration、configuration 或 health check。
 重試前須確認 command 已終止與主機恢復狀態；未取得遠端輸出時，不宣稱已回滾或服務健康。
 
+若 candidate 回報 `writer_shutdown_not_graceful`，cleanup 會維持 application containers 停止，
+不會自動恢復服務。先核對遠端輸出確實停在 migration 前、`current` 仍指向原 accepted release，
+且各容器的 image digest 與原 manifest 一致；符合時可重新啟動這些既有容器恢復原版，驗證健康、
+具認證的 Serve 查詢、停止的 controls 與資料指紋後，再重跑失敗的 deploy job。
+不得修改容器 exit code 或跳過 graceful-shutdown gate；若已開始 migration 或映像不符，須改走
+對應的復原流程。Serve 停止時若持續等待 background tasks，保留其 shutdown log，恢復後重測原本
+逾時的查詢，不能只用 `/health` 判定查詢已恢復。
+
 Backend image 以 `uv sync --frozen --no-dev --no-install-project` 安裝 runtime，只有 `/app`，
 不包含 Backend dev group 的 editable `../fetcher`。部署 migration 直接執行 PATH 中的
 `/app/.venv/bin/alembic`（`alembic upgrade head`、`alembic current`），不得裸用會重新處理
