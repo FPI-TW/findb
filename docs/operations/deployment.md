@@ -565,8 +565,8 @@ receipts 與子程序狀態時停止切換，不能清檔或重新初始化。Pr
    不得重建遺失的既有 checkpoint。保留單環境唯一 Fetcher host 的 trusted deployment inventory。
 4. 保存完整 consumer `docker inspect` JSON（不可將含 secrets 的原始內容貼進 audit／chat），以及只包含
    該環境 Fetcher host IDs 的可信 inventory JSON。以 host local 的 `infra/deploy/provider_work_preflight.py`
-   驗證單 host、全部 15 個 consumers、protocol flag／image label、graceful stopped state、同一 writable
-   bind mount，並實際嘗試取得五個 provider flock。任一 orphan／未知 consumer／不同 inode 都拒絕。
+   驗證單 host、bundle v3 的全部 12 個 consumers、protocol flag／image label、graceful stopped state、同一 writable
+   bind mount，並實際嘗試取得 FactSet、FinLab、TAIFEX、Twelve Data 四個 provider flock。任一 orphan／未知 consumer／不同 inode 都拒絕。
 
    ```bash
    python3 infra/deploy/provider_work_preflight.py --environment staging \
@@ -660,9 +660,15 @@ v2→v3 不會死結。`check_full_market_checkpoint.sh` 與 SSM gate 為同一�
 2. Accepted 後此版成為新下限。`fetcher-deploy.yml` 拒絕 v3 以外的 bundle，v2 不再 replay，須回退時採 forward fix。
 3. `SHIOAJI_SIMULATION` 仍為 `runtime/configuration` 的 optional key，Shioaji secrets 與 ECR 也保留，
    待 Backend 退役驗收後才清理；Shioaji CloudWatch alarm 指向更早的舊容器名稱，不受此版影響，同批移除。
-4. Backend `apply_cutover` 仍要求五個 provider lock，而 `provider_work_preflight.py` 只回報四個；
-   Backend 退役前不可重新做 provider-work cutover attestation。Shioaji controls 的 heartbeat 會停止更新，
-   Dashboard 顯示的年齡增加屬預期。
+4. 本次 Backend 修正將 `apply_cutover` 的 host lock identities 改為 FactSet、FinLab、TAIFEX、Twelve Data，
+   與 bundle v3 preflight 的四個 providers 一致；缺少任一 provider 或仍含 Shioaji 的舊五-provider proof
+   一律拒絕。部署此 Backend 版本前仍不可重新 attestation；例行部署不需要重新執行 cutover。
+   Shioaji controls 的 heartbeat 停止更新、Dashboard 年齡增加屬預期。
+5. Cutover 仍以固定 provider lock order 檢查保留的 Shioaji active owner、所有舊 nonterminal runs 與
+   running historical items，未排空則拒絕；不建立／更新 Shioaji owner inode，也不重投影其舊 work／attempt。
+   既有 requests、prepared／receipts 與原始狀態均保留。此修正無 schema migration；部署後驗證
+   Shioaji 新回補不在 scopes、preview 無效、create 回傳 422，並核對既有 Admin／Serve 查詢與資料筆數。
+   Source scope／credentials 的退役仍待後續 migration；不能因四-provider cutover 通過就宣稱整體退役完成。
 
 ## Twelve Data HK 退役的 rollback 下限
 

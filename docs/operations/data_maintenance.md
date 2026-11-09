@@ -120,7 +120,7 @@ Production universe是reviewed、versioned artifact，不在runtime自動換股�
   securities（包括多股類），每次最多claim 5個symbol；scheduler poll及批次間隔不得短於60秒。
 - FinLab使用`finlab_tw50_2026_09_21.v2.json`，固定50檔、每個交易日只讀五個SDK datasets，
   完整50-symbol grid成立後才可送出full snapshot。
-- Shioaji使用`shioaji_tw50_2026_09_21.v2.json`，50檔股票與`0050`、`0056`、`006201`
+- 已退役 Shioaji 的歷史證據曾使用`shioaji_tw50_2026_09_21.v2.json`，50檔股票與`0050`、`0056`、`006201`
   分成兩個sequence；每個provider request仍只處理一檔且`SHIOAJI_SIMULATION=true`。
 
 三份v2 manifest均綁定來源URL、effective date、來源摘要與依序正規化symbol的SHA-256。
@@ -130,15 +130,14 @@ production/staging target混用都會fail closed。`source_sha256`是該次revie
 `symbols_sha256`是依manifest順序、每行一個canonical symbol（Shioaji為
 `dataset_key:symbol`）且結尾換行的摘要。
 
-Production EOD historical control plane允許最近366個calendar days；Shioaji minute 各環境均維持最近 31 天。
+Production EOD historical control plane允許最近366個calendar days；Shioaji 已停止新申請，既有 minute request 的 31 天視窗語意保留。
 仍依published market calendar與 provider policy 建立
 open-day work items；Twelve Data逐symbol、FinLab逐trade date保存lease/checkpoint並沿用raw-first、
 immutable idempotency與Source terminal驗證。Twelve Data historical與daily同樣以`adjust=none`抓取
 實際成交價；回補可依較新的`fetched_at`覆寫同來源舊列，但不會把拆股調整價寫入canonical。
 本變更前以`adjust=splits`完成的回補列，若之後已有拆股，可能與實際成交價不同，須依原raw
 與拆股日期個別核對後重跑，不得整批覆寫。切換前已保存回應或prepared body但尚未完成的
-historical work會保留原bytes並以manual review結束，處理方式見[價格基準切換與舊回應快取](full_market.md#價格基準切換與舊回應快取)。Shioaji 支援 `tw_equity_minute` 與 `tw_etf_minute`，
-依已驗證 production v2 manifest 分別回補完整 50 檔股票與 3 檔 ETF；不接受 staging／舊 pilot manifest。
+historical work會保留原bytes並以manual review結束，處理方式見[價格基準切換與舊回應快取](full_market.md#價格基準切換與舊回應快取)。Shioaji 舊 `tw_equity_minute` 與 `tw_etf_minute` 的 manifest／receipts 保留供查核，不再提供新回補。
 建立正式
 request前先使用`findb-fetch-backfill-plan --provider ... --dataset-key ... --start-date ...
 --end-date ...`（預設dry-run）保存日期、預估calls／rows及無效日期；只有核對計畫後才加
@@ -149,39 +148,23 @@ canonical與Serve前不可擴大下一批。
 
 ### Shioaji 股票／ETF 分鐘回補
 
-> Shioaji historical consumer 已移除，本節不再可執行（`--provider shioaji` 會被拒絕），僅供稽核既有回補紀錄；TW 分 K 回補待替代 provider 上線。
+Shioaji historical consumer 已移除，Backend 的新申請 capability 也已移除。即使 dataset 仍為
+active、保留 scheduler／Source scope，scopes API 也不再列出 `tw_equity_minute` 或 `tw_etf_minute`
+的 Shioaji 選項；有效日期的 preview 回報 `provider_dataset_unsupported`，新 request 回傳 HTTP 422。
+Dashboard 使用同一 scopes API，因此不需另維護退役選項清單。TW 分 K 回補待替代 provider 上線。
 
-Dashboard「歷史回補」的供應商與資料集清單由後端 scopes API 產生；需有 active dataset 與
-對應 Shioaji scheduler scope，production 不再另行排除 Shioaji。各環境的申請日期範圍皆為最近 31 個日曆日
-（含當日，最早為台北當日往前 30 天）；超出範圍或未來日期一律拒絕。當日新抓取仍須已過凍結日曆的收盤時間。
-每次 request 只涵蓋一個 dataset，日期依序執行，股票與 ETF 須分別申請。例如：
+既有 requests／items、frozen manifest、prepared bytes、receipts、repair／ACK、canonical 分 K 與
+checkpoint 均保留；Admin 歷史列表／分頁、既有取消操作與 Serve 分 K 查詢維持原有權限與語意。
+相同 request key、scope 與仍在原日期視窗內的重送只回傳原 request，不重開 failed work 或新增工作。
+歷史 request 的台北日期與 31 天視窗仍用於原證據解讀及收尾，不代表恢復抓取能力。
 
-```bash
-findb-fetch-backfill-plan --provider shioaji --dataset-key tw_equity_minute \
-  --start-date 2026-10-01 --end-date 2026-10-05
-findb-fetch-backfill-plan --provider shioaji --dataset-key tw_etf_minute \
-  --start-date 2026-10-01 --end-date 2026-10-05
-```
+此階段僅關閉新回補申請並調整 cutover inventory，未撤銷 Source credentials、刪除 scheduler／catalog
+scope，亦未改寫既有 claim／交付收尾協定；無現行 Shioaji executor，不可將保留 API 當作重新啟用授權。
+任何舊 queued／running work 或未交付 prepared bytes 都須先人工盤點；不藉此次發布自動取消、重試或刪除。
+後續 scope／credential migration 與資源清理見 [backlog](../dev/backlog.md#full-market-external-acceptance)。
 
-預設只 preview，確認後加 `--deliver`，需要等待完成時加 `--wait`。預估 provider calls 為
-有效日期數乘以股票 50／ETF 3，分鐘 rows 無法事先確定，回傳 `null`。CLI 與 historical worker
-使用同一個 `FETCHER_SHIOAJI_PRODUCTION_MANIFEST`（預設 reviewed production v2）；
-維持 `SHIOAJI_SIMULATION=true`、Source credential dataset scope、R2 raw-first 與帳號 governor。
-Worker 使用既有 `findb-fetch-historical-backfill --provider shioaji --run-forever`。
-
-每個日期先凍結完整成員、sequence／sequence_count 與 universe identity，重試不替換成員。
-Checkpoint 位於 `FETCHER_HISTORICAL_STATE_DIR/<request_id>.sqlite3`，沿用既有 acquisition 與
-checkpoint 的 31 天驗證，不延長 production Shioaji 的回補範圍；daily checkpoint 與 cutoff 不受歷史模式影響。
-全部 sequences 必須取得 Source `completed` 且 total／success／failed counts 完全符合才可完成，
-不完整或 DQ 失敗不得當作成功／no-data。已保存的 prepared bytes／receipts 依原流程恢復。
-
-Historical 與 Pilot／Full 共用同 provider FIFO／host lock，可在
-daily controls running 時申請，無須刪除或重設 daily terminal checkpoint。既有 terminal failed request 不會因部署自動重試；另建 request key
-只申請待補日期，驗證 Raw R2 → Source → outbox／worker → canonical → Serve 與完整成員證據，
-再處理對應 alerts／DQ；不得直接改寫舊 checkpoint 或告警狀態。
-
-Historical CLI收到`SIGTERM`／`SIGINT`後立即停止新日期claim，完成當前日期的raw-first交付與
-terminal回報；idle時立即退出。部署停止期限仍為30秒，執行中的日期可能較久，應先等待request
+現行 providers 的 Historical CLI 收到`SIGTERM`／`SIGINT`後立即停止新日期claim，完成當前日期的raw-first交付與
+terminal回報；idle時立即退出。部署停止期限為90秒，執行中的日期可能較久，應先等待request
 terminal且沒有running item；scheduler停止狀態不代表historical worker已排空。若程序被強制終止，
 原 provider owner 與 running item 保留；heartbeat 到期不釋放 owner，也不將 item 改為 pending。
 只有重新取得相同 shared host-lock inode、確認原 child／descendants 已停止後，才可旋轉
@@ -308,8 +291,9 @@ migration-owned partition。Staging monitoring以一筆為告警門檻，因此�
 TAIFEX stopped-controls 維護窗口與獨立 historical TTL lease 已退役；
 可在 Pilot／Full desired running 時提交所有既有支援 scope 的回補。
 它們依同 provider FIFO 排隊；日期由早到晚入列，profile／request 決策與證據不互相覆蓋。
-可用 scope 以後端 capability matrix 與 active scheduler scope 為準；包含 FactSet HK EOD 與
-production Shioaji 股票／ETF minute，TW ETF EOD 仍不支援 historical。
+可用 scope 以後端 capability matrix 與 active scheduler scope 為準；現行為 Twelve Data US EOD、
+FinLab TW equity EOD、TAIFEX futures EOD、FactSet HK EOD。Shioaji minute 已停止新申請，
+TW ETF EOD 仍不支援 historical。
 
 Twelve Data／FinLab historical 會保存 frozen universe、native response、immutable prepared jobs 與所有 receipts；
 Shioaji 保存全部 minute sequences，TAIFEX 保存五報表與 whole-day manifest。Queue retry 重用原 scope／budget，

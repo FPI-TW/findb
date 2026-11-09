@@ -104,7 +104,7 @@ class RuntimeHarness:
             patch.setenv(key, value)
         inodes = {}
         # Backend cutover proof still names Shioaji until its scope is retired.
-        for provider in {provider for provider, _ in SCOPES} | {"factset", "shioaji"}:
+        for provider in {provider for provider, _ in SCOPES} | {"factset"}:
             with coordinator.host_lock(provider) as (_, inode):
                 inodes[provider] = inode
         await attest_cutover(self.db, inodes)
