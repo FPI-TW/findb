@@ -151,7 +151,7 @@ def test_staging_cd_jobs_after_an_optional_verify_override_skip_propagation() ->
             return set(direct).union(*(needs(parent) for parent in direct))
 
         downstream = [name for name in jobs if "verify" in needs(name)]
-        assert {"publish", "prepare", "deploy"} <= set(downstream)
+        assert {"publish", "deploy"} <= set(downstream)
         for name in downstream:
             condition = str(jobs[name].get("if", ""))
             assert "!cancelled()" in condition or "always()" in condition, (unit, name)
@@ -383,7 +383,7 @@ def test_staging_cd_has_exact_revision_policy_and_no_legacy_transport() -> None:
     for unit in ("findb", "fetcher"):
         text = (ROOT / ".github" / "workflows" / f"{unit}-cd.yml").read_text()
         assert "infra/deploy/change_policy.py" in text
-        assert "revision: ${{ needs.prepare.outputs.revision }}" in text
+        assert "revision: ${{ needs.policy.outputs.revision }}" in text
         assert "Verify exact requested revision" in text
 
 
@@ -478,11 +478,7 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
             "contents": "read",
             "id-token": "write",
         }
-        assert "environment" not in jobs["prepare"]
-        assert jobs["prepare"]["permissions"] == {
-            "contents": "read",
-            "id-token": "write",
-        }
+        assert "prepare" not in jobs
         deploy_permissions = {
             "contents": "read",
             "id-token": "write",
@@ -494,9 +490,7 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
         publish_block = re.search(
             r"^  publish:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
         ).group("body")
-        prepare_block = re.search(
-            r"^  prepare:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)", text, re.M | re.S
-        ).group("body")
+        prepare_block = (ROOT / ".github/workflows" / f"{unit}-deploy.yml").read_text()
         assert f"role/{unit}-staging-ecr-publisher" in publish_block
         assert f"role/{unit}-staging-ecr-publisher" not in prepare_block
         assert "aws-configuration" in prepare_block
@@ -508,9 +502,9 @@ def test_staging_callers_delegate_deployment_to_reusable_workflow() -> None:
         assert f"uses: ./.github/workflows/{unit}-deploy.yml" in deploy_block
         assert "runs-on:" not in deploy_block
         assert "aws ssm send-command" not in deploy_block
-        assert "mode: ${{ needs.prepare.outputs.mode }}" in deploy_block
-        assert "bundle_key: ${{ needs.prepare.outputs.bundle_key }}" in deploy_block
-        assert f"{unit}/candidates/" in text
+        assert "mode: ${{ needs.policy.outputs.mode }}" in deploy_block
+        assert "bundle_key: ${{ needs.policy.outputs.bundle_key }}" in deploy_block
+        assert f"{unit}/candidates/" in prepare_block
         assert f"{unit}/accepted/" in text
 
 
@@ -587,10 +581,10 @@ def test_fetcher_waits_for_same_sha_findb_after_read_only_preflight() -> None:
     caller_text = (ROOT / ".github" / "workflows" / "fetcher-cd.yml").read_text()
     caller = yaml.safe_load(caller_text)
     assert "Wait for same-revision FinDB staging rollout" not in caller_text
-    assert caller["jobs"]["deploy"]["needs"] == "prepare"
+    assert caller["jobs"]["deploy"]["needs"] == ["policy", "verify", "publish"]
     assert caller["jobs"]["deploy"]["with"]["findb_rollout_sha"] == (
-        "${{ github.event_name == 'push' && needs.prepare.outputs.mode == 'candidate' "
-        "&& needs.prepare.outputs.revision || '' }}"
+        "${{ github.event_name == 'push' && needs.policy.outputs.mode == 'candidate' "
+        "&& needs.policy.outputs.revision || '' }}"
     )
     production = yaml.safe_load(
         (ROOT / ".github" / "workflows" / "fetcher-production-cd.yml").read_text()
@@ -827,6 +821,7 @@ def test_prepare_contracts_are_main_push_or_confirmed_manual_candidate_or_exact_
         assert '[ -z "$CANDIDATE_CONFIRMATION" ]' in text
         assert '[ -n "$ACCEPTED" ] && [ -n "$IMAGE_TAG" ]' in text
         assert '[ "${{ github.event_name }}" = push ]' in text
+        text = (ROOT / ".github/workflows" / f"{unit}-deploy.yml").read_text()
         assert f"{unit}/candidates/${{REVISION}}/" in text
         assert "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar" in text
         assert "--if-none-match '*'" in text
@@ -1178,7 +1173,7 @@ def test_staging_replay_deploy_survives_skipped_publisher(unit: str) -> None:
     jobs = workflow["jobs"]
     # Replay intentionally skips publish. A status function is required so that
     # GitHub does not inject success() and suppress deploy through that ancestor.
-    assert jobs["deploy"]["needs"] == "prepare"
-    assert jobs["deploy"]["if"] == "${{ !cancelled() && needs.prepare.result == 'success' }}"
-    assert "needs.policy.outputs.mode == 'replay'" in jobs["prepare"]["if"]
-    assert "needs.publish.result == 'skipped'" in jobs["prepare"]["if"]
+    assert jobs["deploy"]["needs"] == ["policy", "verify", "publish"]
+    assert "!cancelled()" in jobs["deploy"]["if"]
+    assert "needs.policy.outputs.mode == 'replay'" in jobs["deploy"]["if"]
+    assert "needs.publish.result == 'skipped'" in jobs["deploy"]["if"]

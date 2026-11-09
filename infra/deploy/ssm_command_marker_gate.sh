@@ -173,7 +173,7 @@ ssm_wait_command() (
       completed=true
       return 0
     fi
-    sleep 5
+    sleep 2
   done
   echo "SSM command deadline exceeded: command_id=$command_id timeout_seconds=$6; acceptance is blocked." >&2
   return 1

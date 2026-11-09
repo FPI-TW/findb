@@ -14,6 +14,22 @@ name: Reusable FinDB deployment
       bundle_key:
         required: true
         type: string
+      prepare_candidate:
+        required: false
+        type: boolean
+        default: false
+      backend_image:
+        required: false
+        type: string
+        default: ''
+      dashboard_image:
+        required: false
+        type: string
+        default: ''
+      migration_revision:
+        required: false
+        type: string
+        default: ''
       release_tag:
         required: false
         type: string
@@ -56,12 +72,63 @@ jobs:
       with:
         target: ${{ inputs.deployment_target }}
         unit: findb
+    - name: Verify staging candidate preparation contract
+      if: ${{ inputs.prepare_candidate }}
+      env:
+        TARGET: ${{ inputs.deployment_target }}
+        MODE: ${{ inputs.mode }}
+        REVISION: ${{ inputs.revision }}
+        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        RELEASE_TAG: ${{ inputs.release_tag }}
+      run: |
+        set -euo pipefail
+        [ "$GITHUB_REF" = refs/heads/main ]
+        [ "$TARGET" = staging ]
+        [ "$MODE" = candidate ]
+        [ -z "$BUNDLE_KEY" ]
+        [ -z "$RELEASE_TAG" ]
+        [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+        [ "$(git rev-parse HEAD)" = "$REVISION" ]
+    - name: Build and upload exact staging candidate
+      if: ${{ inputs.prepare_candidate }}
+      id: candidate
+      env:
+        ACCOUNT: ${{ env.AWS_ACCOUNT_ID }}
+        REGISTRY: ${{ env.ECR_REGISTRY }}
+        REVISION: ${{ inputs.revision }}
+        BUNDLE_BUCKET: ${{ env.DEPLOY_BUNDLE_BUCKET }}
+        KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
+        BACKEND_IMAGE: ${{ inputs.backend_image }}
+        DASHBOARD_IMAGE: ${{ inputs.dashboard_image }}
+        MIGRATION_REVISION: ${{ inputs.migration_revision }}
+      run: |
+        set -euo pipefail
+        [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
+        [[ "$BACKEND_IMAGE" =~ ^${REGISTRY}/findb/staging/backend@sha256:[0-9a-f]{64}$ ]]; [[ "$DASHBOARD_IMAGE" =~ ^${REGISTRY}/findb/staging/dashboard@sha256:[0-9a-f]{64}$ ]]
+        [[ "$MIGRATION_REVISION" =~ ^[0-9a-f]{12}$ ]]
+        python3 infra/deploy/release_manifest.py generate --repo-root . --unit findb --commit-sha "$REVISION" --migration-revision "$MIGRATION_REVISION" --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "backend=$BACKEND_IMAGE" --image "dashboard=$DASHBOARD_IMAGE" --output "$RUNNER_TEMP/manifest.json"
+        python3 infra/deploy/release_manifest.py bundle --repo-root . --unit findb --manifest "$RUNNER_TEMP/manifest.json" --output "$RUNNER_TEMP/bundle.tar"
+        sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d ' ' -f1)"; key="findb/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar"
+        aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$key" --body "$RUNNER_TEMP/bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
+        echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
+    - name: Select exact deployment bundle
+      id: bundle
+      env:
+        PREPARE: ${{ inputs.prepare_candidate }}
+        INPUT_KEY: ${{ inputs.bundle_key }}
+        CANDIDATE_KEY: ${{ steps.candidate.outputs.bundle_key }}
+      run: |
+        set -euo pipefail
+        key="$INPUT_KEY"
+        if [ "$PREPARE" = true ]; then key="$CANDIDATE_KEY"; fi
+        [ -n "$key" ]
+        echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
     - name: Verify immutable target contract
       env:
         EXPECTED_SHA: ${{ inputs.revision }}
         TARGET: ${{ inputs.deployment_target }}
         MODE: ${{ inputs.mode }}
-        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        BUNDLE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         RELEASE_TAG: ${{ inputs.release_tag }}
       run: |
         set -euo pipefail
@@ -94,7 +161,7 @@ jobs:
         TARGET: ${{ inputs.deployment_target }}
         REVISION: ${{ inputs.revision }}
         MODE: ${{ inputs.mode }}
-        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        BUNDLE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         RELEASE_TAG: ${{ inputs.release_tag }}
         AWS_REGION: ${{ env.AWS_REGION }}
         AWS_ACCOUNT_ID: ${{ env.AWS_ACCOUNT_ID }}
@@ -161,7 +228,7 @@ jobs:
       env:
         TARGET: ${{ inputs.deployment_target }}
         REVISION: ${{ inputs.revision }}
-        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        BUNDLE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
         VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}
         BACKEND_IMAGE: ${{ steps.release.outputs.backend }}
@@ -192,7 +259,7 @@ jobs:
         TARGET: ${{ inputs.deployment_target }}
         MODE: ${{ inputs.mode }}
         REVISION: ${{ inputs.revision }}
-        BUNDLE_KEY: ${{ inputs.bundle_key }}
+        BUNDLE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
         BACKEND_IMAGE: ${{ steps.release.outputs.backend }}
         DASHBOARD_IMAGE: ${{ steps.release.outputs.dashboard }}
@@ -238,7 +305,7 @@ jobs:
       env:
         REVISION: ${{ inputs.revision }}
         RELEASE_TAG: ${{ inputs.release_tag }}
-        CANDIDATE_KEY: ${{ inputs.bundle_key }}
+        CANDIDATE_KEY: ${{ steps.bundle.outputs.bundle_key }}
         BUNDLE_SHA256: ${{ steps.release.outputs.bundle_sha256 }}
         COMMAND_ID: ${{ steps.ssm.outputs.command_id }}
         VALIDATOR_SHA256: ${{ steps.release.outputs.validator_sha256 }}

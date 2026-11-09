@@ -220,7 +220,7 @@ jobs:
           [ "$(grep -c '^image_ref=' "$work/$name.output")" = 1 ]
           printf '%s_image_ref=%s\n' "$name" "$(sed -n 's/^image_ref=//p' "$work/$name.output")" >> "$GITHUB_OUTPUT"
         done
-  prepare:
+  deploy:
     needs:
     - policy
     - verify
@@ -230,75 +230,6 @@ jobs:
       (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay') ||
       (needs.verify.result == 'skipped' && github.event_name == 'push' && needs.policy.outputs.fetcher_ci_evidence != ''))) && ((needs.policy.outputs.mode == 'candidate' && needs.publish.result == 'success') ||
        (needs.policy.outputs.mode == 'replay' && needs.publish.result == 'skipped'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      id-token: write
-    outputs:
-      revision: ${{ needs.policy.outputs.revision }}
-      mode: ${{ needs.policy.outputs.mode }}
-      bundle_key: ${{ steps.contract.outputs.bundle_key }}
-    env:
-      AWS_REGION: ap-southeast-1
-      ACCOUNT: '439622209937'
-      REGISTRY: 439622209937.dkr.ecr.ap-southeast-1.amazonaws.com
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ needs.policy.outputs.revision }}
-        persist-credentials: false
-        clean: false
-    - name: Load deployment driver from protected main
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        ref: ${{ github.workflow_sha }}
-        path: .deployment-driver
-        persist-credentials: false
-    - name: Load AWS deployment configuration
-      uses: ./.deployment-driver/.github/actions/aws-configuration
-      with:
-        target: staging
-        unit: fetcher
-    - name: Verify exact requested revision for bundle preparation
-      env:
-        EXPECTED_SHA: ${{ needs.policy.outputs.revision }}
-      run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-    - name: Verify deployment account
-      shell: bash
-      run: test "$(aws sts get-caller-identity --query Account --output text)" = "$AWS_ACCOUNT_ID"
-    - name: Build and upload exact v2 staging candidate
-      if: ${{ needs.policy.outputs.mode == 'candidate' }}
-      id: candidate
-      env:
-        REVISION: ${{ needs.policy.outputs.revision }}
-        BUNDLE_BUCKET: ${{ env.DEPLOY_BUNDLE_BUCKET }}
-        KMS_KEY: ${{ env.DEPLOY_BUNDLE_KMS_KEY_ARN }}
-        TWELVE_IMAGE: ${{ needs.publish.outputs.twelve_image }}
-        FINLAB_IMAGE: ${{ needs.publish.outputs.finlab_image }}
-        FACTSET_IMAGE: ${{ needs.publish.outputs.factset_image }}
-      run: |
-        set -euo pipefail
-        [ "$(aws sts get-caller-identity --query Account --output text)" = "$ACCOUNT" ]
-        [[ "$TWELVE_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/twelve-data@sha256:[0-9a-f]{64}$ ]]; [[ "$FINLAB_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/finlab@sha256:[0-9a-f]{64}$ ]]; [[ "$FACTSET_IMAGE" =~ ^${REGISTRY}/findb/staging/fetcher/factset@sha256:[0-9a-f]{64}$ ]]
-        profile=unified
-        python3 infra/deploy/release_manifest.py generate --runtime-profile "$profile" --repo-root . --unit fetcher --commit-sha "$REVISION" --migration-revision none --contract-manifest contracts/manifest.json --created-by-run-id "$GITHUB_RUN_ID" --deployment-target staging --registry "$REGISTRY" --account-id "$ACCOUNT" --release-tag '' --image "twelve_data=$TWELVE_IMAGE" --image "finlab=$FINLAB_IMAGE" --image "factset=$FACTSET_IMAGE" --output "$RUNNER_TEMP/manifest.json"
-        python3 infra/deploy/release_manifest.py bundle --repo-root . --unit fetcher --manifest "$RUNNER_TEMP/manifest.json" --output "$RUNNER_TEMP/bundle.tar"
-        sha="$(sha256sum "$RUNNER_TEMP/bundle.tar" | cut -d ' ' -f1)"; key="fetcher/candidates/${REVISION}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${sha}.tar"
-        aws s3api put-object --bucket "$BUNDLE_BUCKET" --key "$key" --body "$RUNNER_TEMP/bundle.tar" --if-none-match '*' --server-side-encryption aws:kms --ssekms-key-id "$KMS_KEY" >/dev/null
-        echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
-    - name: Publish exact reusable deployment contract
-      id: contract
-      env:
-        MODE: ${{ needs.policy.outputs.mode }}
-        REPLAY_KEY: ${{ needs.policy.outputs.bundle_key }}
-        CANDIDATE_KEY: ${{ steps.candidate.outputs.bundle_key }}
-      run: |
-        set -euo pipefail
-        key="$REPLAY_KEY"; [ "$MODE" = candidate ] && key="$CANDIDATE_KEY"; [ -n "$key" ]; echo "bundle_key=$key" >> "$GITHUB_OUTPUT"
-  deploy:
-    needs: prepare
-    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     permissions:
       contents: read
       id-token: write
@@ -306,19 +237,22 @@ jobs:
     uses: ./.github/workflows/fetcher-deploy.yml
     with:
       deployment_target: staging
-      revision: ${{ needs.prepare.outputs.revision }}
-      mode: ${{ needs.prepare.outputs.mode }}
-      bundle_key: ${{ needs.prepare.outputs.bundle_key }}
+      revision: ${{ needs.policy.outputs.revision }}
+      mode: ${{ needs.policy.outputs.mode }}
+      bundle_key: ${{ needs.policy.outputs.bundle_key }}
+      prepare_candidate: ${{ needs.policy.outputs.mode == 'candidate' }}
+      twelve_image: ${{ needs.publish.outputs.twelve_image }}
+      finlab_image: ${{ needs.publish.outputs.finlab_image }}
+      factset_image: ${{ needs.publish.outputs.factset_image }}
       release_tag: ''
       # A pushed candidate waits, after its read-only preflight, for the same
       # revision's FinDB staging rollout; replays deploy an accepted bundle.
-      findb_rollout_sha: ${{ github.event_name == 'push' && needs.prepare.outputs.mode == 'candidate' && needs.prepare.outputs.revision || '' }}
+      findb_rollout_sha: ${{ github.event_name == 'push' && needs.policy.outputs.mode == 'candidate' && needs.policy.outputs.revision || '' }}
   report-staging-deployment-failure:
     needs:
     - policy
     - verify
     - publish
-    - prepare
     - deploy
     if: |-
       always() && github.ref == 'refs/heads/main' && (inputs.deployment_target || 'staging') == 'staging' && (needs.verify.result == 'failure' ||
@@ -327,8 +261,6 @@ jobs:
         needs.policy.result == 'cancelled' ||
         needs.publish.result == 'failure' ||
         needs.publish.result == 'cancelled' ||
-        needs.prepare.result == 'failure' ||
-        needs.prepare.result == 'cancelled' ||
         needs.deploy.result == 'failure' ||
         needs.deploy.result == 'cancelled')
     runs-on: ubuntu-latest
@@ -361,7 +293,7 @@ jobs:
           --value 1 \
           --unit Count
   deployment-summary:
-    needs: [policy, verify, publish, prepare, deploy]
+    needs: [policy, verify, publish, deploy]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

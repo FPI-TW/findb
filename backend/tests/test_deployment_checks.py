@@ -258,16 +258,16 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
 
     assert completed.returncode == 0, completed.stderr
     calls = docker_calls.read_text(encoding="utf-8").splitlines()
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert "predeploy_db_check.py" in calls[0]
     assert (
         "--require-exact-alembic-revision"
         if mode == "activate"
         else "--allow-empty-database-bootstrap"
     ) in calls[0]
-    assert (
-        "reconcile_deployment_credentials.py --deployment-target staging --check-only" in calls[1]
-    )
+    assert "reconcile_deployment_credentials.py" in calls[0]
+    assert "--check-only" in calls[0]
+    assert "staging" in calls[0]
 
 
 def _run_ssm_marker_gate(
@@ -1728,7 +1728,8 @@ def test_runtime_secret_helpers_enforce_tmpfs_cleanup_and_registry_isolation() -
     assert "--consumer credentials" in migration_block
     assert "run --rm --no-deps" in migration_block
     assert "reconcile_deployment_credentials.py" in migration_block
-    assert '--deployment-target "$APP_ENVIRONMENT"' in migration_block
+    assert '--deployment-target "$4"' in migration_block
+    assert '"$revision_policy" "$APP_ENVIRONMENT"' in migration_block
     assert "--check-only" in migration_block
     assert " up " not in migration_block
     assert findb.count("--map MIGRATION_DATABASE_URL=DATABASE_URL") == 2
@@ -3592,8 +3593,11 @@ def test_staging_predeploy_preserves_release_context_through_runtime_wrapper(
     )
     assert completed.returncode == 42
     commands = command_log.read_text(encoding="utf-8")
-    assert "predeploy_db_check.py --expected-alembic-revision incompatible-target" in commands
-    assert "--expected-rds-endpoint db.example.com" in commands
+    assert 'predeploy_db_check.py --expected-alembic-revision "$1"' in commands
+    assert (
+        "check incompatible-target db.example.com --allow-empty-database-bootstrap staging"
+        in commands
+    )
     assert " stop --timeout " not in commands
     assert "alembic upgrade" not in commands
     cleanup_arm = helper.index("release_services_may_have_started=1")
@@ -3968,9 +3972,9 @@ fi
     )
     assert cached.returncode == 0, cached.stderr
     build = docker_log.read_text(encoding="utf-8")
-    assert "--cache-from type=gha,scope=findb/staging/fetcher/finlab" in build
+    assert "--cache-from type=gha,version=2,scope=findb/staging/fetcher/finlab" in build
     assert (
-        "--cache-to type=gha,mode=max,scope=findb/staging/fetcher/finlab,ignore-error=true"
+        "--cache-to type=gha,version=2,mode=max,scope=findb/staging/fetcher/finlab,ignore-error=true"
     ) in build
     assert build.index("--cache-to") < build.index("--push")
     assert "runtime-token" not in cached.stdout + cached.stderr

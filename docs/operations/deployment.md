@@ -143,6 +143,102 @@ summary：總牆鐘、僅 verify/test 阻塞、僅跨 unit 等待、部署淨耗
 不得以重用同一 image 的 replay 代替一般增量樣本；冷建置與大型 migration 另外分類。合併前本機
 測試不能取代這些 AWS 實測。Linux CI 額外執行真實 Docker 替換／復原及 systemd watchdog 測試。
 
+### #422 staging 首輪實測與改善順序
+
+2026-11-09 合併 revision `1b5a7fcaaf666a98ffd517f459a83b3e1e7414ee` 的兩次部署均成功。
+Actions timing artifact 與 jobs API 時間一致；CloudWatch 同時確認 FinDB、Fetcher 的
+`deployment_transaction=healthy` 與 `deployment_transaction=committed`。這是正常提交路徑的
+實測證據，不代表取消、主機重啟、完整復原或 checkpoint／quota 不變的故障情境已驗收。
+
+| 項目 | [FinDB staging](https://github.com/FPI-TW/findb/actions/runs/42619274513) | [Fetcher staging](https://github.com/FPI-TW/findb/actions/runs/42619274501) |
+| --- | ---: | ---: |
+| 首個 job 至部署結束 | 8:30（510 秒） | 12:34（754 秒） |
+| 扣除 verify/test 的獨占區間 | 2:43（163 秒） | 3:32（212 秒） |
+| 扣除純等待同 revision FinDB | 0 秒 | 2:52（172 秒） |
+| 部署淨耗時 | **5:47（347 秒）** | **6:10（370 秒）** |
+| 相較重構前基準縮短 | 3:14（約 36%） | 4:36（約 43%） |
+| 距離嚴格低於 300 秒，至少還需縮短 | 48 秒 | 71 秒 |
+
+這次五個 images 的 GHA cache 匯入與匯出皆出現 HTTP 400／HTML error response；匯出設定
+`ignore-error=true`，所以發布仍成功。兩筆保留為「快取異常、部署成功但超標」樣本，不能當作
+warm-cache 一般增量的代表，也不能刪除超標紀錄。目前 staging 兩個 units 的合格一般增量樣本
+均為 **0/5**；production 尚未新增驗收樣本。
+
+下表按 Actions job／step 的秒級時間分解，所有列相加等於部署淨耗時；平行 images 取整個
+build step 的牆鐘，不累加各 image。各 job 的 setup、post action、step 間隙與秒級取整差額
+歸入該 job 的準備／收尾列。Job 間排程間隙仍計入部署。
+
+| 步驟 | FinDB 秒 | Fetcher 秒 | 存在理由 | 改善方向 |
+| --- | ---: | ---: | --- | --- |
+| Policy／revision／CI gate | 8 | 6 | 驗證來源、main ancestry、candidate／replay 與 CI 證據 | 保留；不是主要瓶頸 |
+| Publisher 準備與收尾 | 19 | 20 | Checkout、publisher OIDC、Buildx 初始化及清理 | 維持 publisher／deploy 權限分離；先處理 cache，再量測 Buildx 成本 |
+| 平行 image build／push／digest 驗證 | 38 | 59 | 產生本 revision 的 immutable images | 優先修正 cache 版本／endpoint，明確記錄命中與匯出結果 |
+| FinDB immutable migration revision | 13 | — | 從實際 backend image 執行 `alembic heads`，綁定 bundle | 在建置時產生與 digest 綁定的 revision metadata，避免 runner 再拉 image；保留 exact binding |
+| Prepare 準備與收尾 | 17 | 14 | Selected source 與 protected-main driver checkout、deploy OIDC、AWS allowlist | 與同一 deploy role 的 deploy job 合併，保留兩種 checkout 的信任邊界 |
+| Bundle 建立／上傳 | 5 | 4 | 封裝精確來源、manifest 與可信 validator | 保留 immutable bundle 與 hash；不為省秒跳過驗證 |
+| Deploy 準備、release 驗證與收尾 | 25 | 23 | 再次設定帳號、role、driver，驗證並 materialize bundle | 合併 prepare 後重用同 job 設定；保留進主機前的 bundle／digest 驗證 |
+| Read-only SSM preflight | 27 | 15 | 檢查主機、secrets、DB／既有 runtime eligibility | 批次唯讀 inventory、減少 CLI 啟動與輪詢延遲；檢查項目保留 |
+| FinDB 完成後 Fetcher 即時恢復檢查 | — | 8 | 確認 12 個舊 runtimes 可安全替換 | 本次 `stable_seconds=0`，沒有固定 60 秒等待；可移入 apply 修改前，省一次 SSM 往返 |
+| 單次 apply＋主機健康檢查 | 168 | 187 | 安全更新服務及確認可用，詳見下表 | 優先消除重複 secret 讀取、批次讀取 Docker metadata；保留停止 writers 與健康驗證 |
+| Runner acceptance／本次 decision | 5 | 5 | Runner 為唯一 acceptance writer，條件寫入本次 transaction | 保留；不能重用舊 attempt 的 acceptance 代替本次提交 |
+| SSM finalize | 9 | 15 | 同鎖核對 decision、commit pointer、啟用 restart policy、清理舊容器 | 減少 SSM 輪詢尾差；保留 durable commit／watchdog 競態保護 |
+| Job 間排程間隙 | 13 | 14 | Actions job 交接 | 減少同 IAM scope 的 job 邊界；不把這段改列排除 |
+| **合計** | **347** | **370** | | |
+
+主機內部尚無完整逐階段計時。以下按 SSM CloudWatch stdout／stderr 的相鄰事件估算，可能包含
+輸出緩衝與相鄰準備成本，不能視為單一 API 的精確效能；它們是上表 apply 的子區間，不再相加到總數。
+
+| 主機子區間 | 約秒數 | 存在理由與改善方向 |
+| --- | ---: | --- |
+| FinDB：SSM 啟動、transaction 準備、credentials、pull | 29 | 取得精確 images、建立可復原狀態；保留 watchdog，減少重複 credentials 讀取 |
+| FinDB：nginx materialize | 3 | 準備 allowlist、real-IP、Serve key 與 tmpfs；保留 |
+| FinDB：migration／compose／credentials 載入及 DB／credential precheck | 30 | 在停止服務前拒絕不相容 DB 或 credential；兩個同 scope 的 one-shot checks 可合併 |
+| FinDB：重新載入 compose credentials、停止 writers、核對退出 | 16 | 防止 migration 與舊 writers 同時執行；保留 graceful shutdown，重用同 transaction 的受限 compose scope |
+| FinDB：再次載入 credentials、migration／reconciliation | 26 | 驗證 exact revision、權限、內部 credentials 與 registry；減少重複載入，migration credentials 不進長駐服務 |
+| FinDB：再次載入 compose credentials、服務 up 至 nginx started | 36 | 按相依順序建立健康服務；檢視 health probe 的排程延遲，避免過早開放入口 |
+| FinDB：nginx 啟動後完整健康、cache 與 journal healthy | 22 | Queue、worker、API、Dashboard、公開入口與 key 注入；先補各 probe 計時，再評估獨立 probe 平行化 |
+| FinDB：結果傳回／runner 輪詢尾差 | 6 | 確認 SSM success marker；有界縮短輪詢間隔 |
+| Fetcher：SSM、inventory／checkpoint、images 準備 | 43 | 記錄原 IDs、檢查 checkpoint 並取得三個 images；目前仍有逐欄位 `docker inspect` 與序列 pull，可批次 inspect、有限度平行 pull |
+| Fetcher：Twelve Data 三 profiles | 30 | Provider credentials 隔離、offline／control 檢查、graceful stop、序列替換 |
+| Fetcher：FinLab 三 profiles | 28 | 同上；合併同 scope 檢查程序，保持每個 profile 的控制與 checkpoint 檢查 |
+| Fetcher：TAIFEX 三 profiles | 27 | 同上；批次讀取 metadata，容器修改仍序列化 |
+| Fetcher：FactSet 三 profiles | 26 | 同上；不可為省時移除原容器完整復原能力 |
+| Fetcher：共同健康觀察及 journal healthy | 27 | 12 個 runtimes 共用至少 25 秒，檢查 IDs、images、running、restart count；保留觀察下限 |
+| Fetcher：結果傳回／runner 輪詢尾差 | 6 | 確認 SSM success marker；有界縮短輪詢間隔 |
+
+### 耗時改善實作與後續驗收
+
+Build helper 明確指定 GHA cache `version=2`，保留每個 image repository 的獨立 scope 與
+immutable tag／digest 檢查。依 [Docker cache 版本選擇規則](https://docs.docker.com/build/cache/backends/gha/#version)，
+這可避免由舊 `ACTIONS_CACHE_URL` 推導成 v1；下一筆 staging 必須確認五個 images 的 cache
+匯入／匯出結果。服務端 cache 故障仍可能發生，不能把設定修正當作快取已命中的證據。
+
+Runtime secret loader 先驗證整個 consumer allowlist，再以最多四個並行 AWS CLI requests
+讀取該 consumer 的 secrets；所有讀取及 schema／distinct-key 驗證成功才產生 env。
+任何一筆失敗均不啟動 command。各 provider wrapper、migration 與長駐服務的 credentials 邊界
+保持隔離，不建立跨階段或跨部署 secret cache。這次先用有界平行讀取消除序列等待，避免為了
+重用 credentials 引入額外的持久化與生命週期協定。FinDB 的 DB compatibility 與 credential
+check-only 合併在同一短命容器，以 `sh -e` 確保前者失敗時不繼續後者。
+
+Fetcher apply 的初始 inventory 以一次 Docker inspect 取得所需欄位，逐個驗證既有 runtime
+與 checkpoint；這份快照只用於修改前檢查，替換、健康及復原仍讀取即時狀態。三個 exact images
+平行拉取，各自核對 RepoDigest，等待全部子程序結束且成功後才修改容器。Provider 修改仍
+序列化，保留十二個 runtimes 的共同至少 25 秒觀察與原 IDs 復原能力。
+
+Staging 的 bundle preparation 移入 reusable deploy job，共用同一次 protected-main driver
+checkout、AWS 設定與 deploy role；publisher 仍是獨立 job／IAM role。新增的 preparation input
+只允許 main 的 staging candidate、空 bundle key 與空 release tag；production 與 replay 維持
+傳入既有 bundle 的路徑。CI gate、故障告警、Backend-first 與 v3 相容皆保留。
+SSM 正常完成輪詢改為兩秒，deadline、成功 marker、取消確認與 acceptance 規則不變。
+主機 wrapper 額外輸出不含 secret 的 `deployment_runtime unit=... consumers=... seconds=... status=...`，
+可區分 consumer 載入與命令的合計耗時；Actions 淨耗時計算維持原有規則。
+
+後續先驗證 cache、正常提交與部署淨耗時，再以一般增量累積樣本。Fetcher 等待同 revision
+FinDB 的 step 全部另列排除；恢復狀態、preflight、健康、cache 生成、acceptance 與 finalize
+仍計入。重用同一 SHA／image 的 replay 只能驗證相容與復原，不能補足一般增量的五筆樣本。
+尚未實作的候選包括 image digest 綁定 migration metadata、合併恢復檢查的 SSM 往返，以及
+細部 health probes 平行化；先由改善後實測判斷需求，不預先宣稱低於 300 秒。
+
 2026-10-16 已透過 OpenTofu 套用兩環境 deploy role 的取消命令權限：
 
 | 環境 | AWS account | 更新的 deploy roles | Apply 結果 | 套用後完整 refresh plan |
@@ -271,7 +367,7 @@ Push 入口在 change policy 選到某 unit 的 CI 時，先以 `infra/deploy/ci
 `Required CI` 必須成功，且該 unit CI workflow 的每個 job 於最新 attempt 皆為 success（PR 略過該 unit 時不算）。
 符合時跳過 `verify` 並在 log 輸出 `ci_evidence=reused` 與 PR／run ID；任何不符或 API 錯誤都輸出
 `ci_evidence=unavailable reason=...` 並照常執行 CI。手動 dispatch 與 production promotion 不使用此復用。
-`verify` 可能被跳過，因此其下游 job（`select`、`publish`、`prepare`、`deploy`）的 `if` 都必須含
+`verify` 可能被跳過，因此其下游 job（`publish`、`deploy`）的 `if` 都必須含
 `!cancelled()` 或 `always()`，否則隱含的 `success()` 會因上游 skipped 而連帶略過部署。
 
 排查「合併後失敗」時，先分開核對 PR 的 merged state、Required CI 與 main push 的 CD。
@@ -311,8 +407,8 @@ ORM 同步宣告其餘既有 DB defaults，兩種建表方式維持相同預設�
 不改變既有 rollback 下限，也不代表較舊 accepted image 可略過 DB compatibility 檢查。
 
 Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使用
-`!cancelled() && needs.prepare.result == 'success'`，避免被略過的 publish ancestor 連帶略過，
-並保留取消整個 workflow 時不繼續部署的行為。
+含 `!cancelled()` 的明確條件，允許 policy 成功、mode 為 replay 且 publish skipped 的組合，
+避免被略過的 publisher 連帶略過 deploy，並保留取消整個 workflow 時不繼續部署的行為。
 恢復後須確認實際 deploy／activation job、服務與公開 endpoint，不能只看 workflow 的 success。
 
 1. 解析指定版本與 AWS 設定，驗證 schema、account、instance tags／instance profile、SSM Online、
@@ -322,17 +418,16 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 3. Backend candidate 停止公開 nginx、舊讀寫服務，優雅停止 writers；以 migration role 升級、核對 exact revision、
    校準 DB grants、deployment credentials 與 registry。兩環境執行相同步驟；不執行 calendar seed 或 completeness gate。
    Migration `91a4c7e2d630` 凍結既有工作使用的日曆與政策快照，完整保留既有 plans、first dates、prepared deliveries。
-4. Backend candidate 只啟動內部 services，驗證 API、Dashboard、RabbitMQ durable topology、worker ping／heartbeat
-   及 queue health；公開入口保持停止。成功後停止 candidate services，再回報可保存 acceptance。
-   Fetcher candidate 執行 offline config、controls stopped 與 checkpoint 驗證，驗證最終 container config，
-   不啟動未 accepted 的抓取程序。
-5. Orchestrator 保存 immutable accepted bundle／record，綁定 commit、unit、target、digests、SSM command 與成功結果。
-   SSM timeout、結果不明或缺少成功 marker 均不得視為 acceptance。
-   Provider 安裝抑制 Docker image prune／pull 的例行 stdout，避免超過 SSM 回應上限而截斷終態 marker；
+4. Schema-v4 Backend apply 只更新一次服務，驗證 API、Dashboard、RabbitMQ durable topology、worker
+   ping／heartbeat、queue health、公開入口與 Serve key 注入。Fetcher 在 offline config、controls
+   stopped 與 checkpoint 驗證後序列替換各 runtime，保持 controls 停止，完成共同健康觀察。
+5. Runner 保存 immutable accepted bundle／record 及本次 transaction decision，綁定 commit、unit、
+   target、digests、SSM command 與成功結果。SSM timeout、結果不明或缺少成功 marker 均不得視為 acceptance。
+   Provider 安裝抑制 Docker image pull 的例行 stdout，避免超過 SSM 回應上限而截斷終態 marker；
    錯誤 stderr 與失敗 exit code 仍保留，不以 CloudWatch 的成功文字繞過 acceptance gate。
-6. Activate 再次驗證相同 identity、exact DB revision 與必要 gates，不重跑 migration／registry mutations；
-   啟動 accepted services、公開 nginx，完成 TLS／routing／queue health，
-   才更新 current pointer。Fetcher daemon 可保持 idle，抓取 desired state 仍由 Owner 人工控制。
+6. Finalize 在主機鎖內核對本次 decision 與 runtime identity，提交 current pointer、啟用 restart
+   policy 並清理舊容器，不重新部署。Fetcher daemon 可保持 idle，抓取 desired state 仍由 Owner 人工控制。
+   舊 schema-v3 bundle 的 replay／rollback 保留其 candidate／activation 路徑，不套用五分鐘承諾。
 
 日常 deployment 不執行 provider native 抓取 gate。不可因驗收而自動 start controls、重設首次日期，
 也不可將 FinLab／Shioaji／Twelve Data／TAIFEX 或 R2 未完成的 native 驗收描述成部署成功的一部分。
