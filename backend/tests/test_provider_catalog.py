@@ -181,7 +181,8 @@ def test_time_changes_do_not_republish_fetcher_dashboard_or_inventory(declaratio
     declaration["feeds"][0]["completion_deadline"]["local_time"] = "10:00"
     current = build_artifacts(ProviderCatalog.model_validate(declaration))
     assert {path for path in previous if current[path] != previous[path]} == {
-        Path("backend/app/generated/provider_metadata.v1.json")
+        Path("backend/app/generated/provider_metadata.v1.json"),
+        Path("backend/configs/execution_feeds.v1.json"),
     }
 
 

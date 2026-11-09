@@ -9,16 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.registry import SourceClient
+from app.services.provider_metadata import source_scopes
 from app.utils import utc_now, uuid7
 
 # Source credentials are intentionally narrower than the historical
 # provider-wide scope.  Keep this mapping in one place so create/rotate
 # all apply the same fail-closed boundary as contract ingestion.
 PROVIDER_DATASET_SCOPE: dict[str, tuple[str, ...]] = {
-    "twelve_data": ("us_equity_eod",),
-    "finlab": ("tw_equity_eod", "tw_etf_eod"),
-    "taifex": ("tw_futures_eod",),
-    "factset": ("hk_equity_eod",),
+    provider: tuple(keys) for provider, keys in source_scopes().items()
 }
 
 

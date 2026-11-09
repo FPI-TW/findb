@@ -21,6 +21,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.registry import AdminAuditEvent, APIKey, SourceClient
+from app.services.provider_metadata import provider_catalog, source_scopes
 from app.utils import utc_now, uuid7
 
 
@@ -48,49 +49,23 @@ class SourceCredentialSpec:
     description: str
     allowed_datasets: tuple[str, ...]
     rate_limit_requests: int = 120
+    rate_limit_window_seconds: int = 60
 
 
-SOURCE_SPECS = (
+SOURCE_SPECS = tuple(
     SourceCredentialSpec(
-        env_name="FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY_HASH",
-        name="fetcher-twelve-data",
-        source_name="twelve_data",
-        description="Twelve Data Fetcher Source client",
-        allowed_datasets=("us_equity_eod",),
-    ),
-    SourceCredentialSpec(
-        env_name="FETCHER_FINLAB_SOURCE_CLIENT_KEY_HASH",
-        name="fetcher-finlab",
-        source_name="finlab",
-        description="FinLab Fetcher Source client",
-        allowed_datasets=("tw_equity_eod",),
-    ),
+        env_name=provider.source_credential.hash_env,
+        name=provider.source_credential.name,
+        source_name=provider.provider,
+        description=provider.source_credential.description,
+        allowed_datasets=tuple(source_scopes()[provider.provider]),
+        rate_limit_requests=provider.source_credential.rate_limit_requests,
+        rate_limit_window_seconds=provider.source_credential.rate_limit_window_seconds,
+    )
+    for provider in provider_catalog().providers
+    if provider.provider in source_scopes()
 )
-FULL_MARKET_SOURCE_SPECS = (
-    replace(SOURCE_SPECS[0], rate_limit_requests=2400),
-    replace(
-        SOURCE_SPECS[1], allowed_datasets=("tw_equity_eod", "tw_etf_eod"), rate_limit_requests=2400
-    ),
-    SourceCredentialSpec(
-        env_name="FETCHER_TAIFEX_SOURCE_CLIENT_KEY_HASH",
-        name="fetcher-taifex",
-        source_name="taifex",
-        description="TAIFEX Fetcher Source client",
-        allowed_datasets=("tw_futures_eod",),
-        rate_limit_requests=2400,
-    ),
-    SourceCredentialSpec(
-        env_name="FETCHER_FACTSET_SOURCE_CLIENT_KEY_HASH",
-        name="fetcher-factset",
-        source_name="factset",
-        description="FactSet HK EOD Fetcher Source client",
-        allowed_datasets=("hk_equity_eod",),
-        rate_limit_requests=2400,
-    ),
-)
-
-
-SOURCE_SPECS = FULL_MARKET_SOURCE_SPECS
+FULL_MARKET_SOURCE_SPECS = SOURCE_SPECS
 
 
 def source_specs_for_profile(
@@ -145,7 +120,7 @@ def _apply_source_policy(
             *sorted(retained - set(spec.allowed_datasets)),
         ],
         "rate_limit_requests": max(spec.rate_limit_requests, row.rate_limit_requests),
-        "rate_limit_window": 60,
+        "rate_limit_window": spec.rate_limit_window_seconds,
     }
     changed = False
     for field, value in desired.items():
@@ -215,7 +190,7 @@ async def reconcile_source_credential(
             fingerprint=key_hash[:16],
             allowed_datasets=list(spec.allowed_datasets),
             rate_limit_requests=spec.rate_limit_requests,
-            rate_limit_window=60,
+            rate_limit_window=spec.rate_limit_window_seconds,
             created_at=now,
             updated_at=now,
             rotated_from_id=rotated_from_id,

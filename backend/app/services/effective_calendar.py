@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
+from app.services.provider_metadata import provider_catalog
 
 MARKETS = {
     "TW": ("Asia/Taipei", time(9), time(13, 30)),
@@ -19,10 +20,7 @@ MARKETS = {
     "TAIFEX": ("Asia/Taipei", time(8, 45), time(13, 45)),
 }
 PROVIDER_CALENDAR_SWITCHES = {
-    "twelve_data": "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
-    "finlab": "FINLAB_SKIP_NON_TRADING_DAYS",
-    "taifex": "TAIFEX_SKIP_NON_TRADING_DAYS",
-    "factset": "FACTSET_SKIP_NON_TRADING_DAYS",
+    provider.provider: provider.calendar_switch_env for provider in provider_catalog().providers
 }
 
 

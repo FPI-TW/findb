@@ -26,6 +26,7 @@ from app.models.registry import (
     MissingDeliveryAlert,
     SchedulerControl,
 )
+from app.schemas.execution_config import FeedScheduleView
 from app.services.delivery_policy import (
     DeliveryExpectation,
     delivery_run_coverage_condition,
@@ -33,6 +34,7 @@ from app.services.delivery_policy import (
     delivery_run_mode_condition,
     resolve_expected_data_date,
 )
+from app.services.feed_schedule import feed_schedule_view
 from app.services.full_market_governance import (
     full_market_configuration as _full_market_configuration,
 )
@@ -66,6 +68,7 @@ class FreshnessFeed:
     last_failure_code: str | None
     configuration_error: str | None
     status: FreshnessStatus
+    schedule: FeedScheduleView | None = None
     runtime_eligible: bool = True
     activation_blockers: tuple[str, ...] = ()
 
@@ -848,6 +851,10 @@ async def _build_scheduler_freshness(
         )
         configuration_errors.extend(f"{feed.dataset.dataset_key}:{error}" for error in feed_errors)
 
+    feed_rows = [
+        replace(feed, schedule=feed_schedule_view(feed.source, feed.dataset_key, evaluated_at))
+        for feed in feed_rows
+    ]
     runtime_feeds = [feed for feed in feed_rows if feed.runtime_eligible]
     states = [feed.status for feed in runtime_feeds]
     fresh_count = states.count("fresh")

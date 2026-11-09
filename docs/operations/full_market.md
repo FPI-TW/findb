@@ -67,9 +67,13 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 | 範圍 | 權威來源 | 用途 |
 | --- | --- | --- |
 | 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 僅 US，HK 已永久退役 |
-| 安裝 feeds | `backend/configs/execution_feeds.v1.json` 及實際部署的 Fetcher config | Backend catalog 與 Fetcher config 均為五條（Shioaji 分 K 僅保留歷史查詢，見 [deployment](deployment.md)）；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
+| 安裝 feeds | `backend/configs/provider_catalog.v1.json` 及其生成的 Fetcher config | Backend catalog 與 Fetcher config 均為五條（Shioaji 分 K 僅保留歷史查詢，見 [deployment](deployment.md)）；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
 | 凍結 admission | `admitted_dataset_keys`／`admission_id` | Owner 最近一次啟動時凍結的可用 datasets；停止後投影仍可能保留 |
 | 即時抓取授權 | Source `full-market/authorization?consumer=pilot\|full_market` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、profile flag、Source credential、baseline 與 provider cutover |
+
+Source `execution-config?execution_profile=pilot|full_market` 已發布 credential 範圍內的排程快照，
+不包含 running／quota 授權；Admin 的逐 feed schedule 使用相同 resolver。現階段 Fetcher 仍讀
+生成的本機相容設定，不能因新 API 存在就刪除舊檔或改寫 frozen plan deadline。
 
 新 daily 入列使用安裝 feeds 與 admission 的交集；新抓取仍須通過即時授權、交易日期／窗口及平台配額。
 FactSet 的安裝 feed 也不代表已獲准取得 HK 新資料，仍須發布 baseline 並明確 cutover。

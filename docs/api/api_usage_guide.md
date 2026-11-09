@@ -33,6 +33,21 @@ Authorization: Bearer <admin-session>
 每個 provider/client 使用獨立 Source key；共用 Fetcher runtime 從 Source 取得有效執行政策，
 不再注入 calendar Serve key。`ADMIN_BREAK_GLASS_API_KEY` 只供 bootstrap 與緊急復原。
 
+## Daily 排程設定發布
+
+```http
+GET /api/v1/source/execution-config?execution_profile=pilot&schema_version=1
+X-API-Key: <source-client-key>
+```
+
+`execution_profile` 必填且限 `pilot`／`full_market`，`schema_version` 預設 1。
+Provider 與 feeds 依 credential 的非空合法 scope 決定，不接受 provider／environment override。
+回應為完整快照，含環境、profile、schema version、schedule digest、逐 feed 當地觸發時間與時區，
+另列 completion deadline、bounded monitor 及發布重試窗口；`Cache-Control: no-store`。
+沒有／無效 credential 回 401／403，無效 scope 回 403，不支援的查詢參數回 422。
+此 API 不授予抓取權限，不改 controls、first dates、plans 或 historical lease。
+設定欄位、digest 與 Admin 逐 feed 投影見 [provider metadata](../architecture/provider_metadata.md#backend-排程發布)。
+
 ## Canonical ingest
 
 ```http

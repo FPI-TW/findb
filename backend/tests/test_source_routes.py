@@ -8,6 +8,7 @@ def test_source_openapi_contains_only_retained_operational_routes() -> None:
     source_paths = {path for path in paths if path.startswith("/api/v1/source/")}
     assert source_paths == {
         "/api/v1/source/contracts/{schema_id}/versions/{schema_version}",
+        "/api/v1/source/execution-config",
         "/api/v1/source/scheduler-controls/{scheduler_key}/poll",
         "/api/v1/source/scheduler-controls/{scheduler_key}/authorization",
         "/api/v1/source/historical-backfills/{item_id}/authorization",

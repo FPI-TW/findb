@@ -8,7 +8,7 @@ of the published versioned ingress contracts.
 
 import logging
 from datetime import date
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -23,6 +23,7 @@ from app.api.v1.provider_work import router as provider_work_router
 from app.dependencies import get_db
 from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
 from app.models.registry import DailyDeliveryPlan
+from app.schemas.execution_config import ExecutionConfigQuery, ExecutionConfigResponse
 from app.schemas.full_market import (
     CalendarSkipResponse,
     DeliveryOutcomeRequest,
@@ -56,6 +57,7 @@ from app.services.canonical_ingestion import (
     CanonicalIngestRejectionError,
     accept_canonical_ingest,
 )
+from app.services.feed_schedule import execution_config
 from app.services.full_market import (
     FullMarketError,
     create_plan,
@@ -145,6 +147,22 @@ def _acquisition_source_scope(db: AsyncSession) -> tuple[str, list[str]]:
     ):
         raise HTTPException(status_code=403, detail="Source acquisition dataset scope denied")
     return provider, datasets
+
+
+@router.get("/execution-config", response_model=ExecutionConfigResponse)
+async def get_execution_config(
+    query: Annotated[ExecutionConfigQuery, Query()],
+    response: Response,
+    _api_key: str = Depends(verify_source_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> ExecutionConfigResponse:
+    provider, datasets = _acquisition_source_scope(db)
+    try:
+        snapshot = execution_config(provider, datasets, query.execution_profile)
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Execution configuration unavailable")
+    response.headers["Cache-Control"] = "no-store"
+    return snapshot
 
 
 @router.post("/full-market/readiness")

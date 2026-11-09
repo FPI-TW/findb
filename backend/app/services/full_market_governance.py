@@ -1,9 +1,7 @@
 """Shared registry governance validation for monitoring and scheduler control."""
 
-import json
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from types import MappingProxyType
 
 from app.models.registry import DatasetRegistry
@@ -11,6 +9,7 @@ from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
     validate_dataset_contract_scope,
 )
+from app.services.provider_metadata import acquisition_feed, acquisition_feeds
 from app.services.source_clients import PROVIDER_DATASET_SCOPE
 
 
@@ -27,11 +26,14 @@ class FullMarketFeedDescriptor:
 # Registry declarations must accept their output, even for disabled siblings.
 FULL_MARKET_FEEDS = MappingProxyType(
     {
-        "us_equity_eod": FullMarketFeedDescriptor("market_eod", 1, "US", "equity", "daily"),
-        "hk_equity_eod": FullMarketFeedDescriptor("market_eod", 1, "HK", "equity", "daily"),
-        "tw_equity_eod": FullMarketFeedDescriptor("market_eod", 1, "TW", "equity", "daily"),
-        "tw_etf_eod": FullMarketFeedDescriptor("market_eod", 1, "TW", "etf", "daily"),
-        "tw_futures_eod": FullMarketFeedDescriptor("futures_eod", 1, "TW", "future", "daily"),
+        feed.dataset_key: FullMarketFeedDescriptor(
+            feed.contract.schema_id,
+            feed.contract.current_version,
+            feed.market,
+            feed.asset_class,
+            feed.frequency,
+        )
+        for feed in acquisition_feeds()
     }
 )
 
@@ -65,8 +67,7 @@ def full_market_configuration(
             if expected is not None:
                 if (
                     declaration.schema_id != expected.schema_id
-                    or (2 if provider == "factset" else expected.schema_version)
-                    not in declaration.accepted_schema_versions
+                    or expected.schema_version not in declaration.accepted_schema_versions
                 ):
                     errors.append("runtime_contract_mismatch")
                 if (
@@ -93,24 +94,18 @@ def full_market_configuration(
     return False, previous, errors, blockers
 
 
-def _execution_feeds() -> list[dict]:
-    catalog = json.loads(
-        (Path(__file__).resolve().parents[2] / "configs" / "execution_feeds.v1.json").read_text()
-    )
-    return catalog["feeds"]
-
-
 def feed_schedule(dataset_key: str) -> tuple[str, str]:
-    """The same exchange-local trigger is used by both execution profiles."""
-    for feed in _execution_feeds():
-        if feed["dataset_key"] == dataset_key:
-            return feed["source_timezone"], feed["scheduled_time"]
-    raise ValueError("Unknown acquisition feed")
+    """Compatibility accessor for existing Backend consumers."""
+    from app.services.feed_schedule import describe_feed
+
+    matches = [f for f in acquisition_feeds() if f.dataset_key == dataset_key]
+    schedules = {
+        (describe_feed(f).source_timezone, describe_feed(f).scheduled_time) for f in matches
+    }
+    if len(schedules) != 1:
+        raise ValueError("Unknown or ambiguous acquisition feed")
+    return next(iter(schedules))
 
 
 def is_execution_feed(dataset_key: str, provider: str) -> bool:
-    """Whether Fetcher still plans this provider/dataset pair in either profile."""
-    return any(
-        feed["dataset_key"] == dataset_key and feed["provider"] == provider
-        for feed in _execution_feeds()
-    )
+    return acquisition_feed(provider, dataset_key) is not None

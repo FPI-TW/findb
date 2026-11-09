@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.execution_profiles import ExecutionProfile
 from app.schemas.common import PaginatedResponse, PaginationInfo
+from app.schemas.execution_config import FeedScheduleView
 from app.schemas.full_market import CalendarSkipResponse, DeliveryPlanResponse
 from app.schemas.shioaji_repair import RepairPreviewRequest
 from app.services.slot_identity import CanonicalSlotId
@@ -615,6 +616,7 @@ class UniverseReleaseDiffResponse(BaseModel):
 
 
 class MarketFreshnessFeedResponse(BaseModel):
+    schedule: FeedScheduleView | None = None
     dataset_key: str
     source: str
     schema_id: Optional[str] = None
@@ -882,6 +884,7 @@ class SuccessResponse(BaseModel):
 
 
 class SchedulerControlResponse(BaseModel):
+    feed_schedules: list[FeedScheduleView] = Field(default_factory=list)
     execution_profile: ExecutionProfile = "pilot"
     """A persisted scheduler control row plus its current heartbeat age."""
 

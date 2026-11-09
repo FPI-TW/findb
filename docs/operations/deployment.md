@@ -826,6 +826,28 @@ Provider-work 尚未啟用的 governor upgrade 另以 additive `full_account_coo
 只延長 debt；rollback 仍須依上述完整停止／排空／成套checkpoint備份程序，不可倒退 usage／cooldown
 或混用未通過此 dispatch gate 的 consumer。Runtime 部署成功不代表 provider-work queue 已啟用。
 
+## Provider catalog PR2 發布邊界
+
+PR2 使用最新 schema-v4 單次部署交易；不新增部署 job、第二次啟動、舊 candidate／activation
+腳本或 host override。沿用 backend-first orchestration、immutable decision、committed journal／receipt、
+獨立 watchdog 與 recovery gate。Backend metadata 與 provider 型別已由既有 Docker `COPY app`
+打包，不依賴 release bundle 中另放 catalog 或讀取主機工作目錄。沒有新 migration。
+
+舊 Fetcher 的三環境 full-market configs 改由 catalog 生成，維持原有內容與序列化順序，保留
+pilot catalog 的檔案 hash binding。PR2 不要求 Fetcher 改版；依現行 change policy 選取 Backend
+CI／staging rollout，不修改共用編排或略過 receipt／health。後續變更相容投影時，仍須同步驗證
+既有 artifact bindings；PR4 解除所有 consumer 依賴後才可刪除這些檔案。
+
+Staging 驗收應核對最新 committed receipt、current manifest、實際 images 與 metadata digest，
+以四個 Source identities 讀取 execution-config，驗證各自 scope、環境、profile、版本、時區、
+deadline 與 no-store。保留舊 Fetcher daily／historical 操作介面及排程檔，控制狀態不因讀取設定而改變。
+
+Production 暫緩至 PR1～5 staging 整合完成，保留中間版本的 immutable evidence，再安排維護窗口：
+先發布 PR2 Backend API，接著 PR3＋PR4 Fetcher／Infra，最後 PR5 preflight／migration／Backend／Dashboard。
+每階段 promotion 已驗收的相同 digests，不能只用最終版本跳過中間相容階段。沿用已完成的
+production transactions prefix 保護與 schema-v4 發布基準（見上文首輪實測）；本 PR 不執行 production apply 或發布。
+PR4 上線後，Backend 不得單獨回退至沒有 execution-config API 的版本。
+
 ## Provider catalog PR1 staging 驗收
 
 2026-11-09（台北時間）[#416](https://github.com/FPI-TW/findb/pull/416) 合併至
