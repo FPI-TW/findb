@@ -6,15 +6,14 @@ idempotency keys and terminal Source verification stay identical to recurrence.
 
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import UUID
 
 from findb_fetcher.client import SourceAPIClient
-from findb_fetcher.config import FetcherConfig, app_environment
+from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import ContractRegistry
+from findb_fetcher.execution_metadata import ExecutionDescriptor, historical_execution
 from findb_fetcher.finlab_scheduler import FinLabScheduledExecutor
 from findb_fetcher.finlab_universe import load_finlab_universe
 from findb_fetcher.historical_backfill import (
@@ -26,7 +25,6 @@ from findb_fetcher.provider_work import active, require_owner
 from findb_fetcher.providers.finlab import FinLabSdkGateway, FinLabSymbol
 from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
-from findb_fetcher.schedule import ScheduleConfig, load_schedule_manifest
 from findb_fetcher.scheduler_state import ScheduledJob
 from findb_fetcher.twelve_data_scheduler import TwelveDataScheduledExecutor
 from findb_fetcher.universe import UniverseSymbol, load_symbol_universe
@@ -36,12 +34,12 @@ class HistoricalRuntimeError(RuntimeError):
     pass
 
 
-def _execute(executor, schedule, job):
+def _execute(executor, execution, job):
     owner = active()
     dispatch_before = owner.dispatch_observations if owner else 0
     if owner:
         job = replace(
-            job, attempt_count=owner.journal.reserve_attempt(job.job_key, schedule.max_attempts)
+            job, attempt_count=owner.journal.reserve_attempt(job.job_key, execution.max_attempts)
         )
     from findb_fetcher.provider_work import (
         ProviderWorkAcquisitionStopped,
@@ -69,27 +67,18 @@ def _execute(executor, schedule, job):
     return result
 
 
-def _schedule(provider: str, dataset_key: str) -> ScheduleConfig:
-    default_schedule = (
-        "/app/configs/daily_scheduler.production.v3.json"
-        if app_environment("staging").strip().lower() == "production"
-        else "/app/configs/daily_scheduler.v2.json"
-    )
-    path = Path(os.getenv("FETCHER_HISTORICAL_SCHEDULE_FILE", default_schedule))
-    for feed in load_schedule_manifest(path).feeds:
-        if feed.provider == provider and feed.dataset_key == dataset_key and feed.enabled:
-            return feed
-    raise HistoricalRuntimeError("historical provider scope is not enabled")
-
-
 def _job(
-    schedule: ScheduleConfig, item: HistoricalWorkItem, symbol: str, canonical: str, exchange: str
+    execution: ExecutionDescriptor,
+    item: HistoricalWorkItem,
+    symbol: str,
+    canonical: str,
+    exchange: str,
 ) -> ScheduledJob:
     owner = active()
     job_key = f"historical:{item.request_id}:{item.trade_date}:{symbol}"
     return ScheduledJob(
         job_key=job_key,
-        schedule_id=schedule.schedule_id,
+        schedule_id=execution.schedule_id,
         scheduled_date=item.trade_date,
         universe_id=f"historical:{item.request_id}",
         universe_version=1,
@@ -98,9 +87,9 @@ def _job(
         exchange=exchange,
         status="running",
         attempt_count=1,
-        slot_id=schedule.slot_id,
-        provider=schedule.provider,
-        dataset_key=schedule.dataset_key,
+        slot_id=execution.slot_id,
+        provider=execution.provider,
+        dataset_key=execution.dataset_key,
         work_item=symbol,
         target_data_date=item.trade_date,
         checkpoint_before=None,
@@ -117,8 +106,8 @@ class TwelveDataHistoricalRunner:
         require_owner(item.provider)
         if item.provider != "twelve_data":
             raise HistoricalRuntimeError("provider mismatch")
-        schedule = _schedule(item.provider, item.dataset_key)
-        universe = load_symbol_universe(schedule.universe_file)
+        execution = historical_execution(item.provider, item.dataset_key)
+        universe = load_symbol_universe(execution.universe_file)
         owner = active()
         if owner:
             frozen = owner.freeze(
@@ -153,7 +142,7 @@ class TwelveDataHistoricalRunner:
             SourceAPIClient(config, registry) as source,
         ):
             executor = TwelveDataScheduledExecutor(
-                schedule=schedule,
+                execution=execution,
                 universe=universe,
                 provider=provider,
                 source=source,
@@ -164,8 +153,8 @@ class TwelveDataHistoricalRunner:
             for member in universe.symbols:
                 result = _execute(
                     executor,
-                    schedule,
-                    _job(schedule, item, member.symbol, member.canonical_symbol, member.exchange),
+                    execution,
+                    _job(execution, item, member.symbol, member.canonical_symbol, member.exchange),
                 )
                 if not result.succeeded or result.run_id is None:
                     raise HistoricalRuntimeError("twelve_data terminal delivery failed")
@@ -184,14 +173,8 @@ class FinLabHistoricalRunner:
         require_owner(item.provider)
         if item.provider != "finlab":
             raise HistoricalRuntimeError("provider mismatch")
-        schedule = _schedule(item.provider, item.dataset_key)
-        default_universe = (
-            "/app/configs/finlab_tw50_2026_09_21.v2.json"
-            if app_environment("staging").strip().lower() == "production"
-            else "/app/configs/finlab_tw_review_required.v1.json"
-        )
-        universe_path = Path(os.getenv("FETCHER_FINLAB_UNIVERSE_FILE", default_universe))
-        universe = load_finlab_universe(universe_path)
+        execution = historical_execution(item.provider, item.dataset_key)
+        universe = load_finlab_universe(execution.universe_file)
         owner = active()
         if owner:
             frozen = owner.freeze(
@@ -217,7 +200,7 @@ class FinLabHistoricalRunner:
         registry = ContractRegistry(config.contracts_dir)
         with SourceAPIClient(config, registry) as source:
             executor = FinLabScheduledExecutor(
-                schedule=schedule,
+                execution=execution,
                 universe=universe,
                 provider=FinLabSdkGateway.from_env(),
                 source=source,
@@ -227,8 +210,8 @@ class FinLabHistoricalRunner:
             )
             result = _execute(
                 executor,
-                schedule,
-                _job(schedule, item, universe.dataset_key, universe.dataset_key, universe.market),
+                execution,
+                _job(execution, item, universe.dataset_key, universe.dataset_key, universe.market),
             )
         if not result.succeeded or result.run_id is None:
             raise HistoricalRuntimeError("finlab terminal delivery failed")

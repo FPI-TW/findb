@@ -8,6 +8,7 @@ import threading
 from typing import cast
 
 from findb_fetcher.config import FetcherConfig
+from findb_fetcher.execution_metadata import historical_feeds
 from findb_fetcher.factset_historical import FactSetHistoricalRunner
 from findb_fetcher.historical_backfill import (
     HistoricalControlClient,
@@ -37,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.check:
         FetcherConfig.from_env()
+        historical_feeds(args.provider)
         return 0
     with scheduler_stop_event() as stopper:
         runner = cast(

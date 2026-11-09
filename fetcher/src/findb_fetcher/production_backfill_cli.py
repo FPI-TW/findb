@@ -13,8 +13,9 @@ from typing import Any, Never, Sequence
 
 import httpx
 
+from findb_fetcher.config import app_environment
+from findb_fetcher.execution_metadata import historical_execution, historical_feed
 from findb_fetcher.finlab_universe import load_finlab_universe
-from findb_fetcher.schedule import load_schedule_manifest
 from findb_fetcher.universe import load_symbol_universe
 
 
@@ -38,7 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-date", required=True, type=date.fromisoformat)
     parser.add_argument("--end-date", required=True, type=date.fromisoformat)
     parser.add_argument("--request-key")
-    parser.add_argument("--schedule-file", type=Path, default=_default_schedule_file())
+    parser.add_argument(
+        "--universe-file", type=Path, help="Reviewed Twelve Data/FinLab universe for estimation"
+    )
     parser.add_argument("--deliver", action="store_true")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--poll-seconds", type=int, default=15)
@@ -46,48 +49,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _default_schedule_file() -> Path:
-    return Path(
-        os.getenv(
-            "FETCHER_HISTORICAL_SCHEDULE_FILE",
-            "/app/configs/daily_scheduler.production.v3.json",
-        )
-    )
-
-
-def _scope(path: Path, provider: str, dataset_key: str) -> tuple[int, int | None]:
+def _scope(
+    provider: str, dataset_key: str, universe_file: Path | None = None
+) -> tuple[int, int | None]:
+    if app_environment() != "production":
+        raise BackfillCLIError("backfill planner requires production")
+    historical_feed(provider, dataset_key)
     if provider in {"taifex", "factset"}:
-        from findb_fetcher.config import app_environment
-        from findb_fetcher.full_market_cli import load_config
-
-        if app_environment() != "production":
-            raise BackfillCLIError("backfill planner requires production")
-        config_path = Path(
-            os.getenv("FETCHER_FULL_MARKET_CONFIG", "/app/configs/full_market.production.v1.json")
-        )
-        config = load_config(config_path)
-        if config["deployment_target"] != "production" or not any(
-            feed["provider"] == provider and feed["dataset_key"] == dataset_key
-            for feed in config["feeds"]
-        ):
-            raise BackfillCLIError("requested production EOD scope is not enabled")
+        if universe_file is not None:
+            raise BackfillCLIError("This provider uses a Backend-owned historical universe")
         return (1 if provider == "factset" else 5), None
-    manifest = load_schedule_manifest(path)
-    if manifest.deployment_target != "production":
-        raise BackfillCLIError("backfill planner requires the production schedule")
-    feeds = [
-        feed
-        for feed in manifest.feeds
-        if feed.provider == provider and feed.dataset_key == dataset_key and feed.enabled
-    ]
-    if len(feeds) != 1:
-        raise BackfillCLIError("requested production EOD scope is not enabled")
-    feed = feeds[0]
+    execution = historical_execution(provider, dataset_key, universe_file=universe_file)
     if provider == "twelve_data":
-        symbols = len(load_symbol_universe(feed.universe_file).symbols)
+        symbols = len(load_symbol_universe(execution.universe_file).symbols)
         return symbols, symbols
     if provider == "finlab":
-        symbols = len(load_finlab_universe(feed.universe_file).symbols)
+        symbols = len(load_finlab_universe(execution.universe_file).symbols)
         return 5, symbols
     raise BackfillCLIError("requested production EOD provider is unsupported")
 
@@ -131,7 +108,7 @@ def main(argv: Sequence[str] | None = None, *, client: httpx.Client | None = Non
         args = build_parser().parse_args(argv)
         if args.start_date > args.end_date or args.wait and not args.deliver:
             raise BackfillCLIError("invalid production backfill arguments")
-        calls_per_day, rows_per_day = _scope(args.schedule_file, args.provider, args.dataset_key)
+        calls_per_day, rows_per_day = _scope(args.provider, args.dataset_key, args.universe_file)
         base_url = os.environ["FINDB_ADMIN_API_URL"]
         api_key = os.environ["FINDB_BACKFILL_ADMIN_API_KEY"]
         request_key = args.request_key or (

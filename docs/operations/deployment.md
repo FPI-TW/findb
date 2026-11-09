@@ -842,11 +842,67 @@ Staging 驗收應核對最新 committed receipt、current manifest、實際 imag
 以四個 Source identities 讀取 execution-config，驗證各自 scope、環境、profile、版本、時區、
 deadline 與 no-store。保留舊 Fetcher daily／historical 操作介面及排程檔，控制狀態不因讀取設定而改變。
 
-Production 暫緩至 PR1～5 staging 整合完成，保留中間版本的 immutable evidence，再安排維護窗口：
-先發布 PR2 Backend API，接著 PR3＋PR4 Fetcher／Infra，最後 PR5 preflight／migration／Backend／Dashboard。
+Production 發布分組為 PR1＋PR2、PR3＋PR4、PR5，保留每階段 staging 的 immutable evidence：
+先發布 PR1＋2 Backend API，接著 PR3＋PR4 Fetcher／Infra，最後 PR5 preflight／migration／Backend／Dashboard。
 每階段 promotion 已驗收的相同 digests，不能只用最終版本跳過中間相容階段。沿用已完成的
 production transactions prefix 保護與 schema-v4 發布基準（見上文首輪實測）；本 PR 不執行 production apply 或發布。
 PR4 上線後，Backend 不得單獨回退至沒有 execution-config API 的版本。
+
+## Provider catalog PR3 發布邊界
+
+PR3 只解除 historical 執行與 planner 的本機排程依賴，不新增 DB migration、排程 API 呼叫或控制面權限。
+`execution_descriptors.v1.json` 已由三個 Dockerfiles 的 `COPY fetcher/src` 打包，wheel 同樣攜帶此檔。
+Historical `--check` 驗證連線設定及 package metadata 的版本／digest／provider scope，不會 claim、
+建立 state 或抓取 provider。舊 daily／full-market config 仍供 daily 與現行部署工具使用，不可提前刪除。
+
+沿用目前 schema-v4 單次交易、三 images／四 providers／十二 consumers inventory、
+whole-work owner lock、checkpoint identity、immutable decision 與 committed receipt；不新增部署入口
+或第二次啟動。現有 change policy 會選取 Fetcher rollout，Backend CI 仍需驗證跨套件 runtime tests。
+合併後可依既有 staging CD 驗證 PR3；production 等 PR4 整合驗收後，以 PR3＋4 同一組 accepted
+Fetcher／Infra bundle promotion，先停 controls、排空既有工作並保留 checkpoint，再依原流程切換。
+本次實作不 dispatch production，也不自動恢復或啟動 controls。
+
+PR3 驗證包含舊排程路徑失效、非排程預設與舊 manifest 相同、reviewed universe 與 frozen members 保留、
+原 job key／attempt／prepared bytes 重啟復用、Backend preview 拒絕時不建立 request，以及既有
+Source claim→acquire→prepare→receipt→complete、cancel／expiry／ACK-loss 測試。
+PR4 仍須補齊不存在舊排程檔的完整 image／daily／health／initialize-state／部署驗收；PR3 測試不替代該階段。
+
+## Provider catalog production 驗收
+
+2026-11-10（台北時間）完成 PR1＋2 production 唯讀驗收。
+[FinDB Production CD](https://github.com/FPI-TW/findb/actions/runs/42656213012) 已完成 promotion，
+主機 commit 為 `077ee02b5d2c26b42927ad66e236bdeb3965ddc7`。Backend／Dashboard digests 與
+PR2 staging accepted manifest 相同；Fetcher 保留 `c1c175b8a7496ff666472e3ee83ffcc9483f3756`，
+本次未重部署 Fetcher，亦未因驗收新增任何 production dispatch。
+
+- Backend 六個 application containers、Fetcher 十二個 consumers 皆 running、零重啟、無 OOM；
+  有 healthcheck 的四個 Backend containers 均 healthy。兩台主機 current manifest、實際 images、
+  schema-v4 committed transaction／receipt 與 S3 immutable decision／acceptance 的發布身份一致。
+- Backend metadata SHA-256 為 `e6a89f5b6f509ef73098c9109e52d11485bfc30a2bcc846ed77f2a6471c7eb44`。
+  四個 provider 使用原有 Source credentials 驗證 Pilot／Full 共八組 execution-config，全部 HTTP 200；
+  identity、production／profile／schema、完整 catalog 內容、digest、no-store 與無 slot 均正確。
+  每個 provider 的五種錯誤 query 皆 422，缺少／無效 key 分別 401／403。
+- DB-backed viewer 查詢 Admin schedulers／freshness，Pilot／Full 各五條 feed schedule 皆與 catalog 一致。
+  #423 的退休 Shioaji Full minute plans 兩個 datasets 各 18 筆，全部 HTTP 200，deadline 逐筆符合
+  frozen DB 值；Pilot 查詢回傳空集合。公開 health、Dashboard lookup、Serve US EOD 均 HTTP 200。
+- Admin GET 前後 13 個 controls 的狀態／revision／retired 值、7 筆 first dates、141 筆 plans 的
+  identity／deadline／membership hash／expected count 及 work／historical／normalization 狀態計數一致。
+  DB revision 保持 `d8e3f0b5a2c4`，未撤銷 Shioaji credentials 為零；歷史終態未重寫。
+- Production Twelve Data／TAIFEX Full 的 desired state 原為 running，當時 observed state 為 stopped；
+  runtime 在 idle／每輪完成後會回報 stopped，只有正在執行一輪時回報 running。其餘 controls 維持 stopped。
+  初次 probe 誤沿用 staging「全部 stopped」的斷言而中止；改為記錄實際狀態並比對 GET 前後，完整重驗通過。
+  未啟停 controls，也未以此次 GET 驗收宣稱 daily 或 historical 新工作完成。
+
+| 證據 | FinDB | Fetcher |
+| --- | --- | --- |
+| Production accepted bundle SHA-256 | `19ed28e981b3335435ee97c9703823467e14d350e7ed7484101c049aaa91157a` | `1cac68892f4e3b9263579fc237fd1ce0825be1927dcc04208557ff7bd3140880` |
+| Committed transaction suffix | `42656213012-1` | `42639305431-1` |
+| Receipt 原始部署 SSM | `67e504ba-1d88-47f6-a263-bb82632d181d` | `a0be3b53-0030-4d16-87f7-81352a258f99` |
+| 本次 runtime／Source 驗收 SSM | `51a4f20e-caf3-44c8-aa31-2a436be341b6` | `65833766-bef0-4ffd-bbc5-83f2e6980400` |
+
+Transaction ID 為 `<bundle SHA-256>-<suffix>`。Admin／DB 最終驗收 SSM 為
+`5bb58896-32d3-4628-aced-83896dd9e637`。此次只驗收已發布 PR1＋2 的相容性；PR3＋4 與 PR5
+尚未 production promotion，不取代後續 native 抓取、歷史回補完整鏈路、動態排程與 DB／UI 驗收。
 
 ## Provider catalog PR2 staging 驗收
 

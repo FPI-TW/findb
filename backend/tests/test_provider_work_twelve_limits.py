@@ -32,7 +32,7 @@ async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_
     successful = historical_runtime.TwelveDataClient(None)
     handler = successful._client._transport.handle_request
     calls = []
-    maximum = historical_runtime._schedule(h.provider, h.dataset).max_attempts
+    maximum = historical_runtime.historical_execution(h.provider, h.dataset).max_attempts
 
     def native(request):
         calls.append(request.url.params["symbol"])

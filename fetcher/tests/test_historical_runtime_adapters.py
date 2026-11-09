@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 import findb_fetcher.historical_runtime as runtime
+from findb_fetcher import execution_metadata
 from findb_fetcher.client import PreparedDelivery
 from findb_fetcher.finlab_universe import load_finlab_universe
 from findb_fetcher.historical_backfill import HistoricalWorkItem
@@ -22,12 +23,10 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataConfig,
 )
 from findb_fetcher.raw_storage import RawObject
-from findb_fetcher.schedule import load_schedule_manifest
 from findb_fetcher.universe import load_symbol_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
 CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "contracts"
-SCHEDULE_PATH = CONFIG_DIR / "daily_scheduler.v2.json"
 TWELVE_UNIVERSE_PATH = CONFIG_DIR / "twelve_data_us_common_stocks.v1.json"
 FINLAB_UNIVERSE_PATH = CONFIG_DIR / "finlab_tw_review_required.v1.json"
 TWELVE_FIXTURE_PATH = (
@@ -132,14 +131,13 @@ def test_twelve_historical_runtime_uses_raw_first_prepared_terminal_delivery(
     source = _Source(events, record_count=1)
     raw_store = _RawStore(events)
     _patch_runtime_config(monkeypatch, source=source, raw_store=raw_store)
-    schedule = next(
-        feed
-        for feed in load_schedule_manifest(SCHEDULE_PATH).feeds
-        if feed.provider == "twelve_data"
-    )
+    monkeypatch.setattr(execution_metadata, "CONFIGS_DIR", CONFIG_DIR)
+    monkeypatch.setenv("APP_ENVIRONMENT", "local")
+    monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/absent/daily.json")
+    monkeypatch.setenv("FETCHER_FULL_MARKET_CONFIG", "/absent/full-market.json")
+    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     universe = load_symbol_universe(TWELVE_UNIVERSE_PATH)
     universe = replace(universe, symbols=universe.symbols[:1])
-    monkeypatch.setattr(runtime, "_schedule", lambda *_args: schedule)
     monkeypatch.setattr(runtime, "load_symbol_universe", lambda _path: universe)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -164,6 +162,25 @@ def test_twelve_historical_runtime_uses_raw_first_prepared_terminal_delivery(
     assert run_id == RUN_ID
     assert events == ["fetch", "raw", "prepare", "deliver", "terminal"]
     assert str(source.requests[0]["idempotency_key"]).startswith("twelve_data:")
+    assert source.requests[0]["delivery"]["scheduled_for"] == "2024-01-05T00:00:00Z"
+    frozen = {
+        "universe_id": universe.universe_id,
+        "universe_version": universe.universe_version,
+        "members": [
+            {"key": m.canonical_symbol, "symbol": m.symbol, "exchange": m.exchange}
+            for m in universe.symbols
+        ],
+    }
+    monkeypatch.setattr(runtime, "load_symbol_universe", lambda path: replace(universe, symbols=()))
+    _assert_frozen_replay(
+        monkeypatch,
+        runtime.TwelveDataHistoricalRunner(),
+        runtime.TwelveDataScheduledExecutor,
+        _item("twelve_data", "us_equity_eod", "US", date(2024, 1, 5)),
+        source,
+        events,
+        frozen,
+    )
 
 
 def test_finlab_historical_runtime_uses_raw_first_prepared_terminal_delivery(
@@ -173,11 +190,12 @@ def test_finlab_historical_runtime_uses_raw_first_prepared_terminal_delivery(
     source = _Source(events, record_count=2)
     raw_store = _RawStore(events)
     _patch_runtime_config(monkeypatch, source=source, raw_store=raw_store)
-    schedule = next(
-        feed for feed in load_schedule_manifest(SCHEDULE_PATH).feeds if feed.provider == "finlab"
-    )
+    monkeypatch.setattr(execution_metadata, "CONFIGS_DIR", CONFIG_DIR)
+    monkeypatch.setenv("APP_ENVIRONMENT", "local")
+    monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/absent/daily.json")
+    monkeypatch.setenv("FETCHER_FULL_MARKET_CONFIG", "/absent/full-market.json")
+    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     universe = load_finlab_universe(FINLAB_UNIVERSE_PATH)
-    monkeypatch.setattr(runtime, "_schedule", lambda *_args: schedule)
     monkeypatch.setattr(runtime, "load_finlab_universe", lambda _path: universe)
 
     target = date(2026, 7, 29)
@@ -206,3 +224,57 @@ def test_finlab_historical_runtime_uses_raw_first_prepared_terminal_delivery(
     assert run_id == RUN_ID
     assert events == ["fetch"] * 5 + ["raw", "prepare", "deliver", "terminal"]
     assert str(source.requests[0]["idempotency_key"]).startswith("finlab:")
+    assert source.requests[0]["delivery"]["scheduled_for"] == target.isoformat() + "T00:00:00Z"
+    frozen = {
+        "manifest_id": universe.manifest_id,
+        "manifest_version": universe.manifest_version,
+        "field_datasets": universe.field_datasets,
+        "members": [
+            {"key": m.canonical_symbol, "symbol": m.source_symbol} for m in universe.symbols
+        ],
+    }
+    monkeypatch.setattr(runtime, "load_finlab_universe", lambda path: replace(universe, symbols=()))
+    _assert_frozen_replay(
+        monkeypatch,
+        runtime.FinLabHistoricalRunner(),
+        runtime.FinLabScheduledExecutor,
+        _item("finlab", "tw_equity_eod", "TW", target),
+        source,
+        events,
+        frozen,
+    )
+
+
+def _assert_frozen_replay(monkeypatch, runner, executor_type, item, source, events, frozen):
+    """A restarted leased job retains legacy bytes, membership, identity and attempt."""
+    request = json.loads(json.dumps(source.requests[0]))
+    request["delivery"]["scheduled_for"] = "2026-01-01T22:30:00Z"
+    original_bytes = json.dumps(request, sort_keys=True)
+    reserved, released, jobs = [], [], []
+    owner = SimpleNamespace(
+        dispatch_observations=0,
+        freeze=lambda proposed: frozen,
+        journal=SimpleNamespace(
+            prepared=lambda key: json.loads(original_bytes),
+            reserve_attempt=lambda key, maximum: reserved.append((key, maximum)) or 4,
+            release_wait_attempt=lambda key: released.append(key),
+            save_prepared_request=lambda *a, **kw: pytest.fail("prepared bytes rewritten"),
+        ),
+    )
+    monkeypatch.setattr(runtime, "active", lambda: owner)
+    execute = executor_type.execute
+
+    def tracked(executor, job, **kwargs):
+        jobs.append(job)
+        return execute(executor, job, **kwargs)
+
+    monkeypatch.setattr(executor_type, "execute", tracked)
+    events.clear()
+    assert runner.run(replace(item, lease_token=UUID(int=1234))) == RUN_ID
+    assert events == ["prepare", "deliver", "terminal"]
+    assert json.dumps(source.requests[-1], sort_keys=True) == original_bytes
+    assert jobs[0].attempt_count == 4
+    assert jobs[0].job_key == f"historical:{item.request_id}:{item.trade_date}:{jobs[0].symbol}"
+    assert jobs[0].schedule_id == f"{item.provider}_{jobs[0].slot_id}_{item.dataset_key}"
+    assert reserved == [(jobs[0].job_key, 5)]
+    assert released == [jobs[0].job_key]

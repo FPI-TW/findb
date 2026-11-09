@@ -12,10 +12,11 @@ capability 與 active provider 型別接到生成 metadata，並新增唯讀 exe
 `app.services.provider_metadata` 在 process 內載入並驗證 image 隨附的 metadata digest；
 發布新版 Backend 後使用新值，不提供環境排程 override。
 
-Fetcher 仍讀本機設定；`execution_feeds.v1.json` 與三環境 full-market configs 現為 catalog 的
+Fetcher daily 仍讀本機設定；`execution_feeds.v1.json` 與三環境 full-market configs 現為 catalog 的
 過渡生成投影，不能手改。Dashboard 增加可讀取的逐 feed API 欄位，但 UI、DB schedule、
-monitor 判定與 plan deadline 切換仍由後續 PR 處理。Historical runner 尚未解除舊檔依賴，
-不能先刪除相容檔案。未完成範圍見 [backlog](../dev/backlog.md#provider-metadata-與排程統一)。
+monitor 判定與 plan deadline 切換仍由後續 PR 處理。PR3 已解除 historical runner／planner 的舊排程檔
+依賴；daily 與部署工具尚未切換，PR4 完成前仍不能刪除相容檔案。
+未完成範圍見 [backlog](../dev/backlog.md#provider-metadata-與排程統一)。
 
 ## 宣告與邊界
 
@@ -94,9 +95,25 @@ Retired／非 acquisition feeds 的 schedule 為空。既有 card-level DB 時�
 
 ## 後續發布邊界
 
+PR3 的 `findb_fetcher.execution_metadata` 只載入 package 內的 `execution_descriptors.v1.json`，
+驗證版本、digest、唯一 identity、環境與 historical capability。Twelve Data／FinLab 使用不含
+觸發時間的 `ExecutionDescriptor`；FactSet／TAIFEX 從相同投影讀取交付 metadata。
+既有 scheduler service 會將非排程參數轉為 descriptor，並另外提供 daily delivery metadata，
+共用 executor 本身不計算觸發時間。
+
+Historical 日期仍來自 request／lease；不讀 Source execution-config、不檢查 daily running，亦不因
+daily 時間變更改變回補範圍。既有 journal identity、attempt、universe freeze、prepared bytes、
+calendar snapshot、cutoff 與 acquisition authorization 保留。新建 Twelve Data／FinLab historical
+payload 的 `delivery.scheduled_for` 使用 request 交易日 UTC 00:00 作為穩定日期標記，不表示 daily
+觸發時間；已有 prepared body 完全沿用原值。Slot 只供現行交付契約與 journal identity 相容。
+
+Planner 以相同 descriptor／reviewed universe 估算，Backend preview 決定日期及權限是否合法；
+FinLab ETF 等 unsupported historical scope 不因日資料能力而開放。詳細操作見
+[historical runbook](../operations/data_maintenance.md#production-universe與historical-backfill)。
+
 PR4 將讓 Fetcher 每輪只使用 execution-config 該輪取得的記憶體快照，失敗時停止新日期規劃，不能回退到本機排程檔。
 Prepared recovery 與 historical request／lease 不應依賴 daily schedule 成功讀取。
-移除舊檔前須先解除四個 historical runners 與 backfill planner 的設定依賴。
+PR3 保留相容檔與現行部署入口，PR4 才移除 daily／build／release 的剩餘依賴。
 
 PR2 無 DB migration，也不啟用任何 provider。沿用 schema-v4 單次部署交易與 committed receipt；
 Backend metadata 隨 image 打包，Infra inventory 尚未加入 bundle allowlist。部署與 production

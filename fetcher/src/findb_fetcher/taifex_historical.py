@@ -23,7 +23,7 @@ from findb_fetcher.client import (
 )
 from findb_fetcher.config import FetcherConfig, app_environment
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.full_market_cli import load_config
+from findb_fetcher.execution_metadata import historical_feed
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.full_market_universe import TAIFEX_HISTORY_URL, canonical_bytes, checksum
 from findb_fetcher.historical_backfill import (
@@ -86,20 +86,8 @@ class TaifexHistoricalRunner:
         config = replace(FetcherConfig.from_env(), max_attempts=1)
         registry = ContractRegistry(config.contracts_dir)
         target = app_environment()
-        manifest = load_config(
-            Path(
-                os.getenv(
-                    "FETCHER_FULL_MARKET_CONFIG", f"/app/configs/full_market.{target}.v1.json"
-                )
-            )
-        )
-        if manifest["deployment_target"] != target:
-            raise ValueError("historical feed target differs")
-        feed = next(
-            feed
-            for feed in manifest["feeds"]
-            if feed["provider"] == "taifex" and feed["dataset_key"] == "tw_futures_eod"
-        )
+        metadata = historical_feed("taifex", "tw_futures_eod")
+        feed = {"slot_id": metadata["delivery"]["slot_id"]}
         root = Path(os.getenv("FETCHER_HISTORICAL_STATE_DIR", "/var/lib/findb-historical-taifex"))
         return cls(
             path=root / "state.sqlite3",

@@ -238,7 +238,7 @@ def test_prepared_request_replay_skips_gateway_and_raw(tmp_path: Path) -> None:
     )
     replay_source = Source([], total=2, success=2, failed=0)
     executor = FinLabScheduledExecutor(
-        schedule=_schedule(),
+        execution=_schedule().execution_descriptor(),
         universe=universe,
         provider=Gateway(RuntimeError("must not fetch")),
         source=replay_source,  # type: ignore[arg-type]
