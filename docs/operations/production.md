@@ -44,6 +44,26 @@ break-glass 復原憑證，仍經正式 Admin API、expected revision 與 audit 
 確認原映像與 current pointer 後恢復 v0.1.18、驗證查詢與資料，再重試同一 bundle 成功。
 復原判斷見 [部署失敗處理](deployment.md#共用部署順序)。
 
+### PR #418 rollout 狀態
+
+2026-11-09 staging 的 [FinDB CD](https://github.com/FPI-TW/findb/actions/runs/42571464832/attempts/2)
+與 [Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/42571464830/attempts/2) 尚未 accepted。
+兩個 runtime configuration secrets 的退役欄位已清理，其他值逐一比對相同；初次失敗的
+`secret_schema_invalid` 已排除。後續 Backend 在 Compose interpolation 因殘留必填的
+`SHIOAJI_SKIP_NON_TRADING_DAYS` 中止，須合併 Compose 修正後重建 candidate，不能重跑原 bundle。
+Fetcher preflight 曾拒絕三個 `provider-work-backup-findb-*-shioaji` 舊容器。已確認
+`Exited (0)`，保存各自 root filesystem export、inspect metadata、diff 與 SHA-256 manifest
+至主機 root-only 的 `/var/backups/findb-retirement/20261109-staging-shioaji/`，驗證後只移除
+這三個容器，未使用 `--force`／`--volumes`，原 images、匿名 volumes、checkpoint／cache 與
+所有 bind mount 路徑及 inode 保留。十二個 active consumers 的 ID 與運作狀態不變，
+新版 host guard 已回報 `fetcher_host_eligibility=running`；production 同類殘留仍待盤點。
+
+失敗發生在 migration 與服務替換之前，staging 仍使用原 accepted release，revision 為
+`c7d2e9a4f1b3`，十二個 active Fetcher consumers 仍運作。Shioaji 歷史 requests／items、
+work／owner／receipts 指紋、59,646 筆分 K 與認證 Serve 回應均與部署前一致。
+Staging IaC plan 通過零刪除 gate（0 新增、22 原位更新、0 刪除），尚未 apply；production
+尚未開始本版部署或 IaC apply。須先完成 staging Backend／Fetcher 與 IaC 驗收，才能 promotion。
+
 ## 其他 provider 複查與控制路徑實測（2026-11-01）
 
 台北 11/01 00:23～00:40 經 Owner 授權，以 PostgreSQL `REPEATABLE READ READ ONLY`、Fetcher
