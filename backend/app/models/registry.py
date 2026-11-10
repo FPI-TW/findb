@@ -68,11 +68,15 @@ class DatasetRegistry(Base):
 
 
 class FullMarketEnvironment(Base):
-    """Trusted lifecycle flag; API reads never reconcile deployment state."""
+    """Environment lock row shared by start, plan and HK cutover."""
 
     __tablename__ = "full_market_environment"
     environment: Mapped[str] = mapped_column(String(20), primary_key=True)
-    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Retired kill switch with no readers; dropped next release. The column default only
+    # keeps inserts valid at pre-d7a2c4e6f8b1 revisions seeded by migration tests.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -94,7 +98,10 @@ class FullMarketEnrollment(Base):
     installation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     reported_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    reported_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Retired kill-switch report with no readers; dropped next release (see ``enabled``).
+    reported_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
     revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     __table_args__ = (

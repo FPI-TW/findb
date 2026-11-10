@@ -45,7 +45,7 @@ async def test_report_continuation_uses_real_queue_and_cannot_reopen_acquisition
     monkeypatch.setattr(fixtures, "DAY", DAY)
     _, _, db_plan = await fixtures._activated_plan(h.db, h.dataset, count=2)
     get_settings().APP_ENVIRONMENT = h.environment
-    h.db.add(FullMarketEnvironment(environment=h.environment, enabled=True))
+    h.db.add(FullMarketEnvironment(environment=h.environment))
     feed = {
         "provider": h.provider,
         "dataset_key": h.dataset,

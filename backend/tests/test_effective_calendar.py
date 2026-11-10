@@ -202,7 +202,7 @@ async def test_all_feeds_profiles_and_environments_freeze_weekend_decision(
     settings = get_settings()
     monkeypatch.setattr(settings, "APP_ENVIRONMENT", environment)
     monkeypatch.setattr(settings, PROVIDER_CALENDAR_SWITCHES[body.provider], skip)
-    test_session.add(FullMarketEnvironment(environment=environment, enabled=True))
+    test_session.add(FullMarketEnvironment(environment=environment))
     await test_session.commit()
     ready = await eligibility(test_session, body.provider, [dataset], profile="full_market")
     assert ready["ready"] and not ready["blockers"]

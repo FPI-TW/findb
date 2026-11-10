@@ -147,7 +147,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     monkeypatch.setattr(fixtures, "DAY", DAY)
     _, _, db_plan = await fixtures._activated_plan(h.db, h.dataset, count=2)
     get_settings().APP_ENVIRONMENT = h.environment
-    h.db.add(FullMarketEnvironment(environment=h.environment, enabled=True))
+    h.db.add(FullMarketEnvironment(environment=h.environment))
     feed = {
         "provider": h.provider,
         "dataset_key": h.dataset,

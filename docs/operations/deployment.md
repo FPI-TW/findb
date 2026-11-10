@@ -701,14 +701,14 @@ prepared 皆有 receipt、Pilot plan parts 的 runs 已 terminal；任一未結�
 1. 已完成：authorization／scheduler 回應不再回傳 `full_market_enabled`，`ReadinessReport` 不再接受
    該欄位（現行 Fetcher 皆不讀寫）；Fetcher host preflight 只接受已安裝 bundle v5，殘留的
    `findb-pilot-*` consumer 一律阻擋發布。
-2. 待完成：
-   - SSM deployment config 仍可能含 `FULL_MARKET_ENABLED`（2026-11-10 staging FinDB CD 仍輸出
-     `aws_configuration=warning reason=retired_field_ignored field=FULL_MARKET_ENABLED`）。載入時忽略且不匯出；
-     operator 以 `infra/env/aws_configuration.py sync` 清除 staging 與 production 的 FinDB／Fetcher 鍵後，
-     才能移除 `RETIRED_FIELDS` 容忍並改為拒絕。順序不可顛倒，否則部署設定驗證會失敗。
-   - `full_market_environment.enabled` 與 `full_market_enrollment.reported_enabled` 已無讀取者，但都是
-     NOT NULL 且沒有 server default。Migration 測試會在舊 revision 以現行 service 建立種子資料，
-     因此不能只停止寫入；須同一版補 server default 並調整測試種子方式，再於下一版刪欄，且 production 不得跳過前一版。
+2. 已完成：2026-11-10 以 `infra/env/aws_configuration.py sync` 清除 staging 與 production 的 FinDB／Fetcher
+   SSM 中的 `FULL_MARKET_ENABLED`（staging、production 皆為 version 2→3，可回退 version 2），之後才移除
+   `RETIRED_FIELDS` 容忍；現在含此鍵的設定一律拒絕。若回退 SSM 到 version 2，必須同時回退到仍容忍此鍵的版本。
+3. 已完成第一步：migration `d7a2c4e6f8b1` 為 `full_market_environment.enabled`（false）與
+   `full_market_enrollment.reported_enabled`（true）補 server default；程式不再讀取或指定這兩欄，ORM 只以
+   相同常數 default 寫入，讓 migration 測試在舊 revision 以現行 ORM 建立種子時仍有值。
+   待完成：下一版先從 ORM 移除並改以 server default 寫入（同時調整舊 revision 的 migration 測試種子），再刪欄。**production 必須先 promote 含 `d7a2c4e6f8b1` 的版本**，再 promote 刪欄版本；
+   不得跳過：舊版仍明確寫入這兩欄，直接升到刪欄版本時，部署切換期間仍在執行的舊版與 rollback 都會寫入已刪除的欄位。
 
 評估結論：`full_market_environment` 保留為 start、plan 與 HK cutover 共用的環境鎖定列，不改為 advisory
 lock（列鎖可與其他 row 一起在同一 transaction 中觀察與稽核）。`execution_profile` 只剩 `full_market` 但

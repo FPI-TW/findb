@@ -62,7 +62,7 @@ async def historical_admission(db, dataset, release, day, calendar_id, *, profil
     settings.APP_ENVIRONMENT = "local"
     lifecycle = await db.get(FullMarketEnvironment, "local")
     if lifecycle is None:
-        db.add(FullMarketEnvironment(environment="local", enabled=True))
+        db.add(FullMarketEnvironment(environment="local"))
     else:
         lifecycle.enabled = True
     client = SourceClient(

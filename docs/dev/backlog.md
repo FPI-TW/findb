@@ -12,9 +12,10 @@
   migration `a7c3e1f9d2b4`、`pilot-residue-v1` 封存 SHA-256、staging 共用 governor 唯讀核對、
   staging Full 首日驗收（一次只啟動一個 provider、記憶體／OOM，驗收後停止），再以相同 digests promotion
   production。
-- [ ] 收斂一版相容的剩餘部分（#450）：operator 以 `aws_configuration.py sync` 清除兩環境 SSM 的
-  `FULL_MARKET_ENABLED` 後，移除 `RETIRED_FIELDS` 載入容忍；`full_market_environment.enabled`／
-  `full_market_enrollment.reported_enabled` 先補 server default 並調整 migration 測試種子，下一版再刪欄。
+- [ ] `full_market_environment.enabled` 與 `full_market_enrollment.reported_enabled`（#450）：下一版從 ORM 移除
+  （改由 server default 寫入，並調整舊 revision 的 migration 測試種子），再下一版刪欄；production 須依序
+  promote，先含 migration `d7a2c4e6f8b1` 的版本，順序見
+  [deployment](../operations/deployment.md) 的 Pilot 退役章節。
 
 ## Historical Full release cohort（#409、#433）
 

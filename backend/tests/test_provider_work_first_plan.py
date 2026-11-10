@@ -61,7 +61,7 @@ async def test_daily_taifex_first_plan_known_native_failure_retries_original_wor
     )
     await historical_admission(h.db, dataset, release, DAY, calendar.id)
     get_settings().APP_ENVIRONMENT = h.environment
-    h.db.add(FullMarketEnvironment(environment=h.environment, enabled=True))
+    h.db.add(FullMarketEnvironment(environment=h.environment))
     feed = {
         "provider": "taifex",
         "dataset_key": h.dataset,
