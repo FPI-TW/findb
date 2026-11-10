@@ -57,7 +57,7 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
 
     h = native_runtime
     monkeypatch.setenv("TWELVE_DATA_API_KEY", "offline-twelve")
-    h.db.add(FullMarketEnvironment(environment=h.environment, enabled=True))
+    h.db.add(FullMarketEnvironment(environment=h.environment))
     for control in await h.db.scalars(select(SchedulerControl)):
         control.desired_state = "stopped"
     await h.db.commit()

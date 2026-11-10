@@ -70,7 +70,7 @@ async def lock_environment(db: AsyncSession) -> FullMarketEnvironment:
         raise AdmissionError("environment_invalid")
     await db.execute(
         insert(FullMarketEnvironment)
-        .values(environment=environment, enabled=False, updated_at=utc_now())
+        .values(environment=environment, updated_at=utc_now())
         .on_conflict_do_nothing()
     )
     return (

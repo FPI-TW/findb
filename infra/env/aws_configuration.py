@@ -11,10 +11,6 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent
-# Retired nonsecret keys are tolerated for exactly one release so an existing
-# SSM parameter keeps deploying: they are ignored (never exported) with a
-# stderr warning, and `sync` drops them. Remove this tolerance next release.
-RETIRED_FIELDS = frozenset({"FULL_MARKET_ENABLED"})
 
 
 class ConfigurationError(ValueError):
@@ -36,22 +32,6 @@ def bootstrap(target: str, unit: str) -> dict[str, str]:
     }
 
 
-def without_retired_fields(document: Any) -> Any:
-    """Return ``document`` without retired keys, warning once per ignored key name."""
-    if not isinstance(document, dict) or not isinstance(document.get("values"), dict):
-        return document
-    retired = sorted(RETIRED_FIELDS & set(document["values"]))
-    for name in retired:
-        # Only the key name is emitted; the configured value is never printed.
-        print(
-            f"aws_configuration=warning reason=retired_field_ignored field={name}", file=sys.stderr
-        )
-    if not retired:
-        return document
-    values = {name: value for name, value in document["values"].items() if name not in retired}
-    return {**document, "values": values}
-
-
 def validate(document: Any, *, target: str, unit: str) -> dict[str, str]:
     schema = json.loads((ROOT / "deployment.schema.json").read_text())
     route = bootstrap(target, unit)
@@ -70,7 +50,7 @@ def validate(document: Any, *, target: str, unit: str) -> dict[str, str]:
     ):
         raise ConfigurationError("configuration_identity_invalid")
     fields = schema["units"][unit]
-    values = without_retired_fields(document)["values"]
+    values = document["values"]
     if (
         not isinstance(values, dict)
         or set(values) - set(fields["required"]) - set(fields["defaults"])
@@ -164,8 +144,6 @@ def main() -> int:
                 if args.input is None:
                     raise ConfigurationError("input_required")
                 document = json.loads(args.input.read_text())
-            # A retired key is reported once and never exported; `sync` removes it.
-            document = without_retired_fields(document)
             values = validate(document, target=args.target, unit=args.unit)
             if args.command == "sync":
                 # File input is already allowlisted; stdout/stderr never contain its values.

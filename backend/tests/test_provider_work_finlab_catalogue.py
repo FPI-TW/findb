@@ -24,7 +24,7 @@ async def test_finlab_native_catalogue_known_failure_settles(
     from findb_fetcher.full_market_universe import TW_COMPANY_URLS, TW_ISIN_URLS
 
     h = native_runtime
-    h.db.add(FullMarketEnvironment(environment=h.environment, enabled=True))
+    h.db.add(FullMarketEnvironment(environment=h.environment))
     for control in await h.db.scalars(select(SchedulerControl)):
         control.desired_state = "stopped"
     await h.db.commit()

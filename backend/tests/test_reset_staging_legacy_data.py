@@ -414,7 +414,7 @@ async def test_reset_clears_full_admission_fk_graph_and_preserves_installation_a
             dataset, source = await _seed_protected_rows(session)
             now = utc_now()
             first_date = now.date() - timedelta(days=30)
-            environment = FullMarketEnvironment(environment="staging", enabled=True)
+            environment = FullMarketEnvironment(environment="staging")
             enrollment = FullMarketEnrollment(
                 environment="staging",
                 provider="twelve_data",
@@ -495,7 +495,8 @@ async def test_reset_clears_full_admission_fk_graph_and_preserves_installation_a
                 == first_date
             )
             assert (
-                await connection.scalar(text("SELECT enabled FROM full_market_environment")) is True
+                await connection.scalar(text("SELECT environment FROM full_market_environment"))
+                == "staging"
             )
             row = (
                 await connection.execute(

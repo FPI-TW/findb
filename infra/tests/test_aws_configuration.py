@@ -61,27 +61,16 @@ def test_configuration_rejects_secret_fields_wrong_identity_and_injection(target
 
 @pytest.mark.parametrize("target", ["staging", "production"])
 @pytest.mark.parametrize("unit", ["findb", "fetcher"])
-@pytest.mark.parametrize("flag", ["true", "false", "True", "0", ""])
-def test_retired_full_market_flag_is_tolerated_with_warning_and_never_exported(
-    target, unit, flag, capsys
-):
+@pytest.mark.parametrize("flag", ["true", "false", ""])
+def test_retired_full_market_flag_is_rejected(target, unit, flag):
     value = document(target, unit)
     value["values"]["FULL_MARKET_ENABLED"] = flag
-    result = module.validate(value, target=target, unit=unit)
-    assert "FULL_MARKET_ENABLED" not in result
-    assert value["values"]["FULL_MARKET_ENABLED"] == flag  # Input is never mutated.
-    warning = capsys.readouterr().err
-    assert warning == (
-        "aws_configuration=warning reason=retired_field_ignored field=FULL_MARKET_ENABLED\n"
-    )
-    assert module.validate(document(target, unit), target=target, unit=unit) == result
-    assert capsys.readouterr().err == ""
+    with pytest.raises(module.ConfigurationError, match="configuration_fields_invalid"):
+        module.validate(value, target=target, unit=unit)
 
 
 @pytest.mark.parametrize("command", ["load", "sync", "validate"])
-def test_cli_ignores_retired_ssm_flag_once_and_sync_removes_it(
-    tmp_path, monkeypatch, capsys, command
-):
+def test_cli_rejects_retired_ssm_flag_without_writing(tmp_path, monkeypatch, capsys, command):
     value = document("staging", "fetcher")
     value["values"]["FULL_MARKET_ENABLED"] = "true"
     calls = []
@@ -103,21 +92,12 @@ def test_cli_ignores_retired_ssm_flag_once_and_sync_removes_it(
     if command != "load":
         arguments += ["--input", str(source)]
     monkeypatch.setattr(module.sys, "argv", [*arguments, "--github-env", str(exported)])
-    assert module.main() == 0
+    assert module.main() == 1
     output = capsys.readouterr()
-    assert output.err.count("reason=retired_field_ignored field=FULL_MARKET_ENABLED") == 1
-    assert "FULL_MARKET_ENABLED" not in exported.read_text()
-    assert "FULL_MARKET_ENABLED" not in output.out
-    written = [call for call in calls if call[:2] == ["ssm", "put-parameter"]]
-    if command == "sync":
-        [put] = written
-        stored = json.loads(put[put.index("--value") + 1])
-        assert "FULL_MARKET_ENABLED" not in stored["values"]
-        assert stored["values"] == {
-            name: item for name, item in value["values"].items() if name != "FULL_MARKET_ENABLED"
-        }
-    else:
-        assert written == []
+    assert output.err == "aws_configuration=failed\n"
+    assert output.out == ""
+    assert not exported.exists()
+    assert [call for call in calls if call[:2] == ["ssm", "put-parameter"]] == []
 
 
 def test_templates_and_schema_no_longer_name_the_retired_flag():
