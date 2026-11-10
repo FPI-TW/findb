@@ -33,11 +33,35 @@ resource "aws_kms_alias" "deploy_bundle" {
   name          = "alias/findb-production-deploy-bundle"
   target_key_id = aws_kms_key.deploy_bundle.key_id
 }
+# CloudWatch alarms publish to the KMS-encrypted alert topic only when the
+# service may use this key; without it every alarm action fails.
+data "aws_iam_policy_document" "logs_kms" {
+  source_policy_documents = [data.aws_iam_policy_document.kms.json]
+  statement {
+    sid       = "CloudWatchAlarmNotifications"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
+    resources = ["*"]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudwatch.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.aws_account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${var.aws_account_id}:alarm:findb-production-*"]
+    }
+  }
+}
 resource "aws_kms_key" "logs" {
   description             = "FinDB production logs and alerts"
   enable_key_rotation     = true
   deletion_window_in_days = 30
-  policy                  = data.aws_iam_policy_document.kms.json
+  policy                  = data.aws_iam_policy_document.logs_kms.json
   tags                    = local.common_tags
   lifecycle {
     prevent_destroy = true

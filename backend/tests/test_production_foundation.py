@@ -87,6 +87,30 @@ def test_production_deployment_failure_alarm_fires_on_one_published_failure() ->
     assert 'values   = ["FinDB/Production"]' in metric_statement
 
 
+def test_production_alert_topic_key_lets_only_own_alarms_publish() -> None:
+    storage = (REPO_ROOT / "infra/tofu/production/storage.tf").read_text(encoding="utf-8")
+    monitoring = (REPO_ROOT / "infra/tofu/production/monitoring.tf").read_text(encoding="utf-8")
+
+    # The alert topic is encrypted with the logs key; without a CloudWatch grant
+    # every alarm action fails to publish.
+    assert "kms_master_key_id = aws_kms_key.logs.id" in monitoring
+    logs_key = storage.split('resource "aws_kms_key" "logs"', 1)[1].split("\n}\n", 1)[0]
+    assert "policy                  = data.aws_iam_policy_document.logs_kms.json" in logs_key
+    grant = storage.split('data "aws_iam_policy_document" "logs_kms"', 1)[1].split(
+        'resource "aws_kms_key" "logs"', 1
+    )[0]
+    assert "source_policy_documents = [data.aws_iam_policy_document.kms.json]" in grant
+    assert 'identifiers = ["cloudwatch.amazonaws.com"]' in grant
+    assert 'actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]' in grant
+    assert 'variable = "aws:SourceAccount"' in grant
+    assert ":alarm:findb-production-*" in grant
+    # The shared policy for the deploy bundle key stays unchanged.
+    shared = storage.split('data "aws_iam_policy_document" "kms"', 1)[1].split(
+        'resource "aws_kms_key" "deploy_bundle"', 1
+    )[0]
+    assert "cloudwatch.amazonaws.com" not in shared
+
+
 def test_production_rollback_replays_acceptance_without_rerunning_ci() -> None:
     for unit in ("findb", "fetcher"):
         workflow = (REPO_ROOT / ".github/workflows" / f"{unit}-production-cd.yml").read_text(
