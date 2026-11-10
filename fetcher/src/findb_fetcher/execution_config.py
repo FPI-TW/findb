@@ -53,9 +53,18 @@ def _deadline(value: dict) -> None:
 
 
 def resolve_execution_config(
-    value: dict[str, Any], *, provider: str, environment: str, profile: str
+    value: dict[str, Any],
+    *,
+    provider: str,
+    environment: str,
+    profile: str,
+    complete_scope: bool = True,
 ) -> ExecutionSnapshot:
-    """Validate the complete snapshot before exposing any feed to the planner."""
+    """Validate the complete snapshot before exposing any feed to the planner.
+
+    Maintenance may hold a narrower credential scope; it still validates every
+    published feed but does not require the full installed provider scope.
+    """
     body = deepcopy(value)
     if set(body) != {
         "schema_version",
@@ -147,6 +156,6 @@ def resolve_execution_config(
                 "slot_id": installed["delivery"]["slot_id"],
             }
         )
-    if seen != set(expected):
+    if complete_scope and seen != set(expected):
         raise ValueError("Incomplete execution config scope")
     return ExecutionSnapshot(digest=digest, feeds=tuple(resolved))

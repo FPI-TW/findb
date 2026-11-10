@@ -692,6 +692,7 @@ class FullMarketRuntime:
         feeds = [feed for feed in self.installed_feeds if feed["dataset_key"] in dataset_keys]
         if not feeds:
             return []
+        zones = self._universe_zones(feeds)
         now = datetime.now(timezone.utc)
         snapshots: dict[str, bytes] = {}
         if self.provider == "twelve_data":
@@ -705,7 +706,7 @@ class FullMarketRuntime:
                 us_dates = {
                     nasdaq_effective_date(
                         snapshots[url],
-                        observed_date=now.astimezone(ZoneInfo("America/New_York")).date(),
+                        observed_date=now.astimezone(zones["us_equity_eod"]).date(),
                     )
                     for url in NASDAQ_URLS
                 }
@@ -731,7 +732,7 @@ class FullMarketRuntime:
         elif self.provider == "factset":
             snapshots[HKEX_URL] = self._snapshot(HKEX_URL)
             hk_date, hk = parse_hkex(
-                snapshots[HKEX_URL], observed_date=now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
+                snapshots[HKEX_URL], observed_date=now.astimezone(zones["hk_equity_eod"]).date()
             )
             native = FactSetGateway(FactSetConfig.from_env()).catalogue(
                 tuple(sorted({member["symbol"] for member in hk}))
@@ -803,16 +804,16 @@ class FullMarketRuntime:
                         else "gap"
                     )
             groups = {
-                "tw_equity_eod": (
-                    now.astimezone(ZoneInfo("Asia/Taipei")).date(),
-                    equity,
-                    {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
-                ),
-                "tw_etf_eod": (
-                    now.astimezone(ZoneInfo("Asia/Taipei")).date(),
-                    etfs,
-                    {url: snapshots[url] for url in TW_ISIN_URLS},
-                ),
+                dataset: (now.astimezone(zones[dataset]).date(), members, evidence)
+                for dataset, members, evidence in (
+                    (
+                        "tw_equity_eod",
+                        equity,
+                        {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
+                    ),
+                    ("tw_etf_eod", etfs, {url: snapshots[url] for url in TW_ISIN_URLS}),
+                )
+                if dataset in zones
             }
             if self.provider == "finlab":
                 for dataset, evidence in catalogue_snapshots.items():
@@ -821,7 +822,7 @@ class FullMarketRuntime:
             self._ensure_proof()
             raw = self._snapshot(TAIFEX_URL, provider_response=True)
             day = official_report_date(raw)
-            if day > now.astimezone(ZoneInfo("Asia/Taipei")).date():
+            if day > now.astimezone(zones["tw_futures_eod"]).date():
                 raise ReadinessBlockedError("TAIFEX report is future-dated")
             rows = parse_report(raw, target_date=day)
             groups = {"tw_futures_eod": (day, report_members(rows), {TAIFEX_URL: raw})}
@@ -840,17 +841,26 @@ class FullMarketRuntime:
                 provider=self.provider,
                 effective_date=effective,
                 observed_at=now,
-                source_timezone={
-                    "US": "America/New_York",
-                    "HK": "Asia/Hong_Kong",
-                    "TW": "Asia/Taipei",
-                    "TW_FUTURES": "Asia/Taipei",
-                }[feed.get("calendar_market", feed["market"])],
+                source_timezone=zones[dataset].key,
                 snapshots=evidence,
                 members=members,
             )
             result.append(self.source.submit(body))
         return result
+
+    def _universe_zones(self, feeds: list[dict[str, Any]]) -> dict[str, ZoneInfo]:
+        """Universe dates use Source-published feed timezones, never local tables."""
+        snapshot = self.schedule_snapshot or resolve_execution_config(
+            self.source.execution_config(),
+            provider=self.provider,
+            environment=app_environment(),
+            profile=self.execution_profile,
+            complete_scope=False,
+        )
+        published = {feed["dataset_key"]: feed["source_timezone"] for feed in snapshot.feeds}
+        if any(feed["dataset_key"] not in published for feed in feeds):
+            raise ReadinessBlockedError("Source universe timezone unavailable")
+        return {feed["dataset_key"]: ZoneInfo(published[feed["dataset_key"]]) for feed in feeds}
 
     def drain(self) -> None:
         """Drain retained deliveries only through the original fenced owner."""
@@ -1706,12 +1716,7 @@ class FullMarketRuntime:
                 provider=self.provider,
                 effective_date=day,
                 observed_at=datetime.now(timezone.utc),
-                source_timezone={
-                    "US": "America/New_York",
-                    "HK": "Asia/Hong_Kong",
-                    "TW": "Asia/Taipei",
-                    "TW_FUTURES": "Asia/Taipei",
-                }[feed.get("calendar_market", feed["market"])],
+                source_timezone=feed["source_timezone"],
                 snapshots={url: raw},
                 members=members,
             )
