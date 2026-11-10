@@ -75,6 +75,8 @@ locals {
     }
   }
 
+  provider_inventory = jsondecode(file("${path.module}/../../deploy/generated/provider_inventory.v1.json"))
+
   monitored_containers = {
     findb = toset([
       "findb-dashboard",
@@ -86,24 +88,33 @@ locals {
       "findb-serve",
       "findb-worker",
     ])
-    fetcher = toset([
-      "findb-fetcher-finlab-scheduler",
-      "findb-fetcher-scheduler",
-    ])
+    # Current Fetcher consumers come only from the generated provider
+    # inventory (backend/scripts/export_provider_catalog.py), which the host
+    # metric publisher embeds as the same generated block.
+    fetcher = toset([for consumer in local.provider_inventory.consumers : consumer.name])
   }
 
-  scheduler_keys = toset([
-    "finlab_tw_equity_eod_v1",
-    "twelve_data_us_common_stocks_daily_v1",
-  ])
+  # Every catalog provider has exactly one Full market scheduler control.
+  scheduler_keys = toset([for provider in local.provider_inventory.providers : "full_market_${provider}_v1"])
 
   # Keep existing alarm identities under the standard zero-delete plan policy.
-  # Retired resources emit no metrics and have no notification actions.
-  retired_alarm_resources = toset(["findb-fetcher-shioaji-scheduler", "shioaji_tw_pilot_v1"])
+  # Retired resources emit no metrics and have no notification actions; a
+  # missing datapoint is not breaching.
+  retired_fetcher_containers = toset([
+    "findb-fetcher-finlab-scheduler",
+    "findb-fetcher-scheduler",
+    "findb-fetcher-shioaji-scheduler",
+  ])
+  retired_scheduler_keys = toset([
+    "finlab_tw_equity_eod_v1",
+    "shioaji_tw_pilot_v1",
+    "twelve_data_us_common_stocks_daily_v1",
+  ])
+  retired_alarm_resources = setunion(local.retired_fetcher_containers, local.retired_scheduler_keys)
   retained_alarm_containers = merge(local.monitored_containers, {
-    fetcher = setunion(local.monitored_containers.fetcher, toset(["findb-fetcher-shioaji-scheduler"]))
+    fetcher = setunion(local.monitored_containers.fetcher, local.retired_fetcher_containers)
   })
-  retained_alarm_scheduler_keys = setunion(local.scheduler_keys, toset(["shioaji_tw_pilot_v1"]))
+  retained_alarm_scheduler_keys = setunion(local.scheduler_keys, local.retired_scheduler_keys)
 
   metric_publisher_service_units = {
     for unit in sort(keys(local.unit_config)) : unit => <<-EOT
@@ -215,7 +226,7 @@ locals {
     ]...),
     {
       for container in local.retained_alarm_containers.fetcher : "fetcher_runtime_security_${container}" => {
-        alarm_name          = "findb-staging-fetcher-${replace(container, "findb-fetcher-", "")}-runtime-security"
+        alarm_name          = "findb-staging-fetcher-${trimprefix(trimprefix(container, "findb-fetcher-"), "findb-")}-runtime-security"
         metric_name         = "DockerRuntimeSecurityHealthy"
         comparison_operator = "LessThanThreshold"
         threshold           = 1
@@ -386,6 +397,9 @@ locals {
         description         = "At least one API credential was rejected in the overlapping ten-minute Docker log window."
       }
     },
+    # Staging controls are normally stopped and the publisher skips stopped
+    # controls. A running control always reports its persisted heartbeat age,
+    # so a dead consumer still breaches; container health covers absence.
     {
       for scheduler_key in local.retained_alarm_scheduler_keys : "scheduler_${scheduler_key}" => {
         alarm_name          = "findb-staging-fetcher-${replace(scheduler_key, "_", "-")}-heartbeat-stale"
@@ -397,8 +411,8 @@ locals {
         resource            = scheduler_key
         evaluation_periods  = 2
         datapoints_to_alarm = 2
-        treat_missing_data  = "breaching"
-        description         = "${scheduler_key} heartbeat is at least three minutes old or the metric is missing."
+        treat_missing_data  = "notBreaching"
+        description         = "${scheduler_key} is running and its heartbeat is at least three minutes old."
       }
     },
     {

@@ -18,18 +18,25 @@ locals {
     }
 
   }
+  # Current Fetcher consumers and their Full market controls come only from the
+  # generated provider inventory (backend/scripts/export_provider_catalog.py),
+  # which the host metric publisher embeds as the same generated block.
+  provider_inventory = jsondecode(file("${path.module}/../../deploy/generated/provider_inventory.v1.json"))
   monitored_containers = {
     findb   = toset(["findb-dashboard", "findb-dispatcher", "findb-ingest", "findb-nginx", "findb-rabbitmq", "findb-raw-cleanup", "findb-serve", "findb-worker"])
-    fetcher = toset(["findb-fetcher-finlab-scheduler", "findb-fetcher-scheduler"])
+    fetcher = toset([for consumer in local.provider_inventory.consumers : consumer.name])
   }
-  scheduler_keys = toset(["twelve_data_us_common_stocks_daily_v1", "finlab_tw_equity_eod_v1"])
+  scheduler_keys = toset([for provider in local.provider_inventory.providers : "full_market_${provider}_v1"])
   # Keep existing alarm identities under the standard zero-delete plan policy.
-  # Retired resources emit no metrics and have no notification actions.
-  retired_alarm_resources = toset(["findb-fetcher-shioaji-scheduler", "shioaji_tw_pilot_v1"])
+  # Retired resources emit no metrics and have no notification actions; a
+  # missing datapoint is not breaching.
+  retired_fetcher_containers = toset(["findb-fetcher-finlab-scheduler", "findb-fetcher-scheduler", "findb-fetcher-shioaji-scheduler"])
+  retired_scheduler_keys     = toset(["finlab_tw_equity_eod_v1", "shioaji_tw_pilot_v1", "twelve_data_us_common_stocks_daily_v1"])
+  retired_alarm_resources    = setunion(local.retired_fetcher_containers, local.retired_scheduler_keys)
   retained_alarm_containers = merge(local.monitored_containers, {
-    fetcher = setunion(local.monitored_containers.fetcher, toset(["findb-fetcher-shioaji-scheduler"]))
+    fetcher = setunion(local.monitored_containers.fetcher, local.retired_fetcher_containers)
   })
-  retained_alarm_scheduler_keys = setunion(local.scheduler_keys, toset(["shioaji_tw_pilot_v1"]))
+  retained_alarm_scheduler_keys = setunion(local.scheduler_keys, local.retired_scheduler_keys)
 
   custom_alarms = merge(
     {
@@ -158,7 +165,12 @@ resource "aws_cloudwatch_metric_alarm" "rds" {
   ok_actions    = [aws_sns_topic.operations.arn]
 }
 resource "aws_cloudwatch_metric_alarm" "custom" {
-  for_each            = local.custom_alarms
+  for_each = local.custom_alarms
+
+  # The association installs the current collector before alarms whose missing
+  # datapoints breach are created.
+  depends_on = [aws_ssm_association.metric_publisher]
+
   alarm_name          = "findb-production-${replace(each.key, "_", "-")}"
   namespace           = "FinDB/Production"
   metric_name         = each.value.metric

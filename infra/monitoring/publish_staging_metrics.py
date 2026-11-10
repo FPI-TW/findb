@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Publish bounded, non-secret FinDB staging operational metrics."""
+"""Publish bounded, non-secret FinDB staging and production operational metrics."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import socket
 import ssl
 import subprocess
@@ -16,6 +17,26 @@ from typing import Any
 
 DEFAULT_NAMESPACE = "FinDB/Staging"
 ALLOWED_NAMESPACES = (DEFAULT_NAMESPACE, "FinDB/Production")
+ENVIRONMENT_BY_NAMESPACE = {DEFAULT_NAMESPACE: "staging", "FinDB/Production": "production"}
+
+# The Fetcher consumer inventory is generated from the provider catalog by
+# backend/scripts/export_provider_catalog.py; never edit it by hand. OpenTofu
+# derives the matching alarm identities from the same generated inventory.
+# BEGIN GENERATED PROVIDER INVENTORY
+PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+CONSUMERS = (
+    ("findb-full-market-factset", "factset", "full_market", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
+)
+EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
+# END GENERATED PROVIDER INVENTORY
+
 EXPECTED_CONTAINERS = {
     "findb": (
         "findb-dashboard",
@@ -27,20 +48,33 @@ EXPECTED_CONTAINERS = {
         "findb-serve",
         "findb-worker",
     ),
-    "fetcher": (
-        "findb-fetcher-finlab-scheduler",
-        "findb-fetcher-scheduler",
-    ),
+    "fetcher": EXPECTED_RUNTIMES,
 }
-EXPECTED_FETCHER_MOUNTS = {
-    "findb-fetcher-scheduler": {
-        ("bind", "/var/lib/findb-fetcher", "/var/lib/findb-fetcher", True),
-    },
-    "findb-fetcher-finlab-scheduler": {
-        ("bind", "/var/lib/findb-finlab-fetcher", "/var/lib/findb-finlab-fetcher", True),
-        ("bind", "/var/lib/findb-finlab-fetcher/cache", "/home/fetcher", True),
-    },
+
+# Host paths mirror infra/deploy/runtime-secrets/deploy_fetcher_aws.sh and
+# release_fetcher_provider.sh; infra tests pin both sides together.
+FULL_MARKET_STATE_DIRS = {
+    "staging": "/var/lib/findb-full-market/staging",
+    "production": "/var/lib/findb-full-market",
 }
+HISTORICAL_STATE_DIRS = {
+    "factset": "/var/lib/findb-factset-fetcher/historical",
+    "finlab": "/var/lib/findb-finlab-fetcher/historical",
+    "taifex": "/var/lib/findb-taifex-fetcher/historical",
+    "twelve_data": "/var/lib/findb-fetcher/historical",
+}
+PROVIDER_CACHE_DIRS = {"finlab": "/var/lib/findb-finlab-fetcher/cache"}
+ACCOUNT_STATE_ROOT = "/var/lib/findb-account"
+READINESS_DIR = "/etc/findb-full-market/readiness"
+# Image VOLUME paths (fetcher/Dockerfile*) that no bind covers exactly receive
+# Docker-managed anonymous volumes. They are container-private and never expose
+# a host path, so they are the only permitted non-bind mounts.
+IMAGE_ANONYMOUS_VOLUMES = {
+    "factset": frozenset({"/var/lib/findb-fetcher"}),
+    "finlab": frozenset({"/home/fetcher", "/var/lib/findb-finlab-fetcher"}),
+    "twelve_data": frozenset({"/var/lib/findb-fetcher"}),
+}
+_ANONYMOUS_VOLUME_NAME = re.compile(r"[0-9a-f]{64}")
 INVALID_CREDENTIAL_LOG_CONTAINERS = (
     "findb-ingest",
     "findb-serve",
@@ -130,10 +164,71 @@ def _container_metrics(deployment_unit: str) -> tuple[list[dict[str, Any]], list
     return metrics, errors
 
 
-def _fetcher_runtime_security_metrics() -> tuple[list[dict[str, Any]], list[str]]:
+def expected_consumer_mounts(
+    environment: str, provider: str, role: str, image_key: str
+) -> tuple[frozenset[tuple[str, str, str, bool]], frozenset[str]]:
+    """Return one consumer's exact bind mounts and permitted anonymous volumes."""
+    state_dir = (
+        FULL_MARKET_STATE_DIRS[environment]
+        if role == "full_market"
+        else HISTORICAL_STATE_DIRS[provider]
+    )
+    account_dir = f"{ACCOUNT_STATE_ROOT}/{environment}"
+    binds = {
+        ("bind", state_dir, state_dir, True),
+        ("bind", account_dir, account_dir, True),
+        ("bind", READINESS_DIR, f"{ACCOUNT_STATE_ROOT}/readiness", False),
+    }
+    if role == "full_market":
+        binds.add(("bind", READINESS_DIR, f"{state_dir}/readiness", False))
+    if provider in PROVIDER_CACHE_DIRS:
+        binds.add(("bind", PROVIDER_CACHE_DIRS[provider], "/home/fetcher", True))
+    bound = {destination for _, _, destination, _ in binds}
+    return frozenset(binds), IMAGE_ANONYMOUS_VOLUMES[image_key] - bound
+
+
+def _mounts_match(
+    mounts: list[dict[str, Any]],
+    expected_binds: frozenset[tuple[str, str, str, bool]],
+    anonymous_volumes: frozenset[str],
+) -> bool:
+    binds = set()
+    for mount in mounts:
+        if mount["Type"] == "bind":
+            binds.add(
+                (
+                    "bind",
+                    str(mount["Source"]),
+                    str(mount["Destination"]),
+                    bool(mount["RW"]),
+                )
+            )
+        elif not (
+            mount["Type"] == "volume"
+            and mount.get("Driver") == "local"
+            and _ANONYMOUS_VOLUME_NAME.fullmatch(str(mount.get("Name", "")))
+            and str(mount["Destination"]) in anonymous_volumes
+        ):
+            return False
+    return binds == expected_binds
+
+
+def _fetcher_runtime_security_metrics(
+    environment: str = "staging",
+) -> tuple[list[dict[str, Any]], list[str]]:
     metrics: list[dict[str, Any]] = []
     errors: list[str] = []
-    for container, expected_mounts in EXPECTED_FETCHER_MOUNTS.items():
+    for container, provider, role, image_key in CONSUMERS:
+        try:
+            expected_binds, anonymous_volumes = expected_consumer_mounts(
+                environment, provider, role, image_key
+            )
+        except KeyError:
+            errors.append(f"no runtime mount contract for {container}")
+            metrics.append(
+                _metric("DockerRuntimeSecurityHealthy", 0, "Count", "fetcher", container)
+            )
+            continue
         result = _run(["docker", "inspect", container])
         if result.returncode != 0:
             metrics.append(
@@ -144,15 +239,6 @@ def _fetcher_runtime_security_metrics() -> tuple[list[dict[str, Any]], list[str]
             state = json.loads(result.stdout)[0]
             config = state["Config"]
             host_config = state["HostConfig"]
-            actual_mounts = {
-                (
-                    str(mount["Type"]),
-                    str(mount["Source"]),
-                    str(mount["Destination"]),
-                    bool(mount["RW"]),
-                )
-                for mount in state["Mounts"]
-            }
             tmpfs = host_config.get("Tmpfs") or {}
             tmp_options = set(str(tmpfs.get("/tmp", "")).split(","))
             security_options = set(host_config.get("SecurityOpt") or [])
@@ -165,7 +251,7 @@ def _fetcher_runtime_security_metrics() -> tuple[list[dict[str, Any]], list[str]
                 and security_options in ({"no-new-privileges"}, {"no-new-privileges:true"})
                 and set(tmpfs) == {"/tmp"}
                 and {"rw", "noexec", "nosuid"}.issubset(tmp_options)
-                and actual_mounts == expected_mounts
+                and _mounts_match(state["Mounts"], expected_binds, anonymous_volumes)
             )
         except (
             KeyError,
@@ -576,6 +662,7 @@ def collect_metrics(
     db_identifier: str,
     dlm_policy_id: str,
     tls_host: str,
+    environment: str = "staging",
 ) -> tuple[list[dict[str, Any]], list[str]]:
     metrics = _filesystem_metrics(unit, Path("/"))
     container_metrics, errors = _container_metrics(unit)
@@ -601,7 +688,7 @@ def collect_metrics(
         metrics.extend(tls_metrics)
         errors.extend(tls_errors)
     else:
-        security_metrics, security_errors = _fetcher_runtime_security_metrics()
+        security_metrics, security_errors = _fetcher_runtime_security_metrics(environment)
         metrics.extend(security_metrics)
         errors.extend(security_errors)
     metrics.append(_metric("CollectorSuccess", int(not errors), "Count", unit, "host"))
@@ -646,6 +733,7 @@ def main() -> int:
         args.rds_instance_identifier,
         args.dlm_policy_id,
         args.tls_host,
+        ENVIRONMENT_BY_NAMESPACE[args.namespace],
     )
     publish_metrics(metrics, args.region, args.namespace)
     for error in errors:

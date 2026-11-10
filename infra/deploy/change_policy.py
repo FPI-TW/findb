@@ -35,6 +35,15 @@ SHARED_PREFIXES = (
     "infra/deploy/",
 )
 INFRA_PREFIXES = ("infra/tofu/", "infra/env/")
+# Files outside infra/tofu/ that OpenTofu reads with file()/filebase64(); a
+# change alters the planned resources, so it must run the plan gate too.
+INFRA_PLAN_INPUTS = frozenset(
+    {
+        "infra/deploy/ensure_swap.sh",
+        "infra/deploy/generated/provider_inventory.v1.json",
+        "infra/monitoring/publish_staging_metrics.py",
+    }
+)
 # The plan gate must exercise its own workflow before it guards infrastructure.
 INFRA_PLAN_WORKFLOW = ".github/workflows/staging-infra-plan.yml"
 FINDB_STAGING_WORKFLOWS = {
@@ -91,7 +100,7 @@ def classify(paths: list[str]) -> dict[str, bool]:
             # Deploy helpers and compose contracts affect the host runtime.
             if path.startswith("infra/deploy/") or path == "docker-compose.prod.yml":
                 result["findb_staging"] = result["fetcher_staging"] = True
-        if path.startswith(INFRA_PREFIXES):
+        if path.startswith(INFRA_PREFIXES) or path in INFRA_PLAN_INPUTS:
             result["infra_plan"] = True
     return result
 

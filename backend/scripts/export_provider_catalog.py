@@ -138,8 +138,9 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
         Path("infra/deploy/generated/provider_inventory.v1.json"): json_text(inventory),
     }
 
-    # Standalone SSM guards must carry the same generated inventory when copied
-    # without the source tree. Regenerate the marked inventory in each guard.
+    # Standalone SSM guards and the host metric publisher must carry the same
+    # generated inventory when copied without the source tree. Regenerate the
+    # marked inventory in each embedded script.
     block = "# BEGIN GENERATED PROVIDER INVENTORY\n"
     block += "PROVIDERS = " + repr(tuple(inventory["providers"])).replace("'", '"') + "\n"
     block += "CONSUMERS = (\n"
@@ -151,12 +152,12 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
         )
     block += ")\nEXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)\n"
     block += "# END GENERATED PROVIDER INVENTORY"
-    for name in (
-        "check_fetcher_host.py",
-        "check_fetcher_runtime_recovery.py",
-        "provider_work_preflight.py",
+    for path in (
+        Path("infra/deploy/check_fetcher_host.py"),
+        Path("infra/deploy/check_fetcher_runtime_recovery.py"),
+        Path("infra/deploy/provider_work_preflight.py"),
+        Path("infra/monitoring/publish_staging_metrics.py"),
     ):
-        path = Path("infra/deploy") / name
         text = (REPO_ROOT / path).read_text()
         start = text.index("# BEGIN GENERATED PROVIDER INVENTORY")
         end = text.index("# END GENERATED PROVIDER INVENTORY") + len(
