@@ -34,7 +34,8 @@
             "FINDB_TLS_PRIVATE_KEY_PATH",
             "PROVIDER_WORK_REQUIRED",
             "FACTSET_SKIP_NON_TRADING_DAYS",
-            "EOD_LONG_GAP_TRADING_DAYS"
+            "EOD_LONG_GAP_TRADING_DAYS",
+            "SCHEDULER_EXPECTED_CYCLE_INTERVAL_SECONDS"
           ]
         }
       ]
@@ -134,7 +135,8 @@
           "optional_keys": [
             "PROVIDER_WORK_REQUIRED",
             "FACTSET_SKIP_NON_TRADING_DAYS",
-            "EOD_LONG_GAP_TRADING_DAYS"
+            "EOD_LONG_GAP_TRADING_DAYS",
+            "SCHEDULER_EXPECTED_CYCLE_INTERVAL_SECONDS"
           ]
         },
         {

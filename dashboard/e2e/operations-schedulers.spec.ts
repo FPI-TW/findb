@@ -41,6 +41,24 @@ test("normal login and retired profile deep links show one schedule section with
   await expect(page.getByText(/Pilot/)).toHaveCount(0)
   await expect(page.getByText("pilot_finlab_v1")).toHaveCount(0)
   await expect(page.getByRole("region", { name: "資料抓取排程" })).toBeVisible()
+  await expect(
+    page.getByRole("region", { name: "full_market_finlab_v1 Owner 設定" })
+  ).toContainText("已啟用")
+  await expect(
+    page.getByRole("region", { name: "full_market_finlab_v1 Runtime 實況" })
+  ).toContainText("執行中：等待下一輪")
+  await expect(
+    page.getByRole("region", {
+      name: "full_market_twelve_data_v1 Runtime 實況",
+    })
+  ).toContainText("已停止")
+  await expect(
+    page.getByText("1 已啟用 · 0 抓取中（共 3 個排程）")
+  ).toBeVisible()
+  await expect(page.getByText("尚不可部署：1 個排程還沒停好")).toBeVisible()
+  // Secondary fields stay in each card's collapsed detail block.
+  await expect(page.getByText("環境：production").first()).toBeHidden()
+  await page.getByText("詳細", { exact: true }).first().click()
   await expect(page.getByText("環境：production").first()).toBeVisible()
   await expect(
     page.getByText("本次凍結範圍：tw_equity_eod").first()
@@ -53,7 +71,7 @@ test("normal login and retired profile deep links show one schedule section with
   ).toBeVisible()
   await expect(
     page.getByText(
-      "部署前人工確認：請停止所有排程，確認期望與實際狀態均為已停止。"
+      "部署前人工確認：請停止所有排程，確認每張卡片的「Owner 設定」與「Runtime 實況」均為已停止。"
     )
   ).toBeVisible()
   await page.goto("/dashboard/operations/?profile=full_market")
@@ -78,7 +96,7 @@ test("cancel and Escape are side-effect free; batch start skips blocked and runn
   await login(page)
   await page
     .getByRole("button", {
-      name: "twelve_data full_market_twelve_data_v1 設為執行中",
+      name: "twelve_data full_market_twelve_data_v1 設為已啟用",
     })
     .click()
   await expect(page.getByRole("alertdialog")).toContainText(
@@ -105,8 +123,8 @@ test("cancel and Escape are side-effect free; batch start skips blocked and runn
   await page.getByRole("button", { name: "確認全部停止", exact: true }).click()
   // Bulk updates are sequential; wait for every card before reading mutations.
   for (const name of [
-    "finlab full_market_finlab_v1 設為執行中",
-    "twelve_data full_market_twelve_data_v1 設為執行中",
+    "finlab full_market_finlab_v1 設為已啟用",
+    "twelve_data full_market_twelve_data_v1 設為已啟用",
   ])
     await expect(page.getByRole("button", { name })).toBeEnabled()
   await expect
@@ -166,7 +184,7 @@ test("partial overview failure and recovery preserve controls, cards and queue p
     exact: true,
   })
   const card = page.getByRole("button", {
-    name: "twelve_data full_market_twelve_data_v1 設為執行中",
+    name: "twelve_data full_market_twelve_data_v1 設為已啟用",
   })
   const queue = page.getByRole("heading", {
     name: "Source ingest 後的佇列與 Worker",

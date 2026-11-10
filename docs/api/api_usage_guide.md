@@ -161,6 +161,9 @@ transaction 鎖定 registry／control 並重新驗證資格；資格不符回 `4
 `{"code":"scheduler_start_blocked","start_blockers":["full_market_no_enabled_datasets"]}`
 （原因依未完成條件而異），不變更 desired state、revision 或 audit。既有 revision conflict
 仍回 `409`；停止永遠保留既有 Owner 權限／revision 檢查，但不要求啟動資格。
+Admin 回應也包含 `acquisition_allowed`／`acquisition_blockers`、`expected_cycle_interval_seconds`
+（Dashboard 判讀心跳與 cycle 的 poll 間隔）及 `running_since`（目前 running revision 的
+admission 時間，停止時為 `null`）；Source scheduler poll 回應形狀不變。
 
 獨立查詢有效年度日曆：
 

@@ -917,6 +917,9 @@ class SchedulerControlResponse(BaseModel):
     declaration_sha256: str | None = None
     feed_readiness: list[dict] = Field(default_factory=list)
     capacity: dict = Field(default_factory=dict)
+    # Admin-only runtime interpretation hints; the Source poll shape is unchanged.
+    expected_cycle_interval_seconds: int | None = None
+    running_since: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

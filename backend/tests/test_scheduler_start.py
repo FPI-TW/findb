@@ -1,6 +1,6 @@
 """Trust-bound manual admission, scope freeze, CAS, and lifecycle stops."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -30,7 +30,7 @@ from app.services.scheduler_control import (
     update_scheduler_desired_state,
 )
 from app.services.source_clients import create_source_client
-from app.utils import utc_now
+from app.utils import ensure_utc, utc_now
 from scripts.seed_data import seed_datasets
 from tests.full_market_fixtures import declaration
 from tests.script_env import script_env
@@ -1008,6 +1008,57 @@ async def test_owner_api_start_ignores_malformed_optional_governance(
     assert (
         await test_session.scalar(select(func.count()).select_from(AdminAuditEvent)) == before + 1
     )
+
+
+@pytest.mark.asyncio
+async def test_admin_scheduler_view_reports_cycle_interval_and_running_since(
+    client, admin_headers, test_session, monkeypatch
+):
+    await ready(test_session, monkeypatch, scope=["tw_equity_eod"])
+    await test_session.commit()
+
+    def control_view(response):
+        assert response.status_code == 200, response.text
+        payload = response.json()["data"]
+        if isinstance(payload, dict):
+            return payload
+        return next(item for item in payload if item["scheduler_key"] == KEY)
+
+    stopped = control_view(await client.get("/api/v1/admin/schedulers", headers=admin_headers))
+    assert stopped["desired_state"] == "stopped"
+    assert stopped["expected_cycle_interval_seconds"] == 30
+    assert stopped["running_since"] is None
+
+    monkeypatch.setattr(get_settings(), "SCHEDULER_EXPECTED_CYCLE_INTERVAL_SECONDS", 15)
+    started = control_view(
+        await client.patch(
+            f"/api/v1/admin/schedulers/{KEY}",
+            headers=admin_headers,
+            json={"desired_state": "running", "expected_revision": stopped["revision"]},
+        )
+    )
+    admission = await test_session.scalar(
+        select(FullMarketAdmission).where(
+            FullMarketAdmission.scheduler_key == KEY,
+            FullMarketAdmission.control_revision == started["revision"],
+        )
+    )
+    assert admission is not None
+    assert started["expected_cycle_interval_seconds"] == 15
+    assert datetime.fromisoformat(started["running_since"]) == ensure_utc(admission.created_at)
+    listed = control_view(await client.get("/api/v1/admin/schedulers", headers=admin_headers))
+    assert listed["running_since"] == started["running_since"]
+
+    # Stopping clears the start marker even though the frozen admission remains.
+    halted = control_view(
+        await client.patch(
+            f"/api/v1/admin/schedulers/{KEY}",
+            headers=admin_headers,
+            json={"desired_state": "stopped", "expected_revision": started["revision"]},
+        )
+    )
+    assert halted["running_since"] is None
+    assert halted["expected_cycle_interval_seconds"] == 15
 
 
 @pytest.mark.asyncio

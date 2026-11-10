@@ -87,6 +87,28 @@ FactSet 的安裝 feed 也不代表已獲准取得 HK 新資料，仍須發布 b
 授權及 provider-work owner／queue 核對；心跳新鮮且 cycle 持續完成可屬正常間歇。心跳過期、
 cycle 沒有完成或授權拒絕時，保留相應證據再判定原因，不能只憑這一組狀態宣告故障或健康。
 
+Dashboard「導入與排程」卡片把「Owner 設定」（desired：已啟用／已停止與 revision）和
+「Runtime 實況」分開顯示，實況依下表由 Admin scheduler 回應推導，並附一句白話說明。
+門檻取自回應的 `expected_cycle_interval_seconds`（Backend `SCHEDULER_EXPECTED_CYCLE_INTERVAL_SECONDS`，
+預設 30，須與 Fetcher bootstrap `poll_seconds` 及 `FETCHER_SCHEDULER_CONTROL_POLL_SECONDS` 一致；
+欄位缺少時 Dashboard 以 30 秒計），心跳過期與 cycle 停滯門檻皆為 3 × 間隔。
+
+| 條件（依序判定） | Runtime 實況 |
+| --- | --- |
+| 設定錯誤、尚未啟用、已停用 | 沿用 freshness 判定 |
+| 沒有心跳／心跳超過 3 × 間隔 | 尚未回報／心跳過期 |
+| desired=stopped，observed=stopped／running | 已停止／停止中（顯示本輪已執行多久） |
+| desired=running，`acquisition_allowed=false` | 已啟用但抓取被擋，列出 `acquisition_blockers` |
+| observed=running 且最近 cycle 開始後尚未完成 | 抓取中（顯示本輪已執行多久） |
+| 最近 cycle 在 3 × 間隔內開始且已完成 | 執行中：等待下一輪 |
+| 最近 cycle 在 3 × 間隔內開始但未完成 | 已啟用但上一輪未完成（附 `last_error`） |
+| `running_since`（目前 running revision 的 admission 時間）在 3 × 間隔內且之後尚無 cycle | 啟動中：等待第一輪 cycle |
+| 其他 desired=running | 已啟用但沒有進入 cycle |
+
+授權 re-check 會在 cycle 之間短暫回報 observed=running；只要最近 cycle 已完成，就不算抓取中。
+卡片另以 market-freshness 的持久化 plan 摘要顯示各 feed 當期交易日的 data／expected、blocked
+與狀態，用於辨識 cycle 照常完成但沒有產出的情況；完整成員核對仍在「交付監控」。
+
 Backend／Source 暫時不可用時，尚無 active owner 的長駐 runtime 會印出固定的
 `fetcher_source_wait reason=source_unavailable` 並退避重查，不因單次 521 退出。等待期間
 不會取得新 provider 資料，Source 恢復後仍重新取得 control 與授權。若已有 active owner

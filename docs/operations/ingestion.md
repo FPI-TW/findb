@@ -53,7 +53,11 @@ readiness／enrollment／expiry／capacity 條件不再列為啟動 gate。stopp
 [emergency stop CLI](full_market.md#緊急停止)，之後仍需 Owner 手動 start，GET 不寫 control。
 平台限制與治理資料清單見
 [Full market runbook](full_market.md)。舊連結的 `profile` 參數會被忽略。
-部署前須停止所有 controls 並確認 desired／observed state 均為 stopped。
+部署前須停止所有 controls 並確認 desired／observed state 均為 stopped。Dashboard 卡片的
+「Owner 設定」對應 desired、「Runtime 實況」對應 observed 與心跳推導結果；批次控制區顯示
+「N 已啟用 · M 抓取中」，並在全部 control 均為 desired／observed stopped 時顯示「可部署」，
+否則列出尚未停好的 control 與其實況。判讀規則見
+[Full market runbook](full_market.md#scheduler-scope-與有效抓取範圍)。
 
 ## 上線前檢查
 

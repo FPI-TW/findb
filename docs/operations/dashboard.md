@@ -81,7 +81,9 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 
 Overview、freshness、schedulers、plans、alerts 的 Admin API 請求固定帶 `execution_profile=full_market`。
 導入概況只有一個排程區塊與一組 Owner「全部啟動／全部停止」，不再顯示 profile 分頁或跨 profile 重疊警告；
-排程卡片顯示 control 所屬環境，不再顯示已退役的環境旗標。
+排程卡片分為「Owner 設定」與「Runtime 實況」兩欄，主區另顯示最近一輪 cycle 與當期交付進度；
+Revision、Heartbeat、cycle 原始時間、poll 間隔、凍結範圍、feed readiness 與 control 所屬環境
+收在「詳細」，不再顯示已退役的環境旗標。批次控制區以「N 已啟用 · M 抓取中」計數並顯示可部署總結。
 尚未納入抓取範圍的 feed
 若有 blocker，顯示實際原因；沒有 blocker 則顯示「尚未啟用」，不視為日曆缺漏或資料缺漏。
 啟停成功後，卡片先套用 scheduler 回應，再重新取得 freshness；freshness 的 activation 只對其計算時的

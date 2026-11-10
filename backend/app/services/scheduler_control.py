@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminPrincipal
+from app.config import get_settings
 from app.execution_profiles import unified_scheduler
-from app.models.registry import AdminAuditEvent, SchedulerControl
+from app.models.registry import AdminAuditEvent, FullMarketAdmission, SchedulerControl
 from app.services.admin_audit import record_admin_audit
 from app.services.feed_schedule import feed_schedule_view
 from app.services.scheduler_start import scheduler_start_blockers, scheduler_start_datasets
@@ -364,8 +365,20 @@ async def present_admin_scheduler_control(
     blockers = await scheduler_start_blockers(db, row, scheduler_dataset_keys(row))
     from app.services.full_market_admission import admission_projection, eligibility
 
-    projection = {}
+    projection: dict[str, Any] = {}
     if unified_scheduler(row.scheduler_key):
+        # The admission frozen by the current stopped-to-running revision marks
+        # when the Owner started it; Dashboard uses it as the first-cycle grace.
+        running_since = (
+            await db.scalar(
+                select(FullMarketAdmission.created_at).where(
+                    FullMarketAdmission.scheduler_key == row.scheduler_key,
+                    FullMarketAdmission.control_revision == row.revision,
+                )
+            )
+            if row.desired_state == "running"
+            else None
+        )
         result = await eligibility(
             db,
             row.provider,
@@ -375,12 +388,14 @@ async def present_admin_scheduler_control(
             **await admission_projection(db, row.provider),
             "feed_readiness": result["feeds"],
             "capacity": result["capacity"],
+            "running_since": _normalize_timestamp(running_since),
         }
     return {
         **present_scheduler_control(row),
         **projection,
         "start_allowed": not blockers,
         "start_blockers": blockers,
+        "expected_cycle_interval_seconds": get_settings().SCHEDULER_EXPECTED_CYCLE_INTERVAL_SECONDS,
     }
 
 
