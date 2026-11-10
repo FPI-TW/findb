@@ -215,6 +215,10 @@ def test_twelve_data_member_failures_stay_member_scoped_and_replay(monkeypatch, 
         "NODATA": "missing",
         "O": "data",
     }
+    evidence = {row["member_key"]: row for row in result.result_evidence["members"]}
+    # An identity mismatch cites its own raw response; a provider 404 has none.
+    assert "/twelve_data/us_equity_eod/" in evidence["BADCCY"]["raw"]["ref"]
+    assert "raw" not in evidence["NODATA"]
     assert result.result_evidence["schema_version"] == 1
     assert owner.frozen[0]["contract"] == {"schema_id": "market_eod", "schema_version": 1}
     assert [m["key"] for m in owner.frozen[0]["members"]] == ["BADCCY", "LIMIT", "NODATA", "O"]
@@ -295,6 +299,7 @@ def test_finlab_downloads_five_tables_once_and_isolates_members(
     bundle = next(put for put in s3.puts if put["Metadata"]["source-symbol"] == "dataset_bundle")
     assert outcomes["1101"]["raw"]["ref"].endswith(bundle["Metadata"]["sha256"] + ".json")
     assert outcomes["9999"]["reason"] == "no_source_row"
+    assert outcomes["9999"]["raw"] == outcomes["2317"]["raw"] == outcomes["1101"]["raw"]
     assert result.status == "partial"
 
 

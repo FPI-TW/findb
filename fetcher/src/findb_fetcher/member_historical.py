@@ -83,6 +83,7 @@ class MemberHistoricalRunner:
         self.owns_http = http is None
         self.adapter = adapter or adapter_for(provider)
         self.limits = limits or platform_limits(provider)
+        self._shared_raw: RawObject | None = None
 
     @classmethod
     def from_env(cls, provider: str) -> MemberHistoricalRunner:
@@ -135,6 +136,8 @@ class MemberHistoricalRunner:
                 ],
             }
         )
+        # The shared native observation (FinLab bundle) a member failure may cite.
+        self._shared_raw = None
         try:
             outcomes = [self._member(owner, item, feed, member, members) for member in members]
         finally:
@@ -152,7 +155,11 @@ class MemberHistoricalRunner:
         return HistoricalRunResult(None, evidence, completion_status(evidence))
 
     def _context(
-        self, item: HistoricalWorkItem, feed: dict, cohort: list[dict]
+        self,
+        item: HistoricalWorkItem,
+        feed: dict,
+        cohort: list[dict],
+        persisted: list[RawObject],
     ) -> AcquisitionContext:
         now = datetime.now(timezone.utc)
         bound = int(self.limits["max_response_bytes"])
@@ -179,8 +186,8 @@ class MemberHistoricalRunner:
             contract=feed["contract"],
             limits=self.limits,
             http=self.http,
-            persist=lambda raw, symbol, **kwargs: self._persist(
-                raw, item.dataset_key, symbol, **kwargs
+            persist=lambda raw, symbol, **kwargs: _recorded(
+                persisted, self._persist(raw, item.dataset_key, symbol, **kwargs)
             ),
             observe_response=observe,
             rate_limited=lambda: None,
@@ -236,9 +243,10 @@ class MemberHistoricalRunner:
         job_key: str,
     ) -> dict[str, Any]:
         # A shared native table spends one date budget, never one per member.
+        shared = self.adapter.pending_shared_fetch(item.dataset_key, item.trade_date)
         operation = (
             _JOURNAL + "shared:" + item.trade_date.isoformat()
-            if self.adapter.pending_shared_fetch(item.dataset_key, item.trade_date)
+            if shared
             else _JOURNAL + "member:" + key
         )
         try:
@@ -249,8 +257,13 @@ class MemberHistoricalRunner:
             # Transient member failures are exhausted; the date continues without it.
             return {"member_key": key, "outcome": "missing"}
         dispatch_before = owner.dispatch_observations
+        persisted: list[RawObject] = []
         try:
-            result = self.adapter.acquire(member, self._context(item, feed, cohort))
+            try:
+                result = self.adapter.acquire(member, self._context(item, feed, cohort, persisted))
+            finally:
+                if shared and persisted:
+                    self._shared_raw = persisted[0]
         except (ProviderWorkAcquisitionStopped, ProviderWorkSourceUnavailableError):
             if owner.dispatch_observations == dispatch_before:
                 owner.journal.release_wait_attempt(operation)
@@ -264,7 +277,14 @@ class MemberHistoricalRunner:
             deterministic = self.adapter.member_outcome(exc)
             if deterministic is not None:
                 outcome, reason = deterministic
-                return {"member_key": key, "outcome": outcome, "reason": reason}
+                # Cite the member's own raw response, else the shared table it was read from.
+                raw = persisted[-1] if persisted else self._shared_raw
+                return {
+                    "member_key": key,
+                    "outcome": outcome,
+                    "reason": reason,
+                    **({"raw": {"ref": raw.ref, "sha256": raw.sha256}} if raw else {}),
+                }
             # Rate limits, outages, an unpublished date or an SDK failure retry the
             # date later; the reserved attempt bounds how often this operation runs.
             raise HistoricalWorkDeferredError("historical provider retry") from None
@@ -335,6 +355,11 @@ class MemberHistoricalRunner:
         if terminal.failed_records == 1 and terminal.success_records == 0:
             return {"member_key": key, "outcome": "invalid", "reason": "row_structure_invalid"}
         raise ValueError("historical member normalization did not produce a row outcome")
+
+
+def _recorded(persisted: list[RawObject], stored: RawObject) -> RawObject:
+    persisted.append(stored)
+    return stored
 
 
 def _saved(owner, key: str, action: Callable[[], dict]) -> dict:
