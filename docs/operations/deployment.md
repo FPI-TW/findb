@@ -695,7 +695,8 @@ host preflight 允許從 v3／v4 主機首次切換。Account allocation 的 `ac
 ### 切換程序
 
 1. 預檢：Twelve Data 的 staging 與 production 共用同一帳號與 API key，governor 不設跨環境預算，staging
-   啟動 Twelve Data 會直接消耗 production 的 credits／分鐘配額，須先與 production 排程協調。Staging 平時
+   啟動 Twelve Data 會直接消耗 production 的 credits／分鐘配額；現行用量遠低於上限，不需事先協調（見
+   [設定與啟動](full_market.md#設定與啟動)）。Staging 平時
    不跑抓取，一次只啟動一個 provider；仍須確認 `t3.small` Fetcher host 在八個 consumers 常駐、一個
    provider 執行時的可用記憶體（見 [OOM 紀錄](#2026-10-22-staging-historical-finlab-oom-阻擋部署)）。
 2. Owner 以 Admin scheduler API 停止所有 `pilot_*` 與 `full_market_*` controls 至 desired／observed
@@ -710,7 +711,7 @@ host preflight 允許從 v3／v4 主機首次切換。Account allocation 的 `ac
 6. Staging 唯讀核對 account governor：這是 staging daily 第一次經共用 governor，確認 mount、pins、
    debt、unknown liability 與 cooldown 均保留。
 7. Owner 檢查後一次只啟動一個 staging provider，完成首日 Full 驗收（expected 組成、canonical／Serve、
-   記憶體與 OOM）後停止，再換下一個；Twelve Data 驗收前先協調 production 配額。
+   記憶體與 OOM）後停止，再換下一個。
 8. 以相同 digests promotion production，依步驟 2–7 執行；production 不重新建置。
 
 任何 RDS snapshot restore 後（包含本次失敗復原），先執行 [緊急停止](full_market.md#緊急停止)，

@@ -393,9 +393,9 @@ other log-derived monitoring remain out of scope. These remaining domains must
 not be inferred from the healthy alarm set.
 
 The two current root volumes have been replaced with encrypted volumes, the
-RDS restore rehearsal and SSH-ingress removal have also been completed, and
-their live records are maintained in
-[`deployment.md`](deployment.md#phase-6-live-recovery-record-2026-09-01-to-2026-09-03).
+RDS restore rehearsal and SSH-ingress removal have also been completed; their
+2026-09-01 to 2026-09-03 live records were removed from `deployment.md` and are
+traceable through Git history.
 A one-time encrypted migration and a recurring backup chain are separate
 controls; migration or backup chain evidence must remain distinct. Daily DLM policy
 `policy-0d0a29c9e19f6323e` was created for the two exact current root volumes and immediate encrypted

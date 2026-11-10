@@ -228,9 +228,9 @@ Fetcher CD發布 `ghcr.io/fpi-tw/findb-fetcher:<sha>`並讓三個scheduler conta
 target常駐；scheduler是否開始新cycle由FinDB DB控制，owner透過Dashboard變更。
 Migration在各environment都以`stopped`建立控制資料，再於受控部署驗證後逐一啟用。
 
-Staging只用於有明確symbol、日期與筆數上限的端到端功能驗證，不導入完整
-universe或production-scale歷史資料。完整限制與例外核准方式見
-[Deployment staging data policy](docs/operations/deployment.md#staging-data-policy)。
+Staging與production安裝相同runtime；staging平時controls停止，只在測試改動時一次啟動一個provider，
+驗收後即停止，回補只做少量日期。完整規則見
+[Full market 設定與啟動](docs/operations/full_market.md#設定與啟動)。
 
 部署設定由 `infra/env/` 的service-specific安全來源管理；實際值不進Git。Staging已完成AWS
 OIDC／SSM、unit-specific deploy與instance roles、Secrets Manager runtime boundary、ECR digest與
