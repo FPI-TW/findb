@@ -71,6 +71,10 @@ collector hand-maintains current consumer names.
   consumer still breaches, and container health covers an absent consumer.
   Production keeps breaching on missing data, so an unexpectedly stopped production
   control is visible.
+- The production alert topic is encrypted with the `logs` KMS key. Its policy grants
+  `cloudwatch.amazonaws.com` `kms:Decrypt` and `kms:GenerateDataKey*`, scoped to this
+  account and `findb-production-*` alarm ARNs. Without that grant every alarm action
+  fails with `Failed to execute action` (the state before #477).
 
 ## Live acceptance record (2026-09-01 to 2026-09-15)
 
