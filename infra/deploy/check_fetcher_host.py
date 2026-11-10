@@ -172,6 +172,7 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     if any("shioaji" in name for name in names):
         raise ValueError("retired provider container remains on host")
     if set(names) != set(EXPECTED_RUNTIMES) or len(names) != len(rows):
+        print("fetcher_host_eligibility=failed reason=consumer_inventory_mismatch")
         raise ValueError("missing, duplicate or unknown consumer")
     for name, provider, profile, image_key in CONSUMERS:
         image = manifest["images"][image_key]

@@ -5,6 +5,33 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
+## Fetcher inventory 複查（2026-11-10）
+
+Production Fetcher 全量 Docker inventory 為十二個現役 consumers，沒有 `provider-work-backup-*`
+或其他額外容器。十二個 consumers 全部 running、零重啟、無 OOM；以支援 bundle v3／v4 的
+host guard 唯讀核對 installed manifest、accepted runtime 與完整命令後通過。當前仍為 bundle v3、
+revision `c1c175b8a7496ff666472e3ee83ffcc9483f3756`；本次沒有部署、清理或變更 controls。
+
+Staging 的 PR4 preflight 阻擋來自初次 provider-work 切換留下的十二個已停止備份容器；
+現役十二個 consumers 的 accepted identity 均通過。Owner 核准後，十二個舊備份容器已按固定
+container ID 移除，未使用 `--force`／`--volumes`。Rootfs export、inspect、diff、mount inode 與
+checksum manifest 保留於 staging Fetcher 主機 root-only 的
+`/var/backups/findb-retirement/20261110-staging-provider-work/`；manifest SHA-256 為
+`2b9fc62e9b77182c93918c9d55231d03048d8e8a98ae3df00e98a4010fd9f354`，清理收據為同目錄
+`cleanup-receipt.json`。清理後現役容器 ID 與全部原掛載 inode 不變，images、volumes、
+checkpoint／cache 均保留，完整 host guard 通過。
+此殘留不是 production 同步存在的問題。清理前封存與重新驗證步驟見
+[部署文件](deployment.md#provider-catalog-pr4-發布邊界)。
+
+清理後 [staging Fetcher CD 42733667963，第 2 次執行](https://github.com/FPI-TW/findb/actions/runs/42733667963/attempts/2)
+成功，revision 為 `8d4c8be5a787e95ff08a1983823904b925af60a1`、bundle v4，bundle SHA-256 為
+`3e6f1f68de73c37f4ceaf544f18bea7bdda734cfcaf78c9cc6c41f77db7b8a57`。
+主機 current pointer、committed journal／healthy accepted receipt、十二個執行中 consumers 的 images
+一致，零重啟、無 OOM。四個 providers 的 Pilot／Full execution-config 均回傳 no-store 且通過
+部署 image 內的 resolver；daily bootstrap 與四個 historical `--check` 通過，舊環境排程檔不存在，
+FinLab historical 仍僅允許 equity。這是部署與唯讀 bootstrap 驗收，未建立新 historical request，
+不替代實際回補鏈路與 fault recovery 驗收；production 未變更。
+
 ## 單次部署 protocol v4 發布
 
 2026-11-09 promotion staging 已驗收 revision `c1c175b8a7496ff666472e3ee83ffcc9483f3756`，

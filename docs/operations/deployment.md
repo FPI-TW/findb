@@ -876,6 +876,14 @@ CD 在 materialize release selection 階段只接受 bundle v3／v4；拒絕 v1�
 Installed receipt 依 bundle 格式驗證設定：v4 使用不含 desired_state 的 bootstrap，v3 保留舊設定檢查；
 兩者都保留執行中 image、config digest、環境、Source 與 account allocation 的綁定。
 未知／重複／缺少 consumer 仍阻擋發布，不把它當作空主機。
+主機上的已停止備份容器也屬於完整 Docker inventory。若仍有 provider-work 初次切換保留的
+`provider-work-backup-*`，preflight 回報 `consumer_inventory_mismatch` 並停止；不因名稱為 backup
+而自動忽略，也不在 CD 內自動刪除。先核對現役十二個 consumers 的 accepted identity，逐一確認
+額外容器來源與停止狀態，將 rootfs export、inspect、diff、mount inode 與 SHA-256 manifest 保存於
+root-only 封存目錄，經 Owner 核准後才按固定 container ID 移除舊容器。保留 images、所有 volumes、
+checkpoint／cache 與 bind mount，禁止 `--force`／`--volumes`；清理後重驗原現役 ID、mount inode、
+host guard，再重試 staging CD。此檢查不代表需要回退已成功部署的 Backend。
+
 
 沿用 main-ref OIDC、backend-first、不可變 promotion decision、committed journal／receipt、獨立
 watchdog 與 activation failure 完整回復。PR4 不新增 migration、不改 controls，也不取代現有人工
