@@ -367,6 +367,7 @@ def test_historical_adapter_semantic_sets_name_catalog_providers():
     from app.services.historical_backfill import (
         CAPABILITIES,
         DAILY_REPORT_HISTORICAL_PROVIDERS,
+        MEMBER_COHORT_PROVIDERS,
         PREVIEW_CALENDAR_PROVIDERS,
     )
     from app.services.provider_metadata import provider_catalog
@@ -376,12 +377,18 @@ def test_historical_adapter_semantic_sets_name_catalog_providers():
     assert DAILY_REPORT_HISTORICAL_PROVIDERS <= historical
     assert PREVIEW_CALENDAR_PROVIDERS - {"shioaji"} <= historical
     # Whole-market report providers use the Backend universe, never a packaged
-    # Fetcher universe descriptor (the planner would silently ignore one).
-    assert {
+    # Fetcher universe descriptor (the planner would silently ignore one). Full
+    # release cohort providers only keep descriptors for requests created before them.
+    without_descriptor = {
         feed.provider
         for feed in provider_catalog().feeds
         if feed.historical_execution is None and feed.capabilities.historical != "unsupported"
-    } == DAILY_REPORT_HISTORICAL_PROVIDERS
+    }
+    assert (
+        DAILY_REPORT_HISTORICAL_PROVIDERS
+        <= without_descriptor
+        <= DAILY_REPORT_HISTORICAL_PROVIDERS | MEMBER_COHORT_PROVIDERS
+    )
 
 
 def _seed_with_catalog(monkeypatch, declaration):

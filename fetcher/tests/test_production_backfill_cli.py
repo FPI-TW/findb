@@ -190,7 +190,7 @@ def test_backend_preview_denial_never_creates_request(monkeypatch, capsys, provi
 
 @pytest.mark.parametrize(
     "provider,dataset",
-    [("finlab", "tw_etf_eod"), ("twelve_data", "hk_equity_eod"), ("taifex", "us_equity_eod")],
+    [("twelve_data", "hk_equity_eod"), ("taifex", "us_equity_eod")],
 )
 def test_planner_cannot_expand_historical_scope(monkeypatch, provider, dataset):
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
@@ -198,6 +198,12 @@ def test_planner_cannot_expand_historical_scope(monkeypatch, provider, dataset):
         transport=httpx.MockTransport(lambda _: pytest.fail("unsupported scope dispatched"))
     ) as client:
         assert production_backfill_cli.main(_args(provider, dataset), client=client) == 2
+
+
+def test_planner_estimates_etf_release_cohort_without_a_static_universe(monkeypatch):
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    # The Backend freezes the ETF Full release; FinLab reads five shared tables per date.
+    assert production_backfill_cli._scope("finlab", "tw_etf_eod") == (5, None)
 
 
 def test_planner_requires_production_and_rejects_retired_schedule_option(monkeypatch):

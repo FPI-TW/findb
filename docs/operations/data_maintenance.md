@@ -180,6 +180,8 @@ Twelve Data／FinLab 的 `--universe-file` 只替換本次 planner 的估算輸�
 request 的 universe；應使用與 worker 相同的 reviewed artifact。FinLab 原有
 `FETCHER_FINLAB_UNIVERSE_FILE` 保留，runner 與 planner 預設共同使用；未設定時讀 descriptor 的同環境預設。
 FactSet／TAIFEX 的成員由既有 Backend cohort／日期資料決定，不接受 planner universe override。
+Twelve Data／FinLab 新 request 的實際成員是 Backend 凍結的 Full release，planner 的靜態 universe 只是估算；
+FinLab `tw_etf_eod` 沒有靜態 universe，planner 以每日 5 次 SDK 呼叫估算，不估筆數。
 
 移除排程檔依賴不會擴大日期、權限或歷史 scope。新 Twelve Data／FinLab historical payload 的
 `delivery.scheduled_for` 為 request 交易日 UTC 00:00 的日期標記；request/job keys、target date、
