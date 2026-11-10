@@ -660,6 +660,21 @@ Staging 同 SHA 自動部署時，Fetcher CD 會等 FinDB CD 成功；production
 必須先 promote FinDB 並確認 migration 完成，再 promote Fetcher。Fetcher rollback 不受影響；Backend
 rollback 到不含此欄位的版本前，須先 rollback Fetcher。
 
+## Historical Full release cohort 的發布順序（#409、#433）
+
+Twelve Data／FinLab 新建的 historical request 改為每日期凍結 Full release cohort（`universe_snapshot`
+`version: 2`, `cohort: full_release`），Fetcher 以 Full adapter 逐成員交付 `market_eod` v1 `backfill`
+並以逐成員 EOD evidence（可 `partial`）完成。舊 Backend 不認得這種 snapshot、v1 EOD manifest 與
+Twelve Data／FinLab 的 `partial`，新 Fetcher 送到舊 Backend 的 cohort 完成會被拒絕。**Production 必須先
+promote FinDB（Backend），確認可建立新 request 後，才 promote Fetcher。** 沒有 migration；Staging 同 SHA
+自動部署時 Fetcher CD 會等 FinDB CD 成功。
+
+舊 Fetcher 遇到新 cohort request 時沒有成員清單可用的新路徑，仍會執行舊 executor，因此在 Fetcher
+升級前不要為 Twelve Data／FinLab 建立新 historical request。本變更前建立的 request 沒有 cohort，新
+Backend 繼續以單一 Source run 驗證、新 Fetcher 繼續以舊 executor 執行。Fetcher rollback 前先確認沒有
+running 的 cohort request；Backend rollback 到本變更之前時，須先 rollback Fetcher 並取消未完成的
+cohort request。舊 executor、`scheduler_state.py` 與靜態清單的移除見 [backlog](../dev/backlog.md)。
+
 ## Pilot profile 退役與 rollback 下限
 
 Backend migration `a7c3e1f9d2b4_retire_pilot_profile`（接在 `e9f4a1c6b3d5` 之後）與 Fetcher bundle v5

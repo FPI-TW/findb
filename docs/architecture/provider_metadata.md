@@ -114,12 +114,15 @@ PR3 的 `findb_fetcher.execution_metadata` 只載入 package 內的 `execution_d
 
 Historical 日期仍來自 request／lease；不讀 Source execution-config、不檢查 daily running，亦不因
 daily 時間變更改變回補範圍。既有 journal identity、attempt、universe freeze、prepared bytes、
-calendar snapshot、cutoff 與 acquisition authorization 保留。新建 Twelve Data／FinLab historical
-payload 的 `delivery.scheduled_for` 使用 request 交易日 UTC 00:00 作為穩定日期標記，不表示 daily
-觸發時間；已有 prepared body 完全沿用原值。Slot 只供現行交付契約與 journal identity 相容。
+calendar snapshot、cutoff 與 acquisition authorization 保留。本變更前建立的 Twelve Data／FinLab
+historical request 沿用舊 executor，payload 的 `delivery.scheduled_for` 使用 request 交易日 UTC 00:00
+作為穩定日期標記，不表示 daily 觸發時間；已有 prepared body 完全沿用原值。新 request 凍結各日期的
+Full release cohort，成員範圍由 Backend 決定，不讀 descriptor 的 universe。Slot 只供現行交付契約與
+journal identity 相容。
 
 Planner 以相同 descriptor／reviewed universe 估算，Backend preview 決定日期及權限是否合法；
-FinLab ETF 等 unsupported historical scope 不因日資料能力而開放。詳細操作見
+historical capability 只由 catalog 宣告開放（FinLab `tw_etf_eod` 已為 `executable`），不因日資料能力
+自動開放。詳細操作見
 [historical runbook](../operations/data_maintenance.md#production-universe與historical-backfill)。
 
 ## Fetcher 動態排程
