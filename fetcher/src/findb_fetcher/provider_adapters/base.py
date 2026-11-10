@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from findb_fetcher.full_market_errors import MemberUnavailableError, ReadinessBlockedError
+from findb_fetcher.full_market_errors import MemberUnavailableError
 from findb_fetcher.raw_storage import RawObject
 
 
@@ -90,6 +90,8 @@ class AcquisitionContext:
     snapshot: Callable[..., bytes]
     # The frozen cohort, for providers that serve one shared table per date.
     cohort: Sequence[Mapping[str, Any]] | None = None
+    # The frozen universe release's effective date, when the caller knows it.
+    universe_effective_date: date | None = None
 
     @property
     def max_response_bytes(self) -> int:
@@ -263,12 +265,8 @@ class ProviderAdapter:
         """
         if isinstance(exc, MemberUnavailableError):
             return (
-                ("missing", "no_source_row")
-                if exc.code == "missing_symbol"
-                else ("invalid", "row_structure_invalid")
+                ("missing", "no_source_row") if exc.absent else ("invalid", "row_structure_invalid")
             )
-        if isinstance(exc, ReadinessBlockedError) and exc.member_scoped:
-            return ("invalid", "row_structure_invalid")
         return None
 
     def pending_shared_fetch(self, dataset_key: str, trade_date: date) -> bool:

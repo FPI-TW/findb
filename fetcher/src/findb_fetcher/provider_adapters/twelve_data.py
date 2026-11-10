@@ -10,8 +10,8 @@ from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from findb_fetcher.full_market_errors import (
+    MemberUnavailableError,
     ReadinessBlockedError,
-    member_identity_error,
     retryable_http_status,
 )
 from findb_fetcher.full_market_universe import (
@@ -109,7 +109,8 @@ class TwelveDataAdapter(ProviderAdapter):
             delivery=dict(context.delivery),
         )
         if request["payload"]["data"][0]["currency"] != member["currency"]:
-            raise member_identity_error("provider identity differs from official universe")
+            # The served series is sound but belongs to another listing: this member only.
+            raise MemberUnavailableError("identity_mismatch")
         return AcquisitionResult.data(request, stored)
 
     def catalogue_request(self, dataset_key: str, max_response_bytes: int) -> CatalogueRequest:

@@ -20,6 +20,7 @@ from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_cli import load_config
 from findb_fetcher.full_market_client import FullMarketSourceClient
+from findb_fetcher.full_market_errors import MemberUnavailableError
 from findb_fetcher.full_market_runtime import (
     ReadinessBlockedError,
     load_readiness,
@@ -825,7 +826,7 @@ def test_raw_persisted_before_provider_mapping_failure(tmp_path: Path) -> None:
 def test_native_twelve_data_identity_checks_currency_on_any_exchange(
     tmp_path: Path, mic: str, currency: str, instrument_type: str
 ) -> None:
-    from findb_fetcher.full_market_runtime import ReadinessBlockedError
+    from findb_fetcher.full_market_errors import MemberUnavailableError
     from findb_fetcher.providers.twelve_data import TwelveDataResponse
 
     runtime, _, raw = _runtime(tmp_path)
@@ -865,7 +866,8 @@ def test_native_twelve_data_identity_checks_currency_on_any_exchange(
             assert requests[0]["payload"]["data"][0]["symbol"] == "AAPL"
             assert raw.calls == [native]
         else:
-            with pytest.raises(ReadinessBlockedError, match="provider identity differs"):
+            # A series for another listing blocks only this member (#462).
+            with pytest.raises(MemberUnavailableError, match="identity_mismatch"):
                 runtime._acquire(
                     _member(), plan, plan["parts"][0], {"release_id": "r"}, runtime.feeds[0]
                 )
@@ -1235,7 +1237,8 @@ def test_taifex_all_missing_metrics_require_explicit_zero_volume_for_no_trade(
         assert source.outcomes[0]["reason"] == "no_trade"
         assert json.loads(source.outcomes[0]["evidence"]["source_excerpt"])["volume"] == 0
     else:
-        with pytest.raises(ReadinessBlockedError, match="no source-provided observation"):
+        # An observation-free quote blocks only this member (#462).
+        with pytest.raises(MemberUnavailableError, match="no_observation"):
             runtime._acquire(member, plan, plan["parts"][0], {}, runtime.feeds[0])
         assert source.outcomes == []
     assert raw.calls and runtime.state.prepared("fp1:123:TX:202610:regular") is None

@@ -11,6 +11,7 @@ import httpx
 
 from findb_fetcher.full_market_errors import (
     DatedUniversePendingError,
+    MemberUnavailableError,
     ProviderHTTPError,
     ReadinessBlockedError,
     retryable_http_status,
@@ -162,6 +163,12 @@ class TaifexAdapter(ProviderAdapter):
             and row["session"] == member["session"]
         ]
         if len(selected) != 1:
+            if context.universe_effective_date == day:
+                # A same-date official universe was built from this very report, so the
+                # absent contract/session is deterministic for this member alone.
+                raise MemberUnavailableError("missing_contract")
+            # A plan frozen on an older universe (before #307) may name a contract the
+            # exchange has since rolled; keep the original round-level retry.
             raise ReadinessBlockedError("actual TAIFEX contract/session is missing")
         if is_no_trade(selected[0]):
             evidence = {
@@ -179,7 +186,8 @@ class TaifexAdapter(ProviderAdapter):
             not any(selected[0][field] is not None for field in OBSERVATION_FIELDS)
             and selected[0]["volume"] is None
         ):
-            raise ReadinessBlockedError("TAIFEX quote has no source-provided observation")
+            # The report row exists but carries no observation: this member only.
+            raise MemberUnavailableError("no_observation")
         if context.contract is None:
             raise ReadinessBlockedError("TAIFEX contract metadata is unavailable")
         request = {

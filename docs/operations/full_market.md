@@ -280,7 +280,7 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `no_data_exhausted` | `no_data` 額度耗盡（plan 重試輪每輪結算後依序等待 30、60、60、120 分鐘，進度見 Fetcher SQLite `full_no_data_round`），缺漏須另行回補；只影響該檔。Breaker 連續觸發 5 次且其間沒有資料才結束 plan，此時先查是否為未發布休市日 |
 | `prepared/normalizing` | 應查 Backend run 與序列收據；可能已完成，不能據此宣稱 queue 卡住 |
 | `source_proven_no_trade` | 已完成。FinLab 當日四個價格全空、成交量為空或 0，視為當日沒有成交，附整張表 bundle 的 SHA-256 回報 `no_trade` 證據；TAIFEX 依報表的無成交列 |
-| `member_unavailable` | FinLab 整張表正常，但只有該成員不能使用：部分欄位空值、OHLC 越界、成交量非整數，或 FinLab 表中還沒有這個代號（例如剛上市）。只擋下該檔，不重試、不重新下載整張表、不停止 plan；Backend 記為 blocked（缺代號為 `empty_response`，其餘為 `source_error`），細分原因看 `full_work_diagnostic.category` 的 `member:<code>` |
+| `member_unavailable` | Provider 回應本身正常，但只有該成員不能使用。只擋下該檔，不重試、不重新下載共用表或報表、不結束這一輪；Backend 記為 blocked，細分原因看 `full_work_diagnostic.category` 的 `member:<code>`：<br>FinLab：部分欄位空值、OHLC 越界、成交量非整數（`source_error`），或表中還沒有這個代號，例如剛上市（`member:missing_symbol`，`empty_response`）。<br>Twelve Data：回應的幣別與凍結 release 成員不同（`member:identity_mismatch`，`source_error`）。<br>TAIFEX：該列沒有任何觀測值（`member:no_observation`，`source_error`）；plan 凍結的是同一交易日的 dated universe，而當日報表沒有該 contract／session（`member:missing_contract`，`empty_response`）。#307 之前以較舊 universe 凍結的 plan 缺 contract 時，可能是 universe 落後於轉倉，仍以一般 `source_error` 結束這一輪並重試 |
 
 診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source
 credential、config 與 `FETCHER_ACCOUNT_STATE_PATH` 執行，明確指定 profile／state path：
