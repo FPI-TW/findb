@@ -59,7 +59,9 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
     feeds = {f.dataset_key: f for f in catalog.feeds}
     assert feeds["hk_equity_eod"].contract.current_version == 2
     assert feeds["hk_equity_eod"].contract.accepted_versions == [1, 2]
-    assert feeds["tw_etf_eod"].capabilities.historical == "unsupported"
+    # ETF historical backfills the Full release cohort; it needs no static universe file.
+    assert feeds["tw_etf_eod"].capabilities.historical == "executable"
+    assert feeds["tw_etf_eod"].historical_execution is None
     us = feeds["us_equity_eod"]
     assert us.schedule.timezone == "America/New_York"
     assert us.schedule.local_time == "17:00"

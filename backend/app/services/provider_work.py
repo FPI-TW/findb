@@ -684,14 +684,20 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
                 ):
                     raise ProviderWorkError("EOD manifest mapping differs from the frozen plan")
     elif work.kind == "historical" and "contract" in manifest:
-        from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
+        from sqlalchemy.orm import selectinload
+
+        from app.models.registry import HistoricalBackfillItem
+        from app.services.historical_backfill import HistoricalBackfillError, frozen_cohort
 
         try:
-            item = await db.get(HistoricalBackfillItem, UUID(work.scope["item_id"]))
-            request = await db.get(HistoricalBackfillRequest, item.request_id) if item else None
-        except (ValueError, KeyError):
-            request = None
-        snapshot = request.universe_snapshot if request else None
+            item = await db.scalar(
+                select(HistoricalBackfillItem)
+                .options(selectinload(HistoricalBackfillItem.request))
+                .where(HistoricalBackfillItem.item_id == UUID(work.scope["item_id"]))
+            )
+            snapshot = await frozen_cohort(db, item) if item else None
+        except (ValueError, KeyError, HistoricalBackfillError):
+            snapshot = None
         if not snapshot or manifest.get("universe_release_id") != snapshot["release_id"]:
             raise ProviderWorkError("EOD historical manifest lacks the request's frozen cohort")
         expected_rows = {

@@ -33,6 +33,9 @@ from app.services.source_clients import create_source_client
 from app.utils import uuid7
 from tests.owned_history import claim_next_item
 
+# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
+pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(

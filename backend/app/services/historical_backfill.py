@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.registry import (
+    DailyDeliveryPlan,
     DatasetRegistry,
     HistoricalBackfillItem,
     HistoricalBackfillRequest,
@@ -27,11 +28,12 @@ from app.models.registry import (
     SchedulerControl,
     SchedulerDataset,
     UniverseMember,
+    UniverseMemberListing,
     UniverseRelease,
 )
 from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
-from app.schemas.ingress import MarketEODIngressRequestV2
+from app.schemas.ingress import MarketEODIngressRequest, MarketEODIngressRequestV2
 from app.services.effective_calendar import effective_days, execution_policy, market_timezone
 from app.services.provider_metadata import provider_catalog
 from app.utils import utc_now, uuid7
@@ -85,6 +87,149 @@ def _historical_policy(provider: str) -> dict:
 
 class HistoricalBackfillError(ValueError):
     pass
+
+
+# Providers whose historical dates acquire each frozen Full release member separately.
+MEMBER_COHORT_PROVIDERS = frozenset({"twelve_data", "finlab"})
+MAX_COHORT_MEMBERS = 10000
+_COHORT_FIELDS = (
+    "member_key",
+    "symbol",
+    "provider_symbol",
+    "exchange",
+    "currency",
+    "asset_class",
+    "classification",
+    "mapping_status",
+    "raw_evidence_ref",
+)
+
+
+def member_cohort(request: HistoricalBackfillRequest) -> bool:
+    """A request whose dates are bound to Full universe releases (Twelve Data, FinLab)."""
+    snapshot = request.universe_snapshot
+    return isinstance(snapshot, dict) and snapshot.get("cohort") == "full_release"
+
+
+def eod_cohort(request: HistoricalBackfillRequest) -> bool:
+    """Requests completed by per-member EOD evidence instead of one Source run."""
+    return request.provider == "factset" or member_cohort(request)
+
+
+def _cohort_digest(members: list[dict]) -> str:
+    return hashlib.sha256(
+        json.dumps(members, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+async def _release_cohort(db: AsyncSession, release_id: UUID, trade_date: date) -> list[dict]:
+    """Mapped release members already listed on the date, in member order."""
+    rows = await db.execute(
+        select(UniverseMemberListing.member_id, UniverseMemberListing.listed_date)
+        .join(UniverseMember, UniverseMember.member_id == UniverseMemberListing.member_id)
+        .where(UniverseMember.release_id == release_id)
+    )
+    listed: dict[UUID, date] = {member_id: listed_date for member_id, listed_date in rows}
+    members = await db.scalars(
+        select(UniverseMember)
+        .where(
+            UniverseMember.release_id == release_id,
+            UniverseMember.mapping_status == "mapped",
+        )
+        .order_by(UniverseMember.member_key)
+    )
+    return [
+        {field: getattr(member, field) for field in _COHORT_FIELDS}
+        for member in members
+        if listed.get(member.member_id, trade_date) <= trade_date
+    ]
+
+
+async def _bind_full_releases(
+    db: AsyncSession, *, provider: str, dataset_key: str, days: list[date]
+) -> dict:
+    """Bind each date to its Full plan's release, else the latest one published by then.
+
+    Releases are immutable, so the request keeps only each date's release
+    identity and member digest; the members are re-read and verified at claim.
+    """
+    bindings: dict[str, dict] = {}
+    for day in days:
+        plan = await db.scalar(
+            select(DailyDeliveryPlan).where(
+                DailyDeliveryPlan.dataset_key == dataset_key,
+                DailyDeliveryPlan.provider == provider,
+                DailyDeliveryPlan.trade_date == day,
+                DailyDeliveryPlan.execution_profile == "full_market",
+            )
+        )
+        release = (
+            await db.get(UniverseRelease, plan.release_id)
+            if plan is not None
+            else await db.scalar(
+                select(UniverseRelease)
+                .where(
+                    UniverseRelease.dataset_key == dataset_key,
+                    UniverseRelease.provider == provider,
+                    UniverseRelease.status == "published",
+                    UniverseRelease.effective_date <= day,
+                )
+                .order_by(UniverseRelease.effective_date.desc(), UniverseRelease.created_at.desc())
+                .limit(1)
+            )
+        )
+        if release is None:
+            raise HistoricalBackfillError(f"no published universe applies to {day.isoformat()}")
+        members = await _release_cohort(db, release.release_id, day)
+        if not 1 <= len(members) <= MAX_COHORT_MEMBERS:
+            raise HistoricalBackfillError(
+                f"universe for {day.isoformat()} has no mapped members or exceeds its bound"
+            )
+        bindings[day.isoformat()] = {
+            "release_id": str(release.release_id),
+            "effective_date": release.effective_date.isoformat(),
+            "member_sha256": release.member_sha256,
+            "plan_id": str(plan.plan_id) if plan is not None else None,
+            "cohort_sha256": _cohort_digest(members),
+            "member_count": len(members),
+        }
+    return {"version": 2, "cohort": "full_release", "dates": bindings}
+
+
+async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict | None:
+    """The item's immutable EOD cohort: FactSet's request cohort or its date's release."""
+    request = item.request
+    snapshot = request.universe_snapshot
+    if request.provider == "factset":
+        return snapshot
+    if not member_cohort(request):
+        return None
+    assert isinstance(snapshot, dict)
+    binding = snapshot["dates"].get(item.trade_date.isoformat())
+    if not isinstance(binding, dict):
+        raise HistoricalBackfillError("historical date has no frozen universe")
+    release = await db.get(UniverseRelease, UUID(binding["release_id"]))
+    members = (
+        await _release_cohort(db, release.release_id, item.trade_date)
+        if release is not None
+        else []
+    )
+    if (
+        release is None
+        or release.member_sha256 != binding["member_sha256"]
+        or _cohort_digest(members) != binding["cohort_sha256"]
+    ):
+        raise HistoricalBackfillError("historical frozen universe differs from its release")
+    return {
+        "version": 2,
+        "cohort": "full_release",
+        "trade_date": item.trade_date.isoformat(),
+        "release_id": binding["release_id"],
+        "effective_date": binding["effective_date"],
+        "member_sha256": binding["member_sha256"],
+        "plan_id": binding["plan_id"],
+        "members": members,
+    }
 
 
 class HistoricalBackfillConflictError(HistoricalBackfillError):
@@ -251,6 +396,18 @@ async def create_request(
         db, "TAIFEX" if provider == "taifex" else dataset.market, start_date, end_date
     )
     policy = _historical_policy(provider)
+    if provider in MEMBER_COHORT_PROVIDERS:
+        # Every acquired date backfills its whole mapped Full release, never a static list.
+        universe_snapshot = await _bind_full_releases(
+            db,
+            provider=provider,
+            dataset_key=dataset_key,
+            days=[
+                date.fromisoformat(day["trade_date"])
+                for day in calendar
+                if not (policy["skip_non_trading_days"] and not day["is_open"])
+            ],
+        )
     now = utc_now()
     row = HistoricalBackfillRequest(
         request_id=uuid7(),
@@ -756,7 +913,8 @@ async def complete_item(
         "failure_message": failure_message,
         "result_evidence": result_evidence,
     }
-    if provider == "factset":
+    eod = eod_cohort(item.request)
+    if eod:
         from app.models.provider_work import ProviderWork, ProviderWorkAttempt
 
         replay_identity = db.info.get("provider_work")
@@ -784,8 +942,8 @@ async def complete_item(
                     raise HistoricalBackfillConflictError("historical completion replay differs")
                 return item
     now = utc_now()
-    if outcome == "partial" and provider != "factset":
-        raise HistoricalBackfillValidationError("partial is restricted to fenced FactSet EOD v2")
+    if outcome == "partial" and not eod:
+        raise HistoricalBackfillValidationError("partial is restricted to per-member EOD evidence")
 
     from app.models.provider_work import ProviderWorkOwner
     from app.services.provider_work import environment, fence, prepared_keys
@@ -838,7 +996,7 @@ async def complete_item(
                         "historical_completion": completion_report,
                         "historical_item_status": item.status,
                     }
-                    if provider == "factset"
+                    if eod
                     else {}
                 ),
                 **(
@@ -863,20 +1021,38 @@ async def complete_item(
         raise HistoricalBackfillConflictError("backfill item is not leased")
     run: IngestionRun | None = None
     eod_evidence = None
-    if outcome in {"completed", "partial"} and provider == "factset":
+    if outcome in {"completed", "partial"} and eod:
         try:
             eod_evidence = EODCompletionEvidence.model_validate(result_evidence)
         except ValueError as exc:
             raise HistoricalBackfillValidationError("EOD completion evidence is invalid") from exc
+        try:
+            cohort = await frozen_cohort(db, item)
+        except HistoricalBackfillError as exc:
+            raise HistoricalBackfillValidationError(str(exc)) from exc
         if (
             eod_evidence.item_id != item.item_id
             or eod_evidence.request_id != item.request_id
             or eod_evidence.trade_date != item.trade_date
-            or not item.request.universe_snapshot
+            or not cohort
             or {member.member_key for member in eod_evidence.members}
-            != {member["member_key"] for member in item.request.universe_snapshot["members"]}
+            != {member["member_key"] for member in cohort["members"]}
+            or eod_evidence.schema_version != _eod_schema_version(item.request)
+            or (
+                # Only mapped members are frozen; no-data needs its durable raw observation.
+                member_cohort(item.request)
+                and any(
+                    member.outcome == "mapping_gap"
+                    or (member.outcome == "no_data" and member.raw is None)
+                    for member in eod_evidence.members
+                )
+            )
         ):
             raise HistoricalBackfillValidationError("EOD evidence differs from the frozen request")
+        if member_cohort(item.request) and outcome != (
+            "partial" if _eod_partial(eod_evidence) else "completed"
+        ):
+            raise HistoricalBackfillValidationError("EOD outcome differs from its member evidence")
         item.result_evidence = eod_evidence.model_dump(mode="json")
     elif outcome == "completed" and provider == "taifex":
         await _validate_taifex_completion(db, item, run_id, result_evidence, now)
@@ -918,7 +1094,7 @@ async def complete_item(
                     "historical_completion": completion_report,
                     "historical_item_status": outcome,
                 }
-                if provider == "factset"
+                if eod
                 else {}
             ),
             "no_data": no_data,
@@ -964,13 +1140,15 @@ async def complete_item(
     return item
 
 
-async def validate_factset_historical_delivery(
-    db: AsyncSession, request: MarketEODIngressRequestV2
+async def validate_eod_historical_delivery(
+    db: AsyncSession, request: MarketEODIngressRequest | MarketEODIngressRequestV2
 ) -> None:
+    """One frozen-cohort EOD delivery (FactSet, or a Full release cohort) of a leased date."""
     from app.services.provider_work import fence, prepared_descriptors
 
+    provider = request.source
     if request.delivery is None:
-        raise HistoricalBackfillValidationError("FactSet historical delivery requires fenced work")
+        raise HistoricalBackfillValidationError("historical EOD delivery requires fenced work")
     try:
         item_id = UUID(request.delivery.work_item_id.removeprefix("historical:"))
     except ValueError as exc:
@@ -983,8 +1161,10 @@ async def validate_factset_historical_delivery(
     identity = db.info.get("provider_work")
     if item is None or identity is None:
         raise HistoricalBackfillValidationError("historical work is unavailable")
+    if item.request.provider != provider or not eod_cohort(item.request):
+        raise HistoricalBackfillValidationError("historical delivery is outside its frozen cohort")
     work, _, _ = await fence(
-        db, provider="factset", **{key: identity[key] for key in ("work_id", "generation", "token")}
+        db, provider=provider, **{key: identity[key] for key in ("work_id", "generation", "token")}
     )
     descriptor = (await prepared_descriptors(db, work.work_id, request.idempotency_key)).get(
         request.idempotency_key
@@ -993,14 +1173,18 @@ async def validate_factset_historical_delivery(
         "provider_work_body_sha256"
     )
     now = utc_now()
-    snapshot = item.request.universe_snapshot or {}
+    try:
+        snapshot = await frozen_cohort(db, item) or {}
+    except HistoricalBackfillError as exc:
+        raise HistoricalBackfillValidationError(str(exc)) from exc
     members = {row["symbol"]: row for row in snapshot.get("members", [])}
+    # FactSet always states the listing; Full release rows may leave it to the member.
+    strict_symbol = provider == "factset"
     if (
         work.kind != "historical"
         or work.stable_key != f"historical:{item.item_id}"
-        or item.request.provider != "factset"
         or item.request.dataset_key != request.dataset_key
-        or request.source != "factset"
+        or request.schema_version != _eod_schema_version(item.request)
         or (
             not retained
             and (
@@ -1022,12 +1206,30 @@ async def validate_factset_historical_delivery(
             row.trade_date != item.trade_date
             or row.symbol not in members
             or members[row.symbol]["mapping_status"] != "mapped"
-            or row.source_symbol != members[row.symbol]["provider_symbol"]
-            or row.currency != members[row.symbol]["currency"]
+            or (strict_symbol or row.source_symbol is not None)
+            and row.source_symbol != members[row.symbol]["provider_symbol"]
+            or (strict_symbol or row.currency is not None)
+            and row.currency != members[row.symbol]["currency"]
             for row in request.payload.data
         )
     ):
         raise HistoricalBackfillValidationError("historical delivery is outside its frozen cohort")
+
+
+def _eod_schema_version(request: HistoricalBackfillRequest) -> int:
+    """FactSet delivers EOD v2; Full release cohorts use their feed's current contract."""
+    if request.provider == "factset":
+        return 2
+    feed = next(
+        feed
+        for feed in provider_catalog().feeds
+        if feed.provider == request.provider and feed.dataset_key == request.dataset_key
+    )
+    return feed.contract.current_version
+
+
+def _eod_partial(evidence: EODCompletionEvidence) -> bool:
+    return any(member.outcome not in {"data", "no_data"} for member in evidence.members)
 
 
 def _valid_completed_run(run: IngestionRun | None, item: HistoricalBackfillItem) -> bool:

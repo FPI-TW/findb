@@ -93,7 +93,7 @@
       "calendar_market": "TW",
       "capabilities": {
         "acquisition": true,
-        "historical": "unsupported",
+        "historical": "executable",
         "source": true
       },
       "contract": {
@@ -201,7 +201,7 @@
       "provider": "twelve_data"
     }
   ],
-  "projection_sha256": "3deea320ea2f990052f24f688d0d5e52c248072557a7554affe90e707bd1d824",
+  "projection_sha256": "50ced8d1fd4b1c6e9a940f2348ecc59b81c89ab854cc70d5b6553a490dc6b869",
   "providers": [
     {
       "credential_env_names": [

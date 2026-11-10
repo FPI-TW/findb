@@ -21,6 +21,9 @@ from app.services import provider_work
 from app.services.provider_work import prepared_map
 from tests.provider_work_runtime_support import SCOPES, RuntimeHarness
 
+# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
+pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+
 
 @pytest_asyncio.fixture
 async def native_runtime(request, client, test_session, test_engine, monkeypatch, tmp_path):

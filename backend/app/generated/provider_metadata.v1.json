@@ -131,7 +131,7 @@
       "calendar_market": "TW",
       "capabilities": {
         "acquisition": true,
-        "historical": "unsupported",
+        "historical": "executable",
         "source": true
       },
       "completion_deadline": {
@@ -403,5 +403,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "fdd40e2c4b8b2e561e4e20197777def5fce2c874db751d6589e7d0a358a1f916"
+  "source_sha256": "f7808b281493e47d5a03b9847ef370d402023cfba406f65ef1b580faeadc15ac"
 }

@@ -18,6 +18,10 @@ from tests.test_provider_work_adapters import native_runtime as native_runtime
 DAILY = [*SCOPES, ("finlab", "tw_etf_eod")]
 
 
+# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
+pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime", [(provider, dataset, 0) for provider, dataset in DAILY], indirect=True

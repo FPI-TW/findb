@@ -15,6 +15,9 @@ from app.services.provider_work import prepared_map
 from app.utils import utc_now, uuid7
 from tests.provider_work_clock import recent_backfill_day
 
+# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
+pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+
 
 async def attest_cutover(db, identities=None):
     await queue.apply_cutover(

@@ -16,6 +16,9 @@ from app.utils import utc_now
 from tests.provider_work_clock import account_clock
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
+# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
+pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("twelve_data", "us_equity_eod")], indirect=True)

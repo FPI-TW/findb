@@ -22,6 +22,9 @@ from tests.provider_work_runtime_support import SCOPES
 from tests.test_provider_work import attest_cutover
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
+# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
+pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [(p, d, 5) for p, d in SCOPES], indirect=True)
