@@ -516,3 +516,38 @@ def test_twelve_data_catalogue_request_keeps_the_credential_out_of_evidence(monk
     assert adapter.catalogue_evidence_dataset("https://api.example/stocks?country=Japan") is None
     with pytest.raises(Exception, match="catalogue shape invalid"):
         adapter.catalogue_rows(b'{"rows": []}')
+
+
+def test_catalogue_response_replays_under_its_original_journal_key(tmp_path, monkeypatch):
+    """A catalogue journaled before the adapter move replays without provider I/O."""
+    import base64
+
+    from provider_work_support import owned_unit_work
+    from test_full_market import _runtime
+
+    monkeypatch.setenv("TWELVE_DATA_API_KEY", "offline-secret")
+    runtime, _, raw = _runtime(tmp_path)
+    runtime.http.close()
+    runtime.http = httpx.Client(
+        transport=httpx.MockTransport(lambda request: pytest.fail("journal must replay"))
+    )
+    body = b'{"data":[{"symbol":"AAPL"}]}'
+    url = "https://api.twelvedata.com/stocks?country=United+States"
+    saved = json.dumps(
+        {
+            "type": "tuple",
+            "data": [[{"symbol": "AAPL"}], url, {"__bytes__": base64.b64encode(body).decode()}],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    # The pre-adapter key: name + sha256 of the canonical identity, unvalidated, no basis.
+    key = "twelve_catalogue:" + hashlib.sha256(b'{"dataset_key":"us_equity_eod"}').hexdigest()
+    try:
+        with owned_unit_work(runtime.provider, tmp_path) as owner:
+            owner.journal.response(key, saved)
+            rows, evidence_url, replayed = runtime._catalogue_market("us_equity_eod")
+        assert (rows, evidence_url, replayed) == ([{"symbol": "AAPL"}], url, body)
+        assert raw.calls == []
+    finally:
+        runtime.close()
