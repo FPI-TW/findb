@@ -1,10 +1,8 @@
 import { z } from "zod"
 
+// Responses may still carry retired pilot rows until the backend retirement
+// migration runs; requests are always scoped to full_market.
 export const executionProfileSchema = z.enum(["pilot", "full_market"])
-export type ExecutionProfile = z.infer<typeof executionProfileSchema>
-export const executionProfileRequestSchema = z.object({
-  profile: executionProfileSchema,
-})
 
 const isoDateTime = z.string().datetime({ offset: true })
 const nullableDateTime = isoDateTime.nullable()
@@ -17,7 +15,6 @@ const paginationSchema = z.object({
 })
 
 export const deliveryPlansRequestSchema = z.object({
-  profile: executionProfileSchema.optional(),
   datasetKey: z.string().trim().max(100).default(""),
   tradeDate: z.union([z.iso.date(), z.literal("")]).default(""),
   page: z.number().int().positive().default(1),
@@ -92,7 +89,6 @@ export const deliveryPlansSchema = z.object({
 export type DeliveryPlan = z.infer<typeof deliveryPlansSchema>["data"][number]
 
 export const auditFiltersSchema = z.object({
-  profile: executionProfileSchema.optional(),
   datasetKey: z.string().trim().max(100).default(""),
   runId: z.union([z.uuid(), z.literal("")]).default(""),
   dateFrom: z.union([z.iso.date(), z.literal("")]).default(""),
@@ -779,7 +775,6 @@ export const deliveryPlanDatasetsSchema = z.object({
   data: z.array(z.string()),
 })
 export const deliveryResourceRequestSchema = z.object({
-  profile: executionProfileSchema.optional(),
   resource: z.enum(["alerts", "backfills", "scopes", "providerWork"]),
   page: z.number().int().positive().default(1),
   pageSize: z.number().int().min(1).max(100).default(25),

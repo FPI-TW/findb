@@ -13,7 +13,7 @@
 | 實作或升級Fetcher與Source間的versioned contract | [architecture/ingress_contracts.md](architecture/ingress_contracts.md) |
 | 呼叫Source、Serve或Admin API | [api/api_usage_guide.md](api/api_usage_guide.md) |
 | 部署、migration、credential設定、Shioaji 退役、release或rollback | [operations/deployment.md](operations/deployment.md) |
-| 啟用 Full market、管理 runtime/account enrollment、操作 Pilot/Full tabs與 drain | [operations/full_market.md](operations/full_market.md) |
+| 啟用 Full market、管理 runtime/account enrollment、操作 Full market controls 與 drain | [operations/full_market.md](operations/full_market.md) |
 | 執行檢查與測試、了解 PostgreSQL fixture 隔離及並行驗證 | [operations/testing.md](operations/testing.md) |
 | 使用營運台、交付分頁與統一重整／載入規範 | [operations/dashboard.md](operations/dashboard.md) |
 | 管理staging原生／custom告警、SNS確認、collector與synthetic通知測試 | [operations/monitoring.md](operations/monitoring.md) |

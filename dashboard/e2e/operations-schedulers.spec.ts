@@ -18,7 +18,7 @@ async function login(page: Page, role = "owner") {
   await page.getByLabel("密碼", { exact: true }).fill("fixture-password")
   await page.getByRole("button", { name: "登入", exact: true }).click()
   await expect(
-    page.getByRole("tab", { name: "Pilot（1 執行中）" })
+    page.getByRole("heading", { name: "full_market_finlab_v1", exact: true })
   ).toBeVisible()
 }
 
@@ -26,27 +26,21 @@ test.beforeEach(async ({ request }) => {
   await request.post(`${backend}/fixture/reset`, { data: {} })
 })
 
-test("normal login, deep links and browser history select profiles without mutations", async ({
+test("normal login and retired profile deep links show one schedule section without mutations", async ({
   page,
   request,
 }) => {
-  await page.goto("/dashboard/operations/?profile=full_market")
+  await page.goto("/dashboard/operations/?profile=pilot")
   await expect(page).toHaveURL(/\/login/)
   await login(page)
   const navigation = page.getByRole("navigation", { name: "營運資料分類" })
   const overviewLink = navigation.getByRole("link", { name: "導入概況" })
   const deliveriesLink = navigation.getByRole("link", { name: "交付監控" })
   await expect(overviewLink).toHaveAttribute("aria-current", "page")
-  await expect(
-    page.getByRole("tab", { name: "Pilot（1 執行中）" })
-  ).toHaveAttribute("aria-selected", "true")
-  await expect(
-    page.getByRole("region", { name: "Full market 排程" })
-  ).toHaveCount(0)
-  await page.getByRole("tab", { name: "Full market（1 執行中）" }).click()
-  await expect(page).toHaveURL(/profile=full_market/)
-  await expect(overviewLink).toHaveAttribute("aria-current", "page")
-  await expect(page.getByRole("region", { name: "Pilot 排程" })).toHaveCount(0)
+  await expect(page.getByRole("tab", { name: /Pilot/ })).toHaveCount(0)
+  await expect(page.getByText(/Pilot/)).toHaveCount(0)
+  await expect(page.getByText("pilot_finlab_v1")).toHaveCount(0)
+  await expect(page.getByRole("region", { name: "資料抓取排程" })).toBeVisible()
   await expect(
     page.getByText("FULL_MARKET_ENABLED：true · production").first()
   ).toBeVisible()
@@ -60,119 +54,59 @@ test("normal login, deep links and browser history select profiles without mutat
     page.getByText("tw_etf_eod：baseline_missing · 首次日期 尚未啟動").first()
   ).toBeVisible()
   await expect(
-    page.getByText(/部署前人工確認：請分別停止 Full market 與/)
+    page.getByText(
+      "部署前人工確認：請停止所有排程，確認期望與實際狀態均為已停止。"
+    )
   ).toBeVisible()
-  await page.goBack()
-  await expect(
-    page.getByRole("tab", { name: "Pilot（1 執行中）" })
-  ).toHaveAttribute("aria-selected", "true")
-  await page.goForward()
-  await expect(
-    page.getByRole("tab", { name: "Full market（1 執行中）" })
-  ).toHaveAttribute("aria-selected", "true")
+  await page.goto("/dashboard/operations/?profile=full_market")
+  await expect(page.getByRole("region", { name: "資料抓取排程" })).toBeVisible()
+  await expect(page.getByText("pilot_finlab_v1")).toHaveCount(0)
   await page.reload()
-  await expect(
-    page.getByRole("region", { name: "Full market 排程" })
-  ).toBeVisible()
-  await expect(overviewLink).toHaveAttribute("aria-current", "page")
+  await expect(page.getByRole("region", { name: "資料抓取排程" })).toBeVisible()
   await deliveriesLink.click()
   await expect(deliveriesLink).toHaveAttribute("aria-current", "page")
   await expect(overviewLink).not.toHaveAttribute("aria-current", "page")
-  await overviewLink.click()
+  await page.goBack()
   await expect(overviewLink).toHaveAttribute("aria-current", "page")
-  await expect(deliveriesLink).not.toHaveAttribute("aria-current", "page")
+  await page.goForward()
+  await expect(deliveriesLink).toHaveAttribute("aria-current", "page")
   expect((await state(request)).mutations).toEqual([])
 })
 
-test("hidden counterpart warnings cancel safely and Pilot batch start/stop stays isolated", async ({
+test("cancel and Escape are side-effect free; batch start skips blocked and running controls", async ({
   page,
   request,
 }) => {
   await login(page)
   await page
-    .getByRole("button", { name: "Pilot finlab pilot_finlab_v1 設為執行中" })
+    .getByRole("button", { name: "shioaji full_market_shioaji_v1 設為執行中" })
     .click()
   await expect(page.getByRole("alertdialog")).toContainText(
-    "full_market_finlab_v1"
+    "full_market_shioaji_v1"
   )
   await page.getByRole("button", { name: "取消", exact: true }).click()
   expect((await state(request)).mutations).toEqual([])
-  await page
-    .getByRole("button", { name: "Pilot 全部啟動", exact: true })
-    .click()
-  await expect(page.getByRole("alertdialog")).toContainText(
-    "Full market 與 Pilot 將同時執行"
-  )
-  await page.keyboard.press("Escape")
-  await expect(page.getByRole("alertdialog")).toHaveCount(0)
-  expect((await state(request)).mutations).toEqual([])
-  await page
-    .getByRole("button", { name: "Pilot 全部啟動", exact: true })
-    .click()
-  await page
-    .getByRole("button", { name: "確認 Pilot 全部啟動", exact: true })
-    .click()
-  await expect(
-    page.getByRole("tab", { name: "Pilot（2 執行中）" })
-  ).toBeVisible()
-  await page
-    .getByRole("button", { name: "Pilot 全部停止", exact: true })
-    .click()
-  await page
-    .getByRole("button", { name: "確認 Pilot 全部停止", exact: true })
-    .click()
-  await expect(
-    page.getByRole("tab", { name: "Pilot（0 執行中）" })
-  ).toBeVisible()
-  expect((await state(request)).mutations).toEqual([
-    {
-      scheduler_key: "pilot_finlab_v1",
-      desired_state: "running",
-      expected_revision: 1,
-    },
-    {
-      scheduler_key: "pilot_finlab_v1",
-      desired_state: "stopped",
-      expected_revision: 2,
-    },
-    {
-      scheduler_key: "pilot_shioaji_v1",
-      desired_state: "stopped",
-      expected_revision: 1,
-    },
-  ])
-  await expect(
-    page.getByRole("tab", { name: "Full market（1 執行中）" })
-  ).toBeVisible()
-})
-
-test("Full market batch skips blocked and running controls, warns about hidden Pilot and stops only its profile", async ({
-  page,
-  request,
-}) => {
-  await login(page)
-  await page.goto("/dashboard/operations/?profile=full_market")
   await expect(
     page.getByRole("note").filter({ hasText: "全部啟動將跳過" })
   ).toContainText("full_market_taifex_v1（缺少已發布的官方 baseline）")
-  await page
-    .getByRole("button", { name: "Full market 全部啟動", exact: true })
-    .click()
-  await expect(page.getByRole("alertdialog")).toContainText("pilot_shioaji_v1")
-  await page
-    .getByRole("button", { name: "確認 Full market 全部啟動", exact: true })
-    .click()
+  await page.getByRole("button", { name: "全部啟動", exact: true }).click()
+  await expect(page.getByRole("alertdialog")).not.toContainText("Pilot")
+  await page.keyboard.press("Escape")
+  await expect(page.getByRole("alertdialog")).toHaveCount(0)
+  expect((await state(request)).mutations).toEqual([])
+  await page.getByRole("button", { name: "全部啟動", exact: true }).click()
+  await page.getByRole("button", { name: "確認全部啟動", exact: true }).click()
   await expect(
-    page.getByRole("tab", { name: "Full market（2 執行中）" })
+    page.getByRole("button", {
+      name: "shioaji full_market_shioaji_v1 設為已停止",
+    })
   ).toBeVisible()
-  await page
-    .getByRole("button", { name: "Full market 全部停止", exact: true })
-    .click()
-  await page
-    .getByRole("button", { name: "確認 Full market 全部停止", exact: true })
-    .click()
+  await page.getByRole("button", { name: "全部停止", exact: true }).click()
+  await page.getByRole("button", { name: "確認全部停止", exact: true }).click()
   await expect(
-    page.getByRole("tab", { name: "Full market（0 執行中）" })
+    page.getByRole("button", {
+      name: "finlab full_market_finlab_v1 設為執行中",
+    })
   ).toBeVisible()
   expect((await state(request)).mutations).toEqual([
     {
@@ -191,9 +125,6 @@ test("Full market batch skips blocked and running controls, warns about hidden P
       expected_revision: 2,
     },
   ])
-  await expect(
-    page.getByRole("tab", { name: "Pilot（1 執行中）" })
-  ).toBeVisible()
 })
 
 test("all blocked starts and non-Owner sessions cannot mutate controls", async ({
@@ -201,14 +132,9 @@ test("all blocked starts and non-Owner sessions cannot mutate controls", async (
   request,
 }) => {
   await request.post(`${backend}/fixture/reset`, { data: { allBlocked: true } })
-  await page.goto("/dashboard/login")
-  await page.waitForLoadState("networkidle")
-  await page.getByLabel("帳號", { exact: true }).fill("owner")
-  await page.getByLabel("密碼", { exact: true }).fill("fixture-password")
-  await page.getByRole("button", { name: "登入", exact: true }).click()
-  await page.goto("/dashboard/operations/?profile=full_market")
+  await login(page)
   await expect(
-    page.getByRole("button", { name: "Full market 全部啟動", exact: true })
+    page.getByRole("button", { name: "全部啟動", exact: true })
   ).toBeDisabled()
   await expect(
     page.getByRole("note").filter({ hasText: "全部啟動將跳過" })
@@ -218,11 +144,10 @@ test("all blocked starts and non-Owner sessions cannot mutate controls", async (
   await request.post(`${backend}/fixture/reset`, { data: { role: "operator" } })
   await login(page, "operator")
   await expect(
-    page.getByRole("button", { name: "Pilot 全部啟動", exact: true })
+    page.getByRole("button", { name: "全部啟動", exact: true })
   ).toHaveCount(0)
-  await page.getByRole("tab", { name: "Full market（1 執行中）" }).click()
   await expect(
-    page.getByRole("button", { name: "Full market 全部停止", exact: true })
+    page.getByRole("button", { name: "全部停止", exact: true })
   ).toHaveCount(0)
   expect((await state(request)).mutations).toEqual([])
 })
@@ -234,11 +159,11 @@ test("partial overview failure and recovery preserve controls, cards and queue p
   await page.setViewportSize({ width: 1440, height: 1000 })
   await login(page)
   const controls = page.getByRole("button", {
-    name: "Pilot 全部啟動",
+    name: "全部啟動",
     exact: true,
   })
   const card = page.getByRole("button", {
-    name: "Pilot finlab pilot_finlab_v1 設為執行中",
+    name: "shioaji full_market_shioaji_v1 設為執行中",
   })
   const queue = page.getByRole("heading", {
     name: "Source ingest 後的佇列與 Worker",

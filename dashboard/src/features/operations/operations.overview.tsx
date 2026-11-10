@@ -279,69 +279,8 @@ type SchedulerMutationTarget = Pick<
   | "start_blockers"
 >
 
-const SCHEDULER_PROFILES = ["pilot", "full_market"] as const
-export type SchedulerProfile = (typeof SCHEDULER_PROFILES)[number]
-
-function schedulerProfile(control: Pick<Scheduler, "scheduler_key">) {
-  return control.scheduler_key.startsWith("full_market_")
-    ? "full_market"
-    : "pilot"
-}
-
-function schedulerProfileLabel(profile: SchedulerProfile) {
-  return profile === "full_market" ? "Full market" : "Pilot"
-}
-
-function overlappingSchedulers(
-  targets: SchedulerMutationTarget[],
-  schedulers: SchedulerMutationTarget[]
-) {
-  return schedulers.filter(
-    scheduler =>
-      (scheduler.desired_state === "running" ||
-        scheduler.observed_state === "running") &&
-      targets.some(
-        target =>
-          target.provider === scheduler.provider &&
-          schedulerProfile(target) !== schedulerProfile(scheduler)
-      )
-  )
-}
-
-function SchedulerOverlapWarning({
-  schedulers,
-}: {
-  schedulers: SchedulerMutationTarget[]
-}) {
-  if (schedulers.length === 0) return null
-  return (
-    <Alert variant="warning">
-      <AlertTriangle aria-hidden="true" />
-      <AlertTitle>Full market 與 Pilot 將同時執行</AlertTitle>
-      <AlertDescription>
-        <p className="m-0">
-          同一 provider 的兩種排程範圍重疊，可能重複抓取、增加 API
-          用量與資料導入工作。
-          建議先停止另一區排程，並等待實際狀態變為已停止，再啟動。
-        </p>
-        <ul className="my-0 max-h-40 overflow-auto pl-5 font-mono text-xs wrap-anywhere">
-          {schedulers.map(scheduler => (
-            <li key={scheduler.scheduler_key}>
-              {scheduler.provider} / {scheduler.scheduler_key}（期望：
-              {formatSchedulerState(scheduler.desired_state)}；實際：
-              {formatSchedulerState(scheduler.observed_state)}）
-            </li>
-          ))}
-        </ul>
-      </AlertDescription>
-    </Alert>
-  )
-}
-
 function schedulerStartAllowed(control: SchedulerMutationTarget) {
-  return (
-    control.start_allowed ?? !control.scheduler_key.startsWith("full_market_")
-  )
+  return control.start_allowed ?? false
 }
 
 function schedulerStartReason(control: SchedulerMutationTarget) {
@@ -375,7 +314,6 @@ function schedulerStartReason(control: SchedulerMutationTarget) {
 }
 
 type SchedulerBulkConfirmation = {
-  profile: SchedulerProfile
   desiredState: SchedulerDesiredState
   targets: SchedulerMutationTarget[]
   skipped: SchedulerMutationTarget[]
@@ -383,12 +321,10 @@ type SchedulerBulkConfirmation = {
 
 function SchedulerConfirmationDialog({
   target,
-  overlaps,
   onCancel,
   onConfirm,
 }: {
   target: SchedulerMutationTarget | null
-  overlaps: SchedulerMutationTarget[]
   onCancel: () => void
   onConfirm: () => void
 }) {
@@ -414,7 +350,6 @@ function SchedulerConfirmationDialog({
                 : "停止後系統將不再依排程自動抓取資料。"}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <SchedulerOverlapWarning schedulers={overlaps} />
           <AlertDialogFooter>
             <AlertDialogCancel onClick={onCancel}>取消</AlertDialogCancel>
             <AlertDialogAction
@@ -432,12 +367,10 @@ function SchedulerConfirmationDialog({
 
 function SchedulerBulkConfirmationDialog({
   confirmation,
-  overlaps,
   onCancel,
   onConfirm,
 }: {
   confirmation: SchedulerBulkConfirmation | null
-  overlaps: SchedulerMutationTarget[]
   onCancel: () => void
   onConfirm: () => void
 }) {
@@ -453,9 +386,7 @@ function SchedulerBulkConfirmationDialog({
       {confirmation && (
         <AlertDialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              確認 {schedulerProfileLabel(confirmation.profile)} {actionLabel}？
-            </AlertDialogTitle>
+            <AlertDialogTitle>確認{actionLabel}排程？</AlertDialogTitle>
             <AlertDialogDescription>
               將依序更新 {confirmation.targets.length} 個
               Scheduler，且每筆都會以目前 revision 防止覆蓋其他人剛完成的操作。
@@ -464,7 +395,6 @@ function SchedulerBulkConfirmationDialog({
                 : "送出後請逐一確認實際狀態恢復執行，部分失敗不會自動重試。"}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <SchedulerOverlapWarning schedulers={overlaps} />
           <ul className="my-0 max-h-48 overflow-auto pl-5 font-mono text-xs text-muted">
             {confirmation.targets.map(target => (
               <li key={target.scheduler_key}>
@@ -493,7 +423,7 @@ function SchedulerBulkConfirmationDialog({
               }
               onClick={onConfirm}
             >
-              確認 {schedulerProfileLabel(confirmation.profile)} {actionLabel}
+              確認{actionLabel}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -503,7 +433,6 @@ function SchedulerBulkConfirmationDialog({
 }
 
 function useSchedulerActions(
-  schedulers: SchedulerMutationTarget[],
   audit: DashboardRequest["audit"] = { ...OPERATIONS_OVERVIEW_AUDIT },
   applyScheduler?: (response: SchedulerMutationResponse) => void
 ) {
@@ -608,7 +537,7 @@ function useSchedulerActions(
 
       if (!authenticationFailed && failed === 0) {
         toast.success(
-          `${schedulerProfileLabel(schedulerProfile(targets[0]!))} Scheduler 已全部${desiredState === "running" ? "啟動" : "停止"}`,
+          `Scheduler 已全部${desiredState === "running" ? "啟動" : "停止"}`,
           { description: `成功更新 ${succeeded} 筆；請繼續確認實際狀態。` }
         )
       } else if (!authenticationFailed) {
@@ -631,15 +560,12 @@ function useSchedulerActions(
     actionErrors,
     bulkPending,
     requestBulkState: (
-      profile: SchedulerProfile,
       desiredState: SchedulerDesiredState,
       controls: SchedulerMutationTarget[]
     ) => {
       if (bulkPending || pendingKeys.size > 0) return
       const candidates = controls.filter(
-        scheduler =>
-          schedulerProfile(scheduler) === profile &&
-          scheduler.desired_state !== desiredState
+        scheduler => scheduler.desired_state !== desiredState
       )
       const skipped =
         desiredState === "running"
@@ -650,7 +576,7 @@ function useSchedulerActions(
           desiredState === "stopped" || schedulerStartAllowed(scheduler)
       )
       if (targets.length > 0)
-        setBulkConfirmation({ profile, desiredState, targets, skipped })
+        setBulkConfirmation({ desiredState, targets, skipped })
     },
     requestToggleScheduler: (control: SchedulerMutationTarget) => {
       if (
@@ -664,11 +590,6 @@ function useSchedulerActions(
       <>
         <SchedulerConfirmationDialog
           target={confirmationTarget}
-          overlaps={
-            confirmationTarget?.desired_state === "stopped"
-              ? overlappingSchedulers([confirmationTarget], schedulers)
-              : []
-          }
           onCancel={() => setConfirmationTarget(null)}
           onConfirm={() => {
             const target = confirmationTarget
@@ -678,11 +599,6 @@ function useSchedulerActions(
         />
         <SchedulerBulkConfirmationDialog
           confirmation={bulkConfirmation}
-          overlaps={
-            bulkConfirmation?.desiredState === "running"
-              ? overlappingSchedulers(bulkConfirmation.targets, schedulers)
-              : []
-          }
           onCancel={() => setBulkConfirmation(null)}
           onConfirm={() => {
             const confirmation = bulkConfirmation
@@ -701,12 +617,10 @@ function useSchedulerActions(
 }
 
 function SchedulerBulkControls({
-  profile,
   role,
   schedulers,
   actions,
 }: {
-  profile: SchedulerProfile
   role: AdminRole
   schedulers: SchedulerMutationTarget[]
   actions: ReturnType<typeof useSchedulerActions>
@@ -720,11 +634,9 @@ function SchedulerBulkControls({
   return (
     <div className="mb-4 grid gap-3 rounded-xl border border-line bg-surface p-4 sm:grid-cols-[1fr_auto] sm:items-center">
       <div>
-        <p className="m-0 text-sm font-semibold">
-          {schedulerProfileLabel(profile)} 批次控制
-        </p>
+        <p className="m-0 text-sm font-semibold">批次控制</p>
         <p className="mt-1 mb-0 text-xs text-muted">
-          只更新此區排程。停止後請等待此區所有卡片的「期望」與「實際」均為已停止。
+          停止後請等待所有卡片的「期望」與「實際」均為已停止。
         </p>
         {blocked.length > 0 && (
           <p className="mt-2 mb-0 text-xs text-muted" role="note">
@@ -751,12 +663,10 @@ function SchedulerBulkControls({
               )
             }
             aria-busy={actions.bulkPending}
-            onClick={() =>
-              actions.requestBulkState(profile, "stopped", schedulers)
-            }
+            onClick={() => actions.requestBulkState("stopped", schedulers)}
           >
             <Power aria-hidden="true" />
-            {schedulerProfileLabel(profile)} 全部停止
+            全部停止
           </Button>
           <Button
             type="button"
@@ -770,12 +680,10 @@ function SchedulerBulkControls({
               )
             }
             aria-busy={actions.bulkPending}
-            onClick={() =>
-              actions.requestBulkState(profile, "running", schedulers)
-            }
+            onClick={() => actions.requestBulkState("running", schedulers)}
           >
             <Power aria-hidden="true" />
-            {schedulerProfileLabel(profile)} 全部啟動
+            全部啟動
           </Button>
         </div>
       )}
@@ -783,14 +691,12 @@ function SchedulerBulkControls({
   )
 }
 
-function SchedulerProfileSection({
-  profile,
+function SchedulerSection({
   role,
   schedulers,
   actions,
   children,
 }: {
-  profile: SchedulerProfile
   role: AdminRole
   schedulers: SchedulerMutationTarget[]
   actions: ReturnType<typeof useSchedulerActions>
@@ -798,22 +704,13 @@ function SchedulerProfileSection({
 }) {
   return (
     <section
-      aria-label={`${schedulerProfileLabel(profile)} 排程`}
+      aria-label="資料抓取排程"
       className="grid gap-4 rounded-2xl border border-line bg-surface-soft p-4 sm:p-5"
     >
-      <div>
-        <h3 className="m-0 text-base font-bold">
-          {schedulerProfileLabel(profile)}
-          {profile === "full_market" ? "（全市場）" : "（小範圍驗證）"}
-        </h3>
-        <p className="mt-1 mb-0 text-sm text-muted">
-          {profile === "full_market"
-            ? "依核准的全市場範圍抓取資料；啟動前須完成治理與啟用資格。"
-            : "使用少量商品驗證資料流程；同 provider 的商品可能包含在全市場範圍內。"}
-        </p>
-      </div>
+      <p className="m-0 text-sm text-muted">
+        依核准的全市場範圍每日抓取資料；啟動前須完成治理與啟用資格。
+      </p>
       <SchedulerBulkControls
-        profile={profile}
         role={role}
         schedulers={schedulers}
         actions={actions}
@@ -855,7 +752,7 @@ function SchedulerActionButton({
           (nextState === "running" && !schedulerStartAllowed(control))
         }
         aria-busy={pending}
-        aria-label={`${schedulerProfileLabel(schedulerProfile(control))} ${control.provider} ${control.scheduler_key} 設為${nextState === "running" ? "執行中" : "已停止"}`}
+        aria-label={`${control.provider} ${control.scheduler_key} 設為${nextState === "running" ? "執行中" : "已停止"}`}
       >
         <Power aria-hidden="true" />
         {pending
@@ -887,7 +784,6 @@ function IngestionCardView({
   requestToggle: (control: SchedulerMutationTarget) => void
 }) {
   const { control, freshness } = card
-  const profileLabel = schedulerProfileLabel(schedulerProfile(control))
   const runtimeStatus = selectSchedulerRuntimeStatus({ control, freshness })
   const runtimeStatusMeta = SCHEDULER_RUNTIME_STATUS_META[runtimeStatus]
   const normalizationCompleted =
@@ -992,7 +888,7 @@ function IngestionCardView({
           </AlertDescription>
         </Alert>
       ) : null}
-      {schedulerProfile(control) === "full_market" && (
+      {control.scheduler_key.startsWith("full_market_") && (
         <div className="grid gap-2 text-xs text-muted">
           <p className="m-0">
             FULL_MARKET_ENABLED：
@@ -1016,13 +912,13 @@ function IngestionCardView({
       {freshness?.monitor_kind === "full_market" && (
         <div className="grid gap-2 text-xs text-muted">
           <p className="m-0">
-            {profileLabel} 已啟用範圍：
+            已啟用範圍：
             {freshness.active_dataset_keys.join(", ") || "無"}
             。資料更新不代表此模式已啟用或排程已回報心跳。
           </p>
           {!control.last_heartbeat_at && (
             <p className="m-0">
-              {profileLabel} 排程尚未回報心跳；請確認部署與 Owner 啟用狀態。
+              排程尚未回報心跳；請確認部署與 Owner 啟用狀態。
             </p>
           )}
           {freshness.pending_feeds.length > 0 && (
@@ -1078,8 +974,6 @@ function IngestionCardView({
 }
 
 export function IngestionOverviewPanel({
-  profile: selectedProfile = "pilot",
-  updateProfile = () => undefined,
   freshnessResult,
   schedulersResult,
   loading,
@@ -1087,8 +981,6 @@ export function IngestionOverviewPanel({
   applyScheduler,
   audit = OPERATIONS_OVERVIEW_AUDIT,
 }: {
-  profile?: SchedulerProfile
-  updateProfile?: (profile: SchedulerProfile) => void
   freshnessResult: PanelResult<MarketFreshnessResponse> | null
   schedulersResult: PanelResult<SchedulersResponse> | null
   loading: boolean
@@ -1118,11 +1010,7 @@ export function IngestionOverviewPanel({
           }
   const cards = result?.ok ? result.data.cards : []
   const schedulers = schedulersResult?.ok ? schedulersResult.data.data : []
-  const actions = useSchedulerActions(
-    cards.map(card => card.control),
-    audit,
-    applyScheduler
-  )
+  const actions = useSchedulerActions(audit, applyScheduler)
   return (
     <Panel
       eyebrow="Ingestion overview"
@@ -1134,113 +1022,41 @@ export function IngestionOverviewPanel({
       {result?.ok && (
         <div className="grid gap-6">
           <p className="m-0 text-xs text-muted">
-            部署前人工確認：請分別停止 Full market 與
-            Pilot，確認所有排程的期望與實際狀態均為已停止。
+            部署前人工確認：請停止所有排程，確認期望與實際狀態均為已停止。
           </p>
-          <div role="tablist" aria-label="導入排程模式" className="flex gap-2">
-            {SCHEDULER_PROFILES.map(profile => (
-              <Button
-                key={profile}
-                role="tab"
-                id={`scheduler-tab-${profile}`}
-                aria-controls={`scheduler-panel-${profile}`}
-                aria-selected={selectedProfile === profile}
-                tabIndex={selectedProfile === profile ? 0 : -1}
-                variant={selectedProfile === profile ? "default" : "outline"}
-                onClick={() => updateProfile(profile)}
-                onKeyDown={event => {
-                  const index = SCHEDULER_PROFILES.indexOf(profile)
-                  const nextIndex =
-                    event.key === "Home"
-                      ? 0
-                      : event.key === "End"
-                        ? SCHEDULER_PROFILES.length - 1
-                        : event.key === "ArrowRight"
-                          ? (index + 1) % SCHEDULER_PROFILES.length
-                          : event.key === "ArrowLeft"
-                            ? (index + SCHEDULER_PROFILES.length - 1) %
-                              SCHEDULER_PROFILES.length
-                            : null
-                  if (nextIndex === null) return
-                  event.preventDefault()
-                  const next = SCHEDULER_PROFILES[nextIndex]!
-                  event.currentTarget.parentElement
-                    ?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
-                    [nextIndex]?.focus()
-                  updateProfile(next)
-                }}
-              >
-                {schedulerProfileLabel(profile)}（
-                {
-                  cards.filter(
-                    card =>
-                      schedulerProfile(card.control) === profile &&
-                      card.control.desired_state === "running"
-                  ).length
-                }{" "}
-                執行中）
-              </Button>
-            ))}
-          </div>
-          {SCHEDULER_PROFILES.filter(
-            profile => profile === selectedProfile
-          ).map(profile => {
-            const profileCards = cards.filter(
-              card => schedulerProfile(card.control) === profile
-            )
-            return (
-              <div
-                key={profile}
-                role="tabpanel"
-                id={`scheduler-panel-${profile}`}
-                aria-labelledby={`scheduler-tab-${profile}`}
-              >
-                <SchedulerProfileSection
-                  profile={profile}
-                  role={role}
-                  schedulers={schedulers.filter(
-                    scheduler => schedulerProfile(scheduler) === profile
-                  )}
-                  actions={actions}
-                >
-                  {profileCards.length === 0 ? (
-                    <EmptyState>此區目前沒有已註冊的資料抓取排程。</EmptyState>
-                  ) : (
-                    <div className="grid gap-3">
-                      {[...new Set(profileCards.flatMap(cardMarkets))]
-                        .sort()
-                        .map(market => (
-                          <section key={market} className="grid gap-3">
-                            <h3 className="font-bold">{market}</h3>
-                            {profileCards
-                              .filter(card =>
-                                cardMarkets(card).includes(market)
-                              )
-                              .map(card => (
-                                <IngestionCardView
-                                  card={card}
-                                  key={card.control.scheduler_key}
-                                  role={role}
-                                  pending={
-                                    actions.bulkPending ||
-                                    actions.pendingKeys.size > 0
-                                  }
-                                  actionError={
-                                    actions.actionErrors[
-                                      card.control.scheduler_key
-                                    ]
-                                  }
-                                  requestToggle={actions.requestToggleScheduler}
-                                />
-                              ))}
-                          </section>
-                        ))}
-                    </div>
-                  )}
-                </SchedulerProfileSection>
+          <SchedulerSection
+            role={role}
+            schedulers={schedulers}
+            actions={actions}
+          >
+            {cards.length === 0 ? (
+              <EmptyState>目前沒有已註冊的資料抓取排程。</EmptyState>
+            ) : (
+              <div className="grid gap-3">
+                {[...new Set(cards.flatMap(cardMarkets))].sort().map(market => (
+                  <section key={market} className="grid gap-3">
+                    <h3 className="font-bold">{market}</h3>
+                    {cards
+                      .filter(card => cardMarkets(card).includes(market))
+                      .map(card => (
+                        <IngestionCardView
+                          card={card}
+                          key={card.control.scheduler_key}
+                          role={role}
+                          pending={
+                            actions.bulkPending || actions.pendingKeys.size > 0
+                          }
+                          actionError={
+                            actions.actionErrors[card.control.scheduler_key]
+                          }
+                          requestToggle={actions.requestToggleScheduler}
+                        />
+                      ))}
+                  </section>
+                ))}
               </div>
-            )
-          })}
+            )}
+          </SchedulerSection>
         </div>
       )}
       {actions.dialog}
@@ -1264,11 +1080,7 @@ export function SchedulerPanel({
   applyScheduler?: (response: SchedulerMutationResponse) => void
 }) {
   const schedulers = result?.ok ? result.data.data : []
-  const actions = useSchedulerActions(
-    schedulers,
-    OPERATIONS_OVERVIEW_AUDIT,
-    applyScheduler
-  )
+  const actions = useSchedulerActions(OPERATIONS_OVERVIEW_AUDIT, applyScheduler)
   return (
     <Panel
       eyebrow="Scheduler control"
@@ -1295,146 +1107,130 @@ export function SchedulerPanel({
       {result?.ok && (
         <div className="grid gap-6">
           <p className="m-0 text-xs text-muted">
-            部署前人工確認：請分別停止 Full market 與
-            Pilot，確認所有排程的期望與實際狀態均為已停止。
+            部署前人工確認：請停止所有排程，確認期望與實際狀態均為已停止。
           </p>
-          {SCHEDULER_PROFILES.map(profile => {
-            const profileSchedulers = schedulers.filter(
-              scheduler => schedulerProfile(scheduler) === profile
-            )
-            return (
-              <SchedulerProfileSection
-                key={profile}
-                profile={profile}
-                role={role}
-                schedulers={profileSchedulers}
-                actions={actions}
-              >
-                {profileSchedulers.length === 0 ? (
-                  <EmptyState>此區目前沒有已註冊的資料抓取排程。</EmptyState>
-                ) : (
-                  <div className="grid gap-3">
-                    {profileSchedulers.map(scheduler => {
-                      const stale =
-                        scheduler.heartbeat_age_seconds === null ||
-                        scheduler.heartbeat_age_seconds > 90
-                      const actionError =
-                        actions.actionErrors[scheduler.scheduler_key]
-                      return (
-                        <article
-                          className="grid gap-4 rounded-xl border border-line bg-surface p-4"
-                          key={scheduler.scheduler_key}
-                        >
-                          <div className="flex flex-wrap items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <h3 className="m-0 font-mono text-sm font-bold wrap-anywhere">
-                                {scheduler.scheduler_key}
-                              </h3>
-                              <p className="mt-1 mb-0 text-xs text-muted">
-                                Provider：{scheduler.provider} · Dataset：
-                                {scheduler.dataset_keys.join(", ") || "—"}
-                              </p>
-                            </div>
-                            <div className="flex flex-wrap items-center justify-end gap-1.5">
-                              <Badge
-                                variant={schedulerStateVariant(
-                                  scheduler.desired_state
-                                )}
-                              >
-                                期望：
-                                {formatSchedulerState(scheduler.desired_state)}
-                              </Badge>
-                              <Badge
-                                variant={schedulerStateVariant(
-                                  scheduler.observed_state
-                                )}
-                              >
-                                實際：
-                                {formatSchedulerState(scheduler.observed_state)}
-                              </Badge>
-                              {stale && (
-                                <Badge variant="destructive">
-                                  <TriangleAlert aria-hidden="true" />
-                                  Heartbeat stale
-                                </Badge>
-                              )}
-                            </div>
-                          </div>
-                          <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                            <div>
-                              <dt className="text-xs text-muted">Heartbeat</dt>
-                              <dd className="mt-0.5">
-                                {formatAge(scheduler.heartbeat_age_seconds)} ·{" "}
-                                <DateWithRelative
-                                  value={scheduler.last_heartbeat_at}
-                                />
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-xs text-muted">
-                                最近 cycle 開始
-                              </dt>
-                              <dd className="mt-0.5">
-                                <DateWithRelative
-                                  value={scheduler.last_cycle_started_at}
-                                />
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-xs text-muted">
-                                最近 cycle 完成
-                              </dt>
-                              <dd className="mt-0.5">
-                                <DateWithRelative
-                                  value={scheduler.last_cycle_completed_at}
-                                />
-                              </dd>
-                            </div>
-                            <div>
-                              <dt className="text-xs text-muted">Revision</dt>
-                              <dd className="mt-0.5 font-mono">
-                                r{scheduler.revision}
-                              </dd>
-                            </div>
-                          </dl>
-                          {scheduler.last_error && (
-                            <Alert variant="warning" role="status">
-                              <TriangleAlert size={17} />
-                              <AlertDescription>
-                                <span className="font-semibold">
-                                  最近錯誤：
-                                </span>
-                                {scheduler.last_error}
-                              </AlertDescription>
-                            </Alert>
-                          )}
-                          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-                            <SchedulerActionButton
-                              role={role}
-                              control={scheduler}
-                              pending={
-                                actions.bulkPending ||
-                                actions.pendingKeys.size > 0
-                              }
-                              requestToggle={actions.requestToggleScheduler}
-                            />
-                            {actionError && (
-                              <p
-                                className="m-0 text-xs text-danger"
-                                role="alert"
-                              >
-                                {actionError}
-                              </p>
+          <SchedulerSection
+            role={role}
+            schedulers={schedulers}
+            actions={actions}
+          >
+            {schedulers.length === 0 ? (
+              <EmptyState>目前沒有已註冊的資料抓取排程。</EmptyState>
+            ) : (
+              <div className="grid gap-3">
+                {schedulers.map(scheduler => {
+                  const stale =
+                    scheduler.heartbeat_age_seconds === null ||
+                    scheduler.heartbeat_age_seconds > 90
+                  const actionError =
+                    actions.actionErrors[scheduler.scheduler_key]
+                  return (
+                    <article
+                      className="grid gap-4 rounded-xl border border-line bg-surface p-4"
+                      key={scheduler.scheduler_key}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h3 className="m-0 font-mono text-sm font-bold wrap-anywhere">
+                            {scheduler.scheduler_key}
+                          </h3>
+                          <p className="mt-1 mb-0 text-xs text-muted">
+                            Provider：{scheduler.provider} · Dataset：
+                            {scheduler.dataset_keys.join(", ") || "—"}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center justify-end gap-1.5">
+                          <Badge
+                            variant={schedulerStateVariant(
+                              scheduler.desired_state
                             )}
-                          </div>
-                        </article>
-                      )
-                    })}
-                  </div>
-                )}
-              </SchedulerProfileSection>
-            )
-          })}
+                          >
+                            期望：
+                            {formatSchedulerState(scheduler.desired_state)}
+                          </Badge>
+                          <Badge
+                            variant={schedulerStateVariant(
+                              scheduler.observed_state
+                            )}
+                          >
+                            實際：
+                            {formatSchedulerState(scheduler.observed_state)}
+                          </Badge>
+                          {stale && (
+                            <Badge variant="destructive">
+                              <TriangleAlert aria-hidden="true" />
+                              Heartbeat stale
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                        <div>
+                          <dt className="text-xs text-muted">Heartbeat</dt>
+                          <dd className="mt-0.5">
+                            {formatAge(scheduler.heartbeat_age_seconds)} ·{" "}
+                            <DateWithRelative
+                              value={scheduler.last_heartbeat_at}
+                            />
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-muted">
+                            最近 cycle 開始
+                          </dt>
+                          <dd className="mt-0.5">
+                            <DateWithRelative
+                              value={scheduler.last_cycle_started_at}
+                            />
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-muted">
+                            最近 cycle 完成
+                          </dt>
+                          <dd className="mt-0.5">
+                            <DateWithRelative
+                              value={scheduler.last_cycle_completed_at}
+                            />
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs text-muted">Revision</dt>
+                          <dd className="mt-0.5 font-mono">
+                            r{scheduler.revision}
+                          </dd>
+                        </div>
+                      </dl>
+                      {scheduler.last_error && (
+                        <Alert variant="warning" role="status">
+                          <TriangleAlert size={17} />
+                          <AlertDescription>
+                            <span className="font-semibold">最近錯誤：</span>
+                            {scheduler.last_error}
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+                        <SchedulerActionButton
+                          role={role}
+                          control={scheduler}
+                          pending={
+                            actions.bulkPending || actions.pendingKeys.size > 0
+                          }
+                          requestToggle={actions.requestToggleScheduler}
+                        />
+                        {actionError && (
+                          <p className="m-0 text-xs text-danger" role="alert">
+                            {actionError}
+                          </p>
+                        )}
+                      </div>
+                    </article>
+                  )
+                })}
+              </div>
+            )}
+          </SchedulerSection>
         </div>
       )}
       {actions.dialog}
@@ -1509,20 +1305,9 @@ export function MarketFreshnessPanel({
   )
 }
 
-export function OperationsOverviewPage({
-  role,
-  profile = "pilot",
-  updateProfile = () => undefined,
-}: {
-  role?: AdminRole
-  profile?: SchedulerProfile
-  updateProfile?: (profile: SchedulerProfile) => void
-}) {
+export function OperationsOverviewPage({ role }: { role?: AdminRole }) {
   const effectiveRole = role ?? "viewer"
-  const audit: DashboardRequest["audit"] = {
-    ...OPERATIONS_OVERVIEW_AUDIT,
-    profile,
-  }
+  const audit: DashboardRequest["audit"] = { ...OPERATIONS_OVERVIEW_AUDIT }
   const query = useOperationsDashboardQuery("overview", audit)
   const state = useOperationsDashboardState(query)
   const overview = state.response?.view === "overview" ? state.response : null
@@ -1538,8 +1323,6 @@ export function OperationsOverviewPage({
       <OperationsDashboardStatus state={state} />
       <div className="grid gap-5">
         <IngestionOverviewPanel
-          profile={profile}
-          updateProfile={updateProfile ?? (() => undefined)}
           freshnessResult={overview?.freshness ?? null}
           schedulersResult={overview?.schedulers ?? null}
           loading={state.initialLoading}

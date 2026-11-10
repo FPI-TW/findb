@@ -929,9 +929,9 @@ AWS 路徑、首次切換、備份與回退下限見 [deployment.md](deployment.
 
 ## Dashboard 與 API
 
-Overview／交付監控以 `profile=pilot|full_market` 分頁。Staging 預設 Pilot，production 預設 Full market。
-各自呈現數量、缺口、告警、首次日期與啟動狀態；URL、篩選、刷新及 cache key 均帶 profile。
-未指定 profile 的既有 plan API 維持 Full market 語意，新 runtime／Dashboard 必須明確傳入。
+Overview／交付監控只呈現 Full market，不提供 Pilot 分頁；Dashboard 對 Admin API 固定傳入
+`execution_profile=full_market`，舊連結的 `profile` 參數會被忽略。頁面呈現數量、缺口、告警、首次日期與啟動狀態。
+未指定 profile 的既有 plan API 維持 Full market 語意，新 runtime 必須明確傳入。
 細節見 [dashboard.md](dashboard.md)。
 
 ### Freshness 的持久化完整度摘要

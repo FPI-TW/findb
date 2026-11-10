@@ -40,8 +40,7 @@ export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
     >
       <h2 className="m-0 text-base font-bold text-ink">供應商工作佇列</h2>
       <p className="mt-1 text-xs text-muted">
-        Pilot、Full market、歷史回補與維護共用同供應商
-        FIFO；不同供應商可同時執行。
+        每日抓取、歷史回補與維護共用同供應商 FIFO；不同供應商可同時執行。
       </p>
       <QueryStatus
         hasData={result !== undefined}

@@ -41,10 +41,9 @@ API failure都不得enqueue。
 
 ### Scheduler 啟動資格
 
-Dashboard 導入概況與 Scheduler 面板依 `full_market_` key 前綴區分 Full market 與 Pilot，
-兩區各有獨立的單筆與「全部啟動／全部停止」控制，只有 Owner 可操作。每區批次只更新該區。
-Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「Full market 全部啟動」或
-「Pilot 全部啟動」只更新該區符合資格且
+Dashboard 導入概況與 Scheduler 面板只顯示 Full market controls（`execution_profile=full_market`），
+提供單筆與「全部啟動／全部停止」控制，只有 Owner 可操作。
+Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「全部啟動」只更新符合資格且
 尚未 running 的 controls，確認視窗顯示實際更新數量與跳過原因；單筆啟動套用相同資格。
 全市場啟動須至少一個 feed 同時具備 published baseline；缺日曆依市場`weekend_days`預設，
 內建市場預設週六日休市；其餘
@@ -53,13 +52,8 @@ readiness／enrollment／expiry／capacity 條件不再列為啟動 gate。stopp
 當地今天決定並永久保留。停止不受 start blockers 限制；旗標關閉由 trusted lifecycle/management
 流程停止 Full controls/audit，重新開旗標仍需 Owner 手動 start，GET 不寫 control。
 平台限制與治理資料清單見
-[Full market runbook](full_market.md)。Pilot tab 預設，URL `profile=full_market` 選 Full tab；
-切換不寫 state，各 tab 的 bulk 僅處理本 profile。
-
-啟動單筆或批次前，若同 provider 另一區期望或實際狀態仍為 running（包含停止中），
-確認視窗會提醒範圍重疊、重複抓取與 API 用量風險；Owner 可確認繼續，不構成後端互斥保證。
-建議先停止另一區並等待實際停止。停止操作與不同 provider 的活動不觸發此提醒。
-部署前須分別停止兩區並確認所有 desired／observed state 均為 stopped。
+[Full market runbook](full_market.md)。舊連結的 `profile` 參數會被忽略。
+部署前須停止所有 controls 並確認 desired／observed state 均為 stopped。
 
 ## 上線前檢查
 
