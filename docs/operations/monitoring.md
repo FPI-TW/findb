@@ -32,8 +32,45 @@ Active ingestion failure metrics now cover the five catalog feeds: Twelve Data U
 FinLab TW equity/ETF, TAIFEX futures and FactSet HK. Retired minute datasets stay
 queryable and do not generate new missing-delivery alerts. Cloud resources change
 only after the reviewed IaC plan is applied; see the [retirement runbook](deployment.md#shioaji-退役的-rollback-下限).
-The remaining legacy container/scheduler alarm identities need a separate inventory
-alignment with the unified runtime; this retirement does not establish their health.
+
+## Fetcher consumer inventory
+
+Fetcher container and scheduler alarm identities derive from the generated
+`infra/deploy/generated/provider_inventory.v1.json`; neither OpenTofu root nor the
+collector hand-maintains current consumer names.
+
+- Both `monitoring.tf` roots read the inventory with `jsondecode(file(...))`. Every
+  `consumers[].name` (currently `findb-full-market-*` and `findb-historical-*` for
+  FactSet, FinLab, TAIFEX and Twelve Data) gets health and restart alarms, plus a
+  runtime-security alarm on staging. Every `providers[]` entry gets heartbeat alarms
+  for its `full_market_<provider>_v1` control; production also gets freshness alarms.
+- `backend/scripts/export_provider_catalog.py` writes the same inventory into the
+  `BEGIN/END GENERATED PROVIDER INVENTORY` block of
+  `infra/monitoring/publish_staging_metrics.py`. Its `--check` mode, run by CI, fails
+  when the block is stale. The collector derives each consumer's exact bind mounts from
+  the role and provider. Full market uses
+  `/var/lib/findb-full-market/staging` on staging and `/var/lib/findb-full-market` on
+  production. Historical consumers use their provider-specific `historical` directory.
+  Every consumer also binds the account governor and read-only readiness, and FinLab
+  binds its cache. Tests check these paths against `deploy_fetcher_aws.sh` and
+  `release_fetcher_provider.sh`. The only other mounts allowed are Docker anonymous
+  volumes at image `VOLUME` paths that no bind covers exactly; tests check that
+  allowlist against `fetcher/Dockerfile*`.
+- The inventory, the collector and `infra/deploy/ensure_swap.sh` are read by OpenTofu.
+  Changing any of them triggers the staging infra plan gate, the same as `infra/tofu/`.
+- The pre-unification identities `findb-fetcher-scheduler`,
+  `findb-fetcher-finlab-scheduler` and `findb-fetcher-shioaji-scheduler`, and the
+  scheduler keys `twelve_data_us_common_stocks_daily_v1`, `finlab_tw_equity_eod_v1`
+  and `shioaji_tw_pilot_v1`, remain as retired alarms under the zero-delete plan
+  policy. They have no notification actions, `notBreaching` missing data and
+  `RuntimeStatus=retired`. The collector no longer publishes them, so they settle to
+  `OK`. Physically deleting them needs a separately approved retirement plan.
+- Staging controls are normally stopped, and the collector publishes no heartbeat for
+  a stopped control. Staging heartbeat alarms therefore treat missing data as not
+  breaching. A running control always reports its persisted heartbeat age, so a dead
+  consumer still breaches, and container health covers an absent consumer.
+  Production keeps breaching on missing data, so an unexpectedly stopped production
+  control is visible.
 
 ## Live acceptance record (2026-09-01 to 2026-09-15)
 
@@ -140,11 +177,11 @@ breaching-on-missing alarms are created.
 | Both hosts | Root `DiskUsedPercent >= 85%`, `InodeUsedPercent >= 90%`, collector success `< 1` for 2 × 5 minutes |
 | Required containers | Health `< 1` for 2 × 5 minutes; current-container restart count `>= 3` |
 | RabbitMQ | Local disk or memory alarm flag `>= 1`; collected from `rabbitmq-diagnostics`, without credentials |
-| Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for the retained FinLab or Twelve Data legacy alarm identities |
+| Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for each running `full_market_<provider>_v1` control from the generated inventory; a stopped staging control publishes no datum and is not breaching |
 | RDS recovery | `LatestRestorableTime` lag `>= 1800` seconds, providing a continuous PITR/backup-lag signal |
 | DLM control plane | Exact root-volume policy health `< 1` for 2 × 5 minutes; query failure or missing data also breaches |
 | Public TLS certificate | Verified `notAfter` days remaining `<= 30` for 2 × 5 minutes; TLS query/verification failure suppresses the healthy datum and missing data breaches |
-| Fetcher runtime security | Each of the three active schedulers must preserve non-root `10001:10001`, read-only root, `Privileged=false`, `CapDrop=ALL`, no added capabilities, `no-new-privileges`, exact `/tmp` tmpfs protections, and the exact writable bind-mount allowlist; violation or missing data breaches |
+| Fetcher runtime security | Each generated-inventory consumer must preserve non-root `10001:10001`, read-only root, `Privileged=false`, `CapDrop=ALL`, no added capabilities, `no-new-privileges`, exact `/tmp` tmpfs protections, and the exact bind-mount allowlist (anonymous volumes only at image `VOLUME` paths); violation or missing data breaches |
 | Active-feed contract | Rejected ingress-schema/required-field/completeness attempt count `>= 1` in the overlapping ten-minute window |
 | Active-feed completeness | Non-rerun ingestion run with zero records `>= 1` in the overlapping ten-minute window |
 | Active-feed DQ | Blocking DQ error count `>= 1` in the overlapping ten-minute window |
@@ -181,7 +218,8 @@ and 54 alarms.
 
 The thresholds and evaluation settings are fixed-by-validation variables in
 `infra/tofu/staging/variables.tf`; changing them requires a reviewed IaC
-change. Container and scheduler resource sets are explicit in source; there
+change. FinDB container sets are explicit in source and Fetcher sets come from the
+generated provider inventory; there
 are no per-queue, per-symbol, per-request, or other unbounded dimensions.
 
 PR [#237](https://github.com/FPI-TW/findb/pull/237) merged the custom metrics and alarms;

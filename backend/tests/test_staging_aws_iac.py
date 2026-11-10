@@ -551,6 +551,93 @@ def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:
     assert 'output "session_manager_document_names"' in outputs
 
 
+def test_fetcher_alarm_identities_derive_from_the_generated_inventory() -> None:
+    from app.execution_profiles import scheduler_key
+
+    inventory = json.loads(
+        (REPO_ROOT / "infra/deploy/generated/provider_inventory.v1.json").read_text()
+    )
+    assert [scheduler_key(provider) for provider in inventory["providers"]] == [
+        f"full_market_{provider}_v1" for provider in inventory["providers"]
+    ]
+    retired_containers = (
+        "findb-fetcher-finlab-scheduler",
+        "findb-fetcher-scheduler",
+        "findb-fetcher-shioaji-scheduler",
+    )
+    retired_keys = (
+        "finlab_tw_equity_eod_v1",
+        "shioaji_tw_pilot_v1",
+        "twelve_data_us_common_stocks_daily_v1",
+    )
+    for environment in ("staging", "production"):
+        monitoring = _read(TOFU_ROOT / environment / "monitoring.tf")
+        assert (
+            'provider_inventory = jsondecode(file("${path.module}/../../deploy/generated/'
+            'provider_inventory.v1.json"))'
+        ) in monitoring
+        assert re.search(
+            r"fetcher += toset\(\[for consumer in local\.provider_inventory\.consumers : "
+            r"consumer\.name\]\)",
+            monitoring,
+        )
+        assert (
+            "scheduler_keys = toset([for provider in local.provider_inventory.providers : "
+            '"full_market_${provider}_v1"])'
+        ) in monitoring
+        # Current names are never hand-maintained alongside the inventory.
+        for consumer in inventory["consumers"]:
+            assert consumer["name"] not in monitoring
+        # Zero-delete: every pre-unification identity remains as a retired alarm.
+        retired = monitoring.split("retired_fetcher_containers", 1)[1].split(
+            "retired_alarm_resources", 1
+        )[0]
+        for identity in (*retired_containers, *retired_keys):
+            assert f'"{identity}"' in retired
+        assert (
+            "retired_alarm_resources" in monitoring
+            and "setunion(local.retired_fetcher_containers, local.retired_scheduler_keys)"
+            in monitoring
+        )
+        assert (
+            "fetcher = setunion(local.monitored_containers.fetcher, "
+            "local.retired_fetcher_containers)"
+        ) in monitoring
+        assert (
+            "retained_alarm_scheduler_keys = setunion(local.scheduler_keys, "
+            "local.retired_scheduler_keys)"
+        ) in monitoring
+
+    staging = _read(STAGING_ROOT / "monitoring.tf")
+    # The runtime-security name keeps every existing identity unchanged while
+    # current consumers read naturally.
+    assert (
+        '"findb-staging-fetcher-${trimprefix(trimprefix(container, "findb-fetcher-"), '
+        '"findb-")}-runtime-security"'
+    ) in staging
+    heartbeat = staging.split('"scheduler_${scheduler_key}" => {', 1)[1].split("\n      }", 1)[0]
+    assert 'treat_missing_data  = "notBreaching"' in heartbeat
+    custom = staging.split('resource "aws_cloudwatch_metric_alarm" "custom" {', 1)[1]
+    assert (
+        'treat_missing_data        = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching"'
+        in custom
+    )
+    assert "actions_enabled           = !contains(local.retired_alarm_resources" in custom
+
+    production = _read(TOFU_ROOT / "production" / "monitoring.tf")
+    alarm = production.split('resource "aws_cloudwatch_metric_alarm" "custom" {', 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    assert "depends_on = [aws_ssm_association.metric_publisher]" in alarm
+    assert (
+        'treat_missing_data  = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : "breaching"'
+        in alarm
+    )
+    assert (
+        "actions_enabled = !contains(local.retired_alarm_resources, each.value.resource)" in alarm
+    )
+
+
 def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     monitoring = _read(STAGING_ROOT / "monitoring.tf")
     iam = _read(STAGING_ROOT / "iam.tf")

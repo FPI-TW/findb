@@ -70,7 +70,8 @@ uv --directory backend run python scripts/export_provider_catalog.py --check
 資料產物包含 schema version 與 SHA-256；Backend 保存 canonical source digest，其它消費端保存
 各自正向欄位投影的 digest。來源物件與集合排序不改變輸出；只改 Backend 時間不改非排程 Fetcher
 descriptor、Dashboard constants 或 Infra inventory。單純時間變更只發布 Backend，無須重建 Fetcher image。
-獨立傳送至 SSM 的 host／recovery／owner-lock guards 內嵌同一生成 inventory，生成區塊納入 `--check`。
+獨立傳送至 SSM 的 host／recovery／owner-lock guards 與 `infra/monitoring/publish_staging_metrics.py`
+內嵌同一生成 inventory，生成區塊納入 `--check`；OpenTofu monitoring 直接讀 inventory JSON 推導告警。
 `--check` 不寫檔，任一產物缺失或內容被修改就失敗，已接入 FinDB／Fetcher CI。
 Fetcher 使用正向欄位投影，不包含 schedule、deadline、date lag 或 publication retry window，避免
 Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。

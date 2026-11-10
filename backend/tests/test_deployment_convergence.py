@@ -38,7 +38,12 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
         (["infra/tofu/staging/main.tf"], (True, False, False, False, True)),
         (["infra/env/production/findb/remote.env.example"], (True, False, False, False, True)),
         (["infra/env/aws_configuration.py"], (True, False, False, False, True)),
-        (["infra/monitoring/publish_staging_metrics.py"], (True, False, False, False, False)),
+        (["infra/monitoring/publish_staging_metrics.py"], (True, False, False, False, True)),
+        (["infra/deploy/ensure_swap.sh"], (True, True, True, True, True)),
+        (
+            ["infra/deploy/generated/provider_inventory.v1.json"],
+            (True, True, True, True, True),
+        ),
         (["infra/acceptance/native_feed_evidence.py"], (True, False, False, False, False)),
         (
             ["infra/acceptance/export_native_fetcher_evidence.py"],
@@ -61,6 +66,17 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
 def test_change_policy_truth_table(paths: list[str], expected: tuple[bool, ...]) -> None:
     result = policy.classify(paths)
     assert tuple(result[key] for key in policy.OUTPUTS) == expected
+
+
+def test_every_file_read_by_opentofu_runs_the_plan_gate() -> None:
+    read = re.compile(r'(?:file|filebase64)\("\$\{path\.module\}/([^"]+)"\)')
+    inputs = set()
+    for source in (ROOT / "infra/tofu").rglob("*.tf"):
+        for relative in read.findall(source.read_text(encoding="utf-8")):
+            inputs.add((source.parent / relative).resolve().relative_to(ROOT).as_posix())
+    assert "infra/deploy/generated/provider_inventory.v1.json" in inputs
+    for path in sorted(inputs):
+        assert policy.classify([path])["infra_plan"], path
 
 
 def test_change_policy_full_selection_without_trusted_base(tmp_path: Path) -> None:
