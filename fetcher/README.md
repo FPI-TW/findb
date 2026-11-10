@@ -99,6 +99,8 @@ historical runner 可用自己的 context 呼叫同一個 `acquire`。
 
 | 介面 | 職責 |
 | --- | --- |
+| `build_universe(feeds, UniverseContext) -> {dataset: UniverseSnapshot}` | 抓官方名單、對照 provider catalogue，回傳 effective date、members 與官方 evidence bytes；runtime 負責持久化 evidence 與提交 Source |
+| `catalogue_request`、`catalogue_rows`、`catalogue_evidence_dataset` | 選用（`catalogue_datasets`）：HTTP provider catalogue 的 request 與解析；runtime 以 adapter 宣告的 `catalogue_journal` 治理、journal 與重放 |
 | `acquire(member, AcquisitionContext) -> AcquisitionResult` | 抓取一個成員並映射成 contract request 與其 raw object，或回傳 no_trade evidence；不呼叫 Source |
 | `acquire_batch(members, BatchContext)`、`batch_status(evidence)` | 選用（`batch = True`）：一次原生查詢整個 cohort 再逐成員交付 |
 | `dated_universe(day, AcquisitionContext) -> DatedUniverse` | 選用（`dated_universe_code`）：Source 要求時以當日觀察建立 universe |
@@ -109,7 +111,13 @@ historical runner 可用自己的 context 呼叫同一個 `acquire`。
 `AcquisitionContext` 提供 dataset、trade date、單一觀察時間 `fetched_at`、feed、delivery metadata、
 packaged catalog 的 contract（schema id 與 current version，不寫死在 adapter）、平台 limits、HTTP client，
 以及 `persist`、`observe_response`、`rate_limited`、`snapshot` 四個 runtime callable；共用一張表的
-provider（FinLab）另取得凍結 cohort。
+provider（FinLab）另取得凍結 cohort。`UniverseContext` 提供 Source 授權的 dataset 範圍、單一觀察時間、
+Source 發布的 feed 時區，以及 governed snapshot／catalogue、persist、byte accounting、limits 重讀與
+SDK pacing callable。官方 snapshot URL 對應的 raw dataset 由 `full_market_universe.official_snapshot_dataset`
+決定。
+
+Runtime 主流程不判斷 provider 名稱；`load_readiness` 的 FinLab response 上限屬 provider metadata 邊界
+（#399），不在 adapter 內。
 
 `classify` 依 phase（`member` 成員迴圈、`round` daily 輪次、`maintenance` universe refresh）回傳：
 
@@ -131,8 +139,29 @@ cohort 大小，並破壞既有 journal key 的重放。freeze、checkpoint 與�
 `_deliver_batch_plan` 負責。
 
 `tests/test_provider_adapter_golden.py` 以固定原生輸入與時鐘鎖定四個 provider 的 prepared body、
-idempotency key、R2 物件、Source outcome 與成員結算（`tests/fixtures/provider_adapter_golden.json`）。
-改動 adapter 時這些 golden 必須維持不變；只有刻意的 contract 變更才以 `FINDB_UPDATE_GOLDEN=1` 重產。
+idempotency key、R2 物件、Source outcome 與成員結算（`tests/fixtures/provider_adapter_golden.json`）；
+`tests/test_provider_universe_golden.py` 鎖定 universe refresh 的 Source body 與 R2 物件
+（`tests/fixtures/provider_universe_golden.json`）。改動 adapter 時這些 golden 必須維持不變；只有刻意的
+contract 變更才以 `FINDB_UPDATE_GOLDEN=1` 重產。
+
+### 新增 provider 步驟
+
+Fetcher 端只新增模組與註冊，不修改 runtime 的分支或 `except`：
+
+1. Backend `backend/configs/provider_catalog.v1.json` 加入 feed、contract 與 delivery slot，重新產生
+   Fetcher metadata；`execution_config._IMPLEMENTED_ADAPTERS` 加入 `(provider, dataset_key)`。
+2. `providers/<provider>.py` 放原生 client、bounded response 與 contract mapping（historical 共用）。
+3. `provider_adapters/<provider>.py` 繼承 `ProviderAdapter`：實作 `build_universe` 與 `acquire`（或
+   `batch = True` 加 `acquire_batch`）；需要時宣告 `dated_universe_code`、`shared_response_prefix`、
+   `outage_retry_seconds`、`catalogue_datasets`。時區、slot、contract 版本一律從 context 取得。
+4. `classify(exc, phase)` 為該 provider 的每個例外在 `member`、`round`、`maintenance` 三個 phase
+   回傳分類，其餘一律 `PASSTHROUGH`；`diagnostic` 只回傳有界欄位。
+5. 在 `provider_adapters/__init__.py` 的 `ADAPTERS` 註冊。
+6. 測試：在 `tests/test_provider_adapters.py` 補分類表與只依 context 的抓取（feed 取自
+   `tests/fixtures/execution_config.v1.json`），並在兩個 golden 檔新增該 provider 的情境
+   （只產生新 key）。
+7. 平台 limits、account governor declaration、部署 inventory 與 provider-work 必要條件見
+   [新增 provider 的必要條件](../docs/architecture/provider_work.md#新增-provider-的必要條件)。
 
 ## Runtime 設定
 

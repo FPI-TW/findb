@@ -349,7 +349,9 @@ shared FD 與 heartbeat failure；child 在 usage／SDK I/O 前驗證繼承 FD i
 
 ## 新增 provider 的必要條件
 
-新增 provider／scope 必須同時完成 capability／registry／contract／normalizer／Serve 驗收，且：
+新增 provider／scope 必須同時完成 capability／registry／contract／normalizer／Serve 驗收。Fetcher 的
+provider 專屬抓取、universe 建立與例外分類放在 `findb_fetcher.provider_adapters`，runtime 不新增 provider
+分支或 `except`；介面與步驟見 [Fetcher provider adapters](../../fetcher/README.md#provider-adapters)。此外：
 
 1. 接入 shared DB FIFO 與該 environment/provider 的 shared flock；不得另建 historical lease 或繞過 owner 的 catalogue path。
 2. 所有 SDK、HTTP、subprocess 與 descendants 在實際 I/O 前重查 acquisition fence，並繼承 FD／提供可證明的 stop-reap 邊界。
