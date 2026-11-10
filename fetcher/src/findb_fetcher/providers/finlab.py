@@ -52,6 +52,14 @@ class FinLabPayloadError(FinLabError):
     """A gateway table cannot safely become a market_eod contract."""
 
 
+class FinLabValueError(FinLabPayloadError):
+    """One symbol's observation is unusable; ``code`` is a bounded, message-free class."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class FinLabSdkError(FinLabError):
     """The optional FinLab SDK is unavailable or returned an unsafe table."""
 
@@ -103,6 +111,9 @@ class FinLabSdkGateway:
     on_response_bytes: Callable[[int], None] | None = dataclass_field(
         default=None, repr=False, compare=False
     )
+    # Full daily narrows a table to the listed symbols FinLab serves and isolates
+    # the rest per member; the historical bundle keeps the strict whole-scope check.
+    allow_missing_symbols: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_identity_credential", self.api_token)
@@ -113,9 +124,16 @@ class FinLabSdkGateway:
 
     @classmethod
     def from_env(
-        cls, *, on_response_bytes: Callable[[int], None] | None = None
+        cls,
+        *,
+        on_response_bytes: Callable[[int], None] | None = None,
+        allow_missing_symbols: bool = False,
     ) -> "FinLabSdkGateway":
-        return cls(api_token=installed_token(), on_response_bytes=on_response_bytes)
+        return cls(
+            api_token=installed_token(),
+            on_response_bytes=on_response_bytes,
+            allow_missing_symbols=allow_missing_symbols,
+        )
 
     def __repr__(self) -> str:
         return "FinLabSdkGateway(api_token=<redacted>)"
@@ -239,7 +257,10 @@ class FinLabSdkGateway:
                                 frame, reviewed_symbols=reviewed_symbols
                             )
                         return _table_from_dataframe(
-                            frame, target_date=target_date, reviewed_symbols=reviewed_symbols
+                            frame,
+                            target_date=target_date,
+                            reviewed_symbols=reviewed_symbols,
+                            allow_missing_symbols=self.allow_missing_symbols,
                         )
                     except FinLabSdkError as exc:
                         raise type(exc)(str(exc)) from None
@@ -625,14 +646,25 @@ def _table_from_dataframe(
     *,
     target_date: date,
     reviewed_symbols: tuple[str, ...],
+    allow_missing_symbols: bool = False,
 ) -> FinLabDatasetTable:
-    """Narrow a pandas-like FinLab frame to exactly one validated date row."""
+    """Narrow a pandas-like FinLab frame to exactly one validated date row.
+
+    With ``allow_missing_symbols`` the table keeps only reviewed symbols present
+    as columns, so a symbol FinLab does not serve yet stays a per-member gap.
+    """
     index_values, dates, column_values = _frame_axes(frame)
     loc = getattr(frame, "loc", None)
     if loc is None:
         raise FinLabSdkError("FinLab dataset result is not a DataFrame")
     missing_symbols = set(reviewed_symbols).difference(column_values)
-    if missing_symbols:
+    if missing_symbols and allow_missing_symbols:
+        reviewed_symbols = tuple(
+            symbol for symbol in reviewed_symbols if symbol not in missing_symbols
+        )
+        if not reviewed_symbols:
+            raise FinLabSdkError("FinLab dataset serves none of the reviewed symbols")
+    elif missing_symbols:
         raise FinLabSdkError("FinLab dataset is missing reviewed symbols")
     matching = [position for position, value in enumerate(dates) if value == target_date]
     if len(matching) != 1:
@@ -720,20 +752,22 @@ def _bundle_bytes(
 
 def _numeric_text(value: object, *, field: str) -> str:
     if isinstance(value, bool) or value is None:
-        raise FinLabPayloadError(f"{field} contains a non-numeric value")
+        raise FinLabValueError("non_numeric", f"{field} contains a non-numeric value")
     try:
         decimal = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
-        raise FinLabPayloadError(f"{field} contains a non-numeric value") from exc
-    if not decimal.is_finite() or decimal < 0:
-        raise FinLabPayloadError(f"{field} must be finite and non-negative")
+        raise FinLabValueError("non_numeric", f"{field} contains a non-numeric value") from exc
+    if not decimal.is_finite():
+        raise FinLabValueError("non_finite", f"{field} must be finite and non-negative")
+    if decimal < 0:
+        raise FinLabValueError("negative", f"{field} must be finite and non-negative")
     return format(decimal, "f")
 
 
 def _integer_value(value: str) -> int:
     decimal = Decimal(value)
     if decimal != decimal.to_integral_value():
-        raise FinLabPayloadError("volume must be an integer")
+        raise FinLabValueError("volume_not_integer", "volume must be an integer")
     return int(decimal)
 
 
@@ -744,7 +778,7 @@ def _validate_ohlcv(values: Mapping[str, Mapping[str, str]], symbols: Sequence[s
         low_value = Decimal(values["low"][symbol])
         close_value = Decimal(values["close"][symbol])
         if high_value < max(open_value, low_value, close_value):
-            raise FinLabPayloadError(f"{symbol} high violates OHLC bounds")
+            raise FinLabValueError("ohlc_bounds", f"{symbol} high violates OHLC bounds")
         if low_value > min(open_value, high_value, close_value):
-            raise FinLabPayloadError(f"{symbol} low violates OHLC bounds")
+            raise FinLabValueError("ohlc_bounds", f"{symbol} low violates OHLC bounds")
         _integer_value(values["volume"][symbol])

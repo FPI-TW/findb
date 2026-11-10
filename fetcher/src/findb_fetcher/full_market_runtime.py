@@ -90,6 +90,7 @@ from findb_fetcher.providers.finlab import (
     FinLabSdkGateway,
     FinLabSymbol,
     FinLabTargetNotReadyError,
+    FinLabValueError,
     build_finlab_dataset_bundle,
 )
 from findb_fetcher.providers.finlab import (
@@ -141,6 +142,40 @@ class ProviderHTTPError(ReadinessBlockedError):
         super().__init__(message)
         self.status_code = status_code
         self.dispatched = True
+
+
+class MemberUnavailableError(RuntimeError):
+    """One member cannot be delivered while the shared provider response is sound.
+
+    ``code`` is a bounded class (never a provider message); the member is blocked
+    for this plan and the round continues with the other members.
+    """
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+# Shared FinLab evidence URL; the bundle checksum identifies the exact observation.
+FINLAB_PRICE_EVIDENCE_URL = "https://www.finlab.tw/data/price-close?dataset={dataset}"
+FINLAB_PRICE_FIELDS = ("open", "high", "low", "close")
+
+
+def _finlab_unobserved(value: object) -> bool:
+    if value is None or isinstance(value, bool):
+        return value is None
+    try:
+        return not math.isfinite(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+
+
+def _finlab_no_trade(values: dict[str, object]) -> bool:
+    """FinLab leaves every price empty, with no positive volume, on a day without trades."""
+    volume = values["volume"]
+    return all(_finlab_unobserved(values[field]) for field in FINLAB_PRICE_FIELDS) and (
+        _finlab_unobserved(volume) or volume == 0
+    )
 
 
 class DatedUniversePendingError(ReadinessBlockedError):
@@ -584,7 +619,9 @@ class FullMarketRuntime:
                 raise ReadinessBlockedError("FinLab SDK version is unsupported")
         except importlib.metadata.PackageNotFoundError:
             raise ReadinessBlockedError("FinLab pinned SDK is unavailable") from None
-        return FinLabSdkGateway.from_env(on_response_bytes=self._observed_response)
+        return FinLabSdkGateway.from_env(
+            on_response_bytes=self._observed_response, allow_missing_symbols=True
+        )
 
     @_governed
     def _catalogue(self, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
@@ -2059,6 +2096,18 @@ class FullMarketRuntime:
             except ProviderWorkBasisMismatchError:
                 self._price_basis_manual(plan, part, member_key, key)
                 continue
+            except MemberUnavailableError as exc:
+                # Deterministic for this table: block only the member, without retries
+                # that would download the shared table again.
+                self.source.outcome(
+                    plan["plan_id"],
+                    work_item_id=part["work_item_id"],
+                    member_key=member_key,
+                    reason="empty_response" if exc.code == "missing_symbol" else "source_error",
+                )
+                self.state.finish(key, status="manual", reason="member_unavailable")
+                self._record_diagnostic(key, exc)
+                continue
             except SourceAPIResponseError as exc:
                 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
 
@@ -2155,6 +2204,11 @@ class FullMarketRuntime:
                 http_status=exc.status_code,
                 provider_code=exc.provider_code,
                 dispatched=exc.dispatched,
+            )
+        elif isinstance(exc, (MemberUnavailableError, FinLabValueError)):
+            prefix = "member" if isinstance(exc, MemberUnavailableError) else "finlab_value"
+            self.state.record_diagnostic(
+                key, provider=self.provider, category=f"{prefix}:{exc.code}"
             )
         elif isinstance(exc, QuotaBlockedError):
             self.state.record_diagnostic(
@@ -2284,9 +2338,12 @@ class FullMarketRuntime:
                         "close": "price:收盤價",
                         "volume": "price:成交股數",
                     },
+                    # Gap members never reach a provider call, so they never
+                    # constrain the table FinLab serves for the mapped ones.
                     symbols=tuple(
                         FinLabSymbol(item["provider_symbol"], item["symbol"])
                         for item in release["members"]
+                        if item["mapping_status"] == "mapped"
                     ),
                     production_scope=True,
                 )
@@ -2315,6 +2372,33 @@ class FullMarketRuntime:
                 table_stored = self._persist(table_raw, dataset, "dataset_bundle")
                 self.bundles[cache_key] = (config, tables, table_raw, table_stored)
             full_config, tables, raw, stored = self.bundles[cache_key]
+            provider_symbol = member["provider_symbol"]
+            if any(provider_symbol not in table.symbols for table in tables.values()):
+                raise MemberUnavailableError("missing_symbol")
+            values = {
+                field: table.values[0][table.symbols.index(provider_symbol)]
+                for field, table in tables.items()
+            }
+            if _finlab_no_trade(values):
+                self.source.outcome(
+                    plan["plan_id"],
+                    work_item_id=part["work_item_id"],
+                    member_key=member["member_key"],
+                    reason="no_trade",
+                    evidence={
+                        "url": FINLAB_PRICE_EVIDENCE_URL.format(dataset=dataset),
+                        "sha256": checksum(raw),
+                        "observed_at": now.isoformat(),
+                        "source_symbol": provider_symbol,
+                        "trade_date": day.isoformat(),
+                        "session": member.get("session"),
+                        "source_status": "no_trade",
+                        "source_excerpt": canonical_bytes(
+                            {field: str(value) for field, value in sorted(values.items())}
+                        ).decode()[:500],
+                    },
+                )
+                return []
             single_config = FinLabDatasetConfig(
                 dataset_key=dataset,
                 market="TW",
@@ -2335,9 +2419,13 @@ class FullMarketRuntime:
                 )
                 for field, table in tables.items()
             }
-            bundle = build_finlab_dataset_bundle(
-                config=single_config, target_date=day, tables=single_tables
-            )
+            try:
+                bundle = build_finlab_dataset_bundle(
+                    config=single_config, target_date=day, tables=single_tables
+                )
+            except FinLabValueError as exc:
+                # The shared table passed validation; only this member's values are unusable.
+                raise MemberUnavailableError(exc.code) from None
             request = finlab_request(bundle, fetched_at=now, delivery=delivery)
             request["payload"]["data"] = [
                 row for row in request["payload"]["data"] if row["symbol"] == member["symbol"]

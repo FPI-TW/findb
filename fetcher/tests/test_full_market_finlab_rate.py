@@ -441,3 +441,104 @@ def test_readiness_expiring_during_pacing_does_not_gate_acquisition(
     with runtime.state.connection() as db:
         assert db.execute("SELECT SUM(requests) FROM full_quota").fetchone()[0] == 4
     runtime.http.close()
+
+
+@pytest.mark.parametrize("dataset", ["tw_equity_eod", "tw_etf_eod"])
+def test_finlab_member_failures_stay_member_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dataset: str
+) -> None:
+    runtime, source, raw, clock, context = _finlab_runtime(tmp_path, monkeypatch, dataset)
+    nan = float("nan")
+    observations = {
+        "2330": {"open": 10, "high": 11, "low": 9, "close": 10, "volume": 1000},
+        # A listed symbol without trades that day: every price empty, no volume.
+        "1538": {"open": nan, "high": nan, "low": nan, "close": nan, "volume": nan},
+        "1589": {"open": 10, "high": 9, "low": 8, "close": 10, "volume": 1000},
+        "4804": {"open": 10, "high": nan, "low": 9, "close": 10, "volume": 1000},
+    }
+    fields = {
+        "price:開盤價": "open",
+        "price:最高價": "high",
+        "price:最低價": "low",
+        "price:收盤價": "close",
+        "price:成交股數": "volume",
+    }
+    served = tuple(observations)
+    members = [*served, "00416A", "00418A"]
+    context.release["members"] = [
+        {
+            "symbol": symbol,
+            "provider_symbol": symbol,
+            "member_key": symbol,
+            "mapping_status": "gap" if symbol == "00418A" else "mapped",
+        }
+        for symbol in members
+    ]
+    context.plan["parts"][0]["member_keys"] = members
+    runtime.state.record_plan(context.plan, "finlab")
+    from findb_fetcher import acquisition
+
+    def fetch_dataset(name: str, *, target_date: date, symbols: tuple[str, ...]) -> Any:
+        with acquisition.Acquisition("finlab") as operation:
+            operation.start()
+            context.gateway.calls.append((name, clock.elapsed, symbols))
+            # FinLab does not serve 00416A yet; the gateway narrows to served symbols.
+            present = tuple(symbol for symbol in symbols if symbol in observations)
+            return FinLabDatasetTable(
+                dates=(target_date.isoformat(),),
+                symbols=present,
+                values=(tuple(observations[symbol][fields[name]] for symbol in present),),
+            )
+
+    context.gateway.fetch_dataset = fetch_dataset
+    delivered: list[Any] = []
+    runtime.delivery = SimpleNamespace(
+        prepare=lambda request: SimpleNamespace(body=canonical_bytes(request), request=request),
+        deliver=lambda body: delivered.append(body.request) or SimpleNamespace(run_id=UUID(int=1)),
+        get_run_status=lambda *args, **kwargs: SimpleNamespace(
+            status="completed", failed_records=0, total_records=1, success_records=1
+        ),
+    )
+
+    runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+
+    calls = context.gateway.calls
+    assert len(calls) == 5
+    assert all(call[2] == (*served, "00416A") for call in calls)
+    assert [request["payload"]["data"][0]["symbol"] for request in delivered] == ["2330"]
+    outcomes = {item["member_key"]: item for item in source.outcomes}
+    assert {key: item["reason"] for key, item in outcomes.items()} == {
+        "1538": "no_trade",
+        "1589": "source_error",
+        "4804": "source_error",
+        "00416A": "empty_response",
+        "00418A": "mapping_gap",
+    }
+    evidence = outcomes["1538"]["evidence"]
+    assert evidence["source_status"] == "no_trade"
+    assert evidence["source_symbol"] == "1538"
+    assert evidence["trade_date"] == "2026-10-01"
+    assert evidence["sha256"] == checksum(raw.calls[0])
+    assert evidence["url"].startswith("https://")
+    with runtime.state.connection() as db:
+        rows = {
+            row["member_key"]: (row["status"], row["reason"])
+            for row in db.execute(
+                "SELECT member_key,status,reason FROM full_work WHERE plan_id=?",
+                (context.plan["plan_id"],),
+            )
+        }
+        diagnostics = sorted(
+            row["category"] for row in db.execute("SELECT category FROM full_work_diagnostic")
+        )
+    assert {key: rows[key] for key in members} == {
+        "2330": ("complete", None),
+        "1538": ("complete", "source_proven_no_trade"),
+        "1589": ("manual", "member_unavailable"),
+        "4804": ("manual", "member_unavailable"),
+        "00416A": ("manual", "member_unavailable"),
+        "00418A": ("manual", "mapping_gap"),
+    }
+    assert diagnostics == ["member:missing_symbol", "member:non_finite", "member:ohlc_bounds"]
+    assert not runtime.state.has_blocking_manual(context.plan["plan_id"])
+    runtime.http.close()
