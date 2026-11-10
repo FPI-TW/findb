@@ -484,95 +484,22 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 
-    def install_version_four(self, *, pilot_running=False):
-        """A v4 host still holds Pilot consumers, drained before this release."""
-        deployment = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-        deployment.write_text(
-            deployment.read_text().replace("# pilot-retired-v1:", "# previous-profiles:")
-        )
-        self.manifest["fetcher_bundle_version"] = 4
-        with release.SourceBundleReader(self.root) as source:
-            self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher", 3, 4)
-            )
-        self.write_manifest()
-        for provider in ("twelve_data", "finlab", "taifex", "factset"):
-            row = self.row(
-                f"findb-pilot-{provider.replace('_', '-')}",
-                "twelve_data" if provider == "taifex" else provider,
-                self.runtime_args("pilot", provider),
-            )
-            if pilot_running:
-                row["State"].update(Running=True, Status="running")
-            self.rows.append(row)
-
-    def test_version_four_host_with_drained_pilot_residue_is_eligible(self):
-        self.install_version_four()
-        self.assertEqual(len(self.rows), 12)
-        self.assertEqual(self.check(), "drained")
-        self.rows = [row for row in self.rows if not row["Name"].startswith("/findb-pilot-")]
-        self.assertEqual(self.check(), "drained")
-
-    def test_running_or_undrained_pilot_residue_blocks_the_release(self):
-        self.install_version_four(pilot_running=True)
-        self.rows[0]["Config"]["Env"].append("SOURCE_CLIENT_KEY=secret-source-key")
-        output = io.StringIO()
-        with redirect_stdout(output), self.assertRaisesRegex(ValueError, "must be stopped"):
-            self.check()
-        self.assertEqual(
-            output.getvalue(), "fetcher_host_eligibility=failed reason=pilot_residue_running\n"
-        )
-        for change in ({"ExitCode": 137}, {"OOMKilled": True}, {"Error": "private"}):
-            with self.subTest(change=change):
-                self.rows = self.rows[:8]
-                self.install_version_four()
-                self.rows[-1]["State"].update(change)
-                output = io.StringIO()
-                with redirect_stdout(output), self.assertRaises(ValueError):
-                    self.check()
-                self.assertEqual(
-                    output.getvalue(),
-                    "fetcher_host_eligibility=failed reason=pilot_residue_not_drained\n",
-                )
-                self.assertNotIn("private", output.getvalue())
-
-    def test_pilot_residue_is_rejected_after_retirement_or_with_retained_names(self):
+    def test_pilot_residue_is_rejected_after_retirement(self):
         residue = self.row("findb-pilot-finlab", "finlab", self.runtime_args("pilot", "finlab"))
         self.rows.append(residue)
         with self.assertRaisesRegex(ValueError, "after its retirement"):
             self.check()
-        self.rows.pop()
-        self.install_version_four()
         self.rows[-1]["Name"] = "/findb-pilot-factset-previous"
         with self.assertRaisesRegex(ValueError, "unknown consumer"):
             self.check()
 
-    def test_accepted_v3_host_is_eligible_for_bootstrap_upgrade(self):
-        for target in ("local", "staging", "production"):
-            path = self.root / f"fetcher/configs/full_market.{target}.v1.json"
-            path.write_bytes(
-                (
-                    ROOT / f"fetcher/tests/fixtures/legacy_schedules/full_market.{target}.v1.json"
-                ).read_bytes()
-            )
-        deployment = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-        deployment.write_text(
-            deployment.read_text()
-            .replace("# backend-schedules-v1:", "# legacy-clocks:")
-            .replace("# pilot-retired-v1:", "# previous-profiles:")
-        )
-        self.manifest["fetcher_bundle_version"] = 3
-        with release.SourceBundleReader(self.root) as source:
-            self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher", 3, 3)
-            )
-        self.write_manifest()
-        for row in self.rows:
-            row["Config"]["Cmd"] = [
-                arg.replace("/bootstrap.", "/full_market.") for arg in row["Config"]["Cmd"]
-            ]
-            row["Args"] = row["Config"]["Cmd"][1:]
-        self.assertEqual(self.check(), "drained")
+    def test_pre_v5_hosts_are_below_the_rollback_floor(self):
+        for version in (3, 4):
+            with self.subTest(version=version):
+                self.manifest["fetcher_bundle_version"] = version
+                self.write_manifest()
+                with self.assertRaisesRegex(ValueError, "format identity invalid"):
+                    self.check()
 
     def test_pre_unification_schema_is_rejected(self):
         for version in (1, 2):

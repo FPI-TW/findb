@@ -31,8 +31,8 @@ AWS_PROFILE=staging uv --directory backend run python ../infra/env/aws_configura
 
 相同工具支援 `--target production` 與 `--unit fetcher`。`sync` 會覆寫該 unit 的單一 SSM parameter；
 先保留原 parameter version，部署前對四組設定執行相同驗證。不得在此 JSON 加入 application secrets。
-已退役的 `FULL_MARKET_ENABLED` 不再是部署欄位；既有 SSM parameter 若仍含此鍵，本版僅於 stderr
-警告並忽略（不匯出），`sync` 會將其移除；下一版將改為拒絕。抓取只由 scheduler controls 與 Source 授權決定。
+已退役的 `FULL_MARKET_ENABLED` 不再是部署欄位；既有 SSM parameter 若仍含此鍵，僅於 stderr
+警告並忽略（不匯出），`sync` 會將其移除。兩環境的鍵都清除後才會改為拒絕（見 deployment 的 Pilot 退役章節）。抓取只由 scheduler controls 與 Source 授權決定。
 `PROVIDER_WORK_REQUIRED` 在 deployment SSM 與 runtime configuration 缺省為 `true`；
 明確 `false` 會在設定驗證／部署前拒絕。升級既有 false 環境前，須完成完整 provider-work
 drain、備份與 cutover attestation，兩端同步 true；本機範本更新不會修改遠端設定。Session tokens 與 TAIFEX endpoint／timeout 等選填欄位缺省亦不代表部署設定失效。
