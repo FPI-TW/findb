@@ -1,6 +1,6 @@
 """Read-only market freshness projection.
 
-SchedulerControl is the source of truth for scheduler definitions.  Dataset
+Catalog owns feed clocks; SchedulerControl owns lifecycle state. Dataset
 delivery blocks are used only to evaluate a mapped feed's own date policy; an
 invalid or missing block never removes the scheduler card from this view.
 """
@@ -147,7 +147,7 @@ class _SchedulerDefinition:
 
 
 def _next_scheduled_at(now: datetime, local_time: time, timezone_name: str) -> datetime:
-    """Calculate the next slot while failing closed on a bad timezone."""
+    """Compatibility clock for retired controls without a published feed schedule."""
     try:
         zone = ZoneInfo(timezone_name)
     except (TypeError, ZoneInfoNotFoundError, ValueError):
@@ -455,11 +455,9 @@ async def _profile_feed_freshness(
     first_date: str | None,
 ) -> FreshnessFeed:
     from app.services.effective_calendar import acquisition_dates
-    from app.services.full_market_governance import feed_schedule
+    from app.services.feed_schedule import completion_deadline_at, latest_due_date
 
-    timezone_name, scheduled_time = feed_schedule(feed.dataset.dataset_key)
-    local = evaluated_at.astimezone(ZoneInfo(timezone_name))
-    through = local.date() - timedelta(days=int(local.strftime("%H:%M") < scheduled_time))
+    through = latest_due_date(feed.dataset.dataset_key, evaluated_at)
     dates = (
         await acquisition_dates(
             db,
@@ -567,6 +565,14 @@ async def _profile_feed_freshness(
         else None
     )
     state: FreshnessStatus = "not_due" if expected is None else "never_received"
+    if expected is not None:
+        deadline = (
+            ensure_utc(snapshot["deadline_at"])
+            if snapshot["deadline_at"] is not None
+            else completion_deadline_at(feed.dataset.dataset_key, expected)
+        )
+        if evaluated_at < deadline:
+            state = "not_due"
     has_current = snapshot["expected_count"] is not None
     if has_current:
         state = (
@@ -803,13 +809,21 @@ async def _build_scheduler_freshness(
                 }
                 if deadline is not None:
                     resolver_kwargs["current_session_deadline"] = deadline
-                    if effective_expectation.schedule is not None:
-                        resolver_kwargs["operational_deadline_timezone"] = (
-                            effective_expectation.schedule.timezone
-                        )
-                        resolver_kwargs["target_date_lag_days"] = (
+                    policy = effective_expectation.missing_delivery
+                    resolver_kwargs["operational_deadline_timezone"] = policy.deadline_timezone or (
+                        effective_expectation.schedule.timezone
+                        if effective_expectation.schedule
+                        else None
+                    )
+                    resolver_kwargs["target_date_lag_days"] = (
+                        policy.deadline_day_offset
+                        if policy.deadline_timezone is not None
+                        else (
                             effective_expectation.schedule.target_date_lag_days
+                            if effective_expectation.schedule
+                            else 0
                         )
+                    )
                 expected, reason = await resolve_expected_data_date(
                     db,
                     effective_expectation.latest_date,
@@ -941,10 +955,11 @@ async def _build_scheduler_freshness(
         last_fetched_at=max(last_fetched, default=None),
         last_successful_update_at=max(last_completed, default=None),
         last_complete_at=max(runtime_completed, default=None) if all_current else None,
-        next_scheduled_at=_next_scheduled_at(
-            evaluated_at,
-            definition.scheduled_local_time,
-            definition.timezone,
+        next_scheduled_at=min(
+            (row.schedule.next_scheduled_at for row in feed_rows if row.schedule),
+            default=_next_scheduled_at(
+                evaluated_at, definition.scheduled_local_time, definition.timezone
+            ),
         ),
         feed_count=len(runtime_feeds),
         fresh_feed_count=fresh_count,
@@ -1025,7 +1040,6 @@ async def list_market_freshness(
             item.market,
             item.timezone,
             item.scheduled_local_time,
-            item.slot_id,
             item.scheduler_key,
         ),
     )

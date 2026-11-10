@@ -204,12 +204,13 @@ def test_staging_migration_requires_exact_revision_before_reconciliation_or_serv
     assert completed.returncode == 42
     assert len(docker_calls.read_text().splitlines()) == 1
     calls = (tmp_path / "inner-calls").read_text().splitlines()
-    assert len(calls) == 2
-    assert calls[0] == "upgrade head"
-    assert "predeploy_db_check.py" in calls[1]
-    assert "--expected-alembic-revision target-revision" in calls[1]
-    assert "--expected-rds-endpoint db.example.com" in calls[1]
-    assert "--require-exact-alembic-revision" in calls[1]
+    assert len(calls) == 3
+    assert "preflight_catalog_schedule.py" in calls[0]
+    assert calls[1] == "upgrade head"
+    assert "predeploy_db_check.py" in calls[2]
+    assert "--expected-alembic-revision target-revision" in calls[2]
+    assert "--expected-rds-endpoint db.example.com" in calls[2]
+    assert "--require-exact-alembic-revision" in calls[2]
     assert all("reconcile_" not in call for call in calls)
 
 
@@ -3988,3 +3989,21 @@ fi
     assert invalid.returncode != 0
     assert "reason=build_cache_invalid" in invalid.stderr
     assert not docker_log.exists()
+
+
+def test_catalog_preflight_failure_prevents_migration_and_provisioning(tmp_path):
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text()
+    block = helper.split("<<'MIGRATION_SCRIPT'\n", 1)[1].split("\nMIGRATION_SCRIPT", 1)[0]
+    activation, candidate = block.split("\nfi\n", 1)
+    assert "preflight_catalog_schedule" not in activation
+    script = candidate.split("ingest sh -euc '\n", 1)[1].split("\n  ' </dev/null", 1)[0]
+    calls = tmp_path / "calls"
+    for executable in ("python", "alembic"):
+        binary = tmp_path / executable
+        binary.write_text(f'#!/bin/sh\necho "{executable} $*" >> "{calls}"\nexit 42\n')
+        binary.chmod(0o755)
+    result = subprocess.run(
+        ["/bin/sh", "-euc", script], env={"PATH": str(tmp_path)}, capture_output=True, text=True
+    )
+    assert result.returncode == 42
+    assert calls.read_text().splitlines() == ["python /app/scripts/preflight_catalog_schedule.py"]

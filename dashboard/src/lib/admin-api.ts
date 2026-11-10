@@ -144,7 +144,23 @@ export const canonicalSlotIdSchema = z.enum([
 ])
 export type CanonicalSlotId = z.infer<typeof canonicalSlotIdSchema>
 
+export const feedScheduleSchema = z.object({
+  provider: z.string(),
+  dataset_key: z.string(),
+  market: z.string(),
+  scheduled_time: z.string(),
+  source_timezone: z.string(),
+  target_date_lag_days: z.number().int(),
+  next_scheduled_at: isoDateTime,
+  completion_deadline: z.object({
+    timezone: z.string(),
+    local_time: z.string(),
+    trade_date_day_offset: z.number().int(),
+  }),
+})
+
 export const schedulerSchema = z.object({
+  feed_schedules: z.array(feedScheduleSchema).optional(),
   execution_profile: executionProfileSchema.optional(),
   full_market_enabled: z.boolean().nullable().optional(),
   environment: z.string().nullable().optional(),
@@ -267,6 +283,7 @@ export const marketFreshnessSchema = z.object({
       feeds: z
         .array(
           z.object({
+            schedule: feedScheduleSchema.nullable().optional(),
             dataset_key: z.string(),
             source: z.string(),
             schema_id: z.string().nullable(),

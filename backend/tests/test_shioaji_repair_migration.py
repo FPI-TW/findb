@@ -53,7 +53,7 @@ async def test_repair_schema_roundtrip_preserves_frozen_scope(monkeypatch):
                     "daily_delivery_member",
                 )
             }
-        await run_alembic(url, "head")
+        await run_alembic(url, "2f79b1d0c4e3")
         async with engine.connect() as db:
             for table, rows in before.items():
                 assert (
@@ -61,7 +61,7 @@ async def test_repair_schema_roundtrip_preserves_frozen_scope(monkeypatch):
                 ).scalars().all() == rows
             assert await db.scalar(text("SELECT count(*) FROM shioaji_member_repair")) == 0
         await run_alembic(url, "1e68a0c9b3d2", command="downgrade")
-        await run_alembic(url, "head")
+        await run_alembic(url, "2f79b1d0c4e3")
         async with engine.connect() as db:
             assert await db.scalar(text("SELECT count(*) FROM shioaji_repair_ack")) == 0
 

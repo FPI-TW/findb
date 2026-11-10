@@ -16,9 +16,8 @@ const waitLabels: Record<string, string> = {
 }
 
 export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
-  const [selectedProvider, setSelectedProvider] = useState<string>(
-    SOURCE_PROVIDERS[0]
-  )
+  const [selectedProvider, setSelectedProvider] =
+    useState<string>("twelve_data")
   const query = useDeliveryResource(
     { resource: "providerWork", page: 1, pageSize: 100 },
     active
@@ -33,7 +32,7 @@ export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
   )
   const selected = providers.includes(selectedProvider)
     ? selectedProvider
-    : SOURCE_PROVIDERS[0]
+    : "twelve_data"
   return (
     <section
       className="mb-6 rounded-xl border border-line bg-surface p-4"

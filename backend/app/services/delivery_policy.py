@@ -225,12 +225,16 @@ class MissingDeliveryPolicy(BaseModel):
         default_factory=list,
         max_length=32,
     )
-    # The monitor deadline is intentionally independent from the ingest
-    # latest-date availability grace.  It is interpreted in the timezone of
-    # ``LatestDatePolicy`` and is only used by delivery monitoring and the
-    # market-freshness projection.  ``None`` preserves the legacy behavior
-    # for policies created before this field existed.
+    # Independent from acquisition schedule and ingest close-plus-grace policy.
+    # Absent timezone preserves legacy policy interpretation until migrated.
     deadline_local_time: time | None = None
+    deadline_timezone: str | None = None
+    deadline_day_offset: int = Field(default=0, ge=0, le=366)
+
+    @field_validator("deadline_timezone")
+    @classmethod
+    def validate_deadline_timezone(cls, value: str | None) -> str | None:
+        return LatestDatePolicy.validate_timezone(value) if value is not None else None
 
     @field_validator("expected_sources")
     @classmethod
@@ -269,7 +273,7 @@ class SourcePolicyOverride(BaseModel):
 
 
 class FreshnessSchedule(BaseModel):
-    """Operator-owned schedule used to group expected delivery feeds."""
+    """Catalog schedule projection; slot remains delivery-contract metadata."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -281,9 +285,14 @@ class FreshnessSchedule(BaseModel):
         "asia_pacific_markets_window",
     ]
     local_time: time
-    timezone: Literal["Asia/Taipei"]
+    timezone: str = Field(min_length=1, max_length=100)
     target_date_lag_days: int = Field(default=0, ge=0, le=366)
     expected_sources: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        return LatestDatePolicy.validate_timezone(value)
 
     @field_validator("expected_sources")
     @classmethod

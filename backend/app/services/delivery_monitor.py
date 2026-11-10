@@ -33,7 +33,7 @@ from app.services.feed_scope import lock_feed_scope
 from app.services.full_market import _calendar_market, _deadline, reconcile_plan
 from app.services.ingress_contracts import DatasetContractDeclaration
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
-from app.utils import utc_now, uuid7
+from app.utils import ensure_utc, utc_now, uuid7
 
 logger = logging.getLogger(__name__)
 
@@ -252,13 +252,17 @@ async def scan_missing_deliveries(
                 }
                 if deadline is not None:
                     resolver_kwargs["current_session_deadline"] = deadline
-                    if expectation.schedule is not None:
-                        resolver_kwargs["operational_deadline_timezone"] = (
-                            expectation.schedule.timezone
+                    policy = expectation.missing_delivery
+                    resolver_kwargs["operational_deadline_timezone"] = policy.deadline_timezone or (
+                        expectation.schedule.timezone if expectation.schedule else None
+                    )
+                    resolver_kwargs["target_date_lag_days"] = (
+                        policy.deadline_day_offset
+                        if policy.deadline_timezone is not None
+                        else (
+                            expectation.schedule.target_date_lag_days if expectation.schedule else 0
                         )
-                        resolver_kwargs["target_date_lag_days"] = (
-                            expectation.schedule.target_date_lag_days
-                        )
+                    )
                 expected_date, reason = await resolve_expected_data_date(
                     db,
                     latest,
@@ -457,10 +461,10 @@ async def _scan_full_market_feed(
     gap_streaks: dict[str, int] = {}
     unplanned_streak = 0
     for trade_date in dates:
-        deadline = _deadline(dataset, trade_date)
+        plan = by_date.get(trade_date)
+        deadline = ensure_utc(plan.deadline_at) if plan else _deadline(dataset, trade_date)
         if evaluated_at < deadline:
             continue
-        plan = by_date.get(trade_date)
         summary = await reconcile_plan(db, plan, now=evaluated_at, gap_limit=None) if plan else None
         # Only exchange-expected dates enter this loop. Data or durable no_data
         # removes that member from gaps and therefore resets its streak. Without

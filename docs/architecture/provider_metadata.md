@@ -13,8 +13,9 @@ capability 與 active provider 型別接到生成 metadata，並新增唯讀 exe
 發布新版 Backend 後使用新值，不提供環境排程 override。
 
 Fetcher daily 每輪規劃前讀取 Source execution-config，image 僅保存非排程 execution descriptors 與
-bootstrap。Dashboard 逐 feed API 已可讀取；UI、DB schedule、monitor 判定與 plan deadline
-切換仍由 PR5 處理。Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排程檔。
+bootstrap。Dashboard 依 market 分組，逐 feed 顯示時間與時區，不顯示 Slot。DB schedule 是 catalog
+投影；新 plan 與無 plan 的監控使用 catalog deadline，已有 plan 使用 frozen `deadline_at`。
+Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排程檔。
 未完成範圍見 [backlog](../dev/backlog.md#provider-metadata-與排程統一)。
 
 ## 宣告與邊界
@@ -89,8 +90,13 @@ quota 或 historical lease，也不建立 plan／work；取得設定不代表取
 `app.services.feed_schedule` 統一 Source 與 Admin 的時間解讀。Admin `/schedulers` 新增
 `feed_schedules`，`/market-freshness` 的每條 feed 新增 `schedule`，皆附 `next_scheduled_at`。
 該值是下一次嚴格晚於評估時間的當地時鐘觸發，隨紐約 DST 換算 UTC；不是交易日日曆判定。
-Retired／非 acquisition feeds 的 schedule 為空。既有 card-level DB 時間與 freshness 狀態維持相容，
-新欄位不改寫 persisted deadline 或既有 frozen plan。
+Retired／非 acquisition feeds 的 schedule 為空。Card 下一次時間取逐 feed 的最早值。
+已有 plan 的期限優先於新 catalog，不改寫歷史 evidence。
+
+Bounded missing-delivery 使用獨立 `deadline_timezone`／`deadline_day_offset`，US 仍是次日
+台北 09:15，不使用 daily trigger 的 timezone／date lag。Ingest close-plus-grace 不變。
+遷移內嵌固定目標與已核對舊值，未知差異中止；seed 保留 enabled、action、threshold、notes，
+重新投影排程與期限。操作見 [PR5 發布與遷移](../operations/deployment.md#provider-catalog-pr5-發布與遷移)。
 
 ## Historical 與 daily 隔離
 

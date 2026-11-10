@@ -96,12 +96,12 @@ def test_supported_registry_reconciliation_restores_missing_us_policy() -> None:
         "missing_delivery": {
             "action": "warn",
             "expected_sources": ["twelve_data"],
-            "deadline_local_time": "10:00:00",
+            "deadline_local_time": "09:15:00",
         },
         "schedule": {
             "enabled": True,
             "slot_id": "western_markets_window",
-            "local_time": "09:00:00",
+            "local_time": "08:15:00",
             "timezone": "Asia/Taipei",
             "target_date_lag_days": 1,
             "expected_sources": ["twelve_data"],
@@ -118,7 +118,7 @@ def test_supported_registry_reconciliation_restores_missing_us_policy() -> None:
     assert us_policy["latest_date"]["calendar_market"] == "US"
     assert us_policy["baseline"]["strategy"] == "rolling_median"
     assert us_policy["record_count"]["minimum_record_count"] == 1
-    assert us_policy["schedule"]["local_time"] == "09:00:00"
+    assert us_policy["schedule"]["local_time"] == "17:00:00"
     assert reconciled["us_equity_eod"]["operator_note"] == "preserve"
     assert report.changed is True
     assert report.action == "production_registry_reconciled"

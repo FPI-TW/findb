@@ -895,7 +895,7 @@ PR4 Fetcher 上線後，Backend 最低版本必須提供 schema 1 execution-conf
 `PROVIDER_WORK_FROZEN_FEED` 相容回應（本 PR4 Backend）。因此本組沿用 backend-first 發布，
 不可只更新 Fetcher 或單獨將 Backend 回退至 PR2。日後調整同 schema 的
 排程時間只需發布 Backend；新增 adapter／contract 能力或超出現有 schema 才需協調 Fetcher 發布。
-PR5 仍負責 DB schedule／deadline preflight 與遷移、monitor／freshness 切換及 Dashboard market 分組。
+PR5 的 DB schedule／deadline、monitor 與 Dashboard 切換見下方發布與遷移規則。
 
 ## Provider catalog PR3 staging 驗收
 
@@ -986,8 +986,7 @@ canonical 寫入，Serve 第一頁 100 筆皆來自本次抓取。此數字是�
 FactSet 驗收，先按上述 request ID 唯讀查詢終態，再核對全部 receipts、DQ、member evidence、
 owner 釋放及 partial／completed 結算；不要另建重複請求或重抓已保存的 native bytes。
 本次不部署 production，不把排除 FactSet 的結果視為其 production promotion 核准。
-PR5 的 DB preflight／deadline／monitor 與 Dashboard market 分組尚未執行，現行 UI 的 Slot
-標示仍屬 PR5 待辦；slot 契約／DB 欄位仍維持相容。
+當時部署版本仍顯示 Slot；PR5 切換市場分組後，slot 契約／DB 欄位仍維持相容。
 
 ### 可追溯證據與本機驗證
 
@@ -1462,3 +1461,58 @@ Production 版本落後，運行問題延後處理；先以下列方式降低短
 
 容器上限讓 FinLab 的 OOM 只影響該容器，但 `OOMKilled=true` 仍會被 preflight 拒絕部署；
 再次阻擋時依本節確認原因，經授權重啟容器後重試。
+
+## Provider catalog PR3＋4 production 驗收
+
+2026-11-10 唯讀驗收已部署 release `d86b633aae3ac83cdb0ab1f789057d16d28b1f2c`：
+[FinDB CD 42742153828](https://github.com/FPI-TW/findb/actions/runs/42742153828)、
+[Fetcher CD 42743102997](https://github.com/FPI-TW/findb/actions/runs/42743102997) 均成功。
+Backend／Dashboard images 與 manifest 一致；Fetcher bundle v4 三 images 與 staging accepted
+digests 相同，12 個現役 consumers 無缺漏、額外容器、OOM 或重啟。S3 immutable decisions、
+acceptance 與兩個 host committed receipts 相符。
+
+四 providers × Pilot／Full 八組 execution-config 通過 Source auth、scope、environment、schema、
+digest 與 no-store 核對；安裝 image 的 resolver、daily／historical `--check` 通過，舊排程檔不存在，
+FinLab historical 仍只開放 equity。Admin 查詢前後 13 controls、7 first dates、142 frozen plans 不變；
+未建立 production historical requests，未更動 running 的 Twelve Data／TAIFEX Full controls 或
+其它 stopped controls。FactSet native 終態仍依 Owner 指示排除，不宣稱完整四-provider 終態驗收。
+
+既有 2026-11-09 Twelve Data work `01a1c253-84ef-7e4b-a097-ac62c9f34057` 持續推進：checkpoint
+快照為 5,408 data、10 source-proven no-trade、124 no-data retry、66 mapping gap manual、
+1 normalizing。這是執行中快照，不是全 feed completed；mapping gap 留待資料品質處理，
+本次未重抓、重寫或取消工作。Release／bootstrap／設定發布相容性通過，daily 完整性不在此聲明內。
+
+| 證據 | SSM command ID |
+| --- | --- |
+| Backend release／receipt／健康 | `5fa58caa-9d63-4d24-83d8-9577e8d515a1` |
+| Fetcher inventory／八組快照／bootstrap | `888a08ec-91f4-43c2-bbdc-dd8055fa8940` |
+| Admin read-only／frozen snapshot | `83325eba-d6e8-49fc-bc48-83f5abfaf60a` |
+| Daily checkpoint 唯讀計數 | `fb8e6e2d-2de3-47e2-ba23-56239fe0f118` |
+| PR5 production 唯讀 preflight | `024a8366-db91-440e-85db-d168ae944ba7` |
+| PR5 staging 唯讀 preflight | `58e386eb-1f12-4dbb-8cfe-dea19e484204` |
+
+## Provider catalog PR5 發布與遷移
+
+本階段實作不部署 production。兩環境 PR5 唯讀盤點均為 11 筆 known_old_default、2 筆
+already_compliant、0 筆 unknown_difference；此快照不能取代發布時重跑 preflight。
+
+1. 確認目標已接受 PR3＋4 bundle v4，遵循既有 maintenance window、controls 停止／排空流程，
+   記錄原先 desired state。先以 candidate image、既有 migration credential wrapper 執行
+   `python /app/scripts/preflight_catalog_schedule.py`。CLI 使用唯讀 transaction，exit 1 表示
+   未知差異，須先查明；不直接覆寫，也不輸出 secrets 或 operator notes。
+2. Schema-v4 coordinator 的 candidate one-shot migration block 再次執行同一 preflight，
+   成功才執行 Alembic、exact revision check、privilege／credential／registry reconciliation。
+   Activation／replay 仍只核對 exact revision，不重跑 migration 或 provisioning。
+3. `e9f4a1c6b3d5` 內嵌固定值，不 import live catalog；鎖定並驗證全部目標 rows 後才更新，
+   未知差異中止 transaction。只改五條 feed 的 schedule／bounded deadline 表示、八個現役
+   controls 的時間／時區。保留 enabled、action、threshold、notes、slot、desired／observed
+   state、revision、first dates、既有 plan／work／receipts；retired rows 不動。乾淨安裝的 TW equity
+   缺少 schedule 時，只接受 migration chain 所產生的完整固定 policy 形狀，其餘缺漏仍中止。
+4. US 改為紐約 17:00、lag 0；FactSet 香港 18:30；FinLab 台北 18:00；TAIFEX 台北 17:00。
+   Bounded US 仍是次日台北 09:15，TW equity 當日台北 17:00；其它 bounded monitors 保持 disabled。
+   新 Pilot／Full plan 使用 US 次日台北 09:00，其餘當日台北 23:00。既有 frozen deadline
+   是監控權威，不遷移或重建。
+5. Staging 驗證 migration、market 分組、逐 feed 時間／時區、無 Slot 標示與 ingress 相容性後，
+   再依 accepted digest promotion 流程另行安排 production。由 Owner 恢復原先運行項目，
+   不自動啟用 stopped controls。PR5 後 Backend rollback 下限是支援獨立 deadline timezone
+   的版本；migration downgrade 明確拒絕，資料修復採 forward fix。

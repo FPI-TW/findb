@@ -1,3 +1,4 @@
+import { DATASET_MARKETS } from "../../lib/generated/provider-catalog"
 import { useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
 import {
@@ -52,7 +53,6 @@ import {
   EmptyState,
   Metric,
   freshnessVariant,
-  SLOT_SEMANTIC_LABELS,
   STATUS_LABELS,
   type OperationsDashboardQuery,
   OperationsDashboardStatus,
@@ -66,6 +66,7 @@ import { OPERATIONS_OVERVIEW_AUDIT } from "./operations.search"
 
 type SchedulerCardControl = Pick<
   Scheduler,
+  | "feed_schedules"
   | "scheduler_key"
   | "provider"
   | "dataset_keys"
@@ -94,8 +95,23 @@ type IngestionCard = {
   freshness: MarketFreshness | null
 }
 
+function cardMarkets(card: IngestionCard): string[] {
+  const markets = card.control.feed_schedules?.map(feed => feed.market) ?? []
+  const values = markets.length
+    ? markets
+    : card.control.dataset_keys.map(
+        key => DATASET_MARKETS[key] ?? card.freshness?.market ?? "其他"
+      )
+  return [
+    ...new Set(values.length ? values : [card.freshness?.market ?? "其他"]),
+  ]
+}
+
 function controlFromFreshness(summary: MarketFreshness): SchedulerCardControl {
   return {
+    feed_schedules: summary.feeds.flatMap(feed =>
+      feed.schedule ? [feed.schedule] : []
+    ),
     scheduler_key: summary.scheduler_key,
     provider: summary.provider || summary.feeds[0]?.source || "—",
     dataset_keys: summary.dataset_keys,
@@ -886,10 +902,17 @@ function IngestionCardView({
           Provider：{control.provider} · Dataset：
           {control.dataset_keys.join(", ") || "—"}
         </p>
-        <p className="mt-1 mb-0 text-xs text-muted">
-          每日排程 {formatScheduledTime(control.scheduled_local_time)} ·{" "}
-          {control.timezone} · Slot {control.slot_id}
-        </p>
+        {control.feed_schedules?.length ? (
+          control.feed_schedules.map(feed => (
+            <p key={feed.dataset_key} className="mt-1 mb-0 text-xs text-muted">
+              {feed.dataset_key} · 每日{" "}
+              {formatScheduledTime(feed.scheduled_time)} ·{" "}
+              {feed.source_timezone}
+            </p>
+          ))
+        ) : (
+          <p className="mt-1 mb-0 text-xs text-muted">尚無發布排程</p>
+        )}
       </div>
       <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
         <div>
@@ -1184,20 +1207,34 @@ export function IngestionOverviewPanel({
                     <EmptyState>此區目前沒有已註冊的資料抓取排程。</EmptyState>
                   ) : (
                     <div className="grid gap-3">
-                      {profileCards.map(card => (
-                        <IngestionCardView
-                          card={card}
-                          key={card.control.scheduler_key}
-                          role={role}
-                          pending={
-                            actions.bulkPending || actions.pendingKeys.size > 0
-                          }
-                          actionError={
-                            actions.actionErrors[card.control.scheduler_key]
-                          }
-                          requestToggle={actions.requestToggleScheduler}
-                        />
-                      ))}
+                      {[...new Set(profileCards.flatMap(cardMarkets))]
+                        .sort()
+                        .map(market => (
+                          <section key={market} className="grid gap-3">
+                            <h3 className="font-bold">{market}</h3>
+                            {profileCards
+                              .filter(card =>
+                                cardMarkets(card).includes(market)
+                              )
+                              .map(card => (
+                                <IngestionCardView
+                                  card={card}
+                                  key={card.control.scheduler_key}
+                                  role={role}
+                                  pending={
+                                    actions.bulkPending ||
+                                    actions.pendingKeys.size > 0
+                                  }
+                                  actionError={
+                                    actions.actionErrors[
+                                      card.control.scheduler_key
+                                    ]
+                                  }
+                                  requestToggle={actions.requestToggleScheduler}
+                                />
+                              ))}
+                          </section>
+                        ))}
                     </div>
                   )}
                 </SchedulerProfileSection>
@@ -1416,7 +1453,7 @@ export function MarketFreshnessPanel({
   refreshError: string
 }) {
   const summaries = result?.ok ? result.data.data : []
-  const grouped = [...new Set(summaries.map(summary => summary.slot_id))].sort()
+  const grouped = [...new Set(summaries.map(summary => summary.market))].sort()
   return (
     <Panel
       eyebrow="Market freshness"
@@ -1437,16 +1474,14 @@ export function MarketFreshnessPanel({
         <EmptyState>目前沒有已啟用的市場排程。</EmptyState>
       ) : (
         <div className="grid gap-5">
-          {grouped.map(slotId => (
-            <section key={slotId}>
-              <h3 className="mb-2 font-bold">
-                {SLOT_SEMANTIC_LABELS[slotId] ?? slotId}
-              </h3>
+          {grouped.map(market => (
+            <section key={market}>
+              <h3 className="mb-2 font-bold">{market}</h3>
               <div className="grid gap-2 xl:grid-cols-2">
                 {summaries
-                  .filter(summary => summary.slot_id === slotId)
+                  .filter(summary => summary.market === market)
                   .map(summary => (
-                    <Card key={`${summary.slot_id}:${summary.market}`}>
+                    <Card key={summary.scheduler_key}>
                       <div className="flex items-start justify-between gap-2">
                         <strong className="text-lg">{summary.market}</strong>
                         <Badge variant={freshnessVariant(summary.status)}>
@@ -1454,8 +1489,7 @@ export function MarketFreshnessPanel({
                         </Badge>
                       </div>
                       <p className="mt-1 text-xs text-muted">
-                        排程 {formatScheduledTime(summary.scheduled_local_time)}{" "}
-                        · 下次{" "}
+                        下次{" "}
                         <DateWithRelative value={summary.next_scheduled_at} />
                       </p>
                       <details className="mt-3 rounded-lg bg-surface-soft px-3 py-2">

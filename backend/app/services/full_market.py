@@ -3,7 +3,7 @@
 import hashlib
 import json
 import re
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Literal, cast
 from uuid import UUID
@@ -532,13 +532,9 @@ async def _require_elapsed_delivery(
 
 
 def _deadline(dataset: DatasetRegistry, trade_date: date) -> datetime:
-    # Calendar date is the exchange-attributed date. US completion is due the
-    # next Taipei day; HK/TW/TAIFEX are due 23:00 on that Taipei date.
-    taipei_date = trade_date + timedelta(days=1 if dataset.market == "US" else 0)
-    hour = 9 if dataset.market == "US" else 23
-    return datetime.combine(taipei_date, time(hour), ZoneInfo("Asia/Taipei")).astimezone(
-        timezone.utc
-    )
+    from app.services.feed_schedule import completion_deadline_at
+
+    return completion_deadline_at(dataset.dataset_key, trade_date)
 
 
 async def create_plan(

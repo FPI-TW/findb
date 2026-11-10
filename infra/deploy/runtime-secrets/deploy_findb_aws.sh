@@ -328,6 +328,7 @@ docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_T
   -e FINDB_LOOKUP_SERVE_API_KEY -e FINDB_STATIC_CACHE_SERVE_API_KEY \
   -e PREDEPLOY_EXPECTED_ALEMBIC_REVISION -e PREDEPLOY_EXPECTED_RDS_ENDPOINT -e APP_ENVIRONMENT \
   ingest sh -euc '
+    python /app/scripts/preflight_catalog_schedule.py
     alembic upgrade head
     python /app/scripts/predeploy_db_check.py --expected-alembic-revision "$PREDEPLOY_EXPECTED_ALEMBIC_REVISION" --expected-rds-endpoint "$PREDEPLOY_EXPECTED_RDS_ENDPOINT" --require-exact-alembic-revision
     python /app/scripts/reconcile_database_privileges.py

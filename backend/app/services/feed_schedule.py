@@ -91,3 +91,21 @@ def execution_config(
         json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
     return ExecutionConfigResponse.model_validate({**body, "schedule_digest": digest})
+
+
+def completion_deadline_at(dataset_key: str, trade_date: date) -> datetime:
+    """Resolve a new plan deadline; persisted plans must use their frozen value."""
+    feed = next((f for f in acquisition_feeds() if f.dataset_key == dataset_key), None)
+    if feed is None or feed.completion_deadline is None:
+        raise ValueError("Feed has no acquisition deadline")
+    return deadline_at(feed.completion_deadline, trade_date)
+
+
+def latest_due_date(dataset_key: str, now: datetime) -> date:
+    feed = next((f for f in acquisition_feeds() if f.dataset_key == dataset_key), None)
+    if feed is None:
+        raise ValueError("Feed has no acquisition schedule")
+    schedule = describe_feed(feed)
+    local = now.astimezone(ZoneInfo(schedule.source_timezone))
+    before_trigger = local.time() < time.fromisoformat(schedule.scheduled_time)
+    return local.date() - timedelta(days=schedule.target_date_lag_days + int(before_trigger))

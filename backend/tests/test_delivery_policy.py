@@ -25,7 +25,7 @@ from app.services.delivery_policy import (
 )
 from app.services.ingress_contracts import validate_ingress_request
 from app.utils import uuid7
-from scripts.seed_data import seed_datasets
+from scripts.seed_data import DATASETS, seed_datasets
 
 
 def _request(
@@ -274,12 +274,20 @@ async def test_dataset_seed_preserves_existing_operator_config(
             config={
                 "operator_note": "preserve",
                 "delivery_expectation": {
+                    **next(
+                        d["config"]["delivery_expectation"]
+                        for d in DATASETS
+                        if d["dataset_key"] == "tw_equity_eod"
+                    ),
                     "delivery_mode": "full_snapshot",
                     "minimum_record_count": 1777,
                     "freshness_hours": 72,
                     "missing_delivery": {
                         "action": "disabled",
                         "expected_sources": [],
+                        "deadline_local_time": "17:00:00",
+                        "deadline_timezone": "Asia/Taipei",
+                        "deadline_day_offset": 0,
                     },
                 },
             },
@@ -294,9 +302,11 @@ async def test_dataset_seed_preserves_existing_operator_config(
     assert dataset.config["delivery_expectation"]["minimum_record_count"] == 1777
     assert dataset.config["delivery_expectation"]["freshness_hours"] == 72
     assert dataset.config["delivery_expectation"]["missing_delivery"] == {
-        "action": "warn",
-        "expected_sources": ["finlab"],
+        "action": "disabled",
+        "expected_sources": [],
         "deadline_local_time": "17:00:00",
+        "deadline_timezone": "Asia/Taipei",
+        "deadline_day_offset": 0,
     }
     assert dataset.config["schema_id"] == "market_eod"
 
@@ -305,6 +315,7 @@ async def test_dataset_seed_preserves_existing_operator_config(
         "delivery_expectation": {
             **dataset.config["delivery_expectation"],
             "missing_delivery": {
+                **dataset.config["delivery_expectation"]["missing_delivery"],
                 "action": "warn",
                 "expected_sources": ["operator_feed"],
             },
@@ -316,6 +327,9 @@ async def test_dataset_seed_preserves_existing_operator_config(
     assert dataset.config["delivery_expectation"]["missing_delivery"] == {
         "action": "warn",
         "expected_sources": ["operator_feed"],
+        "deadline_local_time": "17:00:00",
+        "deadline_timezone": "Asia/Taipei",
+        "deadline_day_offset": 0,
     }
 
 
@@ -332,6 +346,11 @@ async def test_dataset_seed_preserves_operator_finlab_override(test_session: Asy
             config={
                 "operator_note": "keep",
                 "delivery_expectation": {
+                    **next(
+                        d["config"]["delivery_expectation"]
+                        for d in DATASETS
+                        if d["dataset_key"] == "tw_equity_eod"
+                    ),
                     "record_count": {"minimum_record_count": 2100},
                     "source_overrides": {
                         "finlab": {
@@ -831,3 +850,18 @@ async def test_missing_latest_date_config_is_calendar_warning(
     assert result.outcome == "warn"
     assert result.primary_code == "CALENDAR_UNAVAILABLE"
     assert result.violations[0].reason == "latest_date_policy_not_configured"
+
+
+def test_seed_rejects_unknown_clock_even_when_other_schedule_fields_are_missing():
+    from copy import deepcopy
+
+    from scripts.seed_data import _merge_operator_config
+
+    seed = next(d["config"] for d in DATASETS if d["dataset_key"] == "us_equity_eod")
+    existing = deepcopy(seed)
+    del existing["delivery_expectation"]["schedule"]
+    existing["delivery_expectation"]["missing_delivery"]["deadline_local_time"] = "12:34:00"
+    before = deepcopy(existing)
+    with pytest.raises(ValueError, match="Unknown schedule differences"):
+        _merge_operator_config("us_equity_eod", seed, existing)
+    assert existing == before

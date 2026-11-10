@@ -104,7 +104,7 @@ test("authenticated provider queue shows active daily work and historical FIFO w
   ).toHaveCount(3)
   await expect(queue.getByRole("alert")).toHaveCount(0)
   await queue.getByRole("tab", { name: "finlab (3)" }).press("ArrowRight")
-  await expect(queue.getByRole("tab", { name: "shioaji (0)" })).toHaveAttribute(
+  await expect(queue.getByRole("tab", { name: "taifex (0)" })).toHaveAttribute(
     "aria-selected",
     "true"
   )
