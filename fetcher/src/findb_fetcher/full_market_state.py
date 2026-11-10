@@ -17,13 +17,21 @@ from typing import Any
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 
 _DIAGNOSTIC_CATEGORY = re.compile(r"^[a-z][a-z0-9_]{0,39}(:[A-Za-z][A-Za-z0-9_]{0,59})?$")
+# Members other than no-data keep their own next_at; a no-data member waits for the plan's
+# retry round and is fetched at most once in it. Callers join full_no_data_round as r.
+_ELIGIBLE_WORK = (
+    "w.status NOT IN ('complete','manual') AND w.lease_until<=:now AND w.next_at<=:now "
+    "AND (COALESCE(w.reason,'')!='no_data' "
+    "OR (w.attempts<COALESCE(r.round,1) AND COALESCE(r.not_before,0)<=:now))"
+)
 
 FULL_WORK_MAX_ATTEMPTS = 5
 # Consecutive no-data members that stop a round: past this it is unlikely to be per symbol.
 # Also the acquired members that prove the date is open and the provider is serving it.
 FULL_WORK_NO_DATA_BREAKER = 20
 # A symbol's end-of-day row can publish hours later than the rest, so its retries span hours.
-# One wait after each failed attempt but the last; FULL_WORK_MAX_ATTEMPTS includes the first fetch.
+# One wait after each completed retry round but the last; FULL_WORK_MAX_ATTEMPTS includes the
+# first fetch. A round ends once every no-data member has been fetched in it.
 FULL_WORK_NO_DATA_RETRY_DELAYS = (1800, 3600, 3600, 7200)
 FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS = 1800
 # Settled intents and past quota windows outlive every liability, login and cooldown read.
@@ -95,6 +103,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
                 CREATE TABLE IF NOT EXISTS full_provider_outage (plan_id TEXT PRIMARY KEY, since REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_no_data_trip (plan_id TEXT PRIMARY KEY, trips INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS full_no_data_round (plan_id TEXT PRIMARY KEY, round INTEGER NOT NULL, not_before REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_cursor (provider TEXT, dataset TEXT, trade_date TEXT NOT NULL, PRIMARY KEY(provider,dataset));
                 CREATE TABLE IF NOT EXISTS full_schedule (scope TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0, batch BLOB);
                 CREATE TABLE IF NOT EXISTS acquisition_intent(operation_id TEXT PRIMARY KEY, account TEXT NOT NULL, provider TEXT NOT NULL, armed_at REAL NOT NULL, status TEXT NOT NULL, cooldown_bound REAL NOT NULL, actual_start REAL, completed_at REAL);
@@ -605,8 +614,9 @@ class FullMarketState:
         with self.connection() as db:
             return (
                 db.execute(
-                    "SELECT 1 FROM full_work WHERE key=? AND status NOT IN ('complete','manual') AND lease_until<=? AND next_at<=?",
-                    (key, now, now),
+                    "SELECT 1 FROM full_work w LEFT JOIN full_no_data_round r ON r.plan_id=w.plan_id "
+                    f"WHERE w.key=:key AND {_ELIGIBLE_WORK}",
+                    {"key": key, "now": now},
                 ).fetchone()
                 is not None
             )
@@ -622,14 +632,11 @@ class FullMarketState:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT status,lease_until,next_at,plan_id FROM full_work WHERE key=?", (key,)
+                "SELECT w.plan_id FROM full_work w LEFT JOIN full_no_data_round r ON r.plan_id=w.plan_id "
+                f"WHERE w.key=:key AND {_ELIGIBLE_WORK}",
+                {"key": key, "now": now},
             ).fetchone()
-            if (
-                row is None
-                or row["status"] in {"complete", "manual"}
-                or row["lease_until"] > now
-                or row["next_at"] > now
-            ):
+            if row is None:
                 return False
             db.execute(
                 "UPDATE full_work SET lease_until=?, attempts=attempts+1 WHERE key=?",
@@ -693,8 +700,9 @@ class FullMarketState:
         """Only currently eligible work without a persisted provider response needs quota."""
         with self.connection() as db:
             rows = db.execute(
-                "SELECT member_key FROM full_work WHERE plan_id=? AND status IN ('pending','prepared') AND body IS NULL AND lease_until<=? AND next_at<=?",
-                (plan_id, now, now),
+                "SELECT w.member_key FROM full_work w LEFT JOIN full_no_data_round r ON r.plan_id=w.plan_id "
+                f"WHERE w.plan_id=:plan_id AND w.status IN ('pending','prepared') AND w.body IS NULL AND {_ELIGIBLE_WORK}",
+                {"plan_id": plan_id, "now": now},
             ).fetchall()
             return {row["member_key"] for row in rows}
 
@@ -743,12 +751,15 @@ class FullMarketState:
         reason: str = "rate_limited",
         delay_seconds: int = 60,
     ) -> None:
-        """Authorized waiting retains prepared bytes and the original failure budget."""
+        """Authorized waiting retains prepared bytes and the original failure budget.
+
+        A no-data member keeps its reason, so it stays unfetched in the current retry round.
+        """
         if delay_seconds < 1:
             raise FullMarketStateError("wait delay must be positive")
         with self.connection() as db:
             db.execute(
-                "UPDATE full_work SET status=CASE WHEN body IS NULL THEN 'pending' ELSE 'prepared' END,reason=?,lease_until=0,next_at=?,attempts=MAX(0,attempts-1) WHERE key=?",
+                "UPDATE full_work SET status=CASE WHEN body IS NULL THEN 'pending' ELSE 'prepared' END,reason=CASE WHEN reason='no_data' THEN reason ELSE ? END,lease_until=0,next_at=?,attempts=MAX(0,attempts-1) WHERE key=?",
                 (reason, now + delay_seconds, key),
             )
 
@@ -830,12 +841,49 @@ class FullMarketState:
         with self.connection() as db:
             db.execute("DELETE FROM full_no_data_trip WHERE plan_id=?", (plan_id,))
 
+    def advance_no_data_round(self, plan_id: str, *, now: float) -> None:
+        """Start the next no-data retry round once the current one has fetched every member.
+
+        Round 1 is the first fetch of every member; each later round fetches every member
+        still without data once. An interrupted round resumes with its unfetched members.
+        """
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute(
+                "SELECT round FROM full_no_data_round WHERE plan_id=?", (plan_id,)
+            ).fetchone()
+            unfetched = db.execute(
+                "SELECT 1 FROM full_work WHERE plan_id=? AND status NOT IN ('complete','manual') "
+                "AND attempts<? AND (reason='no_data' OR (attempts=0 AND body IS NULL)) LIMIT 1",
+                (plan_id, current[0] if current else 1),
+            ).fetchone()
+            if unfetched is not None:
+                return
+            fetched = db.execute(
+                "SELECT MIN(attempts) FROM full_work WHERE plan_id=? "
+                "AND status NOT IN ('complete','manual') AND reason='no_data'",
+                (plan_id,),
+            ).fetchone()[0]
+            if fetched is None:
+                return
+            delay = FULL_WORK_NO_DATA_RETRY_DELAYS[
+                min(fetched, len(FULL_WORK_NO_DATA_RETRY_DELAYS)) - 1
+            ]
+            db.execute(
+                "INSERT INTO full_no_data_round VALUES(?,?,?) ON CONFLICT(plan_id) "
+                "DO UPDATE SET round=excluded.round,not_before=excluded.not_before",
+                (plan_id, fetched + 1, now + delay),
+            )
+
     def no_data_retry_at(self, plan_id: str) -> float | None:
-        """Earliest next action of a plan with members in no-data backoff, if any."""
+        """Earliest next action of a plan with members awaiting a no-data retry round, if any."""
         with self.connection() as db:
             row = db.execute(
-                "SELECT MIN(next_at),COALESCE(SUM(reason='no_data'),0) FROM full_work "
-                "WHERE plan_id=? AND status NOT IN ('complete','manual')",
+                "SELECT MIN(CASE WHEN COALESCE(w.reason,'')!='no_data' THEN w.next_at "
+                "WHEN w.attempts<COALESCE(r.round,1) THEN MAX(w.next_at,COALESCE(r.not_before,0)) END),"
+                "COALESCE(SUM(w.reason='no_data'),0) "
+                "FROM full_work w LEFT JOIN full_no_data_round r ON r.plan_id=w.plan_id "
+                "WHERE w.plan_id=? AND w.status NOT IN ('complete','manual')",
                 (plan_id,),
             ).fetchone()
         return row[0] if row[1] else None
@@ -925,13 +973,8 @@ class FullMarketState:
         with self.connection() as db:
             if reason == "normalizing":
                 db.execute("UPDATE full_work SET attempts=MAX(0,attempts-1) WHERE key=?", (key,))
-            retry_delay = 60
-            if reason == "no_data":
-                row = db.execute("SELECT attempts FROM full_work WHERE key=?", (key,)).fetchone()
-                spent = row[0] if row else 1
-                retry_delay = FULL_WORK_NO_DATA_RETRY_DELAYS[
-                    min(max(spent, 1), len(FULL_WORK_NO_DATA_RETRY_DELAYS)) - 1
-                ]
+            # The plan's no-data retry round, not the member, decides when it is fetched again.
+            retry_delay = 0 if reason == "no_data" else 60
             db.execute(
                 "UPDATE full_work SET status=?,reason=?,receipt=COALESCE(?,receipt),lease_until=0,next_at=? WHERE key=?",
                 (

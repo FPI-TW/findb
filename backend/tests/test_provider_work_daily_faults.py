@@ -397,6 +397,8 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     await h.db.commit()
     with FullMarketState(state_path).connection() as db:
         db.execute("UPDATE full_work SET next_at=0")
+        # A no-data member waits for the plan's next retry round, not its own next_at.
+        db.execute("UPDATE full_no_data_round SET not_before=0")
     h.handle, h.native = handle, native
     assert await asyncio.wait_for(asyncio.to_thread(run_round), 30)
     h.db.expire_all()

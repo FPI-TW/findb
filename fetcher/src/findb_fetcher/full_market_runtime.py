@@ -1472,6 +1472,8 @@ class FullMarketRuntime:
         pending_errors = []
         plan_id = (owner.journal.manifest() or {}).get("plan_id")
         if owner.work["kind"] == "daily" and plan_id:
+            # The next no-data retry round waits from this settlement, not from each member.
+            self.state.advance_no_data_round(plan_id, now=time.time())
             with self.state.connection() as db:
                 pending_errors = sorted(
                     row[0]
