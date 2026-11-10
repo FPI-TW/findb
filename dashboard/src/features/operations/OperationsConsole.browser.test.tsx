@@ -29,7 +29,7 @@ vi.mock("../../lib/auth.functions", () => ({ logout: vi.fn() }))
 
 import { IngestionOverviewPanel } from "./operations.overview"
 
-const providers = ["finlab", "shioaji", "taifex", "twelve_data"]
+const providers = ["factset", "finlab", "taifex", "twelve_data"]
 const timestamp = "2026-08-04T02:00:00Z"
 
 function scheduler(provider: string): Scheduler {

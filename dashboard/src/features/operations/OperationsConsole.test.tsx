@@ -174,8 +174,8 @@ function deliveriesResponse(missingDeliveries: MissingDelivery[] = []): Extract<
       data: {
         data: [
           {
-            provider: "shioaji",
-            dataset_key: "tw_equity_minute",
+            provider: "taifex",
+            dataset_key: "tw_futures_eod",
             market: "TW",
             executable: true,
           },
@@ -208,7 +208,7 @@ function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
 }
 
 function makeFullMarketFreshness(
-  provider = "shioaji",
+  provider = "taifex",
   overrides: Record<string, unknown> = {}
 ) {
   const scheduler = makeScheduler({
@@ -258,9 +258,9 @@ function makeMissingDelivery(
 ): MissingDelivery {
   return {
     alert_id: "019565d2-f838-7c91-85c1-72d4d7bbbe90",
-    dataset_key: "tw_equity_minute",
-    source: "shioaji",
-    schema_id: "market_minute",
+    dataset_key: "tw_futures_eod",
+    source: "taifex",
+    schema_id: "futures_eod",
     schema_version: 1,
     expected_data_date: "2026-08-31",
     status: "open",
@@ -316,8 +316,8 @@ beforeEach(() => {
     return { resource: data.resource, result: result.data }
   })
   mocks.previewHistoricalBackfill.mockResolvedValue({
-    provider: "shioaji",
-    dataset_key: "tw_equity_minute",
+    provider: "taifex",
+    dataset_key: "tw_futures_eod",
     market: "TW",
     scope_valid: true,
     scope_reason: null,
@@ -594,7 +594,7 @@ describe("Operations presentation", () => {
     ).toBe("心跳過期")
   })
 
-  it.each(["finlab", "shioaji", "taifex", "twelve_data"])(
+  it.each(["factset", "finlab", "taifex", "twelve_data"])(
     "shows dormant %s full-market status without inventing heartbeat",
     provider => {
       const freshness = makeFullMarketFreshness(provider)
@@ -612,9 +612,9 @@ describe("Operations presentation", () => {
   )
 
   it("separates explicit stop/deactivation from missing and stale active runtime", () => {
-    const freshness = makeFullMarketFreshness("shioaji", {
+    const freshness = makeFullMarketFreshness("taifex", {
       activation_state: "activated",
-      active_dataset_keys: ["tw_equity_minute"],
+      active_dataset_keys: ["tw_futures_eod"],
     })
     expect(
       selectSchedulerRuntimeStatus({ control: freshness, freshness })
@@ -907,8 +907,8 @@ describe("Operations presentation", () => {
         revision: 7,
       }),
       makeScheduler({
-        scheduler_key: "scheduler-shioaji",
-        provider: "shioaji",
+        scheduler_key: "scheduler-taifex",
+        provider: "taifex",
         desired_state: "running",
         observed_state: "running",
         revision: 11,
@@ -934,7 +934,7 @@ describe("Operations presentation", () => {
       screen.getByText("finlab / scheduler-finlab / r7")
     ).toBeInTheDocument()
     expect(
-      screen.getByText("shioaji / scheduler-shioaji / r11")
+      screen.getByText("taifex / scheduler-taifex / r11")
     ).toBeInTheDocument()
   })
 
@@ -992,8 +992,8 @@ describe("Operations presentation", () => {
         revision: 7,
       }),
       makeScheduler({
-        scheduler_key: "scheduler-shioaji",
-        provider: "shioaji",
+        scheduler_key: "scheduler-taifex",
+        provider: "taifex",
         desired_state: "running",
         observed_state: "running",
         revision: 11,
@@ -1035,7 +1035,7 @@ describe("Operations presentation", () => {
       screen.getByText("finlab / scheduler-finlab / r7")
     ).toBeInTheDocument()
     expect(
-      screen.getByText("shioaji / scheduler-shioaji / r11")
+      screen.getByText("taifex / scheduler-taifex / r11")
     ).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "確認全部停止" }))
 
@@ -1043,7 +1043,7 @@ describe("Operations presentation", () => {
     expect(screen.getByRole("button", { name: "全部停止" })).toBeDisabled()
     expect(
       screen.getByRole("button", {
-        name: "shioaji scheduler-shioaji 設為已停止",
+        name: "taifex scheduler-taifex 設為已停止",
       })
     ).toBeDisabled()
     expect(mocks.updateScheduler).toHaveBeenNthCalledWith(1, {
@@ -1069,7 +1069,7 @@ describe("Operations presentation", () => {
     await waitFor(() => expect(mocks.updateScheduler).toHaveBeenCalledTimes(2))
     expect(mocks.updateScheduler).toHaveBeenNthCalledWith(2, {
       data: {
-        schedulerKey: "scheduler-shioaji",
+        schedulerKey: "scheduler-taifex",
         desiredState: "stopped",
         expectedRevision: 11,
       },
@@ -1092,7 +1092,7 @@ describe("Operations presentation", () => {
         start_blockers: ["full_market_no_enabled_datasets"],
       }),
       makeScheduler({
-        scheduler_key: "full_market_shioaji_v1",
+        scheduler_key: "full_market_taifex_v1",
         desired_state: "stopped",
       }),
     ]
@@ -1204,8 +1204,8 @@ describe("Operations presentation", () => {
         start_blockers: ["full_market_configuration_invalid"],
       }),
       makeScheduler({
-        scheduler_key: "full_market_shioaji_v1",
-        provider: "shioaji",
+        scheduler_key: "full_market_taifex_v1",
+        provider: "taifex",
         desired_state: "running",
         start_allowed: false,
         start_blockers: ["full_market_no_enabled_datasets"],
@@ -1230,13 +1230,13 @@ describe("Operations presentation", () => {
     ).toBeDisabled()
     expect(
       screen.getByRole("button", {
-        name: "shioaji full_market_shioaji_v1 設為已停止",
+        name: "taifex full_market_taifex_v1 設為已停止",
       })
     ).toBeEnabled()
     fireEvent.click(screen.getByRole("button", { name: "全部停止" }))
     expect(screen.getByText(/將依序更新 1 個/)).toBeInTheDocument()
     expect(
-      screen.getByText(/shioaji \/ full_market_shioaji_v1/)
+      screen.getByText(/taifex \/ full_market_taifex_v1/)
     ).toBeInTheDocument()
   })
 
@@ -1324,7 +1324,7 @@ describe("Operations presentation", () => {
       }),
       makeScheduler({
         scheduler_key: "scheduler-next",
-        provider: "shioaji",
+        provider: "taifex",
         desired_state: "running",
         observed_state: "running",
         revision: 4,
@@ -1365,8 +1365,8 @@ describe("Operations presentation", () => {
   it("shows closed dates as skipped and allows confirmation-based backfill creation", async () => {
     mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
     mocks.previewHistoricalBackfill.mockResolvedValue({
-      provider: "shioaji",
-      dataset_key: "tw_equity_minute",
+      provider: "taifex",
+      dataset_key: "tw_futures_eod",
       market: "TW",
       scope_valid: true,
       scope_reason: null,
@@ -1391,10 +1391,10 @@ describe("Operations presentation", () => {
       expect(screen.getByPlaceholderText("provider")).toBeInTheDocument()
     )
     fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "shioaji" },
+      target: { value: "taifex" },
     })
     fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_equity_minute" },
+      target: { value: "tw_futures_eod" },
     })
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-30" },
@@ -1418,8 +1418,8 @@ describe("Operations presentation", () => {
   it("allows an all-skipped request without pretending it acquired data", async () => {
     mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
     mocks.previewHistoricalBackfill.mockResolvedValue({
-      provider: "shioaji",
-      dataset_key: "tw_equity_minute",
+      provider: "taifex",
+      dataset_key: "tw_futures_eod",
       market: "TW",
       scope_valid: true,
       scope_reason: null,
@@ -1437,10 +1437,10 @@ describe("Operations presentation", () => {
     )
     await screen.findByPlaceholderText("provider")
     fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "shioaji" },
+      target: { value: "taifex" },
     })
     fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_equity_minute" },
+      target: { value: "tw_futures_eod" },
     })
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-31" },
@@ -1458,8 +1458,8 @@ describe("Operations presentation", () => {
   it("allows default calendar dates in historical preview", async () => {
     mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
     mocks.previewHistoricalBackfill.mockResolvedValue({
-      provider: "shioaji",
-      dataset_key: "tw_equity_minute",
+      provider: "taifex",
+      dataset_key: "tw_futures_eod",
       market: "TW",
       scope_valid: true,
       scope_reason: null,
@@ -1482,10 +1482,10 @@ describe("Operations presentation", () => {
     )
     await screen.findByPlaceholderText("provider")
     fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "shioaji" },
+      target: { value: "taifex" },
     })
     fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_equity_minute" },
+      target: { value: "tw_futures_eod" },
     })
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-30" },
@@ -1502,8 +1502,8 @@ describe("Operations presentation", () => {
   it("blocks confirmation and creation when the provider scope is invalid", async () => {
     mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
     mocks.previewHistoricalBackfill.mockResolvedValue({
-      provider: "shioaji",
-      dataset_key: "tw_equity_minute",
+      provider: "taifex",
+      dataset_key: "tw_futures_eod",
       market: "TW",
       scope_valid: false,
       scope_reason: "provider_scope_inactive",
@@ -1525,10 +1525,10 @@ describe("Operations presentation", () => {
     )
     await screen.findByPlaceholderText("provider")
     fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "shioaji" },
+      target: { value: "taifex" },
     })
     fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_equity_minute" },
+      target: { value: "tw_futures_eod" },
     })
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-31" },
@@ -1547,8 +1547,8 @@ describe("Operations presentation", () => {
   it("shows localized guidance together with the original out-of-window error code", async () => {
     mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
     mocks.previewHistoricalBackfill.mockResolvedValue({
-      provider: "shioaji",
-      dataset_key: "tw_equity_minute",
+      provider: "taifex",
+      dataset_key: "tw_futures_eod",
       market: "TW",
       scope_valid: false,
       scope_reason: "outside_latest_31_days",
@@ -1570,10 +1570,10 @@ describe("Operations presentation", () => {
     )
     await screen.findByPlaceholderText("provider")
     fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "shioaji" },
+      target: { value: "taifex" },
     })
     fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_equity_minute" },
+      target: { value: "tw_futures_eod" },
     })
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-07-01" },
@@ -1718,8 +1718,8 @@ describe("Operations presentation", () => {
     }
     mocks.loadDashboard.mockResolvedValue(response)
     mocks.previewHistoricalBackfill.mockResolvedValue({
-      provider: "shioaji",
-      dataset_key: "tw_equity_minute",
+      provider: "taifex",
+      dataset_key: "tw_futures_eod",
       market: "TW",
       scope_valid: true,
       scope_reason: null,
@@ -1749,10 +1749,10 @@ describe("Operations presentation", () => {
     )
     await screen.findByPlaceholderText("provider")
     fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "shioaji" },
+      target: { value: "taifex" },
     })
     fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_equity_minute" },
+      target: { value: "tw_futures_eod" },
     })
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-30" },
@@ -1768,8 +1768,8 @@ describe("Operations presentation", () => {
     await waitFor(() =>
       expect(mocks.createHistoricalBackfill).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          provider: "shioaji",
-          datasetKey: "tw_equity_minute",
+          provider: "taifex",
+          datasetKey: "tw_futures_eod",
           startDate: "2026-08-30",
           endDate: "2026-08-30",
         }),
@@ -1834,14 +1834,14 @@ describe("Operations presentation", () => {
     fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "帶入 tw_equity_minute 2026-08-31 回補參數",
+        name: "帶入 tw_futures_eod 2026-08-31 回補參數",
       })
     )
     expect(screen.getByRole("tab", { name: "歷史回補" })).toHaveAttribute(
       "aria-selected",
       "true"
     )
-    expect(screen.getByPlaceholderText("provider")).toHaveValue("shioaji")
+    expect(screen.getByPlaceholderText("provider")).toHaveValue("taifex")
     expect(screen.getByLabelText("回補起始日期")).toHaveValue("2026-08-31")
     fireEvent.change(screen.getByLabelText("回補結束日期"), {
       target: { value: "2026-09-01" },
@@ -1902,7 +1902,7 @@ describe("Operations presentation", () => {
     fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
     fireEvent.click(
       await screen.findByRole("button", {
-        name: "帶入 tw_equity_minute 2026-08-31 回補參數",
+        name: "帶入 tw_futures_eod 2026-08-31 回補參數",
       })
     )
     await act(async () => {
@@ -1936,10 +1936,10 @@ describe("Operations presentation", () => {
     )
 
     fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
-    expect(await screen.findByText("tw_equity_minute")).toBeInTheDocument()
+    expect(await screen.findByText("tw_futures_eod")).toBeInTheDocument()
     expect(
       screen.queryByRole("button", {
-        name: "帶入 tw_equity_minute 2026-08-31 回補參數",
+        name: "帶入 tw_futures_eod 2026-08-31 回補參數",
       })
     ).not.toBeInTheDocument()
     expect(

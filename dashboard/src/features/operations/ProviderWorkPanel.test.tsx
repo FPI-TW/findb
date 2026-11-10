@@ -181,8 +181,8 @@ it("distinguishes daily window, rotation progress and actual failure", () => {
         data: [
           {
             work_id: "019f98b5-ee0b-7b16-9a28-d8e2ed638a95",
-            provider: "shioaji",
-            dataset_key: "tw_equity_minute",
+            provider: "twelve_data",
+            dataset_key: "us_equity_eod",
             kind: "daily",
             stable_key: "daily:full_market:fixture",
             trade_date: "2026-10-28",
@@ -218,7 +218,7 @@ it("distinguishes daily window, rotation progress and actual failure", () => {
     refetch: vi.fn(),
   })
   render(<ProviderWorkPanel />)
-  fireEvent.click(screen.getByRole("tab", { name: "shioaji (1)" }))
+  fireEvent.click(screen.getByRole("tab", { name: "twelve_data (1)" }))
   expect(screen.getByText("每日抓取窗口外")).toBeVisible()
   expect(screen.getByText("第 42 輪")).toBeVisible()
   expect(screen.getByText("最近批次：25 個成員 · 12.5 秒")).toBeVisible()

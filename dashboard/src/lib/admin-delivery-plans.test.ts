@@ -5,7 +5,7 @@ import { fetchDeliveryPlansData } from "./admin.server"
 const plan = {
   plan_id: "plan-1",
   dataset_key: "tw_futures_eod",
-  provider: "shioaji",
+  provider: "taifex",
   trade_date: "2026-10-01",
   release_id: "release-1",
   deadline_at: "2026-10-01T15:00:00Z",

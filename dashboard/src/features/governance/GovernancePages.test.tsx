@@ -225,6 +225,7 @@ describe("governance pages", () => {
     expect(screen.getByText("tw_equity_eod")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
 
+    // Retired provider: Shioaji must not be offered for new credentials.
     expect(
       screen.queryByRole("option", { name: "shioaji" })
     ).not.toBeInTheDocument()
