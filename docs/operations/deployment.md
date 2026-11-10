@@ -385,7 +385,17 @@ findb/production/accepted/c1c175b8a7496ff666472e3ee83ffcc9483f3756/ff21ee6931d1d
 fetcher/production/accepted/c1c175b8a7496ff666472e3ee83ffcc9483f3756/1cac68892f4e3b9263579fc237fd1ce0825be1927dcc04208557ff7bd3140880.tar
 ```
 
-目前 staging 為 FinDB 1/5、Fetcher 1/5，production 為 FinDB 1/5、Fetcher 0/5；
+首輪後 production 又累積以下一般增量 promotion 樣本，均已扣 verify，Fetcher 於 FinDB
+committed 後才 dispatch，workflow 內無跨 unit 等待：
+
+| Release | Unit | Run | 淨耗時 | 總牆鐘 | Verify |
+| --- | --- | --- | ---: | ---: | ---: |
+| `findb-v0.1.22`（`077ee02`） | FinDB | [42656213012](https://github.com/FPI-TW/findb/actions/runs/42656213012) | **229 秒** | 453 秒 | 224 秒 |
+| `findb-v0.1.23`（`d86b633`） | FinDB | [42742153828](https://github.com/FPI-TW/findb/actions/runs/42742153828) | **245 秒** | 453 秒 | 208 秒 |
+| `fetcher-v0.1.28`（`d86b633`） | Fetcher | [42743102997](https://github.com/FPI-TW/findb/actions/runs/42743102997) | **280 秒** | 509 秒 | 229 秒 |
+| `findb-v0.1.24`（`8104e48`） | FinDB | [42767771254](https://github.com/FPI-TW/findb/actions/runs/42767771254) | **240 秒** | 466 秒 | 226 秒 |
+
+Production 合格樣本為 FinDB 4/5、Fetcher 1/5；staging 計數不在本表更新範圍。
 四組各五筆的整體驗收尚未完成。本次正常部署成功不替代 AWS 故障注入、取消、主機重啟與
 正式 rollback 演練；既有未完成資料與復原驗收繼續列管。
 
@@ -1508,8 +1518,9 @@ FinLab historical 仍只開放 equity。Admin 查詢前後 13 controls、7 first
 
 ## Provider catalog PR5 發布與遷移
 
-本階段實作不部署 production。兩環境 PR5 唯讀盤點均為 11 筆 known_old_default、2 筆
-already_compliant、0 筆 unknown_difference；此快照不能取代發布時重跑 preflight。
+兩環境 PR5 唯讀盤點均為 11 筆 known_old_default、2 筆 already_compliant、0 筆
+unknown_difference；此快照不能取代發布時重跑 preflight。Production 已發布 `findb-v0.1.24`，
+見 [PR5 production 發布與唯讀驗收](#pr5-production-發布與唯讀驗收)。
 
 既有環境的升級基線是已完成 Shioaji 退役的 `d8e3f0b5a2c4`；不支援在同一次
 candidate deployment 才從退役前版本補做退役。正式 image 的 container regression 必須
@@ -1540,7 +1551,7 @@ candidate deployment 才從退役前版本補做退役。正式 image 的 contai
 
 ### Staging 驗收清單
 
-以下為待執行的驗收，不代表已發布 PR5；production promotion 須另行安排。
+以下 staging 驗收尚未執行；production 已依 Owner 決定先行發布，不因此將本清單視為通過。
 
 - 合併前確認 PR 最新 commit 的 Required CI 全綠，並處理 review findings。合併後由既有
   schema-v4 staging CD 建立 candidate，記錄 Backend／Dashboard digest、deployment attempt
@@ -1573,4 +1584,46 @@ image build 或殘留 inventory 失敗。復原核對 SSM：`2a8d0998-6a22-428b-
 `69bd242775e85ba0aaf20af2fd342337488cfc04a16a1a9a45b310ad39ff7402-42750921079-2`，
 transaction committed、十二個 consumers 皆為 accepted healthy、零 restart／OOM，三個 image
 digests 符合本次 candidate。部署後 SSM：`9eb2e8bf-8e13-4cf9-afe0-d25f8f69f97d`。
-此紀錄確認部署恢復；上方 PR5 migration／UI 的完整 staging 驗收仍須執行，production 未部署。
+此紀錄確認部署恢復；上方 PR5 migration／UI 的完整 staging 驗收仍須執行。
+
+### PR5 production 發布與唯讀驗收
+
+2026-11-10 依 Owner 決定 promotion PR5 `8104e48af631821a9c82a2e2ccb7b5d31b761eae`，版本為
+`findb-v0.1.24`；上方 staging migration／UI 驗收清單未先執行，維持未完成。Fetcher 程式自
+`d86b633aae3ac83cdb0ab1f789057d16d28b1f2c` 未變更，production 維持 `fetcher-v0.1.28`，未重部署。
+
+發布前唯讀盤點（SSM `7e715b8f-e1e9-4b2e-be73-0e1972ac4c6a`，`SET TRANSACTION READ ONLY`）：
+revision `d8e3f0b5a2c4`；preflight 為 11 筆 known_old_default、2 筆 already_compliant（兩個 FinLab
+controls）、0 筆 unknown_difference。八個現役 controls 已為 desired／observed stopped，先前
+Twelve Data／TAIFEX Full 的 running 狀態已不存在；無 queued／running historical requests 或
+provider work，attempts 均 settled，normalization 全部 completed。排空條件成立，不需另停 controls。
+
+[FinDB Production CD 42767771254](https://github.com/FPI-TW/findb/actions/runs/42767771254) 成功：
+verify、promotion、read-only preflight、apply、acceptance 與 finalize 皆通過，未觸發 rollback 或
+`DeploymentFailure`。扣除 verify 226 秒後部署淨耗時 **240 秒**（總牆鐘 466 秒）。
+Production accepted bundle：
+
+```text
+findb/production/accepted/8104e48af631821a9c82a2e2ccb7b5d31b761eae/b4f07bf17489dba6baad26fad6e439b0f783df03e530ae4a7a8881ffe1cef916.tar
+```
+
+部署後唯讀驗收：
+
+- Revision 為 `e9f4a1c6b3d5`，重跑 preflight 13 筆全部 already_compliant（SSM
+  `1d3b1429-75e9-423d-9983-864cc513a4cf`）。
+- 八個現役 controls 仍為 stopped／stopped，未自動啟用；時間／時區與 catalog 一致：Twelve Data
+  紐約 17:00、FactSet 香港 18:30、FinLab 台北 18:00、TAIFEX 台北 17:00。
+- Admin schedulers 與 market-freshness 在 Pilot／Full 各回傳五條 feeds，扣除 `next_scheduled_at`
+  後與安裝 image 的 catalog 描述完全相同；freshness 市場為 HK／TW／US。Provider metadata
+  SHA-256 仍為 `e6a89f5b6f509ef73098c9109e52d11485bfc30a2bcc846ed77f2a6471c7eb44`。
+  退休 TW minute datasets 的 delivery-plans 查詢均為 HTTP 200。
+- GET 前後 read-only 快照相同：13 controls、7 first dates、142 frozen plans；plans 的
+  identity／deadline／membership／expected count 指紋 SHA-256 為
+  `7dc1ba7b4dc5a784cee10394dbd9eb7579f55283d868c122323da8f0c8564159`，work、historical、
+  normalization 計數不變（SSM `79ba41e2-c619-4a10-b618-6d09401f7cd6`）。
+- 公開 `/health` 與 `/dashboard/lookup` 均 HTTP 200。
+
+PR5 accepted 後 Backend rollback 下限為 `findb-v0.1.24`；`e9f4a1c6b3d5` downgrade 明確拒絕，
+資料修復採 forward fix。未驗證項目：Dashboard 實際畫面的市場分組與無 Slot 標示、新 plan 採
+catalog deadline（需 Owner 恢復 controls 後產生）、既有 slot ingress 相容性（需 Source 寫入），
+以及 staging 驗收清單。Controls 由 Owner 恢復原先運行項目，本次未變更。
