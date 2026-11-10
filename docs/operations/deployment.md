@@ -601,7 +601,7 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 Historical Twelve Data／FinLab 以 Backend request／item lease 為持久狀態；Shioaji 另以 request UUID 命名 SQLite。
 驗收應依實際 entrypoint 與 mount 判定使用中的檔案，不能把共用 helper 的未使用通用 state path 當成遺失 checkpoint。
 
-五個 `findb-historical-*` workers 是獨立 transactional consumers，沿用既有人工歷史回補請求機制；
+四個現役 `findb-historical-*` workers 是獨立 transactional consumers，沿用既有人工歷史回補請求機制；
 不再由 pilot 部署順便建立。所有 acquiring consumers 使用同一帳號 governor mount，保留 credential pins、
 quota debt、unknown liability、cooldown 與 prepared delivery。不同環境仍使用各自帳號與儲存。
 容器 UID/GID 為 10001，state directories `0700`、SQLite `0600`；provider credentials 不跨 consumer 注入。
@@ -611,6 +611,13 @@ acquiring work 完成。Idle daemon 仍顯示 running 是正常狀態；helper �
 Provider container 收到 TERM 後有 90 秒完成當前 bounded operation 與回收隔離 child；此上限涵蓋
 FactSet 最長 60 秒查詢、額外 20 秒 supervisor deadline 與 process-group reap 緩衝。超過時 Docker 才送 KILL，
 helper 會將非零 exit 視為 `graceful_stop` 失敗並觸發交易回復，不會接受或啟用候選版本。
+這 90 秒不是完整 historical 日期的排空預算；例如 FactSet 會逐成員交付並等待 normalization，
+整日 frozen cohort 可能需要數小時。停止 Pilot／Full controls 不會停止 historical，也不代表
+provider owner 已釋放。部署前須另確認 historical／maintenance work 已結算、所有已接受 runs
+均為 terminal、provider owner 無 active attempt；不能只看十二個容器 running／健康就重試。
+若因 historical 未排空而停止失敗，先確認 transaction aborted、原 container IDs／current 已恢復，
+保留原 request、prepared bytes 與 receipts，等待原工作繼續完成。略過 native 驗收不等於授權取消
+該 request；取消須另有 Owner 指示。排空後才重跑失敗的 staging CD jobs，不延長或略過停止檢查。
 Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉送訊號；raw cleanup
 收到 TERM 後完成當前 transaction 並中斷每日等待。禁止用 `docker rm -f` 越過停止或 checkpoint 問題。交易保存原 container ID、image、名稱與 running state；
 失敗或 INT／TERM／HUP 依反向順序恢復已接受的統一版 runtime。查詢失敗不代表不存在。
@@ -979,7 +986,7 @@ identity／deadline／member hash／expected count，驗收前後雜湊完全相
 ### FactSet 保留紀錄與驗收限制
 
 Owner 指示先跳過 FactSet，故不宣稱四個 native historical runners 已全部完成驗收。
-最後一次 DB 觀測時請求仍為 running，凍結當時 HKEX 2,817 個成員；原生價格回應 2,648 列
+PR3＋4 驗收時 DB 觀測請求仍為 running，凍結當時 HKEX 2,817 個成員；原生價格回應 2,648 列
 已保存 R2，SHA-256 為 `e5a1aef3190c656c08257166fc471eb49299ec66bd277883ba2b0f0e3fc417fe`。
 已觀測 295 個 prepared／receipts／raw payload，兩段 payload hash 均相符；其中 285 筆已有
 canonical 寫入，Serve 第一頁 100 筆皆來自本次抓取。此數字是執行中快照，不能當成最終完整性。
@@ -989,6 +996,12 @@ FactSet 驗收，先按上述 request ID 唯讀查詢終態，再核對全部 re
 owner 釋放及 partial／completed 結算；不要另建重複請求或重抓已保存的 native bytes。
 本次不部署 production，不把排除 FactSet 的結果視為其 production promotion 核准。
 當時部署版本仍顯示 Slot；PR5 切換市場分組後，slot 契約／DB 欄位仍維持相容。
+
+2026-11-10 PR5 staging CD 復原時，原請求於台北時間 12:02:00 自然結算為 `partial`，
+request／item／work 終態一致，2,648 份 prepared／receipts 對應的 runs 全部 terminal
+（2,573 completed、75 completed_with_errors），provider owner 已釋放。未取消、重建請求或
+重抓 native bytes。這次只確認安全部署所需的排空條件，不取代尚未執行的 FactSet 完整 native
+驗收；唯讀 SSM 證據為 `ad8b81cb-b1af-4983-8a0a-6f66ac063496`。
 
 ### 可追溯證據與本機驗證
 
@@ -1544,3 +1557,20 @@ candidate deployment 才從退役前版本補做退役。正式 image 的 contai
 - 驗證既有 plan 採 frozen deadline、新 plan 採 catalog；US Pilot／Full 次日台北 09:00 與
   bounded 09:15 分開。歷史回補不新增 daily gate，依既有驗收紀錄追蹤 FactSet native terminal
   的使用者同意略過項目，不標記為通過。Owner 僅恢復原先運行項目後，記錄最終驗收結果。
+
+### PR5 staging Fetcher 部署恢復
+
+PR5 `8104e48af631821a9c82a2e2ccb7b5d31b761eae` 的
+[FinDB CD](https://github.com/FPI-TW/findb/actions/runs/42750921117) 成功；
+[Fetcher CD 42750921079](https://github.com/FPI-TW/findb/actions/runs/42750921079) 第一次因
+FactSet historical 尚未排空，SIGTERM 後 90 秒被 Docker KILL（exit 137），以 `graceful_stop`
+中止。原十二個 consumers 與 current 已恢復，transaction 為 aborted；不是 migration、
+image build 或殘留 inventory 失敗。復原核對 SSM：`2a8d0998-6a22-428b-bcc2-5a724ea219ea`。
+
+原 FactSet 請求自然結算後，確認無 active owners／queued 或 running historical requests，
+八個 controls 均 desired／observed stopped，才重跑失敗 jobs。第二次嘗試成功，未改程式、
+停止上限、controls 或 frozen cohort。現役 bundle 為
+`69bd242775e85ba0aaf20af2fd342337488cfc04a16a1a9a45b310ad39ff7402-42750921079-2`，
+transaction committed、十二個 consumers 皆為 accepted healthy、零 restart／OOM，三個 image
+digests 符合本次 candidate。部署後 SSM：`9eb2e8bf-8e13-4cf9-afe0-d25f8f69f97d`。
+此紀錄確認部署恢復；上方 PR5 migration／UI 的完整 staging 驗收仍須執行，production 未部署。
