@@ -106,22 +106,29 @@ unknown 或 terminal polling timeout 後，即停止該輪的新 provider I/O �
 member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain，再安全 tail retry。
 例外是 Twelve Data 的成員層級 `no_data`（HTTP 400 "No data is available"）：它不代表 provider 或帳號
 異常，回報 `source_error` 並保存診斷後繼續下一個 member，該 member 依原 attempt 上限重試，耗盡後為
-`manual / no_data_exhausted`。部分標的的資料可能晚數小時才發布，所以每次 `no_data` 失敗後依序至少等待 30、60、60、
-120 分鐘再試（5 次含第一次抓取）。美股第一輪約 3.5 小時，最後一次約在隔日 05:30–06:05 UTC，work 也在這時才結算。
-重試不增加呼叫次數，晚到的列多半是成交量 0、價格不變的占位資料，仍照常寫入。只剩退避中
-的成員時，下一 attempt 排到最近的重試時間，不空轉。同一輪連續 20 個 `no_data` 且其間沒有取得資料時視為
-系統性問題（例如未發布日曆的休市日），停止該輪，並讓所有待抓成員一起退避 30 分鐘。plan 已取得 20 個以上成員
-後，日期與 provider 都已證實正常，重試中的 `no_data` 不再計入，只有第一次嘗試才算。單檔 HTTP 404
-（`not_found`）同樣依此處理：商品清單可能先列出新代號（例如改名後的新 ticker），日線卻尚未提供；
-`full_work.reason` 與 `no_data` 相同，`full_work_diagnostic` 保留 `not_found` 類別以便分辨。其他 Twelve Data
+`manual / no_data_exhausted`。部分標的的資料可能晚數小時才發布，所以 `no_data` 成員不設逐檔間隔，改由 plan 的
+重試輪控制：第 1 輪抓完全部成員，之後每輪處理當時所有仍為 `no_data` 的成員各一次（5 次含第一次抓取）。一輪
+在結算時若已沒有本輪尚未抓的成員，下一輪最早開始時間為結算時間加上 30、60、60、120 分鐘（依序）；因此同一成員
+兩次抓取至少相隔這些時間。輪號與下一輪時間保存在 Fetcher SQLite `full_no_data_round`，跨 queue attempt 與重啟；
+一輪被 Source 不可用、quota、breaker 或重啟中斷時，下一 attempt 只接續本輪尚未抓的成員，不重抓也不提早進入下一輪。
+沒有輪次紀錄的進行中 plan 從最少嘗試次數的 `no_data` 成員接續，並以該次數對應的間隔等待。
+其他原因（`source_error`、`normalizing`、quota 等待、FinLab 發布等待、TAIFEX outage 等）仍依逐檔 `next_at`。
+美股第一輪約 3.5 小時，之後 4 個重試輪通常各只需數分鐘，work 約在隔日 06:50 UTC 結算。
+重試不增加呼叫次數，晚到的列多半是成交量 0、價格不變的占位資料，仍照常寫入。只剩等待重試輪
+的成員時，下一 attempt 排到下一輪最早時間；若有其他原因的成員更早到期，則依最早時間排程，不空轉。同一輪連續
+20 個 `no_data` 且其間沒有取得資料時視為系統性問題（例如未發布日曆的休市日），停止該輪，並讓所有待抓成員一起
+退避 30 分鐘。plan 已取得 20 個以上成員後，日期與 provider 都已證實正常，重試中的 `no_data` 不再計入，只有第一次
+嘗試才算。單檔 HTTP 404（`not_found`）同樣依此處理：商品清單可能先列出新代號（例如改名後的新 ticker），
+日線卻尚未提供；`full_work.reason` 與 `no_data` 相同，`full_work_diagnostic` 保留 `not_found` 類別以便分辨。其他 Twelve Data
 錯誤類別（含 `invalid_symbol`、`plan_restricted`）維持停止該輪。
 
 非 Shioaji 的 daily 結算：plan 尚有未結成員時，`mapping_gap` 與 `no_data_exhausted` 的 manual 成員只影響
 自身，該輪 tail retry 繼續處理其餘成員；其他 manual 原因可能是系統性問題，仍立即
 `failed`／`MANUAL_INTERVENTION_REQUIRED`。Breaker 連續觸發 5 次且其間沒有取得任何資料時同樣 `failed`；取得資料
-即重新計算，provider 恢復後可接續。全面無資料最多花費 20 個 member 各 5 次呼叫；已取得足夠資料後才全面無資料，
-最多約 300 次呼叫。沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source
-canonical evidence 判定，不計為成功或 no_data。Tail round 不再對已終結或退避中的 member 查詢 prepared。
+即重新計算，provider 恢復後可接續。全面無資料時，breaker 中斷後接續同一輪的未抓成員，累計 5 次即結束 plan：大型
+plan 約 100 次呼叫（5 × 20 個 member），小型 plan 另含每輪未滿 20 個、未觸發 breaker 的尾端成員。
+沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source canonical evidence 判定，不計為成功或 no_data。
+Tail round 不再對已終結、退避中或等待重試輪的 member 查詢 prepared。
 原 controls／request 仍允許抓取時，下一 attempt 才可接續同一 frozen scope 的剩餘 members。
 Daily member 的一般例外會先持久保存 `source_error_pending`，再回報 Source `source_error`；
 回報成功才套用原 local attempt ceiling。回報失敗／重啟時，先補報原 outcome，該輪不再抓取

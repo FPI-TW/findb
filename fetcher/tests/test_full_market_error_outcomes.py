@@ -14,6 +14,7 @@ from findb_fetcher.full_market_state import (
     FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS,
     FULL_WORK_NO_DATA_RETRY_DELAYS,
     FullMarketState,
+    QuotaBlockedError,
 )
 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
 from provider_work_support import owned_unit_work
@@ -307,9 +308,10 @@ def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path, rep
         assert statuses["AACI"][:2] == ("manual", "mapping_gap")
         with runtime.state.connection() as db:
             db.execute(
-                "UPDATE full_work SET next_at=0,attempts=? WHERE member_key='ACA'",
+                "UPDATE full_work SET attempts=? WHERE member_key='ACA'",
                 (FULL_WORK_MAX_ATTEMPTS - 1,),
             )
+        _skip_waits(runtime)
         with owned_unit_work(runtime.provider, tmp_path):
             assert runtime._deliver_plan(
                 plan, _members("AAPL", "AACI", "ACA", "MSFT", gaps={"AACI"}), runtime.feeds[0]
@@ -342,7 +344,8 @@ def test_unbroken_no_data_run_is_bounded_and_ends_the_plan_as_systemic(tmp_path,
         raise TwelveDataResponseError("private-detail", dispatched=True, **reply)
 
     runtime._acquire = acquire
-    keys = [f"M{index:03d}" for index in range(FULL_WORK_NO_DATA_BREAKER + 10)]
+    bound = FULL_WORK_NO_DATA_BREAKER * FULL_WORK_MAX_ATTEMPTS
+    keys = [f"M{index:03d}" for index in range(bound + 10)]
     plan = _plan()
     plan["parts"][0]["member_keys"] = keys
     runtime.state.record_plan(plan, runtime.provider)
@@ -354,11 +357,11 @@ def test_unbroken_no_data_run_is_bounded_and_ends_the_plan_as_systemic(tmp_path,
                 assert not runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
             assert len(acquired) == FULL_WORK_NO_DATA_BREAKER * number
             runtime._settle_queued_round(owner)
-            with runtime.state.connection() as db:
-                db.execute("UPDATE full_work SET next_at=0")
+            _skip_waits(runtime)
         assert owner.settled[:-1] == [("retry", None)] * (FULL_WORK_MAX_ATTEMPTS - 1)
         assert owner.settled[-1] == ("failed", "MANUAL_INTERVENTION_REQUIRED")
-        assert set(acquired) == set(keys[:FULL_WORK_NO_DATA_BREAKER])
+        # Each held round resumes with members not yet fetched in it, never the same run.
+        assert acquired == keys[:bound]
     finally:
         runtime.close()
 
@@ -407,6 +410,22 @@ def _no_data_error():
     )
 
 
+def _round(runtime, plan_id="p"):
+    with runtime.state.connection() as db:
+        row = db.execute(
+            "SELECT round,not_before FROM full_no_data_round WHERE plan_id=?", (plan_id,)
+        ).fetchone()
+    return tuple(row) if row else None
+
+
+def _skip_waits(runtime, plan_id="p"):
+    """Settle the no-data retry round, then end every wait as if its time had passed."""
+    runtime.state.advance_no_data_round(plan_id, now=time.time())
+    with runtime.state.connection() as db:
+        db.execute("UPDATE full_work SET next_at=0")
+        db.execute("UPDATE full_no_data_round SET not_before=0")
+
+
 def test_persistent_no_data_run_in_retry_rounds_never_starves_the_tail(tmp_path):
     runtime, source, _ = _runtime(tmp_path)
     runtime._acquisition_allowed = lambda: True
@@ -433,8 +452,7 @@ def test_persistent_no_data_run_in_retry_rounds_never_starves_the_tail(tmp_path)
             with owned_unit_work(runtime.provider, tmp_path):
                 assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
             runtime._settle_queued_round(owner)
-            with runtime.state.connection() as db:
-                db.execute("UPDATE full_work SET next_at=0")
+            _skip_waits(runtime)
         assert acquired.count(no_data[-1]) == FULL_WORK_MAX_ATTEMPTS
         assert len(acquired) == len(data) + len(no_data) * FULL_WORK_MAX_ATTEMPTS
         statuses = _statuses(runtime)
@@ -473,12 +491,17 @@ def test_breaker_after_proven_data_still_counts_first_attempts_only(tmp_path):
         with owned_unit_work(runtime.provider, tmp_path):
             assert not runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
         assert acquired == data + fresh[:breaker]
-        with runtime.state.connection() as db:
-            db.execute("UPDATE full_work SET next_at=0")
+        _skip_waits(runtime)
         acquired.clear()
         with owned_unit_work(runtime.provider, tmp_path):
             assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
-        # The retried run does not count, and the five left are too few to trip again.
+        # The held round resumes with the five left, too few to trip again.
+        assert acquired == fresh[breaker:]
+        _skip_waits(runtime)
+        acquired.clear()
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+        # The retry round's unbroken no-data run does not count.
         assert acquired == fresh
     finally:
         runtime.close()
@@ -535,8 +558,7 @@ def test_no_data_member_recovers_on_a_later_round(tmp_path):
         # Still backing off: the provider is not asked again this soon.
         assert _statuses(runtime)["AAPL"] == ("pending", "no_data", 1)
         published = True
-        with runtime.state.connection() as db:
-            db.execute("UPDATE full_work SET next_at=0 WHERE member_key='AAPL'")
+        _skip_waits(runtime)
         with owned_unit_work(runtime.provider, tmp_path):
             assert runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
         assert _statuses(runtime)["AAPL"][0] == "complete"
@@ -559,21 +581,26 @@ def test_no_data_retries_wait_longer_until_the_budget_is_spent(tmp_path):
     runtime._acquire = acquire
     plan = _plan()
     runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    owner = _SettleOwner()
     assert FULL_WORK_NO_DATA_RETRY_DELAYS == (1800, 3600, 3600, 7200)
     assert len(FULL_WORK_NO_DATA_RETRY_DELAYS) == FULL_WORK_MAX_ATTEMPTS - 1
     try:
         for attempt, delay in enumerate(FULL_WORK_NO_DATA_RETRY_DELAYS, start=1):
-            before = time.time()
             with owned_unit_work(runtime.provider, tmp_path):
                 runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
-            after = time.time()
             assert _statuses(runtime)["AAPL"] == ("pending", "no_data", attempt)
-            with runtime.state.connection() as db:
-                next_at = db.execute(
-                    "SELECT next_at FROM full_work WHERE member_key='AAPL'"
-                ).fetchone()[0]
-                db.execute("UPDATE full_work SET next_at=0 WHERE member_key='AAPL'")
-            assert before + delay <= next_at <= after + delay
+            before = time.time()
+            runtime._settle_queued_round(owner)
+            after = time.time()
+            # The wait starts at the round's settlement and the next attempt sleeps through it.
+            not_before = _round(runtime)[1]
+            assert before + delay <= not_before <= after + delay
+            assert delay - 1 <= owner.delays[-1] <= delay + 1
+            with owned_unit_work(runtime.provider, tmp_path):
+                runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
+            assert calls == attempt
+            _skip_waits(runtime)
         with owned_unit_work(runtime.provider, tmp_path):
             runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
         assert _statuses(runtime)["AAPL"] == (
@@ -602,6 +629,163 @@ def test_only_no_data_uses_the_long_retry_schedule(tmp_path):
         runtime.close()
 
 
+def test_each_no_data_round_fetches_every_member_once_and_settles_once(tmp_path):
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    no_data = ["N1", "N2", "N3"]
+    keys = ["N1", "D1", "N2", "D2", "N3", "D3"]
+    acquired = []
+
+    def acquire(member, *args):
+        acquired.append(member["member_key"])
+        if member["member_key"].startswith("N"):
+            raise _no_data_error()
+        return []
+
+    runtime._acquire = acquire
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = keys
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    owner = _SettleOwner()
+    try:
+        for number in range(1, FULL_WORK_MAX_ATTEMPTS + 1):
+            acquired.clear()
+            with owned_unit_work(runtime.provider, tmp_path):
+                assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+            assert acquired == (keys if number == 1 else no_data)
+            runtime._settle_queued_round(owner)
+            assert len(owner.settled) == number
+            # Members fetched apart in a round wait together; nothing is due before the round.
+            with owned_unit_work(runtime.provider, tmp_path):
+                assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+            assert acquired == (keys if number == 1 else no_data)
+            with runtime.state.connection() as db:
+                db.execute("UPDATE full_no_data_round SET not_before=0")
+        assert owner.settled[:-1] == [("retry", None)] * (FULL_WORK_MAX_ATTEMPTS - 1)
+        assert owner.settled[-1] == ("failed", "MANUAL_INTERVENTION_REQUIRED")
+        assert owner.delays[:-1] == [
+            pytest.approx(delay, abs=1) for delay in FULL_WORK_NO_DATA_RETRY_DELAYS
+        ]
+        statuses = _statuses(runtime)
+        assert all(
+            statuses[key] == ("manual", "no_data_exhausted", FULL_WORK_MAX_ATTEMPTS)
+            for key in no_data
+        )
+    finally:
+        runtime.close()
+
+
+def test_interrupted_no_data_round_resumes_without_refetching(tmp_path):
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    keys = ["N1", "N2", "N3", "N4"]
+    acquired = []
+    quota_waiting = False
+
+    def acquire(member, *args):
+        if quota_waiting and member["member_key"] == "N3":
+            raise QuotaBlockedError("account waiting", quota_wait=True)
+        acquired.append(member["member_key"])
+        raise _no_data_error()
+
+    runtime._acquire = acquire
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = keys
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    owner = _SettleOwner()
+    try:
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+        runtime._settle_queued_round(owner)
+        _skip_waits(runtime)
+        assert _round(runtime)[0] == 2
+        acquired.clear()
+        quota_waiting = True
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert not runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+        assert acquired == ["N1", "N2"]
+        # The wait refunds the attempt and keeps the member unfetched in this round.
+        assert _statuses(runtime)["N3"] == ("pending", "no_data", 1)
+        runtime._settle_queued_round(owner)
+        assert _round(runtime) == (2, 0)
+        assert owner.delays[-1] == 60
+        # The round survives a restart of the local state.
+        restarted = FullMarketState(tmp_path / "state.sqlite3")
+        now = time.time()
+        assert not restarted.eligible("fp1:123:N1", now=now + 61)
+        assert restarted.eligible("fp1:123:N3", now=now + 61)
+        quota_waiting = False
+        acquired.clear()
+        with runtime.state.connection() as db:
+            db.execute("UPDATE full_work SET next_at=0")
+        with owned_unit_work(runtime.provider, tmp_path):
+            assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+        assert acquired == ["N3", "N4"]
+        before = time.time()
+        runtime._settle_queued_round(owner)
+        assert _round(runtime)[0] == 3
+        assert _round(runtime)[1] >= before + FULL_WORK_NO_DATA_RETRY_DELAYS[1]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("other", ["source_error", "normalizing"])
+def test_earlier_member_retry_never_fetches_no_data_before_its_round(tmp_path, other):
+    runtime, source, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    now = time.time()
+    assert runtime.state.claim("fp1:123:AAPL", now=now)
+    runtime.state.finish("fp1:123:AAPL", status="pending", reason="no_data", now=now)
+    assert runtime.state.claim("fp1:123:MSFT", now=now)
+    if other == "normalizing":
+        # Normalization refunds the attempt, but the provider response is already held.
+        runtime.state.prepare("fp1:123:MSFT", b"prepared delivery")
+        runtime.state.finish("fp1:123:MSFT", status="prepared", reason="normalizing", now=now)
+    else:
+        runtime.state.finish("fp1:123:MSFT", status="pending", reason="source_error", now=now)
+    owner = _SettleOwner()
+    try:
+        with runtime.state.connection() as db:
+            assert db.execute("SELECT next_at FROM full_work WHERE member_key='AAPL'").fetchone()[
+                0
+            ] == pytest.approx(now)
+        runtime._settle_queued_round(owner)
+        assert owner.settled == [("retry", None)]
+        assert owner.delays == [60]
+        assert _round(runtime)[0] == 2
+        assert runtime.state.eligible("fp1:123:MSFT", now=now + 61)
+        assert not runtime.state.eligible("fp1:123:AAPL", now=now + 61)
+        assert runtime.state.eligible(
+            "fp1:123:AAPL", now=now + FULL_WORK_NO_DATA_RETRY_DELAYS[0] + 61
+        )
+    finally:
+        runtime.close()
+
+
+def test_plan_without_a_round_resumes_from_its_least_fetched_no_data_member(tmp_path):
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    plan = _plan()
+    state.record_plan(plan, "twelve_data")
+    # A plan in flight before retry rounds existed holds members at different attempts.
+    with state.connection() as db:
+        db.execute("UPDATE full_work SET reason='no_data',attempts=2 WHERE member_key='AAPL'")
+        db.execute("UPDATE full_work SET reason='no_data',attempts=3 WHERE member_key='MSFT'")
+    now = time.time()
+    assert not state.eligible("fp1:123:AAPL", now=now)
+    state.advance_no_data_round("p", now=now)
+    later = now + FULL_WORK_NO_DATA_RETRY_DELAYS[1]
+    assert state.no_data_retry_at("p") == later
+    assert state.eligible("fp1:123:AAPL", now=later)
+    assert not state.eligible("fp1:123:MSFT", now=later)
+    # Settling again before the round has fetched anyone neither moves nor skips it.
+    state.advance_no_data_round("p", now=later)
+    assert state.no_data_retry_at("p") == later
+
+
 @pytest.mark.parametrize(
     "other_status,expected_delay_above",
     [(None, FULL_WORK_NO_DATA_RETRY_DELAYS[0] - 60), ("prepared", None)],
@@ -614,6 +798,7 @@ def test_retry_round_waits_only_when_every_remaining_member_is_backing_off(
     runtime.state.record_plan(plan, runtime.provider)
     source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
     now = time.time()
+    assert runtime.state.claim("fp1:123:AAPL", now=now)
     runtime.state.finish("fp1:123:AAPL", status="pending", reason="no_data", now=now)
     if other_status:
         runtime.state.prepare("fp1:123:MSFT", b"prepared delivery")
@@ -658,13 +843,11 @@ def test_no_data_starting_after_proven_data_ends_the_plan_with_bounded_calls(tmp
             with owned_unit_work(runtime.provider, tmp_path):
                 assert not runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
             runtime._settle_queued_round(owner)
-            with runtime.state.connection() as db:
-                db.execute("UPDATE full_work SET next_at=0")
+            _skip_waits(runtime)
         assert owner.settled[:-1] == [("retry", None)] * (FULL_WORK_MAX_ATTEMPTS - 1)
         assert owner.settled[-1] == ("failed", "MANUAL_INTERVENTION_REQUIRED")
-        rounds = range(1, FULL_WORK_MAX_ATTEMPTS + 1)
-        assert len(acquired) == sum(breaker * number for number in rounds)
-        assert not set(acquired) & set(no_data[breaker * FULL_WORK_MAX_ATTEMPTS :])
+        # Every trip holds the first round, which resumes with members not yet fetched.
+        assert acquired == no_data[: breaker * FULL_WORK_MAX_ATTEMPTS]
     finally:
         runtime.close()
 
@@ -672,7 +855,8 @@ def test_no_data_starting_after_proven_data_ends_the_plan_with_bounded_calls(tmp
 def test_acquired_data_restarts_the_trip_count(tmp_path):
     runtime, source, _ = _runtime(tmp_path)
     runtime._acquisition_allowed = lambda: True
-    keys = [f"M{index:03d}" for index in range(FULL_WORK_NO_DATA_BREAKER + 1)]
+    # Each retry round trips on its last member.
+    keys = [f"M{index:03d}" for index in range(FULL_WORK_NO_DATA_BREAKER)]
     publishing = False
 
     def acquire(member, *args):
@@ -688,8 +872,7 @@ def test_acquired_data_restarts_the_trip_count(tmp_path):
         for _ in range(FULL_WORK_MAX_ATTEMPTS - 1):
             with owned_unit_work(runtime.provider, tmp_path):
                 assert not runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
-            with runtime.state.connection() as db:
-                db.execute("UPDATE full_work SET next_at=0")
+            _skip_waits(runtime)
         with runtime.state.connection() as db:
             assert db.execute("SELECT trips FROM full_no_data_trip").fetchone()[0] == (
                 FULL_WORK_MAX_ATTEMPTS - 1
