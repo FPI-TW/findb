@@ -925,6 +925,87 @@ PR5 仍負責 DB schedule／deadline preflight 與遷移、monitor／freshness �
 因此通過的是 release／bootstrap／API／frozen 資料相容性；live historical 全鏈路與 PR4 動態排程
 留待 PR3＋4 staging 整合驗收，不把本次唯讀結果當作完整 native acceptance。
 
+## Provider catalog PR3＋4 staging 整合驗收
+
+2026-11-10（台北時間）驗收 PR3 [#430](https://github.com/FPI-TW/findb/pull/430)、PR4
+[#431](https://github.com/FPI-TW/findb/pull/431) 與部署修正 #432／#436。部署 commit 為
+`d86b633aae3ac83cdb0ab1f789057d16d28b1f2c`；[FinDB CD 42737364615](https://github.com/FPI-TW/findb/actions/runs/42737364615)
+及 [Fetcher CD 42737364735](https://github.com/FPI-TW/findb/actions/runs/42737364735) 均成功。
+Fetcher bundle SHA-256 為 `3a69d56717972b5ff38b9147c7450e2bf240c0853453ba97bfc9f36e773b8b3c`，
+schema-v4 journal committed、receipt healthy，十二個現役 consumers 符合 manifest／host guard，
+無 OOM／restart。三個 image digests：
+
+| Image | SHA-256 |
+| --- | --- |
+| Twelve Data／TAIFEX | `74b6cbe56268beae369f1cec92688a5ecb66f8011adab613adc6bd89274c2f87` |
+| FinLab | `a9c796f906e23f3f58d0ec09f153f2e7a903701ee393415de2e587fe9549ebb7` |
+| FactSet | `195727b08e554850860cf38b947439fe66fdf301d1ac5385ab8414bdaef4e1eb` |
+
+### 已完成項目
+
+- 四個 providers × Pilot／Full 共八次正式 Source execution-config 查詢均通過部署 image 的
+  resolver；scope、environment、profile、schema、digest 與 `Cache-Control: no-store` 正確。
+  Daily／historical `--check` 通過，舊 full-market／daily schedule 檔不在 image，指定失效舊路徑
+  不構成 fallback；FinLab historical 仍只包含 equity。
+- 相同 image digests 在無網路、無 secrets、無現役 state mounts 的隔離容器內，完成 883 項
+  非信號測試（FactSet 291、FinLab 273、Twelve Data／TAIFEX 319）。涵蓋完整快照換版、下一輪
+  生效、API 失敗清除舊快照、prepared recovery 不要求新排程、DST／跨年邊界、historical
+  metadata／planner、owner fence、raw-first、ACK-loss、lease／retry／cutoff 與恢復案例。
+  Provider／Source 故障由測試 doubles 注入，未故意中斷 staging API 或更改線上排程。
+- 本機跨架構容器的少數 process signal 案例曾逾越三秒上限；將原測試函式在 staging 原生
+  amd64、相同三個 image 的隔離容器執行後，48 項 SIGTERM／SIGINT 測試全部通過，包含
+  Source outage wait、historical idle／running／failure／startup 的排空與退出。
+  原生 probe 無 credentials／網路／現役 mounts，執行後移除自身容器。
+- 經已登入的 staging Owner Dashboard preview／create 建立 `2026-11-06` 單日請求。
+  全程 daily controls 維持 stopped；未更改 universe、首次日期、日曆、配額或權限。
+  三個完成請求均在第一個 lease／attempt 結算，prepared → receipt → raw payload 雜湊一致；
+  canonical 與受既有 Serve credential 保護的查詢皆有本次資料。
+
+| Provider | Request ID | Native 驗收 |
+| --- | --- | --- |
+| Twelve Data | `01a1c333-6218-7098-abf1-968b2dceed30` | completed；staging 原有 3 成員、3 receipts、3 筆 canonical／Serve；3 個 R2 raw objects 雜湊正確。 |
+| FinLab | `01a1c333-f07e-733f-9508-deab69419f83` | completed；staging 原有 2 成員、1 receipt、2 筆 canonical／Serve；5 份 native response checkpoint 與 R2 aggregate 雜湊正確。 |
+| TAIFEX | `01a1c334-69bb-70e0-9610-f0c61672946c` | completed；TX／MTX／TMF／TE／TF，62 個契約／時段 observations、53 筆 canonical／Serve；五份 CP950 CSV 及整日 manifest 的 R2 bytes 均符合 SHA-256。 |
+| FactSet | `01a1c335-001b-72a3-bf78-97f6243ab083` | Owner 指示本次跳過終態驗收；已建立請求保留，未取消或改寫。詳見下節。 |
+
+Historical 成功發生在當地 daily 觸發時間之前且 controls 全部停止，未新增 daily running 或
+觸發時間 gate。這是 staging 原有 universe 的實測，不代表已驗收 production 的 101／50 檔清單。
+Production planner 以隔離測試驗證 preview／scope／估算與回補語意，未指向 production 建立工作。
+既有 14 個 controls 的狀態／revision／retired 值、14 個 first dates，以及 70 個 frozen plans 的
+identity／deadline／member hash／expected count，驗收前後雜湊完全相同。
+
+### FactSet 保留紀錄與驗收限制
+
+Owner 指示先跳過 FactSet，故不宣稱四個 native historical runners 已全部完成驗收。
+最後一次 DB 觀測時請求仍為 running，凍結當時 HKEX 2,817 個成員；原生價格回應 2,648 列
+已保存 R2，SHA-256 為 `e5a1aef3190c656c08257166fc471eb49299ec66bd277883ba2b0f0e3fc417fe`。
+已觀測 295 個 prepared／receipts／raw payload，兩段 payload hash 均相符；其中 285 筆已有
+canonical 寫入，Serve 第一頁 100 筆皆來自本次抓取。此數字是執行中快照，不能當成最終完整性。
+
+不縮減 frozen cohort、不把缺列當 no_data，也不以目前成功筆數推定 completed。後續如恢復
+FactSet 驗收，先按上述 request ID 唯讀查詢終態，再核對全部 receipts、DQ、member evidence、
+owner 釋放及 partial／completed 結算；不要另建重複請求或重抓已保存的 native bytes。
+本次不部署 production，不把排除 FactSet 的結果視為其 production promotion 核准。
+PR5 的 DB preflight／deadline／monitor 與 Dashboard market 分組尚未執行，現行 UI 的 Slot
+標示仍屬 PR5 待辦；slot 契約／DB 欄位仍維持相容。
+
+### 可追溯證據與本機驗證
+
+| 驗收 | SSM command ID |
+| --- | --- |
+| 最新 release、host guard、八組 Source 快照與 bootstrap | `4c114132-995e-4d53-84ed-0681f77a133b` |
+| DB 操作前基線 | `b77313bc-0e92-4440-bb4c-45133852d0b6` |
+| Native request／work／receipts／canonical 與 frozen 資料比對 | `9baa3885-2bb3-44fd-91fb-bc1b9450bcd3` |
+| Journal prepared／response 及 R2 raw 雜湊 | `bb8ec7d2-25fa-4528-b0f3-bb5b1d8447c0` |
+| TAIFEX 五份報表與整日 manifest | `4c8ab364-e880-4a6a-bef2-d5ab9b261319` |
+| 三個 image 的原生 process signal 測試 | `a5e64d34-4264-4189-af50-a4a948828954` |
+| 已認證 Serve 四市場查詢 | `e9f89dec-ebb7-4460-8a54-d9a29a79965e` |
+| 驗收後仍為十二個現役 consumers、無測試容器殘留 | `d0ac4740-de10-46d1-bdbb-be5160d5d5ab` |
+
+全 repo `pnpm test` 完成：Backend 2,259 passed／3 skipped、migration 31 passed、Infra 986 passed／
+2 skipped／289 subtests、Fetcher 1,771 passed、Dashboard unit 203、browser 10、e2e 16 passed；
+contracts／generated artifacts checks 通過。`pnpm check` 的 format／lint／type checks 通過。
+
 ## Provider catalog production 驗收
 
 2026-11-10（台北時間）完成 PR1＋2 production 唯讀驗收。

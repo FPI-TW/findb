@@ -31,8 +31,8 @@
 
 - API與schema：部署版本的OpenAPI、versioned contract endpoint及`contracts/`。
 - Active datasets與policy：`backend/scripts/seed_data.py`及Fetcher的versioned configs。
-- Backend provider metadata／發布排程：`backend/configs/provider_catalog.v1.json`；Fetcher 尚讀相容投影，
-  現況與後續切換見 [provider metadata](architecture/provider_metadata.md)。
+- Backend provider metadata／發布排程：`backend/configs/provider_catalog.v1.json`；Fetcher 每輪讀取 Source
+  execution-config，image 僅保留非排程 descriptors 與 bootstrap；邊界見 [provider metadata](architecture/provider_metadata.md)。
 - DB schema：ORM與Alembic migrations。
 - Runtime topology：`docker-compose.prod.yml`。
 - Environment設定：`infra/env/`與`app.config.Settings`。

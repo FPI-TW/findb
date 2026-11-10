@@ -227,8 +227,10 @@ findb-fetch-backfill-plan --provider taifex --dataset-key tw_futures_eod \
 # 核對上述 dry-run 後，使用相同參數加 --deliver --wait。
 ```
 
-CLI 與 runner 讀取生成的非排程 metadata；historical 不再使用 `FETCHER_FULL_MARKET_CONFIG`，
-該設定目前只屬於尚未切換的 daily runtime／工具。
+CLI 與 runner 讀取生成的非排程 metadata；daily 與 historical 均已移除
+`FETCHER_FULL_MARKET_CONFIG` 及舊 schedule manifest 的 runtime／build 依賴。Daily 每輪向
+Backend 取得排程；historical 直接使用 request 日期、frozen scope 與原有 acquisition authorization，
+不要求 daily schedule API 成功或 daily controls 為 running。
 Staging／local 亦可直接使用 Admin preview／create 及
 `findb-fetch-historical-backfill --provider taifex --run-forever`。
 
