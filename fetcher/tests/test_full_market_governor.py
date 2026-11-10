@@ -192,7 +192,7 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
         api_token="offline-secret",
         _sdk=SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=get)),
     )
-    runtime._finlab_gateway = lambda: gateway
+    runtime.adapter.gateway = lambda *_: gateway
     authorizations = []
 
     def authorize(method, path):
@@ -217,7 +217,7 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
             runtime.sync_universes()
     assert len(authorizations) == 1
     assert [call[1] for call in calls] == [100, 103][:fail_at]
-    assert len(submitted) == (2 if fail_at is None else 0) and runtime.bundles == {}
+    assert len(submitted) == (2 if fail_at is None else 0) and runtime.adapter.bundles == {}
     for index, body in enumerate(submitted, start=1):
         mapped = index == 1 or not missing_etf
         assert body["members"][0]["mapping_status"] == ("mapped" if mapped else "gap")
@@ -330,7 +330,11 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
             )
     assert len(calls) == 1
     assert _daily(first) == (1, 0)
-    assert raw.calls == [] and first.catalogue_evidence == {} and first.bundles == {}
+    assert (
+        raw.calls == []
+        and first.catalogue_evidence == {}
+        and getattr(first.adapter, "bundles", {}) == {}
+    )
     assert first.state.prepared("fp1:123:AAPL") is None
     with first.state.connection() as db:
         permit = db.execute("SELECT next_at FROM full_pacing").fetchone()[0]
@@ -515,7 +519,7 @@ def _real_finlab_gateway(runtime: Any, symbols: tuple[str, ...]) -> list[str]:
         api_token="offline-secret",
         _sdk=SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=get)),
     )
-    runtime._finlab_gateway = lambda: gateway
+    runtime.adapter.gateway = lambda *_: gateway
     return calls
 
 
@@ -554,7 +558,7 @@ def test_real_finlab_gateway_oversized_field_rejects_and_records_observable_over
     assert observed == 2449
     assert _quota(runtime, "2026-10-01")[0] == expected_calls
     assert _quota(runtime, "2026-10-01")[1] == 0
-    assert raw.calls == [] and runtime.bundles == {}
+    assert raw.calls == [] and runtime.adapter.bundles == {}
     assert runtime.state.prepared("tw_equity_eod:" + symbols[0]) is None
     assert source.outcomes == [
         {"work_item_id": "tw_equity_eod", "member_key": symbols[0], "reason": "source_error"}
@@ -913,7 +917,11 @@ def test_http_catalogue_and_public_reports_enforce_exact_raw_body_boundary(
             message = "response bound failed"
         with pytest.raises(error, match=message):
             acquire()
-        assert raw.calls == [] and runtime.catalogue_evidence == {} and runtime.bundles == {}
+        assert (
+            raw.calls == []
+            and runtime.catalogue_evidence == {}
+            and getattr(runtime.adapter, "bundles", {}) == {}
+        )
     assert len(calls) == 1
     assert _daily(runtime) == (
         (2, len(body) if boundary == "wire" else 20)
@@ -1720,7 +1728,7 @@ def test_finlab_catalogue_operational_failure_does_not_submit_mapping_gaps(
         _sdk=SimpleNamespace(login=login, data=SimpleNamespace(get=get)),
         on_response_bytes=observed,
     )
-    runtime._finlab_gateway = lambda: gateway
+    runtime.adapter.gateway = lambda *_: gateway
     if failure == "r2":
 
         def persist(*args, **kwargs):
@@ -1730,7 +1738,7 @@ def test_finlab_catalogue_operational_failure_does_not_submit_mapping_gaps(
     with pytest.raises(RuntimeError if failure == "r2" else FinLabOperationalError) as caught:
         runtime.sync_universes(dataset_keys=["tw_equity_eod"])
     assert "private" not in str(caught.value) and "offline-token" not in str(caught.value)
-    assert submitted == [] and runtime.bundles == {}
+    assert submitted == [] and runtime.adapter.bundles == {}
     assert len(calls) == int(failure not in {"authorization", "login"})
     if failure.startswith("quota_") or failure == "network":
         with runtime.state.connection() as db:

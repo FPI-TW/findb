@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import math
 import os
@@ -14,7 +13,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -76,6 +75,8 @@ from findb_fetcher.provider_adapters import (
     FailureKind,
     adapter_for,
 )
+from findb_fetcher.provider_adapters.finlab import FINLAB_PRICE_EVIDENCE_URL, FinLabAdapter
+from findb_fetcher.provider_adapters.finlab import table_bytes as finlab_table_bytes
 from findb_fetcher.provider_process import ProviderProcessError
 from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
@@ -96,18 +97,8 @@ from findb_fetcher.providers.factset import (
 )
 from findb_fetcher.providers.finlab import (
     FinLabConfigError,
-    FinLabDatasetConfig,
-    FinLabDatasetTable,
     FinLabOperationalError,
     FinLabSdkError,
-    FinLabSdkGateway,
-    FinLabSymbol,
-    FinLabTargetNotReadyError,
-    FinLabValueError,
-    build_finlab_dataset_bundle,
-)
-from findb_fetcher.providers.finlab import (
-    build_market_eod_request as finlab_request,
 )
 from findb_fetcher.providers.taifex import (
     TaifexOperationalError,
@@ -138,28 +129,6 @@ _TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States"}
 
 class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
     """A proven daily-window wait, including authoritative Source denial."""
-
-
-# Shared FinLab evidence URL; the bundle checksum identifies the exact observation.
-FINLAB_PRICE_EVIDENCE_URL = "https://www.finlab.tw/data/price-close?dataset={dataset}"
-FINLAB_PRICE_FIELDS = ("open", "high", "low", "close")
-
-
-def _finlab_unobserved(value: object) -> bool:
-    if value is None or isinstance(value, bool):
-        return value is None
-    try:
-        return not math.isfinite(float(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return False
-
-
-def _finlab_no_trade(values: dict[str, object]) -> bool:
-    """FinLab leaves every price empty, with no positive volume, on a day without trades."""
-    volume = values["volume"]
-    return all(_finlab_unobserved(values[field]) for field in FINLAB_PRICE_FIELDS) and (
-        _finlab_unobserved(volume) or volume == 0
-    )
 
 
 # A TAIFEX report outage stops charging members, but only for this long per plan.
@@ -402,7 +371,6 @@ class FullMarketRuntime:
         self.snapshot_objects: dict[str, RawObject] = {}
         self.catalogue_evidence: dict[str, bytes] = {}
         self.futures: dict[str, tuple[bytes, list[dict[str, Any]], bool]] = {}
-        self.bundles: dict[tuple[str, date], Any] = {}
         # Source stable work identity is immutable, so one acknowledged enqueue
         # per process is enough; every later cycle would only replay it.
         self.enqueued_keys: set[str] = set()
@@ -416,7 +384,6 @@ class FullMarketRuntime:
 
     def pause(self) -> None:
         self.adapter.reset()
-        self.bundles.clear()
         self.futures.clear()
 
     def _publication_retry_delay(self, owner, feed: dict[str, Any]) -> int:
@@ -512,15 +479,6 @@ class FullMarketRuntime:
             until=time.time() + 60,
         )
 
-    def _finlab_table_bytes(self, table: FinLabDatasetTable) -> bytes:
-        return canonical_bytes(
-            {
-                "dates": table.dates,
-                "symbols": table.symbols,
-                "values": [[str(value) for value in row] for row in table.values],
-            }
-        )
-
     def _read_response(
         self, response: httpx.Response, *, bound: int, provider_response: bool
     ) -> bytes:
@@ -588,16 +546,6 @@ class FullMarketRuntime:
         from findb_fetcher.platform_limits import limits
 
         self.proof = limits(self.provider, [feed["dataset_key"] for feed in self.installed_feeds])
-
-    def _finlab_gateway(self) -> FinLabSdkGateway:
-        try:
-            if importlib.metadata.version("finlab") != "1.5.7":
-                raise ReadinessBlockedError("FinLab SDK version is unsupported")
-        except importlib.metadata.PackageNotFoundError:
-            raise ReadinessBlockedError("FinLab pinned SDK is unavailable") from None
-        return FinLabSdkGateway.from_env(
-            on_response_bytes=self._observed_response, allow_missing_symbols=True
-        )
 
     @_governed
     def _catalogue(self, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
@@ -779,7 +727,7 @@ class FullMarketRuntime:
             # Catalogue presence is independent of daily OHLCV completeness.
             catalogue_snapshots: dict[str, dict[str, bytes]] = {}
             self._ensure_proof()
-            gateway = self._finlab_gateway()
+            gateway = cast(FinLabAdapter, self.adapter).gateway(self._observed_response)
             for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
                 if dataset not in dataset_keys:
                     continue
@@ -804,9 +752,9 @@ class FullMarketRuntime:
                     for member in members:
                         member["mapping_status"] = "gap"
                     continue
-                detached = self._finlab_table_bytes(table)
+                detached = finlab_table_bytes(table)
                 self._observed_response(len(detached))
-                url = f"https://www.finlab.tw/data/price-close?dataset={dataset}"
+                url = FINLAB_PRICE_EVIDENCE_URL.format(dataset=dataset)
                 self.snapshot_objects[url] = self._persist(detached, dataset, "provider_catalogue")
                 catalogue_snapshots[dataset] = {url: detached}
                 for member in members:
@@ -1886,10 +1834,11 @@ class FullMarketRuntime:
                     continue
                 prepared = self.state.prepared(key)
                 if prepared is None:
+                    shared = self.adapter.shared_response_prefix
                     if (
-                        self.provider == "finlab"
+                        shared is not None
                         and getattr(owner, "journal", None) is not None
-                        and owner.journal.has_response_observation("finlab_dataset:", prefix=True)
+                        and owner.journal.has_response_observation(shared, prefix=True)
                         and self._calendar_repair_required(owner)
                     ):
                         self.state.finish(
@@ -1998,34 +1947,6 @@ class FullMarketRuntime:
                 else:
                     self.state.defer_wait(key, now=time.time(), reason="suspended")
                 return False
-            except FinLabTargetNotReadyError:
-                retry_delay = self._publication_retry_delay(owner, feed)
-                if self._calendar_repair_required(owner):
-                    self.state.finish(
-                        key,
-                        status="manual",
-                        reason="calendar_repair_required",
-                    )
-                    raise CalendarDecisionRepairRequiredError(
-                        "published calendar is now closed"
-                    ) from None
-                if retry_delay > 0:
-                    self.state.defer_wait(
-                        key,
-                        now=time.time(),
-                        reason="target_not_ready",
-                        delay_seconds=retry_delay,
-                    )
-                    raise ProviderPublicationPendingError(
-                        "finlab_target_not_ready",
-                        retry_after_seconds=retry_delay,
-                    ) from None
-                self.state.finish(
-                    key,
-                    status="manual",
-                    reason="target_not_ready",
-                )
-                return False
             except QuotaBlockedError as exc:
                 limited = exc.quota_wait and not exc.dispatched
                 if limited:
@@ -2089,6 +2010,35 @@ class FullMarketRuntime:
                         "Source provider owner fence differs"
                     ) from None
                 failure = self.adapter.classify(exc, "member")
+                if failure.wait == "publication":
+                    # The provider has not published the target date for the cohort yet.
+                    retry_delay = self._publication_retry_delay(owner, feed)
+                    if self._calendar_repair_required(owner):
+                        self.state.finish(
+                            key,
+                            status="manual",
+                            reason="calendar_repair_required",
+                        )
+                        raise CalendarDecisionRepairRequiredError(
+                            "published calendar is now closed"
+                        ) from None
+                    if retry_delay > 0:
+                        self.state.defer_wait(
+                            key,
+                            now=time.time(),
+                            reason="target_not_ready",
+                            delay_seconds=retry_delay,
+                        )
+                        raise ProviderPublicationPendingError(
+                            failure.code or "provider_target_not_ready",
+                            retry_after_seconds=retry_delay,
+                        ) from None
+                    self.state.finish(
+                        key,
+                        status="manual",
+                        reason="target_not_ready",
+                    )
+                    return False
                 if failure.wait is None and failure.kind in {
                     FailureKind.MEMBER,
                     FailureKind.QUOTA_WAIT,
@@ -2207,11 +2157,8 @@ class FullMarketRuntime:
             )
         elif (fields := self.adapter.diagnostic(exc)) is not None:
             self.state.record_diagnostic(key, provider=self.provider, **fields)
-        elif isinstance(exc, (MemberUnavailableError, FinLabValueError)):
-            prefix = "member" if isinstance(exc, MemberUnavailableError) else "finlab_value"
-            self.state.record_diagnostic(
-                key, provider=self.provider, category=f"{prefix}:{exc.code}"
-            )
+        elif isinstance(exc, MemberUnavailableError):
+            self.state.record_diagnostic(key, provider=self.provider, category=f"member:{exc.code}")
         elif isinstance(exc, QuotaBlockedError):
             self.state.record_diagnostic(
                 key,
@@ -2311,114 +2258,18 @@ class FullMarketRuntime:
             assert result.request is not None and result.raw_object is not None
             request, stored = result.request, result.raw_object
         elif self.provider == "finlab":
-            cache_key = (dataset, day)
-            if cache_key not in self.bundles:
-                config = FinLabDatasetConfig(
-                    dataset_key=dataset,
-                    market="TW",
-                    asset_class=feed["asset_class"],
-                    currency="TWD",
-                    field_datasets={
-                        "open": "price:開盤價",
-                        "high": "price:最高價",
-                        "low": "price:最低價",
-                        "close": "price:收盤價",
-                        "volume": "price:成交股數",
-                    },
-                    # Gap members never reach a provider call, so they never
-                    # constrain the table FinLab serves for the mapped ones.
-                    symbols=tuple(
-                        FinLabSymbol(item["provider_symbol"], item["symbol"])
-                        for item in release["members"]
-                        if item["mapping_status"] == "mapped"
-                    ),
-                    production_scope=True,
-                )
-                gateway = self._finlab_gateway()
-                tables = {}
-                for field, name in config.field_datasets.items():
-                    tables[field] = gateway.fetch_dataset(
-                        name,
-                        target_date=day,
-                        symbols=tuple(item.source_symbol for item in config.symbols),
-                    )
-                    self._observed_response(len(self._finlab_table_bytes(tables[field])))
-                table_raw = canonical_bytes(
-                    {
-                        field: {
-                            "dates": table.dates,
-                            "symbols": table.symbols,
-                            "values": [[str(value) for value in row] for row in table.values],
-                        }
-                        for field, table in tables.items()
-                    }
-                )
-                # Five independent field responses share a bounded derived bundle.
-                if len(table_raw) > 5 * int(self.proof["max_response_bytes"]) + 64:
-                    raise ReadinessBlockedError("SDK derived bundle exceeds aggregate bound")
-                table_stored = self._persist(table_raw, dataset, "dataset_bundle")
-                self.bundles[cache_key] = (config, tables, table_raw, table_stored)
-            full_config, tables, raw, stored = self.bundles[cache_key]
-            provider_symbol = member["provider_symbol"]
-            if any(provider_symbol not in table.symbols for table in tables.values()):
-                raise MemberUnavailableError("missing_symbol")
-            values = {
-                field: table.values[0][table.symbols.index(provider_symbol)]
-                for field, table in tables.items()
-            }
-            if _finlab_no_trade(values):
+            result = self.adapter.acquire(member, context)
+            if result.no_trade is not None:
                 self.source.outcome(
                     plan["plan_id"],
                     work_item_id=part["work_item_id"],
                     member_key=member["member_key"],
                     reason="no_trade",
-                    evidence={
-                        "url": FINLAB_PRICE_EVIDENCE_URL.format(dataset=dataset),
-                        "sha256": checksum(raw),
-                        "observed_at": now.isoformat(),
-                        "source_symbol": provider_symbol,
-                        "trade_date": day.isoformat(),
-                        "session": member.get("session"),
-                        "source_status": "no_trade",
-                        "source_excerpt": canonical_bytes(
-                            {field: str(value) for field, value in sorted(values.items())}
-                        ).decode()[:500],
-                    },
+                    evidence=result.no_trade,
                 )
                 return []
-            single_config = FinLabDatasetConfig(
-                dataset_key=dataset,
-                market="TW",
-                asset_class=feed["asset_class"],
-                currency="TWD",
-                field_datasets=full_config.field_datasets,
-                symbols=(FinLabSymbol(member["provider_symbol"], member["symbol"]),),
-                production_scope=True,
-            )
-            single_tables = {
-                field: FinLabDatasetTable(
-                    dates=table.dates,
-                    symbols=(member["provider_symbol"],),
-                    values=tuple(
-                        (values[table.symbols.index(member["provider_symbol"])],)
-                        for values in table.values
-                    ),
-                )
-                for field, table in tables.items()
-            }
-            try:
-                bundle = build_finlab_dataset_bundle(
-                    config=single_config, target_date=day, tables=single_tables
-                )
-            except FinLabValueError as exc:
-                # The shared table passed validation; only this member's values are unusable.
-                raise MemberUnavailableError(exc.code) from None
-            request = finlab_request(bundle, fetched_at=now, delivery=delivery)
-            request["payload"]["data"] = [
-                row for row in request["payload"]["data"] if row["symbol"] == member["symbol"]
-            ]
-            request["payload"]["batch"]["declared_record_count"] = 1
-            request["payload"]["batch"]["delivery_mode"] = "incremental"
+            assert result.request is not None and result.raw_object is not None
+            request, stored = result.request, result.raw_object
         else:
             raw, rows, historical = self._taifex_report(day, dataset)
             stored = self._persist(raw, dataset, "exchange_report")
