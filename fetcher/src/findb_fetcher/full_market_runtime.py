@@ -80,7 +80,6 @@ from findb_fetcher.provider_adapters.finlab import table_bytes as finlab_table_b
 from findb_fetcher.provider_adapters.taifex import (
     TAIFEX_OUTAGE_RETRY_SECONDS as TAIFEX_OUTAGE_RETRY_SECONDS,
 )
-from findb_fetcher.provider_adapters.taifex import taifex_http_retryable as _taifex_http_retryable
 from findb_fetcher.provider_process import ProviderProcessError
 from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
@@ -96,23 +95,19 @@ from findb_fetcher.provider_work import (
 from findb_fetcher.providers.factset import (
     FactSetConfig,
     FactSetGateway,
-    FactSetOperationalError,
     map_current_cohort,
 )
 from findb_fetcher.providers.finlab import (
-    FinLabConfigError,
     FinLabOperationalError,
     FinLabSdkError,
 )
 from findb_fetcher.providers.taifex import (
-    TaifexOperationalError,
     official_report_date,
     parse_report,
     report_members,
 )
 from findb_fetcher.providers.twelve_data import (
     TwelveDataConfig,
-    TwelveDataResponseError,
 )
 from findb_fetcher.providers.twelve_data import (
     authorization_headers as td_authorization_headers,
@@ -912,11 +907,9 @@ class FullMarketRuntime:
                 and owner.dispatch_observations == dispatch_before
             ):
                 owner.journal.release_wait_attempt(operation_key)
-        except (TwelveDataResponseError, ProviderHTTPError, httpx.HTTPStatusError) as exc:
+        except (ProviderHTTPError, httpx.HTTPStatusError) as exc:
             status = (
-                exc.status_code
-                if isinstance(exc, (TwelveDataResponseError, ProviderHTTPError))
-                else exc.response.status_code
+                exc.status_code if isinstance(exc, ProviderHTTPError) else exc.response.status_code
             )
             retryable = _retryable_http_status(status)
             code = "MAINTENANCE_HTTP_" + str(status or "UNKNOWN")
@@ -933,16 +926,21 @@ class FullMarketRuntime:
             code = "MAINTENANCE_SOURCE_" + str(exc.status_code or "UNKNOWN")
         except RawStorageUploadError as exc:
             retryable, code = exc.retryable, "MAINTENANCE_RAW_UPLOAD"
-        except FactSetOperationalError as exc:
-            retryable, code = exc.retryable, exc.code
         except ProviderProcessError:
             retryable, code = True, "MAINTENANCE_PROVIDER_PROCESS"
-        except FinLabOperationalError:
-            retryable, code = True, "MAINTENANCE_FINLAB_OPERATIONAL"
-        except FinLabConfigError:
-            code = "MAINTENANCE_FINLAB_CONFIG"
         except (ReadinessBlockedError, ValueError):
             pass
+        except Exception as exc:
+            # Provider failures are classified by the adapter; others propagate.
+            failure = self.adapter.classify(exc, "maintenance")
+            if failure.kind not in {FailureKind.ROUND_RETRY, FailureKind.WORK_FAILED}:
+                raise
+            retryable = failure.kind is FailureKind.ROUND_RETRY
+            code = (
+                "MAINTENANCE_HTTP_" + str(failure.status_code or "UNKNOWN")
+                if failure.http
+                else failure.code or "MAINTENANCE_PROVIDER_FAILURE"
+            )
         else:
             owner.freeze(
                 {
@@ -1214,17 +1212,11 @@ class FullMarketRuntime:
                         if retryable
                         else "DAILY_SOURCE_REJECTED",
                     )
-                except (ProviderHTTPError, TwelveDataResponseError, TaifexOperationalError) as exc:
-                    status = exc.status_code
-                    retryable = (
-                        _taifex_http_retryable(exc)
-                        if isinstance(exc, TaifexOperationalError)
-                        else _retryable_http_status(status)
-                    )
+                except ProviderHTTPError as exc:
                     self._settle_queued_round(
                         owner,
-                        outcome="retry" if retryable else "failed",
-                        failure_code="DAILY_PROVIDER_HTTP_" + str(status or "UNKNOWN"),
+                        outcome="retry" if _retryable_http_status(exc.status_code) else "failed",
+                        failure_code="DAILY_PROVIDER_HTTP_" + str(exc.status_code or "UNKNOWN"),
                     )
                 except QuotaBlockedError as exc:
                     self._settle_queued_round(
@@ -1245,7 +1237,7 @@ class FullMarketRuntime:
                         if permanent
                         else "DAILY_SOURCE_UNAVAILABLE",
                     )
-                except (FactSetOperationalError, RawStorageUploadError) as exc:
+                except RawStorageUploadError as exc:
                     self._settle_queued_round(
                         owner,
                         outcome="retry" if exc.retryable else "failed",
@@ -1283,6 +1275,23 @@ class FullMarketRuntime:
                 except (ReadinessBlockedError, ValueError):
                     self._settle_queued_round(
                         owner, outcome="failed", failure_code="DAILY_PLANNING_FORMAT_OR_SCOPE"
+                    )
+                except Exception as exc:
+                    # Provider failures are classified by the adapter; others propagate.
+                    failure = self.adapter.classify(exc, "round")
+                    if failure.kind not in {FailureKind.ROUND_RETRY, FailureKind.WORK_FAILED}:
+                        raise
+                    retryable = failure.kind is FailureKind.ROUND_RETRY
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry" if retryable else "failed",
+                        failure_code=(
+                            "DAILY_PROVIDER_HTTP_" + str(failure.status_code or "UNKNOWN")
+                            if failure.http
+                            else "DAILY_PROVIDER_UNAVAILABLE"
+                            if retryable
+                            else "DAILY_PROVIDER_REJECTED"
+                        ),
                     )
                 finally:
                     # Persistent SDK sessions must be stopped and reaped before
