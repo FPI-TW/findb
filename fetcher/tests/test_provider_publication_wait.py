@@ -39,7 +39,7 @@ def test_publication_wait_settles_one_round_with_explicit_policy(
 ):
     from findb_fetcher import provider_work
 
-    runtime, source, _ = _runtime(tmp_path, provider="finlab", execution_profile="pilot")
+    runtime, source, _ = _runtime(tmp_path, provider="finlab")
     feed = runtime.feeds[0]
     feed.update(
         dataset_key="tw_equity_eod",

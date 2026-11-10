@@ -233,7 +233,7 @@ class FullMarketState:
 
     def bind_profile(self, profile: str) -> None:
         """Bind a checkpoint once; legacy full checkpoints retain all state verbatim."""
-        if profile not in {"pilot", "full_market"}:
+        if profile != "full_market":
             raise FullMarketStateError("invalid execution profile")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -244,11 +244,6 @@ class FullMarketState:
             if row is not None and row[0] != profile:
                 raise FullMarketStateError("checkpoint execution profile mismatch")
             if row is None:
-                if profile == "pilot" and any(
-                    db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
-                    for table in ("full_work", "full_plan", "full_cursor")
-                ):
-                    raise FullMarketStateError("legacy full-market checkpoint cannot become pilot")
                 db.execute(
                     "INSERT INTO execution_identity(id,profile) VALUES(1,?) ON CONFLICT DO NOTHING",
                     (profile,),

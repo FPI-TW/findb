@@ -28,7 +28,7 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataConfig,
     TwelveDataResponseError,
 )
-from test_full_market import _member, _plan, _proof, _runtime
+from test_full_market import _checkpoint_reserve, _member, _plan, _proof, _runtime
 from test_full_market_finlab_rate import _Clock, _finlab_runtime, _quota
 
 
@@ -82,7 +82,7 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
     second, _, _ = _runtime(tmp_path)
     second.proof = first.proof.copy()
     second.proof["expires_at"] = (clock.now() + timedelta(seconds=2)).isoformat()
-    second._reserve()  # Expired legacy evidence cannot bypass or shorten cooldown.
+    _checkpoint_reserve(second)  # Expired legacy evidence cannot bypass or shorten cooldown.
     assert clock.now().timestamp() >= cooldown_until
     second.proof = _proof(clock.now())
 
@@ -117,7 +117,7 @@ def test_legacy_dated_cooldown_promoted_and_new_cooldown_preserves_later_permit(
         db.execute("INSERT INTO full_quota VALUES('twelve_data','2026-10-01',1,1000,?)", (until,))
     runtime.state = FullMarketState(runtime.state.path)
     runtime.state.rate_limited(account="twelve_data", window="2026-10-02", until=until - 2)
-    runtime._reserve()
+    _checkpoint_reserve(runtime)
     assert clock.now().timestamp() == until and clock.waits == [1] * 5
     assert _daily(runtime) == (1, 1000)
     with runtime.state.connection() as db:
@@ -333,7 +333,7 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
     clock.elapsed += 1
     second, _, _ = _runtime(tmp_path)
     second.proof = first.proof.copy()
-    second._reserve()
+    _checkpoint_reserve(second)
     assert clock.now().timestamp() == started_at + (60 if status == 429 else 1)
     assert clock.waits == ([1] * 59 if status == 429 else [])
     assert _daily(second) == (2, 1000)
@@ -384,7 +384,7 @@ def test_http_429_cooldown_commits_before_secondary_byte_ledger_failure(
     clock.elapsed += 1
     fresh, _, _ = _runtime(tmp_path)
     fresh.proof = runtime.proof.copy()
-    fresh._reserve()
+    _checkpoint_reserve(fresh)
     assert clock.now().timestamp() == until and clock.waits == [1] * 59
     with fresh.state.connection() as db:
         assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] == pytest.approx(
@@ -592,12 +592,12 @@ def test_other_provider_acquisition_paths_enforce_verified_byte_bound(
     if path == "catalogue":
         acquire = runtime._catalogue
     elif path == "latest":
-        runtime._reserve()
+        _checkpoint_reserve(runtime)
 
         def acquire() -> Any:
             return runtime._snapshot(TAIFEX_URL, provider_response=True)
     else:
-        runtime._reserve()
+        _checkpoint_reserve(runtime)
 
         def acquire() -> Any:
             return fetch_report(
@@ -629,10 +629,10 @@ def test_restart_runtime_waits_entire_durable_account_rate(
     clock = _Clock(monkeypatch)
     first.proof = _proof(clock.now())
     first.proof["requests_per_second"] = 1 / 120
-    first._reserve()
+    _checkpoint_reserve(first)
     second, _, _ = _runtime(tmp_path, provider=provider)
     second.proof = first.proof.copy()
-    second._reserve()
+    _checkpoint_reserve(second)
     assert clock.elapsed == 220 and clock.waits == [1] * 120
     assert _daily(second)[0] == 2
     first.http.close()
@@ -675,12 +675,12 @@ def test_clock_rollback_preserves_pacing_without_expiry_gate(
     clock = _Clock(monkeypatch)
     runtime.proof = _proof(clock.now())
     runtime.proof["requests_per_second"] = 1 / 120
-    runtime._reserve()
+    _checkpoint_reserve(runtime)
     clock.elapsed = 90
-    runtime._reserve()
+    _checkpoint_reserve(runtime)
     assert clock.elapsed == 220 and clock.waits == [1] * 130
     runtime.proof["expires_at"] = (clock.now() + timedelta(seconds=2)).isoformat()
-    runtime._reserve()
+    _checkpoint_reserve(runtime)
     assert _daily(runtime)[0] == 3
     runtime.http.close()
 
@@ -710,11 +710,9 @@ def test_failed_minute_quota_changes_neither_daily_nor_pacing_permit(
         assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] == 1790856001
 
 
-@pytest.mark.parametrize("guard", ["stop", "expiry"])
-def test_control_or_expiry_during_transaction_keeps_reservation_without_acquisition(
+def test_expiry_during_transaction_keeps_reservation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    guard: str,
 ) -> None:
     runtime, _, _ = _runtime(tmp_path)
     clock = _Clock(monkeypatch)
@@ -727,15 +725,8 @@ def test_control_or_expiry_during_transaction_keeps_reservation_without_acquisit
         return result
 
     runtime.state.reserve_acquisition = delayed
-    if guard == "stop":
-        runtime.can_acquire = lambda: clock.elapsed < 101
-    else:
-        runtime.proof["expires_at"] = (clock.now() + timedelta(seconds=1)).isoformat()
-    if guard == "stop":
-        with pytest.raises(ReadinessBlockedError, match="stopped"):
-            runtime._reserve()
-    else:
-        runtime._reserve()
+    runtime.proof["expires_at"] = (clock.now() + timedelta(seconds=1)).isoformat()
+    _checkpoint_reserve(runtime)
     assert _daily(runtime) == (1, 1000)
     runtime.http.close()
 
@@ -756,7 +747,7 @@ def test_sqlite_contention_preserves_actual_one_second_permit_spacing(tmp_path: 
 
     def take(runtime: Any) -> float:
         started.wait()
-        runtime._reserve()
+        _checkpoint_reserve(runtime)
         return grant_clocks[id(runtime)][-1]
 
     # Both processes enter with a pre-lock clock more than one permit old.
@@ -798,7 +789,7 @@ def test_sqlite_wait_uses_post_lock_quota_window_and_overage_window(
     monkeypatch.setattr(runtime.state, "connection", traced_connection)
 
     def take() -> None:
-        runtime._reserve()
+        _checkpoint_reserve(runtime)
 
     # A real SQLite writer blocks reservation while UTC crosses a quota boundary.
     with sqlite3.connect(runtime.state.path) as blocker, ThreadPoolExecutor(max_workers=1) as pool:
@@ -870,7 +861,7 @@ def test_http_catalogue_and_public_reports_enforce_exact_raw_body_boundary(
     if path == "catalogue":
         acquire = runtime._catalogue
     else:
-        runtime._reserve()
+        _checkpoint_reserve(runtime)
         if path == "snapshot":
 
             def acquire() -> Any:
@@ -1078,7 +1069,6 @@ def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, mo
     can_acquire = full_market_cli.acquisition_gate(
         "full_market", SimpleNamespace(poll=poll), SimpleNamespace(request=authorize)
     )
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "true")
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
 
     def deliver(prepared):
@@ -1351,7 +1341,7 @@ def test_shared_429_is_committed_before_secondary_observer_failure(tmp_path, mon
         runtime.close()
 
 
-@pytest.mark.parametrize("consumer", ["pilot", "historical"])
+@pytest.mark.parametrize("consumer", ["historical"])
 @pytest.mark.parametrize(
     "status,boundary",
     [
@@ -1455,7 +1445,7 @@ def test_buffered_encoded_error_uses_measured_wire_bytes_instead_of_decoded_leng
     assert caught.value.declared_bytes == (100 if length == "100" else 0)
 
 
-@pytest.mark.parametrize("consumer", ["pilot", "historical"])
+@pytest.mark.parametrize("consumer", ["historical"])
 @pytest.mark.parametrize(
     "buffered,boundary",
     [

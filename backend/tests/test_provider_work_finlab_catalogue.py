@@ -5,7 +5,6 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app.config import get_settings
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import FullMarketEnvironment, SchedulerControl
 from app.services.provider_work import prepared_map
@@ -25,7 +24,6 @@ async def test_finlab_native_catalogue_known_failure_settles(
     from findb_fetcher.full_market_universe import TW_COMPANY_URLS, TW_ISIN_URLS
 
     h = native_runtime
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
     h.db.add(FullMarketEnvironment(environment=h.environment, enabled=True))
     for control in await h.db.scalars(select(SchedulerControl)):
         control.desired_state = "stopped"

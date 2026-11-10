@@ -219,32 +219,15 @@ async def test_repair_summary_and_approval_rollback_together(test_session):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile", ["full_market", "pilot"])
-@pytest.mark.parametrize("gate", ["open", "window", "stopped", "flag"])
+@pytest.mark.parametrize("gate", ["open", "window", "stopped"])
 async def test_reopened_attempt_respects_acquisition_gate_through_claim(
-    test_session, monkeypatch, profile, gate
+    test_session, monkeypatch, gate
 ):
-    from app.config import get_settings
-
     db = test_session
     work, member, _, plan, _ = await setup(db)
-    if profile == "pilot":
-        work.execution_profile = plan.execution_profile = profile
-        (await db.get(DailyDeliveryPlan, plan.plan_id)).execution_profile = profile
-        db.add(
-            SchedulerControl(
-                scheduler_key="pilot_shioaji_v1",
-                execution_profile="pilot",
-                provider="shioaji",
-                slot_id="taiwan_market_window",
-                desired_state="running",
-            )
-        )
-        await db.flush()
-    control = await db.get(SchedulerControl, f"{profile}_shioaji_v1")
+    control = await db.get(SchedulerControl, "full_market_shioaji_v1")
     if gate == "stopped":
         control.desired_state = "stopped"
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", gate != "flag")
     monkeypatch.setattr(queue, "daily_window", lambda *args: {"open": gate != "window"})
     await db.commit()
     await authorize(db, work, proposal(member))
@@ -253,7 +236,7 @@ async def test_reopened_attempt_respects_acquisition_gate_through_claim(
             ProviderWorkAttempt.work_id == work.work_id, ProviderWorkAttempt.state == "queued"
         )
     )
-    drain = gate in {"window", "stopped"} or gate == "flag" and profile == "full_market"
+    drain = gate in {"window", "stopped"}
     assert attempt.drain_only is drain
     assert await queue.acquisition_open(db, work) is (not drain)
     assert control.desired_state == ("stopped" if gate == "stopped" else "running")

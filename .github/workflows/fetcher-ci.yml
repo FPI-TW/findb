@@ -115,11 +115,9 @@ jobs:
             provider="${pair#*:}"
             docker run --rm --network none --read-only --tmpfs /tmp -e APP_ENVIRONMENT=local -e SOURCE_API_URL=https://source.invalid -e SOURCE_CLIENT_KEY=offline-validation -e FETCHER_ACCOUNT_STATE_PATH=/tmp/account/governor.sqlite3 "$image" sh -ec '
               test -z "$(find /app/configs -name "daily_scheduler*.json" -o -name "full_market.*.v1.json")"
-              for profile in pilot full_market; do
-                findb-fetch-runtime --provider "$1" --execution-profile "$profile" --config /app/configs/bootstrap.local.v1.json --check
-                findb-fetch-runtime --provider "$1" --execution-profile "$profile" --config /app/configs/bootstrap.local.v1.json --state-path "/tmp/$profile/state.sqlite3" --initialize-state
-                findb-fetch-runtime --provider "$1" --execution-profile "$profile" --config /app/configs/bootstrap.local.v1.json --state-path "/tmp/$profile/state.sqlite3" --health
-              done
+              findb-fetch-runtime --provider "$1" --execution-profile full_market --config /app/configs/bootstrap.local.v1.json --check
+              findb-fetch-runtime --provider "$1" --execution-profile full_market --config /app/configs/bootstrap.local.v1.json --state-path /tmp/full_market/state.sqlite3 --initialize-state
+              findb-fetch-runtime --provider "$1" --execution-profile full_market --config /app/configs/bootstrap.local.v1.json --state-path /tmp/full_market/state.sqlite3 --health
               findb-fetch-historical-backfill --provider "$1" --check
             ' sh "$provider"
           done

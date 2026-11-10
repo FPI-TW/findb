@@ -172,9 +172,9 @@ async def test_source_daily_close_is_frozen_and_does_not_block_runnable_maintena
     dataset = await seed(test_session, "finlab")
     test_session.add(
         SchedulerControl(
-            scheduler_key="pilot_finlab_v1",
+            scheduler_key="full_market_finlab_v1",
             provider="finlab",
-            execution_profile="pilot",
+            execution_profile="full_market",
             desired_state="running",
             observed_state="running",
             timezone="Asia/Taipei",
@@ -195,10 +195,10 @@ async def test_source_daily_close_is_frozen_and_does_not_block_runnable_maintena
     await attest_cutover(test_session)
     body = {
         "kind": "daily",
-        "stable_key": f"daily:pilot:{dataset}:2099-10-15",
+        "stable_key": f"daily:full_market:{dataset}:2099-10-15",
         "dataset_key": dataset,
         "trade_date": "2099-10-15",
-        "execution_profile": "pilot",
+        "execution_profile": "full_market",
         "scope": {
             "feed": {
                 "provider": "finlab",
@@ -567,21 +567,20 @@ async def test_enforced_historical_bridge_authorizes_while_both_controls_running
     monkeypatch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
     await attest_cutover(test_session)
     dataset = await seed(test_session, provider)
-    for profile in ("pilot", "full_market"):
-        key = f"{profile}_{provider}_v1"
-        test_session.add(
-            SchedulerControl(
-                scheduler_key=key,
-                provider=provider,
-                execution_profile=profile,
-                desired_state="running",
-                observed_state="running",
-                timezone="Asia/Taipei",
-                slot_id="taiwan_market_window",
-            )
+    key = f"full_market_{provider}_v1"
+    test_session.add(
+        SchedulerControl(
+            scheduler_key=key,
+            provider=provider,
+            execution_profile="full_market",
+            desired_state="running",
+            observed_state="running",
+            timezone="Asia/Taipei",
+            slot_id="taiwan_market_window",
         )
-        await test_session.flush()
-        test_session.add(SchedulerDataset(scheduler_key=key, dataset_key=dataset))
+    )
+    await test_session.flush()
+    test_session.add(SchedulerDataset(scheduler_key=key, dataset_key=dataset))
     await test_session.flush()
     request, _ = await create_request(
         test_session,

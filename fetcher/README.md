@@ -12,15 +12,14 @@ Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受
 | FinLab | `tw_equity_eod`、`tw_etf_eod` |
 | TAIFEX | `tw_futures_eod` |
 
-唯一 recurring runtime 是 `findb-fetch-runtime --execution-profile pilot|full_market`。
-兩種 profile 使用同一 published universe、calendar、provider adapters、Raw R2、Source 與 retry/catchup 流程。
-Pilot 建立 daily plan 時按 canonical 商品識別排序取前兩項，期貨以 product／contract 取樣並保留所有 sessions。
-樣本建立後凍結；重試、重啟、補抓及 universe 發布不得改寫它。
+唯一 daily recurring runtime 是 `findb-fetch-runtime`，execution profile 只有 `full_market`；
+`--execution-profile` 僅為相容保留，傳入其他值（含已退役的 `pilot`）會直接拒絕（exit 2）。
+Daily runtime 使用 published universe、calendar、provider adapters、Raw R2、Source 與 retry/catchup 流程；
+plan 建立後凍結，重試、重啟、補抓及 universe 發布不得改寫它。歷史回補另由 historical consumers 執行。
 
-部署在兩環境固定安裝八個 recurring consumers，以及四個獨立 historical consumers。
-`FULL_MARKET_ENABLED=false` 只禁止 full market 新抓取，不影響安裝、pilot 或 prepared delivery。
-部署只接受 stopped controls；Owner 操作啟停。Staging 常態開 pilot，上版可短暫開 full market；production 常態只開 full market。
-`pilot_<provider>_v1` 與 `full_market_<provider>_v1` 各自有 first dates、plans、checkpoint；同環境共用帳號 governor。
+兩環境每個 provider 安裝一個 daily `full_market` consumer 與一個獨立 historical consumer。
+新抓取只受 Backend scheduler control（`full_market_<provider>_v1`）與 Source acquisition authorization 管控；
+沒有本機 enable flag。部署只接受 stopped controls；Owner 操作啟停。同環境 consumers 共用帳號 governor。
 所有 provider-specific scheduler、Twelve Data one-shot、FinLab smoke 與 TAIFEX pilot CLI 都只回報退役（exit 2）；
 Shioaji Fetcher runtime 已退役，其舊 CLI 回報 `PROVIDER_RETIRED`；Backend 已停止新回補申請，
 歷史 scope／credentials 與資源清理仍見 [退役狀態](../docs/dev/backlog.md#full-market-external-acceptance)。`PROVIDER_WORK_REQUIRED` 缺省 true，明確 false 拒絕啟動。
@@ -45,9 +44,10 @@ uv run mypy src
 
 本機 `.env` 的 `FETCHER_ACCOUNT_STATE_PATH=.state/account/governor.sqlite3` 解析為
 `fetcher/.state/account/governor.sqlite3`；一般使用者可建立此目錄。所有 providers 的
-Pilot、Full、maintenance 與 historical 命令均須載入同一份 `.env`、使用此共用 durable
-ledger，即使 `FULL_MARKET_ENABLED=false` 也相同。Checkpoint 可各自隔離；切換 profile、
-重啟或更新 credentials 不得清除 account pins、既有用量、unknown liability 或 cooldown。
+daily、maintenance 與 historical 命令均須載入同一份 `.env`、使用此共用 durable
+ledger。Checkpoint 可各自隔離；重啟或更新 credentials 不得清除 account pins、既有用量、
+unknown liability 或 cooldown。未設定 `FETCHER_CONSUMER_PROFILE` 的舊入口視為 bounded consumer，
+保留自身 control／authorization，僅在設定 `FETCHER_ACCOUNT_STATE_PATH` 時共用 ledger。
 若從其他工作目錄啟動，將 `FETCHER_ACCOUNT_STATE_PATH` 設為該既有檔案的絕對路徑，
 並一併調整 contracts／schedule／checkpoint 的相對路徑；不要只沿用同一個相對路徑字串。
 
@@ -96,8 +96,8 @@ Staging 與 production 的 raw object lifecycle 為 90 天。Bucket lock 的適�
 | `SOURCE_API_URL` | 是 | FinDB Source API HTTPS origin |
 | `SOURCE_CLIENT_KEY` | 是 | 當前 provider 專用 DB-backed Source client key |
 | `FETCHER_CONTRACTS_DIR` | 否 | Contract manifest 目錄（container 預設 `/app/contracts`） |
-| `--state-path` | 部署是 | 各 provider／execution profile 的獨立 durable SQLite checkpoint 檔案 |
-| `FETCHER_ACCOUNT_STATE_PATH` | 本機新抓取是 | 全 providers／Pilot／Full／historical 共用 durable account governor；本機範本從 `fetcher/` 使用 `.state/account/governor.sqlite3` |
+| `--state-path` | 部署是 | 各 provider 的獨立 durable SQLite checkpoint 檔案 |
+| `FETCHER_ACCOUNT_STATE_PATH` | 本機新抓取是 | 全 providers／daily／maintenance／historical 共用 durable account governor；本機範本從 `fetcher/` 使用 `.state/account/governor.sqlite3` |
 | `FINLAB_API_TOKEN` | FinLab 是 | FinLab headless SDK token |
 | `TWELVE_DATA_API_KEY` | Twelve Data 是 | Twelve Data runtime secret |
 | `CLOUDFLARE_R2_ACCOUNT_ID` | delivery/scheduler 是 | Cloudflare account ID |
@@ -113,9 +113,9 @@ Dashboard client bundle。
 
 `configs/full_market.<target>.v1.json` 由 Backend 共用 feed catalog 產生，環境間只有 target 不同。
 首次啟動需 published baseline 與完整 published calendar；不要求 capacity readiness 證據。
-獨立 checkpoint 綁定 execution profile，拒絕把既有 full market SQLite 改標為 pilot。
+獨立 checkpoint 綁定 `full_market` execution profile；已綁定退役 `pilot` 的 checkpoint 一律拒絕沿用。
 Daily plan API 未指定 profile 的舊 caller 仍表示 full market；本 runtime 一律明確帶入。
-canonical 更新的持久化寫入證據按 plan 保留，另一 profile 的寫入不會讓已完成計畫倒退。
+canonical 更新的持久化寫入證據按 plan 保留，後續寫入不會讓已完成計畫倒退。
 
 已設定 account state 的 consumers 共用 durable governor，沿用既有
 account ID 或使用 credential fingerprint；不設跨環境分配、所有行情的日請求預算、deadline capacity proof
@@ -185,7 +185,7 @@ AWS 設定、首次切換備份／drain、immutable acceptance 與 rollback 下�
 ### Twelve Data 日期邊界
 
 `TwelveDataClient.fetch_daily` 的 `start_date`／`end_date` 都是包含當日的交易所本地日期。
-Client 統一將上界編碼成隔日午夜；scheduler、人工回補與共用 Pilot／Full market runtime
+Client 統一將上界編碼成隔日午夜；scheduler、人工回補與 daily full market runtime
 不得另加一天。無法表示隔日的 `date.max` 在發出請求前拒絕。
 CLI、universe 與 scheduler/runtime 的 canonical mapping 只納入要求的日期範圍；
 Raw R2 保留完整原始 HTTP bytes，即使 provider 回傳額外日期也不改寫原始證據。
@@ -212,7 +212,7 @@ bytes、job key、attempt 與 frozen members 不改寫。操作與分階段部�
 部署 checkpoint 為 `/var/lib/findb-taifex-fetcher/historical/state.sqlite3`；本機使用
 `FETCHER_HISTORICAL_STATE_DIR` 指定可寫目錄，並沿用既有 `FETCHER_ACCOUNT_STATE_PATH`。
 Raw-first 五商品報表、整日 manifest、prepared body、receipt 與有限重試均持久保存；
-停止 TAIFEX Pilot／Full 並排空後執行，操作與驗收見
+停止 TAIFEX daily runtime 並排空後執行，操作與驗收見
 [資料維護](../docs/operations/data_maintenance.md#taifex-futures-eod-回補)。
 
 `daily_runtime_policies` 可為 provider 設定新抓取窗口與有限批次輪替，目前沒有 provider 使用。

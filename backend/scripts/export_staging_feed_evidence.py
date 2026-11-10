@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export bounded Source-to-canonical evidence for the five staging pilot feeds."""
+"""Export bounded Source-to-canonical evidence for the staging daily feeds."""
 
 from __future__ import annotations
 

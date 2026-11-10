@@ -1,61 +1,48 @@
 #!/usr/bin/env python3
-"""Collect one sanitized staging active-feed acceptance evidence package.
+"""Bounded, read-only SSM evidence transport for Full market native evidence.
 
 The coordinator runs locally. It injects read-only probes into the existing
-Fetcher and FinDB execution units through SSM; it neither adds a host nor
-creates a cross-host runtime dependency.
+FinDB ingest unit and the generated Full market consumers through SSM; it
+neither adds a host nor creates a cross-host runtime dependency. Collection and
+assessment live in ``collect_native_feed_evidence.py`` and
+``native_feed_evidence.py``, which bind scope to the generated execution
+descriptors. The retired Pilot five-feed assessment and its staging catalog
+were removed with the Pilot profile.
 """
 
 from __future__ import annotations
 
-import argparse
 import base64
 import hashlib
 import json
-import os
 import re
 import secrets
 import shlex
 import subprocess
 import time
 import zlib
-from datetime import datetime, timedelta, timezone
-from datetime import time as clock_time
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-FETCHER_PROBE = REPO_ROOT / "infra" / "acceptance" / "export_fetcher_feed_evidence.py"
-FINDB_PROBE = REPO_ROOT / "backend" / "scripts" / "export_staging_feed_evidence.py"
-FETCHER_CONTAINERS = {
-    "twelve_data": "findb-fetcher-scheduler",
-    "finlab": "findb-fetcher-finlab-scheduler",
-    "taifex": "findb-fetcher-taifex-scheduler",
-}
-CURRENT_FETCHER_CONTAINERS = {
-    f"findb-{profile}-{provider}"
-    for profile in ("pilot", "full-market")
-    for provider in ("twelve-data", "finlab", "taifex", "factset")
-}
+PROVIDER_INVENTORY = REPO_ROOT / "infra/deploy/generated/provider_inventory.v1.json"
 
 
-def _pilot_catalog() -> dict[str, Any]:
-    from findb_fetcher.pilot_catalog import load_staging_pilot_catalog
-
-    return load_staging_pilot_catalog(REPO_ROOT / "fetcher/configs")
-
-
-def catalog_feeds() -> tuple[tuple[str, str], ...]:
-    catalog = _pilot_catalog()
-    if set(catalog["providers"]) != set(FETCHER_CONTAINERS):
-        raise ValueError("pilot provider readiness metadata missing")
-    return tuple(
-        (provider, feed["dataset_key"])
-        for provider, spec in catalog["providers"].items()
-        for feed in spec["feeds"]
+def full_market_containers(path: Path = PROVIDER_INVENTORY) -> frozenset[str]:
+    """Full market consumer names from the generated, checksum-bound inventory."""
+    value = json.loads(path.read_text(encoding="utf-8"))
+    digest = value.pop("projection_sha256")
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    if hashlib.sha256(canonical).hexdigest() != digest or value["schema_version"] != 1:
+        raise ValueError("provider inventory integrity mismatch")
+    names = frozenset(
+        consumer["name"] for consumer in value["consumers"] if consumer["role"] == "full_market"
     )
+    if len(names) != len(value["providers"]):
+        raise ValueError("provider inventory must name one Full market consumer per provider")
+    return names
 
 
 def _run(command: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -177,11 +164,9 @@ def _transport_command(
     index: int = 0,
     environment: dict[str, str] | None = None,
 ) -> str:
-    if container not in {
-        "findb-ingest",
-        *FETCHER_CONTAINERS.values(),
-        *CURRENT_FETCHER_CONTAINERS,
-    } or not re.fullmatch(r"[0-9a-f]{32}", nonce):
+    if container not in {"findb-ingest", *full_market_containers()} or not re.fullmatch(
+        r"[0-9a-f]{32}", nonce
+    ):
         raise ValueError("invalid evidence transport target")
     config = {
         "version": TRANSPORT_VERSION,
@@ -408,74 +393,6 @@ def _ssm_probe(
             pass
 
 
-def _expected_target(findb: dict[str, Any], provider: str, *, observed_at: datetime) -> str:
-    """Derive eligibility from runtime schedule and official calendar, never outcomes."""
-    try:
-        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
-            return ""
-        evidence = findb["target_calendar_evidence"]
-        sampled_at = datetime.fromisoformat(evidence["observed_at_utc"])
-        if (
-            evidence["schema_version"] != 1
-            or sampled_at.utcoffset() != timedelta(0)
-            or abs((observed_at - sampled_at).total_seconds()) > 300
-        ):
-            return ""
-        market = {"twelve_data": "US", "finlab": "TW", "taifex": "TAIFEX"}[provider]
-        timezone_name = "America/New_York" if market == "US" else "Asia/Taipei"
-        calendar = evidence["markets"][market]
-        if calendar["valid"] is not True or calendar["timezone"] != timezone_name:
-            return ""
-        revisions = {item["year"]: item for item in calendar["revisions"]}
-        if len(revisions) != len(calendar["revisions"]) or any(
-            item["status"] != "published"
-            or item["coverage_complete"] is not True
-            or type(item["revision"]) is not int
-            or item["revision"] < 1
-            or not item["revision_id"]
-            or item["timezone"] != timezone_name
-            for item in revisions.values()
-        ):
-            return ""
-        days = {item["trade_date"]: item for item in calendar["days"]}
-        if len(days) != len(calendar["days"]):
-            return ""
-        local = observed_at.astimezone(ZoneInfo("Asia/Taipei"))
-        due = {
-            "twelve_data": clock_time(8, 15),
-            "finlab": clock_time(14, 30),
-            "taifex": clock_time(18),
-        }[provider]
-        # US 09:00 is the delivery deadline; eligibility begins at its 08:15 trigger.
-        candidate = local.date() - timedelta(days=int(local.time() < due))
-        if provider == "twelve_data":
-            candidate -= timedelta(days=1)
-        for _ in range(14):
-            day = days[candidate.isoformat()]
-            revision = revisions[candidate.year]
-            if (
-                day["revision"] != revision["revision"]
-                or day["revision_id"] != revision["revision_id"]
-            ):
-                return ""
-            if day["day_status"] not in {"open", "closed", "settlement_only"} or (
-                day["is_open"] is not (day["day_status"] == "open")
-            ):
-                return ""
-            if day["day_status"] == "open":
-                close = clock_time.fromisoformat(
-                    day["session_close"]
-                    or ("16:00" if market == "US" else "13:45" if market == "TAIFEX" else "13:30")
-                )
-                completed_at = datetime.combine(candidate, close, tzinfo=ZoneInfo(timezone_name))
-                if observed_at >= completed_at:
-                    return candidate.isoformat()
-            candidate -= timedelta(days=1)
-    except (KeyError, TypeError, ValueError):
-        return ""
-    return ""
-
-
 # Kept identical in the standalone collector: both scripts execute on separate hosts.
 PROJECTION_FIELDS = {
     "market_eod": ("total_ticks", "turnover"),
@@ -627,301 +544,5 @@ def _valid_receipts(row: dict[str, Any], provider: str, definition: dict[str, An
     )
 
 
-def _functional_acceptance(
-    findb: dict[str, Any], fetcher: dict[str, Any], *, observed_at: datetime | None = None
-) -> dict[str, bool]:
-    observed_at = observed_at or datetime.now(timezone.utc)
-    catalog = _pilot_catalog()
-    feeds = {(item["source"], item["dataset_key"]): item for item in findb["feeds"]}
-    result = {}
-    for provider, spec in catalog["providers"].items():
-        config = fetcher.get(provider, {}).get("config", {})
-        file_name = {
-            "twelve_data": "twelve_data_us_staging_pilot.v2.json",
-            "finlab": "finlab_tw_review_required.v1.json",
-            "taifex": "taifex_tw_staging_pilot.v1.json",
-        }[provider]
-        config_bound = (
-            config.get(
-                "universe_sha256" if provider in {"twelve_data", "finlab"} else "manifest_sha256"
-            )
-            == catalog["files"][file_name]
-        )
-        observations = fetcher.get(provider, {}).get("recent_trade_dates", [])
-        for definition in spec["feeds"]:
-            dataset = definition["dataset_key"]
-            feed = feeds.get((provider, dataset), {})
-            latest = _expected_target(findb, provider, observed_at=observed_at)
-            ready = [
-                row
-                for row in observations
-                if row.get("dataset_key", dataset) == dataset
-                and str(row.get("target_data_date") or row.get("target_date")) == latest
-            ]
-            observations_complete = bool(ready) and all(
-                (
-                    row.get("status") == "completed"
-                    and row.get("terminal_status") in {None, "completed"}
-                )
-                or (row.get("status") == "terminal" and row.get("terminal_status") == "completed")
-                for row in ready
-            )
-            run_ids = set()
-            for row in ready:
-                if str(row.get("target_data_date") or row.get("target_date")) == latest:
-                    run_ids.update(str(row.get("run_ids") or row.get("run_id") or "").split(","))
-            run_ids.discard("")
-            runs = [row for row in feed.get("runs", []) if row.get("batch_data_date") == latest]
-            records = [record for row in runs for record in (row.get("canonical_coverage") or [])]
-            expected = {
-                "twelve_data": {"AAPL", "MSFT"},
-                "finlab": {"2330", "2317"},
-                "taifex": {"TX", "MTX"},
-            }[provider]
-            okay = (
-                config_bound
-                and bool(latest)
-                and observations_complete
-                and bool(runs)
-                and len({row["run_id"] for row in runs}) == len(runs)
-                and {row["run_id"] for row in runs} == run_ids
-                and {record.get("symbol") for record in records} == expected
-                and all(record.get("trade_date") == latest for record in records)
-            )
-            okay = okay and all(
-                _valid_receipts(row, provider, definition)
-                and _valid_queue_receipts(row)
-                and row.get("source_http_status") == 202
-                and row.get("attempt_status") in {"accepted", "duplicate"}
-                and row.get("raw_persisted") is True
-                and row.get("status") == "completed"
-                and row.get("job_status") == "completed"
-                and row.get("dq_errors") == 0
-                and row.get("canonical_rows")
-                == row.get("success_records")
-                == row.get("total_records")
-                and row.get("canonical_rows", 0) > 0
-                for row in runs
-            )
-            if provider == "taifex":
-                okay = (
-                    okay
-                    and len(records) == 4
-                    and all(
-                        record.get("row_count") == 1
-                        and len(record.get("contract_month", "")) == 6
-                        and record["contract_month"].isdigit()
-                        and record.get("contract_code")
-                        == f"{record.get('symbol')}:{record.get('contract_month')}"
-                        for record in records
-                    )
-                    and {(record.get("symbol"), record.get("session")) for record in records}
-                    == {
-                        (product, session)
-                        for product in expected
-                        for session in ("regular", "after_hours")
-                    }
-                    and all(
-                        len(
-                            {
-                                record["contract_month"]
-                                for record in records
-                                if record["symbol"] == product
-                            }
-                        )
-                        == 1
-                        for product in expected
-                    )
-                )
-            okay = okay and _valid_serve_proof(feed, provider, latest, run_ids)
-            result[f"{provider}/{dataset}"] = bool(okay)
-    return result
-
-
-def _assessment(
-    findb: dict[str, Any], fetcher: dict[str, Any], *, observed_at: datetime | None = None
-) -> dict[str, Any]:
-    observed_at = observed_at or datetime.now(timezone.utc)
-    backend_feeds = {(item["source"], item["dataset_key"]): item for item in findb["feeds"]}
-    fetcher_by_provider = {item["provider"]: item for item in fetcher.values()}
-    source_202 = {}
-    for provider, dataset in catalog_feeds():
-        rows = backend_feeds.get((provider, dataset), {}).get("runs", [])
-        source_202[f"{provider}/{dataset}"] = any(
-            row["source_http_status"] == 202 and row["attempt_status"] in {"accepted", "duplicate"}
-            for row in rows
-        )
-    serve_boundaries = {
-        f"{source}/{dataset}": item["lineage_contract"]["serve"]
-        for (source, dataset), item in backend_feeds.items()
-    }
-    serve_probes = {
-        f"{source}/{dataset}": _valid_serve_proof(
-            item,
-            source,
-            _expected_target(findb, source, observed_at=observed_at),
-            {row["run_id"] for row in item.get("runs", []) if row.get("run_id")},
-        )
-        for (source, dataset), item in backend_feeds.items()
-    }
-    backend_multi_date = all(item["multi_trade_date_ready"] for item in findb["feeds"])
-    fetcher_multi_date = all(
-        len(
-            {
-                str(row.get("target_data_date") or row.get("target_date"))
-                for row in item["recent_trade_dates"]
-            }
-        )
-        >= 2
-        for item in fetcher_by_provider.values()
-    )
-    functional = _functional_acceptance(findb, fetcher, observed_at=observed_at)
-    return {
-        "pilot_target_dates": {
-            f"{provider}/{dataset}": _expected_target(findb, provider, observed_at=observed_at)
-            for provider, dataset in catalog_feeds()
-        },
-        "pilot_functional_acceptance": functional,
-        "pilot_functional_complete": all(functional.values())
-        and set(backend_feeds) == set(catalog_feeds())
-        and set(fetcher_by_provider) == set(FETCHER_CONTAINERS),
-        "five_feed_scope_complete": set(backend_feeds) == set(catalog_feeds()),
-        "four_provider_scope_complete": set(fetcher_by_provider) == set(FETCHER_CONTAINERS),
-        "backend_multi_trade_date_complete": backend_multi_date,
-        "fetcher_multi_trade_date_complete": fetcher_multi_date,
-        "persistent_source_202": source_202,
-        "serve_boundary": serve_boundaries,
-        "serve_probe": serve_probes,
-        "serve_boundary_complete": set(serve_boundaries)
-        == {f"{source}/{dataset}" for source, dataset in catalog_feeds()}
-        and set(serve_boundaries.values()) == {"required"}
-        and all(serve_probes.values()),
-    }
-
-
-def _git_sha() -> str:
-    result = _run(["git", "rev-parse", "HEAD"])
-    return result.stdout.strip() if result.returncode == 0 else "unknown"
-
-
-def _upload(*, path: Path, region: str, bucket: str, key: str, kms_key_arn: str) -> dict[str, Any]:
-    response = _aws_json(
-        [
-            "s3api",
-            "put-object",
-            "--region",
-            region,
-            "--bucket",
-            bucket,
-            "--key",
-            key,
-            "--body",
-            str(path),
-            "--content-type",
-            "application/json",
-            "--server-side-encryption",
-            "aws:kms",
-            "--ssekms-key-id",
-            kms_key_arn,
-            "--if-none-match",
-            "*",
-        ]
-    )
-    return {
-        "bucket": bucket,
-        "key": key,
-        "version_id": response.get("VersionId"),
-        "server_side_encryption": response.get("ServerSideEncryption"),
-        "ssekms_key_id": response.get("SSEKMSKeyId"),
-    }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--region", default="ap-southeast-1")
-    parser.add_argument("--findb-instance-id", required=True)
-    parser.add_argument("--fetcher-instance-id", required=True)
-    parser.add_argument("--phase", choices=("pre", "post"), required=True)
-    parser.add_argument("--pre-manifest", type=Path)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--bucket")
-    parser.add_argument("--kms-key-arn")
-    parser.add_argument("--s3-key")
-    args = parser.parse_args()
-    if args.phase == "post" and args.pre_manifest is None:
-        parser.error("--pre-manifest is required for post phase")
-    if bool(args.bucket) != bool(args.kms_key_arn):
-        parser.error("--bucket and --kms-key-arn must be supplied together")
-
-    findb_result = _ssm_probe(
-        region=args.region,
-        instance_id=args.findb_instance_id,
-        script=FINDB_PROBE,
-        container="findb-ingest",
-    )
-    fetcher_results = {
-        provider: _ssm_probe(
-            region=args.region,
-            instance_id=args.fetcher_instance_id,
-            script=FETCHER_PROBE,
-            container=container,
-            provider=provider,
-        )
-        for provider, container in FETCHER_CONTAINERS.items()
-    }
-    captured_at = datetime.now(timezone.utc).isoformat()
-    pre_sha256 = None
-    if args.pre_manifest:
-        pre_sha256 = hashlib.sha256(args.pre_manifest.read_bytes()).hexdigest()
-    manifest = {
-        "schema_version": 1,
-        "environment": "staging",
-        "phase": args.phase,
-        "captured_at": captured_at,
-        "repository_commit": _git_sha(),
-        "pilot_catalog_sha256": hashlib.sha256(
-            (REPO_ROOT / "fetcher/configs/staging_provider_pilots.v1.json").read_bytes()
-        ).hexdigest(),
-        "evidence_kind": "live_pipeline_observation",
-        "topology": {
-            "kind": "single_coordinator_unit_local_probes",
-            "additional_hosts": 0,
-            "runtime_cross_host_dependency": False,
-        },
-        "pre_manifest_sha256": pre_sha256,
-        "probe_command_ids": {
-            "findb": findb_result["command_id"],
-            **{
-                f"fetcher_{provider}": result["command_id"]
-                for provider, result in fetcher_results.items()
-            },
-        },
-        "findb": findb_result["payload"],
-        "fetcher": {provider: result["payload"] for provider, result in fetcher_results.items()},
-    }
-    manifest["assessment"] = _assessment(
-        manifest["findb"], manifest["fetcher"], observed_at=datetime.fromisoformat(captured_at)
-    )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    serialized = json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    args.output.write_text(serialized, encoding="utf-8")
-    os.chmod(args.output, 0o600)
-    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-    upload = None
-    if args.bucket:
-        key = args.s3_key or (
-            f"evidence/staging/active-feeds/{captured_at[:10]}/{args.phase}-{digest[:16]}.json"
-        )
-        upload = _upload(
-            path=args.output,
-            region=args.region,
-            bucket=args.bucket,
-            key=key,
-            kms_key_arn=args.kms_key_arn,
-        )
-    print(json.dumps({"sha256": digest, "output": str(args.output), "upload": upload}))
-    return 0
-
-
 if __name__ == "__main__":
-    raise SystemExit("Legacy five-feed CLI retired; use collect_native_feed_evidence.py")
+    raise SystemExit("Pilot five-feed CLI retired; use collect_native_feed_evidence.py")

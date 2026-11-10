@@ -115,7 +115,7 @@ async def test_seed_schedules_hk_for_factset_but_not_twelve_data(test_session):
             )
         )
     )
-    assert schedulers == {"pilot_factset_v1", "full_market_factset_v1"}
+    assert schedulers == {"full_market_factset_v1"}
 
 
 @pytest.mark.parametrize(

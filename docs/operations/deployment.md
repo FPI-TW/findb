@@ -69,7 +69,7 @@ checkpoint 完整性及 activation health 並未因 staging 而放寬。兩環�
 流程為 `preflight → apply → 健康檢查 → runner acceptance → finalize`。Preflight 不重複拉取
 images；apply 只更新一次服務。FinDB 在停止 writers 並核對 graceful shutdown 後執行 migration／
 reconciliation，nginx mounts 就緒後只建立一次，保留 queue、worker、API、Dashboard、公開入口及
-lookup key probe。Fetcher 以 provider 分組載入 credentials，同組 profiles 序列替換；十二個
+lookup key probe。Fetcher 以 provider 分組載入 credentials，同組 consumers 序列替換；八個
 runtimes 共用至少 25 秒健康觀察。部署不變更 Owner desired controls、quota 或 checkpoint。
 
 FinDB Backend／Dashboard images 及 production digest 複製平行執行，所有子程序成功才發布
@@ -89,7 +89,7 @@ policy，仍須通過 CI 或可信 PR evidence；production verify 保留。Fetc
   舊 acceptance 不能提交新 attempt。Instance role 只有讀取權，無新增寫入權。
 - Finalize 與 watchdog 使用同一主機鎖，核對本次 decision、container IDs／images／啟動時間及健康，
   才更新 pointer、啟用 restart policy 並提交 journal；不重新啟動服務。已提交舊容器清理可重試。
-- Runner 中斷或 acceptance 不可確認時，watchdog 停止未提交容器。Fetcher 還原原十二個 IDs 與
+- Runner 中斷或 acceptance 不可確認時，watchdog 停止未提交容器。Fetcher 還原原 runtime IDs 與
   pointer；FinDB 只在舊 release 的 exact DB revision 檢查通過後復原，絕不 downgrade schema。
   長時間 FinDB 復原亦持久化 child PID／boot identity，避免 SSM 中斷留下無主部署程序。
   不能復原或容器未 graceful shutdown 時記錄 `recovery_required`，不自動重啟異常關閉的舊 runtime；
@@ -596,13 +596,12 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 ## Runtime 與持久化狀態
 
-每次 Fetcher 部署固定安裝八個 recurring runtimes：四個 `findb-pilot-*` 與四個 `findb-full-market-*`。
-兩者使用同一 `findb-fetch-runtime --execution-profile pilot|full_market` CLI、相同五條 feeds 與 calendar。
-`FULL_MARKET_ENABLED` 只控制 full market 的新抓取資格，不影響安裝拓撲。
+每次 Fetcher bundle v5 部署固定安裝八個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
+與一個 `findb-historical-<suffix>`。Daily 使用 `findb-fetch-runtime --execution-profile full_market`、
+五條 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝拓撲不隨設定改變。
 
 | 狀態 | 路徑 |
 | --- | --- |
-| Pilot | `/var/lib/findb-pilot/<environment>/state.sqlite3` |
 | Staging Full | `/var/lib/findb-full-market/staging/state.sqlite3` |
 | Production Full（保留既有路徑） | `/var/lib/findb-full-market/state.sqlite3` |
 | 共用帳號 governor | `/var/lib/findb-account/<environment>/governor.sqlite3` |
@@ -612,19 +611,19 @@ Historical Twelve Data／FinLab 以 Backend request／item lease 為持久狀態
 驗收應依實際 entrypoint 與 mount 判定使用中的檔案，不能把共用 helper 的未使用通用 state path 當成遺失 checkpoint。
 
 四個現役 `findb-historical-*` workers 是獨立 transactional consumers，沿用既有人工歷史回補請求機制；
-不再由 pilot 部署順便建立。所有 acquiring consumers 使用同一帳號 governor mount，保留 credential pins、
+所有 acquiring consumers 使用同一帳號 governor mount，保留 credential pins、
 quota debt、unknown liability、cooldown 與 prepared delivery。不同環境仍使用各自帳號與儲存。
 容器 UID/GID 為 10001，state directories `0700`、SQLite `0600`；provider credentials 不跨 consumer 注入。
 
-部署前 Owner 必須停止兩個 profile，等待 desired／observed 都 stopped，取消或等待 historical／maintenance
+部署前 Owner 必須停止所有 controls，等待 desired／observed 都 stopped，取消或等待 historical／maintenance
 acquiring work 完成。Idle daemon 仍顯示 running 是正常狀態；helper 會優雅停止並確認 exit 0、非 OOM、無 Docker error。
 Provider container 收到 TERM 後有 90 秒完成當前 bounded operation 與回收隔離 child；此上限涵蓋
 FactSet 最長 60 秒查詢、額外 20 秒 supervisor deadline 與 process-group reap 緩衝。超過時 Docker 才送 KILL，
 helper 會將非零 exit 視為 `graceful_stop` 失敗並觸發交易回復，不會接受或啟用候選版本。
 這 90 秒不是完整 historical 日期的排空預算；例如 FactSet 會逐成員交付並等待 normalization，
-整日 frozen cohort 可能需要數小時。停止 Pilot／Full controls 不會停止 historical，也不代表
+整日 frozen cohort 可能需要數小時。停止 Full controls 不會停止 historical，也不代表
 provider owner 已釋放。部署前須另確認 historical／maintenance work 已結算、所有已接受 runs
-均為 terminal、provider owner 無 active attempt；不能只看十二個容器 running／健康就重試。
+均為 terminal、provider owner 無 active attempt；不能只看八個容器 running／健康就重試。
 若因 historical 未排空而停止失敗，先確認 transaction aborted、原 container IDs／current 已恢復，
 保留原 request、prepared bytes 與 receipts，等待原工作繼續完成。略過 native 驗收不等於授權取消
 該 request；取消須另有 Owner 指示。排空後才重跑失敗的 staging CD jobs，不延長或略過停止檢查。
@@ -639,9 +638,9 @@ Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉�
 可還原點、完整 SQLite＋sidecars、governor、raw marker、舊 current pointer 與 container inspection。
 備份要能對應同一停止時點，並記錄 checksum；不得在 SQLite writer 還活動時直接複製單一主檔。
 
-舊 pilot／full／historical containers 及 current pointer 在備份與停止證據完備後移出 active installation，
-保留狀態目錄。新版 migration 保留 full plans、first dates，退休舊 pilot controls 與其 open alerts，
-新 pilot controls 預設 stopped。原 full controls 不被自動 start。
+統一版切換時，舊 containers 及 current pointer 在備份與停止證據完備後移出 active installation，
+保留狀態目錄；migration 保留 full plans、first dates，原 full controls 不被自動 start。其後 Pilot profile
+已退役，見下節。
 
 新 manifest／acceptance 僅接受 schema version 3；Fetcher runtime profile 固定 `unified`。
 舊 v1／v2 accepted replay、舊 pilot layout、舊主機路徑及 cutover 開關不再支援。
@@ -651,6 +650,74 @@ Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉�
 Rollback 入口與 promotion 相同，選擇 `mode=rollback` 和該環境已 accepted 的 exact bundle key。
 它不重建 images、不修改 immutable acceptance、不刪 governor 或 prepared bodies。若 migration 不相容，採 forward fix，
 或在停止狀態下進行已核對的完整備份復原。
+
+## Pilot profile 退役與 rollback 下限
+
+Backend migration `a7c3e1f9d2b4_retire_pilot_profile`（接在 `e9f4a1c6b3d5` 之後）與 Fetcher bundle v5
+（marker `# pilot-retired-v1:`）退役 Pilot execution profile 與 `FULL_MARKET_ENABLED`；daily 只剩 Full market。
+
+Migration 先確認所有 `pilot_*` controls desired／observed 皆 stopped、Pilot provider work 已 terminal、
+attempts 已 settled（`calendar_closed` work 的 queued attempts 除外）、owner 未持有 Pilot attempt、Pilot
+prepared 皆有 receipt、Pilot plan parts 的 runs 已 terminal；任一未結即以
+`Pilot retirement blocked by unsettled <項目>` 整筆拒絕。通過後：
+
+- 刪除 Pilot plans／parts／members／decisions／dataset state、provider work 與 attempts／prepared／receipts、
+  綁定 Pilot 的 Shioaji closure／repair rows、Pilot admissions 與 feeds、`pilot_*` scheduler controls，以及
+  `PILOT_INCOMPLETE` 等 Pilot plan alerts。
+- 保留 Pilot 寫入的 ingestion runs、raw payloads 與 canonical rows；runs 的 `delivery_part_id` 設為 NULL，
+  其 `delivery_member_evidence` 刪除。`admin_audit_event` 為 append-only，不改動。
+- 只因舊 server default 被標為 pilot 的 legacy alerts 改標 `full_market`；與既有 full_market identity
+  重複者刪除。
+- CHECK 要求 `full_market_dataset_state`、`daily_delivery_plan`、`daily_execution_decision`、
+  `scheduler_control`、`missing_delivery_alert` 的 `execution_profile = 'full_market'`；`provider_work` 允許
+  NULL 或 `full_market`。`full_market_environment` 只保留為環境鎖定列，`enabled` 欄位不再使用。
+
+本版為一版相容期：Backend Settings 忽略殘留的 `FULL_MARKET_ENABLED` env；SSM deployment config 若仍含
+此鍵，載入時忽略且不匯出，stderr 輸出 `aws_configuration=warning reason=retired_field_ignored field=FULL_MARKET_ENABLED`；
+執行 `sync` 時會移除該鍵。
+Authorization／scheduler 回應的 `full_market_enabled` 已 deprecated 且固定 `true`，
+`ReadinessReport.full_market_enabled` 接受但忽略。下一版刪除 SSM parameter、相容處理與這些欄位。
+
+Fetcher bundle v5 每個 provider 安裝 Full 與 historical 兩個 consumers，四個 providers 共八個；
+`release_fetcher_provider.sh` 只接受 `FETCHER_CONSUMER_PROFILE=full_market|historical`，其他值為
+`consumer_profile_invalid`。Rollback 下限只接受 v5（v3／v4 含 Pilot consumers，v1／v2 含 Shioaji）；
+host preflight 允許從 v3／v4 主機首次切換。Account allocation 的 `account.consumers` 必須剛好是
+`{full_market, historical, maintenance}`，由 `inspect_full_market_installation.py` 檢查。
+
+部署腳本不會 stop 或 `rm -f` 任何 `findb-pilot-*` container：仍在執行者以 `pilot_residue_running`、
+非正常結束（非 exit 0、OOM 或 Docker error）者以 `runtime_retirement_failed` fail closed。Activation 的
+`pilot-residue-v1` 步驟將 `/var/lib/findb-pilot/<environment>`（含 SQLite `-wal`／`-shm`）封存為
+`/var/backups/findb-pilot-retirement/<environment>-<UTC 時間>-<pid>/state.tar`，同目錄寫入
+`state.tar.sha256` 與逐檔 SHA-256 的 `manifest.json`，並逐檔驗證；之後依擷取的 container ID 以非強制
+`docker rm` 移除容器，確認目錄自封存後未變更才刪除。Candidate 模式只驗證不變更；state 為 symlink 或
+含非一般檔案時以 `pilot_state_unsafe` 拒絕。
+
+### 切換程序
+
+1. 預檢：確認 staging 與 production 的 Twelve Data 是否共用同一 provider 帳號；governor 不設跨環境預算，
+   共用時 staging Full daily 會與 production 爭用同一 credits／分鐘限制。確認 staging `t3.small` Fetcher
+   host 在八個 consumers 與 Full cohort 下的可用記憶體（見
+   [OOM 紀錄](#2026-10-22-staging-historical-finlab-oom-阻擋部署)）。
+2. Owner 以 Admin scheduler API 停止所有 `pilot_*` 與 `full_market_*` controls 至 desired／observed
+   stopped，排空 historical／maintenance 與 prepared delivery，確認 runs terminal、owner 無 active attempt。
+   再以 `docker stop` 手動停止全部 `findb-pilot-*` containers，確認 exit 0、無 OOM、無 Docker error。
+3. 保存 RDS snapshot，以及 Fetcher SQLite checkpoints（含 sidecars）與 account governor 的成套備份並記錄
+   checksum。
+4. 從已安裝主機的 account allocation 檔的 `account.consumers` 移除 `pilot`，使其剛好為
+   `{full_market, historical, maintenance}`。
+5. Backend-first：migration 成功後才部署 Fetcher bundle v5，由 `pilot-residue-v1` 封存並移除 Pilot 殘留；
+   保存輸出的封存路徑與 SHA-256。
+6. Staging 唯讀核對 account governor：這是 staging daily 第一次經共用 governor，確認 mount、pins、
+   debt、unknown liability 與 cooldown 均保留。
+7. Owner 檢查後逐一 provider 啟動 staging Full controls，完成首日 Full 驗收（expected 組成、canonical／
+   Serve、記憶體與 OOM）。
+8. 以相同 digests promotion production，依步驟 2–7 執行；production 不重新建置。
+
+任何 RDS snapshot restore 後（包含本次失敗復原），先執行 [緊急停止](full_market.md#緊急停止)，
+再啟動 Fetcher consumers 或 Owner start。
+
+接受後 Backend rollback 下限為 `a7c3e1f9d2b4`，downgrade 直接拒絕，無法還原已刪除的 Pilot rows；
+Fetcher 下限為 bundle v5。失敗時保持停止，以成套備份復原或 forward fix。
 
 ## DB、credentials 與 network
 
@@ -671,10 +738,10 @@ systemd 在 Docker 啟動前重建 tmpfs；缺失時 fail closed。Serve API 保
 
 交付前執行 `pnpm check`、`pnpm test`、`tofu fmt -check -recursive infra/tofu`，兩環境 `tofu validate` 與實際 refresh plan。
 部署證據至少保留：release／digest、schema version、設定欄位驗證、IAM subject、備份、drain、migration revision、
-SSM command 與終態、candidate health、immutable acceptance、activation health，以及兩 profile 缺漏隔離結果。
+SSM command 與終態、candidate health、immutable acceptance 與 activation health。
 切換的 SQLite 比對以備份建立基準：Full、governor 與每個 historical request 檔案均需存在且完整，
 不能只檢查目前存活的檔案。保留原有資料表欄位與完整資料列，包含 prepared bodies、acquisition status／
-actual start／login units／connections；quota、pacing 與 cooldown 不得倒退。新 Pilot checkpoint 首次建立，
+actual start／login units／connections；quota、pacing 與 cooldown 不得倒退。新建立的 checkpoint
 需另核對 profile 身分、實際 mount 與完整性。停止期間不得意外新增 acquisition／work。
 DB 另比對 plans、parts、members、first dates、admissions 與 historical requests／items 的既有資料列 fingerprints，
 新 profile／calendar snapshot 欄位依 migration 契約單獨驗證。
@@ -779,8 +846,7 @@ Source outcome 的 report-only continuation 需要 Backend 與 Fetcher 都使用
 不能以清除 SQLite reason、帳號 cooldown 或重設 queue 來處理待回報工作。
 新版本不再提供舊 acquiring／無 fence acceptance fallback。程式碼變更本身不會同步遠端設定，
 實際環境的部署與設定值須依上述驗收紀錄核對。
-Backend 與全部 Fetcher consumers 必須一起切換；
-`FULL_MARKET_ENABLED` 是另一個獨立旗標，不能替代 queue cutover。完整邊界見
+Backend 與全部 Fetcher consumers 必須一起切換。完整邊界見
 [provider work 架構](../architecture/provider_work.md)。
 
 新版本的 rollback 仍須保留 provider-work enforcement。若要退回不支援此協定的舊 binary，
@@ -825,7 +891,7 @@ receipts 與子程序狀態時停止切換，不能清檔或重新初始化。Pr
 6. Backend 與全部新 consumer 的部署 runtime configuration 同步設定 `PROVIDER_WORK_REQUIRED=true`，
    啟動新 consumers。Source 未啟用前拒絕 queue claim；啟用後拒絕沒有 fence headers 的 legacy acceptance
    與 historical lease claim。從同一共享 inode 取得 lock 後，先恢復原 owner，再選下一 runnable FIFO。
-   保留各 profile desired state、first dates 與 frozen plan。切換後 historical 不要求停止 Pilot／Full controls。
+   保留各 profile desired state、first dates 與 frozen plan。切換後 historical 不要求停止 Full controls。
    若原環境已安裝 accepted protocol-v1 images，重建 enforced consumers 後尚未啟動的真實狀態是
    `created`；它不能代替原 workers graceful stop 的證據，也不能直接通過 installed-host guard。
    先保留原十五個 workers 的 exit 0／完整 inspect／備份，完成 Owner attestation，再依 Backend-first

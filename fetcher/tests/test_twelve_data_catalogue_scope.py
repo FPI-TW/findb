@@ -57,7 +57,7 @@ def scoped_catalogue(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 def test_us_catalogue_uses_header_credential_and_raw_provenance(
     scoped_catalogue, monkeypatch, environment, profile
 ):

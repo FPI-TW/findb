@@ -1,4 +1,4 @@
-"""Profile membership, canonical evidence and monitoring must never cross scopes."""
+"""Full market is the only daily profile; retired Pilot parameters fail closed."""
 
 from uuid import UUID
 
@@ -6,202 +6,48 @@ import pytest
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.execution_profiles import scheduler_key
-from app.models.canonical import CalendarYearRevision, FuturesContractEOD
-from app.models.registry import DeliveryMemberEvidence, MissingDeliveryAlert, SchedulerControl
-from app.schemas.full_market import DeliveryPlanCreateRequest
-from app.services.full_market import create_plan, get_plan
-from app.services.normalize.contracts import FuturesEODContractNormalizer
-from tests.full_market_fixtures import historical_admission
+from app.services.full_market import get_plan
 from tests.test_full_market import DAY, _activated_plan, _ingress, _quote, _source_headers
-
-
-async def _pilot(db, dataset, body, full):
-    revision = await db.scalar(
-        select(CalendarYearRevision).where(
-            CalendarYearRevision.market
-            == ("TAIFEX" if dataset.dataset_key == "tw_futures_eod" else dataset.market)
-        )
-    )
-    from app.models.registry import UniverseRelease
-
-    release = await db.get(UniverseRelease, full.release_id)
-    await historical_admission(db, dataset, release, DAY, revision.id, profile="pilot")
-    return await create_plan(
-        db,
-        DeliveryPlanCreateRequest(
-            version=1,
-            execution_profile="pilot",
-            dataset_key=dataset.dataset_key,
-            provider=body.provider,
-            trade_date=DAY,
-            release_id=full.release_id,
-        ),
-        allowed_datasets=[dataset.dataset_key],
-    )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "key",
+    "path",
     [
-        "us_equity_eod",
-        "hk_equity_eod",
-        "tw_equity_eod",
-        "tw_etf_eod",
-        "tw_futures_eod",
+        "/api/v1/admin/delivery-plans",
+        "/api/v1/admin/missing-deliveries",
+        "/api/v1/admin/schedulers",
     ],
 )
-@pytest.mark.parametrize("count", [1, 3])
-async def test_five_feed_profiles_freeze_distinct_plans(test_session, key, count):
-    dataset, body, full = await _activated_plan(test_session, key, count=count)
-    pilot = await _pilot(test_session, dataset, body, full)
-    multiplier = 2 if key == "tw_futures_eod" else 1
-    assert full.summary.expected == count * multiplier
-    assert pilot.summary.expected == min(count, 2) * multiplier
-    assert pilot.plan_id != full.plan_id
-    members = [member for part in pilot.parts for member in part.member_keys]
-    assert (
-        members
-        == sorted(member for part in full.parts for member in part.member_keys)[
-            : min(count, 2) * multiplier
-        ]
-    )
-    assert pilot.execution_profile == pilot.summary.execution_profile == "pilot"
-    get_settings().FULL_MARKET_ENABLED = False
-    # The flag cannot disable pilot nor change an already frozen plan on retry.
-    repeated = await create_plan(
-        test_session,
-        DeliveryPlanCreateRequest(
-            version=1,
-            execution_profile="pilot",
-            dataset_key=key,
-            provider=body.provider,
-            trade_date=DAY,
-            release_id=full.release_id,
-        ),
-        allowed_datasets=[key],
-    )
-    assert repeated == pilot
+async def test_retired_pilot_profile_is_rejected_by_admin_reads(client, admin_headers, path):
+    response = await client.get(path, params={"execution_profile": "pilot"}, headers=admin_headers)
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_canonical_overwrite_preserves_only_own_plan_evidence(
+async def test_retired_pilot_consumer_is_rejected_by_source_authorization(test_session, client):
+    await _activated_plan(test_session, count=1)
+    headers = await _source_headers(test_session)
+    await test_session.commit()
+    for params in ({"consumer": "pilot"}, {"execution_profile": "pilot"}):
+        response = await client.get(
+            "/api/v1/source/full-market/authorization", params=params, headers=headers
+        )
+        assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_default_and_explicit_plan_reads_return_the_daily_plan(
     test_session, owned_client, admin_headers
 ):
-    dataset, body, full = await _activated_plan(test_session, count=1)
-    pilot = await _pilot(test_session, dataset, body, full)
-    headers = await _source_headers(test_session)
-    run_ids = []
-    for plan in (pilot, full):
-        request = _ingress(plan, [_quote(), _quote(session="after_hours")])
-        request["idempotency_key"] = request["request_key"] = str(plan.plan_id)
-        response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
-        assert response.status_code == 202, response.text
-        run_id = UUID(response.json()["run_id"])
-        run_ids.append(run_id)
-        normalizer = FuturesEODContractNormalizer(
-            test_session,
-            {
-                **dataset.config,
-                "_ingest_source": "taifex",
-                "_ingest_fetched_at": request["fetched_at"],
-            },
-        )
-        assert (await normalizer.process(request["payload"], run_id)).success_records == 2
-        await test_session.commit()
-        result = await get_plan(
-            test_session, pilot.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
-        )
-        assert result.status == "complete"
-        other = await get_plan(
-            test_session, full.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
-        )
-        assert other.status == ("incomplete" if plan == pilot else "complete")
-    assert set(await test_session.scalars(select(FuturesContractEOD.run_id))) == {run_ids[1]}
-    assert set(await test_session.scalars(select(DeliveryMemberEvidence.run_id))) == set(run_ids)
-    for profile, expected in (("pilot", pilot), ("full_market", full)):
+    _, _, full = await _activated_plan(test_session, count=1)
+    await test_session.commit()
+    for params in ({}, {"execution_profile": "full_market"}):
         response = await owned_client.get(
-            "/api/v1/admin/delivery-plans",
-            params={"execution_profile": profile},
-            headers=admin_headers,
+            "/api/v1/admin/delivery-plans", params=params, headers=admin_headers
         )
         assert response.status_code == 200, response.text
-        assert [item["plan_id"] for item in response.json()["data"]] == [str(expected.plan_id)]
-    default = await owned_client.get("/api/v1/admin/delivery-plans", headers=admin_headers)
-    assert [item["plan_id"] for item in default.json()["data"]] == [str(full.plan_id)]
-
-
-@pytest.mark.asyncio
-async def test_outcomes_and_missing_alerts_are_profile_isolated(
-    test_session, client, admin_headers
-):
-    from datetime import timedelta
-
-    from app.models.registry import DailyDeliveryMember
-    from app.schemas.full_market import DeliveryOutcomeRequest
-    from app.services.delivery_monitor import scan_missing_deliveries
-    from app.services.full_market import record_outcome
-    from app.utils import utc_now
-    from tests.test_full_market import EVIDENCE
-
-    dataset, body, full = await _activated_plan(test_session, count=1)
-    pilot = await _pilot(test_session, dataset, body, full)
-    for member in await test_session.scalars(
-        select(DailyDeliveryMember).where(DailyDeliveryMember.plan_id == pilot.plan_id)
-    ):
-        await record_outcome(
-            test_session,
-            pilot.plan_id,
-            DeliveryOutcomeRequest(
-                version=1,
-                work_item_id=pilot.parts[0].work_item_id,
-                member_key=member.member_key,
-                outcome="no_data",
-                reason="no_trade",
-                evidence={
-                    **EVIDENCE,
-                    "observed_at": utc_now(),
-                    "source_symbol": member.provider_symbol,
-                    "trade_date": DAY,
-                    "session": member.session,
-                    "source_status": "no_trade",
-                    "source_excerpt": "Official session report: no trades.",
-                },
-            ),
-            provider="taifex",
-            allowed_datasets=[dataset.dataset_key],
-        )
-    await scan_missing_deliveries(test_session, now=full.deadline_at + timedelta(minutes=1))
-    await test_session.commit()
-    for profile in ("pilot", "full_market"):
-        result = await client.get(
-            "/api/v1/admin/missing-deliveries",
-            params={"execution_profile": profile, "status": "open"},
-            headers=admin_headers,
-        )
-        assert result.status_code == 200, result.text
-        rows = result.json()["data"]
-        assert len(rows) == (0 if profile == "pilot" else 1)
-        assert all(row["execution_profile"] == profile for row in rows)
-    full_after = await get_plan(
-        test_session, full.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
-    )
-    assert full_after.summary.no_data == 0 and full_after.summary.missing == 2
-
-    full_control = await test_session.get(SchedulerControl, scheduler_key("taifex", "full_market"))
-    assert full_control is not None
-    full_control.desired_state = "stopped"
-    await test_session.commit()
-    await scan_missing_deliveries(test_session, now=full.deadline_at + timedelta(minutes=2))
-    alert = await test_session.scalar(
-        select(MissingDeliveryAlert).where(MissingDeliveryAlert.execution_profile == "full_market")
-    )
-    assert alert.status == "resolved"
-    assert alert.details["resolution"] == {
-        "code": "SCHEDULER_STOPPED",
-        "execution_profile": "full_market",
-    }
+        assert [item["plan_id"] for item in response.json()["data"]] == [str(full.plan_id)]
 
 
 @pytest.mark.asyncio
@@ -219,7 +65,7 @@ async def test_outcomes_and_missing_alerts_are_profile_isolated(
 async def test_shared_five_feed_source_queue_canonical_serve(
     test_session, test_engine, owned_client, monkeypatch, environment, key
 ):
-    """Both profiles traverse the real durable pipeline in either environment."""
+    """Daily plans traverse the real durable pipeline in either environment."""
     import hashlib
     from copy import deepcopy
 
@@ -233,10 +79,9 @@ async def test_shared_five_feed_source_queue_canonical_serve(
 
     monkeypatch.setattr(get_settings(), "APP_ENVIRONMENT", environment)
     dataset, body, full = await _activated_plan(test_session, key, count=3)
-    pilot = await _pilot(test_session, dataset, body, full)
     headers = await _source_headers(test_session, body.provider, [key])
     await test_session.commit()
-    for plan in (pilot, full):
+    for plan in (full,):
         members = [member for part in plan.parts for member in part.member_keys]
         request = _ingress(plan, [])
         request.update(
@@ -318,13 +163,11 @@ async def test_shared_five_feed_source_queue_canonical_serve(
         )
         duplicate = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert duplicate.json()["run_id"] == str(run_id)
-        for frozen in (pilot, full):
-            result = await get_plan(
-                test_session, frozen.plan_id, provider=body.provider, allowed_datasets=[key]
-            )
-            completed = frozen == pilot or plan == full
-            assert result.summary.data == (frozen.summary.expected if completed else 0)
-            assert result.status == ("complete" if completed else "incomplete")
+        result = await get_plan(
+            test_session, plan.plan_id, provider=body.provider, allowed_datasets=[key]
+        )
+        assert result.summary.data == plan.summary.expected
+        assert result.status == "complete"
         if key == "tw_futures_eod":
             endpoint = "/api/v1/serve/futures/eod"
             params = {

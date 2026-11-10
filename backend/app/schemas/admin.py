@@ -556,7 +556,7 @@ class QueueHealthResponse(BaseModel):
 
 
 class MissingDeliveryAlertResponse(BaseModel):
-    execution_profile: ExecutionProfile = "pilot"
+    execution_profile: ExecutionProfile = "full_market"
     alert_id: UUID
     dataset_key: str
     source: str
@@ -644,7 +644,7 @@ class PendingMarketFeedResponse(BaseModel):
 
 
 class MarketFreshnessResponse(BaseModel):
-    execution_profile: ExecutionProfile = "pilot"
+    execution_profile: ExecutionProfile = "full_market"
     market: str
     scheduler_key: str
     provider: str
@@ -885,7 +885,7 @@ class SuccessResponse(BaseModel):
 
 class SchedulerControlResponse(BaseModel):
     feed_schedules: list[FeedScheduleView] = Field(default_factory=list)
-    execution_profile: ExecutionProfile = "pilot"
+    execution_profile: ExecutionProfile = "full_market"
     """A persisted scheduler control row plus its current heartbeat age."""
 
     scheduler_key: str
@@ -906,6 +906,7 @@ class SchedulerControlResponse(BaseModel):
     heartbeat_age_seconds: Optional[float] = None
     start_allowed: bool
     start_blockers: list[str]
+    # Deprecated: FULL_MARKET_ENABLED is retired; always true when present.
     full_market_enabled: bool | None = None
     environment: str | None = None
     admission_id: str | None = None

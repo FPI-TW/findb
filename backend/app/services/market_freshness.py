@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import case, func, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
+from app.execution_profiles import ExecutionProfile, unified_scheduler
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DailyDeliveryPlan,
@@ -692,7 +692,7 @@ async def _build_scheduler_freshness(
     evaluated_at: datetime,
 ) -> MarketFreshness:
     full_market = unified_scheduler(definition.scheduler_key)
-    profile = scheduler_profile(definition.scheduler_key)
+    profile: ExecutionProfile = "full_market"
     configuration_errors: list[str] = []
     if not definition.dataset_keys:
         configuration_errors.append("scheduler_dataset_mapping_missing")
@@ -1017,7 +1017,7 @@ async def list_market_freshness(
 
     results: list[MarketFreshness] = []
     for definition in definitions:
-        if profile is not None and scheduler_profile(definition.scheduler_key) != profile:
+        if profile is not None and not unified_scheduler(definition.scheduler_key):
             continue
         if validated_slot_filter and definition.slot_id != validated_slot_filter:
             continue

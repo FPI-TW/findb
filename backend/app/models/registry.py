@@ -147,9 +147,7 @@ class FullMarketDatasetState(Base):
         String(20), primary_key=True, default="full_market", server_default="full_market"
     )
     __table_args__ = (
-        CheckConstraint(
-            "execution_profile IN ('pilot', 'full_market')", name="dataset_state_profile"
-        ),
+        CheckConstraint("execution_profile = 'full_market'", name="dataset_state_profile"),
     )
     dataset_key: Mapped[str] = mapped_column(
         ForeignKey("dataset_registry.dataset_key"), primary_key=True
@@ -256,9 +254,7 @@ class DailyDeliveryPlan(Base):
             "execution_profile",
             name="uq_daily_delivery_plan_scope_date",
         ),
-        CheckConstraint(
-            "execution_profile IN ('pilot', 'full_market')", name="delivery_plan_profile"
-        ),
+        CheckConstraint("execution_profile = 'full_market'", name="delivery_plan_profile"),
         Index("idx_daily_delivery_plan_deadline", "deadline_at", "dataset_key"),
     )
 
@@ -335,7 +331,7 @@ class DailyExecutionDecision(Base):
     snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     __table_args__ = (
-        CheckConstraint("execution_profile IN ('pilot','full_market')", name="decision_profile"),
+        CheckConstraint("execution_profile = 'full_market'", name="decision_profile"),
         CheckConstraint(
             "(kind='planned' AND plan_id IS NOT NULL) OR "
             "(kind='skipped_calendar' AND plan_id IS NULL)",
@@ -410,6 +406,7 @@ class SchedulerControl(Base):
 
     __tablename__ = "scheduler_control"
     __table_args__ = (
+        CheckConstraint("execution_profile = 'full_market'", name="scheduler_control_profile"),
         CheckConstraint(
             "length(trim(scheduler_key)) > 0",
             name="scheduler_key_nonempty",
@@ -456,7 +453,7 @@ class SchedulerControl(Base):
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     execution_profile: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="pilot", server_default="pilot"
+        String(20), nullable=False, default="full_market", server_default="full_market"
     )
     # ``slot_id``, ``scheduled_local_time`` and ``timezone`` are the durable
     # scheduler definition.  Runtime code must provide a canonical slot ID.
@@ -1299,6 +1296,7 @@ class MissingDeliveryAlert(Base):
 
     __tablename__ = "missing_delivery_alert"
     __table_args__ = (
+        CheckConstraint("execution_profile = 'full_market'", name="missing_delivery_profile"),
         CheckConstraint(
             "status IN ('open', 'resolved')",
             name="status_valid",
@@ -1326,7 +1324,7 @@ class MissingDeliveryAlert(Base):
     schema_id: Mapped[str] = mapped_column(String(50), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     execution_profile: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="pilot", server_default="pilot"
+        String(20), nullable=False, default="full_market", server_default="full_market"
     )
     expected_data_date: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="open")

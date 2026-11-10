@@ -1,7 +1,22 @@
 # Current Backlog
 
-> 只保存已核准範圍內的未完成工作。完成後直接移除；歷史由Git追溯。Active feeds與pilot
+> 只保存已核准範圍內的未完成工作。完成後直接移除；歷史由Git追溯。Active feeds
 > 範圍見[現行架構](../architecture/overview.md#active-feeds)。
+
+## Pilot profile 退役切換
+
+切換契約、程序與 rollback 下限見 [Pilot 退役](../operations/deployment.md#pilot-profile-退役與-rollback-下限)。
+
+- [ ] Staging 與 production 依序完成切換驗收：停止全部 controls 並排空 historical／maintenance、
+  手動停止 `findb-pilot-*`、RDS snapshot 與 SQLite／governor 成套備份、移除 allocation 的 `pilot`、
+  migration `a7c3e1f9d2b4`、`pilot-residue-v1` 封存 SHA-256、staging 共用 governor 唯讀核對、
+  staging Full 首日驗收（逐一 provider 啟動、記憶體／OOM），再以相同 digests promotion production。
+  預檢須先回答 staging／production Twelve Data 是否共用帳號，以及 staging `t3.small` 能否承載八個 consumers。
+- [ ] 下一版移除一版相容：刪除 SSM `FULL_MARKET_ENABLED` parameter 與載入容忍、deprecated 的
+  `full_market_enabled` API 欄位與 `ReadinessReport.full_market_enabled`，並以 migration 移除
+  `full_market_environment.enabled`。
+- [ ] Dashboard tests 仍以已退役的 Shioaji 作為 active provider，改用現役 provider；追蹤
+  [#447](https://github.com/FPI-TW/findb/issues/447)。
 
 ## CI/CD 五分鐘部署驗收
 
@@ -69,8 +84,8 @@ PR1～4 已通過 staging／production 發布相容性驗收；PR5 已實作 DB 
 來源行為與排查見 [TAIFEX 期貨日行情](../operations/taifex.md)；native 驗收另見
 [未完成驗收](production-foundation-cutover-plan.md)。
 
-- [ ] Pilot 只取排序前兩個契約（實際皆為 MTX），TX／TMF／TE／TF 只能由 Full 或歷史回補驗收；
-  驗收計畫須明列。
+- [ ] Full daily 涵蓋 TX／MTX／TMF／TE／TF 全部 published 契約；staging Full 首日起的驗收計畫須逐產品
+  明列 sessions 與 canonical／Serve 證據，更早日期以歷史回補驗收。
 
 ## Full-market external acceptance
 
@@ -100,9 +115,9 @@ PR1～4 已通過 staging／production 發布相容性驗收；PR5 已實作 DB 
 
 現行抓取、價格基準與失敗分類見 [Full market](../operations/full_market.md#twelve-data-日資料與失敗分類)。
 
-- [ ] 部署 `adjust=none`／header 認證／失敗分類後，先以 Pilot 兩檔、再以 Full 前 100 檔連續數個
+- [ ] 部署 `adjust=none`／header 認證／失敗分類後，以 staging Full daily（約 6,018 筆目錄）連續數個
   美國交易日驗收 Source → R2 → canonical → Serve，並以 `--health` 的 `source_error_diagnostics`
-  核對失敗分類；通過後才開放 Full 全名單（約 6,018 筆目錄）。
+  核對失敗分類；通過後才由 Owner 啟動 production Full。
 - [ ] 向 Twelve Data 書面確認：方案的美股成交量是否為 consolidated、收盤價是否為官方收盤、
   美東 17:00 日線是否定稿及事後修正政策、400 訊息族群，以及 staging／production 是否共用帳號
   （共用時兩環境 governor 合計會超過 1597 credits／分鐘）。
@@ -118,7 +133,7 @@ PR1～4 已通過 staging／production 發布相容性驗收；PR5 已實作 DB 
 
 實作契約與操作見 [FactSet 港股日行情](../operations/factset_hk.md)；staging ECR、IAM／KMS
 及獨立 Source／RDS credentials 已就緒；backend migration、FactSet Source registry、
-停止中的 Pilot／Full scheduler seed、Fetcher host secret loader 與 Source 契約認證已核對。
+停止中的 scheduler seed、Fetcher host secret loader 與 Source 契約認證已核對。
 10/21 HK 切換時 Backend 為 `fe29ce5`、Fetcher 為 `f7d0d8f`；十五個 consumers 已完成 enforcement。
 59 筆 prepared／receipt 與 DB terminal、一致備份、十五 consumer graceful stop、shared-inode
 attestation、Owner cutover，以及原 plans／first dates 的保留均已核對。部署與備份證據見
@@ -126,17 +141,16 @@ attestation、Owner cutover，以及原 plans／first dates 的保留均已核�
 正常日期的 HKEX 第一份 baseline、RDS TLS／catalogue SELECT、兩 owner 排空、四個相關 controls
 停止、HK provider cutover 及 rollback 前置核對已完成；現行狀態與證據見
 [10/21 切換](../operations/deployment.md#2026-10-21-staging-hk-切換)。
-退役 feed 修正已部署至 staging `dd1dece`，Twelve Data Pilot 已恢復 US 新抓取與 canonical 入庫，
-Full 保持停止；證據見 [部署重試與 Pilot 恢復](../operations/deployment.md#部署重試與-twelve-data-pilot-恢復)。
+退役 feed 修正已部署至 staging `dd1dece`，當時 Twelve Data Pilot 恢復 US 新抓取與 canonical 入庫；
+Pilot 退役後改由 Full daily 承接。證據見 [部署重試與 Pilot 恢復](../operations/deployment.md#部署重試與-twelve-data-pilot-恢復)。
 
 - [ ] 保存另一個正常日期的 FactSet maintenance／release，驗證跨日更新與第一份 FactSet daily
   plan 的成員凍結。既有 20 plans／42 members 的切換前後 fingerprints 已核對不變，不能
   代替尚未建立的 FactSet daily plan 驗收。證據要求見 [FactSet runbook](../operations/factset_hk.md)。
-- [ ] 驗證 staging FactSet 原生 prices SELECT，以及兩檔單日、異常歷史樣本、全名單的真實
-  R2／Source／queue／canonical／Serve 流程，核對 partial／missing／DQ。兩檔 daily 須於
+- [ ] 驗證 staging FactSet 原生 prices SELECT，以及異常歷史樣本與全名單 Full daily 的真實
+  R2／Source／queue／canonical／Serve 流程，核對 partial／missing／DQ。Daily 須於
   香港時間 18:30–23:00 抓取；本機原生快照重播或歷史回補不能替代 daily 環境驗收。
-  Twelve Data Pilot 已恢復 US 每日兩檔；FactSet Pilot 與全部 Full controls 保持停止，
-  FactSet 驗收後維持 Pilot 每日兩檔、Full 停止。
+  FactSet Full control 於 Pilot 退役切換後由 Owner 檢查再啟動。
 - [ ] Staging 驗收後，套用 production 的新增基礎設施與 secrets，再依既有 production promotion
   與 Owner control 流程啟用；維持目前上市
   cohort 回補範圍、18:30–23:00 新 I/O 窗口、明確 partial／missing／DQ 證據，不自動 fallback。

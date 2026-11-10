@@ -16,9 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def assess(backend: dict[str, Any], fetchers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     scope = {key: backend[key] for key in ("environment", "execution_profile", "trade_date")}
-    if scope["environment"] not in ("staging", "production") or scope["execution_profile"] not in (
-        "pilot",
-        "full_market",
+    if scope["environment"] not in ("staging", "production") or scope["execution_profile"] != (
+        "full_market"
     ):
         raise ValueError("invalid native evidence scope")
     catalog = json.loads((ROOT / "fetcher/src/findb_fetcher/data/execution_descriptors.v1.json").read_text())

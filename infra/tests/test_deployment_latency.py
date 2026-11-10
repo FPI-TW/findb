@@ -193,9 +193,24 @@ def test_initial_batch_inventory_validates_every_runtime_and_fails_closed(tmp_pa
     source = (RUNTIME / "deploy_fetcher_aws.sh").read_text()
     role = source[source.index("runtime_command_role() {") : source.index("\nset +x")]
     inventory = source[source.index("initial_runtime_state() {") : source.index("\nprocessed=()")]
-    rows = []
+    # Retired Pilot residue is listed but never role-checked by the inventory:
+    # the residue step archives it after proving it stopped.
+    rows = [
+        {
+            "name": f"/findb-pilot-{provider}",
+            "id": f"pilot-{provider}",
+            "image": "image@sha256:abc",
+            "running": False,
+            "exit_code": 0,
+            "oom": False,
+            "error": "",
+            "accepted": "true",
+            "command": ["findb-fetch-runtime", "--execution-profile", "pilot"],
+        }
+        for provider in ("twelve-data", "finlab")
+    ]
     for provider in ("twelve-data", "finlab", "taifex", "factset"):
-        for profile in ("pilot", "full-market", "historical"):
+        for profile in ("full-market", "historical"):
             command = (
                 ["findb-fetch-historical-backfill"]
                 if profile == "historical"
@@ -239,7 +254,7 @@ else: sys.exit(99)
 """)
     docker.chmod(0o755)
     script = (
-        "set -euo pipefail\nFETCHER_DEPLOY_MODE=apply\nproviders=(factset finlab taifex twelve-data)\npilot_state=/checkpoint\n"
+        "set -euo pipefail\nFETCHER_DEPLOY_MODE=apply\nproviders=(factset finlab taifex twelve-data)\n"
         + role
         + "\n"
         + """
@@ -264,7 +279,7 @@ require_full_checkpoint() { echo checked >> "$INVENTORY_TEST/checkpoints"; }
     assert (result.returncode == 0) == (fault == ""), result.stderr
     assert (tmp_path / "calls").read_text().splitlines() == ["container", "inspect"]
     if not fault:
-        assert len((tmp_path / "checkpoints").read_text().splitlines()) == 8
+        assert len((tmp_path / "checkpoints").read_text().splitlines()) == 4
 
 
 @pytest.mark.parametrize("failure", ["", "predeploy", "credentials"])

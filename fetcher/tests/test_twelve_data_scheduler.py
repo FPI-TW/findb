@@ -586,3 +586,54 @@ def test_delivery_retry_reuses_persisted_request_without_refetching(
     assert second.outcome == "completed"
     assert len(provider.calls) == 1
     assert source.requests[0] == source.requests[1]
+
+
+def test_new_daily_state_never_claims_legacy_nvda_or_old_pending_dates(tmp_path):
+    import sqlite3
+
+    calendar = SimpleNamespace(
+        get_day=lambda market, day: (
+            SimpleNamespace(
+                is_open=day.weekday() < 5, day_status="open" if day.weekday() < 5 else "closed"
+            ),
+            1,
+        )
+    )
+    old_schedule = load_schedule_manifest(SCHEDULE_PATH).feeds[0]
+    old_universe = load_symbol_universe(UNIVERSE_PATH)
+    new_schedule = load_schedule_manifest(CONFIG_DIR / "daily_scheduler.staging.v3.json").feeds[0]
+    new_universe = load_symbol_universe(CONFIG_DIR / "twelve_data_us_staging_pilot.v2.json")
+    now = datetime(2026, 10, 5, 2, tzinfo=timezone.utc)
+    old = SchedulerState(tmp_path / "old.sqlite3")
+    old.enqueue_due(
+        old_schedule, old_universe, date(2026, 10, 2), target_data_date=date(2026, 10, 1), now=now
+    )
+    state = SchedulerState(tmp_path / "new.sqlite3")
+    state.enqueue_due(
+        new_schedule, new_universe, date(2026, 10, 2), target_data_date=date(2026, 10, 1), now=now
+    )
+    observed = []
+
+    class Executor:
+        def execute(self, job, **kwargs):
+            observed.append((job.symbol, job.target_data_date))
+            return JobExecution(
+                outcome="completed",
+                succeeded=True,
+                record_count=1,
+                checkpoint_after=job.target_data_date,
+            )
+
+    service = SchedulerService(
+        schedule=new_schedule,
+        universe=new_universe,
+        state=state,
+        executor=Executor(),
+        calendar=calendar,
+    )
+    assert service.run_once(now=now).claimed == 2
+    assert set(observed) == {("AAPL", date(2026, 10, 2)), ("MSFT", date(2026, 10, 2))}
+    with sqlite3.connect(tmp_path / "old.sqlite3") as db:
+        assert db.execute("SELECT status FROM scheduled_job WHERE symbol='NVDA'").fetchone() == (
+            "pending",
+        )

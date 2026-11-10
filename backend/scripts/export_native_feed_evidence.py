@@ -73,7 +73,7 @@ async def export(spec):
         or environment != get_settings().APP_ENVIRONMENT
     ):
         raise ValueError("environment mismatch")
-    if profile not in ("pilot", "full_market"):
+    if profile != "full_market":
         raise ValueError("invalid execution profile")
     trade_date = date.fromisoformat(spec["trade_date"])
     from app.services.provider_metadata import acquisition_feeds

@@ -41,9 +41,7 @@ test("normal login and retired profile deep links show one schedule section with
   await expect(page.getByText(/Pilot/)).toHaveCount(0)
   await expect(page.getByText("pilot_finlab_v1")).toHaveCount(0)
   await expect(page.getByRole("region", { name: "資料抓取排程" })).toBeVisible()
-  await expect(
-    page.getByText("FULL_MARKET_ENABLED：true · production").first()
-  ).toBeVisible()
+  await expect(page.getByText("環境：production").first()).toBeVisible()
   await expect(
     page.getByText("本次凍結範圍：tw_equity_eod").first()
   ).toBeVisible()

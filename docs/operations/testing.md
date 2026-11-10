@@ -99,8 +99,7 @@ Admin 修復回應另驗證 OpenAPI typed schemas、必要摘要欄位與格式�
 `test_sdk_bootstrap.py` 另以正式 child protocol 與離線 SDK 驗證登入失敗仍保留 native／登入帳務，
 僅將 Kbars probe 記為 `predispatch`；dead child 仍須回收並由後續 acquisition 替換。
 修復續作另覆蓋 persisted summary 同交易更新／回滾／重播、無 outcome 的已修復 mapping
-不再顯示 gap、獨立 source error 保留，以及 repair→claim 的窗口／control／Full flag 矩陣與
-Pilot 例外。本機 no-trade complete、Backend resolved、prepared／receipt 成員不得重開或新增
+不再顯示 gap、獨立 source error 保留，以及 repair→claim 的窗口／control 矩陣。本機 no-trade complete、Backend resolved、prepared／receipt 成員不得重開或新增
 安裝 ACK；混合成員僅 ACK 實際安裝者，local→grant 中斷與 ACK-loss 可用同 ID 續作。
 已 ACK 修復的後續回合不再查 diagnostics／restore／ACK，只補報待安裝成員自身的 outcome；
 observation guard 重用 fresh member authorization，逾時才重新 RPC。
@@ -138,7 +137,7 @@ Account unit decorator 以 worker 明確傳入的 `path` 決定 lock 根目錄�
 的情況，SDK／FD inheritance 測試仍執行。
 
 `test_source_recovery.py` 以 MockTransport 核對兩個 control clients 對 408／429／5xx
-（含 521）的 bounded retries、永久錯誤拒絕與安全日誌；直接執行現行 Pilot／Full CLI
+（含 521）的 bounded retries、永久錯誤拒絕與安全日誌；直接執行現行 Full CLI
 的五 provider 啟動，以及 drain／poll／gate／cycle／completion／error-report 中斷恢復。
 實際 subprocess 的 SIGTERM／SIGINT 測試覆蓋內層 Retry-After 與外層 outage wait；
 active work 的 bounded backoff 不因停止訊號跳過 drain。額度測試分別中斷 initial owner、
@@ -232,7 +231,7 @@ Shioaji SDK 版本集中於 `providers/shioaji.py` 的 `SHIOAJI_SDK_VERSION`，�
 
 Production SSR、匿名權限導向、登入 POST RPC、已登入營運台與 Lookup hydration smoke
 通過。Smoke fixture 須先呼叫 `/fixture/reset` 初始化資料；未初始化時不應期待有執行中的
-Pilot。真實 provider 驗收與 runtime image 驗證仍依各自流程執行。
+scheduler control。真實 provider 驗收與 runtime image 驗證仍依各自流程執行。
 安全依賴驗收（2026-10-23）的 `pnpm audit` 各嚴重度皆為零；這是 npm 依賴掃描結果，
 不代表 GitHub 告警已關閉。
 
@@ -288,7 +287,7 @@ Shutdown transaction 的獨立情境由 pytest parameters 分配給 workers；�
 Fetcher release shell tests 執行完整 helper，僅將主機 account governor 與 readiness roots
 映射至各 case 的暫存目錄；fake sudo 拒絕操作該目錄以外的絕對路徑，模擬必要的 ownership／
 mode metadata，不建立或修改主機 `/var/lib/findb-account` 與 `/etc/findb-full-market`。
-Pilot／Full profile 與 flag 開關仍執行 governor 建目錄、bind mount、preflight 與 rollback
+Full 與 historical consumers 均執行 governor 建目錄、bind mount、preflight 與 rollback
 分支，並驗證建立的 container arguments；測試不需要 root、真實 Docker release 或 provider 連線。
 
 三個 jobs 均產生 JUnit、含慢測試清單的 `pytest.log`、pytest `real/user/sys` 計時與
@@ -356,22 +355,16 @@ probe 送 EOF 並收完輸出。EOF grace 45 秒逾時後，僅對該測試建�
 不可依 prefix 批次刪除仍在使用中的 DB。
 
 
-以下舊版五 feeds native evidence probes 仍保留供問題追查；尚未完成七 feeds 與有效日曆政策的 native 驗收，
-不能作為新版部署 gate 或宣稱新版資料驗收通過。新版 fixture 與部署驗收見下方兩節。
+舊版 staging bounded pilot catalog、Fetcher feed evidence probe 與五 feeds Pilot assessment 已隨 Pilot
+退役刪除。`infra/acceptance/collect_staging_feed_evidence.py` 只保留唯讀 SSM evidence transport，collection
+與 assessment 由 `collect_native_feed_evidence.py`／`native_feed_evidence.py` 依生成的 execution descriptors
+綁定 Full market scope。`backend/tests/test_staging_provider_pilots.py` 只核對共用 feed catalog 與 Source
+scope／supported contracts、兩環境期貨 provisioning 政策，以及 TAIFEX Source → queue → canonical → Serve
+與重送；CI 缺少新 provider 的 catalog／startup acceptance 時 fail closed。
 
-Staging provider functional acceptance 由 `fetcher/tests/test_staging_pilots.py`、
-`backend/tests/test_staging_provider_pilots.py` 與 staging evidence probes 覆蓋。CI 必須核對 catalog 與
-runtime/schema/Source scope，缺少 future provider pilot／startup acceptance 時 fail closed。
-此 legacy diagnostic catalog 的 runtime metadata 必須綁定 `findb-fetch-runtime`、明確
-`--execution-profile pilot --provider ... --config configs/bootstrap.staging.v1.json` 與 config hash。
-Validator 與 evidence collector 共用相同驗證，拒絕已退役 CLI、錯誤 profile/provider/config 或 hash。
-`--check` subprocess 僅證明入口與設定可用；保留的舊固定 cohort 仍只供診斷，不代表新 runtime
-目前的 frozen members、七 feeds native 驗收或部署 gate 已通過。
-
-Fixture tests 與 live pipeline observations 分開；live 門檻是四個 providers／五個 feeds 各自最新 eligible 已完成
-交易日的 exact pilot instrument coverage（TAIFEX 兩 actual monthly contracts／四 session rows）、同 run lineage
-的 Source 202、raw、completed queue/canonical 與 Serve proof。兩日期觀測不要求歷史 backfill，也不套用
-Full market enrollment/admission 與各環境實際 coverage 驗證。
+Fixture tests 與 live pipeline observations 分開；live 門檻是四個 providers／五個 feeds 各自最新 eligible
+已完成交易日的 frozen Full cohort coverage、同 run lineage 的 Source 202、raw、completed queue／canonical
+與 Serve proof。兩日期觀測不要求歷史 backfill。
 
 Staging evidence 使用 backend unit-local `published_year` 驗證完整已發布官方年度日曆，輸出
 `target_calendar_evidence` v1 的 UTC 觀測時刻、revision metadata 與最多 16 日的日期／收盤窗口；
@@ -409,8 +402,13 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 ## 環境與 profile 一致性
 
 兩個 AWS 環境共用部署 schema、設定 loader、必要 gates 與健康驗收。
-`test_execution_profiles.py` 覆蓋七條 feed 的凍結樣本與 profile 計畫隔離、canonical 覆寫後持久化證據及缺漏告警；
+`test_execution_profiles.py` 覆蓋七條 feed 的凍結樣本、`full_market` 以外 profile 的 422 拒絕、canonical 覆寫後持久化證據及缺漏告警；
 `test_execution_profile_migration.py` 驗證升級保留與 rollback 下限。
+Pilot 退役由 `test_retire_pilot_profile_migration.py` 驗證刪除 Pilot workflow rows、保留 runs／raw／canonical
+與 audit，以及任一未結 Pilot 狀態整筆拒絕；`test_scheduler_start.py`／`test_full_market_lifecycle.py` 驗證
+緊急停止的 audit、冪等與 first dates 保留；Infra `test_fetcher_shutdown_transaction.py`／
+`test_fetcher_host_preflight.py` 驗證 `findb-pilot-*` 殘留封存、執行中殘留 fail closed、candidate 只檢查及
+symlink checkpoint 拒絕。
 `infra/tests/test_full_market_checkpoint_entry.py` 執行 workflow 實際傳輸的 checkpoint guard；
 Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態及失敗回退。
 Shutdown 與 inventory suites 的假 `docker`／`sudo` 由 `infra/tests/fake_daemon.py` 提供：每個指令是只
@@ -500,7 +498,7 @@ Backend 健康命令 `8789d81c-6a7b-4b26-a969-d44bde78d4f8` 確認 ingest／serv
 
 ## 有效日曆政策回歸
 
-`test_effective_calendar.py` 覆蓋 staging／production、pilot／full_market、七 feeds 的無日曆／週末／跳過政策，
+`test_effective_calendar.py` 覆蓋 staging／production、七 feeds 的無日曆／週末／跳過政策，
 以及 draft、部分發布、閏年與不寫入的預設查詢。`test_effective_calendar_migration.py` 與 profile migration 測試
 驗證歷史 item／plan／首次日期保留，標記 migration 時點快照。Fetcher recovery 測試驗證週末仍取得 Source 決策，
 skipped_calendar 不建立本機抓取工作。Dashboard 驗證來源標示、政策略過與 profile cache 隔離。
@@ -579,7 +577,7 @@ TAIFEX 舊計畫仍為 `native_plan_incomplete`，待台北 2026-10-16 17:00 新
 Backend dev group 以 editable path 安裝 Fetcher，僅供真實跨 application 測試；production `uv sync --no-dev`
 不會安裝 Fetcher 或 provider SDK。`test_provider_work_runtime.py` 以 sync transport bridge 將實際 Fetcher
 FullMarketRuntime／historical runner 連至 authenticated ASGI Source，再執行真實 normalization、DB fencing、
-canonical proof 與 shared flock；只替換外部 provider response／R2 upload。它驗證 Full → historical → Pilot
+canonical proof 與 shared flock；只替換外部 provider response／R2 upload。它驗證 Full → historical → Full
 handoff 與 controls 保持 running。`test_provider_work.py` 另涵蓋 queue enforcement、四 provider historical
 授權、acceptance／close transaction barrier、FIFO／retry／heartbeat recovery 與 retained-raw rerun。
 
@@ -592,7 +590,7 @@ pacing floor 與等待路徑仍執行，實際間隔由 Fetcher 單元測試覆�
 
 Production Shioaji 另以真實 reviewed v2 manifest 驗證股票 50／ETF 3 條 sequences 經
 FIFO → authenticated Source → worker → canonical，逐一對帳 receipts、member evidence 與
-sequence_count；既有 recovery cases 明確使用四成員 pilot fixture。Backend historical tests
+sequence_count；既有 recovery cases 明確使用四成員小型 fixture。Backend historical tests
 涵蓋 production scopes、preview／create／idempotency／cancel、credential scope／撤銷／lease、
 台北日期跨 UTC 邊界與 Shioaji 最近 31 天上下界，以及凍結日曆收盤授權。
 Fetcher tests 驗證 production manifest／dataset 拒絕、dry-run／deliver 的 50／3 calls 與未知 rows、
@@ -603,7 +601,7 @@ Production 50 成員 nominal 驗收使用 `shioaji_dispatch_clock`，讓 parent�
 這只改變測試時鐘座標；產品 grant／quota／lease 下限、IPC timeout 與 process termination
 不放寬。過期、FD／owner fencing、真實授權失效及跨分鐘案例由獨立 dispatch boundary tests 覆蓋。
 50 成員的 harness 設定 `execution_timeout=90`；`RuntimeHarness.run()` 會依此重設 deadline，
-不能只改 `deadline` 而沿用四成員 pilot 的 25 秒預設，否則平行執行可能在中途造成 heartbeat
+不能只改 `deadline` 而沿用四成員 fixture 的 25 秒預設，否則平行執行可能在中途造成 heartbeat
 與 settlement 被測試本身截斷。
 
 Fault cases 包含 intent commit ACK 遺失、local save 後
@@ -611,7 +609,7 @@ confirm 前取消、local save crash、intent／cancel transaction barrier，以
 取消／停止期間不新增 provider I/O，accepted nonterminal run 仍保留 whole-work owner；取消狀態與缺漏保持真實。
 `backend/tests/test_provider_work_projection.py` 以 PostgreSQL 驗證大量 retained rounds 與約 42 MB
 minute prepared 仍只執行固定三次 SELECT（含 historical／HK eligibility 最多五次），不讀取完整
-body／manifest／scope／proof／token，不因工作數增加 N+1。涵蓋五 providers、Pilot／Full、
+body／manifest／scope／proof／token，不因工作數增加 N+1。涵蓋五 providers、Full daily、
 terminal／nonterminal receipts、原 prepared 排空、pending error report、window／cooldown／
 not-before／batch-yield／recovery、historical expiry eligibility 與 current／historical failure 顯示，
 並透過 authenticated Viewer API 驗證原回應與 401／403。效能數據只作量測，不使用易受 CI 負載
@@ -625,8 +623,7 @@ Closed-round 回歸涵蓋 daily、FinLab、Twelve Data 與 Shioaji：close commi
 provider I/O；partial frozen scope 先安全 retry，再完成原 members。Shioaji 多日期／三 ETF sequences 的
 429、503、lost accepted ACK 與 terminal polling timeout，分別在 running／cancelled 狀態下驗證原 bytes、
 tail FIFO、後續日期不被取消、budgets／receipts 保留，以及 cancelled 只排空原 prepared。
-Daily 另驗證 stopped 429／503 retry 可 claim，及同日較新 Pilot 寫入後的 explicit manual failure；
-該 overlap 的 actual-write evidence 不偽造，且結束後不再阻塞 provider。
+Daily 另驗證 stopped 429／503 retry 可 claim，且結束後不再阻塞 provider。
 Stop／drain handoff 另驗證原 prepared 已 terminal、只剩未抓取 members 時，stopped queued work
 不能以「曾有 prepared」反覆占據 runnable head；maintenance consumer 可直接前進。合法 start 同
 profile 後由新 attempt 接續同一 frozen scope，保留 first date、原 bytes／receipts 與 failure budgets。
@@ -751,7 +748,7 @@ owner、manifest、原job budget與armed／unknown／legacy floor snapshot，然
   不觸發 fork 警告，以及 parent 被 kill 後 worker 仍持有 lock 至結束。
 
 - `backend/tests/test_provider_work_daily_manifest.py` 透過 authenticated Source API 驗證
-  Pilot／Full 在 claim 後停止時拒絕首次 manifest，已凍結相同內容仍可重播與安全 close／settle。
+  Full 在 claim 後停止時拒絕首次 manifest，已凍結相同內容仍可重播與安全 close／settle。
 
 ## Backend 排程發布與 Fetcher bootstrap
 

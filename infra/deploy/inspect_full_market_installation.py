@@ -44,10 +44,8 @@ def build(
         or accepted.get("images") != manifest["images"]
     ):
         raise ValueError("immutable acceptance does not bind this installation")
-    names = {provider: "findb-pilot-" + provider.replace("_", "-")}
     full_name = "findb-full-market-" + provider.replace("_", "-")
     actual = [("full_market", inspect(full_name))]
-    actual.append(("pilot", inspect(names[provider])))
     actual.append(("historical", inspect("findb-historical-" + provider.replace("_", "-"))))
     allocation = json.loads(allocation_path.read_bytes())
     if (
@@ -90,7 +88,6 @@ def build(
             or row["Config"]["Image"]
             != manifest["images"][provider if provider != "taifex" else "twelve_data"]
             or installed_environment != target
-            or env.get("FULL_MARKET_ENABLED") != "true"
             or env.get("FETCHER_ACCOUNT_STATE_PATH") != governor
             or not any(
                 mount.get("Destination") == str(Path(governor).parent) and mount.get("RW")
@@ -155,7 +152,7 @@ def build(
     config = json.loads(config_path.read_bytes())
     if config.get("deployment_target") != target:
         raise ValueError("installed config identity invalid")
-    if manifest.get("fetcher_bundle_version", 3) == 4:
+    if manifest.get("fetcher_bundle_version", 3) >= 4:
         if (
             set(config) != {"version", "deployment_target", "poll_seconds"}
             or type(config.get("version")) is not int

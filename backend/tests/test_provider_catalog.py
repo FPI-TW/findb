@@ -93,7 +93,7 @@ def test_invalid_metadata_fails_closed(declaration, fault):
     elif fault == "duplicate_suffix":
         declaration["providers"][1]["container_suffix"] = p["container_suffix"]
     elif fault == "duplicate_role":
-        p["consumer_roles"].append("pilot")
+        p["consumer_roles"].append("historical")
     elif fault == "missing_daily_consumer":
         p["consumer_roles"].remove("full_market")
     elif fault == "missing_historical_consumer":
@@ -247,9 +247,8 @@ def test_inventory_preserves_image_sharing_and_all_roles(declaration):
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
     assert inventory["images"] == ["factset", "finlab", "twelve_data"]
-    assert len(inventory["consumers"]) == 12
+    assert len(inventory["consumers"]) == 8
     assert {c["name"] for c in inventory["consumers"] if c["provider"] == "taifex"} == {
-        "findb-pilot-taifex",
         "findb-full-market-taifex",
         "findb-historical-taifex",
     }
@@ -268,7 +267,7 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
     declaration["feeds"].append(feed)
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
-    assert len(inventory["consumers"]) == 15
+    assert len(inventory["consumers"]) == 10
     assert (
         'example: ["example_eod"]'
         in artifacts[Path("dashboard/src/lib/generated/provider-catalog.ts")]
@@ -317,8 +316,7 @@ def test_fetcher_adapter_scopes_match_catalog_without_clocks(declaration):
     )
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
-def test_backend_publication_is_consumable_by_independent_fetcher(profile):
+def test_backend_publication_is_consumable_by_independent_fetcher():
     from findb_fetcher.execution_config import resolve_execution_config
 
     from app.config import get_settings
@@ -326,12 +324,12 @@ def test_backend_publication_is_consumable_by_independent_fetcher(profile):
     from app.services.provider_metadata import source_scopes
 
     for provider, scopes in source_scopes().items():
-        published = execution_config(provider, scopes, profile).model_dump(mode="json")
+        published = execution_config(provider, scopes, "full_market").model_dump(mode="json")
         result = resolve_execution_config(
             published,
             provider=provider,
             environment=get_settings().APP_ENVIRONMENT,
-            profile=profile,
+            profile="full_market",
         )
         assert {f["dataset_key"] for f in result.feeds} == set(scopes)
         assert all("slot_id" not in f for f in published["feeds"])

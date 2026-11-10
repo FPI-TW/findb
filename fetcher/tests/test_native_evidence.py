@@ -23,13 +23,13 @@ spec.loader.exec_module(evidence)
 @pytest.fixture
 def native_case(tmp_path, monkeypatch):
     state = FullMarketState(tmp_path / "state.sqlite3")
-    state.bind_profile("pilot")
+    state.bind_profile("full_market")
     plan = {
         "plan_id": "plan",
         "dataset_key": "us_equity_eod",
         "trade_date": "2026-10-15",
         "release_id": "universe",
-        "execution_profile": "pilot",
+        "execution_profile": "full_market",
         "parts": [
             {
                 "part_id": "part",
@@ -87,14 +87,14 @@ def native_case(tmp_path, monkeypatch):
         lambda config: SimpleNamespace(_client=SimpleNamespace(get_object=get)),
     )
     monkeypatch.setenv("APP_ENVIRONMENT", "staging")
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "pilot")
+    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
     monkeypatch.setenv("FETCHER_STATE_PATH", str(state.path))
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(state.path))
     return (
         state,
         {
             "environment": "staging",
-            "execution_profile": "pilot",
+            "execution_profile": "full_market",
             "provider": "twelve_data",
             "plans": [target],
         },
@@ -146,7 +146,7 @@ def test_corrupt_r2_bytes_rejected_and_closed(native_case):
 
 def test_other_profile_rejected_before_read(native_case):
     _, spec, _, calls = native_case
-    spec["execution_profile"] = "full_market"
+    spec["execution_profile"] = "maintenance"
     with pytest.raises(ValueError, match="identity"):
         evidence.export(spec)
     assert not calls

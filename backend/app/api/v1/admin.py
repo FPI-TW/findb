@@ -25,7 +25,7 @@ from app.api.deps import (
 )
 from app.config import get_settings
 from app.dependencies import get_db
-from app.execution_profiles import ExecutionProfile, scheduler_profile
+from app.execution_profiles import ExecutionProfile, unified_scheduler
 from app.models.canonical import CalendarImportBatch, CalendarMarket, CalendarYearRevision
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
@@ -714,8 +714,7 @@ async def list_schedulers(
         data=[
             SchedulerControlResponse(**await present_admin_scheduler_control(db, row))
             for row in rows
-            if execution_profile is None
-            or scheduler_profile(row.scheduler_key) == execution_profile
+            if execution_profile is None or unified_scheduler(row.scheduler_key)
         ]
     )
 

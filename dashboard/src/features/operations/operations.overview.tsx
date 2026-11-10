@@ -83,7 +83,6 @@ type SchedulerCardControl = Pick<
   | "heartbeat_age_seconds"
   | "start_allowed"
   | "start_blockers"
-  | "full_market_enabled"
   | "environment"
   | "admitted_dataset_keys"
   | "first_start_dates"
@@ -286,7 +285,6 @@ function schedulerStartAllowed(control: SchedulerMutationTarget) {
 function schedulerStartReason(control: SchedulerMutationTarget) {
   const reasons: Record<string, string> = {
     full_market_no_enabled_datasets: "尚未啟用任何全市場 feed",
-    full_market_flag_disabled: "環境 Full market flag 關閉",
     full_market_runtime_missing: "尚未安裝並登錄 runtime",
     full_market_readiness_not_reported: "已登錄 runtime 尚未回報 readiness",
     full_market_readiness_expired: "readiness 證據已過期",
@@ -890,11 +888,7 @@ function IngestionCardView({
       ) : null}
       {control.scheduler_key.startsWith("full_market_") && (
         <div className="grid gap-2 text-xs text-muted">
-          <p className="m-0">
-            FULL_MARKET_ENABLED：
-            {control.full_market_enabled ? "true" : "false"} ·{" "}
-            {control.environment ?? "—"}
-          </p>
+          <p className="m-0">環境：{control.environment ?? "—"}</p>
           <p className="m-0">
             本次凍結範圍：{control.admitted_dataset_keys?.join(", ") || "無"}
           </p>

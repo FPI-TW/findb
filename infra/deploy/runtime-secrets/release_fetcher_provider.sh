@@ -51,6 +51,12 @@ preflight_name="${8:?preflight container required}"
 cache_dir="${9:?cache directory or - required}"
 shift 9
 [ "$#" -gt 0 ] || { echo "release_fetcher_provider=failed reason=scheduler_command_missing" >&2; exit 2; }
+# Only Full market and historical consumers exist. An unset or retired
+# profile (including pilot) is never defaulted to an acquiring identity.
+case "${FETCHER_CONSUMER_PROFILE:-}" in
+  full_market|historical) ;;
+  *) echo "release_fetcher_provider=failed reason=consumer_profile_invalid" >&2; exit 2 ;;
+esac
 
 provider_release_mode="${FETCHER_PROVIDER_RELEASE_MODE:-transactional}"
 case "$provider_release_mode" in
@@ -163,7 +169,6 @@ export FETCHER_HISTORICAL_STATE_DIR="$state_dir"
 
 runtime_env_args=(
   --env PROVIDER_WORK_REQUIRED
-  --env FULL_MARKET_ENABLED
   --env FETCHER_CONSUMER_PROFILE
   --env FETCHER_ACCOUNT_STATE_PATH
   --env "FETCHER_ACCOUNT_READINESS_FILE=/var/lib/findb-account/readiness/${provider//-/_}.json"
@@ -208,8 +213,8 @@ fi
 readiness_mount=()
 account_mount=()
 account_dir="/var/lib/findb-account/$APP_ENVIRONMENT"
-# All current acquiring consumers use the durable governor, including bounded
-# Pilot/historical with Full disabled. Preserve any retained ledger and pins.
+# All current acquiring consumers (Full market and historical) use the durable
+# governor. Preserve any retained ledger and pins.
 sudo mkdir -p "$account_dir" /etc/findb-full-market/readiness
 sudo chown 10001:10001 "$account_dir"
 sudo chmod 0700 "$account_dir"
@@ -235,12 +240,8 @@ account_mount=(--mount "type=bind,src=$account_dir,dst=$account_dir" --mount "ty
 
 if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ]; then
 raw_marker="$state_dir/raw-bucket.sha256"
-if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" = full_market ]; then
-  # All four providers share only the quota/checkpoint DB, never credentials.
-  marker_identity="full-market"
-else
-  marker_identity="pilot"
-fi
+# All four providers share only the quota/checkpoint DB, never credentials.
+marker_identity="full-market"
 fingerprint="$(printf '%s\n%s\n%s' "$CLOUDFLARE_R2_ACCOUNT_ID" "$CLOUDFLARE_R2_RAW_BUCKET" "$marker_identity" | sha256sum | cut -d ' ' -f1)"
 write_marker() {
   marker_tmp="$(sudo mktemp "$state_dir/.raw-bucket.sha256.XXXXXX")"
@@ -336,7 +337,7 @@ if [ "$cache_dir" != "-" ]; then
 fi
 
 case "${FETCHER_CONSUMER_PROFILE:-}:$1" in
-  pilot:findb-fetch-runtime|full_market:findb-fetch-runtime|historical:findb-fetch-historical-backfill) ;;
+  full_market:findb-fetch-runtime|historical:findb-fetch-historical-backfill) ;;
   *) echo "release_fetcher_provider=failed reason=consumer_command_mismatch" >&2; exit 2 ;;
 esac
 if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ] && ! sudo test -e "$state_path"; then
@@ -500,11 +501,11 @@ fi
 if [ "${FETCHER_CONSUMER_PROFILE:-}" = historical ]; then
   common_args+=(--label com.findb.fetcher.historical-shutdown=date-boundary-v1)
 fi
-if [ "${FETCHER_CONSUMER_PROFILE:-pilot}" != historical ]; then
+if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ]; then
   common_args+=("${readiness_mount[@]}")
 fi
-# FinLab SDK get loads a whole dataset. On the small staging host (Pilot and
-# small backfills only), keep one table load from exhausting the whole host.
+# FinLab SDK get loads a whole dataset. On the small staging host, keep one
+# table load from exhausting the whole host.
 expected_memory=0
 if [ "$APP_ENVIRONMENT" = staging ] && [ "$provider" = finlab ]; then
   expected_memory=1073741824

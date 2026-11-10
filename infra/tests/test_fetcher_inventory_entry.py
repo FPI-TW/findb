@@ -245,20 +245,16 @@ def run_entry(
     checkpoint.mkdir()
     durable = checkpoint / "state.sqlite3"
     durable.write_bytes(b"prepared-payload-debt-and-cursors")
-    marker_identity = "full-market" if kind == "full" else "pilot"
+    if kind not in {"full", "historical"}:
+        raise ValueError("only Full market and historical consumers exist")
+    marker_identity = "full-market"
     fingerprint = hashlib.sha256(("a" * 32 + "\nraw-data\n" + marker_identity).encode()).hexdigest()
     (checkpoint / "raw-bucket.sha256").write_text(fingerprint + "\n")
-    stable = "findb-full-market-twelve-data" if kind == "full" else "findb-pilot-twelve-data"
-    if kind == "historical":
-        stable = "findb-historical-twelve-data"
+    stable = "findb-full-market-twelve-data" if kind == "full" else "findb-historical-twelve-data"
     previous = stable + "-previous"
     candidate = stable + "-candidate"
     image = REGISTRY + "/findb/production/fetcher/twelve-data@sha256:" + "b" * 64
-    runtime_command = (
-        "findb-fetch-runtime"
-        if kind == "full"
-        else ("findb-fetch-historical-backfill" if kind == "historical" else "findb-fetch-runtime")
-    )
+    runtime_command = "findb-fetch-runtime" if kind == "full" else "findb-fetch-historical-backfill"
     rows = {
         stable: dict(
             id="original-current",
@@ -321,10 +317,7 @@ def run_entry(
         "FETCHER_PROVIDER_RELEASE_MODE": "transactional",
         "FETCHER_DEPLOY_MODE": "activate",
         "FETCHER_RUNTIME_PROFILE": "unified",
-        "FETCHER_CONSUMER_PROFILE": "full_market"
-        if kind == "full"
-        else ("historical" if kind == "historical" else "pilot"),
-        "FULL_MARKET_ENABLED": "false",
+        "FETCHER_CONSUMER_PROFILE": "full_market" if kind == "full" else "historical",
         "FETCHER_SOURCE_API_URL": "https://example.invalid/source",
         "FETCHER_TWELVE_DATA_SOURCE_CLIENT_KEY": "source-fixture",
         "TWELVE_DATA_API_KEY": "provider-fixture",
@@ -346,14 +339,12 @@ def run_entry(
         previous,
         stable + "-preflight",
         "-",
-        "findb-fetch-runtime"
-        if kind == "full"
-        else ("findb-fetch-historical-backfill" if kind == "historical" else "findb-fetch-runtime"),
+        runtime_command,
     ]
     if kind == "historical":
         args.extend(["--provider", "twelve_data"])
     else:
-        args.extend(["--execution-profile", "full_market" if kind == "full" else "pilot"])
+        args.extend(["--execution-profile", "full_market"])
     command = ["/bin/bash", *args]
     if parent:
         source = DEPLOY.read_text()
@@ -650,12 +641,12 @@ def test_conditional_legacy_and_generic_recovery_do_not_guess_running_state(
 @pytest.mark.parametrize("running", [False, True])
 @pytest.mark.parametrize("previous_only", [False, True])
 @pytest.mark.parametrize("failure", [None, "rc1", "rc81", "empty", "invalid"])
-def test_generic_whole_parent_helper_restores_exact_initial_state(
+def test_historical_whole_parent_helper_restores_exact_initial_state(
     tmp_path, running, previous_only, failure
 ):
     result, before, actual = run_entry(
         tmp_path,
-        kind="generic",
+        kind="historical",
         parent=True,
         running=running,
         previous_only=previous_only,
@@ -675,10 +666,12 @@ def test_generic_whole_parent_helper_restores_exact_initial_state(
 @pytest.mark.parametrize("running", [False, True])
 @pytest.mark.parametrize("previous_only", [False, True])
 @pytest.mark.parametrize("trigger", ["health-failure", "INT", "TERM", "HUP"])
-def test_generic_whole_helper_signals_restore_original(tmp_path, running, previous_only, trigger):
+def test_historical_whole_helper_signals_restore_original(
+    tmp_path, running, previous_only, trigger
+):
     result, before, actual = run_entry(
         tmp_path,
-        kind="generic",
+        kind="historical",
         parent=True,
         running=running,
         previous_only=previous_only,
@@ -727,7 +720,7 @@ def test_whole_helper_normal_retirement_requires_verified_fields(tmp_path, field
     assert not any(a[:2] == ["docker", "rm"] for a in actual["log"])
 
 
-@pytest.mark.parametrize("kind", ["full", "generic", "historical"])
+@pytest.mark.parametrize("kind", ["full", "historical"])
 @pytest.mark.parametrize("running", [False, True])
 @pytest.mark.parametrize("parent", [False, True])
 def test_every_consumer_preserves_unstaged_accepted_previous(tmp_path, kind, running, parent):
@@ -861,7 +854,7 @@ docker() {
         assert events.exists(), "Successful status control must execute real mutation branch"
 
 
-@pytest.mark.parametrize("consumer", ["pilot", "full-market", "historical"])
+@pytest.mark.parametrize("consumer", ["full-market", "historical"])
 def test_no_consumer_can_treat_exit_137_as_graceful(consumer):
     import re
 

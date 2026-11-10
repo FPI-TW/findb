@@ -14,7 +14,7 @@ CONFIG = Path(__file__).resolve().parents[1] / "configs/bootstrap.local.v1.json"
 
 
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 def test_checkpoint_bootstrap_preserves_live_owner_and_shared_inode(
     tmp_path, monkeypatch, provider, profile
 ):

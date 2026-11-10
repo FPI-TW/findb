@@ -1,7 +1,7 @@
 # Staging Performance Baseline
 
 本文件保存可重複的staging量測邊界與何時才需要優化的判斷規則。數字是容量決策的輸入，
-不是production SLO，也不能用小型pilot universe推估production吞吐。
+不是production SLO，也不能用小型staging樣本universe推估production吞吐。
 
 ## 2026-09-15 baseline
 

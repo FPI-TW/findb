@@ -47,30 +47,6 @@
       "name": "findb-historical-twelve-data",
       "provider": "twelve_data",
       "role": "historical"
-    },
-    {
-      "image_key": "factset",
-      "name": "findb-pilot-factset",
-      "provider": "factset",
-      "role": "pilot"
-    },
-    {
-      "image_key": "finlab",
-      "name": "findb-pilot-finlab",
-      "provider": "finlab",
-      "role": "pilot"
-    },
-    {
-      "image_key": "twelve_data",
-      "name": "findb-pilot-taifex",
-      "provider": "taifex",
-      "role": "pilot"
-    },
-    {
-      "image_key": "twelve_data",
-      "name": "findb-pilot-twelve-data",
-      "provider": "twelve_data",
-      "role": "pilot"
     }
   ],
   "images": [
@@ -78,7 +54,7 @@
     "finlab",
     "twelve_data"
   ],
-  "projection_sha256": "c6743fefcc63f25052cd555f3a06d80786fdb5ff3782dbb86d5078e135fe2ecc",
+  "projection_sha256": "6bb3088c80cf35ce3f61ede8852e9a142913ebf4163d15811ce275ed83c5d92b",
   "providers": [
     "factset",
     "finlab",

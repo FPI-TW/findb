@@ -177,27 +177,26 @@ async def test_original_prepared_and_run_drain_states(test_session, provider, re
 
 
 @pytest.mark.asyncio
-async def test_profile_fifo_active_recovery_and_environment_filter(test_session):
+async def test_fifo_active_recovery_and_environment_filter(test_session):
     db = test_session
     full, a = await seed_work(db, "finlab")
-    pilot, b = await seed_work(db, "finlab", profile="pilot")
+    following, _ = await seed_work(db, "finlab")
     hidden, _ = await seed_work(db, "shioaji")
     hidden.environment = "staging"
     finished, done = await seed_work(db, "finlab")
     done.state = "settled"
     finished.state = "failed"
-    for profile in ["pilot", "full_market"]:
-        db.add(
-            SchedulerControl(
-                scheduler_key=f"{profile}_finlab_v1",
-                provider="finlab",
-                execution_profile=profile,
-                desired_state="running",
-                observed_state="running",
-                slot_id="taiwan_market_window",
-                timezone="Asia/Taipei",
-            )
+    db.add(
+        SchedulerControl(
+            scheduler_key="full_market_finlab_v1",
+            provider="finlab",
+            execution_profile="full_market",
+            desired_state="running",
+            observed_state="running",
+            slot_id="taiwan_market_window",
+            timezone="Asia/Taipei",
         )
+    )
     db.add(
         ProviderWorkOwner(
             environment=queue.environment(),
@@ -210,10 +209,10 @@ async def test_profile_fifo_active_recovery_and_environment_filter(test_session)
     a.state = "recovery_blocked"
     await db.flush()
     rows = await queue.projection(db, provider="finlab")
-    assert [r["work_id"] for r in rows] == [str(full.work_id), str(pilot.work_id)]
+    assert [r["work_id"] for r in rows] == [str(full.work_id), str(following.work_id)]
     assert rows[0]["active"] and rows[0]["wait_reason"] == "recovery_required"
     assert rows[1]["wait_reason"] == "provider_active" and rows[1]["position"] == 1
-    assert rows[0]["execution_profile"] == "full_market" and rows[1]["execution_profile"] == "pilot"
+    assert {row["execution_profile"] for row in rows} == {"full_market"}
 
 
 @pytest.mark.asyncio
@@ -306,23 +305,19 @@ async def test_hk_cutover_drain_classification_uses_original_eligibility(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile", ["full_market", "pilot"])
-@pytest.mark.parametrize("enabled", [False, True])
-async def test_prepared_projection_matches_flag_and_profile_acquisition_gate(
-    test_session, monkeypatch, profile, enabled
+@pytest.mark.parametrize("desired_state", ["stopped", "running"])
+async def test_prepared_projection_matches_control_acquisition_gate(
+    test_session, monkeypatch, desired_state
 ):
-    from app.config import get_settings
-
     db = test_session
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", enabled)
     monkeypatch.setattr(queue, "daily_window", lambda *args: {"open": True})
-    work, _ = await seed_work(db, profile=profile, prepared={"original": {"body": "immutable"}})
+    work, _ = await seed_work(db, prepared={"original": {"body": "immutable"}})
     db.add(
         SchedulerControl(
-            scheduler_key=f"{profile}_shioaji_v1",
+            scheduler_key="full_market_shioaji_v1",
             provider="shioaji",
-            execution_profile=profile,
-            desired_state="running",
+            execution_profile="full_market",
+            desired_state=desired_state,
             slot_id="taiwan_market_window",
         )
     )
@@ -330,7 +325,7 @@ async def test_prepared_projection_matches_flag_and_profile_acquisition_gate(
     expected = not await queue.acquisition_open(db, work)
     with monitor_reads(db):
         [row] = await queue.projection(db)
-    assert row["drain_only"] is expected is (not enabled and profile == "full_market")
+    assert row["drain_only"] is expected is (desired_state == "stopped")
 
 
 @pytest.mark.asyncio
@@ -381,9 +376,7 @@ async def test_minute_sized_preparation_with_many_rounds_stays_a_metadata_read(t
 async def test_wait_and_report_continuation_precedence(
     test_session, monkeypatch, gate, pending_error
 ):
-    from app.config import get_settings
 
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
     db = test_session
     work, attempt = await seed_work(db, "finlab")
     db.add(

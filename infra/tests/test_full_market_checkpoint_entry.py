@@ -213,7 +213,11 @@ export -f sudo docker
         text=True,
         timeout=10,
     )
-    if state_kind != "valid" or expected_reason:
+    if profile == "pilot":
+        # Retired Pilot residue is archived by the deployment, never inspected here.
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "gate-passed").exists()
+    elif state_kind != "valid" or expected_reason:
         assert result.returncode != 0
         reason = (
             expected_reason
@@ -228,7 +232,7 @@ export -f sudo docker
     assert (checkpoint.read_bytes() if checkpoint.exists() else None) == before
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 @pytest.mark.parametrize(
     "suffix",
     [
@@ -253,7 +257,7 @@ def test_transported_guard_rejects_unknown_command(tmp_path, profile, suffix):
     )
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 @pytest.mark.parametrize("query", ["cmd", "listed-inspect"])
 @pytest.mark.parametrize("rc", [1, 81])
 def test_transported_guard_rejects_query_failure(tmp_path, profile, query, rc):
@@ -309,7 +313,7 @@ def test_actual_docker_probes_accept_bash32_empty_cache_mount(tmp_path, mode):
 preflight_name=fixture; state_dir=/state; image=fixture-image
 cache_mount=(); readiness_mount=(); runtime_env_args=(--env APP_ENVIRONMENT)
 docker() { printf '%s\\n' "$@"; }
-set -- findb-fetch-runtime --execution-profile pilot --state-path /state/state.sqlite3
+set -- findb-fetch-runtime --execution-profile full_market --state-path /state/state.sqlite3
 """
         + command
     )

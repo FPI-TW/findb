@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminPrincipal
-from app.execution_profiles import scheduler_profile, unified_scheduler
-from app.models.registry import SchedulerControl
+from app.execution_profiles import unified_scheduler
+from app.models.registry import AdminAuditEvent, SchedulerControl
 from app.services.admin_audit import record_admin_audit
 from app.services.feed_schedule import feed_schedule_view
 from app.services.scheduler_start import scheduler_start_blockers, scheduler_start_datasets
@@ -134,9 +134,7 @@ async def update_scheduler_desired_state(
             await freeze_admission(
                 db,
                 row,
-                await eligibility(
-                    db, row.provider, datasets, profile=scheduler_profile(row.scheduler_key)
-                ),
+                await eligibility(db, row.provider, datasets),
             )
 
     row.desired_state = desired_state
@@ -161,6 +159,76 @@ async def update_scheduler_desired_state(
         if refreshed is not None:
             row = refreshed
     return row
+
+
+async def emergency_stop_controls(
+    db: AsyncSession, *, actor: str, reason: str, apply: bool
+) -> list[dict[str, Any]]:
+    """Stop every active control without Dashboard or Admin API dependencies.
+
+    Locks follow the Owner mutation order: providers, environment, then controls.
+    Replaces the retired FULL_MARKET_ENABLED kill switch; nothing is started.
+    """
+    from app.services.full_market_admission import lock_environment
+    from app.services.provider_work import lock_provider
+
+    providers = sorted(
+        set(
+            await db.scalars(
+                select(SchedulerControl.provider).where(SchedulerControl.retired_at.is_(None))
+            )
+        )
+    )
+    for provider in providers:
+        await lock_provider(db, provider)
+    await lock_environment(db)
+    rows = (
+        await db.scalars(
+            select(SchedulerControl)
+            .where(
+                SchedulerControl.retired_at.is_(None),
+                SchedulerControl.desired_state != "stopped",
+            )
+            .order_by(SchedulerControl.scheduler_key)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+    ).all()
+    stopped = []
+    for row in rows:
+        stopped.append(
+            {
+                "scheduler_key": row.scheduler_key,
+                "provider": row.provider,
+                "observed_state": row.observed_state,
+                "revision": row.revision + 1 if apply else row.revision,
+            }
+        )
+        if not apply:
+            continue
+        row.desired_state = "stopped"
+        row.revision += 1
+        row.updated_at = utc_now()
+        db.add(
+            AdminAuditEvent(
+                actor_type="deployment",
+                actor_id=actor,
+                actor_display_name=actor,
+                action="stop",
+                resource_type="scheduler_control",
+                resource_id=row.scheduler_key,
+                details={
+                    "reason": "emergency_stop",
+                    "note": reason,
+                    "revision": row.revision,
+                },
+            )
+        )
+    if apply:
+        await db.commit()
+    else:
+        await db.rollback()
+    return stopped
 
 
 def _source_scope(db: AsyncSession) -> tuple[str | None, list[str] | None]:
@@ -265,7 +333,7 @@ def present_scheduler_control(
     heartbeat_age = max(0.0, (reference - heartbeat).total_seconds()) if heartbeat else None
     return {
         "scheduler_key": row.scheduler_key,
-        "execution_profile": scheduler_profile(row.scheduler_key),
+        "execution_profile": "full_market",
         "provider": row.provider,
         "dataset_keys": scheduler_dataset_keys(row),
         "feed_schedules": [
@@ -302,12 +370,9 @@ async def present_admin_scheduler_control(
             db,
             row.provider,
             await scheduler_start_datasets(db, row.scheduler_key),
-            profile=scheduler_profile(row.scheduler_key),
         )
         projection = {
-            **await admission_projection(
-                db, row.provider, profile=scheduler_profile(row.scheduler_key)
-            ),
+            **await admission_projection(db, row.provider),
             "feed_readiness": result["feeds"],
             "capacity": result["capacity"],
         }

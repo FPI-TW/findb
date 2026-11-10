@@ -46,7 +46,6 @@ def test_conflict_diagnostics_use_only_safe_protocol_codes(reported, expected):
 
 
 def test_source_429_recovers_frozen_plan_without_acquisition_authority(monkeypatch):
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
     clock = [0.0]
     calls = []

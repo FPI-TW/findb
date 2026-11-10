@@ -129,7 +129,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.manifest = {
             "schema_version": 3,
             "runtime_profile": "unified",
-            "fetcher_bundle_version": 4,
+            "fetcher_bundle_version": 5,
             "deployment_target": "production",
             "unit": "fetcher",
             "commit_sha": "b" * 40,
@@ -154,28 +154,14 @@ class FetcherHostPreflightTests(unittest.TestCase):
         }
         self.write_manifest()
         self.rows = []
-        for profile in ("pilot", "full_market"):
-            for provider in ("twelve_data", "finlab", "taifex", "factset"):
-                prefix = profile.replace("_", "-")
-                name = f"findb-{prefix}-{provider.replace('_', '-')}"
-                state = f"/var/lib/findb-{prefix}/production"
-                if profile == "full_market":
-                    state = "/var/lib/findb-full-market"
-                args = [
-                    "findb-fetch-runtime",
-                    "--execution-profile",
-                    profile,
-                    "--config",
-                    "/app/configs/bootstrap.production.v1.json",
-                    "--state-path",
-                    state + "/state.sqlite3",
-                    "--provider",
-                    provider,
-                    "--run-forever",
-                ]
-                self.rows.append(
-                    self.row(name, "twelve_data" if provider == "taifex" else provider, args)
+        for provider in ("twelve_data", "finlab", "taifex", "factset"):
+            self.rows.append(
+                self.row(
+                    f"findb-full-market-{provider.replace('_', '-')}",
+                    "twelve_data" if provider == "taifex" else provider,
+                    self.runtime_args("full_market", provider),
                 )
+            )
 
         for provider in ("twelve_data", "finlab", "taifex", "factset"):
             self.rows.append(
@@ -190,6 +176,26 @@ class FetcherHostPreflightTests(unittest.TestCase):
                     ],
                 )
             )
+
+    @staticmethod
+    def runtime_args(profile, provider):
+        state = (
+            "/var/lib/findb-full-market"
+            if profile == "full_market"
+            else f"/var/lib/findb-{profile}/production"
+        )
+        return [
+            "findb-fetch-runtime",
+            "--execution-profile",
+            profile,
+            "--config",
+            "/app/configs/bootstrap.production.v1.json",
+            "--state-path",
+            state + "/state.sqlite3",
+            "--provider",
+            provider,
+            "--run-forever",
+        ]
 
     def install_historical_source(self):
         shutil.rmtree(self.root)
@@ -254,7 +260,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         return result
 
     def test_complete_unified_installation_is_drained(self):
-        self.assertEqual(len(self.rows), 12)
+        self.assertEqual(len(self.rows), 8)
         self.assertEqual(self.check(), "drained")
 
     def test_restarting_runtime_reports_only_trusted_consumer_identity(self):
@@ -267,7 +273,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
             self.check()
         self.assertEqual(
             output.getvalue(),
-            "fetcher_host_blocked reason=runtime_not_eligible execution_profile=pilot provider=twelve_data\n",
+            "fetcher_host_blocked reason=runtime_not_eligible execution_profile=full_market provider=twelve_data\n",
         )
         self.assertNotIn("secret", output.getvalue())
 
@@ -309,7 +315,11 @@ class FetcherHostPreflightTests(unittest.TestCase):
             )
         )
         path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-        path.write_text(path.read_text().replace("# shioaji-retired-v1:", "# previous-providers:"))
+        path.write_text(
+            path.read_text()
+            .replace("# shioaji-retired-v1:", "# previous-providers:")
+            .replace("# pilot-retired-v1:", "# previous-profiles:")
+        )
         with release.SourceBundleReader(self.root) as source:
             self.manifest["deployment_source_bundle_sha256"] = (
                 source.deployment_source_bundle_sha256("fetcher")
@@ -318,7 +328,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
 
     def test_version_two_host_is_below_retirement_floor(self):
         self.install_version_two()
-        self.assertEqual(len(self.rows), 15)
+        self.assertEqual(len(self.rows), 11)
         self.rows = [row for row in self.rows if row["Name"] != "/findb-pilot-shioaji"]
         with self.assertRaises((ValueError, KeyError)):
             self.check()
@@ -344,7 +354,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 source.deployment_source_bundle_sha256("fetcher")
             )
         self.write_manifest()
-        self.assertEqual(len(self.rows), 11)
+        self.assertEqual(len(self.rows), 8)
         with self.assertRaises(ValueError):
             self.check()
 
@@ -461,8 +471,8 @@ class FetcherHostPreflightTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         self.check()
 
-    def test_drained_requires_exact_pilot_format_identity(self):
-        for version in (None, False, True, 0, 5, "1", 1.0):
+    def test_drained_requires_exact_bundle_format_identity(self):
+        for version in (None, False, True, 0, 6, "1", 1.0):
             with self.subTest(version=version):
                 self.manifest["fetcher_bundle_version"] = version
                 if version is None:
@@ -470,9 +480,72 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 self.write_manifest()
                 with self.assertRaisesRegex(ValueError, "format identity invalid"):
                     self.check()
-        self.manifest["fetcher_bundle_version"] = 4
+        self.manifest["fetcher_bundle_version"] = 5
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
+
+    def install_version_four(self, *, pilot_running=False):
+        """A v4 host still holds Pilot consumers, drained before this release."""
+        deployment = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+        deployment.write_text(
+            deployment.read_text().replace("# pilot-retired-v1:", "# previous-profiles:")
+        )
+        self.manifest["fetcher_bundle_version"] = 4
+        with release.SourceBundleReader(self.root) as source:
+            self.manifest["deployment_source_bundle_sha256"] = (
+                source.deployment_source_bundle_sha256("fetcher", 3, 4)
+            )
+        self.write_manifest()
+        for provider in ("twelve_data", "finlab", "taifex", "factset"):
+            row = self.row(
+                f"findb-pilot-{provider.replace('_', '-')}",
+                "twelve_data" if provider == "taifex" else provider,
+                self.runtime_args("pilot", provider),
+            )
+            if pilot_running:
+                row["State"].update(Running=True, Status="running")
+            self.rows.append(row)
+
+    def test_version_four_host_with_drained_pilot_residue_is_eligible(self):
+        self.install_version_four()
+        self.assertEqual(len(self.rows), 12)
+        self.assertEqual(self.check(), "drained")
+        self.rows = [row for row in self.rows if not row["Name"].startswith("/findb-pilot-")]
+        self.assertEqual(self.check(), "drained")
+
+    def test_running_or_undrained_pilot_residue_blocks_the_release(self):
+        self.install_version_four(pilot_running=True)
+        self.rows[0]["Config"]["Env"].append("SOURCE_CLIENT_KEY=secret-source-key")
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaisesRegex(ValueError, "must be stopped"):
+            self.check()
+        self.assertEqual(
+            output.getvalue(), "fetcher_host_eligibility=failed reason=pilot_residue_running\n"
+        )
+        for change in ({"ExitCode": 137}, {"OOMKilled": True}, {"Error": "private"}):
+            with self.subTest(change=change):
+                self.rows = self.rows[:8]
+                self.install_version_four()
+                self.rows[-1]["State"].update(change)
+                output = io.StringIO()
+                with redirect_stdout(output), self.assertRaises(ValueError):
+                    self.check()
+                self.assertEqual(
+                    output.getvalue(),
+                    "fetcher_host_eligibility=failed reason=pilot_residue_not_drained\n",
+                )
+                self.assertNotIn("private", output.getvalue())
+
+    def test_pilot_residue_is_rejected_after_retirement_or_with_retained_names(self):
+        residue = self.row("findb-pilot-finlab", "finlab", self.runtime_args("pilot", "finlab"))
+        self.rows.append(residue)
+        with self.assertRaisesRegex(ValueError, "after its retirement"):
+            self.check()
+        self.rows.pop()
+        self.install_version_four()
+        self.rows[-1]["Name"] = "/findb-pilot-factset-previous"
+        with self.assertRaisesRegex(ValueError, "unknown consumer"):
+            self.check()
 
     def test_accepted_v3_host_is_eligible_for_bootstrap_upgrade(self):
         for target in ("local", "staging", "production"):
@@ -484,7 +557,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
             )
         deployment = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
         deployment.write_text(
-            deployment.read_text().replace("# backend-schedules-v1:", "# legacy-clocks:")
+            deployment.read_text()
+            .replace("# backend-schedules-v1:", "# legacy-clocks:")
+            .replace("# pilot-retired-v1:", "# previous-profiles:")
         )
         self.manifest["fetcher_bundle_version"] = 3
         with release.SourceBundleReader(self.root) as source:

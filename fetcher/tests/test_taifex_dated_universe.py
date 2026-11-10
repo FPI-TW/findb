@@ -81,7 +81,7 @@ def plan(profile, day=DAY):
     }
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 def test_queued_dated_prerequisite_uses_prerequisite_retry_delay(tmp_path, monkeypatch, profile):
     from findb_fetcher import provider_work
 
@@ -119,7 +119,7 @@ def test_queued_dated_prerequisite_uses_prerequisite_retry_delay(tmp_path, monke
     runtime.close()
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 def test_new_exact_date_release_and_concurrent_freeze(tmp_path, monkeypatch, profile):
     runtime, source, feed = setup_runtime(tmp_path, monkeypatch, profile)
     calls = []
@@ -173,7 +173,7 @@ def test_report_http_errors_are_operational(status):
             fetch_report(http, target_date=DAY, latest=False)
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 @pytest.mark.parametrize("status", ["published", "candidate"])
 def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
     tmp_path, monkeypatch, profile, status
@@ -258,7 +258,7 @@ def test_dated_release_health_replaces_stale_catalogue_and_never_regresses(tmp_p
     assert not state.refresh_due("taifex", 4)
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 @pytest.mark.parametrize("body", [b"", b"bad csv", b"\xff"])
 def test_malformed_dated_report_never_submits_or_caches(tmp_path, monkeypatch, profile, body):
     runtime, source, feed = setup_runtime(tmp_path, monkeypatch, profile)
@@ -312,7 +312,7 @@ def test_official_report_layout_maps_sessions_and_skips_spreads():
     assert after_hours["settlement_price"] is None and after_hours["open_interest"] is None
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 @pytest.mark.parametrize("sessions", [(), ("盤後",)], ids=["closure", "after_hours_only"])
 def test_unpublished_official_report_stays_pending_and_uncached(
     tmp_path, monkeypatch, profile, sessions
@@ -340,7 +340,7 @@ def test_unpublished_official_report_stays_pending_and_uncached(
     runtime.close()
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 def test_concurrent_plan_after_dated_refresh_returns_frozen_members(tmp_path, monkeypatch, profile):
     runtime, source, feed = setup_runtime(tmp_path, monkeypatch, profile)
     reads = []

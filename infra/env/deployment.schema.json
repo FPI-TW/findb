@@ -12,7 +12,6 @@
         "RDS_DB_INSTANCE_IDENTIFIER"
       ],
       "defaults": {
-        "FULL_MARKET_ENABLED": "false",
         "AWS_PROMOTION_ROLE_ARN": "",
         "STAGING_AWS_ACCOUNT_ID": "",
         "STAGING_PROMOTION_READ_ROLE_ARN": "",
@@ -31,7 +30,6 @@
         "DEPLOY_BUNDLE_KMS_KEY_ARN"
       ],
       "defaults": {
-        "FULL_MARKET_ENABLED": "false",
         "AWS_PROMOTION_ROLE_ARN": "",
         "STAGING_AWS_ACCOUNT_ID": "",
         "STAGING_PROMOTION_READ_ROLE_ARN": "",

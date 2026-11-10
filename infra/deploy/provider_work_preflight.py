@@ -19,10 +19,6 @@ CONSUMERS = (
     ("findb-historical-finlab", "finlab", "historical", "finlab"),
     ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
-    ("findb-pilot-factset", "factset", "pilot", "factset"),
-    ("findb-pilot-finlab", "finlab", "pilot", "finlab"),
-    ("findb-pilot-taifex", "taifex", "pilot", "twelve_data"),
-    ("findb-pilot-twelve-data", "twelve_data", "pilot", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY

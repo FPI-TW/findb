@@ -88,20 +88,19 @@ async def seed(session, monkeypatch):
         next(item for item in DATASETS if item["dataset_key"] == "tw_futures_eod")
     )
     session.add(DatasetRegistry(**definition))
-    for profile in ("pilot", "full_market"):
-        key = f"{profile}_taifex_v1"
-        session.add(
-            SchedulerControl(
-                scheduler_key=key,
-                provider="taifex",
-                execution_profile=profile,
-                slot_id="taiwan_market_window",
-                timezone="Asia/Taipei",
-                desired_state="stopped",
-                observed_state="stopped",
-            )
+    key = "full_market_taifex_v1"
+    session.add(
+        SchedulerControl(
+            scheduler_key=key,
+            provider="taifex",
+            execution_profile="full_market",
+            slot_id="taiwan_market_window",
+            timezone="Asia/Taipei",
+            desired_state="stopped",
+            observed_state="stopped",
         )
-        session.add(SchedulerDataset(scheduler_key=key, dataset_key="tw_futures_eod"))
+    )
+    session.add(SchedulerDataset(scheduler_key=key, dataset_key="tw_futures_eod"))
     _, key = await create_source_client(
         session,
         name="taifex-historical",
@@ -341,7 +340,7 @@ async def test_queue_claim_allows_running_controls_and_keeps_frozen_close(
     path = f"/api/v1/source/historical-backfills/{item.item_id}/authorization"
     payload = {"lease_token": str(item.lease_token)}
     assert (await client.post(path, json=payload, headers=headers)).json()["acquisition_allowed"]
-    control = await test_session.get(SchedulerControl, "pilot_taifex_v1")
+    control = await test_session.get(SchedulerControl, "full_market_taifex_v1")
     control.desired_state = "running"
     await test_session.commit()
     assert (await client.post(path, json=payload, headers=headers)).json()[

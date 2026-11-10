@@ -62,7 +62,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             "release_tag": f"{unit}-v1.0.0" if target == "production" else "",
         }
         if unit == "fetcher":
-            manifest.update(runtime_profile="unified", fetcher_bundle_version=4)
+            manifest.update(runtime_profile="unified", fetcher_bundle_version=5)
         if target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": f"{unit}/accepted/{'a' * 40}/{'b' * 64}.tar",
@@ -78,62 +78,60 @@ class FullMarketDeploymentTests(unittest.TestCase):
         for target in ("staging", "production"):
             self.validate(self.manifest(target))
 
-    def test_every_runtime_mounts_writable_shared_governor_with_full_disabled(self):
+    def test_every_runtime_mounts_writable_shared_governor(self):
         source = (ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
         start = source.index("readiness_mount=()")
         end = source.index("\n{\n  # The official", start)
         mount_setup = source[start:end]
         for target in ("staging", "production"):
-            for enabled in ("false", "true"):
-                for retained in (False, True):
-                    with self.subTest(target=target, enabled=enabled, retained=retained):
-                        with tempfile.TemporaryDirectory() as directory:
-                            base = Path(directory)
-                            account_root = base / "account"
-                            account_dir = account_root / target
-                            readiness_dir = base / "readiness"
-                            ledger = account_dir / "governor.sqlite3"
-                            if retained:
-                                account_dir.mkdir(parents=True)
-                                ledger.write_bytes(b"retained pins, debt and cooldown")
-                            # Execute the actual shell setup on isolated host paths.
-                            # Only chown is recorded: this offline test is not root.
-                            setup = mount_setup.replace(
-                                "/var/lib/findb-account", str(account_root)
-                            ).replace("/etc/findb-full-market/readiness", str(readiness_dir))
-                            completed = subprocess.run(
-                                [
-                                    "bash",
-                                    "-c",
-                                    'set -euo pipefail\nsudo() { if [ "$1" = chown ]; then '
-                                    'printf "%s\\n" "$*" >&2; else "$@"; fi; }\n'
-                                    + setup
-                                    + '\nprintf "%s\\n" ${account_mount[@]+"${account_mount[@]}"}',
-                                ],
-                                env={
-                                    **script_env(),
-                                    "APP_ENVIRONMENT": target,
-                                    "FULL_MARKET_ENABLED": enabled,
-                                },
-                                capture_output=True,
-                                text=True,
-                                check=False,
+            for retained in (False, True):
+                with self.subTest(target=target, retained=retained):
+                    with tempfile.TemporaryDirectory() as directory:
+                        base = Path(directory)
+                        account_root = base / "account"
+                        account_dir = account_root / target
+                        readiness_dir = base / "readiness"
+                        ledger = account_dir / "governor.sqlite3"
+                        if retained:
+                            account_dir.mkdir(parents=True)
+                            ledger.write_bytes(b"retained pins, debt and cooldown")
+                        # Execute the actual shell setup on isolated host paths.
+                        # Only chown is recorded: this offline test is not root.
+                        setup = mount_setup.replace(
+                            "/var/lib/findb-account", str(account_root)
+                        ).replace("/etc/findb-full-market/readiness", str(readiness_dir))
+                        completed = subprocess.run(
+                            [
+                                "bash",
+                                "-c",
+                                'set -euo pipefail\nsudo() { if [ "$1" = chown ]; then '
+                                'printf "%s\\n" "$*" >&2; else "$@"; fi; }\n'
+                                + setup
+                                + '\nprintf "%s\\n" ${account_mount[@]+"${account_mount[@]}"}',
+                            ],
+                            env={
+                                **script_env(),
+                                "APP_ENVIRONMENT": target,
+                            },
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        self.assertEqual(completed.returncode, 0, completed.stderr)
+                        args = completed.stdout.splitlines()
+                        self.assertIn(f"type=bind,src={account_dir},dst={account_dir}", args)
+                        self.assertIn(
+                            f"type=bind,src={readiness_dir},dst={account_root}/readiness,readonly",
+                            args,
+                        )
+                        self.assertEqual(account_dir.stat().st_mode & 0o777, 0o700)
+                        self.assertIn(f"chown 10001:10001 {account_dir}", completed.stderr)
+                        if retained:
+                            self.assertEqual(
+                                ledger.read_bytes(), b"retained pins, debt and cooldown"
                             )
-                            self.assertEqual(completed.returncode, 0, completed.stderr)
-                            args = completed.stdout.splitlines()
-                            self.assertIn(f"type=bind,src={account_dir},dst={account_dir}", args)
-                            self.assertIn(
-                                f"type=bind,src={readiness_dir},dst={account_root}/readiness,readonly",
-                                args,
-                            )
-                            self.assertEqual(account_dir.stat().st_mode & 0o777, 0o700)
-                            self.assertIn(f"chown 10001:10001 {account_dir}", completed.stderr)
-                            if retained:
-                                self.assertEqual(
-                                    ledger.read_bytes(), b"retained pins, debt and cooldown"
-                                )
-                            else:
-                                self.assertFalse(ledger.exists())
+                        else:
+                            self.assertFalse(ledger.exists())
 
     def test_full_market_is_environment_bound_fetcher_only(self):
         good = self.manifest()
@@ -167,7 +165,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             ):
                 with self.subTest(target=target, profile=profile):
                     manifest = self.manifest(target)
-                    manifest["fetcher_bundle_version"] = 4
+                    manifest["fetcher_bundle_version"] = 5
                     manifest["runtime_profile"] = profile
                     with release.SourceBundleReader(ROOT) as sources:
                         contracts = sources.load_selected_contract_manifest(
@@ -327,12 +325,17 @@ class FullMarketDeploymentTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("release_root_invalid", completed.stderr)
 
-    def test_fixed_topology_installs_both_profiles_with_full_flag_off(self):
+    def test_fixed_topology_installs_only_full_market_and_historical(self):
         source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
-        self.assertIn("for execution_profile in pilot full_market; do", source)
         self.assertIn('for provider in "${providers[@]}"; do', source)
-        self.assertIn('findb-fetch-runtime --execution-profile "$execution_profile"', source)
-        self.assertNotIn('[ "$FULL_MARKET_ENABLED" =', source)
+        self.assertIn("findb-fetch-runtime --execution-profile full_market", source)
+        self.assertIn("for profile in full_market historical; do", source)
+        self.assertNotIn("execution-profile pilot", source)
+        self.assertNotIn("FULL_MARKET_ENABLED", source)
+        self.assertNotIn(
+            "FULL_MARKET_ENABLED",
+            (ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text(),
+        )
 
     def test_rollback_floor_rejects_legacy_runtime_profiles(self):
         for profile in (None, "bounded", "full-market"):
@@ -377,7 +380,7 @@ class InstallationReceiptTests(unittest.TestCase):
                 "source_requests_per_minute": 120,
                 "account": {
                     "governor_identity": "/account/governor.sqlite3",
-                    "consumers": ["full_market", "pilot", "historical", "maintenance"],
+                    "consumers": ["full_market", "historical", "maintenance"],
                 },
             }
             for name, value in (
@@ -395,13 +398,7 @@ class InstallationReceiptTests(unittest.TestCase):
             environment_fields = ["APP_ENVIRONMENT=staging"]
 
             def row(name):
-                consumer = (
-                    "historical"
-                    if "historical" in name
-                    else "full_market"
-                    if "full-market" in name
-                    else "pilot"
-                )
+                consumer = "historical" if "historical" in name else "full_market"
                 return {
                     "Id": consumer + "-container",
                     "Config": {
@@ -410,7 +407,6 @@ class InstallationReceiptTests(unittest.TestCase):
                         "Cmd": ["findb-fetch-full-market", "--config", "/installed/config"],
                         "Env": [
                             *environment_fields,
-                            "FULL_MARKET_ENABLED=true",
                             "FETCHER_ACCOUNT_STATE_PATH=/account/governor.sqlite3",
                             "FETCHER_CONSUMER_PROFILE=" + consumer,
                             "SOURCE_CLIENT_KEY=private-key",
@@ -457,7 +453,8 @@ class InstallationReceiptTests(unittest.TestCase):
                 receipt["source_key_sha256"], hashlib.sha256(b"private-key").hexdigest()
             )
             self.assertNotIn("private-key", json.dumps(receipt))
-            self.assertEqual(len(calls), 8)  # Both allocations plus actual config, twice.
+            self.assertEqual(len(calls), 6)  # Both allocations plus actual config, twice.
+            self.assertEqual(receipt["consumers"], ["full_market", "historical", "maintenance"])
             environment_fields[:] = ["DEPLOYMENT_TARGET=staging"]
             with (
                 patch.object(inspection, "inspect", side_effect=row),

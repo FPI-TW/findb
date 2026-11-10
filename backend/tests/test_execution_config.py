@@ -29,12 +29,11 @@ async def credential(db, provider="finlab", datasets=None):
     )
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
 @pytest.mark.parametrize(
     "provider,count", [("finlab", 2), ("twelve_data", 1), ("factset", 1), ("taifex", 1)]
 )
 async def test_publication_is_credential_scoped_and_independent_of_running(
-    client, test_session, monkeypatch, provider, count, profile
+    client, test_session, monkeypatch, provider, count
 ):
     await seed_datasets(test_session)
     before = [
@@ -46,7 +45,9 @@ async def test_publication_is_credential_scoped_and_independent_of_running(
         feed_schedule, "get_settings", lambda: SimpleNamespace(APP_ENVIRONMENT="staging")
     )
     response = await client.get(
-        URL, params={"execution_profile": profile, "schema_version": 1}, headers={"X-API-Key": key}
+        URL,
+        params={"execution_profile": "full_market", "schema_version": 1},
+        headers={"X-API-Key": key},
     )
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
@@ -54,7 +55,7 @@ async def test_publication_is_credential_scoped_and_independent_of_running(
     assert (body["provider"], body["environment"], body["execution_profile"]) == (
         provider,
         "staging",
-        profile,
+        "full_market",
     )
     assert len(body["feeds"]) == count
     assert all(f["provider"] == provider for f in body["feeds"])
@@ -73,13 +74,15 @@ async def test_publication_is_credential_scoped_and_independent_of_running(
 
 async def test_subset_does_not_publish_sibling_and_has_complete_snapshot(client, test_session):
     row, key = await credential(test_session, datasets=["tw_etf_eod"])
-    first = await client.get(URL, params={"execution_profile": "pilot"}, headers={"X-API-Key": key})
+    first = await client.get(
+        URL, params={"execution_profile": "full_market"}, headers={"X-API-Key": key}
+    )
     assert first.status_code == 200
     assert [f["dataset_key"] for f in first.json()["feeds"]] == ["tw_etf_eod"]
     row.allowed_datasets = ["tw_equity_eod"]
     await test_session.commit()
     second = await client.get(
-        URL, params={"execution_profile": "pilot"}, headers={"X-API-Key": key}
+        URL, params={"execution_profile": "full_market"}, headers={"X-API-Key": key}
     )
     assert second.status_code == 200
     assert [f["dataset_key"] for f in second.json()["feeds"]] == ["tw_equity_eod"]
@@ -94,7 +97,7 @@ async def test_malformed_or_stale_db_scope_fails_closed(client, test_session, sc
     row.allowed_datasets = scope
     await test_session.commit()
     response = await client.get(
-        URL, params={"execution_profile": "pilot"}, headers={"X-API-Key": key}
+        URL, params={"execution_profile": "full_market"}, headers={"X-API-Key": key}
     )
     assert response.status_code == 403
 
@@ -104,9 +107,10 @@ async def test_malformed_or_stale_db_scope_fails_closed(client, test_session, sc
     [
         {},
         {"execution_profile": "historical"},
-        {"execution_profile": "pilot", "schema_version": 2},
-        {"execution_profile": "pilot", "provider": "factset"},
-        {"execution_profile": "pilot", "environment": "production"},
+        {"execution_profile": "pilot"},
+        {"execution_profile": "full_market", "schema_version": 2},
+        {"execution_profile": "full_market", "provider": "factset"},
+        {"execution_profile": "full_market", "environment": "production"},
     ],
 )
 async def test_query_cannot_override_identity_or_version(client, test_session, params):
@@ -116,29 +120,27 @@ async def test_query_cannot_override_identity_or_version(client, test_session, p
 
 
 async def test_auth_required_and_revoked_key_rejected(client, test_session):
-    assert (await client.get(URL, params={"execution_profile": "pilot"})).status_code == 401
+    assert (await client.get(URL, params={"execution_profile": "full_market"})).status_code == 401
     row, key = await credential(test_session)
     row.revoked_at = datetime.now(timezone.utc)
     await test_session.commit()
     assert (
-        await client.get(URL, params={"execution_profile": "pilot"}, headers={"X-API-Key": key})
+        await client.get(
+            URL, params={"execution_profile": "full_market"}, headers={"X-API-Key": key}
+        )
     ).status_code == 403
 
 
 @pytest.mark.parametrize("environment", ["local", "staging", "production"])
-def test_digest_binds_environment_and_profile(monkeypatch, environment):
+def test_digest_binds_environment(monkeypatch, environment):
     monkeypatch.setattr(
         feed_schedule, "get_settings", lambda: SimpleNamespace(APP_ENVIRONMENT=environment)
     )
-    first = execution_config("twelve_data", ["us_equity_eod"], "pilot")
+    first = execution_config("twelve_data", ["us_equity_eod"], "full_market")
     assert first.environment == environment
     assert (
         first.schedule_digest
-        == execution_config("twelve_data", ["us_equity_eod"], "pilot").schedule_digest
-    )
-    assert (
-        first.schedule_digest
-        != execution_config("twelve_data", ["us_equity_eod"], "full_market").schedule_digest
+        == execution_config("twelve_data", ["us_equity_eod"], "full_market").schedule_digest
     )
 
 
@@ -185,12 +187,12 @@ def test_completion_and_bounded_deadlines_are_independent():
 def test_schedule_change_changes_snapshot_but_slot_does_not(monkeypatch):
     catalog = provider_metadata.provider_catalog().model_copy(deep=True)
     monkeypatch.setattr(provider_metadata, "provider_catalog", lambda: catalog)
-    before = execution_config("twelve_data", ["us_equity_eod"], "pilot")
+    before = execution_config("twelve_data", ["us_equity_eod"], "full_market")
     feed = next(f for f in catalog.feeds if f.provider == "twelve_data")
     feed.delivery.slot_id = "taiwan_market_window"
-    assert execution_config("twelve_data", ["us_equity_eod"], "pilot") == before
+    assert execution_config("twelve_data", ["us_equity_eod"], "full_market") == before
     feed.schedule.local_time = "18:00"
-    after = execution_config("twelve_data", ["us_equity_eod"], "pilot")
+    after = execution_config("twelve_data", ["us_equity_eod"], "full_market")
     assert after.schedule_digest != before.schedule_digest
     assert after.feeds[0].scheduled_time == "18:00"
 
@@ -215,8 +217,8 @@ async def test_admin_feed_projection_uses_same_resolver(client, admin_headers, t
     assert response.status_code == 200
     rows = response.json()["data"]
     for provider in ("finlab", "factset", "twelve_data", "taifex"):
-        row = next(r for r in rows if r["scheduler_key"] == f"pilot_{provider}_v1")
-        expected = execution_config(provider, row["dataset_keys"], "pilot")
+        row = next(r for r in rows if r["scheduler_key"] == f"full_market_{provider}_v1")
+        expected = execution_config(provider, row["dataset_keys"], "full_market")
         assert [
             {k: v for k, v in f.items() if k != "next_scheduled_at"} for f in row["feed_schedules"]
         ] == [f.model_dump(mode="json") for f in expected.feeds]
@@ -242,12 +244,12 @@ async def test_unavailable_schedule_does_not_return_partial_or_stale_snapshot(
     _, key = await credential(test_session)
     headers = {"X-API-Key": key}
     assert (
-        await client.get(URL, params={"execution_profile": "pilot"}, headers=headers)
+        await client.get(URL, params={"execution_profile": "full_market"}, headers=headers)
     ).status_code == 200
     catalog = provider_metadata.provider_catalog().model_copy(deep=True)
     catalog.feeds = [f for f in catalog.feeds if f.dataset_key != "tw_etf_eod"]
     monkeypatch.setattr(provider_metadata, "provider_catalog", lambda: catalog)
-    response = await client.get(URL, params={"execution_profile": "pilot"}, headers=headers)
+    response = await client.get(URL, params={"execution_profile": "full_market"}, headers=headers)
     assert response.status_code == 503
     assert response.json() == {"detail": "Execution configuration unavailable"}
 

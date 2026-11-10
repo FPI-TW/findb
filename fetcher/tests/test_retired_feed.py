@@ -11,7 +11,7 @@ from test_full_market import _plan, _runtime
 
 
 def _retired_runtime(
-    tmp_path, monkeypatch, *, profile="pilot", state="open", scope=None, kind="daily"
+    tmp_path, monkeypatch, *, profile="full_market", state="open", scope=None, kind="daily"
 ):
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(tmp_path / "account.sqlite3"))
     runtime, source, _ = _runtime(tmp_path, execution_profile=profile)
@@ -64,7 +64,7 @@ def _retired_runtime(
     return runtime, work, bodies, events, settlements
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 @pytest.mark.parametrize("state", ["open", "closed"])
 @pytest.mark.parametrize(
     "scope", [{"legacy_id": "original-plan"}, {"feed": {"dataset_key": "hk_equity_eod"}}]
