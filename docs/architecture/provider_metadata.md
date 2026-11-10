@@ -36,7 +36,10 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   `market`／`calendar_market` 都必須在其中，`schedule.timezone` 必須與之相同（`test_provider_catalog.py`）。
   Full-market admission／acceptance、historical provider cutoff、FactSet 窗口、HK cutover 與 seed
   delivery expectation 都引用這份對照。
-- `delivery.slot_id` 只表示既有 contract 相容欄位，不能作為時鐘或新 acquisition 權威。
+- `delivery.slot_id` 只表示既有 contract 相容欄位與 Dashboard 區域分組，不能作為時鐘或新 acquisition
+  權威。Seed 的 delivery expectation 與 `scheduler_control` 的 slot、時鐘、時區都由 catalog 投影
+  （`seed_datasets` 會更新現役 control 的 slot），既有列由 migration `c3f6a9d1e2b7` 投影一次；
+  `test_catalog_slot_migration.py` 強制 seed、frozen migration 與 catalog 一致。
 - Historical execution profiles 保留現行 local／staging／production 的靜態 universe reference 與 executor
   預設值，不包含觸發時間。這些是打包預設，不是 DB request、operator overrides 或即時授權。
 
@@ -111,8 +114,8 @@ Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。
 - **Image reference 環境變數**：`TWELVE_IMAGE_REF`／`FINLAB_IMAGE_REF`／`FACTSET_IMAGE_REF` 是 workflow、
   release manifest 與 deployment transaction 的介面；腳本只保留 image key→變數的單一對照，未知 image key
   fail closed。改名須與 workflow 同步發布。
-- **Seed-only 欄位**：名稱、說明、currency、delivery expectation 的 mode／門檻／slot 與時鐘（排程投影由
-  #368 處理）、`full_market` gate、staged datasets 的 `is_active` 由 operator 管理，以及無 catalog feed
+- **Seed-only 欄位**：名稱、說明、currency、delivery expectation 的 mode／門檻（slot、時鐘、時區與
+  lag 由 catalog 投影）、`full_market` gate、staged datasets 的 `is_active` 由 operator 管理，以及無 catalog feed
   的保留分 K datasets。`SUPPORTED_DATASETS` 是 registry provisioning 的獨立預期，不由 seed 自身推導。
 
 ## Backend 排程發布
