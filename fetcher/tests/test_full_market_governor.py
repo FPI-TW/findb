@@ -1072,7 +1072,7 @@ def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, mo
         member.update(
             session=row["session"], member_key=row["contract_code"] + ":" + row["session"]
         )
-    runtime.futures[day.isoformat()] = (raw, rows, False)
+    runtime.adapter.reports[day.isoformat()] = (raw, rows, False)
     calls = []
 
     def poll(**kwargs):

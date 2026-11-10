@@ -1223,7 +1223,7 @@ def test_taifex_all_missing_metrics_require_explicit_zero_volume_for_no_trade(
     report = canonical_bytes([source_row])
     parsed = parse_report(report, target_date=date(2026, 10, 1))[0]
     # Pin an already acquired report; no live provider operation is needed.
-    runtime.futures["2026-10-01"] = (report, [parsed], False)
+    runtime.adapter.reports["2026-10-01"] = (report, [parsed], False)
     member = {
         **report_members([parsed])[0],
         "session": "regular",

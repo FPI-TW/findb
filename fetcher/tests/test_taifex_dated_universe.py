@@ -132,11 +132,11 @@ def test_new_exact_date_release_and_concurrent_freeze(tmp_path, monkeypatch, pro
         return plan(profile)
 
     source.plan = create
-    runtime._dated_taifex_universe = lambda *a: {"release_id": "dated"}
+    runtime._dated_universe = lambda *a: {"release_id": "dated"}
     assert runtime._plan_for_date(feed, DAY) == plan(profile)
     assert [c["release_id"] for c in calls] == ["old", "dated"]
     source.plans_for_date = lambda **kw: {"data": [plan(profile)]}
-    runtime._dated_taifex_universe = lambda *a: pytest.fail("frozen plan refresh")
+    runtime._dated_universe = lambda *a: pytest.fail("frozen plan refresh")
     assert runtime._plan_for_date(feed, DAY) == plan(profile)
     assert len(calls) == 2
     runtime.close()
@@ -217,9 +217,9 @@ def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
     source.submit = submit
     if status == "candidate":
         with pytest.raises(DatedUniversePendingError, match="dated_universe_pending"):
-            runtime._dated_taifex_universe(feed, DAY)
+            runtime._dated_universe(feed, DAY)
     else:
-        assert runtime._dated_taifex_universe(feed, DAY)["release_id"] == "dated"
+        assert runtime._dated_universe(feed, DAY)["release_id"] == "dated"
     assert requests == ["TX", "MTX", "TMF", "TE", "TF"]
     assert scopes and set(scopes) == {"tw_futures_eod"}
     assert {m["contract_code"] for m in submitted[0]["members"]} == {
@@ -236,7 +236,9 @@ def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
     assert [(r["release_id"], r["status"], r["effective_date"]) for r in refresh] == [
         ("dated", status, str(DAY))
     ]
-    runtime._taifex_report(DAY, feed["dataset_key"])
+    runtime.adapter.report(
+        DAY, runtime._provider_context(feed["dataset_key"], DAY, feed, delivery={})
+    )
     assert len(requests) == 5
     runtime.close()
 
@@ -325,8 +327,8 @@ def test_malformed_dated_report_never_submits_or_caches(tmp_path, monkeypatch, p
     )
     source.submit = lambda *a: pytest.fail("invalid report must not publish")
     with pytest.raises(DatedUniversePendingError, match="dated_report_unavailable"):
-        runtime._dated_taifex_universe(feed, DAY)
-    assert str(DAY) not in runtime.futures
+        runtime._dated_universe(feed, DAY)
+    assert str(DAY) not in runtime.adapter.reports
     runtime.close()
 
 
@@ -389,8 +391,8 @@ def test_unpublished_official_report_stays_pending_and_uncached(
     )
     source.submit = lambda *a: pytest.fail("unpublished report must not publish membership")
     with pytest.raises(DatedUniversePendingError, match="dated_report_unavailable"):
-        runtime._dated_taifex_universe(feed, DAY)
-    assert str(DAY) not in runtime.futures
+        runtime._dated_universe(feed, DAY)
+    assert str(DAY) not in runtime.adapter.reports
     runtime.close()
 
 
@@ -407,7 +409,7 @@ def test_concurrent_plan_after_dated_refresh_returns_frozen_members(tmp_path, mo
     source.plan = lambda **kw: (_ for _ in ()).throw(
         FullMarketProtocolError("conflict", status_code=409, code=CODE)
     )
-    runtime._dated_taifex_universe = lambda *a: {"release_id": "dated"}
+    runtime._dated_universe = lambda *a: {"release_id": "dated"}
     assert runtime._plan_for_date(feed, DAY) == plan(profile)
     assert len(reads) == 3
     runtime.close()
