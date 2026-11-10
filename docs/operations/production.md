@@ -5,6 +5,13 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
+## Provider catalog PR5 發布（2026-11-10）
+
+Production FinDB 為 `findb-v0.1.24`（`8104e48af631821a9c82a2e2ccb7b5d31b761eae`），Fetcher 維持
+`fetcher-v0.1.28`（`d86b633aae3ac83cdb0ab1f789057d16d28b1f2c`）。DB revision 為 `e9f4a1c6b3d5`，
+此版為 Backend rollback 下限，downgrade 拒絕。八個現役 controls 均為 stopped，待 Owner 恢復。
+證據與未驗證項目見 [PR5 production 發布與唯讀驗收](deployment.md#pr5-production-發布與唯讀驗收)。
+
 ## Fetcher inventory 複查（2026-11-10）
 
 Production Fetcher 全量 Docker inventory 為十二個現役 consumers，沒有 `provider-work-backup-*`

@@ -17,8 +17,8 @@
   #425 已合併恢復檢查的 SSM 往返，暖快取部署腳本增量為 FinDB 261 秒、Fetcher 236 秒
   （另扣 184 秒 FinDB wait），兩者各取得 1/5 筆合格樣本。仍須累積真實應用程式增量；
   不以空 commit 或 replay 補足。Production 首輪已成功 promotion：FinDB 237 秒、Fetcher 306 秒，
-  已扣 verify，Fetcher 在 FinDB 完成後才 dispatch。Production 合格樣本為 1/5、0/5，
-  Fetcher 超標 6 秒的樣本保留；後續量測 promotion 初始化／digest 複製，不減少健康檢查。
+  已扣 verify，Fetcher 在 FinDB 完成後才 dispatch。其後 FinDB 229／245／240 秒、
+  Fetcher 280 秒，production 合格樣本為 FinDB 4/5、Fetcher 1/5，Fetcher 首輪超標 6 秒的樣本保留；後續量測 promotion 初始化／digest 複製，不減少健康檢查。
   逐步量測與限制見操作文件。
 
 ## 延後：平台強化
@@ -53,13 +53,15 @@ Production native 資料與實際 rollback 演練由
 追蹤 [#399](https://github.com/FPI-TW/findb/issues/399)／[#368](https://github.com/FPI-TW/findb/issues/368)。
 PR1～4 已通過 staging／production 發布相容性驗收；PR5 已實作 DB preflight／migration、
 監控期限統一及 Dashboard market 分組。現行契約見 [provider metadata](../architecture/provider_metadata.md)，
-發布分組與證據見 [部署](../operations/deployment.md)。PR5 尚未部署 production。
+發布分組與證據見 [部署](../operations/deployment.md)。PR5 已依 Owner 決定先行發布 production
+`findb-v0.1.24`，migration 與 Admin 唯讀驗收通過；staging 驗收仍未執行。
 
 - [ ] PR3＋4 FactSet native 終態驗收依 Owner 指示暫不執行；已建立的 request 保留。Twelve Data、
   FinLab、TAIFEX、planner、daily 動態快照與 bundle 驗收已完成，證據與恢復核對方式見
   [staging 整合驗收](../operations/deployment.md)。
-- [ ] PR5 staging 發布後驗證實際 migration／UI，再另行安排 production promotion；每次發布重跑
-  唯讀 preflight，未知差異中止，不自動啟用 stopped controls。
+- [ ] PR5 staging 驗證實際 migration／UI；production 尚需確認 Dashboard 市場分組與無 Slot 標示、
+  新 plan 採 catalog deadline 及 slot ingress 相容性。每次發布重跑唯讀 preflight，未知差異中止，
+  不自動啟用 stopped controls；controls 由 Owner 恢復。
 - [ ] Slot 契約與 DB 欄位另以 expand／contract PR 退役；保留舊 raw／prepared／checkpoint 證據。
 
 ## TAIFEX 正式上線
