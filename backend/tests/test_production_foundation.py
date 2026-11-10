@@ -1,5 +1,6 @@
 """Structural regression checks for the Production AWS foundation."""
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -111,6 +112,13 @@ def test_production_alert_topic_key_lets_only_own_alarms_publish() -> None:
     assert "cloudwatch.amazonaws.com" not in shared
 
 
+def _hcl_attribute(source: str, name: str) -> str | None:
+    # `tofu fmt` realigns `=` whenever a longer attribute is added, so match the
+    # attribute name and value instead of the aligned text.
+    match = re.search(rf"^\s*{name}\s*=\s*(.+?)\s*$", source, re.MULTILINE)
+    return match.group(1) if match else None
+
+
 def test_production_backend_pins_the_state_kms_key_required_by_the_bucket_policy() -> None:
     backend = (REPO_ROOT / "infra/tofu/production/backend.tf").read_text(encoding="utf-8")
     bootstrap = (REPO_ROOT / "infra/tofu/production-bootstrap/main.tf").read_text(encoding="utf-8")
@@ -118,15 +126,24 @@ def test_production_backend_pins_the_state_kms_key_required_by_the_bucket_policy
     # The bucket policy denies any PutObject (state and lockfile) whose SSE-KMS
     # key id is not the state key, so a plain `init` must already carry it.
     assert 'variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"' in bootstrap
-    assert 'bucket       = "findb-production-tofu-state-289112218471"' in backend
-    assert 'key          = "production/control-plane.tfstate"' in backend
-    assert "encrypt      = true" in backend
-    assert (
-        'kms_key_id   = "arn:aws:kms:ap-southeast-1:289112218471:key/'
-        'be629e7b-7540-4f6f-9818-a0b8f2d7bddc"'
-    ) in backend
-    assert "use_lockfile = true" in backend
-    assert "dynamodb_table" not in backend
+    assert _hcl_attribute(backend, "bucket") == '"findb-production-tofu-state-289112218471"'
+    assert _hcl_attribute(backend, "key") == '"production/control-plane.tfstate"'
+    assert _hcl_attribute(backend, "region") == '"ap-southeast-1"'
+    assert _hcl_attribute(backend, "encrypt") == "true"
+    assert _hcl_attribute(backend, "kms_key_id") == (
+        '"arn:aws:kms:ap-southeast-1:289112218471:key/be629e7b-7540-4f6f-9818-a0b8f2d7bddc"'
+    )
+    assert _hcl_attribute(backend, "use_lockfile") == "true"
+    assert _hcl_attribute(backend, "dynamodb_table") is None
+
+
+def test_production_bootstrap_init_output_does_not_override_the_pinned_backend() -> None:
+    outputs = (REPO_ROOT / "infra/tofu/production-bootstrap/outputs.tf").read_text(encoding="utf-8")
+
+    init_output = outputs.split('output "backend_init_command"', 1)[1].split("\n}\n", 1)[0]
+    assert _hcl_attribute(init_output, "value") == (
+        '"tofu -chdir=infra/tofu/production init -reconfigure"'
+    )
 
 
 def test_production_rollback_replays_acceptance_without_rerunning_ci() -> None:
