@@ -1764,7 +1764,7 @@ class FullMarketRuntime:
                     plan["plan_id"],
                     work_item_id=part["work_item_id"],
                     member_key=member_key,
-                    reason="empty_response" if exc.code == "missing_symbol" else "source_error",
+                    reason="empty_response" if exc.absent else "source_error",
                 )
                 self.state.finish(key, status="manual", reason="member_unavailable")
                 self._record_diagnostic(key, exc)
@@ -2017,13 +2017,19 @@ class FullMarketRuntime:
             "target_data_date": day.isoformat(),
             "work_item_id": part["work_item_id"],
         }
-        return self._provider_context(
-            plan["dataset_key"],
-            day,
-            feed,
-            delivery=delivery,
-            fetched_at=now,
-            cohort=release.get("members"),
+        effective = release.get("effective_date")
+        return replace(
+            self._provider_context(
+                plan["dataset_key"],
+                day,
+                feed,
+                delivery=delivery,
+                fetched_at=now,
+                cohort=release.get("members"),
+            ),
+            universe_effective_date=date.fromisoformat(effective)
+            if isinstance(effective, str)
+            else None,
         )
 
     def _provider_context(

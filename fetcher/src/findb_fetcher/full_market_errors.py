@@ -4,16 +4,7 @@ from __future__ import annotations
 
 
 class ReadinessBlockedError(RuntimeError):
-    # True only when the failure concerns one member's provider identity, never the
-    # shared provider response; the class and message stay those of the daily path.
-    member_scoped = False
-
-
-def member_identity_error(message: str) -> ReadinessBlockedError:
-    """A provider identity that differs from the frozen member, for that member only."""
-    error = ReadinessBlockedError(message)
-    error.member_scoped = True
-    return error
+    pass
 
 
 class ProviderHTTPError(ReadinessBlockedError):
@@ -29,12 +20,25 @@ class MemberUnavailableError(RuntimeError):
     """One member cannot be delivered while the shared provider response is sound.
 
     ``code`` is a bounded class (never a provider message); the member is blocked
-    for this plan and the round continues with the other members.
+    for this plan and the round continues with the other members:
+
+    - ``missing_symbol`` / ``missing_contract``: the provider response has no row for it
+      (Source outcome ``empty_response``);
+    - ``identity_mismatch``, ``no_observation`` or a mapper class: its row is unusable
+      (Source outcome ``source_error``).
     """
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+    @property
+    def absent(self) -> bool:
+        """The provider served no row for the member, rather than an unusable one."""
+        return self.code in ABSENT_MEMBER_CODES
+
+
+ABSENT_MEMBER_CODES = frozenset({"missing_symbol", "missing_contract"})
 
 
 class DatedUniversePendingError(ReadinessBlockedError):

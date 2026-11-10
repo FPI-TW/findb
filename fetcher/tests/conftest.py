@@ -70,6 +70,7 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         "test_full_market.py",
         "test_provider_adapter_golden.py",
         "test_provider_universe_golden.py",
+        "test_member_scoped_errors.py",
         "test_full_market_governor.py",
         "test_full_market_finlab_rate.py",
         "test_daily_runtime_policy.py",
