@@ -2085,6 +2085,55 @@ def test_findb_candidate_cleanup_surfaces_a_docker_stop_failure(tmp_path: Path) 
     assert "candidate_cleanup_failed" in result.stderr
 
 
+def test_findb_candidate_cleanup_existence_check_survives_large_listing(tmp_path: Path) -> None:
+    # A first-line match with a long tail is where `printf | grep -q` under
+    # pipefail can report SIGPIPE as "not found" and silently skip a container.
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
+        encoding="utf-8"
+    )
+    cleanup_start = helper.index("fixed_candidate_containers=(")
+    cleanup_end = helper.index("\ncleanup_unaccepted_candidate()", cleanup_start)
+    cleanup = helper[cleanup_start:cleanup_end]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'case "$1" in\n'
+        "  ps) printf '%s\\n' findb-nginx; seq -f 'unrelated-container-%g' 1 200000 ;;\n"
+        "  inspect) printf '%s\\n' 'running true false' ;;\n"
+        "  stop) exit 71 ;;\n"
+        "  *) exit 72 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", f"set -euo pipefail\n{cleanup}\nstop_fixed_candidate_containers"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**script_env(), "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+    assert result.returncode != 0
+    assert "candidate_cleanup_docker_stop_failed container=findb-nginx" in result.stderr
+    assert "container=findb-dashboard" not in result.stderr
+
+
+def test_deploy_shell_scripts_do_not_pipe_into_quiet_grep() -> None:
+    # `grep -q` exits on the first match; under pipefail the producer's SIGPIPE
+    # turns a hit into a miss. Match against a captured value instead.
+    quiet_pipe = re.compile(r"(?<!\|)\|(?!\|)\s*grep\s+-[A-Za-z]*q")
+    offenders = [
+        f"{path.relative_to(REPO_ROOT)}:{number}"
+        for path in sorted((REPO_ROOT / "infra/deploy").rglob("*.sh"))
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if quiet_pipe.search(line) and not line.lstrip().startswith("#")
+    ]
+    assert offenders == []
+
+
 def test_findb_nginx_replacement_shell_contract_is_verified_and_fail_closed(tmp_path: Path) -> None:
     deploy = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_findb_aws.sh").read_text(
         encoding="utf-8"

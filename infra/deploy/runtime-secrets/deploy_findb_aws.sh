@@ -45,8 +45,8 @@ expected_findb_image="$expected_ecr_registry/findb/$APP_ENVIRONMENT/backend@sha2
 expected_dashboard_image="$expected_ecr_registry/findb/$APP_ENVIRONMENT/dashboard@sha256:"
 
 if [ "$ECR_REGISTRY" != "$expected_ecr_registry" ] \
-  || ! printf '%s' "$FINDB_IMAGE_REF" | grep -Eq "^${expected_findb_image}[0-9a-f]{64}$" \
-  || ! printf '%s' "$DASHBOARD_IMAGE_REF" | grep -Eq "^${expected_dashboard_image}[0-9a-f]{64}$"; then
+  || ! grep -Eq "^${expected_findb_image}[0-9a-f]{64}$" <<<"$FINDB_IMAGE_REF" \
+  || ! grep -Eq "^${expected_dashboard_image}[0-9a-f]{64}$" <<<"$DASHBOARD_IMAGE_REF"; then
   echo "findb_aws_deploy=failed reason=ecr_image_contract" >&2
   exit 1
 fi
@@ -94,7 +94,9 @@ stop_fixed_candidate_containers() {
     # A container that has not been created cannot be active; Docker itself
     # was successfully queried above, so this is distinct from an inspection
     # failure that must fail the transaction.
-    if ! printf '%s\n' "$names" | grep -Fxq "$container"; then
+    # Match a captured value: a quiet grep fed by a pipe can lose the race to
+    # SIGPIPE under pipefail and silently skip an existing container.
+    if ! grep -Fxq -- "$container" <<<"$names"; then
       continue
     fi
     if ! state="$(docker inspect --format '{{.State.Status}} {{.State.Running}} {{.State.Restarting}}' "$container")"; then
@@ -383,7 +385,8 @@ fi
 for service in dispatcher worker; do
   ready=0
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    if docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps --status running --services </dev/null | grep -qx "$service"; then
+    running_services="$(docker compose -f "$compose_file" ${FINDB_TRANSACTION_COMPOSE_FILE:+-f "$FINDB_TRANSACTION_COMPOSE_FILE"} ps --status running --services </dev/null || true)"
+    if grep -Fxq -- "$service" <<<"$running_services"; then
       ready=1
       break
     fi

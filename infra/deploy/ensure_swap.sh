@@ -9,7 +9,9 @@ swap=/swapfile
 size_bytes=4294967296
 
 active() {
-  swapon --show=NAME --noheadings | grep -qx "$swap"
+  local names
+  names="$(swapon --show=NAME --noheadings)"
+  grep -Fxq -- "$swap" <<<"$names"
 }
 
 if ! active; then

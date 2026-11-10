@@ -34,8 +34,8 @@ esac
 
 if [ "$AWS_REGION" != "ap-southeast-1" ] \
   || [ "$GITHUB_REF" != "refs/heads/main" ] \
-  || ! printf '%s' "$GITHUB_SHA" | grep -Eq '^[0-9a-f]{40}$' \
-  || ! printf '%s' "$image_tag" | grep -Eq '^[0-9a-f]{40}$' \
+  || ! grep -Eq '^[0-9a-f]{40}$' <<<"$GITHUB_SHA" \
+  || ! grep -Eq '^[0-9a-f]{40}$' <<<"$image_tag" \
   || { [ "$reuse_only" = "false" ] && [ "$image_tag" != "$GITHUB_SHA" ]; } \
   || { [ "$reuse_only" != "true" ] && [ "$reuse_only" != "false" ]; }; then
   echo "staging_ecr_build=failed reason=publisher_identity_or_sha_contract" >&2
@@ -72,7 +72,7 @@ trap 'rm -f -- "$error_file" "$hex_file" "$digest_file" "$digest_value_file"' EX
 
 write_outputs() {
   local digest="$1"
-  if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+  if ! grep -Eq '^sha256:[0-9a-f]{64}$' <<<"$digest"; then
     echo "staging_ecr_build=failed reason=ecr_digest_invalid repository=$repository_name" >&2
     exit 1
   fi
@@ -120,7 +120,7 @@ read_exact_digest() {
     return 1
   fi
   value="$(<"$digest_value_file")"
-  if ! printf '%s' "$value" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+  if ! grep -Eq '^sha256:[0-9a-f]{64}$' <<<"$value"; then
     return 1
   fi
   printf '%s\n' "$value"

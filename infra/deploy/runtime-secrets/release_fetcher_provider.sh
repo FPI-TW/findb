@@ -133,7 +133,7 @@ if [ "${ECR_REGISTRY:-}" != "${AWS_ACCOUNT_ID:-}.dkr.ecr.ap-southeast-1.amazonaw
 fi
 expected_image_repository="$ECR_REGISTRY/findb/$APP_ENVIRONMENT/fetcher/$image_repository_suffix"
 
-if ! printf '%s' "$image" | grep -Eq "^${expected_image_repository}@sha256:[0-9a-f]{64}$"; then
+if ! grep -Eq "^${expected_image_repository}@sha256:[0-9a-f]{64}$" <<<"$image"; then
   echo "release_fetcher_provider=failed reason=ecr_image_contract" >&2
   exit 1
 fi
@@ -152,12 +152,12 @@ require_value r2_bucket "${CLOUDFLARE_R2_RAW_BUCKET:-}"
 require_value r2_access_key "${CLOUDFLARE_R2_RAW_ACCESS_KEY_ID:-}"
 require_value r2_secret_key "${CLOUDFLARE_R2_RAW_SECRET_ACCESS_KEY:-}"
 
-if ! printf '%s' "$CLOUDFLARE_R2_ACCOUNT_ID" | grep -Eq '^[0-9a-f]{32}$'; then
+if ! grep -Eq '^[0-9a-f]{32}$' <<<"$CLOUDFLARE_R2_ACCOUNT_ID"; then
   echo "release_fetcher_provider=failed reason=r2_account_invalid" >&2
   exit 1
 fi
-if ! printf '%s' "$CLOUDFLARE_R2_RAW_BUCKET" | grep -Eq '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$' \
-  || printf '%s' "$CLOUDFLARE_R2_RAW_BUCKET" | grep -Eq '^([0-9]{1,3}[.]){3}[0-9]{1,3}$'; then
+if ! grep -Eq '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$' <<<"$CLOUDFLARE_R2_RAW_BUCKET" \
+  || grep -Eq '^([0-9]{1,3}[.]){3}[0-9]{1,3}$' <<<"$CLOUDFLARE_R2_RAW_BUCKET"; then
   echo "release_fetcher_provider=failed reason=r2_bucket_invalid" >&2
   exit 1
 fi
@@ -327,7 +327,8 @@ fi
 # terminal marker remains visible. Failures still retain stderr and exit status.
 if [ "${FETCHER_IMAGES_PREPARED:-false}" = true ]; then
   # A coordinator hint never authorizes a missing or substituted image.
-  docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq "$image"
+  image_digests="$(docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}')"
+  grep -Fxq -- "$image" <<<"$image_digests"
 else
   docker pull "$image" >/dev/null
 fi
