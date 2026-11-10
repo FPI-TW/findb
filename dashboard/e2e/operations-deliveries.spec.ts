@@ -152,7 +152,7 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
   )
   await expect(page.getByRole("tab", { name: "缺漏告警" })).toBeFocused()
   await page
-    .getByRole("button", { name: "帶入 tw_equity_minute 2026-10-07 回補參數" })
+    .getByRole("button", { name: "帶入 tw_equity_eod 2026-10-07 回補參數" })
     .click()
   await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
   await page.getByLabel("回補結束日期").fill("2026-10-08")
@@ -311,7 +311,7 @@ test("viewer deep links cannot expose historical backfill and tab keyboard navig
   )
   await expect(
     page.getByRole("table", { name: "未解決的交付缺漏" })
-  ).toContainText("tw_equity_minute")
+  ).toContainText("tw_equity_eod")
   await expect(
     page.getByRole("button", { name: /帶入.*回補參數/ })
   ).toHaveCount(0)
@@ -334,13 +334,11 @@ for (const role of ["operator", "owner"]) {
     await page.getByRole("tab", { name: "缺漏告警" }).click()
     await page
       .getByRole("button", {
-        name: "帶入 tw_equity_minute 2026-10-07 回補參數",
+        name: "帶入 tw_equity_eod 2026-10-07 回補參數",
       })
       .click()
-    await expect(page.locator("#backfill-provider")).toHaveValue("shioaji")
-    await expect(page.locator("#backfill-dataset")).toHaveValue(
-      "tw_equity_minute"
-    )
+    await expect(page.locator("#backfill-provider")).toHaveValue("finlab")
+    await expect(page.locator("#backfill-dataset")).toHaveValue("tw_equity_eod")
     await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
     await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
     const create = page.getByRole("button", { name: "建立回補", exact: true })
@@ -378,10 +376,8 @@ for (const role of ["operator", "owner"]) {
           ]
       )
       .toBeGreaterThan(count)
-    await expect(page.locator("#backfill-provider")).toHaveValue("shioaji")
-    await expect(page.locator("#backfill-dataset")).toHaveValue(
-      "tw_equity_minute"
-    )
+    await expect(page.locator("#backfill-provider")).toHaveValue("finlab")
+    await expect(page.locator("#backfill-dataset")).toHaveValue("tw_equity_eod")
     await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
     await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
     await expect(preview).toBeVisible()
@@ -389,17 +385,17 @@ for (const role of ["operator", "owner"]) {
     await expect(create).toBeEnabled()
     await create.click()
     await expect(
-      page.locator("details").filter({ hasText: "shioaji/tw_equity_minute" })
+      page.locator("details").filter({ hasText: "finlab/tw_equity_eod" })
     ).toContainText("2026-10-07 – 2026-10-07")
     await page.getByRole("button", { name: "重新整理", exact: true }).click()
     await expect(
-      page.locator("details").filter({ hasText: "shioaji/tw_equity_minute" })
+      page.locator("details").filter({ hasText: "finlab/tw_equity_eod" })
     ).toHaveCount(1)
     const state = await (await request.get(`${backend}/fixture/state`)).json()
     expect(state.previews).toEqual([
       {
-        provider: "shioaji",
-        dataset_key: "tw_equity_minute",
+        provider: "finlab",
+        dataset_key: "tw_equity_eod",
         start_date: "2026-10-07",
         end_date: "2026-10-07",
       },
@@ -407,8 +403,8 @@ for (const role of ["operator", "owner"]) {
     expect(state.mutations).toEqual([
       {
         path: "/api/v1/admin/historical-backfills",
-        provider: "shioaji",
-        dataset_key: "tw_equity_minute",
+        provider: "finlab",
+        dataset_key: "tw_equity_eod",
         start_date: "2026-10-07",
         end_date: "2026-10-07",
         request_key: expect.any(String),
@@ -425,7 +421,7 @@ test("changed parameters and a new alert invalidate preview and confirmation; a 
   await login(page)
   await page.getByRole("tab", { name: "缺漏告警" }).click()
   await page
-    .getByRole("button", { name: "帶入 tw_equity_minute 2026-10-07 回補參數" })
+    .getByRole("button", { name: "帶入 tw_equity_eod 2026-10-07 回補參數" })
     .click()
   await page.getByRole("button", { name: "驗證交易日", exact: true }).click()
   await expect(page.getByRole("checkbox")).toBeEnabled()
@@ -441,7 +437,7 @@ test("changed parameters and a new alert invalidate preview and confirmation; a 
   await page.getByRole("checkbox").check()
   await page.getByRole("tab", { name: "缺漏告警" }).click()
   await page
-    .getByRole("button", { name: "帶入 tw_equity_minute 2026-10-07 回補參數" })
+    .getByRole("button", { name: "帶入 tw_equity_eod 2026-10-07 回補參數" })
     .click()
   await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
   await expect(page.getByRole("checkbox")).not.toBeChecked()
@@ -461,7 +457,7 @@ test("changed parameters and a new alert invalidate preview and confirmation; a 
   await expect(page.getByRole("button", { name: "驗證中…" })).toBeVisible()
   await page.getByRole("tab", { name: "缺漏告警" }).click()
   await page
-    .getByRole("button", { name: "帶入 tw_equity_minute 2026-10-06 回補參數" })
+    .getByRole("button", { name: "帶入 tw_equity_eod 2026-10-06 回補參數" })
     .click()
   await lateResponse
   await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-06")
@@ -488,7 +484,7 @@ for (const expiry of ["local", "upstream"] as const) {
     await page.getByRole("tab", { name: "缺漏告警" }).click()
     await page
       .getByRole("button", {
-        name: "帶入 tw_equity_minute 2026-10-07 回補參數",
+        name: "帶入 tw_equity_eod 2026-10-07 回補參數",
       })
       .click()
     await expect(

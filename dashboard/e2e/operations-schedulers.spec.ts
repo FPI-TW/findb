@@ -79,10 +79,12 @@ test("cancel and Escape are side-effect free; batch start skips blocked and runn
 }) => {
   await login(page)
   await page
-    .getByRole("button", { name: "shioaji full_market_shioaji_v1 設為執行中" })
+    .getByRole("button", {
+      name: "twelve_data full_market_twelve_data_v1 設為執行中",
+    })
     .click()
   await expect(page.getByRole("alertdialog")).toContainText(
-    "full_market_shioaji_v1"
+    "full_market_twelve_data_v1"
   )
   await page.getByRole("button", { name: "取消", exact: true }).click()
   expect((await state(request)).mutations).toEqual([])
@@ -98,33 +100,36 @@ test("cancel and Escape are side-effect free; batch start skips blocked and runn
   await page.getByRole("button", { name: "確認全部啟動", exact: true }).click()
   await expect(
     page.getByRole("button", {
-      name: "shioaji full_market_shioaji_v1 設為已停止",
+      name: "twelve_data full_market_twelve_data_v1 設為已停止",
     })
   ).toBeVisible()
   await page.getByRole("button", { name: "全部停止", exact: true }).click()
   await page.getByRole("button", { name: "確認全部停止", exact: true }).click()
-  await expect(
-    page.getByRole("button", {
-      name: "finlab full_market_finlab_v1 設為執行中",
-    })
-  ).toBeVisible()
-  expect((await state(request)).mutations).toEqual([
-    {
-      scheduler_key: "full_market_shioaji_v1",
-      desired_state: "running",
-      expected_revision: 1,
-    },
-    {
-      scheduler_key: "full_market_finlab_v1",
-      desired_state: "stopped",
-      expected_revision: 1,
-    },
-    {
-      scheduler_key: "full_market_shioaji_v1",
-      desired_state: "stopped",
-      expected_revision: 2,
-    },
+  // Bulk updates are sequential; wait for every card before reading mutations.
+  for (const name of [
+    "finlab full_market_finlab_v1 設為執行中",
+    "twelve_data full_market_twelve_data_v1 設為執行中",
   ])
+    await expect(page.getByRole("button", { name })).toBeEnabled()
+  await expect
+    .poll(async () => (await state(request)).mutations)
+    .toEqual([
+      {
+        scheduler_key: "full_market_twelve_data_v1",
+        desired_state: "running",
+        expected_revision: 1,
+      },
+      {
+        scheduler_key: "full_market_finlab_v1",
+        desired_state: "stopped",
+        expected_revision: 1,
+      },
+      {
+        scheduler_key: "full_market_twelve_data_v1",
+        desired_state: "stopped",
+        expected_revision: 2,
+      },
+    ])
 })
 
 test("all blocked starts and non-Owner sessions cannot mutate controls", async ({
@@ -163,7 +168,7 @@ test("partial overview failure and recovery preserve controls, cards and queue p
     exact: true,
   })
   const card = page.getByRole("button", {
-    name: "shioaji full_market_shioaji_v1 設為執行中",
+    name: "twelve_data full_market_twelve_data_v1 設為執行中",
   })
   const queue = page.getByRole("heading", {
     name: "Source ingest 後的佇列與 Worker",

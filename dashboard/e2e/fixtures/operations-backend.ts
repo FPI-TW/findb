@@ -173,9 +173,9 @@ createServer(async (request, response) => {
     overviewFailurePath = ""
     rows = [
       scheduler("pilot_finlab_v1", "finlab"),
-      scheduler("pilot_shioaji_v1", "shioaji", true),
+      scheduler("pilot_twelve_data_v1", "twelve_data", true),
       scheduler("full_market_finlab_v1", "finlab", true),
-      scheduler("full_market_shioaji_v1", "shioaji"),
+      scheduler("full_market_twelve_data_v1", "twelve_data"),
       {
         ...scheduler("full_market_taifex_v1", "taifex"),
         start_allowed: false,
@@ -263,9 +263,9 @@ createServer(async (request, response) => {
         [
           {
             alert_id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
-            dataset_key: "tw_equity_minute",
-            source: "shioaji",
-            schema_id: "market_minute",
+            dataset_key: "tw_equity_eod",
+            source: "finlab",
+            schema_id: "market_eod",
             schema_version: 1,
             expected_data_date: "2026-10-07",
             status: "open",
@@ -355,8 +355,8 @@ createServer(async (request, response) => {
     return send({
       data: [
         {
-          provider: "shioaji",
-          dataset_key: "tw_equity_minute",
+          provider: "finlab",
+          dataset_key: "tw_equity_eod",
           market: "TW",
           executable: true,
         },
