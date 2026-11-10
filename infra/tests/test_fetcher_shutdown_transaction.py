@@ -4,6 +4,7 @@ Only /opt/fetcher paths are relocated into a temporary directory. The actual
 validation, ERR trap, retirement, candidate and rollback shell paths execute.
 """
 
+import hashlib
 import json
 import os
 import signal
@@ -60,12 +61,14 @@ def fake_call(state, command, args, parent, environ):
             return "local", ""
         if args[args.index("--consumer") + 1] == "images":
             state["images_prepared"] = True
+            state["prepared_images"] = sorted(a for a in args if "@sha256:" in a)
             return 0, ""
         index = next(i for i, a in enumerate(args) if a.endswith("/release_fetcher_provider.sh"))
         provider, image, state_dir, state_path, stable, candidate, previous = args[
             index + 1 : index + 8
         ]
         state.setdefault("provider_images", []).append([stable, image])
+        state.setdefault("provider_layouts", {})[stable] = [image, state_dir, args[index + 9]]
         runtime_command = args[index + 10 :]
         if state.get("fault") == "provider_before":
             status = 7
@@ -284,6 +287,7 @@ def execute(
     command_query=None,
     checkpoint_kind="valid",
     pilot_state=None,
+    inventory_change=None,
 ):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -298,6 +302,14 @@ def execute(
         inventory.write_bytes(
             (ROOT / "infra/deploy/generated/provider_inventory.v1.json").read_bytes()
         )
+        if inventory_change is not None:
+            value = json.loads(inventory.read_text())
+            value.pop("projection_sha256")
+            inventory_change(value)
+            value["projection_sha256"] = hashlib.sha256(
+                json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            inventory.write_text(json.dumps(value))
         for name in (
             "fetcher.json",
             "runtime_secret_command.sh",
@@ -552,6 +564,65 @@ def test_both_profiles_have_same_deployment_path(mode):
         assert pointer == "a" * 64 + "-123-1"
         assert set(state["rows"]) == set(before)
         assert all(row["id"].startswith("new-") for row in state["rows"].values())
+
+
+# Independent expectation: existing durable host directories never move with metadata.
+HOST_LAYOUT = {
+    "twelve_data": ("/var/lib/findb-fetcher/historical", "-"),
+    "finlab": ("/var/lib/findb-finlab-fetcher/historical", "/var/lib/findb-finlab-fetcher/cache"),
+    "taifex": ("/var/lib/findb-taifex-fetcher/historical", "-"),
+    "factset": ("/var/lib/findb-factset-fetcher/historical", "-"),
+}
+
+
+def test_inventory_derived_images_and_host_layout_are_unchanged():
+    completed, state, _ = execute(original_rows())
+    assert completed.returncode == 0, completed.stderr
+    layouts = state["provider_layouts"]
+    assert set(layouts) == {stable for stable, *_ in PROVIDERS}
+    for stable, repository, provider, profile in PROVIDERS:
+        image, state_dir, cache = layouts[stable]
+        assert image == f"{REGISTRY}/findb/staging/fetcher/{repository}@sha256:{'c' * 64}"
+        history, expected_cache = HOST_LAYOUT[provider]
+        assert cache == expected_cache
+        if profile == "historical":
+            assert state_dir == history
+    assert state["prepared_images"] == sorted(
+        f"{REGISTRY}/findb/staging/fetcher/{name}@sha256:{'c' * 64}"
+        for name in ("twelve-data", "finlab", "factset")
+    )
+
+
+def _add_example_provider(value):
+    value["providers"].append("example")
+    for role in ("full_market", "historical"):
+        value["consumers"].append(
+            {
+                "name": f"findb-{role.replace('_', '-')}-example",
+                "provider": "example",
+                "role": role,
+                "image_key": "twelve_data",
+            }
+        )
+
+
+def _unpublished_image_key(value):
+    value["images"].append("taifex")
+    for consumer in value["consumers"]:
+        if consumer["provider"] == "taifex":
+            consumer["image_key"] = "taifex"
+
+
+@pytest.mark.parametrize("change", [_add_example_provider, _unpublished_image_key])
+def test_inventory_without_host_adapter_fails_before_docker(change):
+    # A digest-valid generated inventory still cannot invent host state paths or
+    # image references that the workflow does not pass.
+    completed, state, pointer = execute(original_rows(), inventory_change=change)
+    assert completed.returncode != 0
+    assert "reason=provider_inventory_invalid" in completed.stderr
+    assert not any(call[0] == "docker" for call in state["log"])
+    assert not state.get("provider_images")
+    assert pointer == "b" * 64 + "-122-1"
 
 
 def rows_with_retired(**change):

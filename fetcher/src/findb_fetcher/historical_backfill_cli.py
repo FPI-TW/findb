@@ -8,7 +8,7 @@ import threading
 from typing import cast
 
 from findb_fetcher.config import FetcherConfig
-from findb_fetcher.execution_metadata import historical_feeds
+from findb_fetcher.execution_metadata import historical_feeds, historical_provider_ids
 from findb_fetcher.factset_historical import FactSetHistoricalRunner
 from findb_fetcher.historical_backfill import (
     HistoricalControlClient,
@@ -29,7 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--provider",
         required=True,
-        choices=("twelve_data", "finlab", "taifex", "factset"),
+        choices=historical_provider_ids(),
     )
     parser.add_argument("--run-forever", action="store_true")
     parser.add_argument(

@@ -125,9 +125,8 @@ try:
         raise ValueError()
     if len({c["name"] for c in consumers}) != len(consumers):
         raise ValueError()
+    # Host state/cache layouts are checked in bash below; unknown providers fail there.
     for provider in providers:
-        if provider not in {"twelve_data", "finlab", "taifex", "factset"}:
-            raise ValueError()  # Host adapter state/cache paths must be implemented first.
         rows = [c for c in consumers if c["provider"] == provider]
         if {c["role"] for c in rows} != {"full_market", "historical"} or len(rows) != 2:
             raise ValueError()
@@ -141,22 +140,58 @@ except Exception:
 INVENTORY
 )"
 providers=()
-while read -r provider image_key; do providers+=("$provider"); done <<< "$provider_inventory"
+image_keys=()
+seen_image_keys=" "
+while read -r provider image_key; do
+  providers+=("$provider")
+  case "$seen_image_keys" in
+    *" $image_key "*) ;;
+    *) image_keys+=("$image_key"); seen_image_keys="$seen_image_keys$image_key " ;;
+  esac
+done <<< "$provider_inventory"
+# The workflow passes one exact image reference per generated image key. These
+# variable names are the workflow/transaction interface, not provider metadata.
+image_ref() {
+  case "$1" in
+    twelve_data) printf '%s' "$TWELVE_IMAGE_REF" ;;
+    finlab) printf '%s' "$FINLAB_IMAGE_REF" ;;
+    factset) printf '%s' "$FACTSET_IMAGE_REF" ;;
+    *) return 1 ;;
+  esac
+}
 provider_image() {
   local provider image_key
   while read -r provider image_key; do
     if [ "$provider" = "$1" ]; then
-      case "$image_key" in
-        twelve_data) printf '%s' "$TWELVE_IMAGE_REF" ;;
-        finlab) printf '%s' "$FINLAB_IMAGE_REF" ;;
-        factset) printf '%s' "$FACTSET_IMAGE_REF" ;;
-        *) return 1 ;;
-      esac
+      image_ref "$image_key"
       return
     fi
   done <<< "$provider_inventory"
   return 1
 }
+# Existing durable host directories (historical state, optional SDK cache). They
+# are adapter-owned on-disk locations, so a catalog edit can never move state.
+provider_host_layout() {
+  case "$1" in
+    twelve-data) printf '%s %s' /var/lib/findb-fetcher/historical - ;;
+    finlab) printf '%s %s' /var/lib/findb-finlab-fetcher/historical /var/lib/findb-finlab-fetcher/cache ;;
+    taifex) printf '%s %s' /var/lib/findb-taifex-fetcher/historical - ;;
+    factset) printf '%s %s' /var/lib/findb-factset-fetcher/historical - ;;
+    *) return 1 ;;
+  esac
+}
+for provider in "${providers[@]}"; do
+  provider_host_layout "$provider" >/dev/null || {
+    echo "fetcher_aws_deploy=failed reason=provider_inventory_invalid" >&2
+    exit 1
+  }
+done
+for image_key in "${image_keys[@]}"; do
+  image_ref "$image_key" >/dev/null || {
+    echo "fetcher_aws_deploy=failed reason=provider_inventory_invalid" >&2
+    exit 1
+  }
+done
 
 runtime_dir="$FETCHER_RELEASE_ROOT/infra/deploy/runtime-secrets"
 catalog="$runtime_dir/fetcher.json"
@@ -189,9 +224,12 @@ validate_image() {
     exit 1
   }
 }
-validate_image "$TWELVE_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/twelve-data"
-validate_image "$FINLAB_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/finlab"
-validate_image "$FACTSET_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/factset"
+image_refs=()
+for image_key in "${image_keys[@]}"; do
+  image="$(image_ref "$image_key")"
+  validate_image "$image" "findb/$APP_ENVIRONMENT/fetcher/${image_key//_/-}"
+  image_refs+=("$image")
+done
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
@@ -757,7 +795,7 @@ retire_pilot_residue
 # Pull each exact image once per phase with a secret-free consumer. Individual
 # provider credentials remain confined to their own runtime wrapper invocation.
 run_runtime --consumer images --ecr-registry "$ECR_REGISTRY" --docker-login -- \
-  bash -s -- "$TWELVE_IMAGE_REF" "$FINLAB_IMAGE_REF" "$FACTSET_IMAGE_REF" <<'PREPARE_IMAGES'
+  bash -s -- "${image_refs[@]}" <<'PREPARE_IMAGES'
 set -euo pipefail
 # Only image downloads overlap. Wait for every child, including on failure,
 # before any provider mutation or Docker login cleanup.
@@ -822,12 +860,8 @@ provider_count="$((${#providers[@]} * 2))"
 if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
   for provider in "${providers[@]}"; do
     image="$(provider_image "$provider")"
-    case "$provider" in
-      twelve-data) history=/var/lib/findb-fetcher/historical; cache=- ;;
-      taifex) history=/var/lib/findb-taifex-fetcher/historical; cache=- ;;
-      factset) history=/var/lib/findb-factset-fetcher/historical; cache=- ;;
-      finlab) history=/var/lib/findb-finlab-fetcher/historical; cache=/var/lib/findb-finlab-fetcher/cache ;;
-    esac
+    layout="$(provider_host_layout "$provider")"
+    read -r history cache <<< "$layout"
     for profile in full-market historical; do
       stable="findb-$profile-$provider"
       register_provider "$stable" "${stable}-previous"
@@ -857,10 +891,8 @@ export FETCHER_CONSUMER_PROFILE=full_market
 for provider in "${providers[@]}"; do
   image="$(provider_image "$provider")"
   identity="${provider//-/_}"
-  case "$provider" in
-    twelve-data|taifex|factset) cache_dir=- ;;
-    finlab) cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
-  esac
+  layout="$(provider_host_layout "$provider")"
+  read -r _ cache_dir <<< "$layout"
   stable="findb-full-market-$provider"
   register_provider "$stable" "${stable}-previous"
   run_runtime --consumer "$provider" -- \
@@ -883,12 +915,8 @@ export FETCHER_CONSUMER_PROFILE=historical
 # pilot-retired-v1: accepted installations require four providers and eight consumers.
 for provider in "${providers[@]}"; do
   image="$(provider_image "$provider")"
-  case "$provider" in
-    twelve-data) state_dir=/var/lib/findb-fetcher/historical; cache_dir=- ;;
-    finlab) state_dir=/var/lib/findb-finlab-fetcher/historical; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
-    taifex) state_dir=/var/lib/findb-taifex-fetcher/historical; cache_dir=- ;;
-    factset) state_dir=/var/lib/findb-factset-fetcher/historical; cache_dir=- ;;
-  esac
+  layout="$(provider_host_layout "$provider")"
+  read -r state_dir cache_dir <<< "$layout"
   stable="findb-historical-$provider"
   register_provider "$stable" "${stable}-previous"
   run_runtime --consumer "$provider" -- \

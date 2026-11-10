@@ -14,7 +14,11 @@ from typing import Any, Never, Sequence
 import httpx
 
 from findb_fetcher.config import app_environment
-from findb_fetcher.execution_metadata import historical_execution, historical_feed
+from findb_fetcher.execution_metadata import (
+    historical_execution,
+    historical_feed,
+    historical_provider_ids,
+)
 from findb_fetcher.finlab_universe import load_finlab_universe
 from findb_fetcher.universe import load_symbol_universe
 
@@ -33,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--provider",
         required=True,
-        choices=("twelve_data", "finlab", "taifex", "factset"),
+        choices=historical_provider_ids(),
     )
     parser.add_argument("--dataset-key", required=True)
     parser.add_argument("--start-date", required=True, type=date.fromisoformat)
