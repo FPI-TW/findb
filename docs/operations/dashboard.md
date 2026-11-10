@@ -114,3 +114,11 @@ Shioaji daily 另顯示每日抓取窗口／下次開窗時間、最近已結算
 人工處理數，以及最近實際失敗原因。`第 N 輪` 是 FIFO 輪替次數，不能解讀為成員失敗重試。
 「每日抓取窗口外」與「等待共用帳號配額或冷卻」是等待狀態；23:00 後未完整交付仍保留逾期告警。
 批次統計是 Fetcher checkpoint 的執行證據，最終資料完整性以交付計畫 canonical evidence 為準。
+
+### 市場排程顯示
+
+Pilot／Full 頁籤內依 market 分組，使用 Backend 發布的逐 feed 時間與時區；FinLab equity／ETF
+維持同一 control，bulk actions 仍依 profile。Slot 不再顯示或參與分組，API 舊欄位維持相容。
+缺少已發布排程時顯示「尚無發布排程」，不把舊 card-level 時間當作替代設定。
+新 Source credential 的 provider／dataset 選項來自生成 catalog；退役 Shioaji credential 仍可
+讀取歷史紀錄，但不提供新的建立選項。

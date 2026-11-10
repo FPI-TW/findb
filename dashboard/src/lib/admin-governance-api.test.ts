@@ -44,16 +44,14 @@ const credential = {
 describe("admin governance wire contracts", () => {
   it("exposes governed provider credential scopes including inactive staged feeds", () => {
     expect(SOURCE_PROVIDERS).toEqual([
-      "twelve_data",
-      "finlab",
-      "shioaji",
-      "taifex",
       "factset",
+      "finlab",
+      "taifex",
+      "twelve_data",
     ])
     expect(SOURCE_PROVIDER_DATASETS).toEqual({
       twelve_data: ["us_equity_eod"],
       finlab: ["tw_equity_eod", "tw_etf_eod"],
-      shioaji: ["tw_equity_minute", "tw_etf_minute"],
       taifex: ["tw_futures_eod"],
       factset: ["hk_equity_eod"],
     })
@@ -173,31 +171,14 @@ describe("admin governance wire contracts", () => {
       }).success
     ).toBe(false)
     expect(
-      createCredentialSchema.parse({
+      createCredentialSchema.safeParse({
         kind: "source",
-        name: "shioaji-fetcher",
-        owner: "data-platform",
-        source_name: "shioaji",
-        allowed_datasets: ["tw_equity_minute", "tw_etf_minute"],
-      })
-    ).toMatchObject({
-      kind: "source",
-      source_name: "shioaji",
-      allowed_datasets: SOURCE_PROVIDER_DATASETS.shioaji,
-    })
-    expect(
-      createCredentialSchema.parse({
-        kind: "source",
-        name: "shioaji-subset",
+        name: "retired",
         owner: "data-platform",
         source_name: "shioaji",
         allowed_datasets: ["tw_equity_minute"],
-      })
-    ).toMatchObject({
-      kind: "source",
-      source_name: "shioaji",
-      allowed_datasets: ["tw_equity_minute"],
-    })
+      }).success
+    ).toBe(false)
     expect(() =>
       createCredentialSchema.parse({
         kind: "source",

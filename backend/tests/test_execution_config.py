@@ -250,3 +250,19 @@ async def test_unavailable_schedule_does_not_return_partial_or_stale_snapshot(
     response = await client.get(URL, params={"execution_profile": "pilot"}, headers=headers)
     assert response.status_code == 503
     assert response.json() == {"detail": "Execution configuration unavailable"}
+
+
+@pytest.mark.parametrize(
+    "clock, expected",
+    [
+        ("2026-03-09T20:59:59+00:00", "2026-03-08"),
+        ("2026-03-09T21:00:00+00:00", "2026-03-09"),
+        ("2026-11-02T21:59:59+00:00", "2026-11-01"),
+        ("2026-11-02T22:00:00+00:00", "2026-11-02"),
+        ("2027-01-01T00:00:00+00:00", "2026-12-31"),
+    ],
+)
+def test_catalog_trigger_boundary_and_dst(clock, expected):
+    from app.services.feed_schedule import latest_due_date
+
+    assert latest_due_date("us_equity_eod", datetime.fromisoformat(clock)).isoformat() == expected

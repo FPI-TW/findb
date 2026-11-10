@@ -6,26 +6,16 @@ const nullableDateTime = isoDateTime.nullable()
 export const adminRoleSchema = z.enum(["owner", "operator", "viewer"])
 export type AdminRole = z.infer<typeof adminRoleSchema>
 
-export const SOURCE_PROVIDERS = [
-  "twelve_data",
-  "finlab",
-  "shioaji",
-  "taifex",
-  "factset",
-] as const
+export {
+  SOURCE_PROVIDERS,
+  SOURCE_PROVIDER_DATASETS,
+} from "./generated/provider-catalog.ts"
+import {
+  SOURCE_PROVIDERS,
+  SOURCE_PROVIDER_DATASETS,
+} from "./generated/provider-catalog.ts"
 export const sourceProviderSchema = z.enum(SOURCE_PROVIDERS)
 export type SourceProvider = z.infer<typeof sourceProviderSchema>
-
-export const SOURCE_PROVIDER_DATASETS: Record<
-  SourceProvider,
-  readonly string[]
-> = {
-  twelve_data: ["us_equity_eod"],
-  finlab: ["tw_equity_eod", "tw_etf_eod"],
-  shioaji: ["tw_equity_minute", "tw_etf_minute"],
-  taifex: ["tw_futures_eod"],
-  factset: ["hk_equity_eod"],
-}
 
 export const adminUserSchema = z.object({
   user_id: z.uuid(),
@@ -183,7 +173,9 @@ export const createCredentialSchema = z
   ])
   .superRefine((credential, context) => {
     if (credential.kind !== "source") return
-    const supported = new Set(SOURCE_PROVIDER_DATASETS[credential.source_name])
+    const supported = new Set<string>(
+      SOURCE_PROVIDER_DATASETS[credential.source_name]
+    )
     const seen = new Set<string>()
     credential.allowed_datasets.forEach((dataset, index) => {
       if (seen.has(dataset)) {

@@ -134,10 +134,10 @@ normalization、canonical 與稽核可繼續；不重抓已 prepared 資料。�
 
 ## 有效日曆與每日政策
 
-Backend 是政策權威。`runtime/configuration` 使用五個獨立開關：
+Backend 是政策權威。`runtime/configuration` 使用四個獨立開關：
 `TWELVE_DATA_SKIP_NON_TRADING_DAYS`、`FINLAB_SKIP_NON_TRADING_DAYS`、
-`SHIOAJI_SKIP_NON_TRADING_DAYS`、`TAIFEX_SKIP_NON_TRADING_DAYS`、`FACTSET_SKIP_NON_TRADING_DAYS`。
-每個開關皆為 `true`／`false` 字串，五個 provider 預設皆為 `true`，兩環境欄位相同，經部署生效。
+`TAIFEX_SKIP_NON_TRADING_DAYS`、`FACTSET_SKIP_NON_TRADING_DAYS`。
+每個開關皆為 `true`／`false` 字串，四個 provider 預設皆為 `true`，兩環境欄位相同，經部署生效。
 Fetcher 透過 Source 取得政策與每日決策，不保存另一份日曆或政策設定。預設略過非交易日；
 明確設為 false 才在週末／休市照常執行。排程時間、交易所時區、Owner controls、平台配額、429 與既有重試規則仍有效。
 不設連續十筆失敗中斷規則。
@@ -179,7 +179,7 @@ auth／scope 錯誤仍依原規則 failed／manual，不得誤分類成尚未發
 不得以新 revision 自動覆寫。若目前 skip flag 為 false，work 仍維持人工處理；須先明確決定是否
 透過部署啟用政策，不能跳過下節對目前政策與證據的檢查直接修復。
 
-五個 provider 的 Pilot／Full daily canonical 回合，另在第一個需要新 provider I/O 的成員 claim
+四個現役 provider 的 Pilot／Full daily canonical 回合，另在第一個需要新 provider I/O 的成員 claim
 前查詢一次同一 calendar status；FactSet 則在第一次 snapshot 請求前查詢。已完成、manual、
 deferred 或未 mapped 的成員、本地已有 prepared bytes 的排空與 historical 回合都不觸發查詢。
 若結果為 `repair_required`，work 以 `CALENDAR_DECISION_REPAIR_REQUIRED` failed，不改寫任何
@@ -794,7 +794,7 @@ body 的實際大小。Universe 端點使用相同 IP allowlist、proxy 與 Back
 Source 認證，仍驗證 dataset scope、最多 30,000 個成員與 evidence；上限不是略過驗證的權限。
 中途停機、撤銷某市場權限或任一回應失敗時，不提交部分 catalogue evidence。
 
-這些程式保護不等於 native 驗收通過。驗收仍須包含真正 locked object 的重複寫入、七條 feeds
+這些程式保護不等於 native 驗收通過。驗收仍須包含真正 locked object 的重複寫入、五條現役 feeds
 各自的非零 canonical／Serve 證據，以及 profile、plan、run 與 R2 bytes 的對應。
 Shioaji 共用 runtime 明確套用既有 `SHIOAJI_SIMULATION=true` 驗證，再建立隔離 SDK；
 Pilot／Full market 均使用資料擷取用 simulation，catalogue raw evidence 也記錄相同模式。
@@ -1154,3 +1154,11 @@ wait reason、retry／heartbeat；GET projection 不更動 controls、lease 或 
 
 HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 只負責 US，HK 已永久退役。每日 HKEX 清單、申請時現行 cohort 回補、partial 結算、五日長缺漏與明確 provider
 切換規則見 [FactSet 港股日行情](factset_hk.md)。安裝新版 image 不會自動啟動 controls 或切換來源。
+
+### Catalog 排程與 frozen deadline
+
+新 plan deadline 與沒有 plan 的 missing-delivery 判定共用 Backend `feed_schedule` resolver：
+US 次日台北 09:00，其餘當日台北 23:00。既有 plan 以儲存的 `deadline_at` 判定，不因後續
+catalog 修改提早或延後告警。Bounded US 09:15 是另一政策，使用自己的 timezone／day offset。
+Dashboard 依 market 分組，逐 feed 顯示交易所當地觸發時間；slot 僅保留交付契約相容用途。
+DB 舊值修正與發布下限見 [PR5 遷移](deployment.md#provider-catalog-pr5-發布與遷移)。

@@ -488,6 +488,67 @@ describe("Operations query hooks", () => {
 })
 
 describe("Operations presentation", () => {
+  it("groups controls by market and renders published per-feed clocks without slots", async () => {
+    const feed = (
+      key: string,
+      market: string,
+      clock: string,
+      zone: string
+    ) => ({
+      provider: market === "US" ? "twelve_data" : "finlab",
+      dataset_key: key,
+      market,
+      scheduled_time: clock,
+      source_timezone: zone,
+      target_date_lag_days: 0,
+      next_scheduled_at: timestamp,
+      completion_deadline: {
+        timezone: "Asia/Taipei",
+        local_time: "23:00",
+        trade_date_day_offset: 0,
+      },
+    })
+    mocks.loadDashboard.mockResolvedValue(
+      overviewResponse([
+        makeScheduler({
+          scheduler_key: "pilot_finlab_v1",
+          dataset_keys: ["tw_equity_eod", "tw_etf_eod"],
+          feed_schedules: [
+            feed("tw_equity_eod", "TW", "18:00", "Asia/Taipei"),
+            feed("tw_etf_eod", "TW", "18:00", "Asia/Taipei"),
+          ],
+        }),
+        makeScheduler({
+          scheduler_key: "pilot_twelve_data_v1",
+          provider: "twelve_data",
+          dataset_keys: ["us_equity_eod"],
+          feed_schedules: [
+            feed("us_equity_eod", "US", "17:00", "America/New_York"),
+          ],
+        }),
+      ])
+    )
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <OperationsOverviewPage role="viewer" />
+      </QueryClientProvider>
+    )
+    expect(
+      await screen.findByRole("heading", { name: "TW" })
+    ).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "US" })).toBeInTheDocument()
+    expect(
+      screen.getByText(/us_equity_eod · 每日 17:00 · America\/New_York/)
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/tw_etf_eod · 每日 18:00 · Asia\/Taipei/)
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(/Slot|taiwan_market_window|western_markets_window/)
+    ).not.toBeInTheDocument()
+    expect(screen.getAllByText("pilot_finlab_v1")).toHaveLength(1)
+  })
+
   it("keeps the DQ policy detail bounded and hides nested raw payload values", () => {
     render(
       <DQPolicyDetails

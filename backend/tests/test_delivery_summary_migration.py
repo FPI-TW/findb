@@ -36,7 +36,7 @@ async def test_summary_schema_roundtrip_preserves_plan_and_requires_valid_counts
                 ),
                 ids,
             )
-        await run_alembic(url, "head")
+        await run_alembic(url, "0d57f9b8a2c1")
         async with engine.begin() as db:
             assert await db.scalar(text("SELECT count(*) FROM daily_delivery_plan_summary")) == 0
             assert (
@@ -65,6 +65,6 @@ async def test_summary_schema_roundtrip_preserves_plan_and_requires_valid_counts
                 )
                 == 1
             )
-        await run_alembic(url, "head")
+        await run_alembic(url, "0d57f9b8a2c1")
         async with engine.connect() as db:
             assert await db.scalar(text("SELECT count(*) FROM daily_delivery_plan_summary")) == 0

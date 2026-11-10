@@ -225,13 +225,10 @@ describe("governance pages", () => {
     expect(screen.getByText("tw_equity_eod")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
 
-    expect(screen.getByRole("option", { name: "shioaji" })).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText("Source name"), {
-      target: { value: "shioaji" },
-    })
-    expect(screen.queryByText("tw_equity_eod")).not.toBeInTheDocument()
-    expect(screen.getByText("tw_equity_minute")).toBeInTheDocument()
-    expect(screen.getByText("tw_etf_minute")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("option", { name: "shioaji" })
+    ).not.toBeInTheDocument()
+    expect(screen.getByText("tw_etf_eod")).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText("Source name"), {
       target: { value: "taifex" },
     })

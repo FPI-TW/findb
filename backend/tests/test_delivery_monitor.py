@@ -70,13 +70,15 @@ def _twelve_data_config() -> dict:
                 "action": "warn",
                 "expected_sources": ["twelve_data"],
                 "deadline_local_time": "09:15:00",
+                "deadline_timezone": "Asia/Taipei",
+                "deadline_day_offset": 1,
             },
             "schedule": {
                 "enabled": True,
                 "slot_id": "western_markets_window",
-                "local_time": "08:15:00",
-                "timezone": "Asia/Taipei",
-                "target_date_lag_days": 1,
+                "local_time": "17:00:00",
+                "timezone": "America/New_York",
+                "target_date_lag_days": 0,
                 "expected_sources": ["twelve_data"],
             },
         },
@@ -943,3 +945,33 @@ async def test_ingest_first_makes_concurrent_scan_skip_then_no_false_open(test_e
             await session.scalar(select(func.count()).where(MissingDeliveryAlert.status == "open"))
             == 0
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frozen_hour, catalog_hour, alerts", [(16, 15, 0), (14, 15, 1)])
+async def test_monitor_uses_frozen_plan_deadline(
+    test_session, monkeypatch, frozen_hour, catalog_hour, alerts
+):
+    from app.models.registry import DailyDeliveryPlan
+    from app.services import feed_schedule
+    from tests.test_full_market import DAY, _activated_plan
+
+    _, _, response = await _activated_plan(test_session, "tw_etf_eod", count=1)
+    plan = await test_session.get(DailyDeliveryPlan, response.plan_id)
+    frozen = datetime.combine(DAY, time(frozen_hour), timezone.utc)
+    plan.deadline_at = frozen
+    await test_session.commit()
+    monkeypatch.setattr(
+        feed_schedule,
+        "completion_deadline_at",
+        lambda key, day: datetime.combine(day, time(catalog_hour), timezone.utc),
+    )
+    result = await scan_missing_deliveries(
+        test_session, now=datetime.combine(DAY, time(15), timezone.utc)
+    )
+    assert result.created_or_refreshed == alerts
+    await test_session.refresh(plan)
+    assert plan.deadline_at == frozen
+    if alerts:
+        alert = await test_session.scalar(select(MissingDeliveryAlert))
+        assert alert.details["deadline_at"] == frozen.isoformat()

@@ -124,7 +124,7 @@ it("isolates provider lists and preserves selection and FIFO order on refresh", 
   mocks.query.mockReturnValue(queryResult)
   const { rerender } = render(<ProviderWorkPanel />)
   const tabs = screen.getByRole("tablist", { name: "供應商工作佇列分頁" })
-  expect(within(tabs).getAllByRole("tab")).toHaveLength(5)
+  expect(within(tabs).getAllByRole("tab")).toHaveLength(4)
   expect(screen.getByRole("tab", { name: "twelve_data (1)" })).toHaveAttribute(
     "aria-selected",
     "true"

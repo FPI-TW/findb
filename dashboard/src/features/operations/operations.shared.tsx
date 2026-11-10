@@ -484,13 +484,6 @@ export default function OperationsLayout({
   )
 }
 
-export const SLOT_SEMANTIC_LABELS: Record<string, string> = {
-  western_markets_window: "西方市場窗口",
-  global_markets_window: "全球市場窗口",
-  taiwan_market_window: "台灣市場窗口",
-  asia_pacific_markets_window: "亞太市場窗口",
-}
-
 export const STATUS_LABELS: Record<FreshnessStatus, string> = {
   not_due: "尚未到期",
   fresh: "已更新",
@@ -536,6 +529,12 @@ export function FeedDetails({ feeds }: { feeds: MarketFreshness["feeds"] }) {
               {feed.success_records ?? "—"} / 總數 {feed.total_records ?? "—"} ·
               policy {feed.policy_outcome ?? "—"}
             </p>
+            {feed.schedule && (
+              <p className="mt-1 mb-0 text-muted">
+                每日 {feed.schedule.scheduled_time} ·{" "}
+                {feed.schedule.source_timezone}
+              </p>
+            )}
             <p className="mt-1 mb-0 text-muted">
               Provider fetched：
               <DateWithRelative value={feed.last_fetched_at} />

@@ -1,6 +1,6 @@
 """Historical admitted fixtures preserve delivery tests without legacy activation."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from app.config import get_settings
 from app.models.registry import (
@@ -96,11 +96,18 @@ async def historical_admission(db, dataset, release, day, calendar_id, *, profil
     key = f"{profile}_{release.provider}_v1"
     control = await db.get(SchedulerControl, key)
     if control is None:
+        from app.services.provider_metadata import acquisition_feed
+
+        feed = acquisition_feed(release.provider, dataset.dataset_key)
+        clock = time.fromisoformat(feed.schedule.local_time) if feed and feed.schedule else time(18)
+        zone = feed.schedule.timezone if feed and feed.schedule else "Asia/Taipei"
         control = SchedulerControl(
             scheduler_key=key,
             execution_profile=profile,
             provider=release.provider,
             slot_id="taiwan_market_window",
+            scheduled_local_time=clock,
+            timezone=zone,
             desired_state="running",
             observed_state="stopped",
             revision=2,

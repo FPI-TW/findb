@@ -15,7 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import get_settings
 from app.models.base import Base
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
+from app.services.provider_metadata import acquisition_feeds
 from app.utils import utc_now
+from scripts.preflight_catalog_schedule import migration_module
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -408,6 +410,34 @@ _hk["config"]["accepted_schema_versions"] = [1, 2]
 _hk["config"]["current_schema_version"] = 2
 
 
+# Only schedule/deadline representation is catalog-owned. Other policies remain
+# operator-owned, including disabled monitors and legal delivery slot values.
+def _project_schedule(dataset_key: str, config: dict) -> dict:
+    result = deepcopy(config)
+    feed = next((f for f in acquisition_feeds() if f.dataset_key == dataset_key), None)
+    if feed is None or feed.schedule is None:
+        return result
+    expectation = result["delivery_expectation"]
+    expectation["schedule"].update(
+        local_time=time.fromisoformat(feed.schedule.local_time).isoformat(),
+        timezone=feed.schedule.timezone,
+        target_date_lag_days=feed.schedule.target_date_lag_days,
+        expected_sources=[feed.provider],
+    )
+    if feed.bounded_monitor.deadline is not None:
+        policy = feed.bounded_monitor.deadline
+        expectation["missing_delivery"].update(
+            deadline_local_time=time.fromisoformat(policy.local_time).isoformat(),
+            deadline_timezone=policy.timezone,
+            deadline_day_offset=policy.trade_date_day_offset,
+        )
+    return result
+
+
+for _dataset in DATASETS:
+    _dataset["config"] = _project_schedule(_dataset["dataset_key"], _dataset["config"])
+
+
 _LEGACY_CONFIG_KEYS = {
     "source_format",
     "field_mapping",
@@ -444,6 +474,15 @@ def _merge_operator_config(
     if not isinstance(existing_config, dict):
         return merged
 
+    migration = migration_module()
+    if dataset_key in migration.FEEDS and any(
+        field in existing_config.get("delivery_expectation", {})
+        for field in ("schedule", "missing_delivery")
+    ):
+        status, _ = migration.project_config(dataset_key, existing_config)
+        if status == "unknown_difference":
+            raise ValueError(f"Unknown schedule differences: {dataset_key}")
+
     def merge_mapping(defaults: dict, overrides: dict) -> dict:
         result = deepcopy(defaults)
         for key, value in overrides.items():
@@ -464,17 +503,7 @@ def _merge_operator_config(
         if key == "delivery_expectation" and isinstance(value, dict):
             merged[key] = merge_mapping(merged.get(key, {}), value)
             if "missing_delivery" in value:
-                historical_disabled = {
-                    "action": "disabled",
-                    "expected_sources": [],
-                }
-                if (
-                    dataset_key != "tw_equity_eod"
-                    or value["missing_delivery"] != historical_disabled
-                ):
-                    merged[key]["missing_delivery"] = deepcopy(value["missing_delivery"])
-                else:
-                    merged[key]["missing_delivery"] = deepcopy(seed_config[key]["missing_delivery"])
+                merged[key]["missing_delivery"] = deepcopy(value["missing_delivery"])
             continue
         merged[key] = deepcopy(value)
 
@@ -489,12 +518,19 @@ def _merge_operator_config(
                     policy["enabled"] = False
                 else:
                     policy["action"] = "disabled"
-    return merged
+    return _project_schedule(dataset_key, merged)
 
 
 async def seed_datasets(session: AsyncSession) -> None:
     """Upsert bounded feeds and inactive new full-market declarations."""
     logger.info("Seeding supported datasets: %s", ", ".join(SUPPORTED_DATASETS))
+    # Validate the complete projection before seed can overwrite any clocks.
+    report, _, _ = await session.run_sync(
+        lambda sync: migration_module().inspect(sync.connection(), lock=True)
+    )
+    unknown = [row["key"] for row in report if row["status"] == "unknown_difference"]
+    if unknown:
+        raise ValueError("Unknown schedule differences: " + ", ".join(unknown))
     for dataset in DATASETS:
         existing = await session.get(DatasetRegistry, dataset["dataset_key"])
         if existing is None:
@@ -528,12 +564,14 @@ async def seed_datasets(session: AsyncSession) -> None:
         )
         existing.updated_at = utc_now()
     await session.flush()
-    for provider, datasets, slot, clock in (
-        ("twelve_data", ["us_equity_eod"], "western_markets_window", time(8)),
-        ("finlab", ["tw_equity_eod", "tw_etf_eod"], "taiwan_market_window", time(18)),
-        ("taifex", ["tw_futures_eod"], "taiwan_market_window", time(18)),
-        ("factset", ["hk_equity_eod"], "asia_pacific_markets_window", time(18, 30)),
-    ):
+    for provider in sorted({feed.provider for feed in acquisition_feeds()}):
+        feeds = [feed for feed in acquisition_feeds() if feed.provider == provider]
+        feed = feeds[0]
+        assert feed.schedule is not None
+        datasets = [item.dataset_key for item in feeds]
+        slot = feed.delivery.slot_id
+        clock = time.fromisoformat(feed.schedule.local_time)
+        zone = feed.schedule.timezone
         for profile in ("pilot", "full_market"):
             key = f"{profile}_{provider}_v1"
             await session.execute(
@@ -544,12 +582,16 @@ async def seed_datasets(session: AsyncSession) -> None:
                     execution_profile=profile,
                     slot_id=slot,
                     scheduled_local_time=clock,
-                    timezone="Asia/Taipei",
+                    timezone=zone,
                     desired_state="stopped",
                     observed_state="stopped",
                     revision=1,
                 )
-                .on_conflict_do_nothing(index_elements=["scheduler_key"])
+                .on_conflict_do_update(
+                    index_elements=["scheduler_key"],
+                    set_={"scheduled_local_time": clock, "timezone": zone},
+                    where=SchedulerControl.retired_at.is_(None),
+                )
             )
             for dataset_key in datasets:
                 await session.execute(

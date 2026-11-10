@@ -918,3 +918,51 @@ def test_serve_freshness_schema_has_a_closed_status_vocabulary():
         "failed",
         "never_received",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frozen_hour", [None, 14, 16])
+@pytest.mark.parametrize("summary_pending", [False, True])
+async def test_profile_freshness_deadline_without_summary_uses_frozen_plan_first(
+    test_session, frozen_hour, summary_pending
+):
+    from app.models.registry import DailyDeliveryPlan
+    from app.services.market_freshness import _ConfiguredFeed, _profile_feed_freshness
+    from tests.test_full_market import DAY, _activated_plan, _calendar, _dataset
+
+    if frozen_hour is None:
+        dataset = await _dataset(test_session, "tw_etf_eod")
+        await _calendar(test_session, "TW", [DAY])
+    else:
+        dataset, _, response = await _activated_plan(test_session, "tw_etf_eod", count=1)
+        plan = await test_session.get(DailyDeliveryPlan, response.plan_id)
+        plan.deadline_at = datetime.combine(DAY, time(frozen_hour), timezone.utc)
+        await test_session.flush()
+        if summary_pending:
+            from sqlalchemy import delete
+
+            from app.models.registry import DailyDeliveryPlanSummary
+
+            await test_session.execute(
+                delete(DailyDeliveryPlanSummary).where(
+                    DailyDeliveryPlanSummary.plan_id == plan.plan_id
+                )
+            )
+    feed = _ConfiguredFeed(dataset, "finlab", "market_eod", 1, None, ())
+    before = await _profile_feed_freshness(
+        test_session,
+        feed,
+        "full_market",
+        datetime.combine(DAY, time(14, 30), timezone.utc),
+        DAY.isoformat(),
+    )
+    after = await _profile_feed_freshness(
+        test_session,
+        feed,
+        "full_market",
+        datetime.combine(DAY, time(15, 30), timezone.utc),
+        DAY.isoformat(),
+    )
+    overdue = "never_received" if summary_pending or frozen_hour is None else "late"
+    assert before.status == (overdue if frozen_hour == 14 else "not_due")
+    assert after.status == ("not_due" if frozen_hour == 16 else overdue)

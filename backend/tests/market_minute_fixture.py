@@ -115,7 +115,17 @@ def legacy_acquisition_catalog():
         key: governance.FullMarketFeedDescriptor("market_minute", 1, "TW", asset, "minute")
         for key, asset in (("tw_equity_minute", "equity"), ("tw_etf_minute", "etf"))
     }
+    from app.services.feed_schedule import completion_deadline_at
+
+    def historical_deadline(key, trade_date):
+        if key in historical:
+            return datetime.combine(
+                trade_date, datetime.min.time(), ZoneInfo("Asia/Taipei")
+            ).astimezone(timezone.utc) + timedelta(hours=23)
+        return completion_deadline_at(key, trade_date)
+
     with (
+        patch("app.services.feed_schedule.completion_deadline_at", historical_deadline),
         patch.dict(PROVIDER_DATASET_SCOPE, {"shioaji": tuple(historical)}),
         patch.object(
             governance, "FULL_MARKET_FEEDS", {**governance.FULL_MARKET_FEEDS, **historical}

@@ -1,6 +1,7 @@
 # Provider work FIFO
 
-所有五個 providers（Twelve Data、FinLab、Shioaji、TAIFEX、FactSet）只使用 provider-work-v1。
+現役四個 providers（Twelve Data、FinLab、TAIFEX、FactSet）只使用 provider-work-v1。
+Shioaji 已退役；下文相關 checkpoint／repair 說明僅供保留證據判讀，不授權新的抓取。
 Pilot／Full daily、historical、maintenance 與 retained-raw rerun 共用同 provider 的 FIFO、owner fence
 與 whole-work host lock。`PROVIDER_WORK_REQUIRED` 保留為部署相容性斷言：缺省為 `true`，
 Backend／Fetcher 接受一般布林 true 寫法（不分大小寫的 `true`、`1`、`yes`、`on`、`t`、`y`）；
@@ -100,7 +101,7 @@ normalization 與 completion proof 共用整個 owner，不能以一次 Source `
 Retryable round 必須先關閉 acquisition／acceptance、排空所有 accepted runs，再把下一 attempt
 附加到 FIFO 尾端並設定 `not_before`。原 frozen manifest、prepared bytes、receipts 與 operation budgets
 跨 queue retry 保留。等待 quota／queue 不是 provider failure；永久格式／DQ failure 保留 failed／manual。
-Daily 七條 feeds 與 historical adapters 在觀察到第一個 retryable provider／Source 錯誤、transport
+Daily 五條 feeds 與 historical adapters 在觀察到第一個 retryable provider／Source 錯誤、transport
 unknown 或 terminal polling timeout 後，即停止該輪的新 provider I/O 與新 prepared intent；不繼續後續
 member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain，再安全 tail retry。
 例外是 Twelve Data 的成員層級 `no_data`（HTTP 400 "No data is available"）：它不代表 provider 或帳號
@@ -151,7 +152,7 @@ FinLab daily target-not-ready 與 FactSet daily `no_source_row` 在 immutable
 不保存可 replay 的空 snapshot；historical 及超過 deadline 的缺列仍依 terminal partial／manual
 處理。每次 retry 在任何新 provider I/O 前，以 owner fence 重新讀取目前 published calendar；若 frozen planned decision
 之後的新 published revision 將該日改為休市，保存 `CALENDAR_DECISION_REPAIR_REQUIRED` 並停止
-重試，等待人工修復，絕不自動改寫 frozen decision。五個 provider 的 daily canonical 回合也在
+重試，等待人工修復，絕不自動改寫 frozen decision。四個現役 provider 的 daily canonical 回合也在
 第一個新抓取成員 claim 前（FactSet 為第一次 snapshot 前）查詢一次，命中時不授權、不派送、
 不消耗 member attempts，也不改寫既有 local member checkpoint。詳見 [Full market runbook](../operations/full_market.md#來源尚未發布的等待與休市判定)。
 
@@ -464,3 +465,10 @@ SIGTERM／join／SIGKILL／join，之後確認 leader 已回收且 group 不存�
 Daily control 在 claim 後停止時，也拒絕首次 manifest 寫入；已存在且完全相同的 frozen manifest
 仍可重播，以支援原 prepared 排空。這個 gate 位於既有 provider transaction／owner fence 內，
 Pilot 與 Full 都適用，不改寫已凍結的 scope 或 calendar-skip 決策。
+
+### 排程與 historical 隔離
+
+PR5 只投影 daily schedule／bounded deadline，既有 plan、work、prepared bytes、receipts 與 historical
+request 不重寫。Historical runners／planner 仍依非排程 descriptors、request 日期、lease、calendar
+snapshot、cutoff 與既有 acquisition authorization 執行；daily 觸發時間、execution-config API 故障或
+scheduler running 狀態不構成新增前提。FinLab ETF historical scope 不擴張。
