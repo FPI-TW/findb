@@ -475,8 +475,10 @@ Production 升版前，以 Owner API 正常停止原本啟用的 Full Shioaji（
 與 TAIFEX（10→11），確認所有 controls desired stopped、五個 provider 無 active owner。
 保存 PostgreSQL prepared hashes／receipts，以及主機 SQLite tables 的逐表指紋、檔案 inode
 與五組 provider host lock identity；不得以重設 checkpoint、refund 舊失敗或清空 cache 通過部署。
-Shioaji 空 Kbars／mapping 問題繼續由 [issue #378](https://github.com/FPI-TW/findb/issues/378)
-獨立追蹤，本次部署驗收不代表該問題已修復。
+本次部署驗收不代表 Shioaji 空 Kbars／mapping 問題（[issue #378](https://github.com/FPI-TW/findb/issues/378)）
+已修復；Shioaji 退役後該 issue 未經 production 驗收即關閉，保留證據與權限見
+[Shioaji Backend 退役部署基準](production.md#shioaji-backend-退役部署基準)，分 K 缺口由
+backlog 的替代 provider 項目追蹤。
 
 [Production Fetcher CD](https://github.com/FPI-TW/findb/actions/runs/40992266165) 於
 `2026-10-30 02:45 UTC` 成功完成 `fetcher-v0.1.13` promotion；指定 revision 的 Fetcher CI
