@@ -54,9 +54,11 @@ def installed_manifest(base, validator, target, registry):
         raise ValueError("release root mode invalid")
     with validator.SourceBundleReader(root) as source:
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
-        if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
-            "fetcher_bundle_version"
-        ] not in {3, 4, 5}:
+        if (
+            type(manifest.get("fetcher_bundle_version")) is not int
+            or manifest["fetcher_bundle_version"] != 5
+        ):
+            # Bundle v5 (Pilot retirement) is the rollback floor on every host.
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
         validator.validate_manifest(manifest, contracts, source)
@@ -69,7 +71,7 @@ def installed_manifest(base, validator, target, registry):
     return manifest
 
 
-def runtime_command(target, provider, profile, bundle_version=4):
+def runtime_command(target, provider, profile):
     if profile == "historical":
         return [
             "findb-fetch-historical-backfill",
@@ -85,7 +87,7 @@ def runtime_command(target, provider, profile, bundle_version=4):
         "--execution-profile",
         profile,
         "--config",
-        f"/app/configs/{'bootstrap' if bundle_version >= 4 else 'full_market'}.{target}.v1.json",
+        f"/app/configs/bootstrap.{target}.v1.json",
         "--state-path",
         f"{state_dir}/state.sqlite3",
         "--provider",
@@ -124,8 +126,8 @@ def committed_runtime(row, base=Path("/opt/fetcher")):
         return False
 
 
-def require_runtime(row, image, target, provider, profile, bundle_version=4):
-    command = runtime_command(target, provider, profile, bundle_version)[0]
+def require_runtime(row, image, target, provider, profile):
+    command = runtime_command(target, provider, profile)[0]
     config, state = row["Config"], row["State"]
     fields = [item.split("=", 1) for item in config["Env"] if "=" in item]
     identity = [value for key, value in fields if key == "APP_ENVIRONMENT"]
@@ -137,7 +139,7 @@ def require_runtime(row, image, target, provider, profile, bundle_version=4):
         not committed_runtime(row)
         or config["Image"] != image
         or not isinstance(args, list)
-        or args != runtime_command(target, provider, profile, bundle_version)
+        or args != runtime_command(target, provider, profile)
         or "Entrypoint" not in config
         or config["Entrypoint"] not in (None, [])
         or row.get("Path") != command
@@ -155,26 +157,10 @@ def require_runtime(row, image, target, provider, profile, bundle_version=4):
 PILOT_RESIDUE = tuple(f"findb-pilot-{provider.replace('_', '-')}" for provider in PROVIDERS)
 
 
-def require_pilot_residue(rows, bundle_version):
-    """Allow only stopped, gracefully drained Pilot consumers of a pre-v5 install.
-
-    Bundle v5 archives and removes them before installing; it never stops,
-    force-removes or reuses a Pilot runtime. A running one blocks the release.
-    """
-    for row in rows:
-        state = row["State"]
-        if bundle_version >= 5:
-            raise ValueError("retired pilot consumer remains after its retirement")
-        if state.get("Running") is not False or state.get("Status") != "exited":
-            print("fetcher_host_eligibility=failed reason=pilot_residue_running")
-            raise ValueError("retired pilot consumer must be stopped before its retirement")
-        if (
-            state.get("ExitCode") != 0
-            or state.get("OOMKilled") is not False
-            or state.get("Error") != ""
-        ):
-            print("fetcher_host_eligibility=failed reason=pilot_residue_not_drained")
-            raise ValueError("retired pilot consumer did not drain gracefully")
+def require_no_pilot_residue(rows):
+    """Bundle v5 archived and removed every Pilot consumer; one left over blocks the release."""
+    if rows:
+        raise ValueError("retired pilot consumer remains after its retirement")
 
 
 def check_host(target, registry, validator, base=Path("/opt/fetcher")):
@@ -193,16 +179,14 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     if any("shioaji" in name for name in names):
         raise ValueError("retired provider container remains on host")
     residue = [names.pop(name) for name in PILOT_RESIDUE if name in names]
-    require_pilot_residue(residue, manifest["fetcher_bundle_version"])
+    require_no_pilot_residue(residue)
     if set(names) != set(EXPECTED_RUNTIMES) or len(names) + len(residue) != len(rows):
         print("fetcher_host_eligibility=failed reason=consumer_inventory_mismatch")
         raise ValueError("missing, duplicate or unknown consumer")
     for name, provider, profile, image_key in CONSUMERS:
         image = manifest["images"][image_key]
         try:
-            require_runtime(
-                names[name], image, target, provider, profile, manifest["fetcher_bundle_version"]
-            )
+            require_runtime(names[name], image, target, provider, profile)
         except (ValueError, KeyError):
             print(
                 "fetcher_host_blocked reason=runtime_not_eligible "

@@ -523,8 +523,6 @@ async def admission_projection(
         result["blockers"].append("daily_acquisition_window_closed")
     return {
         "daily_runtime_window": runtime_window,
-        # Deprecated: FULL_MARKET_ENABLED is retired; kept for older Fetcher readers.
-        "full_market_enabled": True,
         "execution_profile": profile,
         "environment": result["environment"],
         "admission_id": str(admission.admission_id) if admission else None,

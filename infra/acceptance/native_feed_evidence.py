@@ -20,7 +20,9 @@ def assess(backend: dict[str, Any], fetchers: dict[str, dict[str, Any]]) -> dict
         "full_market"
     ):
         raise ValueError("invalid native evidence scope")
-    catalog = json.loads((ROOT / "fetcher/src/findb_fetcher/data/execution_descriptors.v1.json").read_text())
+    catalog = json.loads(
+        (ROOT / "fetcher/src/findb_fetcher/data/execution_descriptors.v1.json").read_text()
+    )
     expected = {
         (f["provider"], f["dataset_key"])
         for f in catalog["feeds"]

@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from app.api.deps import AdminPrincipal
@@ -30,7 +31,7 @@ from app.services.scheduler_control import (
     update_scheduler_desired_state,
 )
 from app.services.source_clients import create_source_client
-from app.utils import ensure_utc, utc_now
+from app.utils import ensure_utc, utc_now, uuid7
 from scripts.seed_data import seed_datasets
 from tests.full_market_fixtures import declaration
 from tests.script_env import script_env
@@ -567,9 +568,8 @@ async def test_source_budget_is_bound_to_actual_client_and_reported_for_permits(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("environment", ["local", "staging", "production"])
-@pytest.mark.parametrize("runtime_enabled", [True, False])
-async def test_deprecated_runtime_flag_report_never_blocks_acquisition(
-    test_session, monkeypatch, environment, runtime_enabled
+async def test_readiness_report_without_runtime_flag_never_blocks_acquisition(
+    test_session, monkeypatch, environment
 ):
     row, proof = await ready(
         test_session, monkeypatch, environment=environment, scope=["tw_equity_eod"]
@@ -581,7 +581,6 @@ async def test_deprecated_runtime_flag_report_never_blocks_acquisition(
             declaration_sha256=row.declaration_sha256,
             runtime_id=row.runtime_id,
             datasets=proof.datasets,
-            full_market_enabled=runtime_enabled,
         ),
     )
     result = await admission_projection(test_session, "finlab", source=True)
@@ -629,7 +628,6 @@ async def test_stale_installed_ack_only_blocks_acquisition_until_runtime_reports
             declaration_sha256=row.declaration_sha256,
             runtime_id=row.runtime_id,
             datasets=proof.datasets,
-            full_market_enabled=True,
         ),
     )
     control = await update_scheduler_desired_state(
@@ -837,7 +835,6 @@ async def test_source_current_enrollment_verification_is_readonly_and_independen
             declaration_sha256=row.declaration_sha256,
             runtime_id=row.runtime_id,
             datasets=proof.datasets,
-            full_market_enabled=False,
         ),
     )
     # A stopped control must still allow repair-proof verification.
@@ -1128,3 +1125,16 @@ async def test_start_accepts_missing_or_draft_calendar(
     assert control.desired_state == "running"
     admission = await test_session.scalar(select(FullMarketAdmissionFeed))
     assert admission.calendar_revision_id is None
+
+
+def test_readiness_report_rejects_the_retired_runtime_flag():
+    with pytest.raises(ValidationError):
+        ReadinessReport.model_validate(
+            {
+                "enrollment_id": str(uuid7()),
+                "declaration_sha256": "0" * 64,
+                "runtime_id": "runtime",
+                "datasets": ["tw_equity_eod"],
+                "full_market_enabled": True,
+            }
+        )
