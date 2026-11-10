@@ -61,7 +61,9 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
             with pytest.raises(QuotaBlockedError):
                 first._catalogue()
         else:
-            first.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+            first.adapter.client = TwelveDataClient(
+                TwelveDataConfig(api_key="offline-secret"), client=http
+            )
             plan = _plan()
             plan["parts"][0]["member_keys"] = ["AAPL"]
             first.state.record_plan(plan, first.provider)
@@ -91,7 +93,9 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
         return httpx.Response(503)
 
     with httpx.Client(transport=httpx.MockTransport(acquired)) as http:
-        second.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+        second.adapter.client = TwelveDataClient(
+            TwelveDataConfig(api_key="offline-secret"), client=http
+        )
         plan = _plan()
         with pytest.raises(TwelveDataResponseError):
             second._acquire(_member(), plan, plan["parts"][0], {"release_id": "r"}, second.feeds[0])
@@ -188,7 +192,7 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
         api_token="offline-secret",
         _sdk=SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=get)),
     )
-    runtime._finlab_gateway = lambda: gateway
+    runtime.adapter.gateway = lambda *_: gateway
     authorizations = []
 
     def authorize(method, path):
@@ -213,7 +217,7 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
             runtime.sync_universes()
     assert len(authorizations) == 1
     assert [call[1] for call in calls] == [100, 103][:fail_at]
-    assert len(submitted) == (2 if fail_at is None else 0) and runtime.bundles == {}
+    assert len(submitted) == (2 if fail_at is None else 0) and runtime.adapter.bundles == {}
     for index, body in enumerate(submitted, start=1):
         mapped = index == 1 or not missing_etf
         assert body["members"][0]["mapping_status"] == ("mapped" if mapped else "gap")
@@ -312,7 +316,9 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
             with pytest.raises(error):
                 first._catalogue()
         else:
-            first.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+            first.adapter.client = TwelveDataClient(
+                TwelveDataConfig(api_key="offline-secret"), client=http
+            )
             with pytest.raises(TwelveDataResponseError) as caught:
                 first._acquire(
                     _member(), _plan(), _plan()["parts"][0], {"release_id": "r"}, first.feeds[0]
@@ -324,7 +330,11 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
             )
     assert len(calls) == 1
     assert _daily(first) == (1, 0)
-    assert raw.calls == [] and first.catalogue_evidence == {} and first.bundles == {}
+    assert (
+        raw.calls == []
+        and first.catalogue_evidence == {}
+        and getattr(first.adapter, "bundles", {}) == {}
+    )
     assert first.state.prepared("fp1:123:AAPL") is None
     with first.state.connection() as db:
         permit = db.execute("SELECT next_at FROM full_pacing").fetchone()[0]
@@ -370,7 +380,9 @@ def test_http_429_cooldown_commits_before_secondary_byte_ledger_failure(
             runtime.http = http
             acquire = runtime._catalogue
         else:
-            runtime.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+            runtime.adapter.client = TwelveDataClient(
+                TwelveDataConfig(api_key="offline-secret"), client=http
+            )
 
             def acquire() -> Any:
                 return runtime._acquire(
@@ -410,7 +422,9 @@ def test_daily_invalid_http_429_stops_delivery_without_preparation(
     with httpx.Client(
         transport=httpx.MockTransport(lambda request: httpx.Response(429, stream=_Body(body)))
     ) as http:
-        runtime.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+        runtime.adapter.client = TwelveDataClient(
+            TwelveDataConfig(api_key="offline-secret"), client=http
+        )
         assert not runtime._deliver_plan(
             plan, {"release_id": "r", "members": [_member()]}, runtime.feeds[0]
         )
@@ -451,7 +465,7 @@ def test_actual_twelve_data_stream_uses_readiness_cap_before_preparation(
         )
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
-        runtime.td = TwelveDataClient(
+        runtime.adapter.client = TwelveDataClient(
             TwelveDataConfig(api_key="offline-secret", max_response_bytes=8000000), client=client
         )
         plan = _plan()
@@ -480,7 +494,7 @@ def test_actual_twelve_data_creation_tightens_environment_cap(
         runtime._acquire(
             _member(), _plan(), _plan()["parts"][0], {"release_id": "r"}, runtime.feeds[0]
         )
-    assert runtime.td._config.max_response_bytes == 1000
+    assert runtime.adapter.client._config.max_response_bytes == 1000
     runtime.http.close()
 
 
@@ -505,7 +519,7 @@ def _real_finlab_gateway(runtime: Any, symbols: tuple[str, ...]) -> list[str]:
         api_token="offline-secret",
         _sdk=SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=get)),
     )
-    runtime._finlab_gateway = lambda: gateway
+    runtime.adapter.gateway = lambda *_: gateway
     return calls
 
 
@@ -544,7 +558,7 @@ def test_real_finlab_gateway_oversized_field_rejects_and_records_observable_over
     assert observed == 2449
     assert _quota(runtime, "2026-10-01")[0] == expected_calls
     assert _quota(runtime, "2026-10-01")[1] == 0
-    assert raw.calls == [] and runtime.bundles == {}
+    assert raw.calls == [] and runtime.adapter.bundles == {}
     assert runtime.state.prepared("tw_equity_eod:" + symbols[0]) is None
     assert source.outcomes == [
         {"work_item_id": "tw_equity_eod", "member_key": symbols[0], "reason": "source_error"}
@@ -903,7 +917,11 @@ def test_http_catalogue_and_public_reports_enforce_exact_raw_body_boundary(
             message = "response bound failed"
         with pytest.raises(error, match=message):
             acquire()
-        assert raw.calls == [] and runtime.catalogue_evidence == {} and runtime.bundles == {}
+        assert (
+            raw.calls == []
+            and runtime.catalogue_evidence == {}
+            and getattr(runtime.adapter, "bundles", {}) == {}
+        )
     assert len(calls) == 1
     assert _daily(runtime) == (
         (2, len(body) if boundary == "wire" else 20)
@@ -1054,7 +1072,7 @@ def test_cached_taifex_report_checks_control_without_provider_quota(tmp_path, mo
         member.update(
             session=row["session"], member_key=row["contract_code"] + ":" + row["session"]
         )
-    runtime.futures[day.isoformat()] = (raw, rows, False)
+    runtime.adapter.reports[day.isoformat()] = (raw, rows, False)
     calls = []
 
     def poll(**kwargs):
@@ -1210,7 +1228,7 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
     runtime.http.close()
     runtime.http = httpx.Client(transport=httpx.MockTransport(response))
     if path == "daily":
-        runtime.td = TwelveDataClient(
+        runtime.adapter.client = TwelveDataClient(
             TwelveDataConfig(api_key="offline-fixture"), client=runtime.http
         )
 
@@ -1611,7 +1629,9 @@ def test_full_twelve_data_non_200_never_persists_provider_payload(tmp_path, monk
             lambda _: httpx.Response(status, json={"status": "ok", "values": []})
         )
     ) as http:
-        runtime.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+        runtime.adapter.client = TwelveDataClient(
+            TwelveDataConfig(api_key="offline-secret"), client=http
+        )
         try:
             with pytest.raises(TwelveDataResponseError) as caught:
                 runtime._acquire(
@@ -1708,7 +1728,7 @@ def test_finlab_catalogue_operational_failure_does_not_submit_mapping_gaps(
         _sdk=SimpleNamespace(login=login, data=SimpleNamespace(get=get)),
         on_response_bytes=observed,
     )
-    runtime._finlab_gateway = lambda: gateway
+    runtime.adapter.gateway = lambda *_: gateway
     if failure == "r2":
 
         def persist(*args, **kwargs):
@@ -1718,7 +1738,7 @@ def test_finlab_catalogue_operational_failure_does_not_submit_mapping_gaps(
     with pytest.raises(RuntimeError if failure == "r2" else FinLabOperationalError) as caught:
         runtime.sync_universes(dataset_keys=["tw_equity_eod"])
     assert "private" not in str(caught.value) and "offline-token" not in str(caught.value)
-    assert submitted == [] and runtime.bundles == {}
+    assert submitted == [] and runtime.adapter.bundles == {}
     assert len(calls) == int(failure not in {"authorization", "login"})
     if failure.startswith("quota_") or failure == "network":
         with runtime.state.connection() as db:

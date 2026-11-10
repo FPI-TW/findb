@@ -233,7 +233,8 @@ class _SnapshotStopError(Exception):
 def test_factset_first_snapshot_checks_calendar_only_for_daily_work(
     tmp_path, monkeypatch, kind, repair_required, expected
 ):
-    from findb_fetcher import factset_eod, full_market_runtime
+    from findb_fetcher import factset_eod
+    from findb_fetcher.provider_adapters import factset as factset_adapter
     from findb_fetcher.provider_work import WorkJournal
 
     runtime, _, _ = _runtime(tmp_path, provider="factset", execution_profile="full_market")
@@ -270,8 +271,8 @@ def test_factset_first_snapshot_checks_calendar_only_for_daily_work(
             raise _SnapshotStopError
 
     monkeypatch.setattr(factset_eod, "FactSetEOD", Snapshot)
-    monkeypatch.setattr(full_market_runtime, "FactSetConfig", SimpleNamespace(from_env=dict))
-    monkeypatch.setattr(full_market_runtime, "FactSetGateway", lambda config: None)
+    monkeypatch.setattr(factset_adapter, "FactSetConfig", SimpleNamespace(from_env=dict))
+    monkeypatch.setattr(factset_adapter, "FactSetGateway", lambda config: None)
     runtime.source.authorization = lambda *args, **kwargs: {}
     try:
         stopped = (
@@ -280,7 +281,7 @@ def test_factset_first_snapshot_checks_calendar_only_for_daily_work(
             else CalendarDecisionRepairRequiredError
         )
         with pytest.raises(stopped):
-            runtime._deliver_factset_plan(owner, plan, release, feed)
+            runtime._deliver_batch_plan(owner, plan, release, feed)
         assert events == expected
         assert _attempts(runtime) == {"00001": ("pending", None, 0)}
     finally:

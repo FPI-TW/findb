@@ -125,7 +125,7 @@ def _finlab_runtime(
         )
 
     gateway.fetch_dataset = fetch_dataset
-    runtime._finlab_gateway = lambda: gateway
+    runtime.adapter.gateway = lambda *_: gateway
     return runtime, source, raw, clock, SimpleNamespace(gateway=gateway, plan=plan, release=release)
 
 
@@ -336,7 +336,7 @@ def test_finlab_field_calls_paced_cached_and_prepared_identity_survives_restart(
         key: runtime.state.prepared(key)
         for key in (dataset + ":" + symbol for symbol in context.plan["parts"][0]["member_keys"])
     }
-    runtime.bundles.clear()
+    runtime.adapter.bundles.clear()
     runtime.state = FullMarketState(runtime.state.path)
     clock.elapsed += 61
     runtime.delivery.get_run_status = lambda *args, **kwargs: SimpleNamespace(
@@ -372,7 +372,7 @@ def test_finlab_partial_bundle_remains_durable_unresolved(
     runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
     expected_calls = 3 if boundary == "failure" else 2
     assert len(context.gateway.calls) == expected_calls
-    assert (dataset, date(2026, 10, 1)) not in runtime.bundles
+    assert (dataset, date(2026, 10, 1)) not in runtime.adapter.bundles
     assert raw.calls == []
     key = dataset + ":" + context.plan["parts"][0]["member_keys"][0]
     assert runtime.state.prepared(key) is None

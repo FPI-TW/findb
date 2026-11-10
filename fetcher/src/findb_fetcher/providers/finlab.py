@@ -29,13 +29,16 @@ FINLAB_SOURCE = "finlab"
 _IDENTIFIER = re.compile(r"^[a-z0-9_]{1,50}$")
 _SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,49}$")
 _REQUIRED_FIELDS = ("open", "high", "low", "close", "volume")
-_REQUIRED_DATASETS = {
-    "open": "price:開盤價",
-    "high": "price:最高價",
-    "low": "price:最低價",
-    "close": "price:收盤價",
-    "volume": "price:成交股數",
-}
+# The reviewed OHLCV field datasets, in acquisition order; the only copy.
+FINLAB_FIELD_DATASETS: Mapping[str, str] = MappingProxyType(
+    {
+        "open": "price:開盤價",
+        "high": "price:最高價",
+        "low": "price:最低價",
+        "close": "price:收盤價",
+        "volume": "price:成交股數",
+    }
+)
 _MAX_SOURCE_REQUEST_BYTES = 1024 * 1024
 _FRAME_JSON_COLUMN_BATCH = 16
 
@@ -380,7 +383,7 @@ class FinLabDatasetConfig:
             raise FinLabConfigError("asset_class must match its fixed FinLab Source dataset key")
         if self.currency not in {None, "TWD"}:
             raise FinLabConfigError("currency must be TWD or null")
-        if dict(self.field_datasets) != _REQUIRED_DATASETS:
+        if dict(self.field_datasets) != dict(FINLAB_FIELD_DATASETS):
             raise FinLabConfigError("field_datasets must match the reviewed FinLab OHLCV datasets")
         if not self.symbols:
             raise FinLabConfigError("reviewed FinLab symbol scope must not be empty")
