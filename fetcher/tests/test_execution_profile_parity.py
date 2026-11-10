@@ -12,7 +12,7 @@ from findb_fetcher.full_market_runtime import ReadinessBlockedError
 from test_full_market import _member, _runtime
 from test_full_market_recovery import _frozen_plan, _release
 
-CONFIGS = Path(__file__).resolve().parents[1] / "configs"
+CONFIGS = Path(__file__).resolve().parents[1] / "tests/fixtures/legacy_schedules"
 FEEDS = json.loads((CONFIGS / "full_market.staging.v1.json").read_text())["feeds"]
 
 

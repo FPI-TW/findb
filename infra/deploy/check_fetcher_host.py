@@ -12,6 +12,25 @@ import stat
 import subprocess
 from pathlib import Path
 
+# BEGIN GENERATED PROVIDER INVENTORY
+PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+CONSUMERS = (
+    ("findb-full-market-factset", "factset", "full_market", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
+    ("findb-pilot-factset", "factset", "pilot", "factset"),
+    ("findb-pilot-finlab", "finlab", "pilot", "finlab"),
+    ("findb-pilot-taifex", "taifex", "pilot", "twelve_data"),
+    ("findb-pilot-twelve-data", "twelve_data", "pilot", "twelve_data"),
+)
+EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
+# END GENERATED PROVIDER INVENTORY
+
 
 def require_root_directory(path):
     info = path.lstat()
@@ -39,10 +58,9 @@ def installed_manifest(base, validator, target, registry):
         raise ValueError("release root mode invalid")
     with validator.SourceBundleReader(root) as source:
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
-        if (
-            type(manifest.get("fetcher_bundle_version")) is not int
-            or manifest["fetcher_bundle_version"] != 3
-        ):
+        if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
+            "fetcher_bundle_version"
+        ] not in {3, 4}:
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
         validator.validate_manifest(manifest, contracts, source)
@@ -55,7 +73,7 @@ def installed_manifest(base, validator, target, registry):
     return manifest
 
 
-def runtime_command(target, provider, profile):
+def runtime_command(target, provider, profile, bundle_version=4):
     if profile == "historical":
         return [
             "findb-fetch-historical-backfill",
@@ -71,7 +89,7 @@ def runtime_command(target, provider, profile):
         "--execution-profile",
         profile,
         "--config",
-        f"/app/configs/full_market.{target}.v1.json",
+        f"/app/configs/{'bootstrap' if bundle_version >= 4 else 'full_market'}.{target}.v1.json",
         "--state-path",
         f"{state_dir}/state.sqlite3",
         "--provider",
@@ -110,8 +128,8 @@ def committed_runtime(row, base=Path("/opt/fetcher")):
         return False
 
 
-def require_runtime(row, image, target, provider, profile):
-    command = runtime_command(target, provider, profile)[0]
+def require_runtime(row, image, target, provider, profile, bundle_version=4):
+    command = runtime_command(target, provider, profile, bundle_version)[0]
     config, state = row["Config"], row["State"]
     fields = [item.split("=", 1) for item in config["Env"] if "=" in item]
     identity = [value for key, value in fields if key == "APP_ENVIRONMENT"]
@@ -123,7 +141,7 @@ def require_runtime(row, image, target, provider, profile):
         not committed_runtime(row)
         or config["Image"] != image
         or not isinstance(args, list)
-        or args != runtime_command(target, provider, profile)
+        or args != runtime_command(target, provider, profile, bundle_version)
         or "Entrypoint" not in config
         or config["Entrypoint"] not in (None, [])
         or row.get("Path") != command
@@ -153,20 +171,20 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     names = {row["Name"].removeprefix("/"): row for row in rows}
     if any("shioaji" in name for name in names):
         raise ValueError("retired provider container remains on host")
-    for profile in ("pilot", "full_market", "historical"):
-        for provider in ("twelve_data", "finlab", "taifex", "factset"):
-            name = f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}"
-            image = manifest["images"]["twelve_data" if provider == "taifex" else provider]
-            try:
-                require_runtime(names[name], image, target, provider, profile)
-            except (ValueError, KeyError):
-                # Only trusted inventory identities cross the SSM log boundary;
-                # Docker errors, argv and environment may contain secrets.
-                print(
-                    "fetcher_host_blocked reason=runtime_not_eligible "
-                    f"execution_profile={profile} provider={provider}"
-                )
-                raise
+    if set(names) != set(EXPECTED_RUNTIMES) or len(names) != len(rows):
+        raise ValueError("missing, duplicate or unknown consumer")
+    for name, provider, profile, image_key in CONSUMERS:
+        image = manifest["images"][image_key]
+        try:
+            require_runtime(
+                names[name], image, target, provider, profile, manifest["fetcher_bundle_version"]
+            )
+        except (ValueError, KeyError):
+            print(
+                "fetcher_host_blocked reason=runtime_not_eligible "
+                f"execution_profile={profile} provider={provider}"
+            )
+            raise
     return "running" if any(row["State"]["Running"] for row in rows) else "drained"
 
 

@@ -12,7 +12,11 @@ from findb_fetcher.market_calendar import CalendarDay, MarketCalendarError
 from findb_fetcher.schedule import load_schedule_manifest
 from findb_fetcher.twelve_data_scheduler import SchedulerService
 
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "daily_scheduler.v2.json"
+CONFIG_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "tests/fixtures/legacy_schedules"
+    / "daily_scheduler.v2.json"
+)
 
 
 class EmptyState:

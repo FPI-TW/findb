@@ -175,7 +175,7 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
             )
             runtime._ensure_proof = lambda: None
             try:
-                runtime._queued_cycle()
+                runtime._queued_cycle(plan_new_dates=False)
             finally:
                 runtime.close()
 

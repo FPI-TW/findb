@@ -93,7 +93,7 @@ FINDB_RUNTIME_SECRET_FILES = (
     "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
     "infra/deploy/runtime-secrets/render_serve_key.py",
 )
-FETCHER_RUNTIME_SECRET_FILES = (
+LEGACY_FETCHER_RUNTIME_SECRET_FILES = (
     "infra/deploy/inspect_full_market_installation.py",
     "fetcher/configs/full_market.local.v1.json",
     "fetcher/configs/full_market.staging.v1.json",
@@ -102,6 +102,14 @@ FETCHER_RUNTIME_SECRET_FILES = (
     "infra/deploy/runtime-secrets/fetcher.json",
     "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
 )
+FETCHER_RUNTIME_SECRET_FILES = (
+    *(p for p in LEGACY_FETCHER_RUNTIME_SECRET_FILES if not p.startswith("fetcher/configs/")),
+    "fetcher/configs/bootstrap.local.v1.json",
+    "fetcher/configs/bootstrap.staging.v1.json",
+    "fetcher/configs/bootstrap.production.v1.json",
+    "infra/deploy/generated/provider_inventory.v1.json",
+)
+
 FINDB_BUNDLE_FILES = (
     "docker-compose.prod.yml",
     "infra/nginx/cloudflare-real-ip.conf",
@@ -194,13 +202,15 @@ class SourceBundleReader:
         """The exact selected-source paths frozen into this reader snapshot."""
         return frozenset(self._snapshot)
 
-    def deployment_source_bundle_sha256(self, unit: str, schema_version: int = 3) -> str:
+    def deployment_source_bundle_sha256(
+        self, unit: str, schema_version: int = 3, fetcher_bundle_version: int = 4
+    ) -> str:
         records = [
             {
                 "path": relative,
                 "sha256": hashlib.sha256(self.read(relative)).hexdigest(),
             }
-            for relative in sorted(bundle_paths(unit, schema_version))
+            for relative in sorted(bundle_paths(unit, schema_version, fetcher_bundle_version))
         ]
         canonical = json.dumps(records, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
@@ -225,18 +235,33 @@ class SourceBundleReader:
         return contract_manifest
 
 
-def bundle_paths(unit: str, schema_version: int = 3) -> tuple[str, ...]:
+def bundle_paths(
+    unit: str, schema_version: int = 3, fetcher_bundle_version: int = 4
+) -> tuple[str, ...]:
+    if unit == "fetcher" and (
+        type(fetcher_bundle_version) is not int or fetcher_bundle_version not in {1, 2, 3, 4}
+    ):
+        raise ManifestError("fetcher_bundle_version invalid")
     try:
         return {
             "findb": FINDB_BUNDLE_FILES,
-            "fetcher": FETCHER_BUNDLE_FILES,
+            "fetcher": FETCHER_BUNDLE_FILES
+            if fetcher_bundle_version >= 4
+            else (
+                *COMMON_BUNDLE_FILES,
+                *LEGACY_FETCHER_RUNTIME_SECRET_FILES,
+                "fetcher/pyproject.toml",
+            ),
         }[unit] + (TRANSACTION_BUNDLE_FILES if schema_version == 4 else ())
     except KeyError as exc:
         raise ManifestError("unit must be findb or fetcher") from exc
 
 
 def bundle_source_paths(
-    unit: str, contract_manifest: ContractManifest, schema_version: int = 3
+    unit: str,
+    contract_manifest: ContractManifest,
+    schema_version: int = 3,
+    fetcher_bundle_version: int = 4,
 ) -> tuple[str, ...]:
     """Return the complete allowlist captured in a deployable unit bundle.
 
@@ -248,7 +273,7 @@ def bundle_source_paths(
     contract_paths = tuple(
         f"contracts/{contract['path']}" for contract in contract_manifest.parsed["contracts"]
     )
-    return (*bundle_paths(unit, schema_version), *contract_paths)
+    return (*bundle_paths(unit, schema_version, fetcher_bundle_version), *contract_paths)
 
 
 def bundle_file_mode(relative: str) -> int:
@@ -552,7 +577,7 @@ def validate_manifest(
         if (
             manifest.get("unit") != "fetcher"
             or type(manifest.get("fetcher_bundle_version")) is not int
-            or manifest.get("fetcher_bundle_version") not in {1, 2, 3}
+            or manifest.get("fetcher_bundle_version") not in {1, 2, 3, 4}
         ):
             raise ManifestError("fetcher_bundle_version invalid")
     if schema_version == 4:
@@ -649,15 +674,17 @@ def validate_manifest(
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise ManifestError("created_by_run_id must be a numeric, nonempty string")
     if source_bundle is not None and bundle_digest != source_bundle.deployment_source_bundle_sha256(
-        unit, schema_version
+        unit, schema_version, manifest.get("fetcher_bundle_version", 4)
     ):
         raise ManifestError("deployment source bundle checksum mismatch")
     if source_bundle is not None and unit == "fetcher":
         deployment = source_bundle.read("infra/deploy/runtime-secrets/deploy_fetcher_aws.sh")
         version = manifest["fetcher_bundle_version"]
-        if (b"# factset-consumers-v1:" in deployment) != (version >= 2) or (
-            b"# shioaji-retired-v1:" in deployment
-        ) != (version == 3):
+        if (
+            (b"# factset-consumers-v1:" in deployment) != (version >= 2)
+            or (b"# shioaji-retired-v1:" in deployment) != (version >= 3)
+            or (b"# backend-schedules-v1:" in deployment) != (version >= 4)
+        ):
             raise ManifestError("fetcher bundle version differs from deployment topology")
 
 
@@ -750,6 +777,7 @@ def build_bundle(repo_root: Path, manifest_path: Path, unit: str) -> bytes:
                     unit,
                     contract_manifest,
                     manifest["schema_version"],
+                    manifest.get("fetcher_bundle_version", 4),
                 )
             )
         )
@@ -827,7 +855,11 @@ def validate_bundle_bytes(
         manifest = _load_manifest_bytes(extracted.read())
         if manifest.get("unit") != unit:
             raise ManifestError("bundle unit does not match expected unit")
-        expected_paths = set(bundle_paths(unit, manifest["schema_version"]))
+        expected_paths = set(
+            bundle_paths(
+                unit, manifest["schema_version"], manifest.get("fetcher_bundle_version", 4)
+            )
+        )
         # The contract manifest identifies the schema members expected in the archive.
         contract_member = next(
             (member for member in members if member.name == "contracts/manifest.json"), None
@@ -840,7 +872,12 @@ def validate_bundle_bytes(
             raise ManifestError("bundle contract manifest is unreadable")
         contract_manifest = _parse_contract_manifest_bytes(contract_raw.read())
         expected_paths.update(
-            bundle_source_paths(unit, contract_manifest, manifest["schema_version"])
+            bundle_source_paths(
+                unit,
+                contract_manifest,
+                manifest["schema_version"],
+                manifest.get("fetcher_bundle_version", 4),
+            )
         )
         if set(names) != ({BUNDLE_MANIFEST_PATH} | expected_paths):
             raise ManifestError("bundle members do not match the unit allowlist")
@@ -857,7 +894,11 @@ def validate_bundle_bytes(
                 raise ManifestError(f"bundle contract schema checksum mismatch: {contract['path']}")
         source_records = [
             {"path": path, "sha256": hashlib.sha256(contents[path]).hexdigest()}
-            for path in sorted(bundle_paths(unit, manifest["schema_version"]))
+            for path in sorted(
+                bundle_paths(
+                    unit, manifest["schema_version"], manifest.get("fetcher_bundle_version", 4)
+                )
+            )
         ]
         source_sha = hashlib.sha256(canonical_json_bytes(source_records)).hexdigest()
         if manifest.get("deployment_source_bundle_sha256") != source_sha:
@@ -1205,7 +1246,7 @@ def generate(args: argparse.Namespace) -> None:
         if args.unit == "fetcher":
             manifest["runtime_profile"] = "unified"
         if args.unit == "fetcher":
-            manifest["fetcher_bundle_version"] = 3
+            manifest["fetcher_bundle_version"] = 4
         if args.deployment_target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": args.promotion_source_bundle_key,

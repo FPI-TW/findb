@@ -199,7 +199,15 @@ async def test_source_daily_close_is_frozen_and_does_not_block_runnable_maintena
         "dataset_key": dataset,
         "trade_date": "2099-10-15",
         "execution_profile": "pilot",
-        "scope": {"feed": "original"},
+        "scope": {
+            "feed": {
+                "provider": "finlab",
+                "dataset_key": dataset,
+                "market": "TW",
+                "asset_class": "equity",
+                "scheduled_time": "17:00",
+            }
+        },
         "not_before": "2000-01-01T00:00:00Z",
     }
     first = await client.post(
@@ -223,6 +231,24 @@ async def test_source_daily_close_is_frozen_and_does_not_block_runnable_maintena
         "/api/v1/source/provider-work/enqueue", headers=source_headers, json=body
     )
     assert replay.status_code == 200 and replay.json() == first.json()
+    changed = {**body, "scope": {"feed": {**body["scope"]["feed"], "scheduled_time": "18:00"}}}
+    frozen = await client.post(
+        "/api/v1/source/provider-work/enqueue", headers=source_headers, json=changed
+    )
+    assert frozen.status_code == 409
+    assert frozen.headers["X-FinDB-Error-Code"] == "PROVIDER_WORK_FROZEN_FEED"
+    # Changing adapter identity is still a genuine conflict, not a clock update.
+    changed["scope"]["feed"]["market"] = "US"
+    conflict = await client.post(
+        "/api/v1/source/provider-work/enqueue", headers=source_headers, json=changed
+    )
+    assert conflict.status_code == 409
+    assert conflict.headers["X-FinDB-Error-Code"] == "PROVIDER_WORK_CONFLICT"
+    replay = await client.post(
+        "/api/v1/source/provider-work/enqueue", headers=source_headers, json=body
+    )
+    assert replay.status_code == 200 and replay.json() == first.json()
+
     ready = await client.post(
         "/api/v1/source/provider-work/enqueue",
         headers=source_headers,

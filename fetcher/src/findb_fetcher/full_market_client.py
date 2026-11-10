@@ -22,6 +22,7 @@ from findb_fetcher.source_recovery import source_retry_sleep, transient_source_s
 PROVIDER_WORK_CONFLICT_CODES = frozenset(
     {
         "PROVIDER_WORK_CONFLICT",
+        "PROVIDER_WORK_FROZEN_FEED",
         "PROVIDER_WORK_FENCE_MISMATCH",
         "PROVIDER_WORK_RECOVERY_REQUIRED",
         "PROVIDER_WORK_NOT_CLOSED",
@@ -73,6 +74,39 @@ class FullMarketSourceClient:
     def close(self) -> None:
         if self.owns_client:
             self.client.close()
+
+    def execution_config(self) -> dict[str, Any]:
+        """Fetch one bounded, non-cacheable complete schedule response."""
+        source_permit(self.config.source_client_key)
+        try:
+            with self.client.stream(
+                "GET",
+                self.config.source_api_url + "/api/v1/source/execution-config",
+                params={"execution_profile": self.execution_profile, "schema_version": 1},
+                headers={"X-API-Key": self.config.source_client_key, "Accept-Encoding": "identity"},
+            ) as response:
+                if response.status_code != 200:
+                    raise FullMarketProtocolError(
+                        "Execution config unavailable",
+                        status_code=response.status_code,
+                        retryable=transient_source_status(response.status_code),
+                        retry_after=self._retry_delay(response, 0, bounded=False),
+                    )
+                if response.headers.get("cache-control", "").lower() != "no-store":
+                    raise FullMarketProtocolError("Execution config cache policy invalid")
+                raw = bytearray()
+                for chunk in response.iter_bytes():
+                    if len(raw) + len(chunk) > 65536:
+                        raise FullMarketProtocolError("Execution config exceeds bound")
+                    raw.extend(chunk)
+                value = json.loads(raw)
+                if not isinstance(value, dict):
+                    raise ValueError("Execution config must be an object")
+                return value
+        except (httpx.TransportError, ValueError) as exc:
+            raise FullMarketProtocolError(
+                "Execution config unavailable", retryable=isinstance(exc, httpx.TransportError)
+            ) from exc
 
     def authorization(
         self,

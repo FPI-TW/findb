@@ -121,6 +121,11 @@ def _cycle_runtime(
         completion_window_seconds=86400,
     )
     source = _Governance(runtime, releases, min(days))
+    from execution_config_support import publication
+
+    source.execution_config = lambda: publication(
+        source_timezone="UTC", scheduled_time="00:00", target_date_lag_days=0
+    )
     runtime.source = source
     runtime._ensure_proof = lambda: None
     now = datetime.now(timezone.utc)

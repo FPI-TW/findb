@@ -115,6 +115,54 @@ esac
   exit 1
 fi
 
+provider_inventory="$(python3 - "$FETCHER_RELEASE_ROOT/infra/deploy/generated/provider_inventory.v1.json" <<'INVENTORY'
+import hashlib, json, sys
+try:
+    value = json.load(open(sys.argv[1]))
+    digest = value.pop("projection_sha256")
+    if hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest() != digest:
+        raise ValueError()
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise ValueError()
+    consumers = value["consumers"]
+    providers = value["providers"]
+    if not providers or len(set(providers)) != len(providers) or len(consumers) != len(providers) * 3:
+        raise ValueError()
+    if len({c["name"] for c in consumers}) != len(consumers):
+        raise ValueError()
+    for provider in providers:
+        if provider not in {"twelve_data", "finlab", "taifex", "factset"}:
+            raise ValueError()  # Host adapter state/cache paths must be implemented first.
+        rows = [c for c in consumers if c["provider"] == provider]
+        if {c["role"] for c in rows} != {"pilot", "full_market", "historical"} or len(rows) != 3:
+            raise ValueError()
+        if not all(c["name"] == "findb-" + c["role"].replace("_", "-") + "-" + provider.replace("_", "-") for c in rows):
+            raise ValueError()
+        if len({c["image_key"] for c in rows}) != 1 or rows[0]["image_key"] not in value["images"]:
+            raise ValueError()
+        print(provider.replace("_", "-"), rows[0]["image_key"])
+except Exception:
+    raise SystemExit("fetcher_aws_deploy=failed reason=provider_inventory_invalid") from None
+INVENTORY
+)"
+providers=()
+while read -r provider image_key; do providers+=("$provider"); done <<< "$provider_inventory"
+provider_image() {
+  local provider image_key
+  while read -r provider image_key; do
+    if [ "$provider" = "$1" ]; then
+      case "$image_key" in
+        twelve_data) printf '%s' "$TWELVE_IMAGE_REF" ;;
+        finlab) printf '%s' "$FINLAB_IMAGE_REF" ;;
+        factset) printf '%s' "$FACTSET_IMAGE_REF" ;;
+        *) return 1 ;;
+      esac
+      return
+    fi
+  done <<< "$provider_inventory"
+  return 1
+}
+
 runtime_dir="$FETCHER_RELEASE_ROOT/infra/deploy/runtime-secrets"
 catalog="$runtime_dir/fetcher.json"
 runtime_command="$runtime_dir/runtime_secret_command.sh"
@@ -262,9 +310,9 @@ initial_runtime_exists() {
   return 1
 }
 retained_full_market=false
-for pair in "findb-pilot-twelve-data:findb-full-market-twelve-data" "findb-pilot-finlab:findb-full-market-finlab" "findb-pilot-taifex:findb-full-market-taifex" "findb-pilot-factset:findb-full-market-factset"; do
-  pilot_name="${pair%%:*}"
-  full_name="${pair#*:}"
+for provider in "${providers[@]}"; do
+  pilot_name="findb-pilot-$provider"
+  full_name="findb-full-market-$provider"
   for base in "$full_name" "$pilot_name" "findb-historical-${full_name#findb-full-market-}"; do
     for installed in "$base" "${base}-previous" "${base}-candidate" "${base}-transaction-backup" "${base}-legacy-previous" "${base}-preflight" "${base}-preflight-state" "${base}-preflight-control"; do
       if initial_runtime_exists "$installed"; then
@@ -610,14 +658,15 @@ for legacy in findb-fetcher-scheduler findb-fetcher-finlab-scheduler findb-fetch
     exit 1
   fi
 done
-provider_count=8
+provider_count="$((${#providers[@]} * 2))"
 if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
-  for provider in twelve-data finlab taifex factset; do
+  for provider in "${providers[@]}"; do
+    image="$(provider_image "$provider")"
     case "$provider" in
-      twelve-data) image="$TWELVE_IMAGE_REF"; history=/var/lib/findb-fetcher/historical; cache=- ;;
-      taifex) image="$TWELVE_IMAGE_REF"; history=/var/lib/findb-taifex-fetcher/historical; cache=- ;;
-      factset) image="$FACTSET_IMAGE_REF"; history=/var/lib/findb-factset-fetcher/historical; cache=- ;;
-      finlab) image="$FINLAB_IMAGE_REF"; history=/var/lib/findb-finlab-fetcher/historical; cache=/var/lib/findb-finlab-fetcher/cache ;;
+      twelve-data) history=/var/lib/findb-fetcher/historical; cache=- ;;
+      taifex) history=/var/lib/findb-taifex-fetcher/historical; cache=- ;;
+      factset) history=/var/lib/findb-factset-fetcher/historical; cache=- ;;
+      finlab) history=/var/lib/findb-finlab-fetcher/historical; cache=/var/lib/findb-finlab-fetcher/cache ;;
     esac
     for profile in pilot full-market historical; do
       stable="findb-$profile-$provider"
@@ -634,7 +683,7 @@ for profile in pilot full_market historical; do
     full_market) state="$full" ;;
     historical) state="$history" ;;
   esac
-  command=(findb-fetch-runtime --execution-profile "$profile" --config "/app/configs/full_market.$APP_ENVIRONMENT.v1.json" --state-path "$state/state.sqlite3" --provider "${provider//-/_}")
+  command=(findb-fetch-runtime --execution-profile "$profile" --config "/app/configs/bootstrap.$APP_ENVIRONMENT.v1.json" --state-path "$state/state.sqlite3" --provider "${provider//-/_}")
   if [ "$profile" = historical ]; then command=(findb-fetch-historical-backfill --provider "${provider//-/_}"); fi
   "$helper" "$provider" "$image" "$state" "$state/state.sqlite3" "$stable" "$stable-candidate" "$stable-previous" "$stable-preflight" "$cache" "${command[@]}"
 done
@@ -644,7 +693,7 @@ PROVIDER_PROFILES
     done
   done
 else
-provider_count=8
+provider_count="$((${#providers[@]} * 2))"
 for execution_profile in pilot full_market; do
   export FETCHER_CONSUMER_PROFILE="$execution_profile"
   state_dir="$pilot_state"
@@ -653,12 +702,13 @@ for execution_profile in pilot full_market; do
     state_dir="$full_market_state"
     name_prefix=findb-full-market
   fi
-  for provider in twelve-data finlab taifex factset; do
+  for provider in "${providers[@]}"; do
+    image="$(provider_image "$provider")"
     identity="${provider//-/_}"
     case "$provider" in
-      twelve-data|taifex) image="$TWELVE_IMAGE_REF"; cache_dir=- ;;
-      factset) image="$FACTSET_IMAGE_REF"; cache_dir=- ;;
-      finlab) image="$FINLAB_IMAGE_REF"; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
+      twelve-data|taifex) cache_dir=- ;;
+      factset) cache_dir=- ;;
+      finlab) cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
     esac
     stable="$name_prefix-$provider"
     register_provider "$stable" "${stable}-previous"
@@ -667,7 +717,7 @@ for execution_profile in pilot full_market; do
       "$state_dir" "$state_dir/state.sqlite3" \
       "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
       findb-fetch-runtime --execution-profile "$execution_profile" \
-      --config "/app/configs/full_market.$APP_ENVIRONMENT.v1.json" \
+      --config "/app/configs/bootstrap.$APP_ENVIRONMENT.v1.json" \
       --state-path "$state_dir/state.sqlite3" --provider "$identity"
     record_activated_runtime "$stable" "$image"
   done
@@ -678,13 +728,15 @@ done
 export FETCHER_CONSUMER_PROFILE=historical
 # historical-taifex-v1: accepted installations require the TAIFEX historical consumer.
 # factset-consumers-v1: accepted installations require the FactSet consumers.
+# backend-schedules-v1: clocks are published by Source; bootstrap contains no schedules.
 # shioaji-retired-v1: accepted installations require four providers and twelve consumers.
-for provider in twelve-data finlab taifex factset; do
+for provider in "${providers[@]}"; do
+  image="$(provider_image "$provider")"
   case "$provider" in
-    twelve-data) image="$TWELVE_IMAGE_REF"; state_dir=/var/lib/findb-fetcher/historical; cache_dir=- ;;
-    finlab) image="$FINLAB_IMAGE_REF"; state_dir=/var/lib/findb-finlab-fetcher/historical; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
-    taifex) image="$TWELVE_IMAGE_REF"; state_dir=/var/lib/findb-taifex-fetcher/historical; cache_dir=- ;;
-    factset) image="$FACTSET_IMAGE_REF"; state_dir=/var/lib/findb-factset-fetcher/historical; cache_dir=- ;;
+    twelve-data) state_dir=/var/lib/findb-fetcher/historical; cache_dir=- ;;
+    finlab) state_dir=/var/lib/findb-finlab-fetcher/historical; cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
+    taifex) state_dir=/var/lib/findb-taifex-fetcher/historical; cache_dir=- ;;
+    factset) state_dir=/var/lib/findb-factset-fetcher/historical; cache_dir=- ;;
   esac
   stable="findb-historical-$provider"
   register_provider "$stable" "${stable}-previous"

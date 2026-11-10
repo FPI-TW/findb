@@ -29,12 +29,14 @@ from app.models.provider_work import (
 )
 from app.models.registry import IngestionRun, SchedulerControl
 from app.services.daily_runtime import daily_window
+from app.services.provider_metadata import provider_catalog
 from app.utils import utc_now, uuid7
 
 HEARTBEAT_TTL = timedelta(minutes=2)
 TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
-# Bundle v3 host inventory, matching infra/deploy/provider_work_preflight.py.
-CUTOVER_PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+
+# Same catalog projection as the generated deployment consumer inventory.
+CUTOVER_PROVIDERS = tuple(p.provider for p in provider_catalog().providers if p.consumer_roles)
 RETIRED_CUTOVER_PROVIDERS = ("shioaji",)
 
 
@@ -283,7 +285,34 @@ async def enqueue(
             existing.execution_profile,
             existing.scope,
         ) != immutable:
-            raise ProviderWorkError("stable work identity is already bound to another scope")
+            # Daily clock publications can change between process starts. Report
+            # the existing frozen feed distinctly, without replacing any scope,
+            # calendar, plan, attempt or prepared evidence. Other identity/scope
+            # conflicts retain their strict error semantics.
+            incoming = scope or {}
+            old_feed, new_feed = existing.scope.get("feed"), incoming.get("feed")
+            frozen_feed = (
+                kind == "daily"
+                and (
+                    existing.kind,
+                    existing.dataset_key,
+                    existing.trade_date,
+                    existing.execution_profile,
+                )
+                == immutable[:4]
+                and isinstance(old_feed, dict)
+                and isinstance(new_feed, dict)
+                and all(
+                    old_feed.get(k) == new_feed.get(k)
+                    for k in ("provider", "dataset_key", "market", "asset_class")
+                )
+                and {k: v for k, v in existing.scope.items() if k != "feed"}
+                == {k: v for k, v in incoming.items() if k != "feed"}
+            )
+            raise ProviderWorkError(
+                "stable work identity is already bound to another scope",
+                code="PROVIDER_WORK_FROZEN_FEED" if frozen_feed else "PROVIDER_WORK_CONFLICT",
+            )
         return existing
     work = ProviderWork(
         work_id=uuid7(),

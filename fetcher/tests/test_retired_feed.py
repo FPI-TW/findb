@@ -81,7 +81,7 @@ def test_retired_daily_settles_without_planning_rewriting_or_reacquiring(
     with runtime.state.connection() as db:
         original = [tuple(row) for row in db.execute("SELECT * FROM full_work")]
     try:
-        runtime._queued_cycle()
+        runtime._queued_cycle(plan_new_dates=False)
         assert events.index("drain-originals") < events.index("close") < events.index("settle")
         assert len(settlements) == 2
         assert all(row["outcome"] == "failed" for row in settlements)
@@ -101,7 +101,7 @@ def test_retired_maintenance_does_not_spend_attempt_or_refresh_current_sibling(
 ):
     runtime, _, _, events, settlements = _retired_runtime(tmp_path, monkeypatch, kind="maintenance")
     try:
-        runtime._queued_cycle()
+        runtime._queued_cycle(plan_new_dates=False)
         assert "drain-originals" in events
         assert settlements[-1]["failure_code"] == "RETIRED_FEED_MANUAL_REVIEW"
         journal = queue.WorkJournal(tmp_path / "provider-work.sqlite3", "original-stable")
@@ -129,11 +129,11 @@ def test_retired_checkpoint_requires_every_original_sequence_and_preserves_recei
     bodies.extend(canonical_bytes(row).decode() for row in requests[: 2 if registered else 1])
     try:
         if registered:
-            runtime._queued_cycle()
+            runtime._queued_cycle(plan_new_dates=False)
             assert settlements[-1]["outcome"] == "failed"
         else:
             with pytest.raises(queue.ProviderWorkRecoveryBlockedError):
-                runtime._queued_cycle()
+                runtime._queued_cycle(plan_new_dates=False)
             assert not settlements
         assert runtime.state.prepared(key) == original
         assert runtime.state.sequence_receipt(key, "first") == "original-run"
@@ -152,7 +152,7 @@ def test_retired_drain_failure_keeps_fence_for_recovery(tmp_path, monkeypatch):
     monkeypatch.setattr(queue.ProviderWorkSession, "drain_prepared", fail)
     try:
         with pytest.raises(queue.ProviderWorkRecoveryBlockedError):
-            runtime._queued_cycle()
+            runtime._queued_cycle(plan_new_dates=False)
         assert not settlements
     finally:
         runtime.close()
@@ -168,7 +168,7 @@ def test_invalid_retired_checkpoint_never_uses_manual_prepared_waiver(tmp_path, 
     runtime.state.prepare("fp1:123:AAPL", body)
     try:
         with pytest.raises(queue.ProviderWorkRecoveryBlockedError):
-            runtime._queued_cycle()
+            runtime._queued_cycle(plan_new_dates=False)
         assert not settlements and "drain-originals" not in events
         assert runtime.state.prepared("fp1:123:AAPL") == body
     finally:

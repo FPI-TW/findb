@@ -8,18 +8,31 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROVIDERS = ("twelve_data", "finlab", "taifex", "factset")
+# BEGIN GENERATED PROVIDER INVENTORY
+PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+CONSUMERS = (
+    ("findb-full-market-factset", "factset", "full_market", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
+    ("findb-pilot-factset", "factset", "pilot", "factset"),
+    ("findb-pilot-finlab", "finlab", "pilot", "finlab"),
+    ("findb-pilot-taifex", "taifex", "pilot", "twelve_data"),
+    ("findb-pilot-twelve-data", "twelve_data", "pilot", "twelve_data"),
+)
+EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
+# END GENERATED PROVIDER INVENTORY
 
 
 def inspect_cutover(*, environment, host_id, host_ids, containers):
     if environment not in {"local", "staging", "production"} or host_ids != [host_id]:
         raise ValueError("exactly one Fetcher host per environment is required")
     names = {row["Name"].removeprefix("/"): row for row in containers}
-    expected = {
-        f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}"
-        for profile in ("pilot", "full_market", "historical")
-        for provider in PROVIDERS
-    }
+    expected = set(EXPECTED_RUNTIMES)
     if set(names) != expected:
         raise ValueError("all provider consumers must be present; unknown consumers are forbidden")
     mount_sources = set()

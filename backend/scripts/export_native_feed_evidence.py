@@ -8,7 +8,6 @@ import json
 import os
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 from urllib import parse
 from urllib.request import Request, urlopen
 
@@ -77,9 +76,9 @@ async def export(spec):
     if profile not in ("pilot", "full_market"):
         raise ValueError("invalid execution profile")
     trade_date = date.fromisoformat(spec["trade_date"])
-    manifest = json.loads(Path("configs/execution_feeds.v1.json").read_text())
-    drain_only = set(manifest["drain_only_providers"])
-    catalog = [feed for feed in manifest["feeds"] if feed["provider"] not in drain_only]
+    from app.services.provider_metadata import acquisition_feeds
+
+    catalog = [feed.model_dump() for feed in acquisition_feeds()]
     feeds = []
     async with async_session_maker() as db:
         await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))

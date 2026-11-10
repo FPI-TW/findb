@@ -28,49 +28,6 @@ def projection_digest(value: object) -> str:
     ).hexdigest()
 
 
-def legacy_execution_catalog(catalog: ProviderCatalog) -> dict:
-    """Temporary compatibility projection until PR4 removes local schedules."""
-    # Preserve the frozen byte-level pilot catalog bindings until PR4 retires
-    # these files. This controls serialization only, never scheduling or scope.
-    legacy_order = (
-        "us_equity_eod",
-        "hk_equity_eod",
-        "tw_equity_eod",
-        "tw_etf_eod",
-        "tw_futures_eod",
-    )
-    feeds = sorted(
-        catalog.canonical_data()["feeds"],
-        key=lambda f: (
-            legacy_order.index(f["dataset_key"])
-            if f["dataset_key"] in legacy_order
-            else len(legacy_order),
-            f["provider"],
-            f["dataset_key"],
-        ),
-    )
-    return {
-        "version": 1,
-        "drain_only_providers": [],
-        "daily_runtime_policies": {},
-        "feeds": [
-            {
-                "provider": feed["provider"],
-                "dataset_key": feed["dataset_key"],
-                "market": feed["market"],
-                "asset_class": feed["asset_class"],
-                "source_timezone": feed["schedule"]["timezone"],
-                "scheduled_time": feed["schedule"]["local_time"],
-                "target_date_lag_days": feed["schedule"]["target_date_lag_days"],
-                "completion_window_seconds": feed["publication_retry_window_seconds"],
-                "slot_id": feed["delivery"]["slot_id"],
-            }
-            for feed in feeds
-            if feed["capabilities"]["acquisition"]
-        ],
-    }
-
-
 def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
     data = catalog.canonical_data()
     envelope = {"schema_version": 1, "source_sha256": catalog.digest()}
@@ -160,11 +117,8 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
         "from typing import Literal\n\n"
         "ProviderId = Literal[" + ", ".join(json.dumps(p) for p in source_scopes) + "]\n"
     )
-    return {
+    artifacts = {
         Path("backend/app/generated/provider_ids.py"): provider_type,
-        Path("backend/configs/execution_feeds.v1.json"): json_text(
-            legacy_execution_catalog(catalog)
-        ),
         Path("backend/configs/provider_catalog.v1.schema.json"): json_text(
             ProviderCatalog.model_json_schema()
         ),
@@ -175,6 +129,33 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
         Path("dashboard/src/lib/generated/provider-catalog.ts"): "\n".join(lines),
         Path("infra/deploy/generated/provider_inventory.v1.json"): json_text(inventory),
     }
+
+    # Standalone SSM guards must carry the same generated inventory when copied
+    # without the source tree. Regenerate the marked inventory in each guard.
+    block = "# BEGIN GENERATED PROVIDER INVENTORY\n"
+    block += "PROVIDERS = " + repr(tuple(inventory["providers"])).replace("'", '"') + "\n"
+    block += "CONSUMERS = (\n"
+    for row in consumers:
+        block += (
+            "    ("
+            + ", ".join(json.dumps(row[k]) for k in ("name", "provider", "role", "image_key"))
+            + "),\n"
+        )
+    block += ")\nEXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)\n"
+    block += "# END GENERATED PROVIDER INVENTORY"
+    for name in (
+        "check_fetcher_host.py",
+        "check_fetcher_runtime_recovery.py",
+        "provider_work_preflight.py",
+    ):
+        path = Path("infra/deploy") / name
+        text = (REPO_ROOT / path).read_text()
+        start = text.index("# BEGIN GENERATED PROVIDER INVENTORY")
+        end = text.index("# END GENERATED PROVIDER INVENTORY") + len(
+            "# END GENERATED PROVIDER INVENTORY"
+        )
+        artifacts[path] = text[:start] + block + text[end:]
+    return artifacts
 
 
 def export(root: Path, *, check: bool) -> list[Path]:

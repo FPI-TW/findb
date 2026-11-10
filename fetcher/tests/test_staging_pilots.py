@@ -109,9 +109,13 @@ def test_new_daily_state_never_claims_legacy_nvda_or_old_pending_dates(tmp_path)
     from findb_fetcher.twelve_data_scheduler import JobExecution, SchedulerService
     from findb_fetcher.universe import load_symbol_universe
 
-    old_schedule = load_schedule_manifest(CONFIGS / "daily_scheduler.v2.json").feeds[0]
+    old_schedule = load_schedule_manifest(
+        (CONFIGS.parent / "tests/fixtures/legacy_schedules") / "daily_scheduler.v2.json"
+    ).feeds[0]
     old_universe = load_symbol_universe(CONFIGS / "twelve_data_us_common_stocks.v1.json")
-    new_schedule = load_schedule_manifest(CONFIGS / "daily_scheduler.staging.v3.json").feeds[0]
+    new_schedule = load_schedule_manifest(
+        (CONFIGS.parent / "tests/fixtures/legacy_schedules") / "daily_scheduler.staging.v3.json"
+    ).feeds[0]
     new_universe = load_symbol_universe(CONFIGS / "twelve_data_us_staging_pilot.v2.json")
     now = datetime(2026, 10, 5, 2, tzinfo=timezone.utc)
     old = SchedulerState(tmp_path / "old.sqlite3")

@@ -20,8 +20,9 @@ CONTRACTS = CONFIGS.parents[1] / "contracts"
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 def test_non_clock_settings_match_previous_historical_manifest(monkeypatch, environment, provider):
     monkeypatch.setenv("APP_ENVIRONMENT", environment)
-    monkeypatch.setattr(metadata, "CONFIGS_DIR", CONFIGS)
-    path = CONFIGS / (
+    legacy = CONFIGS.parent / "tests/fixtures/legacy_schedules"
+    monkeypatch.setattr(metadata, "CONFIGS_DIR", legacy)
+    path = legacy / (
         "daily_scheduler.production.v3.json"
         if environment == "production"
         else "daily_scheduler.v2.json"
@@ -129,7 +130,7 @@ def test_whole_market_historical_bootstrap_does_not_load_daily_config(
 
     module = factset_historical if provider == "factset" else taifex_historical
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    monkeypatch.setenv("FETCHER_FULL_MARKET_CONFIG", "/missing/full-market.json")
+    monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/missing/full-market.json")
     monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/missing/daily.json")
     monkeypatch.setenv("FETCHER_HISTORICAL_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(full_market_cli, "load_config", lambda *a: pytest.fail("daily config read"))
@@ -164,7 +165,7 @@ def test_deployment_historical_check_works_without_schedule_files(monkeypatch, p
     monkeypatch.setenv("SOURCE_API_URL", "https://source.example")
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "test-key")
     monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/missing/daily.json")
-    monkeypatch.setenv("FETCHER_FULL_MARKET_CONFIG", "/missing/full.json")
+    monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/missing/full.json")
     monkeypatch.setattr(schedule, "load_schedule_manifest", lambda *a: pytest.fail("schedule read"))
     monkeypatch.setattr(full_market_cli, "load_config", lambda *a: pytest.fail("full config read"))
     assert historical_backfill_cli.main(["--provider", provider, "--check"]) == 0

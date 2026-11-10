@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import shutil
 from copy import deepcopy
@@ -182,7 +181,6 @@ def test_time_changes_do_not_republish_fetcher_dashboard_or_inventory(declaratio
     current = build_artifacts(ProviderCatalog.model_validate(declaration))
     assert {path for path in previous if current[path] != previous[path]} == {
         Path("backend/app/generated/provider_metadata.v1.json"),
-        Path("backend/configs/execution_feeds.v1.json"),
     }
 
 
@@ -193,7 +191,9 @@ def test_historical_defaults_match_existing_execution_inputs(declaration):
         ("staging", "daily_scheduler.v2.json"),
         ("production", "daily_scheduler.production.v3.json"),
     ):
-        manifest = json.loads((ROOT / "fetcher/configs" / filename).read_text())
+        manifest = json.loads(
+            (ROOT / "fetcher/tests/fixtures/legacy_schedules" / filename).read_text()
+        )
         old = {(f["provider"], f["dataset_key"]): f for f in manifest["feeds"]}
         for feed in catalog.feeds:
             if feed.historical_execution is None:
@@ -302,29 +302,36 @@ def test_all_artifacts_are_checked_and_check_is_read_only(tmp_path):
         path.write_text(original)
 
 
-def test_transitional_active_scopes_and_schedule_match_existing_runtime(declaration):
+def test_fetcher_adapter_scopes_match_catalog_without_clocks(declaration):
+    from findb_fetcher.execution_metadata import acquisition_feeds
+    from findb_fetcher.full_market_cli import _SCOPES
+
     catalog = ProviderCatalog.model_validate(declaration)
-    tree = ast.parse((ROOT / "fetcher/src/findb_fetcher/full_market_cli.py").read_text())
-    scopes = next(
-        ast.literal_eval(n.value)
-        for n in tree.body
-        if isinstance(n, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "_SCOPES" for t in n.targets)
-    )
-    assert scopes == {
+    assert _SCOPES == {
         p.provider: {f.dataset_key for f in catalog.feeds if f.provider == p.provider}
         for p in catalog.providers
     }
-    old = json.loads((ROOT / "backend/configs/execution_feeds.v1.json").read_text())
-    active = {
-        (f["provider"], f["dataset_key"]): f
-        for f in old["feeds"]
-        if f["provider"] not in old["drain_only_providers"]
-    }
-    assert len(active) == len(catalog.feeds)
-    for feed in catalog.feeds:
-        previous = active[(feed.provider, feed.dataset_key)]
-        assert feed.schedule.local_time == previous["scheduled_time"]
-        assert feed.schedule.timezone == previous["source_timezone"]
-        assert feed.schedule.target_date_lag_days == previous["target_date_lag_days"]
-        assert feed.publication_retry_window_seconds == previous["completion_window_seconds"]
+    assert len(acquisition_feeds()) == len(catalog.feeds)
+    assert all(
+        "scheduled_time" not in f and "source_timezone" not in f for f in acquisition_feeds()
+    )
+
+
+@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+def test_backend_publication_is_consumable_by_independent_fetcher(profile):
+    from findb_fetcher.execution_config import resolve_execution_config
+
+    from app.config import get_settings
+    from app.services.feed_schedule import execution_config
+    from app.services.provider_metadata import source_scopes
+
+    for provider, scopes in source_scopes().items():
+        published = execution_config(provider, scopes, profile).model_dump(mode="json")
+        result = resolve_execution_config(
+            published,
+            provider=provider,
+            environment=get_settings().APP_ENVIRONMENT,
+            profile=profile,
+        )
+        assert {f["dataset_key"] for f in result.feeds} == set(scopes)
+        assert all("slot_id" not in f for f in published["feeds"])

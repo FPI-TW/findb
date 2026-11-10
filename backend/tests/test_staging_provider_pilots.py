@@ -33,7 +33,9 @@ from tests.test_full_market import _calendar, _ingress, _quote, _source_headers
 @pytest.mark.parametrize("target", ["staging", "production"])
 def test_shared_feed_catalog_matches_source_scope_and_supported_contracts(target):
     catalog = json.loads(
-        (Path(__file__).resolve().parents[1] / "configs/execution_feeds.v1.json").read_text()
+        (
+            Path(__file__).resolve().parents[1] / "app/generated/provider_metadata.v1.json"
+        ).read_text()
     )
     specs = source_specs_for_profile("unified", target)
     declarations = {item["dataset_key"]: item["config"] for item in DATASETS}

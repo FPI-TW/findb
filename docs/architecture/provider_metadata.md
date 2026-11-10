@@ -12,10 +12,9 @@ capability 與 active provider 型別接到生成 metadata，並新增唯讀 exe
 `app.services.provider_metadata` 在 process 內載入並驗證 image 隨附的 metadata digest；
 發布新版 Backend 後使用新值，不提供環境排程 override。
 
-Fetcher daily 仍讀本機設定；`execution_feeds.v1.json` 與三環境 full-market configs 現為 catalog 的
-過渡生成投影，不能手改。Dashboard 增加可讀取的逐 feed API 欄位，但 UI、DB schedule、
-monitor 判定與 plan deadline 切換仍由後續 PR 處理。PR3 已解除 historical runner／planner 的舊排程檔
-依賴；daily 與部署工具尚未切換，PR4 完成前仍不能刪除相容檔案。
+Fetcher daily 每輪規劃前讀取 Source execution-config，image 僅保存非排程 execution descriptors 與
+bootstrap。Dashboard 逐 feed API 已可讀取；UI、DB schedule、monitor 判定與 plan deadline
+切換仍由 PR5 處理。Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排程檔。
 未完成範圍見 [backlog](../dev/backlog.md#provider-metadata-與排程統一)。
 
 ## 宣告與邊界
@@ -57,21 +56,21 @@ uv --directory backend run python scripts/export_provider_catalog.py --check
 | `backend/configs/provider_catalog.v1.schema.json` | Catalog 結構 schema |
 | `backend/app/generated/provider_metadata.v1.json` | Backend metadata、時間與 Source scopes |
 | `backend/app/generated/provider_ids.py` | Active Source provider 型別；舊 Shioaji readiness evidence 額外保留明確歷史型別 |
-| `backend/configs/execution_feeds.v1.json` | 舊工具的相容投影，Backend acquisition metadata 不再讀取此檔 |
+| `fetcher/configs/bootstrap.{environment}.v1.json` | 程序版本、環境身分、polling；無 feed、觸發時間或 deadline |
 | `fetcher/src/findb_fetcher/data/execution_descriptors.v1.json` | Fetcher 非排程 metadata，隨 Python package／image 打包 |
 | `dashboard/src/lib/generated/provider-catalog.ts` | Typed provider constants 與 scope |
 | `infra/deploy/generated/provider_inventory.v1.json` | 三 images、四 providers、十二 consumers 的明確 inventory |
 
 資料產物包含 schema version 與 SHA-256；Backend 保存 canonical source digest，其它消費端保存
 各自正向欄位投影的 digest。來源物件與集合排序不改變輸出；只改 Backend 時間不改非排程 Fetcher
-descriptor、Dashboard constants 或 Infra inventory。過渡期間的舊 full-market configs 仍含時間，
-因此仍會改變；PR4 移除這些檔案後，時間調整才不再要求 Fetcher image 改版。
+descriptor、Dashboard constants 或 Infra inventory。單純時間變更只發布 Backend，無須重建 Fetcher image。
+獨立傳送至 SSM 的 host／recovery／owner-lock guards 內嵌同一生成 inventory，生成區塊納入 `--check`。
 `--check` 不寫檔，任一產物缺失或內容被修改就失敗，已接入 FinDB／Fetcher CI。
 Fetcher 使用正向欄位投影，不包含 schedule、deadline、date lag 或 publication retry window，避免
 Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。
 
 新增／替換 feed 須先更新 catalog、確認 contract 已發布，重新生成並執行測試。消費端不可手改產物。
-修改同語意欄位應只修改 catalog；Fetcher 舊 manifest 由 exporter 使用同一來源產生。
+修改同語意欄位應只修改 catalog；舊 schedule manifest 僅作為 tests/fixtures 的相容性證據，不打包至 image。
 
 ## Backend 排程發布
 
@@ -93,7 +92,7 @@ quota 或 historical lease，也不建立 plan／work；取得設定不代表取
 Retired／非 acquisition feeds 的 schedule 為空。既有 card-level DB 時間與 freshness 狀態維持相容，
 新欄位不改寫 persisted deadline 或既有 frozen plan。
 
-## 後續發布邊界
+## Historical 與 daily 隔離
 
 PR3 的 `findb_fetcher.execution_metadata` 只載入 package 內的 `execution_descriptors.v1.json`，
 驗證版本、digest、唯一 identity、環境與 historical capability。Twelve Data／FinLab 使用不含
@@ -111,10 +110,28 @@ Planner 以相同 descriptor／reviewed universe 估算，Backend preview 決定
 FinLab ETF 等 unsupported historical scope 不因日資料能力而開放。詳細操作見
 [historical runbook](../operations/data_maintenance.md#production-universe與historical-backfill)。
 
-PR4 將讓 Fetcher 每輪只使用 execution-config 該輪取得的記憶體快照，失敗時停止新日期規劃，不能回退到本機排程檔。
-Prepared recovery 與 historical request／lease 不應依賴 daily schedule 成功讀取。
-PR3 保留相容檔與現行部署入口，PR4 才移除 daily／build／release 的剩餘依賴。
+## Fetcher 動態排程
 
-PR2 無 DB migration，也不啟用任何 provider。沿用 schema-v4 單次部署交易與 committed receipt；
-Backend metadata 隨 image 打包，Infra inventory 尚未加入 bundle allowlist。部署與 production
-分階段 promotion 規則見 [deployment](../operations/deployment.md#provider-catalog-pr2-發布邊界)。
+`findb_fetcher.execution_config` 驗證 schema、environment、profile、digest、完整 provider scope、
+已安裝 adapter／contract、時區、clock、lag 與窗口。Source client 每輪只讀取一次有上限的
+`no-store` 回應，完整驗證後才建立記憶體快照。多 feed 在同輪共享版本；下一輪重新讀取，
+失敗先清除前輪快照並停止新日期規劃，不存在磁碟 cache、image fallback 或環境時間 override。
+`FETCHER_BOOTSTRAP_CONFIG` 只綁定安裝憑證的 bootstrap identity；舊 full-market config 不再被接受。
+
+新 daily work 將該輪 feed metadata 凍結在既有 `scope.feed`。後續排程更新不改 stable key、
+既有 work 或 plan 的 `deadline_at`。重啟遇到同一 daily identity 的舊 feed，Source 回傳
+`409 / PROVIDER_WORK_FROZEN_FEED`；Fetcher 只略過該次重複 enqueue，claim 後仍用原 scope。
+Provider／dataset／date／profile 或 adapter identity 真正衝突仍失敗，calendar snapshot 亦不重寫。Slot 由非排程 descriptor 加入既有交付 metadata，
+不參與 API 快照驗證、到期日、deadline 或排程握手。Universe 日期解讀仍使用各 adapter 的交易所時區，
+不引用 daily trigger，也不對 historical 增加 daily API 前提。
+
+每輪先透過原 owner／Source authorization 排空已入列工作，再規劃新日期；drain 不取得排程、
+不 enqueue 新日期或 maintenance。Source 不可用時原 prepared bytes／收據保留，待恢復後重送。
+Historical request、lease、calendar snapshot、cutoff 與權限保持獨立。
+
+## 發布邊界
+
+PR4 沿用 schema-v4 單次部署交易，Fetcher bundle 格式升至 4，allowlist 改為 bootstrap 加生成 inventory。
+已接受的 bundle 3 仍可被驗證與回復，但新 runtime 不讀舊 config。Backend owner-lock providers 由
+同一 catalog 的 consumer roles 推導。部署與 production 分組見
+[deployment](../operations/deployment.md#provider-catalog-pr4-發布邊界)。

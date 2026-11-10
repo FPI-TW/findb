@@ -286,6 +286,11 @@ def execute(
         old_release.mkdir(parents=True)
         runtime = release / "infra/deploy/runtime-secrets"
         runtime.mkdir(parents=True)
+        inventory = release / "infra/deploy/generated/provider_inventory.v1.json"
+        inventory.parent.mkdir(parents=True)
+        inventory.write_bytes(
+            (ROOT / "infra/deploy/generated/provider_inventory.v1.json").read_bytes()
+        )
         for name in (
             "fetcher.json",
             "runtime_secret_command.sh",

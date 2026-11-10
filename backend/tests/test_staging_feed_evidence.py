@@ -210,7 +210,6 @@ def _pilot_package():
             "universe_sha256"
             if provider in {"twelve_data", "finlab"}
             else "manifest_sha256": catalog["files"][filename],
-            "schedule_sha256": catalog["files"]["daily_scheduler.staging.v3.json"],
         }
     observed_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc)
     return (

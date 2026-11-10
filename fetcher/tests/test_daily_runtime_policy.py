@@ -344,7 +344,9 @@ def test_enabled_queue_freezes_both_daily_plans_before_delivery(tmp_path, monkey
 
     runtime._deliver_plan = deliver
     runtime._settle_queued_round = lambda *args: None
-    runtime._queued_cycle()
+    from findb_fetcher.execution_config import ExecutionSnapshot
+
+    runtime._queued_cycle(snapshot=ExecutionSnapshot("fixture", tuple(feeds)))
     assert delivered == ["tw_equity_eod"]
 
 

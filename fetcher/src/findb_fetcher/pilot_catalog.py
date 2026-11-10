@@ -19,7 +19,7 @@ PILOT_RUNTIMES = {
     provider: ("findb-fetch-runtime", "findb_fetcher.full_market_cli")
     for provider in SUPPORTED_PILOTS
 }
-RUNTIME_CONFIG = "full_market.staging.v1.json"
+RUNTIME_CONFIG = "bootstrap.staging.v1.json"
 
 
 def pilot_runtime_arguments(provider: str) -> list[str]:
@@ -67,7 +67,6 @@ def load_staging_pilot_catalog(directory: Path) -> dict[str, Any]:
             raise ValueError("provider pilot scope or acceptance metadata invalid")
     required_files = {
         RUNTIME_CONFIG,
-        "daily_scheduler.staging.v3.json",
         "twelve_data_us_staging_pilot.v2.json",
         "finlab_tw_review_required.v1.json",
         "taifex_tw_staging_pilot.v1.json",

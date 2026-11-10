@@ -9,10 +9,16 @@ import pytest
 
 from findb_fetcher.schedule import ScheduleError, load_schedule_manifest
 
-V2_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "daily_scheduler.v2.json"
+V2_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "tests/fixtures/legacy_schedules"
+    / "daily_scheduler.v2.json"
+)
 V2_CALENDAR_PATH = V2_CONFIG_PATH.parent / "calendars" / "us_equity_2026_2028.v1.json"
 V3_CONFIG_PATH = (
-    Path(__file__).resolve().parents[1] / "configs" / "daily_scheduler.production.v3.json"
+    Path(__file__).resolve().parents[1]
+    / "tests/fixtures/legacy_schedules"
+    / "daily_scheduler.production.v3.json"
 )
 
 

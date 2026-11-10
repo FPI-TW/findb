@@ -267,7 +267,7 @@ def test_actual_daily_cli_retries_initial_poll_before_runtime_creation(
         daily.main(
             [
                 "--config",
-                str(Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json"),
+                str(Path(__file__).resolve().parents[1] / "configs/bootstrap.production.v1.json"),
                 "--provider",
                 provider,
                 "--execution-profile",
@@ -378,7 +378,7 @@ def test_actual_clis_stop_during_inner_or_outer_outage_wait(tmp_path, mode, sign
         "-c",
         SIGNAL_PROCESS,
         mode,
-        str(Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json"),
+        str(Path(__file__).resolve().parents[1] / "configs/bootstrap.production.v1.json"),
         str(tmp_path / "checkpoint.sqlite3"),
     ]
     with subprocess.Popen(

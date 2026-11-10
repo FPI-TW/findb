@@ -239,7 +239,7 @@ else: sys.exit(99)
 """)
     docker.chmod(0o755)
     script = (
-        "set -euo pipefail\nFETCHER_DEPLOY_MODE=apply\npilot_state=/checkpoint\n"
+        "set -euo pipefail\nFETCHER_DEPLOY_MODE=apply\nproviders=(factset finlab taifex twelve-data)\npilot_state=/checkpoint\n"
         + role
         + "\n"
         + """

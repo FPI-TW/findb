@@ -51,14 +51,13 @@ Production native 資料與實際 rollback 演練由
 ## Provider metadata 與排程統一
 
 追蹤 [#399](https://github.com/FPI-TW/findb/issues/399)／[#368](https://github.com/FPI-TW/findb/issues/368)。
-PR1、PR2 已完成 staging／production 驗收；Backend metadata 與排程發布已上線，Fetcher daily 尚未切換；現行契約見
+PR1、PR2 已完成 staging／production 驗收；Backend metadata 與排程發布已上線，PR4 Fetcher 動態排程待 staging 發布驗收；現行契約見
 [provider metadata](../architecture/provider_metadata.md)，驗收證據見
 [PR1＋2 production 驗收](../operations/deployment.md#provider-catalog-production-驗收)。
-發布分組為 PR1＋2 → PR3＋4 → PR5；PR3 已完成 historical metadata 解耦，production 等待 PR4 整合驗收後再 promotion。
+發布分組為 PR1＋2 → PR3＋4 → PR5；PR3 historical metadata 解耦已通過 staging 唯讀驗收；PR4 已完成動態排程與部署 inventory，production 等待 PR3＋4 整合驗收後再 promotion。
 
 - [ ] PR3＋4 staging 整合驗收：四個 historical runners／planner、daily 動態排程與新 bundle 一起驗證；
   維持 request、lease、universe、attempt、cutoff 與 prepared replay 語意，再安排 production 發布。
-- [ ] PR4：Fetcher 每輪讀取 Backend 排程快照，移除 image／本機排程來源，同步切換部署 inventory。
 - [ ] PR5：受控修正 DB schedule／deadline 表示，統一監控時間；Dashboard 改依 market 分組，移除 Slot
   標示。未知 DB 差異先中止確認，frozen plan deadline 不改寫。完成跨服務與部署驗收。
 - [ ] Slot 契約與 DB 欄位另以 expand／contract PR 退役；保留舊 raw／prepared／checkpoint 證據。

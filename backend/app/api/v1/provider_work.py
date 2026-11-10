@@ -138,7 +138,9 @@ async def enqueue(body: EnqueueRequest, db: AsyncSession = Depends(get_db)) -> d
         return {"work_id": str(work.work_id), "state": work.state}
     except service.ProviderWorkError as exc:
         await db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409, detail=str(exc), headers={"X-FinDB-Error-Code": exc.code}
+        ) from exc
 
 
 @router.post("/claim")

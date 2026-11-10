@@ -142,11 +142,15 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
                 client=httpx.Client(transport=httpx.MockTransport(provider)),
                 can_acquire=lambda: False,
             )
+            # This harness grants one dataset to exercise an individual adapter.
+            runtime.installed_feeds = [
+                f for f in runtime.installed_feeds if f["dataset_key"] == h.dataset
+            ]
             try:
                 return (
                     runtime.sync_queued_universes()
                     if entry == "explicit"
-                    else runtime._queued_cycle()
+                    else runtime._queued_cycle(plan_new_dates=False)
                 )
             finally:
                 runtime.close()

@@ -124,7 +124,7 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         test_session,
         name="fifo-bridge",
         source_name="finlab",
-        allowed_datasets=["tw_equity_eod"],
+        allowed_datasets=["tw_equity_eod", "tw_etf_eod"],
         rate_limit_requests=100000,
         rate_limit_window=60,
         commit=False,

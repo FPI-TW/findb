@@ -73,7 +73,7 @@ def test_publication_wait_settles_one_round_with_explicit_policy(
     settlements = []
     runtime._settle_queued_round = lambda *args, **kwargs: settlements.append(kwargs)
 
-    runtime._queued_cycle()
+    runtime._queued_cycle(plan_new_dates=False)
 
     assert settlements == [expected]
     runtime.close()

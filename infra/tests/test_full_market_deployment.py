@@ -62,7 +62,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             "release_tag": f"{unit}-v1.0.0" if target == "production" else "",
         }
         if unit == "fetcher":
-            manifest.update(runtime_profile="unified", fetcher_bundle_version=3)
+            manifest.update(runtime_profile="unified", fetcher_bundle_version=4)
         if target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": f"{unit}/accepted/{'a' * 40}/{'b' * 64}.tar",
@@ -167,7 +167,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             ):
                 with self.subTest(target=target, profile=profile):
                     manifest = self.manifest(target)
-                    manifest["fetcher_bundle_version"] = 3
+                    manifest["fetcher_bundle_version"] = 4
                     manifest["runtime_profile"] = profile
                     with release.SourceBundleReader(ROOT) as sources:
                         contracts = sources.load_selected_contract_manifest(
@@ -330,7 +330,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
     def test_fixed_topology_installs_both_profiles_with_full_flag_off(self):
         source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
         self.assertIn("for execution_profile in pilot full_market; do", source)
-        self.assertIn("for provider in twelve-data finlab taifex factset; do", source)
+        self.assertIn('for provider in "${providers[@]}"; do', source)
         self.assertIn('findb-fetch-runtime --execution-profile "$execution_profile"', source)
         self.assertNotIn('[ "$FULL_MARKET_ENABLED" =', source)
 

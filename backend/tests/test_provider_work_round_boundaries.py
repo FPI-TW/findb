@@ -81,7 +81,7 @@ async def test_daily_prefetch_source_failure_closes_and_requeues_without_native(
                 can_acquire=lambda: False,
             )
             try:
-                return runtime._queued_cycle()
+                return runtime._queued_cycle(plan_new_dates=False)
             finally:
                 runtime.close()
 

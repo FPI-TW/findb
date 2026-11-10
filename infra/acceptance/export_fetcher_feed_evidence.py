@@ -25,12 +25,9 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
 
 
 def _daily_provider(provider: str) -> dict[str, Any]:
-    default_schedule = (
-        "/app/configs/daily_scheduler.production.v3.json"
-        if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
-        else "/app/configs/daily_scheduler.staging.v3.json"
-    )
-    schedule_path = Path(os.getenv("FETCHER_SCHEDULE_FILE", default_schedule))
+    # Retired checkpoint reader only: no installed schedule or image fallback.
+    # The caller must explicitly supply preserved historical evidence.
+    schedule_path = Path(os.environ["FETCHER_SCHEDULE_FILE"])
     schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
     feed = next(item for item in schedule["feeds"] if item["provider"] == provider)
     universe_path = schedule_path.parent / feed["universe_file"]
