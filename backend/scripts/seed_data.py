@@ -16,8 +16,9 @@ from app.config import get_settings
 from app.execution_profiles import scheduler_key
 from app.models.base import Base
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
+from app.provider_catalog import FeedDefinition
 from app.services.effective_calendar import MARKETS
-from app.services.provider_metadata import acquisition_feeds
+from app.services.provider_metadata import acquisition_feeds, provider_catalog
 from app.utils import utc_now
 from scripts.preflight_catalog_schedule import migration_module
 
@@ -142,6 +143,8 @@ def _contract_config(
     currency: str | None,
     allowed_sources: list[str],
     delivery_expectation: dict,
+    accepted_schema_versions: list[int] | None = None,
+    current_schema_version: int = 1,
 ) -> dict:
     """Return only contract, scope, and delivery policy keys.
 
@@ -150,8 +153,8 @@ def _contract_config(
     """
     return {
         "schema_id": schema_id,
-        "accepted_schema_versions": [1],
-        "current_schema_version": 1,
+        "accepted_schema_versions": accepted_schema_versions or [1],
+        "current_schema_version": current_schema_version,
         "schema_enforcement": "enforce",
         "allowed_sources": allowed_sources,
         "defaults": {
@@ -168,25 +171,65 @@ def _contract_config(
     }
 
 
-DATASETS: list[dict[str, Any]] = [
-    {
-        "dataset_key": "us_equity_eod",
-        "name": "美股日K",
-        "description": "Twelve Data provider-neutral market_eod.v1 美國股票每日 OHLCV 資料",
-        "asset_class": "equity",
-        "market": "US",
-        "frequency": "daily",
+def _catalog_feed(dataset_key: str) -> FeedDefinition:
+    """Return the dataset's only Source feed; its identity is catalog-owned.
+
+    Provider, market, asset class, frequency, calendar market and contract
+    versions come from ``provider_catalog.v1.json``. A multi-provider dataset
+    would need an explicit seed precedence decision, so it fails loudly here.
+    """
+    feeds = [
+        feed
+        for feed in provider_catalog().feeds
+        if feed.dataset_key == dataset_key and feed.capabilities.source
+    ]
+    if len(feeds) != 1:
+        raise ValueError(f"Seed requires exactly one catalog Source feed: {dataset_key}")
+    return feeds[0]
+
+
+def _catalog_contract_config(
+    dataset_key: str, *, currency: str | None, delivery_expectation: dict
+) -> dict:
+    feed = _catalog_feed(dataset_key)
+    return _contract_config(
+        schema_id=feed.contract.schema_id,
+        market=feed.market,
+        asset_class=feed.asset_class,
+        currency=currency,
+        allowed_sources=[feed.provider],
+        delivery_expectation=delivery_expectation,
+        accepted_schema_versions=sorted(feed.contract.accepted_versions),
+        current_schema_version=feed.contract.current_version,
+    )
+
+
+def _catalog_dataset(dataset_key: str, *, name: str, description: str, config: dict) -> dict:
+    feed = _catalog_feed(dataset_key)
+    return {
+        "dataset_key": dataset_key,
+        "name": name,
+        "description": description,
+        "asset_class": feed.asset_class,
+        "market": feed.market,
+        "frequency": feed.frequency,
         "is_active": True,
-        "config": _contract_config(
-            schema_id="market_eod",
-            market="US",
-            asset_class="equity",
+        "config": config,
+    }
+
+
+DATASETS: list[dict[str, Any]] = [
+    _catalog_dataset(
+        "us_equity_eod",
+        name="美股日K",
+        description="Twelve Data provider-neutral market_eod.v1 美國股票每日 OHLCV 資料",
+        config=_catalog_contract_config(
+            "us_equity_eod",
             currency="USD",
-            allowed_sources=["twelve_data"],
             delivery_expectation=_eod_delivery_expectation(
                 mode="incremental",
-                market="US",
-                source="twelve_data",
+                market=_catalog_feed("us_equity_eod").calendar_market,
+                source=_catalog_feed("us_equity_eod").provider,
                 minimum_count=1,
                 slot_id="western_markets_window",
                 local_time="08:15:00",
@@ -194,25 +237,18 @@ DATASETS: list[dict[str, Any]] = [
                 target_date_lag_days=1,
             ),
         ),
-    },
-    {
-        "dataset_key": "tw_equity_eod",
-        "name": "台股日K",
-        "description": "FinLab provider-neutral market_eod.v1 台灣股票每日 OHLCV 資料",
-        "asset_class": "equity",
-        "market": "TW",
-        "frequency": "daily",
-        "is_active": True,
-        "config": _contract_config(
-            schema_id="market_eod",
-            market="TW",
-            asset_class="equity",
+    ),
+    _catalog_dataset(
+        "tw_equity_eod",
+        name="台股日K",
+        description="FinLab provider-neutral market_eod.v1 台灣股票每日 OHLCV 資料",
+        config=_catalog_contract_config(
+            "tw_equity_eod",
             currency="TWD",
-            allowed_sources=["finlab"],
             delivery_expectation=_eod_delivery_expectation(
                 mode="full_snapshot",
-                market="TW",
-                source="finlab",
+                market=_catalog_feed("tw_equity_eod").calendar_market,
+                source=_catalog_feed("tw_equity_eod").provider,
                 minimum_count=2,
                 slot_id="taiwan_market_window",
                 local_time="14:30:00",
@@ -220,7 +256,8 @@ DATASETS: list[dict[str, Any]] = [
                 target_date_lag_days=0,
             ),
         ),
-    },
+    ),
+    # Retained historical minute datasets have no catalog feed (Shioaji retired).
     {
         "dataset_key": "tw_equity_minute",
         "name": "台股股票分鐘 K",
@@ -310,17 +347,9 @@ for _dataset in DATASETS:
         }
 
 
-def _staged_eod_dataset(
-    dataset_key: str,
-    name: str,
-    *,
-    market: str,
-    asset_class: str,
-    currency: str | None,
-    provider: str,
-    schema_id: str,
-    calendar_market: str,
-) -> dict[str, Any]:
+def _staged_eod_dataset(dataset_key: str, name: str, *, currency: str | None) -> dict[str, Any]:
+    feed = _catalog_feed(dataset_key)
+    provider, calendar_market = feed.provider, feed.calendar_market
     expectation = _eod_delivery_expectation(
         mode="full_snapshot",
         market=calendar_market,
@@ -332,13 +361,8 @@ def _staged_eod_dataset(
     )
     expectation["schedule"]["enabled"] = False
     expectation["missing_delivery"] = {"action": "disabled", "expected_sources": []}
-    config = _contract_config(
-        schema_id=schema_id,
-        market=market,
-        asset_class=asset_class,
-        currency=currency,
-        allowed_sources=[provider],
-        delivery_expectation=expectation,
+    config = _catalog_contract_config(
+        dataset_key, currency=currency, delivery_expectation=expectation
     )
     config["full_market"] = {
         "enabled": False,
@@ -347,59 +371,24 @@ def _staged_eod_dataset(
         "calendar_market": calendar_market,
     }
     config["source_precedence"] = [provider]
-    return {
-        "dataset_key": dataset_key,
-        "name": name,
-        "description": f"Staged {provider} {schema_id}.v1 full-market daily feed",
-        "asset_class": asset_class,
-        "market": market,
-        "frequency": "daily",
-        "is_active": True,
-        "config": config,
-    }
+    return _catalog_dataset(
+        dataset_key,
+        name=name,
+        description=f"Staged {provider} {feed.contract.schema_id}.v1 full-market daily feed",
+        config=config,
+    )
 
 
 DATASETS.extend(
     [
-        _staged_eod_dataset(
-            "hk_equity_eod",
-            "港股日K",
-            market="HK",
-            asset_class="equity",
-            currency=None,
-            provider="factset",
-            schema_id="market_eod",
-            calendar_market="HK",
-        ),
-        _staged_eod_dataset(
-            "tw_etf_eod",
-            "台灣 ETF 日K",
-            market="TW",
-            asset_class="etf",
-            currency="TWD",
-            provider="finlab",
-            schema_id="market_eod",
-            calendar_market="TW",
-        ),
-        _staged_eod_dataset(
-            "tw_futures_eod",
-            "台灣期貨契約日K",
-            market="TW",
-            asset_class="future",
-            currency="TWD",
-            provider="taifex",
-            schema_id="futures_eod",
-            calendar_market="TAIFEX",
-        ),
+        # HK contract versions (current v2, accepted v1/v2 so retained v1 raw stays
+        # schema-valid) come from the catalog; new FactSet acquisition is separately
+        # gated by the explicit HK cutover transaction.
+        _staged_eod_dataset("hk_equity_eod", "港股日K", currency=None),
+        _staged_eod_dataset("tw_etf_eod", "台灣 ETF 日K", currency="TWD"),
+        _staged_eod_dataset("tw_futures_eod", "台灣期貨契約日K", currency="TWD"),
     ]
 )
-
-
-# Retained v1 raw stays schema-valid; new FactSet acquisition is separately gated
-# by the explicit HK cutover transaction.
-_hk = next(item for item in DATASETS if item["dataset_key"] == "hk_equity_eod")
-_hk["config"]["accepted_schema_versions"] = [1, 2]
-_hk["config"]["current_schema_version"] = 2
 
 
 # Only schedule/deadline representation is catalog-owned. Other policies remain

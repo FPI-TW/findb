@@ -9,7 +9,7 @@ from app.execution_profiles import ExecutionProfile
 from app.models.registry import DailyDeliveryPlan, DailyExecutionDecision
 from app.schemas.admin import DeliveryPlanListResponse, PaginatedDeliveryPlanListResponse
 from app.schemas.common import PaginationInfo
-from app.services.effective_calendar import execution_policy
+from app.services.effective_calendar import PROVIDER_CALENDAR_SWITCHES, execution_policy
 from app.services.full_market import _skip_response, plan_response
 
 
@@ -85,10 +85,8 @@ async def list_delivery_plans(
             )
         ).all()
     ]
-    policies = {
-        provider: execution_policy(provider)
-        for provider in ("twelve_data", "finlab", "taifex", "factset")
-    }
+    # Every catalog provider carries a calendar switch; retired ones are not reported.
+    policies = {provider: execution_policy(provider) for provider in PROVIDER_CALENDAR_SWITCHES}
     if not paginated:
         return DeliveryPlanListResponse(
             data=data, skipped=skipped, skipped_total=skipped_total, execution_policies=policies

@@ -14,6 +14,7 @@ import httpx
 
 from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
+from findb_fetcher.execution_metadata import provider_ids
 from findb_fetcher.full_market_universe import canonical_bytes
 from findb_fetcher.source_recovery import source_retry_sleep, transient_source_status
 
@@ -251,7 +252,7 @@ class FullMarketSourceClient:
                                 or result.get("max_age_seconds") != 5
                                 or not -0.250 <= receipt_utc - checked_at < REMOTE_AGE_SECONDS
                                 or origin - sent_monotonic >= REMOTE_AGE_SECONDS
-                                or provider not in {"twelve_data", "finlab", "taifex", "factset"}
+                                or provider not in provider_ids()
                             ):
                                 raise ValueError
                         except (KeyError, TypeError, ValueError):

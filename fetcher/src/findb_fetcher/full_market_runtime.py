@@ -31,7 +31,7 @@ from findb_fetcher.client import (
 from findb_fetcher.config import app_environment
 from findb_fetcher.daily_runtime import window
 from findb_fetcher.execution_config import ExecutionSnapshot, resolve_execution_config
-from findb_fetcher.execution_metadata import acquisition_feeds
+from findb_fetcher.execution_metadata import acquisition_feeds, provider_platform_limits
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
@@ -258,9 +258,7 @@ def load_readiness(
                 or value[field] <= 0
             ):
                 raise ValueError
-        if value["max_response_bytes"] > (
-            2 * 1024**3 if provider == "finlab" else MAX_SNAPSHOT_BYTES
-        ):
+        if value["max_response_bytes"] > provider_platform_limits(provider)["max_response_bytes"]:
             raise ValueError
     except (KeyError, TypeError, ValueError):
         raise ReadinessBlockedError(

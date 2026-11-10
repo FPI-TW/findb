@@ -6,22 +6,28 @@ import os
 from pathlib import Path
 from typing import Any
 
+from findb_fetcher.execution_metadata import provider_descriptor, provider_platform_limits
 from findb_fetcher.full_market_state import FullMarketState
+
+# FactSet's account identity excludes the password, so rotation preserves debt.
+# Each name must still be a published credential setting (tested against the descriptor).
+FACTSET_IDENTITY_ENV_NAMES = ("FACTSET_HOST", "FACTSET_PORT", "FACTSET_USER")
 
 
 def limits(provider: str, datasets: list[str] | None = None) -> dict[str, Any]:
-    if provider not in {"twelve_data", "finlab", "taifex", "factset"}:
-        raise ValueError("unsupported provider")
+    # Static bounds come from the packaged catalog projection; unknown providers fail closed.
+    published = provider_platform_limits(provider)
+    per_minute = published["requests_per_minute"]
     return {
         "provider": provider,
         "datasets": datasets or [],
         "requests_per_day": None,
-        "requests_per_minute": 1597 if provider == "twelve_data" else None,
-        "requests_per_second": 1597 / 60 if provider == "twelve_data" else None,
+        "requests_per_minute": per_minute,
+        "requests_per_second": per_minute / 60 if per_minute else None,
         # FinLab enforces its 5000 MB daily quota in the authenticated SDK API.
         # Detached dataframe size is not a network usage measurement.
         "bytes_per_day": None,
-        "max_response_bytes": 2 * 1024**3 if provider == "finlab" else 16 * 1024**2,
+        "max_response_bytes": published["max_response_bytes"],
         "platform_limits": True,
     }
 
@@ -34,20 +40,23 @@ def interval(value: dict[str, Any]) -> float:
 def account_identity(
     provider: str, state: FullMarketState, *, credential: str | None = None
 ) -> str:
-    name = {
-        "twelve_data": "TWELVE_DATA_API_KEY",
-        "finlab": "FINLAB_API_TOKEN",
-        "taifex": "",
-        "factset": "",
-    }[provider]
+    # Unknown providers fail closed; credential setting names are catalog-published.
+    names = provider_descriptor(provider)["credential_env_names"]
     from findb_fetcher.finlab_credentials import effective_token, installed_token
 
-    environment = (
-        installed_token() if provider == "finlab" else (os.getenv(name, "") if name else "public")
-    )
-    if provider == "factset":
-        # Credential identity excludes the password, so rotation preserves debt.
-        environment = f"{os.getenv('FACTSET_HOST', '').lower()}:{os.getenv('FACTSET_PORT', '3306')}:{os.getenv('FACTSET_USER', '')}"
+    if provider == "finlab":
+        environment = installed_token()
+    elif provider == "factset":
+        host, port, user = FACTSET_IDENTITY_ENV_NAMES
+        environment = (
+            f"{os.getenv(host, '').lower()}:{os.getenv(port, '3306')}:{os.getenv(user, '')}"
+        )
+    elif not names:
+        environment = "public"
+    elif len(names) == 1:
+        environment = os.getenv(names[0], "")
+    else:
+        raise ValueError("provider account identity is undefined")
     actual: str = credential if credential is not None else environment
     legacy_digest = hashlib.sha256(actual.encode()).hexdigest()
     # The supported SDK boundaries normalize surrounding credential whitespace.

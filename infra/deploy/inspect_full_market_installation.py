@@ -11,6 +11,21 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+# BEGIN GENERATED PROVIDER INVENTORY
+PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+CONSUMERS = (
+    ("findb-full-market-factset", "factset", "full_market", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
+)
+EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
+# END GENERATED PROVIDER INVENTORY
+
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -44,9 +59,11 @@ def build(
         or accepted.get("images") != manifest["images"]
     ):
         raise ValueError("immutable acceptance does not bind this installation")
-    full_name = "findb-full-market-" + provider.replace("_", "-")
-    actual = [("full_market", inspect(full_name))]
-    actual.append(("historical", inspect("findb-historical-" + provider.replace("_", "-"))))
+    consumers = {role: (name, image) for name, owner, role, image in CONSUMERS if owner == provider}
+    if set(consumers) != {"full_market", "historical"}:
+        raise ValueError("provider is not in the generated consumer inventory")
+    full_name, image_key = consumers["full_market"]
+    actual = [(role, inspect(consumers[role][0])) for role in ("full_market", "historical")]
     allocation = json.loads(allocation_path.read_bytes())
     if (
         allocation["environment"] != target
@@ -85,8 +102,7 @@ def build(
             is_accepted = labels.get("com.findb.fetcher.accepted") == "true"
         if (
             not is_accepted
-            or row["Config"]["Image"]
-            != manifest["images"][provider if provider != "taifex" else "twelve_data"]
+            or row["Config"]["Image"] != manifest["images"][image_key]
             or installed_environment != target
             or env.get("FETCHER_ACCOUNT_STATE_PATH") != governor
             or not any(
@@ -189,7 +205,7 @@ def main() -> None:
     parser.add_argument(
         "--provider",
         required=True,
-        choices=("twelve_data", "finlab", "taifex", "factset"),
+        choices=PROVIDERS,
     )
     parser.add_argument("--governor", required=True)
     parser.add_argument(
