@@ -43,6 +43,7 @@ backend/app/static/data/instruments.json
 *.tfstate
 *.tfstate.*
 *.tfplan
+*.tfplan.json
 *.tfvars
 !*.tfvars.example
 infra/tofu/bootstrap/backend.tf

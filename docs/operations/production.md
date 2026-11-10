@@ -762,7 +762,7 @@ DQ／delivery policy。
    `production/bootstrap.tfstate`；確認 versioning、public access block、SSE-KMS 與 lockfile。
    遷移前先將 `production-bootstrap/backend.s3.tf.example` 複製為 ignored `backend.tf`，再使用
    `bootstrap_backend_migrate_command` output；確認 remote state 完整後才安全刪除 local state。
-3. 初始化 `infra/tofu/production`（`backend.tf` 已固定 bootstrap output 的 KMS ARN，見「日常 plan／apply」）。保存 refresh plan，確認
+3. 初始化 `infra/tofu/production`（`backend.tf` 已固定 bootstrap `state_kms_key_arn` output 的 ARN，兩者須一致；指令見「日常 plan／apply」）。保存 refresh plan，確認
    account output 為 `289112218471` 且沒有 delete，再由受信任 operator apply。
 4. 同一 PR 對 `infra/tofu/staging` 執行 refresh plan，新增的兩個 promotion-reader role 之外
    必須 zero-delete。Reader 只可讀自己 unit 的 `*/accepted/`、acceptance record 與 ECR layers。
