@@ -215,6 +215,20 @@ def test_terminal_failure_rejects_lines_outside_reason_grammar(tmp_path, line):
     assert "secret" not in result.stderr
 
 
+def test_inventory_failure_surfaces_only_fixed_reason_without_docker_metadata(tmp_path):
+    diagnostic = "fetcher_host_eligibility=failed reason=consumer_inventory_mismatch"
+    result, _ = run_wait(
+        tmp_path,
+        status="Failed",
+        stdout=f"{diagnostic}\ncontainer name contains secret\n",
+        stderr="SOURCE_CLIENT_KEY=secret\nfetcher_host_eligibility=failed\n",
+    )
+    assert result.returncode != 0
+    assert f"Remote deployment failure: {diagnostic}" in result.stderr
+    assert f"::error title=遠端部署失敗原因::{diagnostic}" in result.stderr
+    assert "secret" not in result.stderr
+
+
 def test_terminal_failure_reason_output_is_bounded(tmp_path):
     stderr = "".join(f"fetcher_aws_deploy=failed reason=reason_{index}\n" for index in range(12))
     result, _ = run_wait(tmp_path, status="Failed", stderr=stderr)

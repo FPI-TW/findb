@@ -521,6 +521,24 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 
+    def test_retained_cutover_backups_are_not_active_inventory_or_silently_ignored(self):
+        active = copy.deepcopy(self.rows)
+        backups = copy.deepcopy(active)
+        for row in backups:
+            row["Name"] = "/provider-work-backup-" + row["Name"].removeprefix("/")
+            row["Config"]["Env"].append("SOURCE_CLIENT_KEY=secret-key")
+        self.rows += backups
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaisesRegex(ValueError, "unknown consumer"):
+            self.check()
+        self.assertEqual(
+            output.getvalue(),
+            "fetcher_host_eligibility=failed reason=consumer_inventory_mismatch\n",
+        )
+        self.assertEqual(self.rows, active + backups)
+        self.rows = active
+        self.assertEqual(self.check(), "drained")
+
     def test_missing_profile_worker_is_rejected(self):
         self.rows.pop()
         with self.assertRaises((KeyError, ValueError)):

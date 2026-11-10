@@ -5,6 +5,17 @@ Production 固定使用 AWS account `289112218471`、region `ap-southeast-1`，s
 兩環境的統一版部署基準見 [部署文件](deployment.md)；native 資料與實際 rollback 演練仍見
 [待完成項目](../dev/production-foundation-cutover-plan.md)，不得以部署健康驗收代替。
 
+## Fetcher inventory 複查（2026-11-10）
+
+Production Fetcher 全量 Docker inventory 為十二個現役 consumers，沒有 `provider-work-backup-*`
+或其他額外容器。十二個 consumers 全部 running、零重啟、無 OOM；以支援 bundle v3／v4 的
+host guard 唯讀核對 installed manifest、accepted runtime 與完整命令後通過。當前仍為 bundle v3、
+revision `c1c175b8a7496ff666472e3ee83ffcc9483f3756`；本次沒有部署、清理或變更 controls。
+
+Staging 的 PR4 preflight 阻擋來自初次 provider-work 切換留下的十二個已停止備份容器；
+現役十二個 consumers 的 accepted identity 均通過。此殘留不是 production 同步存在的問題。
+清理前封存與重新驗證步驟見 [部署文件](deployment.md#provider-catalog-pr4-發布邊界)。
+
 ## 單次部署 protocol v4 發布
 
 2026-11-09 promotion staging 已驗收 revision `c1c175b8a7496ff666472e3ee83ffcc9483f3756`，

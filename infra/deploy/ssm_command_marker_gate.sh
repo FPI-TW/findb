@@ -114,7 +114,7 @@ ssm_command_marker_state() {
       # Host scripts end each handled failure with a fixed "<component>=failed
       # reason=<token>" line, mostly on stderr. Surface only that exact grammar,
       # in first-seen order, so Docker/provider text never reaches the runner log.
-      diagnostic="$(jq -r '[(.stdout, (.stderr // "")) | split("\n")[] | rtrimstr("\r") | select(test("^(application_environment|fetcher_aws_deploy|fetcher_checkpoint_gate|fetcher_runtime_inventory|findb_aws_deploy|install_findb_bootstrap|release_fetcher_provider|render_nginx_runtime|runtime_secret_command)=failed reason=[a-z0-9_]+( (runtime|container|service)=[a-z0-9][a-z0-9_.-]*| committed=true)*$"))] | reduce .[] as $line ([]; if index([$line]) then . else . + [$line] end) | .[:8][]' <<<"$response")"
+      diagnostic="$(jq -r '[(.stdout, (.stderr // "")) | split("\n")[] | rtrimstr("\r") | select(test("^(application_environment|fetcher_aws_deploy|fetcher_checkpoint_gate|fetcher_host_eligibility|fetcher_runtime_inventory|findb_aws_deploy|install_findb_bootstrap|release_fetcher_provider|render_nginx_runtime|runtime_secret_command)=failed reason=[a-z0-9_]+( (runtime|container|service)=[a-z0-9][a-z0-9_.-]*| committed=true)*$"))] | reduce .[] as $line ([]; if index([$line]) then . else . + [$line] end) | .[:8][]' <<<"$response")"
       while IFS= read -r line; do
         [ -n "$line" ] || continue
         echo "Remote deployment failure: $line" >&2
