@@ -707,7 +707,9 @@ prepared 皆有 receipt、Pilot plan parts 的 runs 已 terminal；任一未結�
 3. 已完成第一步：migration `d7a2c4e6f8b1` 為 `full_market_environment.enabled`（false）與
    `full_market_enrollment.reported_enabled`（true）補 server default；程式不再讀取或指定這兩欄，ORM 只以
    相同常數 default 寫入，讓 migration 測試在舊 revision 以現行 ORM 建立種子時仍有值。
-   待完成：下一版先從 ORM 移除並改以 server default 寫入（同時調整舊 revision 的 migration 測試種子），再刪欄。**production 必須先 promote 含 `d7a2c4e6f8b1` 的版本**，再 promote 刪欄版本；
+   第二步：ORM 不再映射這兩欄，insert 改由 server default 補值。舊 revision 的 migration 測試以
+   `tests/migration_database.py` 的 `add_retired_column_defaults` 補同一 default 後建立種子；schema drift 測試
+   暫時允許這兩欄只存在於 DB。待完成：下一版以 migration 刪欄並移除 drift 允許清單。**production 必須先 promote 含 `d7a2c4e6f8b1` 的版本**，再 promote 刪欄版本；
    不得跳過：舊版仍明確寫入這兩欄，直接升到刪欄版本時，部署切換期間仍在執行的舊版與 rollback 都會寫入已刪除的欄位。
 
 評估結論：`full_market_environment` 保留為 start、plan 與 HK cutover 共用的環境鎖定列，不改為 advisory
