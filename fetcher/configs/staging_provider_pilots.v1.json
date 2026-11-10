@@ -24,7 +24,7 @@
         "--provider",
         "twelve_data",
         "--config",
-        "configs/full_market.staging.v1.json"
+        "configs/bootstrap.staging.v1.json"
       ]
     },
     "finlab": {
@@ -49,7 +49,7 @@
         "--provider",
         "finlab",
         "--config",
-        "configs/full_market.staging.v1.json"
+        "configs/bootstrap.staging.v1.json"
       ]
     },
     "taifex": {
@@ -74,15 +74,14 @@
         "--provider",
         "taifex",
         "--config",
-        "configs/full_market.staging.v1.json"
+        "configs/bootstrap.staging.v1.json"
       ]
     }
   },
   "files": {
-    "daily_scheduler.staging.v3.json": "690ed5ef7c9752dfb754c96737ee09514dfee346005da622dbba1c278acc451e",
     "twelve_data_us_staging_pilot.v2.json": "8ddb523add543b11131708ac0df44c281e0a6200ad1a9b58087a808f96641a1b",
     "finlab_tw_review_required.v1.json": "15dc19a8d76ed66eaa5fe1bd8e41fcb5e09e69a21da44303264dcd2c6c959f8d",
     "taifex_tw_staging_pilot.v1.json": "d3adbcd5c0b6d102ff6ad1074a5a128f50d8f326d044dca38d90b4360dd96b46",
-    "full_market.staging.v1.json": "4477aca4231f7537b10922c99c8c0988c599ac4a1bd92d6f284522745b51d335"
+    "bootstrap.staging.v1.json": "87094540ece05875dc490257f61eacd3fa2d4a8f4440461e4c011fa956ce9593"
   }
 }

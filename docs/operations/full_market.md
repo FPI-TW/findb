@@ -491,7 +491,7 @@ Owner 提供的本機證明是受信任操作端的 attestation，不是新的 S
 
 ```bash
 findb-fetch-runtime --provider shioaji --execution-profile pilot \
-  --config /app/configs/full_market.staging.v1.json \
+  --config /app/configs/bootstrap.staging.v1.json \
   --state-path /var/lib/findb-pilot/staging/state.sqlite3 \
   --calendar-closure --work-id <work-id> --closure-proposal request.json > preview.json
 ```
@@ -500,7 +500,7 @@ findb-fetch-runtime --provider shioaji --execution-profile pilot \
 
 ```bash
 findb-fetch-runtime --provider shioaji --execution-profile pilot \
-  --config /app/configs/full_market.staging.v1.json \
+  --config /app/configs/bootstrap.staging.v1.json \
   --state-path /var/lib/findb-pilot/staging/state.sqlite3 \
   --calendar-closure --work-id <work-id> --closure-proposal preview.json \
   --apply --expected-sha256 <preview-sha256>
@@ -913,9 +913,9 @@ Full 才補完整範圍。Staging fetcher 主機記憶體小（見
 cd fetcher
 export APP_ENVIRONMENT=local FETCHER_ACCOUNT_STATE_PATH=.state/account/governor.sqlite3
 uv run --env-file .env findb-fetch-runtime --execution-profile pilot --provider finlab \
-  --config configs/full_market.local.v1.json --state-path .state/pilot/state.sqlite3 --sync-universes
+  --config configs/bootstrap.local.v1.json --state-path .state/pilot/state.sqlite3 --sync-universes
 uv run --env-file .env findb-fetch-runtime --execution-profile pilot --provider finlab \
-  --config configs/full_market.local.v1.json --state-path .state/pilot/state.sqlite3 --run-forever
+  --config configs/bootstrap.local.v1.json --state-path .state/pilot/state.sqlite3 --run-forever
 ```
 
 Full 使用 `--execution-profile full_market` 與獨立 checkpoint，並將 Backend／Fetcher 的

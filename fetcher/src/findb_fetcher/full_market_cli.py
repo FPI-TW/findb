@@ -11,15 +11,14 @@ import threading
 from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timezone
-from datetime import time as clock_time
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from findb_fetcher.account_governor import prune_ledger
 from findb_fetcher.client import SourceAPIClient
 from findb_fetcher.config import FetcherConfig, app_environment, require_provider_work_protocol
 from findb_fetcher.contracts import ContractRegistry
+from findb_fetcher.execution_metadata import acquisition_feeds
 from findb_fetcher.full_market_client import FullMarketSourceClient
 from findb_fetcher.full_market_runtime import FullMarketRuntime
 from findb_fetcher.full_market_state import FullMarketState, FullMarketStateError
@@ -31,86 +30,25 @@ from findb_fetcher.source_recovery import (
     transient_source_error,
 )
 
-_SCOPES = {
-    "twelve_data": {"us_equity_eod"},
-    "factset": {"hk_equity_eod"},
-    "finlab": {"tw_equity_eod", "tw_etf_eod"},
-    "taifex": {"tw_futures_eod"},
-}
+_SCOPES: dict[str, set[str]] = {}
+for _feed in acquisition_feeds():
+    _SCOPES.setdefault(_feed["provider"], set()).add(_feed["dataset_key"])
 
 
 def load_config(path: Path) -> dict[str, Any]:
+    """Load process bootstrap only. No feed clocks, schedules or local overrides."""
     if path.stat().st_size > 65536:
-        raise ValueError("full-market config exceeds bound")
+        raise ValueError("bootstrap config exceeds bound")
     value = json.loads(path.read_bytes())
     if (
-        set(value)
-        != {
-            "version",
-            "deployment_target",
-            "desired_state",
-            "poll_seconds",
-            "feeds",
-            "daily_runtime_policies",
-        }
+        set(value) != {"version", "deployment_target", "poll_seconds"}
+        or type(value["version"]) is not int
         or value["version"] != 1
         or value["deployment_target"] not in {"local", "staging", "production"}
-        or value["desired_state"] != "stopped"
         or type(value["poll_seconds"]) is not int
         or not 1 <= value["poll_seconds"] <= 30
     ):
-        raise ValueError("full-market rollout config must be environment-bound/stopped v1")
-    from findb_fetcher.daily_runtime import validate_policies
-
-    validate_policies(value["daily_runtime_policies"])
-    actual = set()
-    for feed in value["feeds"]:
-        if set(feed) != {
-            "provider",
-            "dataset_key",
-            "market",
-            "asset_class",
-            "source_timezone",
-            "scheduled_time",
-            "target_date_lag_days",
-            "completion_window_seconds",
-            "slot_id",
-        }:
-            raise ValueError("full-market feed shape invalid")
-        pair = (feed["provider"], feed["dataset_key"])
-        if pair in actual:
-            raise ValueError("full-market feed duplicated")
-        actual.add(pair)
-        dataset = feed["dataset_key"]
-        expected_market = (
-            "US" if dataset.startswith("us_") else "HK" if dataset.startswith("hk_") else "TW"
-        )
-        expected_asset = (
-            "future" if dataset == "tw_futures_eod" else "etf" if "_etf_" in dataset else "equity"
-        )
-        if (
-            feed["market"] != expected_market
-            or feed["asset_class"] != expected_asset
-            or feed["slot_id"]
-            not in {
-                "western_markets_window",
-                "global_markets_window",
-                "taiwan_market_window",
-                "asia_pacific_markets_window",
-            }
-        ):
-            raise ValueError("full-market feed identity differs from governed scope")
-        ZoneInfo(feed["source_timezone"])
-        clock_time.fromisoformat(feed["scheduled_time"])
-        if feed["target_date_lag_days"] != 0 or feed["completion_window_seconds"] < 1:
-            raise ValueError("full-market feed clock invalid")
-    expected = {
-        (provider, dataset) for provider, datasets in _SCOPES.items() for dataset in datasets
-    }
-    if actual != expected:
-        raise ValueError("full-market coverage must contain every acquiring feed")
-    if not set(value["daily_runtime_policies"]) <= {provider for provider, _ in actual}:
-        raise ValueError("daily runtime policy scope invalid")
+        raise ValueError("runtime requires environment-bound bootstrap without schedules")
     return value
 
 
@@ -212,7 +150,7 @@ def run_worker(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--config", type=Path, default=Path("/app/configs/full_market.production.v1.json")
+        "--config", type=Path, default=Path("/app/configs/bootstrap.production.v1.json")
     )
     parser.add_argument("--provider", required=True, choices=sorted(_SCOPES))
     parser.add_argument(
@@ -253,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("runtime environment identity mismatch")
         os.environ["FETCHER_CONSUMER_PROFILE"] = args.execution_profile
         os.environ["FETCHER_EXECUTION_PROFILE"] = args.execution_profile
-        os.environ["FETCHER_FULL_MARKET_CONFIG"] = str(args.config)
+        os.environ["FETCHER_BOOTSTRAP_CONFIG"] = str(args.config)
         os.environ["FETCHER_ACCOUNT_READINESS_FILE"] = str(
             args.readiness_file
             or Path(
@@ -320,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
                     {
                         **state.health(args.provider),
                         "daily_runtime_window": window(
-                            config["daily_runtime_policies"].get(args.provider),
+                            None,
                             datetime.now(timezone.utc),
                         ),
                     },

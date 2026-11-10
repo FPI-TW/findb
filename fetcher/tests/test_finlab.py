@@ -189,7 +189,7 @@ def test_prepare_rejects_raw_store_integrity_mismatch() -> None:
 
 
 def test_disabled_manifest_uses_only_the_reviewed_finlab_pilot_universe() -> None:
-    configs = Path(__file__).parents[1] / "configs"
+    configs = Path(__file__).parents[1] / "tests/fixtures/legacy_schedules"
     schedule = json.loads((configs / "daily_scheduler.v2.json").read_text(encoding="utf-8"))
     finlab = next(feed for feed in schedule["feeds"] if feed["provider"] == "finlab")
 

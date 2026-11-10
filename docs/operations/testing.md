@@ -363,7 +363,7 @@ Staging provider functional acceptance 由 `fetcher/tests/test_staging_pilots.py
 `backend/tests/test_staging_provider_pilots.py` 與 staging evidence probes 覆蓋。CI 必須核對 catalog 與
 runtime/schema/Source scope，缺少 future provider pilot／startup acceptance 時 fail closed。
 此 legacy diagnostic catalog 的 runtime metadata 必須綁定 `findb-fetch-runtime`、明確
-`--execution-profile pilot --provider ... --config configs/full_market.staging.v1.json` 與 config hash。
+`--execution-profile pilot --provider ... --config configs/bootstrap.staging.v1.json` 與 config hash。
 Validator 與 evidence collector 共用相同驗證，拒絕已退役 CLI、錯誤 profile/provider/config 或 hash。
 `--check` subprocess 僅證明入口與設定可用；保留的舊固定 cohort 仍只供診斷，不代表新 runtime
 目前的 frozen members、七 feeds native 驗收或部署 gate 已通過。
@@ -752,3 +752,17 @@ owner、manifest、原job budget與armed／unknown／legacy floor snapshot，然
 
 - `backend/tests/test_provider_work_daily_manifest.py` 透過 authenticated Source API 驗證
   Pilot／Full 在 claim 後停止時拒絕首次 manifest，已凍結相同內容仍可重播與安全 close／settle。
+
+## Backend 排程發布與 Fetcher bootstrap
+
+`fetcher/tests/test_execution_config.py` 驗證完整 snapshot 替換、digest／schema／scope／adapter 拒絕、
+每輪版本隔離、API 失敗清除前輪快照、Source Retry-After、drain 不規劃日期，以及紐約 DST／跨年邊界。
+`backend/tests/test_provider_catalog.py` 直接將 Backend 發布內容交給獨立 Fetcher resolver，避免雙方
+各自測試通過卻無法互通。Provider-work integration tests 驗證重啟後的新排程不改寫 frozen feed、
+calendar、plan、prepared bytes 與收據；只有同一 daily identity 的明確 frozen-feed 回應可略過 enqueue。
+
+Fetcher CI 在三個實際 images 中禁止網路、以唯讀 root 執行四 providers 的 `--check`、
+兩個 profiles 的 `--initialize-state`／`--health` 與 historical `--check`，並確認 image 不含舊排程檔。
+舊排程資料僅位於 `fetcher/tests/fixtures/legacy_schedules`，用於 frozen identity 與既有參數相容性比較。
+部署測試包含格式 3 已接受主機升級、格式 4 bootstrap／inventory allowlist、未知／缺失 consumer 拒絕，
+以及 activation failure 恢復原 container、image、pointer 與 checkpoint。

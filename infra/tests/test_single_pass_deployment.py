@@ -316,7 +316,7 @@ def test_new_manifest_bundles_protocol_tools_and_preserves_v3():
     m.update(
         account_id="439622209937",
         registry=manifest_tool.REGISTRY,
-        fetcher_bundle_version=3,
+        fetcher_bundle_version=4,
         created_by_run_id="12",
         contract_versions=list(contracts.versions),
         contract_manifest_sha256=contracts.canonical_sha256,

@@ -228,7 +228,7 @@ docker() {
 """
         + "\n"
     )
-    config = REPO_ROOT / f"fetcher/configs/full_market.{target}.v1.json"
+    config = REPO_ROOT / f"fetcher/configs/bootstrap.{target}.v1.json"
     command = [
         "findb-fetch-runtime",
         "--execution-profile",

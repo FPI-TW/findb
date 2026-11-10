@@ -377,7 +377,7 @@ def test_trusted_capacity_repair_requires_current_source_authority_and_installed
     }
     readiness, envelope = tmp_path / "corrected.json", tmp_path / "enrollment.json"
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
-    monkeypatch.setenv("FETCHER_FULL_MARKET_CONFIG", str(config))
+    monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", str(config))
     monkeypatch.setenv("FETCHER_ACCOUNT_READINESS_FILE", str(readiness))
     monkeypatch.setenv("SOURCE_API_URL", "http://localhost:8080")
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "current-source-key")

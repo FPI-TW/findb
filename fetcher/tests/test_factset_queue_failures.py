@@ -75,7 +75,7 @@ def test_daily_known_failure_drains_settles_and_releases_owner(
     runtime._deliver_factset_plan = fail
     monkeypatch.setattr(queue.time, "sleep", lambda _: None)
     try:
-        runtime._queued_cycle()
+        runtime._queued_cycle(plan_new_dates=False)
         assert len(settlements) == 2
         assert all(s["outcome"] == outcome for s in settlements)
         assert events.index("close") < events.index("settle")
@@ -124,7 +124,7 @@ def test_daily_source_fence_is_never_settled_as_known_failure(tmp_path, monkeypa
     runtime._deliver_factset_plan = fail
     try:
         with pytest.raises(queue.ProviderWorkRecoveryBlockedError):
-            runtime._queued_cycle()
+            runtime._queued_cycle(plan_new_dates=False)
     finally:
         runtime.close()
 

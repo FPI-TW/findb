@@ -6,7 +6,6 @@ import json
 import stat
 import time
 import zipfile
-from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -504,56 +503,22 @@ def test_finlab_etf_only_explicit_production_scope() -> None:
     assert config.asset_class == "etf"
 
 
-def test_manifest_stopped_acquiring_feeds_no_staging_changes() -> None:
+def test_bootstrap_has_no_schedule_fields() -> None:
     config = load_config(
-        Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json"
+        Path(__file__).resolve().parents[1] / "configs/bootstrap.production.v1.json"
     )
-    assert config["desired_state"] == "stopped"
-    assert len(config["feeds"]) == 5
-    assert config["daily_runtime_policies"] == {}
+    assert config == {"version": 1, "deployment_target": "production", "poll_seconds": 30}
 
 
 @pytest.mark.parametrize(
-    ("change", "message"),
-    [
-        (
-            lambda config: config["feeds"].append(
-                {
-                    **config["feeds"][0],
-                    "provider": "retired_provider",
-                    "dataset_key": "tw_equity_minute",
-                    "market": "TW",
-                    "asset_class": "equity",
-                    "slot_id": "taiwan_market_window",
-                }
-            ),
-            "every acquiring feed",
-        ),
-        (lambda config: config["feeds"].pop(), "every acquiring feed"),
-        (
-            lambda config: config["daily_runtime_policies"].update(
-                retired_provider={
-                    "timezone": "Asia/Taipei",
-                    "start": "18:00",
-                    "end": "06:00",
-                    "max_members": 25,
-                    "max_seconds": 60,
-                }
-            ),
-            "policy scope",
-        ),
-    ],
+    "field",
+    ["feeds", "desired_state", "daily_runtime_policies", "scheduled_time", "source_timezone"],
 )
-def test_manifest_rejects_ungoverned_provider_and_incomplete_coverage(
-    tmp_path: Path, change: Callable[[dict[str, Any]], Any], message: str
-) -> None:
-    config = json.loads(
-        (Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json").read_text()
-    )
-    change(config)
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps(config))
-    with pytest.raises(ValueError, match=message):
+def test_bootstrap_rejects_local_schedule_overrides(tmp_path, field):
+    value = {"version": 1, "deployment_target": "production", "poll_seconds": 30, field: []}
+    path = tmp_path / "bootstrap.json"
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="without schedules"):
         load_config(path)
 
 
@@ -786,6 +751,11 @@ def _runtime(
         readiness_file=None,
         client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(500))),
     )
+    # Low-level executor fixtures intentionally use a synthetic scope.
+    runtime.installed_feeds = runtime.feeds = config["feeds"]
+    from execution_config_support import publication
+
+    source.execution_config = lambda: publication(provider, profile=execution_profile)
     runtime.proof = _proof(datetime.now(timezone.utc))
     return runtime, source, raw
 
@@ -1368,7 +1338,7 @@ def test_require_stopped_never_recreates_unavailable_checkpoint(
     result = full_market_cli.main(
         [
             "--config",
-            str(Path(__file__).resolve().parents[1] / f"configs/full_market.{target}.v1.json"),
+            str(Path(__file__).resolve().parents[1] / f"configs/bootstrap.{target}.v1.json"),
             "--provider",
             "twelve_data",
             "--state-path",
@@ -1419,7 +1389,7 @@ def test_twelve_data_control_scope_is_us_only(tmp_path, monkeypatch, scope, acce
     state = FullMarketState(tmp_path / "state.sqlite3")
     args = [
         "--config",
-        str(Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json"),
+        str(Path(__file__).resolve().parents[1] / "configs/bootstrap.production.v1.json"),
         "--provider",
         "twelve_data",
         "--state-path",
@@ -1475,7 +1445,7 @@ def test_require_stopped_checks_existing_control_without_mutating_prepared_check
     result = full_market_cli.main(
         [
             "--config",
-            str(Path(__file__).resolve().parents[1] / "configs/full_market.production.v1.json"),
+            str(Path(__file__).resolve().parents[1] / "configs/bootstrap.production.v1.json"),
             "--provider",
             "twelve_data",
             "--state-path",
@@ -1556,7 +1526,7 @@ def test_require_stopped_validates_physical_integrity_and_usable_legacy_core(
     result = full_market_cli.main(
         [
             "--config",
-            str(Path(__file__).resolve().parents[1] / f"configs/full_market.{target}.v1.json"),
+            str(Path(__file__).resolve().parents[1] / f"configs/bootstrap.{target}.v1.json"),
             "--provider",
             "finlab",
             "--state-path",

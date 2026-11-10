@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "deployment_target": "local",
+  "poll_seconds": 30
+}

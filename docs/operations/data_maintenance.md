@@ -116,7 +116,7 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 Historical capability 現由 provider catalog 推導；Source execution-config 是 daily 設定發布，
 不作 historical request／claim／acquisition 的額外 gate。四個 historical runners 與 production
 planner 改讀 image 隨附的 `execution_descriptors.v1.json`，不讀 daily schedule／full-market config；
-FinLab ETF 的未開放 scope 維持不變。Daily 與部署工具尚有相依，排程檔待 PR4 才移除。
+FinLab ETF 的未開放 scope 維持不變。PR4 已移除 image／build／release 的舊排程檔；daily 改讀 Backend 快照，historical 不依賴該 API。
 
 Production universe是reviewed、versioned artifact，不在runtime自動換股：
 

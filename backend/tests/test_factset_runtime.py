@@ -235,7 +235,8 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
         await test_session.commit()
         config = json.loads(
             (
-                Path(__file__).resolve().parents[2] / "fetcher/configs/full_market.local.v1.json"
+                Path(__file__).resolve().parents[2]
+                / "fetcher/tests/fixtures/legacy_schedules/full_market.local.v1.json"
             ).read_text()
         )
         feed = next(f for f in config["feeds"] if f["provider"] == "factset")

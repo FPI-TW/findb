@@ -10,7 +10,7 @@ import pytest
 
 from findb_fetcher import provider_work
 
-CONFIG = Path(__file__).resolve().parents[1] / "configs/full_market.local.v1.json"
+CONFIG = Path(__file__).resolve().parents[1] / "configs/bootstrap.local.v1.json"
 
 
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])

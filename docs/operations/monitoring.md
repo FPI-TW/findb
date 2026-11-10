@@ -441,7 +441,7 @@ Missing-delivery scan 只對該 execution profile 的 scheduler control 為 `des
 open alerts 以 `resolution.code=SCHEDULER_STOPPED` 關閉；Pilot 與 Full 必須分開判斷，不能因
 Pilot running 而延續已停止 Full 的缺漏告警。
 
-Registry scope 不足以維持監控：provider／dataset 不在 `backend/configs/execution_feeds.v1.json`
+Registry scope 不足以維持監控：provider／dataset 不在 `backend/configs/provider_catalog.v1.json`
 時，Fetcher 不會為其建立 plan，scan 不建立或刷新告警，即使 scheduler 仍為 running；既有 open
 alerts 保留原 details 並以 `resolution.code=FEED_RETIRED` 關閉，後續掃描不重開。Twelve Data
 港股已從 registry scope 移除，既有 open alerts 由 migration 以同一 code 關閉；歷史紀錄的

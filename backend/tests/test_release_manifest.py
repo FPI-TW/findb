@@ -52,7 +52,7 @@ def _manifest(unit: str = "findb") -> dict[str, object]:
         "deployment_source_bundle_sha256": "d" * 64,
         "created_by_run_id": "123456",
         **(
-            {"fetcher_bundle_version": 3, "runtime_profile": "unified"} if unit == "fetcher" else {}
+            {"fetcher_bundle_version": 4, "runtime_profile": "unified"} if unit == "fetcher" else {}
         ),
     }
 
@@ -64,7 +64,7 @@ def _write_selected_source_bundle(root: Path, unit: str) -> None:
         path.write_text(
             relative
             + (
-                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -87,7 +87,7 @@ def test_pre_unification_manifest_is_below_rollback_floor(unit, version):
         release_manifest.validate_manifest(manifest, CONTRACT_DATA)
 
 
-@pytest.mark.parametrize("value", [False, 0, 4, "1"])
+@pytest.mark.parametrize("value", [False, 0, 5, "1"])
 def test_fetcher_bundle_version_rejects_unknown_or_malformed_format(value) -> None:
     manifest = _manifest("fetcher")
     manifest["fetcher_bundle_version"] = value
@@ -647,7 +647,7 @@ def test_bundle_digest_is_sorted_and_rejects_symlink_or_content_mutation(tmp_pat
         path.write_text(
             relative
             + (
-                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -677,15 +677,16 @@ def test_bundle_allowlists_are_unit_scoped() -> None:
         "infra/deploy/runtime-secrets/render_nginx_runtime.sh",
         "infra/deploy/runtime-secrets/render_serve_key.py",
     )
-    assert release_manifest.FETCHER_RUNTIME_SECRET_FILES == (
+    assert set(release_manifest.FETCHER_RUNTIME_SECRET_FILES) == {
         "infra/deploy/inspect_full_market_installation.py",
-        "fetcher/configs/full_market.local.v1.json",
-        "fetcher/configs/full_market.staging.v1.json",
-        "fetcher/configs/full_market.production.v1.json",
+        "fetcher/configs/bootstrap.local.v1.json",
+        "fetcher/configs/bootstrap.staging.v1.json",
+        "fetcher/configs/bootstrap.production.v1.json",
+        "infra/deploy/generated/provider_inventory.v1.json",
         "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh",
         "infra/deploy/runtime-secrets/fetcher.json",
         "infra/deploy/runtime-secrets/release_fetcher_provider.sh",
-    )
+    }
     assert "contracts/manifest.json" in release_manifest.COMMON_BUNDLE_FILES
     assert "infra/deploy/runtime-secrets/build_ecr_image_if_missing.sh" not in (
         release_manifest.COMMON_BUNDLE_FILES
@@ -1252,7 +1253,7 @@ def test_bundle_checksum_rejects_external_hardlink(tmp_path: Path) -> None:
         path.write_text(
             relative
             + (
-                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1275,7 +1276,7 @@ def test_bundle_checksum_rejects_directory_input(tmp_path: Path) -> None:
         path.write_text(
             relative
             + (
-                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1298,7 +1299,7 @@ def test_source_bundle_rejects_unsafe_parent_paths(tmp_path: Path, parent_kind: 
         path.write_text(
             relative
             + (
-                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1390,7 +1391,7 @@ def test_bundle_checksum_keeps_one_open_root_across_a_root_path_replacement(
         path.write_text(
             relative
             + (
-                "\n# factset-consumers-v1:\n# shioaji-retired-v1:"
+                "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1605,3 +1606,9 @@ def test_validate_rejects_a_different_selected_contract_manifest(tmp_path: Path)
         )
         == 1
     )
+
+
+@pytest.mark.parametrize("version", [None, True, "4", {}, 0, 5])
+def test_bundle_allowlist_rejects_untrusted_format_before_selecting_files(version):
+    with pytest.raises(release_manifest.ManifestError, match="fetcher_bundle_version"):
+        release_manifest.bundle_paths("fetcher", 4, version)

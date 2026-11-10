@@ -15,7 +15,7 @@ CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
 def descriptor_universes(monkeypatch):
     monkeypatch.setattr(execution_metadata, "CONFIGS_DIR", CONFIGS_DIR)
     monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/absent/daily.json")
-    monkeypatch.setenv("FETCHER_FULL_MARKET_CONFIG", "/absent/full-market.json")
+    monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/absent/full-market.json")
 
 
 def _args(provider: str = "twelve_data", dataset: str = "us_equity_eod") -> list[str]:
@@ -106,7 +106,7 @@ def test_wait_without_deliver_fails_closed(
 
 def test_taifex_preview_uses_shared_catalog_and_unknown_rows(monkeypatch, capsys):
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    monkeypatch.setenv("FETCHER_FULL_MARKET_CONFIG", "/absent/full-market.json")
+    monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/absent/full-market.json")
     monkeypatch.setenv("FINDB_ADMIN_API_URL", "https://findb.example")
     monkeypatch.setenv("FINDB_BACKFILL_ADMIN_API_KEY", "secret")
     requests = []
@@ -130,7 +130,7 @@ def test_factset_wait_reports_terminal_gaps_without_polling_until_timeout(
     monkeypatch, capsys, status
 ):
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    monkeypatch.setenv("FETCHER_FULL_MARKET_CONFIG", "/absent/full-market.json")
+    monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/absent/full-market.json")
     monkeypatch.setenv("FINDB_ADMIN_API_URL", "https://findb.example")
     monkeypatch.setenv("FINDB_BACKFILL_ADMIN_API_KEY", "secret")
     requests = []

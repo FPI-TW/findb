@@ -107,7 +107,7 @@ def test_queued_dated_prerequisite_uses_prerequisite_retry_delay(tmp_path, monke
     settlements = []
     runtime._settle_queued_round = lambda *args, **kwargs: settlements.append(kwargs)
 
-    runtime._queued_cycle()
+    runtime._queued_cycle(plan_new_dates=False)
 
     assert settlements == [
         {

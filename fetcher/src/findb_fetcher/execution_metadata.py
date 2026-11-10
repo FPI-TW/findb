@@ -52,7 +52,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def historical_feeds(provider: str) -> tuple[dict[str, Any], ...]:
+def provider_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
     """Return only static adapter metadata; Backend still authorizes every work item."""
     app_environment()  # Reject invalid/conflicting deployment identity even without a clock.
     try:
@@ -71,21 +71,37 @@ def historical_feeds(provider: str) -> tuple[dict[str, Any], ...]:
         identities = [(row["provider"], row["dataset_key"]) for row in value["feeds"]]
         if len(set(providers)) != len(providers) or len(set(identities)) != len(identities):
             raise ExecutionMetadataError("Duplicate execution metadata identity")
-        if provider not in providers:
+        if provider is not None and provider not in providers:
             raise ExecutionMetadataError("Unknown historical adapter")
         feeds = tuple(
             row
             for row in value["feeds"]
-            if row["provider"] == provider
+            if (provider is None or row["provider"] == provider)
             and row["lifecycle"] == "active"
             and row["capabilities"]["source"] is True
-            and row["capabilities"]["historical"] in {"declared", "executable"}
         )
         if not feeds:
             raise ExecutionMetadataError("Unsupported historical adapter scope")
         return feeds
     except (OSError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise ExecutionMetadataError("Invalid installed execution metadata") from exc
+
+
+def acquisition_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
+    return tuple(
+        row for row in provider_feeds(provider) if row["capabilities"]["acquisition"] is True
+    )
+
+
+def historical_feeds(provider: str) -> tuple[dict[str, Any], ...]:
+    feeds = tuple(
+        row
+        for row in provider_feeds(provider)
+        if row["capabilities"]["historical"] in {"declared", "executable"}
+    )
+    if not feeds:
+        raise ExecutionMetadataError("Unsupported historical adapter scope")
+    return feeds
 
 
 def historical_feed(provider: str, dataset_key: str) -> dict[str, Any]:

@@ -15,7 +15,7 @@ from findb_fetcher.scheduler_state import (
 )
 from findb_fetcher.universe import load_symbol_universe
 
-CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "tests/fixtures/legacy_schedules"
 SCHEDULE_PATH = CONFIG_DIR / "daily_scheduler.v2.json"
 UNIVERSE_PATH = CONFIG_DIR / "twelve_data_us_common_stocks.v1.json"
 NOW = datetime(2026, 7, 25, 2, 5, tzinfo=timezone.utc)

@@ -18,7 +18,7 @@ from findb_fetcher.raw_storage import RawObject, RawStorageUploadError
 from findb_fetcher.schedule import load_schedule_manifest
 from findb_fetcher.scheduler_state import ScheduledJob, SchedulerState
 
-CONFIG_DIR = Path(__file__).resolve().parents[1] / "configs"
+CONFIG_DIR = Path(__file__).resolve().parents[1] / "tests/fixtures/legacy_schedules"
 CONTRACTS_DIR = Path(__file__).resolve().parents[2] / "contracts"
 SCHEDULE_PATH = CONFIG_DIR / "daily_scheduler.v2.json"
 UNIVERSE_PATH = CONFIG_DIR / "finlab_tw_review_required.v1.json"

@@ -647,12 +647,6 @@ def _functional_acceptance(
             )
             == catalog["files"][file_name]
         )
-        if provider in {"twelve_data", "finlab"}:
-            config_bound = (
-                config_bound
-                and config.get("schedule_sha256")
-                == catalog["files"]["daily_scheduler.staging.v3.json"]
-            )
         observations = fetcher.get(provider, {}).get("recent_trade_dates", [])
         for definition in spec["feeds"]:
             dataset = definition["dataset_key"]

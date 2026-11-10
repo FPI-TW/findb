@@ -76,7 +76,7 @@ def production_args(command, provider=None):
         return [
             command,
             "--config",
-            "/app/configs/full_market.production.v1.json",
+            "/app/configs/bootstrap.production.v1.json",
             "--state-path",
             "/var/lib/findb-full-market/state.sqlite3",
             "--provider",
@@ -129,7 +129,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.manifest = {
             "schema_version": 3,
             "runtime_profile": "unified",
-            "fetcher_bundle_version": 3,
+            "fetcher_bundle_version": 4,
             "deployment_target": "production",
             "unit": "fetcher",
             "commit_sha": "b" * 40,
@@ -166,7 +166,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                     "--execution-profile",
                     profile,
                     "--config",
-                    "/app/configs/full_market.production.v1.json",
+                    "/app/configs/bootstrap.production.v1.json",
                     "--state-path",
                     state + "/state.sqlite3",
                     "--provider",
@@ -292,7 +292,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                         "--execution-profile",
                         profile,
                         "--config",
-                        "/app/configs/full_market.production.v1.json",
+                        "/app/configs/bootstrap.production.v1.json",
                         "--state-path",
                         state + "/state.sqlite3",
                         "--provider",
@@ -393,10 +393,10 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.check()
         self.rows = original[1:]
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             self.check()
         self.rows = [self.row("unknown-fetcher", "finlab", ["unknown"])]
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             self.check()
         self.rows = original
         with self.assertRaises(ValueError):
@@ -462,7 +462,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                         self.check()
 
     def test_drained_requires_exact_pilot_format_identity(self):
-        for version in (None, False, True, 0, 4, "1", 1.0):
+        for version in (None, False, True, 0, 5, "1", 1.0):
             with self.subTest(version=version):
                 self.manifest["fetcher_bundle_version"] = version
                 if version is None:
@@ -470,8 +470,33 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 self.write_manifest()
                 with self.assertRaisesRegex(ValueError, "format identity invalid"):
                     self.check()
-        self.manifest["fetcher_bundle_version"] = 3
+        self.manifest["fetcher_bundle_version"] = 4
         self.write_manifest()
+        self.assertEqual(self.check(), "drained")
+
+    def test_accepted_v3_host_is_eligible_for_bootstrap_upgrade(self):
+        for target in ("local", "staging", "production"):
+            path = self.root / f"fetcher/configs/full_market.{target}.v1.json"
+            path.write_bytes(
+                (
+                    ROOT / f"fetcher/tests/fixtures/legacy_schedules/full_market.{target}.v1.json"
+                ).read_bytes()
+            )
+        deployment = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+        deployment.write_text(
+            deployment.read_text().replace("# backend-schedules-v1:", "# legacy-clocks:")
+        )
+        self.manifest["fetcher_bundle_version"] = 3
+        with release.SourceBundleReader(self.root) as source:
+            self.manifest["deployment_source_bundle_sha256"] = (
+                source.deployment_source_bundle_sha256("fetcher", 3, 3)
+            )
+        self.write_manifest()
+        for row in self.rows:
+            row["Config"]["Cmd"] = [
+                arg.replace("/bootstrap.", "/full_market.") for arg in row["Config"]["Cmd"]
+            ]
+            row["Args"] = row["Config"]["Cmd"][1:]
         self.assertEqual(self.check(), "drained")
 
     def test_pre_unification_schema_is_rejected(self):
@@ -568,7 +593,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
             self.check()
 
     def test_missing_runtime_configuration_is_rejected(self):
-        (self.root / "fetcher/configs/full_market.staging.v1.json").unlink()
+        (self.root / "fetcher/configs/bootstrap.staging.v1.json").unlink()
         with self.assertRaises(ValueError):
             self.check()
 

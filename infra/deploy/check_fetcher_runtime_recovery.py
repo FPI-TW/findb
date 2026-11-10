@@ -12,11 +12,24 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-PROFILES = ("pilot", "full-market", "historical")
-PROVIDERS = ("twelve-data", "finlab", "taifex", "factset")
-EXPECTED_RUNTIMES = tuple(
-    f"findb-{profile}-{provider}" for profile in PROFILES for provider in PROVIDERS
+# BEGIN GENERATED PROVIDER INVENTORY
+PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+CONSUMERS = (
+    ("findb-full-market-factset", "factset", "full_market", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
+    ("findb-pilot-factset", "factset", "pilot", "factset"),
+    ("findb-pilot-finlab", "finlab", "pilot", "finlab"),
+    ("findb-pilot-taifex", "taifex", "pilot", "twelve_data"),
+    ("findb-pilot-twelve-data", "twelve_data", "pilot", "twelve_data"),
 )
+EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
+# END GENERATED PROVIDER INVENTORY
 
 RuntimeSnapshot = tuple[tuple[str, str, str, int, str, bool], ...]
 

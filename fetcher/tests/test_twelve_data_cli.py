@@ -85,7 +85,7 @@ def test_required_protocol_accepts_standard_true_values(value, monkeypatch, tmp_
                 "--provider",
                 "twelve_data",
                 "--config",
-                str(Path(__file__).resolve().parents[1] / "configs/full_market.local.v1.json"),
+                str(Path(__file__).resolve().parents[1] / "configs/bootstrap.local.v1.json"),
                 "--state-path",
                 str(tmp_path / "unused.sqlite3"),
                 "--check",
@@ -119,13 +119,23 @@ def test_daily_cycle_and_drain_only_dispatch_queue(provider, drain, monkeypatch)
     from findb_fetcher.full_market_runtime import FullMarketRuntime
 
     runtime = FullMarketRuntime.__new__(FullMarketRuntime)
+    from types import SimpleNamespace
+
+    from execution_config_support import publication
+
     runtime.provider = provider
+    runtime.execution_profile = "full_market"
+    runtime.source = SimpleNamespace(execution_config=lambda: publication(provider))
     calls = []
     runtime._queued_cycle = lambda **kwargs: calls.append(kwargs) or {"status": "queued"}
     monkeypatch.delenv("PROVIDER_WORK_REQUIRED", raising=False)
     result = runtime.drain() if drain else runtime.cycle()
     assert result == (None if drain else {"status": "queued"})
-    assert calls == ([{"include_health": False}] if drain else [{}])
+    assert calls == (
+        [{"include_health": False, "plan_new_dates": False}]
+        if drain
+        else [{"snapshot": runtime.schedule_snapshot}]
+    )
 
 
 def test_source_delivery_without_owner_rejects_before_transport(monkeypatch):

@@ -1,0 +1,187 @@
+{
+  "factset": {
+    "schema_version": 1,
+    "environment": "local",
+    "execution_profile": "full_market",
+    "provider": "factset",
+    "schedule_digest": "fff560326faa606765994e0460f606d5922b7cf2b344ffb36c2ba627dac7a8cc",
+    "feeds": [
+      {
+        "provider": "factset",
+        "dataset_key": "hk_equity_eod",
+        "market": "HK",
+        "calendar_market": "HK",
+        "asset_class": "equity",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "market_eod",
+          "current_version": 2,
+          "accepted_versions": [
+            1,
+            2
+          ]
+        },
+        "scheduled_time": "18:30",
+        "source_timezone": "Asia/Hong_Kong",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 16200,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "23:00",
+          "trade_date_day_offset": 0
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      }
+    ]
+  },
+  "finlab": {
+    "schema_version": 1,
+    "environment": "local",
+    "execution_profile": "full_market",
+    "provider": "finlab",
+    "schedule_digest": "98dc02465b81ce3ed76caad64e9eeef96f690bd6e6f78c40db260e39cd8bd09a",
+    "feeds": [
+      {
+        "provider": "finlab",
+        "dataset_key": "tw_equity_eod",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "equity",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "market_eod",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "18:00",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "23:00",
+          "trade_date_day_offset": 0
+        },
+        "bounded_monitor": {
+          "enabled": true,
+          "deadline": {
+            "timezone": "Asia/Taipei",
+            "local_time": "17:00",
+            "trade_date_day_offset": 0
+          }
+        }
+      },
+      {
+        "provider": "finlab",
+        "dataset_key": "tw_etf_eod",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "etf",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "market_eod",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "18:00",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "23:00",
+          "trade_date_day_offset": 0
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      }
+    ]
+  },
+  "taifex": {
+    "schema_version": 1,
+    "environment": "local",
+    "execution_profile": "full_market",
+    "provider": "taifex",
+    "schedule_digest": "cdfbce5a78b8c3715d6d191dfda6390f76a77ed5b2acf94ca8926da04c4b723c",
+    "feeds": [
+      {
+        "provider": "taifex",
+        "dataset_key": "tw_futures_eod",
+        "market": "TW",
+        "calendar_market": "TAIFEX",
+        "asset_class": "future",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "futures_eod",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "17:00",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 18000,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "23:00",
+          "trade_date_day_offset": 0
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      }
+    ]
+  },
+  "twelve_data": {
+    "schema_version": 1,
+    "environment": "local",
+    "execution_profile": "full_market",
+    "provider": "twelve_data",
+    "schedule_digest": "a3b72f6f0f8607ed26f22750a5e668ccfa69e45a4080062b392ad9dc699b10f2",
+    "feeds": [
+      {
+        "provider": "twelve_data",
+        "dataset_key": "us_equity_eod",
+        "market": "US",
+        "calendar_market": "US",
+        "asset_class": "equity",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "market_eod",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "17:00",
+        "source_timezone": "America/New_York",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 10800,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "09:00",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": true,
+          "deadline": {
+            "timezone": "Asia/Taipei",
+            "local_time": "09:15",
+            "trade_date_day_offset": 1
+          }
+        }
+      }
+    ]
+  }
+}

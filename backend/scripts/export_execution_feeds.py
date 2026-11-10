@@ -1,4 +1,4 @@
-"""Generate identical environment manifests from the shared five-feed catalog."""
+"""Generate process bootstrap settings without any feed scheduling data."""
 
 import argparse
 import json
@@ -9,43 +9,21 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from scripts.export_provider_catalog import (  # noqa: E402
-    CATALOG_PATH,
-    legacy_execution_catalog,
-    load_catalog,
-)
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[2]
-    catalog = legacy_execution_catalog(
-        load_catalog(root / CATALOG_PATH, contracts_dir=root / "contracts")
-    )
-    if catalog["version"] != 1 or len(catalog["feeds"]) != 5:
-        raise ValueError("Expected the versioned five-feed catalog")
-    # Drain-only providers keep their Source scope, but Fetcher must not plan them.
-    drain_only = set(catalog["drain_only_providers"])
-    feeds = [feed for feed in catalog["feeds"] if feed["provider"] not in drain_only]
-    policies = {
-        provider: policy
-        for provider, policy in catalog["daily_runtime_policies"].items()
-        if provider not in drain_only
-    }
     stale = []
     for target in ("local", "staging", "production"):
-        path = root / f"fetcher/configs/full_market.{target}.v1.json"
+        path = root / f"fetcher/configs/bootstrap.{target}.v1.json"
         body = (
             json.dumps(
                 {
                     "version": 1,
                     "deployment_target": target,
-                    "desired_state": "stopped",
                     "poll_seconds": 30,
-                    "feeds": feeds,
-                    "daily_runtime_policies": policies,
                 },
                 indent=2,
             )

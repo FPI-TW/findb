@@ -1,0 +1,29 @@
+{
+  "universe_version": 1,
+  "universe_id": "twelve_data_us_staging_pilot_v2",
+  "provider": "twelve_data",
+  "dataset_key": "us_equity_eod",
+  "market": "US",
+  "asset_class": "equity",
+  "instrument_type": "Common Stock",
+  "credit_cost_per_symbol": 1,
+  "limits": {
+    "max_symbols_per_run": 2,
+    "max_records_per_symbol": 1,
+    "max_total_records_per_run": 2,
+    "max_date_span_days": 1,
+    "max_credits_per_run": 2
+  },
+  "symbols": [
+    {
+      "symbol": "AAPL",
+      "canonical_symbol": "AAPL",
+      "exchange": "NASDAQ"
+    },
+    {
+      "symbol": "MSFT",
+      "canonical_symbol": "MSFT",
+      "exchange": "NASDAQ"
+    }
+  ]
+}

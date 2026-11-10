@@ -124,7 +124,7 @@ def runtime_identity_matches(runtime_id: str) -> bool:
         from findb_fetcher import full_market_cli
         from findb_fetcher.installation_receipt import installed_artifact_digest
 
-        config = Path(os.environ["FETCHER_FULL_MARKET_CONFIG"])
+        config = Path(os.environ["FETCHER_BOOTSTRAP_CONFIG"])
         governor = os.environ["FETCHER_ACCOUNT_STATE_PATH"]
         expected = (
             "local:"
@@ -358,7 +358,7 @@ def repair_capacity(
     # Run in the installed Full worker's environment. Arbitrary supplied files
     # cannot stand in for its actual configured files and installed runtime.
     try:
-        config = Path(os.environ["FETCHER_FULL_MARKET_CONFIG"])
+        config = Path(os.environ["FETCHER_BOOTSTRAP_CONFIG"])
         installed_readiness = Path(
             os.getenv(
                 "FETCHER_ACCOUNT_READINESS_FILE",

@@ -833,14 +833,10 @@ PR2 使用最新 schema-v4 單次部署交易；不新增部署 job、第二次�
 獨立 watchdog 與 recovery gate。Backend metadata 與 provider 型別已由既有 Docker `COPY app`
 打包，不依賴 release bundle 中另放 catalog 或讀取主機工作目錄。沒有新 migration。
 
-舊 Fetcher 的三環境 full-market configs 改由 catalog 生成，維持原有內容與序列化順序，保留
-pilot catalog 的檔案 hash binding。PR2 不要求 Fetcher 改版；依現行 change policy 選取 Backend
-CI／staging rollout，不修改共用編排或略過 receipt／health。後續變更相容投影時，仍須同步驗證
-既有 artifact bindings；PR4 解除所有 consumer 依賴後才可刪除這些檔案。
-
+PR1＋2 保留舊 Fetcher 相容性；PR4 起新 bundle 使用 bootstrap 與生成 inventory。
 Staging 驗收應核對最新 committed receipt、current manifest、實際 images 與 metadata digest，
 以四個 Source identities 讀取 execution-config，驗證各自 scope、環境、profile、版本、時區、
-deadline 與 no-store。保留舊 Fetcher daily／historical 操作介面及排程檔，控制狀態不因讀取設定而改變。
+deadline 與 no-store。控制狀態不因讀取設定而改變。
 
 Production 發布分組為 PR1＋PR2、PR3＋PR4、PR5，保留每階段 staging 的 immutable evidence：
 先發布 PR1＋2 Backend API，接著 PR3＋PR4 Fetcher／Infra，最後 PR5 preflight／migration／Backend／Dashboard。
@@ -853,7 +849,7 @@ PR4 上線後，Backend 不得單獨回退至沒有 execution-config API 的版�
 PR3 只解除 historical 執行與 planner 的本機排程依賴，不新增 DB migration、排程 API 呼叫或控制面權限。
 `execution_descriptors.v1.json` 已由三個 Dockerfiles 的 `COPY fetcher/src` 打包，wheel 同樣攜帶此檔。
 Historical `--check` 驗證連線設定及 package metadata 的版本／digest／provider scope，不會 claim、
-建立 state 或抓取 provider。舊 daily／full-market config 仍供 daily 與現行部署工具使用，不可提前刪除。
+建立 state 或抓取 provider。PR4 已解除 daily 與部署工具的剩餘依賴，舊排程檔只保留在測試 fixture。
 
 沿用目前 schema-v4 單次交易、三 images／四 providers／十二 consumers inventory、
 whole-work owner lock、checkpoint identity、immutable decision 與 committed receipt；不新增部署入口
@@ -865,7 +861,56 @@ Fetcher／Infra bundle promotion，先停 controls、排空既有工作並保留
 PR3 驗證包含舊排程路徑失效、非排程預設與舊 manifest 相同、reviewed universe 與 frozen members 保留、
 原 job key／attempt／prepared bytes 重啟復用、Backend preview 拒絕時不建立 request，以及既有
 Source claim→acquire→prepare→receipt→complete、cancel／expiry／ACK-loss 測試。
-PR4 仍須補齊不存在舊排程檔的完整 image／daily／health／initialize-state／部署驗收；PR3 測試不替代該階段。
+PR3 的唯讀驗收不替代 PR3＋4 的 daily 動態排程與 historical 完整鏈路驗收。
+
+## Provider catalog PR4 發布邊界
+
+新 Fetcher bundle 使用 `fetcher_bundle_version=4`，部署交易仍為 schema 4／single-pass-v1。
+三環境 `bootstrap.*.v1.json` 僅含 version、deployment_target、poll_seconds；bundle 加入生成
+`provider_inventory.v1.json`，不包含舊 full-market schedule。三 images／四 providers／十二 consumers
+由 catalog 投影決定，host eligibility、recovery gate 與 Backend owner-lock 使用相同 inventory。
+原已接受 bundle 3 的 allowlist、manifest digest 與舊 command binding 仍可驗證，允許升級及原交易回復。
+未知／重複／缺少 consumer 仍阻擋發布，不把它當作空主機。
+
+沿用 main-ref OIDC、backend-first、不可變 promotion decision、committed journal／receipt、獨立
+watchdog 與 activation failure 完整回復。PR4 不新增 migration、不改 controls，也不取代現有人工
+Owner stop／排空／checkpoint 保全流程。新 bundle 不自動啟用原本停止的 provider。
+先在 staging 驗證 bootstrap、daily API 輪替／失敗、prepared recovery、四個 historical consumers，
+再按 PR3＋4 組別 promotion 相同 accepted digests；本次實作不部署 production。
+
+PR4 Fetcher 上線後，Backend 最低版本必須提供 schema 1 execution-config 與
+`PROVIDER_WORK_FROZEN_FEED` 相容回應（本 PR4 Backend）。因此本組沿用 backend-first 發布，
+不可只更新 Fetcher 或單獨將 Backend 回退至 PR2。日後調整同 schema 的
+排程時間只需發布 Backend；新增 adapter／contract 能力或超出現有 schema 才需協調 Fetcher 發布。
+PR5 仍負責 DB schedule／deadline preflight 與遷移、monitor／freshness 切換及 Dashboard market 分組。
+
+## Provider catalog PR3 staging 驗收
+
+2026-11-10（台北時間）驗收已部署 [#430](https://github.com/FPI-TW/findb/pull/430)，合併 commit
+`6574b2839ac71d9b698fe07c96feae34afa08e2b`。FinDB CD
+[42721900884](https://github.com/FPI-TW/findb/actions/runs/42721900884) 與 Fetcher CD
+[42721900816](https://github.com/FPI-TW/findb/actions/runs/42721900816) 均成功，沿用 Required CI
+[42660861164](https://github.com/FPI-TW/findb/actions/runs/42660861164) 證據。
+
+- 兩台 current manifest、S3 immutable decision／accepted record 與 host journal／receipt identity 一致，
+  schema 4、journal committed、receipt healthy／accepted。Backend bundle SHA-256
+  `3e4daaac82b37b5dde2ec3d6c12aecf7ea1c269d4eebdfcc37d8d35db758baa0`；Fetcher bundle
+  `f8e5c4cdbca2df228398a4a404ca5417b202d19a9abd1a55481a461c081dcd9d`。
+- Backend 六個服務與 Fetcher 十二 consumers 正常，images 符合 manifest，無 OOM／restart。
+- 四個 historical 容器在 subprocess 設定失效的舊 schedule/config 路徑後，`--check` 全部通過；
+  六個 historical runtime 模組 SHA-256 與合併版一致。FinLab historical 仍只開 equity，未擴張 ETF。
+- 四組 Source credentials × Pilot／Full 的八次 execution-config 回應均為完整授權 scope，
+  environment／profile／schema／digest／no-store 正確且無 slot。每 provider 七組負向查詢均拒絕。
+- Admin 兩個 profiles 的五條 feed schedule 與 catalog 一致；Shioaji Pilot 各 11 個歷史 plans
+  仍可唯讀查詢且 deadline 與 DB 一致，Full 無 plans。
+- Admin GET 前後 DB 14 個 controls（全 stopped）、14 個 first dates、70 個 frozen plans 與狀態
+  完全相同；無未撤銷 Shioaji credential，migration 為 `d8e3f0b5a2c4`。
+
+唯讀 SSM 證據：Backend `e0a4e671-10e3-4350-b76d-958c68b7bbad`；Fetcher／Source／historical
+`5315c922-141c-4a78-8dd2-36b3ba5dc768`；Admin／DB `b5b1a716-c373-4b1f-8ae5-89bdd871de52`。
+本次未新增 backfill request、未抓取 provider、未變更 controls，亦未部署 production。
+因此通過的是 release／bootstrap／API／frozen 資料相容性；live historical 全鏈路與 PR4 動態排程
+留待 PR3＋4 staging 整合驗收，不把本次唯讀結果當作完整 native acceptance。
 
 ## Provider catalog production 驗收
 

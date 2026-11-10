@@ -114,6 +114,11 @@ def test_cycles_replay_each_acknowledged_stable_enqueue_once(tmp_path, monkeypat
             "scheduled_time": "00:00",
         }
     ]
+    from execution_config_support import publication
+
+    source.execution_config = lambda: publication(
+        source_timezone="UTC", scheduled_time="00:00", target_date_lag_days=0
+    )
     first = datetime.now(timezone.utc).date().toordinal() - 3
     enqueued = []
     failures = {"daily:full_market:us_equity_eod:" + date.fromordinal(first).isoformat()}

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "universe_id": "taifex_tw_staging_pilot_v1",
+  "provider": "taifex",
+  "dataset_key": "tw_futures_eod",
+  "schema_id": "futures_eod",
+  "schema_version": 1,
+  "products": [
+    "TX",
+    "MTX"
+  ],
+  "calendar_market": "TAIFEX",
+  "scheduled_time": "18:00",
+  "timezone": "Asia/Taipei",
+  "max_requests_per_date": 6,
+  "max_response_bytes": 8388608,
+  "max_records_per_date": 4,
+  "max_attempts_per_date": 3,
+  "max_date_span_days": 1
+}

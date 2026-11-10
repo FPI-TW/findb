@@ -13,9 +13,7 @@ from findb_fetcher import full_market_cli, installation_receipt
 
 def test_local_receipt_binds_actual_process_env_and_package(tmp_path, monkeypatch):
     config = tmp_path / "full.json"
-    value = json.loads(
-        (Path(__file__).parents[1] / "configs/full_market.local.v1.json").read_bytes()
-    )
+    value = json.loads((Path(__file__).parents[1] / "configs/bootstrap.local.v1.json").read_bytes())
     config.write_text(json.dumps(value))
     governor = tmp_path / "governor.sqlite3"
     governor.touch()

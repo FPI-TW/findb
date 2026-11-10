@@ -104,8 +104,25 @@ jobs:
           docker build -f fetcher/Dockerfile.factset -t "$image" .
           docker run --rm "$image" python -c 'import importlib.util,ssl; assert importlib.util.find_spec("pymysql"); assert importlib.util.find_spec("finlab") is None; c=ssl.create_default_context(cafile="/app/certs/ap-southeast-1-bundle.pem"); assert c.check_hostname and c.verify_mode==ssl.CERT_REQUIRED'
           docker run --rm "$image"
-          docker run --rm "$image" findb-fetch-runtime --provider factset --config /app/configs/full_market.local.v1.json --check
+          docker run --rm "$image" findb-fetch-runtime --provider factset --config /app/configs/bootstrap.local.v1.json --check
           docker run --rm "$image" findb-fetch-historical-backfill --help
+
+      - name: Verify images bootstrap without local schedule files
+        working-directory: .
+        run: |
+          for pair in findb-fetcher:twelve_data findb-fetcher:taifex findb-fetcher-finlab:finlab findb-fetcher-factset:factset; do
+            image="${pair%:*}:${{ github.sha }}"
+            provider="${pair#*:}"
+            docker run --rm --network none --read-only --tmpfs /tmp -e APP_ENVIRONMENT=local -e SOURCE_API_URL=https://source.invalid -e SOURCE_CLIENT_KEY=offline-validation -e FETCHER_ACCOUNT_STATE_PATH=/tmp/account/governor.sqlite3 "$image" sh -ec '
+              test -z "$(find /app/configs -name "daily_scheduler*.json" -o -name "full_market.*.v1.json")"
+              for profile in pilot full_market; do
+                findb-fetch-runtime --provider "$1" --execution-profile "$profile" --config /app/configs/bootstrap.local.v1.json --check
+                findb-fetch-runtime --provider "$1" --execution-profile "$profile" --config /app/configs/bootstrap.local.v1.json --state-path "/tmp/$profile/state.sqlite3" --initialize-state
+                findb-fetch-runtime --provider "$1" --execution-profile "$profile" --config /app/configs/bootstrap.local.v1.json --state-path "/tmp/$profile/state.sqlite3" --health
+              done
+              findb-fetch-historical-backfill --provider "$1" --check
+            ' sh "$provider"
+          done
 
       - name: Verify runtime images ship valid import bytecode
         working-directory: .

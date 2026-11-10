@@ -24,10 +24,12 @@ def complete_evidence():
         "feeds": [],
     }
     fetchers = {}
-    catalog = json.loads((ROOT / "backend/configs/execution_feeds.v1.json").read_text())
+    catalog = json.loads(
+        (ROOT / "fetcher/src/findb_fetcher/data/execution_descriptors.v1.json").read_text()
+    )
     for feed in catalog["feeds"]:
         provider, dataset = feed["provider"], feed["dataset_key"]
-        if provider in catalog["drain_only_providers"]:
+        if not feed["capabilities"]["acquisition"]:
             continue
         plan = {
             "plan_id": dataset,

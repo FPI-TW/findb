@@ -151,7 +151,7 @@ async def test_daily_taifex_first_plan_known_native_failure_retries_original_wor
                 client=httpx.Client(transport=httpx.MockTransport(native)),
             )
             try:
-                return runtime._queued_cycle()
+                return runtime._queued_cycle(plan_new_dates=False)
             finally:
                 runtime.close()
 

@@ -28,7 +28,10 @@ from findb_fetcher.client import (
     SourceAPITransportError,
     permanent_source_failure,
 )
+from findb_fetcher.config import app_environment
 from findb_fetcher.daily_runtime import window
+from findb_fetcher.execution_config import ExecutionSnapshot, resolve_execution_config
+from findb_fetcher.execution_metadata import acquisition_feeds
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
@@ -375,7 +378,10 @@ class FullMarketRuntime:
             raw_store,
         )
         self.readiness_file = readiness_file
-        self.feeds = [feed for feed in config["feeds"] if feed["provider"] == provider]
+        self.feeds = [
+            {**feed, "slot_id": feed["delivery"]["slot_id"]} for feed in acquisition_feeds(provider)
+        ]
+        self.schedule_snapshot: ExecutionSnapshot | None = None
         self.installed_feeds = list(self.feeds)
         self.http = client or httpx.Client(timeout=30)
         self.owns_http = client is None
@@ -389,7 +395,7 @@ class FullMarketRuntime:
         # Source stable work identity is immutable, so one acknowledged enqueue
         # per process is enough; every later cycle would only replay it.
         self.enqueued_keys: set[str] = set()
-        self.daily_policy = config.get("daily_runtime_policies", {}).get(provider)
+        self.daily_policy = None
         self.last_batch: dict[str, Any] = {}
 
     def close(self) -> None:
@@ -859,7 +865,12 @@ class FullMarketRuntime:
                 provider=self.provider,
                 effective_date=effective,
                 observed_at=now,
-                source_timezone=feed["source_timezone"],
+                source_timezone={
+                    "US": "America/New_York",
+                    "HK": "Asia/Hong_Kong",
+                    "TW": "Asia/Taipei",
+                    "TW_FUTURES": "Asia/Taipei",
+                }[feed.get("calendar_market", feed["market"])],
                 snapshots=evidence,
                 members=members,
             )
@@ -871,14 +882,23 @@ class FullMarketRuntime:
         from findb_fetcher.config import require_provider_work_protocol
 
         require_provider_work_protocol()
-        self._queued_cycle(include_health=False)
+        self._queued_cycle(include_health=False, plan_new_dates=False)
 
     def cycle(self) -> dict[str, Any]:
         """All providers use the same durable queue, including retained work."""
         from findb_fetcher.config import require_provider_work_protocol
 
         require_provider_work_protocol()
-        return self._queued_cycle()
+        # Clear before requesting: a failed round cannot reuse the previous clock.
+        self.schedule_snapshot = None
+        snapshot = resolve_execution_config(
+            self.source.execution_config(),
+            provider=self.provider,
+            environment=app_environment(),
+            profile=self.execution_profile,
+        )
+        self.schedule_snapshot = snapshot
+        return self._queued_cycle(snapshot=snapshot)
 
     def sync_queued_universes(self) -> list[dict[str, Any]]:
         from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
@@ -1059,10 +1079,26 @@ class FullMarketRuntime:
     def _enqueue(self, body: dict[str, Any]) -> None:
         if body["stable_key"] in self.enqueued_keys:
             return
-        self.source.request("POST", "provider-work/enqueue", body)
+        try:
+            self.source.request("POST", "provider-work/enqueue", body)
+        except FullMarketProtocolError as exc:
+            if not (
+                body["kind"] == "daily"
+                and exc.status_code == 409
+                and exc.code == "PROVIDER_WORK_FROZEN_FEED"
+            ):
+                raise
+            # Source proved the same daily identity already has frozen metadata.
+            # Claim restores its original scope; never overwrite it with this round.
         self.enqueued_keys.add(body["stable_key"])
 
-    def _queued_cycle(self, *, include_health: bool = True) -> dict[str, Any]:
+    def _queued_cycle(
+        self,
+        *,
+        include_health: bool = True,
+        plan_new_dates: bool = True,
+        snapshot: ExecutionSnapshot | None = None,
+    ) -> dict[str, Any]:
         """Enqueue bounded dates before claiming; every provider call is owned."""
         from findb_fetcher.provider_work import ProviderWorkWaitingError, claimed_work
         from findb_fetcher.raw_storage import RawStorageUploadError
@@ -1080,8 +1116,11 @@ class FullMarketRuntime:
             if authorization.get("acquisition_allowed")
             else []
         )
+        if plan_new_dates and snapshot is None:
+            raise ValueError("New date planning requires a fresh execution snapshot")
+        planning_feeds = snapshot.feeds if snapshot is not None and plan_new_dates else ()
         due: list[tuple[date, dict[str, Any]]] = []
-        for feed in self.installed_feeds:
+        for feed in planning_feeds:
             if feed["dataset_key"] not in admitted:
                 continue
             listed = self.source.universes(feed["dataset_key"], self.provider)
@@ -1101,18 +1140,14 @@ class FullMarketRuntime:
             )
         # Existing durable plans must drain after stop even when no new dates
         # are admitted. Enqueue idempotency preserves their original position.
-        for saved in self.state.pending_plans(self.provider):
+        for saved in self.state.pending_plans(self.provider) if plan_new_dates else ():
             plan = json.loads(saved["body"])
-            feed = next(
-                (
-                    feed
-                    for feed in self.installed_feeds
-                    if feed["dataset_key"] == plan["dataset_key"]
-                ),
+            pending_feed = next(
+                (feed for feed in planning_feeds if feed["dataset_key"] == plan["dataset_key"]),
                 None,
             )
-            if feed:
-                due.append((date.fromisoformat(plan["trade_date"]), feed))
+            if pending_feed:
+                due.append((date.fromisoformat(plan["trade_date"]), pending_feed))
         for day, feed in sorted(due, key=lambda value: (value[0], value[1]["dataset_key"])):
             self._enqueue(
                 {
@@ -1129,7 +1164,7 @@ class FullMarketRuntime:
             and self.provider != "taifex"
             and self.state.refresh_due(self.provider, now.timestamp())
         ):
-            for feed in self.installed_feeds:
+            for feed in planning_feeds:
                 if feed["dataset_key"] in admitted:
                     self._enqueue(
                         {
@@ -1696,7 +1731,12 @@ class FullMarketRuntime:
                 provider=self.provider,
                 effective_date=day,
                 observed_at=datetime.now(timezone.utc),
-                source_timezone=feed["source_timezone"],
+                source_timezone={
+                    "US": "America/New_York",
+                    "HK": "Asia/Hong_Kong",
+                    "TW": "Asia/Taipei",
+                    "TW_FUTURES": "Asia/Taipei",
+                }[feed.get("calendar_market", feed["market"])],
                 snapshots={url: raw},
                 members=members,
             )
