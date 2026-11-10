@@ -400,6 +400,7 @@ def _project_schedule(dataset_key: str, config: dict) -> dict:
         return result
     expectation = result["delivery_expectation"]
     expectation["schedule"].update(
+        slot_id=feed.delivery.slot_id,
         local_time=time.fromisoformat(feed.schedule.local_time).isoformat(),
         timezone=feed.schedule.timezone,
         target_date_lag_days=feed.schedule.target_date_lag_days,
@@ -569,7 +570,7 @@ async def seed_datasets(session: AsyncSession) -> None:
             )
             .on_conflict_do_update(
                 index_elements=["scheduler_key"],
-                set_={"scheduled_local_time": clock, "timezone": zone},
+                set_={"slot_id": slot, "scheduled_local_time": clock, "timezone": zone},
                 where=SchedulerControl.retired_at.is_(None),
             )
         )

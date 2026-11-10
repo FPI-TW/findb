@@ -16,13 +16,11 @@ from findb_fetcher.scheduler_control import (
     SchedulerControlClient,
     SchedulerControlLoop,
     SchedulerControlProtocolError,
-    SchedulerControlResponse,
     SchedulerControlResponseError,
     SchedulerControlTransportError,
     _log_control_failure,
     require_scheduler_stopped,
     scheduler_stop_event,
-    validate_scheduler_definition,
 )
 
 TWELVE_CONTROL_KEY = "full_market_twelve_data_v1"
@@ -228,29 +226,6 @@ def test_control_client_parses_authoritative_scheduler_definition() -> None:
     assert response.slot_id == "western_markets_window"
     assert response.scheduled_local_time == time(8, 15)
     assert response.timezone == "Asia/Taipei"
-
-
-def test_definition_drift_is_rejected_before_cycle() -> None:
-    response = SchedulerControlResponse(
-        scheduler_key=TWELVE_CONTROL_KEY,
-        provider="twelve_data",
-        dataset_keys=("other_dataset",),
-        slot_id="western_markets_window",
-        scheduled_local_time=time(8, 15),
-        timezone="Asia/Taipei",
-        desired_state="running",
-        revision=1,
-        server_time=datetime(2026, 8, 4, tzinfo=UTC),
-    )
-    with pytest.raises(SchedulerControlProtocolError):
-        validate_scheduler_definition(
-            response,
-            provider="twelve_data",
-            dataset_keys=("us_equity_eod",),
-            slot_id="western_markets_window",
-            scheduled_local_time="08:15:00",
-            timezone_name="Asia/Taipei",
-        )
 
 
 def test_disabled_idle_never_constructs_or_invokes_cycle() -> None:
@@ -647,14 +622,7 @@ def test_each_provider_stopped_idle_then_running_acknowledgement_delivers(provid
             )
 
     def validator(response):
-        validate_scheduler_definition(
-            response,
-            provider=provider,
-            dataset_keys=feeds,
-            slot_id="taiwan_market_window",
-            scheduled_local_time="18:00:00",
-            timezone_name="Asia/Taipei",
-        )
+        assert response.provider == provider and tuple(response.dataset_keys) == tuple(feeds)
 
     assert (
         SchedulerControlLoop(Control(), definition_validator=validator).run(

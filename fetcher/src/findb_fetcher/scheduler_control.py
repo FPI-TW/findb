@@ -660,33 +660,6 @@ def _parse_local_time(value: object) -> clock_time:
     raise SchedulerControlProtocolError("scheduler control scheduled_local_time was invalid")
 
 
-def validate_scheduler_definition(
-    response: SchedulerControlResponse,
-    *,
-    provider: str,
-    dataset_keys: tuple[str, ...] | list[str],
-    slot_id: str,
-    scheduled_local_time: clock_time | str,
-    timezone_name: str,
-) -> None:
-    """Fail closed when local execution config drifts from DB definition."""
-    expected_time = (
-        _parse_local_time(scheduled_local_time)
-        if isinstance(scheduled_local_time, str)
-        else scheduled_local_time
-    )
-    if response.provider != provider:
-        raise SchedulerControlProtocolError("scheduler control provider drifted")
-    if tuple(sorted(response.dataset_keys)) != tuple(sorted(dataset_keys)):
-        raise SchedulerControlProtocolError("scheduler control dataset mapping drifted")
-    if response.slot_id != slot_id:
-        raise SchedulerControlProtocolError("scheduler control slot drifted")
-    if response.scheduled_local_time != expected_time:
-        raise SchedulerControlProtocolError("scheduler control scheduled time drifted")
-    if response.timezone != timezone_name:
-        raise SchedulerControlProtocolError("scheduler control timezone drifted")
-
-
 def _parse_utc_datetime(value: object, field: str) -> datetime:
     if not isinstance(value, str):
         raise SchedulerControlProtocolError(f"scheduler control {field} was invalid")
@@ -766,5 +739,4 @@ __all__ = [
     "SchedulerControlTransportError",
     "scheduler_stop_event",
     "scheduler_control_keys",
-    "validate_scheduler_definition",
 ]
