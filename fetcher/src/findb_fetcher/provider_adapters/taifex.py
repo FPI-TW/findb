@@ -39,6 +39,7 @@ from findb_fetcher.providers.taifex import (
     persist_dated_report,
     report_members,
 )
+from findb_fetcher.raw_storage import RawObject
 
 # A TAIFEX report outage stops charging members, but only for this long per plan.
 TAIFEX_OUTAGE_RETRY_SECONDS = 12 * 3600
@@ -71,9 +72,12 @@ class TaifexAdapter(ProviderAdapter):
 
     def __init__(self) -> None:
         self.reports: dict[str, tuple[bytes, list[dict[str, Any]], bool]] = {}
+        # One content-addressed raw object per date's report, shared by every member.
+        self.report_objects: dict[str, RawObject] = {}
 
     def reset(self) -> None:
         self.reports.clear()
+        self.report_objects.clear()
 
     def report(
         self, day: date, context: AcquisitionContext
@@ -81,11 +85,12 @@ class TaifexAdapter(ProviderAdapter):
         """The date's report: the latest report when it is that date, else the dated one."""
         if day.isoformat() not in self.reports:
             latest_raw = context.snapshot(TAIFEX_URL, provider_response=True)
-            if latest_raw:
-                context.persist(latest_raw, "exchange_report")
+            latest_object = context.persist(latest_raw, "exchange_report") if latest_raw else None
             try:
                 rows = parse_report(latest_raw, target_date=day)
                 raw, historical = latest_raw, False
+                if latest_object is not None:
+                    self.report_objects[day.isoformat()] = latest_object
             except (ValueError, UnicodeError):
                 reports = {}
                 rows = []
@@ -131,7 +136,10 @@ class TaifexAdapter(ProviderAdapter):
     def acquire(self, member: Mapping[str, Any], context: AcquisitionContext) -> AcquisitionResult:
         day = context.trade_date
         raw, rows, historical = self.report(day, context)
-        stored = context.persist(raw, "exchange_report")
+        stored = self.report_objects.get(day.isoformat())
+        if stored is None:
+            stored = context.persist(raw, "exchange_report")
+            self.report_objects[day.isoformat()] = stored
         selected = [
             row
             for row in rows
@@ -151,7 +159,6 @@ class TaifexAdapter(ProviderAdapter):
                 "source_status": "no_trade",
                 "source_excerpt": canonical_bytes(selected[0]).decode()[:500],
             }
-            context.persist(raw, "exchange_report")
             return AcquisitionResult.no_trade_evidence(evidence)
         if (
             not any(selected[0][field] is not None for field in OBSERVATION_FIELDS)

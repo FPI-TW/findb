@@ -21,7 +21,7 @@ from findb_fetcher.full_market_errors import (
     MemberUnavailableError,
     ProviderHTTPError,
 )
-from findb_fetcher.full_market_universe import canonical_bytes
+from findb_fetcher.full_market_universe import TAIFEX_HISTORY_URL, TAIFEX_URL, canonical_bytes
 from findb_fetcher.provider_adapters import (
     ADAPTERS,
     AcquisitionContext,
@@ -421,3 +421,53 @@ def test_maintenance_failure_codes_come_from_adapter_classes(tmp_path, provider,
             assert settled == [expected]
     finally:
         runtime.close()
+
+
+def _taifex_report_row(session: str, **values: str) -> dict[str, str]:
+    return {
+        "Date": DAY.strftime("%Y%m%d"),
+        "Contract": "TX",
+        "ContractMonth(Week)": "202610",
+        "Open": "1",
+        "High": "2",
+        "Low": "1",
+        "Last": "2",
+        "Volume": "3",
+        "SettlementPrice": "2",
+        "OpenInterest": "4",
+        "TradingSession": session,
+        **values,
+    }
+
+
+@pytest.mark.parametrize("dated", [False, True], ids=["latest", "dated"])
+def test_taifex_report_raw_object_is_written_once_per_date(dated):
+    """Every member's source_raw_ref is the date's one content-addressed report object."""
+    from findb_fetcher.providers.taifex import parse_report
+
+    no_trade = {
+        field: "NULL"
+        for field in ("Open", "High", "Low", "Last", "SettlementPrice", "OpenInterest")
+    }
+    report = canonical_bytes(
+        [_taifex_report_row("一般"), _taifex_report_row("盤後", Volume="0", **no_trade)]
+    )
+    context, raw, _ = _context(
+        _feed("taifex"), snapshot=lambda url, provider_response=False: report
+    )
+    adapter = TaifexAdapter()
+    if dated:
+        # A dated fallback report (fetched through the owned runtime) has no raw object yet.
+        adapter.reports[DAY.isoformat()] = (report, parse_report(report, target_date=DAY), True)
+    member = {"contract_code": "TX:202610", "provider_symbol": "TX:202610"}
+    data = adapter.acquire({**member, "session": "regular"}, context)
+    quiet = adapter.acquire({**member, "session": "after_hours"}, context)
+    with pytest.raises(Exception, match="contract/session is missing"):
+        adapter.acquire({**member, "contract_code": "TX:202612", "session": "regular"}, context)
+    assert data.raw_object is not None and quiet.no_trade is not None
+    assert raw.calls == [(report, "exchange_report", "json")]
+    assert data.raw_object.sha256 == hashlib.sha256(report).hexdigest()
+    assert quiet.no_trade["sha256"] == data.raw_object.sha256
+    assert quiet.no_trade["url"].startswith(TAIFEX_HISTORY_URL if dated else TAIFEX_URL)
+    adapter.reset()
+    assert adapter.reports == {} and adapter.report_objects == {}
