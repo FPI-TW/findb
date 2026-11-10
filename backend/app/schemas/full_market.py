@@ -182,6 +182,8 @@ class DeliverySummaryResponse(FullMarketModel):
     no_data: int
     missing: int
     blocked: int
+    # Blocked members whose provider mapping is missing; not counted toward is_late.
+    mapping_gap: int = 0
     deadline_at: datetime
     is_late: bool
     gaps: list[dict]

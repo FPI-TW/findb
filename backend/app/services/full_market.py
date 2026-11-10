@@ -897,6 +897,7 @@ async def reconcile_plan(
     if plan.provider == "factset" and plan.dataset_key == "hk_equity_eod":
         canonical_keys.update(await _factset_historical_repairs(db, plan, members))
     counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
+    unmapped = 0
     gaps: list[dict] = []
     for member in members:
         mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
@@ -912,10 +913,12 @@ async def reconcile_plan(
         else:
             state = "missing"
         counts[state] += 1
+        reason = member.outcome_reason or ("mapping_gap" if mapping_gap else None)
+        if reason == "mapping_gap" and member.member_key in mappings:
+            reason = None
+        if state == "blocked" and reason == "mapping_gap":
+            unmapped += 1
         if state in {"missing", "blocked"} and (gap_limit is None or len(gaps) < gap_limit):
-            reason = member.outcome_reason or ("mapping_gap" if mapping_gap else None)
-            if reason == "mapping_gap" and member.member_key in mappings:
-                reason = None
             gaps.append(
                 {
                     "member_key": member.member_key,
@@ -928,8 +931,12 @@ async def reconcile_plan(
         execution_profile=execution_profile(plan.execution_profile),
         expected=len(members),
         **counts,
+        mapping_gap=unmapped,
         deadline_at=plan.deadline_at,
-        is_late=evaluated_at > plan.deadline_at and counts["missing"] + counts["blocked"] > 0,
+        # Lateness tracks acquisition progress: a mapping gap cannot be fetched, so
+        # it stays blocked (and alerting) without making the plan late.
+        is_late=evaluated_at > plan.deadline_at
+        and counts["missing"] + counts["blocked"] - unmapped > 0,
         gaps=gaps,
     )
 

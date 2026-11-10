@@ -113,6 +113,9 @@ inode 復原；不得藉重新啟動 daemon、等待 TTL 或刪除相容 scope �
 舊 Pilot 留下的 runs 已脫離 plan（`delivery_part_id` 為 NULL），不計入任何 plan。
 Minute 必須有完整 sequenced snapshot；DQ error、空批次、quota failure 不得算成功或 no_data。
 No_data 必須有 durable provider evidence。
+Summary 另回傳 `mapping_gap`：blocked 中屬於 mapping gap 的成員數。`is_late` 只看抓取進度，
+也就是超過 deadline 時，扣除 mapping gap 後仍有 missing 或 blocked；mapping gap 照樣計入 blocked
+與缺漏告警，不會因此被隱藏。
 
 ## 啟動契約
 
