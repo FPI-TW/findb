@@ -53,13 +53,49 @@ def _safe_identifier(*parts: str) -> str:
     return value[:MAX_DATABASE_IDENTIFIER_LENGTH].rstrip("_") or "findb_migration"
 
 
+# Columns the current ORM no longer maps, with the server default migration
+# d7a2c4e6f8b1 gives them.  Revisions before it have the column without a
+# default, so current services could not seed rows there.
+RETIRED_COLUMN_DEFAULTS = (
+    ("full_market_environment", "enabled", "false"),
+    ("full_market_enrollment", "reported_enabled", "true"),
+)
+
+
+async def add_retired_column_defaults(database_url: str) -> None:
+    """Give pre-d7a2c4e6f8b1 schemas the defaults current ORM inserts rely on."""
+
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            for table, column, default in RETIRED_COLUMN_DEFAULTS:
+                missing = await connection.scalar(
+                    text(
+                        "SELECT column_default IS NULL FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND table_name = :table "
+                        "AND column_name = :column"
+                    ),
+                    {"table": table, "column": column},
+                )
+                if missing:
+                    await connection.execute(
+                        text(f"ALTER TABLE {table} ALTER COLUMN {column} SET DEFAULT {default}")
+                    )
+    finally:
+        await engine.dispose()
+
+
 async def run_alembic(
     database_url: str,
     revision: str,
     *,
     command: str = "upgrade",
 ) -> None:
-    """Run ``alembic <command> <revision>`` against ``database_url`` in a subprocess."""
+    """Run ``alembic <command> <revision>`` against ``database_url`` in a subprocess.
+
+    Afterwards an older schema gets the retired-column defaults so current
+    services can seed it; this never changes a schema at or after d7a2c4e6f8b1.
+    """
 
     environment = os.environ.copy()
     environment["DATABASE_URL"] = database_url
@@ -72,6 +108,7 @@ async def run_alembic(
         capture_output=True,
         text=True,
     )
+    await add_retired_column_defaults(database_url)
 
 
 class MigrationDatabaseFactory:
