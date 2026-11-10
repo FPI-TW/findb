@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   policy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       revision: ${{ steps.revision.outputs.sha }}
       findb_ci: ${{ steps.policy.outputs.findb_ci }}
@@ -55,7 +55,7 @@ jobs:
     name: Required CI
     if: ${{ always() }}
     needs: [policy, findb, fetcher, staging-infra-plan]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           POLICY: ${{ needs.policy.result }}

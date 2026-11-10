@@ -30,7 +30,7 @@ permissions:
   id-token: write
 jobs:
   resolve:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       revision: ${{ steps.resolve.outputs.sha }}
@@ -83,7 +83,7 @@ jobs:
       contents: read
   bind-release-tag:
     needs: resolve
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
