@@ -103,7 +103,7 @@ case "$FETCHER_DEPLOY_MODE" in
   candidate|activate|apply) ;;
   *) echo "fetcher_aws_deploy=failed reason=deploy_mode_invalid" >&2; exit 1 ;;
 esac
-  if ! printf '%s' "$FETCHER_RELEASE_ROOT" | grep -Eq '^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$' \
+  if ! grep -Eq '^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$' <<<"$FETCHER_RELEASE_ROOT" \
   || [ ! -d "$FETCHER_RELEASE_ROOT" ] || [ -L "$FETCHER_RELEASE_ROOT" ] \
   || [ "$(stat -c '%U:%G:%a' "$FETCHER_RELEASE_ROOT")" != root:root:700 ]; then
   echo "fetcher_aws_deploy=failed reason=release_root_invalid" >&2
@@ -184,7 +184,7 @@ fi
 
 validate_image() {
   local image="$1" repository="$2"
-  printf '%s' "$image" | grep -Eq "^${expected_registry}/${repository}@sha256:[0-9a-f]{64}$" || {
+  grep -Eq "^${expected_registry}/${repository}@sha256:[0-9a-f]{64}$" <<<"$image" || {
     echo "fetcher_aws_deploy=failed reason=ecr_image_contract" >&2
     exit 1
   }
@@ -527,7 +527,7 @@ if [ "$FETCHER_DEPLOY_MODE" = activate ]; then
   fi
   if [ -L /opt/fetcher/current ]; then
     previous_pointer="$(readlink /opt/fetcher/current)"
-    printf '%s' "$previous_pointer" | grep -Eq '^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$' || {
+    grep -Eq '^/opt/fetcher/releases/[0-9a-f]{64}-[A-Za-z0-9._-]+$' <<<"$previous_pointer" || {
       echo "fetcher_aws_deploy=failed reason=current_pointer_invalid" >&2
       false
     }
@@ -763,7 +763,9 @@ set -euo pipefail
 # before any provider mutation or Docker login cleanup.
 pull_exact() {
   docker pull "$1" >/dev/null
-  docker image inspect "$1" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -Fxq "$1"
+  local digests
+  digests="$(docker image inspect "$1" --format '{{range .RepoDigests}}{{println .}}{{end}}')"
+  grep -Fxq -- "$1" <<<"$digests"
 }
 pids=()
 for image in "$@"; do
