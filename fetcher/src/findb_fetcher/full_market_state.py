@@ -665,7 +665,7 @@ class FullMarketState:
                 ).fetchall()
             )
             failures = db.execute(
-                "SELECT member_key,reason,attempts FROM full_work WHERE plan_id=? AND reason IN ('source_error','source_rejected','normalization_failed','mapping_gap','retry_exhausted','empty_response','unknown_dispatch') ORDER BY key",
+                "SELECT member_key,reason,attempts FROM full_work WHERE plan_id=? AND reason IN ('source_error','source_rejected','normalization_failed','mapping_gap','member_unavailable','retry_exhausted','empty_response','unknown_dispatch') ORDER BY key",
                 (plan_id,),
             ).fetchall()
             batch = db.execute(
@@ -781,15 +781,15 @@ class FullMarketState:
     def has_blocking_manual(self, plan_id: str) -> bool:
         """Whether a manual member needs review before the rest of the plan may continue.
 
-        A mapping gap or a symbol out of no-data retries concerns only that member,
-        and so does any other no-data reply until the breaker keeps tripping with no
-        data in between. Any other manual reason may be systemic, so it still ends the
+        A mapping gap, a symbol out of no-data retries or a member whose own values
+        are unusable concerns only that member, and so does any other no-data reply
+        until the breaker keeps tripping with no data in between. Any other manual reason may be systemic, so it still ends the
         plan at once.
         """
         with self.connection() as db:
             manual = db.execute(
                 "SELECT 1 FROM full_work WHERE plan_id=? AND status='manual' "
-                "AND COALESCE(reason,'') NOT IN ('mapping_gap','no_data_exhausted') LIMIT 1",
+                "AND COALESCE(reason,'') NOT IN ('mapping_gap','no_data_exhausted','member_unavailable') LIMIT 1",
                 (plan_id,),
             ).fetchone()
             trips = db.execute(

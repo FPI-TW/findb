@@ -254,6 +254,8 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `no_data` | Twelve Data 回報該檔該日無資料，或單檔回 404（`not_found`，例如清單已列出但日線尚未提供的新代號），不停止其他成員；依額度重試，不算成功或 no_data。兩者以 Fetcher SQLite `full_work_diagnostic.category` 分辨，Admin API 與 Dashboard 都只顯示 `source_error` |
 | `no_data_exhausted` | `no_data` 額度耗盡（失敗後依序等待 30、60、60、120 分鐘），缺漏須另行回補；只影響該檔。Breaker 連續觸發 5 次且其間沒有資料才結束 plan，約需 4.5 小時，此時先查是否為未發布休市日 |
 | `prepared/normalizing` | 應查 Backend run 與序列收據；可能已完成，不能據此宣稱 queue 卡住 |
+| `source_proven_no_trade` | 已完成。FinLab 當日四個價格全空、成交量為空或 0，視為當日沒有成交，附整張表 bundle 的 SHA-256 回報 `no_trade` 證據；TAIFEX 依報表的無成交列 |
+| `member_unavailable` | FinLab 整張表正常，但只有該成員不能使用：部分欄位空值、OHLC 越界、成交量非整數，或 FinLab 表中還沒有這個代號（例如剛上市）。只擋下該檔，不重試、不重新下載整張表、不停止 plan；Backend 記為 blocked（缺代號為 `empty_response`，其餘為 `source_error`），細分原因看 `full_work_diagnostic.category` 的 `member:<code>` |
 
 診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source
 credential、config 與 `FETCHER_ACCOUNT_STATE_PATH` 執行，明確指定 profile／state path：

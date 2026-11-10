@@ -352,6 +352,17 @@ def test_sdk_gateway_selects_only_reviewed_symbols_and_rejects_missing_members()
             symbols=("2330", "9999"),
         )
 
+    tolerant = FinLabSdkGateway(api_token="test-token", _sdk=sdk, allow_missing_symbols=True)
+    narrowed = tolerant.fetch_dataset(
+        "price:開盤價",
+        target_date=TARGET_DATE,
+        symbols=("9999", "2317", "2330"),
+    )
+    assert narrowed.symbols == ("2317", "2330")
+    assert narrowed.values == ((300, 1000),)
+    with pytest.raises(FinLabSdkError, match="serves none"):
+        tolerant.fetch_dataset("price:開盤價", target_date=TARGET_DATE, symbols=("9999",))
+
 
 def test_bundle_cannot_be_mutated_or_constructed_with_inconsistent_integrity_data() -> None:
     bundle = build_finlab_dataset_bundle(
