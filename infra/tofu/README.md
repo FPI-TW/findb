@@ -248,6 +248,13 @@ configuration. `staging/backend.tf` is intentionally partial; the globally
 unique bucket, state key, region, KMS key, encryption, and native lockfile are
 never hardcoded there.
 
+`production/backend.tf` is the opposite: production has one fixed state root,
+so bucket, key, region, and the state KMS key ARN are all pinned there because
+the state bucket policy rejects writes (including the native lockfile) that do
+not carry that exact key. A plain `init` works; see
+[`docs/operations/production.md`](../../docs/operations/production.md) for the
+day-to-day plan/apply commands.
+
 The stack enforces the required `Project=findb`, `Environment`, `DeploymentUnit`,
 `Owner`, and `BackupOwner` tags on each existing instance. It creates separate
 OIDC deploy roles for `staging-findb` and `staging-fetcher`, separate EC2

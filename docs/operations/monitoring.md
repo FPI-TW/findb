@@ -328,6 +328,10 @@ Do not run this from a pull-request plan identity. That role is intentionally
 read-only except for the native remote-state lockfile; it has no permission to
 create or alter monitoring resources.
 
+These steps use the staging root. For production, follow the init/plan/apply
+commands in [production.md 日常 plan／apply](production.md#日常-planapply);
+its backend is fully pinned and its tracked tfvars already holds the real values.
+
 1. Review the configuration in a clean checkout at the approved commit. Copy
    `infra/tofu/staging/terraform.tfvars.example` to an ignored local
    `terraform.tfvars`, replace `operational_alert_email` with the on-call

@@ -111,6 +111,24 @@ def test_production_alert_topic_key_lets_only_own_alarms_publish() -> None:
     assert "cloudwatch.amazonaws.com" not in shared
 
 
+def test_production_backend_pins_the_state_kms_key_required_by_the_bucket_policy() -> None:
+    backend = (REPO_ROOT / "infra/tofu/production/backend.tf").read_text(encoding="utf-8")
+    bootstrap = (REPO_ROOT / "infra/tofu/production-bootstrap/main.tf").read_text(encoding="utf-8")
+
+    # The bucket policy denies any PutObject (state and lockfile) whose SSE-KMS
+    # key id is not the state key, so a plain `init` must already carry it.
+    assert 'variable = "s3:x-amz-server-side-encryption-aws-kms-key-id"' in bootstrap
+    assert 'bucket       = "findb-production-tofu-state-289112218471"' in backend
+    assert 'key          = "production/control-plane.tfstate"' in backend
+    assert "encrypt      = true" in backend
+    assert (
+        'kms_key_id   = "arn:aws:kms:ap-southeast-1:289112218471:key/'
+        'be629e7b-7540-4f6f-9818-a0b8f2d7bddc"'
+    ) in backend
+    assert "use_lockfile = true" in backend
+    assert "dynamodb_table" not in backend
+
+
 def test_production_rollback_replays_acceptance_without_rerunning_ci() -> None:
     for unit in ("findb", "fetcher"):
         workflow = (REPO_ROOT / ".github/workflows" / f"{unit}-production-cd.yml").read_text(
