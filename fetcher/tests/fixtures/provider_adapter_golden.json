@@ -1,0 +1,818 @@
+{
+ "factset": {
+  "delivered": [
+   "{\"dataset_key\":\"hk_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"asia_pacific_markets_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:hk_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"factset:8f0c0ef22c86d83915427214944148000b1b6d114552f09f0b6529ac9f45a798\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/factset/hk_equity_eod/43d5b10e2977ab55/1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae.json\",\"source_raw_sha256\":\"1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae\"},\"data\":[{\"close\":\"10.5\",\"currency\":\"HKD\",\"high\":\"11\",\"low\":\"9.5\",\"open\":\"10\",\"source_symbol\":\"AAAAA1-L\",\"symbol\":\"00001\",\"trade_date\":\"2026-10-01\",\"volume\":1000}]},\"request_key\":\"factset:hk_equity_eod:8f0c0ef22c86d8391542721494414800\",\"schema_id\":\"market_eod\",\"schema_version\":2,\"source\":\"factset\"}"
+  ],
+  "evaluated": [
+   "plan:hk_equity_eod"
+  ],
+  "idempotency_keys": [
+   "factset:8f0c0ef22c86d83915427214944148000b1b6d114552f09f0b6529ac9f45a798"
+  ],
+  "job_keys": [
+   "factset:00001"
+  ],
+  "manifest": {
+   "contract": {
+    "schema_id": "market_eod",
+    "schema_version": 2
+   },
+   "members": [
+    {
+     "key": "00001",
+     "mapping_status": "mapped",
+     "source_symbol": "AAAAA1-L"
+    },
+    {
+     "key": "00002",
+     "mapping_status": "mapped",
+     "source_symbol": "AAAAA2-L"
+    },
+    {
+     "key": "00003",
+     "mapping_status": "mapped",
+     "source_symbol": "AAAAA3-L"
+    },
+    {
+     "key": "00004",
+     "mapping_status": "gap",
+     "source_symbol": "AAAAA4-L"
+    }
+   ],
+   "mode": "canonical",
+   "plan_id": "plan:hk_equity_eod"
+  },
+  "outcomes": [
+   {
+    "member_key": "00002",
+    "plan_id": "plan:hk_equity_eod",
+    "reason": "source_error",
+    "work_item_id": "fp1:hk_equity_eod"
+   },
+   {
+    "member_key": "00004",
+    "plan_id": "plan:hk_equity_eod",
+    "reason": "mapping_gap",
+    "work_item_id": "fp1:hk_equity_eod"
+   }
+  ],
+  "prepared": {
+   "fp1:hk_equity_eod:00001": "[{\"dataset_key\":\"hk_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"asia_pacific_markets_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:hk_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"factset:8f0c0ef22c86d83915427214944148000b1b6d114552f09f0b6529ac9f45a798\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/factset/hk_equity_eod/43d5b10e2977ab55/1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae.json\",\"source_raw_sha256\":\"1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae\"},\"data\":[{\"close\":\"10.5\",\"currency\":\"HKD\",\"high\":\"11\",\"low\":\"9.5\",\"open\":\"10\",\"source_symbol\":\"AAAAA1-L\",\"symbol\":\"00001\",\"trade_date\":\"2026-10-01\",\"volume\":1000}]},\"request_key\":\"factset:hk_equity_eod:8f0c0ef22c86d8391542721494414800\",\"schema_id\":\"market_eod\",\"schema_version\":2,\"source\":\"factset\"}]"
+  },
+  "queried": [
+   [
+    "2026-10-01",
+    [
+     "AAAAA1-L",
+     "AAAAA2-L",
+     "AAAAA3-L"
+    ]
+   ]
+  ],
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "factset/hk_equity_eod/43d5b10e2977ab55/1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae.json",
+    "metadata": {
+     "dataset": "hk_equity_eod",
+     "provider": "factset",
+     "sha256": "1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae",
+     "source-symbol": "frozen-cohort"
+    },
+    "sha256": "1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae",
+    "size": 372
+   }
+  ],
+  "settled": [
+   [
+    "partial",
+    {
+     "proof": {
+      "eod": {
+       "members": [
+        {
+         "member_key": "00001",
+         "outcome": "data"
+        },
+        {
+         "member_key": "00002",
+         "outcome": "invalid",
+         "raw": {
+          "ref": "r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/factset/hk_equity_eod/43d5b10e2977ab55/1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae.json",
+          "sha256": "1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae"
+         },
+         "reason": "row_structure_invalid"
+        },
+        {
+         "member_key": "00003",
+         "outcome": "missing",
+         "raw": {
+          "ref": "r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/factset/hk_equity_eod/43d5b10e2977ab55/1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae.json",
+          "sha256": "1fbc2454d3498b4a301eb4e78c50031eff4b27a0f5e315d2b6b3e31630822aae"
+         },
+         "reason": "no_source_row"
+        },
+        {
+         "member_key": "00004",
+         "outcome": "mapping_gap"
+        }
+       ],
+       "schema_id": "market_eod",
+       "schema_version": 2,
+       "trade_date": "2026-10-01",
+       "version": 2
+      }
+     }
+    }
+   ]
+  ],
+  "settlement": [
+   {
+    "member_key": "00001",
+    "reason": "data",
+    "status": "complete"
+   },
+   {
+    "member_key": "00002",
+    "reason": "invalid",
+    "status": "complete"
+   },
+   {
+    "member_key": "00003",
+    "reason": "missing",
+    "status": "complete"
+   },
+   {
+    "member_key": "00004",
+    "reason": "mapping_gap",
+    "status": "complete"
+   }
+  ]
+ },
+ "finlab:tw_equity_eod": {
+  "delivered": [
+   "{\"dataset_key\":\"tw_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"finlab:342b7e74e2b9dbef04043153c52f2dd87b91a3bf1abbaa0721804a4144257ec8\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_equity_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json\",\"source_raw_sha256\":\"f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a\"},\"data\":[{\"close\":\"588\",\"currency\":\"TWD\",\"high\":\"590\",\"low\":\"575.5\",\"open\":\"580\",\"source_symbol\":\"2330\",\"symbol\":\"2330\",\"trade_date\":\"2026-10-01\",\"volume\":25000000}]},\"request_key\":\"finlab:tw_equity_eod:342b7e74e2b9dbef04043153c52f2dd8\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"finlab\"}",
+   "{\"dataset_key\":\"tw_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"finlab:2fdd0fe486d4b573c9e7a536781fe5b0de8dbc0817dd0d6d18fe8152c1849b4d\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_equity_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json\",\"source_raw_sha256\":\"f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a\"},\"data\":[{\"close\":\"130.8\",\"currency\":\"TWD\",\"high\":\"131\",\"low\":\"129.95\",\"open\":\"130.5\",\"source_symbol\":\"0050\",\"symbol\":\"0050\",\"trade_date\":\"2026-10-01\",\"volume\":8000000}]},\"request_key\":\"finlab:tw_equity_eod:2fdd0fe486d4b573c9e7a536781fe5b0\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"finlab\"}"
+  ],
+  "idempotency_keys": [
+   "finlab:342b7e74e2b9dbef04043153c52f2dd87b91a3bf1abbaa0721804a4144257ec8",
+   "finlab:2fdd0fe486d4b573c9e7a536781fe5b0de8dbc0817dd0d6d18fe8152c1849b4d"
+  ],
+  "job_keys": [
+   null,
+   null
+  ],
+  "outcomes": [
+   {
+    "evidence": {
+     "observed_at": "2026-10-02T01:30:00+00:00",
+     "session": null,
+     "sha256": "f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a",
+     "source_excerpt": "{\"close\":\"nan\",\"high\":\"nan\",\"low\":\"nan\",\"open\":\"nan\",\"volume\":\"0\"}",
+     "source_status": "no_trade",
+     "source_symbol": "1101",
+     "trade_date": "2026-10-01",
+     "url": "https://www.finlab.tw/data/price-close?dataset=tw_equity_eod"
+    },
+    "member_key": "1101",
+    "plan_id": "plan:tw_equity_eod",
+    "reason": "no_trade",
+    "work_item_id": "fp1:tw_equity_eod"
+   },
+   {
+    "member_key": "9999",
+    "plan_id": "plan:tw_equity_eod",
+    "reason": "empty_response",
+    "work_item_id": "fp1:tw_equity_eod"
+   },
+   {
+    "member_key": "GAP1",
+    "plan_id": "plan:tw_equity_eod",
+    "reason": "mapping_gap",
+    "work_item_id": "fp1:tw_equity_eod"
+   }
+  ],
+  "prepared": {
+   "fp1:tw_equity_eod:0050": "[{\"dataset_key\":\"tw_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"finlab:2fdd0fe486d4b573c9e7a536781fe5b0de8dbc0817dd0d6d18fe8152c1849b4d\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_equity_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json\",\"source_raw_sha256\":\"f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a\"},\"data\":[{\"close\":\"130.8\",\"currency\":\"TWD\",\"high\":\"131\",\"low\":\"129.95\",\"open\":\"130.5\",\"source_symbol\":\"0050\",\"symbol\":\"0050\",\"trade_date\":\"2026-10-01\",\"volume\":8000000}]},\"request_key\":\"finlab:tw_equity_eod:2fdd0fe486d4b573c9e7a536781fe5b0\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"finlab\"}]",
+   "fp1:tw_equity_eod:2330": "[{\"dataset_key\":\"tw_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"finlab:342b7e74e2b9dbef04043153c52f2dd87b91a3bf1abbaa0721804a4144257ec8\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_equity_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json\",\"source_raw_sha256\":\"f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a\"},\"data\":[{\"close\":\"588\",\"currency\":\"TWD\",\"high\":\"590\",\"low\":\"575.5\",\"open\":\"580\",\"source_symbol\":\"2330\",\"symbol\":\"2330\",\"trade_date\":\"2026-10-01\",\"volume\":25000000}]},\"request_key\":\"finlab:tw_equity_eod:342b7e74e2b9dbef04043153c52f2dd8\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"finlab\"}]"
+  },
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_equity_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json",
+    "metadata": {
+     "dataset": "tw_equity_eod",
+     "provider": "finlab",
+     "sha256": "f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a",
+     "source-symbol": "dataset_bundle"
+    },
+    "sha256": "f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a",
+    "size": 499
+   }
+  ],
+  "requested": [
+   [
+    "price:開盤價",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ],
+   [
+    "price:最高價",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ],
+   [
+    "price:最低價",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ],
+   [
+    "price:收盤價",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ],
+   [
+    "price:成交股數",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ]
+  ],
+  "settlement": [
+   {
+    "member_key": "0050",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "1101",
+    "reason": "source_proven_no_trade",
+    "status": "complete"
+   },
+   {
+    "member_key": "2330",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "9999",
+    "reason": "member_unavailable",
+    "status": "manual"
+   },
+   {
+    "member_key": "GAP1",
+    "reason": "mapping_gap",
+    "status": "manual"
+   }
+  ]
+ },
+ "finlab:tw_etf_eod": {
+  "delivered": [
+   "{\"dataset_key\":\"tw_etf_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_etf_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"finlab:71a7c1e698d0d41115f5a1433b92b1c1f4278fc41dc1f69a0a4b5b8a96986d5b\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_etf_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json\",\"source_raw_sha256\":\"f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a\"},\"data\":[{\"close\":\"588\",\"currency\":\"TWD\",\"high\":\"590\",\"low\":\"575.5\",\"open\":\"580\",\"source_symbol\":\"2330\",\"symbol\":\"2330\",\"trade_date\":\"2026-10-01\",\"volume\":25000000}]},\"request_key\":\"finlab:tw_etf_eod:71a7c1e698d0d41115f5a1433b92b1c1\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"finlab\"}",
+   "{\"dataset_key\":\"tw_etf_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_etf_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"finlab:20c49df311f75ef51f6f88ec23abce48826ed42cdd01bab711c998b900b01ad5\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_etf_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json\",\"source_raw_sha256\":\"f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a\"},\"data\":[{\"close\":\"130.8\",\"currency\":\"TWD\",\"high\":\"131\",\"low\":\"129.95\",\"open\":\"130.5\",\"source_symbol\":\"0050\",\"symbol\":\"0050\",\"trade_date\":\"2026-10-01\",\"volume\":8000000}]},\"request_key\":\"finlab:tw_etf_eod:20c49df311f75ef51f6f88ec23abce48\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"finlab\"}"
+  ],
+  "idempotency_keys": [
+   "finlab:71a7c1e698d0d41115f5a1433b92b1c1f4278fc41dc1f69a0a4b5b8a96986d5b",
+   "finlab:20c49df311f75ef51f6f88ec23abce48826ed42cdd01bab711c998b900b01ad5"
+  ],
+  "job_keys": [
+   null,
+   null
+  ],
+  "outcomes": [
+   {
+    "evidence": {
+     "observed_at": "2026-10-02T01:30:00+00:00",
+     "session": null,
+     "sha256": "f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a",
+     "source_excerpt": "{\"close\":\"nan\",\"high\":\"nan\",\"low\":\"nan\",\"open\":\"nan\",\"volume\":\"0\"}",
+     "source_status": "no_trade",
+     "source_symbol": "1101",
+     "trade_date": "2026-10-01",
+     "url": "https://www.finlab.tw/data/price-close?dataset=tw_etf_eod"
+    },
+    "member_key": "1101",
+    "plan_id": "plan:tw_etf_eod",
+    "reason": "no_trade",
+    "work_item_id": "fp1:tw_etf_eod"
+   },
+   {
+    "member_key": "9999",
+    "plan_id": "plan:tw_etf_eod",
+    "reason": "empty_response",
+    "work_item_id": "fp1:tw_etf_eod"
+   },
+   {
+    "member_key": "GAP1",
+    "plan_id": "plan:tw_etf_eod",
+    "reason": "mapping_gap",
+    "work_item_id": "fp1:tw_etf_eod"
+   }
+  ],
+  "prepared": {
+   "fp1:tw_etf_eod:0050": "[{\"dataset_key\":\"tw_etf_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_etf_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"finlab:20c49df311f75ef51f6f88ec23abce48826ed42cdd01bab711c998b900b01ad5\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_etf_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json\",\"source_raw_sha256\":\"f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a\"},\"data\":[{\"close\":\"130.8\",\"currency\":\"TWD\",\"high\":\"131\",\"low\":\"129.95\",\"open\":\"130.5\",\"source_symbol\":\"0050\",\"symbol\":\"0050\",\"trade_date\":\"2026-10-01\",\"volume\":8000000}]},\"request_key\":\"finlab:tw_etf_eod:20c49df311f75ef51f6f88ec23abce48\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"finlab\"}]",
+   "fp1:tw_etf_eod:2330": "[{\"dataset_key\":\"tw_etf_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_etf_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"finlab:71a7c1e698d0d41115f5a1433b92b1c1f4278fc41dc1f69a0a4b5b8a96986d5b\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_etf_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json\",\"source_raw_sha256\":\"f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a\"},\"data\":[{\"close\":\"588\",\"currency\":\"TWD\",\"high\":\"590\",\"low\":\"575.5\",\"open\":\"580\",\"source_symbol\":\"2330\",\"symbol\":\"2330\",\"trade_date\":\"2026-10-01\",\"volume\":25000000}]},\"request_key\":\"finlab:tw_etf_eod:71a7c1e698d0d41115f5a1433b92b1c1\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"finlab\"}]"
+  },
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_etf_eod/11e97cffe8db4fdd/f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a.json",
+    "metadata": {
+     "dataset": "tw_etf_eod",
+     "provider": "finlab",
+     "sha256": "f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a",
+     "source-symbol": "dataset_bundle"
+    },
+    "sha256": "f26a806f28a3f1d81a12c3e2f0d1bb078247fe68e364bcc8f36d9e48ffadd58a",
+    "size": 499
+   }
+  ],
+  "requested": [
+   [
+    "price:開盤價",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ],
+   [
+    "price:最高價",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ],
+   [
+    "price:最低價",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ],
+   [
+    "price:收盤價",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ],
+   [
+    "price:成交股數",
+    "2026-10-01",
+    [
+     "2330",
+     "1101",
+     "9999",
+     "0050"
+    ]
+   ]
+  ],
+  "settlement": [
+   {
+    "member_key": "0050",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "1101",
+    "reason": "source_proven_no_trade",
+    "status": "complete"
+   },
+   {
+    "member_key": "2330",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "9999",
+    "reason": "member_unavailable",
+    "status": "manual"
+   },
+   {
+    "member_key": "GAP1",
+    "reason": "mapping_gap",
+    "status": "manual"
+   }
+  ]
+ },
+ "taifex": {
+  "calls": [
+   "GET https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
+  ],
+  "delivered": [
+   "{\"dataset_key\":\"tw_futures_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_futures_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"taifex:6405c88f4ca35ae58a6a7d794d2f069be5828985920a98359b4b8d2c14fb22f1\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/b7f12de762f55100/ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2.json\",\"source_raw_sha256\":\"ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2\"},\"data\":[{\"close\":\"22050\",\"contract_code\":\"TX:202610\",\"contract_month\":\"202610\",\"high\":\"22100\",\"low\":\"21900\",\"open\":\"22000\",\"open_interest\":1200,\"product_code\":\"TX\",\"session\":\"regular\",\"settlement_price\":\"22040\",\"trade_date\":\"2026-10-01\",\"volume\":37}]},\"request_key\":\"taifex:tw_futures_eod:6405c88f4ca35ae58a6a7d794d2f069b\",\"schema_id\":\"futures_eod\",\"schema_version\":1,\"source\":\"taifex\"}",
+   "{\"dataset_key\":\"tw_futures_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_futures_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"taifex:99872cd1aa3546cb413039a28f31710fedfdde93c8f62b75106ac25d1bb88be0\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/b7f12de762f55100/ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2.json\",\"source_raw_sha256\":\"ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2\"},\"data\":[{\"close\":\"22050\",\"contract_code\":\"TX:202611\",\"contract_month\":\"202611\",\"high\":\"22100\",\"low\":\"21900\",\"open\":\"22000\",\"open_interest\":1200,\"product_code\":\"TX\",\"session\":\"regular\",\"settlement_price\":\"22040\",\"trade_date\":\"2026-10-01\",\"volume\":5}]},\"request_key\":\"taifex:tw_futures_eod:99872cd1aa3546cb413039a28f31710f\",\"schema_id\":\"futures_eod\",\"schema_version\":1,\"source\":\"taifex\"}"
+  ],
+  "idempotency_keys": [
+   "taifex:6405c88f4ca35ae58a6a7d794d2f069be5828985920a98359b4b8d2c14fb22f1",
+   "taifex:99872cd1aa3546cb413039a28f31710fedfdde93c8f62b75106ac25d1bb88be0"
+  ],
+  "job_keys": [
+   null,
+   null
+  ],
+  "outcomes": [
+   {
+    "evidence": {
+     "observed_at": "2026-10-02T01:30:00+00:00",
+     "session": "after_hours",
+     "sha256": "ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2",
+     "source_excerpt": "{\"close\":null,\"contract_code\":\"TX:202610\",\"contract_month\":\"202610\",\"high\":null,\"low\":null,\"open\":null,\"open_interest\":null,\"product_code\":\"TX\",\"session\":\"after_hours\",\"settlement_price\":null,\"trade_date\":\"2026-10-01\",\"volume\":0}",
+     "source_status": "no_trade",
+     "source_symbol": "TX:202610",
+     "trade_date": "2026-10-01",
+     "url": "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
+    },
+    "member_key": "TX:202610:after_hours",
+    "plan_id": "plan:tw_futures_eod",
+    "reason": "no_trade",
+    "work_item_id": "fp1:tw_futures_eod"
+   },
+   {
+    "member_key": "TX:202612:regular",
+    "plan_id": "plan:tw_futures_eod",
+    "reason": "source_error",
+    "work_item_id": "fp1:tw_futures_eod"
+   }
+  ],
+  "prepared": {
+   "fp1:tw_futures_eod:TX:202610:regular": "[{\"dataset_key\":\"tw_futures_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_futures_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"taifex:6405c88f4ca35ae58a6a7d794d2f069be5828985920a98359b4b8d2c14fb22f1\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/b7f12de762f55100/ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2.json\",\"source_raw_sha256\":\"ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2\"},\"data\":[{\"close\":\"22050\",\"contract_code\":\"TX:202610\",\"contract_month\":\"202610\",\"high\":\"22100\",\"low\":\"21900\",\"open\":\"22000\",\"open_interest\":1200,\"product_code\":\"TX\",\"session\":\"regular\",\"settlement_price\":\"22040\",\"trade_date\":\"2026-10-01\",\"volume\":37}]},\"request_key\":\"taifex:tw_futures_eod:6405c88f4ca35ae58a6a7d794d2f069b\",\"schema_id\":\"futures_eod\",\"schema_version\":1,\"source\":\"taifex\"}]",
+   "fp1:tw_futures_eod:TX:202611:regular": "[{\"dataset_key\":\"tw_futures_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_futures_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"taifex:99872cd1aa3546cb413039a28f31710fedfdde93c8f62b75106ac25d1bb88be0\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/b7f12de762f55100/ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2.json\",\"source_raw_sha256\":\"ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2\"},\"data\":[{\"close\":\"22050\",\"contract_code\":\"TX:202611\",\"contract_month\":\"202611\",\"high\":\"22100\",\"low\":\"21900\",\"open\":\"22000\",\"open_interest\":1200,\"product_code\":\"TX\",\"session\":\"regular\",\"settlement_price\":\"22040\",\"trade_date\":\"2026-10-01\",\"volume\":5}]},\"request_key\":\"taifex:tw_futures_eod:99872cd1aa3546cb413039a28f31710f\",\"schema_id\":\"futures_eod\",\"schema_version\":1,\"source\":\"taifex\"}]"
+  },
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "taifex/tw_futures_eod/69260b9dc8a30963/ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2.json",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2",
+    "size": 636
+   },
+   {
+    "content_type": "application/json",
+    "key": "taifex/tw_futures_eod/b7f12de762f55100/ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2.json",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2",
+     "source-symbol": "exchange_report"
+    },
+    "sha256": "ada441213223a315ecbe4d7a932a4e8478e9569b0050709802b73ce0742284c2",
+    "size": 636
+   }
+  ],
+  "settlement": [
+   {
+    "member_key": "TX:202610:after_hours",
+    "reason": "source_proven_no_trade",
+    "status": "complete"
+   },
+   {
+    "member_key": "TX:202610:regular",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "TX:202611:regular",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "TX:202612:regular",
+    "reason": "source_error",
+    "status": "pending"
+   }
+  ]
+ },
+ "taifex:dated": {
+  "calls": [
+   "GET latest",
+   "POST TX",
+   "POST MTX",
+   "POST TMF",
+   "POST TE",
+   "POST TF"
+  ],
+  "delivered": [
+   "{\"dataset_key\":\"tw_futures_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_futures_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"taifex:9f355600bbf8cc87e1811afb322941b4f9428a803c08a2448cacc99d5310acc3\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/b7f12de762f55100/5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e.json\",\"source_raw_sha256\":\"5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e\"},\"data\":[{\"close\":\"105\",\"contract_code\":\"TX:202610\",\"contract_month\":\"202610\",\"high\":\"110\",\"low\":\"90\",\"open\":\"100\",\"open_interest\":10,\"product_code\":\"TX\",\"session\":\"regular\",\"settlement_price\":\"105\",\"trade_date\":\"2026-10-01\",\"volume\":5}]},\"request_key\":\"taifex:tw_futures_eod:9f355600bbf8cc87e1811afb322941b4\",\"schema_id\":\"futures_eod\",\"schema_version\":1,\"source\":\"taifex\"}",
+   "{\"dataset_key\":\"tw_futures_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_futures_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"taifex:c8c053405725d6d531b426eb8b2f2078fac997fd92dba28ddf4891be9d5d8c4f\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/b7f12de762f55100/5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e.json\",\"source_raw_sha256\":\"5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e\"},\"data\":[{\"close\":\"105\",\"contract_code\":\"MTX:202610\",\"contract_month\":\"202610\",\"high\":\"110\",\"low\":\"90\",\"open\":\"100\",\"open_interest\":10,\"product_code\":\"MTX\",\"session\":\"regular\",\"settlement_price\":\"105\",\"trade_date\":\"2026-10-01\",\"volume\":5}]},\"request_key\":\"taifex:tw_futures_eod:c8c053405725d6d531b426eb8b2f2078\",\"schema_id\":\"futures_eod\",\"schema_version\":1,\"source\":\"taifex\"}"
+  ],
+  "idempotency_keys": [
+   "taifex:9f355600bbf8cc87e1811afb322941b4f9428a803c08a2448cacc99d5310acc3",
+   "taifex:c8c053405725d6d531b426eb8b2f2078fac997fd92dba28ddf4891be9d5d8c4f"
+  ],
+  "job_keys": [
+   null,
+   null
+  ],
+  "outcomes": [
+   {
+    "evidence": {
+     "observed_at": "2026-10-02T01:30:00+00:00",
+     "session": "after_hours",
+     "sha256": "5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e",
+     "source_excerpt": "{\"close\":null,\"contract_code\":\"TX:202610\",\"contract_month\":\"202610\",\"high\":null,\"low\":null,\"open\":null,\"open_interest\":null,\"product_code\":\"TX\",\"session\":\"after_hours\",\"settlement_price\":null,\"trade_date\":\"2026-10-01\",\"volume\":0}",
+     "source_status": "no_trade",
+     "source_symbol": "TX:202610",
+     "trade_date": "2026-10-01",
+     "url": "https://www.taifex.com.tw/cht/3/futDataDown"
+    },
+    "member_key": "TX:202610:after_hours",
+    "plan_id": "plan:tw_futures_eod",
+    "reason": "no_trade",
+    "work_item_id": "fp1:tw_futures_eod"
+   },
+   {
+    "evidence": {
+     "observed_at": "2026-10-02T01:30:00+00:00",
+     "session": "after_hours",
+     "sha256": "5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e",
+     "source_excerpt": "{\"close\":null,\"contract_code\":\"MTX:202610\",\"contract_month\":\"202610\",\"high\":null,\"low\":null,\"open\":null,\"open_interest\":null,\"product_code\":\"MTX\",\"session\":\"after_hours\",\"settlement_price\":null,\"trade_date\":\"2026-10-01\",\"volume\":0}",
+     "source_status": "no_trade",
+     "source_symbol": "MTX:202610",
+     "trade_date": "2026-10-01",
+     "url": "https://www.taifex.com.tw/cht/3/futDataDown"
+    },
+    "member_key": "MTX:202610:after_hours",
+    "plan_id": "plan:tw_futures_eod",
+    "reason": "no_trade",
+    "work_item_id": "fp1:tw_futures_eod"
+   }
+  ],
+  "prepared": {
+   "fp1:tw_futures_eod:MTX:202610:regular": "[{\"dataset_key\":\"tw_futures_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_futures_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"taifex:c8c053405725d6d531b426eb8b2f2078fac997fd92dba28ddf4891be9d5d8c4f\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/b7f12de762f55100/5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e.json\",\"source_raw_sha256\":\"5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e\"},\"data\":[{\"close\":\"105\",\"contract_code\":\"MTX:202610\",\"contract_month\":\"202610\",\"high\":\"110\",\"low\":\"90\",\"open\":\"100\",\"open_interest\":10,\"product_code\":\"MTX\",\"session\":\"regular\",\"settlement_price\":\"105\",\"trade_date\":\"2026-10-01\",\"volume\":5}]},\"request_key\":\"taifex:tw_futures_eod:c8c053405725d6d531b426eb8b2f2078\",\"schema_id\":\"futures_eod\",\"schema_version\":1,\"source\":\"taifex\"}]",
+   "fp1:tw_futures_eod:TX:202610:regular": "[{\"dataset_key\":\"tw_futures_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"taiwan_market_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:tw_futures_eod\"},\"fetched_at\":\"2026-10-02T01:30:00+00:00\",\"idempotency_key\":\"taifex:9f355600bbf8cc87e1811afb322941b4f9428a803c08a2448cacc99d5310acc3\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/b7f12de762f55100/5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e.json\",\"source_raw_sha256\":\"5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e\"},\"data\":[{\"close\":\"105\",\"contract_code\":\"TX:202610\",\"contract_month\":\"202610\",\"high\":\"110\",\"low\":\"90\",\"open\":\"100\",\"open_interest\":10,\"product_code\":\"TX\",\"session\":\"regular\",\"settlement_price\":\"105\",\"trade_date\":\"2026-10-01\",\"volume\":5}]},\"request_key\":\"taifex:tw_futures_eod:9f355600bbf8cc87e1811afb322941b4\",\"schema_id\":\"futures_eod\",\"schema_version\":1,\"source\":\"taifex\"}]"
+  },
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "taifex/tw_futures_eod/69260b9dc8a30963/080523a60667288060eb82eb0e074897fcf4d9f2ff17484f15b69094a5594668.json",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "080523a60667288060eb82eb0e074897fcf4d9f2ff17484f15b69094a5594668",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "080523a60667288060eb82eb0e074897fcf4d9f2ff17484f15b69094a5594668",
+    "size": 215
+   },
+   {
+    "content_type": "application/json",
+    "key": "taifex/tw_futures_eod/b7f12de762f55100/080523a60667288060eb82eb0e074897fcf4d9f2ff17484f15b69094a5594668.json",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "080523a60667288060eb82eb0e074897fcf4d9f2ff17484f15b69094a5594668",
+     "source-symbol": "exchange_report"
+    },
+    "sha256": "080523a60667288060eb82eb0e074897fcf4d9f2ff17484f15b69094a5594668",
+    "size": 215
+   },
+   {
+    "content_type": "text/csv; charset=big5",
+    "key": "taifex/tw_futures_eod/536939ed0e78c5b5/9fbe7ebffd2967c85e5a486ee34b25ae75f7aed9ba8b2b87da09508a7d493f39.csv",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "9fbe7ebffd2967c85e5a486ee34b25ae75f7aed9ba8b2b87da09508a7d493f39",
+     "source-symbol": "TX"
+    },
+    "sha256": "9fbe7ebffd2967c85e5a486ee34b25ae75f7aed9ba8b2b87da09508a7d493f39",
+    "size": 194
+   },
+   {
+    "content_type": "text/csv; charset=big5",
+    "key": "taifex/tw_futures_eod/8a37724efe3ac2ce/a9648ca0aeb4185ba30e78d1cc5fa05176ba1ad701cda9131ada530dde43993e.csv",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "a9648ca0aeb4185ba30e78d1cc5fa05176ba1ad701cda9131ada530dde43993e",
+     "source-symbol": "MTX"
+    },
+    "sha256": "a9648ca0aeb4185ba30e78d1cc5fa05176ba1ad701cda9131ada530dde43993e",
+    "size": 196
+   },
+   {
+    "content_type": "text/csv; charset=big5",
+    "key": "taifex/tw_futures_eod/d44f3bea6f2ff817/0a27a57a1e832e9cc8930cdcf7d64779e9a2afc67e982bfd12667b58bf404cec.csv",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "0a27a57a1e832e9cc8930cdcf7d64779e9a2afc67e982bfd12667b58bf404cec",
+     "source-symbol": "TMF"
+    },
+    "sha256": "0a27a57a1e832e9cc8930cdcf7d64779e9a2afc67e982bfd12667b58bf404cec",
+    "size": 196
+   },
+   {
+    "content_type": "text/csv; charset=big5",
+    "key": "taifex/tw_futures_eod/4aa7f53b126d71e9/420cabfbc7d162a830e3ba291a536f633b4e65858aabbbed09b3cf76e1b7557f.csv",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "420cabfbc7d162a830e3ba291a536f633b4e65858aabbbed09b3cf76e1b7557f",
+     "source-symbol": "TE"
+    },
+    "sha256": "420cabfbc7d162a830e3ba291a536f633b4e65858aabbbed09b3cf76e1b7557f",
+    "size": 194
+   },
+   {
+    "content_type": "text/csv; charset=big5",
+    "key": "taifex/tw_futures_eod/63ee3b90f0bc6402/9d4efa787d41c04efd28ed1e520ad903fcbc80e1f07233510129cca565bbfc6e.csv",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "9d4efa787d41c04efd28ed1e520ad903fcbc80e1f07233510129cca565bbfc6e",
+     "source-symbol": "TF"
+    },
+    "sha256": "9d4efa787d41c04efd28ed1e520ad903fcbc80e1f07233510129cca565bbfc6e",
+    "size": 194
+   },
+   {
+    "content_type": "application/json",
+    "key": "taifex/tw_futures_eod/b7f12de762f55100/5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e.json",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e",
+     "source-symbol": "exchange_report"
+    },
+    "sha256": "5ea7632da71fca7e9c89d6b706f646c246dec2952d418d619e48918979f47b4e",
+    "size": 1052
+   }
+  ],
+  "settlement": [
+   {
+    "member_key": "MTX:202610:after_hours",
+    "reason": "source_proven_no_trade",
+    "status": "complete"
+   },
+   {
+    "member_key": "MTX:202610:regular",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "TX:202610:after_hours",
+    "reason": "source_proven_no_trade",
+    "status": "complete"
+   },
+   {
+    "member_key": "TX:202610:regular",
+    "reason": null,
+    "status": "complete"
+   }
+  ]
+ },
+ "twelve_data": {
+  "calls": [
+   [
+    "AAPL",
+    "2026-10-01",
+    "2026-10-01",
+    100000
+   ],
+   [
+    "NODATA",
+    "2026-10-01",
+    "2026-10-01",
+    100000
+   ],
+   [
+    "IBM",
+    "2026-10-01",
+    "2026-10-01",
+    100000
+   ],
+   [
+    "LIMIT",
+    "2026-10-01",
+    "2026-10-01",
+    100000
+   ]
+  ],
+  "delivered": [
+   "{\"dataset_key\":\"us_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"western_markets_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:us_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"twelve_data:c872f6b02181e54460c32f83e0e2ed9bae0e9d26cbdb07ffbd3b0b4d5f321ad4\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/twelve_data/us_equity_eod/1eb44d625271a4eb/13f0e021f918d6f34b39cb6c3e07b04c3b24c0a017ad9b9ad15208e6207f7ede.json\",\"source_raw_sha256\":\"13f0e021f918d6f34b39cb6c3e07b04c3b24c0a017ad9b9ad15208e6207f7ede\"},\"data\":[{\"close\":\"11.25\",\"currency\":\"USD\",\"high\":\"12.5\",\"low\":\"9.75\",\"open\":\"10\",\"source_symbol\":\"AAPL\",\"symbol\":\"AAPL\",\"trade_date\":\"2026-10-01\",\"volume\":1234}]},\"request_key\":\"twelve_data:us_equity_eod:c872f6b02181e54460c32f83e0e2ed9b\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"twelve_data\"}",
+   "{\"dataset_key\":\"us_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"western_markets_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:us_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"twelve_data:2904c4c0c3ebba394c02f4a5674787cd2a238795dbf816f005ea1ae16b07214f\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/twelve_data/us_equity_eod/973a4a818d799636/9f7fc51f0b9886e5026bd8189b3537418f94399aa44884be5b41e8c1ee9b0a72.json\",\"source_raw_sha256\":\"9f7fc51f0b9886e5026bd8189b3537418f94399aa44884be5b41e8c1ee9b0a72\"},\"data\":[{\"close\":\"12\",\"currency\":\"USD\",\"high\":\"12.5\",\"low\":\"9.75\",\"open\":\"10\",\"source_symbol\":\"IBM\",\"symbol\":\"IBM\",\"trade_date\":\"2026-10-01\",\"volume\":1234}]},\"request_key\":\"twelve_data:us_equity_eod:2904c4c0c3ebba394c02f4a5674787cd\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"twelve_data\"}"
+  ],
+  "idempotency_keys": [
+   "twelve_data:c872f6b02181e54460c32f83e0e2ed9bae0e9d26cbdb07ffbd3b0b4d5f321ad4",
+   "twelve_data:2904c4c0c3ebba394c02f4a5674787cd2a238795dbf816f005ea1ae16b07214f"
+  ],
+  "job_keys": [
+   null,
+   null
+  ],
+  "outcomes": [
+   {
+    "member_key": "NODATA",
+    "plan_id": "plan:us_equity_eod",
+    "reason": "source_error",
+    "work_item_id": "fp1:us_equity_eod"
+   },
+   {
+    "member_key": "LIMIT",
+    "plan_id": "plan:us_equity_eod",
+    "reason": "rate_limited",
+    "work_item_id": "fp1:us_equity_eod"
+   }
+  ],
+  "prepared": {
+   "fp1:us_equity_eod:AAPL": "[{\"dataset_key\":\"us_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"western_markets_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:us_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"twelve_data:c872f6b02181e54460c32f83e0e2ed9bae0e9d26cbdb07ffbd3b0b4d5f321ad4\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/twelve_data/us_equity_eod/1eb44d625271a4eb/13f0e021f918d6f34b39cb6c3e07b04c3b24c0a017ad9b9ad15208e6207f7ede.json\",\"source_raw_sha256\":\"13f0e021f918d6f34b39cb6c3e07b04c3b24c0a017ad9b9ad15208e6207f7ede\"},\"data\":[{\"close\":\"11.25\",\"currency\":\"USD\",\"high\":\"12.5\",\"low\":\"9.75\",\"open\":\"10\",\"source_symbol\":\"AAPL\",\"symbol\":\"AAPL\",\"trade_date\":\"2026-10-01\",\"volume\":1234}]},\"request_key\":\"twelve_data:us_equity_eod:c872f6b02181e54460c32f83e0e2ed9b\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"twelve_data\"}]",
+   "fp1:us_equity_eod:IBM": "[{\"dataset_key\":\"us_equity_eod\",\"delivery\":{\"scheduled_for\":\"2026-10-02T01:30:00+00:00\",\"slot_id\":\"western_markets_window\",\"target_data_date\":\"2026-10-01\",\"work_item_id\":\"fp1:us_equity_eod\"},\"fetched_at\":\"2026-10-02T01:30:00Z\",\"idempotency_key\":\"twelve_data:2904c4c0c3ebba394c02f4a5674787cd2a238795dbf816f005ea1ae16b07214f\",\"payload\":{\"batch\":{\"data_date\":\"2026-10-01\",\"declared_record_count\":1,\"delivery_mode\":\"incremental\",\"source_raw_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/twelve_data/us_equity_eod/973a4a818d799636/9f7fc51f0b9886e5026bd8189b3537418f94399aa44884be5b41e8c1ee9b0a72.json\",\"source_raw_sha256\":\"9f7fc51f0b9886e5026bd8189b3537418f94399aa44884be5b41e8c1ee9b0a72\"},\"data\":[{\"close\":\"12\",\"currency\":\"USD\",\"high\":\"12.5\",\"low\":\"9.75\",\"open\":\"10\",\"source_symbol\":\"IBM\",\"symbol\":\"IBM\",\"trade_date\":\"2026-10-01\",\"volume\":1234}]},\"request_key\":\"twelve_data:us_equity_eod:2904c4c0c3ebba394c02f4a5674787cd\",\"schema_id\":\"market_eod\",\"schema_version\":1,\"source\":\"twelve_data\"}]"
+  },
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "twelve_data/us_equity_eod/1eb44d625271a4eb/13f0e021f918d6f34b39cb6c3e07b04c3b24c0a017ad9b9ad15208e6207f7ede.json",
+    "metadata": {
+     "dataset": "us_equity_eod",
+     "provider": "twelve_data",
+     "sha256": "13f0e021f918d6f34b39cb6c3e07b04c3b24c0a017ad9b9ad15208e6207f7ede",
+     "source-symbol": "AAPL"
+    },
+    "sha256": "13f0e021f918d6f34b39cb6c3e07b04c3b24c0a017ad9b9ad15208e6207f7ede",
+    "size": 282
+   },
+   {
+    "content_type": "application/json",
+    "key": "twelve_data/us_equity_eod/973a4a818d799636/9f7fc51f0b9886e5026bd8189b3537418f94399aa44884be5b41e8c1ee9b0a72.json",
+    "metadata": {
+     "dataset": "us_equity_eod",
+     "provider": "twelve_data",
+     "sha256": "9f7fc51f0b9886e5026bd8189b3537418f94399aa44884be5b41e8c1ee9b0a72",
+     "source-symbol": "IBM"
+    },
+    "sha256": "9f7fc51f0b9886e5026bd8189b3537418f94399aa44884be5b41e8c1ee9b0a72",
+    "size": 278
+   }
+  ],
+  "settlement": [
+   {
+    "member_key": "AAPL",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "GAP",
+    "reason": null,
+    "status": "pending"
+   },
+   {
+    "member_key": "IBM",
+    "reason": null,
+    "status": "complete"
+   },
+   {
+    "member_key": "LIMIT",
+    "reason": "rate_limited",
+    "status": "pending"
+   },
+   {
+    "member_key": "NODATA",
+    "reason": "no_data",
+    "status": "pending"
+   }
+  ]
+ }
+}
