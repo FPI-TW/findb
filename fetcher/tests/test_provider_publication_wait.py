@@ -135,7 +135,7 @@ def test_factset_publication_retry_checks_calendar_before_provider_io(tmp_path) 
     )
 
     with pytest.raises(CalendarDecisionRepairRequiredError):
-        runtime._deliver_factset_plan(owner, plan, release, feed)
+        runtime._deliver_batch_plan(owner, plan, release, feed)
 
     with runtime.state.connection() as db:
         row = db.execute(

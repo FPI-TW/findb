@@ -72,7 +72,7 @@ def test_daily_known_failure_drains_settles_and_releases_owner(
         assert queue.inherited_fds()
         raise error
 
-    runtime._deliver_factset_plan = fail
+    runtime._deliver_batch_plan = fail
     monkeypatch.setattr(queue.time, "sleep", lambda _: None)
     try:
         runtime._queued_cycle(plan_new_dates=False)
@@ -121,7 +121,7 @@ def test_daily_source_fence_is_never_settled_as_known_failure(tmp_path, monkeypa
     def fail(*args):
         raise SourceAPIResponseError(409, "PROVIDER_WORK_FENCE")
 
-    runtime._deliver_factset_plan = fail
+    runtime._deliver_batch_plan = fail
     try:
         with pytest.raises(queue.ProviderWorkRecoveryBlockedError):
             runtime._queued_cycle(plan_new_dates=False)

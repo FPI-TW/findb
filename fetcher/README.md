@@ -87,6 +87,52 @@ JSON payload使用`.json`與`application/json`；TAIFEX歷史報表保留原始C
 `text/csv; charset=big5`。既有immutable refs不改寫，新物件依實際格式建立。
 Staging 與 production 的 raw object lifecycle 為 90 天。Bucket lock 的適用範圍見
 [Raw retention](../docs/operations/data_maintenance.md#raw-retention)。
+TAIFEX 同一日報表只寫一個內容定址物件，所有成員共用同一 `source_raw_ref`。
+
+## Provider adapters
+
+`findb_fetcher.provider_adapters` 是 Full daily 的 provider 邊界，每個 provider 一個模組，由
+`adapter_for(provider)` 建立。`FullMarketRuntime` 保留工作所有權、account governor 與配額、
+raw persistence（`_persist` 的 identity 檢查）、Source 協定、checkpoint、重試與 `full:` idempotency
+identity；adapter 只透過明確的 context 取得這些能力，不讀 plan、part、owner 或 state，因此
+historical runner 可用自己的 context 呼叫同一個 `acquire`。
+
+| 介面 | 職責 |
+| --- | --- |
+| `acquire(member, AcquisitionContext) -> AcquisitionResult` | 抓取一個成員並映射成 contract request 與其 raw object，或回傳 no_trade evidence；不呼叫 Source |
+| `acquire_batch(members, BatchContext)`、`batch_status(evidence)` | 選用（`batch = True`）：一次原生查詢整個 cohort 再逐成員交付 |
+| `dated_universe(day, AcquisitionContext) -> DatedUniverse` | 選用（`dated_universe_code`）：Source 要求時以當日觀察建立 universe |
+| `classify(exc, phase) -> ProviderFailure` | 把 provider 例外分成 `member`、`round_retry`、`work_failed`、`quota_wait` 或 `passthrough` |
+| `diagnostic(exc)` | provider 例外的有界診斷欄位，不含 provider 原文 |
+| `reset()`、`close()` | 清除每輪原生快取（ownership 可能轉移時）、關閉 client |
+
+`AcquisitionContext` 提供 dataset、trade date、單一觀察時間 `fetched_at`、feed、delivery metadata、
+packaged catalog 的 contract（schema id 與 current version，不寫死在 adapter）、平台 limits、HTTP client，
+以及 `persist`、`observe_response`、`rate_limited`、`snapshot` 四個 runtime callable；共用一張表的
+provider（FinLab）另取得凍結 cohort。
+
+`classify` 依 phase（`member` 成員迴圈、`round` daily 輪次、`maintenance` universe refresh）回傳：
+
+| Kind | Runtime 處理 |
+| --- | --- |
+| `member` | 回報該成員，同輪繼續；`no_data=True` 計入成員 no-data 預算與 breaker |
+| `round_retry` | 回報該成員並結束本輪；帶 `wait="publication"` 時等待 provider 發布 target date，`wait="outage"` 時為所有成員共用的報表中斷，不扣成員預算、受 `outage_retry_seconds` 限制 |
+| `work_failed` | 輪次層級的確定性失敗，settle failed |
+| `quota_wait` | provider 帳號限流：account cooldown、回報 `rate_limited` 並結束本輪 |
+| `passthrough` | 不是該 provider 的例外，沿用 runtime 對該 phase 的預設處理 |
+
+輪次與 maintenance 的 failure code 由 runtime 依分類產生：`http=True` 時為
+`DAILY_PROVIDER_HTTP_<status>`／`MAINTENANCE_HTTP_<status>`，否則 daily 為
+`DAILY_PROVIDER_UNAVAILABLE`／`DAILY_PROVIDER_REJECTED`、maintenance 為 adapter 提供的 `code`。
+
+FactSet 保留 `acquire_batch`：一個 cohort 只做一次 fenced 原生查詢，`FactSetEOD` 以
+`factset-eod:snapshot`／`factset-eod:receipt:*` journal 重放而不再查詢；拆成逐成員抓取會使查詢數乘上
+cohort 大小，並破壞既有 journal key 的重放。freeze、checkpoint 與日曆修復判斷仍由 runtime 的
+`_deliver_batch_plan` 負責。
+
+`tests/test_provider_adapter_golden.py` 以固定原生輸入與時鐘鎖定四個 provider 的 prepared body、
+idempotency key、R2 物件、Source outcome 與成員結算（`tests/fixtures/provider_adapter_golden.json`）。
+改動 adapter 時這些 golden 必須維持不變；只有刻意的 contract 變更才以 `FINDB_UPDATE_GOLDEN=1` 重產。
 
 ## Runtime 設定
 

@@ -250,7 +250,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
             )
             runtime.proof = limits(h.provider)
             if h.provider == "twelve_data":
-                runtime.td = historical_runtime.TwelveDataClient(None)
+                runtime.adapter.client = historical_runtime.TwelveDataClient(None)
             acquire = runtime._acquire
 
             def traced(member, *args):

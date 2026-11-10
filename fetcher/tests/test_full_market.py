@@ -806,7 +806,7 @@ def test_raw_persisted_before_provider_mapping_failure(tmp_path: Path) -> None:
     from findb_fetcher.providers.twelve_data import TwelveDataResponse
 
     runtime, _, raw = _runtime(tmp_path)
-    runtime.td = SimpleNamespace(
+    runtime.adapter.client = SimpleNamespace(
         fetch_daily=lambda *args, **kwargs: TwelveDataResponse(
             {"status": "ok", "meta": {}}, raw_bytes=b'{"meta":{}}'
         )
@@ -852,7 +852,7 @@ def test_native_twelve_data_identity_checks_currency_on_any_exchange(
         ],
     }
     native = canonical_bytes(payload)
-    runtime.td = SimpleNamespace(
+    runtime.adapter.client = SimpleNamespace(
         fetch_daily=lambda *args, **kwargs: TwelveDataResponse(payload, raw_bytes=native)
     )
     plan = _plan()
@@ -951,7 +951,7 @@ def test_empty_provider_values_are_blocked_source_error_not_no_trade(tmp_path: P
     from findb_fetcher.providers.twelve_data import TwelveDataResponse
 
     runtime, source, _ = _runtime(tmp_path)
-    runtime.td = SimpleNamespace(
+    runtime.adapter.client = SimpleNamespace(
         fetch_daily=lambda *args, **kwargs: TwelveDataResponse(
             {
                 "status": "ok",
@@ -1223,7 +1223,7 @@ def test_taifex_all_missing_metrics_require_explicit_zero_volume_for_no_trade(
     report = canonical_bytes([source_row])
     parsed = parse_report(report, target_date=date(2026, 10, 1))[0]
     # Pin an already acquired report; no live provider operation is needed.
-    runtime.futures["2026-10-01"] = (report, [parsed], False)
+    runtime.adapter.reports["2026-10-01"] = (report, [parsed], False)
     member = {
         **report_members([parsed])[0],
         "session": "regular",
@@ -1679,7 +1679,9 @@ def test_native_twelve_daily_uses_inclusive_wire_window_and_bounds_delivery(
 
     try:
         with httpx.Client(transport=httpx.MockTransport(handler)) as http:
-            runtime.td = TwelveDataClient(TwelveDataConfig(api_key="test-key"), client=http)
+            runtime.adapter.client = TwelveDataClient(
+                TwelveDataConfig(api_key="test-key"), client=http
+            )
             requests = runtime._acquire(
                 _member(), plan, plan["parts"][0], {"release_id": "r"}, runtime.feeds[0]
             )
