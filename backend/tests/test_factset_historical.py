@@ -264,7 +264,7 @@ async def test_request_cohort_stays_frozen_and_partial_day_continues(
     loaded = await test_session.get(HistoricalBackfillRequest, request_id)
     assert loaded.completed_at is not None
     from app.models.registry import DailyDeliveryMember, DailyDeliveryPlan
-    from app.services.full_market import _factset_historical_repairs
+    from app.services.full_market import _historical_repairs
 
     plan = DailyDeliveryPlan(
         dataset_key="hk_equity_eod", provider="factset", trade_date=date(2026, 10, 16)
@@ -277,15 +277,15 @@ async def test_request_cohort_stays_frozen_and_partial_day_continues(
         )
         for m in frozen["members"]
     ]
-    assert await _factset_historical_repairs(test_session, plan, daily_members) == {"00001"}
+    assert await _historical_repairs(test_session, plan, daily_members) == {"00001"}
     daily_members[0].provider_symbol = "CCCCCC-L"
-    assert await _factset_historical_repairs(test_session, plan, daily_members) == set()
+    assert await _historical_repairs(test_session, plan, daily_members) == set()
     daily_members[0].provider_symbol = "AAAAAA-L"
     daily_members[0].mapping_status = "gap"
-    assert await _factset_historical_repairs(test_session, plan, daily_members) == set()
+    assert await _historical_repairs(test_session, plan, daily_members) == set()
     daily_members[0].mapping_status = "mapped"
     plan.trade_date = date(2026, 10, 17)
-    assert await _factset_historical_repairs(test_session, plan, daily_members) == set()
+    assert await _historical_repairs(test_session, plan, daily_members) == set()
 
 
 def _hk_dataset(cutover=None):

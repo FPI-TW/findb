@@ -50,6 +50,7 @@ from app.schemas.ingress import (
     FuturesEODIngressRequest,
     FuturesEODRow,
     IngressRequest,
+    MarketEODIngressRequest,
     MarketEODIngressRequestV2,
     MarketEODRow,
     MarketMinuteRow,
@@ -959,8 +960,8 @@ async def reconcile_plan(
             or (part_id, snapshot_id, daily_update_id) in complete_groups
         ):
             canonical_keys.add(member_key)
-    if plan.provider == "factset" and plan.dataset_key == "hk_equity_eod":
-        canonical_keys.update(await _factset_historical_repairs(db, plan, members))
+    if plan.dataset_key not in {"tw_futures_eod", "tw_equity_minute", "tw_etf_minute"}:
+        canonical_keys.update(await _historical_repairs(db, plan, members))
     counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
     unmapped = 0
     gaps: list[dict] = []
@@ -1006,31 +1007,37 @@ async def reconcile_plan(
     )
 
 
-async def _factset_historical_repairs(
+async def _historical_repairs(
     db: AsyncSession, plan: DailyDeliveryPlan, members: list[DailyDeliveryMember]
 ) -> set[str]:
-    """Historical actual writes may resolve monitoring, never settle another work."""
+    """Historical actual writes may resolve monitoring, never settle another work.
+
+    A member counts only when the historical work froze it with the same provider
+    symbol under the contract its run actually wrote.
+    """
     from app.config import get_settings
     from app.models.provider_work import ProviderWork, ProviderWorkReceipt
 
-    if plan.provider != "factset" or plan.dataset_key != "hk_equity_eod":
-        return set()
     evidence = (
         await db.execute(
-            select(DeliveryMemberEvidence.member_key, ProviderWork.work_id)
+            select(
+                DeliveryMemberEvidence.member_key,
+                ProviderWork.work_id,
+                IngestionRun.schema_id,
+                IngestionRun.schema_version,
+            )
             .join(IngestionRun, IngestionRun.run_id == DeliveryMemberEvidence.run_id)
             .join(ProviderWorkReceipt, ProviderWorkReceipt.run_id == IngestionRun.run_id)
             .join(ProviderWork, ProviderWork.work_id == ProviderWorkReceipt.work_id)
             .where(
-                IngestionRun.source == "factset",
+                IngestionRun.source == plan.provider,
                 IngestionRun.dataset_key == plan.dataset_key,
                 IngestionRun.batch_data_date == plan.trade_date,
                 IngestionRun.schema_id == "market_eod",
-                IngestionRun.schema_version == 2,
                 IngestionRun.status.in_(("completed", "completed_with_errors")),
                 ProviderWork.kind == "historical",
                 ProviderWork.environment == get_settings().APP_ENVIRONMENT,
-                ProviderWork.provider == "factset",
+                ProviderWork.provider == plan.provider,
                 ProviderWork.dataset_key == plan.dataset_key,
                 ProviderWork.trade_date == plan.trade_date,
             )
@@ -1041,25 +1048,31 @@ async def _factset_historical_repairs(
         for member in members
         if member.mapping_status == "mapped"
     }
-    manifests: dict[UUID, dict[str, str]] = {}
+    manifests: dict[UUID, tuple[dict | None, dict[str, str]]] = {}
     repaired = set()
-    for key, work_id in evidence:
+    for key, work_id, schema_id, schema_version in evidence:
         if key not in expected:
             continue
         if work_id not in manifests:
             work = await db.get(ProviderWork, work_id)
             manifest = work.manifest if work else None
             manifests[work_id] = (
-                {
-                    row["key"]: row["source_symbol"]
-                    for row in manifest["members"]
-                    if row.get("mapping_status") == "mapped"
-                }
-                if manifest
-                and manifest.get("contract") == {"schema_id": "market_eod", "schema_version": 2}
-                else {}
+                (
+                    manifest.get("contract"),
+                    {
+                        row["key"]: row["source_symbol"]
+                        for row in manifest["members"]
+                        if row.get("mapping_status") == "mapped"
+                    },
+                )
+                if manifest and manifest.get("contract")
+                else (None, {})
             )
-        if manifests[work_id].get(key) == expected[key]:
+        contract, frozen = manifests[work_id]
+        if (
+            contract == {"schema_id": schema_id, "schema_version": schema_version}
+            and frozen.get(key) == expected[key]
+        ):
             repaired.add(key)
     return repaired
 
@@ -1211,19 +1224,25 @@ async def validate_ingest_part(
     governance = (dataset.config or {}).get("full_market") or {}
     delivery = getattr(request, "delivery", None)
     work_item_id = getattr(delivery, "work_item_id", None)
+    from app.services.historical_backfill import MEMBER_COHORT_PROVIDERS
+
     if (
-        isinstance(request, MarketEODIngressRequestV2)
-        and request.source == "factset"
-        and isinstance(work_item_id, str)
+        isinstance(work_item_id, str)
         and work_item_id.startswith("historical:")
+        and (
+            isinstance(request, MarketEODIngressRequestV2)
+            and request.source == "factset"
+            or isinstance(request, (MarketEODIngressRequest, MarketEODIngressRequestV2))
+            and request.source in MEMBER_COHORT_PROVIDERS
+        )
     ):
         from app.services.historical_backfill import (
             HistoricalBackfillError,
-            validate_factset_historical_delivery,
+            validate_eod_historical_delivery,
         )
 
         try:
-            await validate_factset_historical_delivery(db, request)
+            await validate_eod_historical_delivery(db, request)
         except HistoricalBackfillError as exc:
             raise FullMarketError(str(exc), 409) from exc
         return None

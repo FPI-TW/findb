@@ -81,6 +81,8 @@ from app.services.historical_backfill import (
     authorize_item,
     claim_next_item,
     complete_item,
+    frozen_cohort,
+    member_cohort,
 )
 from app.services.ingestion import (
     DatasetAccessDeniedError,
@@ -428,7 +430,17 @@ async def claim_historical_backfill_item(
         raise HTTPException(status_code=403, detail="Source dataset scope unavailable")
     try:
         item = await claim_next_item(db, provider=provider, allowed_datasets=datasets)
+        # A Full release cohort is re-read from its immutable release and verified.
+        snapshot = (
+            await frozen_cohort(db, item)
+            if item is not None and member_cohort(item.request)
+            else item.request.universe_snapshot
+            if item is not None
+            else None
+        )
     except (HistoricalBackfillConflictError, ProviderWorkError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except HistoricalBackfillError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await db.commit()
     if item is None:
@@ -443,7 +455,7 @@ async def claim_historical_backfill_item(
         trade_date=item.trade_date,
         lease_token=item.lease_token,
         lease_expires_at=item.lease_expires_at,
-        universe_snapshot=item.request.universe_snapshot,
+        universe_snapshot=snapshot,
     )
 
 

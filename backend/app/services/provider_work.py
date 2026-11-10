@@ -616,16 +616,19 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
         raise ProviderWorkError("expected scope is already frozen")
     if "contract" in manifest:
         from app.models.registry import DatasetRegistry
+        from app.services.historical_backfill import MEMBER_COHORT_PROVIDERS
         from app.services.ingress_contracts import parse_dataset_contract_declaration
 
         dataset = await db.get(DatasetRegistry, work.dataset_key)
         declaration = parse_dataset_contract_declaration(dataset.config) if dataset else None
+        # FactSet freezes EOD v2; a Full release historical cohort freezes its feed's v1.
+        version = 1 if work.kind == "historical" and work.provider in MEMBER_COHORT_PROVIDERS else 2
         if (
-            manifest["contract"] != {"schema_id": "market_eod", "schema_version": 2}
+            manifest["contract"] != {"schema_id": "market_eod", "schema_version": version}
             or work.kind not in {"daily", "historical"}
             or declaration is None
             or declaration.schema_id != "market_eod"
-            or 2 not in declaration.accepted_schema_versions
+            or version not in declaration.accepted_schema_versions
             or work.provider not in declaration.provider_scope()
         ):
             raise ProviderWorkError("frozen EOD v2 contract is outside the dataset scope")
@@ -684,14 +687,20 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
                 ):
                     raise ProviderWorkError("EOD manifest mapping differs from the frozen plan")
     elif work.kind == "historical" and "contract" in manifest:
-        from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
+        from sqlalchemy.orm import selectinload
+
+        from app.models.registry import HistoricalBackfillItem
+        from app.services.historical_backfill import HistoricalBackfillError, frozen_cohort
 
         try:
-            item = await db.get(HistoricalBackfillItem, UUID(work.scope["item_id"]))
-            request = await db.get(HistoricalBackfillRequest, item.request_id) if item else None
-        except (ValueError, KeyError):
-            request = None
-        snapshot = request.universe_snapshot if request else None
+            item = await db.scalar(
+                select(HistoricalBackfillItem)
+                .options(selectinload(HistoricalBackfillItem.request))
+                .where(HistoricalBackfillItem.item_id == UUID(work.scope["item_id"]))
+            )
+            snapshot = await frozen_cohort(db, item) if item else None
+        except (ValueError, KeyError, HistoricalBackfillError):
+            snapshot = None
         if not snapshot or manifest.get("universe_release_id") != snapshot["release_id"]:
             raise ProviderWorkError("EOD historical manifest lacks the request's frozen cohort")
         expected_rows = {
@@ -1031,9 +1040,11 @@ async def settle(
         )
     ):
         outcome, failure_code = "failed", "NORMALIZATION_FAILED"
+    from app.services.eod_completion import eod_contract_version
+
     eod_v2 = (work.manifest or {}).get("contract") == {
         "schema_id": "market_eod",
-        "schema_version": 2,
+        "schema_version": eod_contract_version(work),
     }
     if outcome == "partial" or outcome == "completed" and eod_v2:
         from app.schemas.eod_completion import EODCompletionEvidence

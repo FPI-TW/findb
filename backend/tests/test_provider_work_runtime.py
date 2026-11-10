@@ -27,6 +27,9 @@ from tests.provider_work_runtime_support import DAY as HISTORICAL_DAY
 from tests.test_canonical_ingest_api import _execute_run
 from tests.test_full_market import DAY, _activated_plan
 
+# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
+pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(

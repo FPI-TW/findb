@@ -63,6 +63,13 @@ def _scope(
         if universe_file is not None:
             raise BackfillCLIError("This provider uses a Backend-owned historical universe")
         return (1 if provider == "factset" else 5), None
+    if (
+        provider == "finlab"
+        and universe_file is None
+        and historical_feed(provider, dataset_key)["historical_execution"] is None
+    ):
+        # The Backend freezes this feed's Full release; five shared tables per date.
+        return 5, None
     execution = historical_execution(provider, dataset_key, universe_file=universe_file)
     if provider == "twelve_data":
         symbols = len(load_symbol_universe(execution.universe_file).symbols)

@@ -294,3 +294,18 @@ def legacy_shioaji_acquisition():
 
     with legacy_acquisition_catalog():
         yield
+
+
+@pytest.fixture
+def legacy_member_cohort(monkeypatch):
+    """Create Twelve Data/FinLab requests as before Full release cohorts existed.
+
+    Requests created before the cohort change carry no universe snapshot and keep
+    the single-run legacy completion; these suites exercise that retained path.
+    """
+    from app.services import historical_backfill
+
+    async def legacy(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(historical_backfill, "_bind_full_releases", legacy)

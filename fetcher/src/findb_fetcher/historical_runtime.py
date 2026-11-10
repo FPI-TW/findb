@@ -1,7 +1,8 @@
 """Concrete provider runtimes for leased historical work.
 
-They reuse production executors, so acquisition, raw persistence, immutable
-idempotency keys and terminal Source verification stay identical to recurrence.
+A date whose request froze its Full release cohort is acquired member by member
+through the Full daily adapters (``member_historical``). Requests created before
+that freeze carry no cohort and keep the legacy scheduled executors below.
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ from findb_fetcher.finlab_scheduler import FinLabScheduledExecutor
 from findb_fetcher.finlab_universe import load_finlab_universe
 from findb_fetcher.historical_backfill import (
     HistoricalPreparedManualError,
+    HistoricalRunResult,
     HistoricalWorkDeferredError,
     HistoricalWorkItem,
 )
+from findb_fetcher.member_historical import MemberHistoricalRunner, full_release_cohort
 from findb_fetcher.provider_work import active, require_owner
 from findb_fetcher.providers.finlab import FinLabSdkGateway, FinLabSymbol
 from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
@@ -97,15 +100,39 @@ def _job(
     )
 
 
-class TwelveDataHistoricalRunner:
+class _CohortRunner:
+    """Routes Full release cohorts to the member runner; others stay legacy."""
+
+    provider: str
+    _members: MemberHistoricalRunner | None = None
+
+    def _cohort(self, item: HistoricalWorkItem) -> HistoricalRunResult | None:
+        if not full_release_cohort(item):
+            return None
+        if self._members is None:
+            self._members = MemberHistoricalRunner.from_env(self.provider)
+        return self._members.run(item)
+
+    def close(self) -> None:
+        if self._members is not None:
+            self._members.close()
+            self._members = None
+
+
+class TwelveDataHistoricalRunner(_CohortRunner):
+    provider = "twelve_data"
+
     @classmethod
     def from_env(cls) -> "TwelveDataHistoricalRunner":
         return cls()
 
-    def run(self, item: HistoricalWorkItem) -> UUID:
+    def run(self, item: HistoricalWorkItem) -> UUID | HistoricalRunResult:
         require_owner(item.provider)
         if item.provider != "twelve_data":
             raise HistoricalRuntimeError("provider mismatch")
+        cohort = self._cohort(item)
+        if cohort is not None:
+            return cohort
         execution = historical_execution(item.provider, item.dataset_key)
         universe = load_symbol_universe(execution.universe_file)
         owner = active()
@@ -164,15 +191,20 @@ class TwelveDataHistoricalRunner:
         return last
 
 
-class FinLabHistoricalRunner:
+class FinLabHistoricalRunner(_CohortRunner):
+    provider = "finlab"
+
     @classmethod
     def from_env(cls) -> "FinLabHistoricalRunner":
         return cls()
 
-    def run(self, item: HistoricalWorkItem) -> UUID:
+    def run(self, item: HistoricalWorkItem) -> UUID | HistoricalRunResult:
         require_owner(item.provider)
         if item.provider != "finlab":
             raise HistoricalRuntimeError("provider mismatch")
+        cohort = self._cohort(item)
+        if cohort is not None:
+            return cohort
         execution = historical_execution(item.provider, item.dataset_key)
         universe = load_finlab_universe(execution.universe_file)
         owner = active()

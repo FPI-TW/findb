@@ -963,6 +963,30 @@ consumer 的並行度或速率，須重新評估，必要時改以兩環境 allo
 [部署 OOM 紀錄](deployment.md#2026-10-22-staging-historical-finlab-oom-阻擋部署)），FinLab worker 一律載入
 整張 dataset；staging 只做少量回補，啟動後須觀察記憶體與 OOM。
 
+### 以 historical 回補 Full 缺漏（Twelve Data、FinLab）
+
+Twelve Data `us_equity_eod`、FinLab `tw_equity_eod` 與 `tw_etf_eod` 的 historical request 建立時，每個要抓的
+日期凍結一個 Full universe release：該日期已有 Full plan 時用 plan 的 release，沒有 plan 時用該日期以前
+最新的 published release；成員為該 release 中已上市（`listed_date` 不晚於該日）的 mapped 成員全部，
+不只 plan 的缺漏成員。Request 只保存每個日期的 release ID、release digest 與 cohort digest，claim 時
+從不可變 release 重讀並核對；任何日期沒有可用 release 或沒有 mapped 成員時拒絕建立。
+
+Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類型、幣別身分檢查；FinLab 每個日期只下載
+一次五張欄位表），每成員一個 `market_eod` v1 `backfill` request，`work_item_id=historical:<item>`：
+
+| 情況 | 成員結果 | 日期 |
+| --- | --- | --- |
+| 寫入 canonical | `data` | 繼續 |
+| FinLab 價格全空且無成交量 | `no_data`，附五表 bundle 的 raw | 繼續 |
+| Twelve Data no_data／404、FinLab 表中沒有該 symbol | `missing`（`no_source_row`） | 繼續 |
+| FinLab OHLC 等單檔值不合法、Twelve Data 幣別不符或 mapper 拒絕、Source DQ 拒絕 | `invalid`（`row_structure_invalid`），附 raw | 繼續 |
+| 限流、provider 暫時錯誤、FinLab 尚未發布該日期 | — | 整日稍後重試；已完成成員不重抓 |
+
+確定性的成員錯誤不觸發整日重試。暫時錯誤每成員（FinLab 為每日期共用表）最多 5 次 native 嘗試，用盡後
+該成員記 `missing`；FinLab 共用表用盡則該日期失敗。有任何非 data／no_data 成員時 item 為 `partial`，
+Backend 逐成員驗證 evidence 與本 work 的實際寫入證據。本變更前建立的 request（沒有 cohort）仍沿用舊
+排程器 executor 與靜態清單，至排空為止。
+
 ```bash
 cd fetcher
 export APP_ENVIRONMENT=local FETCHER_ACCOUNT_STATE_PATH=.state/account/governor.sqlite3
@@ -1002,7 +1026,10 @@ snapshot；交易日曆、首次日期與 deadline 仍依查詢時間計算，�
 normalization 完成或失敗、retry／retry exhausted、no-data／blocked outcome 變更時，
 只刷新受影響的 plan，與原始資料／run／實際寫入證據在同一 transaction commit。
 Plan row lock 串行化同 plan 的競爭寫入；失敗 rollback 不得先公布摘要。
-FactSet 具合法 historical receipt 的修復會更新同 dataset／provider／date 的 plan 摘要。
+Historical 實際寫入的修復會更新同 dataset／provider／date 的 plan 摘要：FactSet、Twelve Data 與
+FinLab 的 historical work 只要以相同契約、相同 provider symbol 凍結該成員並有本 work 的 receipt 與
+canonical 寫入證據，該成員即算 data，解除 gap 與 missing-delivery 告警；原 Full work 的結算不改寫。
+Historical 的 no_data 證據不改變 Full plan 的 missing。
 OHLCV 人工修正不改變 member 身份或完整度，無須重算摘要。
 
 `expected = data + no_data + missing + blocked` 與原 canonical／durable evidence 規則相同。

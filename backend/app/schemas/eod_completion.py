@@ -36,7 +36,8 @@ class EODCompletionEvidence(BaseModel):
 
     version: Literal[2]
     schema_id: Literal["market_eod"]
-    schema_version: Literal[2]
+    # FactSet delivers EOD v2; Full release cohorts deliver their feed contract (v1).
+    schema_version: Literal[1, 2]
     trade_date: date
     members: list[EODMemberResult] = Field(min_length=1, max_length=10000)
     item_id: UUID | None = None
