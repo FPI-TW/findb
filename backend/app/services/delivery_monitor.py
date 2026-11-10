@@ -327,6 +327,7 @@ async def scan_missing_deliveries(
                     schema_id=declaration.schema_id,
                     schema_version=declaration.current_schema_version,
                     expected_data_date=expected_date,
+                    execution_profile="full_market",
                     status="open",
                     first_detected_at=evaluated_at,
                     last_detected_at=evaluated_at,
@@ -490,7 +491,7 @@ async def _scan_full_market_feed(
             resolved += len(resolution.scalars().all())
             continue
         details: dict[str, Any] = {
-            "code": "FULL_MARKET_INCOMPLETE" if profile == "full_market" else "PILOT_INCOMPLETE",
+            "code": "FULL_MARKET_INCOMPLETE",
             "execution_profile": profile,
             "plan_id": str(plan.plan_id) if plan else None,
             "expected": summary.expected if summary else None,
@@ -608,7 +609,7 @@ async def _resolve_open_alerts_for_feed(
                     MissingDeliveryAlert.status == "open",
                     MissingDeliveryAlert.dataset_key == dataset_key,
                     MissingDeliveryAlert.source == source,
-                    MissingDeliveryAlert.execution_profile == "pilot",
+                    MissingDeliveryAlert.execution_profile == "full_market",
                     MissingDeliveryAlert.schema_id == schema_id,
                     MissingDeliveryAlert.schema_version == schema_version,
                 )
@@ -656,7 +657,7 @@ async def _resolve_open_alerts_for_feed(
             MissingDeliveryAlert.status == "open",
             MissingDeliveryAlert.dataset_key == dataset_key,
             MissingDeliveryAlert.source == source,
-            MissingDeliveryAlert.execution_profile == "pilot",
+            MissingDeliveryAlert.execution_profile == "full_market",
             MissingDeliveryAlert.schema_id == schema_id,
             MissingDeliveryAlert.schema_version == schema_version,
             delivered,
@@ -694,7 +695,7 @@ async def resolve_missing_delivery_for_run(
         or run.failed_records != 0
     ):
         return 0
-    profile = "pilot"
+    profile = "full_market"
     if run.delivery_part_id is not None:
         part = await db.get(DailyDeliveryPart, run.delivery_part_id)
         plan = await db.get(DailyDeliveryPlan, part.plan_id) if part else None

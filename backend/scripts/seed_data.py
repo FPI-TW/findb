@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.execution_profiles import scheduler_key
 from app.models.base import Base
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.services.provider_metadata import acquisition_feeds
@@ -572,36 +573,35 @@ async def seed_datasets(session: AsyncSession) -> None:
         slot = feed.delivery.slot_id
         clock = time.fromisoformat(feed.schedule.local_time)
         zone = feed.schedule.timezone
-        for profile in ("pilot", "full_market"):
-            key = f"{profile}_{provider}_v1"
+        key = scheduler_key(provider)
+        await session.execute(
+            insert(SchedulerControl)
+            .values(
+                scheduler_key=key,
+                provider=provider,
+                execution_profile="full_market",
+                slot_id=slot,
+                scheduled_local_time=clock,
+                timezone=zone,
+                desired_state="stopped",
+                observed_state="stopped",
+                revision=1,
+            )
+            .on_conflict_do_update(
+                index_elements=["scheduler_key"],
+                set_={"scheduled_local_time": clock, "timezone": zone},
+                where=SchedulerControl.retired_at.is_(None),
+            )
+        )
+        for dataset_key in datasets:
             await session.execute(
-                insert(SchedulerControl)
+                insert(SchedulerDataset)
                 .values(
                     scheduler_key=key,
-                    provider=provider,
-                    execution_profile=profile,
-                    slot_id=slot,
-                    scheduled_local_time=clock,
-                    timezone=zone,
-                    desired_state="stopped",
-                    observed_state="stopped",
-                    revision=1,
+                    dataset_key=dataset_key,
                 )
-                .on_conflict_do_update(
-                    index_elements=["scheduler_key"],
-                    set_={"scheduled_local_time": clock, "timezone": zone},
-                    where=SchedulerControl.retired_at.is_(None),
-                )
+                .on_conflict_do_nothing()
             )
-            for dataset_key in datasets:
-                await session.execute(
-                    insert(SchedulerDataset)
-                    .values(
-                        scheduler_key=key,
-                        dataset_key=dataset_key,
-                    )
-                    .on_conflict_do_nothing()
-                )
     await session.commit()
     logger.info("Seeded %d datasets", len(DATASETS))
 

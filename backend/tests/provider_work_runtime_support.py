@@ -110,21 +110,20 @@ class RuntimeHarness:
         await attest_cutover(self.db, inodes)
         definition = next(row for row in DATASETS if row["dataset_key"] == self.dataset)
         self.db.add(DatasetRegistry(**definition))
-        for profile in ("pilot", "full_market"):
-            key = f"{profile}_{self.provider}_v1"
-            self.db.add(
-                SchedulerControl(
-                    scheduler_key=key,
-                    provider=self.provider,
-                    execution_profile=profile,
-                    timezone="Asia/Taipei",
-                    slot_id="taiwan_market_window",
-                    desired_state="running",
-                    observed_state="running",
-                )
+        key = f"full_market_{self.provider}_v1"
+        self.db.add(
+            SchedulerControl(
+                scheduler_key=key,
+                provider=self.provider,
+                execution_profile="full_market",
+                timezone="Asia/Taipei",
+                slot_id="taiwan_market_window",
+                desired_state="running",
+                observed_state="running",
             )
-            await self.db.flush()
-            self.db.add(SchedulerDataset(scheduler_key=key, dataset_key=self.dataset))
+        )
+        await self.db.flush()
+        self.db.add(SchedulerDataset(scheduler_key=key, dataset_key=self.dataset))
         _, secret = await create_source_client(
             self.db,
             name="native-matrix",

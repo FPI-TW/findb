@@ -49,7 +49,7 @@ def declaration(provider, client_id, datasets, *, environment="local", now=None)
                 "used_bytes": 0,
                 "environment_exclusive": True,
                 "governor_identity": "/fixture/governor.sqlite3",
-                "consumers": ["pilot", "full_market", "historical", "maintenance"],
+                "consumers": ["full_market", "historical", "maintenance"],
                 "other_requests_per_day": 10,
                 "other_bytes_per_day": 1000000,
             },
@@ -59,7 +59,6 @@ def declaration(provider, client_id, datasets, *, environment="local", now=None)
 
 async def historical_admission(db, dataset, release, day, calendar_id, *, profile="full_market"):
     settings = get_settings()
-    settings.FULL_MARKET_ENABLED = True
     settings.APP_ENVIRONMENT = "local"
     lifecycle = await db.get(FullMarketEnvironment, "local")
     if lifecycle is None:

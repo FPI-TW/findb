@@ -49,8 +49,8 @@ Admin API 以 `start_allowed`／`start_blockers` 回報啟動資格。「全部�
 內建市場預設週六日休市；其餘
 readiness／enrollment／expiry／capacity 條件不再列為啟動 gate。stopped→running
 凍結 ready scope；新 ready sibling 須停止再啟動，running 重複 start 不改 scope。首次日期由交易所
-當地今天決定並永久保留。停止不受 start blockers 限制；旗標關閉由 trusted lifecycle/management
-流程停止 Full controls/audit，重新開旗標仍需 Owner 手動 start，GET 不寫 control。
+當地今天決定並永久保留。停止不受 start blockers 限制；緊急停止全部 controls 使用
+[emergency stop CLI](full_market.md#緊急停止)，之後仍需 Owner 手動 start，GET 不寫 control。
 平台限制與治理資料清單見
 [Full market runbook](full_market.md)。舊連結的 `profile` 參數會被忽略。
 部署前須停止所有 controls 並確認 desired／observed state 均為 stopped。
@@ -104,7 +104,7 @@ accepted ECR SHA `0e2e28089498237b4261169aa0c6885f215a1d9e`。舊version未刪�
 ## Bounded end-to-end acceptance
 
 Staging驗收完整功能，不累積資料量。執行前依
-[staging data policy](deployment.md#staging-data-policy)記錄image／config、pilot identity、
+[staging data policy](deployment.md#staging-data-policy)記錄image／config、bounded identity、
 日期／row上限、credits與pre-run counts。
 
 基礎檢查：
@@ -125,12 +125,12 @@ sudo /opt/findb/runtime-secrets/runtime_secret_command.sh \
   python /app/scripts/check_queue_health.py
 ```
 
-以固定bounded identity送出pilot並確認：
+以固定bounded identity送出一筆受控delivery並確認：
 
 1. Provider raw R2 reference、checksum與delivery內容一致。
 2. Source回`202`及attempt／run IDs。
 3. Run／job進入預期terminal state；outbox已published且無active delivery殘留。
-4. DQ、canonical values與row counts符合pilot。
+4. DQ、canonical values與row counts符合預期。
 5. Serve、Admin與Dashboard顯示相同lineage。
 6. 相同內容重送不增加canonical row；相同key不同內容回`409`。
 7. 保存post-run counts、queue／DLQ及實際credits。
@@ -188,11 +188,11 @@ candidate 的預覽與修復命令見 [Full market runbook](full_market.md#治�
 Market freshness必須分開呈現provider fetch、normalization completion與feed policy。
 Raw存在但canonical未完成時沿run／job／outbox／queue診斷，不要誤判為provider未送達。
 
-Full market Scheduler 卡片呈現 environment flag、baseline／calendar blockers、frozen admitted scope 與 first dates。
+Full market Scheduler 卡片呈現環境、baseline／calendar blockers、frozen admitted scope 與 first dates。
 Freshness 只 aggregate running admission 的 feeds，pending sibling 保留 blocker 明細。Registry/contract
 market、asset、frequency 與 schema v1 必須符合實際 runtime；malformed scope 仍回報 configuration error。
-Feed raw/canonical 更新可能來自 Pilot，不能證明 Full runtime 已部署、被授權或回報自己的 heartbeat。
-All-start skip blockers 及 hidden-tab overlap confirmation 見 [runbook](full_market.md)。
+Feed raw/canonical 更新可能來自 historical 回補或 retained-raw rerun，不能證明 Full runtime 已部署、被授權或
+回報自己的 heartbeat。All-start skip blockers 見 [runbook](full_market.md)。
 
 ## 常見診斷
 
@@ -248,8 +248,7 @@ Schema migration後不直接回退到不認得目前Alembic head的image；採fo
 舊route、舊provider identity、volume deletion或大範圍資料刪除作為recovery。
 
 
-Staging provider onboarding 使用四個 provider／五個 feed 的 bounded functional pilots，詳細 scope、
-control keys 與 startup commands 見 [Fetcher](../../fetcher/README.md#staging-pilot-啟動與驗收)。新 provider
-必須提供 supported versioned schema、最小 Source credential scope、catalog pilot、startup fixture、durable replay
-與 Source→raw→terminal canonical→Serve live evidence。TAIFEX staging 是實際近月雙 session 契約，
-以獨立 `TAIFEX` 官方 calendar 選最新已完成交易日；不啟用 production full-market、continuous 或歷史 backfill。
+Staging provider onboarding 不再使用 bounded functional pilots，staging pilot catalog 已刪除；staging 與
+production 一樣以 Full daily 驗收。新 provider 必須提供 supported versioned schema、最小 Source credential scope、
+catalog feed、startup fixture、durable replay 與 Source→raw→terminal canonical→Serve live evidence。TAIFEX
+以獨立 `TAIFEX` 官方 calendar 判定交易日，不啟用 continuous；歷史回補見 [資料維護](data_maintenance.md)。

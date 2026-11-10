@@ -17,11 +17,9 @@ FEEDS = json.loads((CONFIGS / "full_market.staging.v1.json").read_text())["feeds
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
 @pytest.mark.parametrize("feed", FEEDS, ids=lambda feed: feed["dataset_key"])
-def test_same_calendar_date_retry_and_frozen_membership(
-    tmp_path, monkeypatch, environment, profile, feed
-):
+def test_same_calendar_date_retry_and_frozen_membership(tmp_path, monkeypatch, environment, feed):
+    profile = "full_market"
     import findb_fetcher.full_market_runtime as module
 
     class Clock(datetime):
@@ -50,9 +48,7 @@ def test_same_calendar_date_retry_and_frozen_membership(
     for day in (date(2026, 7, 21), date(2026, 7, 22)):
         plan = _frozen_plan(feed["dataset_key"], day, release)
         plan.update(provider=feed["provider"], execution_profile=profile)
-        plan["parts"][0]["member_keys"] = [
-            row["member_key"] for row in members[: 2 if profile == "pilot" else 3]
-        ]
+        plan["parts"][0]["member_keys"] = [row["member_key"] for row in members]
         frozen[str(day)] = plan
     source.request = lambda method, path: {
         "acquisition_allowed": True,
@@ -75,13 +71,14 @@ def test_same_calendar_date_retry_and_frozen_membership(
             ]
         )
     )
-    expected_members = ["A", "B"] if profile == "pilot" else ["A", "B", "C"]
+    expected_members = ["A", "B", "C"]
     for _ in range(2):
         for day in (date(2026, 7, 21), date(2026, 7, 22)):
             existing = runtime._existing_plan(selected, day)
             assert existing["parts"][0]["member_keys"] == expected_members
             assert existing["release_id"] == "published-original"
         release["members"].append({**_member(), "member_key": "D", "symbol": "D"})
-    frozen["2026-07-22"]["execution_profile"] = "full_market" if profile == "pilot" else "pilot"
+    # A plan frozen under the retired pilot profile is never adopted.
+    frozen["2026-07-22"]["execution_profile"] = "pilot"
     with pytest.raises(ReadinessBlockedError, match="identity invalid"):
         runtime._existing_plan(selected, date(2026, 7, 22))

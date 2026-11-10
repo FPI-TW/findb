@@ -1,8 +1,6 @@
 import { z } from "zod"
 
-// Responses may still carry retired pilot rows until the backend retirement
-// migration runs; requests are always scoped to full_market.
-export const executionProfileSchema = z.enum(["pilot", "full_market"])
+export const executionProfileSchema = z.enum(["full_market"])
 
 const isoDateTime = z.string().datetime({ offset: true })
 const nullableDateTime = isoDateTime.nullable()
@@ -158,7 +156,6 @@ export const feedScheduleSchema = z.object({
 export const schedulerSchema = z.object({
   feed_schedules: z.array(feedScheduleSchema).optional(),
   execution_profile: executionProfileSchema.optional(),
-  full_market_enabled: z.boolean().nullable().optional(),
   environment: z.string().nullable().optional(),
   admission_id: z.string().nullable().optional(),
   admitted_dataset_keys: z.array(z.string()).optional(),

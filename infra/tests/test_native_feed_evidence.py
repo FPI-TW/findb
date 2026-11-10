@@ -19,7 +19,7 @@ spec.loader.exec_module(module)
 def complete_evidence():
     backend = {
         "environment": "staging",
-        "execution_profile": "pilot",
+        "execution_profile": "full_market",
         "trade_date": "2026-10-15",
         "feeds": [],
     }
@@ -35,12 +35,12 @@ def complete_evidence():
             "plan_id": dataset,
             "dataset_key": dataset,
             "provider": provider,
-            "execution_profile": "pilot",
+            "execution_profile": "full_market",
             "trade_date": "2026-10-15",
             "release_id": "universe",
             "parts_sha256": "parts",
             "summary": {
-                "execution_profile": "pilot",
+                "execution_profile": "full_market",
                 "expected": 2,
                 "data": 2,
                 "no_data": 0,
@@ -69,7 +69,7 @@ def complete_evidence():
             provider,
             {
                 "environment": "staging",
-                "execution_profile": "pilot",
+                "execution_profile": "full_market",
                 "provider": provider,
                 "plans": [],
             },
@@ -94,7 +94,7 @@ def test_exact_acquiring_feed_evidence_passes(complete_evidence):
 
 
 @pytest.mark.parametrize(
-    "environment,profile", [("staging", "pilot"), ("production", "full_market")]
+    "environment,profile", [("staging", "full_market"), ("production", "full_market")]
 )
 def test_native_coordinator_scopes_readonly_probes(
     monkeypatch, tmp_path, complete_evidence, environment, profile
@@ -196,7 +196,7 @@ def test_incomplete_or_cross_scope_evidence_never_passes(complete_evidence, muta
     elif mutation == "missing_feed":
         backend["feeds"].pop()
     elif mutation == "wrong_profile":
-        exporter["execution_profile"] = "full_market"
+        exporter["execution_profile"] = "historical"
     elif mutation == "other_run":
         proof["sample"]["run_id"] = "another-profile-run"
     elif mutation == "changed_plan":
@@ -207,3 +207,40 @@ def test_incomplete_or_cross_scope_evidence_never_passes(complete_evidence, muta
         assert mutation in {"missing_feed", "wrong_profile", "other_run", "changed_plan"}
     else:
         assert result["passed"] is False
+
+
+def test_retired_pilot_scope_is_rejected(complete_evidence):
+    backend, fetchers = deepcopy(complete_evidence)
+    backend["execution_profile"] = "pilot"
+    with pytest.raises(ValueError, match="scope"):
+        module.assess(backend, fetchers)
+
+
+def test_collector_only_offers_the_full_market_profile(monkeypatch):
+    import sys
+
+    monkeypatch.syspath_prepend(str(ROOT / "infra/acceptance"))
+    import collect_native_feed_evidence as collector
+
+    for profile in ("pilot", "bounded"):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "collect",
+                "--environment",
+                "staging",
+                "--profile",
+                profile,
+                "--trade-date",
+                "2026-10-15",
+                "--findb-instance-id",
+                "b",
+                "--fetcher-instance-id",
+                "f",
+                "--output",
+                "/nonexistent/evidence.json",
+            ],
+        )
+        with pytest.raises(SystemExit):
+            collector.main()

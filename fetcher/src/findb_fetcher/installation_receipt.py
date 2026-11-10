@@ -41,7 +41,7 @@ def main() -> None:
         "--consumer-pid",
         action="append",
         default=[],
-        help="Actual installed extra consumer: pilot=PID or historical=PID",
+        help="Actual installed extra consumer: historical=PID",
     )
     parser.add_argument("--allocation", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -68,9 +68,8 @@ def main() -> None:
     target, environment_contract = process_environment(
         environment, allow_legacy=args.allow_legacy_environment
     )
-    flag = re.search(r"(?:^|\s)FULL_MARKET_ENABLED=([^\s]+)", environment)
-    if target != "local" or flag is None or flag.group(1).lower() != "true":
-        raise ValueError("installed environment/flag differs from local enrollment")
+    if target != "local":
+        raise ValueError("installed environment differs from local enrollment")
     allocation_env = re.search(r"(?:^|\s)FETCHER_ACCOUNT_ALLOCATION_FILE=([^\s]+)", environment)
     readiness_env = re.search(r"(?:^|\s)FETCHER_ACCOUNT_READINESS_FILE=([^\s]+)", environment)
     installed_allocation = (
@@ -107,10 +106,10 @@ def main() -> None:
     installed_consumers = {"full_market", "maintenance"}
     for supplied in args.consumer_pid:
         profile, pid = supplied.split("=", 1)
-        if profile not in {"pilot", "historical"}:
+        if profile != "historical":
             raise ValueError("unknown local consumer profile")
         process = subprocess.check_output(["ps", "-p", str(int(pid)), "-o", "command="], text=True)
-        if "findb" not in process or (profile == "historical" and "historical" not in process):
+        if "findb" not in process or "historical" not in process:
             raise ValueError("consumer PID identity invalid")
         installed_env = subprocess.check_output(
             ["ps", "eww", "-p", str(int(pid)), "-o", "command="], text=True

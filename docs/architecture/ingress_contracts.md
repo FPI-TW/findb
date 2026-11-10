@@ -186,7 +186,7 @@ daily_update group 的所有 sequences 完成後計入 data，其他完成群組
 五分鐘。EOD／minute 的伺服器時間與 `fetched_at` 都須已過 該 plan 凍結的有效日曆收盤（未發布日期使用同市場正常時間）；
 缺個別日期時間時，保守採 US 16:00 New York、HK 16:10 Hong Kong（含收市競價）、
 TW 13:30 Taipei、TAIFEX regular 13:45 Taipei。TAIFEX after_hours 採歸屬交易日 Taipei 05:00，
-不等待日盤收盤。Pilot／Full market 建立新計畫或略過決策時，也會拒絕未來日期與尚未到正常／已發布收盤的日期。
+不等待日盤收盤。Full market 建立新計畫或略過決策時，也會拒絕未來日期與尚未到正常／已發布收盤的日期。
 
 `no_data` 限 `halted`／`no_trade`，必須有 credential-free HTTPS URL、SHA-256、observed_at、
 source_symbol、trade_date、source_status 與 bounded excerpt；futures 同時匹配 session。

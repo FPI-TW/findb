@@ -2,7 +2,7 @@
 
 FactSet 負責切換後的新港股 EOD 抓取；Twelve Data 繼續負責美股。港股不自動 fallback。
 程式更新不等於環境已切換：正式抓取仍需要 provider-work enforcement、已發布的
-HKEX baseline、明確的 HK provider cutover，以及 Owner 啟動相應 Pilot／Full control。
+HKEX baseline、明確的 HK provider cutover，以及 Owner 啟動 Full control。
 
 ## 清單與歷史範圍
 
@@ -18,9 +18,9 @@ member checksum 及完整成員 mapping，所有日期共用這份快照。清�
 不得標示為歷史全市場。Production 最長 366 calendar days，local/staging 最長 31 天。
 
 首次 baseline 尚未發布時，使用已部署 FactSet image 的正常
-`findb-fetch-runtime --execution-profile pilot --provider factset --sync-universes`，並帶入該環境
-原有 config、Pilot checkpoint 與 shared account／provider-work mounts。維護使用 Source 的
-maintenance 授權，不必先啟動 daily control；不得以獨立無 owner 的 MySQL probe 代替。
+`findb-fetch-runtime --execution-profile full_market --provider factset --sync-universes`，並帶入該環境
+原有 config、Full checkpoint 與 shared account／provider-work mounts。維護使用 Source 的
+maintenance 授權（只依 Source credential 綁定），不必先啟動 daily control；不得以獨立無 owner 的 MySQL probe 代替。
 CLI 回傳 `queued` 只表示排隊，須追到 maintenance terminal、原始證據與 release 才算成功。
 工作 key 由 CLI 依 UTC 日期產生，同日重跑不另造 identity；HKEX 檔案日期則按香港日期驗證。
 Future-dated 失敗保留原 journal 與用量，待正常日期建立新工作，不改時鐘或重置預算。
@@ -34,7 +34,7 @@ release ID、members、parts 及 checksum 未變。單日重跑或本機 fixture
 需明確執行上述維護入口。既有發布差異門檻與人工例外規則維持。
 
 Daily 新 I/O 僅於香港時間 18:30（含）至 23:00（不含）進行；已準備好的交付仍須排空。
-Pilot 按 canonical 識別排序取前兩檔。`FACTSET_SKIP_NON_TRADING_DAYS=true` 是預設值；
+Daily plan 凍結完整 published cohort。`FACTSET_SKIP_NON_TRADING_DAYS=true` 是預設值；
 歷史回補略過休市日。缺少已發布日曆時沿用既有週一至週五規則。
 
 ## MySQL 與價格映射
@@ -166,15 +166,15 @@ MySQL `information_schema.tables.UPDATE_TIME` 僅為整表最後異動 metadata�
    舊 bundle v1 只供既有安裝辨識；新 release 與 promotion 必須包含 FactSet digest。
 3. 依 [provider-work 維運](../architecture/provider_work.md) 完成單 host／shared inode／所有 consumers
    停止及排空的 preflight attestation，再開啟 `PROVIDER_WORK_REQUIRED`。
-4. 使用 FactSet Pilot maintenance 同步 HKEX 清單，由 Admin 確認並發布第一份 baseline。
+4. 使用 FactSet maintenance 同步 HKEX 清單，由 Admin 確認並發布第一份 baseline。
    之後沿用既有差異門檻與人工例外核准規則。
-5. 停止 Twelve Data 與 FactSet 的 Pilot／Full controls，排空 active owner。以香港當日日期
+5. 停止 Twelve Data 與 FactSet 的 Full controls，排空 active owner。以香港當日日期
    執行 `uv --directory backend run python scripts/cutover_hk_factset.py --effective-date YYYY-MM-DD --actor OPERATOR`。
    預設驗證後 rollback；加入 `--apply` 才提交。切換決定不可改寫或回溯日期。
-6. 切換 transaction 保留原 dataset/profile first dates 與 plans，記錄 audit，設定 FactSet
+6. 切換 transaction 保留原 dataset first dates 與 plans，記錄 audit，設定 FactSet
    priority -1、Twelve Data priority 0，並使舊 HK Twelve Data stored priority 一致，保留價格與 lineage。
    FactSet 新 daily 日期從切換日開始；更早日期使用 historical request。
-7. 完成兩檔單日、異常歷史樣本、全市場 native acceptance 後，再由 Owner 啟動所需 control，
+7. 完成單日、異常歷史樣本、全市場 native acceptance 後，再由 Owner 啟動所需 control，
    依既有 staging acceptance／production promotion 流程交付。
 
 不得在仍有 cohort、partial、v2 run 或切換紀錄時 downgrade 此 migration。Rollback 亦須保留
@@ -183,15 +183,15 @@ MySQL `information_schema.tables.UPDATE_TIME` 僅為整表最後異動 metadata�
 ### Cutover 與原生連線驗收證據
 
 切換前保存當前 accepted Backend／Fetcher bundle、Alembic revision、DB／checkpoint 備份、
-兩 provider 的 Pilot／Full controls revisions、first dates、plans／members fingerprints，
-以及 shared lock identity。以 CAS 停止四個 controls，等待 desired／observed stopped，
+兩 provider 的 Full controls revisions、first dates、plans／members fingerprints，
+以及 shared lock identity。以 CAS 停止兩個 controls，等待 desired／observed stopped，
 核對兩 provider owner 已釋放及在途 prepared／receipts 已排空；心跳過期不代表 owner 已釋放。
 先執行 cutover script 的預設 dry-run，再以同一香港日期與具名 actor 執行 `--apply`，
 保存 decision／audit 與上述 fingerprints 的前後比對。跨香港午夜須重做日期核對。
 
 HK provider decision 不可改寫，應用 rollback 不代表把 HK 新抓取切回 Twelve Data。
 候選 rollback 版本須維持目前部署的 provider-work owner 到期證據契約，以及 EOD v2、
-cohort／partial、FactSet scopes 與十五 consumers；accepted 身分、migration compatibility
+cohort／partial、FactSet scopes 與現行 consumer inventory；accepted 身分、migration compatibility
 及停止／排空要求依 [部署維運](deployment.md) 核對，不只比較 image tag。
 
 FactSet maintenance 成功可提供 staging 到 RDS 的 TLS／原生 catalogue SELECT 證據，須核對
@@ -233,6 +233,8 @@ Twelve Data HK 列，關閉 rerun 沒有資料受影響。Staging 已套用 HK c
 本機 checkpoint 的未完成 HK plans 是舊執行的保留證據，會持續出現在 `--health` 的
 `unresolved`；不得清檔、改成 complete／no_data 或重設預算。這些成員沒有 prepared bytes
 或 receipts，不會再交付。切換日前的港股資料若需補齊，一律以 FactSet historical request 處理。
+Pilot 退役後，上表 staging 的 Pilot work 與 plans 已由 migration `a7c3e1f9d2b4` 刪除，Pilot 本機
+checkpoint 改以 tar＋SHA-256 封存於 `/var/backups/findb-pilot-retirement/`；Full 的 rows 與 checkpoint 不變。
 
 SSM 證據：production DB `408e1514-f6fb-4c24-bfa9-445a7675824f`、Fetcher SQLite
 `876d9006-82f7-487e-aaf8-d603e0482d20`；staging DB `57ed7c13-70c4-4552-9614-96073634aed8`、

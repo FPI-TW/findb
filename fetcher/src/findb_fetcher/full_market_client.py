@@ -58,7 +58,7 @@ class FullMarketSourceClient:
         client: httpx.Client | None = None,
         execution_profile: str = "full_market",
     ) -> None:
-        if execution_profile not in {"pilot", "full_market"}:
+        if execution_profile != "full_market":
             raise ValueError("Unsupported execution profile")
         self.execution_profile = execution_profile
         self.config = config

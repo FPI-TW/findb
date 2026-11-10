@@ -682,13 +682,6 @@ async def create_plan(
             )
         ).all()
     )
-    if body.execution_profile == "pilot":
-
-        def identity(member: UniverseMember) -> tuple[str, str]:
-            return (member.product_code or member.symbol, member.contract_code or "")
-
-        selected = set(sorted({identity(member) for member in members})[:2])
-        members = [member for member in members if identity(member) in selected]
     if not members:
         raise FullMarketError("Published universe has no plan members", 409)
     plan = DailyDeliveryPlan(
@@ -700,9 +693,7 @@ async def create_plan(
         execution_profile=body.execution_profile,
         activation_cutoff=activation_date,
         deadline_at=_deadline(dataset, body.trade_date),
-        member_sha256=release.member_sha256
-        if body.execution_profile == "full_market"
-        else _digest([member.member_key for member in members]),
+        member_sha256=release.member_sha256,
         expected_count=len(members),
         created_at=utc_now(),
     )

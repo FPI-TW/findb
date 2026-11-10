@@ -235,7 +235,7 @@ def load_readiness(
 def validate_capacity(
     proof: dict[str, Any], request_count: int, *, seconds_available: float
 ) -> None:
-    # Reserve retry headroom; insufficient coverage blocks instead of selecting a pilot subset.
+    # Reserve retry headroom; insufficient coverage blocks instead of selecting a subset.
     needed = math.ceil(request_count * 1.2)
     rate = min(proof["requests_per_second"], proof["requests_per_minute"] / 60)
     if (
@@ -367,7 +367,7 @@ class FullMarketRuntime:
         client: httpx.Client | None = None,
         can_acquire: Callable[[], bool] | None = None,
     ) -> None:
-        if execution_profile not in {"pilot", "full_market"}:
+        if execution_profile != "full_market":
             raise ValueError("Unsupported execution profile")
         self.execution_profile = execution_profile
         self.provider, self.config, self.state = provider, config, state
@@ -454,41 +454,16 @@ class FullMarketRuntime:
             return self.can_acquire()
         return self.runtime_window()["open"] and self.can_acquire()
 
-    def _reserve(self, *, requests: int = 1, byte_count: int | None = None) -> tuple[int, int]:
-        from findb_fetcher.account_governor import enabled as governor_enabled
+    def _reserve(self) -> tuple[int, int]:
+        """Reserve one acquisition through the shared, durable account governor."""
         from findb_fetcher.account_governor import reserve
-        from findb_fetcher.platform_limits import interval
 
-        if governor_enabled():
-            permit = reserve(self.provider)
-            if not self._acquisition_allowed() or permit is None:
-                raise ReadinessBlockedError("scheduler acquisition stopped")
-            self.reservation_window = permit.window
-            self.account_permit = permit
-            return permit.requests_before, permit.requests_after
-        while True:
-            if not self._acquisition_allowed():
-                raise ReadinessBlockedError("scheduler was stopped by Source control")
-            wait, before, after, window = self.state.reserve_acquisition(
-                account=self.provider,
-                interval=interval(self.proof),
-                requests=requests,
-                byte_count=(
-                    0 if self.proof.get("platform_limits") else self.proof["max_response_bytes"]
-                )
-                if byte_count is None
-                else byte_count,
-                request_limit=self.proof["requests_per_day"],
-                byte_limit=self.proof["bytes_per_day"],
-                minute_limit=self.proof["requests_per_minute"],
-                enforce_capacity=False,
-            )
-            if wait <= 0:
-                self.reservation_window = window
-                if not self._acquisition_allowed():
-                    raise ReadinessBlockedError("scheduler was stopped by Source control")
-                return before, after
-            time.sleep(min(wait, 1))
+        permit = reserve(self.provider)
+        if not self._acquisition_allowed() or permit is None:
+            raise ReadinessBlockedError("scheduler acquisition stopped")
+        self.reservation_window = permit.window
+        self.account_permit = permit
+        return permit.requests_before, permit.requests_after
 
     def _observed_response(self, size: int, *, declared: int = 0) -> None:
         bound = int(self.proof["max_response_bytes"])

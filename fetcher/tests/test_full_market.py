@@ -760,6 +760,34 @@ def _runtime(
     return runtime, source, raw
 
 
+def _checkpoint_reserve(runtime: Any) -> tuple[int, int]:
+    """Take one permit from the durable checkpoint pacing/quota ledger.
+
+    Runtime acquisition reserves only through the shared account governor; this
+    harness keeps the checkpoint ledger's cooldown, pacing and window semantics
+    covered with the runtime's synthetic proof limits.
+    """
+    from findb_fetcher import full_market_runtime as runtime_module
+    from findb_fetcher.platform_limits import interval
+
+    proof = runtime.proof
+    while True:
+        wait, before, after, window = runtime.state.reserve_acquisition(
+            account=runtime.provider,
+            interval=interval(proof),
+            requests=1,
+            byte_count=0 if proof.get("platform_limits") else proof["max_response_bytes"],
+            request_limit=proof["requests_per_day"],
+            byte_limit=proof["bytes_per_day"],
+            minute_limit=proof["requests_per_minute"],
+            enforce_capacity=False,
+        )
+        if wait <= 0:
+            runtime.reservation_window = window
+            return before, after
+        runtime_module.time.sleep(min(wait, 1))
+
+
 def _member() -> dict[str, Any]:
     return {
         "symbol": "AAPL",
@@ -1325,7 +1353,6 @@ def test_require_stopped_never_recreates_unavailable_checkpoint(
         else:
             state_path.write_bytes(b"" if kind == "empty" else b"invalid SQLite")
     monkeypatch.setenv("APP_ENVIRONMENT", target)
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     monkeypatch.setattr(
         full_market_cli, "FullMarketState", lambda *_: pytest.fail("state constructor must not run")
     )
@@ -1383,7 +1410,6 @@ def test_twelve_data_control_scope_is_us_only(tmp_path, monkeypatch, scope, acce
             )
 
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     monkeypatch.setattr(full_market_cli.FetcherConfig, "from_env", lambda: object())
     monkeypatch.setattr(full_market_cli, "SchedulerControlClient", Control)
     state = FullMarketState(tmp_path / "state.sqlite3")
@@ -1434,7 +1460,6 @@ def test_require_stopped_checks_existing_control_without_mutating_prepared_check
             )
 
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     monkeypatch.setattr(
         full_market_cli,
         "FullMarketState",
@@ -1541,17 +1566,27 @@ def test_require_stopped_validates_physical_integrity_and_usable_legacy_core(
     assert not (tmp_path / "state.sqlite3-shm").exists()
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
-def test_checkpoint_profile_binding_is_durable(tmp_path, profile):
+def test_checkpoint_profile_binding_is_durable(tmp_path):
     state = FullMarketState(tmp_path / "checkpoint.sqlite3")
-    state.bind_profile(profile)
+    state.bind_profile("full_market")
     restarted = FullMarketState(state.path)
-    restarted.bind_profile(profile)
+    restarted.bind_profile("full_market")
+    with pytest.raises(FullMarketStateError, match="invalid execution profile"):
+        restarted.bind_profile("pilot")
+
+
+def test_retired_pilot_checkpoint_is_never_rebound_as_full_market(tmp_path):
+    state = FullMarketState(tmp_path / "checkpoint.sqlite3")
+    with state.connection() as db:
+        db.execute(
+            "CREATE TABLE execution_identity (id INTEGER PRIMARY KEY CHECK(id=1), profile TEXT NOT NULL)"
+        )
+        db.execute("INSERT INTO execution_identity VALUES (1, 'pilot')")
     with pytest.raises(FullMarketStateError, match="profile mismatch"):
-        restarted.bind_profile("pilot" if profile == "full_market" else "full_market")
+        state.bind_profile("full_market")
 
 
-def test_legacy_checkpoint_cannot_be_relabelled_pilot(tmp_path):
+def test_legacy_checkpoint_binds_full_market_and_keeps_state(tmp_path):
     state = FullMarketState(tmp_path / "checkpoint.sqlite3")
     state.record_plan(_plan(), "twelve_data")
     body = canonical_bytes({"fetched_at": "frozen", "source_raw_sha256": "a" * 64})
@@ -1559,8 +1594,6 @@ def test_legacy_checkpoint_cannot_be_relabelled_pilot(tmp_path):
     with state.connection() as db:
         db.execute("INSERT INTO full_cursor VALUES ('taifex','tw_futures_eod','2026-10-01')")
         db.execute("INSERT INTO full_quota VALUES ('account','day',12,345,678)")
-    with pytest.raises(FullMarketStateError, match="legacy full-market checkpoint"):
-        state.bind_profile("pilot")
     state.bind_profile("full_market")
     assert state.prepared("fp1:123:AAPL") == body
     with state.connection() as db:
@@ -1600,13 +1633,12 @@ def test_universe_date_uses_exchange_local_observation(zone, observed, effective
             request()
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
 def test_native_twelve_daily_uses_inclusive_wire_window_and_bounds_delivery(
-    tmp_path: Path, profile: str
+    tmp_path: Path,
 ) -> None:
     from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 
-    runtime, _, raw = _runtime(tmp_path, execution_profile=profile)
+    runtime, _, raw = _runtime(tmp_path)
     plan = _plan()
     payload = json.loads(
         (
@@ -1638,3 +1670,36 @@ def test_native_twelve_daily_uses_inclusive_wire_window_and_bounds_delivery(
         assert plan == _plan()
     finally:
         runtime.http.close()
+
+
+def test_cli_rejects_retired_pilot_execution_profile(capsys):
+    from findb_fetcher import full_market_cli
+
+    with pytest.raises(SystemExit) as rejected:
+        full_market_cli.main(
+            ["--provider", "twelve_data", "--execution-profile", "pilot", "--check"]
+        )
+    assert rejected.value.code == 2
+    assert "'pilot' is retired" in capsys.readouterr().err
+
+
+def test_acquisition_gate_uses_only_control_and_source_authorization(monkeypatch):
+    from findb_fetcher import full_market_cli
+
+    monkeypatch.delenv("FETCHER_CONSUMER_PROFILE", raising=False)
+    requests: list[str] = []
+    desired = ["running"]
+
+    def authorize(method: str, path: str) -> dict[str, Any]:
+        requests.append(path)
+        return {"acquisition_allowed": True}
+
+    can_acquire = full_market_cli.acquisition_gate(
+        "full_market",
+        SimpleNamespace(poll=lambda **kwargs: SimpleNamespace(desired_state=desired[0])),
+        SimpleNamespace(request=authorize),
+    )
+    assert can_acquire() is True
+    desired[0] = "stopped"
+    assert can_acquire() is False
+    assert requests == ["full-market/authorization?consumer=full_market"] * 2

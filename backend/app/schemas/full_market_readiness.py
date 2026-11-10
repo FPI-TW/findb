@@ -148,6 +148,7 @@ class ReadinessDeclaration(FullMarketModel):
 
 
 class ReadinessReport(FullMarketModel):
+    # Deprecated: accepted from older Fetchers and ignored; FULL_MARKET_ENABLED is retired.
     full_market_enabled: bool = True
     enrollment_id: UUID
     declaration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

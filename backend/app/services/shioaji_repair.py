@@ -159,7 +159,7 @@ async def apply(db: AsyncSession, work_id, body: RepairApplyRequest, *, actor: s
     if await db.scalar(
         select(SchedulerControl.scheduler_key)
         .where(
-            SchedulerControl.scheduler_key.in_(("pilot_shioaji_v1", "full_market_shioaji_v1")),
+            SchedulerControl.scheduler_key == "full_market_shioaji_v1",
             SchedulerControl.retired_at.is_not(None),
         )
         .limit(1)

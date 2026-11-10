@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import verify_source_api_key
 from app.api.v1.provider_work import router as provider_work_router
 from app.dependencies import get_db
-from app.execution_profiles import ExecutionProfile, scheduler_profile, unified_scheduler
+from app.execution_profiles import ExecutionProfile, unified_scheduler
 from app.models.registry import DailyDeliveryPlan
 from app.schemas.execution_config import ExecutionConfigQuery, ExecutionConfigResponse
 from app.schemas.full_market import (
@@ -180,7 +180,7 @@ async def report_full_market_readiness(
 @router.get("/full-market/authorization")
 async def full_market_authorization(
     response: Response,
-    consumer: str = "full_market",
+    consumer: Literal["full_market", "maintenance"] = "full_market",
     execution_profile: ExecutionProfile = "full_market",
     declaration_sha256: str = "",
     runtime_id: str = "",
@@ -188,10 +188,9 @@ async def full_market_authorization(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     provider, _ = _full_market_source_scope(db)
-    profile: ExecutionProfile = "pilot" if consumer == "pilot" else execution_profile
-    projection = await admission_projection(db, provider, source=True, profile=profile)
+    projection = await admission_projection(db, provider, source=True, profile=execution_profile)
     account = await account_authorization(
-        db, provider, consumer, declaration_sha256, runtime_id, profile=profile
+        db, provider, consumer, declaration_sha256, runtime_id, profile=execution_profile
     )
     checked_at = utc_now()
     _authorization_headers(response, checked_at.isoformat())
@@ -229,9 +228,7 @@ async def scheduler_acquisition_authorization(
         raise HTTPException(status_code=403, detail="Source scheduler scope denied")
     acquisition_allowed = row.desired_state == "running"
     if unified_scheduler(scheduler_key):
-        current = await account_authorization(
-            db, provider, scheduler_profile(scheduler_key), "", ""
-        )
+        current = await account_authorization(db, provider, "full_market", "", "")
         acquisition_allowed = acquisition_allowed and current["acquisition_allowed"]
     checked_at = utc_now()
     _authorization_headers(response, checked_at.isoformat())

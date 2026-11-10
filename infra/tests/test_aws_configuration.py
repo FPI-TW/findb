@@ -1,6 +1,7 @@
 """Staging and production accept exactly the same nonsecret deployment schema."""
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,8 @@ def test_environment_schema_parity_and_safe_defaults(unit):
     staging = module.validate(document("staging", unit), target="staging", unit=unit)
     production = module.validate(document("production", unit), target="production", unit=unit)
     assert set(staging) == set(production)
-    assert staging["FULL_MARKET_ENABLED"] == production["FULL_MARKET_ENABLED"] == "false"
+    assert "FULL_MARKET_ENABLED" not in staging
+    assert "FULL_MARKET_ENABLED" not in production
     assert staging["CONFIGURATION_PATH"] != production["CONFIGURATION_PATH"]
 
 
@@ -59,18 +61,69 @@ def test_configuration_rejects_secret_fields_wrong_identity_and_injection(target
 
 @pytest.mark.parametrize("target", ["staging", "production"])
 @pytest.mark.parametrize("unit", ["findb", "fetcher"])
-@pytest.mark.parametrize("flag", ["true", "false", None, "True", "0", ""])
-def test_full_market_flag_is_explicit_or_defaults_stopped(target, unit, flag):
+@pytest.mark.parametrize("flag", ["true", "false", "True", "0", ""])
+def test_retired_full_market_flag_is_tolerated_with_warning_and_never_exported(
+    target, unit, flag, capsys
+):
     value = document(target, unit)
-    if flag is not None:
-        value["values"]["FULL_MARKET_ENABLED"] = flag
-    if flag in {"true", "false", None}:
-        assert module.validate(value, target=target, unit=unit)["FULL_MARKET_ENABLED"] == (
-            flag or "false"
-        )
+    value["values"]["FULL_MARKET_ENABLED"] = flag
+    result = module.validate(value, target=target, unit=unit)
+    assert "FULL_MARKET_ENABLED" not in result
+    assert value["values"]["FULL_MARKET_ENABLED"] == flag  # Input is never mutated.
+    warning = capsys.readouterr().err
+    assert warning == (
+        "aws_configuration=warning reason=retired_field_ignored field=FULL_MARKET_ENABLED\n"
+    )
+    assert module.validate(document(target, unit), target=target, unit=unit) == result
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("command", ["load", "sync", "validate"])
+def test_cli_ignores_retired_ssm_flag_once_and_sync_removes_it(
+    tmp_path, monkeypatch, capsys, command
+):
+    value = document("staging", "fetcher")
+    value["values"]["FULL_MARKET_ENABLED"] = "true"
+    calls = []
+    route = module.bootstrap("staging", "fetcher")
+
+    def aws(arguments, region):
+        calls.append(arguments)
+        if arguments[:2] == ["sts", "get-caller-identity"]:
+            return {"Account": route["AWS_ACCOUNT_ID"]}
+        if arguments[:2] == ["ssm", "get-parameter"]:
+            return {"Parameter": {"Type": "String", "Value": json.dumps(value)}}
+        return {}
+
+    source = tmp_path / "deployment.json"
+    source.write_text(json.dumps(value))
+    exported = tmp_path / "github.env"
+    monkeypatch.setattr(module, "aws", aws)
+    arguments = ["aws_configuration.py", command, "--target", "staging", "--unit", "fetcher"]
+    if command != "load":
+        arguments += ["--input", str(source)]
+    monkeypatch.setattr(module.sys, "argv", [*arguments, "--github-env", str(exported)])
+    assert module.main() == 0
+    output = capsys.readouterr()
+    assert output.err.count("reason=retired_field_ignored field=FULL_MARKET_ENABLED") == 1
+    assert "FULL_MARKET_ENABLED" not in exported.read_text()
+    assert "FULL_MARKET_ENABLED" not in output.out
+    written = [call for call in calls if call[:2] == ["ssm", "put-parameter"]]
+    if command == "sync":
+        [put] = written
+        stored = json.loads(put[put.index("--value") + 1])
+        assert "FULL_MARKET_ENABLED" not in stored["values"]
+        assert stored["values"] == {
+            name: item for name, item in value["values"].items() if name != "FULL_MARKET_ENABLED"
+        }
     else:
-        with pytest.raises(module.ConfigurationError):
-            module.validate(value, target=target, unit=unit)
+        assert written == []
+
+
+def test_templates_and_schema_no_longer_name_the_retired_flag():
+    root = PATH.parent
+    for path in [root / "deployment.schema.json", *root.glob("*/*/deployment.json.example")]:
+        assert "FULL_MARKET_ENABLED" not in path.read_text(), path
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])

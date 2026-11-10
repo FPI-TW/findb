@@ -55,14 +55,9 @@ def load_config(path: Path) -> dict[str, Any]:
 def acquisition_gate(
     execution_profile: str, control: SchedulerControlClient, source: FullMarketSourceClient
 ) -> Callable[[], bool]:
-    """Return the per-acquisition flag, control and Source authorization check."""
+    """Return the per-acquisition control and Source authorization check."""
 
     def can_acquire() -> bool:
-        if (
-            execution_profile == "full_market"
-            and os.getenv("FULL_MARKET_ENABLED", "false").lower() != "true"
-        ):
-            return False
         if os.getenv("FETCHER_CONSUMER_PROFILE") == "maintenance":
             return (
                 source.request(
@@ -153,9 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         "--config", type=Path, default=Path("/app/configs/bootstrap.production.v1.json")
     )
     parser.add_argument("--provider", required=True, choices=sorted(_SCOPES))
-    parser.add_argument(
-        "--execution-profile", choices=("pilot", "full_market"), default="full_market"
-    )
+    # Retained for command compatibility; full_market is the only daily profile.
+    parser.add_argument("--execution-profile", default="full_market")
     parser.add_argument(
         "--state-path", type=Path, default=Path("/var/lib/findb-full-market/state.sqlite3")
     )
@@ -172,10 +166,11 @@ def main(argv: list[str] | None = None) -> int:
     ):
         modes.add_argument("--" + mode, action="store_true")
     args = parser.parse_args(argv)
-    if args.execution_profile == "pilot" and args.state_path == Path(
-        "/var/lib/findb-full-market/state.sqlite3"
-    ):
-        args.state_path = Path("/var/lib/findb-pilot/state.sqlite3")
+    if args.execution_profile != "full_market":
+        parser.error(
+            f"--execution-profile {args.execution_profile!r} is retired; "
+            "only 'full_market' is supported"
+        )
     runtime = None
     source = None
     delivery = None
@@ -190,7 +185,6 @@ def main(argv: list[str] | None = None) -> int:
         if config["deployment_target"] != app_environment("local"):
             raise ValueError("runtime environment identity mismatch")
         os.environ["FETCHER_CONSUMER_PROFILE"] = args.execution_profile
-        os.environ["FETCHER_EXECUTION_PROFILE"] = args.execution_profile
         os.environ["FETCHER_BOOTSTRAP_CONFIG"] = str(args.config)
         os.environ["FETCHER_ACCOUNT_READINESS_FILE"] = str(
             args.readiness_file
@@ -241,8 +235,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if identity is not None and identity[0] != args.execution_profile:
                     raise ValueError("checkpoint execution profile mismatch")
-                if identity is None and args.execution_profile != "full_market":
-                    raise ValueError("pilot checkpoint identity missing")
         else:
             state = FullMarketState(args.state_path)
             state.bind_profile(args.execution_profile)

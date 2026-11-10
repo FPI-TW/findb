@@ -71,7 +71,6 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         "test_full_market_governor.py",
         "test_full_market_finlab_rate.py",
         "test_daily_runtime_policy.py",
-        "test_staging_pilots.py",
         "test_taifex_historical.py",
         "test_historical_runtime_adapters.py",
         "test_full_market_recovery.py",

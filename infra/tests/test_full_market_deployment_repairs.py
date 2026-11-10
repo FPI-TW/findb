@@ -29,9 +29,9 @@ def test_provider_stop_timeout_covers_bounded_factset_query_and_reap():
     assert "docker stop --time 30" not in helper
 
 
-@pytest.mark.parametrize("bundle_version", [3, 4])
+@pytest.mark.parametrize("bundle_version", [3, 4, 5])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
-def test_production_container_arguments_bind_full_pilot_historical_inspection(
+def test_production_container_arguments_bind_full_and_historical_inspection(
     tmp_path, monkeypatch, provider, bundle_version
 ):
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
@@ -46,10 +46,6 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
             "\ncandidate_image=", helper.index('docker run -d --name "$candidate"')
         )
     ]
-    names = {
-        "twelve_data": "findb-pilot-twelve-data",
-        "finlab": "findb-pilot-finlab",
-    }
     governor = "/var/lib/findb-account/production/governor.sqlite3"
     image = "image@sha256:" + "b" * 64
     manifest = {
@@ -63,7 +59,7 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
     accepted = {**manifest, "state": "accepted", "bundle_sha256": "c" * 64}
     config = (
         json.loads((REPO_ROOT / "fetcher/configs/bootstrap.production.v1.json").read_text())
-        if bundle_version == 4
+        if bundle_version >= 4
         else {"deployment_target": "production", "desired_state": "stopped"}
     )
     allocation = {
@@ -73,7 +69,7 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
         "source_requests_per_minute": 120,
         "account": {
             "governor_identity": governor,
-            "consumers": ["full_market", "pilot", "historical", "maintenance"],
+            "consumers": ["full_market", "historical", "maintenance"],
         },
     }
     for name, value in [
@@ -84,19 +80,11 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
     ]:
         (tmp_path / name).write_text(json.dumps(value))
     actual = {}
-    for consumer in ["full_market", "pilot", "historical"]:
-        full_name = "findb-full-market-" + provider.replace("_", "-")
-        name = (
-            full_name
-            if consumer == "full_market"
-            else "findb-historical-" + provider.replace("_", "-")
-            if consumer == "historical"
-            else names[provider]
-        )
+    for consumer in ["full_market", "historical"]:
+        name = f"findb-{consumer.replace('_', '-')}-" + provider.replace("_", "-")
         args_env = {
             **script_env(),
             "APP_ENVIRONMENT": "production",
-            "FULL_MARKET_ENABLED": "true",
             "FETCHER_CONSUMER_PROFILE": consumer,
             "FETCHER_ACCOUNT_STATE_PATH": governor,
             "SOURCE_CLIENT_KEY": "source-fixture",
@@ -194,11 +182,14 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
         governor,
         tmp_path / "allocation",
     )
-    assert result["consumers"] == ["full_market", "pilot", "historical", "maintenance"]
-    assert len(result["installed_consumers"]) == 3
+    assert result["consumers"] == ["full_market", "historical", "maintenance"]
+    assert len(result["installed_consumers"]) == 2
+    assert not any(
+        "FULL_MARKET_ENABLED" in item for row in actual.values() for item in row["Config"]["Env"]
+    )
 
     invalid_configs = [{**config, "deployment_target": "staging"}]
-    if bundle_version == 4:
+    if bundle_version >= 4:
         invalid_configs += [
             {**config, "desired_state": "stopped"},
             {**config, "feeds": []},
@@ -223,7 +214,7 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
 @pytest.mark.parametrize("target", ["local", "staging", "production"])
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
-@pytest.mark.parametrize("consumer", ["full_market", "pilot"])
+@pytest.mark.parametrize("consumer", ["full_market"])
 def test_actual_full_state_bootstrap_forwards_only_canonical_environment(
     tmp_path, target, existing, provider, consumer
 ):
@@ -315,6 +306,51 @@ docker() {
     )
     assert completed.returncode == 0, completed.stderr
     assert state.read_bytes().startswith(b"SQLite format 3")
+
+
+@pytest.mark.parametrize("consumer", ["pilot", "", None, "maintenance"])
+def test_retired_or_unset_consumer_profile_is_never_released(tmp_path, consumer):
+    """The helper never defaults an unset or retired profile to an acquiring identity."""
+    helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
+    environment = {**script_env(), "AWS_REGION": "ap-southeast-1", "FETCHER_DEPLOY_MODE": "apply"}
+    if consumer is not None:
+        environment["FETCHER_CONSUMER_PROFILE"] = consumer
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    for name in ("docker", "sudo"):
+        (binaries / name).write_text('#!/bin/sh\necho mutation >> "$MUTATIONS"\nexit 97\n')
+        (binaries / name).chmod(0o700)
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            helper,
+            "release",
+            "finlab",
+            "image@sha256:" + "b" * 64,
+            "/state",
+            "/state/state.sqlite3",
+            "findb-full-market-finlab",
+            "findb-full-market-finlab-candidate",
+            "findb-full-market-finlab-previous",
+            "findb-full-market-finlab-preflight",
+            "-",
+            "findb-fetch-runtime",
+            "--execution-profile",
+            "pilot",
+        ],
+        env={
+            **environment,
+            "PATH": f"{binaries}:{os.environ['PATH']}",
+            "MUTATIONS": str(tmp_path / "mutations"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 2
+    assert "reason=consumer_profile_invalid" in result.stderr
+    assert not (tmp_path / "mutations").exists()
 
 
 @pytest.mark.parametrize(
@@ -667,7 +703,7 @@ def test_actual_helper_recovery_traps_gracefully_retire_or_preserve_runtime(
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, "4", True])
+@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, 6, "5", True])
 def test_workflow_bundle_gate_accepts_supported_versions_only(tmp_path, target, version):
     workflow = (REPO_ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
     start = workflow.index("        # Older bundles recreate")
@@ -682,6 +718,6 @@ def test_workflow_bundle_gate_accepts_supported_versions_only(tmp_path, target, 
         capture_output=True,
         text=True,
     )
-    assert (result.returncode == 0) == (type(version) is int and version in {3, 4})
+    assert (result.returncode == 0) == (type(version) is int and version == 5)
     if result.returncode:
         assert "Fetcher rollback 下限" in result.stderr

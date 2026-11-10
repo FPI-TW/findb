@@ -135,7 +135,6 @@ def test_twelve_historical_runtime_uses_raw_first_prepared_terminal_delivery(
     monkeypatch.setenv("APP_ENVIRONMENT", "local")
     monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/absent/daily.json")
     monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/absent/full-market.json")
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     universe = load_symbol_universe(TWELVE_UNIVERSE_PATH)
     universe = replace(universe, symbols=universe.symbols[:1])
     monkeypatch.setattr(runtime, "load_symbol_universe", lambda _path: universe)
@@ -194,7 +193,6 @@ def test_finlab_historical_runtime_uses_raw_first_prepared_terminal_delivery(
     monkeypatch.setenv("APP_ENVIRONMENT", "local")
     monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/absent/daily.json")
     monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/absent/full-market.json")
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     universe = load_finlab_universe(FINLAB_UNIVERSE_PATH)
     monkeypatch.setattr(runtime, "load_finlab_universe", lambda _path: universe)
 

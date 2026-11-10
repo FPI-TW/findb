@@ -23,10 +23,6 @@ CONSUMERS = (
     ("findb-historical-finlab", "finlab", "historical", "finlab"),
     ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
-    ("findb-pilot-factset", "factset", "pilot", "factset"),
-    ("findb-pilot-finlab", "finlab", "pilot", "finlab"),
-    ("findb-pilot-taifex", "taifex", "pilot", "twelve_data"),
-    ("findb-pilot-twelve-data", "twelve_data", "pilot", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
@@ -60,7 +56,7 @@ def installed_manifest(base, validator, target, registry):
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
         if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
             "fetcher_bundle_version"
-        ] not in {3, 4}:
+        ] not in {3, 4, 5}:
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
         validator.validate_manifest(manifest, contracts, source)
@@ -156,6 +152,31 @@ def require_runtime(row, image, target, provider, profile, bundle_version=4):
         raise ValueError("installed runtime is not an accepted gracefully drained consumer")
 
 
+PILOT_RESIDUE = tuple(f"findb-pilot-{provider.replace('_', '-')}" for provider in PROVIDERS)
+
+
+def require_pilot_residue(rows, bundle_version):
+    """Allow only stopped, gracefully drained Pilot consumers of a pre-v5 install.
+
+    Bundle v5 archives and removes them before installing; it never stops,
+    force-removes or reuses a Pilot runtime. A running one blocks the release.
+    """
+    for row in rows:
+        state = row["State"]
+        if bundle_version >= 5:
+            raise ValueError("retired pilot consumer remains after its retirement")
+        if state.get("Running") is not False or state.get("Status") != "exited":
+            print("fetcher_host_eligibility=failed reason=pilot_residue_running")
+            raise ValueError("retired pilot consumer must be stopped before its retirement")
+        if (
+            state.get("ExitCode") != 0
+            or state.get("OOMKilled") is not False
+            or state.get("Error") != ""
+        ):
+            print("fetcher_host_eligibility=failed reason=pilot_residue_not_drained")
+            raise ValueError("retired pilot consumer did not drain gracefully")
+
+
 def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     inventory = subprocess.check_output(
         ["docker", "container", "ls", "--all", "--format", "{{.ID}}"], text=True
@@ -171,7 +192,9 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     names = {row["Name"].removeprefix("/"): row for row in rows}
     if any("shioaji" in name for name in names):
         raise ValueError("retired provider container remains on host")
-    if set(names) != set(EXPECTED_RUNTIMES) or len(names) != len(rows):
+    residue = [names.pop(name) for name in PILOT_RESIDUE if name in names]
+    require_pilot_residue(residue, manifest["fetcher_bundle_version"])
+    if set(names) != set(EXPECTED_RUNTIMES) or len(names) + len(residue) != len(rows):
         print("fetcher_host_eligibility=failed reason=consumer_inventory_mismatch")
         raise ValueError("missing, duplicate or unknown consumer")
     for name, provider, profile, image_key in CONSUMERS:

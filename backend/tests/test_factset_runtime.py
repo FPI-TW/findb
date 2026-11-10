@@ -180,9 +180,8 @@ async def test_factset_fenced_runner_partial_continues_and_serve_only_has_valid_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
 async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
-    client, test_session, test_engine, monkeypatch, tmp_path, profile
+    client, test_session, test_engine, monkeypatch, tmp_path
 ):
     h = await factset_harness(client, test_session, test_engine, monkeypatch, tmp_path)
     from findb_fetcher import full_market_runtime as runtime
@@ -207,7 +206,7 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
             select(UniverseRelease).where(UniverseRelease.provider == "factset")
         )
         await historical_admission(
-            test_session, dataset, release, NOW.date(), None, profile=profile
+            test_session, dataset, release, NOW.date(), None, profile="full_market"
         )
         plan = await create_plan(
             test_session,
@@ -217,18 +216,18 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
                 dataset_key="hk_equity_eod",
                 trade_date=NOW.date(),
                 release_id=release.release_id,
-                execution_profile=profile,
+                execution_profile="full_market",
             ),
             allowed_datasets=["hk_equity_eod"],
         )
         work = await queue.enqueue(
             test_session,
             provider="factset",
-            stable_key=f"daily:{profile}:hk_equity_eod:{NOW.date()}",
+            stable_key=f"daily:full_market:hk_equity_eod:{NOW.date()}",
             kind="daily",
             dataset_key="hk_equity_eod",
             trade_date=NOW.date(),
-            execution_profile=profile,
+            execution_profile="full_market",
             scope={},
         )
         work_id = work.work_id
@@ -241,14 +240,14 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
         )
         feed = next(f for f in config["feeds"] if f["provider"] == "factset")
         state = FullMarketState(tmp_path / "daily.sqlite3")
-        state.bind_profile(profile)
+        state.bind_profile("full_market")
         frozen = plan.model_dump(mode="json")
         state.record_plan(frozen, "factset")
 
         def deliver():
             with FullMarketSourceClient(h.config, client=h.http()) as source:
                 with claimed_work(
-                    source, "factset", accepted_kinds=["daily"], execution_profile=profile
+                    source, "factset", accepted_kinds=["daily"], execution_profile="full_market"
                 ) as owner:
                     assert owner is not None
                     instance = runtime.FullMarketRuntime(
@@ -258,7 +257,7 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
                         source=source,
                         delivery=SourceAPIClient(h.config, h.registry, client=h.http()),
                         raw_store=h.raw,
-                        execution_profile=profile,
+                        execution_profile="full_market",
                         client=h.http(),
                     )
                     instance._deliver_factset_plan(
@@ -336,7 +335,7 @@ async def test_factset_prepared_drain_preserves_terminal_domain_and_completion_a
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scope", ["pilot", "anomaly", "full"])
+@pytest.mark.parametrize("scope", ["sample", "anomaly", "full"])
 async def test_captured_native_factset_snapshots_through_fenced_pipeline(
     client, test_session, test_engine, monkeypatch, tmp_path, scope
 ):
@@ -362,7 +361,7 @@ async def test_captured_native_factset_snapshots_through_fenced_pipeline(
             row["price_high"] is not None and Decimal(str(row["price_high"])) < max(prices)
         ) or (row["price_low"] is not None and Decimal(str(row["price_low"])) > min(prices))
 
-    if scope == "pilot":
+    if scope == "sample":
         members = members[:2]
     elif scope == "anomaly":
         lookup = {r["fsym_id"]: r for r in json.loads(snapshots["2026-10-16"])["rows"]}

@@ -20,7 +20,7 @@ from findb_fetcher.full_market_runtime import _governed
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 
 FETCHER_DIR = Path(__file__).resolve().parents[1]
-PROFILES = ("pilot", "full_market", "maintenance", "historical")
+PROFILES = ("bounded", "full_market", "maintenance", "historical")
 
 
 @pytest.fixture
@@ -47,7 +47,7 @@ def _process(local, provider, mode):
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("FETCHER_", "SOURCE_", "FINLAB_", "TWELVE_DATA_"))
-        and key not in {"FULL_MARKET_ENABLED", "APP_ENVIRONMENT", "finlab_id_token"}
+        and key not in {"APP_ENVIRONMENT", "finlab_id_token"}
     }
     env["PYTHONPATH"] = str(FETCHER_DIR / "src")
     result = subprocess.run(
@@ -156,7 +156,7 @@ def _probe(provider, mode):
         source = SourceDouble()
 
         def _acquisition_allowed(self):
-            return os.environ["FULL_MARKET_ENABLED"] == "true"
+            return mode == "acquire"
 
         @_governed
         def _acquire(self):
@@ -189,7 +189,6 @@ def _probe(provider, mode):
             return operations[0]
         return acquire()
 
-    os.environ["FULL_MARKET_ENABLED"] = "true" if mode == "acquire" else "false"
     profiles = []
     with patch("findb_fetcher.full_market_client.FullMarketSourceClient", SourceDouble):
         if mode == "acquire":
@@ -217,7 +216,7 @@ def _probe(provider, mode):
                 operation.start()
                 pytest.fail("provider started during retained cooldown")
         elif mode == "denied":
-            os.environ["FETCHER_CONSUMER_PROFILE"] = "pilot"
+            os.environ["FETCHER_CONSUMER_PROFILE"] = "bounded"
             with pytest.raises(QuotaBlockedError, match="Source acquisition denied"):
                 acquire()
         else:

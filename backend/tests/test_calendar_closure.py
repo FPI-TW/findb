@@ -68,17 +68,6 @@ async def setup_closure(db):
         select(SchedulerControl).where(SchedulerControl.provider == "shioaji")
     ):
         control.desired_state = control.observed_state = "stopped"
-    if await db.get(SchedulerControl, "pilot_shioaji_v1") is None:
-        db.add(
-            SchedulerControl(
-                scheduler_key="pilot_shioaji_v1",
-                provider="shioaji",
-                execution_profile="pilot",
-                slot_id="taiwan_market_window",
-                desired_state="stopped",
-                observed_state="stopped",
-            )
-        )
     decision = await db.get(
         DailyExecutionDecision, (work.dataset_key, "shioaji", work.trade_date, "full_market")
     )

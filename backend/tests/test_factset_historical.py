@@ -82,45 +82,44 @@ async def test_request_cohort_stays_frozen_and_partial_day_continues(
     from app.utils import uuid7
 
     summaries = []
-    for profile in ("pilot", "full_market"):
-        plan = DailyDeliveryPlan(
-            plan_id=uuid7(),
-            dataset_key="hk_equity_eod",
-            provider="factset",
-            trade_date=date(2026, 10, 16),
-            release_id=UUID(frozen["release_id"]),
-            execution_profile=profile,
-            activation_cutoff=date(2026, 10, 15),
-            deadline_at=NOW,
-            member_sha256="a" * 64,
-            expected_count=2,
-        )
-        test_session.add(plan)
-        await test_session.flush()
-        part = DailyDeliveryPart(
-            part_id=uuid7(),
-            plan_id=plan.plan_id,
-            part_number=1,
-            work_item_id="fp1:" + uuid7().hex,
-            member_sha256="a" * 64,
-            expected_count=2,
-        )
-        test_session.add(part)
-        await test_session.flush()
-        for member in frozen["members"]:
-            test_session.add(
-                DailyDeliveryMember(
-                    member_id=uuid7(),
-                    plan_id=plan.plan_id,
-                    part_id=part.part_id,
-                    member_key=member["member_key"],
-                    symbol=member["symbol"],
-                    provider_symbol=member["provider_symbol"],
-                    mapping_status="mapped",
-                )
+    plan = DailyDeliveryPlan(
+        plan_id=uuid7(),
+        dataset_key="hk_equity_eod",
+        provider="factset",
+        trade_date=date(2026, 10, 16),
+        release_id=UUID(frozen["release_id"]),
+        execution_profile="full_market",
+        activation_cutoff=date(2026, 10, 15),
+        deadline_at=NOW,
+        member_sha256="a" * 64,
+        expected_count=2,
+    )
+    test_session.add(plan)
+    await test_session.flush()
+    part = DailyDeliveryPart(
+        part_id=uuid7(),
+        plan_id=plan.plan_id,
+        part_number=1,
+        work_item_id="fp1:" + uuid7().hex,
+        member_sha256="a" * 64,
+        expected_count=2,
+    )
+    test_session.add(part)
+    await test_session.flush()
+    for member in frozen["members"]:
+        test_session.add(
+            DailyDeliveryMember(
+                member_id=uuid7(),
+                plan_id=plan.plan_id,
+                part_id=part.part_id,
+                member_key=member["member_key"],
+                symbol=member["symbol"],
+                provider_symbol=member["provider_symbol"],
+                mapping_status="mapped",
             )
-        await refresh_plan_summary(test_session, plan.plan_id)
-        summaries.append(plan.plan_id)
+        )
+    await refresh_plan_summary(test_session, plan.plan_id)
+    summaries.append(plan.plan_id)
     await test_session.commit()
     # Daily refresh removes one member. The existing historical request retains both.
     universe.members = universe.members[:1]

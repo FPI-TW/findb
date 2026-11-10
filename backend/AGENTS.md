@@ -72,21 +72,21 @@ Admin負責已認證的營運、修正與治理操作。
   `futures_contract_eod`；不得由契約價格產生 continuous 或產品層級 latest close。
   到期識別保留實際 `YYYYMM`、`YYYYMMW1..W5` 或 `YYYYMMF1..F5`，不得接受價差或連續合約。
 
-Pilot／Full market 共用 universe 與 daily plan 核心，由 `app/services/full_market.py` 管理。Source credentials 必須同時
+Full market 的 universe 與 daily plan 核心由 `app/services/full_market.py` 管理。Source credentials 必須同時
 符合 provider 與 dataset scope；每日成員凍結後，以 `fp1:<part UUID hex>` 連結 ingestion run。
 EOD 逐批寫入後可立即查詢；minute canonical bars 可逐 sequence 查詢，但成員完整性須等待
 該 canonical row 所屬的 sequenced snapshot group 完成，同 part 的其他群組不會帶過部分交付。
 `expected = data + no_data + missing + blocked` 只依 canonical
 寫入證據（`delivery_member_evidence`，與 normalization 同 transaction）及持久化官方 no-data 證據計算，空批次或 quota failure 不代表正常無資料。
 
-兩種 execution profile 各自隔離 controls、first dates、plans、缺漏與告警。Pilot 固定取 canonical 前兩個商品，期貨保留其 sessions；日計畫成員不可因重試或 universe 更新而改寫。
-Full market 使用環境 opt-in flag 與 Owner scheduler admission；啟動只要求 published baseline；日曆缺少時依市場 `weekend_days` 預設（內建市場預設週六日休市），
+Execution profile 只剩 `full_market`（Pilot 已退役，DB CHECK 限定）；日計畫凍結完整 published cohort，期貨保留其 sessions，成員不可因重試或 universe 更新而改寫。
+Full market 只依 Owner scheduler admission 與 Source 授權（`FULL_MARKET_ENABLED` 已退役）；啟動只要求 published baseline；日曆缺少時依市場 `weekend_days` 預設（內建市場預設週六日休市），
 新抓取不要求 readiness/enrollment/expiry/capacity proof，保留 API 認證、平台配額與資料驗證。
-registry `is_active` 保持普通 dataset acceptance，不能代替 Full flag。部分 ready feeds 可 start，
+registry `is_active` 保持普通 dataset acceptance，不能代替 running control。部分 ready feeds 可 start，
 stopped→running transaction 以 environment→sorted datasets→calendar markets→control lock order 重查並凍結 scope/first dates/revision/audit。Baseline publish 先鎖 dataset 再 release。
 容量 repair 必須經 Source-authenticated 唯讀 current enrollment verification 與 fresh installed ACK，
-不能信任任意檔案的 UUID/hash；此 proof check 獨立於 acquisition/Owner stopped/flag，且 GET 不寫 audit/control。
-旗標关闭由 ingest/all lifecycle 或 trusted management stop/audit，Serve/GET 不寫狀態。既有 prepared
+不能信任任意檔案的 UUID/hash；此 proof check 獨立於 acquisition/Owner stopped，且 GET 不寫 audit/control。
+Ingest 啟動不調整 controls；緊急停止由 `scripts/emergency_stop_controls.py` 寫 audit，Serve/GET 不寫狀態。既有 prepared
 `fp1` delivery/normalization 繼續完成；新 acquisition 不得用 cached desired-state 授權。
 Source 實際交付仍拒絕未来 trade date、超過五分鐘 fetched_at skew，並要求已過市場收盤；
 TAIFEX after_hours 採 attributed trade_date 當地05:00，regular 採 published close 或13:45。

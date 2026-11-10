@@ -8,7 +8,6 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from app.config import get_settings
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import FullMarketEnvironment, SchedulerControl
 from app.services.provider_work import prepared_map
@@ -58,7 +57,6 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
 
     h = native_runtime
     monkeypatch.setenv("TWELVE_DATA_API_KEY", "offline-twelve")
-    get_settings().FULL_MARKET_ENABLED = True
     h.db.add(FullMarketEnvironment(environment=h.environment, enabled=True))
     for control in await h.db.scalars(select(SchedulerControl)):
         control.desired_state = "stopped"

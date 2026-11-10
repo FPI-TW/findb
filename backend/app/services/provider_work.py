@@ -768,8 +768,6 @@ async def acquisition_open(
         ):
             return False
     if work.kind == "daily":
-        if work.execution_profile == "full_market" and not get_settings().FULL_MARKET_ENABLED:
-            return False
         if check_window and not daily_window(work.provider)["open"]:
             return False
         control = await db.get(SchedulerControl, f"{work.execution_profile}_{work.provider}_v1")
@@ -1254,7 +1252,6 @@ async def _projection_acquisition_states(
         if row.kind == "daily":
             allowed = (
                 allowed
-                and (row.execution_profile != "full_market" or get_settings().FULL_MARKET_ENABLED)
                 and daily_window(row.provider, now)["open"]
                 and controls.get(f"{row.execution_profile}_{row.provider}_v1") == "running"
             )

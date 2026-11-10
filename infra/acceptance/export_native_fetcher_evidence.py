@@ -55,7 +55,7 @@ def export(spec: dict[str, Any]) -> dict[str, Any]:
     )
     if (
         environment not in ("staging", "production")
-        or profile not in ("pilot", "full_market")
+        or profile != "full_market"
         or provider not in ("twelve_data", "finlab", "taifex", "factset")
         or environment != os.environ["APP_ENVIRONMENT"]
         or profile != os.environ["FETCHER_CONSUMER_PROFILE"]

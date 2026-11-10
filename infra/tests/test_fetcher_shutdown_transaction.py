@@ -25,7 +25,7 @@ PROVIDERS = tuple(
         provider,
         profile,
     )
-    for profile in ("pilot", "full_market", "historical")
+    for profile in ("full_market", "historical")
     for provider in ("twelve_data", "finlab", "taifex", "factset")
 )
 RETIRED = ("findb-pilot-shioaji", "findb-full-market-shioaji", "findb-historical-shioaji")
@@ -49,7 +49,13 @@ def fake_call(state, command, args, parent, environ):
         # Runtime secret wrapper itself is not under test. No credentials are used.
         if args[0] == "test":
             path = Path(args[-1])
-            return (0 if (path.is_file() if args[1] == "-f" else path.is_symlink()) else 1), ""
+            probe = {
+                "-f": path.is_file,
+                "-d": path.is_dir,
+                "-e": path.exists,
+                "-L": path.is_symlink,
+            }[args[1]]
+            return (0 if probe() else 1), ""
         if args[0] == "python3":
             return "local", ""
         if args[args.index("--consumer") + 1] == "images":
@@ -277,6 +283,7 @@ def execute(
     accepted_replay=False,
     command_query=None,
     checkpoint_kind="valid",
+    pilot_state=None,
 ):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -330,15 +337,19 @@ def execute(
                 with sqlite3.connect(state_dir / "state.sqlite3") as db:
                     db.executescript("DROP TABLE full_work; CREATE TABLE full_work(unusable TEXT);")
             script_source = script_source.replace("/var/lib/findb-full-market", str(checkpoint))
-        # Pilot has an independent checkpoint; never share the full path.
+        # Retired Pilot residue: an optional checkpoint directory and backups.
         pilot_root = root / "pilot-checkpoint"
-        if full_checkpoint:
-            import shutil
-
-            pilot_dir = pilot_root / target
+        pilot_dir = pilot_root / target
+        backups = root / "backups"
+        if pilot_state == "symlink":
+            pilot_root.mkdir()
+            pilot_dir.symlink_to(root)
+        elif pilot_state is not None:
             pilot_dir.mkdir(parents=True)
-            shutil.copyfile(state_dir / "state.sqlite3", pilot_dir / "state.sqlite3")
+            for name, content in pilot_state.items():
+                (pilot_dir / name).write_bytes(content)
         script_source = script_source.replace("/var/lib/findb-pilot", str(pilot_root))
+        script_source = script_source.replace("/var/backups/findb-pilot-retirement", str(backups))
         checkpoint_bytes = (state_dir / "state.sqlite3").read_bytes() if full_checkpoint else None
         if postcommit_field:
             script_source = script_source.replace(
@@ -391,11 +402,45 @@ def execute(
             actual["checkpoint_preserved"] = (
                 state_dir / "state.sqlite3"
             ).read_bytes() == checkpoint_bytes
+        actual["pilot_state"] = (
+            None
+            if not pilot_dir.exists() and not pilot_dir.is_symlink()
+            else (
+                "symlink"
+                if pilot_dir.is_symlink()
+                else {path.name: path.read_bytes() for path in pilot_dir.iterdir()}
+            )
+        )
+        actual["pilot_backups"] = [pilot_backup(path) for path in sorted(backups.glob("*"))]
         return (
             completed,
             actual,
             (host / "current").readlink().name,
         )
+
+
+def pilot_backup(path):
+    """Summarize one recorded Pilot archive: files, digest proof and members."""
+    import hashlib
+    import tarfile
+
+    archive = path / "state.tar"
+    recorded = (path / "state.tar.sha256").read_text().split()
+    manifest = json.loads((path / "manifest.json").read_text())
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    with tarfile.open(archive) as source:
+        contents = {
+            member.name: source.extractfile(member).read()
+            for member in source.getmembers()
+            if member.isfile()
+        }
+    return {
+        "name": path.name,
+        "files": sorted(item.name for item in path.iterdir()),
+        "mode": oct(path.stat().st_mode & 0o777),
+        "recorded": recorded == [digest, "state.tar"] and manifest["archive_sha256"] == digest,
+        "contents": {name: content.decode() for name, content in contents.items()},
+    }
 
 
 def assert_restored(before, state):
@@ -461,9 +506,8 @@ def test_invalid_checkpoint_has_no_runtime_effects(kind):
     )
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
-def test_missing_installed_checkpoint_does_not_bootstrap(profile):
-    name = next(name for name, _, _, item in PROVIDERS if item == profile)
+def test_missing_installed_checkpoint_does_not_bootstrap():
+    name = next(name for name, _, _, item in PROVIDERS if item == "full_market")
     completed, state, _ = execute({name: original_rows()[name]}, full_checkpoint=False)
     assert completed.returncode != 0
     assert "checkpoint_missing" in completed.stderr
@@ -471,7 +515,8 @@ def test_missing_installed_checkpoint_does_not_bootstrap(profile):
 
 
 @pytest.mark.parametrize(
-    "fault", ["inventory-list-1", "inventory-list-81", "inventory-inspect:findb-pilot-finlab:1"]
+    "fault",
+    ["inventory-list-1", "inventory-list-81", "inventory-inspect:findb-full-market-finlab:1"],
 )
 def test_unknown_inventory_is_not_absence(fault):
     completed, state, _ = execute(original_rows(), fault=fault)
@@ -591,7 +636,7 @@ def test_shared_activation_observation_keeps_all_originals_until_healthy():
     wrappers = [entry for entry in state["log"] if entry[0] == "sudo" and "--consumer" in entry]
     assert sum(entry[entry.index("--consumer") + 1] == "images" for entry in wrappers) == 1
     providers = [entry for entry in wrappers if entry[entry.index("--consumer") + 1] != "images"]
-    assert len(providers) == 12
+    assert len(providers) == 8
     assert all("--docker-login" not in entry for entry in providers)
     last_observation = max(i for i, entry in enumerate(state["log"]) if entry[0] == "sleep")
     first_retirement = next(
@@ -611,3 +656,133 @@ def test_shared_health_failure_restores_original_identities_and_pointer():
         name: row["id"] for name, row in original.items()
     }
     assert all(row["running"] for row in state["rows"].values())
+
+
+PILOT_RESIDUE = tuple(
+    f"findb-pilot-{provider}" for provider in ("twelve-data", "finlab", "taifex", "factset")
+)
+PILOT_STATE = {
+    "state.sqlite3": b"pilot-checkpoint",
+    "state.sqlite3-wal": b"pilot-wal",
+    "state.sqlite3-shm": b"pilot-shm",
+    "raw-bucket.sha256": b"marker",
+}
+
+
+def rows_with_pilot(**change):
+    """A host on bundle v4 whose drained Pilot consumers await retirement."""
+    rows = original_rows()
+    for name in PILOT_RESIDUE:
+        rows[name] = dict(
+            id="old-" + name,
+            running=False,
+            exit=0,
+            oom=False,
+            error="",
+            accepted="true",
+            cmd=f"findb-fetch-runtime --execution-profile pilot --provider {name[12:]}",
+        )
+    rows[PILOT_RESIDUE[1]].update(change)
+    return rows
+
+
+def pilot_calls(state):
+    return [
+        call
+        for call in state["log"]
+        if call[0] == "docker"
+        and call[1] in {"stop", "rename", "rm", "start"}
+        and any("findb-pilot-" in argument for argument in call)
+    ]
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_activation_archives_and_removes_stopped_pilot_residue(target):
+    before = rows_with_pilot()
+    completed, state, pointer = execute(
+        before, mode="activate", target=target, pilot_state=PILOT_STATE
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert pointer == "a" * 64 + "-123-1"
+    assert not any(name.startswith("findb-pilot-") for name in state["rows"])
+    # Removal is by captured ID and never forced; nothing is stopped or restarted.
+    removals = [call for call in state["log"] if call[:2] == ["docker", "rm"]]
+    assert {"old-" + name for name in PILOT_RESIDUE} <= {call[-1] for call in removals}
+    assert not any("-f" in call or "--force" in call for call in removals)
+    assert not any(
+        call[:2] in (["docker", "stop"], ["docker", "start"]) and "findb-pilot-" in call[-1]
+        for call in state["log"]
+    )
+    assert state["pilot_state"] is None
+    [backup] = state["pilot_backups"]
+    assert backup["name"].startswith(target + "-")
+    assert backup["files"] == ["manifest.json", "state.tar", "state.tar.sha256"]
+    assert backup["mode"] == "0o700"
+    assert backup["recorded"] is True
+    assert backup["contents"] == {
+        f"{target}/{name}": content.decode() for name, content in PILOT_STATE.items()
+    }
+    assert "fetcher_pilot_residue=retired runtimes=4" in completed.stdout
+    # Retirement precedes every image pull and provider mutation.
+    first_residue = next(i for i, call in enumerate(state["log"]) if call[:2] == ["docker", "rm"])
+    first_wrapper = next(
+        i for i, call in enumerate(state["log"]) if call[0] == "sudo" and "--consumer" in call
+    )
+    assert first_residue < first_wrapper
+
+
+def test_activation_retires_orphan_pilot_checkpoint_without_containers():
+    completed, state, _ = execute(original_rows(), mode="activate", pilot_state=PILOT_STATE)
+    assert completed.returncode == 0, completed.stderr
+    assert state["pilot_state"] is None
+    [backup] = state["pilot_backups"]
+    assert backup["recorded"] is True
+    assert len(backup["contents"]) == len(PILOT_STATE)
+
+
+@pytest.mark.parametrize("mode", ["candidate", "activate"])
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"running": True}, "pilot_residue_running"),
+        ({"exit": 137}, "runtime_retirement_failed"),
+        ({"oom": True}, "runtime_retirement_failed"),
+        ({"error": "private-error"}, "runtime_retirement_failed"),
+    ],
+)
+def test_running_or_undrained_pilot_residue_fails_before_mutation(mode, change, reason):
+    before = rows_with_pilot(**change)
+    completed, state, pointer = execute(before, mode=mode, pilot_state=PILOT_STATE)
+    assert completed.returncode != 0
+    assert f"reason={reason}" in completed.stderr
+    assert "private-error" not in completed.stderr
+    assert_restored(before, state)
+    assert pilot_calls(state) == []
+    assert not state.get("provider_images")
+    assert state["pilot_state"] == PILOT_STATE
+    assert state["pilot_backups"] == []
+    assert pointer == "b" * 64 + "-122-1"
+
+
+def test_candidate_only_verifies_pilot_residue():
+    before = rows_with_pilot()
+    completed, state, pointer = execute(before, mode="candidate", pilot_state=PILOT_STATE)
+    assert completed.returncode == 0, completed.stderr
+    assert "fetcher_pilot_residue=pending runtimes=4" in completed.stdout
+    assert_restored(before, state)
+    assert pilot_calls(state) == []
+    assert state["pilot_state"] == PILOT_STATE
+    assert state["pilot_backups"] == []
+    assert pointer == "b" * 64 + "-122-1"
+
+
+@pytest.mark.parametrize("mode", ["candidate", "activate"])
+def test_symlinked_pilot_checkpoint_is_never_archived_or_followed(mode):
+    before = rows_with_pilot()
+    completed, state, _ = execute(before, mode=mode, pilot_state="symlink")
+    assert completed.returncode != 0
+    assert "reason=pilot_state_unsafe" in completed.stderr
+    assert_restored(before, state)
+    assert pilot_calls(state) == []
+    assert state["pilot_state"] == "symlink"
+    assert state["pilot_backups"] == []

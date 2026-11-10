@@ -213,13 +213,12 @@ stderr空白，輸出分別保存於既有KMS-encrypted log groups。相鄰兩�
 
 ## Active-feed evidence and anomaly calibration
 
-`infra/acceptance/collect_native_feed_evidence.py` 以明確的 environment、execution profile 與
-trade date 收集共用 catalog 的五條 active feeds。舊五條 feed／固定商品的三個 CLI 已停用；其純函式
+`infra/acceptance/collect_native_feed_evidence.py` 以明確的 environment 與 trade date 收集共用 catalog 的五條 active feeds。舊五條 feed／固定商品的三個 CLI 已停用；其純函式
 保留作投影與有界 SSM transport 共用及回歸測試，不再作現行 native 驗收入口。
 
 ```bash
 AWS_PROFILE=staging python3 infra/acceptance/collect_native_feed_evidence.py \
-  --environment staging --profile pilot --trade-date YYYY-MM-DD \
+  --environment staging --trade-date YYYY-MM-DD \
   --findb-instance-id BACKEND_INSTANCE --fetcher-instance-id FETCHER_INSTANCE \
   --output /private/tmp/native-staging-YYYY-MM-DD.json
 ```
@@ -232,7 +231,7 @@ nonce 與讀取後清理；輸出檔使用 exclusive create 與 0600，不覆蓋
 Backend 以 read-only repeatable-read transaction 取得 plan 與持久化 member evidence，交叉核對
 Source accepted／duplicate 202、raw、run、published outbox、completed job、無 DQ error 與
 非零 canonical。Minute 另要求該 run 所屬 sequenced snapshot 完整；Serve HTTP 回應需包含與
-canonical 相同的公開投影。另一 profile 後續更新 canonical 的最新 run_id 不會抹除原 plan 證據。
+canonical 相同的公開投影。historical 回補等後續寫入更新 canonical 的最新 run_id 不會抹除原 plan 證據。
 
 Fetcher 以唯讀 SQLite 核對凍結 plan hash、work member、receipt、prepared body checksum、
 Source request checksum 及 Raw R2 reference；從既有 provider container 有界 GET 並核對實際 bytes
@@ -243,8 +242,8 @@ Shared account governor 的 recent operations、official usage 與 unknown／arm
 每條 feed 至少有一筆真實非零資料，且該 plan 全部 expected 成員已有 data／有證據的 no_data，
 missing／blocked 為零、Fetcher 工作全部完成，才通過。五條 active feeds 全數通過才可將 staging native 結果用於
 production promotion 決策；all-no_data、未到排程時間、未建立 plan、空批次、quota failure 與部署
-健康成功皆不能替代。Production 使用同工具與 `--environment production --profile full_market`；
-先完成 staging Pilot native 驗收，再依部署 runbook promotion 相同 digests。工具的 passed 只代表
+健康成功皆不能替代。Production 使用同工具與 `--environment production`（`--profile` 只接受且預設
+`full_market`）；先完成 staging Full native 驗收，再依部署 runbook promotion 相同 digests。工具的 passed 只代表
 所觀察日期的資料鏈證據，不自動授權 promotion，也不取代 release、governor 與 R2 retention 設定核對。
 
 2026-10-15 staging 診斷 prefix `acceptance/raw_lock_probe/` 已設 7 天 bucket lock；真實重複
@@ -427,8 +426,8 @@ operator test evidence according to the project's change/audit practice.
 ## Full-market monitoring acceptance
 
 Full-market monitoring 使用 durable daily plan，將 universe／release、expected、data、no_data、
-missing、blocked、deadline 與 gap reason 分開呈現。五個 staging bounded pilot feed metrics 與
-staging 原生告警不證明新範圍已上線；未執行 external capability 與實際 daily-plan coverage 驗證 前，不
+missing、blocked、deadline 與 gap reason 分開呈現。Staging Full metrics 與
+staging 原生告警不證明 production 範圍已上線；未執行 external capability 與實際 daily-plan coverage 驗證 前，不
 宣稱全市場健康或 production coverage 完成。
 
 每個交易日核對 Source plan summary 與 canonical lineage；TW／HK／TAIFEX 截止台北當日
@@ -436,10 +435,10 @@ staging 原生告警不證明新範圍已上線；未執行 external capability 
 必須有 durable official/provider evidence。Quota、entitlement、mapping、source error 形成
 blocked；空 response 與缺結果不能歸為 no_data。
 
-Missing-delivery scan 只對該 execution profile 的 scheduler control 為 `desired_state=running`、
-未 retired 時建立或刷新告警。Control 停止、退役或不存在時，既有同 dataset／provider／profile
-open alerts 以 `resolution.code=SCHEDULER_STOPPED` 關閉；Pilot 與 Full 必須分開判斷，不能因
-Pilot running 而延續已停止 Full 的缺漏告警。
+Missing-delivery scan 只對 `full_market` scheduler control 為 `desired_state=running`、
+未 retired 時建立或刷新告警。Control 停止、退役或不存在時，既有同 dataset／provider
+open alerts 以 `resolution.code=SCHEDULER_STOPPED` 關閉。Pilot alerts 已由退役 migration 刪除，
+只因舊 server default 標為 pilot 的 legacy alerts 改標 `full_market`。
 
 Registry scope 不足以維持監控：provider／dataset 不在 `backend/configs/provider_catalog.v1.json`
 時，Fetcher 不會為其建立 plan，scan 不建立或刷新告警，即使 scheduler 仍為 running；既有 open
@@ -450,7 +449,7 @@ alerts 保留原 details 並以 `resolution.code=FEED_RETIRED` 關閉，後續�
 TAIFEX `tw_futures_eod` 在交易日的交付截止後仍沒有 plan、沒有同日 published universe，且已有
 同日 candidate 時，既有 missing-delivery alert 使用專用 `details.code=DATED_UNIVERSE_PENDING`。
 Details 保存截止時間、等待秒數、候選總數、最舊候選時間及最多 20 個最新 release IDs，讓
-Dashboard 明確提示先審核候選。尚無候選時維持一般 `PILOT_INCOMPLETE`／
+Dashboard 明確提示先審核候選。尚無候選時維持一般
 `FULL_MARKET_INCOMPLETE`；同日 release 發布並建立、完成 plan 後，沿用既有完整性規則結清告警。
 
 Runtime recovery 另外檢查 shared quota reservation、prepared raw checksum、provider-scoped

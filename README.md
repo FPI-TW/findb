@@ -2,7 +2,7 @@
 
 FinDB 是金融資料 ingestion、normalization、data quality 與 canonical query
 平台。Repository 包含FastAPI backend、TanStack Dashboard、versioned contracts
-與獨立 Fetcher 套件；四個 providers、五條 feeds 共用 Pilot／Full market runtime。
+與獨立 Fetcher 套件；四個 providers、五條 feeds 共用 Full market runtime。
 Staging／production 以 AWS 設定與 GitHub Actions 部署，實際切換狀態見部署文件。
 
 ## 架構

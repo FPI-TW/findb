@@ -188,17 +188,16 @@ async def test_reseed_preserves_approved_feed_and_running_scheduler(test_session
 
 
 @pytest.mark.asyncio
-async def test_audited_deactivation_retains_plan_and_restores_bounded_feed(test_session):
-    from app.config import get_settings
+async def test_audited_emergency_stop_retains_plan_and_restores_bounded_feed(test_session):
     from app.models.registry import AdminAuditEvent, DailyDeliveryPlan, UniverseRelease
-    from app.services.full_market_admission import reconcile_environment
+    from app.services.scheduler_control import emergency_stop_controls
 
     staged, _, plan = await _activated_plan(test_session, "tw_etf_eod", count=1)
     await seed_datasets(test_session)
     control = await test_session.get(SchedulerControl, "full_market_finlab_v1")
-    get_settings().FULL_MARKET_ENABLED = False
-    await reconcile_environment(test_session, actor="test-flag-transition")
-    await test_session.commit()
+    await emergency_stop_controls(
+        test_session, actor="test-emergency", reason="lifecycle test", apply=True
+    )
     assert control.desired_state == "stopped" and staged.is_active
     assert await test_session.get(DailyDeliveryPlan, plan.plan_id) is not None
     assert await test_session.get(UniverseRelease, plan.release_id) is not None
@@ -317,9 +316,8 @@ async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
 ):
     import hashlib
 
-    from app.config import get_settings
     from app.models.registry import SourceClient
-    from app.services.full_market_admission import reconcile_environment
+    from app.services.scheduler_control import emergency_stop_controls
     from scripts.reconcile_fetcher_credentials import (
         FULL_MARKET_SOURCE_SPECS,
         reconcile_fetcher_credentials_in_session,
@@ -331,8 +329,9 @@ async def test_bounded_reconcile_rotates_keys_without_stranding_frozen_delivery(
     await reconcile_fetcher_credentials_in_session(test_session, hashes, runtime_profile="unified")
     keys = {name: "rotated-" + key for name, key in keys.items()}
     hashes = {name: hashlib.sha256(key.encode()).hexdigest() for name, key in keys.items()}
-    get_settings().FULL_MARKET_ENABLED = False
-    await reconcile_environment(test_session, actor="bounded-deployment")
+    await emergency_stop_controls(
+        test_session, actor="bounded-deployment", reason="key rotation", apply=True
+    )
     await reconcile_fetcher_credentials_in_session(test_session, hashes, runtime_profile="unified")
     credential = await test_session.scalar(
         select(SourceClient).where(

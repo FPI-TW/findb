@@ -3,7 +3,6 @@
   "deployment_target": "production",
   "unit": "findb",
   "values": {
-    "FULL_MARKET_ENABLED": "false",
     "AWS_PROMOTION_ROLE_ARN": "",
     "STAGING_AWS_ACCOUNT_ID": "",
     "STAGING_PROMOTION_READ_ROLE_ARN": "",

@@ -81,10 +81,10 @@ async def apply_cutover(db: AsyncSession, *, effective_date: date, actor: str) -
             .with_for_update()
         )
     )
-    if len([c for c in controls if c.provider == "factset"]) != 2 or any(
+    if len([c for c in controls if c.provider == "factset"]) != 1 or any(
         control.desired_state != "stopped" for control in controls
     ):
-        raise ValueError("HK provider Pilot and Full controls must be installed and stopped")
+        raise ValueError("HK provider Full market controls must be installed and stopped")
     baseline = await db.scalar(
         select(UniverseRelease.release_id)
         .where(

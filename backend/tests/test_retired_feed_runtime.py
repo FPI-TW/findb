@@ -68,7 +68,7 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
         monkeypatch.setattr(fixtures, "_universe", legacy_universe)
         _, release = await fixtures._baseline(h.db, h.dataset, count=1, effective_date=DAY)
         dataset = await h.db.get(DatasetRegistry, h.dataset)
-        await historical_admission(h.db, dataset, release, DAY, None, profile="pilot")
+        await historical_admission(h.db, dataset, release, DAY, None)
         plan = await create_plan(
             h.db,
             DeliveryPlanCreateRequest(
@@ -77,32 +77,30 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
                 provider=h.provider,
                 trade_date=DAY,
                 release_id=release.release_id,
-                execution_profile="pilot",
+                execution_profile="full_market",
             ),
             allowed_datasets=[h.dataset],
         )
         get_settings().APP_ENVIRONMENT = h.environment
-    full = await h.db.get(SchedulerControl, "full_market_twelve_data_v1")
-    full.desired_state = "stopped"
     work = await provider_work.enqueue(
         h.db,
         provider=h.provider,
-        stable_key=f"daily:pilot:{h.dataset}:{DAY}",
+        stable_key=f"daily:full_market:{h.dataset}:{DAY}",
         kind="daily",
         dataset_key=h.dataset,
         trade_date=DAY,
-        execution_profile="pilot",
+        execution_profile="full_market",
         scope={"legacy_id": "original-plan"},
     )
     work_id = work.work_id
     following = await provider_work.enqueue(
         h.db,
         provider=h.provider,
-        stable_key=f"daily:pilot:{h.dataset}:{DAY + timedelta(days=1)}",
+        stable_key=f"daily:full_market:{h.dataset}:{DAY + timedelta(days=1)}",
         kind="daily",
         dataset_key=h.dataset,
         trade_date=DAY + timedelta(days=1),
-        execution_profile="pilot",
+        execution_profile="full_market",
         scope={"legacy_id": "next-original-plan"},
     )
     following_id = following.work_id
@@ -115,7 +113,7 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
         json={
             "protocol": "provider-work-v1",
             "host_lock_identity": inode,
-            "execution_profile": "pilot",
+            "execution_profile": "full_market",
         },
     )
     assert claimed.status_code == 200, claimed.text
@@ -163,15 +161,17 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
     gate["retired"] = True
 
     def run_cycle():
-        with FullMarketSourceClient(h.config, client=h.http(), execution_profile="pilot") as source:
+        with FullMarketSourceClient(
+            h.config, client=h.http(), execution_profile="full_market"
+        ) as source:
             runtime = FullMarketRuntime(
                 provider=h.provider,
                 config={"feeds": [{"provider": h.provider, "dataset_key": "us_equity_eod"}]},
-                state=FullMarketState(h.path / "pilot.sqlite3"),
+                state=FullMarketState(h.path / "full_market.sqlite3"),
                 source=source,
                 delivery=None,
                 raw_store=h.raw,
-                execution_profile="pilot",
+                execution_profile="full_market",
             )
             runtime._ensure_proof = lambda: None
             try:
@@ -216,7 +216,7 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
     assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
     assert (
         await h.db.get(SchedulerControl, "full_market_twelve_data_v1")
-    ).desired_state == "stopped"
+    ).desired_state == "running"
     receipts = list(
         await h.db.scalars(
             select(ProviderWorkReceipt).where(ProviderWorkReceipt.work_id == work_id)
@@ -234,7 +234,7 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
         json={
             "protocol": "provider-work-v1",
             "host_lock_identity": inode,
-            "execution_profile": "pilot",
+            "execution_profile": "full_market",
         },
     )
     assert next_claim.status_code == 200, next_claim.text

@@ -71,7 +71,7 @@ def resolve_execution_config(
         or body["schema_version"] != 1
         or body["environment"] != environment
         or body["provider"] != provider
-        or profile not in {"pilot", "full_market"}
+        or profile != "full_market"
         or body["execution_profile"] != profile
     ):
         raise ValueError("Execution config identity or schema differs")

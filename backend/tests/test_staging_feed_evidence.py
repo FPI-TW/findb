@@ -11,11 +11,9 @@ import json
 import os
 import random
 import shlex
-import sqlite3
 import subprocess
 import sys
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -75,220 +73,6 @@ def _sample_record(schema, *, provider="finlab", run_id="run"):
     return record
 
 
-def _pilot_package():
-    module = _load(
-        "pilot_acceptance", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
-    )
-    backend_probe = _load(
-        "pilot_backend", REPO_ROOT / "backend/scripts/export_staging_feed_evidence.py"
-    )
-    assert {(source, dataset) for source, dataset, _schema in backend_probe.ACTIVE_FEEDS} == set(
-        module.catalog_feeds()
-    )
-    feeds = []
-    fetcher = {}
-    symbols = {"twelve_data": ["AAPL", "MSFT"], "finlab": ["2330", "2317"], "taifex": ["TX", "MTX"]}
-    for provider, dataset in module.catalog_feeds():
-        run_id = provider + ":" + dataset
-        records = []
-        for symbol in symbols.get(provider, ["2330" if dataset == "tw_equity_minute" else "0050"]):
-            for session in ["regular", "after_hours"] if provider == "taifex" else [None]:
-                records.append(
-                    {
-                        "symbol": symbol,
-                        "trade_date": "2026-10-02",
-                        "row_count": 1,
-                        **(
-                            {
-                                "session": session,
-                                "contract_month": "202610",
-                                "contract_code": symbol + ":202610",
-                            }
-                            if session
-                            else {}
-                        ),
-                    }
-                )
-        feeds.append(
-            {
-                "source": provider,
-                "dataset_key": dataset,
-                "lineage_contract": {"serve": "required"},
-                "multi_trade_date_ready": False,
-                "serve_probe": {"success": True, "trade_date": "2026-10-02", "run_id": run_id},
-                "runs": [
-                    {
-                        "run_id": run_id,
-                        "batch_data_date": "2026-10-02",
-                        "source_http_status": 202,
-                        "attempt_status": "accepted",
-                        "raw_persisted": True,
-                        "status": "completed",
-                        "job_status": "completed",
-                        "dq_errors": 0,
-                        "canonical_rows": len(records),
-                        "success_records": len(records),
-                        "total_records": len(records),
-                        "canonical_coverage": records,
-                        "attempt_receipts": [
-                            {
-                                "attempt_id": run_id + ":accepted",
-                                "run_id": run_id,
-                                "source": provider,
-                                "dataset_key": dataset,
-                                "schema_id": next(
-                                    item[2]
-                                    for item in backend_probe.ACTIVE_FEEDS
-                                    if item[:2] == (provider, dataset)
-                                ),
-                                "schema_version": 1,
-                                "http_status": 202,
-                                "status": "accepted",
-                                "request_sha256": "a" * 64,
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-        schema = next(
-            item[2] for item in backend_probe.ACTIVE_FEEDS if item[:2] == (provider, dataset)
-        )
-        sample_record = _sample_record(schema, provider=provider, run_id=run_id)
-        sample = {
-            "sample_instrument_id": sample_record["instrument_id"],
-            "sample_trade_date": sample_record["trade_date"],
-            "sample_run_id": run_id,
-            "sample_record": sample_record,
-        }
-        projection = backend_probe._canonical_projection(schema, sample_record)
-        fingerprint = backend_probe._projection_fingerprint(projection)
-        feeds[-1].update(schema_id=schema, canonical_sample=sample)
-        feeds[-1]["serve_probe"].update(
-            http_status=200,
-            instrument_id=sample_record["instrument_id"],
-            projection_version=1,
-            canonical_projection=projection,
-            returned_projection=projection,
-            canonical_fingerprint=fingerprint,
-            returned_fingerprint=fingerprint,
-        )
-        feeds[-1]["runs"][0].update(
-            job_id=run_id + ":job",
-            job_delivery_id=run_id + ":delivery",
-            outbox_status="published",
-            outbox_receipts=[
-                {
-                    "outbox_id": run_id + ":outbox",
-                    "job_id": run_id + ":job",
-                    "run_id": run_id,
-                    "delivery_id": run_id + ":delivery",
-                    "status": "published",
-                    "event_type": "normalize_run",
-                }
-            ],
-        )
-        fetcher.setdefault(provider, {"provider": provider, "recent_trade_dates": []})[
-            "recent_trade_dates"
-        ].append(
-            {
-                "dataset_key": dataset,
-                "target_date": "2026-10-02",
-                "status": "completed",
-                "run_id": run_id,
-            }
-        )
-    catalog = json.loads(
-        (REPO_ROOT / "fetcher/configs/staging_provider_pilots.v1.json").read_bytes()
-    )
-    for provider, filename in {
-        "twelve_data": "twelve_data_us_staging_pilot.v2.json",
-        "finlab": "finlab_tw_review_required.v1.json",
-        "taifex": "taifex_tw_staging_pilot.v1.json",
-    }.items():
-        fetcher[provider]["config"] = {
-            "universe_sha256"
-            if provider in {"twelve_data", "finlab"}
-            else "manifest_sha256": catalog["files"][filename],
-        }
-    observed_at = datetime(2026, 10, 3, 10, tzinfo=timezone.utc)
-    return (
-        module,
-        {"feeds": feeds, "target_calendar_evidence": _calendar_evidence(observed_at)},
-        fetcher,
-        observed_at,
-    )
-
-
-def _calendar_evidence(observed_at: datetime) -> dict:
-    today = (observed_at + timedelta(hours=8)).date()
-    markets = {}
-    for market in ("US", "TW", "TAIFEX"):
-        timezone_name = "America/New_York" if market == "US" else "Asia/Taipei"
-        markets[market] = {
-            "valid": True,
-            "timezone": timezone_name,
-            "revisions": [
-                {
-                    "year": year,
-                    "revision": 1,
-                    "revision_id": f"{market}:{year}:1",
-                    "status": "published",
-                    "coverage_complete": True,
-                    "timezone": timezone_name,
-                }
-                for year in {(today - timedelta(days=offset)).year for offset in range(16)}
-            ],
-            "days": [
-                {
-                    "trade_date": (today - timedelta(days=offset)).isoformat(),
-                    "day_status": "open"
-                    if (today - timedelta(days=offset)).weekday() < 5
-                    else "closed",
-                    "is_open": (today - timedelta(days=offset)).weekday() < 5,
-                    "revision": 1,
-                    "revision_id": f"{market}:{(today - timedelta(days=offset)).year}:1",
-                    "session_close": None,
-                }
-                for offset in range(16)
-            ],
-        }
-    return {"schema_version": 1, "observed_at_utc": observed_at.isoformat(), "markets": markets}
-
-
-def test_one_completed_day_all_five_pilots_requires_exact_scope_and_run_lineage() -> None:
-    module, findb, fetcher, observed_at = _pilot_package()
-    feeds = findb["feeds"]
-    assessment = module._assessment(findb, fetcher, observed_at=observed_at)
-    assert assessment["pilot_functional_complete"] is True
-    assert assessment["serve_boundary_complete"] is True
-    assert len(assessment["pilot_functional_acceptance"]) == 3
-    assert assessment["backend_multi_trade_date_complete"] is False
-    unbound = deepcopy(fetcher)
-    unbound["twelve_data"]["config"]["universe_sha256"] = "old-config"
-    assert (
-        module._assessment(findb, unbound, observed_at=observed_at)["pilot_functional_complete"]
-        is False
-    )
-    for mutation in ("old_run", "wrong_symbol", "missing_session", "split_expiry"):
-        altered = deepcopy(feeds)
-        if mutation == "old_run":
-            altered[0]["serve_probe"]["run_id"] = "unrelated-legacy-run"
-        elif mutation == "wrong_symbol":
-            altered[0]["runs"][0]["canonical_coverage"][0]["symbol"] = "NVDA"
-        elif mutation == "missing_session":
-            altered[-1]["runs"][0]["canonical_coverage"].pop()
-        else:
-            record = altered[-1]["runs"][0]["canonical_coverage"][0]
-            record.update(contract_month="202611", contract_code=record["symbol"] + ":202611")
-        assert (
-            module._assessment({**findb, "feeds": altered}, fetcher, observed_at=observed_at)[
-                "pilot_functional_complete"
-            ]
-            is False
-        ), mutation
-
-
 def test_minute_lineage_requires_the_serve_boundary() -> None:
     module = _load(
         "export_staging_feed_evidence",
@@ -346,150 +130,6 @@ def test_serve_samples_are_selected_from_pilot_canonical_scope_with_run_lineage(
     assert "i.market = 'TW' AND i.asset_class = 'equity'" in sql
 
 
-def test_assessment_requires_persistent_202_and_two_dates() -> None:
-    module = _load(
-        "collect_staging_feed_evidence",
-        REPO_ROOT / "infra" / "acceptance" / "collect_staging_feed_evidence.py",
-    )
-    feeds = []
-    for source, dataset, schema in (
-        ("twelve_data", "us_equity_eod", "market_eod"),
-        ("finlab", "tw_equity_eod", "market_eod"),
-        ("taifex", "tw_futures_eod", "futures_eod"),
-    ):
-        feeds.append(
-            {
-                "source": source,
-                "dataset_key": dataset,
-                "multi_trade_date_ready": True,
-                "lineage_contract": {"serve": "required"},
-                "serve_probe": {"success": True},
-                "runs": [
-                    {
-                        "source_http_status": 202,
-                        "attempt_status": "accepted",
-                    }
-                ],
-            }
-        )
-    fetcher = {
-        provider: {
-            "provider": provider,
-            "recent_trade_dates": [
-                {"target_data_date": "2026-09-08"},
-                {"target_data_date": "2026-09-05"},
-            ],
-        }
-        for provider in ("twelve_data", "finlab")
-    }
-    fetcher["taifex"] = {
-        "provider": "taifex",
-        "recent_trade_dates": [{"target_date": "2026-09-08"}, {"target_date": "2026-09-05"}],
-    }
-    assessment = module._assessment({"feeds": feeds}, fetcher)
-
-    assert assessment["five_feed_scope_complete"] is True
-    assert assessment["backend_multi_trade_date_complete"] is True
-    assert assessment["fetcher_multi_trade_date_complete"] is True
-    assert assessment["persistent_source_202"] == {
-        "finlab/tw_equity_eod": True,
-        "twelve_data/us_equity_eod": True,
-        "taifex/tw_futures_eod": True,
-    }
-    # An unbound success label cannot prove the HTTP response's provenance.
-    assert assessment["serve_boundary_complete"] is False
-    assert set(assessment["serve_probe"].values()) == {False}
-
-
-def test_daily_fetcher_probe_exports_hashes_credit_budget_and_history(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    module = _load(
-        "export_fetcher_feed_evidence",
-        REPO_ROOT / "infra" / "acceptance" / "export_fetcher_feed_evidence.py",
-    )
-    universe_path = tmp_path / "universe.json"
-    universe_path.write_text(
-        json.dumps(
-            {
-                "universe_id": "reviewed_v1",
-                "credit_cost_per_symbol": 1,
-                "symbols": [
-                    {"symbol": "A", "canonical_symbol": "A"},
-                    {"symbol": "B", "canonical_symbol": "B"},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    schedule_path = tmp_path / "schedule.json"
-    schedule_path.write_text(
-        json.dumps(
-            {
-                "timezone": "Asia/Taipei",
-                "feeds": [
-                    {
-                        "provider": "twelve_data",
-                        "dataset_key": "us_equity_eod",
-                        "universe_file": universe_path.name,
-                        "slot_id": "western",
-                        "scheduled_time": "08:15",
-                        "target_date_policy": "latest_trade_date",
-                        "max_credits_per_run": 5,
-                        "max_records_per_run": 100,
-                        "enabled": True,
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    state_path = tmp_path / "state.sqlite3"
-    with sqlite3.connect(state_path) as db:
-        db.execute(
-            """CREATE TABLE scheduled_job (
-                provider TEXT, dataset_key TEXT, target_data_date TEXT,
-                scheduled_date TEXT, status TEXT, last_outcome TEXT,
-                attempt_count INTEGER, record_count INTEGER,
-                attempt_id TEXT, run_id TEXT, checkpoint_before TEXT,
-                checkpoint_after TEXT
-            )"""
-        )
-        db.executemany(
-            "INSERT INTO scheduled_job VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            [
-                (
-                    "twelve_data",
-                    "us_equity_eod",
-                    date,
-                    date,
-                    "completed",
-                    "success",
-                    1,
-                    2,
-                    "a",
-                    "r",
-                    "2026-09-01",
-                    date,
-                )
-                for date in ("2026-09-08", "2026-09-05")
-            ],
-        )
-    monkeypatch.setenv("FETCHER_SCHEDULE_FILE", str(schedule_path))
-    monkeypatch.setenv("FETCHER_STATE_PATH", str(state_path))
-
-    result = module._daily_provider("twelve_data")
-
-    assert result["credits"]["estimated_per_run"] == 2
-    assert result["credits"]["configured_cap"] == 5
-    assert len(result["config"]["schedule_sha256"]) == 64
-    assert len(result["config"]["universe_sha256"]) == 64
-    assert {row["target_data_date"] for row in result["recent_trade_dates"]} == {
-        "2026-09-08",
-        "2026-09-05",
-    }
-
-
 def test_calibration_identity_is_bounded_and_unique() -> None:
     module = _load(
         "calibrate_staging_provider_alerts",
@@ -507,206 +147,6 @@ def test_calibration_identity_is_bounded_and_unique() -> None:
     assert len(request["idempotency_key"]) <= 100
     assert "staging-cal-missing-close" in request["request_key"]
     assert request["fetched_at"] != "2026-01-01T00:00:00Z"
-
-
-@pytest.mark.parametrize("status", ["blocked", "failed", "pending", None])
-def test_old_success_cannot_hide_latest_eligible_missing_or_blocked_day(status) -> None:
-    module, findb, fetcher, _ = _pilot_package()
-    observed_at = datetime(2026, 10, 5, 10, tzinfo=timezone.utc)
-    findb["target_calendar_evidence"] = _calendar_evidence(observed_at)
-    if status:
-        for provider in ("finlab", "taifex"):
-            for dataset in fetcher[provider].get("datasets", []) or [
-                row["dataset_key"] for row in fetcher[provider]["recent_trade_dates"]
-            ]:
-                fetcher[provider]["recent_trade_dates"].append(
-                    {
-                        "dataset_key": dataset,
-                        "target_date": "2026-10-05",
-                        "status": status,
-                    }
-                )
-    acceptance = module._functional_acceptance(findb, fetcher, observed_at=observed_at)
-    assert acceptance["twelve_data/us_equity_eod"] is True
-    assert all(not value for key, value in acceptance.items() if not key.startswith("twelve_data/"))
-
-
-@pytest.mark.parametrize(
-    "utc_time,expected",
-    [
-        (
-            "2026-10-06T00:14:00+00:00",
-            {
-                "twelve_data": "2026-10-02",
-                "finlab": "2026-10-05",
-                "taifex": "2026-10-05",
-            },
-        ),
-        (
-            "2026-10-06T00:15:00+00:00",
-            {
-                "twelve_data": "2026-10-05",
-                "finlab": "2026-10-05",
-                "taifex": "2026-10-05",
-            },
-        ),
-        (
-            "2026-10-06T00:30:00+00:00",
-            {
-                "twelve_data": "2026-10-05",
-                "finlab": "2026-10-05",
-                "taifex": "2026-10-05",
-            },
-        ),
-        (
-            "2026-10-06T01:00:00+00:00",
-            {
-                "twelve_data": "2026-10-05",
-                "finlab": "2026-10-05",
-                "taifex": "2026-10-05",
-            },
-        ),
-        (
-            "2026-10-06T06:30:00+00:00",
-            {
-                "twelve_data": "2026-10-05",
-                "finlab": "2026-10-06",
-                "taifex": "2026-10-05",
-            },
-        ),
-        (
-            "2026-10-06T09:00:00+00:00",
-            {
-                "twelve_data": "2026-10-05",
-                "finlab": "2026-10-06",
-                "taifex": "2026-10-05",
-            },
-        ),
-        (
-            "2026-10-06T10:00:00+00:00",
-            {
-                "twelve_data": "2026-10-05",
-                "finlab": "2026-10-06",
-                "taifex": "2026-10-06",
-            },
-        ),
-    ],
-)
-def test_targets_follow_runtime_due_times_and_market_calendar(utc_time, expected) -> None:
-    module, findb, _, _ = _pilot_package()
-    observed_at = datetime.fromisoformat(utc_time)
-    findb["target_calendar_evidence"] = _calendar_evidence(observed_at)
-    assert {
-        provider: module._expected_target(findb, provider, observed_at=observed_at)
-        for provider in expected
-    } == expected
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        "missing",
-        "revision",
-        "incomplete",
-        "unpublished",
-        "stale_clock",
-        "naive_clock",
-        "timezone",
-        "missing_day",
-    ],
-)
-def test_calendar_evidence_fails_closed(mutation) -> None:
-    module, findb, fetcher, observed_at = _pilot_package()
-    evidence = findb["target_calendar_evidence"]
-    if mutation == "missing":
-        findb.pop("target_calendar_evidence")
-    elif mutation == "stale_clock":
-        evidence["observed_at_utc"] = (observed_at - timedelta(minutes=6)).isoformat()
-    elif mutation == "naive_clock":
-        evidence["observed_at_utc"] = observed_at.replace(tzinfo=None).isoformat()
-    else:
-        calendar = evidence["markets"]["US"]
-        if mutation == "revision":
-            for day in calendar["days"]:
-                day["revision"] = 2
-        elif mutation == "missing_day":
-            calendar["days"] = [
-                day for day in calendar["days"] if day["trade_date"] != "2026-10-02"
-            ]
-        elif mutation == "incomplete":
-            calendar["revisions"][0]["coverage_complete"] = False
-        elif mutation == "unpublished":
-            calendar["revisions"][0]["status"] = "draft"
-        else:
-            calendar["timezone"] = "Asia/Taipei"
-    assert (
-        module._assessment(findb, fetcher, observed_at=observed_at)["pilot_functional_complete"]
-        is False
-    )
-
-
-def test_official_closed_day_uses_previous_open_date_and_close_time() -> None:
-    module, findb, _, _ = _pilot_package()
-    observed_at = datetime(2026, 10, 5, 10, tzinfo=timezone.utc)
-    findb["target_calendar_evidence"] = _calendar_evidence(observed_at)
-    for day in findb["target_calendar_evidence"]["markets"]["TAIFEX"]["days"]:
-        if day["trade_date"] == "2026-10-05":
-            day.update(day_status="closed", is_open=False)
-    assert module._expected_target(findb, "taifex", observed_at=observed_at) == "2026-10-02"
-    for day in findb["target_calendar_evidence"]["markets"]["TW"]["days"]:
-        if day["trade_date"] == "2026-10-05":
-            day["session_close"] = "19:00"
-    assert module._expected_target(findb, "finlab", observed_at=observed_at) == "2026-10-02"
-
-
-def test_same_run_duplicate_receipt_preserves_coverage_and_rejects_inconsistency() -> None:
-    module, findb, fetcher, observed_at = _pilot_package()
-    run = findb["feeds"][-1]["runs"][0]
-    receipt = deepcopy(run["attempt_receipts"][0])
-    receipt.update(attempt_id="duplicate", status="duplicate")
-    run["attempt_receipts"].append(receipt)
-    assert (
-        module._assessment(findb, fetcher, observed_at=observed_at)["pilot_functional_complete"]
-        is True
-    )
-    for field, invalid in (
-        ("status", "rejected"),
-        ("request_sha256", "b" * 64),
-        ("run_id", "other"),
-        ("dataset_key", "other"),
-    ):
-        altered = deepcopy(findb)
-        altered["feeds"][-1]["runs"][0]["attempt_receipts"][-1][field] = invalid
-        assert (
-            module._assessment(altered, fetcher, observed_at=observed_at)[
-                "pilot_functional_complete"
-            ]
-            is False
-        )
-    inconsistent = deepcopy(run)
-    inconsistent.update(run_id="failed-run", status="failed")
-    findb["feeds"][-1]["runs"].append(inconsistent)
-    assert (
-        module._assessment(findb, fetcher, observed_at=observed_at)["pilot_functional_complete"]
-        is False
-    )
-
-
-@pytest.mark.parametrize("status", [None, "blocked"])
-def test_us_new_target_required_at_0830_before_delivery_deadline(status) -> None:
-    module, findb, fetcher, _ = _pilot_package()
-    observed_at = datetime(2026, 10, 6, 0, 30, tzinfo=timezone.utc)
-    findb["target_calendar_evidence"] = _calendar_evidence(observed_at)
-    if status:
-        fetcher["twelve_data"]["recent_trade_dates"].append(
-            {
-                "target_date": "2026-10-05",
-                "status": status,
-            }
-        )
-    acceptance = module._functional_acceptance(findb, fetcher, observed_at=observed_at)
-    assert acceptance["twelve_data/us_equity_eod"] is False
-    assert module._expected_target(findb, "twelve_data", observed_at=observed_at) == "2026-10-05"
 
 
 @pytest.mark.parametrize("schema", ["market_eod", "market_minute", "futures_eod"])
@@ -785,64 +225,6 @@ def test_minute_probe_matches_exact_bar_and_normalizes_decimals_and_aware_times(
         ),
     )
     assert exporter._serve_probe("market_minute", sample)["success"] is False
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        "source",
-        "fetched_at",
-        "close",
-        "fingerprint",
-        "sample_run",
-        "current_job",
-        "current_receipt",
-        "current_delivery",
-        "historical_receipt",
-    ],
-)
-def test_collector_rechecks_provenance_and_current_queue_generation(mutation):
-    collector, package, fetcher, observed_at = _pilot_package()
-    feed = package["feeds"][-1]
-    run = feed["runs"][0]
-    historical = {
-        **run["outbox_receipts"][0],
-        "outbox_id": "old",
-        "delivery_id": "old-generation",
-        "status": "published",
-    }
-    run["outbox_receipts"].insert(0, historical)
-    assert (
-        collector._functional_acceptance(package, fetcher, observed_at=observed_at)[
-            "taifex/tw_futures_eod"
-        ]
-        is True
-    )
-    if mutation in {"source", "fetched_at", "close"}:
-        feed["serve_probe"]["returned_projection"] = {
-            **feed["serve_probe"]["returned_projection"],
-            {"source": "source", "fetched_at": "source_fetched_at", "close": "close"}[
-                mutation
-            ]: "tampered",
-        }
-    elif mutation == "fingerprint":
-        feed["serve_probe"]["returned_fingerprint"] = "a" * 64
-    elif mutation == "sample_run":
-        feed["canonical_sample"]["sample_record"]["run_id"] = "other"
-    elif mutation == "current_job":
-        run["job_status"] = "failed"
-    elif mutation == "current_receipt":
-        run["outbox_receipts"][-1]["status"] = "failed"
-    elif mutation == "current_delivery":
-        run["job_delivery_id"] = "unknown"
-    else:
-        historical["job_id"] = "unrelated-job"
-    assert (
-        collector._functional_acceptance(package, fetcher, observed_at=observed_at)[
-            "taifex/tw_futures_eod"
-        ]
-        is False
-    )
 
 
 @pytest.fixture
@@ -925,36 +307,6 @@ def _large_transport_payload():
     # Seeded noise exercises the fallback even when gzip cannot fit stdout inline.
     rng = random.Random(17)
     return {"noise": base64.b64encode(rng.randbytes(70_000)).decode()}
-
-
-def test_ssm_transport_preserves_two_date_five_feed_proof(local_ssm, tmp_path):
-    collector, state = local_ssm
-    _module, package, fetcher, observed_at = _pilot_package()
-    for feed in package["feeds"]:
-        old_run = deepcopy(feed["runs"][0])
-        old_run["batch_data_date"] = "2026-10-01"
-        old_run["run_id"] += ":previous"
-        for record in old_run["canonical_coverage"]:
-            record["trade_date"] = "2026-10-01"
-        for receipt in old_run["attempt_receipts"]:
-            receipt["run_id"] = old_run["run_id"]
-        for receipt in old_run["outbox_receipts"]:
-            receipt["run_id"] = old_run["run_id"]
-        feed["runs"].append(old_run)
-    assert sum(len(feed["runs"]) for feed in package["feeds"]) == 6
-    assert collector._assessment(package, fetcher, observed_at=observed_at)[
-        "pilot_functional_complete"
-    ]
-    # The proof must span more than one 24 kB SSM output window.
-    package["transport_padding"] = "x" * 8_000
-    result, raw = _transport_probe(collector, tmp_path, package)
-    assert len(raw) > 24_000
-    assert result["payload"] == package
-    assert state["envelope"]["raw_sha256"] == hashlib.sha256(raw).hexdigest()
-    assert collector._assessment(result["payload"], fetcher, observed_at=observed_at)[
-        "pilot_functional_complete"
-    ]
-    assert [item["operation"] for item in state["commands"]] == ["export", "cleanup"]
 
 
 @pytest.mark.parametrize("large", [False, True])
@@ -1056,17 +408,6 @@ def test_ssm_transport_cleanup_failure_preserves_original_error(local_ssm, tmp_p
     assert state["commands"][-1]["operation"] == "cleanup"
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
-def test_ssm_transport_accepts_every_native_evidence_container(profile, provider) -> None:
-    collector = _load(
-        "pilot_acceptance", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
-    )
-    # Same container naming as collect_native_feed_evidence.py.
-    container = f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}"
-    assert container in collector._transport_command(container, "0" * 32, "read")
-
-
 def test_ssm_transport_rejects_invalid_path_and_non_json_export(local_ssm, tmp_path):
     collector, state = local_ssm
     with pytest.raises(ValueError, match="invalid evidence transport target"):
@@ -1142,7 +483,7 @@ def test_probe_command_preserves_environment_as_literal_data(local_ssm, tmp_path
         instance_id="test",
         deadline=collector.time.monotonic() + 60,
         command=collector._probe_command(
-            script, "findb-fetcher-finlab-scheduler", "finlab", {"LITERAL": value}, nonce=nonce
+            script, "findb-full-market-finlab", "finlab", {"LITERAL": value}, nonce=nonce
         ),
     )
     assert collector._decode_transport(envelope, [envelope["data"]], nonce) == {
@@ -1152,28 +493,121 @@ def test_probe_command_preserves_environment_as_literal_data(local_ssm, tmp_path
     assert state["commands"][0]["nonce"] == nonce
 
 
-@pytest.mark.parametrize("mutation", ["retired-command", "profile", "runtime-config-hash"])
-def test_evidence_collector_rejects_stale_runtime_catalog(tmp_path, monkeypatch, mutation):
-    import shutil
-
-    directory = tmp_path / "fetcher/configs"
-    directory.mkdir(parents=True)
-    for source in (REPO_ROOT / "fetcher/configs").glob("*.json"):
-        shutil.copy(source, directory / source.name)
-    path = directory / "staging_provider_pilots.v1.json"
-    catalog = json.loads(path.read_bytes())
-    if mutation == "retired-command":
-        catalog["providers"]["finlab"]["runtime_command"] = "findb-fetch-finlab-scheduler"
-    elif mutation == "profile":
-        catalog["providers"]["finlab"]["runtime_arguments"][1] = "full_market"
-    else:
-        catalog["files"]["full_market.staging.v1.json"] = "0" * 64
-    path.write_text(json.dumps(catalog))
+@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
+def test_ssm_transport_accepts_only_generated_full_market_containers(provider) -> None:
     collector = _load(
-        "stale_catalog_evidence", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
+        "full_market_transport", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
     )
-    monkeypatch.setattr(collector, "REPO_ROOT", tmp_path)
-    with pytest.raises(ValueError):
-        collector.catalog_feeds()
-    with pytest.raises(ValueError):
-        collector._functional_acceptance({}, {})
+    # Same container naming as collect_native_feed_evidence.py.
+    container = f"findb-full-market-{provider.replace('_', '-')}"
+    assert container in collector.full_market_containers()
+    assert container in collector._transport_command(container, "0" * 32, "read")
+    for retired in (
+        f"findb-pilot-{provider.replace('_', '-')}",
+        f"findb-historical-{provider.replace('_', '-')}",
+        "findb-fetcher-finlab-scheduler",
+        "findb-full-market-shioaji",
+    ):
+        with pytest.raises(ValueError, match="invalid evidence transport target"):
+            collector._transport_command(retired, "0" * 32, "read")
+
+
+def test_transport_allowlist_rejects_tampered_generated_inventory(tmp_path) -> None:
+    collector = _load(
+        "tampered_inventory", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
+    )
+    inventory = json.loads(collector.PROVIDER_INVENTORY.read_text())
+    inventory["consumers"].append(
+        {"image_key": "finlab", "name": "findb-pilot-finlab", "provider": "finlab", "role": "pilot"}
+    )
+    path = tmp_path / "provider_inventory.v1.json"
+    path.write_text(json.dumps(inventory))
+    with pytest.raises(ValueError, match="integrity"):
+        collector.full_market_containers(path)
+    assert not hasattr(collector, "catalog_feeds")
+    assert not (REPO_ROOT / "infra/acceptance/export_fetcher_feed_evidence.py").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "source",
+        "fetched_at",
+        "close",
+        "fingerprint",
+        "sample_run",
+        "current_job",
+        "current_receipt",
+        "current_delivery",
+        "historical_receipt",
+    ],
+)
+def test_collector_rechecks_provenance_and_current_queue_generation(mutation) -> None:
+    collector = _load(
+        "provenance_collector", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"
+    )
+    backend_probe = _load(
+        "provenance_backend", REPO_ROOT / "backend/scripts/export_staging_feed_evidence.py"
+    )
+    record = _sample_record("futures_eod", provider="taifex", run_id="run")
+    projection = backend_probe._canonical_projection("futures_eod", record)
+    fingerprint = backend_probe._projection_fingerprint(projection)
+    feed = {
+        "schema_id": "futures_eod",
+        "canonical_sample": {
+            "sample_instrument_id": record["instrument_id"],
+            "sample_trade_date": record["trade_date"],
+            "sample_run_id": "run",
+            "sample_record": record,
+        },
+        "serve_probe": {
+            "success": True,
+            "http_status": 200,
+            "projection_version": 1,
+            "trade_date": record["trade_date"],
+            "instrument_id": record["instrument_id"],
+            "run_id": "run",
+            "canonical_projection": projection,
+            "returned_projection": projection,
+            "canonical_fingerprint": fingerprint,
+            "returned_fingerprint": fingerprint,
+        },
+    }
+    historical = {
+        "outbox_id": "old",
+        "job_id": "job",
+        "run_id": "run",
+        "delivery_id": "old-generation",
+        "status": "published",
+        "event_type": "normalize_run",
+    }
+    run = {
+        "run_id": "run",
+        "job_id": "job",
+        "job_status": "completed",
+        "job_delivery_id": "delivery",
+        "outbox_status": "published",
+        "outbox_receipts": [
+            historical,
+            {**historical, "outbox_id": "new", "delivery_id": "delivery"},
+        ],
+    }
+    if mutation in {"source", "fetched_at", "close"}:
+        field = {"source": "source", "fetched_at": "source_fetched_at", "close": "close"}[mutation]
+        feed["serve_probe"]["returned_projection"] = {**projection, field: "tampered"}
+    elif mutation == "fingerprint":
+        feed["serve_probe"]["returned_fingerprint"] = "a" * 64
+    elif mutation == "sample_run":
+        feed["canonical_sample"]["sample_record"]["run_id"] = "other"
+    elif mutation == "current_job":
+        run["job_id"] = None
+    elif mutation == "current_receipt":
+        run["outbox_receipts"][-1]["status"] = "failed"
+    elif mutation == "current_delivery":
+        run["job_delivery_id"] = "unknown"
+    elif mutation == "historical_receipt":
+        historical["job_id"] = "unrelated-job"
+    proof = collector._valid_serve_proof(feed, "taifex", record["trade_date"], {"run"})
+    queue = collector._valid_queue_receipts(run)
+    assert (proof and queue) is (mutation is None)

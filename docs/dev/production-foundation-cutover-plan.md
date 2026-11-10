@@ -36,18 +36,19 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
   failed／manual／raw_uploading 證據不得整批重試、清檔或重設預算。實際 native 抓取與 fault／rollback
   演練須另獲授權，不能以部署健康、原 rows 比對或本機測試代替。
 
-- Owner 於台北時間 2026-10-16 將香港排除本次 native 驗收；本次 staging Pilot 目標為其餘六條，
-  尚未全部通過，因此 production native 驗收保持未開始。七條 feed 架構與香港失敗紀錄仍保留。
+- Owner 於台北時間 2026-10-16 將香港排除本次 native 驗收；當時 staging Pilot 目標為其餘六條，
+  尚未全部通過，因此 production native 驗收保持未開始。Pilot 已退役，staging native 驗收改由
+  Full daily 首日驗收承接（見 [backlog](backlog.md)）。七條 feed 架構與香港失敗紀錄仍保留。
   R2 診斷 prefix 的鎖定與相同 bytes 重試已驗證；不能據此宣稱整個 bucket 或七條 feeds 通過。
   Twelve Data 的美國 6,018 筆目錄已成功發布，413 問題已排除；港股已改由 FactSet 負責，
   Twelve Data HK 已永久退役，舊 work 的結案核對見 [FactSet 港股日行情](../operations/factset_hk.md#twelve-data-舊-hk-work-結案)。
   既有美股及 FinLab／Shioaji native 證據保留；Shioaji 已退役，不列入現役抓取驗收，
   不可沿用舊 scope 或授權重啟。其餘現役 feeds 的未完成 native 驗收仍獨立追蹤；
   已完成的美股日期修正、部署資料保留與 Source／R2／canonical／Serve 證據見
-  [正式測試文件](../operations/testing.md)。Pilot 已停止並 drain，剩餘 TAIFEX 通過前不進行 production 驗收。
+  [正式測試文件](../operations/testing.md)。剩餘 TAIFEX 改以 staging Full 驗收，通過前不進行 production 驗收。
   FinLab FileStorage 與跨 feed 目錄缺欄隔離修復已部署至 `50cb51faadd9`，三輪目錄 refresh、
   記憶體與資料保留驗證見正式測試文件；仍需多輪日常抓取穩定性驗證。
-  Pilot 全部停止，不將目錄診斷當作日常抓取驗收。
+  不將目錄診斷當作日常抓取驗收。
   Shioaji 股票 `8908` 與 ETF `00415A` 的 mapping gap 保留為歷史缺口，
   不重開舊抓取或修改凍結樣本；替代 provider 需另建 scope 與驗收證據。
   TAIFEX 2026-10-15 Pilot 計畫有兩筆 canonical 寫入，另兩項已 retry exhausted，整條 feed 未通過；

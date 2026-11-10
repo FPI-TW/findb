@@ -23,7 +23,7 @@ from findb_fetcher.provider_wait import (
 )
 from findb_fetcher.provider_work import WorkJournal
 from findb_fetcher.providers.finlab import FinLabDatasetTable, FinLabTargetNotReadyError
-from test_full_market import _proof, _runtime
+from test_full_market import _checkpoint_reserve, _proof, _runtime
 
 
 class _Clock:
@@ -406,21 +406,17 @@ def test_finlab_partial_bundle_remains_durable_unresolved(
 
 
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
-def test_slow_verified_rate_is_fully_waited_and_stop_rechecked(
+def test_slow_verified_rate_is_fully_waited(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
 ) -> None:
     runtime, _, _ = _runtime(tmp_path, provider=provider)
     clock = _Clock(monkeypatch)
     runtime.proof = _proof(clock.now())
     runtime.proof["requests_per_second"] = 1 / 120
-    runtime._reserve()
-    runtime._reserve()
+    _checkpoint_reserve(runtime)
+    _checkpoint_reserve(runtime)
     assert clock.elapsed == 220
     assert clock.waits == [1] * 120
-    runtime.can_acquire = lambda: clock.elapsed < 223
-    with pytest.raises(runtime_module.ReadinessBlockedError, match="stopped"):
-        runtime._reserve()
-    assert clock.elapsed == 223
     with runtime.state.connection() as db:
         assert (
             db.execute("SELECT next_at FROM full_pacing").fetchone()[0]
@@ -439,8 +435,8 @@ def test_readiness_expiring_during_pacing_does_not_gate_acquisition(
         requests_per_second=0.1,
         expires_at=(clock.now() + timedelta(seconds=2)).isoformat(),
     )
-    runtime._reserve()
-    runtime._reserve()
+    _checkpoint_reserve(runtime)
+    _checkpoint_reserve(runtime)
     assert clock.elapsed == 110
     with runtime.state.connection() as db:
         assert db.execute("SELECT SUM(requests) FROM full_quota").fetchone()[0] == 4

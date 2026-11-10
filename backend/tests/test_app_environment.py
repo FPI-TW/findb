@@ -40,7 +40,7 @@ def test_legacy_environment_cannot_supply_new_settings_input(monkeypatch, tmp_pa
     assert Settings(_env_file=None).APP_ENVIRONMENT == "local"
 
 
-@pytest.mark.parametrize("consumer", ["pilot", "full_market", "historical"])
+@pytest.mark.parametrize("consumer", ["full_market", "historical"])
 def test_current_runtime_only_injects_canonical_environment(consumer):
     source = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
     block = source[

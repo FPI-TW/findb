@@ -107,7 +107,7 @@ def test_unconfirmed_remote_termination_reports_command_identity(tmp_path):
     assert "acceptance is blocked" in result.stderr
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 def test_scheduler_block_surfaces_only_safe_profile_and_provider(tmp_path, profile, provider):
     diagnostic = (
@@ -127,7 +127,7 @@ def test_scheduler_block_surfaces_only_safe_profile_and_provider(tmp_path, profi
     assert result.stderr.count("Fetcher deployment blocked:") == 1
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market", "historical"])
+@pytest.mark.parametrize("profile", ["full_market", "historical"])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
 def test_host_preflight_block_surfaces_identity_without_raw_output(tmp_path, profile, provider):
     diagnostic = (
@@ -151,8 +151,9 @@ def test_host_preflight_block_surfaces_identity_without_raw_output(tmp_path, pro
     "identity",
     [
         "execution_profile=unknown provider=twelve_data",
-        "execution_profile=pilot provider=unknown",
-        "execution_profile=pilot provider=twelve_data%0Asecret",
+        "execution_profile=pilot provider=twelve_data",
+        "execution_profile=full_market provider=unknown",
+        "execution_profile=full_market provider=twelve_data%0Asecret",
     ],
 )
 def test_host_preflight_block_rejects_untrusted_identity(tmp_path, identity):
@@ -176,7 +177,7 @@ def test_terminal_failure_surfaces_fixed_reason_lines_from_both_streams(tmp_path
             "Error response from daemon: secret-token\n"
             "release_fetcher_provider=failed reason=graceful_stop\n"
             "fetcher_aws_deploy=failed reason=runtime_retirement_failed "
-            "runtime=findb-pilot-twelve-data\n"
+            "runtime=findb-full-market-twelve-data\n"
             "release_fetcher_provider=failed reason=graceful_stop\n"
         ),
     )
@@ -189,7 +190,7 @@ def test_terminal_failure_surfaces_fixed_reason_lines_from_both_streams(tmp_path
     assert lines == [
         "fetcher_aws_deploy=failed reason=transaction_aborted",
         "release_fetcher_provider=failed reason=graceful_stop",
-        "fetcher_aws_deploy=failed reason=runtime_retirement_failed runtime=findb-pilot-twelve-data",
+        "fetcher_aws_deploy=failed reason=runtime_retirement_failed runtime=findb-full-market-twelve-data",
     ]
     assert result.stderr.count("::error title=遠端部署失敗原因::") == 3
     assert "secret" not in result.stderr
@@ -260,3 +261,32 @@ def test_host_command_has_a_deadline_and_time_for_term_recovery():
     )
     assert result.returncode == 0
     assert result.stdout.startswith("exec timeout --signal=TERM --kill-after=180s 900s bash -c ")
+
+
+def test_retired_pilot_scheduler_identity_is_not_surfaced(tmp_path):
+    result, _ = run_wait(
+        tmp_path,
+        status="Failed",
+        stdout=(
+            "fetcher_deployment_blocked reason=scheduler_not_stopped "
+            "execution_profile=pilot provider=twelve_data\n"
+        ),
+    )
+    assert result.returncode != 0
+    assert "Fetcher deployment blocked:" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "fetcher_host_eligibility=failed reason=pilot_residue_running",
+        "fetcher_host_eligibility=failed reason=pilot_residue_not_drained",
+        "fetcher_aws_deploy=failed reason=pilot_residue_running runtime=findb-pilot-finlab",
+        "fetcher_aws_deploy=failed reason=pilot_state_archive_failed",
+    ],
+)
+def test_pilot_residue_reasons_are_surfaced(tmp_path, line):
+    result, _ = run_wait(tmp_path, status="Failed", stdout=f"secret\n{line}\n")
+    assert result.returncode != 0
+    assert f"Remote deployment failure: {line}" in result.stderr
+    assert "secret" not in result.stderr

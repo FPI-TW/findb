@@ -29,7 +29,7 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
 - Contract 明列 current／accepted versions，並核對 `contracts/manifest.json` 與實際 artifact checksum。
   FactSet 新交付為 market_eod v2，accepted 為 v1／v2。
 - Schedule 定義交易所當地時間與 date lag；completion deadline 使用獨立 timezone／trade-date day offset。
-  Pilot／Full 保留 US 次日台北 09:00、其餘當日台北 23:00。Bounded monitor 的 US 次日 09:15、
+  Full daily 保留 US 次日台北 09:00、其餘當日台北 23:00。Bounded monitor 的 US 次日 09:15、
   TW equity 當日 17:00 另行保存；其它目前停用。Publication retry window 不代表 delivery SLA。
 - `delivery.slot_id` 只表示既有 contract 相容欄位，不能作為時鐘或新 acquisition 權威。
 - Historical execution profiles 保留現行 local／staging／production 的靜態 universe reference 與 executor
@@ -60,7 +60,7 @@ uv --directory backend run python scripts/export_provider_catalog.py --check
 | `fetcher/configs/bootstrap.{environment}.v1.json` | 程序版本、環境身分、polling；無 feed、觸發時間或 deadline |
 | `fetcher/src/findb_fetcher/data/execution_descriptors.v1.json` | Fetcher 非排程 metadata，隨 Python package／image 打包 |
 | `dashboard/src/lib/generated/provider-catalog.ts` | Typed provider constants 與 scope |
-| `infra/deploy/generated/provider_inventory.v1.json` | 三 images、四 providers、十二 consumers 的明確 inventory |
+| `infra/deploy/generated/provider_inventory.v1.json` | 三 images、四 providers、八 consumers 的明確 inventory |
 
 資料產物包含 schema version 與 SHA-256；Backend 保存 canonical source digest，其它消費端保存
 各自正向欄位投影的 digest。來源物件與集合排序不改變輸出；只改 Backend 時間不改非排程 Fetcher
@@ -75,8 +75,8 @@ Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。
 
 ## Backend 排程發布
 
-`GET /api/v1/source/execution-config?execution_profile=pilot|full_market` 必須使用 Source credential；
-可選 `schema_version=1`，其它版本、profile、provider／environment 查詢參數均拒絕。
+`GET /api/v1/source/execution-config?execution_profile=full_market` 必須使用 Source credential；
+可選 `schema_version=1`，其它版本、profile（含已退役的 `pilot`，回傳 422）、provider／environment 查詢參數均拒絕。
 Provider 與可見 feeds 由 credential 決定；NULL、空、重複、越權或無完整排程的 scope 不發布部分結果。
 回應含 `schema_version`、`environment`、`execution_profile`、`provider`、`schedule_digest` 與完整 `feeds`，
 並設定 `Cache-Control: no-store`。Digest 為移除 `schedule_digest` 後的 JSON，以 sorted keys、
@@ -84,7 +84,7 @@ compact separators、ASCII escape 編碼再做 SHA-256；排序後的 feed 陣�
 
 每條 feed 提供 identity、contract、`scheduled_time`、`source_timezone`、`target_date_lag_days`、
 `publication_retry_window_seconds`、獨立 `completion_deadline` 及 `bounded_monitor`。
-不包含 slot；發布窗口不是 deadline。此 endpoint 不檢查 running、FULL flag、universe readiness、
+不包含 slot；發布窗口不是 deadline。此 endpoint 不檢查 running、universe readiness、
 quota 或 historical lease，也不建立 plan／work；取得設定不代表取得 acquisition authorization。
 
 `app.services.feed_schedule` 統一 Source 與 Admin 的時間解讀。Admin `/schedulers` 新增

@@ -17,7 +17,7 @@ EnvName = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=100)]
 Clock = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
 PositiveInt = Annotated[int, Field(gt=0)]
 DayOffset = Annotated[int, Field(ge=0, le=366)]
-ConsumerRole = Literal["pilot", "full_market", "historical"]
+ConsumerRole = Literal["full_market", "historical"]
 
 
 class CatalogModel(BaseModel):
@@ -212,7 +212,7 @@ class ProviderCatalog(CatalogModel):
             if feed.provider not in providers:
                 raise ValueError("unknown feed provider reference")
             roles = providers[feed.provider].consumer_roles
-            if feed.capabilities.acquisition and not {"pilot", "full_market"} <= set(roles):
+            if feed.capabilities.acquisition and "full_market" not in roles:
                 raise ValueError("acquiring feed requires daily consumers")
             if feed.capabilities.historical != "unsupported" and "historical" not in roles:
                 raise ValueError("historical capability requires a consumer")

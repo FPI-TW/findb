@@ -14,8 +14,8 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 ## 交付監控
 
 入口為 `/dashboard/operations/deliveries`，分為計畫、缺漏告警、Universe 候選與歷史回補；
-viewer 不顯示歷史回補。Dashboard 不再提供 Pilot，頁面只呈現 Full market，沒有執行模式分頁；
-Dashboard 所有請求固定帶 `execution_profile=full_market`，Backend 仍保留的 Pilot 列不會顯示。
+viewer 不顯示歷史回補。Pilot profile 已退役，頁面只呈現 Full market，沒有執行模式分頁；
+Dashboard 所有請求固定帶 `execution_profile=full_market`。
 尚未啟動、已有啟動日期但尚無計畫、以及已建立計畫的實際缺漏分別呈現。
 
 - 全市場計畫：資料集下拉選單列出所有曾有計畫的資料集，不受最近筆數或交易日篩選限制；
@@ -34,7 +34,7 @@ Dashboard 所有請求固定帶 `execution_profile=full_market`，Backend 仍保
 
 URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、Universe 候選 `cp/cps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
-舊連結帶的 `profile=pilot|full_market` 會被忽略，不報錯也不切換內容。
+舊連結帶的 `profile` 參數會被忽略，不報錯也不切換內容。
 計畫是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
 
 ## 載入、更新與失敗
@@ -80,7 +80,8 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 測試方式見 [testing.md](testing.md)；全市場交付判定與操作邊界見 [full_market.md](full_market.md)。
 
 Overview、freshness、schedulers、plans、alerts 的 Admin API 請求固定帶 `execution_profile=full_market`。
-導入概況只有一個排程區塊與一組 Owner「全部啟動／全部停止」，不再顯示 profile 分頁或跨 profile 重疊警告。
+導入概況只有一個排程區塊與一組 Owner「全部啟動／全部停止」，不再顯示 profile 分頁或跨 profile 重疊警告；
+排程卡片顯示 control 所屬環境，不再顯示已退役的環境旗標。
 尚未納入抓取範圍的 feed
 若有 blocker，顯示實際原因；沒有 blocker 則顯示「尚未啟用」，不視為日曆缺漏或資料缺漏。
 啟停成功後，卡片先套用 scheduler 回應，再重新取得 freshness；freshness 的 activation 只對其計算時的

@@ -63,7 +63,8 @@ def fetcher_spec(backend: dict[str, Any], provider: str) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--environment", choices=("staging", "production"), required=True)
-    parser.add_argument("--profile", choices=("pilot", "full_market"), required=True)
+    # Pilot is retired; Full market is the only daily execution profile.
+    parser.add_argument("--profile", choices=("full_market",), default="full_market")
     parser.add_argument("--trade-date", type=date.fromisoformat, required=True)
     parser.add_argument("--findb-instance-id", required=True)
     parser.add_argument("--fetcher-instance-id", required=True)

@@ -289,8 +289,7 @@
       "calendar_switch_env": "FACTSET_SKIP_NON_TRADING_DAYS",
       "consumer_roles": [
         "full_market",
-        "historical",
-        "pilot"
+        "historical"
       ],
       "container_suffix": "factset",
       "credential_env_names": [
@@ -318,8 +317,7 @@
       "calendar_switch_env": "FINLAB_SKIP_NON_TRADING_DAYS",
       "consumer_roles": [
         "full_market",
-        "historical",
-        "pilot"
+        "historical"
       ],
       "container_suffix": "finlab",
       "credential_env_names": [
@@ -344,8 +342,7 @@
       "calendar_switch_env": "TAIFEX_SKIP_NON_TRADING_DAYS",
       "consumer_roles": [
         "full_market",
-        "historical",
-        "pilot"
+        "historical"
       ],
       "container_suffix": "taifex",
       "credential_env_names": [],
@@ -368,8 +365,7 @@
       "calendar_switch_env": "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
       "consumer_roles": [
         "full_market",
-        "historical",
-        "pilot"
+        "historical"
       ],
       "container_suffix": "twelve-data",
       "credential_env_names": [
@@ -407,5 +403,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "06944f12ec92a03b36c76715ac4e8d6d587252399370687ac6e18c05e98b3362"
+  "source_sha256": "fdd40e2c4b8b2e561e4e20197777def5fce2c874db751d6589e7d0a358a1f916"
 }

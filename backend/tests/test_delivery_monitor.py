@@ -468,7 +468,6 @@ async def test_taifex_candidate_wait_past_deadline_uses_dedicated_alert_details(
         await test_session.get(UniverseRelease, baseline.release_id),
         DAY,
         revision_id,
-        profile="pilot",
     )
     candidate_payload = _universe(effective_date=DAY).model_dump(mode="json")
     candidate_payload["members"][0]["classification"] = "manual-review"
@@ -488,12 +487,12 @@ async def test_taifex_candidate_wait_past_deadline_uses_dedicated_alert_details(
 
     assert result.created_or_refreshed == 1
     alert = (await test_session.execute(select(MissingDeliveryAlert))).scalar_one()
-    assert alert.execution_profile == "pilot"
+    assert alert.execution_profile == "full_market"
     assert alert.expected_data_date == DAY
     assert alert.details == {
         "code": "DATED_UNIVERSE_PENDING",
         "severity": "error",
-        "execution_profile": "pilot",
+        "execution_profile": "full_market",
         "plan_id": None,
         "expected": None,
         "data": 0,

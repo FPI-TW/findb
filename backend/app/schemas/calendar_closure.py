@@ -24,7 +24,7 @@ class CalendarClosureCheckpoint(ClosureModel):
 class CalendarClosureRequest(ClosureModel):
     request_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$")
     environment: Literal["local", "staging", "production"]
-    execution_profile: Literal["pilot", "full_market"]
+    execution_profile: Literal["full_market"]
     plan_id: UUID
     reason: str = Field(min_length=10, max_length=2000)
     checkpoint: CalendarClosureCheckpoint

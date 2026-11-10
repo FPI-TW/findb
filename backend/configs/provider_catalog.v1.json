@@ -7,7 +7,6 @@
       "container_suffix": "twelve-data",
       "image_key": "twelve_data",
       "consumer_roles": [
-        "pilot",
         "full_market",
         "historical"
       ],
@@ -33,7 +32,6 @@
       "container_suffix": "factset",
       "image_key": "factset",
       "consumer_roles": [
-        "pilot",
         "full_market",
         "historical"
       ],
@@ -62,7 +60,6 @@
       "container_suffix": "finlab",
       "image_key": "finlab",
       "consumer_roles": [
-        "pilot",
         "full_market",
         "historical"
       ],
@@ -88,7 +85,6 @@
       "container_suffix": "taifex",
       "image_key": "twelve_data",
       "consumer_roles": [
-        "pilot",
         "full_market",
         "historical"
       ],

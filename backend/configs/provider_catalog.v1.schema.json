@@ -423,7 +423,6 @@
         "consumer_roles": {
           "items": {
             "enum": [
-              "pilot",
               "full_market",
               "historical"
             ],

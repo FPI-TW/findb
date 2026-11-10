@@ -23,23 +23,22 @@ def allocation(tmp_path, monkeypatch):
         "account": {
             "account_id": "shared",
             "governor_identity": str(tmp_path / "account.sqlite3"),
-            "consumers": ["pilot", "full_market", "historical"],
+            "consumers": ["bounded", "full_market", "historical"],
             "other_requests_per_day": 2,
             "other_bytes_per_day": 200,
         },
     }
     path = tmp_path / "twelve_data.account.json"
     path.write_text(json.dumps(value))
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "true")
     monkeypatch.setenv("APP_ENVIRONMENT", "local")
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "pilot")
+    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "bounded")
     monkeypatch.setenv("FETCHER_ACCOUNT_READINESS_FILE", str(tmp_path / "missing.json"))
     monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(path))
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", value["account"]["governor_identity"])
     return value
 
 
-@pytest.mark.parametrize("consumer", ["pilot", "historical", "full_market"])
+@pytest.mark.parametrize("consumer", ["bounded", "historical", "full_market"])
 def test_removed_allocation_and_expiry_do_not_gate_acquisition(tmp_path, monkeypatch, consumer):
     allocation(tmp_path, monkeypatch)
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", consumer)
@@ -63,11 +62,43 @@ def test_removed_allocation_and_expiry_do_not_gate_acquisition(tmp_path, monkeyp
         )
 
 
-def test_plain_pilot_without_shared_state_retains_bounded_runtime(monkeypatch, tmp_path):
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "true")
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "pilot")
+def test_unset_consumer_is_bounded_and_retains_bounded_runtime(monkeypatch, tmp_path):
+    monkeypatch.delenv("FETCHER_CONSUMER_PROFILE", raising=False)
     monkeypatch.delenv("FETCHER_ACCOUNT_STATE_PATH", raising=False)
+    monkeypatch.delenv("SOURCE_API_URL", raising=False)
+    assert account_governor.consumer() == "bounded"
+    assert account_governor.consumer() in account_governor.BOUNDED_CONSUMERS
+    # Bounded runtimes keep their own control/authorization and never call Source here.
+    assert account_governor.authorize({}) == {"acquisition_allowed": True}
     assert account_governor.reserve("twelve_data") is None
+
+
+def test_full_market_authorization_never_sends_a_retired_profile(monkeypatch):
+    from findb_fetcher import full_market_client
+
+    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
+    paths = []
+
+    class Source:
+        def __init__(self, config):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def request(self, method, path):
+            paths.append(path)
+            return {"acquisition_allowed": True}
+
+    monkeypatch.setattr(full_market_client, "FullMarketSourceClient", Source)
+    monkeypatch.setattr(
+        "findb_fetcher.config.FetcherConfig.from_env", classmethod(lambda cls: None)
+    )
+    assert account_governor.authorize({}) == {"acquisition_allowed": True}
+    assert paths == ["full-market/authorization?consumer=full_market&execution_profile=full_market"]
 
 
 def test_source_control_budget_paces_provider_calls_without_wait_probe_storm(tmp_path, monkeypatch):
@@ -109,7 +140,7 @@ def test_source_control_budget_paces_provider_calls_without_wait_probe_storm(tmp
     )  # No polling while waiting; no obsolete Source budget.
 
 
-def test_all_source_clients_share_pacing_during_expired_flag_off_drain(tmp_path, monkeypatch):
+def test_all_source_clients_share_pacing_during_expired_drain(tmp_path, monkeypatch):
     import httpx
 
     from findb_fetcher.client import SourceAPIClient
@@ -121,7 +152,6 @@ def test_all_source_clients_share_pacing_during_expired_flag_off_drain(tmp_path,
     value = allocation(tmp_path, monkeypatch)
     value["source_requests_per_minute"] = 120
     (tmp_path / "twelve_data.account.json").write_text(json.dumps(value))
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
     clock = [datetime.now(timezone.utc).timestamp()]
     actual = []
@@ -171,7 +201,7 @@ def test_all_source_clients_share_pacing_during_expired_flag_off_drain(tmp_path,
         )
 
 
-@pytest.mark.parametrize("profile", ["pilot", "historical", "full_market"])
+@pytest.mark.parametrize("profile", ["bounded", "historical", "full_market"])
 def test_capacity_violation_blocks_other_consumers_restart_and_next_day(
     tmp_path, monkeypatch, profile
 ):
@@ -381,7 +411,6 @@ def test_trusted_capacity_repair_requires_current_source_authority_and_installed
     monkeypatch.setenv("FETCHER_ACCOUNT_READINESS_FILE", str(readiness))
     monkeypatch.setenv("SOURCE_API_URL", "http://localhost:8080")
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "current-source-key")
-    monkeypatch.setenv("FULL_MARKET_ENABLED", "false")  # Verification does not require acquisition.
     if failure == "missing-enrollment":
         metadata.pop("enrollment_id")
     elif failure == "bad-uuid":
@@ -456,7 +485,7 @@ def test_trusted_capacity_repair_requires_current_source_authority_and_installed
     else:
         account_governor.repair_capacity(**kwargs)
         assert len(requests) == 1
-        monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "pilot")
+        monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "bounded")
         assert account_governor.reserve("twelve_data") is not None
         with permit.state.connection() as db:
             assert (
