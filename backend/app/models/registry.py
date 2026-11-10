@@ -238,6 +238,8 @@ class UniverseMember(Base):
     session: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     mapping_status: Mapped[str] = mapped_column(String(10), nullable=False)
     raw_evidence_ref: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    # Exchange listing date when the official source states it; NULL means listed.
+    listed_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
     release: Mapped["UniverseRelease"] = relationship(back_populates="members")
 
