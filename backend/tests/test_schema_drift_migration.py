@@ -20,7 +20,6 @@ from app.models import Base
 from app.utils import uuid7
 from tests.migration_database import (
     BACKEND_ROOT,
-    RETIRED_COLUMN_DEFAULTS,
     get_active_migration_database_factory,
     run_alembic,
 )
@@ -57,18 +56,6 @@ def _is_partition_diff(diff: Any, partitions: set[str]) -> bool:
     return table is not None and table.name in partitions
 
 
-# Retired flags the ORM stopped mapping one release before the schema drops them.
-RETIRED_COLUMNS = {(table, column) for table, column, _ in RETIRED_COLUMN_DEFAULTS}
-
-
-def _is_retired_column_diff(diff: Any) -> bool:
-    return (
-        isinstance(diff, tuple)
-        and diff[0] == "remove_column"
-        and (diff[2], diff[3].name) in RETIRED_COLUMNS
-    )
-
-
 def _flatten(diffs: list[Any]) -> list[Any]:
     # Column-level modifications are grouped in lists; flatten them for filtering.
     flattened: list[Any] = []
@@ -89,15 +76,11 @@ def _metadata_diffs(connection: Connection) -> list[Any]:
         },
     )
     partitions = _partition_names(connection)
-    diffs = [
+    return [
         diff
         for diff in _flatten(compare_metadata(context, Base.metadata))
         if not _is_partition_diff(diff, partitions)
     ]
-    retired = {(diff[2], diff[3].name) for diff in diffs if _is_retired_column_diff(diff)}
-    # Fails once the drop migration lands, so this allowance is removed with it.
-    assert retired == RETIRED_COLUMNS
-    return [diff for diff in diffs if not _is_retired_column_diff(diff)]
 
 
 def _check_constraint_diffs(connection: Connection) -> list[str]:
