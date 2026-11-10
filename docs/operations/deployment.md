@@ -1496,6 +1496,12 @@ FinLab historical 仍只開放 equity。Admin 查詢前後 13 controls、7 first
 本階段實作不部署 production。兩環境 PR5 唯讀盤點均為 11 筆 known_old_default、2 筆
 already_compliant、0 筆 unknown_difference；此快照不能取代發布時重跑 preflight。
 
+既有環境的升級基線是已完成 Shioaji 退役的 `d8e3f0b5a2c4`；不支援在同一次
+candidate deployment 才從退役前版本補做退役。正式 image 的 container regression 必須
+實際驗證乾淨安裝、上述基線升級及重跑冪等，並驗證退役前 `a42c89d3e610` 被 preflight
+阻擋且 revision、dataset config、controls 完全不變。一般 `pnpm test` 未設定
+`FINDB_TEST_BACKEND_IMAGE` 時會跳過此 suite，不能視為已完成 container migration 驗證。
+
 1. 確認目標已接受 PR3＋4 bundle v4，遵循既有 maintenance window、controls 停止／排空流程，
    記錄原先 desired state。先以 candidate image、既有 migration credential wrapper 執行
    `python /app/scripts/preflight_catalog_schedule.py`。CLI 使用唯讀 transaction，exit 1 表示
@@ -1516,3 +1522,23 @@ already_compliant、0 筆 unknown_difference；此快照不能取代發布時重
    再依 accepted digest promotion 流程另行安排 production。由 Owner 恢復原先運行項目，
    不自動啟用 stopped controls。PR5 後 Backend rollback 下限是支援獨立 deadline timezone
    的版本；migration downgrade 明確拒絕，資料修復採 forward fix。
+
+### Staging 驗收清單
+
+以下為待執行的驗收，不代表已發布 PR5；production promotion 須另行安排。
+
+- 合併前確認 PR 最新 commit 的 Required CI 全綠，並處理 review findings。合併後由既有
+  schema-v4 staging CD 建立 candidate，記錄 Backend／Dashboard digest、deployment attempt
+  及 accepted bundle；不另起舊版部署流程。
+- 維護窗口停止／排空後、migration 前，保存唯讀 baseline：五條 feeds、八個現役 controls、
+  retired controls、operator policy、first dates、既有 plans 的 `deadline_at`、work 與 receipts。
+  原先已停止項目保留停止狀態；有未知差異時不繼續 migration。
+- Migration 後 revision 為 `e9f4a1c6b3d5`，重跑 preflight 應全部 already_compliant。
+  比對 baseline，僅允許本節列出的 schedule／deadline 欄位變化；確認 seed 重跑不改回舊值，
+  且 controls、operator policy 與 frozen evidence 保持一致。
+- 核對四個 providers 的 pilot／full_market Source execution-config、Admin feed schedules
+  與 freshness 時間／時區一致；Dashboard 依 HK／TW／US 分組，FinLab 顯示兩條 feeds，
+  不出現 Slot 標示。既有 slot ingress 相容性仍須通過。
+- 驗證既有 plan 採 frozen deadline、新 plan 採 catalog；US Pilot／Full 次日台北 09:00 與
+  bounded 09:15 分開。歷史回補不新增 daily gate，依既有驗收紀錄追蹤 FactSet native terminal
+  的使用者同意略過項目，不標記為通過。Owner 僅恢復原先運行項目後，記錄最終驗收結果。
