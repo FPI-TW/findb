@@ -625,8 +625,8 @@ describe("FinDB Admin server boundary", () => {
 
 describe("direct backfill authentication boundary", () => {
   const input = {
-    provider: "shioaji",
-    datasetKey: "tw_equity_minute",
+    provider: "taifex",
+    datasetKey: "tw_futures_eod",
     startDate: "2026-10-07",
     endDate: "2026-10-07",
     requestKey: "fixture-request",

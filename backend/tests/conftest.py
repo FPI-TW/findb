@@ -30,6 +30,35 @@ TEST_DATABASE_URL = os.getenv(
     "postgresql+asyncpg://findb:findb@localhost:5435/findb_test",
 )
 
+# CPython swallows an "error" filter for this warning inside os.fork(), so a
+# filterwarnings entry cannot enforce it; fail the session from the record.
+FORK_WARNING_PREFIX = "This process (pid="
+FORK_WARNING_MARKER = "is multi-threaded, use of fork() may lead to deadlocks"
+_fork_warnings: list[str] = []
+
+
+def pytest_warning_recorded(warning_message, when, nodeid, location):
+    message = str(warning_message.message)
+    if (
+        issubclass(warning_message.category, DeprecationWarning)
+        and message.startswith(FORK_WARNING_PREFIX)
+        and FORK_WARNING_MARKER in message
+    ):
+        _fork_warnings.append(f"{nodeid or location}: {message}")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if _fork_warnings and exitstatus == 0:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_terminal_summary(terminalreporter):
+    if _fork_warnings:
+        terminalreporter.section("fork() from a multi-threaded test process")
+        for line in _fork_warnings:
+            terminalreporter.line(line)
+        terminalreporter.line("Start child processes with subprocess/exec instead of fork().")
+
 
 @pytest.fixture(autouse=True)
 def daily_runtime_clock(monkeypatch):

@@ -170,6 +170,7 @@ describe("admin governance wire contracts", () => {
         allowed_datasets: null,
       }).success
     ).toBe(false)
+    // Retired provider: Shioaji credentials can no longer be issued.
     expect(
       createCredentialSchema.safeParse({
         kind: "source",
