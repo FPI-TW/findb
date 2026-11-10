@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { useState, type ReactNode } from "react"
+import type { ReactNode } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { page, userEvent } from "vitest/browser"
+import { page } from "vitest/browser"
 import { cleanup, render } from "vitest-browser-react"
 
 import "../../styles.css"
@@ -27,25 +27,20 @@ vi.mock("@tanstack/react-start", () => ({
 vi.mock("../../lib/admin.functions", () => mocks)
 vi.mock("../../lib/auth.functions", () => ({ logout: vi.fn() }))
 
-import {
-  IngestionOverviewPanel,
-  type SchedulerProfile,
-} from "./operations.overview"
+import { IngestionOverviewPanel } from "./operations.overview"
 
 const providers = ["finlab", "shioaji", "taifex", "twelve_data"]
 const timestamp = "2026-08-04T02:00:00Z"
 
-function scheduler(provider: string, fullMarket: boolean): Scheduler {
+function scheduler(provider: string): Scheduler {
   return {
-    scheduler_key: fullMarket
-      ? `full_market_${provider}_v1`
-      : `pilot_${provider}_v1`,
+    scheduler_key: `full_market_${provider}_v1`,
     provider,
     dataset_keys: ["tw_equity_eod"],
     slot_id: "taiwan_market_window",
     scheduled_local_time: "14:30:00",
     timezone: "Asia/Taipei",
-    desired_state: fullMarket ? "running" : "stopped",
+    desired_state: "stopped",
     observed_state: "stopped",
     start_allowed: true,
     revision: 1,
@@ -94,7 +89,7 @@ beforeEach(async () => {
     async ({ data }: { data: { schedulerKey: string } }) => ({
       success: true,
       data: {
-        ...scheduler(data.schedulerKey.replace(/^pilot_|_v1$/g, ""), false),
+        ...scheduler(data.schedulerKey.replace(/^full_market_|_v1$/g, "")),
         desired_state: "running",
         revision: 2,
       },
@@ -108,64 +103,10 @@ afterEach(async () => {
 })
 
 describe("scheduler confirmation mobile layout", () => {
-  it("supports roving keyboard tabs without mutating scheduler state", async () => {
-    function Overview() {
-      const [profile, setProfile] = useState<SchedulerProfile>("pilot")
-      return (
-        <IngestionOverviewPanel
-          profile={profile}
-          updateProfile={setProfile}
-          freshnessResult={null}
-          schedulersResult={{
-            ok: true,
-            data: {
-              success: true,
-              data: [scheduler("finlab", false), scheduler("finlab", true)],
-            },
-          }}
-          loading={false}
-          pending={false}
-          freshnessError=""
-          schedulersError=""
-          role="owner"
-        />
-      )
-    }
-    const screen = await render(
-      <QueryClientProvider client={new QueryClient()}>
-        <Overview />
-      </QueryClientProvider>
-    )
-    const pilot = screen.getByRole("tab", { name: "Pilot（0 執行中）" })
-    const full = screen.getByRole("tab", { name: "Full market（1 執行中）" })
-    await pilot.click()
-    await userEvent.keyboard("{ArrowRight}")
-    await expect.element(full).toHaveFocus()
-    await expect.element(full).toHaveAttribute("aria-selected", "true")
-    await expect.element(pilot).toHaveAttribute("tabindex", "-1")
-    await expect
-      .element(
-        screen.getByRole("tabpanel", { name: "Full market（1 執行中）" })
-      )
-      .toBeVisible()
-    await userEvent.keyboard("{ArrowRight}")
-    await expect.element(pilot).toHaveFocus()
-    await expect.element(pilot).toHaveAttribute("aria-selected", "true")
-    await userEvent.keyboard("{End}")
-    await expect.element(full).toHaveFocus()
-    await userEvent.keyboard("{Home}")
-    await expect.element(pilot).toHaveFocus()
-    await userEvent.keyboard("{ArrowLeft}")
-    await expect.element(full).toHaveFocus()
-    expect(mocks.updateScheduler).not.toHaveBeenCalled()
-  })
   it.each(["single", "bulk"] as const)(
-    "keeps the %s warning, targets, cancel and confirm usable at 360x640",
+    "keeps the %s targets, cancel and confirm usable at 360x640",
     async mode => {
-      const rows = providers.flatMap(provider => [
-        scheduler(provider, false),
-        scheduler(provider, true),
-      ])
+      const rows = providers.map(provider => scheduler(provider))
       const screen = await render(
         <QueryClientProvider client={new QueryClient()}>
           <IngestionOverviewPanel
@@ -182,27 +123,15 @@ describe("scheduler confirmation mobile layout", () => {
       const trigger = screen.getByRole("button", {
         name:
           mode === "bulk"
-            ? "Pilot 全部啟動"
-            : "Pilot finlab pilot_finlab_v1 設為執行中",
+            ? "全部啟動"
+            : "finlab full_market_finlab_v1 設為執行中",
       })
       await trigger.click()
       const dialog = dialogElement()
       expectWithinViewport(dialog)
-      expect(dialog.textContent).toContain("Full market 與 Pilot 將同時執行")
-      const warningTitle = dialog.querySelector<HTMLElement>(
-        '[data-slot="alert-title"]'
-      )!
-      warningTitle.scrollIntoView({ block: "nearest" })
-      expectWithinViewport(warningTitle)
-      const overlapProviders = mode === "bulk" ? providers : ["finlab"]
-      for (const provider of overlapProviders) {
+      expect(dialog.textContent).not.toContain("Pilot")
+      for (const provider of mode === "bulk" ? providers : ["finlab"]) {
         expect(dialog.textContent).toContain(`full_market_${provider}_v1`)
-      }
-      if (mode === "bulk") {
-        for (const provider of providers) {
-          expect(dialog.textContent).toContain(`pilot_${provider}_v1`)
-        }
-        expect(dialog.scrollHeight).toBeGreaterThan(dialog.clientHeight)
       }
       for (const item of dialog.querySelectorAll<HTMLElement>("li")) {
         item.scrollIntoView({ block: "nearest" })
@@ -215,7 +144,7 @@ describe("scheduler confirmation mobile layout", () => {
       expect(mocks.updateScheduler).not.toHaveBeenCalled()
 
       await trigger.click()
-      const confirmName = mode === "bulk" ? "確認 Pilot 全部啟動" : "確認啟用"
+      const confirmName = mode === "bulk" ? "確認全部啟動" : "確認啟用"
       const reopenedDialog = dialogElement()
       expectWithinViewport(reopenedDialog)
       revealAction(reopenedDialog, confirmName)
@@ -228,7 +157,7 @@ describe("scheduler confirmation mobile layout", () => {
         mocks.updateScheduler.mock.calls.map(([request]) => request.data)
       ).toEqual(
         (mode === "bulk" ? providers : ["finlab"]).map(provider => ({
-          schedulerKey: `pilot_${provider}_v1`,
+          schedulerKey: `full_market_${provider}_v1`,
           desiredState: "running",
           expectedRevision: 1,
         }))

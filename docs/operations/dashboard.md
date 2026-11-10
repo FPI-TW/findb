@@ -5,7 +5,7 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 
 | 分組     | 頁面                             | 用途                                                               |
 | -------- | -------------------------------- | ------------------------------------------------------------------ |
-| 營運監控 | 導入概況                         | Pilot／Full market 排程、readiness、Owner 啟停、佇列與 Worker 健康 |
+| 營運監控 | 導入概況                         | 全市場排程、readiness、Owner 啟停、佇列與 Worker 健康              |
 | 營運監控 | 交付監控                         | 全市場逐成員核對、資料集日期層級告警、授權歷史回補                 |
 | 營運監控 | 資料品質                         | 未解決 DQ 問題及政策資訊                                           |
 | 資料稽核 | 修正稽核、原始資料               | 修正 lineage 與保留中的 raw payload                                |
@@ -13,10 +13,9 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 
 ## 交付監控
 
-入口為 `/dashboard/operations/deliveries`。最外層是獨立的「Pilot」與「Full market」分頁，
-staging 預設 Pilot，production 預設 Full market；切換不寫入 controls。
-各 profile 內分為計畫、缺漏告警、Universe 候選與歷史回補；viewer 不顯示歷史回補。
-計畫 expected、data、no_data、missing、blocked、缺漏清單與告警只計算所選 profile，不能跨頁混加。
+入口為 `/dashboard/operations/deliveries`，分為計畫、缺漏告警、Universe 候選與歷史回補；
+viewer 不顯示歷史回補。Dashboard 不再提供 Pilot，頁面只呈現 Full market，沒有執行模式分頁；
+Dashboard 所有請求固定帶 `execution_profile=full_market`，Backend 仍保留的 Pilot 列不會顯示。
 尚未啟動、已有啟動日期但尚無計畫、以及已建立計畫的實際缺漏分別呈現。
 
 - 全市場計畫：資料集下拉選單列出所有曾有計畫的資料集，不受最近筆數或交易日篩選限制；
@@ -33,9 +32,10 @@ staging 預設 Pilot，production 預設 Full market；切換不寫入 controls�
   手動與定期更新不改寫草稿、預覽或確認狀態；修改參數或帶入新的告警會取消先前預覽與確認，
   較晚完成的舊預覽也不能授權目前草稿。建立後由回補紀錄刷新顯示已建立請求。
 
-URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、Universe 候選 `cp/cps`、回補 `bp/bps`
+URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、Universe 候選 `cp/cps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
-兩種 profile 的計畫都是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
+舊連結帶的 `profile=pilot|full_market` 會被忽略，不報錯也不切換內容。
+計畫是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
 
 ## 載入、更新與失敗
 
@@ -79,16 +79,15 @@ URL 的 `profile=pilot|full_market`、`tab=plans|alerts|candidates|backfills`、
 
 測試方式見 [testing.md](testing.md)；全市場交付判定與操作邊界見 [full_market.md](full_market.md)。
 
-Overview、freshness、plans、alerts 的請求與 query cache key 都包含 profile；切換時只掛載選中模式，
-不以另一 profile 的上一筆資料作為 placeholder。新 runtime／Dashboard 一律明確傳入 profile；
-舊版未指定 profile 的 plan API 保留 Full market 語意。
-概況卡片的啟用範圍與心跳提示同樣標示所選 Pilot／Full market。尚未納入抓取範圍的 feed
+Overview、freshness、schedulers、plans、alerts 的 Admin API 請求固定帶 `execution_profile=full_market`。
+導入概況只有一個排程區塊與一組 Owner「全部啟動／全部停止」，不再顯示 profile 分頁或跨 profile 重疊警告。
+尚未納入抓取範圍的 feed
 若有 blocker，顯示實際原因；沒有 blocker 則顯示「尚未啟用」，不視為日曆缺漏或資料缺漏。
 啟停成功後，卡片先套用 scheduler 回應，再重新取得 freshness；freshness 的 activation 只對其計算時的
 revision 有效，因此重新取得前不會把「已要求執行但尚未啟用」判為設定錯誤。重新取得後若同一
 revision 仍未啟用，才顯示設定錯誤。
 
-FactSet 的 Pilot／Full market 排程卡片、批次啟動跳過提示與確認視窗會區分兩項啟動阻擋：
+FactSet 的排程卡片、批次啟動跳過提示與確認視窗會區分兩項啟動阻擋：
 `full_market_baseline_missing` 顯示「尚無已發布的 FactSet HKEX baseline」，
 `provider_acquisition_cutover` 顯示「尚未提交 HK provider 切換」。操作順序見
 [FactSet 港股切換](factset_hk.md#backend-first-切換)。其他供應商仍使用一般 baseline 與來源切換限制訊息。
@@ -97,16 +96,16 @@ FactSet 的 Pilot／Full market 排程卡片、批次啟動跳過提示與確認
 
 日曆管理同時顯示可編輯修訂與「抓取使用的日曆」來源；published revision 優先，未設定日期標示
 依市場`weekend_days`顯示預設日期（內建市場預設週六日休市）且 revision 為空，draft 不影響抓取。日曆 API 查詢不寫入或自動發布。
-交付計畫在各 profile 下分開顯示有效 provider 政策及「依設定略過」日期／資料集，支援日期與資料集篩選。
+交付計畫顯示有效 provider 政策及「依設定略過」日期／資料集，支援日期與資料集篩選。
 略過清單最多顯示最近 100 筆並顯示總數；略過不混入 expected、missing、blocked 或 no_data。
 人工回補的 skipped_calendar 顯示「依設定略過」，不算成功 Source run。
 
-交付監控頁的「供應商工作佇列」顯示跨 Pilot／Full／historical／maintenance／rerun 的 provider owner、
+交付監控頁的「供應商工作佇列」顯示跨每日抓取／historical／maintenance／rerun 的 provider owner、
 FIFO 位置、等待原因、round、not_before 與 heartbeat。依供應商分頁，各頁標示工作數並只列出該供應商的工作，
 保留原 FIFO 順序；固定保留 Twelve Data、FinLab、Shioaji、TAIFEX、FactSet 五個供應商分頁，
 即使 API 沒有回傳該供應商的未結算工作，仍顯示 `(0)` 與空清單提示。預設選取 `twelve_data`。
 API 回傳的其他供應商仍可動態補入；固定清單也供 Source 憑證表單使用，FactSet 僅對應 `hk_equity_eod`。
-切換供應商不影響下方的執行模式與交付功能分頁；定期或手動更新保留目前選取的供應商。
+切換供應商不影響下方的交付功能分頁；定期或手動更新保留目前選取的供應商。
 資料來自唯讀 Admin `/provider-work`，不包含 lease token；
 初次回應前顯示 loading，使用既有 operations query refresh 註冊與 session query scope。
 
@@ -117,8 +116,8 @@ Shioaji daily 另顯示每日抓取窗口／下次開窗時間、最近已結算
 
 ### 市場排程顯示
 
-Pilot／Full 頁籤內依 market 分組，使用 Backend 發布的逐 feed 時間與時區；FinLab equity／ETF
-維持同一 control，bulk actions 仍依 profile。Slot 不再顯示或參與分組，API 舊欄位維持相容。
+排程卡片依 market 分組，使用 Backend 發布的逐 feed 時間與時區；FinLab equity／ETF
+維持同一 control。Slot 不再顯示或參與分組，API 舊欄位維持相容。
 缺少已發布排程時顯示「尚無發布排程」，不把舊 card-level 時間當作替代設定。
 新 Source credential 的 provider／dataset 選項來自生成 catalog；退役 Shioaji credential 仍可
 讀取歷史紀錄，但不提供新的建立選項。

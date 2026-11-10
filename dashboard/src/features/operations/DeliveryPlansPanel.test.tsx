@@ -90,11 +90,9 @@ describe("full market plans", () => {
       })
     )
     renderPanel()
-    expect(screen.getByText("正在載入Pilot 交付計畫…")).toBeInTheDocument()
+    expect(screen.getByText("正在載入交付計畫…")).toBeInTheDocument()
     expect(
-      screen.queryByText(
-        "此模式在所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
-      )
+      screen.queryByText("所選條件尚無交付計畫；不代表已完成或已有資料缺漏。")
     ).not.toBeInTheDocument()
     await screen.findByRole("option", { name: "old_dataset" })
     await act(async () => resolve({ data: [plan], pagination }))
@@ -138,16 +136,14 @@ describe("full market plans", () => {
     hidden.unmount()
     const { client } = renderPanel()
     await screen.findByText(
-      "此模式在所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
+      "所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
     )
     mocks.loadDeliveryPlans.mockRejectedValue(new Error("offline"))
     await act(() =>
       client.refetchQueries({ queryKey: ["operations", "delivery-plans"] })
     )
     expect(
-      screen.getByText(
-        "此模式在所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
-      )
+      screen.getByText("所選條件尚無交付計畫；不代表已完成或已有資料缺漏。")
     ).toBeInTheDocument()
     expect(await screen.findByText(/保留最後成功資料/)).toBeInTheDocument()
   })
@@ -158,13 +154,10 @@ describe("full market plans", () => {
     })
     renderPanel()
     await screen.findByRole("button", { name: "展開詳細資料" })
-    fireEvent.click(
-      screen.getByRole("button", { name: "Pilot 交付計畫分頁下一頁" })
-    )
+    fireEvent.click(screen.getByRole("button", { name: "交付計畫分頁下一頁" }))
     await waitFor(() =>
       expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
         data: {
-          profile: "pilot",
           datasetKey: "",
           tradeDate: "",
           page: 2,
@@ -179,7 +172,6 @@ describe("full market plans", () => {
     await waitFor(() =>
       expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
         data: {
-          profile: "pilot",
           datasetKey: "old_dataset",
           tradeDate: "",
           page: 1,
@@ -217,46 +209,38 @@ describe("full market plans", () => {
   })
 })
 
-it("isolates profile queries and removes the previous profile while the next is loading", async () => {
+it("always requests the daily delivery plans without a profile selector", async () => {
+  mocks.loadDeliveryPlans.mockResolvedValue({ data: [plan], pagination })
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  const props = (profile: "pilot" | "full_market") => (
+  render(
     <QueryClientProvider client={client}>
-      <DeliveryPlansPanel search={deliveriesSearchSchema.parse({ profile })} />
+      <DeliveryPlansPanel
+        search={deliveriesSearchSchema.parse({ profile: "pilot" })}
+      />
     </QueryClientProvider>
   )
-  const view = render(props("pilot"))
   await screen.findByText("已逾時")
   expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
-    data: expect.objectContaining({ profile: "pilot" }),
+    data: expect.not.objectContaining({ profile: expect.anything() }),
   })
-  mocks.loadDeliveryPlans.mockReturnValue(new Promise(() => {}))
-  view.rerender(props("full_market"))
-  expect(screen.queryByText("已逾時")).not.toBeInTheDocument()
-  await waitFor(() =>
-    expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
-      data: expect.objectContaining({ profile: "full_market" }),
-    })
-  )
-  expect(mocks.loadDeliveryPlanDatasets).toHaveBeenCalledWith({
-    data: { profile: "full_market" },
-  })
-  expect(screen.getByText("正在載入Full market 交付計畫…")).toBeInTheDocument()
+  expect(mocks.loadDeliveryPlanDatasets).toHaveBeenCalledWith()
+  expect(screen.queryByText(/Pilot/)).not.toBeInTheDocument()
 })
 
-it("shows durable policy skips separately from plan totals and isolates profile cache", async () => {
-  mocks.loadDeliveryPlans.mockImplementation(async ({ data }) => ({
-    data: data.profile === "pilot" ? [plan] : [],
+it("shows durable policy skips separately from plan totals", async () => {
+  mocks.loadDeliveryPlans.mockResolvedValue({
+    data: [plan],
     pagination,
     execution_policies: { finlab: { skip_non_trading_days: true } },
     skipped_total: 1,
     skipped: [
       {
-        execution_profile: data.profile,
+        execution_profile: "full_market",
         dataset_key: "tw_equity_eod",
         provider: "finlab",
-        trade_date: data.profile === "pilot" ? "2026-10-03" : "2026-10-04",
+        trade_date: "2026-10-03",
         status: "skipped_calendar",
         snapshot: {
           calendar_source: "weekday_default",
@@ -264,27 +248,16 @@ it("shows durable policy skips separately from plan totals and isolates profile 
         },
       },
     ],
-  }))
+  })
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
-  const view = render(
+  render(
     <QueryClientProvider client={client}>
-      <DeliveryPlansPanel
-        search={deliveriesSearchSchema.parse({ profile: "pilot" })}
-      />
+      <DeliveryPlansPanel search={deliveriesSearchSchema.parse({})} />
     </QueryClientProvider>
   )
   expect(await screen.findByText(/2026-10-03 · finlab/)).toBeInTheDocument()
   expect(screen.getByText(/依設定略過（1 個日期／資料集）/)).toBeInTheDocument()
   expect(screen.getByText(/finlab：略過/)).toBeInTheDocument()
-  view.rerender(
-    <QueryClientProvider client={client}>
-      <DeliveryPlansPanel
-        search={deliveriesSearchSchema.parse({ profile: "full_market" })}
-      />
-    </QueryClientProvider>
-  )
-  expect(screen.queryByText(/2026-10-03 · finlab/)).not.toBeInTheDocument()
-  expect(await screen.findByText(/2026-10-04 · finlab/)).toBeInTheDocument()
 })

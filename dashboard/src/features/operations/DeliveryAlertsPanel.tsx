@@ -79,7 +79,6 @@ export function DeliveryAlertsPanel({
   const query = useDeliveryResource(
     {
       resource: "alerts",
-      profile: search.profile ?? "pilot",
       page: search.p,
       pageSize: search.ps,
     },

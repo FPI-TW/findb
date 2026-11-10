@@ -145,28 +145,20 @@ export function DeliveryPlansPanel({
   const load = useServerFn(loadDeliveryPlans)
   const loadDatasets = useServerFn(loadDeliveryPlanDatasets)
   const scope = useProtectedQueryScope()
-  const profile = search.profile ?? "pilot"
-  const label = profile === "pilot" ? "Pilot 交付計畫" : "Full market 交付計畫"
   const request = {
-    profile,
     datasetKey: search.dataset,
     tradeDate: search.date,
     page: search.pp,
     pageSize: search.pps,
   }
   const queryKey = ["operations", "delivery-plans", scope, request] as const
-  const datasetsKey = [
-    "operations",
-    "delivery-plan-datasets",
-    scope,
-    profile,
-  ] as const
+  const datasetsKey = ["operations", "delivery-plan-datasets", scope] as const
   useRegisterOperationsQuery(queryKey, active)
   useRegisterOperationsQuery(datasetsKey, active)
   const datasets = useQuery({
     ...manualQueryOptions,
     queryKey: datasetsKey,
-    queryFn: () => loadDatasets({ data: { profile } }),
+    queryFn: () => loadDatasets(),
     enabled: active,
   })
   const query = useQuery({
@@ -189,8 +181,8 @@ export function DeliveryPlansPanel({
   ).sort()
   return (
     <Panel
-      eyebrow={profile === "pilot" ? "Pilot" : "Full market"}
-      title={label}
+      eyebrow="Daily delivery"
+      title="交付計畫"
       icon={<ClipboardList size={19} />}
       result={{ ok: true, data: null }}
     >
@@ -258,10 +250,10 @@ export function DeliveryPlansPanel({
         error={query.error}
         updatedAt={query.dataUpdatedAt}
         onRetry={() => void query.refetch({ cancelRefetch: false })}
-        label={label}
+        label="交付計畫"
       />
       <DataTable
-        ariaLabel={label}
+        ariaLabel="交付計畫"
         columns={columns}
         data={query.data?.data ?? []}
         getRowId={plan => plan.plan_id}
@@ -270,7 +262,7 @@ export function DeliveryPlansPanel({
         refreshingState={null}
         error={query.data === undefined ? query.error : undefined}
         errorState={null}
-        emptyState="此模式在所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
+        emptyState="所選條件尚無交付計畫；不代表已完成或已有資料缺漏。"
         renderExpandedRow={({ original }) => <PlanDetails plan={original} />}
         fillAvailableWidth
         manualPagination
@@ -278,7 +270,7 @@ export function DeliveryPlansPanel({
         pageCount={Math.max(pagination?.total_pages ?? 1, 1)}
         rowCount={pagination?.total_records ?? 0}
         pageSizeOptions={[25, 50, 100]}
-        paginationAriaLabel={`${label}分頁`}
+        paginationAriaLabel="交付計畫分頁"
         onPaginationChange={next => {
           const value =
             typeof next === "function"
