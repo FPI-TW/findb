@@ -238,10 +238,25 @@ class UniverseMember(Base):
     session: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     mapping_status: Mapped[str] = mapped_column(String(10), nullable=False)
     raw_evidence_ref: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
-    # Exchange listing date when the official source states it; NULL means listed.
-    listed_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
     release: Mapped["UniverseRelease"] = relationship(back_populates="members")
+
+
+class UniverseMemberListing(Base):
+    """Exchange listing date a member's official source stated; no row means listed.
+
+    Kept beside ``universe_member`` so members without a listing date store and
+    hash exactly as before.
+    """
+
+    __tablename__ = "universe_member_listing"
+
+    member_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("universe_member.member_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    listed_date: Mapped[date] = mapped_column(Date, nullable=False)
 
 
 class DailyDeliveryPlan(Base):

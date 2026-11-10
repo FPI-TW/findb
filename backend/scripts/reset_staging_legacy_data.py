@@ -100,6 +100,7 @@ TARGET_TABLES = (
     # Associations reference mutable baseline/calendar rows; clear the full FK graph.
     "public.full_market_admission",
     "public.full_market_admission_feed",
+    "public.universe_member_listing",
     "public.universe_member",
     "public.universe_release",
     "public.futures_contract_eod",

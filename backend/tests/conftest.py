@@ -61,6 +61,22 @@ def pytest_terminal_summary(terminalreporter):
 
 
 @pytest.fixture(autouse=True)
+def pre_listing_schema(request, monkeypatch):
+    """Migration tests seed older schemas through current services.
+
+    Universe member listings postdate those schemas and no seed carries a
+    listing date, so their reads see none instead of a missing table.
+    """
+    if "migration" in request.node.fspath.basename:
+        from app.services import full_market
+
+        async def no_listings(db, release_id):
+            return {}
+
+        monkeypatch.setattr(full_market, "_listing_dates", no_listings)
+
+
+@pytest.fixture(autouse=True)
 def daily_runtime_clock(monkeypatch):
     """Keep ordinary daily admission tests inside a defined acquisition window.
 

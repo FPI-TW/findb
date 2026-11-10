@@ -13,7 +13,13 @@ from app.schemas.full_market import (
     UniverseMemberInput,
     UniversePublishRequest,
 )
-from app.services.full_market import _member_columns, create_plan, publish_universe, submit_universe
+from app.services.full_market import (
+    _listing_dates,
+    _member_columns,
+    create_plan,
+    publish_universe,
+    submit_universe,
+)
 from tests.full_market_fixtures import historical_admission
 from tests.test_full_market import DAY, _calendar, _dataset, _universe
 
@@ -102,7 +108,9 @@ async def test_learning_listing_dates_does_not_count_as_membership_change(test_s
         )
     ).all()
     # Members recorded without a listing date hash exactly as before.
-    assert all("listed_date" not in _member_columns(member) for member in stored)
+    listing = await _listing_dates(test_session, first.release_id)
+    assert listing == {}
+    assert all("listed_date" not in _member_columns(member, listing) for member in stored)
 
     dated = _with_listing(
         _universe(KEY, 3, effective_date=DAY + timedelta(days=1)),

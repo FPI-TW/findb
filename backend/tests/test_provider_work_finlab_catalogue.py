@@ -68,7 +68,7 @@ async def test_finlab_native_catalogue_known_failure_settles(
         },
     )
     assert following.status_code == 200
-    html = "<table><tr><td>股票</td></tr><tr><td>2330 company</td><td>x</td><td>x</td><td>x</td><td>x</td><td>ESXXXX</td></tr><tr><td>ETF</td></tr><tr><td>0050 etf</td><td>x</td><td>x</td><td>x</td><td>x</td><td>CEXXXX</td></tr></table>".encode(
+    html = "<table><tr><td>股票</td></tr><tr><td>2330 company</td><td>x</td><td>1994/09/05</td><td>x</td><td>x</td><td>ESXXXX</td></tr><tr><td>ETF</td></tr><tr><td>0050 etf</td><td>x</td><td>2003/06/30</td><td>x</td><td>x</td><td>CEXXXX</td></tr></table>".encode(
         "cp950"
     )
 
