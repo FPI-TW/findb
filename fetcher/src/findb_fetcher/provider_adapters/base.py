@@ -96,10 +96,11 @@ class AcquisitionContext:
 
 @dataclass(frozen=True)
 class AcquisitionResult:
-    """One unsigned contract request with its raw object, or a no-trade observation.
+    """One contract request with its raw object, or a no-trade observation.
 
-    The caller derives the idempotency identity, attaches the raw reference and
-    reports a no-trade outcome; the adapter never talks to Source.
+    The caller replaces the request identity with its own (Full daily keys it by
+    plan and member), attaches the raw reference and reports a no-trade outcome;
+    the adapter never talks to Source.
     """
 
     request: dict[str, Any] | None = None
