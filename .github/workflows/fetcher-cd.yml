@@ -46,7 +46,7 @@ permissions:
   contents: read
 jobs:
   policy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -146,7 +146,7 @@ jobs:
       (!cancelled() && github.ref == 'refs/heads/main' && needs.policy.result == 'success' && needs.policy.outputs.fetcher_staging == 'true' &&
       (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.deployment_mode == 'replay') ||
       (needs.verify.result == 'skipped' && github.event_name == 'push' && needs.policy.outputs.fetcher_ci_evidence != ''))) && needs.policy.outputs.mode == 'candidate'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -263,7 +263,7 @@ jobs:
         needs.publish.result == 'cancelled' ||
         needs.deploy.result == 'failure' ||
         needs.deploy.result == 'cancelled')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -295,7 +295,7 @@ jobs:
   deployment-summary:
     needs: [policy, verify, publish, deploy]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -309,7 +309,7 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: python3 infra/deploy/deployment_timing.py --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --output "$RUNNER_TEMP/deployment-timing.json"
-    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: deployment-timing-fetcher
         path: ${{ runner.temp }}/deployment-timing.json
