@@ -762,13 +762,43 @@ DQ／delivery policy。
    `production/bootstrap.tfstate`；確認 versioning、public access block、SSE-KMS 與 lockfile。
    遷移前先將 `production-bootstrap/backend.s3.tf.example` 複製為 ignored `backend.tf`，再使用
    `bootstrap_backend_migrate_command` output；確認 remote state 完整後才安全刪除 local state。
-3. 以 bootstrap output 的 KMS ARN初始化 `infra/tofu/production`。保存 refresh plan，確認
+3. 初始化 `infra/tofu/production`（`backend.tf` 已固定 bootstrap output 的 KMS ARN，見「日常 plan／apply」）。保存 refresh plan，確認
    account output 為 `289112218471` 且沒有 delete，再由受信任 operator apply。
 4. 同一 PR 對 `infra/tofu/staging` 執行 refresh plan，新增的兩個 promotion-reader role 之外
    必須 zero-delete。Reader 只可讀自己 unit 的 `*/accepted/`、acceptance record 與 ECR layers。
 
 禁止從 PR runner apply；禁止在 state bucket 存 application secret；禁止把 bootstrap saved plan
 拿來 apply foundation。任何 account、region、resource prefix 或 delete 不符即停止。
+
+## 日常 plan／apply
+
+Foundation 建好後的日常變更（例如監控或 IAM 調整）都依這個流程，只能由受信任的 operator
+在 protected `main` 已合併的 commit 上執行，不可從 PR runner apply。
+
+- `production/backend.tf` 已固定 bucket、state key、region 與 state KMS key
+  （`alias/findb-production-tofu-state`）的 ARN。state bucket policy 會拒絕 SSE-KMS key
+  不符的所有寫入，包含 native lockfile。所以 `init` 不需要也不可另外帶 `-backend-config`；
+  若 key 輪替，要在同一個 PR 更新 `backend.tf`。
+- `production/terraform.tfvars.example` 已是實際值，沒有機密，直接以 `-var-file` 使用。
+  這點和 staging 不同：staging 的 example 是 PR plan 用的佔位值，apply 前要另備不進 Git 的
+  `terraform.tfvars`。
+
+```bash
+export AWS_PROFILE=findb-production AWS_REGION=ap-southeast-1
+git switch main && git pull --ff-only && git status --porcelain   # 必須是乾淨的 main
+aws sts get-caller-identity --query Account --output text          # 必須是 289112218471
+tofu -chdir=infra/tofu/production init -reconfigure -input=false
+tofu -chdir=infra/tofu/production plan -refresh=true -input=false \
+  -var-file=terraform.tfvars.example -out=production.tfplan
+tofu -chdir=infra/tofu/production show -json production.tfplan > production.tfplan.json
+python3 infra/tofu/plan_json_guard.py production.tfplan.json       # 任何 delete 即失敗
+tofu -chdir=infra/tofu/production apply -input=false production.tfplan
+```
+
+- 審查 plan 時，每個 action 都要能對應到這次核准的變更。出現非預期的 replacement，或 EC2、RDS、
+  VPC、security group、runtime secret 的變動，即停止。
+- 只 apply 剛審查過的那份 saved plan。plan 之後 `main` 若有新的 commit，就重新產生 plan。
+- saved plan 與 plan JSON 不可 commit，用完即刪除。
 
 ## Live foundation acceptance
 
