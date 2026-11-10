@@ -855,6 +855,7 @@ class FullMarketRuntime:
             provider=self.provider,
             environment=app_environment(),
             profile=self.execution_profile,
+            complete_scope=False,
         )
         published = {feed["dataset_key"]: feed["source_timezone"] for feed in snapshot.feeds}
         if any(feed["dataset_key"] not in published for feed in feeds):

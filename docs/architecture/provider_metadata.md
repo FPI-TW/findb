@@ -132,7 +132,8 @@ Provider／dataset／date／profile 或 adapter identity 真正衝突仍失敗�
 
 Universe 日期解讀與 `source_timezone` 一律使用 Source 發布的 feed 時區，Fetcher 不保存
 market→時區對照：cycle 內沿用當輪快照；未持有快照的 maintenance（含 drain 與手動同步）在任何
-provider I/O 前另讀一次 execution-config，失敗或缺少該 feed 即不抓取、不提交。TAIFEX dated
+provider I/O 前另讀一次 execution-config。Maintenance 只依 credential 綁定授權，因此只要求本次 feeds
+已發布，不要求完整 provider scope，其餘身分、digest 與 feed 驗證不變；失敗或缺少該 feed 即不抓取、不提交。TAIFEX dated
 universe 使用 frozen `scope.feed` 的時區。只讀時區，不引用 daily trigger 時間，也不對
 historical 增加 daily API 前提。
 

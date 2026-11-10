@@ -84,6 +84,37 @@ def test_invalid_complete_snapshot_fails_closed(fault):
         resolve(value)
 
 
+@pytest.mark.parametrize("fault", [None, "timezone", "digest"])
+def test_maintenance_scope_may_be_narrower_but_never_unvalidated(fault):
+    value = publication("finlab", profile="full_market", environment="local")
+    value["feeds"].pop()
+    if fault == "timezone":
+        value["feeds"][0]["source_timezone"] = "Not/AZone"
+    signed(value)
+    if fault == "digest":
+        value["schedule_digest"] = "0" * 64
+    if fault is None:
+        with pytest.raises(ValueError, match="Incomplete execution config scope"):
+            resolve(value)
+        snapshot = resolve_execution_config(
+            value,
+            provider="finlab",
+            environment="local",
+            profile="full_market",
+            complete_scope=False,
+        )
+        assert [feed["dataset_key"] for feed in snapshot.feeds] == ["tw_equity_eod"]
+    else:
+        with pytest.raises((ValueError, KeyError)):
+            resolve_execution_config(
+                value,
+                provider="finlab",
+                environment="local",
+                profile="full_market",
+                complete_scope=False,
+            )
+
+
 def test_snapshot_is_detached_and_has_complete_authorized_scopes():
     value = publication("finlab", profile="full_market", environment="local")
     snapshot = resolve(value)
