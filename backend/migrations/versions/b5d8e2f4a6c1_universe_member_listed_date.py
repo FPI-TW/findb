@@ -24,9 +24,7 @@ def upgrade() -> None:
         "universe_member_listing",
         sa.Column("member_id", postgresql.UUID(as_uuid=True), primary_key=True),
         sa.Column("listed_date", sa.Date(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["member_id"], ["universe_member.member_id"], ondelete="RESTRICT"
-        ),
+        sa.ForeignKeyConstraint(["member_id"], ["universe_member.member_id"], ondelete="RESTRICT"),
     )
 
 
