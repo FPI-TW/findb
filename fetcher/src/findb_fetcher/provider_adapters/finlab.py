@@ -35,6 +35,7 @@ from findb_fetcher.providers.finlab import (
     FinLabDatasetConfig,
     FinLabDatasetTable,
     FinLabOperationalError,
+    FinLabPayloadError,
     FinLabSdkError,
     FinLabSdkGateway,
     FinLabSymbol,
@@ -241,7 +242,8 @@ class FinLabAdapter(ProviderAdapter):
                     "source_excerpt": canonical_bytes(
                         {field: str(value) for field, value in sorted(values.items())}
                     ).decode()[:500],
-                }
+                },
+                stored,
             )
         single_config = FinLabDatasetConfig(
             dataset_key=dataset,
@@ -293,6 +295,15 @@ class FinLabAdapter(ProviderAdapter):
             if isinstance(exc, FinLabConfigError):
                 return ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_CONFIG")
         return PASSTHROUGH
+
+    def pending_shared_fetch(self, dataset_key: str, trade_date: date) -> bool:
+        return (dataset_key, trade_date) not in self.bundles
+
+    def member_outcome(self, exc: BaseException) -> tuple[str, str | None] | None:
+        # One symbol's values failing the mapper never reject the shared tables.
+        if isinstance(exc, FinLabPayloadError) and not isinstance(exc, FinLabTargetNotReadyError):
+            return ("invalid", "row_structure_invalid")
+        return super().member_outcome(exc)
 
     def diagnostic(self, exc: BaseException) -> dict[str, Any] | None:
         if isinstance(exc, FinLabValueError):

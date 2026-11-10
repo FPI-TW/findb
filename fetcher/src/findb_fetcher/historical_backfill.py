@@ -338,7 +338,7 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
             if _basis_blocked(owner):
                 control.fail(item, "PREPARED_DELIVERY_MANUAL_REVIEW")
                 return True
-            if item.provider not in {"taifex", "factset"} or not owner.work.get("manifest"):
+            if not _member_evidence(item) or not owner.work.get("manifest"):
                 if receipts:
                     try:
                         control.complete(item, receipts[-1].run_id)
@@ -356,7 +356,7 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
         ):
             run_id = runner.run(item)
         if not isinstance(run_id, (UUID, HistoricalRunResult)) or (
-            isinstance(run_id, HistoricalRunResult) and item.provider not in {"taifex", "factset"}
+            isinstance(run_id, HistoricalRunResult) and not _member_evidence(item)
         ):
             raise HistoricalControlError("historical runner did not return a Source run")
     except ProviderWorkAcquisitionStopped:
@@ -408,6 +408,14 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
         else:
             return True
     return True
+
+
+def _member_evidence(item: HistoricalWorkItem) -> bool:
+    """Items completed by per-member evidence rather than one Source run."""
+    snapshot = getattr(item, "universe_snapshot", None)
+    return item.provider in {"taifex", "factset"} or (
+        isinstance(snapshot, dict) and snapshot.get("cohort") == "full_release"
+    )
 
 
 def _text(payload: dict, field: str) -> str:

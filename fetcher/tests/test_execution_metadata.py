@@ -47,7 +47,6 @@ def test_non_clock_settings_match_previous_historical_manifest(monkeypatch, envi
 @pytest.mark.parametrize(
     "provider,dataset",
     [
-        ("finlab", "tw_etf_eod"),
         ("twelve_data", "hk_equity_eod"),
         ("shioaji", "tw_equity_minute"),
         ("unknown", "us_equity_eod"),
@@ -56,6 +55,13 @@ def test_non_clock_settings_match_previous_historical_manifest(monkeypatch, envi
 def test_unsupported_scope_remains_closed(provider, dataset):
     with pytest.raises(metadata.ExecutionMetadataError):
         metadata.historical_feed(provider, dataset)
+
+
+def test_etf_historical_backfills_its_release_cohort_without_a_static_universe():
+    feed = metadata.historical_feed("finlab", "tw_etf_eod")
+    assert feed["capabilities"]["historical"] == "executable"
+    with pytest.raises(metadata.ExecutionMetadataError, match="no bundle execution"):
+        metadata.historical_execution("finlab", "tw_etf_eod")
 
 
 def _write(monkeypatch, tmp_path, value):

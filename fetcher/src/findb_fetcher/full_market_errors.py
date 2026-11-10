@@ -4,7 +4,16 @@ from __future__ import annotations
 
 
 class ReadinessBlockedError(RuntimeError):
-    pass
+    # True only when the failure concerns one member's provider identity, never the
+    # shared provider response; the class and message stay those of the daily path.
+    member_scoped = False
+
+
+def member_identity_error(message: str) -> ReadinessBlockedError:
+    """A provider identity that differs from the frozen member, for that member only."""
+    error = ReadinessBlockedError(message)
+    error.member_scoped = True
+    return error
 
 
 class ProviderHTTPError(ReadinessBlockedError):

@@ -9,7 +9,11 @@ from datetime import timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
-from findb_fetcher.full_market_errors import ReadinessBlockedError, retryable_http_status
+from findb_fetcher.full_market_errors import (
+    ReadinessBlockedError,
+    member_identity_error,
+    retryable_http_status,
+)
 from findb_fetcher.full_market_universe import (
     NASDAQ_URLS,
     TWELVE_DATA_EQUITY_TYPES,
@@ -34,6 +38,8 @@ from findb_fetcher.provider_adapters.base import (
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
     TwelveDataConfig,
+    TwelveDataNoNewDataError,
+    TwelveDataPayloadError,
     TwelveDataResponseError,
 )
 from findb_fetcher.providers.twelve_data import (
@@ -103,7 +109,7 @@ class TwelveDataAdapter(ProviderAdapter):
             delivery=dict(context.delivery),
         )
         if request["payload"]["data"][0]["currency"] != member["currency"]:
-            raise ReadinessBlockedError("provider identity differs from official universe")
+            raise member_identity_error("provider identity differs from official universe")
         return AcquisitionResult.data(request, stored)
 
     def catalogue_request(self, dataset_key: str, max_response_bytes: int) -> CatalogueRequest:
@@ -186,6 +192,18 @@ class TwelveDataAdapter(ProviderAdapter):
             http=True,
             status_code=exc.status_code,
         )
+
+    def member_outcome(self, exc: BaseException) -> tuple[str, str | None] | None:
+        # A symbol without a series for the date says nothing about the others.
+        if isinstance(exc, TwelveDataNoNewDataError) or (
+            isinstance(exc, TwelveDataResponseError)
+            and not exc.is_rate_limited
+            and exc.category in {"no_data", "not_found"}
+        ):
+            return ("missing", "no_source_row")
+        if isinstance(exc, TwelveDataPayloadError):
+            return ("invalid", "row_structure_invalid")
+        return super().member_outcome(exc)
 
     def diagnostic(self, exc: BaseException) -> dict[str, Any] | None:
         if not isinstance(exc, TwelveDataResponseError):

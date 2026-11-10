@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from findb_fetcher.full_market_errors import MemberUnavailableError, ReadinessBlockedError
 from findb_fetcher.raw_storage import RawObject
 
 
@@ -105,6 +106,7 @@ class AcquisitionResult:
     """
 
     request: dict[str, Any] | None = None
+    # The persisted native observation: the request's raw, or the no-trade evidence.
     raw_object: RawObject | None = None
     no_trade: dict[str, Any] | None = None
 
@@ -113,8 +115,10 @@ class AcquisitionResult:
         return cls(request=request, raw_object=raw_object)
 
     @classmethod
-    def no_trade_evidence(cls, evidence: dict[str, Any]) -> AcquisitionResult:
-        return cls(no_trade=evidence)
+    def no_trade_evidence(
+        cls, evidence: dict[str, Any], raw_object: RawObject | None = None
+    ) -> AcquisitionResult:
+        return cls(no_trade=evidence, raw_object=raw_object)
 
 
 @dataclass(frozen=True)
@@ -251,3 +255,22 @@ class ProviderAdapter:
     def diagnostic(self, exc: BaseException) -> dict[str, Any] | None:
         """Bounded diagnostic fields for a provider failure; never provider free text."""
         return None
+
+    def member_outcome(self, exc: BaseException) -> tuple[str, str | None] | None:
+        """A deterministic one-member historical outcome ``(outcome, reason)``, else None.
+
+        Historical dates record these per member instead of retrying the date.
+        """
+        if isinstance(exc, MemberUnavailableError):
+            return (
+                ("missing", "no_source_row")
+                if exc.code == "missing_symbol"
+                else ("invalid", "row_structure_invalid")
+            )
+        if isinstance(exc, ReadinessBlockedError) and exc.member_scoped:
+            return ("invalid", "row_structure_invalid")
+        return None
+
+    def pending_shared_fetch(self, dataset_key: str, trade_date: date) -> bool:
+        """True when the next ``acquire`` fetches a native response every member shares."""
+        return False
