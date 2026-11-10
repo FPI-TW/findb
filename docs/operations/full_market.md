@@ -3,7 +3,8 @@
 Daily acquisition 只有 `full_market` 一種 execution profile；Pilot profile 與 `FULL_MARKET_ENABLED`
 旗標已退役，切換與 rollback 下限見 [Pilot 退役](deployment.md#pilot-profile-退役與-rollback-下限)。
 Backend 與 Fetcher 必須使用相同 `APP_ENVIRONMENT=local|staging|production`；JSON `deployment_target`
-仍是環境匹配契約。兩環境固定安裝相同 runtime，staging 與 production 都執行 Full market daily。
+仍是環境匹配契約。兩環境固定安裝相同 runtime；production 執行 Full market daily，staging 平時 controls
+停止，只在測試改動功能時一次啟動一個 provider。
 新抓取只受 scheduler control（Owner start／stop）與 Source 授權（credential scope、每日窗口、平台配額／
 account governor、資料驗證）約束；部署不會啟動排程。啟動資料條件只包含已發布 baseline。
 Owner 權限、revision CAS 與 Source 認證屬於既有操作／資料存取規則。
@@ -925,7 +926,9 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 ## 設定與啟動
 
 Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布 baseline 後才人工啟動；部署本身不
-start controls。Staging 與 production 都執行 Full daily，Owner 在檢查後逐一 provider 啟動。Daily 只抓當日，
+start controls。Production 執行 Full daily；staging 平時保持停止，Owner 只在測試改動時一次啟動一個 provider，
+驗收後即停止。Twelve Data 的 staging 與 production 共用同一帳號（來源無法發多組 API key），兩環境 governor
+各自計算、沒有跨環境預算，staging 抓取會直接消耗 production 的 credits／分鐘配額。Daily 只抓當日，
 回補天數由管理者建立回補時決定；完整範圍回補在 production 執行。Staging fetcher 主機記憶體小（見
 [部署 OOM 紀錄](deployment.md#2026-10-22-staging-historical-finlab-oom-阻擋部署)），FinLab worker 一律載入
 整張 dataset；staging 只做少量回補，啟動後須觀察記憶體與 OOM。
