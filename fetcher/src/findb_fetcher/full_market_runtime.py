@@ -33,6 +33,13 @@ from findb_fetcher.daily_runtime import window
 from findb_fetcher.execution_config import ExecutionSnapshot, resolve_execution_config
 from findb_fetcher.execution_metadata import acquisition_feeds
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
+from findb_fetcher.full_market_errors import (
+    DatedUniversePendingError,
+    MemberUnavailableError,
+    ProviderHTTPError,
+    ReadinessBlockedError,
+)
+from findb_fetcher.full_market_errors import retryable_http_status as _retryable_http_status
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_BREAKER,
@@ -49,7 +56,6 @@ from findb_fetcher.full_market_universe import (
     TAIFEX_URL,
     TW_COMPANY_URLS,
     TW_ISIN_URLS,
-    TWELVE_DATA_EQUITY_TYPES,
     canonical_bytes,
     checksum,
     map_catalogue,
@@ -65,6 +71,11 @@ from findb_fetcher.full_market_universe import (
 )
 from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
+from findb_fetcher.provider_adapters import (
+    AcquisitionContext,
+    FailureKind,
+    adapter_for,
+)
 from findb_fetcher.provider_process import ProviderProcessError
 from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
@@ -108,15 +119,11 @@ from findb_fetcher.providers.taifex import (
     report_members,
 )
 from findb_fetcher.providers.twelve_data import (
-    TwelveDataClient,
     TwelveDataConfig,
     TwelveDataResponseError,
 )
 from findb_fetcher.providers.twelve_data import (
     authorization_headers as td_authorization_headers,
-)
-from findb_fetcher.providers.twelve_data import (
-    build_market_eod_request as td_request,
 )
 from findb_fetcher.raw_storage import (
     RawObject,
@@ -129,33 +136,8 @@ from findb_fetcher.raw_storage import (
 _TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States"}
 
 
-class ReadinessBlockedError(RuntimeError):
-    pass
-
-
 class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
     """A proven daily-window wait, including authoritative Source denial."""
-
-
-class ProviderHTTPError(ReadinessBlockedError):
-    """Preserve the public universe error while retaining a dispatched HTTP status."""
-
-    def __init__(self, message: str, status_code: int) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.dispatched = True
-
-
-class MemberUnavailableError(RuntimeError):
-    """One member cannot be delivered while the shared provider response is sound.
-
-    ``code`` is a bounded class (never a provider message); the member is blocked
-    for this plan and the round continues with the other members.
-    """
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
 
 
 # Shared FinLab evidence URL; the bundle checksum identifies the exact observation.
@@ -180,21 +162,8 @@ def _finlab_no_trade(values: dict[str, object]) -> bool:
     )
 
 
-class DatedUniversePendingError(ReadinessBlockedError):
-    """A date-local prerequisite; other frozen dates may still make progress."""
-
-    def __init__(self, reason: str, *, retry_after_seconds: int = 3600) -> None:
-        super().__init__(reason)
-        self.retry_after_seconds = max(60, retry_after_seconds)
-
-
 # A TAIFEX report outage stops charging members, but only for this long per plan.
 TAIFEX_OUTAGE_RETRY_SECONDS = 12 * 3600
-
-
-def _retryable_http_status(status: int | None) -> bool:
-    """Shared retry classification for provider HTTP status codes."""
-    return status is None or status in {408, 429} or status >= 500
 
 
 def _taifex_http_retryable(exc: TaifexOperationalError | ProviderHTTPError) -> bool:
@@ -418,11 +387,16 @@ class FullMarketRuntime:
         self.feeds = [
             {**feed, "slot_id": feed["delivery"]["slot_id"]} for feed in acquisition_feeds(provider)
         ]
+        # Packaged catalog contracts; frozen work scope never overrides them.
+        self.contracts = {
+            feed["dataset_key"]: feed["contract"] for feed in acquisition_feeds(provider)
+        }
         self.schedule_snapshot: ExecutionSnapshot | None = None
         self.installed_feeds = list(self.feeds)
         self.http = client or httpx.Client(timeout=30)
         self.owns_http = client is None
-        self.td: TwelveDataClient | None = None
+        # Provider-specific acquisition, failure classes and native caches.
+        self.adapter = adapter_for(provider)
         self.proof: dict[str, Any] = {}
         self.reservation_window = ""
         self.snapshot_objects: dict[str, RawObject] = {}
@@ -436,12 +410,12 @@ class FullMarketRuntime:
         self.last_batch: dict[str, Any] = {}
 
     def close(self) -> None:
-        if self.td is not None:
-            self.td.close()
+        self.adapter.close()
         if self.owns_http:
             self.http.close()
 
     def pause(self) -> None:
+        self.adapter.reset()
         self.bundles.clear()
         self.futures.clear()
 
@@ -2052,60 +2026,19 @@ class FullMarketRuntime:
                     reason="target_not_ready",
                 )
                 return False
-            except (QuotaBlockedError, TwelveDataResponseError) as exc:
-                limited = (
-                    exc.quota_wait and not exc.dispatched
-                    if isinstance(exc, QuotaBlockedError)
-                    else exc.is_rate_limited
-                )
-                reason = "rate_limited" if limited else "source_error"
-                # A symbol the catalogue lists before its series is served answers 404,
-                # so it shares the member-scoped no-data budget; diagnostics keep the class.
-                no_data = isinstance(exc, TwelveDataResponseError) and exc.category in {
-                    "no_data",
-                    "not_found",
-                }
+            except QuotaBlockedError as exc:
+                limited = exc.quota_wait and not exc.dispatched
                 if limited:
-                    self.state.rate_limited(
-                        account=self.provider,
-                        window=datetime.now(timezone.utc).date().isoformat(),
-                        until=time.time() + 60,
-                    )
-
-                predispatch_wait = (
-                    isinstance(exc, QuotaBlockedError)
-                    and limited
-                    and (self.daily_policy or owner.dispatch_observations == dispatch_before)
-                )
-                if predispatch_wait:
+                    self._account_cooldown()
+                if limited and (
+                    self.daily_policy or owner.dispatch_observations == dispatch_before
+                ):
                     self.state.defer_wait(key, now=time.time())
                     if self.daily_policy:
                         self.last_batch["reason"] = "quota_wait"
                     return False
-                self.source.outcome(
-                    plan["plan_id"],
-                    work_item_id=part["work_item_id"],
-                    member_key=member_key,
-                    reason=reason,
-                )
-                self.state.finish(
-                    key,
-                    status="prepared" if self.state.prepared(key) else "pending",
-                    reason="no_data" if no_data else reason,
-                    now=time.time(),
-                )
-                self._record_diagnostic(key, exc)
-                # One symbol without data says nothing about the provider or account, so
-                # it keeps its bounded retries without stopping the other members. A long
-                # unbroken run does, so it holds the plan to bound the calls it spends.
-                if no_data:
-                    if self.state.counts_toward_no_data_breaker(key):
-                        no_data_streak += 1
-                    if no_data_streak < FULL_WORK_NO_DATA_BREAKER:
-                        continue
-                    self.state.record_no_data_trip(
-                        plan["plan_id"], until=time.time() + FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS
-                    )
+                reason = "rate_limited" if limited else "source_error"
+                self._report_member_failure(plan, part, member_key, key, exc, reason, reason)
                 return False
             except ProviderWorkBasisMismatchError:
                 self._price_basis_manual(plan, part, member_key, key)
@@ -2155,6 +2088,36 @@ class FullMarketRuntime:
                     raise ProviderWorkRecoveryBlockedError(
                         "Source provider owner fence differs"
                     ) from None
+                failure = self.adapter.classify(exc, "member")
+                if failure.wait is None and failure.kind in {
+                    FailureKind.MEMBER,
+                    FailureKind.QUOTA_WAIT,
+                    FailureKind.ROUND_RETRY,
+                }:
+                    if failure.kind is FailureKind.QUOTA_WAIT:
+                        self._account_cooldown()
+                    self._report_member_failure(
+                        plan,
+                        part,
+                        member_key,
+                        key,
+                        exc,
+                        failure.reason,
+                        "no_data" if failure.no_data else failure.reason,
+                    )
+                    # One symbol without data says nothing about the provider or account,
+                    # so it keeps its bounded retries without stopping the other members.
+                    # A long unbroken run does, so it holds the plan to bound its calls.
+                    if failure.no_data:
+                        if self.state.counts_toward_no_data_breaker(key):
+                            no_data_streak += 1
+                        if no_data_streak < FULL_WORK_NO_DATA_BREAKER:
+                            continue
+                        self.state.record_no_data_trip(
+                            plan["plan_id"],
+                            until=time.time() + FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS,
+                        )
+                    return False
                 if self.provider == "taifex" and _taifex_report_unavailable(exc):
                     # One exchange report serves every member: an outage keeps the
                     # member failure budget and ends this round for a later retry,
@@ -2198,6 +2161,38 @@ class FullMarketRuntime:
         self.state.finish(key, status="manual", reason="price_basis_manual_review")
         self._record_diagnostic(key, ProviderWorkBasisMismatchError("price basis"))
 
+    def _account_cooldown(self) -> None:
+        self.state.rate_limited(
+            account=self.provider,
+            window=datetime.now(timezone.utc).date().isoformat(),
+            until=time.time() + 60,
+        )
+
+    def _report_member_failure(
+        self,
+        plan: dict[str, Any],
+        part: dict[str, Any],
+        member_key: str,
+        key: str,
+        exc: BaseException,
+        reason: str,
+        finish_reason: str,
+    ) -> None:
+        """Report one classified member failure; its retry budget stays durable."""
+        self.source.outcome(
+            plan["plan_id"],
+            work_item_id=part["work_item_id"],
+            member_key=member_key,
+            reason=reason,
+        )
+        self.state.finish(
+            key,
+            status="prepared" if self.state.prepared(key) else "pending",
+            reason=finish_reason,
+            now=time.time(),
+        )
+        self._record_diagnostic(key, exc)
+
     def _record_diagnostic(self, key: str, exc: BaseException) -> None:
         """Best effort: a diagnostic write never suppresses the failure's own report."""
         try:
@@ -2210,15 +2205,8 @@ class FullMarketRuntime:
             self.state.record_diagnostic(
                 key, provider=self.provider, category="price_basis_mismatch"
             )
-        elif isinstance(exc, TwelveDataResponseError):
-            self.state.record_diagnostic(
-                key,
-                provider=self.provider,
-                category=exc.category,
-                http_status=exc.status_code,
-                provider_code=exc.provider_code,
-                dispatched=exc.dispatched,
-            )
+        elif (fields := self.adapter.diagnostic(exc)) is not None:
+            self.state.record_diagnostic(key, provider=self.provider, **fields)
         elif isinstance(exc, (MemberUnavailableError, FinLabValueError)):
             prefix = "member" if isinstance(exc, MemberUnavailableError) else "finlab_value"
             self.state.record_diagnostic(
@@ -2273,15 +2261,14 @@ class FullMarketRuntime:
             raise ReadinessBlockedError("R2 raw persistence identity differs from acquired bytes")
         return stored
 
-    @_governed
-    def _acquire(
+    def _acquisition_context(
         self,
-        member: dict[str, Any],
         plan: dict[str, Any],
         part: dict[str, Any],
         release: dict[str, Any],
         feed: dict[str, Any],
-    ) -> list[dict[str, Any]]:
+    ) -> AcquisitionContext:
+        """The narrow view of one owned member acquisition that an adapter may use."""
         day = date.fromisoformat(plan["trade_date"])
         now = datetime.now(timezone.utc)
         delivery = {
@@ -2291,52 +2278,38 @@ class FullMarketRuntime:
             "work_item_id": part["work_item_id"],
         }
         dataset = plan["dataset_key"]
+        return AcquisitionContext(
+            dataset_key=dataset,
+            trade_date=day,
+            fetched_at=now,
+            feed=feed,
+            delivery=delivery,
+            contract=self.contracts.get(dataset),
+            limits=self.proof,
+            http=self.http,
+            persist=lambda raw, symbol, **kwargs: self._persist(raw, dataset, symbol, **kwargs),
+            observe_response=self._observed_response,
+            rate_limited=self._rate_limited,
+            snapshot=self._snapshot,
+            cohort=release.get("members"),
+        )
+
+    @_governed
+    def _acquire(
+        self,
+        member: dict[str, Any],
+        plan: dict[str, Any],
+        part: dict[str, Any],
+        release: dict[str, Any],
+        feed: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        context = self._acquisition_context(plan, part, release, feed)
+        day, now, dataset = context.trade_date, context.fetched_at, context.dataset_key
+        delivery = context.delivery
         if self.provider == "twelve_data":
-            if self.td is None:
-                td_config = TwelveDataConfig.from_env()
-                self.td = TwelveDataClient(
-                    replace(
-                        td_config,
-                        max_response_bytes=min(
-                            td_config.max_response_bytes, int(self.proof["max_response_bytes"])
-                        ),
-                    )
-                )
-            try:
-                response = self.td.fetch_daily(
-                    member["provider_symbol"],
-                    start_date=day,
-                    end_date=day,
-                    max_response_bytes=int(self.proof["max_response_bytes"]),
-                    on_http_rate_limited=self._rate_limited,
-                )
-            except TwelveDataResponseError as exc:
-                if exc.is_rate_limited:
-                    self._rate_limited()
-                if exc.observed_bytes or exc.declared_bytes:
-                    try:
-                        self._observed_response(exc.observed_bytes, declared=exc.declared_bytes)
-                    except ReadinessBlockedError:
-                        # Overage debt is retained without erasing known HTTP/API status.
-                        raise exc
-                raise
-            raw = response.raw_bytes
-            self._observed_response(len(raw))
-            stored = self._persist(raw, dataset, member["provider_symbol"])
-            request = td_request(
-                response,
-                dataset_key=dataset,
-                fetched_at=now,
-                requested_symbol=member["provider_symbol"],
-                canonical_symbol=member["symbol"],
-                allowed_instrument_types=tuple(TWELVE_DATA_EQUITY_TYPES),
-                after_trade_date=day - timedelta(days=1),
-                through_trade_date=day,
-                delivery=delivery,
-            )
-            if request["payload"]["data"][0]["currency"] != member["currency"]:
-                raise ReadinessBlockedError("provider identity differs from official universe")
-            raw = response.raw_bytes
+            result = self.adapter.acquire(member, context)
+            assert result.request is not None and result.raw_object is not None
+            request, stored = result.request, result.raw_object
         elif self.provider == "finlab":
             cache_key = (dataset, day)
             if cache_key not in self.bundles:

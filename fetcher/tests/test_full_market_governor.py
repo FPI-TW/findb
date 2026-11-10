@@ -61,7 +61,9 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
             with pytest.raises(QuotaBlockedError):
                 first._catalogue()
         else:
-            first.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+            first.adapter.client = TwelveDataClient(
+                TwelveDataConfig(api_key="offline-secret"), client=http
+            )
             plan = _plan()
             plan["parts"][0]["member_keys"] = ["AAPL"]
             first.state.record_plan(plan, first.provider)
@@ -91,7 +93,9 @@ def test_twelve_data_429_account_cooldown_crosses_day_and_shared_runtime(
         return httpx.Response(503)
 
     with httpx.Client(transport=httpx.MockTransport(acquired)) as http:
-        second.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+        second.adapter.client = TwelveDataClient(
+            TwelveDataConfig(api_key="offline-secret"), client=http
+        )
         plan = _plan()
         with pytest.raises(TwelveDataResponseError):
             second._acquire(_member(), plan, plan["parts"][0], {"release_id": "r"}, second.feeds[0])
@@ -312,7 +316,9 @@ def test_known_http_429_survives_invalid_body_and_fresh_shared_hk_runtime(
             with pytest.raises(error):
                 first._catalogue()
         else:
-            first.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+            first.adapter.client = TwelveDataClient(
+                TwelveDataConfig(api_key="offline-secret"), client=http
+            )
             with pytest.raises(TwelveDataResponseError) as caught:
                 first._acquire(
                     _member(), _plan(), _plan()["parts"][0], {"release_id": "r"}, first.feeds[0]
@@ -370,7 +376,9 @@ def test_http_429_cooldown_commits_before_secondary_byte_ledger_failure(
             runtime.http = http
             acquire = runtime._catalogue
         else:
-            runtime.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+            runtime.adapter.client = TwelveDataClient(
+                TwelveDataConfig(api_key="offline-secret"), client=http
+            )
 
             def acquire() -> Any:
                 return runtime._acquire(
@@ -410,7 +418,9 @@ def test_daily_invalid_http_429_stops_delivery_without_preparation(
     with httpx.Client(
         transport=httpx.MockTransport(lambda request: httpx.Response(429, stream=_Body(body)))
     ) as http:
-        runtime.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+        runtime.adapter.client = TwelveDataClient(
+            TwelveDataConfig(api_key="offline-secret"), client=http
+        )
         assert not runtime._deliver_plan(
             plan, {"release_id": "r", "members": [_member()]}, runtime.feeds[0]
         )
@@ -451,7 +461,7 @@ def test_actual_twelve_data_stream_uses_readiness_cap_before_preparation(
         )
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
-        runtime.td = TwelveDataClient(
+        runtime.adapter.client = TwelveDataClient(
             TwelveDataConfig(api_key="offline-secret", max_response_bytes=8000000), client=client
         )
         plan = _plan()
@@ -480,7 +490,7 @@ def test_actual_twelve_data_creation_tightens_environment_cap(
         runtime._acquire(
             _member(), _plan(), _plan()["parts"][0], {"release_id": "r"}, runtime.feeds[0]
         )
-    assert runtime.td._config.max_response_bytes == 1000
+    assert runtime.adapter.client._config.max_response_bytes == 1000
     runtime.http.close()
 
 
@@ -1210,7 +1220,7 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
     runtime.http.close()
     runtime.http = httpx.Client(transport=httpx.MockTransport(response))
     if path == "daily":
-        runtime.td = TwelveDataClient(
+        runtime.adapter.client = TwelveDataClient(
             TwelveDataConfig(api_key="offline-fixture"), client=runtime.http
         )
 
@@ -1611,7 +1621,9 @@ def test_full_twelve_data_non_200_never_persists_provider_payload(tmp_path, monk
             lambda _: httpx.Response(status, json={"status": "ok", "values": []})
         )
     ) as http:
-        runtime.td = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+        runtime.adapter.client = TwelveDataClient(
+            TwelveDataConfig(api_key="offline-secret"), client=http
+        )
         try:
             with pytest.raises(TwelveDataResponseError) as caught:
                 runtime._acquire(
