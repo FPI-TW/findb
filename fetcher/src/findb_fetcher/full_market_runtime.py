@@ -73,7 +73,9 @@ from findb_fetcher.provider_wait import (
 from findb_fetcher.provider_work import (
     ProviderWorkAcquisitionStopped,
     ProviderWorkBasisMismatchError,
+    closed_work_times,
     durable_response,
+    prune_closed_journal,
 )
 from findb_fetcher.providers.factset import (
     FactSetConfig,
@@ -898,6 +900,18 @@ class FullMarketRuntime:
         if any(feed["dataset_key"] not in published for feed in feeds):
             raise ReadinessBlockedError("Source universe timezone unavailable")
         return {feed["dataset_key"]: ZoneInfo(published[feed["dataset_key"]]) for feed in feeds}
+
+    def prune_closed_state(self) -> dict[str, Any] | None:
+        """Daily retention of local journal and checkpoint rows for closed works."""
+        journal = prune_closed_journal(self.source, self.provider)
+        plans = self.state.prune_closed_plans(
+            self.provider,
+            lambda keys: closed_work_times(self.source, stable_keys=keys),
+            execution_profile=self.execution_profile,
+        )
+        if journal is None and plans is None:
+            return None
+        return {"journal": journal, "plans": plans}
 
     def drain(self) -> None:
         """Drain retained deliveries only through the original fenced owner."""

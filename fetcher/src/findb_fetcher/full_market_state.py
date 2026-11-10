@@ -38,6 +38,8 @@ FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS = 1800
 ACCOUNT_LEDGER_RETENTION_SECONDS = 7 * 86400
 ACCOUNT_LEDGER_PRUNE_INTERVAL_SECONDS = 86400
 ACCOUNT_LEDGER_PRUNE_BATCH = 5000
+CLOSED_PLAN_RETENTION_SECONDS = 7 * 86400
+CLOSED_PLAN_PRUNE_INTERVAL_SECONDS = 86400
 
 
 class FullMarketStateError(RuntimeError):
@@ -110,6 +112,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS acquisition_usage(operation_id TEXT NOT NULL, observed_at REAL NOT NULL, bytes INTEGER NOT NULL, limit_bytes INTEGER NOT NULL, remaining_bytes INTEGER NOT NULL, PRIMARY KEY(operation_id,observed_at));
                 CREATE TABLE IF NOT EXISTS account_alias_audit(alias TEXT PRIMARY KEY, account TEXT NOT NULL, original_quota TEXT NOT NULL, original_pacing REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS account_ledger_retention (id INTEGER PRIMARY KEY CHECK(id=1), next_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS checkpoint_retention (provider TEXT PRIMARY KEY, next_at REAL NOT NULL);
             """)
             if "reason" not in {
                 row[1] for row in db.execute("PRAGMA table_info(full_empty_outcome)")
@@ -162,6 +165,76 @@ class FullMarketState:
             "INSERT INTO full_account_cooldown VALUES(?,?,?) ON CONFLICT(account) DO UPDATE SET not_before=MAX(not_before,excluded.not_before),reason=CASE WHEN excluded.not_before>=not_before THEN excluded.reason ELSE reason END",
             (account, until, reason),
         )
+
+    def prune_closed_plans(
+        self,
+        provider: str,
+        closed_at: Callable[[list[str]], dict[str, float]],
+        *,
+        execution_profile: str = "full_market",
+    ) -> dict[str, int] | None:
+        """Drop checkpoints of plans whose daily work Source closed a week ago.
+
+        Runs at most once a day per provider. A closed work is never claimed again,
+        so nothing reads these rows; a plan still holding a prepared body without a
+        receipt keeps everything, since its delivery is not proven locally.
+        """
+        now = self.clock()
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT next_at FROM checkpoint_retention WHERE provider=?", (provider,)
+            ).fetchone()
+            if row is not None and now < row[0]:
+                return None
+            db.execute(
+                "INSERT INTO checkpoint_retention VALUES(?,?) ON CONFLICT(provider) DO UPDATE SET next_at=excluded.next_at",
+                (provider, now + CLOSED_PLAN_PRUNE_INTERVAL_SECONDS),
+            )
+            plans = {
+                f"daily:{execution_profile}:{dataset}:{trade_date}": str(plan_id)
+                for plan_id, dataset, trade_date in db.execute(
+                    "SELECT plan_id,dataset,trade_date FROM full_plan WHERE provider=?", (provider,)
+                )
+            }
+        if not plans:
+            return {"plans": 0, "undelivered": 0}
+        closed = closed_at(sorted(plans))
+        cutoff = now - CLOSED_PLAN_RETENTION_SECONDS
+        removed = {"plans": 0, "undelivered": 0}
+        for stable_key, plan_id in sorted(plans.items()):
+            if closed.get(stable_key, now) >= cutoff:
+                continue
+            with self.connection() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if db.execute(
+                    "SELECT 1 FROM full_work w WHERE w.plan_id=? AND w.body IS NOT NULL "
+                    "AND w.status IN ('pending','prepared') AND w.receipt IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM full_work_receipt r WHERE r.key=w.key) LIMIT 1",
+                    (plan_id,),
+                ).fetchone():
+                    removed["undelivered"] += 1
+                    continue
+                members = "SELECT key FROM full_work WHERE plan_id=?"
+                for table, column in (
+                    ("full_work_receipt", "key"),
+                    ("full_work_diagnostic", "key"),
+                    ("full_empty_outcome", "work_key"),
+                    ("full_member_repair", "work_key"),
+                ):
+                    db.execute(f"DELETE FROM {table} WHERE {column} IN ({members})", (plan_id,))
+                for table in (
+                    "full_work",
+                    "full_plan",
+                    "full_plan_reconcile",
+                    "full_provider_outage",
+                    "full_no_data_trip",
+                    "full_no_data_round",
+                ):
+                    db.execute(f"DELETE FROM {table} WHERE plan_id=?", (plan_id,))
+                db.execute("DELETE FROM full_schedule WHERE scope=?", (plan_id,))
+            removed["plans"] += 1
+        return removed
 
     def prune_account_ledger(
         self, *, batch: int = ACCOUNT_LEDGER_PRUNE_BATCH

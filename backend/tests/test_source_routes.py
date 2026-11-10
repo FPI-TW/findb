@@ -30,6 +30,7 @@ def test_source_openapi_contains_only_retained_operational_routes() -> None:
         "/api/v1/source/provider-work",
         "/api/v1/source/provider-work/enqueue",
         "/api/v1/source/provider-work/claim",
+        "/api/v1/source/provider-work/closed",
         "/api/v1/source/provider-work/{work_id}/authorize",
         "/api/v1/source/provider-work/{work_id}/calendar-status",
         "/api/v1/source/provider-work/{work_id}/calendar-closure",

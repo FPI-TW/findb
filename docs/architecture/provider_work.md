@@ -328,7 +328,9 @@ revision 完全相符，舊 image 不能直接連新 schema；退版規則見
 
 Source `/provider-work` 提供 enqueue、claim、authorize、calendar-status、heartbeat、manifest、
 prepare／prepared、close、settle 與 execute-rerun；historical claim 只是取得同一 owner 中的 item，
-不再有獨立 lease authority。
+不再有獨立 lease authority。唯讀的 `POST /provider-work/closed` 依 work ID 或 stable key 回答
+caller scope 內已結案的工作與 `completed_at`，供 Fetcher 清理本機狀態
+（[已結案工作的本機保留](../operations/data_maintenance.md#已結案工作的本機保留)）。
 Source queue claim 須已有 Owner cutover 保存的相同 shared inode identity，
 單獨改 flag 無法開始 claim。所有 ingest／historical claim 缺少 work protocol 一律 fail closed。
 Source `/provider-work/{work_id}/authorize` 在既有 provider transaction lock 下回傳原 work ID、provider、
