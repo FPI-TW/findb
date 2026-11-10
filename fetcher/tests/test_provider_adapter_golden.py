@@ -540,7 +540,7 @@ def test_factset_cohort_acquisition_is_byte_identical(tmp_path, monkeypatch):
     plan = _plan("hk_equity_eod", [member["member_key"] for member in members])
     runtime.state.record_plan(plan, "factset")
     try:
-        runtime._deliver_factset_plan(owner, plan, {"members": members}, feed)
+        runtime._deliver_batch_plan(owner, plan, {"members": members}, feed)
         _check(
             "factset",
             {

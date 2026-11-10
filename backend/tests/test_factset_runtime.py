@@ -188,6 +188,7 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
     from findb_fetcher.client import SourceAPIClient
     from findb_fetcher.full_market_client import FullMarketSourceClient
     from findb_fetcher.full_market_state import FullMarketState
+    from findb_fetcher.provider_adapters import factset as factset_adapter
     from findb_fetcher.provider_work import claimed_work
 
     from app.models.registry import DatasetRegistry, UniverseRelease
@@ -199,6 +200,7 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
 
     monkeypatch.setattr(runtime.FactSetConfig, "from_env", classmethod(lambda cls: None))
     monkeypatch.setattr(runtime, "FactSetGateway", lambda config: h.gateway)
+    monkeypatch.setattr(factset_adapter, "FactSetGateway", lambda config: h.gateway)
     try:
         assert await h.run() and await h.run(), h.failure
         dataset = await test_session.get(DatasetRegistry, "hk_equity_eod")
@@ -260,7 +262,7 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
                         execution_profile="full_market",
                         client=h.http(),
                     )
-                    instance._deliver_factset_plan(
+                    instance._deliver_batch_plan(
                         owner, frozen, source.release(str(release.release_id)), feed
                     )
 

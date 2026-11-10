@@ -71,6 +71,7 @@ from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
 from findb_fetcher.http_response import BoundedResponseError, read_identity_response
 from findb_fetcher.provider_adapters import (
     AcquisitionContext,
+    BatchContext,
     FailureKind,
     adapter_for,
 )
@@ -1167,8 +1168,8 @@ class FullMarketRuntime:
                         else:
                             self.state.record_plan(plan, self.provider)
                             release = self.source.release(plan["release_id"])
-                            if self.provider == "factset":
-                                self._deliver_factset_plan(owner, plan, release, feed)
+                            if self.adapter.batch:
+                                self._deliver_batch_plan(owner, plan, release, feed)
                             else:
                                 owner.freeze(
                                     {
@@ -1291,9 +1292,10 @@ class FullMarketRuntime:
             pass
         return health()
 
-    def _deliver_factset_plan(self, owner, plan: dict, release: dict, feed: dict) -> None:
-        from findb_fetcher.factset_eod import FactSetEOD, completion_status
-
+    def _deliver_batch_plan(self, owner, plan: dict, release: dict, feed: dict) -> None:
+        """A whole-cohort provider query, delivered and checkpointed member by member."""
+        contract = self.contracts[plan["dataset_key"]]
+        snapshot_key = self.adapter.batch_snapshot_key or ""
         deliveries = {
             key: {"slot_id": feed["slot_id"], "work_item_id": part["work_item_id"]}
             for part in plan["parts"]
@@ -1304,7 +1306,10 @@ class FullMarketRuntime:
             {
                 "mode": "canonical",
                 "plan_id": plan["plan_id"],
-                "contract": {"schema_id": "market_eod", "schema_version": 2},
+                "contract": {
+                    "schema_id": contract["schema_id"],
+                    "schema_version": contract["current_version"],
+                },
                 "members": [
                     {
                         "key": m["member_key"],
@@ -1324,8 +1329,8 @@ class FullMarketRuntime:
 
         retry_delay = self._publication_retry_delay(owner, feed)
         if (
-            owner.journal.has_response_observation("factset-eod:snapshot")
-            and owner.journal.response("factset-eod:snapshot") is None
+            owner.journal.has_response_observation(snapshot_key)
+            and owner.journal.response(snapshot_key) is None
             and self._calendar_repair_required(owner)
         ):
             for key, delivery in deliveries.items():
@@ -1337,7 +1342,7 @@ class FullMarketRuntime:
             raise CalendarDecisionRepairRequiredError("published calendar is now closed") from None
         if (
             owner.work.get("kind") == "daily"
-            and not owner.journal.has_response_observation("factset-eod:snapshot")
+            and not owner.journal.has_response_observation(snapshot_key)
             and any(member["mapping_status"] == "mapped" for member in members)
             and self._calendar_repair_required(owner)
         ):
@@ -1353,18 +1358,17 @@ class FullMarketRuntime:
                 ),
                 state_path=self.state.path,
             ):
-                evidence = FactSetEOD(
-                    FactSetGateway(FactSetConfig.from_env()),
-                    self.delivery,
-                    self.raw_store,
-                    on_receipt=checkpoint_receipt,
-                ).run(
-                    day=date.fromisoformat(plan["trade_date"]),
-                    members=members,
-                    dataset=plan["dataset_key"],
-                    deliveries=deliveries,
-                    historical=False,
-                    defer_missing=retry_delay > 0,
+                evidence = self.adapter.acquire_batch(
+                    members,
+                    BatchContext(
+                        dataset_key=plan["dataset_key"],
+                        trade_date=date.fromisoformat(plan["trade_date"]),
+                        deliveries=deliveries,
+                        delivery=self.delivery,
+                        raw_store=self.raw_store,
+                        on_receipt=checkpoint_receipt,
+                        defer_missing=retry_delay > 0,
+                    ),
                 )
         except ProviderPublicationPendingError:
             if self._calendar_repair_required(owner):
@@ -1378,7 +1382,8 @@ class FullMarketRuntime:
                     "published calendar is now closed"
                 ) from None
             raise ProviderPublicationPendingError(
-                "factset_no_source_row", retry_after_seconds=retry_delay
+                self.adapter.batch_pending_reason or "provider_no_source_row",
+                retry_after_seconds=retry_delay,
             ) from None
         if any(row.get("reason") == "no_source_row" for row in evidence["members"]) and (
             self._calendar_repair_required(owner)
@@ -1406,7 +1411,7 @@ class FullMarketRuntime:
                 reason=result["outcome"],
             )
         self.state.evaluate(self.source.evaluate(plan["plan_id"]))
-        owner.settle(completion_status(evidence), proof={"eod": evidence})
+        owner.settle(self.adapter.batch_status(evidence), proof={"eod": evidence})
 
     def _settle_queued_round(
         self,
