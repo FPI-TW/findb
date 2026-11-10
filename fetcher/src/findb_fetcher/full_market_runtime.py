@@ -13,8 +13,8 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
-from typing import Any, cast
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -48,23 +48,11 @@ from findb_fetcher.full_market_state import (
     QuotaBlockedError,
 )
 from findb_fetcher.full_market_universe import (
-    HKEX_URL,
+    EMPTY_OFFICIAL_SNAPSHOT_URLS,
     MAX_SNAPSHOT_BYTES,
-    NASDAQ_URLS,
-    TAIFEX_URL,
-    TW_COMPANY_URLS,
-    TW_ISIN_URLS,
     canonical_bytes,
     checksum,
-    map_catalogue,
-    nasdaq_effective_date,
-    nasdaq_security_names,
-    parse_hkex,
-    parse_nasdaq,
-    parse_tw_companies,
-    parse_tw_etfs,
-    parse_tw_ordinary,
-    scope_us_members,
+    official_snapshot_dataset,
     universe_request,
 )
 from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
@@ -73,12 +61,8 @@ from findb_fetcher.provider_adapters import (
     AcquisitionContext,
     BatchContext,
     FailureKind,
+    UniverseContext,
     adapter_for,
-)
-from findb_fetcher.provider_adapters.finlab import FINLAB_PRICE_EVIDENCE_URL, FinLabAdapter
-from findb_fetcher.provider_adapters.finlab import table_bytes as finlab_table_bytes
-from findb_fetcher.provider_adapters.taifex import (
-    TAIFEX_OUTAGE_RETRY_SECONDS as TAIFEX_OUTAGE_RETRY_SECONDS,
 )
 from findb_fetcher.provider_process import ProviderProcessError
 from findb_fetcher.provider_wait import (
@@ -92,35 +76,12 @@ from findb_fetcher.provider_work import (
     durable_response,
     prune_closed_journal,
 )
-from findb_fetcher.providers.factset import (
-    FactSetConfig,
-    FactSetGateway,
-    map_current_cohort,
-)
-from findb_fetcher.providers.finlab import (
-    FinLabOperationalError,
-    FinLabSdkError,
-)
-from findb_fetcher.providers.taifex import (
-    official_report_date,
-    parse_report,
-    report_members,
-)
-from findb_fetcher.providers.twelve_data import (
-    TwelveDataConfig,
-)
-from findb_fetcher.providers.twelve_data import (
-    authorization_headers as td_authorization_headers,
-)
 from findb_fetcher.raw_storage import (
     RawObject,
     RawPayloadFormat,
     RawPayloadStore,
     attach_raw_object,
 )
-
-# HK EOD is owned by FactSet; Twelve Data never refreshes or acquires HK again.
-_TD_CATALOGUE_COUNTRIES = {"us_equity_eod": "United States"}
 
 
 class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
@@ -500,20 +461,13 @@ class FullMarketRuntime:
                 raise ProviderHTTPError(
                     "official exchange snapshot unavailable", response.status_code
                 )
-            if url in NASDAQ_URLS:
-                dataset = "us_equity_eod"
-            elif url == HKEX_URL:
-                dataset = "hk_equity_eod"
-            elif url == TAIFEX_URL:
-                dataset = "tw_futures_eod"
-            else:
-                asset = "etf" if url in TW_ISIN_URLS else "equity"
-                dataset = f"tw_{asset}_eod"
-            # An empty TAIFEX HTTP 200 report has no raw object; the dated
+            # An empty unpublished HTTP 200 report has no raw object; the dated
             # report resolver handles fallback/retry without fabricating evidence.
-            if url == TAIFEX_URL and not body:
+            if url in EMPTY_OFFICIAL_SNAPSHOT_URLS and not body:
                 return body
-            self.snapshot_objects[url] = self._persist(body, dataset, "official_universe")
+            self.snapshot_objects[url] = self._persist(
+                body, official_snapshot_dataset(url), "official_universe"
+            )
             return body
 
     def _ensure_proof(self) -> None:
@@ -523,20 +477,18 @@ class FullMarketRuntime:
 
     @_governed
     def _catalogue(self, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
+        """The provider's HTTP catalogue rows for the selected datasets."""
         self._ensure_proof()
-        if self.provider == "finlab":
+        scope = self.adapter.catalogue_datasets
+        if scope is None:
             return []
         installed = {feed["dataset_key"] for feed in self.installed_feeds}
         selected = installed if dataset_keys is None else set(dataset_keys)
-        if (
-            not selected
-            or not selected <= installed
-            or not selected <= _TD_CATALOGUE_COUNTRIES.keys()
-        ):
+        if not selected or not selected <= installed or not selected <= set(scope):
             raise ReadinessBlockedError("provider catalogue dataset scope invalid")
         combined: list[dict[str, Any]] = []
         evidence: dict[str, bytes] = {}
-        for dataset in _TD_CATALOGUE_COUNTRIES:
+        for dataset in scope:
             if dataset not in selected:
                 continue
             rows, url, raw = self._catalogue_market(dataset)
@@ -546,30 +498,33 @@ class FullMarketRuntime:
         return combined
 
     def _catalogue_evidence_for(self, dataset_key: str) -> dict[str, bytes]:
-        country = _TD_CATALOGUE_COUNTRIES[dataset_key]
         return {
             url: raw
             for url, raw in self.catalogue_evidence.items()
-            if dict(parse_qsl(urlsplit(url).query)).get("country") == country
+            if self.adapter.catalogue_evidence_dataset(url) == dataset_key
         }
 
     @_governed
-    @durable_response("twelve_catalogue", ("dataset_key",))
     def _catalogue_market(self, dataset_key: str) -> tuple[list[dict[str, Any]], str, bytes]:
-        config = TwelveDataConfig.from_env()
-        country = _TD_CATALOGUE_COUNTRIES[dataset_key]
-        evidence_url = config.base_url + "/stocks?" + urlencode({"country": country})
-        # Each country request uses a fresh dataset-bound authorization and account permit.
+        # The adapter names the journal identity, so replay keys never change.
+        journaled = durable_response(self.adapter.catalogue_journal, ("dataset_key",))(
+            self._fetch_catalogue
+        )
+        return journaled(dataset_key=dataset_key)
+
+    def _fetch_catalogue(self, dataset_key: str) -> tuple[list[dict[str, Any]], str, bytes]:
+        request = self.adapter.catalogue_request(dataset_key, int(self.proof["max_response_bytes"]))
+        # Each dataset request uses a fresh dataset-bound authorization and account permit.
         with (
-            http_acquisition(self.provider, self.http, url=config.base_url + "/stocks") as (
+            http_acquisition(self.provider, self.http, url=request.url) as (
                 operation,
                 extensions,
             ),
             self.http.stream(
                 "GET",
-                config.base_url + "/stocks",
-                params={"country": country},
-                headers=td_authorization_headers(config.api_key),
+                request.url,
+                params=dict(request.params),
+                headers=dict(request.headers),
                 extensions=extensions,
             ) as response,
         ):
@@ -579,9 +534,7 @@ class FullMarketRuntime:
                 self._rate_limited()
             try:
                 raw = self._read_response(
-                    response,
-                    bound=min(config.max_response_bytes, int(self.proof["max_response_bytes"])),
-                    provider_response=True,
+                    response, bound=request.max_response_bytes, provider_response=True
                 )
             except (ReadinessBlockedError, httpx.HTTPError) as exc:
                 if response.status_code == 429:
@@ -597,12 +550,10 @@ class FullMarketRuntime:
                 raise QuotaBlockedError("provider catalogue rate limited", status_code=429)
             if response.status_code != 200:
                 raise ProviderHTTPError("provider catalogue unavailable", response.status_code)
-            value = json.loads(raw)
-            if not isinstance(value, dict) or not isinstance(value.get("data"), list):
-                raise ReadinessBlockedError("provider catalogue shape invalid")
+            rows = self.adapter.catalogue_rows(raw)
             catalogue_raw = bytes(raw)
             self._persist(catalogue_raw, dataset_key, "provider_catalogue")
-            return value["data"], evidence_url, catalogue_raw
+            return rows, request.evidence_url, catalogue_raw
 
     @_governed
     def sync_universes(self, *, dataset_keys: list[str] | None = None) -> list[dict[str, Any]]:
@@ -629,142 +580,31 @@ class FullMarketRuntime:
             return []
         zones = self._universe_zones(feeds)
         now = datetime.now(timezone.utc)
-        snapshots: dict[str, bytes] = {}
-        if self.provider == "twelve_data":
-            groups = {}
-            catalogue = self._catalogue(dataset_keys=[feed["dataset_key"] for feed in feeds])
-            if "us_equity_eod" in dataset_keys:
-                snapshots.update({url: self._snapshot(url) for url in NASDAQ_URLS})
-                us = parse_nasdaq(snapshots[NASDAQ_URLS[0]]) + parse_nasdaq(
-                    snapshots[NASDAQ_URLS[1]], other=True
-                )
-                us_dates = {
-                    nasdaq_effective_date(
-                        snapshots[url],
-                        observed_date=now.astimezone(zones["us_equity_eod"]).date(),
-                    )
-                    for url in NASDAQ_URLS
-                }
-                if len(us_dates) != 1:
-                    raise ReadinessBlockedError(
-                        "Nasdaq official directories have different effective dates"
-                    )
-                names = nasdaq_security_names(snapshots[NASDAQ_URLS[0]]) | nasdaq_security_names(
-                    snapshots[NASDAQ_URLS[1]], other=True
-                )
-                groups["us_equity_eod"] = (
-                    next(iter(us_dates)),
-                    map_catalogue(
-                        scope_us_members(us, catalogue, official_names=names),
-                        catalogue,
-                        us_official_names=names,
-                    ),
-                    {
-                        **{url: snapshots[url] for url in NASDAQ_URLS},
-                        **self._catalogue_evidence_for("us_equity_eod"),
-                    },
-                )
-        elif self.provider == "factset":
-            snapshots[HKEX_URL] = self._snapshot(HKEX_URL)
-            hk_date, hk = parse_hkex(
-                snapshots[HKEX_URL], observed_date=now.astimezone(zones["hk_equity_eod"]).date()
-            )
-            native = FactSetGateway(FactSetConfig.from_env()).catalogue(
-                tuple(sorted({member["symbol"] for member in hk}))
-            )
-            self._observed_response(len(native))
-            stored = self._persist(native, "hk_equity_eod", "provider_catalogue")
-            members = map_current_cohort(hk, native)
-            for member in members:
-                member["raw_evidence_ref"] = stored.ref
-            groups = {"hk_equity_eod": (hk_date, members, {HKEX_URL: snapshots[HKEX_URL]})}
-        elif self.provider == "finlab":
-            snapshots = {url: self._snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)}
-            companies = {
-                (member["symbol"], member["exchange"])
-                for index, url in enumerate(TW_COMPANY_URLS)
-                for member in parse_tw_companies(snapshots[url], otc=bool(index))
-            }
-            equity = [
-                member
-                for index, url in enumerate(TW_ISIN_URLS)
-                for member in parse_tw_ordinary(snapshots[url], otc=bool(index))
-            ]
-            for member in equity:
-                if (member["symbol"], member["exchange"]) not in companies:
-                    member["classification"] = "classification_gap"
-            etfs = [
-                member
-                for index, url in enumerate(TW_ISIN_URLS)
-                for member in parse_tw_etfs(snapshots[url], otc=bool(index))
-            ]
-            # Catalogue presence is independent of daily OHLCV completeness.
-            catalogue_snapshots: dict[str, dict[str, bytes]] = {}
-            self._ensure_proof()
-            gateway = cast(FinLabAdapter, self.adapter).gateway(self._observed_response)
-            for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
-                if dataset not in dataset_keys:
-                    continue
-                try:
-                    try:
-                        table = gateway.fetch_catalogue(
-                            symbols=tuple(member["provider_symbol"] for member in members),
-                        )
-                    finally:
-                        self.state.pace_from_completion(
-                            account=self.provider,
-                            now=datetime.now(timezone.utc).timestamp(),
-                            interval=(
-                                1 / self.proof["requests_per_second"]
-                                if self.proof["requests_per_second"]
-                                else 0
-                            ),
-                        )
-                except FinLabOperationalError:
-                    raise
-                except FinLabSdkError:
-                    for member in members:
-                        member["mapping_status"] = "gap"
-                    continue
-                detached = finlab_table_bytes(table)
-                self._observed_response(len(detached))
-                url = FINLAB_PRICE_EVIDENCE_URL.format(dataset=dataset)
-                self.snapshot_objects[url] = self._persist(detached, dataset, "provider_catalogue")
-                catalogue_snapshots[dataset] = {url: detached}
-                for member in members:
-                    member["mapping_status"] = (
-                        "mapped"
-                        if member["classification"] != "classification_gap"
-                        and member["provider_symbol"] in table.symbols
-                        else "gap"
-                    )
-            groups = {
-                dataset: (now.astimezone(zones[dataset]).date(), members, evidence)
-                for dataset, members, evidence in (
-                    (
-                        "tw_equity_eod",
-                        equity,
-                        {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
-                    ),
-                    ("tw_etf_eod", etfs, {url: snapshots[url] for url in TW_ISIN_URLS}),
-                )
-                if dataset in zones
-            }
-            if self.provider == "finlab":
-                for dataset, evidence in catalogue_snapshots.items():
-                    groups[dataset][2].update(evidence)
-        else:
-            self._ensure_proof()
-            raw = self._snapshot(TAIFEX_URL, provider_response=True)
-            day = official_report_date(raw)
-            if day > now.astimezone(zones["tw_futures_eod"]).date():
-                raise ReadinessBlockedError("TAIFEX report is future-dated")
-            rows = parse_report(raw, target_date=day)
-            groups = {"tw_futures_eod": (day, report_members(rows), {TAIFEX_URL: raw})}
+        groups = self.adapter.build_universe(
+            feeds,
+            UniverseContext(
+                dataset_keys=dataset_keys,
+                observed_at=now,
+                zones=zones,
+                snapshot=self._snapshot,
+                catalogue=self._catalogue,
+                catalogue_evidence=self._catalogue_evidence_for,
+                persist=self._persist,
+                observe_response=self._observed_response,
+                snapshot_objects=self.snapshot_objects,
+                refresh_limits=self._ensure_proof,
+                pace=self._pace_after_call,
+            ),
+        )
         result = []
         for feed in feeds:
             dataset = feed["dataset_key"]
-            effective, members, evidence = groups[dataset]
+            universe = groups[dataset]
+            effective, members, evidence = (
+                universe.effective_date,
+                universe.members,
+                universe.evidence,
+            )
             for url, raw in evidence.items():
                 stored = self.snapshot_objects.get(url) or self._persist(
                     raw, dataset, "official_universe"
@@ -782,6 +622,16 @@ class FullMarketRuntime:
             )
             result.append(self.source.submit(body))
         return result
+
+    def _pace_after_call(self) -> None:
+        """Space the next account call from the completion of a provider SDK call."""
+        self.state.pace_from_completion(
+            account=self.provider,
+            now=datetime.now(timezone.utc).timestamp(),
+            interval=(
+                1 / self.proof["requests_per_second"] if self.proof["requests_per_second"] else 0
+            ),
+        )
 
     def _universe_zones(self, feeds: list[dict[str, Any]]) -> dict[str, ZoneInfo]:
         """Universe dates use Source-published feed timezones, never local tables."""

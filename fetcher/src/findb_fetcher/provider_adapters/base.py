@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, ClassVar, Literal
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -140,6 +141,53 @@ class DatedUniverse:
     url: str
 
 
+@dataclass(frozen=True)
+class UniverseSnapshot:
+    """One dataset's universe: effective date, members and exact official evidence."""
+
+    effective_date: date
+    members: list[dict[str, Any]]
+    # Official URL -> exact observed bytes; the runtime persists and submits them.
+    evidence: dict[str, bytes]
+
+
+@dataclass(frozen=True)
+class UniverseContext:
+    """Everything ``build_universe`` may use during one owned universe refresh."""
+
+    # The Source-authorized refresh scope.
+    dataset_keys: Sequence[str]
+    # One observation time; exchange-local dates derive from it and ``zones``.
+    observed_at: datetime
+    # Source-published feed timezones, never local tables.
+    zones: Mapping[str, ZoneInfo]
+    # Governed, journaled official snapshot: ``snapshot(url, provider_response=False)``.
+    snapshot: Callable[..., bytes]
+    # Governed provider catalogue rows (``catalogue(dataset_keys=)``) and their evidence.
+    catalogue: Callable[..., list[dict[str, Any]]]
+    catalogue_evidence: Callable[[str], dict[str, bytes]]
+    # Raw persistence: ``persist(raw, dataset_key, source_symbol)``.
+    persist: Callable[..., RawObject]
+    observe_response: Callable[..., None]
+    # Official evidence already persisted, by URL; the runtime reuses these objects.
+    snapshot_objects: dict[str, RawObject]
+    # Re-read platform limits, and pace the account after a completed SDK call.
+    refresh_limits: Callable[[], None]
+    pace: Callable[[], None]
+
+
+@dataclass(frozen=True)
+class CatalogueRequest:
+    """One provider catalogue HTTP request; the runtime governs and journals it."""
+
+    url: str
+    params: Mapping[str, str]
+    headers: Mapping[str, str]
+    # Credential-free URL that identifies the catalogue evidence.
+    evidence_url: str
+    max_response_bytes: int
+
+
 class ProviderAdapter:
     """Defaults describe a provider without optional capabilities."""
 
@@ -158,6 +206,10 @@ class ProviderAdapter:
     # Journal key of the batch's native snapshot, and the pending reason it raises.
     batch_snapshot_key: ClassVar[str | None] = None
     batch_pending_reason: ClassVar[str | None] = None
+    # Datasets with an HTTP provider catalogue (``catalogue_request``) and its journal
+    # name; ``None`` means the catalogue is observed inside ``build_universe``.
+    catalogue_datasets: ClassVar[tuple[str, ...] | None] = ()
+    catalogue_journal: ClassVar[str] = ""
 
     def reset(self) -> None:
         """Drop per-round native caches; called whenever ownership may change."""
@@ -176,6 +228,22 @@ class ProviderAdapter:
 
     def dated_universe(self, day: date, context: AcquisitionContext) -> DatedUniverse:
         raise NotImplementedError(f"{self.provider} has no dated universe")
+
+    def build_universe(
+        self, feeds: Sequence[Mapping[str, Any]], context: UniverseContext
+    ) -> dict[str, UniverseSnapshot]:
+        """Fetch official listings, map them to provider symbols, keyed by dataset."""
+        raise NotImplementedError(f"{self.provider} has no universe refresh")
+
+    def catalogue_request(self, dataset_key: str, max_response_bytes: int) -> CatalogueRequest:
+        raise NotImplementedError(f"{self.provider} has no HTTP catalogue")
+
+    def catalogue_rows(self, raw: bytes) -> list[dict[str, Any]]:
+        raise NotImplementedError(f"{self.provider} has no HTTP catalogue")
+
+    def catalogue_evidence_dataset(self, url: str) -> str | None:
+        """The dataset whose catalogue request produced this evidence URL."""
+        return None
 
     def classify(self, exc: BaseException, phase: Phase) -> ProviderFailure:
         return PASSTHROUGH

@@ -1,0 +1,268 @@
+{
+ "factset": {
+  "queried": [
+   [
+    "00001",
+    "00700",
+    "83000"
+   ]
+  ],
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "factset/hk_equity_eod/69260b9dc8a30963/2919671fdf9c657eef0ed06669e34513595ed07a6f6ac5cf4f7566328235425a.json",
+    "metadata": {
+     "dataset": "hk_equity_eod",
+     "provider": "factset",
+     "sha256": "2919671fdf9c657eef0ed06669e34513595ed07a6f6ac5cf4f7566328235425a",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "2919671fdf9c657eef0ed06669e34513595ed07a6f6ac5cf4f7566328235425a"
+   },
+   {
+    "content_type": "application/json",
+    "key": "factset/hk_equity_eod/039222005d7e4cf7/16eceda6a00ea1d761edbfd89100d8dc2d4a21742eadaaf24736331884325545.json",
+    "metadata": {
+     "dataset": "hk_equity_eod",
+     "provider": "factset",
+     "sha256": "16eceda6a00ea1d761edbfd89100d8dc2d4a21742eadaaf24736331884325545",
+     "source-symbol": "provider_catalogue"
+    },
+    "sha256": "16eceda6a00ea1d761edbfd89100d8dc2d4a21742eadaaf24736331884325545"
+   }
+  ],
+  "requested": [
+   "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx"
+  ],
+  "submitted": [
+   "{\"dataset_key\":\"hk_equity_eod\",\"effective_date\":\"2026-10-02\",\"evidence\":[{\"sha256\":\"2919671fdf9c657eef0ed06669e34513595ed07a6f6ac5cf4f7566328235425a\",\"url\":\"https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx\"}],\"members\":[{\"asset_class\":\"equity\",\"classification\":\"Main Board\",\"currency\":\"HKD\",\"exchange\":\"XHKG\",\"mapping_status\":\"mapped\",\"provider_symbol\":\"AAAAA1-L\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/factset/hk_equity_eod/039222005d7e4cf7/16eceda6a00ea1d761edbfd89100d8dc2d4a21742eadaaf24736331884325545.json\",\"symbol\":\"00001\"},{\"asset_class\":\"equity\",\"classification\":\"Main Board\",\"currency\":\"HKD\",\"exchange\":\"XHKG\",\"mapping_status\":\"gap\",\"provider_symbol\":\"00700\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/factset/hk_equity_eod/039222005d7e4cf7/16eceda6a00ea1d761edbfd89100d8dc2d4a21742eadaaf24736331884325545.json\",\"symbol\":\"00700\"},{\"asset_class\":\"equity\",\"classification\":\"GEM\",\"currency\":\"CNY\",\"exchange\":\"XHKG\",\"mapping_status\":\"gap\",\"provider_symbol\":\"83000\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/factset/hk_equity_eod/039222005d7e4cf7/16eceda6a00ea1d761edbfd89100d8dc2d4a21742eadaaf24736331884325545.json\",\"symbol\":\"83000\"}],\"observed_at\":\"2026-10-02T01:30:00+00:00\",\"provider\":\"factset\",\"source_timezone\":\"Asia/Hong_Kong\",\"version\":1}"
+  ]
+ },
+ "finlab:tw_equity_eod": {
+  "observed": [
+   [
+    "2330",
+    "1101",
+    "2317",
+    "6488"
+   ]
+  ],
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_equity_eod/69260b9dc8a30963/16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba.json",
+    "metadata": {
+     "dataset": "tw_equity_eod",
+     "provider": "finlab",
+     "sha256": "16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba"
+   },
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_equity_eod/69260b9dc8a30963/e7f2f38b997d075ebc4f948a8419977a8fb72eddf89e755ca92b33e0bb3b6f0c.json",
+    "metadata": {
+     "dataset": "tw_equity_eod",
+     "provider": "finlab",
+     "sha256": "e7f2f38b997d075ebc4f948a8419977a8fb72eddf89e755ca92b33e0bb3b6f0c",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "e7f2f38b997d075ebc4f948a8419977a8fb72eddf89e755ca92b33e0bb3b6f0c"
+   },
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_etf_eod/69260b9dc8a30963/64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559.json",
+    "metadata": {
+     "dataset": "tw_etf_eod",
+     "provider": "finlab",
+     "sha256": "64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559"
+   },
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_etf_eod/69260b9dc8a30963/aaed3bf7f25e8ec1f79edf03a54ab53bfe641eda80916d6b65818a837b70d833.json",
+    "metadata": {
+     "dataset": "tw_etf_eod",
+     "provider": "finlab",
+     "sha256": "aaed3bf7f25e8ec1f79edf03a54ab53bfe641eda80916d6b65818a837b70d833",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "aaed3bf7f25e8ec1f79edf03a54ab53bfe641eda80916d6b65818a837b70d833"
+   },
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_equity_eod/039222005d7e4cf7/9a14fb72da413f67281b3eb4a584723f2efb5f1621cc4c961cf1102f78c77ceb.json",
+    "metadata": {
+     "dataset": "tw_equity_eod",
+     "provider": "finlab",
+     "sha256": "9a14fb72da413f67281b3eb4a584723f2efb5f1621cc4c961cf1102f78c77ceb",
+     "source-symbol": "provider_catalogue"
+    },
+    "sha256": "9a14fb72da413f67281b3eb4a584723f2efb5f1621cc4c961cf1102f78c77ceb"
+   }
+  ],
+  "requested": [
+   "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+   "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+   "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
+   "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
+  ],
+  "submitted": [
+   "{\"dataset_key\":\"tw_equity_eod\",\"effective_date\":\"2026-10-02\",\"evidence\":[{\"sha256\":\"64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559\",\"url\":\"https://isin.twse.com.tw/isin/C_public.jsp?strMode=2\"},{\"sha256\":\"aaed3bf7f25e8ec1f79edf03a54ab53bfe641eda80916d6b65818a837b70d833\",\"url\":\"https://isin.twse.com.tw/isin/C_public.jsp?strMode=4\"},{\"sha256\":\"16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba\",\"url\":\"https://openapi.twse.com.tw/v1/opendata/t187ap03_L\"},{\"sha256\":\"9a14fb72da413f67281b3eb4a584723f2efb5f1621cc4c961cf1102f78c77ceb\",\"url\":\"https://www.finlab.tw/data/price-close?dataset=tw_equity_eod\"},{\"sha256\":\"e7f2f38b997d075ebc4f948a8419977a8fb72eddf89e755ca92b33e0bb3b6f0c\",\"url\":\"https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O\"}],\"members\":[{\"asset_class\":\"equity\",\"classification\":\"ordinary\",\"currency\":\"TWD\",\"exchange\":\"XTAI\",\"listed_date\":\"1962-02-09\",\"mapping_status\":\"gap\",\"provider_symbol\":\"1101\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_equity_eod/69260b9dc8a30963/16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba.json\",\"symbol\":\"1101\"},{\"asset_class\":\"equity\",\"classification\":\"classification_gap\",\"currency\":\"TWD\",\"exchange\":\"XTAI\",\"listed_date\":\"1991-06-18\",\"mapping_status\":\"gap\",\"provider_symbol\":\"2317\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_equity_eod/69260b9dc8a30963/16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba.json\",\"symbol\":\"2317\"},{\"asset_class\":\"equity\",\"classification\":\"ordinary\",\"currency\":\"TWD\",\"exchange\":\"XTAI\",\"listed_date\":\"1994-09-05\",\"mapping_status\":\"mapped\",\"provider_symbol\":\"2330\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_equity_eod/69260b9dc8a30963/16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba.json\",\"symbol\":\"2330\"},{\"asset_class\":\"equity\",\"classification\":\"ordinary\",\"currency\":\"TWD\",\"exchange\":\"ROCO\",\"listed_date\":\"2014-03-26\",\"mapping_status\":\"mapped\",\"provider_symbol\":\"6488\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_equity_eod/69260b9dc8a30963/16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba.json\",\"symbol\":\"6488\"}],\"observed_at\":\"2026-10-02T01:30:00+00:00\",\"provider\":\"finlab\",\"source_timezone\":\"Asia/Taipei\",\"version\":1}"
+  ]
+ },
+ "finlab:tw_etf_eod": {
+  "observed": [
+   [
+    "0050",
+    "00632R"
+   ]
+  ],
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_equity_eod/69260b9dc8a30963/16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba.json",
+    "metadata": {
+     "dataset": "tw_equity_eod",
+     "provider": "finlab",
+     "sha256": "16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "16a1314f31b9629a5c98952e87acde42351a057e9efd99d401b9799dc19ecaba"
+   },
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_equity_eod/69260b9dc8a30963/e7f2f38b997d075ebc4f948a8419977a8fb72eddf89e755ca92b33e0bb3b6f0c.json",
+    "metadata": {
+     "dataset": "tw_equity_eod",
+     "provider": "finlab",
+     "sha256": "e7f2f38b997d075ebc4f948a8419977a8fb72eddf89e755ca92b33e0bb3b6f0c",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "e7f2f38b997d075ebc4f948a8419977a8fb72eddf89e755ca92b33e0bb3b6f0c"
+   },
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_etf_eod/69260b9dc8a30963/64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559.json",
+    "metadata": {
+     "dataset": "tw_etf_eod",
+     "provider": "finlab",
+     "sha256": "64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559"
+   },
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_etf_eod/69260b9dc8a30963/aaed3bf7f25e8ec1f79edf03a54ab53bfe641eda80916d6b65818a837b70d833.json",
+    "metadata": {
+     "dataset": "tw_etf_eod",
+     "provider": "finlab",
+     "sha256": "aaed3bf7f25e8ec1f79edf03a54ab53bfe641eda80916d6b65818a837b70d833",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "aaed3bf7f25e8ec1f79edf03a54ab53bfe641eda80916d6b65818a837b70d833"
+   },
+   {
+    "content_type": "application/json",
+    "key": "finlab/tw_etf_eod/039222005d7e4cf7/2a594c8311b754698c748d09e93420b6589ee8ee11f9285df5f98b3290d341c3.json",
+    "metadata": {
+     "dataset": "tw_etf_eod",
+     "provider": "finlab",
+     "sha256": "2a594c8311b754698c748d09e93420b6589ee8ee11f9285df5f98b3290d341c3",
+     "source-symbol": "provider_catalogue"
+    },
+    "sha256": "2a594c8311b754698c748d09e93420b6589ee8ee11f9285df5f98b3290d341c3"
+   }
+  ],
+  "requested": [
+   "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
+   "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
+   "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2",
+   "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
+  ],
+  "submitted": [
+   "{\"dataset_key\":\"tw_etf_eod\",\"effective_date\":\"2026-10-02\",\"evidence\":[{\"sha256\":\"64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559\",\"url\":\"https://isin.twse.com.tw/isin/C_public.jsp?strMode=2\"},{\"sha256\":\"aaed3bf7f25e8ec1f79edf03a54ab53bfe641eda80916d6b65818a837b70d833\",\"url\":\"https://isin.twse.com.tw/isin/C_public.jsp?strMode=4\"},{\"sha256\":\"2a594c8311b754698c748d09e93420b6589ee8ee11f9285df5f98b3290d341c3\",\"url\":\"https://www.finlab.tw/data/price-close?dataset=tw_etf_eod\"}],\"members\":[{\"asset_class\":\"etf\",\"classification\":\"ETF\",\"currency\":\"TWD\",\"exchange\":\"XTAI\",\"listed_date\":\"2003-06-30\",\"mapping_status\":\"mapped\",\"provider_symbol\":\"0050\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_etf_eod/69260b9dc8a30963/64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559.json\",\"symbol\":\"0050\"},{\"asset_class\":\"etf\",\"classification\":\"ETF\",\"currency\":\"TWD\",\"exchange\":\"ROCO\",\"listed_date\":\"2014-10-31\",\"mapping_status\":\"gap\",\"provider_symbol\":\"00632R\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/finlab/tw_etf_eod/69260b9dc8a30963/64dbdf27fa32adf85d399802c312f8649038757c32722ee82018dc1e2d2cc559.json\",\"symbol\":\"00632R\"}],\"observed_at\":\"2026-10-02T01:30:00+00:00\",\"provider\":\"finlab\",\"source_timezone\":\"Asia/Taipei\",\"version\":1}"
+  ]
+ },
+ "taifex": {
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "taifex/tw_futures_eod/69260b9dc8a30963/11485fa4dafdbdec06f1918411321633395f0f03d9bff06dcd50e0939dead17a.json",
+    "metadata": {
+     "dataset": "tw_futures_eod",
+     "provider": "taifex",
+     "sha256": "11485fa4dafdbdec06f1918411321633395f0f03d9bff06dcd50e0939dead17a",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "11485fa4dafdbdec06f1918411321633395f0f03d9bff06dcd50e0939dead17a"
+   }
+  ],
+  "requested": [
+   "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
+  ],
+  "submitted": [
+   "{\"dataset_key\":\"tw_futures_eod\",\"effective_date\":\"2026-10-01\",\"evidence\":[{\"sha256\":\"11485fa4dafdbdec06f1918411321633395f0f03d9bff06dcd50e0939dead17a\",\"url\":\"https://openapi.taifex.com.tw/v1/DailyMarketReportFut\"}],\"members\":[{\"asset_class\":\"future\",\"classification\":\"weekly\",\"contract_code\":\"MTX:202610W2\",\"contract_month\":\"202610W2\",\"currency\":\"TWD\",\"exchange\":\"XTAF\",\"mapping_status\":\"mapped\",\"product_code\":\"MTX\",\"provider_symbol\":\"MTX:202610W2\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/69260b9dc8a30963/11485fa4dafdbdec06f1918411321633395f0f03d9bff06dcd50e0939dead17a.json\",\"sessions\":[\"after_hours\",\"regular\"],\"symbol\":\"MTX\"},{\"asset_class\":\"future\",\"classification\":\"monthly\",\"contract_code\":\"TX:202610\",\"contract_month\":\"202610\",\"currency\":\"TWD\",\"exchange\":\"XTAF\",\"mapping_status\":\"mapped\",\"product_code\":\"TX\",\"provider_symbol\":\"TX:202610\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/taifex/tw_futures_eod/69260b9dc8a30963/11485fa4dafdbdec06f1918411321633395f0f03d9bff06dcd50e0939dead17a.json\",\"sessions\":[\"after_hours\",\"regular\"],\"symbol\":\"TX\"}],\"observed_at\":\"2026-10-02T01:30:00+00:00\",\"provider\":\"taifex\",\"source_timezone\":\"Asia/Taipei\",\"version\":1}"
+  ]
+ },
+ "twelve_data": {
+  "raw_objects": [
+   {
+    "content_type": "application/json",
+    "key": "twelve_data/us_equity_eod/039222005d7e4cf7/70709cae6d8593254bf505b6ee99b53c09b845c3801801602ba22a76a4814762.json",
+    "metadata": {
+     "dataset": "us_equity_eod",
+     "provider": "twelve_data",
+     "sha256": "70709cae6d8593254bf505b6ee99b53c09b845c3801801602ba22a76a4814762",
+     "source-symbol": "provider_catalogue"
+    },
+    "sha256": "70709cae6d8593254bf505b6ee99b53c09b845c3801801602ba22a76a4814762"
+   },
+   {
+    "content_type": "application/json",
+    "key": "twelve_data/us_equity_eod/69260b9dc8a30963/c26ab0d2f1a944b7cb0492627c929cd415e9cade2b96113cad033bfaef19a201.json",
+    "metadata": {
+     "dataset": "us_equity_eod",
+     "provider": "twelve_data",
+     "sha256": "c26ab0d2f1a944b7cb0492627c929cd415e9cade2b96113cad033bfaef19a201",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "c26ab0d2f1a944b7cb0492627c929cd415e9cade2b96113cad033bfaef19a201"
+   },
+   {
+    "content_type": "application/json",
+    "key": "twelve_data/us_equity_eod/69260b9dc8a30963/9525afc45067ae4989801dc4cb5e8274c95cbf6ef7dc676afe3d32dd0bb4bb5e.json",
+    "metadata": {
+     "dataset": "us_equity_eod",
+     "provider": "twelve_data",
+     "sha256": "9525afc45067ae4989801dc4cb5e8274c95cbf6ef7dc676afe3d32dd0bb4bb5e",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "9525afc45067ae4989801dc4cb5e8274c95cbf6ef7dc676afe3d32dd0bb4bb5e"
+   },
+   {
+    "content_type": "application/json",
+    "key": "twelve_data/us_equity_eod/69260b9dc8a30963/70709cae6d8593254bf505b6ee99b53c09b845c3801801602ba22a76a4814762.json",
+    "metadata": {
+     "dataset": "us_equity_eod",
+     "provider": "twelve_data",
+     "sha256": "70709cae6d8593254bf505b6ee99b53c09b845c3801801602ba22a76a4814762",
+     "source-symbol": "official_universe"
+    },
+    "sha256": "70709cae6d8593254bf505b6ee99b53c09b845c3801801602ba22a76a4814762"
+   }
+  ],
+  "requested": [
+   "https://api.twelvedata.com/stocks?country=United+States",
+   "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+   "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+  ],
+  "submitted": [
+   "{\"dataset_key\":\"us_equity_eod\",\"effective_date\":\"2026-10-01\",\"evidence\":[{\"sha256\":\"70709cae6d8593254bf505b6ee99b53c09b845c3801801602ba22a76a4814762\",\"url\":\"https://api.twelvedata.com/stocks?country=United+States\"},{\"sha256\":\"c26ab0d2f1a944b7cb0492627c929cd415e9cade2b96113cad033bfaef19a201\",\"url\":\"https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt\"},{\"sha256\":\"9525afc45067ae4989801dc4cb5e8274c95cbf6ef7dc676afe3d32dd0bb4bb5e\",\"url\":\"https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt\"}],\"members\":[{\"asset_class\":\"equity\",\"classification\":\"ordinary\",\"currency\":\"USD\",\"exchange\":\"XNAS\",\"mapping_status\":\"mapped\",\"provider_symbol\":\"AAPL\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/twelve_data/us_equity_eod/69260b9dc8a30963/c26ab0d2f1a944b7cb0492627c929cd415e9cade2b96113cad033bfaef19a201.json\",\"symbol\":\"AAPL\"},{\"asset_class\":\"equity\",\"classification\":\"ordinary\",\"currency\":\"USD\",\"exchange\":\"XNYS\",\"mapping_status\":\"mapped\",\"provider_symbol\":\"IBM\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/twelve_data/us_equity_eod/69260b9dc8a30963/c26ab0d2f1a944b7cb0492627c929cd415e9cade2b96113cad033bfaef19a201.json\",\"symbol\":\"IBM\"},{\"asset_class\":\"equity\",\"classification\":\"ordinary\",\"currency\":\"USD\",\"exchange\":\"XNYS\",\"mapping_status\":\"gap\",\"provider_symbol\":\"NEW\",\"raw_evidence_ref\":\"r2://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/findb-raw-golden/twelve_data/us_equity_eod/69260b9dc8a30963/c26ab0d2f1a944b7cb0492627c929cd415e9cade2b96113cad033bfaef19a201.json\",\"symbol\":\"NEW\"}],\"observed_at\":\"2026-10-02T01:30:00+00:00\",\"provider\":\"twelve_data\",\"source_timezone\":\"America/New_York\",\"version\":1}"
+  ]
+ }
+}

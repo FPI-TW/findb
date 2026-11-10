@@ -9,9 +9,11 @@ existing journal keys (``factset-eod:snapshot``, ``factset-eod:receipt:*``).
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from findb_fetcher import factset_eod
+from findb_fetcher.full_market_universe import HKEX_URL, parse_hkex
 from findb_fetcher.provider_adapters.base import (
     PASSTHROUGH,
     BatchContext,
@@ -19,11 +21,14 @@ from findb_fetcher.provider_adapters.base import (
     Phase,
     ProviderAdapter,
     ProviderFailure,
+    UniverseContext,
+    UniverseSnapshot,
 )
 from findb_fetcher.providers.factset import (
     FactSetConfig,
     FactSetGateway,
     FactSetOperationalError,
+    map_current_cohort,
 )
 
 
@@ -50,6 +55,25 @@ class FactSetAdapter(ProviderAdapter):
 
     def batch_status(self, evidence: dict[str, Any]) -> str:
         return factset_eod.completion_status(evidence)
+
+    def build_universe(
+        self, feeds: Sequence[Mapping[str, Any]], context: UniverseContext
+    ) -> dict[str, UniverseSnapshot]:
+        """The HKEX list mapped to listings by one native catalogue query."""
+        listing = context.snapshot(HKEX_URL)
+        hk_date, hk = parse_hkex(
+            listing,
+            observed_date=context.observed_at.astimezone(context.zones["hk_equity_eod"]).date(),
+        )
+        native = FactSetGateway(FactSetConfig.from_env()).catalogue(
+            tuple(sorted({member["symbol"] for member in hk}))
+        )
+        context.observe_response(len(native))
+        stored = context.persist(native, "hk_equity_eod", "provider_catalogue")
+        members = map_current_cohort(hk, native)
+        for member in members:
+            member["raw_evidence_ref"] = stored.ref
+        return {"hk_equity_eod": UniverseSnapshot(hk_date, members, {HKEX_URL: listing})}
 
     def classify(self, exc: BaseException, phase: Phase) -> ProviderFailure:
         if phase in {"round", "maintenance"} and isinstance(exc, FactSetOperationalError):

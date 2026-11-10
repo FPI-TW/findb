@@ -139,7 +139,9 @@ def test_invalid_catalogue_scope_fails_before_network(scoped_catalogue, datasets
 
 
 def test_retired_hk_scope_never_refreshes_hk_universe(scoped_catalogue, monkeypatch):
-    import findb_fetcher.full_market_runtime as implementation
+    from findb_fetcher.full_market_universe import HKEX_URL
+    from findb_fetcher.provider_adapters import factset as factset_adapter
+    from findb_fetcher.provider_adapters import twelve_data as implementation
     from test_full_market import _member
 
     runtime, source, _, requests, persisted, _, clock = scoped_catalogue
@@ -165,7 +167,7 @@ def test_retired_hk_scope_never_refreshes_hk_universe(scoped_catalogue, monkeypa
         implementation, "nasdaq_effective_date", lambda *a, **kw: clock.now().date()
     )
     monkeypatch.setattr(
-        implementation,
+        factset_adapter,
         "parse_hkex",
         lambda *a, **kw: pytest.fail("Twelve Data must not parse the HKEX list"),
     )
@@ -173,7 +175,7 @@ def test_retired_hk_scope_never_refreshes_hk_universe(scoped_catalogue, monkeypa
     source.submit = lambda body: submitted.append(body) or {"dataset_key": body["dataset_key"]}
     runtime.sync_universes(dataset_keys=["us_equity_eod", "hk_equity_eod"])
     assert [body["dataset_key"] for body in submitted] == ["us_equity_eod"]
-    assert implementation.HKEX_URL not in snapshots
+    assert HKEX_URL not in snapshots
     assert [r.url.params["country"] for r in requests] == ["United States"]
     catalogues = [item for item in submitted[0]["evidence"] if "/stocks?" in item["url"]]
     assert len(catalogues) == 1

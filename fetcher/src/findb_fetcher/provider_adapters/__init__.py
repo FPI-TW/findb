@@ -7,11 +7,14 @@ from findb_fetcher.provider_adapters.base import (
     AcquisitionContext,
     AcquisitionResult,
     BatchContext,
+    CatalogueRequest,
     DatedUniverse,
     FailureKind,
     Phase,
     ProviderAdapter,
     ProviderFailure,
+    UniverseContext,
+    UniverseSnapshot,
 )
 from findb_fetcher.provider_adapters.factset import FactSetAdapter
 from findb_fetcher.provider_adapters.finlab import FinLabAdapter
@@ -40,6 +43,7 @@ __all__ = [
     "AcquisitionContext",
     "AcquisitionResult",
     "BatchContext",
+    "CatalogueRequest",
     "DatedUniverse",
     "FactSetAdapter",
     "FailureKind",
@@ -49,5 +53,7 @@ __all__ = [
     "ProviderFailure",
     "TaifexAdapter",
     "TwelveDataAdapter",
+    "UniverseContext",
+    "UniverseSnapshot",
     "adapter_for",
 ]

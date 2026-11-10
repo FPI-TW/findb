@@ -2,21 +2,34 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import timedelta
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from findb_fetcher.full_market_errors import ReadinessBlockedError, retryable_http_status
-from findb_fetcher.full_market_universe import TWELVE_DATA_EQUITY_TYPES
+from findb_fetcher.full_market_universe import (
+    NASDAQ_URLS,
+    TWELVE_DATA_EQUITY_TYPES,
+    map_catalogue,
+    nasdaq_effective_date,
+    nasdaq_security_names,
+    parse_nasdaq,
+    scope_us_members,
+)
 from findb_fetcher.provider_adapters.base import (
     PASSTHROUGH,
     AcquisitionContext,
     AcquisitionResult,
+    CatalogueRequest,
     FailureKind,
     Phase,
     ProviderAdapter,
     ProviderFailure,
+    UniverseContext,
+    UniverseSnapshot,
 )
 from findb_fetcher.providers.twelve_data import (
     TwelveDataClient,
@@ -24,12 +37,21 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataResponseError,
 )
 from findb_fetcher.providers.twelve_data import (
+    authorization_headers as td_authorization_headers,
+)
+from findb_fetcher.providers.twelve_data import (
     build_market_eod_request as td_request,
 )
+
+# HK EOD is owned by FactSet; Twelve Data never refreshes or acquires HK again.
+CATALOGUE_COUNTRIES = {"us_equity_eod": "United States"}
 
 
 class TwelveDataAdapter(ProviderAdapter):
     provider = "twelve_data"
+    catalogue_datasets = tuple(CATALOGUE_COUNTRIES)
+    # Existing journal identity of the country catalogue response; never rename.
+    catalogue_journal = "twelve_catalogue"
 
     def __init__(self) -> None:
         self.client: TwelveDataClient | None = None
@@ -83,6 +105,69 @@ class TwelveDataAdapter(ProviderAdapter):
         if request["payload"]["data"][0]["currency"] != member["currency"]:
             raise ReadinessBlockedError("provider identity differs from official universe")
         return AcquisitionResult.data(request, stored)
+
+    def catalogue_request(self, dataset_key: str, max_response_bytes: int) -> CatalogueRequest:
+        config = TwelveDataConfig.from_env()
+        country = CATALOGUE_COUNTRIES[dataset_key]
+        return CatalogueRequest(
+            url=config.base_url + "/stocks",
+            params={"country": country},
+            headers=td_authorization_headers(config.api_key),
+            evidence_url=config.base_url + "/stocks?" + urlencode({"country": country}),
+            max_response_bytes=min(config.max_response_bytes, max_response_bytes),
+        )
+
+    def catalogue_rows(self, raw: bytes) -> list[dict[str, Any]]:
+        value = json.loads(raw)
+        if not isinstance(value, dict) or not isinstance(value.get("data"), list):
+            raise ReadinessBlockedError("provider catalogue shape invalid")
+        return value["data"]
+
+    def catalogue_evidence_dataset(self, url: str) -> str | None:
+        country = dict(parse_qsl(urlsplit(url).query)).get("country")
+        return next(
+            (dataset for dataset, name in CATALOGUE_COUNTRIES.items() if name == country), None
+        )
+
+    def build_universe(
+        self, feeds: Sequence[Mapping[str, Any]], context: UniverseContext
+    ) -> dict[str, UniverseSnapshot]:
+        groups = {}
+        catalogue = context.catalogue(dataset_keys=[feed["dataset_key"] for feed in feeds])
+        if "us_equity_eod" in context.dataset_keys:
+            snapshots = {url: context.snapshot(url) for url in NASDAQ_URLS}
+            us = parse_nasdaq(snapshots[NASDAQ_URLS[0]]) + parse_nasdaq(
+                snapshots[NASDAQ_URLS[1]], other=True
+            )
+            us_dates = {
+                nasdaq_effective_date(
+                    snapshots[url],
+                    observed_date=context.observed_at.astimezone(
+                        context.zones["us_equity_eod"]
+                    ).date(),
+                )
+                for url in NASDAQ_URLS
+            }
+            if len(us_dates) != 1:
+                raise ReadinessBlockedError(
+                    "Nasdaq official directories have different effective dates"
+                )
+            names = nasdaq_security_names(snapshots[NASDAQ_URLS[0]]) | nasdaq_security_names(
+                snapshots[NASDAQ_URLS[1]], other=True
+            )
+            groups["us_equity_eod"] = UniverseSnapshot(
+                next(iter(us_dates)),
+                map_catalogue(
+                    scope_us_members(us, catalogue, official_names=names),
+                    catalogue,
+                    us_official_names=names,
+                ),
+                {
+                    **{url: snapshots[url] for url in NASDAQ_URLS},
+                    **context.catalogue_evidence("us_equity_eod"),
+                },
+            )
+        return groups
 
     def classify(self, exc: BaseException, phase: Phase) -> ProviderFailure:
         if not isinstance(exc, TwelveDataResponseError):

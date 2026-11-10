@@ -198,8 +198,7 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
     from tests.full_market_fixtures import historical_admission
     from tests.test_factset_historical import NOW
 
-    monkeypatch.setattr(runtime.FactSetConfig, "from_env", classmethod(lambda cls: None))
-    monkeypatch.setattr(runtime, "FactSetGateway", lambda config: h.gateway)
+    monkeypatch.setattr(factset_adapter.FactSetConfig, "from_env", classmethod(lambda cls: None))
     monkeypatch.setattr(factset_adapter, "FactSetGateway", lambda config: h.gateway)
     try:
         assert await h.run() and await h.run(), h.failure
