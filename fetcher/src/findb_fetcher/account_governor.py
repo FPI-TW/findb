@@ -19,6 +19,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 from findb_fetcher.config import app_environment
+from findb_fetcher.execution_metadata import provider_ids
 from findb_fetcher.full_market_state import FullMarketState, FullMarketStateError, QuotaBlockedError
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 
@@ -428,6 +429,7 @@ def repair_capacity(
 def main() -> None:
     import argparse
 
+    providers = provider_ids()
     parser = argparse.ArgumentParser(
         description="Trusted account capacity correction; never resets usage"
     )
@@ -436,14 +438,14 @@ def main() -> None:
     inspect.add_argument("--governor", type=Path, required=True)
     inspect.add_argument(
         "--provider",
-        choices=("twelve_data", "finlab", "taifex", "factset"),
+        choices=providers,
         required=True,
     )
     repair = commands.add_parser("repair-capacity")
     repair.add_argument(
         "--provider",
         required=True,
-        choices=("twelve_data", "finlab", "taifex", "factset"),
+        choices=providers,
     )
     repair.add_argument("--environment", required=True, choices=("local", "staging", "production"))
     for name in ("governor", "readiness", "allocation", "enrollment"):

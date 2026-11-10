@@ -155,6 +155,7 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
     for path in (
         Path("infra/deploy/check_fetcher_host.py"),
         Path("infra/deploy/check_fetcher_runtime_recovery.py"),
+        Path("infra/deploy/inspect_full_market_installation.py"),
         Path("infra/deploy/provider_work_preflight.py"),
         Path("infra/monitoring/publish_staging_metrics.py"),
     ):

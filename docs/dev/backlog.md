@@ -12,11 +12,9 @@
   migration `a7c3e1f9d2b4`、`pilot-residue-v1` 封存 SHA-256、staging 共用 governor 唯讀核對、
   staging Full 首日驗收（一次只啟動一個 provider、記憶體／OOM，驗收後停止），再以相同 digests promotion
   production。
-- [ ] 下一版移除一版相容（#450）：刪除 SSM `FULL_MARKET_ENABLED` parameter 與載入容忍、deprecated 的
-  `full_market_enabled` API 欄位與 `ReadinessReport.full_market_enabled`，並以 migration 移除
-  `full_market_environment.enabled`。
-- [ ] Dashboard tests 仍以已退役的 Shioaji 作為 active provider，改用現役 provider；追蹤
-  [#447](https://github.com/FPI-TW/findb/issues/447)。
+- [ ] 收斂一版相容的剩餘部分（#450）：operator 以 `aws_configuration.py sync` 清除兩環境 SSM 的
+  `FULL_MARKET_ENABLED` 後，移除 `RETIRED_FIELDS` 載入容忍；`full_market_environment.enabled`／
+  `full_market_enrollment.reported_enabled` 先補 server default 並調整 migration 測試種子，下一版再刪欄。
 
 ## Historical Full release cohort（#409、#433）
 

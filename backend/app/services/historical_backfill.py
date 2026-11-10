@@ -59,6 +59,16 @@ PROVIDER_TIMEZONES: dict[str, str] = {
 }
 
 
+# Adapter semantics, intentionally not catalog fields: these whole-market providers
+# read official/vendor daily reports. Closed dates have no report (always skipped)
+# and the provider-local current date is inside the cutoff window. Members must be
+# catalog historical providers (test_provider_catalog.py); changing them changes cutoffs.
+DAILY_REPORT_HISTORICAL_PROVIDERS = frozenset({"taifex", "factset"})
+# Preview applies the provider's calendar switch; FactSet preview leaves closed-day
+# decisions to its executor. Retired Shioaji stays for existing request previews.
+PREVIEW_CALENDAR_PROVIDERS = frozenset({"twelve_data", "finlab", "shioaji", "taifex"})
+
+
 def _max_backfill_days(provider: str | None = None) -> int:
     if provider == "shioaji":
         return STAGING_MAX_BACKFILL_DAYS
@@ -75,7 +85,7 @@ def _supports_backfill(provider: str, dataset_key: str) -> bool:
 
 def _historical_policy(provider: str) -> dict:
     policy = execution_policy(provider)
-    if provider in {"taifex", "factset"}:
+    if provider in DAILY_REPORT_HISTORICAL_PROVIDERS:
         # Official daily reports do not exist for exchange-closed dates.
         policy = {key: value for key, value in policy.items() if key != "sha256"}
         policy["skip_non_trading_days"] = True
@@ -253,7 +263,8 @@ def _provider_current_date(provider: str, now: datetime) -> date:
 def expiry_cutoff(provider: str, now: datetime) -> date:
     """One read-only provider-local boundary for claims and live acquisition."""
     return _provider_current_date(provider, now) - timedelta(
-        days=_max_backfill_days(provider) - (1 if provider in {"taifex", "factset"} else 0)
+        days=_max_backfill_days(provider)
+        - (1 if provider in DAILY_REPORT_HISTORICAL_PROVIDERS else 0)
     )
 
 
@@ -578,7 +589,7 @@ async def preview_request(
     )
     skip_non_trading = (
         _historical_policy(provider)["skip_non_trading_days"]
-        if provider in {"twelve_data", "finlab", "shioaji", "taifex"}
+        if provider in PREVIEW_CALENDAR_PROVIDERS
         else False
     )
     days: list[tuple[date, bool, str | None]] = []

@@ -49,11 +49,10 @@ def test_expected_container_sets_are_bounded() -> None:
         assert retired not in SCRIPT.read_text(encoding="utf-8")
 
 
-def _case_paths(script: str, variable: str) -> dict[str, tuple[str, str]]:
-    pattern = re.compile(
-        rf"^\s*([a-z-]+)\) {variable}=(\S+); cache(?:_dir)?=(\S+) ;;$", re.MULTILINE
-    )
-    return {suffix: (state, cache) for suffix, state, cache in pattern.findall(script)}
+def _host_layouts(script: str) -> dict[str, tuple[str, str]]:
+    body = script.split("provider_host_layout() {\n", 1)[1].split("\n}\n", 1)[0]
+    pattern = re.compile(r"^\s*([a-z-]+)\) printf '%s %s' (\S+) (\S+) ;;$", re.MULTILINE)
+    return {suffix: (state, cache) for suffix, state, cache in pattern.findall(body)}
 
 
 def test_mount_contract_matches_fetcher_deployment_paths() -> None:
@@ -66,13 +65,14 @@ def test_mount_contract_matches_fetcher_deployment_paths() -> None:
         if row[2] == "historical"
     }
 
-    for variable in ("history", "state_dir"):
-        paths = _case_paths(deploy, variable)
-        assert set(paths) == suffixes
-        for suffix, (state, cache) in paths.items():
-            provider = suffix.replace("-", "_")
-            assert module.HISTORICAL_STATE_DIRS[provider] == state
-            assert module.PROVIDER_CACHE_DIRS.get(provider, "-") == cache
+    # Every consumer loop reads the deploy script's single host layout table.
+    assert deploy.count('layout="$(provider_host_layout "$provider")"') == 3
+    paths = _host_layouts(deploy)
+    assert set(paths) == suffixes
+    for suffix, (state, cache) in paths.items():
+        provider = suffix.replace("-", "_")
+        assert module.HISTORICAL_STATE_DIRS[provider] == state
+        assert module.PROVIDER_CACHE_DIRS.get(provider, "-") == cache
     assert set(module.HISTORICAL_STATE_DIRS) == set(module.PROVIDERS)
     assert "\nfull_market_state=/var/lib/findb-full-market/$APP_ENVIRONMENT\n" in deploy
     assert (

@@ -1065,7 +1065,8 @@ uv --directory backend run python scripts/rebuild_delivery_plan_summaries.py --p
 
 ## 用量與傳輸保護
 
-正常抓取使用 `platform_limits.py` 中的已確認限制。Twelve Data 按 1597 credits／分鐘 pacing；
+正常抓取使用 provider catalog `platform_limits`（經 Fetcher 打包的 execution descriptor 由
+`platform_limits.py` 讀取）中的已確認限制。Twelve Data 按 1597 credits／分鐘 pacing；
 Shioaji 按 50 行情請求／10 秒 pacing，並在 Kbars 前查 `api.usage()`，每日達 500 MiB 就拒絕抓取。
 FinLab 由 authenticated SDK API 執行每日 5000 MB 配額；detached dataframe bytes 只用於傳輸
 驗證，不當作 API network usage。TAIFEX 不填造數值配額，429 保留 account cooldown。

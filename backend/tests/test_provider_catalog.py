@@ -361,3 +361,66 @@ def test_backend_publication_is_consumable_by_independent_fetcher():
         )
         assert {f["dataset_key"] for f in result.feeds} == set(scopes)
         assert all("slot_id" not in f for f in published["feeds"])
+
+
+def test_historical_adapter_semantic_sets_name_catalog_providers():
+    from app.services.historical_backfill import (
+        CAPABILITIES,
+        DAILY_REPORT_HISTORICAL_PROVIDERS,
+        PREVIEW_CALENDAR_PROVIDERS,
+    )
+    from app.services.provider_metadata import provider_catalog
+
+    historical = {provider for provider, _ in CAPABILITIES}
+    # Adapter semantics stay hand-written; a renamed/retired provider must not linger.
+    assert DAILY_REPORT_HISTORICAL_PROVIDERS <= historical
+    assert PREVIEW_CALENDAR_PROVIDERS - {"shioaji"} <= historical
+    # Whole-market report providers use the Backend universe, never a packaged
+    # Fetcher universe descriptor (the planner would silently ignore one).
+    assert {
+        feed.provider
+        for feed in provider_catalog().feeds
+        if feed.historical_execution is None and feed.capabilities.historical != "unsupported"
+    } == DAILY_REPORT_HISTORICAL_PROVIDERS
+
+
+def _seed_with_catalog(monkeypatch, declaration):
+    from scripts import seed_data
+
+    catalog = ProviderCatalog.model_validate(declaration)
+    monkeypatch.setattr(seed_data, "provider_catalog", lambda: catalog)
+    return seed_data
+
+
+def test_seed_identity_follows_one_catalog_edit(monkeypatch, declaration):
+    feed = next(f for f in declaration["feeds"] if f["dataset_key"] == "hk_equity_eod")
+    feed["contract"].update(current_version=1, accepted_versions=[1])
+    feed["asset_class"] = "etf"
+    seed = _seed_with_catalog(monkeypatch, declaration)
+    dataset = seed._staged_eod_dataset("hk_equity_eod", "港股日K", currency=None)
+    assert dataset["asset_class"] == "etf"
+    assert dataset["config"]["defaults"]["asset_class"] == "etf"
+    assert dataset["config"]["accepted_schema_versions"] == [1]
+    assert dataset["config"]["current_schema_version"] == 1
+    assert dataset["config"]["allowed_sources"] == ["factset"]
+    assert dataset["config"]["source_precedence"] == ["factset"]
+    assert dataset["config"]["full_market"]["calendar_market"] == "HK"
+
+
+@pytest.mark.parametrize("fault", ["second_provider", "source_disabled"])
+def test_seed_requires_exactly_one_catalog_source_feed(monkeypatch, declaration, fault):
+    feeds = declaration["feeds"]
+    index = next(i for i, f in enumerate(feeds) if f["dataset_key"] == "tw_futures_eod")
+    if fault == "second_provider":
+        extra = deepcopy(feeds[index])
+        extra["provider"] = "finlab"
+        feeds.append(extra)
+    if fault == "source_disabled":
+        feeds[index].update(lifecycle="retired", schedule=None, historical_execution=None)
+        feeds[index]["capabilities"].update(
+            source=False, acquisition=False, historical="unsupported"
+        )
+        feeds[index]["bounded_monitor"].update(enabled=False, deadline=None)
+    seed = _seed_with_catalog(monkeypatch, declaration)
+    with pytest.raises(ValueError, match="exactly one catalog Source feed"):
+        seed._staged_eod_dataset("tw_futures_eod", "台灣期貨契約日K", currency="TWD")

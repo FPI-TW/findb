@@ -185,3 +185,143 @@ def test_deployment_check_rejects_missing_packaged_metadata(monkeypatch, tmp_pat
     monkeypatch.setattr(metadata, "METADATA_PATH", tmp_path / "missing.json")
     with pytest.raises(metadata.ExecutionMetadataError):
         historical_backfill_cli.main(["--provider", "taifex", "--check"])
+
+
+def _changed_descriptor(monkeypatch, tmp_path, change):
+    value = json.loads(metadata.METADATA_PATH.read_text())
+    change(value)
+    return _write(monkeypatch, tmp_path, value)
+
+
+def _provider_row(value, provider):
+    return next(row for row in value["providers"] if row["provider"] == provider)
+
+
+def test_platform_limits_are_read_from_installed_descriptor(monkeypatch, tmp_path):
+    from findb_fetcher.platform_limits import limits
+
+    def change(value):
+        _provider_row(value, "twelve_data")["platform_limits"]["requests_per_minute"] = 60
+        _provider_row(value, "finlab")["platform_limits"]["max_response_bytes"] = 4096
+
+    _changed_descriptor(monkeypatch, tmp_path, change)
+    assert limits("twelve_data")["requests_per_minute"] == 60
+    assert limits("twelve_data")["requests_per_second"] == 1
+    assert limits("finlab")["max_response_bytes"] == 4096
+    assert limits("finlab")["requests_per_second"] is None
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["zero_rate", "boolean_rate", "float_bytes", "extra_field", "duplicate_name", "missing"],
+)
+def test_invalid_provider_descriptor_fails_closed(monkeypatch, tmp_path, fault):
+    from findb_fetcher.platform_limits import limits
+
+    def change(value):
+        row = _provider_row(value, "twelve_data")
+        if fault == "zero_rate":
+            row["platform_limits"]["requests_per_minute"] = 0
+        if fault == "boolean_rate":
+            row["platform_limits"]["requests_per_minute"] = True
+        if fault == "float_bytes":
+            row["platform_limits"]["max_response_bytes"] = 1.5
+        if fault == "extra_field":
+            row["platform_limits"]["requests_per_day"] = 1
+        if fault == "duplicate_name":
+            row["credential_env_names"] *= 2
+        if fault == "missing":
+            del row["credential_env_names"]
+
+    _changed_descriptor(monkeypatch, tmp_path, change)
+    with pytest.raises(metadata.ExecutionMetadataError):
+        limits("twelve_data")
+
+
+@pytest.mark.parametrize("provider", ["shioaji", "unknown"])
+def test_unpublished_provider_has_no_limits_or_identity(tmp_path, provider):
+    from findb_fetcher.full_market_state import FullMarketState
+    from findb_fetcher.platform_limits import account_identity, limits
+
+    with pytest.raises(ValueError):
+        limits(provider)
+    with pytest.raises(ValueError):
+        account_identity(provider, FullMarketState(tmp_path / "account.sqlite3"))
+
+
+def test_factset_identity_settings_are_published_without_password():
+    from findb_fetcher.platform_limits import FACTSET_IDENTITY_ENV_NAMES
+
+    names = metadata.provider_descriptor("factset")["credential_env_names"]
+    assert set(FACTSET_IDENTITY_ENV_NAMES) < set(names)
+    assert not any("PASSWORD" in name for name in FACTSET_IDENTITY_ENV_NAMES)
+
+
+def test_single_credential_identity_uses_published_setting(monkeypatch, tmp_path):
+    from findb_fetcher.full_market_state import FullMarketState
+    from findb_fetcher.platform_limits import account_identity
+
+    monkeypatch.setenv("TWELVE_DATA_API_KEY", "old-name")
+    monkeypatch.setenv("RENAMED_TWELVE_DATA_KEY", "new-name")
+    monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(tmp_path / "none.json"))
+    expected = account_identity(
+        "twelve_data", FullMarketState(tmp_path / "a.sqlite3"), credential="new-name"
+    )
+
+    def rename(value):
+        _provider_row(value, "twelve_data")["credential_env_names"] = ["RENAMED_TWELVE_DATA_KEY"]
+
+    _changed_descriptor(monkeypatch, tmp_path, rename)
+    assert account_identity("twelve_data", FullMarketState(tmp_path / "b.sqlite3")) == expected
+
+    def ambiguous(value):
+        _provider_row(value, "twelve_data")["credential_env_names"] = ["A_KEY", "B_KEY"]
+
+    _changed_descriptor(monkeypatch, tmp_path, ambiguous)
+    with pytest.raises(ValueError, match="undefined"):
+        account_identity("twelve_data", FullMarketState(tmp_path / "c.sqlite3"))
+
+
+def test_cli_provider_choices_follow_installed_descriptor(monkeypatch, tmp_path):
+    from findb_fetcher import historical_backfill_cli, production_backfill_cli
+
+    def change(value):
+        value["providers"] = [row for row in value["providers"] if row["provider"] != "taifex"]
+        value["feeds"] = [row for row in value["feeds"] if row["provider"] != "taifex"]
+        for row in value["feeds"]:
+            if row["provider"] == "finlab":
+                row["capabilities"]["historical"] = "unsupported"
+
+    _changed_descriptor(monkeypatch, tmp_path, change)
+    assert "taifex" not in metadata.provider_ids()
+    # FinLab keeps daily adapter metadata but offers no historical choice.
+    assert "finlab" in metadata.provider_ids()
+    assert metadata.historical_provider_ids() == ("factset", "twelve_data")
+    for provider in ("taifex", "finlab"):
+        with pytest.raises(SystemExit) as raised:
+            historical_backfill_cli.main(["--provider", provider, "--check"])
+        assert raised.value.code == 2
+        with pytest.raises(ValueError):
+            production_backfill_cli.build_parser().parse_args(
+                ["--provider", provider, "--dataset-key", "x"]
+                + ["--start-date", "2026-01-01", "--end-date", "2026-01-01"]
+            )
+
+
+def test_account_governor_cli_rejects_unpublished_provider(monkeypatch, tmp_path):
+    from findb_fetcher import account_governor
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "findb-account-governor",
+            "inspect-acquisition",
+            "--governor",
+            "/x",
+            "--provider",
+            "shioaji",
+        ],
+    )
+    with pytest.raises(SystemExit) as raised:
+        account_governor.main()
+    assert raised.value.code == 2

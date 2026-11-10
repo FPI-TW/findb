@@ -70,7 +70,8 @@ uv --directory backend run python scripts/export_provider_catalog.py --check
 資料產物包含 schema version 與 SHA-256；Backend 保存 canonical source digest，其它消費端保存
 各自正向欄位投影的 digest。來源物件與集合排序不改變輸出；只改 Backend 時間不改非排程 Fetcher
 descriptor、Dashboard constants 或 Infra inventory。單純時間變更只發布 Backend，無須重建 Fetcher image。
-獨立傳送至 SSM 的 host／recovery／owner-lock guards 與 `infra/monitoring/publish_staging_metrics.py`
+獨立傳送至 SSM 的 host／recovery／owner-lock guards、installation inspector
+（`inspect_full_market_installation.py`）與 `infra/monitoring/publish_staging_metrics.py`
 內嵌同一生成 inventory，生成區塊納入 `--check`；OpenTofu monitoring 直接讀 inventory JSON 推導告警。
 `--check` 不寫檔，任一產物缺失或內容被修改就失敗，已接入 FinDB／Fetcher CI。
 Fetcher 使用正向欄位投影，不包含 schedule、deadline、date lag 或 publication retry window，避免
@@ -78,6 +79,41 @@ Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。
 
 新增／替換 feed 須先更新 catalog、確認 contract 已發布，重新生成並執行測試。消費端不可手改產物。
 修改同語意欄位應只修改 catalog；舊 schedule manifest 僅作為 tests/fixtures 的相容性證據，不打包至 image。
+
+## 衍生值與刻意手寫的邊界
+
+下列 provider 資訊只由 catalog 經生成產物取得，消費端不另列 provider 名單：
+
+| 消費端 | 衍生內容 | 來源 |
+| --- | --- | --- |
+| Backend | Source scope、credential specs、historical `CAPABILITIES`、calendar 設定名稱、Full-market feeds、cutover／owner-lock providers、readiness provider 型別、delivery plan `execution_policies` 的 provider 集合 | `provider_metadata.v1.json` |
+| Backend seed | Catalog feed 的 provider（`allowed_sources`、`source_precedence`、expected source）、market、asset class、frequency、calendar market、contract schema 與 current／accepted versions（含 FactSet HK v2） | `provider_metadata.v1.json` |
+| Fetcher | Full-market／historical／backfill planner／account governor CLI 的 provider choices、Source authorization 回應的 provider 檢查、平台 rate／response bounds、單一 credential 設定名稱、readiness evidence 的 response bound | `execution_descriptors.v1.json` |
+| Dashboard | Provider options 與 scope | `provider-catalog.ts` |
+| Infra | Consumer 名稱、provider↔image key、需驗證與拉取的 image 集合、installation inspector provider choices | `provider_inventory.v1.json` 與 guard 生成區塊 |
+
+刻意保留手寫、且不放入 catalog 的項目：
+
+- **Adapter 語意集合**：`historical_backfill.DAILY_REPORT_HISTORICAL_PROVIDERS`（TAIFEX／FactSet
+  讀官方或 vendor 日報，休市日一律略過，cutoff 含 provider 當日）與 `PREVIEW_CALENDAR_PROVIDERS`
+  （FactSet preview 不套用 calendar switch；保留退役 Shioaji 舊 request preview）。這些是 executor
+  行為而非 provider 靜態能力，Catalog 的 `declared`／`executable` 沒有定義此語意；測試確認成員仍是
+  catalog historical providers，且 daily-report providers 沒有 Fetcher universe descriptor。
+  Fetcher `historical_backfill.py` 的 partial／manifest 結果判斷與 `production_backfill_cli` 的請求估算
+  單位同屬 adapter 行為，保留原處。
+- **Credential 正規化**：FinLab SDK token、FactSet `HOST:PORT:USER`（不含密碼，輪替保留帳務）為
+  adapter identity；名稱須是 catalog 已發布的 credential 設定（測試約束）。多於一個設定名稱且未定義
+  adapter 規則的 provider fail closed。
+- **Host durable 目錄**：`deploy_fetcher_aws.sh` 的 `provider_host_layout()` 保存既有 historical state 與
+  FinLab SDK cache 路徑（Twelve Data 沿用舊 `/var/lib/findb-fetcher`）。這是既有磁碟狀態位置，修改 catalog
+  不得搬移 state；inventory 出現沒有 host layout 的 provider 會在任何 Docker 操作前以
+  `provider_inventory_invalid` 失敗。
+- **Image reference 環境變數**：`TWELVE_IMAGE_REF`／`FINLAB_IMAGE_REF`／`FACTSET_IMAGE_REF` 是 workflow、
+  release manifest 與 deployment transaction 的介面；腳本只保留 image key→變數的單一對照，未知 image key
+  fail closed。改名須與 workflow 同步發布。
+- **Seed-only 欄位**：名稱、說明、currency、delivery expectation 的 mode／門檻／slot 與時鐘（排程投影由
+  #368 處理）、`full_market` gate、staged datasets 的 `is_active` 由 operator 管理，以及無 catalog feed
+  的保留分 K datasets。`SUPPORTED_DATASETS` 是 registry provisioning 的獨立預期，不由 seed 自身推導。
 
 ## Backend 排程發布
 

@@ -52,9 +52,8 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def provider_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
-    """Return only static adapter metadata; Backend still authorizes every work item."""
-    app_environment()  # Reject invalid/conflicting deployment identity even without a clock.
+def _installed_metadata() -> dict[str, Any]:
+    """Load and verify the packaged projection; never reads environment or clocks."""
     try:
         value = json.loads(METADATA_PATH.read_text(), object_pairs_hook=_unique_object)
         if set(value) != {"schema_version", "projection_sha256", "providers", "feeds"}:
@@ -71,6 +70,77 @@ def provider_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
         identities = [(row["provider"], row["dataset_key"]) for row in value["feeds"]]
         if len(set(providers)) != len(providers) or len(set(identities)) != len(identities):
             raise ExecutionMetadataError("Duplicate execution metadata identity")
+        if not providers or any(type(p) is not str or not p for p in providers):
+            raise ExecutionMetadataError("Invalid execution metadata provider")
+        return value
+    except (OSError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise ExecutionMetadataError("Invalid installed execution metadata") from exc
+
+
+def provider_ids() -> tuple[str, ...]:
+    """Every provider this package carries adapter metadata for, in published order."""
+    return tuple(row["provider"] for row in _installed_metadata()["providers"])
+
+
+def historical_provider_ids() -> tuple[str, ...]:
+    """Providers with at least one active historical feed; adapter choice only."""
+    value = _installed_metadata()
+    try:
+        return tuple(
+            provider["provider"]
+            for provider in value["providers"]
+            if any(
+                row["provider"] == provider["provider"]
+                and row["lifecycle"] == "active"
+                and row["capabilities"]["source"] is True
+                and row["capabilities"]["historical"] in {"declared", "executable"}
+                for row in value["feeds"]
+            )
+        )
+    except (TypeError, KeyError) as exc:
+        raise ExecutionMetadataError("Invalid installed execution metadata") from exc
+
+
+def _positive_int(value: object) -> bool:
+    return type(value) is int and value > 0
+
+
+def provider_descriptor(provider: str) -> dict[str, Any]:
+    """Return one provider's static, secret-free settings (names and limits only)."""
+    row = next(
+        (row for row in _installed_metadata()["providers"] if row["provider"] == provider), None
+    )
+    if row is None:
+        raise ExecutionMetadataError("unsupported provider")
+    try:
+        names = row["credential_env_names"]
+        limits = row["platform_limits"]
+        rate = limits["requests_per_minute"]
+        if (
+            set(row) != {"provider", "credential_env_names", "platform_limits"}
+            or set(limits) != {"requests_per_minute", "max_response_bytes"}
+            or not isinstance(names, list)
+            or any(type(name) is not str or not name for name in names)
+            or len(set(names)) != len(names)
+            or not (rate is None or _positive_int(rate))
+            or not _positive_int(limits["max_response_bytes"])
+        ):
+            raise ExecutionMetadataError("Invalid provider descriptor")
+    except (TypeError, KeyError) as exc:
+        raise ExecutionMetadataError("Invalid provider descriptor") from exc
+    return row
+
+
+def provider_platform_limits(provider: str) -> dict[str, Any]:
+    return dict(provider_descriptor(provider)["platform_limits"])
+
+
+def provider_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
+    """Return only static adapter metadata; Backend still authorizes every work item."""
+    app_environment()  # Reject invalid/conflicting deployment identity even without a clock.
+    value = _installed_metadata()
+    try:
+        providers = [row["provider"] for row in value["providers"]]
         if provider is not None and provider not in providers:
             raise ExecutionMetadataError("Unknown historical adapter")
         feeds = tuple(
@@ -83,7 +153,7 @@ def provider_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
         if not feeds:
             raise ExecutionMetadataError("Unsupported historical adapter scope")
         return feeds
-    except (OSError, TypeError, KeyError, json.JSONDecodeError) as exc:
+    except (TypeError, KeyError) as exc:
         raise ExecutionMetadataError("Invalid installed execution metadata") from exc
 
 

@@ -30,9 +30,12 @@
 文件用來解釋穩定邊界與操作意圖；精確行為依下列來源為準：
 
 - API與schema：部署版本的OpenAPI、versioned contract endpoint及`contracts/`。
-- Active datasets與policy：`backend/scripts/seed_data.py`及Fetcher的versioned configs。
-- Backend provider metadata／發布排程：`backend/configs/provider_catalog.v1.json`；Fetcher 每輪讀取 Source
-  execution-config，image 僅保留非排程 descriptors 與 bootstrap；邊界見 [provider metadata](architecture/provider_metadata.md)。
+- Active datasets與policy：`backend/scripts/seed_data.py`及Fetcher的versioned configs；catalog feed 的
+  provider、market、asset class 與 contract versions 由 provider catalog 投影，seed 只保存名稱、currency
+  與 delivery policy 等 seed-only 欄位。
+- Provider metadata／發布排程：`backend/configs/provider_catalog.v1.json` 是唯一手寫來源，Backend、Fetcher、
+  Dashboard、Infra 只讀生成產物；Fetcher 每輪讀取 Source execution-config，image 僅保留非排程 descriptors
+  與 bootstrap。生成清單與刻意手寫的 adapter／host 例外見 [provider metadata](architecture/provider_metadata.md#衍生值與刻意手寫的邊界)。
 - DB schema：ORM與Alembic migrations。
 - Runtime topology：`docker-compose.prod.yml`。
 - Environment設定：`infra/env/`與`app.config.Settings`。

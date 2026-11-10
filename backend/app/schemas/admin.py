@@ -906,8 +906,6 @@ class SchedulerControlResponse(BaseModel):
     heartbeat_age_seconds: Optional[float] = None
     start_allowed: bool
     start_blockers: list[str]
-    # Deprecated: FULL_MARKET_ENABLED is retired; always true when present.
-    full_market_enabled: bool | None = None
     environment: str | None = None
     admission_id: str | None = None
     admitted_dataset_keys: list[str] = Field(default_factory=list)

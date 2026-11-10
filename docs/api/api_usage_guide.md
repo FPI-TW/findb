@@ -250,7 +250,7 @@ Source `POST /source/full-market/readiness` 只接受已 enrollment 的 ID/diges
 所有環境的 startup 都不以日曆完整性為 gate；新抓取不要求 enrollment、readiness、expiry 或 capacity proof。
 `GET /source/full-market/authorization` 仍驗證 Source key/provider/scope、flag 與 running control；
 `consumer=maintenance` 允許已認證且 Source credential 綁定的 candidate 蒐集，無須先 start、enrollment
-或已發布 baseline。Authorization 與 scheduler 回應的 `full_market_enabled` 已 deprecated，固定為 `true`，下一版移除。
+或已發布 baseline。Authorization 與 scheduler 回應已不含 `full_market_enabled`。
 未知 consumer 拒絕；舊 digest/runtime query 不再影響新抓取資格。此分支尚未部署。
 `GET /admin/delivery-plans` 與 `/{plan_id}/summary` 提供 expected／data／no_data／missing／blocked、
 deadline、late 與 gaps。這些 control mutation 不可使用 Serve key，也不可將 Admin key 提供給 Fetcher。
