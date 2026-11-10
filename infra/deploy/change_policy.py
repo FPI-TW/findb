@@ -35,6 +35,8 @@ SHARED_PREFIXES = (
     "infra/deploy/",
 )
 INFRA_PREFIXES = ("infra/tofu/", "infra/env/")
+# The plan gate must exercise its own workflow before it guards infrastructure.
+INFRA_PLAN_WORKFLOW = ".github/workflows/staging-infra-plan.yml"
 FINDB_STAGING_WORKFLOWS = {
     ".github/workflows/findb-cd.yml",
     ".github/workflows/findb-deploy.yml",
@@ -64,6 +66,8 @@ def classify(paths: list[str]) -> dict[str, bool]:
                 result["findb_staging"] = True
             if path in FETCHER_STAGING_WORKFLOWS:
                 result["fetcher_staging"] = True
+            if path == INFRA_PLAN_WORKFLOW:
+                result["infra_plan"] = True
             continue
         if path.startswith(DEPLOYMENT_ACTION_PREFIX):
             for key in ("findb_ci", "fetcher_ci", "findb_staging", "fetcher_staging"):
