@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import importlib.metadata
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from typing import Any
 
 from findb_fetcher.full_market_errors import MemberUnavailableError, ReadinessBlockedError
-from findb_fetcher.full_market_universe import canonical_bytes, checksum
+from findb_fetcher.full_market_universe import (
+    TW_COMPANY_URLS,
+    TW_ISIN_URLS,
+    canonical_bytes,
+    checksum,
+    parse_tw_companies,
+    parse_tw_etfs,
+    parse_tw_ordinary,
+)
 from findb_fetcher.provider_adapters.base import (
     PASSTHROUGH,
     AcquisitionContext,
@@ -18,6 +26,8 @@ from findb_fetcher.provider_adapters.base import (
     Phase,
     ProviderAdapter,
     ProviderFailure,
+    UniverseContext,
+    UniverseSnapshot,
 )
 from findb_fetcher.providers.finlab import (
     FINLAB_FIELD_DATASETS,
@@ -25,6 +35,7 @@ from findb_fetcher.providers.finlab import (
     FinLabDatasetConfig,
     FinLabDatasetTable,
     FinLabOperationalError,
+    FinLabSdkError,
     FinLabSdkGateway,
     FinLabSymbol,
     FinLabTargetNotReadyError,
@@ -72,6 +83,8 @@ class FinLabAdapter(ProviderAdapter):
     provider = "finlab"
     # The five field tables of a date are one shared observation of the cohort.
     shared_response_prefix = "finlab_dataset:"
+    # Catalogue presence is an SDK observation inside ``build_universe``.
+    catalogue_datasets = None
 
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
@@ -88,6 +101,79 @@ class FinLabAdapter(ProviderAdapter):
         return FinLabSdkGateway.from_env(
             on_response_bytes=observe_response, allow_missing_symbols=True
         )
+
+    def build_universe(
+        self, feeds: Sequence[Mapping[str, Any]], context: UniverseContext
+    ) -> dict[str, UniverseSnapshot]:
+        """TWSE/TPEx official lists, mapped by FinLab SDK column presence."""
+        snapshots = {url: context.snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)}
+        companies = {
+            (member["symbol"], member["exchange"])
+            for index, url in enumerate(TW_COMPANY_URLS)
+            for member in parse_tw_companies(snapshots[url], otc=bool(index))
+        }
+        equity = [
+            member
+            for index, url in enumerate(TW_ISIN_URLS)
+            for member in parse_tw_ordinary(snapshots[url], otc=bool(index))
+        ]
+        for member in equity:
+            if (member["symbol"], member["exchange"]) not in companies:
+                member["classification"] = "classification_gap"
+        etfs = [
+            member
+            for index, url in enumerate(TW_ISIN_URLS)
+            for member in parse_tw_etfs(snapshots[url], otc=bool(index))
+        ]
+        # Catalogue presence is independent of daily OHLCV completeness.
+        catalogue_snapshots: dict[str, dict[str, bytes]] = {}
+        context.refresh_limits()
+        gateway = self.gateway(context.observe_response)
+        for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
+            if dataset not in context.dataset_keys:
+                continue
+            try:
+                try:
+                    table = gateway.fetch_catalogue(
+                        symbols=tuple(member["provider_symbol"] for member in members),
+                    )
+                finally:
+                    context.pace()
+            except FinLabOperationalError:
+                raise
+            except FinLabSdkError:
+                for member in members:
+                    member["mapping_status"] = "gap"
+                continue
+            detached = table_bytes(table)
+            context.observe_response(len(detached))
+            url = FINLAB_PRICE_EVIDENCE_URL.format(dataset=dataset)
+            context.snapshot_objects[url] = context.persist(detached, dataset, "provider_catalogue")
+            catalogue_snapshots[dataset] = {url: detached}
+            for member in members:
+                member["mapping_status"] = (
+                    "mapped"
+                    if member["classification"] != "classification_gap"
+                    and member["provider_symbol"] in table.symbols
+                    else "gap"
+                )
+        groups = {
+            dataset: UniverseSnapshot(
+                context.observed_at.astimezone(context.zones[dataset]).date(), members, evidence
+            )
+            for dataset, members, evidence in (
+                (
+                    "tw_equity_eod",
+                    equity,
+                    {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
+                ),
+                ("tw_etf_eod", etfs, {url: snapshots[url] for url in TW_ISIN_URLS}),
+            )
+            if dataset in context.zones
+        }
+        for dataset, evidence in catalogue_snapshots.items():
+            groups[dataset].evidence.update(evidence)
+        return groups
 
     def acquire(self, member: Mapping[str, Any], context: AcquisitionContext) -> AcquisitionResult:
         dataset, day = context.dataset_key, context.trade_date

@@ -31,6 +31,8 @@ TW_ISIN_URLS = tuple(
 )
 TAIFEX_URL = "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
 TAIFEX_HISTORY_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
+# Official reports that answer HTTP 200 with an empty body before publication.
+EMPTY_OFFICIAL_SNAPSHOT_URLS = frozenset({TAIFEX_URL})
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 # ISO 10383 links these Nasdaq listing segments to operating MIC XNAS.
 NASDAQ_LISTING_SEGMENTS = frozenset({"XNCM", "XNGS", "XNMS"})
@@ -51,6 +53,17 @@ _COMPANY_NAME_FILLER = re.compile(
 
 class UniverseSnapshotError(ValueError):
     """An official snapshot cannot be classified without losing evidence."""
+
+
+def official_snapshot_dataset(url: str) -> str:
+    """The dataset whose raw scope stores one official snapshot URL."""
+    if url in NASDAQ_URLS:
+        return "us_equity_eod"
+    if url == HKEX_URL:
+        return "hk_equity_eod"
+    if url == TAIFEX_URL:
+        return "tw_futures_eod"
+    return "tw_etf_eod" if url in TW_ISIN_URLS else "tw_equity_eod"
 
 
 def canonical_bytes(value: object) -> bytes:

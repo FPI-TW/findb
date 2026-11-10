@@ -21,6 +21,7 @@ import findb_fetcher.full_market_runtime as runtime_module
 from findb_fetcher.full_market_runtime import ReadinessBlockedError
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.full_market_universe import TAIFEX_URL, canonical_bytes
+from findb_fetcher.provider_adapters import finlab as finlab_adapter
 from findb_fetcher.providers.finlab import FinLabSdkGateway
 from findb_fetcher.providers.taifex import TaifexOperationalError, fetch_report
 from findb_fetcher.providers.twelve_data import (
@@ -159,17 +160,17 @@ def test_finlab_catalogue_slow_gateway_completion_paces_next_field_and_restart(
         },
     }
     monkeypatch.setattr(
-        runtime_module,
+        finlab_adapter,
         "parse_tw_companies",
         lambda body, *, otc: [] if otc else [members["equity"]],
     )
     monkeypatch.setattr(
-        runtime_module,
+        finlab_adapter,
         "parse_tw_ordinary",
         lambda body, *, otc: [] if otc else [members["equity"].copy()],
     )
     monkeypatch.setattr(
-        runtime_module, "parse_tw_etfs", lambda body, *, otc: [] if otc else [members["etf"].copy()]
+        finlab_adapter, "parse_tw_etfs", lambda body, *, otc: [] if otc else [members["etf"].copy()]
     )
     runtime._snapshot = lambda url: b"official snapshot"
     submitted = []
@@ -1684,12 +1685,12 @@ def test_finlab_catalogue_operational_failure_does_not_submit_mapping_gaps(
         "classification": "ordinary",
     }
     monkeypatch.setattr(
-        runtime_module, "parse_tw_companies", lambda body, *, otc: [] if otc else [member]
+        finlab_adapter, "parse_tw_companies", lambda body, *, otc: [] if otc else [member]
     )
     monkeypatch.setattr(
-        runtime_module, "parse_tw_ordinary", lambda body, *, otc: [] if otc else [member.copy()]
+        finlab_adapter, "parse_tw_ordinary", lambda body, *, otc: [] if otc else [member.copy()]
     )
-    monkeypatch.setattr(runtime_module, "parse_tw_etfs", lambda body, *, otc: [])
+    monkeypatch.setattr(finlab_adapter, "parse_tw_etfs", lambda body, *, otc: [])
     runtime._snapshot = lambda url: b"official snapshot"
     submitted, calls = [], []
     source.submit = lambda body: submitted.append(body) or body

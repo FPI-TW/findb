@@ -1173,7 +1173,7 @@ def test_taifex_outage_honours_retry_after_and_clears_on_recovery(tmp_path: Path
 
 
 def test_taifex_outage_beyond_retry_window_hands_member_to_manual(tmp_path: Path) -> None:
-    from findb_fetcher.full_market_runtime import TAIFEX_OUTAGE_RETRY_SECONDS
+    from findb_fetcher.provider_adapters.taifex import TAIFEX_OUTAGE_RETRY_SECONDS
 
     runtime, source, _, deliver = _taifex_outage(tmp_path, httpx.Response(503))
     with runtime.state.connection() as db:

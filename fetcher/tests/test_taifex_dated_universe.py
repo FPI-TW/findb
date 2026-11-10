@@ -15,6 +15,7 @@ from findb_fetcher.execution_config import ExecutionSnapshot
 from findb_fetcher.execution_metadata import acquisition_feeds
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.full_market_runtime import DatedUniversePendingError, ReadinessBlockedError
+from findb_fetcher.provider_adapters import taifex as taifex_adapter
 from findb_fetcher.providers.taifex import TaifexOperationalError, fetch_report
 from test_full_market import _runtime
 
@@ -246,10 +247,10 @@ def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
 def _stub_latest_report(runtime, monkeypatch):
     snapshots = []
     runtime._snapshot = lambda *a, **kw: snapshots.append(a) or b"{}"
-    monkeypatch.setattr(runtime_module, "official_report_date", lambda raw: DAY)
-    monkeypatch.setattr(runtime_module, "parse_report", lambda raw, target_date: [])
+    monkeypatch.setattr(taifex_adapter, "official_report_date", lambda raw: DAY)
+    monkeypatch.setattr(taifex_adapter, "parse_report", lambda raw, target_date: [])
     monkeypatch.setattr(
-        runtime_module,
+        taifex_adapter,
         "report_members",
         lambda rows: [{"symbol": "TX", "contract_code": "TX:202608"}],
     )

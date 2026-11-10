@@ -109,6 +109,10 @@ def test_registry_covers_every_published_provider_with_its_capabilities():
         assert (adapter.dated_universe_code is not None) is (provider == "taifex")
         assert (adapter.outage_retry_seconds is not None) is (provider == "taifex")
         assert (adapter.shared_response_prefix is not None) is (provider == "finlab")
+        assert adapter.catalogue_datasets == {
+            "twelve_data": ("us_equity_eod",),
+            "finlab": None,
+        }.get(provider, ())
     retired = adapter_for("shioaji")
     assert type(retired) is ProviderAdapter and retired.classify(RuntimeError(), "member") == (
         ProviderFailure(FailureKind.PASSTHROUGH)
@@ -471,3 +475,44 @@ def test_taifex_report_raw_object_is_written_once_per_date(dated):
     assert quiet.no_trade["url"].startswith(TAIFEX_HISTORY_URL if dated else TAIFEX_URL)
     adapter.reset()
     assert adapter.reports == {} and adapter.report_objects == {}
+
+
+def test_universe_build_uses_only_its_context_and_published_zone():
+    from zoneinfo import ZoneInfo
+
+    from findb_fetcher.provider_adapters import UniverseContext
+
+    report = canonical_bytes([_taifex_report_row("一般"), _taifex_report_row("盤後")])
+    feed = _feed("taifex")
+    calls: list[str] = []
+    context = UniverseContext(
+        dataset_keys=["tw_futures_eod"],
+        observed_at=FETCHED,
+        zones={"tw_futures_eod": ZoneInfo(feed["source_timezone"])},
+        snapshot=lambda url, provider_response=False: calls.append(url) or report,
+        catalogue=lambda **kwargs: pytest.fail("TAIFEX has no provider catalogue"),
+        catalogue_evidence=lambda dataset: pytest.fail("TAIFEX has no provider catalogue"),
+        persist=lambda *args, **kwargs: pytest.fail("the runtime persists universe evidence"),
+        observe_response=lambda *args, **kwargs: None,
+        snapshot_objects={},
+        refresh_limits=lambda: calls.append("limits"),
+        pace=lambda: pytest.fail("no SDK call"),
+    )
+    (universe,) = TaifexAdapter().build_universe([feed], context).values()
+    assert calls == ["limits", TAIFEX_URL]
+    assert universe.effective_date == DAY and universe.evidence == {TAIFEX_URL: report}
+    assert [m["contract_code"] for m in universe.members] == ["TX:202610"]
+    assert sorted(universe.members[0]["sessions"]) == ["after_hours", "regular"]
+
+
+def test_twelve_data_catalogue_request_keeps_the_credential_out_of_evidence(monkeypatch):
+    monkeypatch.setenv("TWELVE_DATA_API_KEY", "offline-secret")
+    adapter = TwelveDataAdapter()
+    request = adapter.catalogue_request("us_equity_eod", 1000)
+    assert request.params == {"country": "United States"}
+    assert request.headers["Authorization"] == "apikey offline-secret"
+    assert "offline-secret" not in request.evidence_url and request.max_response_bytes == 1000
+    assert adapter.catalogue_evidence_dataset(request.evidence_url) == "us_equity_eod"
+    assert adapter.catalogue_evidence_dataset("https://api.example/stocks?country=Japan") is None
+    with pytest.raises(Exception, match="catalogue shape invalid"):
+        adapter.catalogue_rows(b'{"rows": []}')

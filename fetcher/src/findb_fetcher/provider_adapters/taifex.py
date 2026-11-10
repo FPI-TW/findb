@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date
 from functools import partial
 from typing import Any
@@ -30,11 +30,14 @@ from findb_fetcher.provider_adapters.base import (
     Phase,
     ProviderAdapter,
     ProviderFailure,
+    UniverseContext,
+    UniverseSnapshot,
 )
 from findb_fetcher.providers.taifex import (
     TaifexOperationalError,
     fetch_report,
     is_no_trade,
+    official_report_date,
     parse_report,
     persist_dated_report,
     report_members,
@@ -127,6 +130,18 @@ class TaifexAdapter(ProviderAdapter):
                 raw, historical = canonical_bytes(reports), True
             self.reports[day.isoformat()] = (raw, rows, historical)
         return self.reports[day.isoformat()]
+
+    def build_universe(
+        self, feeds: Sequence[Mapping[str, Any]], context: UniverseContext
+    ) -> dict[str, UniverseSnapshot]:
+        """The latest official report's contracts, effective on its report date."""
+        context.refresh_limits()
+        raw = context.snapshot(TAIFEX_URL, provider_response=True)
+        day = official_report_date(raw)
+        if day > context.observed_at.astimezone(context.zones["tw_futures_eod"]).date():
+            raise ReadinessBlockedError("TAIFEX report is future-dated")
+        rows = parse_report(raw, target_date=day)
+        return {"tw_futures_eod": UniverseSnapshot(day, report_members(rows), {TAIFEX_URL: raw})}
 
     def dated_universe(self, day: date, context: AcquisitionContext) -> DatedUniverse:
         raw, rows, historical = self.report(day, context)
