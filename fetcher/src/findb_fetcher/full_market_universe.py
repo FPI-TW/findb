@@ -64,9 +64,15 @@ def checksum(value: bytes) -> str:
 
 
 def _member(
-    symbol: str, exchange: str, currency: str, asset: str, classification: str
+    symbol: str,
+    exchange: str,
+    currency: str,
+    asset: str,
+    classification: str,
+    *,
+    listed_date: date | None = None,
 ) -> dict[str, Any]:
-    return {
+    member = {
         "symbol": symbol,
         "provider_symbol": symbol,
         "exchange": exchange,
@@ -75,6 +81,20 @@ def _member(
         "classification": classification,
         "mapping_status": "gap",
     }
+    if listed_date is not None:
+        member["listed_date"] = listed_date.isoformat()
+    return member
+
+
+def _isin_listed_date(value: str) -> date:
+    """ISIN lists a security before it trades; its 上市日 column is required, never assumed."""
+    matched = re.fullmatch(r"([0-9]{4})/([0-9]{2})/([0-9]{2})", value.strip())
+    if matched is None:
+        raise UniverseSnapshotError("Taiwan listing date is missing or malformed")
+    try:
+        return date(*(int(part) for part in matched.groups()))
+    except ValueError:
+        raise UniverseSnapshotError("Taiwan listing date is missing or malformed") from None
 
 
 def nasdaq_effective_date(raw: bytes, *, observed_date: date) -> date:
@@ -310,6 +330,7 @@ def parse_tw_ordinary(raw: bytes, *, otc: bool = False) -> list[dict[str, Any]]:
             "TWD",
             "equity",
             "ordinary" if cfi.startswith("ES") else "classification_gap",
+            listed_date=_isin_listed_date(row[2]),
         )
         members.append(member)
     if not members:
@@ -339,7 +360,16 @@ def parse_tw_etfs(raw: bytes, *, otc: bool = False) -> list[dict[str, Any]]:
         match = re.match(r"^([0-9]{4,6}[A-Z]?)\s+", row[0].replace("\u3000", " "))
         if match is None:
             raise UniverseSnapshotError("Taiwan ETF identity is invalid")
-        members.append(_member(match.group(1), "ROCO" if otc else "XTAI", "TWD", "etf", "ETF"))
+        members.append(
+            _member(
+                match.group(1),
+                "ROCO" if otc else "XTAI",
+                "TWD",
+                "etf",
+                "ETF",
+                listed_date=_isin_listed_date(row[2]),
+            )
+        )
     if not members:
         raise UniverseSnapshotError("Taiwan ETF section is empty or changed")
     return members

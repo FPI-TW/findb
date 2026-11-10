@@ -242,6 +242,23 @@ class UniverseMember(Base):
     release: Mapped["UniverseRelease"] = relationship(back_populates="members")
 
 
+class UniverseMemberListing(Base):
+    """Exchange listing date a member's official source stated; no row means listed.
+
+    Kept beside ``universe_member`` so members without a listing date store and
+    hash exactly as before.
+    """
+
+    __tablename__ = "universe_member_listing"
+
+    member_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("universe_member.member_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    listed_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+
 class DailyDeliveryPlan(Base):
     """A frozen expected member set for one provider, dataset, and exchange date."""
 

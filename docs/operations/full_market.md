@@ -1054,6 +1054,14 @@ detached bytes checksum 加入 release evidence。SDK 資料錯誤只影響該 f
 回應 accounting 或 R2 失敗中止 refresh，不發布假缺漏。TW 目錄的 effective date 使用台北日期，
 universe request 的未來日期檢查亦依 source timezone 判定。
 
+TW universe 成員帶有 ISIN 的上市日（`listed_date`，存於 `universe_member_listing`）。ISIN 會提前列出尚未上市的商品，所以上市日
+欄位缺漏或格式錯誤時整份名單 fail closed，不視為已上市；parser 與 release 都不依上市日過濾，因為
+release 會被之後的日期沿用。建立 daily plan 時才以 trade date 判斷：`listed_date > trade_date` 的成員
+不列入 expected，上市當日起列入；已上市但仍是 mapping gap 的成員維持 blocked 與告警。沒有上市日
+的成員（其他市場、或上市日加入前建立的 release）視為已上市。Plan 有排除成員時，`member_sha256`
+改為過濾後成員的 digest；沒有排除時與 release 相同。第一次帶入上市日的 release 不把「補上上市日」
+算進 2% 變更比例，之後上市日改變才計入。
+
 Gateway 對 FinLab 1.5.7 原生 FileStorage 設定 `use_cache=False`，只釋放記憶體中的
 DataFrame references，保留既有磁碟檔案與到期 metadata；不呼叫會刪檔的 `clear()`。
 SDK scope 內同時處理呼叫前後的實際 storage 與 package re-export，避免切換 storage 後

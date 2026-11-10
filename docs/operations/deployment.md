@@ -651,6 +651,15 @@ Rollback 入口與 promotion 相同，選擇 `mode=rollback` 和該環境已 acc
 它不重建 images、不修改 immutable acceptance、不刪 governor 或 prepared bodies。若 migration 不相容，採 forward fix，
 或在停止狀態下進行已核對的完整備份復原。
 
+## Universe 上市日的發布順序
+
+Migration `b5d8e2f4a6c1` 新增 `universe_member_listing`（expand-only），只為官方來源有上市日的成員
+保存 `listed_date`；`universe_member` 本身不變。Backend schema 以 `extra="forbid"` 驗證 universe 成員，所以帶 `listed_date` 的 Fetcher 送到舊 Backend
+會得到 422，TW universe 同步因此失敗。**FinDB 必須先部署到該環境，Fetcher 才能部署。**
+Staging 同 SHA 自動部署時，Fetcher CD 會等 FinDB CD 成功；production 兩個 promotion 沒有自動等待，
+必須先 promote FinDB 並確認 migration 完成，再 promote Fetcher。Fetcher rollback 不受影響；Backend
+rollback 到不含此欄位的版本前，須先 rollback Fetcher。
+
 ## Pilot profile 退役與 rollback 下限
 
 Backend migration `a7c3e1f9d2b4_retire_pilot_profile`（接在 `e9f4a1c6b3d5` 之後）與 Fetcher bundle v5

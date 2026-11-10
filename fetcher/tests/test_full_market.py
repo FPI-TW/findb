@@ -226,12 +226,15 @@ def test_hkex_codes_board_currency_and_future_snapshot() -> None:
 def test_tw_etf_sections_include_active_leveraged_inverse_bond_only() -> None:
     html = "<table><tr><td>股票</td></tr><tr><td>2330 台積電</td><td>x</td><td>x</td><td>x</td><td>x</td><td>x</td></tr><tr><td>ETF</td></tr>"
     for symbol in ("00980A", "00631L", "00632R", "00679B"):
-        html += f"<tr><td>{symbol}　ETF</td><td>x</td><td>x</td><td>x</td><td>x</td><td>x</td></tr>"
+        html += f"<tr><td>{symbol}　ETF</td><td>x</td><td>2026/11/03</td><td>x</td><td>x</td><td>x</td></tr>"
     html += "<tr><td>ETN</td></tr><tr><td>020000 ETN</td><td>x</td><td>x</td><td>x</td><td>x</td><td>x</td></tr></table>"
     members = parse_tw_etfs(html.encode("cp950"), otc=True)
     assert [member["symbol"] for member in members] == ["00980A", "00631L", "00632R", "00679B"]
     assert all(
-        member["exchange"] == "ROCO" and member["asset_class"] == "etf" for member in members
+        member["exchange"] == "ROCO"
+        and member["asset_class"] == "etf"
+        and member["listed_date"] == "2026-11-03"
+        for member in members
     )
     assert parse_tw_companies('[{"公司代號":"2330"}]'.encode())[0]["classification"] == "ordinary"
 
@@ -1299,6 +1302,22 @@ def test_tw_ordinary_requires_official_stock_section_cfi_excludes_four_digit_tdr
         ("2330", "ordinary"),
         ("8888", "classification_gap"),
     ]
+    assert {member["listed_date"] for member in members} == {"2026-01-01"}
+
+
+@pytest.mark.parametrize("listed", ["", "x", "2026-11-03", "2026/13/01", "2026/02/30"])
+@pytest.mark.parametrize("section", ["股票", "ETF"])
+def test_tw_listing_date_missing_or_malformed_fails_closed(listed: str, section: str) -> None:
+    from findb_fetcher.full_market_universe import UniverseSnapshotError, parse_tw_ordinary
+
+    symbol = "2330" if section == "股票" else "00980A"
+    html = (
+        f"<table><tr><td>{section}</td></tr><tr><td>{symbol} 名稱</td><td>ISIN</td>"
+        f"<td>{listed}</td><td>上市</td><td>產業</td><td>ESVUFR</td></tr></table>"
+    )
+    parse = parse_tw_ordinary if section == "股票" else parse_tw_etfs
+    with pytest.raises(UniverseSnapshotError, match="listing date"):
+        parse(html.encode("cp950"))
 
 
 def test_hk_actual_equity_board_labels_and_official_rmb_iso_currency() -> None:

@@ -86,6 +86,8 @@ class UniverseMemberInput(FullMarketModel):
     )
     mapping_status: Literal["mapped", "gap"] = "mapped"
     raw_evidence_ref: str | None = Field(default=None, max_length=2048)
+    # Official listing date; a member listed after a trade date is not expected then.
+    listed_date: date | None = None
 
     @model_validator(mode="after")
     def validate_futures_identity(self) -> "UniverseMemberInput":

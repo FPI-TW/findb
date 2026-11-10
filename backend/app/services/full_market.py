@@ -29,6 +29,7 @@ from app.models.registry import (
     DeliveryMemberEvidence,
     IngestionRun,
     UniverseMember,
+    UniverseMemberListing,
     UniverseRelease,
 )
 from app.schemas.full_market import (
@@ -75,10 +76,50 @@ class FullMarketError(ValueError):
 
 
 def _digest(value: object) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=_json_date
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _json_date(value: object) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
+
+
+def _member_columns(member: UniverseMember, listed: dict[UUID, date]) -> dict:
+    """Stored member identity as submitted; an absent listing date stays absent.
+
+    Members recorded without a listing date hash exactly as before, so frozen
+    release digests and auto-publish comparisons are unchanged.
+    """
+    values = {
+        column.name: getattr(member, column.name)
+        for column in UniverseMember.__table__.columns
+        if column.name not in {"member_id", "release_id"}
+    }
+    if member.member_id in listed:
+        values["listed_date"] = listed[member.member_id]
+    return values
+
+
+async def _listing_dates(db: AsyncSession, release_id: UUID) -> dict[UUID, date]:
+    rows = await db.execute(
+        select(UniverseMemberListing.member_id, UniverseMemberListing.listed_date)
+        .join(UniverseMember, UniverseMember.member_id == UniverseMemberListing.member_id)
+        .where(UniverseMember.release_id == release_id)
+    )
+    return {member_id: listed_date for member_id, listed_date in rows}
+
+
+def _member_changed(previous: dict | None, current: dict | None) -> bool:
+    if previous is None or current is None:
+        return True
+    if "listed_date" not in previous:
+        # Learning a listing date the prior release lacked is not a membership change.
+        current = {key: value for key, value in current.items() if key != "listed_date"}
+    return previous != current
 
 
 def _semantic_members(members: list[dict]) -> list[dict]:
@@ -87,6 +128,10 @@ def _semantic_members(members: list[dict]) -> list[dict]:
         {key: value for key, value in member.items() if key != "raw_evidence_ref"}
         for member in sorted(members, key=lambda value: value["member_key"])
     ]
+
+
+def _by_member_key(member: dict) -> str:
+    return member["member_key"]
 
 
 def _semantic_member_digest(members: list[dict]) -> str:
@@ -191,6 +236,8 @@ def _expanded_members(body: UniverseSubmitRequest) -> list[dict]:
         sessions: list[str | None] = list(member.sessions) if member.sessions else [None]
         for session in sessions:
             values = member.model_dump(exclude={"sessions"})
+            if values["listed_date"] is None:
+                values.pop("listed_date")
             values["session"] = session
             values["member_key"] = _member_key(member, session)
             members.append(values)
@@ -312,13 +359,14 @@ async def submit_universe(
                 select(UniverseMember).where(UniverseMember.release_id == prior.release_id)
             )
         ).all()
+        prior_listed = await _listing_dates(db, prior.release_id)
         previous_members = {
             member.member_key: {
-                column.name: getattr(member, column.name)
-                for column in UniverseMember.__table__.columns
+                key: value
+                for key, value in _member_columns(member, prior_listed).items()
                 # Daily evidence references change even when the member does not.
                 # All identity, mapping and classification fields remain material.
-                if column.name not in {"member_id", "release_id", "raw_evidence_ref"}
+                if key != "raw_evidence_ref"
             }
             for member in prior_members
         }
@@ -329,7 +377,7 @@ async def submit_universe(
         for member in members
     }
     change_count = sum(
-        previous_members.get(key) != current_members.get(key)
+        _member_changed(previous_members.get(key), current_members.get(key))
         for key in previous_members.keys() | current_members.keys()
     )
     ratio = Decimal(change_count) / Decimal(
@@ -383,7 +431,12 @@ async def submit_universe(
     db.add(release)
     await db.flush()
     for member in members:
-        db.add(UniverseMember(member_id=uuid7(), release_id=release.release_id, **member))
+        values = dict(member)
+        listed_date = values.pop("listed_date", None)
+        member_id = uuid7()
+        db.add(UniverseMember(member_id=member_id, release_id=release.release_id, **values))
+        if listed_date is not None:
+            db.add(UniverseMemberListing(member_id=member_id, listed_date=listed_date))
     await db.commit()
     return _release_response(release)
 
@@ -456,16 +509,10 @@ async def get_universe(
             .order_by(UniverseMember.member_key)
         )
     ).all()
+    listing = await _listing_dates(db, release_id)
     return UniverseReleaseDetailResponse(
         **_release_response(release).model_dump(),
-        members=[
-            {
-                column.name: getattr(member, column.name)
-                for column in UniverseMember.__table__.columns
-                if column.name not in {"member_id", "release_id"}
-            }
-            for member in members
-        ],
+        members=[_member_columns(member, listing) for member in members],
         evidence=release.evidence,
     )
 
@@ -689,6 +736,24 @@ async def create_plan(
     )
     if not members:
         raise FullMarketError("Published universe has no plan members", 409)
+    # A release outlives its effective date, so listing is judged per trade date:
+    # a member listed later is not expected yet, and one listed on the day is.
+    listing = await _listing_dates(db, release.release_id)
+    listed = [
+        member
+        for member in members
+        if member.member_id not in listing or listing[member.member_id] <= body.trade_date
+    ]
+    if not listed:
+        raise FullMarketError("No universe member is listed on the trade date", 409)
+    member_sha256 = (
+        release.member_sha256
+        if len(listed) == len(members)
+        else _digest(
+            sorted((_member_columns(member, listing) for member in listed), key=_by_member_key)
+        )
+    )
+    members = listed
     plan = DailyDeliveryPlan(
         plan_id=uuid7(),
         dataset_key=body.dataset_key,
@@ -698,7 +763,7 @@ async def create_plan(
         execution_profile=body.execution_profile,
         activation_cutoff=activation_date,
         deadline_at=_deadline(dataset, body.trade_date),
-        member_sha256=release.member_sha256,
+        member_sha256=member_sha256,
         expected_count=len(members),
         created_at=utc_now(),
     )
@@ -1329,14 +1394,8 @@ async def publish_universe(
             )
         ).all()
     )
-    canonical = [
-        {
-            column.name: getattr(member, column.name)
-            for column in UniverseMember.__table__.columns
-            if column.name not in {"member_id", "release_id"}
-        }
-        for member in members
-    ]
+    listing = await _listing_dates(db, release_id)
+    canonical = [_member_columns(member, listing) for member in members]
     # Submission uses Python string ordering; database collation can differ for
     # punctuation, case and futures session names.
     canonical.sort(key=lambda member: member["member_key"])
@@ -1360,14 +1419,8 @@ async def _release_member_values(db: AsyncSession, release_id: UUID) -> list[dic
             )
         ).all()
     )
-    values = [
-        {
-            column.name: getattr(member, column.name)
-            for column in UniverseMember.__table__.columns
-            if column.name not in {"member_id", "release_id"}
-        }
-        for member in members
-    ]
+    listing = await _listing_dates(db, release_id)
+    values = [_member_columns(member, listing) for member in members]
     # Submission uses Python string ordering; database collation can differ for
     # punctuation, case and futures session names.
     values.sort(key=lambda member: member["member_key"])
