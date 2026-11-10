@@ -165,6 +165,19 @@ async def test_local_today_uses_market_local_day(test_session, monkeypatch, key,
     assert full_market_admission.local_today(dataset) == clock.astimezone(ZoneInfo(zone)).date()
 
 
+def test_unknown_market_timezone_fails_closed_for_admission_and_acceptance():
+    from app.models.registry import DatasetRegistry
+    from app.services import full_market_admission
+
+    dataset = DatasetRegistry(dataset_key="xx_equity_eod", market="XX")
+    with pytest.raises(full_market_admission.AdmissionError, match="market_timezone_unsupported"):
+        full_market_admission.local_today(dataset)
+    with pytest.raises(FullMarketError, match="timezone is not configured"):
+        full_market._exchange_timezone(dataset)
+    taifex = DatasetRegistry(dataset_key="tw_futures_eod", market="TW")
+    assert full_market._exchange_timezone(taifex) == ZoneInfo("Asia/Taipei")
+
+
 @pytest.mark.asyncio
 async def test_resume_preserves_original_activation_and_existing_gaps(test_session, monkeypatch):
     dataset, body, plan = await _activated_plan(test_session, count=1)

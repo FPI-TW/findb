@@ -53,7 +53,12 @@ from app.schemas.ingress import (
     MarketEODRow,
     MarketMinuteRow,
 )
-from app.services.effective_calendar import effective_days, execution_policy, execution_snapshot
+from app.services.effective_calendar import (
+    effective_days,
+    execution_policy,
+    execution_snapshot,
+    market_timezone,
+)
 from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
@@ -470,10 +475,10 @@ def _calendar_market(dataset: DatasetRegistry) -> str:
 
 
 def _exchange_timezone(dataset: DatasetRegistry) -> ZoneInfo:
-    zones = {"US": "America/New_York", "HK": "Asia/Hong_Kong", "TW": "Asia/Taipei"}
-    if dataset.market not in zones:
-        raise FullMarketError("Full-market exchange timezone is not configured", 409)
-    return ZoneInfo(zones[dataset.market])
+    try:
+        return market_timezone(_calendar_market(dataset))
+    except ValueError:
+        raise FullMarketError("Full-market exchange timezone is not configured", 409) from None
 
 
 async def _require_closed_acceptance_day(

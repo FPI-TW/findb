@@ -19,6 +19,7 @@ from sqlalchemy import text
 
 from app.models.base import async_session_maker, engine
 from app.services.calendar_management import published_year
+from app.services.effective_calendar import MARKETS
 from app.utils import utc_now
 
 ACTIVE_FEEDS = (
@@ -325,11 +326,8 @@ async def _target_calendar_evidence(session: Any, observed_at: datetime) -> dict
         raise ValueError("evidence observation must be timezone-aware")
     observed_at = observed_at.astimezone(timezone.utc)
     markets = {}
-    for market, timezone_name in {
-        "US": "America/New_York",
-        "TW": "Asia/Taipei",
-        "TAIFEX": "Asia/Taipei",
-    }.items():
+    for market in ("US", "TW", "TAIFEX"):
+        timezone_name = MARKETS[market][0]
         # Availability schedules use Taipei dates, including the US next-day window.
         today = observed_at.astimezone(ZoneInfo("Asia/Taipei")).date()
         window = [today - timedelta(days=offset) for offset in range(16)]
