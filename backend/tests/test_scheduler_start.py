@@ -21,12 +21,12 @@ from app.services.full_market_admission import (
     admission_projection,
     enroll,
     local_today,
-    reconcile_environment,
     report_readiness,
 )
 from app.services.scheduler_control import (
     SchedulerControlRevisionConflictError,
     SchedulerControlStartBlockedError,
+    emergency_stop_controls,
     update_scheduler_desired_state,
 )
 from app.services.source_clients import create_source_client
@@ -43,10 +43,8 @@ PRINCIPAL = AdminPrincipal("user", None, "test-owner", "owner")
 
 async def ready(db, monkeypatch, *, environment="local", scope=None):
     settings = get_settings()
-    monkeypatch.setattr(settings, "FULL_MARKET_ENABLED", True)
     monkeypatch.setattr(settings, "APP_ENVIRONMENT", environment)
     await seed_datasets(db)
-    await reconcile_environment(db, actor="test-management")
     await _calendar(db, "TW")
     await _baseline(db, "tw_equity_eod", count=2)
     client, _ = await create_source_client(
@@ -142,9 +140,7 @@ async def test_manual_start_partial_scope_freeze_repeat_and_restart(
 @pytest.mark.parametrize("block", ["baseline"])
 async def test_start_blocks_without_freezing_or_auditing(test_session, monkeypatch, block):
     row, proof = await ready(test_session, monkeypatch)
-    if block == "flag":
-        monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
-    elif block == "runtime":
+    if block == "runtime":
         row.revoked_at = utc_now()
     elif block == "expiry":
         row.expires_at = utc_now() - timedelta(seconds=1)
@@ -182,12 +178,10 @@ async def test_start_blocks_without_freezing_or_auditing(test_session, monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("former_gate", ["flag", "runtime", "expiry", "capacity", "credential"])
+@pytest.mark.parametrize("former_gate", ["runtime", "expiry", "capacity", "credential"])
 async def test_only_baseline_calendar_gate_manual_start(test_session, monkeypatch, former_gate):
     row, _ = await ready(test_session, monkeypatch)
-    if former_gate == "flag":
-        monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
-    elif former_gate == "runtime":
+    if former_gate == "runtime":
         row.revoked_at = utc_now()
     elif former_gate == "expiry":
         row.expires_at = utc_now() - timedelta(seconds=1)
@@ -231,9 +225,7 @@ async def test_baseline_calendar_start_requires_no_enrollment(test_session, monk
 
 
 @pytest.mark.asyncio
-async def test_flag_off_audited_stop_on_does_not_restart_and_dates_remain(
-    test_session, monkeypatch
-):
+async def test_emergency_stop_is_audited_idempotent_and_dates_remain(test_session, monkeypatch):
     await ready(test_session, monkeypatch)
     control = await update_scheduler_desired_state(
         test_session,
@@ -246,15 +238,36 @@ async def test_flag_off_audited_stop_on_does_not_restart_and_dates_remain(
         FullMarketDatasetState, {"dataset_key": "tw_equity_eod", "execution_profile": "full_market"}
     )
     first_date = first.first_start_date
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
-    await reconcile_environment(test_session, actor="test-management")
+    preview = await emergency_stop_controls(
+        test_session, actor="test-operator", reason="dry run", apply=False
+    )
+    assert [item["scheduler_key"] for item in preview] == [KEY]
+    assert (await test_session.get(SchedulerControl, KEY)).desired_state == "running"
+    await emergency_stop_controls(
+        test_session, actor="test-operator", reason="restore drill", apply=True
+    )
+    control = await test_session.get(SchedulerControl, KEY, populate_existing=True)
     assert control.desired_state == "stopped"
     revision = control.revision
-    await reconcile_environment(test_session, actor="test-management")
+    assert (
+        await emergency_stop_controls(
+            test_session, actor="test-operator", reason="repeat", apply=True
+        )
+        == []
+    )
+    control = await test_session.get(SchedulerControl, KEY, populate_existing=True)
     assert control.revision == revision
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
-    await reconcile_environment(test_session, actor="test-management")
-    assert control.desired_state == "stopped"
+    audit = await test_session.scalar(
+        select(AdminAuditEvent).where(
+            AdminAuditEvent.resource_id == KEY, AdminAuditEvent.action == "stop"
+        )
+    )
+    assert audit.details["reason"] == "emergency_stop" and audit.actor_id == "test-operator"
+    first = await test_session.get(
+        FullMarketDatasetState,
+        {"dataset_key": "tw_equity_eod", "execution_profile": "full_market"},
+        populate_existing=True,
+    )
     assert first.first_start_date == first_date
     with pytest.raises(SchedulerControlRevisionConflictError):
         await update_scheduler_desired_state(
@@ -466,13 +479,10 @@ async def test_baseline_publish_and_start_share_safe_dataset_lock_order(test_eng
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["all", "ingest"])
-async def test_lifecycle_stop_flag_off_and_reopening_remains_stopped(
-    test_session, monkeypatch, role
-):
+async def test_ingest_startup_never_changes_scheduler_controls(test_session, monkeypatch, role):
     from contextlib import asynccontextmanager
 
     from app import main
-    from app.models.registry import FullMarketEnvironment
 
     await ready(test_session, monkeypatch, scope=["tw_equity_eod"])
     await update_scheduler_desired_state(
@@ -494,14 +504,9 @@ async def test_lifecycle_stop_flag_off_and_reopening_remains_stopped(
     monkeypatch.setattr(main, "init_db", nothing)
     monkeypatch.setattr(main, "flush_usage", nothing)
     monkeypatch.setattr(main, "async_session_maker", session)
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
     async with main.lifespan(main.app):
-        assert (await test_session.get(SchedulerControl, KEY)).desired_state == "stopped"
-        assert not (await test_session.get(FullMarketEnvironment, "local")).enabled
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
-    async with main.lifespan(main.app):
-        assert (await test_session.get(SchedulerControl, KEY)).desired_state == "stopped"
-        assert (await test_session.get(FullMarketEnvironment, "local")).enabled
+        control = await test_session.get(SchedulerControl, KEY)
+        assert (control.desired_state, control.revision) == ("running", 2)
 
 
 @pytest.mark.asyncio
@@ -514,10 +519,8 @@ async def test_authorization_get_never_stops_or_refreezes_controls(test_session,
         expected_revision=1,
         principal=PRINCIPAL,
     )
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
     before = await test_session.scalar(select(func.count()).select_from(AdminAuditEvent))
-    projection = await admission_projection(test_session, "finlab", source=True)
-    assert not projection["acquisition_allowed"]
+    await admission_projection(test_session, "finlab", source=True)
     assert control.desired_state == "running" and control.revision == 2
     assert await test_session.scalar(select(func.count()).select_from(AdminAuditEvent)) == before
     assert await test_session.scalar(select(func.count()).select_from(FullMarketAdmissionFeed)) == 1
@@ -564,9 +567,9 @@ async def test_source_budget_is_bound_to_actual_client_and_reported_for_permits(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("environment", ["local", "staging", "production"])
-@pytest.mark.parametrize("backend_enabled,runtime_enabled", [(True, False), (False, True)])
-async def test_environment_flag_mismatch_only_blocks_acquisition(
-    test_session, monkeypatch, environment, backend_enabled, runtime_enabled
+@pytest.mark.parametrize("runtime_enabled", [True, False])
+async def test_deprecated_runtime_flag_report_never_blocks_acquisition(
+    test_session, monkeypatch, environment, runtime_enabled
 ):
     row, proof = await ready(
         test_session, monkeypatch, environment=environment, scope=["tw_equity_eod"]
@@ -581,7 +584,6 @@ async def test_environment_flag_mismatch_only_blocks_acquisition(
             full_market_enabled=runtime_enabled,
         ),
     )
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", backend_enabled)
     result = await admission_projection(test_session, "finlab", source=True)
     assert "full_market_runtime_flag_mismatch" not in result["acquisition_blockers"]
     assert not result["acquisition_allowed"]  # stopped before the Owner start
@@ -594,9 +596,7 @@ async def test_environment_flag_mismatch_only_blocks_acquisition(
     )
     control = await test_session.get(SchedulerControl, KEY)
     assert control.desired_state == "running" and control.revision == 2
-    assert (await admission_projection(test_session, "finlab", source=True))[
-        "acquisition_allowed"
-    ] == backend_enabled
+    assert (await admission_projection(test_session, "finlab", source=True))["acquisition_allowed"]
     assert row.expires_at == proof.expires_at
 
 
@@ -840,8 +840,7 @@ async def test_source_current_enrollment_verification_is_readonly_and_independen
             full_market_enabled=False,
         ),
     )
-    # Flag off and a stopped control must still allow repair-proof verification.
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
+    # A stopped control must still allow repair-proof verification.
     control = await test_session.get(SchedulerControl, KEY)
     before = (control.desired_state, control.revision)
     audit_count = await test_session.scalar(select(func.count()).select_from(AdminAuditEvent))
@@ -1015,12 +1014,8 @@ async def test_owner_api_start_ignores_malformed_optional_governance(
 async def test_maintenance_bootstrap_uses_source_scope_without_baseline_or_admission(
     client, test_session, monkeypatch
 ):
-    from app.models.registry import FullMarketEnvironment
-
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
     monkeypatch.setattr(get_settings(), "APP_ENVIRONMENT", "local")
     await seed_datasets(test_session)
-    await reconcile_environment(test_session, actor="test-management")
     credential, key = await create_source_client(
         test_session,
         name="maintenance-only",
@@ -1041,18 +1036,18 @@ async def test_maintenance_bootstrap_uses_source_scope_without_baseline_or_admis
     assert response.json()["acquisition_allowed"] is True
     assert response.json()["acquisition_blockers"] == []
     assert response.json()["authorized_dataset_keys"] == ["tw_equity_eod"]
-    lifecycle = await test_session.get(FullMarketEnvironment, "local")
-    lifecycle.enabled = False
+    # Universe sync must stay available before the first baseline exists, so
+    # maintenance is gated only by the Source credential, not by controls.
+    credential.revoked_at = utc_now()
     await test_session.commit()
     response = await client.get(
         "/api/v1/source/full-market/authorization",
         params={"consumer": "maintenance"},
         headers=headers,
     )
-    assert response.status_code == 200
-    assert response.json()["acquisition_allowed"] is False
-    assert response.json()["acquisition_blockers"] == ["full_market_flag_disabled"]
-    assert response.json()["authorized_dataset_keys"] == []
+    assert response.status_code in {200, 401, 403}
+    if response.status_code == 200:
+        assert response.json()["acquisition_allowed"] is False
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import get_settings
 from app.schemas.full_market_readiness import ReadinessDeclaration
-from app.services.full_market_admission import enroll, reconcile_environment
+from app.services.full_market_admission import enroll
 
 
 def read_artifact(path: Path) -> tuple[bytes, str]:
@@ -107,11 +107,7 @@ async def run(args: argparse.Namespace) -> dict:
     engine = create_async_engine(settings.DATABASE_URL, pool_size=1, max_overflow=0)
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as db:
-            await reconcile_environment(db, actor="full-market-management")
-            result = {
-                "enabled": settings.FULL_MARKET_ENABLED,
-                "environment": settings.APP_ENVIRONMENT,
-            }
+            result = {"environment": settings.APP_ENVIRONMENT}
             if args.declaration:
                 declaration = ReadinessDeclaration.model_validate_json(
                     read_artifact(args.declaration)[0]

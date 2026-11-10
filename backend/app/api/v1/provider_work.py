@@ -23,7 +23,7 @@ class EnqueueRequest(BaseModel):
     kind: Literal["daily", "historical", "maintenance", "rerun"]
     dataset_key: str
     trade_date: date | None = None
-    execution_profile: Literal["pilot", "full_market"] | None = None
+    execution_profile: Literal["full_market"] | None = None
     scope: dict = Field(default_factory=dict)
     not_before: datetime | None = None
 
@@ -35,7 +35,7 @@ class ClaimRequest(BaseModel):
     recover: bool = False
     requested_work_id: UUID | None = None
     accepted_kinds: list[Literal["daily", "historical", "maintenance", "rerun"]] | None = None
-    execution_profile: Literal["pilot", "full_market"] | None = None
+    execution_profile: Literal["full_market"] | None = None
 
 
 class FenceRequest(BaseModel):
@@ -281,10 +281,10 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
                 authorization = await account_authorization(
                     db,
                     provider,
-                    work.execution_profile or "pilot",
+                    "full_market",
                     "",
                     "",
-                    profile=execution_profile(work.execution_profile or "pilot"),
+                    profile=execution_profile(work.execution_profile or "full_market"),
                 )
                 if not authorization["acquisition_allowed"]:
                     raise service.ProviderWorkSuspendedError("scheduler acquisition is stopped")

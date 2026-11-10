@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import date, time, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,7 @@ from app.config import get_settings
 from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
 from app.services.provider_metadata import provider_catalog
 
+# The only Backend market -> timezone authority; catalog feeds are checked against it.
 MARKETS = {
     "TW": ("Asia/Taipei", time(9), time(13, 30)),
     "US": ("America/New_York", time(9, 30), time(16)),
@@ -19,6 +21,15 @@ MARKETS = {
     "CN": ("Asia/Shanghai", time(9, 30), time(15)),
     "TAIFEX": ("Asia/Taipei", time(8, 45), time(13, 45)),
 }
+
+
+def market_timezone(market: str) -> ZoneInfo:
+    """Fail closed instead of guessing a timezone for an unconfigured market."""
+    if market not in MARKETS:
+        raise ValueError("unsupported calendar market")
+    return ZoneInfo(MARKETS[market][0])
+
+
 PROVIDER_CALENDAR_SWITCHES = {
     provider.provider: provider.calendar_switch_env for provider in provider_catalog().providers
 }

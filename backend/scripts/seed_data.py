@@ -13,8 +13,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
+from app.execution_profiles import scheduler_key
 from app.models.base import Base
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
+from app.services.effective_calendar import MARKETS
 from app.services.provider_metadata import acquisition_feeds
 from app.utils import utc_now
 from scripts.preflight_catalog_schedule import migration_module
@@ -39,8 +41,6 @@ def _eod_delivery_expectation(
     *,
     mode: str,
     market: str,
-    timezone: str,
-    close_time: str,
     source: str,
     minimum_count: int,
     slot_id: str,
@@ -48,6 +48,7 @@ def _eod_delivery_expectation(
     monitor_deadline: str = "17:00:00",
     target_date_lag_days: int = 0,
 ) -> dict:
+    timezone, _, close = MARKETS[market]
     return {
         "delivery_mode": mode,
         "baseline": {
@@ -69,7 +70,7 @@ def _eod_delivery_expectation(
         "latest_date": {
             "calendar_market": market,
             "timezone": timezone,
-            "market_close_time": close_time,
+            "market_close_time": close.isoformat(),
             "availability_grace_minutes": 120,
             "action": "warn",
         },
@@ -90,6 +91,7 @@ def _eod_delivery_expectation(
 
 
 def _minute_delivery_expectation() -> dict:
+    timezone, _, close = MARKETS["TW"]
     return {
         "delivery_mode": "sequenced_snapshot",
         "baseline": {
@@ -111,8 +113,8 @@ def _minute_delivery_expectation() -> dict:
         },
         "latest_date": {
             "calendar_market": "TW",
-            "timezone": "Asia/Taipei",
-            "market_close_time": "13:30:00",
+            "timezone": timezone,
+            "market_close_time": close.isoformat(),
             "availability_grace_minutes": 60,
             "action": "warn",
         },
@@ -184,8 +186,6 @@ DATASETS: list[dict[str, Any]] = [
             delivery_expectation=_eod_delivery_expectation(
                 mode="incremental",
                 market="US",
-                timezone="America/New_York",
-                close_time="16:00:00",
                 source="twelve_data",
                 minimum_count=1,
                 slot_id="western_markets_window",
@@ -212,8 +212,6 @@ DATASETS: list[dict[str, Any]] = [
             delivery_expectation=_eod_delivery_expectation(
                 mode="full_snapshot",
                 market="TW",
-                timezone="Asia/Taipei",
-                close_time="13:30:00",
                 source="finlab",
                 minimum_count=2,
                 slot_id="taiwan_market_window",
@@ -326,12 +324,6 @@ def _staged_eod_dataset(
     expectation = _eod_delivery_expectation(
         mode="full_snapshot",
         market=calendar_market,
-        timezone="Asia/Hong_Kong" if market == "HK" else "Asia/Taipei",
-        close_time="16:10:00"
-        if market == "HK"
-        else "13:45:00"
-        if calendar_market == "TAIFEX"
-        else "13:30:00",
         source=provider,
         minimum_count=0,
         slot_id="taiwan_market_window",
@@ -572,36 +564,35 @@ async def seed_datasets(session: AsyncSession) -> None:
         slot = feed.delivery.slot_id
         clock = time.fromisoformat(feed.schedule.local_time)
         zone = feed.schedule.timezone
-        for profile in ("pilot", "full_market"):
-            key = f"{profile}_{provider}_v1"
+        key = scheduler_key(provider)
+        await session.execute(
+            insert(SchedulerControl)
+            .values(
+                scheduler_key=key,
+                provider=provider,
+                execution_profile="full_market",
+                slot_id=slot,
+                scheduled_local_time=clock,
+                timezone=zone,
+                desired_state="stopped",
+                observed_state="stopped",
+                revision=1,
+            )
+            .on_conflict_do_update(
+                index_elements=["scheduler_key"],
+                set_={"scheduled_local_time": clock, "timezone": zone},
+                where=SchedulerControl.retired_at.is_(None),
+            )
+        )
+        for dataset_key in datasets:
             await session.execute(
-                insert(SchedulerControl)
+                insert(SchedulerDataset)
                 .values(
                     scheduler_key=key,
-                    provider=provider,
-                    execution_profile=profile,
-                    slot_id=slot,
-                    scheduled_local_time=clock,
-                    timezone=zone,
-                    desired_state="stopped",
-                    observed_state="stopped",
-                    revision=1,
+                    dataset_key=dataset_key,
                 )
-                .on_conflict_do_update(
-                    index_elements=["scheduler_key"],
-                    set_={"scheduled_local_time": clock, "timezone": zone},
-                    where=SchedulerControl.retired_at.is_(None),
-                )
+                .on_conflict_do_nothing()
             )
-            for dataset_key in datasets:
-                await session.execute(
-                    insert(SchedulerDataset)
-                    .values(
-                        scheduler_key=key,
-                        dataset_key=dataset_key,
-                    )
-                    .on_conflict_do_nothing()
-                )
     await session.commit()
     logger.info("Seeded %d datasets", len(DATASETS))
 

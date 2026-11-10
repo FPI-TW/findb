@@ -22,13 +22,14 @@ from findb_fetcher.config import app_environment
 from findb_fetcher.full_market_state import FullMarketState, FullMarketStateError, QuotaBlockedError
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 
-
-def enabled() -> bool:
-    return os.getenv("FULL_MARKET_ENABLED", "false").lower() == "true"
+# Consumers that keep their own control/authorization and opt into the shared
+# ledger only when FETCHER_ACCOUNT_STATE_PATH is installed. Entry points that
+# never set FETCHER_CONSUMER_PROFILE (legacy CLIs, manual backfill) are bounded.
+BOUNDED_CONSUMERS = frozenset({"bounded", "historical"})
 
 
 def consumer() -> str:
-    return os.getenv("FETCHER_CONSUMER_PROFILE", "pilot")
+    return os.getenv("FETCHER_CONSUMER_PROFILE", "bounded")
 
 
 @dataclass
@@ -74,7 +75,7 @@ def load_declaration(provider: str) -> dict[str, Any]:
             "FETCHER_ACCOUNT_READINESS_FILE", f"/var/lib/findb-account/readiness/{provider}.json"
         )
     )
-    if consumer() == "pilot" or consumer() == "historical":
+    if consumer() in BOUNDED_CONSUMERS:
         allocation = Path(
             os.getenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(path.with_suffix(".account.json")))
         )
@@ -143,13 +144,8 @@ def authorize(value: dict[str, Any]) -> dict[str, Any]:
     from findb_fetcher.config import FetcherConfig
     from findb_fetcher.full_market_client import FullMarketSourceClient
 
-    if consumer() in {"pilot", "historical"}:
+    if consumer() in BOUNDED_CONSUMERS:
         return {"acquisition_allowed": True}  # Each bounded runtime retains its own control/auth.
-    profile = os.getenv("FETCHER_EXECUTION_PROFILE", "full_market")
-    if profile not in {"pilot", "full_market"}:
-        raise QuotaBlockedError("invalid execution profile")
-    if profile == "full_market" and not enabled():
-        raise QuotaBlockedError("local full-market flag is disabled")
     with FullMarketSourceClient(FetcherConfig.from_env()) as source:
         result = source.request(
             "GET",
@@ -157,7 +153,7 @@ def authorize(value: dict[str, Any]) -> dict[str, Any]:
             + urlencode(
                 {
                     "consumer": consumer(),
-                    "execution_profile": profile,
+                    "execution_profile": "full_market",
                 }
             ),
         )
@@ -170,24 +166,18 @@ def reserve(provider: str, *, force: bool = False) -> Permit | None:
     from findb_fetcher.platform_limits import account_identity, interval, limits
 
     if (
-        consumer() in {"pilot", "historical"}
+        consumer() in BOUNDED_CONSUMERS
         and not force
         and not os.getenv("FETCHER_ACCOUNT_STATE_PATH")
     ):
         return None  # Existing bounded installations retain their provider enforcement.
     value = limits(provider)
-    if consumer() not in {"pilot", "historical"}:
+    if consumer() not in BOUNDED_CONSUMERS:
         authorize({})
     path = Path(os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3"))
     state = FullMarketState(path)
     account = account_identity(provider, state)
     while True:
-        if (
-            consumer() not in {"pilot", "historical"}
-            and os.getenv("FETCHER_EXECUTION_PROFILE", "full_market") == "full_market"
-            and not enabled()
-        ):
-            raise QuotaBlockedError("local full-market flag is disabled")
         wait, before, after, window = state.reserve_acquisition(
             account=account,
             interval=interval(value),
@@ -199,7 +189,7 @@ def reserve(provider: str, *, force: bool = False) -> Permit | None:
             enforce_capacity=False,
         )
         if wait <= 0:
-            if consumer() not in {"pilot", "historical"}:
+            if consumer() not in BOUNDED_CONSUMERS:
                 authorize({})
             return Permit(
                 state,

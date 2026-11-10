@@ -53,6 +53,7 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
         ([".github/workflows/fetcher-production-cd.yml"], (True, True, False, False, False)),
         ([".github/workflows/production-promote.yml"], (True, True, False, False, False)),
         ([".github/workflows/required-ci.yml"], (True, True, False, False, False)),
+        ([".github/workflows/staging-infra-plan.yml"], (True, True, False, False, True)),
         (["docs/operations/deployment.md"], (False, False, False, False, False)),
         ([""], (False, False, False, False, False)),
     ],
@@ -764,7 +765,8 @@ def test_reusable_deployments_only_forward_deployment_controls():
         jobs = yaml.safe_load(text)["jobs"]
         assert all("environment" not in job for job in jobs.values())
         assert "${{ vars." not in text and "${{ secrets." not in text
-        assert 'runtime_variable_names="FULL_MARKET_ENABLED PROVIDER_WORK_REQUIRED"' in text
+        assert 'runtime_variable_names="PROVIDER_WORK_REQUIRED"' in text
+        assert "FULL_MARKET_ENABLED" not in text
         assert "APP_NAME: ${{" not in text
         assert "FETCHER_SOURCE_API_URL: ${{" not in text
         assert "aws-configuration" in text

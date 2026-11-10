@@ -38,14 +38,12 @@ SCHEDULER_KEY = "finlab_tw_equity_eod_v1"
         ["tw_equity_eod", "tw_equity_eod"],
     ],
 )
-async def test_running_pilot_acquisition_denies_invalid_db_credential_scope(
-    client, test_session, scope
-):
+async def test_running_acquisition_denies_invalid_db_credential_scope(client, test_session, scope):
     row = await _add_scheduler(test_session)
     row.desired_state = "running"
     source, key = await create_source_client(
         test_session,
-        name="invalid-pilot-probe",
+        name="invalid-scope-probe",
         source_name="finlab",
         allowed_datasets=["tw_equity_eod"],
         rate_limit_requests=100,

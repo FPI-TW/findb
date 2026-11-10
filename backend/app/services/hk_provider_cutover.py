@@ -2,13 +2,13 @@
 
 from copy import deepcopy
 from datetime import date
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import Instrument, MarketDataEOD
 from app.models.registry import AdminAuditEvent, DatasetRegistry, SchedulerControl, UniverseRelease
+from app.services.effective_calendar import market_timezone
 from app.services.provider_work import lock_provider
 from app.utils import utc_now
 
@@ -34,7 +34,7 @@ def acquisition_allowed(
     cutover = (dataset.config or {}).get("hk_provider_cutover")
     if cutover is None:
         return False
-    today = utc_now().astimezone(ZoneInfo("Asia/Hong_Kong")).date()
+    today = utc_now().astimezone(market_timezone("HK")).date()
     try:
         boundary = date.fromisoformat(cutover["effective_date"])
         if cutover["provider"] != "factset" or cutover["previous_provider"] != "twelve_data":
@@ -70,7 +70,7 @@ async def apply_cutover(db: AsyncSession, *, effective_date: date, actor: str) -
         if config["hk_provider_cutover"] != decision:
             raise ValueError("HK provider cutover is immutable")
         return decision
-    today = utc_now().astimezone(ZoneInfo("Asia/Hong_Kong")).date()
+    today = utc_now().astimezone(market_timezone("HK")).date()
     if effective_date != today:
         raise ValueError("HK cutover requires the explicit current Hong Kong date")
     controls = list(
@@ -81,10 +81,10 @@ async def apply_cutover(db: AsyncSession, *, effective_date: date, actor: str) -
             .with_for_update()
         )
     )
-    if len([c for c in controls if c.provider == "factset"]) != 2 or any(
+    if len([c for c in controls if c.provider == "factset"]) != 1 or any(
         control.desired_state != "stopped" for control in controls
     ):
-        raise ValueError("HK provider Pilot and Full controls must be installed and stopped")
+        raise ValueError("HK provider Full market controls must be installed and stopped")
     baseline = await db.scalar(
         select(UniverseRelease.release_id)
         .where(

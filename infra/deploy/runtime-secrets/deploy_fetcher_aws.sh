@@ -42,16 +42,13 @@ try:
         raise ValueError("invalid command")
     roles = {
         "findb-fetch-full-market": "full_market",
-        "findb-fetch-scheduler": "pilot",
-        "findb-fetch-finlab-scheduler": "pilot",
-        "findb-fetch-taifex-pilot": "pilot",
         "findb-fetch-historical-backfill": "historical",
     }
     if command == ["python", "-m", "findb_fetcher"]:
         role = "readiness"
     elif command[0] == "findb-fetch-runtime":
         role = command[command.index("--execution-profile") + 1]
-        if role not in {"pilot", "full_market"}:
+        if role != "full_market":
             raise ValueError("invalid profile")
     else:
         role = roles[command[0]]
@@ -89,8 +86,6 @@ fi
 
 FETCHER_RUNTIME_PROFILE=unified
 export FETCHER_RUNTIME_PROFILE
-FULL_MARKET_ENABLED="${FULL_MARKET_ENABLED:-false}"
-export FULL_MARKET_ENABLED
 PROVIDER_WORK_REQUIRED="${PROVIDER_WORK_REQUIRED:-true}"
 export PROVIDER_WORK_REQUIRED
 export FETCHER_ACCOUNT_STATE_PATH="/var/lib/findb-account/$APP_ENVIRONMENT/governor.sqlite3"
@@ -126,7 +121,7 @@ try:
         raise ValueError()
     consumers = value["consumers"]
     providers = value["providers"]
-    if not providers or len(set(providers)) != len(providers) or len(consumers) != len(providers) * 3:
+    if not providers or len(set(providers)) != len(providers) or len(consumers) != len(providers) * 2:
         raise ValueError()
     if len({c["name"] for c in consumers}) != len(consumers):
         raise ValueError()
@@ -134,7 +129,7 @@ try:
         if provider not in {"twelve_data", "finlab", "taifex", "factset"}:
             raise ValueError()  # Host adapter state/cache paths must be implemented first.
         rows = [c for c in consumers if c["provider"] == provider]
-        if {c["role"] for c in rows} != {"pilot", "full_market", "historical"} or len(rows) != 3:
+        if {c["role"] for c in rows} != {"full_market", "historical"} or len(rows) != 2:
             raise ValueError()
         if not all(c["name"] == "findb-" + c["role"].replace("_", "-") + "-" + provider.replace("_", "-") for c in rows):
             raise ValueError()
@@ -200,7 +195,7 @@ validate_image "$FACTSET_IMAGE_REF" "findb/$APP_ENVIRONMENT/fetcher/factset"
 
 # Only non-secret deployment configuration is preserved. The wrapper loads one
 # consumer's allowlisted values into /run and removes them after the child exits.
-preserve_env=DEPLOYMENT_TRANSACTION_ID,PROVIDER_WORK_REQUIRED,FULL_MARKET_ENABLED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,FACTSET_IMAGE_REF
+preserve_env=DEPLOYMENT_TRANSACTION_ID,PROVIDER_WORK_REQUIRED,FETCHER_CONSUMER_PROFILE,FETCHER_ACCOUNT_STATE_PATH,FETCHER_RUNTIME_PROFILE,AWS_REGION,AWS_ACCOUNT_ID,APP_ENVIRONMENT,ECR_REGISTRY,FETCHER_RELEASE_ROOT,FETCHER_DEPLOY_MODE,FETCHER_PROVIDER_RELEASE_MODE,FETCHER_IMAGES_PREPARED,FETCHER_HEALTH_MODE,TWELVE_IMAGE_REF,FINLAB_IMAGE_REF,FACTSET_IMAGE_REF
 export FETCHER_PROVIDER_RELEASE_MODE=transactional
 run_runtime() {
   local started=$SECONDS status=0 consumers="" previous="" argument
@@ -217,11 +212,9 @@ run_runtime() {
 
 recorded_profile="$FETCHER_RUNTIME_PROFILE"
 export FETCHER_RECORDED_RELEASE_PROFILE="$recorded_profile"
-pilot_state=/var/lib/findb-pilot/$APP_ENVIRONMENT
 full_market_state=/var/lib/findb-full-market/$APP_ENVIRONMENT
 [ "$APP_ENVIRONMENT" != production ] || full_market_state=/var/lib/findb-full-market
 require_full_checkpoint() {
-  local full_market_state="${1:-$full_market_state}"
   # Installed workers own durable prepared work. Never replace a lost checkpoint,
   # including when an accepted replay invokes an older helper/image.
   if ! sudo test -f "$full_market_state/state.sqlite3" \
@@ -311,9 +304,8 @@ initial_runtime_exists() {
 }
 retained_full_market=false
 for provider in "${providers[@]}"; do
-  pilot_name="findb-pilot-$provider"
   full_name="findb-full-market-$provider"
-  for base in "$full_name" "$pilot_name" "findb-historical-${full_name#findb-full-market-}"; do
+  for base in "$full_name" "findb-historical-$provider"; do
     for installed in "$base" "${base}-previous" "${base}-candidate" "${base}-transaction-backup" "${base}-legacy-previous" "${base}-preflight" "${base}-preflight-state" "${base}-preflight-control"; do
       if initial_runtime_exists "$installed"; then
         initial_runtime_state "$installed"
@@ -326,8 +318,6 @@ for provider in "${providers[@]}"; do
         if [[ "$installed" == "$full_name"* ]] || [ "$installed_role" = full_market ]; then
           require_full_checkpoint
           retained_full_market=true
-        elif [ "$installed_role" = pilot ]; then
-          require_full_checkpoint "$pilot_state"
         fi
       fi
     done
@@ -526,7 +516,7 @@ trap 'abort_transaction 129' HUP
 runtime_inventory_recovery=transaction
 
 register_provider() {
-  # The complete record policy applies equally to Pilot, Full and historical.
+  # The complete record policy applies equally to Full and historical.
   register_named_full "$1" "$2"
 }
 
@@ -594,8 +584,176 @@ require_no_retired_provider() {
 }
 require_no_retired_provider
 
-# A first cutover must drain and archive legacy pilot containers before this
+# A first cutover must drain and archive pre-unification containers before this
 # immutable release is installed. Never restart pre-unification workers here.
+
+# pilot-residue-v1: the Pilot profile is retired. A pre-v5 installation leaves
+# findb-pilot-* containers and their checkpoint. Every such container must
+# already be stopped and gracefully drained: a running one fails closed and is
+# never stopped or force-removed here. Activation archives the checkpoint
+# directory, including SQLite -wal/-shm sidecars, to a fresh root-only backup
+# with a recorded SHA-256 before removing the stopped containers (by captured
+# ID) and the directory. Candidate acceptance only verifies.
+pilot_state=/var/lib/findb-pilot/$APP_ENVIRONMENT
+pilot_backup_root=/var/backups/findb-pilot-retirement
+pilot_residue_state() {
+  # $1=archive|remove|check, $2=state directory, $3=backup directory.
+  sudo python3 - "$@" <<'PILOT_STATE'
+import hashlib
+import json
+import os
+import shutil
+import stat
+import sys
+import tarfile
+from pathlib import Path
+
+
+def digest(handle):
+    value = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(1 << 20), b""):
+        value.update(chunk)
+    return value.hexdigest()
+
+
+def members(state):
+    """Regular files keyed by archive path; links and special files fail closed."""
+    found = {}
+    for directory, folders, files in os.walk(state):
+        for name in folders + files:
+            path = Path(directory, name)
+            mode = os.lstat(path).st_mode
+            if stat.S_ISREG(mode):
+                with path.open("rb") as handle:
+                    found[str(path.relative_to(state.parent))] = digest(handle)
+            elif not stat.S_ISDIR(mode):
+                raise ValueError("unsafe checkpoint member")
+    return found
+
+
+try:
+    action, state, backup = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+    try:
+        info = os.lstat(state)
+    except FileNotFoundError:
+        raise SystemExit(0)  # Nothing to verify, archive or remove.
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("checkpoint directory unsafe")
+    if action == "check":
+        members(state)
+    elif action == "archive":
+        expected = members(state)
+        root = backup.parent
+        root.mkdir(mode=0o700, exist_ok=True)
+        root_info = os.lstat(root)
+        if not stat.S_ISDIR(root_info.st_mode) or root_info.st_uid != os.geteuid():
+            raise ValueError("backup root unsafe")
+        backup.mkdir(mode=0o700)
+        archive = backup / "state.tar"
+        with tarfile.open(archive, "x", format=tarfile.PAX_FORMAT) as output:
+            output.add(state, arcname=state.name, recursive=True)
+        with archive.open("rb") as handle:
+            os.fsync(handle.fileno())
+        archived = {}
+        with tarfile.open(archive, "r:") as source:
+            for member in source.getmembers():
+                if member.isfile():
+                    extracted = source.extractfile(member)
+                    archived[member.name] = digest(extracted)
+                elif not member.isdir():
+                    raise ValueError("unexpected archive member")
+        if archived != expected or members(state) != expected:
+            raise ValueError("archive does not reproduce the checkpoint")
+        with archive.open("rb") as handle:
+            archive_sha256 = digest(handle)
+        (backup / "state.tar.sha256").write_text(f"{archive_sha256}  state.tar\n")
+        (backup / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "pilot-checkpoint-retirement",
+                    "source": str(state),
+                    "archive": "state.tar",
+                    "archive_sha256": archive_sha256,
+                    "members": expected,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        for path in (backup / "state.tar.sha256", backup / "manifest.json"):
+            path.chmod(0o600)
+        print(f"fetcher_pilot_residue=archived archive={archive} sha256={archive_sha256}", flush=True)
+    elif action == "remove":
+        recorded = json.loads((backup / "manifest.json").read_text())
+        with (backup / "state.tar").open("rb") as handle:
+            if digest(handle) != recorded["archive_sha256"]:
+                raise ValueError("archive changed")
+        if recorded["source"] != str(state) or members(state) != recorded["members"]:
+            raise ValueError("checkpoint changed after archive")
+        shutil.rmtree(state)
+        try:
+            state.parent.rmdir()
+        except OSError:
+            pass
+    else:
+        raise ValueError("action invalid")
+except SystemExit:
+    raise
+except Exception:
+    raise SystemExit(1)
+PILOT_STATE
+}
+retire_pilot_residue() {
+  local inventory name running id residue=() entry backup="-"
+  inventory="$(docker container ls --all --format '{{.Names}}' 2>/dev/null)" || runtime_inventory_failure
+  while IFS= read -r name; do
+    [[ "$name" == findb-pilot-* ]] || continue
+    docker container inspect "$name" >/dev/null 2>&1 || runtime_inventory_failure
+    running="$(docker inspect --format '{{.State.Running}}' "$name")" || runtime_inventory_failure
+    if [ "$running" != false ]; then
+      echo "fetcher_aws_deploy=failed reason=pilot_residue_running runtime=$name" >&2
+      return 1
+    fi
+    require_retired_runtime "$name" || return 1
+    id="$(docker inspect --format '{{.Id}}' "$name")" || runtime_inventory_failure
+    [ -n "$id" ] || runtime_inventory_failure
+    residue+=("$name|$id")
+  done <<< "$inventory"
+  if ! pilot_residue_state check "$pilot_state" -; then
+    echo "fetcher_aws_deploy=failed reason=pilot_state_unsafe" >&2
+    return 1
+  fi
+  if [ "${#residue[@]}" -eq 0 ] && ! sudo test -d "$pilot_state"; then
+    return 0
+  fi
+  if [ "$FETCHER_DEPLOY_MODE" = candidate ]; then
+    echo "fetcher_pilot_residue=pending runtimes=${#residue[@]}"
+    return 0
+  fi
+  if sudo test -d "$pilot_state"; then
+    backup="$pilot_backup_root/$APP_ENVIRONMENT-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    if ! pilot_residue_state archive "$pilot_state" "$backup"; then
+      echo "fetcher_aws_deploy=failed reason=pilot_state_archive_failed" >&2
+      return 1
+    fi
+  fi
+  # Revalidate after archiving. Removal addresses the captured ID, never a
+  # name-reused replacement, and is never forced.
+  for entry in ${residue[@]+"${residue[@]}"}; do
+    IFS='|' read -r name id <<< "$entry"
+    [ "$(docker inspect --format '{{.Id}}' "$id")" = "$id" ] || return 1
+    require_retired_runtime "$id" || return 1
+    docker rm "$id" >/dev/null || return 1
+  done
+  if [ "$backup" != - ] && ! pilot_residue_state remove "$pilot_state" "$backup"; then
+    echo "fetcher_aws_deploy=failed reason=pilot_state_removal_failed" >&2
+    return 1
+  fi
+  echo "fetcher_pilot_residue=retired runtimes=${#residue[@]} backup=$backup"
+}
+retire_pilot_residue
+
 # Pull each exact image once per phase with a secret-free consumer. Individual
 # provider credentials remain confined to their own runtime wrapper invocation.
 run_runtime --consumer images --ecr-registry "$ECR_REGISTRY" --docker-login -- \
@@ -651,7 +809,7 @@ verify_activated_runtimes() {
   done
 }
 
-# Never restart pre-unification pilot workers during this release.
+# Never restart pre-unification workers during this release.
 for legacy in findb-fetcher-scheduler findb-fetcher-finlab-scheduler findb-fetcher-shioaji-scheduler findb-fetcher-taifex-scheduler; do
   if runtime_exists "$legacy"; then
     echo "fetcher_aws_deploy=failed reason=legacy_runtime_requires_cutover" >&2
@@ -668,18 +826,17 @@ if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
       factset) history=/var/lib/findb-factset-fetcher/historical; cache=- ;;
       finlab) history=/var/lib/findb-finlab-fetcher/historical; cache=/var/lib/findb-finlab-fetcher/cache ;;
     esac
-    for profile in pilot full-market historical; do
+    for profile in full-market historical; do
       stable="findb-$profile-$provider"
       register_provider "$stable" "${stable}-previous"
     done
-    run_runtime --consumer "$provider" -- bash -s -- "$provider_helper" "$provider" "$image" "$pilot_state" "$full_market_state" "$history" "$cache" <<'PROVIDER_PROFILES'
+    run_runtime --consumer "$provider" -- bash -s -- "$provider_helper" "$provider" "$image" "$full_market_state" "$history" "$cache" <<'PROVIDER_PROFILES'
 set -euo pipefail
-helper="$1"; provider="$2"; image="$3"; pilot="$4"; full="$5"; history="$6"; cache="$7"
-for profile in pilot full_market historical; do
+helper="$1"; provider="$2"; image="$3"; full="$4"; history="$5"; cache="$6"
+for profile in full_market historical; do
   export FETCHER_CONSUMER_PROFILE="$profile"
   stable="findb-${profile//_/-}-$provider"
   case "$profile" in
-    pilot) state="$pilot" ;;
     full_market) state="$full" ;;
     historical) state="$history" ;;
   esac
@@ -688,48 +845,40 @@ for profile in pilot full_market historical; do
   "$helper" "$provider" "$image" "$state" "$state/state.sqlite3" "$stable" "$stable-candidate" "$stable-previous" "$stable-preflight" "$cache" "${command[@]}"
 done
 PROVIDER_PROFILES
-    for profile in pilot full-market historical; do
+    for profile in full-market historical; do
       record_activated_runtime "findb-$profile-$provider" "$image"
     done
   done
 else
 provider_count="$((${#providers[@]} * 2))"
-for execution_profile in pilot full_market; do
-  export FETCHER_CONSUMER_PROFILE="$execution_profile"
-  state_dir="$pilot_state"
-  name_prefix=findb-pilot
-  if [ "$execution_profile" = full_market ]; then
-    state_dir="$full_market_state"
-    name_prefix=findb-full-market
-  fi
-  for provider in "${providers[@]}"; do
-    image="$(provider_image "$provider")"
-    identity="${provider//-/_}"
-    case "$provider" in
-      twelve-data|taifex) cache_dir=- ;;
-      factset) cache_dir=- ;;
-      finlab) cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
-    esac
-    stable="$name_prefix-$provider"
-    register_provider "$stable" "${stable}-previous"
-    run_runtime --consumer "$provider" -- \
-      "$provider_helper" "$provider" "$image" \
-      "$state_dir" "$state_dir/state.sqlite3" \
-      "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
-      findb-fetch-runtime --execution-profile "$execution_profile" \
-      --config "/app/configs/bootstrap.$APP_ENVIRONMENT.v1.json" \
-      --state-path "$state_dir/state.sqlite3" --provider "$identity"
-    record_activated_runtime "$stable" "$image"
-  done
+export FETCHER_CONSUMER_PROFILE=full_market
+for provider in "${providers[@]}"; do
+  image="$(provider_image "$provider")"
+  identity="${provider//-/_}"
+  case "$provider" in
+    twelve-data|taifex|factset) cache_dir=- ;;
+    finlab) cache_dir=/var/lib/findb-finlab-fetcher/cache ;;
+  esac
+  stable="findb-full-market-$provider"
+  register_provider "$stable" "${stable}-previous"
+  run_runtime --consumer "$provider" -- \
+    "$provider_helper" "$provider" "$image" \
+    "$full_market_state" "$full_market_state/state.sqlite3" \
+    "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
+    findb-fetch-runtime --execution-profile full_market \
+    --config "/app/configs/bootstrap.$APP_ENVIRONMENT.v1.json" \
+    --state-path "$full_market_state/state.sqlite3" --provider "$identity"
+  record_activated_runtime "$stable" "$image"
 done
 
 # Historical requests retain their existing provider-specific durable directory.
-# They are independently journaled consumers, never side effects of pilot release.
+# They are independently journaled consumers, never side effects of Full market release.
 export FETCHER_CONSUMER_PROFILE=historical
 # historical-taifex-v1: accepted installations require the TAIFEX historical consumer.
 # factset-consumers-v1: accepted installations require the FactSet consumers.
 # backend-schedules-v1: clocks are published by Source; bootstrap contains no schedules.
-# shioaji-retired-v1: accepted installations require four providers and twelve consumers.
+# shioaji-retired-v1: accepted installations require four providers and no Shioaji consumer.
+# pilot-retired-v1: accepted installations require four providers and eight consumers.
 for provider in "${providers[@]}"; do
   image="$(provider_image "$provider")"
   case "$provider" in

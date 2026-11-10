@@ -13,14 +13,13 @@ from tests.full_market_fixtures import historical_admission
 from tests.test_full_market import DAY, _baseline, _dataset
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
 @pytest.mark.parametrize("skip", [False, True])
 async def test_stale_taifex_release_requires_date_only_after_calendar_decision(
-    test_session, monkeypatch, profile, skip
+    test_session, monkeypatch, skip
 ):
     dataset = await _dataset(test_session)
     _, release = await _baseline(test_session)
-    await historical_admission(test_session, dataset, release, DAY, None, profile=profile)
+    await historical_admission(test_session, dataset, release, DAY, None, profile="full_market")
     # Sunday with no published calendar uses weekday default.
     day = DAY + timedelta(days=5)
     assert day.weekday() == 6
@@ -29,7 +28,7 @@ async def test_stale_taifex_release_requires_date_only_after_calendar_decision(
         version=1,
         dataset_key=dataset.dataset_key,
         provider="taifex",
-        execution_profile=profile,
+        execution_profile="full_market",
         trade_date=day,
         release_id=release.release_id,
     )
@@ -50,18 +49,15 @@ async def test_stale_taifex_release_requires_date_only_after_calendar_decision(
     ) == int(skip)
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
-async def test_existing_taifex_plan_remains_readable_with_legacy_older_release(
-    test_session, profile
-):
+async def test_existing_taifex_plan_remains_readable_with_legacy_older_release(test_session):
     dataset = await _dataset(test_session)
     _, release = await _baseline(test_session)
-    await historical_admission(test_session, dataset, release, DAY, None, profile=profile)
+    await historical_admission(test_session, dataset, release, DAY, None, profile="full_market")
     body = DeliveryPlanCreateRequest(
         version=1,
         dataset_key=dataset.dataset_key,
         provider="taifex",
-        execution_profile=profile,
+        execution_profile="full_market",
         trade_date=DAY,
         release_id=release.release_id,
     )

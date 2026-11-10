@@ -231,10 +231,6 @@ async def test_rebuild_tool_defaults_to_dry_run_and_applies_only_matching_scope(
     assert json.loads(capsys.readouterr().out) == {"apply": False, "matching_plans": 1}
     assert await summary(test_session, plan.plan_id) is None
     args.apply = True
-    args.profile = "pilot"
-    await tool.rebuild(args)
-    assert await summary(test_session, plan.plan_id) is None
-    args.profile = "full_market"
     await tool.rebuild(args)
     assert json.loads(capsys.readouterr().out)["rebuilt"] == 1
     assert (await summary(test_session, plan.plan_id)).missing_count == 2
@@ -394,71 +390,14 @@ async def test_competing_outcome_writers_serialize_summaries(test_session, test_
 
 
 @pytest.mark.asyncio
-async def test_profiles_metadata_and_failed_retry_update_only_affected_plan(test_session):
-    from app.models.canonical import CalendarYearRevision
-    from app.models.registry import UniverseRelease
-    from app.schemas.full_market import DeliveryPlanCreateRequest
-    from app.services.full_market import create_plan
+async def test_failed_retry_updates_plan_summary_and_freshness(test_session):
     from app.services.normalization_queue import _schedule_retry
-    from tests.full_market_fixtures import historical_admission
 
     dataset, _, full = await _activated_plan(test_session, count=1)
-    revision = await test_session.scalar(
-        select(CalendarYearRevision).where(CalendarYearRevision.market == "TAIFEX")
-    )
-    await historical_admission(
-        test_session,
-        dataset,
-        await test_session.get(UniverseRelease, full.release_id),
-        DAY,
-        revision.id,
-        profile="pilot",
-    )
-    pilot = await create_plan(
-        test_session,
-        DeliveryPlanCreateRequest(
-            version=1,
-            dataset_key=dataset.dataset_key,
-            provider="taifex",
-            trade_date=DAY,
-            release_id=full.release_id,
-            execution_profile="pilot",
-        ),
-        allowed_datasets=[dataset.dataset_key],
-    )
-    test_session.add_all(
-        [
-            SchedulerDataset(scheduler_key=f"{p}_taifex_v1", dataset_key=dataset.dataset_key)
-            for p in ("pilot", "full_market")
-        ]
+    test_session.add(
+        SchedulerDataset(scheduler_key="full_market_taifex_v1", dataset_key=dataset.dataset_key)
     )
     await test_session.commit()
-    for member in await test_session.scalars(
-        select(DailyDeliveryMember).where(DailyDeliveryMember.plan_id == pilot.plan_id)
-    ):
-        await record_outcome(
-            test_session,
-            pilot.plan_id,
-            DeliveryOutcomeRequest(
-                version=1,
-                work_item_id=pilot.parts[0].work_item_id,
-                member_key=member.member_key,
-                outcome="no_data",
-                reason="no_trade",
-                evidence={
-                    **EVIDENCE,
-                    "observed_at": utc_now(),
-                    "source_symbol": member.provider_symbol,
-                    "trade_date": DAY,
-                    "session": member.session,
-                    "source_status": "no_trade",
-                    "source_excerpt": "Official session report confirms no trades.",
-                },
-            ),
-            provider="taifex",
-            allowed_datasets=[dataset.dataset_key],
-        )
-    pilot_updated = (await summary(test_session, pilot.plan_id)).updated_at
     service = IngestionService(test_session)
     run = await service.create_ingestion_run(
         dataset.dataset_key,
@@ -473,12 +412,9 @@ async def test_profiles_metadata_and_failed_retry_update_only_affected_plan(test
     job.attempt_count = job.max_attempts
     await _schedule_retry(test_session, job.job_id, run.run_id, RuntimeError("test exhaustion"))
     assert (await summary(test_session, full.plan_id)).last_failure_code == "RETRY_EXHAUSTED"
-    assert (await summary(test_session, pilot.plan_id)).updated_at == pilot_updated
     now = datetime(2026, 7, 21, 12, tzinfo=timezone.utc)
     full_feed = (await list_market_freshness(test_session, profile="full_market", now=now))[
         0
     ].feeds[0]
-    pilot_feed = (await list_market_freshness(test_session, profile="pilot", now=now))[0].feeds[0]
     assert full_feed.latest_successful_data_date is None
     assert full_feed.last_run_id == run.run_id and full_feed.last_failure_code == "RETRY_EXHAUSTED"
-    assert pilot_feed.latest_successful_data_date == DAY and pilot_feed.status == "fresh"

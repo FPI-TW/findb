@@ -309,7 +309,6 @@ describe("FinDB Admin server boundary", () => {
       [
         "/api/v1/admin/market-freshness?execution_profile=full_market",
         "/api/v1/admin/queue/health",
-        "/api/v1/admin/schedulers?execution_profile=pilot",
         "/api/v1/admin/schedulers?execution_profile=full_market",
       ],
     ],
@@ -336,7 +335,7 @@ describe("FinDB Admin server boundary", () => {
       )
 
       expect(calls).toHaveLength(
-        view === "overview" ? 4 : view === "deliveries" ? 3 : 1
+        view === "overview" || view === "deliveries" ? 3 : 1
       )
       expect(
         calls.map(
@@ -396,7 +395,7 @@ describe("FinDB Admin server boundary", () => {
         recordingFetch(calls, {}, undefined, "/api/v1/admin/queue/health")
       )
 
-      expect(timeoutSpy).toHaveBeenCalledTimes(4)
+      expect(timeoutSpy).toHaveBeenCalledTimes(3)
       expect(calls.every(call => call.init?.signal === controller.signal)).toBe(
         true
       )

@@ -44,9 +44,9 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 | `finlab` | `tw_equity_eod`、`tw_etf_eod` | `market_eod.v1` |
 | `taifex` | `tw_futures_eod` | `futures_eod.v1` |
 
-Pilot 與 Full market 使用同一 CLI、provider adapter、published universe／有效日曆、交易所時區、
-收盤判定、重試、Raw R2、Source、normalization 與 Serve 流程。Pilot 只在建立 daily plan 時依 canonical
-識別排序取前兩個商品，不足兩個取實際數量；期貨按 product／contract 選擇，保留各自所有 sessions。
+Daily 只有 Full market 一種 execution profile（Pilot 已退役），使用單一 CLI、provider adapter、
+published universe／有效日曆、交易所時區、收盤判定、重試、Raw R2、Source、normalization 與 Serve 流程。
+Daily plan 凍結完整 published cohort；期貨按 product／contract 選擇，保留各自所有 sessions。
 空集合阻塞；plan 建立後 universe 更新與重試不得改寫成員。
 
 Shioaji 只保留歷史分 K、契約及工作證據；兩條 minute registry 保持 active 供查詢，
@@ -172,11 +172,11 @@ Fetcher 每日經 Source 建立凍結決策，不依賴 Serve 日曆 credentials
 
 ## Provider work 協調
 
-[Provider work FIFO](provider_work.md) 將同環境／provider 的 Pilot、Full daily、historical、maintenance 與
+[Provider work FIFO](provider_work.md) 將同環境／provider 的 Full daily、historical、maintenance 與
 retained-raw rerun 協調為 PostgreSQL stable work＋append-only attempts＋single owner slot；Fetcher 的 shared
 whole-work OS flock 另約束外部 provider I/O 與 descendants。Source acceptance／receipt association 與 close／settle
 共用 transaction lock／generation fence，owner 保留到 accepted runs 全部 terminal 與完整 durable proof committed。
-不同 providers 仍可並行，profile 的 controls／first dates／frozen plans／checkpoints 不合併。
+不同 providers 仍可並行，daily controls／first dates／frozen plans／checkpoints 與 historical 不合併。
 `PROVIDER_WORK_REQUIRED` 缺省 true；false 會拒絕啟動，無 legacy acquiring／acceptance fallback。遠端切換仍須完成 deployment runbook 的 audited preflight。
 新增 provider 的 acquisition、universe/catalogue、historical 與 rerun 都必須接入此 protocol。
 

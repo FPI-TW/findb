@@ -229,7 +229,6 @@ async def admin_headers(test_session: AsyncSession) -> AsyncGenerator[dict, None
 @pytest.fixture(autouse=True)
 def isolate_full_market_settings(monkeypatch):
     settings = get_settings()
-    monkeypatch.setattr(settings, "FULL_MARKET_ENABLED", False)
     monkeypatch.setattr(settings, "APP_ENVIRONMENT", "local")
 
 

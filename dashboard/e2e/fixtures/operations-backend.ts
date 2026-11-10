@@ -26,7 +26,7 @@ const user = adminUserSchema.parse({
 function scheduler(key: string, provider: string, running = false) {
   return schedulerSchema.parse({
     scheduler_key: key,
-    execution_profile: key.startsWith("full_market_") ? "full_market" : "pilot",
+    execution_profile: "full_market",
     provider,
     dataset_keys: ["tw_equity_eod", "tw_etf_eod"],
     slot_id: "taiwan_market_window",
@@ -43,7 +43,6 @@ function scheduler(key: string, provider: string, running = false) {
     updated_at: timestamp,
     heartbeat_age_seconds: 5,
     start_allowed: true,
-    full_market_enabled: true,
     environment: "production",
     admitted_dataset_keys: ["tw_equity_eod"],
     first_start_dates: { tw_equity_eod: "2026-10-06" },
@@ -101,24 +100,6 @@ const plans = Array.from({ length: 31 }, (_, index) => ({
     ],
   },
 }))
-const pilotPlans = [
-  {
-    ...plans[0]!,
-    plan_id: "pilot-plan",
-    dataset_key: "pilot_dataset",
-    execution_profile: "pilot",
-    summary: {
-      ...plans[0]!.summary,
-      execution_profile: "pilot",
-      expected: 2,
-      data: 1,
-      no_data: 0,
-      missing: 1,
-      blocked: 0,
-      gaps: [{ member_key: "TX", status: "missing", reason: "pending" }],
-    },
-  },
-]
 function paginated<T>(items: T[], params: URLSearchParams) {
   const page = Number(params.get("page") ?? 1),
     size = Number(params.get("page_size") ?? 25)
@@ -172,10 +153,8 @@ createServer(async (request, response) => {
     authenticationFailurePaths = []
     overviewFailurePath = ""
     rows = [
-      scheduler("pilot_finlab_v1", "finlab"),
-      scheduler("pilot_shioaji_v1", "shioaji", true),
       scheduler("full_market_finlab_v1", "finlab", true),
-      scheduler("full_market_shioaji_v1", "shioaji"),
+      scheduler("full_market_twelve_data_v1", "twelve_data"),
       {
         ...scheduler("full_market_taifex_v1", "taifex"),
         start_allowed: false,
@@ -232,10 +211,7 @@ createServer(async (request, response) => {
   if (overviewFailurePath === path) return send({ detail: "Unavailable" }, 503)
   if (path === "/api/v1/admin/delivery-plans/datasets")
     return send({
-      data:
-        url.searchParams.get("execution_profile") === "pilot"
-          ? ["pilot_dataset"]
-          : ["old_dataset", "tw_futures_eod"],
+      data: ["old_dataset", "tw_futures_eod"],
     })
   if (path === "/api/v1/admin/delivery-plans") {
     if (plansDelay)
@@ -243,10 +219,7 @@ createServer(async (request, response) => {
     if (plansError) return send({ detail: "Unavailable" }, 503)
     return send(
       paginated(
-        (url.searchParams.get("execution_profile") === "pilot"
-          ? pilotPlans
-          : plans
-        ).filter(
+        plans.filter(
           plan =>
             (!url.searchParams.get("dataset_key") ||
               plan.dataset_key === url.searchParams.get("dataset_key")) &&
@@ -263,9 +236,9 @@ createServer(async (request, response) => {
         [
           {
             alert_id: "019565d2-f838-7c91-85c1-72d4d7bbbe97",
-            dataset_key: "tw_equity_minute",
-            source: "shioaji",
-            schema_id: "market_minute",
+            dataset_key: "tw_equity_eod",
+            source: "finlab",
+            schema_id: "market_eod",
             schema_version: 1,
             expected_data_date: "2026-10-07",
             status: "open",
@@ -355,8 +328,8 @@ createServer(async (request, response) => {
     return send({
       data: [
         {
-          provider: "shioaji",
-          dataset_key: "tw_equity_minute",
+          provider: "finlab",
+          dataset_key: "tw_equity_eod",
           market: "TW",
           executable: true,
         },
@@ -383,9 +356,9 @@ createServer(async (request, response) => {
             provider: "finlab",
             dataset_key: "tw_equity_eod",
             kind: "daily",
-            stable_key: "daily:pilot:tw_equity_eod:2026-10-06",
+            stable_key: "daily:full_market:tw_equity_eod:2026-10-06",
             trade_date: "2026-10-06",
-            execution_profile: "pilot",
+            execution_profile: "full_market",
             state: "running",
             queue_order: 10,
             drain_only: false,

@@ -14,7 +14,9 @@ from test_full_market import _runtime
 
 
 def resolve(value):
-    return resolve_execution_config(value, provider="finlab", environment="local", profile="pilot")
+    return resolve_execution_config(
+        value, provider="finlab", environment="local", profile="full_market"
+    )
 
 
 @pytest.mark.parametrize(
@@ -41,14 +43,14 @@ def resolve(value):
     ],
 )
 def test_invalid_complete_snapshot_fails_closed(fault):
-    value = publication("finlab", profile="pilot", environment="local")
+    value = publication("finlab", profile="full_market", environment="local")
     feed = value["feeds"][0]
     if fault == "version":
         value["schema_version"] = 2
     elif fault in {"environment", "provider"}:
         value[fault] = "unknown"
     elif fault == "profile":
-        value["execution_profile"] = "full_market"
+        value["execution_profile"] = "pilot"  # Retired profile fails closed.
     elif fault == "missing":
         value["feeds"].pop()
     elif fault == "extra":
@@ -82,8 +84,39 @@ def test_invalid_complete_snapshot_fails_closed(fault):
         resolve(value)
 
 
+@pytest.mark.parametrize("fault", [None, "timezone", "digest"])
+def test_maintenance_scope_may_be_narrower_but_never_unvalidated(fault):
+    value = publication("finlab", profile="full_market", environment="local")
+    value["feeds"].pop()
+    if fault == "timezone":
+        value["feeds"][0]["source_timezone"] = "Not/AZone"
+    signed(value)
+    if fault == "digest":
+        value["schedule_digest"] = "0" * 64
+    if fault is None:
+        with pytest.raises(ValueError, match="Incomplete execution config scope"):
+            resolve(value)
+        snapshot = resolve_execution_config(
+            value,
+            provider="finlab",
+            environment="local",
+            profile="full_market",
+            complete_scope=False,
+        )
+        assert [feed["dataset_key"] for feed in snapshot.feeds] == ["tw_equity_eod"]
+    else:
+        with pytest.raises((ValueError, KeyError)):
+            resolve_execution_config(
+                value,
+                provider="finlab",
+                environment="local",
+                profile="full_market",
+                complete_scope=False,
+            )
+
+
 def test_snapshot_is_detached_and_has_complete_authorized_scopes():
-    value = publication("finlab", profile="pilot", environment="local")
+    value = publication("finlab", profile="full_market", environment="local")
     snapshot = resolve(value)
     value["feeds"][0]["scheduled_time"] = "00:00"
     assert snapshot.feeds[0]["scheduled_time"] != "00:00"
@@ -209,7 +242,10 @@ def test_source_publication_is_bounded_authenticated_and_never_cached(monkeypatc
     def response(request):
         requests.append(request)
         assert request.url.path == "/api/v1/source/execution-config"
-        assert dict(request.url.params) == {"execution_profile": "pilot", "schema_version": "1"}
+        assert dict(request.url.params) == {
+            "execution_profile": "full_market",
+            "schema_version": "1",
+        }
         assert request.headers["X-API-Key"] == "secret"
         if fault == "http":
             return httpx.Response(503, headers={"Retry-After": "12"})
@@ -217,14 +253,14 @@ def test_source_publication_is_bounded_authenticated_and_never_cached(monkeypatc
             200,
             headers={"Cache-Control": "public" if fault == "cache" else "no-store"},
             content=b" " * 65537 if fault == "bytes" else None,
-            json=[] if fault == "object" else publication(profile="pilot"),
+            json=[] if fault == "object" else publication(profile="full_market"),
         )
 
     with httpx.Client(transport=httpx.MockTransport(response)) as client:
         source = FullMarketSourceClient(
             FetcherConfig(source_api_url="https://source.example", source_client_key="secret"),
             client=client,
-            execution_profile="pilot",
+            execution_profile="full_market",
         )
         if fault:
             with pytest.raises(FullMarketProtocolError) as error:
@@ -232,7 +268,7 @@ def test_source_publication_is_bounded_authenticated_and_never_cached(monkeypatc
             if fault == "http":
                 assert error.value.retryable and error.value.retry_after == 12
         else:
-            assert source.execution_config()["execution_profile"] == "pilot"
+            assert source.execution_config()["execution_profile"] == "full_market"
             source.execution_config()
             assert len(requests) == 2
 
@@ -272,7 +308,7 @@ def test_only_proven_same_daily_frozen_feed_can_skip_enqueue(
 def test_metadata_alone_cannot_install_an_unknown_adapter(monkeypatch):
     import findb_fetcher.execution_config as module
 
-    value = publication("finlab", profile="pilot", environment="local")
+    value = publication("finlab", profile="full_market", environment="local")
     value["feeds"] = [value["feeds"][0]]
     value["feeds"][0]["dataset_key"] = "tw_unknown_eod"
     monkeypatch.setattr(module, "acquisition_feeds", lambda provider: value["feeds"])

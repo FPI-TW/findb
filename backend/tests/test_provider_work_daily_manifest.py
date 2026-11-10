@@ -13,19 +13,17 @@ from tests.test_provider_work import attest_cutover, seed
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
 @pytest.mark.parametrize("already_frozen", [False, True])
 async def test_authenticated_daily_stop_blocks_first_manifest_but_preserves_identical_replay(
-    client, test_session, monkeypatch, profile, already_frozen
+    client, test_session, monkeypatch, already_frozen
 ):
     db = test_session
     monkeypatch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", True)
     dataset = await seed(db, "finlab")
     control = SchedulerControl(
-        scheduler_key=f"{profile}_finlab_v1",
+        scheduler_key="full_market_finlab_v1",
         provider="finlab",
-        execution_profile=profile,
+        execution_profile="full_market",
         desired_state="running",
         observed_state="running",
         timezone="Asia/Taipei",
@@ -38,7 +36,7 @@ async def test_authenticated_daily_stop_blocks_first_manifest_but_preserves_iden
             dataset_key=dataset,
             provider="finlab",
             trade_date=day,
-            execution_profile=profile,
+            execution_profile="full_market",
             kind="skipped_calendar",
             snapshot={},
         )
@@ -55,11 +53,11 @@ async def test_authenticated_daily_stop_blocks_first_manifest_but_preserves_iden
     work = await queue.enqueue(
         db,
         provider="finlab",
-        stable_key=f"daily:{profile}:{dataset}:{day}",
+        stable_key=f"daily:full_market:{dataset}:{day}",
         kind="daily",
         dataset_key=dataset,
         trade_date=day,
-        execution_profile=profile,
+        execution_profile="full_market",
     )
     work_id = work.work_id
     await attest_cutover(db)
@@ -70,7 +68,7 @@ async def test_authenticated_daily_stop_blocks_first_manifest_but_preserves_iden
         json={
             "protocol": "provider-work-v1",
             "host_lock_identity": "local:1:22",
-            "execution_profile": profile,
+            "execution_profile": "full_market",
         },
     )
     assert claimed.status_code == 200, claimed.text

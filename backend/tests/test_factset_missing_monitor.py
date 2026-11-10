@@ -128,9 +128,8 @@ async def test_cutover_retires_twelve_data_hk_gap_alerts(test_session, monkeypat
 
     retired = alert("hk_equity_eod", "full_market", date(2026, 10, 15), "open")
     already = alert("hk_equity_eod", "full_market", date(2026, 10, 14), "resolved")
-    other_profile = alert("hk_equity_eod", "pilot", date(2026, 10, 15), "open")
     other_dataset = alert("us_equity_eod", "full_market", date(2026, 10, 15), "open")
-    test_session.add_all([retired, already, other_profile, other_dataset])
+    test_session.add_all([retired, already, other_dataset])
     await test_session.flush()
 
     async def scan():
@@ -146,7 +145,7 @@ async def test_cutover_retires_twelve_data_hk_gap_alerts(test_session, monkeypat
     assert await scan() == (0, 1)
     # Later scans neither reopen nor recreate retired-provider gaps.
     assert await scan() == (0, 0)
-    for row in (retired, already, other_profile, other_dataset):
+    for row in (retired, already, other_dataset):
         await test_session.refresh(row)
     assert retired.status == "resolved" and retired.resolved_at == now
     assert retired.details == {
@@ -155,4 +154,4 @@ async def test_cutover_retires_twelve_data_hk_gap_alerts(test_session, monkeypat
         "resolution": {"code": "FEED_RETIRED", "execution_profile": "full_market"},
     }
     assert "resolution" not in already.details
-    assert other_profile.status == other_dataset.status == "open"
+    assert other_dataset.status == "open"

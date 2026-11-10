@@ -7,7 +7,6 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from app.config import get_settings
 from app.models.canonical import CalendarMarket, CalendarRevisionDay, CalendarYearRevision
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
@@ -243,10 +242,9 @@ async def test_dormant_full_market_reports_prerequisites_without_runtime_failure
     from app.services.full_market_admission import admission_projection
 
     await _setup_full_market(test_session, provider)
-    get_settings().FULL_MARKET_ENABLED = False
     projection = await admission_projection(test_session, provider)
     assert projection["acquisition_allowed"] is False
-    assert "full_market_flag_disabled" in projection["acquisition_blockers"]
+    assert "full_market_flag_disabled" not in projection["acquisition_blockers"]
     row = (await list_market_freshness(test_session, now=NOW))[0]
     assert row.monitor_kind == "full_market"
     assert row.activation_state == "not_activated"

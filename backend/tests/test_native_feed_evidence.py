@@ -1,4 +1,4 @@
-"""Native acceptance must bind durable lineage to the requested profile."""
+"""Native acceptance must bind durable lineage to the daily plan."""
 
 import pytest
 from sqlalchemy import text
@@ -23,7 +23,7 @@ from tests.test_staging_feed_evidence import _sample_record
         "tw_futures_eod",
     ],
 )
-async def test_native_evidence_binds_profile_after_canonical_overwrite(
+async def test_native_evidence_binds_daily_plan_lineage(
     test_session, test_engine, owned_client, monkeypatch, environment, key
 ):
     # This regression exercises the v1 evidence path. Current FactSet v2 acquisition
@@ -80,27 +80,22 @@ async def test_native_evidence_binds_profile_after_canonical_overwrite(
             "success": bool(evidence._canonical_projection(schema, sample["sample_record"]))
         },
     )
-    results = []
-    for profile in ("pilot", "full_market"):
-        result = await evidence.export(
-            {
-                "environment": environment,
-                "execution_profile": profile,
-                "trade_date": DAY.isoformat(),
-            }
-        )
-        assert len(result["feeds"]) == 5
-        assert result["passed"] is False  # Other feeds lack plans.
-        feed = next(f for f in result["feeds"] if f["dataset_key"] == key)
-        assert feed["passed"] is True, feed
-        assert feed["plan"]["execution_profile"] == profile
-        assert feed["plan"]["summary"]["data"] > 0
-        assert feed["sample"]["success_records"] > 0
-        assert feed["sample"]["source_request_sha256"]
-        results.append(feed)
-    assert results[0]["sample"]["run_id"] != results[1]["sample"]["run_id"]
-    assert results[0]["sample"]["sample_run_id"] == results[1]["sample"]["run_id"]
-    assert results[0]["plan"]["parts_sha256"] != results[1]["plan"]["parts_sha256"]
+    result = await evidence.export(
+        {
+            "environment": environment,
+            "execution_profile": "full_market",
+            "trade_date": DAY.isoformat(),
+        }
+    )
+    assert len(result["feeds"]) == 5
+    assert result["passed"] is False  # Other feeds lack plans.
+    feed = next(f for f in result["feeds"] if f["dataset_key"] == key)
+    assert feed["passed"] is True, feed
+    assert feed["plan"]["execution_profile"] == "full_market"
+    assert feed["plan"]["summary"]["data"] > 0
+    assert feed["sample"]["success_records"] > 0
+    assert feed["sample"]["source_request_sha256"]
+    assert feed["sample"]["sample_run_id"] == feed["sample"]["run_id"]
 
 
 @pytest.mark.parametrize("schema", ["market_eod", "market_minute", "futures_eod"])

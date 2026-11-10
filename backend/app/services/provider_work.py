@@ -562,7 +562,9 @@ async def fence(
     if acquisition and (attempt.state != "open" or work.state != "running" or attempt.drain_only):
         raise ProviderWorkError("provider work acquisition is closed")
     if acquisition and work.provider == "factset" and work.kind == "daily":
-        local_time = utc_now().astimezone(ZoneInfo("Asia/Hong_Kong")).time()
+        from app.services.effective_calendar import market_timezone
+
+        local_time = utc_now().astimezone(market_timezone("HK")).time()
         if not time(18, 30) <= local_time < time(23):
             raise ProviderWorkSuspendedError("FactSet daily acquisition window is closed")
     if (
@@ -768,8 +770,6 @@ async def acquisition_open(
         ):
             return False
     if work.kind == "daily":
-        if work.execution_profile == "full_market" and not get_settings().FULL_MARKET_ENABLED:
-            return False
         if check_window and not daily_window(work.provider)["open"]:
             return False
         control = await db.get(SchedulerControl, f"{work.execution_profile}_{work.provider}_v1")
@@ -1254,7 +1254,6 @@ async def _projection_acquisition_states(
         if row.kind == "daily":
             allowed = (
                 allowed
-                and (row.execution_profile != "full_market" or get_settings().FULL_MARKET_ENABLED)
                 and daily_window(row.provider, now)["open"]
                 and controls.get(f"{row.execution_profile}_{row.provider}_v1") == "running"
             )

@@ -31,6 +31,7 @@ from app.services.calendar_management import (
     publish_revision,
     revision_days,
 )
+from app.services.effective_calendar import MARKETS
 
 CALENDAR_DIRECTORY = Path(__file__).resolve().parents[1] / "configs" / "calendars"
 TW_CALENDAR_FILES = {
@@ -45,12 +46,6 @@ REVIEWED_2026_FILES = {
     "HK": "hk_equity_2026.v1.json",
     "CN": "cn_equity_2026.v1.json",
     "TAIFEX": "taifex_index_futures_2026.v1.json",
-}
-REVIEWED_TIMEZONES = {
-    "US": "America/New_York",
-    "HK": "Asia/Hong_Kong",
-    "CN": "Asia/Shanghai",
-    "TAIFEX": "Asia/Taipei",
 }
 PRODUCTION_TARGET = "production"
 
@@ -88,7 +83,7 @@ def expected_tw_market() -> CalendarMarket:
     return CalendarMarket(
         market="TW",
         display_name="臺灣",
-        timezone="Asia/Taipei",
+        timezone=MARKETS["TW"][0],
         weekend_days=[5, 6],
         default_session_open=time(9, 0),
         default_session_close=time(13, 30),
@@ -100,7 +95,7 @@ def expected_us_market() -> CalendarMarket:
     return CalendarMarket(
         market="US",
         display_name="美國",
-        timezone="America/New_York",
+        timezone=MARKETS["US"][0],
         weekend_days=[5, 6],
         default_session_open=None,
         default_session_close=None,
@@ -117,7 +112,7 @@ def _expected_market(market: str) -> CalendarMarket:
         return CalendarMarket(
             market=market,
             display_name={"HK": "香港", "CN": "中國", "TAIFEX": "臺灣期貨"}[market],
-            timezone=REVIEWED_TIMEZONES[market],
+            timezone=MARKETS[market][0],
             weekend_days=[5, 6],
             default_session_open=None,
             default_session_close=None,
@@ -171,7 +166,7 @@ def _load_reviewed_us_calendars(calendar_directory: Path) -> list[ReviewedCalend
         "calendar_version": 1,
         "calendar_id": "us_equity_2025_2028",
         "market": "US",
-        "timezone": "America/New_York",
+        "timezone": MARKETS["US"][0],
         "coverage_start_date": "2025-01-01",
         "coverage_end_date": "2028-12-31",
         "source_url": "https://www.nyse.com/trade/hours-calendars",
@@ -244,7 +239,7 @@ def _load_reviewed_2026_calendar(directory: Path, market: str) -> ReviewedCalend
         for key, value in {
             "market": market,
             "year": 2026,
-            "timezone": REVIEWED_TIMEZONES[market],
+            "timezone": MARKETS[market][0],
             "calendar_version": 2 if market == "US" else 1,
             "coverage_start_date": "2026-01-01",
             "coverage_end_date": "2026-12-31",
@@ -380,7 +375,7 @@ def _matches_reviewed_revision(
         current.status == "published"
         and current.market == item.market
         and current.year == item.year
-        and current.timezone == REVIEWED_TIMEZONES.get(item.market, "Asia/Taipei")
+        and current.timezone == MARKETS[item.market][0]
         and (source_matches or owner_json_matches)
         and current.source_filename == item.filename
         and current.actual_days == current.expected_days == len(item.rows)

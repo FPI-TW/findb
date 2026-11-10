@@ -45,71 +45,52 @@ export function DeliveriesPage({
       <PageIntro
         eyebrow="Completeness"
         title="交付監控"
-        description="分別檢查 Pilot 與 Full market 的交付完整性、缺漏告警與歷史回補。"
+        description="檢查每日交付完整性、缺漏告警與歷史回補。"
       />
       <ProviderWorkPanel />
       <OperationsTabs
-        label="執行模式"
+        label="交付監控功能"
         tabs={
-          [
-            { value: "pilot", label: "Pilot" },
-            { value: "full_market", label: "Full market" },
-          ] as const
+          role === "viewer"
+            ? tabs.filter(tab => tab.value !== "backfills")
+            : tabs
         }
-        selected={search.profile ?? "pilot"}
-        onChange={profile => {
-          setSeed(undefined)
-          updateSearch({ ...search, profile, p: 1, pp: 1, cp: 1, bp: 1 })
-        }}
+        selected={selected}
+        onChange={tab => updateSearch({ ...search, tab })}
       >
-        {profile =>
-          profile === (search.profile ?? "pilot") ? (
-            <OperationsTabs
-              label="交付監控功能"
-              tabs={
-                role === "viewer"
-                  ? tabs.filter(tab => tab.value !== "backfills")
-                  : tabs
-              }
-              selected={selected}
-              onChange={tab => updateSearch({ ...search, tab })}
-            >
-              {tab =>
-                tab === "plans" ? (
-                  <DeliveryPlansPanel
-                    search={search}
-                    updateSearch={updateSearch}
-                    active={selected === tab}
-                  />
-                ) : tab === "alerts" ? (
-                  <DeliveryAlertsPanel
-                    search={search}
-                    updateSearch={updateSearch}
-                    active={selected === tab}
-                    role={role}
-                    onBackfill={row => {
-                      setSeed({ ...row })
-                      updateSearch({ ...search, tab: "backfills" })
-                    }}
-                  />
-                ) : tab === "candidates" ? (
-                  <UniverseCandidatesPanel
-                    search={search}
-                    updateSearch={updateSearch}
-                    active={selected === tab}
-                  />
-                ) : (
-                  <HistoricalBackfillsPanel
-                    search={search}
-                    updateSearch={updateSearch}
-                    active={selected === tab}
-                    role={role}
-                    seed={seed}
-                  />
-                )
-              }
-            </OperationsTabs>
-          ) : null
+        {tab =>
+          tab === "plans" ? (
+            <DeliveryPlansPanel
+              search={search}
+              updateSearch={updateSearch}
+              active={selected === tab}
+            />
+          ) : tab === "alerts" ? (
+            <DeliveryAlertsPanel
+              search={search}
+              updateSearch={updateSearch}
+              active={selected === tab}
+              role={role}
+              onBackfill={row => {
+                setSeed({ ...row })
+                updateSearch({ ...search, tab: "backfills" })
+              }}
+            />
+          ) : tab === "candidates" ? (
+            <UniverseCandidatesPanel
+              search={search}
+              updateSearch={updateSearch}
+              active={selected === tab}
+            />
+          ) : (
+            <HistoricalBackfillsPanel
+              search={search}
+              updateSearch={updateSearch}
+              active={selected === tab}
+              role={role}
+              seed={seed}
+            />
+          )
         }
       </OperationsTabs>
     </>

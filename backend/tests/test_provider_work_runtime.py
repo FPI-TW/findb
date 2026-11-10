@@ -17,14 +17,12 @@ import pytest
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.models.canonical import CalendarYearRevision
 from app.models.provider_work import ProviderWork
 from app.models.registry import SchedulerControl, SchedulerDataset
 from app.services import historical_backfill, provider_work
 from app.services.provider_work import prepared_map
 from app.services.source_clients import create_source_client
 from app.utils import utc_now
-from tests.full_market_fixtures import historical_admission
 from tests.provider_work_runtime_support import DAY as HISTORICAL_DAY
 from tests.test_canonical_ingest_api import _execute_run
 from tests.test_full_market import DAY, _activated_plan
@@ -32,14 +30,13 @@ from tests.test_full_market import DAY, _activated_plan
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "stop_before_confirmation,close_crash,temporary_rejection,overlap",
+    "stop_before_confirmation,close_crash,temporary_rejection",
     [
-        (False, False, None, False),
-        (True, False, None, False),
-        (False, True, None, False),
-        (False, False, 503, False),
-        (False, False, 429, False),
-        (False, False, 503, True),
+        (False, False, None),
+        (True, False, None),
+        (False, True, None),
+        (False, False, 503),
+        (False, False, 429),
     ],
     ids=[
         "running-handoff",
@@ -47,10 +44,9 @@ from tests.test_full_market import DAY, _activated_plan
         "closed-restart",
         "503-retry-then-stop",
         "429-retry-then-stop",
-        "503-tail-retry-after-newer-pilot-write",
     ],
 )
-async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs(
+async def test_daily_historical_handoff_with_real_fenced_source_and_proofs(
     client,
     test_session,
     test_engine,
@@ -59,7 +55,6 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
     stop_before_confirmation,
     close_crash,
     temporary_rejection,
-    overlap,
 ):
     root = Path(__file__).resolve().parents[2]
     from tests.test_scheduler_control import _admin_headers
@@ -96,14 +91,6 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         str(root / "fetcher/configs/finlab_tw_review_required.v1.json"),
     )
     dataset, _, daily_plan = await _activated_plan(test_session, "tw_equity_eod", count=2)
-    release = daily_plan.release_id
-    from app.models.registry import UniverseRelease
-
-    baseline = await test_session.get(UniverseRelease, release)
-    calendar_id = await test_session.scalar(
-        select(CalendarYearRevision.id).where(CalendarYearRevision.market == "TW")
-    )
-    await historical_admission(test_session, dataset, baseline, DAY, calendar_id, profile="pilot")
     from copy import deepcopy
 
     from app.models.registry import DatasetRegistry
@@ -114,12 +101,11 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
             **deepcopy(next(item for item in DATASETS if item["dataset_key"] == "tw_etf_eod"))
         )
     )
-    for profile in ("pilot", "full_market"):
-        key = f"{profile}_finlab_v1"
-        control = await test_session.get(SchedulerControl, key)
-        control.observed_state = "running"
-        test_session.add(SchedulerDataset(scheduler_key=key, dataset_key="tw_equity_eod"))
-        test_session.add(SchedulerDataset(scheduler_key=key, dataset_key="tw_etf_eod"))
+    key = "full_market_finlab_v1"
+    control = await test_session.get(SchedulerControl, key)
+    control.observed_state = "running"
+    test_session.add(SchedulerDataset(scheduler_key=key, dataset_key="tw_equity_eod"))
+    test_session.add(SchedulerDataset(scheduler_key=key, dataset_key="tw_etf_eod"))
     _, secret = await create_source_client(
         test_session,
         name="fifo-bridge",
@@ -282,17 +268,7 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         request_key="actual-runtime-handoff",
         created_by="owner",
     )
-    third = await provider_work.enqueue(
-        test_session,
-        provider="finlab",
-        stable_key=f"daily:pilot:tw_equity_eod:{DAY}",
-        kind="daily",
-        dataset_key="tw_equity_eod",
-        trade_date=DAY,
-        execution_profile="pilot",
-        scope={"feed": feed},
-    )
-    expected = [first.work_id, historical.items[0].item_id, third.work_id]
+    expected = [first.work_id, historical.items[0].item_id]
     await test_session.commit()
 
     class Clock(datetime):
@@ -450,10 +426,6 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
     if temporary_rejection:
         from app.models.provider_work import ProviderWorkAttempt
 
-        if overlap:
-            await asyncio.to_thread(run_history)
-            await asyncio.to_thread(run_daily, "pilot")
-
         retry = await test_session.scalar(
             select(ProviderWorkAttempt).where(
                 ProviderWorkAttempt.work_id == expected[0], ProviderWorkAttempt.state == "queued"
@@ -470,8 +442,7 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
             )
         )
         for attempt in others:
-            if not overlap:
-                attempt.not_before = utc_now() + timedelta(minutes=5)
+            attempt.not_before = utc_now() + timedelta(minutes=5)
         await test_session.commit()
         with FullMarketState(tmp_path / "full_market.sqlite3").connection() as db:
             db.execute("UPDATE full_work SET next_at=0")
@@ -481,9 +452,7 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
         for attempt in others:
             attempt.not_before = utc_now() - timedelta(seconds=1)
         await test_session.commit()
-    if not overlap:
-        await asyncio.to_thread(run_history)
-        await asyncio.to_thread(run_daily, "pilot")
+    await asyncio.to_thread(run_history)
     test_session.expire_all()
     work = list(await test_session.scalars(select(ProviderWork).order_by(ProviderWork.created_at)))
     with FullMarketState(tmp_path / "full_market.sqlite3").connection() as db:
@@ -493,21 +462,18 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
                 "SELECT member_key,status,reason,attempts,lease_until,next_at,body IS NOT NULL FROM full_work"
             )
         ]
-    assert len(work) == 3
+    assert len(work) == 2
     assert [row.state for row in work] == (
-        ["failed", "completed", "completed"]
-        if overlap
-        else ["queued", "completed", "completed"]
+        ["queued", "completed"]
         if stop_before_confirmation or temporary_rejection
-        else ["completed"] * 3
+        else ["completed"] * 2
     ), (responses, state_rows)
     full_count = 1 if stop_before_confirmation or temporary_rejection else 2
     assert [event[0] for event in events] == ["full_market-acquisition"] * full_count + [
         "historical-acquisition"
-    ] * 5 + ["pilot-acquisition"] * 2
+    ] * 5
     assert len({row[1] for row in events[:full_count]}) == 1 and events[0][1] == str(expected[0])
-    assert events[-1][1] == str(expected[2])
-    if stop_before_confirmation or temporary_rejection or overlap:
+    if stop_before_confirmation or temporary_rejection:
         from app.services.full_market import get_plan
 
         summary = (
@@ -524,43 +490,16 @@ async def test_daily_historical_daily_handoff_with_real_fenced_source_and_proofs
             summary.no_data,
             summary.missing,
             summary.blocked,
-        ) == ((2, 0, 0, 2, 0) if overlap else (2, 1, 0, 1, 0)), state_rows
+        ) == (2, 1, 0, 1, 0), state_rows
         assert all(gap["reason"] is None for gap in summary.gaps)
-    if overlap:
-        from app.models.provider_work import ProviderWorkAttempt, ProviderWorkOwner
-        from app.models.registry import IngestionRun
-
-        round = await test_session.scalar(
-            select(ProviderWorkAttempt).where(
-                ProviderWorkAttempt.work_id == expected[0], ProviderWorkAttempt.attempt_number == 2
-            )
-        )
-        assert round.outcome == "failed" and round.failure_code == "MANUAL_INTERVENTION_REQUIRED"
-        assert round.proof["manual_reason"] == "frozen_scope_requires_manual_review"
-        assert (await prepared_map(test_session, work[0].work_id)) and len(
-            (await prepared_map(test_session, work[0].work_id))
-        ) == 1
-        assert await test_session.scalar(
-            select(IngestionRun.run_id).where(
-                IngestionRun.success_records == 0, IngestionRun.status == "completed"
-            )
-        )
-        assert (
-            await test_session.get(ProviderWorkOwner, (get_settings().APP_ENVIRONMENT, "finlab"))
-        ).attempt_id is None
     assert all(
         control.desired_state
-        == (
-            "stopped"
-            if (stop_before_confirmation or temporary_rejection)
-            and control.execution_profile == "full_market"
-            else "running"
-        )
+        == ("stopped" if stop_before_confirmation or temporary_rejection else "running")
         for control in await test_session.scalars(
             select(SchedulerControl).where(SchedulerControl.provider == "finlab")
         )
     )
-    if (stop_before_confirmation or temporary_rejection) and not overlap:
+    if stop_before_confirmation or temporary_rejection:
         from app.models.provider_work import ProviderWorkAttempt, ProviderWorkOwner
         from app.models.registry import FullMarketDatasetState
         from app.services.full_market import get_plan

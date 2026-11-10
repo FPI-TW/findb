@@ -206,7 +206,7 @@ def test_current_daily_worker_recovers_each_idle_source_boundary(stage):
 
 
 @pytest.mark.parametrize("provider", sorted(daily._SCOPES))
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 def test_actual_daily_cli_retries_initial_poll_before_runtime_creation(
     tmp_path, monkeypatch, provider, profile
 ):

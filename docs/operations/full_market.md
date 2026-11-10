@@ -1,9 +1,12 @@
-# Pilot／Full market 共用執行流程
+# Full market 執行流程
 
-`FULL_MARKET_ENABLED=false` 是 local、staging、production 的預設值。Backend 與 Fetcher 必須使用
-相同 `APP_ENVIRONMENT=local|staging|production` 與旗標。JSON `deployment_target` 仍是環境匹配契約。`FULL_MARKET_ENABLED` 從 AWS 部署控制設定載入，
-只控制 Full market 新抓取資格；兩環境固定安裝相同 runtime，不以旗標選擇程式。
-旗標為 true 不會啟動排程。Full market 的啟動資料條件只包含已發布 baseline。
+Daily acquisition 只有 `full_market` 一種 execution profile；Pilot profile 與 `FULL_MARKET_ENABLED`
+旗標已退役，切換與 rollback 下限見 [Pilot 退役](deployment.md#pilot-profile-退役與-rollback-下限)。
+Backend 與 Fetcher 必須使用相同 `APP_ENVIRONMENT=local|staging|production`；JSON `deployment_target`
+仍是環境匹配契約。兩環境固定安裝相同 runtime；production 執行 Full market daily，staging 平時 controls
+停止，只在測試改動功能時一次啟動一個 provider。
+新抓取只受 scheduler control（Owner start／stop）與 Source 授權（credential scope、每日窗口、平台配額／
+account governor、資料驗證）約束；部署不會啟動排程。啟動資料條件只包含已發布 baseline。
 Owner 權限、revision CAS 與 Source 認證屬於既有操作／資料存取規則。
 TAIFEX 官方 OpenAPI 不需 provider 帳號、API key 或 provider secret。部署設定中的
 `FETCHER_TAIFEX_SOURCE_CLIENT_KEY` 是 **FinDB 自己簽發的 Source API key**，供 TAIFEX Fetcher
@@ -18,13 +21,13 @@ maintenance bootstrap 也必須通過有效 provider／dataset scope 與 credent
 universe、plan 與新資料抓取仍僅使用當次凍結的 admitted feeds。正常 credential create／rotate
 會將省略的 scope 展開成 provider 的明確清單；本規則不放寬既有 API 邊界。
 
-## Profile 與計畫隔離
+## Profile 與計畫範圍
 
-`findb-fetch-runtime --execution-profile pilot|full_market` 是兩環境共同入口。
-Pilot 每條 feed 取 published universe 穩定排序的前兩個 canonical 商品；期貨以 product／contract 選擇，
-保留入選商品 sessions。Daily plan 凍結選取結果，不因重試、補抓或 universe 更新改寫。
-兩種 profile 各有 controls、first dates、plans、checkpoints、缺漏與告警；同環境共用 account governor。
-只追補各自首次日期後的缺口，prepared delivery 在停止後仍可完成。
+`findb-fetch-runtime --execution-profile full_market` 是兩環境共同的 daily 入口；`pilot` 以 exit 2
+回傳退役訊息，不載入 secrets 或建立 state。每條 feed 依 published universe 凍結完整 cohort；期貨以
+product／contract 選擇並保留 sessions。Daily plan 凍結選取結果，不因重試、補抓或 universe 更新改寫。
+Controls、first dates、plans、checkpoints、缺漏與告警只有 `full_market` 一組；Full daily、historical 與
+maintenance 一律經同環境共用的 account governor。只追補首次日期後的缺口，prepared delivery 在停止後仍可完成。
 
 ### 停止後的低成本排空與完成確認
 
@@ -44,7 +47,7 @@ plans 會建立一次 reconciliation marker；Source 確認後不再每輪重算
 
 Runtime 執行既有 claim／owner recovery、prepared drain 與
 settlement；只有 idle drain 丟棄的完整 health 統計被省略。明確 `--health` 與正常 cycle 的輸出
-保留，plan／provider 狀態索引降低摘要查詢成本。兩種 profile 都適用，不自動切換 deployment flag。
+保留，plan／provider 狀態索引降低摘要查詢成本。
 
 本次 SQLite 變更僅新增索引與 reconciliation table，啟動時在原 schema lock 下建立，不需
 PostgreSQL migration，也不重建 checkpoint、清除 body／receipt 或重設 governor。
@@ -69,9 +72,9 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 | 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 僅 US，HK 已永久退役 |
 | 安裝 feeds | `backend/configs/provider_catalog.v1.json` 及其生成的 Fetcher config | Backend catalog 與 Fetcher config 均為五條（Shioaji 分 K 僅保留歷史查詢，見 [deployment](deployment.md)）；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
 | 凍結 admission | `admitted_dataset_keys`／`admission_id` | Owner 最近一次啟動時凍結的可用 datasets；停止後投影仍可能保留 |
-| 即時抓取授權 | Source `full-market/authorization?consumer=pilot\|full_market` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、profile flag、Source credential、baseline 與 provider cutover |
+| 即時抓取授權 | Source `full-market/authorization?consumer=full_market\|maintenance` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、Source credential、baseline 與 provider cutover；deprecated `full_market_enabled` 固定為 `true` |
 
-Source `execution-config?execution_profile=pilot|full_market` 已發布 credential 範圍內的排程快照，
+Source `execution-config?execution_profile=full_market` 已發布 credential 範圍內的排程快照，
 不包含 running／quota 授權；Admin 的逐 feed schedule 使用相同 resolver。現階段 Fetcher 仍讀
 生成的本機相容設定，不能因新 API 存在就刪除舊檔或改寫 frozen plan deadline。
 
@@ -106,15 +109,16 @@ receipt 與 retry budget 不重寫。操作前先停止相關 control、保存 c
 inode 復原；不得藉重新啟動 daemon、等待 TTL 或刪除相容 scope 排除舊工作。Staging 實際處置見
 [FactSet 部署證據](deployment.md#2026-10-21-staging-hk-切換)。
 
-`expected = data + no_data + missing + blocked`。Data 必須有該 plan 所屬 run 的持久化 canonical 寫入證據，
-Pilot 成功不能直接完成 Full plan。Minute 必須有完整 sequenced snapshot；DQ error、空批次、quota failure
-不得算成功或 no_data。No_data 必須有 durable provider evidence。
+`expected = data + no_data + missing + blocked`。Data 必須有該 plan 所屬 run 的持久化 canonical 寫入證據；
+舊 Pilot 留下的 runs 已脫離 plan（`delivery_part_id` 為 NULL），不計入任何 plan。
+Minute 必須有完整 sequenced snapshot；DQ error、空批次、quota failure 不得算成功或 no_data。
+No_data 必須有 durable provider evidence。
 
 ## 啟動契約
 
-Pilot／Full market 每個 feed 只要求同 provider／dataset 有 `published` official baseline，且 effective date
+每個 feed 只要求同 provider／dataset 有 `published` official baseline，且 effective date
 不晚於交易所當地今天。至少一個 feed 符合即可啟動，並只凍結符合條件的 feeds。日曆不必先設定。
-Enrollment、installation receipt、readiness ACK／expiry、account／capacity proof、環境旗標與
+Enrollment、installation receipt、readiness ACK／expiry、account／capacity proof 與
 registry 額外 metadata 不列為啟動資格 gate。舊 `full_market` metadata 若為字串或 list，
 start 視為缺少 optional governance，重新建立 activation date；有效 contract declaration 與
 既有 immutable first date 仍保留。未知 scheduler／scope 仍依 API definition validation
@@ -124,13 +128,33 @@ Owner 透過 `PATCH /api/v1/admin/schedulers/{scheduler_key}`，傳入 `desired_
 與 `expected_revision`。Backend 在同一 transaction 重查 baseline 與當時可用的 calendar metadata，凍結 ready datasets、
 baseline IDs、可空的 calendar revision IDs 與首次日期，並寫入操作 audit；admission 不必綁定 enrollment。
 新的 ready sibling 須停止後再啟動，重複 running PATCH 不改凍結範圍。
-每 dataset＋profile 首次日期由交易所當地今天決定；migration 保留合法 legacy activation_date，malformed
+每 dataset 首次日期由交易所當地今天決定；migration 保留合法 legacy activation_date，malformed
 legacy 日期在首次 start 時以 immutable first date 修正。停止、重啟與重新 enrollment 均不重設日期。舊 `/admin/feeds/{dataset}/activate`
 與 `/deactivate` 在 Owner 認證後回傳 410；沒有 per-feed activation、manual readiness_approved 或五日門檻。
 
-每次 provider call 前立即查 effective Source authorization。Full market 旗標關閉（不影響 Pilot）、Owner 停止、Source credential 撤銷／到期時，禁止新抓取與 plan。已保存 prepared payload／frozen plan 的 delivery、
-normalization、canonical 與稽核可繼續；不重抓已 prepared 資料。關閉旗標由 ingest/all lifespan 或
-下述管理命令停止 Full controls 並寫 audit；GET 投影永遠唯讀。重新開旗標後仍需 Owner 手動啟動。
+每次 provider call 前立即查 effective Source authorization。Owner 停止、Source credential 撤銷／到期、
+超出每日窗口或平台配額不足時，禁止新抓取與 plan。已保存 prepared payload／frozen plan 的 delivery、
+normalization、canonical 與稽核可繼續；不重抓已 prepared 資料。Ingest 啟動不再調整 controls，
+GET 投影永遠唯讀；停止後仍需 Owner 手動啟動。
+
+### 緊急停止
+
+`FULL_MARKET_ENABLED` kill switch 已由 Backend CLI 取代；預設 dry-run，`--apply` 才寫入：
+
+```bash
+docker exec findb-ingest python scripts/emergency_stop_controls.py \
+  --actor <operator> --reason <text>
+docker exec findb-ingest python scripts/emergency_stop_controls.py \
+  --actor <operator> --reason <text> --apply
+```
+
+工具依 providers → environment → controls 順序加鎖，將所有非 retired control 設為
+`desired_state='stopped'` 並遞增 revision，每個 control 寫一筆 `admin_audit_event`
+（`actor_type=deployment`、`details.reason=emergency_stop`）。Observed state 待各 runtime 回報後才改變，
+prepared delivery 仍正常排空。任何 RDS snapshot restore 後，必須在 Fetcher consumers 啟動與 Owner
+start 前執行；ingest 啟動不調整 controls，production 可先只啟動 ingest container（Fetcher 保持停止）
+再於其中執行。本機改用
+`uv --directory backend run python scripts/emergency_stop_controls.py`。
 
 ## 有效日曆與每日政策
 
@@ -179,7 +203,7 @@ auth／scope 錯誤仍依原規則 failed／manual，不得誤分類成尚未發
 不得以新 revision 自動覆寫。若目前 skip flag 為 false，work 仍維持人工處理；須先明確決定是否
 透過部署啟用政策，不能跳過下節對目前政策與證據的檢查直接修復。
 
-四個現役 provider 的 Pilot／Full daily canonical 回合，另在第一個需要新 provider I/O 的成員 claim
+四個現役 provider 的 Full daily canonical 回合，另在第一個需要新 provider I/O 的成員 claim
 前查詢一次同一 calendar status；FactSet 則在第一次 snapshot 請求前查詢。已完成、manual、
 deferred 或未 mapped 的成員、本地已有 prepared bytes 的排空與 historical 回合都不觸發查詢。
 若結果為 `repair_required`，work 以 `CALENDAR_DECISION_REPAIR_REQUIRED` failed，不改寫任何
@@ -194,7 +218,7 @@ local member checkpoint（既有 no-trade 等證據保留），不授權、不�
 
 ### Shioaji 空 Kbars 與凍結 mapping 修復
 
-> Shioaji Fetcher runtime 已移除（見 [rollback 下限](deployment.md#shioaji-退役的-rollback-下限)）。本節 CLI 只存在於 `fetcher-v0.1.21` 以前，Backend 保留歷史 inventory／preview；controls retired 後 repair apply 拒絕。內容僅供稽核既有紀錄，不可重新啟動舊 CLI。
+> Shioaji Fetcher runtime 已移除（見 [rollback 下限](deployment.md#shioaji-退役的-rollback-下限)）。本節 CLI 只存在於 `fetcher-v0.1.21` 以前，Backend 保留歷史 inventory／preview；controls retired 後 repair apply 拒絕。內容僅供稽核既有紀錄，不可重新啟動舊 CLI。Pilot 退役 migration `a7c3e1f9d2b4` 已刪除綁定 Pilot 的 closure／repair rows，下文的 Pilot 描述只說明退役前行為。
 
 七個 Kbars 向量皆空記為 `empty_response`，原因維持 `unknown`；不能推定尚未發布、無交易或
 entitlement 不足。缺欄、長度不一致、錯誤日期及其他永久格式錯誤仍走原本有界失敗流程。
@@ -461,7 +485,7 @@ JSON SHA-256 為 `0deb444465eae99d60705b2b29c595b911be8d8e5b5b8a7bf56e9dddb50299
 
 ### 已更正休市決策的舊工作結清
 
-> Shioaji Fetcher runtime 已移除（見 [rollback 下限](deployment.md#shioaji-退役的-rollback-下限)）。本節 CLI 只存在於 `fetcher-v0.1.21` 以前，Backend 保留歷史 inventory／preview；controls retired 後 repair apply 拒絕。內容僅供稽核既有紀錄，不可重新啟動舊 CLI。
+> Shioaji Fetcher runtime 已移除（見 [rollback 下限](deployment.md#shioaji-退役的-rollback-下限)）。本節 CLI 只存在於 `fetcher-v0.1.21` 以前，Backend 保留歷史 inventory／preview；controls retired 後 repair apply 拒絕。內容僅供稽核既有紀錄，不可重新啟動舊 CLI。Pilot 退役 migration `a7c3e1f9d2b4` 已刪除綁定 Pilot 的 closure／repair rows，下文的 Pilot 描述只說明退役前行為。
 
 Shioaji Pilot／Full daily 的舊 canonical work 可經 Owner 明確核准改為 `calendar_closed`。
 此狀態只表示休市工作已結清，不代表取得 canonical 或 no_data；原 plan／parts／members、
@@ -696,7 +720,7 @@ Shioaji 限制見[官方使用限制](https://sinotrade.github.io/zh/tutor/limit
 定義見[官方 OpenAPI](https://openapi.taifex.com.tw/)及[Swagger schema](https://openapi.taifex.com.tw/swagger.json)。
 TAIFEX 429 的等待策略採用現行 runtime 的 rate-limit handling。
 
-安裝 Full profile 時，保留 Pilot 與已有 historical workers，使用獨立 container／checkpoint names。
+每個 provider 只安裝 `findb-full-market-*` 與 `findb-historical-*` 兩個 consumers，使用獨立 container／checkpoint names。
 Installed consumers 的用量與 cooldown 由 durable governor 保存，process restart 不清除帳號已用量。
 FinDB internal Source API 的 2400 RPM 為內部服務設定，與 provider 的平台配額分開。
 Payload／R2 object／解壓縮／IPC bounds 屬於傳輸與資料處理保護，不列為額外 provider 配額證據。
@@ -747,15 +771,15 @@ recovery blocked 而卡住同 provider 的後續工作：
 
 | 情境 | 判定 | 處理 |
 | --- | --- | --- |
-| 同一 request identity 只有舊回應 | `durable_response` 找到無基準 key | 拋出一般錯誤 `ProviderWorkBasisMismatchError`；Full／Pilot 成員標為 `manual / price_basis_manual_review` 並回報 `source_error`，同計畫其他成員照常處理；historical item 以 `PREPARED_DELIVERY_MANUAL_REVIEW` 結束 |
-| Prepared body 由舊回應產生 | body 的 `payload.batch.source_raw_sha256` 等於某筆舊回應原始 bytes 的 SHA-256 | 該 body 不送出；Full／Pilot 成員同上標為 manual；historical item 同上 |
+| 同一 request identity 只有舊回應 | `durable_response` 找到無基準 key | 拋出一般錯誤 `ProviderWorkBasisMismatchError`；Full 成員標為 `manual / price_basis_manual_review` 並回報 `source_error`，同計畫其他成員照常處理；historical item 以 `PREPARED_DELIVERY_MANUAL_REVIEW` 結束 |
+| Prepared body 由舊回應產生 | body 的 `payload.batch.source_raw_sha256` 等於某筆舊回應原始 bytes 的 SHA-256 | 該 body 不送出；Full 成員同上標為 manual；historical item 同上 |
 | 排空 prepared ledger 時遇到上述 body | 同上，逐筆判定；只擋 Source 尚未接受的 body | 跳過該 body、其餘照常交付（已接受的舊 body 重播只取回原 run）；本 session 已記錄被擋 body 時，任何非 retry 結算（含 `completed`、`cancelled`、`failed`，以及
 排空後重送的 `PREPARED_DRAINING` 結算）與 drain-only retry 都在送出前改為 `failed`，`failure_code=PRICE_BASIS_MANUAL_REVIEW`（已有 failure code 時保留），proof 帶 `manual_pending_prepared`、`price_basis_blocked` 與 `price_basis`；proof 仍有未回報的 `pending_source_errors` 時先維持 retry，回報後再轉換 |
 
 判定逐筆進行：work 只是含有舊回應、但待送 body 不是由它產生（或待送集合為空）時，不阻擋。
 Historical 的 scope stopped、drain-only 與 closed／draining 回合排空後若有被擋 body，一律以
 `PREPARED_DELIVERY_MANUAL_REVIEW` 完成 item，completion 遇到 `PREPARED_DRAINING` 也改送同一
-manual 結果，讓 item／request 與 work 一起進入終態。Full／Pilot drain-only 回合不會清除
+manual 結果，讓 item／request 與 work 一起進入終態。Full drain-only 回合不會清除
 （Source 只在所有 prepared 都被接受後才解除 drain-only），因此被擋 body 會使該回合的 retry
 轉為 manual failed，尚未抓取的成員改由 historical 回補。
 
@@ -767,7 +791,7 @@ production 匯入的 13 筆 US daily 均未開始、沒有 prepared，目前無�
 Fetcher `full_work_diagnostic` 記為 `price_basis_mismatch`。
 
 Owner 的後續處理：historical request 因 failed date 結束後，為相同日期建立新 request（新 work／
-journal 以 `adjust=none` 抓取）；Full／Pilot 計畫以 manual 成員結算 failed 後，以 historical request
+journal 以 `adjust=none` 抓取）；Full 計畫以 manual 成員結算 failed 後，以 historical request
 回補該日期。取消 historical request 也會在原 owner 排空時走同一 manual 結算，不需人工改 DB。
 不得刪除 journal 列、清除 prepared 或重設預算。
 
@@ -777,7 +801,7 @@ claim。切換當下兩環境均無受影響工作。SSM：production `312dd583-
 `b76aca73-1d06-476d-bdeb-4b9c9ac341b3`，staging `ae01c182-e7ce-4157-9b95-9edcc361762b`／
 `17c9ba56-09c5-42c5-954f-c3d4e904a37b`。
 
-Full／Pilot daily 成員迴圈（`_deliver_plan`）中以下失敗會附加一列到 Fetcher SQLite
+Full daily 成員迴圈（`_deliver_plan`）中以下失敗會附加一列到 Fetcher SQLite
 `full_work_diagnostic`（work key、分類、HTTP status、provider code、是否已派送、時間）：
 Twelve Data provider 錯誤（上表分類）、已派送的 quota 失敗（`quota_blocked`）、價格基準不符
 （`price_basis_mismatch`），以及其他 provider 的未分類例外（`exception:<類別名稱>`）。
@@ -803,8 +827,8 @@ Pilot／Full market 均使用資料擷取用 simulation，catalogue raw evidence
 啟動資格的程式修改位於 `refactor/full-market-baseline-calendar-start`；migration
 `3553ed95cfbf` 允許 admission 的 legacy enrollment reference 為 null，保留既有歷史綁定。
 所有環境的新抓取均不讀取 readiness／enrollment／expiry／capacity proof。Owner start 只依
-published baseline；日曆缺少時依市場`weekend_days`預設，內建市場預設週六日休市；新抓取另遵守 running control、有效旗標、Source
-及 provider API 認證與資料驗證。每次部署仍須確認 installed revision、環境與有效旗標；最新 staging 資料查核見上方現況。
+published baseline；日曆缺少時依市場`weekend_days`預設，內建市場預設週六日休市；新抓取另遵守 running control、Source
+及 provider API 認證與資料驗證。每次部署仍須確認 installed revision 與環境；最新 staging 資料查核見上方現況。
 Nasdaq MIC 與 publication 排序修正已隨上述 c744a36 staging release 部署；production 狀態見 deployment runbook。
 
 ## 治理資料明確需求
@@ -829,7 +853,7 @@ latest 日期不符時使用 TX／MTX／TMF／TE／TF 分產品歷史報表，�
 與空報表同樣保留 date prerequisite 重試，不寫入 durable response。官方來源行為見
 [TAIFEX 期貨日行情](taifex.md)。
 日常 cycle 不先執行 TAIFEX latest 目錄更新；明確的 maintenance refresh 仍可使用。
-報表尚未可用或目錄等待發布時，在各 profile checkpoint 保存日期、原因與一小時後的
+報表尚未可用或目錄等待發布時，在 Full checkpoint 保存日期、原因與一小時後的
 重試時間，provider-work `retry_at` 亦使用相同剩餘延遲，不再每 60 秒重新 claim；CLI health 的
 `date_prerequisites` 可查詢，其他已凍結日期繼續補抓。
 交付截止後若同日 candidate 仍未發布，missing-delivery alert 以
@@ -841,8 +865,7 @@ HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期
 部署期間維持 controls stopped；SQLite 僅新增 prerequisite table，保留原有 rows 與 quota debt。
 
 舊版若已用前一交易日 release 凍結 TAIFEX 計畫，不得把已到期且未出現在當日官方報表的契約
-改記 `no_data`，也不得改寫原 plan、成功 run 或 canonical evidence。一次性處置須先停止對應
-execution profile 的 TAIFEX control，取得當日官方歷史報表與 SHA-256，確認 provider owner 已釋放、
+改記 `no_data`，也不得改寫原 plan、成功 run 或 canonical evidence。一次性處置須先停止 TAIFEX control，取得當日官方歷史報表與 SHA-256，確認 provider owner 已釋放、
 provider work 已 terminal 且沒有 prepared delivery，再以 Admin prepare audit 完整封存 Backend 與
 checkpoint 原值。只有在 checkpoint snapshot digest 相符時，才能移除該 plan 的活動 SQLite
 plan/work，將該 dataset/profile 的治理起始日移到 exact-date universe 保護開始的首日，並以
@@ -902,51 +925,54 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 
 ## 設定與啟動
 
-Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布 baseline 後才人工啟動。
-Staging 只開 Pilot 驗證功能，確認正常後部署到 production 只開 Full；部署本身不 start controls。
-Pilot 與 Full 的 daily 都只抓當日，回補天數由管理者建立回補時決定：Pilot 只補少量日期確認流程，
-Full 才補完整範圍。Staging fetcher 主機記憶體小（見
-[部署 OOM 紀錄](deployment.md#2026-10-22-staging-historical-finlab-oom-阻擋部署)），
-不在 staging 執行 Full 或完整回補；FinLab 即使只取 Pilot 兩檔，worker 仍會載入整張 dataset。
+Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布 baseline 後才人工啟動；部署本身不
+start controls。Production 執行 Full daily；staging 平時保持停止，Owner 只在測試改動時一次啟動一個 provider，
+驗收後即停止。Twelve Data 的 staging 與 production 共用同一帳號（來源無法發多組 API key），兩環境 governor
+各自計算、沒有跨環境預算，staging 抓取會直接消耗 production 的 credits／分鐘配額。Daily 只抓當日，
+回補天數由管理者建立回補時決定；完整範圍回補在 production 執行。Staging fetcher 主機記憶體小（見
+[部署 OOM 紀錄](deployment.md#2026-10-22-staging-historical-finlab-oom-阻擋部署)），FinLab worker 一律載入
+整張 dataset；staging 只做少量回補，啟動後須觀察記憶體與 OOM。
 
 ```bash
 cd fetcher
 export APP_ENVIRONMENT=local FETCHER_ACCOUNT_STATE_PATH=.state/account/governor.sqlite3
-uv run --env-file .env findb-fetch-runtime --execution-profile pilot --provider finlab \
-  --config configs/bootstrap.local.v1.json --state-path .state/pilot/state.sqlite3 --sync-universes
-uv run --env-file .env findb-fetch-runtime --execution-profile pilot --provider finlab \
-  --config configs/bootstrap.local.v1.json --state-path .state/pilot/state.sqlite3 --run-forever
+uv run --env-file .env findb-fetch-runtime --execution-profile full_market --provider finlab \
+  --config configs/bootstrap.local.v1.json --state-path .state/full_market/state.sqlite3 --sync-universes
+uv run --env-file .env findb-fetch-runtime --execution-profile full_market --provider finlab \
+  --config configs/bootstrap.local.v1.json --state-path .state/full_market/state.sqlite3 --run-forever
 ```
 
-Full 使用 `--execution-profile full_market` 與獨立 checkpoint，並將 Backend／Fetcher 的
-`FULL_MARKET_ENABLED` 同步設為 true。各 consumer 共用同一 governor 絕對路徑；不能把 checkpoint 與
+Consumer 以 `FETCHER_CONSUMER_PROFILE=full_market|maintenance|historical` 標示角色（部署 consumers 只用
+`full_market`／`historical`）；未設定時為 legacy bounded 行為。`FETCHER_EXECUTION_PROFILE` 已退役。Full runtime 一律使用共用 account governor，已無各
+checkpoint 自帶的本機 limiter 路徑；各 consumer 共用同一 governor 絕對路徑，不能把 checkpoint 與
 account DB 指向同一檔。既有 governor 的 pins、debt、unknown liability、cooldown 不得刪除或重設。
-維護同步以 Source maintenance 授權執行，不需要 enrollment；新抓取仍要求 published baseline 與 running controls。
+維護同步（universe sync）只依 Source credential 綁定授權，不需要 enrollment 或已發布 baseline，
+因此可在首份 baseline 前執行；新抓取仍要求 published baseline 與 running controls。
 
 AWS 路徑、首次切換、備份與回退下限見 [deployment.md](deployment.md)。CLI 的 `--check` 不呼叫 provider，
 `--initialize-state` 只允許新 installation 建立 schema，既有 checkpoint 遺失必須阻塞。
-`--require-stopped` 唯讀驗證正確 profile checkpoint 與 controls，不能藉部署修改 desired state。
+`--require-stopped` 唯讀驗證 Full checkpoint 與 controls，不能藉部署修改 desired state。
 
 ## Dashboard 與 API
 
-Overview／交付監控以 `profile=pilot|full_market` 分頁。Staging 預設 Pilot，production 預設 Full market。
-各自呈現數量、缺口、告警、首次日期與啟動狀態；URL、篩選、刷新及 cache key 均帶 profile。
-未指定 profile 的既有 plan API 維持 Full market 語意，新 runtime／Dashboard 必須明確傳入。
+Overview／交付監控只呈現 Full market，沒有執行模式分頁；Dashboard 對 Admin API 固定傳入
+`execution_profile=full_market`，舊連結的 `profile` 參數會被忽略。頁面呈現數量、缺口、告警、首次日期與啟動狀態。
+API 的 `execution_profile` 參數保留但只接受 `full_market`，其他值回傳 422；未指定時即為 Full market。
 細節見 [dashboard.md](dashboard.md)。
 
 ### Freshness 的持久化完整度摘要
 
-`market-freshness` 的 Pilot／Full market 完整度與最新 run metadata 讀自
+`market-freshness` 的 Full market 完整度與最新 run metadata 讀自
 `daily_delivery_plan_summary`，不在 GET 中載入歷史成員、canonical K 線或執行
 `reconcile_plan`。每個 feed 的當期數量、最新完整日期與 run metadata 使用同一個 SQL
 snapshot；交易日曆、首次日期與 deadline 仍依查詢時間計算，停止 scheduler 不會凍結
 時間判斷。頁面更新不會觸發抓取或摘要寫入。
 
-摘要以 immutable plan ID 隔離兩種 profile。建立 plan、接受新 run／分鐘重試、
+摘要以 immutable plan ID 區分。建立 plan、接受新 run／分鐘重試、
 normalization 完成或失敗、retry／retry exhausted、no-data／blocked outcome 變更時，
 只刷新受影響的 plan，與原始資料／run／實際寫入證據在同一 transaction commit。
 Plan row lock 串行化同 plan 的競爭寫入；失敗 rollback 不得先公布摘要。
-FactSet 具合法 historical receipt 的修復會更新同 dataset／provider／date 的兩種 profile。
+FactSet 具合法 historical receipt 的修復會更新同 dataset／provider／date 的 plan 摘要。
 OHLCV 人工修正不改變 member 身份或完整度，無須重算摘要。
 
 `expected = data + no_data + missing + blocked` 與原 canonical／durable evidence 規則相同。
@@ -1126,20 +1152,19 @@ cooldown，不捏造行情 request 或 SDK bytes。Parent timeout／EOF／SIGKIL
 
 TAIFEX 指定歷史日期回補沿用獨立 historical control plane，操作見
 [資料維護](data_maintenance.md#taifex-futures-eod-回補)。日常與 historical 共用日期 CSV 的
-raw-first／契約／時段解析；historical 不受 Full flag、activation first date 或今日 universe
-限制，也不改寫 Pilot／Full frozen plans。執行前停止 TAIFEX 兩個 controls 並排空在途工作，
-完成驗證後恢復日常 catchup。新版部署要求兩環境安裝十個 recurring 與五個 historical consumers；
-TAIFEX 共用既有公開資料 governor、Source key 與 Twelve Data image，無新增 provider secret。
+raw-first／契約／時段解析；historical 不受 daily control、activation first date 或今日 universe
+限制，也不改寫 Full frozen plans；不必停止 TAIFEX control。部署要求兩環境各 provider
+安裝 Full 與 historical 兩個 consumers；TAIFEX 共用既有公開資料 governor、Source key 與 Twelve Data image，無新增 provider secret。
 
 ## Provider work FIFO（待環境啟用）
 
-唯一 provider-work 路徑將 Pilot／Full daily work 拆成 dataset/date，與同 provider
+唯一 provider-work 路徑將 Full daily work 拆成 dataset/date，與同 provider
 historical／maintenance／retained-raw rerun 共用 PostgreSQL FIFO；整批日期由早到晚入列，沒有 daily
 優先權。相同 provider 從官方 universe／catalogue acquisition 前就取得 shared whole-work flock 與
 fenced DB owner，一直到所有 accepted runs terminal、完整 proof 與 round settlement committed 才釋放。
 其他 providers 可並行。原 profile controls、first dates、frozen expected、calendar decisions 與 checkpoints 保留。
 
-切換後可讓兩種 controls desired running 同時建立 historical request；不需以停止 TAIFEX controls 當排他。
+Full control desired running 時仍可建立 historical request；不需以停止 TAIFEX controls 當排他。
 停止／cancel 阻止新 acquisition，prepared／accepted work 由原 coordinator 安全排空；quota／FIFO 等待不改
 controls，也不回報假 provider failure／no_data。Retryable round 排空後以原 work／scope／budgets 附加到隊尾。
 心跳遺失保留原 owner，必須重取同一 shared inode、確認 child 已停止後恢復；不會依 TTL 自動跳下一工作。

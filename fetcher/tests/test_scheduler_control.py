@@ -610,3 +610,57 @@ def test_successful_completion_is_not_repeated_on_later_idle_poll() -> None:
     )
     SchedulerControlLoop(control).run(lambda: None, stop_event=stop_event)
     assert control.calls[2]["cycle_completed_at"] is not None
+
+
+@pytest.mark.parametrize(
+    ("provider", "feeds"),
+    [
+        ("twelve_data", ("us_equity_eod",)),
+        ("finlab", ("tw_equity_eod",)),
+        ("taifex", ("tw_futures_eod",)),
+    ],
+)
+def test_each_provider_stopped_idle_then_running_acknowledgement_delivers(provider, feeds):
+    stop = threading.Event()
+    calls: list[dict[str, Any]] = []
+    cycles: list[str] = []
+
+    class Control:
+        scheduler_key = provider + "_fixture"
+        _config = SimpleNamespace(scheduler_control_poll_seconds=0.01)
+
+        def poll(self, **kwargs):
+            calls.append(kwargs)
+            assert len(calls) <= 8, "control must complete bounded startup fixture"
+            desired = "stopped" if len(calls) == 1 else "running"
+            if kwargs.get("cycle_completed_at") is not None:
+                stop.set()
+            return SimpleNamespace(
+                provider=provider,
+                dataset_keys=feeds,
+                slot_id="taiwan_market_window",
+                scheduled_local_time=time(18),
+                timezone="Asia/Taipei",
+                desired_state=desired,
+                revision=len(calls),
+                server_time=datetime.now(timezone.utc),
+            )
+
+    def validator(response):
+        validate_scheduler_definition(
+            response,
+            provider=provider,
+            dataset_keys=feeds,
+            slot_id="taiwan_market_window",
+            scheduled_local_time="18:00:00",
+            timezone_name="Asia/Taipei",
+        )
+
+    assert (
+        SchedulerControlLoop(Control(), definition_validator=validator).run(
+            lambda: cycles.append("fixture_delivered"), stop_event=stop
+        )
+        == 0
+    )
+    assert cycles == ["fixture_delivered"]
+    assert [row["observed_state"] for row in calls[:3]] == ["stopped", "stopped", "running"]

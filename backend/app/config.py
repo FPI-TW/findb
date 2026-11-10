@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     PORT: int = 8080
     APP_ENVIRONMENT: Literal["local", "staging", "production"] = "local"
-    FULL_MARKET_ENABLED: bool = False
     EOD_LONG_GAP_TRADING_DAYS: int = Field(default=5, ge=1, le=366)
     # Kept as a deployment assertion: the legacy execution protocol is retired.
     PROVIDER_WORK_REQUIRED: bool = True

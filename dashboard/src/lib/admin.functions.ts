@@ -1,4 +1,3 @@
-import { executionProfileRequestSchema } from "./admin-api"
 import { createServerFn } from "@tanstack/react-start"
 import { setResponseHeader } from "@tanstack/react-start/server"
 
@@ -140,21 +139,14 @@ export const previewHistoricalBackfill = createServerFn({ method: "POST" })
 
 export const loadDeliveryPlanDatasets = createServerFn({
   method: "POST",
+}).handler(async () => {
+  const config = getDashboardConfig()
+  const session = await requireDashboardSession()
+  markPrivateResponse()
+  return withDashboardAuthentication(() =>
+    fetchDeliveryPlanDatasetsData(session.token, config.apiBaseUrl)
+  )
 })
-  .validator(executionProfileRequestSchema)
-  .handler(async ({ data }) => {
-    const config = getDashboardConfig()
-    const session = await requireDashboardSession()
-    markPrivateResponse()
-    return withDashboardAuthentication(() =>
-      fetchDeliveryPlanDatasetsData(
-        session.token,
-        config.apiBaseUrl,
-        undefined,
-        data.profile
-      )
-    )
-  })
 
 export const loadDeliveryResource = createServerFn({ method: "POST" })
   .validator(deliveryResourceRequestSchema)

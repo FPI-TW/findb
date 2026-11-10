@@ -29,8 +29,13 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
 - Contract 明列 current／accepted versions，並核對 `contracts/manifest.json` 與實際 artifact checksum。
   FactSet 新交付為 market_eod v2，accepted 為 v1／v2。
 - Schedule 定義交易所當地時間與 date lag；completion deadline 使用獨立 timezone／trade-date day offset。
-  Pilot／Full 保留 US 次日台北 09:00、其餘當日台北 23:00。Bounded monitor 的 US 次日 09:15、
+  Full daily 保留 US 次日台北 09:00、其餘當日台北 23:00。Bounded monitor 的 US 次日 09:15、
   TW equity 當日 17:00 另行保存；其它目前停用。Publication retry window 不代表 delivery SLA。
+- Backend 的 market→時區只由 `app.services.effective_calendar.MARKETS` 維護，包含 `TAIFEX` 這類
+  calendar market；`market_timezone()` 對未知 market fail closed，不回落台北時間。Catalog feed 的
+  `market`／`calendar_market` 都必須在其中，`schedule.timezone` 必須與之相同（`test_provider_catalog.py`）。
+  Full-market admission／acceptance、historical provider cutoff、FactSet 窗口、HK cutover 與 seed
+  delivery expectation 都引用這份對照。
 - `delivery.slot_id` 只表示既有 contract 相容欄位，不能作為時鐘或新 acquisition 權威。
 - Historical execution profiles 保留現行 local／staging／production 的靜態 universe reference 與 executor
   預設值，不包含觸發時間。這些是打包預設，不是 DB request、operator overrides 或即時授權。
@@ -60,7 +65,7 @@ uv --directory backend run python scripts/export_provider_catalog.py --check
 | `fetcher/configs/bootstrap.{environment}.v1.json` | 程序版本、環境身分、polling；無 feed、觸發時間或 deadline |
 | `fetcher/src/findb_fetcher/data/execution_descriptors.v1.json` | Fetcher 非排程 metadata，隨 Python package／image 打包 |
 | `dashboard/src/lib/generated/provider-catalog.ts` | Typed provider constants 與 scope |
-| `infra/deploy/generated/provider_inventory.v1.json` | 三 images、四 providers、十二 consumers 的明確 inventory |
+| `infra/deploy/generated/provider_inventory.v1.json` | 三 images、四 providers、八 consumers 的明確 inventory |
 
 資料產物包含 schema version 與 SHA-256；Backend 保存 canonical source digest，其它消費端保存
 各自正向欄位投影的 digest。來源物件與集合排序不改變輸出；只改 Backend 時間不改非排程 Fetcher
@@ -75,8 +80,8 @@ Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。
 
 ## Backend 排程發布
 
-`GET /api/v1/source/execution-config?execution_profile=pilot|full_market` 必須使用 Source credential；
-可選 `schema_version=1`，其它版本、profile、provider／environment 查詢參數均拒絕。
+`GET /api/v1/source/execution-config?execution_profile=full_market` 必須使用 Source credential；
+可選 `schema_version=1`，其它版本、profile（含已退役的 `pilot`，回傳 422）、provider／environment 查詢參數均拒絕。
 Provider 與可見 feeds 由 credential 決定；NULL、空、重複、越權或無完整排程的 scope 不發布部分結果。
 回應含 `schema_version`、`environment`、`execution_profile`、`provider`、`schedule_digest` 與完整 `feeds`，
 並設定 `Cache-Control: no-store`。Digest 為移除 `schedule_digest` 後的 JSON，以 sorted keys、
@@ -84,7 +89,7 @@ compact separators、ASCII escape 編碼再做 SHA-256；排序後的 feed 陣�
 
 每條 feed 提供 identity、contract、`scheduled_time`、`source_timezone`、`target_date_lag_days`、
 `publication_retry_window_seconds`、獨立 `completion_deadline` 及 `bounded_monitor`。
-不包含 slot；發布窗口不是 deadline。此 endpoint 不檢查 running、FULL flag、universe readiness、
+不包含 slot；發布窗口不是 deadline。此 endpoint 不檢查 running、universe readiness、
 quota 或 historical lease，也不建立 plan／work；取得設定不代表取得 acquisition authorization。
 
 `app.services.feed_schedule` 統一 Source 與 Admin 的時間解讀。Admin `/schedulers` 新增
@@ -128,10 +133,16 @@ FinLab ETF 等 unsupported historical scope 不因日資料能力而開放。詳
 既有 work 或 plan 的 `deadline_at`。重啟遇到同一 daily identity 的舊 feed，Source 回傳
 `409 / PROVIDER_WORK_FROZEN_FEED`；Fetcher 只略過該次重複 enqueue，claim 後仍用原 scope。
 Provider／dataset／date／profile 或 adapter identity 真正衝突仍失敗，calendar snapshot 亦不重寫。Slot 由非排程 descriptor 加入既有交付 metadata，
-不參與 API 快照驗證、到期日、deadline 或排程握手。Universe 日期解讀仍使用各 adapter 的交易所時區，
-不引用 daily trigger，也不對 historical 增加 daily API 前提。
+不參與 API 快照驗證、到期日、deadline 或排程握手。
 
-每輪先透過原 owner／Source authorization 排空已入列工作，再規劃新日期；drain 不取得排程、
+Universe 日期解讀與 `source_timezone` 一律使用 Source 發布的 feed 時區，Fetcher 不保存
+market→時區對照：cycle 內沿用當輪快照；未持有快照的 maintenance（含 drain 與手動同步）在任何
+provider I/O 前另讀一次 execution-config。Maintenance 只依 credential 綁定授權，因此只要求本次 feeds
+已發布，不要求完整 provider scope，其餘身分、digest 與 feed 驗證不變；失敗或缺少該 feed 即不抓取、不提交。TAIFEX dated
+universe 使用 frozen `scope.feed` 的時區。只讀時區，不引用 daily trigger 時間，也不對
+historical 增加 daily API 前提。
+
+每輪先透過原 owner／Source authorization 排空已入列工作，再規劃新日期；drain 不以排程規劃新日期，
 不 enqueue 新日期或 maintenance。Source 不可用時原 prepared bytes／收據保留，待恢復後重送。
 Historical request、lease、calendar snapshot、cutoff 與權限保持獨立。
 

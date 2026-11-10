@@ -32,7 +32,7 @@ from app.models.registry import (
 from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
 from app.schemas.ingress import MarketEODIngressRequestV2
-from app.services.effective_calendar import effective_days, execution_policy
+from app.services.effective_calendar import effective_days, execution_policy, market_timezone
 from app.services.provider_metadata import provider_catalog
 from app.utils import utc_now, uuid7
 
@@ -47,12 +47,13 @@ STAGING_MAX_BACKFILL_DAYS = 31
 PRODUCTION_MAX_BACKFILL_DAYS = 366
 # Compatibility for existing staging callers; production uses the target-aware helper.
 MAX_BACKFILL_DAYS = STAGING_MAX_BACKFILL_DAYS
+# Provider cutoffs follow their feeds' calendar markets, matching the Fetcher clock.
 PROVIDER_TIMEZONES: dict[str, str] = {
-    "twelve_data": "America/New_York",
-    "finlab": "Asia/Taipei",
-    "shioaji": "Asia/Taipei",
-    "taifex": "Asia/Taipei",
-    "factset": "Asia/Hong_Kong",
+    provider: market_timezone(market).key
+    for provider, market in {
+        "shioaji": "TW",  # Retired; existing TW minute requests stay readable.
+        **{feed.provider: feed.calendar_market for feed in provider_catalog().feeds},
+    }.items()
 }
 
 

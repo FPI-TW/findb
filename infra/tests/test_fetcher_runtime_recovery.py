@@ -159,17 +159,19 @@ def test_empty_first_bootstrap_does_not_wait_for_installed_runtimes():
 def test_runtime_parser_requires_exact_accepted_inventory():
     parsed = recovery._parse_runtime_rows(docker_rows())
 
-    assert len(parsed) == 12
+    assert len(parsed) == 8
     assert all(row[-1] for row in parsed)
     with pytest.raises(ValueError, match="inventory is incomplete"):
         recovery._parse_runtime_rows(docker_rows()[:-1])
-    unhealthy = recovery._parse_runtime_rows(docker_rows(unhealthy_name="findb-pilot-twelve-data"))
-    assert not next(row for row in unhealthy if row[0] == "findb-pilot-twelve-data")[-1]
+    unhealthy = recovery._parse_runtime_rows(
+        docker_rows(unhealthy_name="findb-full-market-twelve-data")
+    )
+    assert not next(row for row in unhealthy if row[0] == "findb-full-market-twelve-data")[-1]
 
 
 def test_real_cli_surfaces_only_fixed_failure_reason(tmp_path):
     docker = tmp_path / "docker"
-    rows = docker_rows(unhealthy_name="findb-pilot-twelve-data")
+    rows = docker_rows(unhealthy_name="findb-full-market-twelve-data")
     names = " ".join(f"'{name}'" for name in recovery.EXPECTED_RUNTIMES)
     docker.write_text(
         "#!/bin/sh\n"

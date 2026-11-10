@@ -164,7 +164,6 @@ jobs:
         [[ "$TARGET" =~ ^(staging|production)$ ]]
         [[ "$MODE" =~ ^(candidate|replay)$ ]]
         [ "$FETCHER_RUNTIME_PROFILE" = unified ]
-        [[ "$FULL_MARKET_ENABLED" =~ ^(true|false)$ ]]
         if [ "$TARGET" = production ]; then
           test "$GITHUB_REF" = refs/heads/main
           [[ "$RELEASE_TAG" =~ ^fetcher-v[0-9]+[.][0-9]+[.][0-9]+$ ]]
@@ -235,9 +234,9 @@ jobs:
         if [ "$TARGET" = production ]; then
           [ "$(jq -r .promotion_source.staging_registry "$RUNNER_TEMP/release-manifest.json")" = "$STAGING_ECR_REGISTRY" ]
         fi
-        # Older bundles recreate the retired Shioaji consumers; see the deployment rollback floor.
-        if ! jq -e '(.fetcher_bundle_version == 3 or .fetcher_bundle_version == 4)' "$RUNNER_TEMP/release-manifest.json" >/dev/null; then
-          echo "::error title=Fetcher rollback 下限::只接受已支援的 bundle v3／v4；v1／v2 含已退役的 Shioaji consumers，未知版本亦不可部署。" >&2
+        # Older bundles recreate retired Shioaji (v1/v2) or Pilot (v3/v4) consumers; see the deployment rollback floor.
+        if ! jq -e '.fetcher_bundle_version == 5' "$RUNNER_TEMP/release-manifest.json" >/dev/null; then
+          echo "::error title=Fetcher rollback 下限::只接受 bundle v5；v1／v2 含已退役的 Shioaji consumers，v3／v4 含已退役的 Pilot consumers，未知版本亦不可部署。" >&2
           exit 1
         fi
         twelve_data="$(jq -r .images.twelve_data "$RUNNER_TEMP/release-manifest.json")"
@@ -373,7 +372,7 @@ jobs:
           ssm_timeout=1500
           wait_timeout=1620
         fi
-        runtime_variable_names="FULL_MARKET_ENABLED PROVIDER_WORK_REQUIRED"
+        runtime_variable_names="PROVIDER_WORK_REQUIRED"
         runtime_exports=""
         for name in $runtime_variable_names; do
           printf -v q_runtime_value '%q' "${!name:-}"
@@ -460,7 +459,7 @@ jobs:
         TARGET: ${{ inputs.deployment_target }}
       run: |
         set -euo pipefail
-        runtime_variable_names="FULL_MARKET_ENABLED PROVIDER_WORK_REQUIRED"
+        runtime_variable_names="PROVIDER_WORK_REQUIRED"
         runtime_exports=""
         for name in $runtime_variable_names; do
           printf -v q_runtime_value '%q' "${!name:-}"

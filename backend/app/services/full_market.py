@@ -53,7 +53,12 @@ from app.schemas.ingress import (
     MarketEODRow,
     MarketMinuteRow,
 )
-from app.services.effective_calendar import effective_days, execution_policy, execution_snapshot
+from app.services.effective_calendar import (
+    effective_days,
+    execution_policy,
+    execution_snapshot,
+    market_timezone,
+)
 from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
@@ -470,10 +475,10 @@ def _calendar_market(dataset: DatasetRegistry) -> str:
 
 
 def _exchange_timezone(dataset: DatasetRegistry) -> ZoneInfo:
-    zones = {"US": "America/New_York", "HK": "Asia/Hong_Kong", "TW": "Asia/Taipei"}
-    if dataset.market not in zones:
-        raise FullMarketError("Full-market exchange timezone is not configured", 409)
-    return ZoneInfo(zones[dataset.market])
+    try:
+        return market_timezone(_calendar_market(dataset))
+    except ValueError:
+        raise FullMarketError("Full-market exchange timezone is not configured", 409) from None
 
 
 async def _require_closed_acceptance_day(
@@ -682,13 +687,6 @@ async def create_plan(
             )
         ).all()
     )
-    if body.execution_profile == "pilot":
-
-        def identity(member: UniverseMember) -> tuple[str, str]:
-            return (member.product_code or member.symbol, member.contract_code or "")
-
-        selected = set(sorted({identity(member) for member in members})[:2])
-        members = [member for member in members if identity(member) in selected]
     if not members:
         raise FullMarketError("Published universe has no plan members", 409)
     plan = DailyDeliveryPlan(
@@ -700,9 +698,7 @@ async def create_plan(
         execution_profile=body.execution_profile,
         activation_cutoff=activation_date,
         deadline_at=_deadline(dataset, body.trade_date),
-        member_sha256=release.member_sha256
-        if body.execution_profile == "full_market"
-        else _digest([member.member_key for member in members]),
+        member_sha256=release.member_sha256,
         expected_count=len(members),
         created_at=utc_now(),
     )

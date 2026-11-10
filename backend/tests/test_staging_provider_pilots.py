@@ -1,4 +1,4 @@
-"""Target provisioning and Source → queue → actual-contract Serve pilot acceptance."""
+"""Target provisioning and Source → queue → actual-contract Serve daily acceptance."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     assert dataset.is_active is True
     assert dataset.config["full_market"]["enabled"] is False
     assert dataset.config["full_market"]["required"] is True
-    control = await test_session.get(SchedulerControl, "pilot_taifex_v1")
+    control = await test_session.get(SchedulerControl, "full_market_taifex_v1")
     assert control.desired_state == control.observed_state == "stopped"
     day = date(2026, 10, 2)
     await _calendar(test_session, "TAIFEX", [day])
@@ -119,14 +119,12 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     from app.models.registry import UniverseRelease
 
     release_row = await test_session.get(UniverseRelease, release.release_id)
-    await historical_admission(
-        test_session, dataset, release_row, day, revision.id, profile="pilot"
-    )
+    await historical_admission(test_session, dataset, release_row, day, revision.id)
     plan = await create_plan(
         test_session,
         DeliveryPlanCreateRequest(
             version=1,
-            execution_profile="pilot",
+            execution_profile="full_market",
             dataset_key=dataset.dataset_key,
             provider="taifex",
             trade_date=day,
@@ -249,7 +247,7 @@ async def test_provisioned_stage_taifex_source_queue_canonical_serve_and_duplica
     completed = await get_plan(
         test_session, plan.plan_id, provider="taifex", allowed_datasets=[dataset.dataset_key]
     )
-    assert completed.execution_profile == "pilot" and completed.status == "complete"
+    assert completed.execution_profile == "full_market" and completed.status == "complete"
     assert completed.summary.data == 4
     await provision_registry(database_url, deployment_target="production")
     await test_session.refresh(dataset)

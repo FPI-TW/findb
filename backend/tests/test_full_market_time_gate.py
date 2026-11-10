@@ -165,19 +165,26 @@ async def test_local_today_uses_market_local_day(test_session, monkeypatch, key,
     assert full_market_admission.local_today(dataset) == clock.astimezone(ZoneInfo(zone)).date()
 
 
+def test_unknown_market_timezone_fails_closed_for_admission_and_acceptance():
+    from app.models.registry import DatasetRegistry
+    from app.services import full_market_admission
+
+    dataset = DatasetRegistry(dataset_key="xx_equity_eod", market="XX")
+    with pytest.raises(full_market_admission.AdmissionError, match="market_timezone_unsupported"):
+        full_market_admission.local_today(dataset)
+    with pytest.raises(FullMarketError, match="timezone is not configured"):
+        full_market._exchange_timezone(dataset)
+    taifex = DatasetRegistry(dataset_key="tw_futures_eod", market="TW")
+    assert full_market._exchange_timezone(taifex) == ZoneInfo("Asia/Taipei")
+
+
 @pytest.mark.asyncio
 async def test_resume_preserves_original_activation_and_existing_gaps(test_session, monkeypatch):
     dataset, body, plan = await _activated_plan(test_session, count=1)
-    from app.config import get_settings
     from app.models.registry import FullMarketDatasetState, SchedulerControl
-    from app.services.full_market_admission import reconcile_environment
+    from app.services.scheduler_control import emergency_stop_controls
 
-    get_settings().FULL_MARKET_ENABLED = False
-    await reconcile_environment(test_session, actor="test-flag-off")
-    await test_session.commit()
-    get_settings().FULL_MARKET_ENABLED = True
-    await reconcile_environment(test_session, actor="test-flag-on")
-    await test_session.commit()
+    await emergency_stop_controls(test_session, actor="test-stop", reason="resume", apply=True)
     assert (
         await test_session.get(SchedulerControl, "full_market_taifex_v1")
     ).desired_state == "stopped"

@@ -33,6 +33,10 @@ class ProviderWork(Base):
             "kind IN ('daily', 'historical', 'maintenance', 'rerun')",
             name="provider_work_kind_valid",
         ),
+        CheckConstraint(
+            "execution_profile IS NULL OR execution_profile = 'full_market'",
+            name="provider_work_profile",
+        ),
         Index("idx_provider_work_scope", "environment", "provider", "state"),
     )
     work_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)

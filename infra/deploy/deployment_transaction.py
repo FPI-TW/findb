@@ -28,7 +28,7 @@ PROVIDERS = ("twelve-data", "finlab", "taifex", "factset")
 FETCHER_NAMES = tuple(
     f"findb-{profile}-{provider}"
     for provider in PROVIDERS
-    for profile in ("pilot", "full-market", "historical")
+    for profile in ("full-market", "historical")
 )
 FINDB_NAMES = tuple(
     f"findb-{service}"
@@ -39,7 +39,6 @@ ENV_NAMES = (
     "AWS_ACCOUNT_ID",
     "APP_ENVIRONMENT",
     "ECR_REGISTRY",
-    "FULL_MARKET_ENABLED",
     "PROVIDER_WORK_REQUIRED",
     "FINDB_PUBLIC_HOST",
     "PREDEPLOY_EXPECTED_RDS_ENDPOINT",

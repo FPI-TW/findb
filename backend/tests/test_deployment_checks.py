@@ -1260,6 +1260,7 @@ def test_aws_host_helpers_reject_untrusted_ecr_images_before_docker_or_credentia
         AWS_ACCOUNT_ID="439622209937",
         APP_ENVIRONMENT="staging",
         FETCHER_DEPLOY_MODE="candidate",
+        FETCHER_CONSUMER_PROFILE="full_market",
         ECR_REGISTRY="439622209937.dkr.ecr.ap-southeast-1.amazonaws.com",
     )
 
@@ -2344,7 +2345,8 @@ def test_unified_state_bootstrap_is_offline_and_preserves_existing_checkpoints()
     bootstrap = helper.split('case "${FETCHER_CONSUMER_PROFILE:-}:$1" in', 1)[1].split(
         '\ndocker run --rm \\\n  --name "$preflight_name"', 1
     )[0]
-    assert "pilot:findb-fetch-runtime|full_market:findb-fetch-runtime" in bootstrap
+    assert "full_market:findb-fetch-runtime|historical:findb-fetch-historical-backfill" in bootstrap
+    assert "pilot" not in bootstrap
     assert 'for installed in "$stable" "$previous"' in bootstrap
     assert "checkpoint_missing_with_runtime" in bootstrap
     assert "--initialize-state" in bootstrap
@@ -2352,7 +2354,7 @@ def test_unified_state_bootstrap_is_offline_and_preserves_existing_checkpoints()
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
+@pytest.mark.parametrize("profile", ["full_market"])
 @pytest.mark.parametrize("stable_present", [False, True])
 def test_missing_state_bootstrap_enforces_identity_guard(
     tmp_path: Path,
@@ -2478,8 +2480,7 @@ def _run_twelve_fetcher_release_with_marker(
     unaccepted_stable: bool = False,
     transactional_candidate: bool = False,
     preflight_fails: bool = False,
-    full_market_enabled: bool = False,
-    consumer_profile: str = "pilot",
+    consumer_profile: str = "full_market",
     fake_memory: str = "0",
 ) -> subprocess.CompletedProcess[str]:
     helper = REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
@@ -2557,7 +2558,6 @@ def _run_twelve_fetcher_release_with_marker(
         FAKE_SIGNAL_SENT=str(tmp_path / "signal-sent"),
         FETCHER_PROVIDER_RELEASE_MODE="transactional",
         FETCHER_DEPLOY_MODE="candidate" if transactional_candidate else "activate",
-        FULL_MARKET_ENABLED="true" if full_market_enabled else "false",
         FETCHER_CONSUMER_PROFILE=consumer_profile,
         FAKE_MEMORY=fake_memory,
     )
@@ -2585,22 +2585,37 @@ def _run_twelve_fetcher_release_with_marker(
     )
 
 
-def test_aws_fetcher_release_accepts_legacy_twelve_raw_marker_and_rejects_selector_marker(
-    tmp_path: Path,
+@pytest.mark.parametrize("retired_marker", ["pilot", "twelve-data"])
+def test_aws_fetcher_release_accepts_full_market_raw_marker_and_rejects_retired_markers(
+    tmp_path: Path, retired_marker: str
 ) -> None:
     accepted = _run_twelve_fetcher_release_with_marker(
-        tmp_path / "accepted", marker_identity="pilot"
+        tmp_path / "accepted", marker_identity="full-market"
     )
 
     assert accepted.returncode == 0, accepted.stderr
     assert "raw_bucket_mismatch" not in accepted.stderr
 
+    # A retired Pilot checkpoint marker never authorizes a Full market state.
     rejected = _run_twelve_fetcher_release_with_marker(
-        tmp_path / "rejected", marker_identity="twelve-data"
+        tmp_path / "rejected", marker_identity=retired_marker
     )
 
     assert rejected.returncode != 0
     assert "reason=raw_bucket_mismatch" in rejected.stderr
+
+
+@pytest.mark.parametrize("profile", ["pilot", ""])
+def test_aws_fetcher_release_never_defaults_or_accepts_the_retired_pilot_profile(
+    tmp_path: Path, profile: str
+) -> None:
+    completed = _run_twelve_fetcher_release_with_marker(
+        tmp_path, marker_identity="pilot", consumer_profile=profile
+    )
+
+    assert completed.returncode == 2
+    assert "reason=consumer_profile_invalid" in completed.stderr
+    assert not (tmp_path / "docker.log").exists()
 
 
 def test_aws_fetcher_release_removes_residual_candidate_before_failed_preflight(
@@ -2608,7 +2623,7 @@ def test_aws_fetcher_release_removes_residual_candidate_before_failed_preflight(
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="pilot",
+        marker_identity="full-market",
         residual_candidate=True,
         preflight_fails=True,
     )
@@ -2626,7 +2641,7 @@ def test_aws_fetcher_release_restores_residual_previous_before_failed_preflight(
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="pilot",
+        marker_identity="full-market",
         residual_previous=True,
         preflight_fails=True,
     )
@@ -2644,7 +2659,7 @@ def test_aws_fetcher_release_rejects_unaccepted_stable_after_hard_interruption(
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="pilot",
+        marker_identity="full-market",
         unaccepted_stable=True,
         preflight_fails=True,
     )
@@ -2656,19 +2671,13 @@ def test_aws_fetcher_release_rejects_unaccepted_stable_after_hard_interruption(
     assert operations.index("rm") < operations.index("pull")
 
 
-@pytest.mark.parametrize("full_market_enabled", (False, True))
-@pytest.mark.parametrize("consumer_profile", ("pilot", "full_market"))
 def test_aws_fetcher_candidate_validates_created_container_without_starting_it(
     tmp_path: Path,
-    full_market_enabled: bool,
-    consumer_profile: str,
 ) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
         tmp_path,
-        marker_identity="full-market" if consumer_profile == "full_market" else "pilot",
+        marker_identity="full-market",
         transactional_candidate=True,
-        full_market_enabled=full_market_enabled,
-        consumer_profile=consumer_profile,
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -2687,8 +2696,9 @@ def test_aws_fetcher_candidate_validates_created_container_without_starting_it(
     assert (
         f"type=bind,src={readiness_dir},dst=/var/lib/findb-account/readiness,readonly" in arguments
     )
-    if consumer_profile == "full_market":
-        assert f"type=bind,src={readiness_dir},dst={state_dir}/readiness,readonly" in arguments
+    assert f"type=bind,src={readiness_dir},dst={state_dir}/readiness,readonly" in arguments
+    assert not any(argument.startswith("FULL_MARKET_ENABLED") for argument in arguments)
+    assert "FULL_MARKET_ENABLED" not in arguments
 
 
 @pytest.mark.parametrize("had_old", (False, True))
@@ -3806,7 +3816,7 @@ def test_only_staging_finlab_consumers_are_memory_bounded(environment, provider,
 
 def test_aws_fetcher_release_rejects_unexpected_memory_limit(tmp_path: Path) -> None:
     completed = _run_twelve_fetcher_release_with_marker(
-        tmp_path, marker_identity="pilot", fake_memory="1073741824"
+        tmp_path, marker_identity="full-market", fake_memory="1073741824"
     )
 
     assert completed.returncode != 0

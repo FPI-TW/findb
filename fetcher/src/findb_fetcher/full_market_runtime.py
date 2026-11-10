@@ -235,7 +235,7 @@ def load_readiness(
 def validate_capacity(
     proof: dict[str, Any], request_count: int, *, seconds_available: float
 ) -> None:
-    # Reserve retry headroom; insufficient coverage blocks instead of selecting a pilot subset.
+    # Reserve retry headroom; insufficient coverage blocks instead of selecting a subset.
     needed = math.ceil(request_count * 1.2)
     rate = min(proof["requests_per_second"], proof["requests_per_minute"] / 60)
     if (
@@ -367,7 +367,7 @@ class FullMarketRuntime:
         client: httpx.Client | None = None,
         can_acquire: Callable[[], bool] | None = None,
     ) -> None:
-        if execution_profile not in {"pilot", "full_market"}:
+        if execution_profile != "full_market":
             raise ValueError("Unsupported execution profile")
         self.execution_profile = execution_profile
         self.provider, self.config, self.state = provider, config, state
@@ -454,41 +454,16 @@ class FullMarketRuntime:
             return self.can_acquire()
         return self.runtime_window()["open"] and self.can_acquire()
 
-    def _reserve(self, *, requests: int = 1, byte_count: int | None = None) -> tuple[int, int]:
-        from findb_fetcher.account_governor import enabled as governor_enabled
+    def _reserve(self) -> tuple[int, int]:
+        """Reserve one acquisition through the shared, durable account governor."""
         from findb_fetcher.account_governor import reserve
-        from findb_fetcher.platform_limits import interval
 
-        if governor_enabled():
-            permit = reserve(self.provider)
-            if not self._acquisition_allowed() or permit is None:
-                raise ReadinessBlockedError("scheduler acquisition stopped")
-            self.reservation_window = permit.window
-            self.account_permit = permit
-            return permit.requests_before, permit.requests_after
-        while True:
-            if not self._acquisition_allowed():
-                raise ReadinessBlockedError("scheduler was stopped by Source control")
-            wait, before, after, window = self.state.reserve_acquisition(
-                account=self.provider,
-                interval=interval(self.proof),
-                requests=requests,
-                byte_count=(
-                    0 if self.proof.get("platform_limits") else self.proof["max_response_bytes"]
-                )
-                if byte_count is None
-                else byte_count,
-                request_limit=self.proof["requests_per_day"],
-                byte_limit=self.proof["bytes_per_day"],
-                minute_limit=self.proof["requests_per_minute"],
-                enforce_capacity=False,
-            )
-            if wait <= 0:
-                self.reservation_window = window
-                if not self._acquisition_allowed():
-                    raise ReadinessBlockedError("scheduler was stopped by Source control")
-                return before, after
-            time.sleep(min(wait, 1))
+        permit = reserve(self.provider)
+        if not self._acquisition_allowed() or permit is None:
+            raise ReadinessBlockedError("scheduler acquisition stopped")
+        self.reservation_window = permit.window
+        self.account_permit = permit
+        return permit.requests_before, permit.requests_after
 
     def _observed_response(self, size: int, *, declared: int = 0) -> None:
         bound = int(self.proof["max_response_bytes"])
@@ -717,6 +692,7 @@ class FullMarketRuntime:
         feeds = [feed for feed in self.installed_feeds if feed["dataset_key"] in dataset_keys]
         if not feeds:
             return []
+        zones = self._universe_zones(feeds)
         now = datetime.now(timezone.utc)
         snapshots: dict[str, bytes] = {}
         if self.provider == "twelve_data":
@@ -730,7 +706,7 @@ class FullMarketRuntime:
                 us_dates = {
                     nasdaq_effective_date(
                         snapshots[url],
-                        observed_date=now.astimezone(ZoneInfo("America/New_York")).date(),
+                        observed_date=now.astimezone(zones["us_equity_eod"]).date(),
                     )
                     for url in NASDAQ_URLS
                 }
@@ -756,7 +732,7 @@ class FullMarketRuntime:
         elif self.provider == "factset":
             snapshots[HKEX_URL] = self._snapshot(HKEX_URL)
             hk_date, hk = parse_hkex(
-                snapshots[HKEX_URL], observed_date=now.astimezone(ZoneInfo("Asia/Hong_Kong")).date()
+                snapshots[HKEX_URL], observed_date=now.astimezone(zones["hk_equity_eod"]).date()
             )
             native = FactSetGateway(FactSetConfig.from_env()).catalogue(
                 tuple(sorted({member["symbol"] for member in hk}))
@@ -828,16 +804,16 @@ class FullMarketRuntime:
                         else "gap"
                     )
             groups = {
-                "tw_equity_eod": (
-                    now.astimezone(ZoneInfo("Asia/Taipei")).date(),
-                    equity,
-                    {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
-                ),
-                "tw_etf_eod": (
-                    now.astimezone(ZoneInfo("Asia/Taipei")).date(),
-                    etfs,
-                    {url: snapshots[url] for url in TW_ISIN_URLS},
-                ),
+                dataset: (now.astimezone(zones[dataset]).date(), members, evidence)
+                for dataset, members, evidence in (
+                    (
+                        "tw_equity_eod",
+                        equity,
+                        {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
+                    ),
+                    ("tw_etf_eod", etfs, {url: snapshots[url] for url in TW_ISIN_URLS}),
+                )
+                if dataset in zones
             }
             if self.provider == "finlab":
                 for dataset, evidence in catalogue_snapshots.items():
@@ -846,7 +822,7 @@ class FullMarketRuntime:
             self._ensure_proof()
             raw = self._snapshot(TAIFEX_URL, provider_response=True)
             day = official_report_date(raw)
-            if day > now.astimezone(ZoneInfo("Asia/Taipei")).date():
+            if day > now.astimezone(zones["tw_futures_eod"]).date():
                 raise ReadinessBlockedError("TAIFEX report is future-dated")
             rows = parse_report(raw, target_date=day)
             groups = {"tw_futures_eod": (day, report_members(rows), {TAIFEX_URL: raw})}
@@ -865,17 +841,26 @@ class FullMarketRuntime:
                 provider=self.provider,
                 effective_date=effective,
                 observed_at=now,
-                source_timezone={
-                    "US": "America/New_York",
-                    "HK": "Asia/Hong_Kong",
-                    "TW": "Asia/Taipei",
-                    "TW_FUTURES": "Asia/Taipei",
-                }[feed.get("calendar_market", feed["market"])],
+                source_timezone=zones[dataset].key,
                 snapshots=evidence,
                 members=members,
             )
             result.append(self.source.submit(body))
         return result
+
+    def _universe_zones(self, feeds: list[dict[str, Any]]) -> dict[str, ZoneInfo]:
+        """Universe dates use Source-published feed timezones, never local tables."""
+        snapshot = self.schedule_snapshot or resolve_execution_config(
+            self.source.execution_config(),
+            provider=self.provider,
+            environment=app_environment(),
+            profile=self.execution_profile,
+            complete_scope=False,
+        )
+        published = {feed["dataset_key"]: feed["source_timezone"] for feed in snapshot.feeds}
+        if any(feed["dataset_key"] not in published for feed in feeds):
+            raise ReadinessBlockedError("Source universe timezone unavailable")
+        return {feed["dataset_key"]: ZoneInfo(published[feed["dataset_key"]]) for feed in feeds}
 
     def drain(self) -> None:
         """Drain retained deliveries only through the original fenced owner."""
@@ -1733,12 +1718,7 @@ class FullMarketRuntime:
                 provider=self.provider,
                 effective_date=day,
                 observed_at=datetime.now(timezone.utc),
-                source_timezone={
-                    "US": "America/New_York",
-                    "HK": "Asia/Hong_Kong",
-                    "TW": "Asia/Taipei",
-                    "TW_FUTURES": "Asia/Taipei",
-                }[feed.get("calendar_market", feed["market"])],
+                source_timezone=feed["source_timezone"],
                 snapshots={url: raw},
                 members=members,
             )

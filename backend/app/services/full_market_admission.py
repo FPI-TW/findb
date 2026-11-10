@@ -11,14 +11,13 @@ import math
 from collections.abc import Mapping
 from datetime import date
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.execution_profiles import ExecutionProfile, scheduler_key, scheduler_profile
+from app.execution_profiles import ExecutionProfile, scheduler_key
 from app.models.canonical import CalendarMarket, CalendarYearRevision
 from app.models.registry import (
     AdminAuditEvent,
@@ -38,6 +37,7 @@ from app.schemas.full_market_readiness import (
     ReadinessReport,
 )
 from app.services.calendar_management import complete_published_revision_ids
+from app.services.effective_calendar import market_timezone
 from app.services.source_clients import PROVIDER_DATASET_SCOPE
 from app.utils import ensure_utc, utc_now, uuid7
 
@@ -57,17 +57,11 @@ def market(dataset: DatasetRegistry) -> str:
 
 
 def local_today(dataset: DatasetRegistry) -> date:
-    return (
-        utc_now()
-        .astimezone(
-            ZoneInfo(
-                {"US": "America/New_York", "HK": "Asia/Hong_Kong"}.get(
-                    dataset.market, "Asia/Taipei"
-                )
-            )
-        )
-        .date()
-    )
+    try:
+        zone = market_timezone(market(dataset))
+    except ValueError:
+        raise AdmissionError("market_timezone_unsupported") from None
+    return utc_now().astimezone(zone).date()
 
 
 async def lock_environment(db: AsyncSession) -> FullMarketEnvironment:
@@ -86,46 +80,6 @@ async def lock_environment(db: AsyncSession) -> FullMarketEnvironment:
             .with_for_update()
         )
     ).one()
-
-
-async def reconcile_environment(db: AsyncSession, *, actor: str) -> None:
-    from app.services.provider_work import lock_provider
-
-    for provider in ("factset", "finlab", "taifex", "twelve_data"):
-        await lock_provider(db, provider)
-    row = await lock_environment(db)
-    enabled = get_settings().FULL_MARKET_ENABLED
-    row.enabled = enabled
-    row.updated_at = utc_now()
-    if not enabled:
-        controls = (
-            await db.scalars(
-                select(SchedulerControl)
-                .where(SchedulerControl.scheduler_key.startswith("full_market_", autoescape=True))
-                .order_by(SchedulerControl.scheduler_key)
-                .with_for_update()
-            )
-        ).all()
-        for control in controls:
-            if control.desired_state == "running":
-                control.desired_state = "stopped"
-                control.revision += 1
-                control.updated_at = utc_now()
-                db.add(
-                    AdminAuditEvent(
-                        actor_type="deployment",
-                        actor_id=actor,
-                        actor_display_name=actor,
-                        action="stop",
-                        resource_type="scheduler_control",
-                        resource_id=control.scheduler_key,
-                        details={
-                            "reason": "full_market_flag_disabled",
-                            "revision": control.revision,
-                        },
-                    )
-                )
-    await db.flush()
 
 
 async def enroll(
@@ -219,7 +173,6 @@ async def report_readiness(db: AsyncSession, body: ReadinessReport) -> dict:
         or ensure_utc(row.expires_at) <= utc_now()
     ):
         raise AdmissionError("readiness_report_binding_invalid")
-    row.reported_enabled = body.full_market_enabled
     row.reported_at = utc_now()
     await db.commit()
     return {
@@ -421,7 +374,6 @@ async def eligibility(
             blockers.append("full_market_baseline_missing")
     capacity: dict = {}
     return {
-        "enabled": profile == "pilot" or settings.FULL_MARKET_ENABLED,
         "execution_profile": profile,
         "environment": settings.APP_ENVIRONMENT,
         "blockers": blockers,
@@ -439,13 +391,7 @@ async def acquisition_eligibility(
     *,
     profile: ExecutionProfile = "full_market",
 ) -> dict:
-    result = await eligibility(db, provider, datasets, profile=profile)
-    lifecycle = await db.get(FullMarketEnvironment, get_settings().APP_ENVIRONMENT)
-    if profile == "full_market" and (
-        not result["enabled"] or lifecycle is None or not lifecycle.enabled
-    ):
-        result["blockers"].append("full_market_flag_disabled")
-    return result
+    return await eligibility(db, provider, datasets, profile=profile)
 
 
 async def lock_calendars(db: AsyncSession, datasets: list[DatasetRegistry]) -> None:
@@ -460,7 +406,7 @@ async def lock_calendars(db: AsyncSession, datasets: list[DatasetRegistry]) -> N
 async def freeze_admission(
     db: AsyncSession, row: SchedulerControl, result: dict
 ) -> FullMarketAdmission:
-    profile = scheduler_profile(row.scheduler_key)
+    profile: ExecutionProfile = "full_market"
     admission = FullMarketAdmission(
         admission_id=uuid7(),
         scheduler_key=row.scheduler_key,
@@ -491,8 +437,6 @@ async def freeze_admission(
                 first_start_date=local_today(dataset),
             )
             db.add(state)
-        if profile == "pilot":
-            continue
         config = dict(dataset.config or {})
         legacy_governance = config.get("full_market")
         governance = dict(legacy_governance) if isinstance(legacy_governance, Mapping) else {}
@@ -579,7 +523,8 @@ async def admission_projection(
         result["blockers"].append("daily_acquisition_window_closed")
     return {
         "daily_runtime_window": runtime_window,
-        "full_market_enabled": get_settings().FULL_MARKET_ENABLED,
+        # Deprecated: FULL_MARKET_ENABLED is retired; kept for older Fetcher readers.
+        "full_market_enabled": True,
         "execution_profile": profile,
         "environment": result["environment"],
         "admission_id": str(admission.admission_id) if admission else None,
@@ -600,19 +545,13 @@ async def account_authorization(
     *,
     profile: ExecutionProfile = "full_market",
 ) -> dict:
-    if consumer in {"pilot", "full_market"}:
-        profile = "pilot" if consumer == "pilot" else "full_market"
+    if consumer == "full_market":
         return await admission_projection(db, provider, source=True, profile=profile)
     if consumer != "maintenance":
         return {"acquisition_allowed": False, "declaration_sha256": None}
     client_id = db.info.get("source_client_id")
     client = await db.get(SourceClient, client_id) if client_id else None
-    lifecycle = await db.get(FullMarketEnvironment, get_settings().APP_ENVIRONMENT)
     blockers = []
-    if profile == "full_market" and (
-        not get_settings().FULL_MARKET_ENABLED or lifecycle is None or not lifecycle.enabled
-    ):
-        blockers.append("full_market_flag_disabled")
     if not _valid_source_binding(client, provider):
         blockers.append("full_market_source_binding_invalid")
     from app.services.hk_provider_cutover import acquisition_allowed

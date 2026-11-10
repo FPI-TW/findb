@@ -54,7 +54,7 @@ Canonical data改變後使用`backend/scripts/generate_instrument_cache.py`重�
 
 ## Staging data reset
 
-Reset可移除mutable canonical、workflow與PostgreSQL raw，建立bounded pilot空白基線；
+Reset可移除mutable canonical、workflow與PostgreSQL raw，建立bounded空白基線；
 它不是rollback。必須使用`backend/scripts/reset_staging_legacy_data.py`的兩階段安全流程：
 
 1. 確認database／host是staging，記錄Alembic revision、image SHA與protected tables。
@@ -100,7 +100,7 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 
 ## Account governor保留
 
-共用帳號governor每日由Full／Pilot worker清理一次，同主機以`account_ledger_retention`記錄下次時間，
+共用帳號governor每日由Full worker清理一次，同主機以`account_ledger_retention`記錄下次時間，
 多個consumer不重複執行；失敗只輸出`account_ledger_retention`診斷，不阻擋抓取。
 
 - 只刪`completed_at`超過7天的`finalized`／`cancelled` intent與其usage樣本。
@@ -205,15 +205,15 @@ regular／after_hours；production 最近 366 個 calendar days，local／stagin
 建立時凍結 snapshot；historical 已知休市日固定 skipped_calendar，避免把無報表誤報 no-data。當日必須已過 snapshot 收盤且至少 17:00 才能 claim／新抓取。
 年度 ZIP、多年建庫、價差及 continuous 不在此路徑。
 
-日常 Pilot／Full runtime 持續依自己的 first dates 與 frozen plans 補抓缺漏；指定歷史區間
-使用既有 Admin／Dashboard「歷史回補」與 `findb-fetch-backfill-plan`，不建立或結清另一
-profile 的 daily plan。Historical 完成後，恢復的日常 runtime 仍自行交付／對帳。
+日常 Full runtime 持續依 first dates 與 frozen plans 補抓缺漏；指定歷史區間
+使用既有 Admin／Dashboard「歷史回補」與 `findb-fetch-backfill-plan`，不建立或結清
+daily plan。Historical 完成後，恢復的日常 runtime 仍自行交付／對帳。
 
 1. 確認環境已完成 provider-work cutover、shared inode attestation 與 Source credential scope。
-   Historical 與 daily 共用 owner，不要求停止 TAIFEX Pilot／Full controls。
+   Historical 與 daily 共用 owner，不要求停止 TAIFEX Full control。
 2. 預覽 production CLI，檢查 scope、日期與 calendar source；預設不下載 provider。
    正常下載預估為每有效日期五次，rows 為 `null`（未知），實際重試可能增加 calls。
-3. 加 `--deliver` 建立 request；可加 `--wait` 等待結果。Historical consumer 獨立於 Full flag，
+3. 加 `--deliver` 建立 request；可加 `--wait` 等待結果。Historical consumer 獨立於 daily control，
    仍需有效 Source credential、owner fence、已收盤日期與 account governor。
 4. 驗證 raw manifest、全部 Source receipts／outbox、DQ、canonical 與 Serve。
 
@@ -308,8 +308,8 @@ migration-owned partition。Staging monitoring以一筆為告警門檻，因此�
 
 所有環境須完成 [provider-work cutover](deployment.md#provider-work-切換)。
 TAIFEX stopped-controls 維護窗口與獨立 historical TTL lease 已退役；
-可在 Pilot／Full desired running 時提交所有既有支援 scope 的回補。
-它們依同 provider FIFO 排隊；日期由早到晚入列，profile／request 決策與證據不互相覆蓋。
+可在 Full desired running 時提交所有既有支援 scope 的回補。
+它們依同 provider FIFO 排隊；日期由早到晚入列，daily／request 決策與證據不互相覆蓋。
 可用 scope 以後端 capability matrix 與 active scheduler scope 為準；現行為 Twelve Data US EOD、
 FinLab TW equity EOD、TAIFEX futures EOD、FactSet HK EOD。Shioaji minute 已停止新申請，
 TW ETF EOD 仍不支援 historical。

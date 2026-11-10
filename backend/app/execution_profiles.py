@@ -1,9 +1,13 @@
-"""Execution identity shared by acquisition, durable plans and monitoring."""
+"""Execution identity shared by acquisition, durable plans and monitoring.
+
+Pilot is retired; ``full_market`` is the only daily profile. The value remains
+on the wire and in durable keys so plans, work and controls stay addressable.
+"""
 
 from typing import Literal, cast
 
-ExecutionProfile = Literal["pilot", "full_market"]
-EXECUTION_PROFILES: tuple[ExecutionProfile, ...] = ("pilot", "full_market")
+ExecutionProfile = Literal["full_market"]
+EXECUTION_PROFILES: tuple[ExecutionProfile, ...] = ("full_market",)
 
 
 def execution_profile(value: str) -> ExecutionProfile:
@@ -12,13 +16,9 @@ def execution_profile(value: str) -> ExecutionProfile:
     return cast(ExecutionProfile, value)
 
 
-def scheduler_key(provider: str, profile: ExecutionProfile) -> str:
+def scheduler_key(provider: str, profile: ExecutionProfile = "full_market") -> str:
     return f"{profile}_{provider}_v1"
 
 
-def scheduler_profile(key: str) -> ExecutionProfile:
-    return "full_market" if key.startswith("full_market_") else "pilot"
-
-
 def unified_scheduler(key: str) -> bool:
-    return key.startswith(("full_market_", "pilot_")) and key.endswith("_v1")
+    return key.startswith("full_market_") and key.endswith("_v1")

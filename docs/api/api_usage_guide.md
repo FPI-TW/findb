@@ -36,11 +36,11 @@ Authorization: Bearer <admin-session>
 ## Daily 排程設定發布
 
 ```http
-GET /api/v1/source/execution-config?execution_profile=pilot&schema_version=1
+GET /api/v1/source/execution-config?execution_profile=full_market&schema_version=1
 X-API-Key: <source-client-key>
 ```
 
-`execution_profile` 必填且限 `pilot`／`full_market`，`schema_version` 預設 1。
+`execution_profile` 必填且只接受 `full_market`（已退役的 `pilot` 回 422），`schema_version` 預設 1。
 Provider 與 feeds 依 credential 的非空合法 scope 決定，不接受 provider／environment override。
 回應為完整快照，含環境、profile、schema version、schedule digest、逐 feed 當地觸發時間與時區，
 另列 completion deadline、bounded monitor 及發布重試窗口；`Cache-Control: no-store`。
@@ -138,17 +138,18 @@ Content-Type: application/json
 {"lease_token":"<current-item-lease-token>"}
 ```
 
-Pilot probe 綁定精確 scheduler key、provider 與完整 dataset scope；Full probe 另遵守有效 flag／
-running admission，maintenance 遵守 flag／Source scopes。泛用 `consumer=pilot` 不授權抓取。
-Pilot／historical 的當次 acquisition probe 必須使用 DB-backed credential 的明確非空 dataset
+Scheduler probe 綁定精確 scheduler key、provider 與完整 dataset scope；Full probe 另遵守 running
+admission、每日窗口與帳號配額，maintenance 只依 Source credential 綁定的 scopes。`consumer` 只接受
+`full_market`／`maintenance`，`pilot` 回 422。
+Scheduler／historical 的當次 acquisition probe 必須使用 DB-backed credential 的明確非空 dataset
 清單；SQL NULL、空清單、非清單、非字串成員、重複或跨 provider dataset 一律拒絕。
-每次認證重新讀取 DB scope，Pilot 也重新載入 scheduler associations，不能沿用先前允許的清單。
+每次認證重新讀取 DB scope，scheduler probe 也重新載入 scheduler associations，不能沿用先前允許的清單。
 Historical probe 綁定 request／item／provider／dataset、current lease token、expiry 與 cancellation；
 不續租、不更改 request／item/control、heartbeat、revision 或 audit。Scope 不符拒絕，item 不存在或
 不可見回 404；已取消、lease 過期或 token 已改的可見 item 回 `acquisition_allowed=false`。
 
 成功回應包含 `acquisition_allowed`、`provider`、UTC `checked_at`、`max_age_seconds=5`；
-Pilot 包含 `scheduler_key`／`dataset_keys`，historical 包含 `item_id`／`request_id`／`dataset_key`
+Scheduler probe 包含 `scheduler_key`／`dataset_keys`，historical 包含 `item_id`／`request_id`／`dataset_key`
 及允許時的 `lease_expires_at`。回應 header `X-FinDB-Acquisition-Checked-At` 與 body timestamp 相符，
 並使用 `Cache-Control: no-store`。Fetcher 要求 server check／RTT 小於 5 秒、header receipt 起
 最多 50ms 開始 provider invocation，且不能越過 current minute 或 lease expiry；過期須重新授權。
@@ -245,16 +246,16 @@ Source `POST /source/full-market/readiness` 只接受已 enrollment 的 ID/diges
 詳細管理 enrollment、平台限制與治理資料見 [runbook](../operations/full_market.md)。
 所有環境的 startup 都不以日曆完整性為 gate；新抓取不要求 enrollment、readiness、expiry 或 capacity proof。
 `GET /source/full-market/authorization` 仍驗證 Source key/provider/scope、flag 與 running control；
-`consumer=maintenance` 允許已認證、flag 開啟的 candidate 蒐集，無須先 start 或 enrollment。
+`consumer=maintenance` 允許已認證且 Source credential 綁定的 candidate 蒐集，無須先 start、enrollment
+或已發布 baseline。Authorization 與 scheduler 回應的 `full_market_enabled` 已 deprecated，固定為 `true`，下一版移除。
 未知 consumer 拒絕；舊 digest/runtime query 不再影響新抓取資格。此分支尚未部署。
 `GET /admin/delivery-plans` 與 `/{plan_id}/summary` 提供 expected／data／no_data／missing／blocked、
 deadline、late 與 gaps。這些 control mutation 不可使用 Serve key，也不可將 Admin key 提供給 Fetcher。
 
-`ExecutionProfile = pilot | full_market` 貫穿 admission、plans、freshness、缺漏與告警。
-Source／Admin plan 列表、dataset 篩選與監控端點接受 `execution_profile`；舊 plan API 未指定時為 `full_market`。
-新 runtime／Dashboard 一律明確傳入。兩 profile 的 first dates、凍結成員、完成與 no_data 證據隔離；
-Pilot 完成不得完成 Full market，canonical 最新 run 更新也不得使其他已完成計畫倒退。
-`consumer=pilot` 不受 FULL_MARKET_ENABLED 影響；maintenance 以 `execution_profile` 決定相同資格。
+`ExecutionProfile` 只剩 `full_market`，貫穿 admission、plans、freshness、缺漏與告警；Pilot 已退役。
+Source／Admin plan 列表、dataset 篩選與監控端點仍接受 `execution_profile`，但只接受 `full_market`，其他值
+回 422；未指定時為 `full_market`。Canonical 最新 run 更新不得使已完成計畫倒退。
+`FULL_MARKET_ENABLED` 已退役，新抓取只受 scheduler control 與 Source 授權約束。
 
 Admin 計畫查詢支援 `dataset_key` 與 `trade_date`；指定任一 `page/page_size` 即啟用分頁（缺省值 1／25，
 每頁上限 100）；回傳 `data` 及標準 `pagination`。依交易日、建立時間、plan ID 降冪穩定排序。

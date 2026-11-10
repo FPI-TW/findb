@@ -63,7 +63,7 @@ def main() -> None:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--dataset")
     parser.add_argument("--provider")
-    parser.add_argument("--profile", choices=("pilot", "full_market"))
+    parser.add_argument("--profile", choices=("full_market",))
     parser.add_argument("--batch-size", type=int, choices=range(1, 101), default=5)
     asyncio.run(rebuild(parser.parse_args()))
 

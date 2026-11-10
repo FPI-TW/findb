@@ -2,7 +2,7 @@
 
 現役四個 providers（Twelve Data、FinLab、TAIFEX、FactSet）只使用 provider-work-v1。
 Shioaji 已退役；下文相關 checkpoint／repair 說明僅供保留證據判讀，不授權新的抓取。
-Pilot／Full daily、historical、maintenance 與 retained-raw rerun 共用同 provider 的 FIFO、owner fence
+Full daily、historical、maintenance 與 retained-raw rerun 共用同 provider 的 FIFO、owner fence
 與 whole-work host lock。`PROVIDER_WORK_REQUIRED` 保留為部署相容性斷言：缺省為 `true`，
 Backend／Fetcher 接受一般布林 true 寫法（不分大小寫的 `true`、`1`、`yes`、`on`、`t`、`y`）；
 明確 false 拒絕停用協定，空字串／無效值則回報布林解析錯誤。部署檔案仍統一使用 `true`，
@@ -47,7 +47,7 @@ receipts／canonical proof；lease 欄位僅為同一 queue owner 的歷史投�
 
 ## Source 暫時中斷與恢復
 
-現行 Pilot／Full／historical 的 `--run-forever` 在尚未取得工作時，對 Source transport、
+現行 Full／historical 的 `--run-forever` 在尚未取得工作時，對 Source transport、
 HTTP 408／429／5xx（含部署期間觀察到的 521）採可中止的指數退避，從一秒增加至
 poll interval 上限（historical 為 30 秒）。重試從完整 idle iteration 開始，重新 drain、poll
 與取得即時授權，不使用中斷前快取的 desired state 或 grant。兩個 control clients 的單次
@@ -165,7 +165,7 @@ FinLab daily target-not-ready 與 FactSet daily `no_source_row` 在 immutable
 
 已人工改為 `skipped_calendar` 的舊 Shioaji daily canonical work 也拒絕 acquisition，
 即使仍有原 plan／manifest；calendar_skip manifest 與 prepared drain 保持原行為。
-Owner 可在 Pilot／Full 都停止、owner 閒置且 Backend／checkpoint 均無交付／在途證據時，
+Owner 可在 Full control 停止、owner 閒置且 Backend／checkpoint 均無交付／在途證據時，
 經 typed preview／expected SHA 將原 work 結清為 `calendar_closed`。
 `provider_work_calendar_closure` 附加保存原 work／plan／attempts／修復授權、既有休市決策
 audit 與 Owner 本機 attestation；同 transaction 只修改 work.state／completed_at。
@@ -219,8 +219,8 @@ Historical request 失敗時同樣以 provider transaction 同步取消後續 do
 Controls／request 仍允許 acquisition 的正常 retry 可接續原 frozen scope 的未抓取 members，原 budgets 不重設。
 未交付的可恢復 intent 阻擋 completed／cancelled 等 terminal settlement；永久拒絕或需要人工複查時，
 明確保存 failed／manual failure code、原 bytes 與 `manual_pending_prepared` proof，不能默默丟棄。
-`expected = data + no_data + missing + blocked`、first dates、calendar decisions、profile checkpoints 與
-原 controls／admission audits 不變。Historical 可在 Pilot 與 Full desired running 時執行。
+`expected = data + no_data + missing + blocked`、first dates、calendar decisions、Full checkpoints 與
+原 controls／admission audits 不變。Historical 可在 Full desired running 時執行。
 FactSet HK historical 在建立 request 時凍結現行 HKEX cohort；EOD v2 daily／historical 可依完整成員證據結算 partial，historical 繼續下一日期。原 work 的 completed 只採認自己的 receipts。Shioaji historical 已停止新申請；既有股票／ETF minute 的 frozen 成員、sequences 與完整 receipts 保留供查詢及稽核。TW ETF EOD historical 仍不支援。詳見 [FactSet runbook](../operations/factset_hk.md) 與 [資料維護](../operations/data_maintenance.md#shioaji-股票etf-分鐘回補)。
 
 ## 雙層排他、fencing 與復原
@@ -298,13 +298,11 @@ Canonical `delivery_member_evidence` 與實際 canonical writes 同 transaction 
 替換的最新 canonical `run_id`。TAIFEX 仍需五份分產品 report、whole-day raw manifest 與 no-trade 驗證；
 generic settle 不能代替 historical completion validator。
 
-同日重疊範圍存在可達的 manual outcome：Full 原 prepared 因 503 tail retry 延後，期間 Pilot 已寫入
-較新的 canonical 資料時，舊 Full payload 依既有 precedence 可能得到 `success_records=0`，因而無法成立
+同日重疊範圍存在可達的 manual outcome：Full 原 prepared 因 503 tail retry 延後，期間其他 run（例如
+historical 回補）已寫入較新的 canonical 資料時，舊 Full payload 依既有 precedence 可能得到 `success_records=0`，因而無法成立
 該 member 的 actual-write proof。此 work 保存 `MANUAL_INTERVENTION_REQUIRED`／round proof、原 bytes、
 receipts 與 truthful expected／data／missing，所有 accepted runs terminal 後結束 failed round 並釋放 provider；
-不無限 retry，也不以 superseded-success 或 no_data 偽造完成。Daily overlap regression 的兩商品案例為
-expected=2、data=0、missing=2、no_data=blocked=0：首個 503 已停止第二 member 的新抓取，
-該 member 沒有 prepared；第一 member 的原 bytes 被 precedence 跳過，保持明確 manual failure。
+不無限 retry，也不以 superseded-success 或 no_data 偽造完成。
 
 ## API 與營運觀測
 
@@ -390,8 +388,7 @@ Backend `shioaji_member_repair` 以 environment／profile／work／plan／member
 Fetcher 使用同一有效 mapping；有任何 prepared／accepted canonical membership 的成員拒絕更正。
 核准／冪等重播於同一交易刷新 persisted plan summary；有效 mapping 消除原 `mapping_gap`，
 但獨立 outcome reason 與 canonical completion 規則保留。重開 attempt 依 `acquisition_open`
-設定 `drain_only`，claim 重查；Full flag 明確關閉 Full acquisition，Pilot 保持獨立。
-唯讀 queue projection 的 drain 判定同步套用相同 flag／profile 條件。
+設定 `drain_only`，claim 重查；唯讀 queue projection 的 drain 判定同步套用相同條件。
 `shioaji_repair_ack` 保存 fenced 安裝證據；本地 `full_member_repair` 以 repair ID 冪等安裝，
 `full_empty_outcome` 保存 Source outcome 的 ACK-loss continuation。Original terminal work 用新
 attempt 恢復，舊 attempts、prepared bytes、receipts、quota、cooldown 不改寫。
@@ -471,7 +468,7 @@ SIGTERM／join／SIGKILL／join，之後確認 leader 已回收且 group 不存�
 
 Daily control 在 claim 後停止時，也拒絕首次 manifest 寫入；已存在且完全相同的 frozen manifest
 仍可重播，以支援原 prepared 排空。這個 gate 位於既有 provider transaction／owner fence 內，
-Pilot 與 Full 都適用，不改寫已凍結的 scope 或 calendar-skip 決策。
+不改寫已凍結的 scope 或 calendar-skip 決策。
 
 ### 排程與 historical 隔離
 

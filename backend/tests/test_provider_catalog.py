@@ -21,6 +21,32 @@ def declaration():
     return json.loads((ROOT / CATALOG_PATH).read_text())
 
 
+def test_feed_markets_match_backend_timezone_authority(declaration):
+    from app.services.effective_calendar import MARKETS, market_timezone
+    from app.services.historical_backfill import PROVIDER_TIMEZONES
+
+    provider_zones: dict[str, set[str]] = {}
+    for feed in ProviderCatalog.model_validate(declaration).feeds:
+        zone = market_timezone(feed.calendar_market).key
+        assert MARKETS[feed.market][0] == zone, feed.dataset_key
+        if feed.schedule is not None:
+            assert feed.schedule.timezone == zone, feed.dataset_key
+        provider_zones.setdefault(feed.provider, set()).add(zone)
+    # Historical cutoffs are provider-keyed, so one provider must stay in one timezone.
+    assert all(len(zones) == 1 for zones in provider_zones.values())
+    assert {provider: zones.pop() for provider, zones in provider_zones.items()} == {
+        provider: zone for provider, zone in PROVIDER_TIMEZONES.items() if provider != "shioaji"
+    }
+    assert PROVIDER_TIMEZONES["shioaji"] == "Asia/Taipei"
+
+
+def test_unknown_market_timezone_fails_closed():
+    from app.services.effective_calendar import market_timezone
+
+    with pytest.raises(ValueError, match="unsupported calendar market"):
+        market_timezone("TW_FUTURES")
+
+
 def test_supported_scopes_contracts_and_deadlines(declaration):
     catalog = load_catalog(ROOT / CATALOG_PATH, contracts_dir=ROOT / "contracts")
     assert {(f.provider, f.dataset_key) for f in catalog.feeds} == {
@@ -93,7 +119,7 @@ def test_invalid_metadata_fails_closed(declaration, fault):
     elif fault == "duplicate_suffix":
         declaration["providers"][1]["container_suffix"] = p["container_suffix"]
     elif fault == "duplicate_role":
-        p["consumer_roles"].append("pilot")
+        p["consumer_roles"].append("historical")
     elif fault == "missing_daily_consumer":
         p["consumer_roles"].remove("full_market")
     elif fault == "missing_historical_consumer":
@@ -247,9 +273,8 @@ def test_inventory_preserves_image_sharing_and_all_roles(declaration):
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
     assert inventory["images"] == ["factset", "finlab", "twelve_data"]
-    assert len(inventory["consumers"]) == 12
+    assert len(inventory["consumers"]) == 8
     assert {c["name"] for c in inventory["consumers"] if c["provider"] == "taifex"} == {
-        "findb-pilot-taifex",
         "findb-full-market-taifex",
         "findb-historical-taifex",
     }
@@ -268,7 +293,7 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
     declaration["feeds"].append(feed)
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
-    assert len(inventory["consumers"]) == 15
+    assert len(inventory["consumers"]) == 10
     assert (
         'example: ["example_eod"]'
         in artifacts[Path("dashboard/src/lib/generated/provider-catalog.ts")]
@@ -317,8 +342,7 @@ def test_fetcher_adapter_scopes_match_catalog_without_clocks(declaration):
     )
 
 
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
-def test_backend_publication_is_consumable_by_independent_fetcher(profile):
+def test_backend_publication_is_consumable_by_independent_fetcher():
     from findb_fetcher.execution_config import resolve_execution_config
 
     from app.config import get_settings
@@ -326,12 +350,12 @@ def test_backend_publication_is_consumable_by_independent_fetcher(profile):
     from app.services.provider_metadata import source_scopes
 
     for provider, scopes in source_scopes().items():
-        published = execution_config(provider, scopes, profile).model_dump(mode="json")
+        published = execution_config(provider, scopes, "full_market").model_dump(mode="json")
         result = resolve_execution_config(
             published,
             provider=provider,
             environment=get_settings().APP_ENVIRONMENT,
-            profile=profile,
+            profile="full_market",
         )
         assert {f["dataset_key"] for f in result.feeds} == set(scopes)
         assert all("slot_id" not in f for f in published["feeds"])

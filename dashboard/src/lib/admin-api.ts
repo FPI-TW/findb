@@ -1,10 +1,6 @@
 import { z } from "zod"
 
-export const executionProfileSchema = z.enum(["pilot", "full_market"])
-export type ExecutionProfile = z.infer<typeof executionProfileSchema>
-export const executionProfileRequestSchema = z.object({
-  profile: executionProfileSchema,
-})
+export const executionProfileSchema = z.enum(["full_market"])
 
 const isoDateTime = z.string().datetime({ offset: true })
 const nullableDateTime = isoDateTime.nullable()
@@ -17,7 +13,6 @@ const paginationSchema = z.object({
 })
 
 export const deliveryPlansRequestSchema = z.object({
-  profile: executionProfileSchema.optional(),
   datasetKey: z.string().trim().max(100).default(""),
   tradeDate: z.union([z.iso.date(), z.literal("")]).default(""),
   page: z.number().int().positive().default(1),
@@ -92,7 +87,6 @@ export const deliveryPlansSchema = z.object({
 export type DeliveryPlan = z.infer<typeof deliveryPlansSchema>["data"][number]
 
 export const auditFiltersSchema = z.object({
-  profile: executionProfileSchema.optional(),
   datasetKey: z.string().trim().max(100).default(""),
   runId: z.union([z.uuid(), z.literal("")]).default(""),
   dateFrom: z.union([z.iso.date(), z.literal("")]).default(""),
@@ -162,7 +156,6 @@ export const feedScheduleSchema = z.object({
 export const schedulerSchema = z.object({
   feed_schedules: z.array(feedScheduleSchema).optional(),
   execution_profile: executionProfileSchema.optional(),
-  full_market_enabled: z.boolean().nullable().optional(),
   environment: z.string().nullable().optional(),
   admission_id: z.string().nullable().optional(),
   admitted_dataset_keys: z.array(z.string()).optional(),
@@ -779,7 +772,6 @@ export const deliveryPlanDatasetsSchema = z.object({
   data: z.array(z.string()),
 })
 export const deliveryResourceRequestSchema = z.object({
-  profile: executionProfileSchema.optional(),
   resource: z.enum(["alerts", "backfills", "scopes", "providerWork"]),
   page: z.number().int().positive().default(1),
   pageSize: z.number().int().min(1).max(100).default(25),

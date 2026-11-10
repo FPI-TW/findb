@@ -50,7 +50,7 @@ def test_local_receipt_binds_actual_process_env_and_package(tmp_path, monkeypatc
         ],
     )
     process = f"findb-fetch-full-market --config {config}"
-    env = f"{process} APP_ENVIRONMENT=local FULL_MARKET_ENABLED=true SOURCE_CLIENT_KEY=test-source-private FETCHER_ACCOUNT_STATE_PATH={governor} FETCHER_ACCOUNT_ALLOCATION_FILE={allocation}"
+    env = f"{process} APP_ENVIRONMENT=local SOURCE_CLIENT_KEY=test-source-private FETCHER_ACCOUNT_STATE_PATH={governor} FETCHER_ACCOUNT_ALLOCATION_FILE={allocation}"
 
     def inspect(command, **kwargs):
         if command[-1] == "lstart=":
@@ -66,12 +66,15 @@ def test_local_receipt_binds_actual_process_env_and_package(tmp_path, monkeypatc
     assert "test-source-private" not in output.read_text()
     installation_receipt.main()
     assert json.loads(output.read_bytes())["runtime_id"] == receipt["runtime_id"]
-    env = env.replace("FULL_MARKET_ENABLED=true", "FULL_MARKET_ENABLED=false")
-    with pytest.raises(ValueError, match="environment/flag"):
+    env = env.replace("APP_ENVIRONMENT=local", "APP_ENVIRONMENT=staging")
+    with pytest.raises(ValueError, match="environment differs"):
         installation_receipt.main()
-    env = env.replace("FULL_MARKET_ENABLED=false", "FULL_MARKET_ENABLED=true").replace(
-        str(allocation), "/other/allocation"
-    )
+    env = env.replace("APP_ENVIRONMENT=staging", "APP_ENVIRONMENT=local")
+    monkeypatch.setattr(sys, "argv", [*sys.argv, "--consumer-pid", "pilot=18"])
+    with pytest.raises(ValueError, match="unknown local consumer profile"):
+        installation_receipt.main()
+    monkeypatch.setattr(sys, "argv", sys.argv[:-2])
+    env = env.replace(str(allocation), "/other/allocation")
     with pytest.raises(ValueError, match="allocation path"):
         installation_receipt.main()
 

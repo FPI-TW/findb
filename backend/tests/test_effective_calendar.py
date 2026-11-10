@@ -188,21 +188,20 @@ FEEDS = [
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("environment", ["staging", "production"])
-@pytest.mark.parametrize("profile", ["pilot", "full_market"])
 @pytest.mark.parametrize("key", FEEDS)
 @pytest.mark.parametrize("skip", [False, True])
 async def test_all_feeds_profiles_and_environments_freeze_weekend_decision(
-    test_session, monkeypatch, environment, profile, key, skip
+    test_session, monkeypatch, environment, key, skip
 ):
     dataset = await _dataset(test_session, key)
     body, release = await _baseline(test_session, key, count=3)
-    await historical_admission(test_session, dataset, release, DAY, None, profile=profile)
+    await historical_admission(test_session, dataset, release, DAY, None, profile="full_market")
     settings = get_settings()
     monkeypatch.setattr(settings, "APP_ENVIRONMENT", environment)
     monkeypatch.setattr(settings, PROVIDER_CALENDAR_SWITCHES[body.provider], skip)
     test_session.add(FullMarketEnvironment(environment=environment, enabled=True))
     await test_session.commit()
-    ready = await eligibility(test_session, body.provider, [dataset], profile=profile)
+    ready = await eligibility(test_session, body.provider, [dataset], profile="full_market")
     assert ready["ready"] and not ready["blockers"]
     weekend = DAY + timedelta(days=(5 - DAY.weekday()) % 7)
     if body.provider == "taifex" and not skip:
@@ -213,7 +212,7 @@ async def test_all_feeds_profiles_and_environments_freeze_weekend_decision(
         provider=body.provider,
         trade_date=weekend,
         release_id=release.release_id,
-        execution_profile=profile,
+        execution_profile="full_market",
     )
     result = await create_plan(test_session, request, allowed_datasets=[key])
     decision = await test_session.get(
@@ -222,14 +221,14 @@ async def test_all_feeds_profiles_and_environments_freeze_weekend_decision(
             "dataset_key": key,
             "provider": body.provider,
             "trade_date": weekend,
-            "execution_profile": profile,
+            "execution_profile": "full_market",
         },
     )
     assert decision.snapshot["calendar_revision"] is None
     assert decision.snapshot["policy"]["skip_non_trading_days"] == skip
     assert (result.status == "skipped_calendar") == skip
     if not skip:
-        expected = (2 if profile == "pilot" else 3) * (2 if key == "tw_futures_eod" else 1)
+        expected = 3 * (2 if key == "tw_futures_eod" else 1)
         assert result.summary.expected == expected
     frozen = dict(decision.snapshot)
     monkeypatch.setattr(settings, PROVIDER_CALENDAR_SWITCHES[body.provider], not skip)

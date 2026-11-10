@@ -66,7 +66,7 @@ async def inventory(db: AsyncSession, work_id: UUID) -> CalendarClosureInventory
         or work.environment != queue.environment()
         or work.provider != "shioaji"
         or work.kind != "daily"
-        or work.execution_profile not in {"pilot", "full_market"}
+        or work.execution_profile != "full_market"
         or not (work.manifest or {}).get("plan_id")
     ):
         raise FullMarketError("Calendar closure requires a frozen Shioaji daily work", 409)
@@ -213,7 +213,7 @@ def evaluate(
     )
     keys = {c.get("scheduler_key") for c in s.get("controls", [])}
     require(
-        {"pilot_shioaji_v1", "full_market_shioaji_v1"} <= keys
+        "full_market_shioaji_v1" in keys
         and all(
             c.get("desired_state") == c.get("observed_state") == "stopped"
             for c in s.get("controls", [])

@@ -31,7 +31,6 @@ function pageSchema(defaultPageSize: (typeof OPERATIONS_PAGE_SIZES)[number]) {
 }
 
 export const deliveriesSearchSchema = pageSchema(100).extend({
-  profile: z.enum(["pilot", "full_market"]).optional().catch(undefined),
   tab: z
     .enum(["plans", "alerts", "candidates", "backfills"])
     .catch("plans")
@@ -115,7 +114,3 @@ export function rawPayloadAuditFromSearch(
     pageSize: search.ps,
   }
 }
-
-export const overviewSearchSchema = z.object({
-  profile: z.enum(["pilot", "full_market"]).optional().catch(undefined),
-})

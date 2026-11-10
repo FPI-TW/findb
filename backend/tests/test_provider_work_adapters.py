@@ -65,8 +65,6 @@ async def test_historical_ignores_daily_config_outage_and_stopped_daily_controls
 ):
     from findb_fetcher import schedule
 
-    from app.config import get_settings
-
     h = native_runtime
     controls = list(
         await h.db.scalars(select(SchedulerControl).where(SchedulerControl.provider == h.provider))
@@ -74,7 +72,6 @@ async def test_historical_ignores_daily_config_outage_and_stopped_daily_controls
     for row in controls:
         row.desired_state = row.observed_state = "stopped"
     await h.db.commit()
-    monkeypatch.setattr(get_settings(), "FULL_MARKET_ENABLED", False)
     monkeypatch.setattr(
         schedule,
         "load_schedule_manifest",

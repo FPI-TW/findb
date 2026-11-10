@@ -39,7 +39,7 @@ def inventory(root):
                 }
             ],
         }
-        for profile in ("pilot", "full_market", "historical")
+        for profile in ("full_market", "historical")
         for provider in preflight.PROVIDERS
     ]
 
