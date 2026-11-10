@@ -153,7 +153,18 @@ def build(
     }:
         raise ValueError("account allocation must cover actual installed consumers")
     config = json.loads(config_path.read_bytes())
-    if config["deployment_target"] != target or config["desired_state"] != "stopped":
+    if config.get("deployment_target") != target:
+        raise ValueError("installed config identity invalid")
+    if manifest.get("fetcher_bundle_version", 3) == 4:
+        if (
+            set(config) != {"version", "deployment_target", "poll_seconds"}
+            or type(config.get("version")) is not int
+            or config["version"] != 1
+            or type(config.get("poll_seconds")) is not int
+            or not 1 <= config["poll_seconds"] <= 30
+        ):
+            raise ValueError("installed bootstrap config invalid")
+    elif config.get("desired_state") != "stopped":
         raise ValueError("installed config identity invalid")
     return {
         "kind": "deployed-installed",

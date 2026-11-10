@@ -236,8 +236,8 @@ jobs:
           [ "$(jq -r .promotion_source.staging_registry "$RUNNER_TEMP/release-manifest.json")" = "$STAGING_ECR_REGISTRY" ]
         fi
         # Older bundles recreate the retired Shioaji consumers; see the deployment rollback floor.
-        if [ "$(jq -r .fetcher_bundle_version "$RUNNER_TEMP/release-manifest.json")" != 3 ]; then
-          echo "::error title=Fetcher rollback 下限::只接受 bundle v3；更舊的版本含已退役的 Shioaji consumers，須改採 forward fix。" >&2
+        if ! jq -e '(.fetcher_bundle_version == 3 or .fetcher_bundle_version == 4)' "$RUNNER_TEMP/release-manifest.json" >/dev/null; then
+          echo "::error title=Fetcher rollback 下限::只接受已支援的 bundle v3／v4；v1／v2 含已退役的 Shioaji consumers，未知版本亦不可部署。" >&2
           exit 1
         fi
         twelve_data="$(jq -r .images.twelve_data "$RUNNER_TEMP/release-manifest.json")"

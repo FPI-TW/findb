@@ -29,9 +29,10 @@ def test_provider_stop_timeout_covers_bounded_factset_query_and_reap():
     assert "docker stop --time 30" not in helper
 
 
+@pytest.mark.parametrize("bundle_version", [3, 4])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 def test_production_container_arguments_bind_full_pilot_historical_inspection(
-    tmp_path, monkeypatch, provider
+    tmp_path, monkeypatch, provider, bundle_version
 ):
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
     environment_args = helper[
@@ -53,13 +54,18 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
     image = "image@sha256:" + "b" * 64
     manifest = {
         "deployment_target": "production",
+        "fetcher_bundle_version": bundle_version,
         "runtime_profile": "unified",
         "unit": "fetcher",
         "commit_sha": "a" * 40,
         "images": {provider: image},
     }
     accepted = {**manifest, "state": "accepted", "bundle_sha256": "c" * 64}
-    config = {"deployment_target": "production", "desired_state": "stopped"}
+    config = (
+        json.loads((REPO_ROOT / "fetcher/configs/bootstrap.production.v1.json").read_text())
+        if bundle_version == 4
+        else {"deployment_target": "production", "desired_state": "stopped"}
+    )
     allocation = {
         "provider": provider,
         "environment": "production",
@@ -190,6 +196,28 @@ def test_production_container_arguments_bind_full_pilot_historical_inspection(
     )
     assert result["consumers"] == ["full_market", "pilot", "historical", "maintenance"]
     assert len(result["installed_consumers"]) == 3
+
+    invalid_configs = [{**config, "deployment_target": "staging"}]
+    if bundle_version == 4:
+        invalid_configs += [
+            {**config, "desired_state": "stopped"},
+            {**config, "feeds": []},
+            {**config, "version": 2},
+            {**config, "poll_seconds": 0},
+        ]
+    else:
+        invalid_configs.append({**config, "desired_state": "running"})
+    for invalid in invalid_configs:
+        (tmp_path / "config").write_text(json.dumps(invalid))
+        with pytest.raises(ValueError, match="installed (bootstrap )?config"):
+            inspection.build(
+                tmp_path / "manifest",
+                tmp_path / "accepted",
+                tmp_path / "config",
+                provider,
+                governor,
+                tmp_path / "allocation",
+            )
 
 
 @pytest.mark.parametrize("target", ["local", "staging", "production"])
@@ -636,3 +664,24 @@ def test_actual_helper_recovery_traps_gracefully_retire_or_preserve_runtime(
         assert "host detail must remain private" not in result.stderr
         assert (state / previous).stat().st_ino == original_inode
         assert (state / victim).exists()
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, "4", True])
+def test_workflow_bundle_gate_accepts_supported_versions_only(tmp_path, target, version):
+    workflow = (REPO_ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
+    start = workflow.index("        # Older bundles recreate")
+    end = workflow.index('        twelve_data="', start)
+    gate = workflow[start:end]
+    (tmp_path / "release-manifest.json").write_text(
+        json.dumps({"fetcher_bundle_version": version, "deployment_target": target})
+    )
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + gate],
+        env={**script_env(), "RUNNER_TEMP": str(tmp_path), "TARGET": target},
+        capture_output=True,
+        text=True,
+    )
+    assert (result.returncode == 0) == (type(version) is int and version in {3, 4})
+    if result.returncode:
+        assert "Fetcher rollback 下限" in result.stderr

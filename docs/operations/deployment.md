@@ -869,7 +869,12 @@ PR3 的唯讀驗收不替代 PR3＋4 的 daily 動態排程與 historical 完整
 三環境 `bootstrap.*.v1.json` 僅含 version、deployment_target、poll_seconds；bundle 加入生成
 `provider_inventory.v1.json`，不包含舊 full-market schedule。三 images／四 providers／十二 consumers
 由 catalog 投影決定，host eligibility、recovery gate 與 Backend owner-lock 使用相同 inventory。
+CD 在 materialize release selection 階段只接受 bundle v3／v4；拒絕 v1／v2 與未知版本，
+不可將 Shioaji 退役下限誤寫成僅接受 v3。此階段失敗尚未執行 SSM preflight／apply，沒有主機切換
+或需要 rollback 的新交易；修正後須由含修正的 main revision 重新發布。
 原已接受 bundle 3 的 allowlist、manifest digest 與舊 command binding 仍可驗證，允許升級及原交易回復。
+Installed receipt 依 bundle 格式驗證設定：v4 使用不含 desired_state 的 bootstrap，v3 保留舊設定檢查；
+兩者都保留執行中 image、config digest、環境、Source 與 account allocation 的綁定。
 未知／重複／缺少 consumer 仍阻擋發布，不把它當作空主機。
 
 沿用 main-ref OIDC、backend-first、不可變 promotion decision、committed journal／receipt、獨立
