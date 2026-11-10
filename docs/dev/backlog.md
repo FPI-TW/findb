@@ -11,7 +11,7 @@
   手動停止 `findb-pilot-*`、RDS snapshot 與 SQLite／governor 成套備份、移除 allocation 的 `pilot`、
   migration `a7c3e1f9d2b4`、`pilot-residue-v1` 封存 SHA-256、staging 共用 governor 唯讀核對、
   staging Full 首日驗收（一次只啟動一個 provider、記憶體／OOM，驗收後停止），再以相同 digests promotion
-  production。Twelve Data 兩環境共用帳號與 API key，staging 驗收前須協調 production 配額（#449）。
+  production。
 - [ ] 下一版移除一版相容（#450）：刪除 SSM `FULL_MARKET_ENABLED` parameter 與載入容忍、deprecated 的
   `full_market_enabled` API 欄位與 `ReadinessReport.full_market_enabled`，並以 migration 移除
   `full_market_environment.enabled`。
@@ -117,10 +117,10 @@ PR1～4 已通過 staging／production 發布相容性驗收；PR5 已實作 DB 
 
 - [ ] 部署 `adjust=none`／header 認證／失敗分類後，以 staging 短期啟動 Twelve Data Full（約 6,018 筆目錄）
   驗收 Source → R2 → canonical → Serve，並以 `--health` 的 `source_error_diagnostics` 核對失敗分類；
-  兩環境共用帳號，staging 抓取會消耗 production 配額，須先協調（#449）。通過後才由 Owner 啟動 production Full。
+  兩環境共用帳號，staging 抓取會消耗 production 配額，現行用量下不需事先協調。通過後才由 Owner 啟動 production Full。
 - [ ] 向 Twelve Data 書面確認：方案的美股成交量是否為 consolidated、收盤價是否為官方收盤、
   美東 17:00 日線是否定稿及事後修正政策、400 訊息族群。已確認 staging／production 共用同一帳號且無法
-  發多組 API key；兩環境 governor 各自計算，同時抓取合計會超過 1597 credits／分鐘。
+  發多組 API key；兩環境 governor 各自計算，現行逐檔串行用量合計遠低於 1597 credits／分鐘。
 - [ ] 匯入 Twelve Data splits／dividends 至 `corporate_action`，使 `CORP_ACTION_CONTINUITY` 對美股生效；
   另評估 close-to-close 跳價 warning（現行 `ABNORMAL_RETURN` 只比較同日 open／close）。
 - [ ] 供應商 `no_data` 目前一律回報 `source_error` 並消耗重試；評估以停牌公告等交易所證據分流

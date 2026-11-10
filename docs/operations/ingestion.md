@@ -103,9 +103,9 @@ accepted ECR SHA `0e2e28089498237b4261169aa0c6885f215a1d9e`。舊version未刪�
 
 ## Bounded end-to-end acceptance
 
-Staging驗收完整功能，不累積資料量。執行前依
-[staging data policy](deployment.md#staging-data-policy)記錄image／config、bounded identity、
-日期／row上限、credits與pre-run counts。
+Staging驗收完整功能，不累積資料量；啟動範圍依
+[Full market 設定與啟動](full_market.md#設定與啟動)一次只啟動一個provider。執行前記錄
+image／config、bounded identity、日期／row上限、credits與pre-run counts。
 
 基礎檢查：
 

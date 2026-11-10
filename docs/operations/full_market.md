@@ -928,7 +928,10 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布 baseline 後才人工啟動；部署本身不
 start controls。Production 執行 Full daily；staging 平時保持停止，Owner 只在測試改動時一次啟動一個 provider，
 驗收後即停止。Twelve Data 的 staging 與 production 共用同一帳號（來源無法發多組 API key），兩環境 governor
-各自計算、沒有跨環境預算，staging 抓取會直接消耗 production 的 credits／分鐘配額。Daily 只抓當日，
+各自計算、沒有跨環境預算，staging 抓取會直接消耗 production 的 credits／分鐘配額。每個 consumer
+逐檔串行，2026-11 實測每檔約 2.3 秒（約 26 檔／分鐘），兩環境合計遠低於帳號 1597 credits／分鐘上限，
+因此 staging 一次啟動一個 provider 驗收時不需事先協調 production 配額（#449）。若之後提高單一
+consumer 的並行度或速率，須重新評估，必要時改以兩環境 allocation 切分配額。Daily 只抓當日，
 回補天數由管理者建立回補時決定；完整範圍回補在 production 執行。Staging fetcher 主機記憶體小（見
 [部署 OOM 紀錄](deployment.md#2026-10-22-staging-historical-finlab-oom-阻擋部署)），FinLab worker 一律載入
 整張 dataset；staging 只做少量回補，啟動後須觀察記憶體與 OOM。
@@ -1156,7 +1159,7 @@ raw-first／契約／時段解析；historical 不受 daily control、activation
 限制，也不改寫 Full frozen plans；不必停止 TAIFEX control。部署要求兩環境各 provider
 安裝 Full 與 historical 兩個 consumers；TAIFEX 共用既有公開資料 governor、Source key 與 Twelve Data image，無新增 provider secret。
 
-## Provider work FIFO（待環境啟用）
+## Provider work FIFO
 
 唯一 provider-work 路徑將 Full daily work 拆成 dataset/date，與同 provider
 historical／maintenance／retained-raw rerun 共用 PostgreSQL FIFO；整批日期由早到晚入列，沒有 daily
@@ -1169,8 +1172,8 @@ Full control desired running 時仍可建立 historical request；不需以停�
 controls，也不回報假 provider failure／no_data。Retryable round 排空後以原 work／scope／budgets 附加到隊尾。
 心跳遺失保留原 owner，必須重取同一 shared inode、確認 child 已停止後恢復；不會依 TTL 自動跳下一工作。
 
-目前已提交設定預設仍為 false，未執行 staging／production deployment 或 cutover；原 compatibility 操作規則
-僅適用尚未啟用的環境。啟用、migration／import、rollback 與 preflight 見
+兩環境都已切換到 provider work，`PROVIDER_WORK_REQUIRED` 固定為 true、不能關閉，沒有其他相容路徑。
+切換紀錄、migration／import、rollback 下限與 preflight 見
 [deployment](deployment.md#provider-work-切換)，完整契約與新 provider 必要條件見
 [provider work](../architecture/provider_work.md)。交付監控頁會顯示共用 provider queue、active work、順位、
 wait reason、retry／heartbeat；GET projection 不更動 controls、lease 或 audit。
