@@ -31,6 +31,11 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
 - Schedule 定義交易所當地時間與 date lag；completion deadline 使用獨立 timezone／trade-date day offset。
   Full daily 保留 US 次日台北 09:00、其餘當日台北 23:00。Bounded monitor 的 US 次日 09:15、
   TW equity 當日 17:00 另行保存；其它目前停用。Publication retry window 不代表 delivery SLA。
+- Backend 的 market→時區只由 `app.services.effective_calendar.MARKETS` 維護，包含 `TAIFEX` 這類
+  calendar market；`market_timezone()` 對未知 market fail closed，不回落台北時間。Catalog feed 的
+  `market`／`calendar_market` 都必須在其中，`schedule.timezone` 必須與之相同（`test_provider_catalog.py`）。
+  Full-market admission／acceptance、historical provider cutoff、FactSet 窗口、HK cutover 與 seed
+  delivery expectation 都引用這份對照。
 - `delivery.slot_id` 只表示既有 contract 相容欄位，不能作為時鐘或新 acquisition 權威。
 - Historical execution profiles 保留現行 local／staging／production 的靜態 universe reference 與 executor
   預設值，不包含觸發時間。這些是打包預設，不是 DB request、operator overrides 或即時授權。

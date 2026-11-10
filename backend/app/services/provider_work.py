@@ -562,7 +562,9 @@ async def fence(
     if acquisition and (attempt.state != "open" or work.state != "running" or attempt.drain_only):
         raise ProviderWorkError("provider work acquisition is closed")
     if acquisition and work.provider == "factset" and work.kind == "daily":
-        local_time = utc_now().astimezone(ZoneInfo("Asia/Hong_Kong")).time()
+        from app.services.effective_calendar import market_timezone
+
+        local_time = utc_now().astimezone(market_timezone("HK")).time()
         if not time(18, 30) <= local_time < time(23):
             raise ProviderWorkSuspendedError("FactSet daily acquisition window is closed")
     if (

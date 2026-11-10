@@ -21,6 +21,32 @@ def declaration():
     return json.loads((ROOT / CATALOG_PATH).read_text())
 
 
+def test_feed_markets_match_backend_timezone_authority(declaration):
+    from app.services.effective_calendar import MARKETS, market_timezone
+    from app.services.historical_backfill import PROVIDER_TIMEZONES
+
+    provider_zones: dict[str, set[str]] = {}
+    for feed in ProviderCatalog.model_validate(declaration).feeds:
+        zone = market_timezone(feed.calendar_market).key
+        assert MARKETS[feed.market][0] == zone, feed.dataset_key
+        if feed.schedule is not None:
+            assert feed.schedule.timezone == zone, feed.dataset_key
+        provider_zones.setdefault(feed.provider, set()).add(zone)
+    # Historical cutoffs are provider-keyed, so one provider must stay in one timezone.
+    assert all(len(zones) == 1 for zones in provider_zones.values())
+    assert {provider: zones.pop() for provider, zones in provider_zones.items()} == {
+        provider: zone for provider, zone in PROVIDER_TIMEZONES.items() if provider != "shioaji"
+    }
+    assert PROVIDER_TIMEZONES["shioaji"] == "Asia/Taipei"
+
+
+def test_unknown_market_timezone_fails_closed():
+    from app.services.effective_calendar import market_timezone
+
+    with pytest.raises(ValueError, match="unsupported calendar market"):
+        market_timezone("TW_FUTURES")
+
+
 def test_supported_scopes_contracts_and_deadlines(declaration):
     catalog = load_catalog(ROOT / CATALOG_PATH, contracts_dir=ROOT / "contracts")
     assert {(f.provider, f.dataset_key) for f in catalog.feeds} == {

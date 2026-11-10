@@ -11,7 +11,6 @@ import math
 from collections.abc import Mapping
 from datetime import date
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -38,6 +37,7 @@ from app.schemas.full_market_readiness import (
     ReadinessReport,
 )
 from app.services.calendar_management import complete_published_revision_ids
+from app.services.effective_calendar import market_timezone
 from app.services.source_clients import PROVIDER_DATASET_SCOPE
 from app.utils import ensure_utc, utc_now, uuid7
 
@@ -57,17 +57,11 @@ def market(dataset: DatasetRegistry) -> str:
 
 
 def local_today(dataset: DatasetRegistry) -> date:
-    return (
-        utc_now()
-        .astimezone(
-            ZoneInfo(
-                {"US": "America/New_York", "HK": "Asia/Hong_Kong"}.get(
-                    dataset.market, "Asia/Taipei"
-                )
-            )
-        )
-        .date()
-    )
+    try:
+        zone = market_timezone(market(dataset))
+    except ValueError:
+        raise AdmissionError("market_timezone_unsupported") from None
+    return utc_now().astimezone(zone).date()
 
 
 async def lock_environment(db: AsyncSession) -> FullMarketEnvironment:
