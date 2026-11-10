@@ -53,6 +53,7 @@ contracts = manifest.load_contract_manifest(ROOT / "contracts" / "manifest.json"
         ([".github/workflows/fetcher-production-cd.yml"], (True, True, False, False, False)),
         ([".github/workflows/production-promote.yml"], (True, True, False, False, False)),
         ([".github/workflows/required-ci.yml"], (True, True, False, False, False)),
+        ([".github/workflows/staging-infra-plan.yml"], (True, True, False, False, True)),
         (["docs/operations/deployment.md"], (False, False, False, False, False)),
         ([""], (False, False, False, False, False)),
     ],

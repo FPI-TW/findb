@@ -173,13 +173,13 @@ Never apply with an empty provider ARN and the default `false` management flag.
 
 ## Pull-request plan gate
 
-`.github/workflows/staging-infra-plan.yml` runs only for pull requests to
-`main` that change `infra/tofu/**` or the workflow itself. It checks out the
-same-repository pull-request head only (external fork PRs are rejected before
-checkout or AWS credentials), uses pinned OpenTofu 1.12.6 and AWS actions,
-initializes the remote backend with the reviewed bucket, state key, region,
-KMS key, encryption, and native S3 lockfile settings, then runs recursive
-format, validate, and refresh-enabled plan checks.
+`.github/workflows/staging-infra-plan.yml` runs only for pull requests to `main`
+that change `infra/tofu/**`, `infra/env/**`, or the workflow itself. It checks
+out the same-repository pull-request head only (external fork PRs are rejected
+before checkout or AWS credentials), uses pinned OpenTofu 1.12.6 and AWS
+actions, initializes the remote backend with the reviewed bucket, state key,
+region, KMS key, encryption, and native S3 lockfile settings, then runs
+recursive format, validate, and refresh-enabled plan checks.
 
 The gate uses the reviewed nonsecret backend contract
 `bucket=findb-staging-tofu-state-439622209937`,
