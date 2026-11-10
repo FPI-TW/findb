@@ -18,12 +18,15 @@ import type {
   DashboardResponse,
   DQIssue,
   MissingDelivery,
+  PanelResult,
   RawPayload,
   Scheduler,
   SchedulerMutationResponse,
+  SchedulersResponse,
 } from "../../lib/admin-api"
 import { deliveriesSearchSchema } from "./operations.search"
 import { marketFreshnessSchema } from "../../lib/admin-api"
+import type { AdminRole } from "../../lib/admin-governance-api"
 import { OperationsRefreshProvider } from "../../components/OperationsRefresh"
 import { ProtectedQueryScopeProvider } from "../../components/ProtectedQueryScope"
 
@@ -68,8 +71,8 @@ import {
   DeliveriesPage,
   OperationsOverviewPage,
   IngestionOverviewPanel,
-  SCHEDULER_RUNTIME_STATUS_META,
-  SchedulerPanel,
+  describeSchedulerRuntime,
+  schedulerActivityLabel,
   selectSchedulerRuntimeStatus,
 } from "./OperationsConsole"
 import {
@@ -205,6 +208,27 @@ function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
     heartbeat_age_seconds: 5,
     ...overrides,
   }
+}
+
+/** Scheduler rows rendered through the only production card surface. */
+function SchedulerCards({
+  result,
+  role,
+}: {
+  result: PanelResult<SchedulersResponse>
+  role: AdminRole
+}) {
+  return (
+    <IngestionOverviewPanel
+      freshnessResult={null}
+      schedulersResult={result}
+      loading={false}
+      pending={false}
+      freshnessError=""
+      schedulersError=""
+      role={role}
+    />
+  )
 }
 
 function makeFullMarketFreshness(
@@ -574,24 +598,366 @@ describe("Operations presentation", () => {
     expect(screen.queryByText("must-not-render")).not.toBeInTheDocument()
   })
 
-  it("selects scheduler runtime status independently from freshness", () => {
-    const scheduler = makeScheduler({
-      desired_state: "running",
-      observed_state: "stopped",
+  describe("scheduler runtime status", () => {
+    // Fixture heartbeats arrive at `timestamp` and are 5 seconds old.
+    const beforeHeartbeat = (seconds: number) =>
+      new Date(Date.parse(timestamp) - seconds * 1000).toISOString()
+    const enabled = (overrides: Partial<Scheduler> = {}) =>
+      makeScheduler({
+        scheduler_key: "full_market_finlab_v1",
+        desired_state: "running",
+        observed_state: "stopped",
+        acquisition_allowed: true,
+        acquisition_blockers: [],
+        expected_cycle_interval_seconds: 30,
+        last_cycle_started_at: beforeHeartbeat(20),
+        last_cycle_completed_at: beforeHeartbeat(19),
+        ...overrides,
+      })
+    const summarize = (control: Scheduler) =>
+      describeSchedulerRuntime({ control, freshness: null })
+
+    it("treats observed=stopped between recent cycles as idle", () => {
+      const runtime = summarize(enabled())
+      expect(runtime.status).toBe("idle")
+      expect(runtime.label).toBe("執行中：等待下一輪")
+      expect(runtime.variant).toBe("default")
+      expect(runtime.explanation).toMatch(/observed=stopped 是正常閒置/)
+      expect(runtime.explanation).toMatch(/約每 30 秒開始下一輪/)
     })
-    expect(
-      SCHEDULER_RUNTIME_STATUS_META[
-        selectSchedulerRuntimeStatus({ control: scheduler, freshness: null })
-      ].label
-    ).toBe("執行中")
-    expect(
-      SCHEDULER_RUNTIME_STATUS_META[
-        selectSchedulerRuntimeStatus({
-          control: { ...scheduler, heartbeat_age_seconds: 91 },
-          freshness: null,
+
+    it("does not treat an authorization re-check between cycles as acquiring", () => {
+      expect(summarize(enabled({ observed_state: "running" })).status).toBe(
+        "idle"
+      )
+    })
+
+    it("reports an in-progress cycle with its duration", () => {
+      const runtime = summarize(
+        enabled({
+          observed_state: "running",
+          last_cycle_started_at: beforeHeartbeat(295),
+          last_cycle_completed_at: beforeHeartbeat(400),
         })
-      ].label
-    ).toBe("心跳過期")
+      )
+      expect(runtime.status).toBe("acquiring")
+      expect(runtime.label).toBe("抓取中")
+      expect(runtime.explanation).toMatch(/^本輪 cycle 已執行 5 分鐘/)
+    })
+
+    it("explains a stop that waits for the current cycle", () => {
+      const runtime = summarize(
+        enabled({
+          desired_state: "stopped",
+          observed_state: "running",
+          last_cycle_started_at: beforeHeartbeat(115),
+          last_cycle_completed_at: beforeHeartbeat(200),
+        })
+      )
+      expect(runtime.status).toBe("stopping")
+      expect(runtime.label).toBe("停止中")
+      expect(runtime.variant).toBe("warning")
+      expect(runtime.explanation).toMatch(/本輪 cycle（已執行 2 分鐘）/)
+    })
+
+    it.each([
+      ["an old cycle", beforeHeartbeat(600), beforeHeartbeat(599)],
+      ["no cycle at all", null, null],
+    ])("warns when an enabled control has %s", (_, started, completed) => {
+      const runtime = summarize(
+        enabled({
+          last_cycle_started_at: started,
+          last_cycle_completed_at: completed,
+        })
+      )
+      expect(runtime.status).toBe("not_cycling")
+      expect(runtime.label).toBe("已啟用但沒有進入 cycle")
+      expect(runtime.variant).toBe("warning")
+      expect(runtime.explanation).toMatch(/超過 90 秒沒有開始新的 cycle/)
+      expect(runtime.blockers).toEqual([])
+    })
+
+    it("lists acquisition blockers for an enabled control", () => {
+      const runtime = summarize(
+        enabled({
+          acquisition_allowed: false,
+          acquisition_blockers: [
+            "full_market_baseline_missing",
+            "daily_acquisition_window_closed",
+            "future_blocker",
+          ],
+        })
+      )
+      expect(runtime.status).toBe("acquisition_blocked")
+      expect(runtime.label).toBe("已啟用但抓取被擋")
+      expect(runtime.blockers).toEqual([
+        "缺少已發布的官方 baseline",
+        "目前不在每日抓取窗口內",
+        "全市場設定或 scope 無效（future_blocker）",
+      ])
+      expect(
+        summarize(
+          enabled({ acquisition_allowed: false, acquisition_blockers: [] })
+        ).explanation
+      ).toMatch(/未提供原因/)
+    })
+
+    it("ignores the always-false authorization of a stopped control", () => {
+      expect(
+        summarize(
+          enabled({
+            desired_state: "stopped",
+            acquisition_allowed: false,
+            acquisition_blockers: ["full_market_baseline_missing"],
+          })
+        )
+      ).toMatchObject({ status: "stopped", label: "已停止", blockers: [] })
+    })
+
+    it("flags heartbeats older than three poll intervals", () => {
+      const stale = summarize(enabled({ heartbeat_age_seconds: 91 }))
+      expect(stale.status).toBe("stale")
+      expect(stale.label).toBe("心跳過期")
+      expect(stale.explanation).toMatch(/超過 90 秒（3 × poll 間隔 30 秒）/)
+      expect(
+        summarize(
+          enabled({
+            heartbeat_age_seconds: 91,
+            expected_cycle_interval_seconds: 60,
+          })
+        ).status
+      ).toBe("idle")
+      expect(
+        summarize(
+          enabled({
+            heartbeat_age_seconds: 31,
+            expected_cycle_interval_seconds: 10,
+          })
+        ).status
+      ).toBe("stale")
+    })
+
+    it("falls back to a 30-second interval when the Backend omits it", () => {
+      const legacy = enabled({ heartbeat_age_seconds: 91 })
+      delete legacy.expected_cycle_interval_seconds
+      expect(summarize(legacy).status).toBe("stale")
+      expect(
+        summarize(
+          enabled({
+            heartbeat_age_seconds: 89,
+            expected_cycle_interval_seconds: null,
+            last_cycle_started_at: timestamp,
+            last_cycle_completed_at: timestamp,
+          })
+        ).status
+      ).toBe("idle")
+    })
+
+    it("reports a runtime that never sent a heartbeat", () => {
+      const runtime = summarize(
+        enabled({ last_heartbeat_at: null, heartbeat_age_seconds: null })
+      )
+      expect(runtime.status).toBe("not_reported")
+      expect(runtime.label).toBe("尚未回報")
+      expect(runtime.explanation).toMatch(/尚未回報心跳/)
+    })
+
+    it("gives a fresh start one grace period before warning", () => {
+      const old = {
+        last_cycle_started_at: beforeHeartbeat(3600),
+        last_cycle_completed_at: beforeHeartbeat(3599),
+      }
+      const starting = summarize(
+        enabled({ ...old, running_since: beforeHeartbeat(10) })
+      )
+      expect(starting.status).toBe("starting")
+      expect(starting.label).toBe("啟動中：等待第一輪 cycle")
+      expect(starting.explanation).toMatch(/Owner 已於 15 秒前啟用/)
+      expect(
+        summarize(enabled({ ...old, running_since: beforeHeartbeat(200) }))
+          .status
+      ).toBe("not_cycling")
+    })
+
+    it("separates a cycle that started but did not complete", () => {
+      const runtime = summarize(
+        enabled({
+          last_cycle_completed_at: beforeHeartbeat(100),
+          last_error: "full_market_cycle_blocked",
+        })
+      )
+      expect(runtime.status).toBe("cycle_failed")
+      expect(runtime.explanation).toMatch(/（full_market_cycle_blocked）/)
+    })
+
+    it("counts enabled and acquiring controls separately", () => {
+      expect(
+        schedulerActivityLabel([
+          { desired_state: "running", status: "acquiring" },
+          { desired_state: "running", status: "idle" },
+          { desired_state: "stopped", status: "stopping" },
+        ])
+      ).toBe("2 已啟用 · 1 抓取中")
+    })
+
+    it("shows Owner intent and runtime state as separate card sections", () => {
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <SchedulerCards
+            result={{
+              ok: true,
+              data: {
+                success: true,
+                data: [
+                  enabled({
+                    observed_state: "running",
+                    last_cycle_started_at: beforeHeartbeat(55),
+                    last_cycle_completed_at: beforeHeartbeat(120),
+                  }),
+                  enabled({
+                    scheduler_key: "full_market_taifex_v1",
+                    provider: "taifex",
+                    acquisition_allowed: false,
+                    acquisition_blockers: ["full_market_baseline_missing"],
+                  }),
+                ],
+              },
+            }}
+            role="viewer"
+          />
+        </QueryClientProvider>
+      )
+      const owner = screen.getByRole("region", {
+        name: "full_market_finlab_v1 Owner 設定",
+      })
+      const runtime = screen.getByRole("region", {
+        name: "full_market_finlab_v1 Runtime 實況",
+      })
+      expect(owner).toHaveTextContent("已啟用")
+      expect(owner).toHaveTextContent("r1")
+      expect(runtime).toHaveTextContent("抓取中")
+      expect(runtime).toHaveTextContent("本輪 cycle 已執行 1 分鐘")
+      expect(
+        screen.getByRole("region", {
+          name: "full_market_taifex_v1 Runtime 實況",
+        })
+      ).toHaveTextContent("缺少已發布的官方 baseline")
+      expect(
+        screen.getByText(/^2 已啟用 · 1 抓取中（共 2 個排程）$/)
+      ).toBeInTheDocument()
+      expect(screen.getByText("尚不可部署：2 個排程還沒停好")).toBeVisible()
+      expect(
+        screen.getByText(/Owner 設定 已啟用 · Runtime 實況 已啟用但抓取被擋/)
+      ).toBeInTheDocument()
+      expect(
+        screen.getByText(
+          "部署前人工確認：請停止所有排程，確認每張卡片的「Owner 設定」與「Runtime 實況」均為已停止。"
+        )
+      ).toBeInTheDocument()
+      expect(screen.getAllByText("詳細")).toHaveLength(2)
+    })
+
+    it("passes the deployment check only when every control is stopped", () => {
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <SchedulerCards
+            result={{
+              ok: true,
+              data: {
+                success: true,
+                data: [
+                  makeScheduler({ scheduler_key: "full_market_finlab_v1" }),
+                  makeScheduler({
+                    scheduler_key: "full_market_taifex_v1",
+                    provider: "taifex",
+                  }),
+                ],
+              },
+            }}
+            role="viewer"
+          />
+        </QueryClientProvider>
+      )
+      expect(
+        screen.getByText(
+          /全部 2 個排程的「Owner 設定」與「Runtime 實況」均為已停止/
+        )
+      ).toBeInTheDocument()
+      expect(
+        screen.getByText(/^0 已啟用 · 0 抓取中（共 2 個排程）$/)
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/尚不可部署/)).not.toBeInTheDocument()
+    })
+
+    it("shows current trade-date delivery progress from freshness", () => {
+      const freshness = makeFullMarketFreshness("twelve_data", {
+        activation_state: "activated",
+        feeds: [
+          {
+            dataset_key: "us_equity_eod",
+            source: "twelve_data",
+            schema_id: "market_eod",
+            schema_version: 1,
+            expected_data_date: "2026-11-06",
+            latest_successful_data_date: "2026-11-05",
+            last_fetched_at: null,
+            last_completed_at: null,
+            last_run_id: null,
+            total_records: 5550,
+            success_records: 0,
+            failed_records: 12,
+            policy_outcome: null,
+            open_missing_delivery_alert: false,
+            last_failure_code: null,
+            configuration_error: null,
+            status: "late",
+          },
+          {
+            dataset_key: "us_etf_eod",
+            source: "twelve_data",
+            schema_id: "market_eod",
+            schema_version: 1,
+            expected_data_date: "2026-11-06",
+            latest_successful_data_date: null,
+            last_fetched_at: null,
+            last_completed_at: null,
+            last_run_id: null,
+            total_records: null,
+            success_records: null,
+            failed_records: null,
+            policy_outcome: null,
+            open_missing_delivery_alert: false,
+            last_failure_code: null,
+            configuration_error: null,
+            status: "not_due",
+          },
+        ],
+      })
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <IngestionOverviewPanel
+            freshnessResult={{
+              ok: true,
+              data: { success: true, data: [freshness] },
+            }}
+            schedulersResult={null}
+            loading={false}
+            pending={false}
+            freshnessError=""
+            schedulersError=""
+            role="viewer"
+          />
+        </QueryClientProvider>
+      )
+      expect(screen.getByText("當期交付進度")).toBeInTheDocument()
+      const progress = screen.getByText("當期交付進度").nextElementSibling
+      expect(progress).toHaveTextContent(
+        "us_equity_eod · 2026-11-06：data 0 / 5,550 · blocked 12 · 延遲"
+      )
+      expect(progress).toHaveTextContent(
+        "us_etf_eod · 2026-11-06：尚未建立交付計畫 · 尚未到期"
+      )
+    })
   })
 
   it.each(["factset", "finlab", "taifex", "twelve_data"])(
@@ -827,7 +1193,7 @@ describe("Operations presentation", () => {
     expect(control).toMatchObject({ desired_state: "running", revision: 2 })
     expect(
       selectSchedulerRuntimeStatus({ control, freshness: staleFreshness })
-    ).toBe("running")
+    ).toBe("idle")
     render(
       <QueryClientProvider client={queryClient}>
         <IngestionOverviewPanel
@@ -849,7 +1215,7 @@ describe("Operations presentation", () => {
         control,
         freshness: { ...refetched, activation_state: "activated" },
       })
-    ).toBe("running")
+    ).toBe("idle")
     // At the same revision, a running scheduler without activation is real.
     expect(
       selectSchedulerRuntimeStatus({ control, freshness: refetched })
@@ -962,11 +1328,8 @@ describe("Operations presentation", () => {
     const scheduler = makeScheduler()
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <SchedulerPanel
+        <SchedulerCards
           result={{ ok: true, data: { success: true, data: [scheduler] } }}
-          loading={false}
-          pending={false}
-          refreshError=""
           role="viewer"
         />
       </QueryClientProvider>
@@ -1016,11 +1379,8 @@ describe("Operations presentation", () => {
 
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <SchedulerPanel
+        <SchedulerCards
           result={{ ok: true, data: { success: true, data: schedulers } }}
-          loading={false}
-          pending={false}
-          refreshError=""
           role="owner"
         />
       </QueryClientProvider>
@@ -1106,11 +1466,8 @@ describe("Operations presentation", () => {
     }))
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <SchedulerPanel
+        <SchedulerCards
           result={{ ok: true, data: { success: true, data: schedulers } }}
-          loading={false}
-          pending={false}
-          refreshError=""
           role="owner"
         />
       </QueryClientProvider>
@@ -1120,7 +1477,7 @@ describe("Operations presentation", () => {
     ).toBeInTheDocument()
     expect(
       screen.getByRole("button", {
-        name: "twelve_data full_market_twelve_data_v1 設為執行中",
+        name: "twelve_data full_market_twelve_data_v1 設為已啟用",
       })
     ).toBeDisabled()
     fireEvent.click(screen.getByRole("button", { name: "全部啟動" }))
@@ -1139,7 +1496,7 @@ describe("Operations presentation", () => {
       "尚無已發布的 FactSet HKEX baseline；尚未提交 HK provider 切換"
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <SchedulerPanel
+        <SchedulerCards
           result={{
             ok: true,
             data: {
@@ -1164,9 +1521,6 @@ describe("Operations presentation", () => {
               ],
             },
           }}
-          loading={false}
-          pending={false}
-          refreshError=""
           role="owner"
         />
       </QueryClientProvider>
@@ -1182,7 +1536,7 @@ describe("Operations presentation", () => {
     ).not.toBeInTheDocument()
     expect(
       screen.getByRole("button", {
-        name: `factset ${schedulerKey} 設為執行中`,
+        name: `factset ${schedulerKey} 設為已啟用`,
       })
     ).toBeDisabled()
     fireEvent.click(screen.getByRole("button", { name: "全部啟動" }))
@@ -1213,11 +1567,8 @@ describe("Operations presentation", () => {
     ]
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <SchedulerPanel
+        <SchedulerCards
           result={{ ok: true, data: { success: true, data: schedulers } }}
-          loading={false}
-          pending={false}
-          refreshError=""
           role="owner"
         />
       </QueryClientProvider>
@@ -1225,7 +1576,7 @@ describe("Operations presentation", () => {
     expect(screen.getByRole("button", { name: "全部啟動" })).toBeDisabled()
     expect(
       screen.getByRole("button", {
-        name: "finlab full_market_finlab_v1 設為執行中",
+        name: "finlab full_market_finlab_v1 設為已啟用",
       })
     ).toBeDisabled()
     expect(
@@ -1254,18 +1605,15 @@ describe("Operations presentation", () => {
     )
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <SchedulerPanel
+        <SchedulerCards
           result={{ ok: true, data: { success: true, data: [scheduler] } }}
-          loading={false}
-          pending={false}
-          refreshError=""
           role="owner"
         />
       </QueryClientProvider>
     )
     fireEvent.click(
       screen.getByRole("button", {
-        name: "finlab full_market_finlab_v1 設為執行中",
+        name: "finlab full_market_finlab_v1 設為已啟用",
       })
     )
     fireEvent.click(screen.getByRole("button", { name: "確認啟用" }))
@@ -1343,11 +1691,8 @@ describe("Operations presentation", () => {
 
     render(
       <QueryClientProvider client={new QueryClient()}>
-        <SchedulerPanel
+        <SchedulerCards
           result={{ ok: true, data: { success: true, data: schedulers } }}
-          loading={false}
-          pending={false}
-          refreshError=""
           role="owner"
         />
       </QueryClientProvider>

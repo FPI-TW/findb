@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     INGESTION_ATTEMPT_RECONCILE_BATCH_SIZE: int = Field(default=100, gt=0, le=1_000)
     DELIVERY_MONITOR_SECONDS: float = Field(default=60, gt=0)
     DELIVERY_MONITOR_TIMEOUT_SECONDS: float = Field(default=30, gt=0)
+    # Dashboard heartbeat/cycle thresholds only; Backend never drives Fetcher
+    # polling. Must match Fetcher bootstrap ``poll_seconds`` and
+    # FETCHER_SCHEDULER_CONTROL_POLL_SECONDS (both 30 in every environment).
+    SCHEDULER_EXPECTED_CYCLE_INTERVAL_SECONDS: int = Field(default=30, ge=1, le=30)
 
     # Serve API access is provided only by DB-backed keys when enabled.
     SERVE_REQUIRE_AUTH: bool = False

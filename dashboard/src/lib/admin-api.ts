@@ -179,6 +179,16 @@ export const schedulerSchema = z.object({
     .optional(),
   start_allowed: z.boolean().optional(),
   start_blockers: z.array(z.string()).optional(),
+  acquisition_allowed: z.boolean().nullable().optional(),
+  acquisition_blockers: z.array(z.string()).optional(),
+  // Older Backends omit these; the card falls back to a 30-second interval.
+  expected_cycle_interval_seconds: z
+    .number()
+    .int()
+    .positive()
+    .nullable()
+    .optional(),
+  running_since: nullableDateTime.optional(),
   scheduler_key: z.string().trim().min(1).max(200),
   provider: z.string().trim().min(1).max(100),
   dataset_keys: z.array(z.string().trim().min(1).max(200)),

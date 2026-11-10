@@ -104,29 +104,6 @@ export function formatScheduledTime(value: string) {
   return `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`
 }
 
-export function formatSchedulerState(value: string) {
-  if (value === "running") return "執行中"
-  if (value === "stopped") return "已停止"
-  if (value === "idle") return "閒置"
-  if (value === "unknown") return "未知"
-  return value
-}
-
-export function schedulerStateVariant(value: string) {
-  if (value === "running") return "default" as const
-  if (value === "stopped" || value === "idle") return "secondary" as const
-  return "warning" as const
-}
-
-export function schedulerIsStale(scheduler: {
-  heartbeat_age_seconds: number | null
-}) {
-  return (
-    scheduler.heartbeat_age_seconds === null ||
-    scheduler.heartbeat_age_seconds > 90
-  )
-}
-
 export function getVisiblePages(currentPage: number, totalPages: number) {
   if (totalPages <= 7) {
     return Array.from({ length: totalPages }, (_, index) => index + 1)

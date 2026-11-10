@@ -124,7 +124,7 @@ describe("scheduler confirmation mobile layout", () => {
         name:
           mode === "bulk"
             ? "全部啟動"
-            : "finlab full_market_finlab_v1 設為執行中",
+            : "finlab full_market_finlab_v1 設為已啟用",
       })
       await trigger.click()
       const dialog = dialogElement()
