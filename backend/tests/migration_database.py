@@ -53,9 +53,9 @@ def _safe_identifier(*parts: str) -> str:
     return value[:MAX_DATABASE_IDENTIFIER_LENGTH].rstrip("_") or "findb_migration"
 
 
-# Columns the current ORM no longer maps, with the server default migration
-# d7a2c4e6f8b1 gives them.  Revisions before it have the column without a
-# default, so current services could not seed rows there.
+# Retired columns (dropped by e8b3d5f7a9c2) with the server default migration
+# d7a2c4e6f8b1 gives them.  Revisions before d7a2c4e6f8b1 have the column
+# without a default, so current services could not seed rows there.
 RETIRED_COLUMN_DEFAULTS = (
     ("full_market_environment", "enabled", "false"),
     ("full_market_enrollment", "reported_enabled", "true"),
@@ -94,7 +94,8 @@ async def run_alembic(
     """Run ``alembic <command> <revision>`` against ``database_url`` in a subprocess.
 
     Afterwards an older schema gets the retired-column defaults so current
-    services can seed it; this never changes a schema at or after d7a2c4e6f8b1.
+    services can seed it; this never changes a schema at or after d7a2c4e6f8b1,
+    where the columns have defaults or no longer exist.
     """
 
     environment = os.environ.copy()
