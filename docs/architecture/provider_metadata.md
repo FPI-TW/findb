@@ -128,10 +128,15 @@ FinLab ETF 等 unsupported historical scope 不因日資料能力而開放。詳
 既有 work 或 plan 的 `deadline_at`。重啟遇到同一 daily identity 的舊 feed，Source 回傳
 `409 / PROVIDER_WORK_FROZEN_FEED`；Fetcher 只略過該次重複 enqueue，claim 後仍用原 scope。
 Provider／dataset／date／profile 或 adapter identity 真正衝突仍失敗，calendar snapshot 亦不重寫。Slot 由非排程 descriptor 加入既有交付 metadata，
-不參與 API 快照驗證、到期日、deadline 或排程握手。Universe 日期解讀仍使用各 adapter 的交易所時區，
-不引用 daily trigger，也不對 historical 增加 daily API 前提。
+不參與 API 快照驗證、到期日、deadline 或排程握手。
 
-每輪先透過原 owner／Source authorization 排空已入列工作，再規劃新日期；drain 不取得排程、
+Universe 日期解讀與 `source_timezone` 一律使用 Source 發布的 feed 時區，Fetcher 不保存
+market→時區對照：cycle 內沿用當輪快照；未持有快照的 maintenance（含 drain 與手動同步）在任何
+provider I/O 前另讀一次 execution-config，失敗或缺少該 feed 即不抓取、不提交。TAIFEX dated
+universe 使用 frozen `scope.feed` 的時區。只讀時區，不引用 daily trigger 時間，也不對
+historical 增加 daily API 前提。
+
+每輪先透過原 owner／Source authorization 排空已入列工作，再規劃新日期；drain 不以排程規劃新日期，
 不 enqueue 新日期或 maintenance。Source 不可用時原 prepared bytes／收據保留，待恢復後重送。
 Historical request、lease、calendar snapshot、cutoff 與權限保持獨立。
 

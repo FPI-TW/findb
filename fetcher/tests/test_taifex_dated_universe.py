@@ -9,9 +9,12 @@ import httpx
 import pytest
 
 import findb_fetcher.full_market_runtime as runtime_module
+from execution_config_support import publication
 from findb_fetcher.config import FetcherConfig
+from findb_fetcher.execution_config import ExecutionSnapshot
+from findb_fetcher.execution_metadata import acquisition_feeds
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
-from findb_fetcher.full_market_runtime import DatedUniversePendingError
+from findb_fetcher.full_market_runtime import DatedUniversePendingError, ReadinessBlockedError
 from findb_fetcher.providers.taifex import TaifexOperationalError, fetch_report
 from test_full_market import _runtime
 
@@ -29,16 +32,14 @@ def setup_runtime(tmp_path, monkeypatch, profile):
 
     monkeypatch.setattr(runtime_module, "datetime", Clock)
     runtime, source, raw = _runtime(tmp_path, provider="taifex", execution_profile=profile)
-    feed = runtime.feeds[0]
-    feed.update(
-        dataset_key="tw_futures_eod",
-        market="TW",
-        asset_class="future",
-        source_timezone="Asia/Taipei",
-        scheduled_time="13:45",
-        target_date_lag_days=0,
-    )
-    runtime.installed_feeds = [feed]
+    # Packaged and Source-published feeds, never a hand-written field subset:
+    # the real TAIFEX calendar_market is "TAIFEX", not the exchange market.
+    runtime.installed_feeds = runtime.feeds = [
+        {**installed, "slot_id": installed["delivery"]["slot_id"]}
+        for installed in acquisition_feeds("taifex")
+    ]
+    (feed,) = publication("taifex", profile=profile, scheduled_time="13:45")["feeds"]
+    assert feed["calendar_market"] == "TAIFEX"
     runtime.state.bind_profile(profile)
     runtime._ensure_proof = lambda: None
     source.request = lambda *a, **kw: {
@@ -226,6 +227,7 @@ def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
     }
     assert all(set(m["sessions"]) == {"regular", "after_hours"} for m in submitted[0]["members"])
     assert submitted[0]["effective_date"] == str(DAY)
+    assert submitted[0]["source_timezone"] == feed["source_timezone"] == "Asia/Taipei"
     assert submitted[0]["evidence"][0]["url"].startswith("https://")
     assert all(m["raw_evidence_ref"].startswith("r2://") for m in submitted[0]["members"])
     assert runtime.raw_store.formats.count("csv_cp950") == 5
@@ -236,6 +238,58 @@ def test_dated_historical_report_builds_actual_contracts_and_reuses_cache(
     ]
     runtime._taifex_report(DAY, feed["dataset_key"])
     assert len(requests) == 5
+    runtime.close()
+
+
+def _stub_latest_report(runtime, monkeypatch):
+    snapshots = []
+    runtime._snapshot = lambda *a, **kw: snapshots.append(a) or b"{}"
+    monkeypatch.setattr(runtime_module, "official_report_date", lambda raw: DAY)
+    monkeypatch.setattr(runtime_module, "parse_report", lambda raw, target_date: [])
+    monkeypatch.setattr(
+        runtime_module,
+        "report_members",
+        lambda rows: [{"symbol": "TX", "contract_code": "TX:202608"}],
+    )
+    return snapshots
+
+
+@pytest.mark.parametrize("cycle_snapshot", [False, True], ids=["source_config", "cycle"])
+def test_universe_sync_uses_published_taifex_timezone(tmp_path, monkeypatch, cycle_snapshot):
+    runtime, source, feed = setup_runtime(tmp_path, monkeypatch, "full_market")
+    if cycle_snapshot:
+        runtime.schedule_snapshot = ExecutionSnapshot("cycle", (feed,))
+        source.execution_config = lambda: pytest.fail("cycle snapshot already has timezones")
+    _stub_latest_report(runtime, monkeypatch)
+    submitted = []
+    source.submit = lambda body: submitted.append(body) or body
+
+    assert runtime.sync_universes(dataset_keys=["tw_futures_eod"]) == submitted
+    assert [body["source_timezone"] for body in submitted] == ["Asia/Taipei"]
+    runtime.close()
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "unpublished"])
+def test_universe_sync_without_published_timezone_fails_before_provider(
+    tmp_path, monkeypatch, failure
+):
+    runtime, source, feed = setup_runtime(tmp_path, monkeypatch, "full_market")
+    if failure == "unavailable":
+        source.execution_config = lambda: (_ for _ in ()).throw(
+            FullMarketProtocolError("Execution config unavailable", status_code=503)
+        )
+        expected = FullMarketProtocolError
+    else:
+        runtime.schedule_snapshot = ExecutionSnapshot(
+            "cycle", ({**feed, "dataset_key": "other_eod"},)
+        )
+        expected = ReadinessBlockedError
+    snapshots = _stub_latest_report(runtime, monkeypatch)
+    source.submit = lambda body: pytest.fail("universe without timezone must not submit")
+
+    with pytest.raises(expected):
+        runtime.sync_universes(dataset_keys=["tw_futures_eod"])
+    assert snapshots == []
     runtime.close()
 
 
