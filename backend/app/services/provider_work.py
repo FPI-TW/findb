@@ -30,7 +30,7 @@ from app.models.provider_work import (
 from app.models.registry import IngestionRun, SchedulerControl
 from app.services.daily_runtime import daily_window
 from app.services.provider_metadata import provider_catalog
-from app.utils import utc_now, uuid7
+from app.utils import ensure_utc, utc_now, uuid7
 
 HEARTBEAT_TTL = timedelta(minutes=2)
 TERMINAL_RUNS = {"completed", "completed_with_errors", "failed", "cancelled"}
@@ -1266,6 +1266,44 @@ async def _projection_acquisition_states(
             )
         result[row.work_id] = allowed
     return result
+
+
+async def closed_works(
+    db: AsyncSession,
+    *,
+    provider: str,
+    datasets: list[str],
+    work_ids: list[UUID],
+    stable_keys: list[str],
+) -> list[dict]:
+    """Report which of a provider's works Source has closed, and when.
+
+    Fetcher uses this read-only lookup to retire local checkpoints; a work that is
+    open, queued, out of scope or unknown is simply absent from the answer.
+    """
+    rows = await db.execute(
+        select(
+            ProviderWork.work_id,
+            ProviderWork.stable_key,
+            ProviderWork.state,
+            ProviderWork.completed_at,
+        ).where(
+            ProviderWork.environment == environment(),
+            ProviderWork.provider == provider,
+            ProviderWork.dataset_key.in_(datasets),
+            or_(ProviderWork.work_id.in_(work_ids), ProviderWork.stable_key.in_(stable_keys)),
+            ProviderWork.completed_at.is_not(None),
+        )
+    )
+    return [
+        {
+            "work_id": str(work_id),
+            "stable_key": key,
+            "state": state,
+            "completed_at": ensure_utc(completed_at).isoformat(),
+        }
+        for work_id, key, state, completed_at in rows
+    ]
 
 
 async def projection(db: AsyncSession, *, provider: str | None = None) -> list[dict]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -95,6 +96,14 @@ def run_worker(
             pruned = {"failed": 1}
         if pruned is not None:
             print(json.dumps({"account_ledger_retention": pruned}), flush=True)
+        try:
+            retired = runtime.prune_closed_state()
+        except Exception as exc:
+            # Housekeeping too: Source or SQLite trouble retries tomorrow without
+            # stopping acquisition, and only the bounded class name is logged.
+            retired = {"failed": re.sub(r"[^A-Za-z0-9_]", "", type(exc).__name__)[:60]}
+        if retired is not None:
+            print(json.dumps({"closed_work_retention": retired}), flush=True)
         runtime.drain()
         observed = control.poll(observed_state="stopped")
         if observed.desired_state == "running" and can_acquire():

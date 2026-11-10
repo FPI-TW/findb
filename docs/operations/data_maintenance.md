@@ -93,8 +93,8 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 - PostgreSQL `raw.market_payload` 保存 Source ingress payload 30 天，由
   `RAW_RETENTION_ENABLED`／`RAW_RETENTION_DAYS` 控制每日清理。Contract-only rerun
   依賴仍在 PostgreSQL 的 raw。R2 的 90 天窗口保留 provider bytes 供稽核及重新映射。
-- Fetcher SQLite journal 與 checkpoint 是供工作重啟與恢復使用的暫存。其清理條件另依
-  Source 工作終態、恢復需求及 R2 證據判定。
+- Fetcher SQLite journal 與 checkpoint 是供工作重啟與恢復使用的暫存，清理規則見下方
+  [已結案工作的本機保留](#已結案工作的本機保留)。
 - 事故、queue recovery 或 migration 期間，先保留需要的 R2 證據，並暫停相關
   PostgreSQL cleanup，以保留 rerun 能力。Canonical 資料依獨立規則保存。
 
@@ -110,6 +110,26 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 - Schema初始化（含既有大帳本補建index）以`temp_store=MEMORY`排序；consumer rootfs唯讀、`/tmp`
   僅16 MiB，排序溢出到`/tmp`會以`database or disk is full`讓每次受治理的抓取失敗。
 - 刪除後不自動VACUUM，空間由SQLite重用。
+
+## 已結案工作的本機保留
+
+Full worker 每日對自己的 provider 清理一次已結案工作的本機狀態；同一 provider 的 consumers 以
+`work_retention`（journal）與 `checkpoint_retention`（Full checkpoint）記錄下次時間，不重複執行。
+清理失敗只輸出 `closed_work_retention` 診斷（只含例外類別名稱），不阻擋抓取，隔天重試。
+
+- 是否結案由 Source 判定：Fetcher 以 `POST /api/v1/source/provider-work/closed` 查詢（唯讀，
+  依 Source credential 的 provider／dataset scope 回答，一次最多 500 筆）；仍在進行、未知或越權的
+  工作不會出現在回應中，一律保留。Source 尚未提供此 API 時查詢失敗，等同不清理。
+- 只清 Source `completed_at` 已超過 7 天的工作。R2 保存 provider bytes 90 天，本機只保留恢復所需。
+- Provider-work journal（主機共用的 `provider-work.sqlite3`）：刪除 `work_delivery`、`work_job`、
+  `work_budget`、`work_cooldown`、`work_source_error`。Twelve Data 的回應已確認有 R2 副本，另刪
+  `work_response`、`work_response_observation` 與 `work_manifest`；其他格式（FinLab dataset、官方
+  名單、TAIFEX 報表、catalogue）的回應與 manifest 保留。任一 delivery 缺 receipt 的工作整筆保留。
+- Full checkpoint：以 `daily:full_market:<dataset>:<trade_date>` 對應 plan，刪除該 plan 的
+  `full_work` 及其 receipt、diagnostic、empty outcome、member repair，以及 plan、reconcile、outage、
+  no-data trip／round 與 schedule 列。仍有 prepared body 但沒有 receipt 的 plan 整筆保留。
+- 已結案的工作不會再被領取，因此沒有路徑會再讀這些列；`full_cursor` 與 account governor 不在此範圍。
+- 刪除後不自動 VACUUM，空間由 SQLite 重用；要縮小檔案時，在 controls 停止後另行 VACUUM。
 
 ## Production universe與historical backfill
 

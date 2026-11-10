@@ -5,7 +5,7 @@ from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import verify_source_api_key
@@ -71,6 +71,18 @@ class SettleRequest(FenceRequest):
     proof: dict
     retry_at: datetime | None = None
     failure_code: str | None = None
+
+
+class ClosedLookup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    work_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    stable_keys: list[str] = Field(default_factory=list, max_length=500)
+
+    @model_validator(mode="after")
+    def bounded(self) -> "ClosedLookup":
+        if not 1 <= len(self.work_ids) + len(self.stable_keys) <= 500:
+            raise ValueError("closed lookup takes 1 to 500 works")
+        return self
 
 
 class RepairAckRequest(FenceRequest):
@@ -466,6 +478,21 @@ async def manifest(
 @router.post("/{work_id}/settle")
 async def settle(work_id: UUID, body: SettleRequest, db: AsyncSession = Depends(get_db)) -> dict:
     return await mutate(db, work_id, body, "settle")
+
+
+@router.post("/closed")
+async def closed(body: ClosedLookup, db: AsyncSession = Depends(get_db)) -> dict:
+    """Read-only: which listed works Source has closed, for local checkpoint retention."""
+    provider, datasets = scope(db)
+    return {
+        "data": await service.closed_works(
+            db,
+            provider=provider,
+            datasets=datasets,
+            work_ids=body.work_ids,
+            stable_keys=body.stable_keys,
+        )
+    }
 
 
 @router.get("")

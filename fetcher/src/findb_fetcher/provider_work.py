@@ -35,6 +35,24 @@ _quarantine: list[int] = []
 P = ParamSpec("P")
 T = TypeVar("T")
 
+# Source closes a work before its local journal is retired; raw provider bytes
+# stay in R2 for 90 days, so this only bounds local recovery evidence.
+CLOSED_WORK_RETENTION_SECONDS = 7 * 86400
+CLOSED_WORK_PRUNE_INTERVAL_SECONDS = 86400
+CLOSED_LOOKUP_BATCH = 500
+# Replay state that only an open work reads.
+_JOURNAL_REPLAY_TABLES = (
+    "work_delivery",
+    "work_job",
+    "work_budget",
+    "work_cooldown",
+    "work_source_error",
+)
+# Response caches retire only where every body is known to have an R2 copy;
+# other formats (SDK datasets, official snapshots, exchange reports) are kept.
+_R2_BACKED_RESPONSES = frozenset({"twelve_data"})
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
 
 class ProviderWorkWaitingError(RuntimeError):
     """Ordinary FIFO/cooldown wait; never an acquisition failure."""
@@ -943,6 +961,104 @@ class ProviderWorkSession:
             raise ProviderWorkRecoveryBlockedError("heartbeat thread has not stopped")
 
 
+def journal_path(root: Path | None = None) -> Path:
+    """The host-wide provider-work journal beside the shared account ledger."""
+    return (
+        root
+        or Path(
+            os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3")
+        ).parent
+    ) / "provider-work.sqlite3"
+
+
+def closed_work_times(
+    source: Any, *, work_ids: list[str] | None = None, stable_keys: list[str] | None = None
+) -> dict[str, float]:
+    """Source completion time keyed by work id and stable key; open works are absent."""
+    items = [("work_ids", key) for key in work_ids or []] + [
+        ("stable_keys", key) for key in stable_keys or []
+    ]
+    closed: dict[str, float] = {}
+    for start in range(0, len(items), CLOSED_LOOKUP_BATCH):
+        chunk = items[start : start + CLOSED_LOOKUP_BATCH]
+        body = {
+            field: [key for kind, key in chunk if kind == field]
+            for field in ("work_ids", "stable_keys")
+        }
+        for row in source.request("POST", "provider-work/closed", body).get("data", []):
+            completed = datetime.fromisoformat(row["completed_at"]).timestamp()
+            closed[str(row["work_id"])] = completed
+            closed[str(row["stable_key"])] = completed
+    return closed
+
+
+def prune_closed_journal(
+    source: Any, provider: str, *, root: Path | None = None, now: float | None = None
+) -> dict[str, int] | None:
+    """Retire journal replay state of this provider's works Source closed a week ago.
+
+    Runs at most once a day per provider. The journal is shared by every provider
+    on the host; Source answers only for the caller's own scope, so each provider
+    retires only its own works. A work with any delivery lacking a receipt keeps
+    everything, since its acceptance is not proven locally.
+    """
+    path = journal_path(root)
+    if not path.is_file():
+        return None
+    now = time.time() if now is None else now
+    db = sqlite3.connect(path)
+    try:
+        db.execute("PRAGMA journal_mode=WAL")
+        with db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS work_retention(provider TEXT PRIMARY KEY, next_at REAL NOT NULL)"
+            )
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT next_at FROM work_retention WHERE provider=?", (provider,)
+            ).fetchone()
+            if row is not None and now < row[0]:
+                return None
+            # Claim before any lookup so sibling consumers skip; a failure retries tomorrow.
+            db.execute(
+                "INSERT INTO work_retention VALUES(?,?) ON CONFLICT(provider) DO UPDATE SET next_at=excluded.next_at",
+                (provider, now + CLOSED_WORK_PRUNE_INTERVAL_SECONDS),
+            )
+            keys = sorted(
+                str(key)
+                for (key,) in db.execute(
+                    "SELECT work_key FROM work_manifest UNION SELECT work_key FROM work_delivery "
+                    "UNION SELECT work_key FROM work_job"
+                )
+                if _UUID.fullmatch(str(key))
+            )
+        closed = closed_work_times(source, work_ids=keys)
+        cutoff = now - CLOSED_WORK_RETENTION_SECONDS
+        removed = {"works": 0, "unreceipted": 0}
+        for key in keys:
+            if closed.get(key, now) >= cutoff:
+                continue
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                if db.execute(
+                    "SELECT 1 FROM work_delivery WHERE work_key=? AND receipt IS NULL LIMIT 1",
+                    (key,),
+                ).fetchone():
+                    removed["unreceipted"] += 1
+                    continue
+                tables = _JOURNAL_REPLAY_TABLES + (
+                    ("work_response", "work_response_observation", "work_manifest")
+                    if provider in _R2_BACKED_RESPONSES
+                    else ()
+                )
+                for table in tables:
+                    db.execute(f"DELETE FROM {table} WHERE work_key=?", (key,))
+            removed["works"] += 1
+        return removed
+    finally:
+        db.close()
+
+
 @contextmanager
 def claimed_work(
     source,
@@ -971,18 +1087,7 @@ def claimed_work(
         if work is None:
             yield None
             return
-        journal = WorkJournal(
-            (
-                root
-                or Path(
-                    os.getenv(
-                        "FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3"
-                    )
-                ).parent
-            )
-            / "provider-work.sqlite3",
-            work["work_id"],
-        )
+        journal = WorkJournal(journal_path(root), work["work_id"])
         session = ProviderWorkSession(source, provider, work, journal)
         token = _current.set(session)
         try:
