@@ -131,6 +131,38 @@ Full worker 每日對自己的 provider 清理一次已結案工作的本機狀�
 - 已結案的工作不會再被領取，因此沒有路徑會再讀這些列；`full_cursor` 與 account governor 不在此範圍。
 - 刪除後不自動 VACUUM，空間由 SQLite 重用；要縮小檔案時，在 controls 停止後另行 VACUUM。
 
+## PostgreSQL 暫存副本保留
+
+以下三類 server-side 資料目前**沒有**定期清理。保存期限尚待 Owner 決定（#494）；決定前不刪除任何資料。
+
+| 資料 | 內容 | 恢復／稽核用途 |
+| --- | --- | --- |
+| `provider_work_prepared.body` | Fetcher 交付的完整 body，和 raw TTL 無關 | Recovery、retry 與 drain 會重送原始 bytes。終態 work 不會再被領取，但 descriptor、digest 與 receipt 是永久證據 |
+| `calendar_import_batch` | 匯入預覽與 `candidate_rows` | `previewed` 在 30 分鐘後拒絕套用；`applied` 會在重放套用與列表中被讀取 |
+| `admin_session` | 已過期或已撤銷的 session | 讀取時已過濾；稽核需要時看 security event 與 audit，不依賴 session 列 |
+
+`backend/scripts/retention.py`：
+
+- `inspect`：唯讀。依 provider、work 狀態、結案年齡，以及是否仍可能重送，統計 prepared body 的
+  bytes；另外統計 import batch 與 session 的狀態。
+- `cleanup`：預設 dry run，加上 `--apply` 才會寫入。每一類都必須明確給天數
+  （`--prepared-body-days`、`--import-batch-days`、`--session-days`），沒有預設保存期限。
+  - prepared：只把 body 設為 NULL，不刪除列，保留 descriptor、digest 與 receipt。條件是 work 已結案
+    （completed、partial、failed、cancelled、calendar_closed）且結案超過 N 天、沒有未結算的 attempt，
+    而且**每一筆** delivery 都有 terminal run 的 receipt。任何一筆未被接受或是人工 waiver 時，
+    整個 work 的 body 都保留。`prepared_map` 已能處理 NULL body。
+  - import batch：只刪除過期超過 N 天的 `previewed`，`applied` 保留。
+  - session：只刪除過期或撤銷超過 N 天的列。
+  - 可以重複執行；不做 VACUUM。
+
+在 ingest container 內執行：`python scripts/retention.py inspect`。
+
+2026-11-11 staging 盤點結果：
+
+- prepared body 共 15.3 MiB，除了一個 queued 的 Twelve Data work 外都符合清理條件。
+- 過期的 previewed import batch：1 筆。
+- admin session：97 筆過期、6 筆撤銷，最早結束於 2026-07-28。
+
 ## Production universe與historical backfill
 
 Historical capability 現由 provider catalog 推導；Source execution-config 是 daily 設定發布，
