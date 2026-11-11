@@ -3,7 +3,7 @@
 import hashlib
 import json
 from datetime import date, time, timedelta
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -125,6 +125,34 @@ async def effective_days(
             }
         )
     return result
+
+
+async def published_calendar_year(db: AsyncSession, market: str, year: int) -> dict[str, Any]:
+    """Return one year of effective days and whether it is published, defaulted or mixed."""
+    if year < 1900 or year > 2200:
+        raise ValueError("year must be between 1900 and 2200")
+    market = market.upper()
+    days = await effective_days(db, market, date(year, 1, 1), date(year, 12, 31))
+    sources = {day["calendar_source"] for day in days}
+    status: Literal["published", "defaulted", "mixed"] = (
+        "published"
+        if sources == {"published"}
+        else "defaulted"
+        if sources == {"weekday_default"}
+        else "mixed"
+    )
+    # Only one published revision exists per market and year, so any day carries it.
+    return {
+        "market": market,
+        "year": year,
+        "revision": days[0]["calendar_revision"] if status == "published" else None,
+        "status": status,
+        "coverage_complete": True,
+        "timezone": days[0]["timezone"],
+        "expected_days": len(days),
+        "actual_days": len(days),
+        "days": days,
+    }
 
 
 async def execution_snapshot(
