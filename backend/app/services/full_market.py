@@ -1232,7 +1232,10 @@ async def record_outcome(
                 DailyDeliveryMember.member_key == body.member_key,
                 DailyDeliveryPart.work_item_id == body.work_item_id,
             )
-            .with_for_update()
+            # Lock only the member: a summary writer holds the plan lock while it
+            # updates part counts, so locking the joined part too would invert the
+            # plan -> part order and deadlock with it.
+            .with_for_update(of=DailyDeliveryMember)
         )
     ).one_or_none()
     if member is None:

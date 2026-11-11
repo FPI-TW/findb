@@ -829,3 +829,64 @@ async def test_part_classification_matches_full_cohort_across_parts(test_session
     stored = await summary(test_session, plan.plan_id)
     assert stored.data_count == 1
     await _part_counts_match(test_session, plan.plan_id)
+
+
+@pytest.mark.asyncio
+async def test_outcome_waits_behind_a_part_refresh_without_deadlock(test_session, test_engine):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    member = await _first_member(test_session, plan.plan_id)
+    body = DeliveryOutcomeRequest(
+        version=1,
+        work_item_id=plan.parts[0].work_item_id,
+        member_key=member.member_key,
+        outcome="blocked",
+        reason="source_error",
+    )
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def outcome():
+        async with factory() as source:
+            return await record_outcome(
+                source,
+                plan.plan_id,
+                body,
+                provider="taifex",
+                allowed_datasets=[dataset.dataset_key],
+            )
+
+    async with factory() as worker:
+        # A worker's part refresh takes the plan lock first...
+        await worker.execute(
+            select(DailyDeliveryPlan)
+            .where(DailyDeliveryPlan.plan_id == plan.plan_id)
+            .with_for_update()
+        )
+        task = asyncio.create_task(outcome())
+        try:
+            # ...while the outcome locks its member and queues for the plan lock...
+            for _ in range(100):
+                waiting = await worker.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                        "WHERE NOT l.granted AND a.datname = current_database()"
+                    )
+                )
+                if waiting:
+                    break
+                await asyncio.sleep(0.05)
+            assert waiting
+            # ...then writes the part counts, which the outcome must not hold.
+            await worker.execute(text("SET LOCAL lock_timeout = '5s'"))
+            await worker.execute(
+                text(
+                    "UPDATE daily_delivery_part SET data_count = data_count WHERE part_id = :part"
+                ),
+                {"part": plan.parts[0].part_id},
+            )
+            await worker.commit()
+            summary = await asyncio.wait_for(task, 10)
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+    assert summary.blocked == 1
