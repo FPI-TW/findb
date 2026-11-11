@@ -6,6 +6,7 @@ Handles raw data storage and triggers normalization.
 import hashlib
 import json
 import logging
+import time
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any, Optional, Protocol, cast
 from uuid import UUID
@@ -449,9 +450,9 @@ class IngestionService:
         )
         self.db.add(run)
         await self.db.flush()
-        from app.services.delivery_plan_summary import refresh_summaries_for_run
+        from app.services.delivery_plan_summary import record_run_created
 
-        await refresh_summaries_for_run(self.db, run)
+        await record_run_created(self.db, run)
         return run
 
     async def store_raw_payload(
@@ -707,6 +708,7 @@ class IngestionService:
         attempt_id: UUID,
     ) -> tuple[UUID, str, bool]:
         """Persist a validated canonical contract and enqueue schema-based normalization."""
+        started = time.perf_counter()
         if self.bound_source is not None and request.source != self.bound_source:
             raise SourceIdentityMismatchError(
                 f"Credential is bound to source {self.bound_source}, not {request.source}"
@@ -914,12 +916,14 @@ class IngestionService:
             )
 
         logger.info(
-            "Canonical ingestion accepted: attempt_id=%s run_id=%s dataset=%s contract=%s.v%s",
+            "Canonical ingestion accepted: attempt_id=%s run_id=%s dataset=%s contract=%s.v%s "
+            "server_ms=%.1f",
             attempt_id,
             run.run_id,
             request.dataset_key,
             request.schema_id,
             request.schema_version,
+            (time.perf_counter() - started) * 1000,
         )
         return run.run_id, run.status, False
 

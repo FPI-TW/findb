@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import socket
+import time
 from datetime import timedelta
 from uuid import UUID
 
@@ -492,7 +493,6 @@ async def execute_normalization(
                     run.next_retry_at = None
                     if run.started_at is None:
                         run.started_at = now
-                    await refresh_summaries_for_run(session, run)
                     await session.commit()
 
                     raw = None
@@ -542,8 +542,12 @@ async def execute_normalization(
                         normalizer_config["defaults"] = declaration.defaults.model_dump()
                     normalizer_config["_ingest_fetched_at"] = raw.fetched_at
                     normalizer_config["_ingest_source"] = raw.source
+                    # The terminal commit below publishes the summary exactly once.
+                    normalizer_config["_defer_summary_refresh"] = True
                     normalizer = normalizer_cls(session, normalizer_config)
+                    normalize_started = time.perf_counter()
                     result = await normalizer.process(raw.payload, run_id, commit=False)
+                    normalized = time.perf_counter()
                     now = utc_now()
                     job.status = (
                         "completed" if result.failed_records == 0 else "completed_with_errors"
@@ -557,6 +561,18 @@ async def execute_normalization(
                     run.next_retry_at = None
                     await refresh_summaries_for_run(session, run)
                     await session.commit()
+                    committed = time.perf_counter()
+                    logger.info(
+                        "Normalization settled: run_id=%s dataset=%s status=%s attempt=%s "
+                        "queue_wait_ms=%.0f normalize_ms=%.1f settle_ms=%.1f",
+                        run_id,
+                        dataset_key,
+                        job.status,
+                        attempt_count,
+                        (run.started_at - job.created_at).total_seconds() * 1000,
+                        (normalized - normalize_started) * 1000,
+                        (committed - normalized) * 1000,
+                    )
                 except EODPartitionUnavailableError as exc:
                     await session.rollback()
                     failure = PermanentNormalizationError(RunFailureCode.EOD_PARTITION_UNAVAILABLE)

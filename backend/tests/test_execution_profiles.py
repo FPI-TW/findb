@@ -142,6 +142,16 @@ async def test_shared_five_feed_source_queue_canonical_serve(
         request["fetched_at"] = utc_now().isoformat()
         request["payload"]["data"] = rows
         request["payload"]["batch"]["declared_record_count"] = len(rows)
+        from app.services import full_market as full_market_service
+
+        reconciles = []
+        reconcile = full_market_service.reconcile_plan
+
+        async def counted(db, plan_row, **kwargs):
+            reconciles.append(plan_row.plan_id)
+            return await reconcile(db, plan_row, **kwargs)
+
+        monkeypatch.setattr(full_market_service, "reconcile_plan", counted)
         accepted = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert accepted.status_code == 202, accepted.text
         run_id = UUID(accepted.json()["run_id"])
@@ -161,6 +171,9 @@ async def test_shared_five_feed_source_queue_canonical_serve(
             job.delivery_id,
             database_url=test_engine.url.render_as_string(hide_password=False),
         )
+        # One full reconcile per run; a sequenced snapshot also reconciles on creation.
+        assert reconciles == [plan.plan_id] * (2 if key.endswith("minute") else 1)
+        monkeypatch.setattr(full_market_service, "reconcile_plan", reconcile)
         duplicate = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert duplicate.json()["run_id"] == str(run_id)
         result = await get_plan(
