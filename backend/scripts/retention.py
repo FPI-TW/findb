@@ -2,10 +2,12 @@
 Inventory and clean PostgreSQL copies that outlive their recovery purpose.
 
 ``inspect`` is read-only. ``cleanup`` is a dry run unless ``--apply`` is given,
-and every category requires an explicit age in days; there is no default
-retention. Cleanup never deletes provider-work rows: it only clears the body of
-prepared deliveries whose work is terminal and whose every delivery has a
-receipt on a terminal run, keeping descriptors, digests and receipts.
+and every category requires an explicit age in days; the CLI has no default
+retention. The daily raw-cleanup service applies the ages configured in
+Settings through ``scheduled_cleanup``. Cleanup never deletes provider-work
+rows: it only clears the body of prepared deliveries whose work is terminal and
+whose every delivery has a receipt on a terminal run, keeping descriptors,
+digests and receipts.
 """
 
 import argparse
@@ -211,6 +213,23 @@ async def cleanup(
     else:
         await db.rollback()
     return result
+
+
+async def scheduled_cleanup(*, database_url: str | None = None) -> dict[str, Any]:
+    """Apply the configured ages; run daily by the raw-cleanup service."""
+    settings = get_settings()
+    engine = create_async_engine(database_url or settings.DATABASE_URL)
+    try:
+        async with async_sessionmaker(engine, class_=AsyncSession)() as db:
+            return await cleanup(
+                db,
+                prepared_body_days=settings.PREPARED_BODY_RETENTION_DAYS,
+                import_batch_days=settings.CALENDAR_IMPORT_PREVIEW_RETENTION_DAYS,
+                session_days=settings.ADMIN_SESSION_RETENTION_DAYS,
+                apply=True,
+            )
+    finally:
+        await engine.dispose()
 
 
 def _parser() -> argparse.ArgumentParser:

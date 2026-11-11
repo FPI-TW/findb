@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from scripts.cleanup_raw import run_repeated
+from scripts.cleanup_raw import main, run_repeated
 
 
 @pytest.mark.asyncio
@@ -51,3 +51,16 @@ async def test_failed_pass_retries_next_interval_and_can_stop():
     with patch("scripts.cleanup_raw.main", side_effect=cleanup) as cleanup_mock:
         await asyncio.wait_for(run_repeated(interval=0.001, stop=stop), 1)
         assert cleanup_mock.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_daily_pass_also_clears_retained_copies():
+    with (
+        patch("scripts.cleanup_raw.cleanup_expired_raw", new_callable=AsyncMock) as raw,
+        patch("scripts.cleanup_raw.scheduled_cleanup", new_callable=AsyncMock) as retained,
+    ):
+        raw.return_value = 0
+        retained.return_value = {"applied": True}
+        await main()
+    raw.assert_awaited_once_with()
+    retained.assert_awaited_once_with()
