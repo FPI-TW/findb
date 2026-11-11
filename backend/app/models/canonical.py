@@ -318,6 +318,11 @@ class CalendarImportBatch(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+# Admin EOD corrections pin their row to the int4 minimum, below any dataset precedence,
+# so later ingests, reruns and newer fetches never silently overwrite them.
+MANUAL_CORRECTION_PRIORITY = -2_147_483_648
+
+
 class MarketDataEOD(Base):
     """
     End-of-day market data.

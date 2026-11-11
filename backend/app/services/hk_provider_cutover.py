@@ -6,7 +6,7 @@ from datetime import date
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.canonical import Instrument, MarketDataEOD
+from app.models.canonical import MANUAL_CORRECTION_PRIORITY, Instrument, MarketDataEOD
 from app.models.registry import AdminAuditEvent, DatasetRegistry, SchedulerControl, UniverseRelease
 from app.services.effective_calendar import market_timezone
 from app.services.provider_work import lock_provider
@@ -115,6 +115,7 @@ async def apply_cutover(db: AsyncSession, *, effective_date: date, actor: str) -
             ),
             MarketDataEOD.source == "twelve_data",
             MarketDataEOD.source_priority != 0,
+            MarketDataEOD.source_priority != MANUAL_CORRECTION_PRIORITY,
         )
         .values(source_priority=0)
     )
