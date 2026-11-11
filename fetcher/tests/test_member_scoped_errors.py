@@ -54,6 +54,10 @@ def test_twelve_data_identity_mismatch_blocks_only_that_member(tmp_path, monkeyp
         return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
 
     monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    # The one-symbol path stays pinned; shared batches have their own tests.
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+
+    monkeypatch.setattr(TwelveDataAdapter, "member_batch_limit", 0)
     runtime, source, delivery, _ = _runtime(tmp_path, "twelve_data")
     keys = ["AAPL", "OTHER", "IBM"]
     plan = _plan("us_equity_eod", keys)

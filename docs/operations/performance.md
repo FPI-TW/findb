@@ -84,7 +84,7 @@ prepare→ingest response p50 1.361 秒吻合，推論 plan lock 才是全域串
 
 ### 優化順序與重新驗收
 
-追蹤於 issue #504。P0、P1、P3、P5 已完成；後續順序：P2 → P4。
+追蹤於 issue #504。P0–P3、P5 已完成，P4a 已實作；授權類 RPC 合併與連線重用經 Owner 決定暫不做。
 
 PR #508 的 staging 驗收（2026-11-11，Twelve Data 續抓 us_equity_eod 11-09，plan data
 405→1,132，727 runs）：交付 16.27→31.7 runs／分鐘，相鄰 run 間隔 p50 3.455→1.787 秒，
@@ -159,10 +159,12 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
   `step raw_persist`。計時只進 log，不寫入 durable batch 或 settlement proof。部署中的 runtime
   沒有 daily batch policy（`max_members`／`max_seconds` 只在設定時生效），計時因此不依附 batch。授權類 RPC（每檔約 10 次、0.57 秒）
   是 dispatch 邊界的即時授權，是否能合併須先以這組計時拆解後另案評估。
-- **P4** 再驗證 provider batch 與同一 frozen part 的多列交付。Twelve Data 官方支援多 symbol
-  `time_series`，但 credits 仍按 symbol 計費；現有 governor 的單次單 symbol 計帳與
-  adapter／journal／raw lineage 也須一起調整，不能只將 symbol 串接或提高 concurrency。
-  參考[官方 batch 說明](https://support.twelvedata.com/en/articles/5203360-batch-api-requests)
+- **P4a provider batch（已實作，待 staging 驗收）**：同一 part 的待抓成員共用一次逗號
+  `/time_series`（最多 50 個、每 symbol 1 credit），R2 只存一份，仍逐成員交付；規則見
+  [full_market.md](full_market.md) 的 Twelve Data 配額說明。預估每檔約 1.575 → 0.8–0.9 秒（省 provider
+  HTTP、R2 PUT 與 acquisition 內的授權 RPC），Source 端每檔 prepare／ingest／run GET 不變。
+- **P4b** 同一 frozen part 合併成一筆多列 ingest 可再省 Source RPC，但會改變逐成員 receipt、no-data
+  重試與 prepared 語意，待 P4a 驗收後再評估。參考[官方 batch 說明](https://support.twelvedata.com/en/articles/5203360-batch-api-requests)
   與[credits 說明](https://support.twelvedata.com/en/articles/5615854-credits)。
 
 每階段重測完整 cohort 的 first-dispatch→last-dispatch、last-accept→last-terminal、

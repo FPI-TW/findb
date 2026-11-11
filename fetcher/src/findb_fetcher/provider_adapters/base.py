@@ -92,6 +92,9 @@ class AcquisitionContext:
     cohort: Sequence[Mapping[str, Any]] | None = None
     # The frozen universe release's effective date, when the caller knows it.
     universe_effective_date: date | None = None
+    # Provider symbols of this part that may share one native request, starting
+    # with this member; evaluated only when the adapter really dispatches.
+    batch_candidates: Callable[[], tuple[str, ...]] | None = None
 
     @property
     def max_response_bytes(self) -> int:
