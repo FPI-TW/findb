@@ -263,13 +263,3 @@ class UniversePublishRequest(FullMarketModel):
     evidence_note: str = Field(min_length=10, max_length=2000)
     first_baseline_approved: bool = False
     threshold_exception_approved: bool = False
-
-
-class FeedActivateRequest(FullMarketModel):
-    activation_date: date
-    readiness_evidence_note: str = Field(min_length=10, max_length=2000)
-    mode: Literal["acceptance", "active"] = "acceptance"
-
-
-class FeedDeactivateRequest(FullMarketModel):
-    evidence_note: str = Field(min_length=10, max_length=2000)

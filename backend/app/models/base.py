@@ -139,9 +139,3 @@ async def _verify_required_objects(conn) -> None:
             )
             logger.warning(message)
             raise RuntimeError(message)
-
-
-async def get_session() -> AsyncSession:
-    """Get a new database session."""
-    async with async_session_maker() as session:
-        return session
