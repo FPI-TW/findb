@@ -443,3 +443,61 @@ def test_delivery_timing_logs_each_interval_without_daily_policy(tmp_path, monke
     assert [entry["members"] for entry in logged] == [4, 1]
     assert logged[0]["seconds"] == 75
     assert len(acquired) == 5
+
+
+def test_closed_acquisition_skips_remaining_unprepared_members(tmp_path, monkeypatch):
+    from uuid import UUID
+
+    from findb_fetcher import provider_work
+    from findb_fetcher.full_market_universe import canonical_bytes
+
+    runtime, _, release, plan, acquired, _, _ = harness(tmp_path, monkeypatch, count=6)
+    runtime.daily_policy = None
+    restores, gates, statuses = [], [], []
+
+    class Owner:
+        dispatch_observations = 0
+        journal = None
+        work = {"kind": "daily", "state": "open"}
+
+        def restore(self, *, member_key):
+            restores.append(member_key)
+            return []
+
+        def authorize(self):
+            return None
+
+        def request(self, action):
+            return {"work_id": None, "trade_date": None, "repair_required": False}
+
+    class Delivery:
+        def get_run_status(self, run_id, *, expected):
+            statuses.append(expected.idempotency_key)
+            return SimpleNamespace(
+                status="completed", failed_records=0, total_records=1, success_records=1
+            )
+
+    monkeypatch.setattr(provider_work, "require_owner", lambda provider: Owner())
+    allowed = iter([True, False])  # the scheduler stops after the first acquisition
+
+    def gate():
+        gates.append(True)
+        return next(allowed, False)
+
+    runtime._acquisition_allowed = gate
+    runtime.delivery = Delivery()
+    request = {
+        "idempotency_key": "full:S4",
+        "dataset_key": "tw_equity_eod",
+        "schema_id": "market_eod",
+        "schema_version": 1,
+    }
+    runtime.state.prepare("part:S4", canonical_bytes([request]))
+    runtime.state.save_sequence_receipt("part:S4", "full:S4", str(UUID(int=4)))
+    runtime._deliver_plan(plan, release, {})
+    assert acquired == ["S0"]
+    # After the gate first says no, unprepared members cost no probe or gate RPC...
+    assert restores == ["S0", "S1"] and len(gates) == 2
+    # ...while a locally prepared body still settles its run.
+    assert statuses == ["full:S4"]
+    assert runtime.state.plan_progress(plan["plan_id"])["counts"] == {"complete": 2, "pending": 4}

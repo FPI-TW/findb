@@ -84,7 +84,7 @@ prepare→ingest response p50 1.361 秒吻合，推論 plan lock 才是全域串
 
 ### 優化順序與重新驗收
 
-追蹤於 issue #504。P0–P3、P5 已完成，P4a 已實作；授權類 RPC 合併與連線重用經 Owner 決定暫不做。
+追蹤於 issue #504。P0–P3、P4a、P5 已完成；授權類 RPC 合併與連線重用經 Owner 決定暫不做。
 
 PR #508 的 staging 驗收（2026-11-11，Twelve Data 續抓 us_equity_eod 11-09，plan data
 405→1,132，727 runs）：交付 16.27→31.7 runs／分鐘，相鄰 run 間隔 p50 3.455→1.787 秒，
@@ -159,10 +159,21 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
   `step raw_persist`。計時只進 log，不寫入 durable batch 或 settlement proof。部署中的 runtime
   沒有 daily batch policy（`max_members`／`max_seconds` 只在設定時生效），計時因此不依附 batch。授權類 RPC（每檔約 10 次、0.57 秒）
   是 dispatch 邊界的即時授權，是否能合併須先以這組計時拆解後另案評估。
-- **P4a provider batch（已實作，待 staging 驗收）**：同一 part 的待抓成員共用一次逗號
+- **P4a provider batch（已實作，staging 已驗收）**：同一 part 的待抓成員共用一次逗號
   `/time_series`（最多 50 個、每 symbol 1 credit），R2 只存一份，仍逐成員交付；規則見
   [full_market.md](full_market.md) 的 Twelve Data 配額說明。預估每檔約 1.575 → 0.8–0.9 秒（省 provider
   HTTP、R2 PUT 與 acquisition 內的授權 RPC），Source 端每檔 prepare／ingest／run GET 不變。
+  Staging 驗收（PR #524，2026-11-11 13:53–14:05 UTC，417 runs，data 3,148→3,565）：每次抓取
+  `provider_acquire` 816→38 毫秒，R2 PUT 約每 50 檔一次（每檔 231→6 毫秒）；每檔 authorization
+  4.03→2.07、poll 3.03→2.04、work authorize 3.01→1.04 次，Source RPC 約 14.5→10.3 次。牆鐘未改善
+  （每檔 1,575→1,821 毫秒、32.6 runs／分鐘）：同時段 Source RPC 往返普遍慢 2–10 倍（poll 平均
+  35→333 毫秒），Backend ingest `server_ms` p50 64 毫秒不變、兩台 host 負載低、Fetcher 只用一條持久
+  連線，每檔牆鐘約 1.75 秒都在 Source RPC。以前一輪 RPC 延遲推估每檔約 0.74 秒（推估，未實測）。
+  nginx 目前未記錄 `$request_time`，無法區分 origin 與網路。Summary 一致，deferral／errors／drift 0。
+- **停止掃描**：停止後 Fetcher 原本仍對每個剩餘成員先 `prepared` restore、再查 acquisition gate（poll＋
+  authorization），約 1,900 個成員在 RPC 偏慢時需 19 分鐘才回報 stopped。現改為同一輪一旦 gate 回報
+  不可抓取，後續沒有本機 prepared body 的成員直接略過；本機已 prepared 的仍交付或查狀態，Source
+  保留的 bytes 由下次執行中的 attempt 照常 restore（`retry` settle 允許其保持 pending）。
 - **P4b** 同一 frozen part 合併成一筆多列 ingest 可再省 Source RPC，但會改變逐成員 receipt、no-data
   重試與 prepared 語意，待 P4a 驗收後再評估。參考[官方 batch 說明](https://support.twelvedata.com/en/articles/5203360-batch-api-requests)
   與[credits 說明](https://support.twelvedata.com/en/articles/5615854-credits)。

@@ -1542,6 +1542,11 @@ class FullMarketRuntime:
         ordered = ordered[offset:] + ordered[:offset]
         calendar_checked = False
         no_data_streak = 0
+        # Once this pass sees acquisition closed (stopped, suspended or outside the
+        # window) it stays closed: unprepared members are skipped without a restore
+        # probe or another gate RPC each. Locally prepared bodies still deliver;
+        # server-retained ones stay pending for the next running attempt.
+        acquisition_closed = False
         for index, (part, member_key) in ordered:
             key = part["work_item_id"] + ":" + member_key
             if drain_keys is not None and key not in drain_keys:
@@ -1556,6 +1561,8 @@ class FullMarketRuntime:
                     return True
             if not self.state.eligible(key, now=time.time()):
                 continue
+            if acquisition_closed and self.state.prepared(key) is None:
+                continue
             if self.state.prepared(key) is None:
                 restored = owner.restore(member_key=member_key)
                 if restored:
@@ -1563,6 +1570,7 @@ class FullMarketRuntime:
                         key, canonical_bytes([json.loads(body) for body in restored])
                     )
             if self.state.prepared(key) is None and (drain_only or not self._acquisition_allowed()):
+                acquisition_closed = not drain_only
                 continue
             if self.daily_policy and (
                 self.last_batch["processed"] >= self.daily_policy["max_members"]
