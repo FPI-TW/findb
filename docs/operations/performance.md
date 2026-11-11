@@ -84,7 +84,7 @@ prepare→ingest response p50 1.361 秒吻合，推論 plan lock 才是全域串
 
 ### 優化順序與重新驗收
 
-追蹤於 issue #504。執行順序：P3 → P5 → P2 → P4。
+追蹤於 issue #504。P0、P1、P3 已完成；後續順序：P5 → P2 → P4。
 
 PR #508 的 staging 驗收（2026-11-11，Twelve Data 續抓 us_equity_eod 11-09，plan data
 405→1,132，727 runs）：交付 16.27→31.7 runs／分鐘，相鄰 run 間隔 p50 3.455→1.787 秒，
@@ -94,7 +94,19 @@ summary 與完整 `reconcile_plan` 一致。可確定歸因的是 ingest 約 0.3
 隨 plan 進度變慢（reconcile p95 552 毫秒），worker 每筆開始超過進件間隔，deferral 由 0 增至
 74、queue wait p95 升至 8.86 秒，因此先做 P3 與 P5。
 
-- **P0 量測（已實作）**：`Plan summary refreshed` log 記錄 `lock_wait_ms`、`reconcile_ms`、
+PR #519（P3）的 staging 驗收（2026-11-11 09:01–09:21 UTC，同一 plan data 1,132→1,783，
+650 runs，量測段已超過 #508 開始 deferral 的 plan 大小）：lock deferral 74→0，queue wait
+p50／p95／max 0.68／1.09／1.44 秒（#508 後段 p95 8.86 秒、max 68 秒），31.6 runs／分鐘、
+間隔 p50 1.649 秒，errors 0，summary 與完整 `reconcile_plan` 一致。P3 不記錄鎖等待次數，
+以 deferral 與 queue wait 判定。Worker 每筆 `reconcile_ms` 仍隨進度上升：前／中／後段
+p50 265／300／325 毫秒、p95 516／561／665 毫秒；`normalize_ms` p50 455 毫秒中另含
+`resolve_missing_delivery_for_run` 一次未記錄的 `reconcile_plan`（gap_limit=1000）。Ingest
+端 6 次完整重算全來自 Fetcher 對 mapping gap 成員回報 `blocked/mapping_gap`：
+`record_outcome` 鎖內重算一次、commit 後為回應再分類一次，但 gap 成員本就算 blocked，
+計數不變。
+
+- **P0 量測（已實作）**：`Plan summary refreshed` log 記錄 `scope`（`plan` 為整個 cohort、
+  `part` 為單一 part）、`members`（本次分類的成員數）、`lock_wait_ms`、`reconcile_ms`、
   `total_ms`；`Canonical ingestion accepted` 記錄 `server_ms`；`Normalization settled` 記錄
   `queue_wait_ms`（job 建立至 run started）、`normalize_ms` 與 `settle_ms`。API 角色
   （serve／ingest）在 FastAPI lifespan 期間以 INFO 輸出 `app.*` log，格式為
@@ -104,13 +116,18 @@ summary 與完整 `reconcile_plan` 一致。可確定歸因的是 ingest 約 0.3
 - **P1 summary 5→1 次完整重算（已實作，待 production 重測）**：非 terminal、非
   `sequenced_snapshot` run 建立時只單調更新 latest run metadata；processing 不刷新；queue
   只在 terminal commit 前重算一次。規則見 [full_market.md](full_market.md) 的持久化完整度摘要。
-- **P3 鎖競爭（已實作，待 staging 驗收）**：拿不到 dataset 鎖時先在 PostgreSQL 鎖佇列依序
+- **P3 鎖競爭（已實作，staging 已驗收）**：拿不到 dataset 鎖時先在 PostgreSQL 鎖佇列依序
   等待最多 `NORMALIZATION_LOCK_WAIT_MS`（預設 10 秒），逾時才延後重送；取得鎖後重新讀取
   job／run，不重複處理已結算的重複 delivery。鎖與持有範圍不變。規則見
   [ingestion.md](ingestion.md)。不直接刪鎖或增加 worker 數。
-- **P5 summary 增量計數**：terminal 時只依該 run 涉及成員增減計數，不再每筆全 cohort
-  `reconcile_plan`；完整 reconcile 保留給 plan 建立、outcome、historical repair、sequenced
-  snapshot 與修復工具，並證明兩者一致。驗收：`reconcile_ms` 不再隨 plan 進度上升。
+- **P5 summary 增量計數（已實作，待 staging 驗收）**：`daily_delivery_part` 保存各 part 的
+  計數；daily run terminal、outcome 與 historical repair 只在 plan lock 下重新分類受影響的
+  part（約 50 個成員）並把差值加到摘要；outcome 回應讀已存計數，不再為回應分類整個
+  cohort；完成告警檢查改用摘要加上該 part。完整分類保留給 plan 建立、sequenced snapshot、
+  不可信計數的初始化與重建工具。Missing-delivery 掃描對逾期 plan 的完整分類兼作核對，
+  不一致時記 `Plan summary drift corrected` 並修正。規則見 [full_market.md](full_market.md)。
+  驗收：`reconcile_ms` 不再隨 plan 進度上升、log 皆為 `scope=part`、summary 與完整
+  reconcile 一致。
 - **P2 Fetcher 往返**：已有 receipt 的 normalizing 重訪只查 run status，不再 prepare、不計入
   `max_members`；再合併重複 intent／confirm，保留實際 dispatch 邊界即時授權與 durable
   prepared ACK。不要以延長 freshness 或快取 stopped 前的 grant 取代。先補逐 RPC 計時。

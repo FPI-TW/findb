@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Literal, cast
@@ -837,26 +838,47 @@ async def _plan_scope(
     return plan
 
 
-async def reconcile_plan(
+SEQUENCED_DATASETS = frozenset({"tw_equity_minute", "tw_etf_minute"})
+
+
+@dataclass(frozen=True)
+class MemberState:
+    member: DailyDeliveryMember
+    state: Literal["data", "no_data", "missing", "blocked"]
+    reason: str | None
+
+
+async def classify_plan(
     db: AsyncSession,
     plan: DailyDeliveryPlan,
-    *,
-    now: datetime | None = None,
-    gap_limit: int | None = 1000,
-) -> DeliverySummaryResponse:
+    members: list[DailyDeliveryMember] | None = None,
+) -> list[MemberState]:
+    """Classify the whole frozen cohort, or only the given members of the plan.
+
+    A member's state depends only on its own canonical rows, evidence, outcome and
+    mapping, so a subset classifies exactly as it would inside the whole plan.
+    """
     from app.services.shioaji_repair import effective_mappings
 
     mappings = await effective_mappings(db, plan.plan_id) if plan.provider == "shioaji" else {}
-    members = list(
-        (
-            await db.scalars(
-                select(DailyDeliveryMember)
-                .where(DailyDeliveryMember.plan_id == plan.plan_id)
-                .order_by(DailyDeliveryMember.member_key)
-            )
-        ).all()
+    scoped = members is not None
+    if members is None:
+        members = list(
+            (
+                await db.scalars(
+                    select(DailyDeliveryMember)
+                    .where(DailyDeliveryMember.plan_id == plan.plan_id)
+                    .order_by(DailyDeliveryMember.member_key)
+                )
+            ).all()
+        )
+    # Any part of the plan may have written a member's canonical row.
+    part_ids = set(
+        await db.scalars(
+            select(DailyDeliveryPart.part_id).where(DailyDeliveryPart.plan_id == plan.plan_id)
+        )
     )
-    part_ids = {member.part_id for member in members}
+    member_keys = {member.member_key for member in members}
     canonical_keys: set[str] = set()
     complete_groups: set[tuple[UUID, str, str]] = set()
     if plan.dataset_key == "tw_futures_eod":
@@ -884,7 +906,7 @@ async def reconcile_plan(
         canonical_keys = {
             f"{symbol}|{contract}|{session}" for symbol, contract, session, _ in futures_rows
         }
-    elif plan.dataset_key in {"tw_equity_minute", "tw_etf_minute"}:
+    elif plan.dataset_key in SEQUENCED_DATASETS:
         complete_groups = set()
         for part_id in part_ids:
             groups = await list_sequenced_snapshot_groups(
@@ -925,23 +947,23 @@ async def reconcile_plan(
             if (part_id, snapshot_id, daily_update_id) in complete_groups
         }
     else:
-        eod_rows = (
-            await db.execute(
-                select(
-                    Instrument.symbol,
-                    IngestionRun.delivery_part_id,
-                )
-                .join(MarketDataEOD, MarketDataEOD.instrument_id == Instrument.instrument_id)
-                .join(IngestionRun, IngestionRun.run_id == MarketDataEOD.run_id)
-                .where(
-                    MarketDataEOD.trade_date == plan.trade_date,
-                    IngestionRun.delivery_part_id.in_(part_ids),
-                    IngestionRun.status.in_(("completed", "completed_with_errors")),
-                )
+        eod = (
+            select(
+                Instrument.symbol,
+                IngestionRun.delivery_part_id,
             )
-        ).all()
-        canonical_keys = {symbol for symbol, _ in eod_rows}
-    evidence = await db.execute(
+            .join(MarketDataEOD, MarketDataEOD.instrument_id == Instrument.instrument_id)
+            .join(IngestionRun, IngestionRun.run_id == MarketDataEOD.run_id)
+            .where(
+                MarketDataEOD.trade_date == plan.trade_date,
+                IngestionRun.delivery_part_id.in_(part_ids),
+                IngestionRun.status.in_(("completed", "completed_with_errors")),
+            )
+        )
+        if scoped:
+            eod = eod.where(Instrument.symbol.in_(member_keys))
+        canonical_keys = {symbol for symbol, _ in (await db.execute(eod)).all()}
+    evidence_query = (
         select(
             DeliveryMemberEvidence.member_key,
             IngestionRun.delivery_part_id,
@@ -954,19 +976,20 @@ async def reconcile_plan(
             IngestionRun.status.in_(("completed", "completed_with_errors")),
         )
     )
-    for member_key, part_id, snapshot_id, daily_update_id in evidence:
+    if scoped:
+        evidence_query = evidence_query.where(DeliveryMemberEvidence.member_key.in_(member_keys))
+    for member_key, part_id, snapshot_id, daily_update_id in await db.execute(evidence_query):
         if (
-            plan.dataset_key not in {"tw_equity_minute", "tw_etf_minute"}
+            plan.dataset_key not in SEQUENCED_DATASETS
             or (part_id, snapshot_id, daily_update_id) in complete_groups
         ):
             canonical_keys.add(member_key)
-    if plan.dataset_key not in {"tw_futures_eod", "tw_equity_minute", "tw_etf_minute"}:
-        canonical_keys.update(await _historical_repairs(db, plan, members))
-    counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
-    unmapped = 0
-    gaps: list[dict] = []
+    if plan.dataset_key not in {"tw_futures_eod", *SEQUENCED_DATASETS}:
+        canonical_keys.update(await _historical_repairs(db, plan, members, scoped=scoped))
+    states: list[MemberState] = []
     for member in members:
         mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
+        state: Literal["data", "no_data", "missing", "blocked"]
         if member.member_key in canonical_keys:
             state = "data"
         elif member.outcome == "no_data":
@@ -978,37 +1001,90 @@ async def reconcile_plan(
             state = "blocked"
         else:
             state = "missing"
-        counts[state] += 1
         reason = member.outcome_reason or ("mapping_gap" if mapping_gap else None)
         if reason == "mapping_gap" and member.member_key in mappings:
             reason = None
-        if state == "blocked" and reason == "mapping_gap":
+        states.append(MemberState(member, state, reason))
+    return states
+
+
+def summarize_states(
+    plan: DailyDeliveryPlan,
+    states: list[MemberState],
+    *,
+    now: datetime | None = None,
+    gap_limit: int | None = 1000,
+) -> DeliverySummaryResponse:
+    counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
+    unmapped = 0
+    gaps: list[dict] = []
+    for item in states:
+        counts[item.state] += 1
+        if item.state == "blocked" and item.reason == "mapping_gap":
             unmapped += 1
-        if state in {"missing", "blocked"} and (gap_limit is None or len(gaps) < gap_limit):
+        if item.state in {"missing", "blocked"} and (gap_limit is None or len(gaps) < gap_limit):
             gaps.append(
                 {
-                    "member_key": member.member_key,
-                    "status": state,
-                    "reason": reason,
+                    "member_key": item.member.member_key,
+                    "status": item.state,
+                    "reason": item.reason,
                 }
             )
-    evaluated_at = now or utc_now()
-    return DeliverySummaryResponse(
-        execution_profile=execution_profile(plan.execution_profile),
-        expected=len(members),
+    return summary_response(
+        plan,
+        expected=len(states),
         **counts,
         mapping_gap=unmapped,
-        deadline_at=plan.deadline_at,
-        # Lateness tracks acquisition progress: a mapping gap cannot be fetched, so
-        # it stays blocked (and alerting) without making the plan late.
-        is_late=evaluated_at > plan.deadline_at
-        and counts["missing"] + counts["blocked"] - unmapped > 0,
+        now=now,
         gaps=gaps,
     )
 
 
+def summary_response(
+    plan: DailyDeliveryPlan,
+    *,
+    expected: int,
+    data: int,
+    no_data: int,
+    missing: int,
+    blocked: int,
+    mapping_gap: int,
+    now: datetime | None = None,
+    gaps: list[dict],
+) -> DeliverySummaryResponse:
+    evaluated_at = now or utc_now()
+    return DeliverySummaryResponse(
+        execution_profile=execution_profile(plan.execution_profile),
+        expected=expected,
+        data=data,
+        no_data=no_data,
+        missing=missing,
+        blocked=blocked,
+        mapping_gap=mapping_gap,
+        deadline_at=plan.deadline_at,
+        # Lateness tracks acquisition progress: a mapping gap cannot be fetched, so
+        # it stays blocked (and alerting) without making the plan late.
+        is_late=evaluated_at > plan.deadline_at and missing + blocked - mapping_gap > 0,
+        gaps=gaps,
+    )
+
+
+async def reconcile_plan(
+    db: AsyncSession,
+    plan: DailyDeliveryPlan,
+    *,
+    now: datetime | None = None,
+    gap_limit: int | None = 1000,
+) -> DeliverySummaryResponse:
+    return summarize_states(plan, await classify_plan(db, plan), now=now, gap_limit=gap_limit)
+
+
 async def _historical_repairs(
-    db: AsyncSession, plan: DailyDeliveryPlan, members: list[DailyDeliveryMember]
+    db: AsyncSession,
+    plan: DailyDeliveryPlan,
+    members: list[DailyDeliveryMember],
+    *,
+    scoped: bool = False,
 ) -> set[str]:
     """Historical actual writes may resolve monitoring, never settle another work.
 
@@ -1018,31 +1094,34 @@ async def _historical_repairs(
     from app.config import get_settings
     from app.models.provider_work import ProviderWork, ProviderWorkReceipt
 
-    evidence = (
-        await db.execute(
-            select(
-                DeliveryMemberEvidence.member_key,
-                ProviderWork.work_id,
-                IngestionRun.schema_id,
-                IngestionRun.schema_version,
-            )
-            .join(IngestionRun, IngestionRun.run_id == DeliveryMemberEvidence.run_id)
-            .join(ProviderWorkReceipt, ProviderWorkReceipt.run_id == IngestionRun.run_id)
-            .join(ProviderWork, ProviderWork.work_id == ProviderWorkReceipt.work_id)
-            .where(
-                IngestionRun.source == plan.provider,
-                IngestionRun.dataset_key == plan.dataset_key,
-                IngestionRun.batch_data_date == plan.trade_date,
-                IngestionRun.schema_id == "market_eod",
-                IngestionRun.status.in_(("completed", "completed_with_errors")),
-                ProviderWork.kind == "historical",
-                ProviderWork.environment == get_settings().APP_ENVIRONMENT,
-                ProviderWork.provider == plan.provider,
-                ProviderWork.dataset_key == plan.dataset_key,
-                ProviderWork.trade_date == plan.trade_date,
-            )
+    query = (
+        select(
+            DeliveryMemberEvidence.member_key,
+            ProviderWork.work_id,
+            IngestionRun.schema_id,
+            IngestionRun.schema_version,
         )
-    ).all()
+        .join(IngestionRun, IngestionRun.run_id == DeliveryMemberEvidence.run_id)
+        .join(ProviderWorkReceipt, ProviderWorkReceipt.run_id == IngestionRun.run_id)
+        .join(ProviderWork, ProviderWork.work_id == ProviderWorkReceipt.work_id)
+        .where(
+            IngestionRun.source == plan.provider,
+            IngestionRun.dataset_key == plan.dataset_key,
+            IngestionRun.batch_data_date == plan.trade_date,
+            IngestionRun.schema_id == "market_eod",
+            IngestionRun.status.in_(("completed", "completed_with_errors")),
+            ProviderWork.kind == "historical",
+            ProviderWork.environment == get_settings().APP_ENVIRONMENT,
+            ProviderWork.provider == plan.provider,
+            ProviderWork.dataset_key == plan.dataset_key,
+            ProviderWork.trade_date == plan.trade_date,
+        )
+    )
+    if scoped:
+        query = query.where(
+            DeliveryMemberEvidence.member_key.in_([member.member_key for member in members])
+        )
+    evidence = (await db.execute(query)).all()
     expected = {
         member.member_key: member.provider_symbol
         for member in members
@@ -1158,6 +1237,7 @@ async def record_outcome(
     ).one_or_none()
     if member is None:
         raise FullMarketError("Outcome member is outside the frozen plan part", 409)
+    from app.services.delivery_plan_summary import refresh_part_summary, stored_summary_response
     from app.services.shioaji_repair import effective_mappings
 
     mappings = await effective_mappings(db, plan_id) if provider == "shioaji" else {}
@@ -1194,7 +1274,7 @@ async def record_outcome(
         member.outcome_reason,
         member.outcome_evidence,
     ) == (body.outcome, body.reason, evidence):
-        return await reconcile_plan(db, plan)
+        return await stored_summary_response(db, plan)
     if member.outcome == "no_data":
         raise FullMarketError("No-data evidence is immutable; resolve through canonical data", 409)
     member.outcome_history = [
@@ -1210,11 +1290,11 @@ async def record_outcome(
     member.outcome_reason = body.reason
     member.outcome_evidence = evidence
     member.outcome_at = utc_now()
-    from app.services.delivery_plan_summary import refresh_plan_summary
-
-    await refresh_plan_summary(db, plan.plan_id)
+    # An outcome reclassifies only its member's part; the response reuses the
+    # stored counts instead of classifying the cohort again.
+    await refresh_part_summary(db, plan.plan_id, member.part_id)
     await db.commit()
-    return await reconcile_plan(db, plan)
+    return await stored_summary_response(db, plan)
 
 
 async def validate_ingest_part(

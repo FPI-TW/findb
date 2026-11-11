@@ -252,6 +252,11 @@ workers；migration job 維持序列執行。Migration tests 只涵蓋 rollback 
 （`docs/operations/deployment.md`）及之後的 revisions；`test_schema_drift_migration.py`
 比對 `alembic upgrade head` 與 ORM metadata 的結構、CHECK 名稱及 server defaults，
 三類差異均直接使測試失敗。Partition children 僅由 migration 管理，不當成 ORM drift。
+舊 revision 的 migration 測試以目前 services 建立種子，因此 `tests/migration_database.py`
+的 `run_alembic` 會補兩類相容：`d7a2c4e6f8b1` 前已退役欄位的 server default，以及
+`b4d6f8a1c3e5` 前尚未存在的 part 計數／`parts_synced_at`（ORM 會把未設定的 nullable 欄位寫成
+NULL）。後者以 column comment 標記為 shim，只在升版會套用 `b4d6f8a1c3e5` 前移除，讓該
+migration 仍新增真正欄位；驗證該 migration 本身的測試以 `forward_columns=False` 關閉 shim。
 
 Schema reconciliation revision `1e68a0c9b3d2` 的回歸測試涵蓋前一版 populated DB 升級、
 16 個 CHECK 的 OID／定義保留、缺少的市場代碼 CHECK、降版再升級與既有資料保留。

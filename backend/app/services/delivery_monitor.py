@@ -24,6 +24,11 @@ from app.models.registry import (
     SchedulerControl,
     UniverseRelease,
 )
+from app.services.delivery_plan_summary import (
+    correct_summary_drift,
+    plan_complete_with_part,
+    stored_counts,
+)
 from app.services.delivery_policy import (
     delivery_run_coverage_condition,
     parse_delivery_expectation,
@@ -466,7 +471,11 @@ async def _scan_full_market_feed(
         deadline = ensure_utc(plan.deadline_at) if plan else _deadline(dataset, trade_date)
         if evaluated_at < deadline:
             continue
+        stored = await stored_counts(db, plan.plan_id) if plan else None
         summary = await reconcile_plan(db, plan, now=evaluated_at, gap_limit=None) if plan else None
+        if plan and summary:
+            # The scan's full classification doubles as the incremental-count audit.
+            await correct_summary_drift(db, plan.plan_id, stored, summary)
         # Only exchange-expected dates enter this loop. Data or durable no_data
         # removes that member from gaps and therefore resets its streak. Without
         # a frozen plan, escalate the feed gap without inventing member scope.
@@ -702,8 +711,8 @@ async def resolve_missing_delivery_for_run(
         if plan is None:
             return 0
         profile = plan.execution_profile
-        summary = await reconcile_plan(db, plan)
-        if summary.data + summary.no_data != summary.expected:
+        # Only this run's part changed; the stored summary covers the others.
+        if not await plan_complete_with_part(db, plan, run.delivery_part_id):
             return 0
     if delivery_mode is None:
         dataset = await db.get(DatasetRegistry, dataset_key)
