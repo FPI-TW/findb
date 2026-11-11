@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import (
+    MANUAL_CORRECTION_PRIORITY,
     Instrument,
     InstrumentIdentifier,
     InstrumentStats,
@@ -125,11 +126,14 @@ class BaseNormalizer(ABC):
 
     @staticmethod
     def _incoming_source_wins(table, excluded):
-        return (excluded.source_priority < table.c.source_priority) | (
-            (excluded.source_priority == table.c.source_priority)
-            & (
-                table.c.source_fetched_at.is_(None)
-                | (excluded.source_fetched_at >= table.c.source_fetched_at)
+        return (table.c.source_priority != MANUAL_CORRECTION_PRIORITY) & (
+            (excluded.source_priority < table.c.source_priority)
+            | (
+                (excluded.source_priority == table.c.source_priority)
+                & (
+                    table.c.source_fetched_at.is_(None)
+                    | (excluded.source_fetched_at >= table.c.source_fetched_at)
+                )
             )
         )
 

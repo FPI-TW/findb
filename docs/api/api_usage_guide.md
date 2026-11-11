@@ -304,6 +304,11 @@ EOD correction（`PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}`）在同
 後到的修正以前一筆提交後的值重新驗證，合併後違反 OHLC 規則時回 422，不會把兩筆部分修正合成
 未經 DQ 的值。Normalizer upsert 取得同一個 row lock，因此與修正之間也是以整列為單位依序套用。
 
+人工修正優先於之後的所有 ingest。修正會把該列的 `source_priority` 設為 Admin 專用值
+（int4 最小值，比任何 dataset `source_precedence` 都優先），`source` 與 `source_fetched_at`
+保持原值。之後的 rerun、同 provider 較新的 fetch，或優先度更高的 provider 都不會再覆寫這一列；
+HK cutover 重設 Twelve Data 優先度時也會略過。要再改這一列，只能送出新的修正。
+
 Instrument cache的coverage與Serve instrument契約一致，包含`eod`、`minute`及可空的`futures`；
 既有只含前兩者的cache仍可讀取，下一次Admin替換或更新時會正規化為`futures: null`。
 
