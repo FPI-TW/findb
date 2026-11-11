@@ -170,7 +170,8 @@ Control protocol v1 定義在 `backend/app/schemas/full_market.py`，與 ingest 
   TAIFEX 新計畫在日曆略過判定後要求 release effective date 等於目標日；不符時回傳
   `409 {"detail":{"code":"taifex_dated_universe_required"}}`，供 Fetcher 取得該日官方目錄後重試。
   既有凍結計畫與 durable skip 不重新套用此限制。
-- `/source/delivery-plans/{plan_id}/outcomes` 記錄 no_data／blocked。
+- `/source/delivery-plans/{plan_id}/outcomes` 記錄 no_data／blocked；回應的計數讀自已更新的
+  plan 摘要，`gaps` 為空，完整缺口以 GET plan 取得。
 
 Universe material change 計入新增／刪除與 mapping、分類、幣別、exchange、契約身分等欄位變更；
 僅每日 `raw_evidence_ref` 更新不計入 `>2%` 異常門檻。Provenance 仍保留於

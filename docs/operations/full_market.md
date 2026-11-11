@@ -1024,14 +1024,28 @@ API 的 `execution_profile` 參數保留但只接受 `full_market`，其他值�
 snapshot；交易日曆、首次日期與 deadline 仍依查詢時間計算，停止 scheduler 不會凍結
 時間判斷。頁面更新不會觸發抓取或摘要寫入。
 
-摘要以 immutable plan ID 區分。建立 plan、分鐘重試、normalization 完成或失敗、
-retry／retry exhausted、no-data／blocked outcome 變更時，只對受影響的 plan 完整重算，
-與原始資料／run／實際寫入證據在同一 transaction commit。
-Plan row lock 串行化同 plan 的完整重算；失敗 rollback 不得先公布摘要。
-接受非 terminal、非 `sequenced_snapshot` 的新 run 不會改變計數，只以單調條件更新
-latest run metadata，不取 plan lock、不重算；完整重算寫回時也只在其 latest run 不舊於
-已記錄者時覆寫 metadata。Processing 狀態不刷新摘要；queue worker 只在 terminal commit
-前完整重算一次，直接呼叫 normalizer 時由 terminal 狀態更新負責。
+摘要以 immutable plan ID 區分，與原始資料／run／實際寫入證據在同一 transaction commit；
+Plan row lock 串行化同 plan 的摘要寫入，失敗 rollback 不得先公布摘要。
+`daily_delivery_part` 另存各 part 的 data／no_data／missing／blocked／mapping_gap 計數，
+各 part 加總等於 plan 摘要。成員狀態只取決於自身的 canonical、證據、outcome 與 mapping，
+因此：
+
+- 建立 plan、分鐘資料（`sequenced_snapshot`）的 run、受控重建與缺少摘要的初始化，對整個
+  cohort 完整重算，並重寫所有 part 計數。
+- Daily run 的 terminal（完成、失敗、retry exhausted）與 no-data／blocked outcome，只在 plan
+  lock 下重新分類該 part（約 50 個成員），把差值加到 plan 摘要；outcome 回應直接讀已更新的
+  計數，`gaps` 為空，完整缺口由 GET plan 或 Admin reconcile 提供。
+- Historical run 只重新分類它實際寫入成員所在的 part（同 provider／dataset／date 的 plan）。
+- `resolve_missing_delivery_for_run` 以已存摘要加上該 part 的重新分類判斷 plan 是否完成，
+  不再分類整個 cohort。
+
+Part 計數為 NULL（既有 plan）或 `parts_synced_at` 不等於 `updated_at`（其他 release 寫過
+摘要）時不可信，該次寫入改走完整重算並重新初始化。接受非 terminal、非 `sequenced_snapshot`
+的新 run 不會改變計數，只以單調條件更新 latest run metadata，不取 plan lock、不重算；完整
+重算寫回時也只在其 latest run 不舊於已記錄者時覆寫 metadata。Processing 狀態不刷新摘要；
+queue worker 只在 terminal commit 前刷新一次，直接呼叫 normalizer 時由 terminal 狀態更新
+負責。Missing-delivery 掃描本來就對逾期 plan 完整分類，順便與已存摘要比對：掃描期間摘要
+未被寫入但計數不同時，記 `Plan summary drift corrected` warning 並完整重算修正。
 Historical 實際寫入的修復會更新同 dataset／provider／date 的 plan 摘要：FactSet、Twelve Data 與
 FinLab 的 historical work 只要以相同契約、相同 provider symbol 凍結該成員並有本 work 的 receipt 與
 canonical 寫入證據，該成員即算 data，解除 gap 與 missing-delivery 告警；原 Full work 的結算不改寫。
@@ -1068,6 +1082,9 @@ uv --directory backend run python scripts/rebuild_delivery_plan_summaries.py --p
 工具也接受 `--dataset` 與 `--batch-size`（1–100，預設 5）。Canonical／證據的直接維修應在
 維護時段完成並重建，避免讓已維修但尚未重建的摘要對外顯示。一般 application 寫入不需要
 人工重建，所有 GET 仍保持唯讀。Schema 為 additive；移除摘要表前須停止新版 application。
+Migration `b4d6f8a1c3e5` 只新增 nullable 的 part 計數與 `parts_synced_at`，不回填；既有 plan
+在下一次寫入時完整重算一次。回滾到前一版不需降版：舊版忽略新欄位，其摘要寫入讓
+`parts_synced_at` 落後，新版回來後先完整重算；降版只刪除這些衍生計數。
 
 ## 用量與傳輸保護
 

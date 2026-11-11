@@ -145,13 +145,13 @@ async def test_shared_five_feed_source_queue_canonical_serve(
         from app.services import full_market as full_market_service
 
         reconciles = []
-        reconcile = full_market_service.reconcile_plan
+        classify = full_market_service.classify_plan
 
-        async def counted(db, plan_row, **kwargs):
-            reconciles.append(plan_row.plan_id)
-            return await reconcile(db, plan_row, **kwargs)
+        async def counted(db, plan_row, members=None):
+            reconciles.append(plan_row.plan_id if members is None else "part")
+            return await classify(db, plan_row, members)
 
-        monkeypatch.setattr(full_market_service, "reconcile_plan", counted)
+        monkeypatch.setattr(full_market_service, "classify_plan", counted)
         accepted = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert accepted.status_code == 202, accepted.text
         run_id = UUID(accepted.json()["run_id"])
@@ -171,9 +171,10 @@ async def test_shared_five_feed_source_queue_canonical_serve(
             job.delivery_id,
             database_url=test_engine.url.render_as_string(hide_password=False),
         )
-        # One full reconcile per run; a sequenced snapshot also reconciles on creation.
-        assert reconciles == [plan.plan_id] * (2 if key.endswith("minute") else 1)
-        monkeypatch.setattr(full_market_service, "reconcile_plan", reconcile)
+        # A daily run reclassifies only its part (alert check, then summary); a
+        # sequenced snapshot still classifies the whole cohort.
+        assert reconciles == ([plan.plan_id] * 2 if key.endswith("minute") else ["part"] * 2)
+        monkeypatch.setattr(full_market_service, "classify_plan", classify)
         duplicate = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert duplicate.json()["run_id"] == str(run_id)
         result = await get_plan(
