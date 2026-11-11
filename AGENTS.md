@@ -259,7 +259,7 @@ uv --directory backend run alembic downgrade -1
 | `findb-postgres`                    | PostgreSQL 16                                  | host `5435` -> container `5432` |
 | `findb-rabbitmq`                    | 本機 durable delivery broker                   | container network only          |
 | `findb-dispatcher` / `findb-worker` | 本機 outbox dispatcher 與 normalization worker | n/a                             |
-| `findb-raw-cleanup`                 | daily raw TTL cleanup，profile: `tools`        | n/a                             |
+| `findb-raw-cleanup`                 | daily raw TTL 與暫存副本清理，profile: `tools` | n/a                             |
 | `findb-pgadmin`                     | pgAdmin UI，profile: `tools`                   | `5056` -> `80`                  |
 
 App container 連線 DB 使用 `db:5432`；local host 連線 DB 使用 `localhost:5435`。

@@ -3,8 +3,10 @@
 from datetime import timedelta
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
+from app.config import Settings
 from app.models.canonical import CalendarImportBatch
 from app.models.provider_work import (
     ProviderWork,
@@ -189,3 +191,68 @@ def test_cleanup_requires_an_explicit_positive_age(capsys):
             retention.main(argv)
         assert exited.value.code == 2
     assert "explicit --*-days" in capsys.readouterr().err
+
+
+def test_scheduled_ages_default_to_the_owner_decision_and_must_be_positive():
+    settings = Settings(_env_file=None)
+    assert (
+        settings.PREPARED_BODY_RETENTION_DAYS,
+        settings.CALENDAR_IMPORT_PREVIEW_RETENTION_DAYS,
+        settings.ADMIN_SESSION_RETENTION_DAYS,
+    ) == (7, 1, 30)
+    for field in (
+        "PREPARED_BODY_RETENTION_DAYS",
+        "CALENDAR_IMPORT_PREVIEW_RETENTION_DAYS",
+        "ADMIN_SESSION_RETENTION_DAYS",
+    ):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **{field: 0})
+
+
+@pytest.mark.asyncio
+async def test_scheduled_cleanup_applies_configured_ages(test_session, test_engine):
+    now = utc_now()
+    test_session.add(
+        DatasetRegistry(dataset_key="hk_equity_eod", name="HK", market="HK", asset_class="equity")
+    )
+    await test_session.flush()
+    await _work(test_session, "past-week", age=timedelta(days=8))
+    await _work(test_session, "within-week", age=timedelta(days=6))
+    for expires in (now - timedelta(days=2), now - timedelta(hours=12)):
+        test_session.add(
+            CalendarImportBatch(
+                market="TW",
+                year=2026,
+                input_format="csv",
+                candidate_rows=[],
+                summary={},
+                status="previewed",
+                expires_at=expires,
+            )
+        )
+    user = AdminUser(
+        username="retention-scheduled",
+        display_name="Retention",
+        role="owner",
+        password_hash="x",
+    )
+    test_session.add(user)
+    await test_session.flush()
+    for ended in (now - timedelta(days=31), now - timedelta(days=29)):
+        test_session.add(
+            AdminSession(user_id=user.user_id, token_hash=uuid7().hex, expires_at=ended)
+        )
+    await test_session.commit()
+
+    result = await retention.scheduled_cleanup(
+        database_url=test_engine.url.render_as_string(hide_password=False)
+    )
+    test_session.expire_all()
+
+    assert result["applied"] is True
+    assert result["prepared_bodies"]["rows"] == 2
+    assert result["expired_import_previews"] == {"rows": 1}
+    assert result["ended_admin_sessions"] == {"rows": 1}
+    assert await _bodies(test_session) == {"past-week": 0, "within-week": 2}
+    assert await test_session.scalar(select(func.count()).select_from(CalendarImportBatch)) == 1
+    assert await test_session.scalar(select(func.count()).select_from(AdminSession)) == 1

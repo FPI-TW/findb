@@ -1,10 +1,12 @@
 """
 Raw data cleanup script.
-Deletes expired raw data records based on retention policy.
+Deletes expired raw data records based on retention policy, then clears the
+server-side copies covered by ``scripts.retention`` at their configured ages.
 """
 
 import argparse
 import asyncio
+import json
 import logging
 import signal
 from datetime import timedelta
@@ -16,6 +18,7 @@ from app.config import get_settings
 from app.models.raw import RawMarketPayload
 from app.models.registry import IngestionRun, NormalizationJob, NormalizationOutbox
 from app.utils import utc_now
+from scripts.retention import scheduled_cleanup
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -108,6 +111,8 @@ async def main():
     logger.info("Starting raw data cleanup...")
     deleted = await cleanup_expired_raw()
     logger.info(f"Cleanup completed. Deleted {deleted} records.")
+    retained = await scheduled_cleanup()
+    logger.info("Retention cleanup completed: %s", json.dumps(retained, sort_keys=True))
 
 
 async def run_repeated(*, interval: float = 86400, stop: asyncio.Event | None = None):

@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     RAW_RETENTION_ENABLED: bool = True
     RAW_RETENTION_DAYS: int = 30
 
+    # Server-side copies cleared by the daily raw-cleanup pass (scripts/retention.py)
+    PREPARED_BODY_RETENTION_DAYS: int = Field(default=7, ge=1)
+    CALENDAR_IMPORT_PREVIEW_RETENTION_DAYS: int = Field(default=1, ge=1)
+    ADMIN_SESSION_RETENTION_DAYS: int = Field(default=30, ge=1)
+
     model_config = SettingsConfigDict(
         env_file=REPO_ROOT / ".env",
         case_sensitive=True,
