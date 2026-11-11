@@ -649,6 +649,10 @@ class ProviderWorkSession:
         # Only current-reservation evidence; durable budgets/account debt remain
         # in their existing journals and survive a new session or process.
         self.dispatch_observations = 0
+        # Preparation stages already acknowledged for identical bytes. Source
+        # treats a repeated stage as a no-op fence check and ingest re-checks the
+        # fence itself, so one acknowledgement per stage is the durable evidence.
+        self._acknowledged: set[tuple[str, str, str | None]] = set()
         self.failed = threading.Event()
         self._stop = threading.Event()
         self._heartbeat = threading.Thread(target=self._beat, daemon=True)
@@ -778,7 +782,7 @@ class ProviderWorkSession:
         if self.failed.is_set():
             raise ProviderWorkRecoveryBlockedError("provider work heartbeat is unavailable")
         self.journal.prepare(prepared.idempotency_key, prepared.body)
-        self._preparation_request("prepare", body=prepared.body.decode(), stage="confirm")
+        self.acknowledge(prepared.body.decode(), "confirm")
         return {
             "X-FinDB-Work-Id": self.work["work_id"],
             "X-FinDB-Work-Generation": str(self.work["generation"]),
@@ -796,7 +800,16 @@ class ProviderWorkSession:
         body = json.dumps(
             request, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
         )
-        self._preparation_request("prepare", body=body, stage="intent", job_key=job_key)
+        self.acknowledge(body, "intent", job_key=job_key)
+
+    def acknowledge(self, body: str, stage: str, *, job_key: str | None = None) -> None:
+        """Send one durable preparation stage once per session for identical bytes."""
+        identity = (stage, hashlib.sha256(body.encode()).hexdigest(), job_key)
+        if identity in self._acknowledged:
+            self._check_local_fence()
+            return
+        self._preparation_request("prepare", body=body, stage=stage, job_key=job_key)
+        self._acknowledged.add(identity)
 
     def drain_prepared(self, *, pending_only: bool = False, skip: set[str] | None = None) -> list:
         """Replay only server-retained original bytes; never reconstruct or fetch."""

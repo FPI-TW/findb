@@ -20,11 +20,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from findb_fetcher import rpc_timing
 from findb_fetcher.acquisition import authorization_scope, http_acquisition
 from findb_fetcher.client import (
     SourceAPIClient,
     SourceAPIResponseError,
     SourceAPITransportError,
+    delivered_snapshot,
     permanent_source_failure,
 )
 from findb_fetcher.config import app_environment
@@ -1464,6 +1466,7 @@ class FullMarketRuntime:
     ) -> bool:
         self._batch_started = time.monotonic()
         self.last_batch = {"processed": 0, "reason": "scanned", "plan_id": plan["plan_id"]}
+        rpc_timing.drain()
         try:
             return self._deliver_members(
                 plan, release, feed, drain_only=drain_only, drain_keys=drain_keys
@@ -1474,6 +1477,15 @@ class FullMarketRuntime:
                     time.monotonic() - self._batch_started, 3
                 )
                 self.state.schedule_save(plan["plan_id"], batch=self.last_batch)
+                # Diagnostics only, outside the durable batch and settlement proof:
+                # {route template or step: [count, total_ms]} for this batch.
+                print(
+                    json.dumps(
+                        {"delivery_batch": {**self.last_batch, "timing": rpc_timing.drain()}},
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
+                )
 
     def _deliver_members(
         self,
@@ -1556,7 +1568,9 @@ class FullMarketRuntime:
                 next_cursor=(index + 1) % len(entries) if self.daily_policy else None,
             ):
                 continue
-            if self.daily_policy:
+            # A member whose every body already has a run only reads status: it
+            # makes no provider call, so it spends none of the batch's budget.
+            if self.daily_policy and self._saved_runs(key) is None:
                 self.last_batch["processed"] += 1
             dispatch_before = owner.dispatch_observations
             try:
@@ -1611,7 +1625,6 @@ class FullMarketRuntime:
                 normalizing = False
                 prepared_requests = json.loads(prepared)
                 for request in prepared_requests:
-                    immutable = self.delivery.prepare(request)
                     request_identity = request.get("idempotency_key") or checksum(
                         canonical_bytes(request)
                     )
@@ -1623,6 +1636,13 @@ class FullMarketRuntime:
                         saved_run = self.state.receipt(key)
                         if saved_run is not None:
                             self.state.save_sequence_receipt(key, request_identity, saved_run)
+                    # An accepted body never needs another durable preparation
+                    # round trip; checking its run only needs its identity.
+                    immutable = (
+                        delivered_snapshot(request)
+                        if saved_run is not None
+                        else self.delivery.prepare(request)
+                    )
                     if saved_run is None:
                         receipt = self.delivery.deliver(immutable)
                         saved_run = str(receipt.run_id)
@@ -1835,6 +1855,24 @@ class FullMarketRuntime:
 
         return True
 
+    def _saved_runs(self, key: str) -> list[str] | None:
+        """Runs for every prepared body of a member, or None while any needs delivery."""
+        prepared = self.state.prepared(key)
+        if prepared is None:
+            return None
+        requests = json.loads(prepared)
+        runs = []
+        for request in requests:
+            run = self.state.sequence_receipt(
+                key, request.get("idempotency_key") or checksum(canonical_bytes(request))
+            )
+            if run is None and len(requests) == 1:
+                run = self.state.receipt(key)
+            if run is None:
+                return None
+            runs.append(run)
+        return runs
+
     def _price_basis_manual(
         self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
     ) -> None:
@@ -1934,13 +1972,14 @@ class FullMarketRuntime:
         *,
         payload_format: RawPayloadFormat = "json",
     ) -> RawObject:
-        stored = self.raw_store.persist(
-            raw,
-            dataset_key=dataset,
-            source_symbol=symbol.replace("|", ":"),
-            provider=self.provider,
-            payload_format=payload_format,
-        )
+        with rpc_timing.timed("step raw_persist"):
+            stored = self.raw_store.persist(
+                raw,
+                dataset_key=dataset,
+                source_symbol=symbol.replace("|", ":"),
+                provider=self.provider,
+                payload_format=payload_format,
+            )
         if stored.sha256 != checksum(raw) or stored.size_bytes != len(raw):
             raise ReadinessBlockedError("R2 raw persistence identity differs from acquired bytes")
         return stored
@@ -2011,7 +2050,10 @@ class FullMarketRuntime:
         release: dict[str, Any],
         feed: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        result = self.adapter.acquire(member, self._acquisition_context(plan, part, release, feed))
+        with rpc_timing.timed("step provider_acquire"):
+            result = self.adapter.acquire(
+                member, self._acquisition_context(plan, part, release, feed)
+            )
         if result.no_trade is not None:
             self.source.outcome(
                 plan["plan_id"],

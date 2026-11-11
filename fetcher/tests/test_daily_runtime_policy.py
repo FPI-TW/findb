@@ -369,3 +369,51 @@ def test_authoritative_window_denial_preserves_budget_even_if_local_clock_is_ope
         )
     assert runtime.last_batch["reason"] == "acquisition_window_closed"
     assert source.outcomes == []
+
+
+def test_status_only_revisits_do_not_spend_member_budget(tmp_path, monkeypatch, capsys):
+    from uuid import UUID
+
+    from findb_fetcher.full_market_universe import canonical_bytes
+
+    runtime, _, release, plan, acquired, _, _ = harness(tmp_path, monkeypatch, count=40)
+    statuses = []
+
+    class Delivery:
+        def prepare(self, value):
+            pytest.fail("an accepted body is not prepared again")
+
+        def deliver(self, value):
+            pytest.fail("an accepted body is not delivered again")
+
+        def get_run_status(self, run_id, *, expected):
+            statuses.append(expected.idempotency_key)
+            return SimpleNamespace(
+                status="processing", failed_records=0, total_records=1, success_records=1
+            )
+
+    runtime.delivery = Delivery()
+    for i in range(10):
+        key = f"part:S{i}"
+        request = {
+            "idempotency_key": f"full:S{i}",
+            "dataset_key": "tw_equity_eod",
+            "schema_id": "market_eod",
+            "schema_version": 1,
+        }
+        runtime.state.prepare(key, canonical_bytes([request]))
+        runtime.state.save_sequence_receipt(key, request["idempotency_key"], str(UUID(int=i + 1)))
+    runtime._deliver_plan(plan, release, {})
+    # Ten normalizing members only read their runs; all 25 budget slots stay
+    # with members that still need a provider acquisition.
+    assert statuses == [f"full:S{i}" for i in range(10)]
+    assert acquired == [f"S{i}" for i in range(10, 35)]
+    assert runtime.last_batch["processed"] == 25
+    # Timing is logged per batch but never enters the durable batch/proof.
+    assert "timing" not in runtime.state.plan_progress(plan["plan_id"])["last_batch"]
+    logged = [
+        json.loads(line)["delivery_batch"]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"delivery_batch"')
+    ]
+    assert logged[-1]["processed"] == 25 and isinstance(logged[-1]["timing"], dict)
