@@ -269,6 +269,10 @@ def test_twelve_data_member_acquisition_is_byte_identical(tmp_path, monkeypatch)
         return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
 
     monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    # The one-symbol path stays pinned; shared batches have their own tests.
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+
+    monkeypatch.setattr(TwelveDataAdapter, "member_batch_limit", 0)
     assert twelve_data.TwelveDataClient is TwelveDataClient
     runtime, source, delivery, s3 = _runtime(tmp_path, "twelve_data")
     feed = _feed("twelve_data", "us_equity_eod")

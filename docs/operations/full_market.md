@@ -737,10 +737,21 @@ Prepare SSM：`477ef221-ad3e-4086-9389-76f26bfe794b`；Backend 刪除：
 
 | Provider | 適用限制 | 用量核對與超限處理 |
 | --- | --- | --- |
-| Twelve Data | 1597 API credits／分鐘 | Durable governor 依 1597／分鐘平均 pacing；HTTP 429 與 HTTP 200 payload code 429 均寫入 60 秒帳號 cooldown 後等待／重試。實際帳號用量以 readiness probe 的 `/api_usage` 人工核對；每日路徑尚未讀取 response credit headers |
+| Twelve Data | 1597 API credits／分鐘 | Durable governor 依 1597／分鐘平均 pacing，分鐘與日窗口以 credits（一次 batch 的 symbol 數）計；HTTP 429 與 HTTP 200 payload code 429 均寫入 60 秒帳號 cooldown 後等待／重試。實際帳號用量以 readiness probe 的 `/api_usage` 人工核對；每日路徑尚未讀取 response credit headers |
 | FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置 |
 | Shioaji | 500 MB／日、行情查詢 50 次／10 秒 | 以 `api.usage()` 的 bytes／limit_bytes／remaining_bytes 核對；API 回報的 524288000 bytes 為 500 MiB；依 10 秒視窗控制查詢速率 |
 | TAIFEX | OpenAPI 不需帳號，未公布明確 requests／bytes 數值上限 | 以 HTTP 429 作為觸及平台上限的訊號，依 `Retry-After` 或既有 backoff 等待／重試，不自行設定 provider 配額數值 |
+
+Twelve Data daily 以同一 frozen part 為單位共用 provider 請求：part 中第一個需要抓取的成員，把同 part
+後續仍需抓取的成員（已 mapping、沒有 prepared body、eligible：無 lease、退避或未到的 no-data 重試輪）
+一起以逗號 `symbol` 發一次 `/time_series`，最多 50 個、每 symbol 1 credit；mapping gap 與已完成成員不加入、
+不計費。回應必須正好以要求的 symbol 為 key，缺少或多出任何 key 即整批失敗；一次只有一個 symbol 時沿用
+單檔請求。整批回應只存一個 R2 raw object，作為它所服務每個成員的 lineage；每個成員再由自己的項目建出
+request，照常逐檔 prepare／ingest／receipt。單一 symbol 的錯誤（例如 `no_data`、404）只讓該成員走原本的
+member 失敗、no-data 重試輪與 breaker；整批錯誤（例如 429）由觸發的成員承擔。Journal 只有在每個 symbol
+都已有目標日資料時才允許重播該 batch，重試輪因此會重新詢問；未取用的項目最多保留 300 秒。
+實測（2026-11-11）：回應以 symbol 為 key，錯誤項為 `{code, message, meta, status:"error"}`，其 `meta.symbol`
+為整串清單；無效代號也計費（`api-credits-request` 等於 symbol 數）。
 
 Twelve Data credits 計算見[官方說明](https://support.twelvedata.com/en/articles/5615854-credits)；
 Shioaji 限制見[官方使用限制](https://sinotrade.github.io/zh/tutor/limit/)；TAIFEX 平台與 endpoint

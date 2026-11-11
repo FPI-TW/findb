@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import timedelta
@@ -36,10 +37,12 @@ from findb_fetcher.provider_adapters.base import (
     UniverseSnapshot,
 )
 from findb_fetcher.providers.twelve_data import (
+    TWELVE_DATA_MAX_BATCH_SYMBOLS,
     TwelveDataClient,
     TwelveDataConfig,
     TwelveDataNoNewDataError,
     TwelveDataPayloadError,
+    TwelveDataResponse,
     TwelveDataResponseError,
 )
 from findb_fetcher.providers.twelve_data import (
@@ -51,6 +54,8 @@ from findb_fetcher.providers.twelve_data import (
 
 # HK EOD is owned by FactSet; Twelve Data never refreshes or acquires HK again.
 CATALOGUE_COUNTRIES = {"us_equity_eod": "United States"}
+# A batched series serves only the pass that fetched it; later rounds fetch anew.
+BATCH_SERIES_TTL_SECONDS = 300
 
 
 class TwelveDataAdapter(ProviderAdapter):
@@ -59,12 +64,76 @@ class TwelveDataAdapter(ProviderAdapter):
     # Existing journal identity of the country catalogue response; never rename.
     catalogue_journal = "twelve_catalogue"
 
+    # Members of one part fetched by one comma-separated request (one credit each).
+    member_batch_limit = TWELVE_DATA_MAX_BATCH_SYMBOLS
+
     def __init__(self) -> None:
         self.client: TwelveDataClient | None = None
+        # (dataset, date, provider symbol) -> (fetched monotonic, batch, stored raw)
+        self.batched: dict[tuple[str, Any, str], tuple[float, TwelveDataResponse, Any]] = {}
+
+    def reset(self) -> None:
+        self.batched.clear()
 
     def close(self) -> None:
         if self.client is not None:
             self.client.close()
+
+    def _native(self, context: AcquisitionContext, call):
+        try:
+            return call()
+        except TwelveDataResponseError as exc:
+            if exc.is_rate_limited:
+                context.rate_limited()
+            if exc.observed_bytes or exc.declared_bytes:
+                try:
+                    context.observe_response(exc.observed_bytes, declared=exc.declared_bytes)
+                except ReadinessBlockedError:
+                    # Overage debt is retained without erasing known HTTP/API status.
+                    raise exc
+            raise
+
+    def _batched_series(
+        self, member: Mapping[str, Any], context: AcquisitionContext
+    ) -> tuple[TwelveDataResponse, Any] | None:
+        """This member's series from a shared batch, fetching one when worthwhile.
+
+        Each symbol is served once; an unserved one expires with its pass.
+        """
+        assert self.client is not None
+        day, symbol = context.trade_date, member["provider_symbol"]
+        now = time.monotonic()
+        for key in [
+            key for key, item in self.batched.items() if now - item[0] > BATCH_SERIES_TTL_SECONDS
+        ]:
+            del self.batched[key]
+        cached = self.batched.pop((context.dataset_key, day, symbol), None)
+        if cached is None:
+            symbols = context.batch_candidates() if context.batch_candidates else ()
+            if len(symbols) < 2 or symbols[0] != symbol:
+                return None
+            client = self.client
+            batch = self._native(
+                context,
+                lambda: client.fetch_daily_batch(
+                    symbols,
+                    start_date=day,
+                    end_date=day,
+                    max_response_bytes=context.max_response_bytes,
+                    on_http_rate_limited=context.rate_limited,
+                ),
+            )
+            context.observe_response(len(batch.raw_bytes))
+            # One raw object is the lineage of every member it serves.
+            stored = context.persist(batch.raw_bytes, "batch")
+            for other in symbols[1:]:
+                self.batched[(context.dataset_key, day, other)] = (now, batch, stored)
+            cached = (now, batch, stored)
+        _, batch, stored = cached
+        return (
+            self.client.batch_series(batch, symbol, on_http_rate_limited=context.rate_limited),
+            stored,
+        )
 
     def acquire(self, member: Mapping[str, Any], context: AcquisitionContext) -> AcquisitionResult:
         day = context.trade_date
@@ -76,27 +145,24 @@ class TwelveDataAdapter(ProviderAdapter):
                     max_response_bytes=min(config.max_response_bytes, context.max_response_bytes),
                 )
             )
-        try:
-            response = self.client.fetch_daily(
-                member["provider_symbol"],
-                start_date=day,
-                end_date=day,
-                max_response_bytes=context.max_response_bytes,
-                on_http_rate_limited=context.rate_limited,
+        client = self.client
+        served = self._batched_series(member, context)
+        if served is not None:
+            response, stored = served
+        else:
+            response = self._native(
+                context,
+                lambda: client.fetch_daily(
+                    member["provider_symbol"],
+                    start_date=day,
+                    end_date=day,
+                    max_response_bytes=context.max_response_bytes,
+                    on_http_rate_limited=context.rate_limited,
+                ),
             )
-        except TwelveDataResponseError as exc:
-            if exc.is_rate_limited:
-                context.rate_limited()
-            if exc.observed_bytes or exc.declared_bytes:
-                try:
-                    context.observe_response(exc.observed_bytes, declared=exc.declared_bytes)
-                except ReadinessBlockedError:
-                    # Overage debt is retained without erasing known HTTP/API status.
-                    raise exc
-            raise
-        raw = response.raw_bytes
-        context.observe_response(len(raw))
-        stored = context.persist(raw, member["provider_symbol"])
+            raw = response.raw_bytes
+            context.observe_response(len(raw))
+            stored = context.persist(raw, member["provider_symbol"])
         request = td_request(
             response,
             dataset_key=context.dataset_key,

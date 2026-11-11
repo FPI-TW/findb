@@ -1626,7 +1626,11 @@ class FullMarketRuntime:
                             "published calendar is now closed"
                         ) from None
                     owner.authorize()
-                    requests = self._acquire(member, plan, part, release, feed)
+                    candidates = self._batch_candidates(part, member_key, members, drain_keys)
+                    # Providers without shared requests keep the original call shape.
+                    requests = self._acquire(
+                        member, plan, part, release, feed, *([candidates] if candidates else [])
+                    )
                     no_data_streak = 0
                     self.state.clear_no_data_trips(plan["plan_id"])
                     if self.adapter.outage_retry_seconds is not None:
@@ -1880,6 +1884,43 @@ class FullMarketRuntime:
 
         return True
 
+    def _batch_candidates(
+        self,
+        part: dict[str, Any],
+        member_key: str,
+        members: dict[str, dict[str, Any]],
+        drain_keys: set[str] | None,
+    ) -> Callable[[], tuple[str, ...]] | None:
+        """Later members of this part that this pass will acquire, for a shared request.
+
+        Only members that would reach a provider call now qualify: mapped, without
+        a prepared body, and eligible (no lease, backoff or pending no-data round).
+        """
+        limit = getattr(self.adapter, "member_batch_limit", 0)
+        if limit < 2:
+            return None
+
+        def candidates() -> tuple[str, ...]:
+            now = time.time()
+            symbols = [members[member_key]["provider_symbol"]]
+            keys = part["member_keys"]
+            for other in keys[keys.index(member_key) + 1 :]:
+                key = part["work_item_id"] + ":" + other
+                candidate = members[other]
+                if (
+                    candidate["mapping_status"] != "mapped"
+                    or (drain_keys is not None and key not in drain_keys)
+                    or self.state.prepared(key) is not None
+                    or not self.state.eligible(key, now=now)
+                ):
+                    continue
+                symbols.append(candidate["provider_symbol"])
+                if len(symbols) == limit:
+                    break
+            return tuple(dict.fromkeys(symbols))
+
+        return candidates
+
     def _saved_runs(self, key: str) -> list[str] | None:
         """Runs for every prepared body of a member, or None while any needs delivery."""
         prepared = self.state.prepared(key)
@@ -2074,11 +2115,13 @@ class FullMarketRuntime:
         part: dict[str, Any],
         release: dict[str, Any],
         feed: dict[str, Any],
+        batch_candidates: Callable[[], tuple[str, ...]] | None = None,
     ) -> list[dict[str, Any]]:
+        context = self._acquisition_context(plan, part, release, feed)
+        if batch_candidates is not None:
+            context = replace(context, batch_candidates=batch_candidates)
         with rpc_timing.timed("step provider_acquire"):
-            result = self.adapter.acquire(
-                member, self._acquisition_context(plan, part, release, feed)
-            )
+            result = self.adapter.acquire(member, context)
         if result.no_trade is not None:
             self.source.outcome(
                 plan["plan_id"],

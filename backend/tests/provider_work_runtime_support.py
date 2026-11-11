@@ -287,33 +287,38 @@ class RuntimeHarness:
         self.patch.setattr(adapters.RawStorageConfig, "from_env", classmethod(lambda cls: None))
         self.raw = Raw()
 
-        def twelve_response(request):
-            symbol = request.url.params["symbol"]
+        def twelve_series(request, symbol):
             self.native(["daily", symbol])
-            return httpx.Response(
-                200,
-                json={
-                    "meta": {
-                        "symbol": symbol,
-                        "currency": "USD",
-                        "exchange": "NASDAQ",
-                        "mic_code": "XNAS",
-                        "exchange_timezone": "America/New_York",
-                        "type": "Common Stock",
-                        "interval": "1day",
-                    },
-                    "status": "ok",
-                    "values": [
-                        {
-                            "datetime": request.url.params.get("start_date", str(DAY)),
-                            "open": "1",
-                            "high": "1",
-                            "low": "1",
-                            "close": "1",
-                            "volume": "10",
-                        }
-                    ],
+            return {
+                "meta": {
+                    "symbol": symbol,
+                    "currency": "USD",
+                    "exchange": "NASDAQ",
+                    "mic_code": "XNAS",
+                    "exchange_timezone": "America/New_York",
+                    "type": "Common Stock",
+                    "interval": "1day",
                 },
+                "status": "ok",
+                "values": [
+                    {
+                        "datetime": request.url.params.get("start_date", str(DAY)),
+                        "open": "1",
+                        "high": "1",
+                        "low": "1",
+                        "close": "1",
+                        "volume": "10",
+                    }
+                ],
+            }
+
+        def twelve_response(request):
+            symbols = request.url.params["symbol"].split(",")
+            if len(symbols) == 1:
+                return httpx.Response(200, json=twelve_series(request, symbols[0]))
+            # A comma batch answers each requested symbol under its own key.
+            return httpx.Response(
+                200, json={symbol: twelve_series(request, symbol) for symbol in symbols}
             )
 
         self.patch.setattr(
