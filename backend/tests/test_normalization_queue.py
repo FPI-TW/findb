@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from celery.exceptions import Reject, Retry
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.deps import reset_source_rate_limit_state
@@ -23,7 +23,9 @@ from app.models.registry import (
     SourceClient,
 )
 from app.services.normalization_queue import (
+    _acquire_dataset_lock,
     _defer_for_lock_contention,
+    execute_normalization,
     reconcile_nonterminal_jobs,
     reconcile_stale_jobs,
 )
@@ -934,3 +936,144 @@ async def test_raw_cleanup_preserves_nonterminal_and_unpublished_work(
     assert await test_session.get(RawMarketPayload, unpublished_id) is not None
     assert await test_session.get(RawMarketPayload, recent_terminal_id) is not None
     assert await test_session.get(RawMarketPayload, legacy_raw_id) is None
+
+
+async def _wait_for_advisory_waiter(engine) -> None:
+    async with engine.connect() as observer:
+        for _ in range(100):
+            waiting = await observer.scalar(
+                text(
+                    "SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid = l.database "
+                    "WHERE d.datname = current_database() AND l.locktype = 'advisory' "
+                    "AND NOT l.granted"
+                )
+            )
+            await observer.rollback()
+            if waiting:
+                return
+            await asyncio.sleep(0.02)
+    raise AssertionError("no session queued for the advisory lock")
+
+
+@pytest.mark.asyncio
+async def test_dataset_lock_waits_in_order_and_scopes_lock_timeout(test_engine):
+    # Like the worker, the session keeps one connection, so its session lock survives commits.
+    async with (
+        test_engine.connect() as holder,
+        test_engine.connect() as connection,
+        AsyncSession(connection) as session,
+    ):
+        await holder.execute(text("SELECT pg_advisory_lock(hashtext('lock-wait-ds'))"))
+        await holder.commit()
+        default_timeout = await session.scalar(text("SHOW lock_timeout"))
+        await session.rollback()
+        waiter = asyncio.create_task(_acquire_dataset_lock(session, "lock-wait-ds"))
+        try:
+            await _wait_for_advisory_waiter(test_engine)
+            assert not waiter.done()
+            await holder.execute(text("SELECT pg_advisory_unlock(hashtext('lock-wait-ds'))"))
+            await holder.commit()
+            assert await asyncio.wait_for(waiter, timeout=5) is True
+        finally:
+            if not waiter.done():
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+        # The bounded wait ends with its transaction; the advisory lock does not.
+        assert await session.scalar(text("SHOW lock_timeout")) == default_timeout
+        assert await session.scalar(text("SELECT pg_advisory_unlock(hashtext('lock-wait-ds'))"))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_dataset_lock_defers_after_bounded_wait(test_engine, monkeypatch):
+    monkeypatch.setattr(get_settings(), "NORMALIZATION_LOCK_WAIT_MS", 100)
+    async with (
+        test_engine.connect() as holder,
+        test_engine.connect() as connection,
+        AsyncSession(connection) as session,
+    ):
+        await holder.execute(text("SELECT pg_advisory_lock(hashtext('lock-wait-ds'))"))
+        await holder.commit()
+        try:
+            assert await _acquire_dataset_lock(session, "lock-wait-ds") is False
+            # The aborted wait is rolled back, so the session can still defer.
+            assert await session.scalar(text("SELECT 1")) == 1
+        finally:
+            await holder.execute(text("SELECT pg_advisory_unlock(hashtext('lock-wait-ds'))"))
+            await holder.commit()
+
+
+@pytest.mark.asyncio
+async def test_waiting_delivery_skips_duplicate_settled_by_lock_holder(test_engine, test_session):
+    await _seed_eod_dataset(test_session)
+    now = utc_now()
+    run = IngestionRun(
+        dataset_key="tw_equity_eod", source="finlab", status="queued", created_at=now
+    )
+    test_session.add(run)
+    await test_session.flush()
+    delivery_id = uuid7()
+    job = NormalizationJob(
+        run_id=run.run_id,
+        dataset_key="tw_equity_eod",
+        status="queued",
+        delivery_id=delivery_id,
+        available_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    test_session.add(job)
+    await test_session.commit()
+    run_id, job_id = run.run_id, job.job_id
+
+    async with test_engine.connect() as holder:
+        await holder.execute(text("SELECT pg_advisory_lock(hashtext('tw_equity_eod'))"))
+        await holder.commit()
+        worker = asyncio.create_task(
+            execute_normalization(
+                run_id,
+                delivery_id,
+                database_url=test_engine.url.render_as_string(hide_password=False),
+            )
+        )
+        try:
+            await _wait_for_advisory_waiter(test_engine)
+            # Another worker settles a duplicate delivery of the same job meanwhile.
+            await holder.execute(
+                text(
+                    "UPDATE ingestion_run SET status='completed', completed_at=now() WHERE run_id=:r"
+                ),
+                {"r": run_id},
+            )
+            await holder.execute(
+                text(
+                    "UPDATE normalization_job SET status='completed', completed_at=now() WHERE job_id=:j"
+                ),
+                {"j": job_id},
+            )
+            await holder.execute(text("SELECT pg_advisory_unlock(hashtext('tw_equity_eod'))"))
+            await holder.commit()
+            await asyncio.wait_for(worker, timeout=10)
+        finally:
+            if not worker.done():
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+
+    test_session.expire_all()
+    settled = await test_session.get(NormalizationJob, job_id)
+    assert (settled.status, settled.attempt_count, settled.delivery_id) == (
+        "completed",
+        0,
+        delivery_id,
+    )
+    assert (await test_session.get(IngestionRun, run_id)).status == "completed"
+    async with test_engine.connect() as probe:
+        assert (
+            await probe.scalar(
+                text(
+                    "SELECT count(*) FROM pg_locks l JOIN pg_database d ON d.oid = l.database "
+                    "WHERE d.datname = current_database() AND l.locktype = 'advisory'"
+                )
+            )
+            == 0
+        )

@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     NORMALIZATION_TASK_SOFT_TIME_LIMIT: int = 1_800
     NORMALIZATION_TASK_TIME_LIMIT: int = 2_100
     NORMALIZATION_LEASE_SECONDS: int = 2_400
+    # Bounded wait for a held dataset lock before falling back to a delayed redelivery.
+    NORMALIZATION_LOCK_WAIT_MS: int = 10_000
     NORMALIZATION_CONSUMER_TIMEOUT_MS: int = 3_600_000
     OUTBOX_POLL_SECONDS: float = 1.0
     OUTBOX_BATCH_SIZE: int = 100
