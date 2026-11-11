@@ -412,8 +412,34 @@ def test_status_only_revisits_do_not_spend_member_budget(tmp_path, monkeypatch, 
     # Timing is logged per batch but never enters the durable batch/proof.
     assert "timing" not in runtime.state.plan_progress(plan["plan_id"])["last_batch"]
     logged = [
-        json.loads(line)["delivery_batch"]
+        json.loads(line)["delivery_timing"]
         for line in capsys.readouterr().out.splitlines()
-        if line.startswith('{"delivery_batch"')
+        if line.startswith('{"delivery_timing"')
     ]
-    assert logged[-1]["processed"] == 25 and isinstance(logged[-1]["timing"], dict)
+    # 10 status-only revisits plus 25 acquisitions, logged at the end of delivery.
+    assert logged[-1]["final"] and logged[-1]["members"] == 35
+    assert isinstance(logged[-1]["timing"], dict)
+
+
+def test_delivery_timing_logs_each_interval_without_daily_policy(tmp_path, monkeypatch, capsys):
+    runtime, _, release, plan, acquired, _, elapsed = harness(tmp_path, monkeypatch, count=5)
+    runtime.daily_policy = None
+
+    def slow(member, *args):
+        acquired.append(member["member_key"])
+        elapsed[0] += 25
+        return []
+
+    runtime._acquire = slow
+    runtime._deliver_plan(plan, release, {})
+    logged = [
+        json.loads(line)["delivery_timing"]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"delivery_timing"')
+    ]
+    # Production runs without a batch policy: a long delivery still logs once a
+    # minute, then a final line for the remainder.
+    assert [entry["final"] for entry in logged] == [False, True]
+    assert [entry["members"] for entry in logged] == [4, 1]
+    assert logged[0]["seconds"] == 75
+    assert len(acquired) == 5

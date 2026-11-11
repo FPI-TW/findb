@@ -112,6 +112,14 @@ PR #520（P5）的 staging 驗收（2026-11-11 10:39–10:53 UTC，同一 plan d
 drift warning 皆 0。完整分類只有既有 plan 的首次初始化一次（5,551 成員 225 毫秒），ingest
 outcome 改為 part（約 40 毫秒）。Summary、112 個 part 加總與完整 reconcile 一致。
 
+PR #521（P2）的 staging 驗收（2026-11-11 11:41–11:53 UTC，455 runs，同一 plan data
+2,419→2,874）：每檔 prepare RPC 4→2 次；暖機後 11:47–11:53 為 42.6 runs／分鐘、間隔 p50
+1.386 秒、p95 1.68 秒（P5 同長度窗口 41.3、1.407、1.80 秒），prepare 區段（含其前的 provider
+與 R2）每檔 0.704→0.633 秒。前 4 分鐘較慢（31 runs／分鐘），同時段所有未改動的 RPC 間隔也
+慢 10–30%，Backend `server_ms` 與 RDS CPU（約 9–12%）不變，判定為暖機與環境波動。deferral、
+errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時 log 只在 daily batch policy
+存在時輸出，部署中的 runtime 因此沒有輸出，已改為每 60 秒輸出。
+
 同輪 ingest access log（10:48:00–10:48:30，17 筆 ingest）還原每檔約 16.5 次 Source RPC、
 1.76 秒：prepared lookup 1 次；control poll 3、`full-market/authorization` 4、work authorize 3
 （約 0.57 秒）；之後約 0.75 秒沒有 Source RPC（provider HTTP、R2 PUT 與本機處理）；prepare 4 次
@@ -140,14 +148,16 @@ outcome 改為 part（約 40 毫秒）。Summary、112 個 part 加總與完整 
   不一致時記 `Plan summary drift corrected` 並修正。規則見 [full_market.md](full_market.md)。
   驗收：`reconcile_ms` 不再隨 plan 進度上升、log 皆為 `scope=part`、summary 與完整
   reconcile 一致。
-- **P2 Fetcher 往返（已實作，待 staging 驗收）**：已有 receipt 的 normalizing 重訪只查 run
+- **P2 Fetcher 往返（已實作，staging 已驗收）**：已有 receipt 的 normalizing 重訪只查 run
   status，不再 prepare、不計入 `max_members`；同一 owner session 內相同 bytes 的 intent／confirm
   各只送一次（每檔 prepare 4→2 次），保留實際 dispatch 邊界即時授權與 durable prepared ACK，
   規則見 [provider_work.md](../architecture/provider_work.md)。不以延長 freshness 或快取 stopped
-  前的 grant 取代。Fetcher 每個 daily batch 結束時輸出一行 `{"delivery_batch": {...}}`，其中
-  `timing` 為 `{route 或 step: [次數, 總毫秒]}`：Source RPC 依 route template（`{id}` 取代 UUID、
-  不含 query），另有 `step provider_acquire`（含 R2）與 `step raw_persist`。計時只進 log，不寫入
-  durable batch 或 settlement proof。授權類 RPC（每檔約 10 次、0.57 秒）
+  前的 grant 取代。Fetcher 交付 plan 期間每 60 秒、交付結束時各輸出一行
+  `{"delivery_timing": {"plan_id", "members", "seconds", "final", "timing"}}`；`members` 為該區間
+  claim 的成員數（含只查狀態的重訪），`timing` 為 `{route 或 step: [次數, 總毫秒]}`：Source RPC
+  依 route template（`{id}` 取代 UUID、不含 query），另有 `step provider_acquire`（含 R2）與
+  `step raw_persist`。計時只進 log，不寫入 durable batch 或 settlement proof。部署中的 runtime
+  沒有 daily batch policy（`max_members`／`max_seconds` 只在設定時生效），計時因此不依附 batch。授權類 RPC（每檔約 10 次、0.57 秒）
   是 dispatch 邊界的即時授權，是否能合併須先以這組計時拆解後另案評估。
 - **P4** 再驗證 provider batch 與同一 frozen part 的多列交付。Twelve Data 官方支援多 symbol
   `time_series`，但 credits 仍按 symbol 計費；現有 governor 的單次單 symbol 計帳與

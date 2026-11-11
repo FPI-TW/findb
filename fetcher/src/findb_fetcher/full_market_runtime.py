@@ -85,6 +85,9 @@ from findb_fetcher.raw_storage import (
     attach_raw_object,
 )
 
+# Fetcher logs one delivery timing line per interval during a long plan delivery.
+DELIVERY_TIMING_INTERVAL_SECONDS = 60
+
 
 class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
     """A proven daily-window wait, including authoritative Source denial."""
@@ -275,6 +278,7 @@ class FullMarketRuntime:
         self.enqueued_keys: set[str] = set()
         self.daily_policy = None
         self.last_batch: dict[str, Any] = {}
+        self._timing: dict[str, Any] = {"plan_id": None, "since": 0.0, "members": 0}
 
     def close(self) -> None:
         self.adapter.close()
@@ -1466,6 +1470,7 @@ class FullMarketRuntime:
     ) -> bool:
         self._batch_started = time.monotonic()
         self.last_batch = {"processed": 0, "reason": "scanned", "plan_id": plan["plan_id"]}
+        self._timing = {"plan_id": plan["plan_id"], "since": self._batch_started, "members": 0}
         rpc_timing.drain()
         try:
             return self._deliver_members(
@@ -1477,15 +1482,33 @@ class FullMarketRuntime:
                     time.monotonic() - self._batch_started, 3
                 )
                 self.state.schedule_save(plan["plan_id"], batch=self.last_batch)
-                # Diagnostics only, outside the durable batch and settlement proof:
-                # {route template or step: [count, total_ms]} for this batch.
-                print(
-                    json.dumps(
-                        {"delivery_batch": {**self.last_batch, "timing": rpc_timing.drain()}},
-                        separators=(",", ":"),
-                    ),
-                    flush=True,
-                )
+            self._log_delivery_timing(final=True)
+
+    def _log_delivery_timing(self, *, final: bool = False) -> None:
+        """Log ``{route template or step: [count, total_ms]}`` once a minute and at the end.
+
+        Diagnostics only: a plan delivery can run for hours without a daily
+        batch policy, and timing never enters the durable batch or settlement proof.
+        """
+        elapsed = time.monotonic() - self._timing["since"]
+        if not final and elapsed < DELIVERY_TIMING_INTERVAL_SECONDS:
+            return
+        print(
+            json.dumps(
+                {
+                    "delivery_timing": {
+                        "plan_id": self._timing["plan_id"],
+                        "members": self._timing["members"],
+                        "seconds": round(elapsed, 3),
+                        "final": final,
+                        "timing": rpc_timing.drain(),
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        self._timing.update(since=time.monotonic(), members=0)
 
     def _deliver_members(
         self,
@@ -1572,6 +1595,8 @@ class FullMarketRuntime:
             # makes no provider call, so it spends none of the batch's budget.
             if self.daily_policy and self._saved_runs(key) is None:
                 self.last_batch["processed"] += 1
+            self._timing["members"] += 1
+            self._log_delivery_timing()
             dispatch_before = owner.dispatch_observations
             try:
                 if member["mapping_status"] != "mapped":
