@@ -18,6 +18,7 @@ from app.api.deps import (
     AdminPrincipal,
     enforce_admin_login_rate_limit,
     get_admin_break_glass_api_key,
+    request_client_ip,
     require_operator,
     require_owner,
     require_viewer,
@@ -148,12 +149,14 @@ from app.services.admin import (
 )
 from app.services.admin_audit import record_admin_audit
 from app.services.admin_identity import (
+    PASSWORD_CHANGE_FAILED_ACTION,
     active_owner_count,
     authenticate_user,
     create_user,
     issue_session,
     lock_admin_identity,
     revoke_session,
+    revoke_session_after_password_failures,
     set_password,
     temporary_password,
     update_user,
@@ -227,6 +230,7 @@ from app.services.scheduler_control import (
     present_admin_scheduler_control,
     update_scheduler_desired_state,
 )
+from app.services.security_events import record_admin_session_revoked
 from app.services.slot_identity import normalize_slot_id
 from app.services.source_clients import (
     SourceProviderScopeError,
@@ -751,13 +755,41 @@ async def patch_scheduler(
 @router.post("/auth/change-password", response_model=SuccessResponse)
 async def change_admin_password(
     body: ChangePasswordRequest,
+    request: Request,
     principal: AdminPrincipal = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     if principal.actor_type != "user" or principal.actor_id is None:
         raise HTTPException(status_code=403, detail="User session required")
     user = await db.get(AdminUser, UUID(principal.actor_id))
-    if user is None or not verify_password(user.password_hash, body.current_password):
+    if user is None:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if not verify_password(user.password_hash, body.current_password):
+        if principal.session_id is not None:
+            # A stolen session must not get unlimited guesses at the current password.
+            await record_admin_audit(
+                db,
+                principal,
+                action=PASSWORD_CHANGE_FAILED_ACTION,
+                resource_type="admin_session",
+                resource_id=principal.session_id,
+                commit=False,
+            )
+            if await revoke_session_after_password_failures(
+                db,
+                UUID(principal.session_id),
+                max_failures=settings.ADMIN_PASSWORD_CHANGE_MAX_FAILURES,
+            ):
+                record_admin_session_revoked(
+                    "change_password_failures",
+                    session_id=principal.session_id,
+                    endpoint=request.url.path,
+                    client_ip=request_client_ip(request),
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail="Too many incorrect current passwords; session revoked",
+                )
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     await set_password(db, user, body.new_password, must_change=False, commit=False)
     await record_admin_audit(

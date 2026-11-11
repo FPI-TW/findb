@@ -126,6 +126,11 @@ def _extract_client_ip(request: Request) -> str | None:
     return None
 
 
+def request_client_ip(request: Request) -> str | None:
+    """Trusted client IP for security events outside this module."""
+    return _extract_client_ip(request)
+
+
 def _get_source_client_ip(request: Request) -> str:
     client_ip = _extract_client_ip(request)
     if not client_ip:

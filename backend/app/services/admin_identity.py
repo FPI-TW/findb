@@ -11,11 +11,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.registry import AdminSession, AdminUser
+from app.models.registry import AdminAuditEvent, AdminSession, AdminUser
 from app.utils import utc_now, uuid7
 
 ROLES = {"owner", "operator", "viewer"}
 ADMIN_IDENTITY_LOCK_ID = 4_604_470_401
+PASSWORD_CHANGE_FAILED_ACTION = "change_password_failed"
 _password_hasher = PasswordHasher()
 
 
@@ -150,6 +151,35 @@ async def revoke_session(db: AsyncSession, session_id: UUID) -> None:
     if row is not None and row.revoked_at is None:
         row.revoked_at = utc_now()
         await db.commit()
+
+
+async def revoke_session_after_password_failures(
+    db: AsyncSession, session_id: UUID, *, max_failures: int
+) -> bool:
+    """Commit the pending failure audit row; revoke the session once it reaches the limit.
+
+    Failures are counted from durable audit rows, so every worker and restart sees the
+    same total. The session row lock serializes concurrent attempts on one session.
+    """
+    row = (
+        await db.execute(
+            select(AdminSession).where(AdminSession.session_id == session_id).with_for_update()
+        )
+    ).scalar_one()
+    failures = await db.scalar(
+        select(func.count())
+        .select_from(AdminAuditEvent)
+        .where(
+            AdminAuditEvent.resource_type == "admin_session",
+            AdminAuditEvent.resource_id == str(session_id),
+            AdminAuditEvent.action == PASSWORD_CHANGE_FAILED_ACTION,
+        )
+    )
+    revoke = (failures or 0) >= max_failures
+    if revoke and row.revoked_at is None:
+        row.revoked_at = utc_now()
+    await db.commit()
+    return revoke
 
 
 async def revoke_user_sessions(db: AsyncSession, user_id: UUID, *, commit: bool = True) -> None:

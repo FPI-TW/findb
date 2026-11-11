@@ -29,6 +29,26 @@ def record_invalid_credential(
     )
 
 
+def record_admin_session_revoked(
+    reason: str,
+    *,
+    session_id: str,
+    endpoint: str,
+    client_ip: str | None,
+) -> None:
+    """Record that a session was revoked in response to suspicious use."""
+    logger.warning(
+        "Admin session revoked",
+        extra={
+            "security_event": "admin_session_revoked",
+            "reason": reason,
+            "session_id": session_id,
+            "endpoint": endpoint,
+            "client_ip": client_ip or "unknown",
+        },
+    )
+
+
 def auth_failure_counts() -> dict[str, int]:
     with _lock:
         return dict(_auth_failures)

@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     ADMIN_LOGIN_RATE_LIMIT_WINDOW: int = Field(default=300, ge=1)
     # Total login attempts per trusted client IP across all usernames.
     ADMIN_LOGIN_IP_RATE_LIMIT_REQUESTS: int = Field(default=20, ge=1)
+    # Wrong current passwords one session may submit to change-password before it is revoked.
+    ADMIN_PASSWORD_CHANGE_MAX_FAILURES: int = Field(default=5, ge=1)
     CREDENTIAL_USAGE_FLUSH_SECONDS: int = Field(default=60, ge=1)
 
     # Rate Limiting
