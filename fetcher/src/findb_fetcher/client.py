@@ -14,6 +14,7 @@ from uuid import UUID
 
 import httpx
 
+from findb_fetcher import rpc_timing
 from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import (
@@ -168,27 +169,14 @@ class SourceAPIClient:
             raise ContractValidationError("idempotency_key must be a non-empty string")
 
         self._contracts.validate(schema_id, schema_version, snapshot)
-        body = json.dumps(
-            snapshot,
-            ensure_ascii=False,
-            allow_nan=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        prepared = PreparedDelivery(
-            body=body,
-            idempotency_key=idempotency_key,
-            dataset_key=dataset_key,
-            schema_id=schema_id,
-            schema_version=schema_version,
-        )
+        prepared = delivered_snapshot(snapshot)
         from findb_fetcher.provider_work import active
 
         owner = active()
         if owner is not None:
             owner.reserve(snapshot, job_key=job_key)
             owner.journal.prepare(prepared.idempotency_key, prepared.body)
-            owner._preparation_request("prepare", body=prepared.body.decode(), stage="confirm")
+            owner.acknowledge(prepared.body.decode(), "confirm")
         return prepared
 
     def deliver(
@@ -319,6 +307,20 @@ class SourceAPIClient:
         path: str,
         *,
         delivery: PreparedDelivery | None = None,
+        deadline: float | None,
+        monotonic: Callable[[], float],
+    ) -> dict[str, Any]:
+        with rpc_timing.timed(rpc_timing.route(method, path)):
+            return self._request_json_attempts(
+                method, path, delivery=delivery, deadline=deadline, monotonic=monotonic
+            )
+
+    def _request_json_attempts(
+        self,
+        method: str,
+        path: str,
+        *,
+        delivery: PreparedDelivery | None,
         deadline: float | None,
         monotonic: Callable[[], float],
     ) -> dict[str, Any]:
@@ -596,6 +598,27 @@ def _check_deadline(
 ) -> None:
     if deadline is not None:
         _remaining(deadline, monotonic)
+
+
+def delivered_snapshot(request: Mapping[str, Any]) -> PreparedDelivery:
+    """The immutable bytes and identity ``prepare`` binds, without any Source RPC.
+
+    Also the expected identity when checking the run of an already delivered body.
+    """
+    body = json.dumps(
+        dict(request),
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return PreparedDelivery(
+        body=body,
+        idempotency_key=request["idempotency_key"],
+        dataset_key=request["dataset_key"],
+        schema_id=request["schema_id"],
+        schema_version=request["schema_version"],
+    )
 
 
 def _provider_work_headers(delivery: PreparedDelivery) -> dict[str, str]:

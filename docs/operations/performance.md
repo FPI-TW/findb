@@ -84,7 +84,7 @@ prepare→ingest response p50 1.361 秒吻合，推論 plan lock 才是全域串
 
 ### 優化順序與重新驗收
 
-追蹤於 issue #504。P0、P1、P3 已完成；後續順序：P5 → P2 → P4。
+追蹤於 issue #504。P0、P1、P3、P5 已完成；後續順序：P2 → P4。
 
 PR #508 的 staging 驗收（2026-11-11，Twelve Data 續抓 us_equity_eod 11-09，plan data
 405→1,132，727 runs）：交付 16.27→31.7 runs／分鐘，相鄰 run 間隔 p50 3.455→1.787 秒，
@@ -104,6 +104,18 @@ p50 265／300／325 毫秒、p95 516／561／665 毫秒；`normalize_ms` p50 455
 端 6 次完整重算全來自 Fetcher 對 mapping gap 成員回報 `blocked/mapping_gap`：
 `record_outcome` 鎖內重算一次、commit 後為回應再分類一次，但 gap 成員本就算 blocked，
 計數不變。
+
+PR #520（P5）的 staging 驗收（2026-11-11 10:39–10:53 UTC，同一 plan data 1,783→2,419，
+589 runs）：worker `reconcile_ms` p50／p95 300／561 → 28／45 毫秒，前後兩段 28／43、28／45
+毫秒持平；`normalize_ms` p50 455→150 毫秒、`settle_ms` p50 386→71 毫秒；31.6→41.5 runs／分鐘，
+間隔 p50 1.649→1.41 秒、p95 3.43→1.80 秒；queue wait p95 1.08–1.10 秒；deferral、errors 與
+drift warning 皆 0。完整分類只有既有 plan 的首次初始化一次（5,551 成員 225 毫秒），ingest
+outcome 改為 part（約 40 毫秒）。Summary、112 個 part 加總與完整 reconcile 一致。
+
+同輪 ingest access log（10:48:00–10:48:30，17 筆 ingest）還原每檔約 16.5 次 Source RPC、
+1.76 秒：prepared lookup 1 次；control poll 3、`full-market/authorization` 4、work authorize 3
+（約 0.57 秒）；之後約 0.75 秒沒有 Source RPC（provider HTTP、R2 PUT 與本機處理）；prepare 4 次
+（intent、intent、confirm、confirm，約 0.30 秒）；ingest 與 run GET 約 0.25 秒。
 
 - **P0 量測（已實作）**：`Plan summary refreshed` log 記錄 `scope`（`plan` 為整個 cohort、
   `part` 為單一 part）、`members`（本次分類的成員數）、`lock_wait_ms`、`reconcile_ms`、
@@ -128,9 +140,15 @@ p50 265／300／325 毫秒、p95 516／561／665 毫秒；`normalize_ms` p50 455
   不一致時記 `Plan summary drift corrected` 並修正。規則見 [full_market.md](full_market.md)。
   驗收：`reconcile_ms` 不再隨 plan 進度上升、log 皆為 `scope=part`、summary 與完整
   reconcile 一致。
-- **P2 Fetcher 往返**：已有 receipt 的 normalizing 重訪只查 run status，不再 prepare、不計入
-  `max_members`；再合併重複 intent／confirm，保留實際 dispatch 邊界即時授權與 durable
-  prepared ACK。不要以延長 freshness 或快取 stopped 前的 grant 取代。先補逐 RPC 計時。
+- **P2 Fetcher 往返（已實作，待 staging 驗收）**：已有 receipt 的 normalizing 重訪只查 run
+  status，不再 prepare、不計入 `max_members`；同一 owner session 內相同 bytes 的 intent／confirm
+  各只送一次（每檔 prepare 4→2 次），保留實際 dispatch 邊界即時授權與 durable prepared ACK，
+  規則見 [provider_work.md](../architecture/provider_work.md)。不以延長 freshness 或快取 stopped
+  前的 grant 取代。Fetcher 每個 daily batch 結束時輸出一行 `{"delivery_batch": {...}}`，其中
+  `timing` 為 `{route 或 step: [次數, 總毫秒]}`：Source RPC 依 route template（`{id}` 取代 UUID、
+  不含 query），另有 `step provider_acquire`（含 R2）與 `step raw_persist`。計時只進 log，不寫入
+  durable batch 或 settlement proof。授權類 RPC（每檔約 10 次、0.57 秒）
+  是 dispatch 邊界的即時授權，是否能合併須先以這組計時拆解後另案評估。
 - **P4** 再驗證 provider batch 與同一 frozen part 的多列交付。Twelve Data 官方支援多 symbol
   `time_series`，但 credits 仍按 symbol 計費；現有 governor 的單次單 symbol 計帳與
   adapter／journal／raw lineage 也須一起調整，不能只將 symbol 串接或提高 concurrency。

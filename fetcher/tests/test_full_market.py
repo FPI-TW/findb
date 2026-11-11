@@ -864,7 +864,14 @@ def test_provider_not_recalled_after_prepared_body_and_receipt_restart(
     plan["parts"][0]["member_keys"] = ["AAPL"]
     runtime.state.record_plan(plan, "twelve_data")
     key = "fp1:123:AAPL"
-    request = {"identity": "stable", "fetched_at": "persisted"}
+    request = {
+        "identity": "stable",
+        "fetched_at": "persisted",
+        "idempotency_key": "full:stable",
+        "dataset_key": "us_equity_eod",
+        "schema_id": "market_eod",
+        "schema_version": 1,
+    }
     runtime.state.prepare(key, canonical_bytes([request]))
     if capacity_violated:
         runtime.state.observe_capacity(
@@ -877,11 +884,12 @@ def test_provider_not_recalled_after_prepared_body_and_receipt_restart(
         runtime.can_acquire = lambda: False
         with pytest.raises(QuotaBlockedError, match="capacity violation"):
             runtime.state.assert_capacity("twelve_data")
-    counts = {"delivered": 0, "status": 0}
+    counts = {"prepared": 0, "delivered": 0, "status": 0}
 
     class Delivery:
         def prepare(self, value: Any) -> Any:
             assert value == request
+            counts["prepared"] += 1
             return value
 
         def deliver(self, value: Any) -> Any:
@@ -902,13 +910,16 @@ def test_provider_not_recalled_after_prepared_body_and_receipt_restart(
     release = {"members": [_member()]}
     runtime._deliver_plan(plan, release, runtime.feeds[0])
     assert source.outcomes == []
-    assert counts == {"delivered": 1, "status": 1}
+    assert counts == {"prepared": 1, "delivered": 1, "status": 1}
     runtime.state = FullMarketState(runtime.state.path)
     # Advance past retry delay without waiting.
     with runtime.state.connection() as db:
         db.execute("UPDATE full_work SET next_at=0")
     runtime._deliver_plan(plan, release, runtime.feeds[0])
-    assert counts == {"delivered": 1, "status": 2}
+    # The accepted body only reads its run status: no second preparation, and
+    # the status-only revisit spends none of the batch's member budget.
+    assert counts == {"prepared": 1, "delivered": 1, "status": 2}
+    assert runtime.last_batch["processed"] == 0
     assert runtime.state.receipt(key) == str(UUID(int=1))
     runtime.http.close()
 

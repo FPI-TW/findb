@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from uuid import UUID
 import pytest
 
 import findb_fetcher.full_market_runtime as runtime_module
-from findb_fetcher.client import SourceAPIClient
+from findb_fetcher.client import SourceAPIClient, delivered_snapshot
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_runtime import load_readiness
@@ -344,8 +345,13 @@ def test_finlab_field_calls_paced_cached_and_prepared_identity_survives_restart(
     assert len(context.gateway.calls) == 5
     assert len(raw.calls) == 1
     assert len(delivered) == 2
-    assert observed[:2] == observed[2:]
+    # Accepted bodies only read their runs after restart: nothing is prepared
+    # again, and the restored bodies keep the delivered byte identity.
+    assert len(observed) == 2 and delivered == observed
     assert saved == {key: runtime.state.prepared(key) for key in saved}
+    assert sorted(
+        delivered_snapshot(request).body for body in saved.values() for request in json.loads(body)
+    ) == sorted(observed)
     assert source.outcomes == []
     runtime.http.close()
 

@@ -98,6 +98,12 @@ Daily 首次 enqueue 凍結 published calendar close；重複 enqueue 不因後�
 不同 providers 可以並行；同 provider 的 universe／catalogue、抓取、raw persistence、prepared delivery、
 normalization 與 completion proof 共用整個 owner，不能以一次 Source `202` 作為釋放條件。
 
+同一 owner session 內，相同 bytes（與 job binding）的每個 prepared stage（`intent`、`confirm`）只送一次：
+acquisition 先記 intent，delivery prepare 再 confirm；ingest 送出前不再重送 confirm，因為 Source 對重複
+stage 只做 fence 檢查，ingest 本身也以同一 fence 驗證並在 fence 不符時回 `PROVIDER_WORK_FENCE`。略過的
+stage 仍做本機 fence 檢查；stage 失敗不記為已確認，下次照常重送。每個 body 都已有 run 的成員重訪時只
+GET run status，不重新 prepare，也不占 daily `max_members`（`max_seconds` 照常計時）。
+
 Retryable round 必須先關閉 acquisition／acceptance、排空所有 accepted runs，再把下一 attempt
 附加到 FIFO 尾端並設定 `not_before`。原 frozen manifest、prepared bytes、receipts 與 operation budgets
 跨 queue retry 保留。等待 quota／queue 不是 provider failure；永久格式／DQ failure 保留 failed／manual。

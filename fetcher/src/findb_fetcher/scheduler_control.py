@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+from findb_fetcher import rpc_timing
 from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.source_recovery import (
@@ -236,6 +237,10 @@ class SchedulerControlClient:
         self.close()
 
     def _request(self, body: bytes) -> dict[str, Any]:
+        with rpc_timing.timed("POST scheduler-controls/{key}/poll"):
+            return self._request_attempts(body)
+
+    def _request_attempts(self, body: bytes) -> dict[str, Any]:
         url = (
             f"{self._config.source_api_url.rstrip('/')}/api/v1/source/scheduler-controls/"
             f"{self.scheduler_key}/poll"
