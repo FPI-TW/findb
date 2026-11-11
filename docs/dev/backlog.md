@@ -71,19 +71,13 @@ Production native 資料與實際 rollback 演練由
 
 ## Provider metadata 與排程統一
 
-追蹤 [#399](https://github.com/FPI-TW/findb/issues/399)／[#368](https://github.com/FPI-TW/findb/issues/368)。
-PR1～4 已通過 staging／production 發布相容性驗收；PR5 已實作 DB preflight／migration、
-監控期限統一及 Dashboard market 分組。現行契約見 [provider metadata](../architecture/provider_metadata.md)，
-發布分組與證據見 [部署](../operations/deployment.md)。PR5 已依 Owner 決定先行發布 production
-`findb-v0.1.24`，migration 與 Admin 唯讀驗收通過；staging 驗收仍未執行。
+[#399](https://github.com/FPI-TW/findb/issues/399)／[#368](https://github.com/FPI-TW/findb/issues/368)
+已結案。PR1～5 已完成兩環境發布與驗收，證據見 [PR5 兩環境整合驗收](../operations/deployment.md#pr5-兩環境整合驗收)；
+現行契約見 [provider metadata](../architecture/provider_metadata.md)。剩餘項目：
 
 - [ ] PR3＋4 FactSet native 終態驗收依 Owner 指示暫不執行；已建立的 request 保留。Twelve Data、
   FinLab、TAIFEX、planner、daily 動態快照與 bundle 驗收已完成，證據與恢復核對方式見
   [staging 整合驗收](../operations/deployment.md)。
-- [ ] PR5 staging migration 已以 Admin API 唯讀驗收（2026-11-10：四個 control 的時鐘、時區、下次執行時間
-  與 completion deadline 皆與 catalog 一致）；staging UI 仍待確認。Production 尚需確認 Dashboard 市場分組與無 Slot 標示、
-  新 plan 採 catalog deadline 及 slot ingress 相容性。每次發布重跑唯讀 preflight，未知差異中止，
-  不自動啟用 stopped controls；controls 由 Owner 恢復。
 - [ ] Slot 契約與 DB 欄位另以 expand／contract PR 退役；保留舊 raw／prepared／checkpoint 證據。
 
 ## TAIFEX 正式上線

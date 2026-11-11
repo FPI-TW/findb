@@ -16,6 +16,7 @@ Fetcher daily 每輪規劃前讀取 Source execution-config，image 僅保存非
 bootstrap。Dashboard 依 market 分組，逐 feed 顯示時間與時區，不顯示 Slot。DB schedule 是 catalog
 投影；新 plan 與無 plan 的監控使用 catalog deadline，已有 plan 使用 frozen `deadline_at`。
 Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排程檔。
+兩環境排程 DB／API／UI 的核對見 [PR5 兩環境整合驗收](../operations/deployment.md#pr5-兩環境整合驗收)。
 未完成範圍見 [backlog](../dev/backlog.md#provider-metadata-與排程統一)。
 
 ## 宣告與邊界
