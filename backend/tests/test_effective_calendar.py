@@ -348,3 +348,55 @@ def queue_clock(monkeypatch):
     from app.services import historical_backfill, provider_work
 
     monkeypatch.setattr(provider_work, "utc_now", lambda: historical_backfill.utc_now())
+
+
+async def _published_tw_revision(test_session, days: list[date], *, revision: int = 3):
+    row = CalendarYearRevision(
+        market="TW",
+        year=days[0].year,
+        revision=revision,
+        status="published",
+        timezone="Asia/Taipei",
+        source_kind="manual",
+        expected_days=len(days),
+        actual_days=len(days),
+    )
+    test_session.add(row)
+    await test_session.flush()
+    test_session.add_all(
+        CalendarRevisionDay(
+            calendar_revision_id=row.id,
+            trade_date=day,
+            day_status="open" if day.weekday() < 5 else "closed",
+            is_open=day.weekday() < 5,
+            source_kind="manual",
+        )
+        for day in days
+    )
+    await test_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_published_calendar_year_status_and_revision(test_session):
+    from app.services.effective_calendar import published_calendar_year
+
+    defaulted = await published_calendar_year(test_session, "tw", 2023)
+    assert (defaulted["market"], defaulted["status"], defaulted["revision"]) == (
+        "TW",
+        "defaulted",
+        None,
+    )
+    assert defaulted["expected_days"] == defaulted["actual_days"] == len(defaulted["days"]) == 365
+
+    year_2023 = [date(2023, 1, 1) + timedelta(days=offset) for offset in range(365)]
+    await _published_tw_revision(test_session, year_2023)
+    published = await published_calendar_year(test_session, "TW", 2023)
+    assert (published["status"], published["revision"]) == ("published", 3)
+    assert published["timezone"] == "Asia/Taipei"
+
+    await _published_tw_revision(test_session, [date(2024, 2, 29)], revision=1)
+    mixed = await published_calendar_year(test_session, "TW", 2024)
+    assert (mixed["status"], mixed["revision"], len(mixed["days"])) == ("mixed", None, 366)
+
+    with pytest.raises(ValueError, match="year must be between 1900 and 2200"):
+        await published_calendar_year(test_session, "TW", 1899)

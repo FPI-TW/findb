@@ -1,7 +1,7 @@
 """Thin HTTP routes for canonical read-only Serve queries."""
 
 from datetime import date
-from typing import Annotated, Literal, cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -30,7 +30,7 @@ from app.schemas.serve import (
     SortDirection,
 )
 from app.services import serve as serve_queries
-from app.services.effective_calendar import effective_days
+from app.services.effective_calendar import published_calendar_year
 from app.services.market_freshness import list_market_freshness
 from app.services.slot_identity import CanonicalSlotId
 
@@ -159,32 +159,16 @@ async def get_published_calendar_year(
     _: str = Depends(require_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> PublishedCalendarYearEnvelope:
-    if year < 1900 or year > 2200:
-        raise HTTPException(status_code=422, detail="year must be between 1900 and 2200")
-    market = market.upper()
     try:
-        days = await effective_days(db, market, date(year, 1, 1), date(year, 12, 31))
+        year_data = await published_calendar_year(db, market, year)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    sources = {day["calendar_source"] for day in days}
-    status: Literal["published", "defaulted", "mixed"] = (
-        "published"
-        if sources == {"published"}
-        else "defaulted"
-        if sources == {"weekday_default"}
-        else "mixed"
-    )
     return PublishedCalendarYearEnvelope(
         data=PublishedCalendarYearResponse(
-            market=market,
-            year=year,
-            revision=days[0]["calendar_revision"] if status == "published" else None,
-            status=status,
-            coverage_complete=True,
-            timezone=days[0]["timezone"],
-            expected_days=len(days),
-            actual_days=len(days),
-            days=[CalendarResponse(**day) for day in days],
+            **{
+                **year_data,
+                "days": [CalendarResponse(**day) for day in year_data["days"]],
+            }
         )
     )
 
