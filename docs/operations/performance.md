@@ -169,7 +169,11 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
   （每檔 1,575→1,821 毫秒、32.6 runs／分鐘）：同時段 Source RPC 往返普遍慢 2–10 倍（poll 平均
   35→333 毫秒），Backend ingest `server_ms` p50 64 毫秒不變、兩台 host 負載低、Fetcher 只用一條持久
   連線，每檔牆鐘約 1.75 秒都在 Source RPC。以前一輪 RPC 延遲推估每檔約 0.74 秒（推估，未實測）。
-  nginx 目前未記錄 `$request_time`，無法區分 origin 與網路。Summary 一致，deferral／errors／drift 0。
+  Summary 一致，deferral／errors／drift 0。
+- **nginx 請求計時**：HTTPS server 的 access log 使用 `findb_timing` 格式，在 image 預設欄位後加上
+  `rt=$request_time`（nginx 收到請求至回應送完）、`urt=$upstream_response_time`、`uct=$upstream_connect_time`
+  與 `cf_ray`。Fetcher `delivery_timing` 的 client 端耗時減 `rt` 為 client／Cloudflare 路徑；`rt` 減 `urt`
+  為 nginx 本身；`urt` 為 origin（FastAPI 含排隊）。不記錄任何 credential header。
 - **停止掃描**：停止後 Fetcher 原本仍對每個剩餘成員先 `prepared` restore、再查 acquisition gate（poll＋
   authorization），約 1,900 個成員在 RPC 偏慢時需 19 分鐘才回報 stopped。現改為同一輪一旦 gate 回報
   不可抓取，後續沒有本機 prepared body 的成員直接略過；本機已 prepared 的仍交付或查狀態，Source
