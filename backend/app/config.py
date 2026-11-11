@@ -105,11 +105,16 @@ class Settings(BaseSettings):
     ADMIN_SESSION_HOURS: int = Field(default=8, ge=1, le=168)
     ADMIN_LOGIN_RATE_LIMIT_REQUESTS: int = Field(default=5, ge=1)
     ADMIN_LOGIN_RATE_LIMIT_WINDOW: int = Field(default=300, ge=1)
+    # Total login attempts per trusted client IP across all usernames.
+    ADMIN_LOGIN_IP_RATE_LIMIT_REQUESTS: int = Field(default=20, ge=1)
     CREDENTIAL_USAGE_FLUSH_SECONDS: int = Field(default=60, ge=1)
 
     # Rate Limiting
     RATE_LIMIT_REQUESTS: int = 100
     RATE_LIMIT_WINDOW: int = 60  # seconds
+    # Upper bound on tracked identities per in-process limiter; the least recently
+    # used identity is evicted first.
+    RATE_LIMIT_MAX_TRACKED_KEYS: int = Field(default=10_000, ge=1)
 
     # Raw Data Retention
     RAW_RETENTION_ENABLED: bool = True
