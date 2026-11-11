@@ -1,5 +1,7 @@
 """API dependencies including credential authentication and Admin RBAC."""
 
+from collections import OrderedDict, deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from hmac import compare_digest
@@ -24,11 +26,68 @@ settings = get_settings()
 # API Key header security
 api_key_header = APIKeyHeader(name=settings.API_KEY_HEADER, auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
-_source_rate_limit_lock = Lock()
-_source_rate_limit_buckets: dict[str, list[float]] = {}
-_serve_rate_limit_lock = Lock()
-_serve_rate_limit_buckets: dict[str, list[float]] = {}
-_admin_login_rate_limit_buckets: dict[str, list[float]] = {}
+
+
+class SlidingWindowLimiter:
+    """In-process sliding-window limiter whose memory stays bounded.
+
+    Every identity keeps only its timestamps inside its own window. Expired
+    identities are swept periodically, and once ``max_keys`` identities are
+    tracked the least recently used one is evicted, so one-off callers (new
+    visitor IPs, rotated usernames) can never grow the process without limit.
+    """
+
+    SWEEP_EVERY = 256
+
+    def __init__(self, max_keys: Callable[[], int]) -> None:
+        self._max_keys = max_keys
+        self._lock = Lock()
+        self._buckets: OrderedDict[str, tuple[float, deque[float]]] = OrderedDict()
+        self._calls = 0
+
+    def hit(self, key: str, *, limit: int, window: float, now: float | None = None) -> bool:
+        """Record one attempt and return False when ``key`` already used ``limit``."""
+        now = time() if now is None else now
+        with self._lock:
+            self._calls += 1
+            if self._calls % self.SWEEP_EVERY == 0:
+                self._sweep(now)
+            _, bucket = self._buckets.pop(key, (window, deque()))
+            while bucket and bucket[0] <= now - window:
+                bucket.popleft()
+            allowed = len(bucket) < limit
+            if allowed:
+                bucket.append(now)
+            if bucket:
+                self._buckets[key] = (window, bucket)
+            while len(self._buckets) > max(1, self._max_keys()):
+                self._buckets.popitem(last=False)
+            return allowed
+
+    def _sweep(self, now: float) -> None:
+        expired = [key for key, (window, b) in self._buckets.items() if b[-1] <= now - window]
+        for key in expired:
+            del self._buckets[key]
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._buckets)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._buckets.clear()
+            self._calls = 0
+
+
+def _max_tracked_keys() -> int:
+    return settings.RATE_LIMIT_MAX_TRACKED_KEYS
+
+
+_source_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
+_serve_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
+_admin_login_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
+_admin_login_ip_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
+
 ROLE_LEVEL = {"viewer": 1, "operator": 2, "owner": 3}
 
 
@@ -87,68 +146,57 @@ def _enforce_source_rate_limit(
     limit = max(1, int(limit or settings.RATE_LIMIT_REQUESTS))
     window_seconds = max(1, int(window_seconds or settings.RATE_LIMIT_WINDOW))
     bucket_key = f"{bucket_identity}:{client_ip}"
-    now = time()
-    threshold = now - window_seconds
-
-    with _source_rate_limit_lock:
-        bucket = _source_rate_limit_buckets.get(bucket_key, [])
-        bucket = [ts for ts in bucket if ts > threshold]
-
-        if len(bucket) >= limit:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded",
-                headers={"Retry-After": str(window_seconds)},
-            )
-
-        bucket.append(now)
-        _source_rate_limit_buckets[bucket_key] = bucket
+    if not _source_rate_limiter.hit(bucket_key, limit=limit, window=window_seconds):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded",
+            headers={"Retry-After": str(window_seconds)},
+        )
 
 
 def _enforce_serve_rate_limit(key: APIKey, client_ip: str) -> None:
     limit = max(1, int(key.rate_limit_requests))
     window_seconds = max(1, int(key.rate_limit_window))
     bucket_key = f"{key.key_id}:{client_ip}"
-    now = time()
-    threshold = now - window_seconds
-
-    with _serve_rate_limit_lock:
-        bucket = _serve_rate_limit_buckets.get(bucket_key, [])
-        bucket = [ts for ts in bucket if ts > threshold]
-
-        if len(bucket) >= limit:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded",
-            )
-
-        bucket.append(now)
-        _serve_rate_limit_buckets[bucket_key] = bucket
+    if not _serve_rate_limiter.hit(bucket_key, limit=limit, window=window_seconds):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded",
+        )
 
 
 def reset_source_rate_limit_state() -> None:
-    with _source_rate_limit_lock:
-        _source_rate_limit_buckets.clear()
-    with _serve_rate_limit_lock:
-        _serve_rate_limit_buckets.clear()
-    with _source_rate_limit_lock:
-        _admin_login_rate_limit_buckets.clear()
+    for limiter in (
+        _source_rate_limiter,
+        _serve_rate_limiter,
+        _admin_login_rate_limiter,
+        _admin_login_ip_rate_limiter,
+    ):
+        limiter.clear()
 
 
 def enforce_admin_login_rate_limit(request: Request, username: str) -> None:
-    now = time()
+    """Throttle per client IP and username, and per client IP across all usernames.
+
+    The per-IP total stops one client from creating unlimited buckets by rotating
+    usernames; it relies on the trusted client IP forwarded through nginx and the
+    Dashboard (``SOURCE_TRUST_PROXY_HEADERS``).
+    """
     window = settings.ADMIN_LOGIN_RATE_LIMIT_WINDOW
-    key = f"{_extract_client_ip(request) or 'unknown'}:{username.strip().lower()}"
-    with _source_rate_limit_lock:
-        bucket = [t for t in _admin_login_rate_limit_buckets.get(key, []) if t > now - window]
-        if len(bucket) >= settings.ADMIN_LOGIN_RATE_LIMIT_REQUESTS:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Too many login attempts",
-                headers={"Retry-After": str(window)},
-            )
-        bucket.append(now)
-        _admin_login_rate_limit_buckets[key] = bucket
+    ip = _extract_client_ip(request) or "unknown"
+    allowed = _admin_login_ip_rate_limiter.hit(
+        ip, limit=settings.ADMIN_LOGIN_IP_RATE_LIMIT_REQUESTS, window=window
+    ) and _admin_login_rate_limiter.hit(
+        f"{ip}:{username.strip().lower()}",
+        limit=settings.ADMIN_LOGIN_RATE_LIMIT_REQUESTS,
+        window=window,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts",
+            headers={"Retry-After": str(window)},
+        )
 
 
 async def verify_source_api_key(

@@ -30,8 +30,19 @@ Authorization: Bearer <admin-session>
 | Serve | 由`SERVE_REQUIRE_AUTH`控制；即使開放仍保持唯讀 |
 | Admin | 永遠需要具名session、DB-backed machine key或break-glass recovery key |
 
-Rate limit 與 security event 依 client IP 分桶。Admin 登入以「client IP + username」為單位，
-預設 5 次／300 秒。Client IP 的信任邊界如下：
+Rate limit 與 security event 依 client IP 分桶。Admin 登入有兩層限制，window 都是
+`ADMIN_LOGIN_RATE_LIMIT_WINDOW`（預設 300 秒）：
+
+- 「client IP + username」：`ADMIN_LOGIN_RATE_LIMIT_REQUESTS`，預設 5 次。
+- 同一個 client IP 的所有 username 合計：`ADMIN_LOGIN_IP_RATE_LIMIT_REQUESTS`，預設 20 次。
+  只換 username 也無法無限嘗試，或無限建立新的桶。
+
+Source、Serve 與登入的限流狀態都存在各 process 的記憶體中，restart 後重置。每個 limiter 只保留
+window 內的時間戳；過期的身分會定期清掉，追蹤數量超過 `RATE_LIMIT_MAX_TRACKED_KEYS`
+（預設 10,000）時，最久未使用的身分會先被淘汰。所以一次性的訪客 IP 或輪換的 username
+不會讓記憶體無限成長。代價是：來自大量不同 IP 的請求擠滿容量時，被淘汰身分的計數會重新開始。
+
+Client IP 的信任邊界如下：
 
 - 只有 nginx 對外開 port。nginx 對 `/api/v1/*` 與 `/dashboard/` 一律以 Cloudflare 驗證後的
   `$remote_addr` 覆寫 `X-Real-IP`／`X-Forwarded-For`，瀏覽器自帶的值不會原樣傳入。
