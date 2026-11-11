@@ -775,6 +775,12 @@ DQ／delivery policy。
 Foundation 建好後的日常變更（例如監控或 IAM 調整）都依這個流程，只能由受信任的 operator
 在 protected `main` 已合併的 commit 上執行，不可從 PR runner apply。
 
+CI 的驗證範圍：改到 `infra/tofu/` 的 PR 會在 Required CI 的 staging infra plan job 中，
+對 `production` 與 `production-bootstrap` 執行 `fmt -check` 與 `init -backend=false` 加 `validate`。
+這一步在取得任何 AWS 憑證之前執行，不讀 production state，也不 plan 或 apply；
+可以擋下語法、型別錯誤與無效的 resource 引用。Replacement、drift、refresh 結果與 delete，
+仍只能由下方的人工 saved plan 加 `plan_json_guard.py` 確認。
+
 - `production/backend.tf` 已固定 bucket、state key、region 與 state KMS key
   （`alias/findb-production-tofu-state`）的 ARN。state bucket policy 會拒絕 SSE-KMS key
   不符的所有寫入，包含 native lockfile。所以 `init` 不需要也不可另外帶 `-backend-config`；
