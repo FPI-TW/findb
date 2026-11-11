@@ -190,9 +190,17 @@ async def patch_eod_record(
         RecordNotFoundError: if no EOD record matches instrument_id + trade_date.
         NoChangesError: if the patch contains no OHLCV fields or values are identical.
     """
-    stmt = select(MarketDataEOD).where(
-        MarketDataEOD.instrument_id == instrument_id,
-        MarketDataEOD.trade_date == trade_date,
+    # Lock the row until commit: a concurrent correction (or normalizer upsert, which
+    # takes the same row lock) waits and then validates the latest committed values,
+    # instead of merging two partial UPDATEs into an OHLC that bypassed DQ.
+    stmt = (
+        select(MarketDataEOD)
+        .where(
+            MarketDataEOD.instrument_id == instrument_id,
+            MarketDataEOD.trade_date == trade_date,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
     result = await db.execute(stmt)
     eod = result.scalar_one_or_none()

@@ -276,6 +276,11 @@ Admin只供Dashboard與維運，主要能力包括：
 - DQ、raw payload、rerun、EOD correction與audit；
 - instrument cache及市場日曆draft／publish／rollback。
 
+EOD correction（`PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}`）在同一 transaction 內
+先鎖定該筆行情，再合併修正欄位、執行阻擋性 DQ、寫入 audit 與 stats。同一行情的並行修正會依序執行；
+後到的修正以前一筆提交後的值重新驗證，合併後違反 OHLC 規則時回 422，不會把兩筆部分修正合成
+未經 DQ 的值。Normalizer upsert 取得同一個 row lock，因此與修正之間也是以整列為單位依序套用。
+
 Instrument cache的coverage與Serve instrument契約一致，包含`eod`、`minute`及可空的`futures`；
 既有只含前兩者的cache仍可讀取，下一次Admin替換或更新時會正規化為`futures: null`。
 
