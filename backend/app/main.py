@@ -3,7 +3,10 @@ FastAPI application entry point.
 """
 
 import asyncio
-from contextlib import asynccontextmanager
+import logging
+import time
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -27,24 +30,51 @@ OPENAPI_TAGS = [
 ]
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan events."""
-    # Startup
-    await init_db()
-    flush_task = asyncio.create_task(
-        periodic_flush(async_session_maker, settings.CREDENTIAL_USAGE_FLUSH_SECONDS)
+@contextmanager
+def app_logging() -> Iterator[None]:
+    """Emit ``app.*`` INFO records from API roles for the app's lifetime.
+
+    Uvicorn configures only its own loggers, so without this the root logger
+    stays at WARNING and drops them. Celery workers configure the root logger
+    themselves and never run the lifespan. Records still propagate to root.
+    """
+    logger = logging.getLogger("app")
+    formatter = logging.Formatter(
+        "%(asctime)s.%(msecs)03dZ %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
     )
+    formatter.converter = time.gmtime
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    previous = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
     try:
         yield
     finally:
-        flush_task.cancel()
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events."""
+    with app_logging():
+        # Startup
+        await init_db()
+        flush_task = asyncio.create_task(
+            periodic_flush(async_session_maker, settings.CREDENTIAL_USAGE_FLUSH_SECONDS)
+        )
         try:
-            await flush_task
-        except asyncio.CancelledError:
-            pass
-        async with async_session_maker() as db:
-            await flush_usage(db)
+            yield
+        finally:
+            flush_task.cancel()
+            try:
+                await flush_task
+            except asyncio.CancelledError:
+                pass
+            async with async_session_maker() as db:
+                await flush_usage(db)
 
 
 app = FastAPI(
