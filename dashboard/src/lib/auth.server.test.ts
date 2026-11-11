@@ -1,13 +1,14 @@
 const server = vi.hoisted(() => ({
   deleteCookie: vi.fn(),
   setResponseHeader: vi.fn(),
+  requestHeaders: new Headers(),
 }))
 vi.mock("@tanstack/react-start/server", () => ({
   deleteCookie: server.deleteCookie,
   setResponseHeader: server.setResponseHeader,
   getRequest: () => ({
     url: "http://localhost/dashboard",
-    headers: new Headers(),
+    headers: server.requestHeaders,
   }),
   getRequestHeader: () => "http",
   getCookie: () => undefined,
@@ -21,6 +22,7 @@ import {
   configFromEnvironment,
   dashboardCookieOptions,
   fetchDashboardSession,
+  trustedClientAddressHeaders,
   withDashboardAuthentication,
 } from "./auth.server"
 
@@ -79,6 +81,58 @@ describe("dashboard backend authentication boundary", () => {
       username: "operator",
       password: "correct-password",
     })
+  })
+
+  it("forwards only the nginx-set client address to the backend login", async () => {
+    const forwarded: Array<string | null> = []
+    const login = (headers: Record<string, string>) => {
+      server.requestHeaders = new Headers(headers)
+      return authenticateDashboardUser(
+        "operator",
+        "pw",
+        async (_input, init) => {
+          forwarded.push(new Headers(init?.headers).get("x-forwarded-for"))
+          return Response.json({
+            access_token: "opaque-backend-session",
+            token_type: "bearer",
+            expires_at: "2026-07-28T10:00:00Z",
+            user,
+          })
+        }
+      )
+    }
+
+    await login({ "x-real-ip": "203.0.113.7" })
+    await login({ "x-real-ip": "2001:db8::7" })
+    // A browser-chosen X-Forwarded-For is never relayed, with or without X-Real-IP.
+    await login({ "x-forwarded-for": "198.51.100.1" })
+    await login({
+      "x-real-ip": "203.0.113.8",
+      "x-forwarded-for": "198.51.100.1",
+    })
+    server.requestHeaders = new Headers()
+
+    expect(forwarded).toEqual([
+      "203.0.113.7",
+      "2001:db8::7",
+      null,
+      "203.0.113.8",
+    ])
+  })
+
+  it("drops a client address that is not a plain IP literal", () => {
+    for (const value of [
+      "",
+      "unknown",
+      "203.0.113.7, 10.0.0.1",
+      "a".repeat(46),
+    ]) {
+      expect(
+        trustedClientAddressHeaders({
+          headers: new Headers({ "x-real-ip": value }),
+        })
+      ).toEqual({})
+    }
   })
 
   it("checks /auth/me with Bearer and never places the token in the URL", async () => {
