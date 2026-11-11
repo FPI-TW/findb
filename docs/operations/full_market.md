@@ -838,11 +838,13 @@ historical failure code 追溯。診斷在 Source 回報之後以 best effort �
 `--health` 輸出的 `source_error_diagnostics` 為未完成成員最新分類的計數。歷史紀錄只會新增，
 不改寫 `full_work`、prepared bytes、receipts 或 failure budget。
 
-Source 的 `POST /api/v1/source/universes` 使用 16 MiB nginx 與 Backend Content-Length 上限，
-容納完整市場成員；其餘 Source 端點維持 1 MiB nginx 上限及原有
+Source 的 `POST /api/v1/source/universes` 與 `POST /api/v1/source/provider-work/{id}/manifest`
+使用 16 MiB nginx 與 Backend Content-Length 上限：前者容納完整市場成員，後者由 Fetcher 一次凍結
+整份 cohort，沒有分頁或分塊協定。其餘 Source 端點維持 1 MiB nginx 上限及原有
 `SOURCE_MAX_PAYLOAD_BYTES` Backend 限制（預設 1,000,000 bytes）。nginx 同時限制 chunked
-body 的實際大小。Universe 端點使用相同 IP allowlist、proxy 與 Backend
-Source 認證，仍驗證 dataset scope、最多 30,000 個成員與 evidence；上限不是略過驗證的權限。
+body 的實際大小。Manifest location 必須巢狀放在 `^~ /api/v1/source/` 內，因為 `^~` 會停止
+server 層的 regex 比對；兩個放寬端點都使用相同 IP allowlist、proxy 與 Backend Source 認證，
+仍驗證 dataset scope、最多 30,000 個成員與 evidence；上限不是略過驗證的權限。
 中途停機、撤銷某市場權限或任一回應失敗時，不提交部分 catalogue evidence。
 
 這些程式保護不等於 native 驗收通過。驗收仍須包含真正 locked object 的重複寫入、五條現役 feeds
