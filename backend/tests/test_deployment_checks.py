@@ -765,6 +765,11 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
     credential_step = next(
         step for step in steps if step.get("name") == "Configure staging plan AWS credentials"
     )
+    production_validate = next(
+        step
+        for step in steps
+        if step.get("name") == "Validate production configurations without a backend"
+    )
     assert (
         steps.index(fork_guard)
         < steps.index(checkout)
@@ -773,8 +778,23 @@ def test_staging_infra_plan_is_reusable_exact_commit_and_bounded() -> None:
         < steps.index(trusted_source_verification)
         < steps.index(trusted_source_capture)
         < steps.index(tofu_setup)
+        < steps.index(production_validate)
         < steps.index(credential_step)
     )
+    production_script = production_validate["run"]
+    assert "for root in production production-bootstrap; do" in production_script
+    assert '-chdir="infra/tofu/${root}" init -backend=false' in production_script
+    assert "-lockfile=readonly" in production_script
+    assert '-chdir="infra/tofu/${root}" validate' in production_script
+    assert 'TF_DATA_DIR="${RUNNER_TEMP}/tofu-validate-${root}"' in production_script
+    assert "env" not in production_validate
+    # Production is type-checked only: no backend, state, plan or apply from CI.
+    for forbidden in ("-backend-config", "plan", "apply", "289112218471"):
+        assert forbidden not in production_script
+    assert "infra/tofu/production" not in workflow_path.read_text(encoding="utf-8").replace(
+        '"infra/tofu/${root}"', ""
+    )
+    assert " apply" not in workflow_path.read_text(encoding="utf-8")
     assert credential_step["uses"].startswith("aws-actions/configure-aws-credentials@")
     assert credential_step["with"] == {
         "role-to-assume": "arn:aws:iam::439622209937:role/staging-infra-plan",

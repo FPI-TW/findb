@@ -120,6 +120,18 @@ jobs:
           tofu_version: ${{ env.TOFU_VERSION }}
           tofu_wrapper: false
 
+      # Runs before any AWS credential exists: production is only type-checked here,
+      # never initialized against its state backend, planned or applied from CI.
+      - name: Validate production configurations without a backend
+        run: |
+          set -euo pipefail
+          for root in production production-bootstrap; do
+            export TF_DATA_DIR="${RUNNER_TEMP}/tofu-validate-${root}"
+            tofu -chdir="infra/tofu/${root}" init -backend=false -input=false \
+              -lockfile=readonly -no-color
+            tofu -chdir="infra/tofu/${root}" validate -no-color
+          done
+
       - name: Configure staging plan AWS credentials
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v5
         with:

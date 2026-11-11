@@ -255,6 +255,10 @@ not carry that exact key. A plain `init` works; see
 [`docs/operations/production.md`](../../docs/operations/production.md) for the
 day-to-day plan/apply commands.
 
+Required CI type-checks both production roots (`init -backend=false` plus
+`validate`, before any AWS credential is configured); only the manual saved
+plan proves replacements, drift, and deletes.
+
 The stack enforces the required `Project=findb`, `Environment`, `DeploymentUnit`,
 `Owner`, and `BackupOwner` tags on each existing instance. It creates separate
 OIDC deploy roles for `staging-findb` and `staging-fetcher`, separate EC2
