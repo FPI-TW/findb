@@ -103,6 +103,9 @@ acquisition 先記 intent，delivery prepare 再 confirm；ingest 送出前不�
 stage 只做 fence 檢查，ingest 本身也以同一 fence 驗證並在 fence 不符時回 `PROVIDER_WORK_FENCE`。略過的
 stage 仍做本機 fence 檢查；stage 失敗不記為已確認，下次照常重送。每個 body 都已有 run 的成員重訪時只
 GET run status，不重新 prepare，也不占 daily `max_members`（`max_seconds` 照常計時）。
+同一輪成員迴圈中，acquisition gate（停止、暫停或窗口外）一旦回報不可抓取即視為本輪已關閉：之後沒有
+本機 prepared body 的成員不再 restore probe 或重查 gate；本機已 prepared 的成員照常交付或查狀態，Source
+保留而本機沒有的 bytes 保持 pending，由下次執行中的 attempt restore。Drain-only 輪仍逐檔 restore。
 
 Retryable round 必須先關閉 acquisition／acceptance、排空所有 accepted runs，再把下一 attempt
 附加到 FIFO 尾端並設定 `not_before`。原 frozen manifest、prepared bytes、receipts 與 operation budgets
