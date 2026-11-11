@@ -418,3 +418,109 @@ async def test_failed_retry_updates_plan_summary_and_freshness(test_session):
     ].feeds[0]
     assert full_feed.latest_successful_data_date is None
     assert full_feed.last_run_id == run.run_id and full_feed.last_failure_code == "RETRY_EXHAUSTED"
+
+
+def _count_reconciles(monkeypatch):
+    from app.services import full_market
+
+    calls = []
+    original = full_market.reconcile_plan
+
+    async def counted(db, plan, **kwargs):
+        calls.append(plan.plan_id)
+        return await original(db, plan, **kwargs)
+
+    monkeypatch.setattr(full_market, "reconcile_plan", counted)
+    return calls, original
+
+
+async def _assert_matches_reconcile(db, plan_id, reconcile):
+    stored = await summary(db, plan_id)
+    expected = await reconcile(db, await db.get(DailyDeliveryPlan, plan_id), gap_limit=0)
+    assert (
+        stored.expected_count,
+        stored.data_count,
+        stored.no_data_count,
+        stored.missing_count,
+        stored.blocked_count,
+    ) == (expected.expected, expected.data, expected.no_data, expected.missing, expected.blocked)
+    return stored
+
+
+@pytest.mark.asyncio
+async def test_queued_run_advances_metadata_without_reconcile(test_session, monkeypatch):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    calls, reconcile = _count_reconciles(monkeypatch)
+    service = IngestionService(test_session)
+    runs = [
+        await service.create_ingestion_run(
+            dataset.dataset_key,
+            source="taifex",
+            delivery_part_id=plan.parts[0].part_id,
+            schema_id="futures_eod",
+            schema_version=1,
+            batch_data_date=DAY,
+            policy_outcome="warn",
+        )
+        for _ in range(2)
+    ]
+    assert calls == []
+    stored = await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
+    assert (stored.latest_run_id, stored.policy_outcome) == (runs[-1].run_id, "warn")
+    assert stored.missing_count == 2
+
+
+@pytest.mark.asyncio
+async def test_deferred_normalizer_leaves_one_terminal_refresh_to_caller(test_session, monkeypatch):
+    from app.services.delivery_plan_summary import refresh_summaries_for_run
+
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    member = await test_session.scalar(
+        select(DailyDeliveryMember)
+        .where(DailyDeliveryMember.plan_id == plan.plan_id)
+        .order_by(DailyDeliveryMember.member_key)
+    )
+    run = await IngestionService(test_session).create_ingestion_run(
+        dataset.dataset_key,
+        source="taifex",
+        delivery_part_id=plan.parts[0].part_id,
+        schema_id="futures_eod",
+        schema_version=1,
+        batch_data_date=DAY,
+    )
+    calls, reconcile = _count_reconciles(monkeypatch)
+    normalizer = FuturesEODContractNormalizer(
+        test_session, {**dataset.config, "_defer_summary_refresh": True}
+    )
+    await normalizer.process({"data": [_quote(session=member.session)]}, run.run_id, commit=False)
+    assert calls == [] and (await summary(test_session, plan.plan_id)).data_count == 0
+    await refresh_summaries_for_run(test_session, run)
+    assert calls == [plan.plan_id]
+    stored = await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
+    assert stored.data_count == 1 and stored.last_completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_full_refresh_never_regresses_newer_latest_run(test_session):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    await IngestionService(test_session).create_ingestion_run(
+        dataset.dataset_key,
+        source="taifex",
+        delivery_part_id=plan.parts[0].part_id,
+        schema_id="futures_eod",
+        schema_version=1,
+        batch_data_date=DAY,
+    )
+    # A run recorded without the plan lock after this refresh observed the scope.
+    newer_id, newer_at = uuid7(), utc_now() + timedelta(seconds=1)
+    stored = await summary(test_session, plan.plan_id)
+    stored.latest_run_id, stored.latest_run_created_at = newer_id, newer_at
+    stored.policy_outcome = "warn"
+    member = await test_session.scalar(
+        select(DailyDeliveryMember).where(DailyDeliveryMember.plan_id == plan.plan_id).limit(1)
+    )
+    member.outcome = "blocked"
+    await refresh_plan_summary(test_session, plan.plan_id)
+    stored = await summary(test_session, plan.plan_id)
+    assert (stored.latest_run_id, stored.latest_run_created_at) == (newer_id, newer_at)
+    assert stored.policy_outcome == "warn" and stored.blocked_count == 1

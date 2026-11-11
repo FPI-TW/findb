@@ -1024,10 +1024,14 @@ API 的 `execution_profile` 參數保留但只接受 `full_market`，其他值�
 snapshot；交易日曆、首次日期與 deadline 仍依查詢時間計算，停止 scheduler 不會凍結
 時間判斷。頁面更新不會觸發抓取或摘要寫入。
 
-摘要以 immutable plan ID 區分。建立 plan、接受新 run／分鐘重試、
-normalization 完成或失敗、retry／retry exhausted、no-data／blocked outcome 變更時，
-只刷新受影響的 plan，與原始資料／run／實際寫入證據在同一 transaction commit。
-Plan row lock 串行化同 plan 的競爭寫入；失敗 rollback 不得先公布摘要。
+摘要以 immutable plan ID 區分。建立 plan、分鐘重試、normalization 完成或失敗、
+retry／retry exhausted、no-data／blocked outcome 變更時，只對受影響的 plan 完整重算，
+與原始資料／run／實際寫入證據在同一 transaction commit。
+Plan row lock 串行化同 plan 的完整重算；失敗 rollback 不得先公布摘要。
+接受非 terminal、非 `sequenced_snapshot` 的新 run 不會改變計數，只以單調條件更新
+latest run metadata，不取 plan lock、不重算；完整重算寫回時也只在其 latest run 不舊於
+已記錄者時覆寫 metadata。Processing 狀態不刷新摘要；queue worker 只在 terminal commit
+前完整重算一次，直接呼叫 normalizer 時由 terminal 狀態更新負責。
 Historical 實際寫入的修復會更新同 dataset／provider／date 的 plan 摘要：FactSet、Twelve Data 與
 FinLab 的 historical work 只要以相同契約、相同 provider symbol 凍結該成員並有本 work 的 receipt 與
 canonical 寫入證據，該成員即算 data，解除 gap 與 missing-delivery 告警；原 Full work 的結算不改寫。
