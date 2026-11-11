@@ -1051,6 +1051,9 @@ async def test_waiting_delivery_skips_duplicate_settled_by_lock_holder(test_engi
                 ),
                 {"j": job_id},
             )
+            # Like a worker: commit the settlement before releasing the session lock,
+            # which takes effect at once; the waiter must only see committed state.
+            await holder.commit()
             await holder.execute(text("SELECT pg_advisory_unlock(hashtext('tw_equity_eod'))"))
             await holder.commit()
             await asyncio.wait_for(worker, timeout=10)

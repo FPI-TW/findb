@@ -1036,7 +1036,9 @@ snapshot；交易日曆、首次日期與 deadline 仍依查詢時間計算，�
 時間判斷。頁面更新不會觸發抓取或摘要寫入。
 
 摘要以 immutable plan ID 區分，與原始資料／run／實際寫入證據在同一 transaction commit；
-Plan row lock 串行化同 plan 的摘要寫入，失敗 rollback 不得先公布摘要。
+Plan row lock 串行化同 plan 的摘要寫入，失敗 rollback 不得先公布摘要。鎖順序固定為 plan → part：
+摘要寫入者在 plan lock 下更新 part 計數；outcome 只鎖自己的 member 列（`FOR UPDATE OF`），不鎖
+join 到的 part，再取 plan lock，避免與 worker 的 part 更新互相等待而死結。
 `daily_delivery_part` 另存各 part 的 data／no_data／missing／blocked／mapping_gap 計數，
 各 part 加總等於 plan 摘要。成員狀態只取決於自身的 canonical、證據、outcome 與 mapping，
 因此：
