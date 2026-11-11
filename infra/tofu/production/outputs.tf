@@ -69,7 +69,3 @@ output "aws_configuration_locations" {
 
   }
 }
-
-output "broken_reference" {
-  value = aws_instance.does_not_exist.id
-}
