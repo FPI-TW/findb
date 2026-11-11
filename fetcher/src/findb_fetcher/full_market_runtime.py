@@ -142,43 +142,6 @@ def load_readiness(
     return value
 
 
-def validate_capacity(
-    proof: dict[str, Any], request_count: int, *, seconds_available: float
-) -> None:
-    # Reserve retry headroom; insufficient coverage blocks instead of selecting a subset.
-    needed = math.ceil(request_count * 1.2)
-    rate = min(proof["requests_per_second"], proof["requests_per_minute"] / 60)
-    if (
-        needed > proof["requests_per_day"]
-        or needed * proof["max_response_bytes"] > proof["bytes_per_day"]
-        or needed / rate > seconds_available
-    ):
-        raise ReadinessBlockedError("current account cannot finish full coverage before deadline")
-
-
-def split_rows(
-    rows: list[dict[str, Any]], *, max_rows: int = 15000, max_bytes: int = 900000
-) -> list[list[dict[str, Any]]]:
-    """Bound both contract row count and serialized request headroom."""
-    if max_rows < 1 or max_bytes < 1:
-        raise ValueError("batch bounds invalid")
-    result: list[list[dict[str, Any]]] = []
-    chunk: list[dict[str, Any]] = []
-    size = 2
-    for row in rows:
-        row_size = len(canonical_bytes(row)) + 1
-        if row_size + 2 > max_bytes:
-            raise ReadinessBlockedError("one provider row exceeds request byte bound")
-        if chunk and (len(chunk) >= max_rows or size + row_size > max_bytes):
-            result.append(chunk)
-            chunk, size = [], 2
-        chunk.append(row)
-        size += row_size
-    if chunk:
-        result.append(chunk)
-    return result
-
-
 def _governed(method):
     @wraps(method)
     def run(self, *args, **kwargs):
@@ -365,49 +328,30 @@ class FullMarketRuntime:
             return self.can_acquire()
         return self.runtime_window()["open"] and self.can_acquire()
 
-    def _reserve(self) -> tuple[int, int]:
-        """Reserve one acquisition through the shared, durable account governor."""
-        from findb_fetcher.account_governor import reserve
-
-        permit = reserve(self.provider)
-        if not self._acquisition_allowed() or permit is None:
-            raise ReadinessBlockedError("scheduler acquisition stopped")
-        self.reservation_window = permit.window
-        self.account_permit = permit
-        return permit.requests_before, permit.requests_after
-
     def _observed_response(self, size: int, *, declared: int = 0) -> None:
         bound = int(self.proof["max_response_bytes"])
-        counted = size
-        permit = getattr(self, "account_permit", None)
-        if permit is not None:
-            if counted is not None:
-                permit.observe(counted, declared=declared)
-        elif self.proof.get("bytes_per_day") is not None and counted is not None:
+        if self.proof.get("bytes_per_day") is not None and size is not None:
             reserved = 0 if self.proof.get("platform_limits") else bound
-            if counted > reserved and max(size, declared) <= bound:
+            if size > reserved and max(size, declared) <= bound:
                 self.state.record_byte_overage(
                     account=self.provider,
                     window=self.reservation_window,
-                    byte_count=counted - reserved,
+                    byte_count=size - reserved,
                 )
         if max(size, declared) > bound:
-            if permit is None:
-                self.state.observe_capacity(
-                    account=self.provider,
-                    window=self.reservation_window,
-                    bound=(0 if self.proof.get("platform_limits") else bound),
-                    observed=size,
-                    declared=declared,
-                    allocation_sha256="",
-                )
+            self.state.observe_capacity(
+                account=self.provider,
+                window=self.reservation_window,
+                bound=(0 if self.proof.get("platform_limits") else bound),
+                observed=size,
+                declared=declared,
+                allocation_sha256="",
+            )
             raise ReadinessBlockedError("provider response exceeds transport size bound")
 
     def _rate_limited(self) -> None:
-        permit = getattr(self, "account_permit", None)
-        state = permit.state if permit is not None else self.state
-        state.rate_limited(
-            account=permit.account if permit is not None else self.provider,
+        self.state.rate_limited(
+            account=self.provider,
             window=datetime.now(timezone.utc).date().isoformat(),
             until=time.time() + 60,
         )

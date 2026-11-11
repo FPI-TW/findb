@@ -1,7 +1,8 @@
-"""Persistent provider-account permits shared by every opt-in consumer.
+"""Shared provider-account ledger helpers: Source authorization, retention and repair.
 
-Checkpoint databases stay isolated. All consumer processes mount the same
-account governor database; restarts never reset the daily reservation.
+Acquisition is paced at the actual invocation boundary (``acquisition.py``);
+this module no longer issues detached permits. Checkpoint databases stay
+isolated, and every consumer process mounts the same account governor database.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import math
 import os
 import re
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,103 +21,17 @@ from uuid import UUID
 
 from findb_fetcher.config import app_environment
 from findb_fetcher.execution_metadata import provider_ids
-from findb_fetcher.full_market_state import FullMarketState, FullMarketStateError, QuotaBlockedError
+from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 
-# Consumers that keep their own control/authorization and opt into the shared
-# ledger only when FETCHER_ACCOUNT_STATE_PATH is installed. Entry points that
-# never set FETCHER_CONSUMER_PROFILE (legacy CLIs, manual backfill) are bounded.
+# Consumers that keep their own control/authorization and skip the Source
+# account authorization below. Entry points that never set
+# FETCHER_CONSUMER_PROFILE (legacy CLIs, manual backfill) are bounded.
 BOUNDED_CONSUMERS = frozenset({"bounded", "historical"})
 
 
 def consumer() -> str:
     return os.getenv("FETCHER_CONSUMER_PROFILE", "bounded")
-
-
-@dataclass
-class Permit:
-    state: FullMarketState
-    account: str
-    window: str
-    bound: int
-    allocation: str | None = None
-    allocation_sha256: str = ""
-    platform_limits: bool = False
-    byte_limit: int | None = None
-    requests_before: int = 0
-    requests_after: int = 0
-
-    def observe(self, byte_count: int, *, declared: int = 0) -> None:
-        if self.platform_limits:
-            if self.byte_limit is not None:
-                self.state.record_byte_overage(
-                    account=self.account, window=self.window, byte_count=byte_count
-                )
-            if max(byte_count, declared) > self.bound:
-                raise FullMarketStateError("provider response exceeds transport bound")
-            return
-        if max(byte_count, declared) > self.bound:
-            self.state.observe_capacity(
-                account=self.account,
-                window=self.window,
-                bound=self.bound,
-                observed=byte_count,
-                allocation_sha256=self.allocation_sha256,
-                allocation=self.allocation,
-                declared=declared,
-            )
-            raise QuotaBlockedError("observed provider response exceeds enrolled byte bound")
-
-
-def load_declaration(provider: str) -> dict[str, Any]:
-    from findb_fetcher.full_market_runtime import load_readiness
-
-    path = Path(
-        os.getenv(
-            "FETCHER_ACCOUNT_READINESS_FILE", f"/var/lib/findb-account/readiness/{provider}.json"
-        )
-    )
-    if consumer() in BOUNDED_CONSUMERS:
-        allocation = Path(
-            os.getenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(path.with_suffix(".account.json")))
-        )
-        if not allocation.is_file():
-            # A bounded install has no opt-in shared account until installation.
-            raise FileNotFoundError("shared account allocation not installed")
-        value = json.loads(allocation.read_bytes())
-    else:
-        if not path.is_file() or path.stat().st_size > 65536:
-            raise QuotaBlockedError("shared account readiness unavailable")
-        scope = json.loads(path.read_bytes()).get("datasets", [])
-        value = load_readiness(path, provider, scope, now=datetime.now(timezone.utc))
-        allocation_path = Path(
-            os.getenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(path.with_suffix(".account.json")))
-        )
-        allocation = json.loads(allocation_path.read_bytes())
-        allocation["requests_per_second"] = float(allocation["requests_per_second"])
-        allocation.setdefault("source_requests_per_minute", 120)
-        if checksum(canonical_bytes(allocation)) != value.get("account_allocation_sha256"):
-            raise QuotaBlockedError("installed account allocation changed after enrollment")
-    if (
-        value.get("provider") != provider
-        or value.get("environment") != app_environment("local")
-        or value.get("account", {}).get("governor_identity")
-        != os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3")
-        or consumer() not in value["account"].get("consumers", [])
-        or any(
-            type(value.get(key)) is not int or value[key] <= 0
-            for key in (
-                "requests_per_day",
-                "requests_per_minute",
-                "bytes_per_day",
-                "max_response_bytes",
-            )
-        )
-        or not isinstance(value.get("requests_per_second"), (int, float))
-        or value["requests_per_second"] <= 0
-    ):
-        raise QuotaBlockedError("shared account allocation identity invalid")
-    return value
 
 
 def runtime_identity_matches(runtime_id: str) -> bool:
@@ -163,60 +78,12 @@ def authorize(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def reserve(provider: str, *, force: bool = False) -> Permit | None:
-    from findb_fetcher.platform_limits import account_identity, interval, limits
-
-    if (
-        consumer() in BOUNDED_CONSUMERS
-        and not force
-        and not os.getenv("FETCHER_ACCOUNT_STATE_PATH")
-    ):
-        return None  # Existing bounded installations retain their provider enforcement.
-    value = limits(provider)
-    if consumer() not in BOUNDED_CONSUMERS:
-        authorize({})
-    path = Path(os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3"))
-    state = FullMarketState(path)
-    account = account_identity(provider, state)
-    while True:
-        wait, before, after, window = state.reserve_acquisition(
-            account=account,
-            interval=interval(value),
-            requests=1,
-            byte_count=0,
-            request_limit=None,
-            byte_limit=value["bytes_per_day"],
-            minute_limit=value["requests_per_minute"],
-            enforce_capacity=False,
-        )
-        if wait <= 0:
-            if consumer() not in BOUNDED_CONSUMERS:
-                authorize({})
-            return Permit(
-                state,
-                account,
-                window,
-                value["max_response_bytes"],
-                platform_limits=True,
-                byte_limit=value["bytes_per_day"],
-                requests_before=before,
-                requests_after=after,
-            )
-        time.sleep(min(wait, 1))
-
-
 def prune_ledger() -> dict[str, int] | None:
     """Daily host-wide retention for the shared ledger; never creates one."""
     path = Path(os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3"))
     if not path.is_file():
         return None
     return FullMarketState(path).prune_account_ledger()
-
-
-def provider_permit(provider: str) -> Permit | None:
-    # Acquisition is governed at the actual invocation boundary. Detached
-    # reserve() remains a legacy ledger API, never a production provider gate.
-    return None
 
 
 def source_permit(source_key: str) -> None:
