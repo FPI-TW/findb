@@ -99,6 +99,19 @@ async function parseError(response: Response, fallback: string) {
   }
 }
 
+// nginx overwrites X-Real-IP (and X-Forwarded-For) with the Cloudflare-verified
+// client address on every /dashboard/ request, and the Dashboard publishes no
+// port of its own. Forward only that value so ingest rate-limits the real
+// visitor instead of this container; never pass on a browser-supplied header.
+const CLIENT_ADDRESS = /^[0-9A-Fa-f:.]{2,45}$/
+
+export function trustedClientAddressHeaders(
+  request: { headers: Headers } = getRequest()
+): Record<string, string> {
+  const address = request.headers.get("x-real-ip")?.trim() ?? ""
+  return CLIENT_ADDRESS.test(address) ? { "X-Forwarded-For": address } : {}
+}
+
 export async function authenticateDashboardUser(
   username: string,
   password: string,
@@ -111,6 +124,7 @@ export async function authenticateDashboardUser(
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        ...trustedClientAddressHeaders(),
       },
       body: JSON.stringify({ username, password }),
       cache: "no-store",

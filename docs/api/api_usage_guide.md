@@ -30,6 +30,18 @@ Authorization: Bearer <admin-session>
 | Serve | 由`SERVE_REQUIRE_AUTH`控制；即使開放仍保持唯讀 |
 | Admin | 永遠需要具名session、DB-backed machine key或break-glass recovery key |
 
+Rate limit 與 security event 依 client IP 分桶。Admin 登入以「client IP + username」為單位，
+預設 5 次／300 秒。Client IP 的信任邊界如下：
+
+- 只有 nginx 對外開 port。nginx 對 `/api/v1/*` 與 `/dashboard/` 一律以 Cloudflare 驗證後的
+  `$remote_addr` 覆寫 `X-Real-IP`／`X-Forwarded-For`，瀏覽器自帶的值不會原樣傳入。
+- Dashboard 以 server-side fetch 直連 ingest，登入時只轉送 nginx 寫入的 `X-Real-IP`
+  （必須是單一 IP literal），作為 `X-Forwarded-For`。
+- Backend 只在 `SOURCE_TRUST_PROXY_HEADERS=true` 時採用 `X-Forwarded-For` 的第一個值。
+  部署環境必須設為 `true`；否則所有經 nginx 與 Dashboard 的請求都會合併成 proxy container 的 IP，
+  任何人對某個 username 失敗 5 次，就會讓所有人在 window 內無法登入該帳號。
+- ingest 不對外開 port；直連 ingest 不在這個信任邊界內。
+
 每個 provider/client 使用獨立 Source key；共用 Fetcher runtime 從 Source 取得有效執行政策，
 不再注入 calendar Serve key。`ADMIN_BREAK_GLASS_API_KEY` 只供 bootstrap 與緊急復原。
 
