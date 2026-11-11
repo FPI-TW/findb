@@ -1567,13 +1567,3 @@ async def reconcile_taifex_rollover_candidates(
     else:
         await db.rollback()
     return results
-
-
-async def activate_feed(db: AsyncSession, dataset_key: str, body: object) -> dict:
-    """Retired service entrypoint; callers must use Owner scheduler admission."""
-    raise FullMarketError("Feed activation retired; use Owner scheduler PATCH", 410)
-
-
-async def deactivate_feed(db: AsyncSession, dataset_key: str) -> dict:
-    """Retired service entrypoint; callers must use Owner scheduler stop."""
-    raise FullMarketError("Feed deactivation retired; use Owner scheduler PATCH", 410)

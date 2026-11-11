@@ -7,7 +7,6 @@ capability enrollment/report/repair tools remain independent diagnostics.
 
 import hashlib
 import json
-import math
 from collections.abc import Mapping
 from datetime import date
 from uuid import UUID
@@ -247,70 +246,6 @@ async def verify_enrollment(
         reported_at=row.reported_at,
         declaration=proof,
     )
-
-
-def capacity_proof(
-    proof: ReadinessDeclaration, provider: str, members: dict[str, int]
-) -> tuple[dict, list[str]]:
-    # Count every ready feed, plus catalogue refresh and worst report fallback.
-    calls = sum(
-        5 if provider == "finlab" else 7 if provider == "taifex" else count
-        for count in members.values()
-    )
-    calls += {"twelve_data": 4, "finlab": 6, "shioaji": 5, "taifex": 1, "factset": 2}[provider]
-    required = math.ceil(calls * 1.2)
-    required_bytes = required * proof.max_response_bytes
-    rate = min(proof.requests_per_second, proof.requests_per_minute / 60)
-    source_checks = 8
-    # Leave 20% of the Source key budget for delivery, reports and polling.
-    interval = max(1 / rate, 60 * source_checks / (0.8 * proof.source_requests_per_minute))
-    source_requests = required * source_checks
-    # Every member requires control/auth, delivery/outcome and terminal status,
-    # even when its provider response is cached or shared with other members.
-    member_source_requests = math.ceil(sum(members.values()) * 4 * 1.2)
-    source_requests += member_source_requests
-    source_requests += proof.account.other_requests_per_day * source_checks
-    seconds = (required + proof.account.other_requests_per_day) * (
-        interval + proof.provider_call_seconds
-    ) + source_requests * (
-        proof.source_check_seconds + 60 / (0.8 * proof.source_requests_per_minute)
-    )
-    windows = {"us_equity_eod": 10800, "hk_equity_eod": 16200, "tw_futures_eod": 18000}
-    completion_window = min(
-        proof.completion_window_seconds,
-        min(windows.get(dataset, 14400) for dataset in members),
-    )
-    prior_requests = (
-        proof.account.used_requests if proof.account.usage_day == utc_now().date() else 0
-    )
-    prior_bytes = proof.account.used_bytes if proof.account.usage_day == utc_now().date() else 0
-    result = {
-        "version": 1,
-        "members": members,
-        "provider_calls": calls,
-        "required_requests": required,
-        "required_bytes": required_bytes,
-        "required_seconds": seconds,
-        "source_checks_per_call": source_checks,
-        "effective_acquisition_interval_seconds": interval,
-        "completion_window_seconds": completion_window,
-        "source_requests": source_requests,
-        "member_source_requests": member_source_requests,
-        "source_requests_per_member": 4,
-        "retry_multiplier": 1.2,
-        "other_requests": proof.account.other_requests_per_day,
-        "other_bytes": proof.account.other_bytes_per_day,
-        "prior_requests": prior_requests,
-        "prior_bytes": prior_bytes,
-    }
-    blockers = []
-    if required + proof.account.other_requests_per_day + prior_requests > proof.requests_per_day:
-        blockers.append("full_market_request_capacity_insufficient")
-    if required_bytes + proof.account.other_bytes_per_day + prior_bytes > proof.bytes_per_day:
-        blockers.append("full_market_byte_capacity_insufficient")
-    if seconds > completion_window:
-        blockers.append("full_market_deadline_capacity_insufficient")
-    return result, blockers
 
 
 async def eligibility(

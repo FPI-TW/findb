@@ -38,10 +38,6 @@ _ASSET_CLASS_RE = re.compile(ASSET_CLASS_PATTERN)
 _MARKET_RE = re.compile(MARKET_PATTERN)
 
 
-def sql_in(values: tuple[str, ...]) -> str:
-    return ", ".join(f"'{value}'" for value in values)
-
-
 def sql_asset_class_check(column_name: str) -> str:
     return f"{column_name} ~ '{ASSET_CLASS_PATTERN}'"
 

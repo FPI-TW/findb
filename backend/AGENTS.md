@@ -14,7 +14,7 @@ Admin負責已認證的營運、修正與治理操作。
 | Source ingest | `app/api/v1/source.py` | Auth、idempotency、run建立與rerun |
 | Serve query | `app/api/v1/serve.py` | 唯讀filter、pagination與response shaping |
 | Admin operations | `app/api/v1/admin.py` | DQ、EOD修正、raw查詢、bulk rerun與cache管理 |
-| API auth | `app/api/deps.py` | Source、Serve、Admin認證、allowlist與rate limit |
+| API auth | `app/api/deps.py` | Source、Serve、Admin認證、client IP與rate limit；Source IP allowlist由nginx負責 |
 | DB dependency | `app/dependencies.py` | Async session injection |
 
 ### 規則

@@ -642,20 +642,6 @@ async def test_stale_installed_ack_only_blocks_acquisition_until_runtime_reports
     assert (await admission_projection(test_session, "finlab", source=True))["acquisition_allowed"]
 
 
-def test_finlab_capacity_includes_cached_table_member_source_work():
-    from uuid import UUID
-
-    from app.services.full_market_admission import capacity_proof
-
-    proof = declaration("finlab", UUID(int=1), ["tw_equity_eod", "tw_etf_eod"])
-    one, _ = capacity_proof(proof, "finlab", {"tw_equity_eod": 1})
-    all_feeds, _ = capacity_proof(proof, "finlab", {"tw_equity_eod": 3000, "tw_etf_eod": 1000})
-    assert all_feeds["source_requests"] > one["source_requests"] + 19000
-    assert all_feeds["required_seconds"] > one["required_seconds"]
-    assert all_feeds["members"] == {"tw_equity_eod": 3000, "tw_etf_eod": 1000}
-    assert all_feeds["completion_window_seconds"] == 14400
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [0, False, [], {}, "invalid", "2026-02-30"])
 async def test_malformed_legacy_date_is_replaced_by_first_start(test_session, monkeypatch, legacy):
@@ -759,34 +745,6 @@ async def test_null_legacy_metadata_cannot_reset_existing_permanent_first_date(
         )
     ).first_start_date == cutoff
     assert dataset.config["full_market"]["activation_date"] == cutoff.isoformat()
-
-
-@pytest.mark.parametrize(
-    "provider,datasets",
-    [
-        ("twelve_data", {"us_equity_eod": 160}),
-        ("finlab", {"tw_equity_eod": 160}),
-        ("taifex", {"tw_futures_eod": 160}),
-    ],
-)
-def test_capacity_counts_every_member_source_work_independently_of_provider_cache(
-    provider, datasets
-):
-    from uuid import UUID
-
-    from app.services.full_market_admission import capacity_proof
-
-    proof = declaration(provider, UUID(int=1), list(datasets))
-    proof.source_requests_per_minute = 2
-    result, blockers = capacity_proof(proof, provider, datasets)
-    assert result["member_source_requests"] == 768
-    assert result["source_requests_per_member"] == 4
-    assert result["source_requests"] >= 768 + result["required_requests"] * 8
-    assert "full_market_deadline_capacity_insufficient" in blockers
-    proof.source_requests_per_minute = 2400
-    result, blockers = capacity_proof(proof, provider, datasets)
-    assert blockers == []
-    assert result["members"] == datasets
 
 
 @pytest.mark.asyncio

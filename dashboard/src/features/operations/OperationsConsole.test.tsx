@@ -66,15 +66,15 @@ vi.mock("@tanstack/react-start", () => ({
 
 vi.mock("../../lib/admin.functions", () => mocks)
 
+import { DeliveriesPage } from "./operations.deliveries"
 import {
-  DQPolicyDetails,
-  DeliveriesPage,
-  OperationsOverviewPage,
   IngestionOverviewPanel,
+  OperationsOverviewPage,
   describeSchedulerRuntime,
   schedulerActivityLabel,
   selectSchedulerRuntimeStatus,
-} from "./OperationsConsole"
+} from "./operations.overview"
+import { DQPolicyDetails } from "./operations.quality"
 import {
   operationsKeys,
   updateOverviewSchedulerCache,
