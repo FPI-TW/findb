@@ -7,8 +7,10 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Sequence
+from time import perf_counter
+from typing import Callable, Sequence
 
 from dotenv import dotenv_values
 
@@ -21,10 +23,19 @@ DEFAULT_DATABASE_URL = "postgresql+asyncpg://findb:findb@localhost:5435/findb"
 DEFAULT_TEST_DATABASE_URL = "postgresql+asyncpg://findb:findb@localhost:5435/findb_test"
 DEPENDENCY_SERVICES = ("db", "rabbitmq")
 RUNTIME_SERVICES = ("app", "dispatcher", "worker")
+PYTEST_COMMAND = (
+    "uv",
+    "run",
+    "pytest",
+    "--tb=short",
+    "-q",
+    "--durations=20",
+    "--durations-min=0.5",
+)
 
 
 def _run(cmd: Sequence[str], env: dict[str, str] | None = None) -> int:
-    print(f"$ {' '.join(cmd)}")
+    print(f"$ {' '.join(cmd)}", flush=True)
     completed = subprocess.run(cmd, cwd=BACKEND_ROOT, env=env)
     return completed.returncode
 
@@ -246,26 +257,18 @@ def cmd_queue_logs(args: argparse.Namespace) -> int:
 
 
 def cmd_test_db(args: argparse.Namespace) -> int:
-    compose = _docker_compose_cmd()
-    up_code = _run([*compose, "up", "-d", "db"])
-    if up_code != 0:
-        return up_code
+    if not args.no_start_db:
+        compose = _docker_compose_cmd()
+        up_code = _run([*compose, "up", "-d", "db"])
+        if up_code != 0:
+            return up_code
 
     env = os.environ.copy()
     env.setdefault("TEST_DATABASE_URL", DEFAULT_TEST_DATABASE_URL)
     env["DEBUG"] = "true"
-    pytest = [
-        "uv",
-        "run",
-        "pytest",
-        "--tb=short",
-        "-q",
-        "--durations=20",
-        "--durations-min=0.5",
-    ]
     test_code = _run(
         [
-            *pytest,
+            *PYTEST_COMMAND,
             "-n",
             str(args.workers),
             "--dist",
@@ -279,9 +282,44 @@ def cmd_test_db(args: argparse.Namespace) -> int:
     # Migration templates are reused in one serial session, matching CI.
     migration_paths = sorted((BACKEND_ROOT / "tests").glob("test_*migration*.py"))
     return _run(
-        [*pytest, *(str(path.relative_to(BACKEND_ROOT)) for path in migration_paths)],
+        [*PYTEST_COMMAND, *(str(path.relative_to(BACKEND_ROOT)) for path in migration_paths)],
         env=env,
     )
+
+
+def cmd_test_infra(args: argparse.Namespace, pytest_args: Sequence[str] = ()) -> int:
+    return _run(
+        [
+            *PYTEST_COMMAND,
+            "../infra/tests",
+            "-n",
+            str(args.workers),
+            "--dist",
+            "worksteal",
+            "--timeout=300",
+            *pytest_args,
+        ]
+    )
+
+
+def _time_suite(
+    name: str, run: Callable[[argparse.Namespace], int], args: argparse.Namespace
+) -> int:
+    started = perf_counter()
+    try:
+        return run(args)
+    finally:
+        print(f"[{name}] {perf_counter() - started:.2f}s", flush=True)
+
+
+def cmd_test_parallel(args: argparse.Namespace) -> int:
+    started = perf_counter()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        backend = executor.submit(_time_suite, "Backend", cmd_test_db, args)
+        infra = executor.submit(_time_suite, "Infra", cmd_test_infra, args)
+    print(f"[Total] {perf_counter() - started:.2f}s", flush=True)
+    backend_status, infra_status = backend.result(), infra.result()
+    return backend_status or infra_status
 
 
 def cmd_down(_args: argparse.Namespace) -> int:
@@ -373,15 +411,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     queue_logs.add_argument("--tail", type=int, default=200, help="Number of log lines")
     queue_logs.add_argument("--follow", action="store_true", help="Follow log output")
-    test_db = subparsers.add_parser(
-        "test-db", help="Run Backend tests after ensuring db container is up"
+    test_db = subparsers.add_parser("test-db", help="Run Backend tests")
+    test_infra = subparsers.add_parser("test-infra", help="Run Infra pytest suite")
+    test_parallel = subparsers.add_parser(
+        "test-parallel", help="Run Backend and Infra pytest suites concurrently"
     )
-    test_db.add_argument(
-        "--workers",
-        type=_test_worker_count,
-        default=2,
-        help="Number of workers for non-migration tests (0 for serial; default: 2)",
-    )
+    for test_parser in (test_db, test_infra, test_parallel):
+        test_parser.add_argument(
+            "--workers",
+            type=_test_worker_count,
+            default=2,
+            help="Workers per suite (0 for serial; default: 2)",
+        )
+    for test_parser in (test_db, test_parallel):
+        test_parser.add_argument(
+            "--no-start-db",
+            action="store_true",
+            help="Use an already running PostgreSQL instance at TEST_DATABASE_URL",
+        )
     subparsers.add_parser("down", help="Stop development containers")
 
     partial_dump_validate = subparsers.add_parser(
@@ -455,7 +502,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     parser = _build_parser()
-    args = parser.parse_args()
+    args, extra_args = parser.parse_known_args()
+    if extra_args and args.command != "test-infra":
+        parser.error(f"unrecognized arguments: {' '.join(extra_args)}")
 
     handlers = {
         "up-db": cmd_up_db,
@@ -471,6 +520,8 @@ def main() -> int:
         "queue-status": cmd_queue_status,
         "queue-logs": cmd_queue_logs,
         "test-db": cmd_test_db,
+        "test-infra": lambda options: cmd_test_infra(options, extra_args),
+        "test-parallel": cmd_test_parallel,
         "down": cmd_down,
         "partial-dump-validate": cmd_partial_dump_validate,
         "partial-dump-run": cmd_partial_dump_run,

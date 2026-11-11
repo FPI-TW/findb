@@ -174,6 +174,8 @@ findb/
 - Backend runner 的非 migration tests 預設使用兩個 xdist workers 與 worksteal，migration
   tests 另以序列 session 執行；`test-db --workers 0` 可切回序列。`pnpm test:infra` 同樣使用
   Backend pytest 的兩個 workers，無 PostgreSQL dependency。直接 pytest 不隱含平行 flags。
+- `pnpm test:parallel` 可手動同時執行 Backend 與 Infra，`--workers` 設定各 suite 的 worker 數。
+  已啟動測試 PostgreSQL 時可加 `--no-start-db`。
 - `pnpm check`／`make check` 僅執行全 repo 的 lint、type check 與 format check；改動完成後及
   commit 前必須執行。Git pre-commit 與 pre-push 皆只執行 `check`，不執行測試。
 

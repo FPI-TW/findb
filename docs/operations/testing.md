@@ -9,9 +9,30 @@ Pre-commit 與 pre-push 皆只執行 check，不執行測試；不得使用 `--n
 `--dist worksteal`，接著在同一 runner 的獨立序列 session 執行全部 `test_*migration*.py`。
 `uv --directory backend run python scripts/dev.py test-db --workers 0` 可將非 migration tests
 切回序列執行；migration tests 一律序列執行以重用 immutable templates。
-`pnpm test:infra` 使用 Backend pytest 環境，固定 `-n 2 --dist worksteal --timeout=300`，
-不需要 PostgreSQL。Backend pytest 設定每個測試 300 秒 timeout；卡住的測試會留下 traceback，
-而不是耗盡 job timeout。
+`pnpm test:infra` 使用 Backend pytest 環境，預設 `-n 2 --dist worksteal --timeout=300`，
+可用 `--workers` 調整，不需要 PostgreSQL。Backend pytest 設定每個測試 300 秒 timeout；
+卡住的測試會留下 traceback，而不是耗盡 job timeout。
+
+手動同時執行 Backend 與 Infra 時，可比較每套各用 2 或 4 個 workers 的耗時。
+
+```bash
+pnpm test:parallel --workers 2
+pnpm test:parallel --workers 4
+```
+
+Backend 耗時涵蓋非 migration suite 與後續的序列 migration session，Infra 與總耗時另外列出。
+任一套件失敗時指令回傳非零狀態。若 PostgreSQL 已啟動，可加 `--no-start-db` 沿用
+`TEST_DATABASE_URL` 指定的連線（預設為本機 5435），避免從另一個 worktree 重新啟動 Compose
+服務。比較時依序執行兩輪，使用同一個已啟動的 PostgreSQL，並以 `/usr/bin/time -p` 量測
+從 pnpm 啟動到退出的總耗時。
+
+2026-11-11 在 18 核心、64 GiB 的 macOS 主機沿用已啟動的 PostgreSQL 16，每組各量測一次。
+
+| 每套 workers | Backend（含 migration） | Infra | 指令總耗時 |
+| --- | ---: | ---: | ---: |
+| 2 | 151.70 秒 | 147.89 秒 | 152.08 秒 |
+| 4 | 131.38 秒 | 90.08 秒 | 131.78 秒 |
+
 直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
 因此測試中的 nested pytest subprocess 不會意外再建立 workers。
 本機比對 [FinDB CI](../../.github/workflows/findb-ci.yml)／[Fetcher CI](../../.github/workflows/fetcher-ci.yml)
@@ -24,7 +45,7 @@ Backend production image 的 migration regression 使用獨立容器 DB，涵蓋
 Backend 的三個 FactSet captured-native cases 需提供 `FINDB_FACTSET_NATIVE_SNAPSHOT_DIR`
 才會執行，未提供真實 HKEX／FactSet bytes 時依既定規則 skipped。兩個 ORM／migration parity
 cases 必須直接通過：CHECK 名稱／缺少約束與 server defaults 均納入比對，不保留 xfail。
-Infra 一般 job 的兩個 container cases 因未設
+Infra 一般 job 的三個 container cases 因未設
 image 而 skipped，應在建置 Backend image 後以 `FINDB_TEST_BACKEND_IMAGE` 另跑並確認通過。
 TAIFEX historical 只有一次 authorization dispatch attempt；prepare 與 authorize 之間跨越
 UTC 分鐘時，account window 不一致會依設計 fail closed，工作延到 FIFO 尾端重試並維持
@@ -269,7 +290,7 @@ Migration job 另以正式 `backend/Dockerfile` 建置 image，執行
 argv，在獨立 internal Docker network 與 PostgreSQL 16 上驗證空 DB、先前 accepted revision
 `a42c89d3e610` 升級、exact head、重跑與 sentinel 保留。Runtime image 不掛 repo、不含 Fetcher／
 pytest，不允許對外網路或寫入 root filesystem；fixture 只清理自己建立的 containers／network。
-一般 Infra suite 未指定 image 時略過這兩個案例；CI migration job 明確設定 image，不能略過。
+一般 Infra suite 未指定 image 時略過這三個案例；CI migration job 明確設定 image，不能略過。
 本機重現：
 
 ```bash
