@@ -52,10 +52,6 @@ from findb_fetcher.twelve_data_scheduler import (
 _TERMINAL_STATUSES = frozenset({"completed", "completed_with_errors", "failed"})
 
 
-class FinLabSchedulerError(RuntimeError):
-    """A FinLab scheduler operation failed without exposing provider details."""
-
-
 class FinLabScheduledExecutor:
     """Acquire, persist, prepare, deliver, and verify one FinLab bundle job."""
 

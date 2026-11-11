@@ -335,13 +335,6 @@ def _identifier(parent: dict[str, Any], key: str) -> str:
     return value
 
 
-def _exact_int(parent: dict[str, Any], key: str, expected: int) -> int:
-    value = parent.get(key)
-    if type(value) is not int or value != expected:
-        raise FinLabUniverseError(f"{key} must be {expected}")
-    return value
-
-
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:

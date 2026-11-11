@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 import pytest
 
 from findb_fetcher import account_governor
-from findb_fetcher.full_market_runtime import ReadinessBlockedError
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.platform_limits import account_identity, interval, limits
 from test_full_market import _runtime
@@ -47,20 +46,18 @@ def test_native_full_acquisition_needs_no_evidence(
     runtime._ensure_proof()
     assert runtime.proof["datasets"] == [feed["dataset_key"] for feed in runtime.installed_feeds]
     assert runtime.proof["requests_per_day"] is None
-    before, after = runtime._reserve()
-    assert (before, after) == (0, 1)
-    assert probes == [{}, {}]
-    permit = runtime.account_permit
-    permit.state.observe_capacity(
-        account=permit.account,
-        window=permit.window,
+    shared = FullMarketState(tmp_path / "account.sqlite3")
+    shared.observe_capacity(
+        account=account_identity(provider, shared),
+        window=datetime.now(timezone.utc).date().isoformat(),
         bound=1,
         observed=2,
         allocation_sha256="legacy",
     )
+    # A legacy capacity witness never gates acquisition; no legacy governor probe runs.
     assert runtime._acquisition_allowed()
-    assert runtime._reserve() == (1, 2)
-    with permit.state.connection() as db:
+    assert probes == []
+    with shared.connection() as db:
         assert db.execute("SELECT COUNT(*) FROM full_capacity_violation").fetchone()[0] == 1
     runtime.close()
 
@@ -253,29 +250,6 @@ def test_concurrent_first_pin_keeps_one_identity_without_relabeling_ledgers(tmp_
         )
 
 
-def test_oversized_transport_is_validation_error_without_capacity_lock(tmp_path, monkeypatch):
-    from findb_fetcher.full_market_state import FullMarketStateError
-
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
-    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(tmp_path / "account.sqlite3"))
-    monkeypatch.setattr(account_governor, "authorize", lambda _: {"acquisition_allowed": True})
-    permit = account_governor.reserve("twelve_data")
-    with pytest.raises(FullMarketStateError) as rejected:
-        permit.observe(permit.bound + 1)
-    assert not isinstance(rejected.value, QuotaBlockedError)
-    with permit.state.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM full_capacity_violation").fetchone()[0] == 0
-    assert account_governor.reserve("twelve_data") is not None
-
-
-def test_maintenance_does_not_duplicate_runtime_provider_permit(monkeypatch):
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "maintenance")
-    monkeypatch.setattr(
-        account_governor, "reserve", lambda _: pytest.fail("runtime already reserved")
-    )
-    assert account_governor.provider_permit("finlab") is None
-
-
 @pytest.mark.parametrize(
     "provider,name",
     [
@@ -399,32 +373,3 @@ def test_existing_raw_whitespace_pin_migrates_without_resetting_known_debt(
                 ("known-padded-ledger", day),
             ).fetchone()
         ) == (7, 100)
-
-
-def test_runtime_always_reserves_through_shared_account_governor(tmp_path, monkeypatch):
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
-    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(tmp_path / "account.sqlite3"))
-    monkeypatch.setattr(account_governor, "authorize", lambda _: {"acquisition_allowed": True})
-    runtime, _, _ = _runtime(tmp_path)
-    assert runtime._reserve() == (0, 1)
-    assert runtime.account_permit.state.path == tmp_path / "account.sqlite3"
-    with runtime.state.connection() as db:
-        # The per-checkpoint limiter is retired; the checkpoint ledger is untouched.
-        assert db.execute("SELECT COUNT(*) FROM full_quota").fetchone()[0] == 0
-    runtime.can_acquire = lambda: False
-    with pytest.raises(ReadinessBlockedError, match="scheduler acquisition stopped"):
-        runtime._reserve()
-    runtime.close()
-
-
-def test_runtime_without_shared_governor_never_falls_back_to_checkpoint_limiter(
-    tmp_path, monkeypatch
-):
-    monkeypatch.delenv("FETCHER_CONSUMER_PROFILE", raising=False)
-    monkeypatch.delenv("FETCHER_ACCOUNT_STATE_PATH", raising=False)
-    runtime, _, _ = _runtime(tmp_path)
-    with pytest.raises(ReadinessBlockedError, match="scheduler acquisition stopped"):
-        runtime._reserve()
-    with runtime.state.connection() as db:
-        assert db.execute("SELECT COUNT(*) FROM full_quota").fetchone()[0] == 0
-    runtime.close()

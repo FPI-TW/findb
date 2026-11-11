@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -264,12 +263,8 @@ class TwelveDataClient:
                 raise ValueError("exchange must contain 1 to 100 supported ASCII characters")
             params["exchange"] = normalized_exchange
 
-        from findb_fetcher.account_governor import provider_permit
         from findb_fetcher.acquisition import http_acquisition
 
-        permit = provider_permit("twelve_data")
-        if permit:
-            bound = min(bound, permit.bound)
         response_status_code = None
         try:
             with (
@@ -291,17 +286,11 @@ class TwelveDataClient:
                 response_status_code = response.status_code
                 if response_status_code == 429:
                     operation.rate_limited(response.headers.get("Retry-After"))
-                    if permit:
-                        permit.state.rate_limited(
-                            account=permit.account, window=permit.window, until=time.time() + 60
-                        )
                     if on_http_rate_limited is not None:
                         on_http_rate_limited()
                 try:
                     raw_bytes = read_identity_response(response, bound=bound)
                 except BoundedResponseError as exc:
-                    if permit:
-                        permit.observe(exc.observed_bytes, declared=exc.declared_bytes)
                     raise TwelveDataResponseError(
                         f"Twelve Data {exc}",
                         status_code=response_status_code,
@@ -316,8 +305,6 @@ class TwelveDataClient:
                     ) from exc
         except httpx.TransportError as exc:
             observed = getattr(exc, "observed_bytes", 0)
-            if permit:
-                permit.observe(observed)
             raise TwelveDataResponseError(
                 "Twelve Data transport request failed",
                 status_code=response_status_code,
@@ -326,8 +313,6 @@ class TwelveDataClient:
                 category="transport",
             ) from exc
 
-        if permit:
-            permit.observe(len(raw_bytes))
         try:
             payload = json.loads(raw_bytes)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:

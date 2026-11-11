@@ -174,14 +174,6 @@ class ScheduleManifest:
     deployment_target: str = "staging"
 
 
-def load_schedule_config(path: Path) -> ScheduleConfig:
-    """Load a current v2 manifest containing exactly one feed."""
-    manifest = load_schedule_manifest(path)
-    if len(manifest.feeds) != 1:
-        raise ScheduleError("v2 manifest has multiple feeds; use load_schedule_manifest")
-    return manifest.feeds[0]
-
-
 def load_schedule_manifest(path: Path) -> ScheduleManifest:
     """Load a target-bound schedule manifest and reject cross-target identity mixing."""
     try:
@@ -424,18 +416,6 @@ def _date_list(parent: dict[str, Any], key: str) -> tuple[date, ...]:
     if len(parsed) != len(value) or len(parsed) != len(set(parsed)):
         raise ScheduleError(f"{key} must contain unique ISO dates")
     return parsed
-
-
-def _optional_date(parent: dict[str, Any], key: str) -> date | None:
-    value = parent.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ScheduleError(f"{key} must be an ISO date or null")
-    try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        raise ScheduleError(f"{key} must be an ISO date or null") from exc
 
 
 def _required_date(parent: dict[str, Any], key: str) -> date:

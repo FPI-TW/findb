@@ -242,13 +242,9 @@ def fetch_report(
 ) -> bytes:
     if type(max_response_bytes) is not int or max_response_bytes < 1:
         raise ValueError("TAIFEX response byte bound invalid")
-    from findb_fetcher.account_governor import provider_permit
     from findb_fetcher.acquisition import http_acquisition
 
-    permit = provider_permit("taifex")
-    bound = min(
-        max_response_bytes, 16 * 1024 * 1024, permit.bound if permit else max_response_bytes
-    )
+    bound = min(max_response_bytes, 16 * 1024 * 1024)
     method, url = ("GET", TAIFEX_URL) if latest else ("POST", TAIFEX_HISTORY_URL)
     data = (
         None
@@ -269,18 +265,10 @@ def fetch_report(
     ):
         if response.status_code == 429:
             operation.rate_limited(response.headers.get("Retry-After"))
-            if permit:
-                permit.state.rate_limited(
-                    account=permit.account,
-                    window=permit.window,
-                    until=time.time() + 60,
-                )
             if on_http_rate_limited is not None:
                 on_http_rate_limited()
         try:
             raw = read_identity_response(response, bound=bound)
-            if permit:
-                permit.observe(len(raw))
             if on_observed_bytes is not None:
                 on_observed_bytes(len(raw))
             if response.status_code != 200:
@@ -291,8 +279,6 @@ def fetch_report(
                 )
             return raw
         except BoundedResponseError as exc:
-            if permit:
-                permit.observe(exc.observed_bytes, declared=exc.declared_bytes)
             if on_bounded_response is not None:
                 on_bounded_response(exc.observed_bytes, exc.declared_bytes)
             else:
@@ -303,8 +289,6 @@ def fetch_report(
             raise TaifexOperationalError("TAIFEX report response bound failed") from exc
         except httpx.HTTPError as exc:
             observed = getattr(exc, "observed_bytes", 0)
-            if permit:
-                permit.observe(observed)
             if on_observed_bytes is not None and observed:
                 on_observed_bytes(observed)
             raise

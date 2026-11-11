@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from findb_fetcher import full_market_runtime as module
-from findb_fetcher.daily_runtime import validate_policies, window
+from findb_fetcher.daily_runtime import window
 from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FullMarketState,
@@ -40,12 +40,6 @@ def test_window_boundaries(clock, opened, next_open):
     result = window(POLICY, datetime.fromisoformat(clock))
     assert result["open"] is opened
     assert result["next_open_at"] == next_open
-
-
-def test_policy_rejects_unbounded_slices():
-    for key, value in (("max_members", 0), ("max_seconds", True), ("end", "18:00")):
-        with pytest.raises(ValueError):
-            validate_policies({"finlab": {**POLICY, key: value}})
 
 
 def harness(tmp_path, monkeypatch, count=100):

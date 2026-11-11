@@ -14,7 +14,7 @@ import findb_fetcher.full_market_runtime as runtime_module
 from findb_fetcher.client import SourceAPIClient
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.full_market_runtime import load_readiness, validate_capacity
+from findb_fetcher.full_market_runtime import load_readiness
 from findb_fetcher.full_market_state import FullMarketState
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 from findb_fetcher.provider_wait import (
@@ -74,7 +74,6 @@ def _finlab_runtime(
     path = tmp_path / "readiness.json"
     path.write_bytes(canonical_bytes(proof))
     runtime.proof = load_readiness(path, "finlab", [dataset], now=clock.now())
-    validate_capacity(runtime.proof, 5, seconds_available=60)
     symbols = ("0050", "006208") if dataset == "tw_etf_eod" else ("2330", "2317")
     release = {
         "release_id": "release:" + dataset,
@@ -147,7 +146,6 @@ def test_finlab_two_feeds_share_pacing_and_ten_call_account_quota(
     path = tmp_path / "readiness.json"
     path.write_bytes(canonical_bytes(proof))
     runtime.proof = load_readiness(path, "finlab", datasets, now=clock.now())
-    validate_capacity(runtime.proof, 10, seconds_available=14400)
     requests = []
     for dataset in datasets:
         feed = {

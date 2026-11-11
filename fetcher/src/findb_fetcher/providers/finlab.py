@@ -201,11 +201,9 @@ class FinLabSdkGateway:
             raise FinLabOperationalError(
                 "FinLab SDK does not expose the required headless data API"
             )
-        from findb_fetcher.account_governor import provider_permit
         from findb_fetcher.acquisition import Acquisition
 
-        permit = provider_permit("finlab")
-        account = bool(permit) or self.on_response_bytes is not None
+        account = self.on_response_bytes is not None
         try:
             with sdk_credential_scope():
                 storages = _file_storages(data, get)
@@ -246,8 +244,6 @@ class FinLabSdkGateway:
                         try:
                             if observed is None:
                                 observed = _dataframe_response_bytes(frame)
-                            if permit:
-                                permit.observe(observed)
                             if self.on_response_bytes is not None:
                                 self.on_response_bytes(observed)
                         except Exception:

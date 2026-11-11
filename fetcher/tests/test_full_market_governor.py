@@ -754,7 +754,7 @@ def test_sqlite_contention_preserves_actual_one_second_permit_spacing(tmp_path: 
         runtime.proof = _proof(datetime.now(timezone.utc))
         runtime.proof["requests_per_second"] = 1
         # Record the real grant clock each state samples after owning the lock.
-        # Timing the caller after _reserve() returns adds thread-scheduling
+        # Timing the caller after the reservation returns adds thread-scheduling
         # jitter that can shrink the observed gap on a busy CI runner.
         samples = grant_clocks.setdefault(id(runtime), [])
         runtime.state.clock = lambda samples=samples: samples.append(time.time()) or samples[-1]
@@ -946,24 +946,13 @@ def test_http_catalogue_and_public_reports_enforce_exact_raw_body_boundary(
 
 
 @pytest.mark.parametrize("buffered", [True, False])
-def test_official_universe_snapshot_enforces_enrolled_bound_and_latches_account(tmp_path, buffered):
-    from findb_fetcher.account_governor import Permit
+def test_official_universe_snapshot_enforces_enrolled_bound_and_records_violation(
+    tmp_path, buffered
+):
     from findb_fetcher.full_market_universe import NASDAQ_URLS
 
     runtime, _, _ = _runtime(tmp_path)
-    state = FullMarketState(tmp_path / "shared-account.sqlite3")
-    _, _, _, window = state.reserve_acquisition(
-        account="shared",
-        interval=0.001,
-        requests=1,
-        byte_count=100,
-        request_limit=100,
-        byte_limit=10000,
-        minute_limit=100,
-    )
     runtime.proof = {"max_response_bytes": 100}
-    runtime.account_permit = Permit(state, "shared", window, 100, allocation_sha256="a" * 64)
-    runtime._reserve = lambda: None
 
     def response(request):
         if buffered:
@@ -972,48 +961,21 @@ def test_official_universe_snapshot_enforces_enrolled_bound_and_latches_account(
 
     runtime.http.close()
     runtime.http = httpx.Client(transport=httpx.MockTransport(response))
-    with pytest.raises(QuotaBlockedError, match="byte bound"):
+    with pytest.raises(ReadinessBlockedError, match="size bound"):
         runtime._snapshot(NASDAQ_URLS[0])
     assert runtime.snapshot_objects == {}
-    with state.connection() as db:
-        assert (
-            db.execute(
-                "SELECT bytes FROM full_quota WHERE account='shared' AND window=?", (window,)
-            ).fetchone()[0]
-            == 250
-        )
-    with pytest.raises(QuotaBlockedError, match="capacity violation"):
-        state.reserve_acquisition(
-            account="shared",
-            interval=0.001,
-            requests=1,
-            byte_count=100,
-            request_limit=100,
-            byte_limit=10000,
-            minute_limit=100,
-        )
+    with runtime.state.connection() as db:
+        row = db.execute("SELECT * FROM full_capacity_violation").fetchone()
+        assert row["account"] == "twelve_data" and row["observed_bytes"] == 250
     runtime.close()
 
 
 @pytest.mark.parametrize("boundary", ["header", "transport"])
 def test_official_snapshot_records_only_received_bytes_on_incomplete_body(tmp_path, boundary):
-    from findb_fetcher.account_governor import Permit
     from findb_fetcher.full_market_universe import NASDAQ_URLS
 
     runtime, _, _ = _runtime(tmp_path)
-    state = FullMarketState(tmp_path / "shared-account.sqlite3")
-    _, _, _, window = state.reserve_acquisition(
-        account="shared",
-        interval=0.001,
-        requests=1,
-        byte_count=100,
-        request_limit=100,
-        byte_limit=10000,
-        minute_limit=100,
-    )
     runtime.proof = {"max_response_bytes": 100}
-    runtime.account_permit = Permit(state, "shared", window, 100, allocation_sha256="a" * 64)
-    runtime._reserve = lambda: None
     observed = []
     original_observer = runtime._observed_response
 
@@ -1034,16 +996,10 @@ def test_official_snapshot_records_only_received_bytes_on_incomplete_body(tmp_pa
     runtime.http = httpx.Client(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, headers=headers, stream=stream))
     )
-    with pytest.raises(QuotaBlockedError if boundary == "header" else httpx.ReadError):
+    with pytest.raises(ReadinessBlockedError if boundary == "header" else httpx.ReadError):
         runtime._snapshot(NASDAQ_URLS[0])
-    with state.connection() as db:
-        # Keep reserved 100; do not invent the unread 250 or refund quota.
-        assert (
-            db.execute(
-                "SELECT bytes FROM full_quota WHERE account='shared' AND window=?", (window,)
-            ).fetchone()[0]
-            == 100
-        )
+    with runtime.state.connection() as db:
+        # Do not invent the unread 250 as received bytes.
         row = db.execute("SELECT * FROM full_capacity_violation").fetchone()
         if boundary == "header":
             assert row["received_bytes"] == 0 and row["declared_bytes"] == 250
@@ -1154,7 +1110,6 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
     boundary,
 ):
     from findb_fetcher import account_governor
-    from findb_fetcher.account_governor import Permit
     from findb_fetcher.full_market_universe import NASDAQ_URLS
 
     runtime, _, raw_store = _runtime(tmp_path)
@@ -1171,12 +1126,8 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
         byte_limit=10000,
         minute_limit=100,
     )
-    runtime.account_permit = Permit(
-        shared, "actual-provider-account", window, 10, allocation_sha256="a" * 64
-    )
     runtime.proof = {**_proof(clock.now()), "max_response_bytes": 10}
     runtime.reservation_window = window
-    runtime._reserve = lambda: None
     runtime._ensure_proof = lambda: None
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", "full_market")
     monkeypatch.setenv("TWELVE_DATA_API_KEY", "offline-fixture")
@@ -1277,23 +1228,26 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
                 "SELECT * FROM full_quota WHERE account='actual-provider-account' AND window=?",
                 (window,),
             ).fetchone()
-            assert (row["requests"], row["bytes"]) == (1, max(10, expected_actual))
+            assert (row["requests"], row["bytes"]) == (1, 10)
             pacing = db.execute(
                 "SELECT next_at FROM full_pacing WHERE account='actual-provider-account'"
             ).fetchone()[0]
             assert pacing == started + (60 if status == 429 else 0.1)
+            assert db.execute("SELECT * FROM full_capacity_violation").fetchone() is None
+        with runtime.state.connection() as db:
+            assert db.execute("SELECT count(*) FROM full_quota").fetchone()[0] == 0
+            assert db.execute("SELECT count(*) FROM full_pacing").fetchone()[0] == (
+                1 if status == 429 else 0
+            )
             violation = db.execute("SELECT * FROM full_capacity_violation").fetchone()
             if violated:
-                assert violation["account"] == "actual-provider-account"
+                assert violation["account"] == "twelve_data"
                 assert violation["received_bytes"] == expected_actual
                 assert violation["declared_bytes"] == (
                     100 if boundary in {"header", "header-encoding"} else 0
                 )
             else:
                 assert violation is None
-        with runtime.state.connection() as db:
-            assert db.execute("SELECT count(*) FROM full_quota").fetchone()[0] == 0
-            assert db.execute("SELECT count(*) FROM full_pacing").fetchone()[0] == 0
         if path in {"snapshot", "taifex-report"} and boundary == "transport":
             assert observed == [(5, 0)]
         # A distinct consumer/process opens the shared governor after restart.
@@ -1310,15 +1264,10 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
                 minute_limit=100,
             )
 
-        if violated:
-            clock.elapsed += 61
-            with pytest.raises(QuotaBlockedError, match="capacity violation"):
-                reserve()
-        else:
-            wait, *_ = reserve()
-            assert wait == pytest.approx(60 if status == 429 else 0.1, abs=1e-6)
-            clock.elapsed += 60 if status == 429 else 1
-            assert reserve()[0] == 0
+        wait, *_ = reserve()
+        assert wait == pytest.approx(60 if status == 429 else 0.1, abs=1e-6)
+        clock.elapsed += 60 if status == 429 else 1
+        assert reserve()[0] == 0
         # Shared provider cooldown/violation does not stop prepared Source drain.
         allocation = tmp_path / "account.json"
         allocation.write_text('{"source_requests_per_minute":120}')
@@ -1329,16 +1278,12 @@ def test_http_error_boundaries_use_actual_shared_account_before_body_failures(
         runtime.close()
 
 
-def test_shared_429_is_committed_before_secondary_observer_failure(tmp_path, monkeypatch):
-    from findb_fetcher.account_governor import Permit
+def test_429_is_committed_before_secondary_observer_failure(tmp_path, monkeypatch):
     from findb_fetcher.full_market_universe import NASDAQ_URLS
 
     runtime, _, _ = _runtime(tmp_path)
     clock = _Clock(monkeypatch)
-    shared = FullMarketState(tmp_path / "account.sqlite3")
-    runtime.account_permit = Permit(shared, "real-account", "2026-10-01", 10)
     runtime.proof = {"max_response_bytes": 10}
-    runtime._reserve = lambda: None
     runtime._observed_response = lambda *args, **kwargs: (_ for _ in ()).throw(
         QuotaBlockedError("offline ledger failure")
     )
@@ -1349,101 +1294,15 @@ def test_shared_429_is_committed_before_secondary_observer_failure(tmp_path, mon
     try:
         with pytest.raises(QuotaBlockedError, match="ledger failure"):
             runtime._snapshot(NASDAQ_URLS[0])
-        with shared.connection() as db:
+        with runtime.state.connection() as db:
             assert (
                 db.execute(
-                    "SELECT next_at FROM full_pacing WHERE account='real-account'"
+                    "SELECT next_at FROM full_pacing WHERE account='twelve_data'"
                 ).fetchone()[0]
                 == clock.now().timestamp() + 60
             )
     finally:
         runtime.close()
-
-
-@pytest.mark.parametrize("consumer", ["historical"])
-@pytest.mark.parametrize(
-    "status,boundary",
-    [
-        (200, "bounded"),
-        (429, "bounded"),
-        (503, "bounded"),
-        (429, "header"),
-        (503, "wire"),
-        (429, "transport"),
-    ],
-)
-def test_taifex_error_reader_uses_its_own_shared_permit_for_bounded_consumers(
-    tmp_path, monkeypatch, consumer, status, boundary
-):
-    from findb_fetcher import account_governor
-    from findb_fetcher.account_governor import Permit
-
-    clock = _Clock(monkeypatch)
-    shared = FullMarketState(tmp_path / "shared.sqlite3")
-    _, _, _, window = shared.reserve_acquisition(
-        account="taifex-shared",
-        interval=0.1,
-        requests=1,
-        byte_count=10,
-        request_limit=100,
-        byte_limit=10000,
-        minute_limit=100,
-        allocation="other",
-        allocation_request_limit=100,
-        allocation_byte_limit=10000,
-    )
-    permit = Permit(
-        shared, "taifex-shared", window, 10, allocation="other", allocation_sha256="a" * 64
-    )
-    monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", consumer)
-    monkeypatch.setattr(
-        account_governor,
-        "provider_permit",
-        lambda provider: permit if provider == "taifex" else pytest.fail("wrong account provider"),
-    )
-
-    class Partial(httpx.SyncByteStream):
-        def __iter__(self):
-            yield b"12345"
-            raise httpx.ReadError("offline partial report")
-
-    headers = {"Content-Length": "100"} if boundary == "header" else {}
-    raw = b"x" * (25 if boundary == "wire" else 5)
-    with httpx.Client(
-        transport=httpx.MockTransport(
-            lambda _: httpx.Response(
-                status, headers=headers, stream=Partial() if boundary == "transport" else _Body(raw)
-            )
-        )
-    ) as http:
-        if status == 200:
-            assert (
-                fetch_report(
-                    http, target_date=date(2026, 10, 1), latest=False, max_response_bytes=10
-                )
-                == raw
-            )
-        else:
-            with pytest.raises((TaifexOperationalError, QuotaBlockedError, httpx.ReadError)):
-                fetch_report(
-                    http, target_date=date(2026, 10, 1), latest=False, max_response_bytes=10
-                )
-    with shared.connection() as db:
-        quota = db.execute(
-            "SELECT requests,bytes FROM full_quota WHERE account='taifex-shared' AND window=?",
-            (window,),
-        ).fetchone()
-        assert tuple(quota) == (1, 25 if boundary == "wire" else 10)
-        if status == 429:
-            assert (
-                db.execute(
-                    "SELECT next_at FROM full_pacing WHERE account='taifex-shared'"
-                ).fetchone()[0]
-                == clock.now().timestamp() + 60
-            )
-        if boundary == "header":
-            violation = db.execute("SELECT * FROM full_capacity_violation").fetchone()
-            assert violation["received_bytes"] == 0 and violation["declared_bytes"] == 100
 
 
 @pytest.mark.parametrize("length", ["100", "invalid", "-1", None])
@@ -1476,44 +1335,44 @@ def test_buffered_encoded_error_uses_measured_wire_bytes_instead_of_decoded_leng
             "wire",
             "transport",
             "encoding",
-            "observer",
             "callback",
         ]
         if not (buffered and boundary == "transport")
     ],
 )
-def test_twelve_data_own_permit_persists_429_before_every_error_boundary(
+def test_twelve_data_acquisition_persists_429_before_every_error_boundary(
     tmp_path, monkeypatch, consumer, buffered, boundary
 ):
-    from findb_fetcher import account_governor
-    from findb_fetcher.account_governor import Permit
+    import hashlib
 
+    from findb_fetcher import account_governor, acquisition
+    from findb_fetcher.acquisition import authorization_scope
+
+    runtime, _, _ = _runtime(tmp_path)
     clock = _Clock(monkeypatch)
     started = clock.now().timestamp()
     path = tmp_path / "shared.sqlite3"
     shared = FullMarketState(path)
     _, _, _, window = shared.reserve_acquisition(
         account="actual-twelve-data-account",
-        interval=0.1,
+        interval=0,
         requests=1,
         byte_count=10,
         request_limit=100,
         byte_limit=10000,
         minute_limit=100,
     )
-    permit = Permit(shared, "actual-twelve-data-account", window, 10, allocation_sha256="a" * 64)
+    shared.account_identity(
+        "twelve_data",
+        hashlib.sha256(b"offline-secret").hexdigest(),
+        "actual-twelve-data-account",
+    )
+    runtime.proof = {**_proof(clock.now()), "max_response_bytes": 10}
     monkeypatch.setenv("FETCHER_CONSUMER_PROFILE", consumer)
-    monkeypatch.setattr(account_governor, "provider_permit", lambda provider: permit)
-    observed = []
-    original = permit.observe
-
-    def observe(size, **kwargs):
-        observed.append((size, kwargs.get("declared", 0)))
-        if boundary == "observer":
-            raise RuntimeError("offline observer failure")
-        original(size, **kwargs)
-
-    permit.observe = observe
+    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
+    monkeypatch.setattr(
+        acquisition, "limits", lambda provider: {**runtime.proof, "requests_per_second": 10}
+    )
 
     class Partial(httpx.SyncByteStream):
         def __iter__(self):
@@ -1537,35 +1396,35 @@ def test_twelve_data_own_permit_persists_429_before_every_error_boundary(
     def callback():
         raise RuntimeError("offline callback failure")
 
-    with httpx.Client(transport=httpx.MockTransport(response)) as http:
-        client = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
-        with pytest.raises((TwelveDataResponseError, QuotaBlockedError, RuntimeError)) as caught:
-            client.fetch_daily(
-                "AAPL", on_http_rate_limited=callback if boundary == "callback" else None
-            )
+    try:
+        with httpx.Client(transport=httpx.MockTransport(response)) as http:
+            client = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
+            with (
+                pytest.raises((TwelveDataResponseError, QuotaBlockedError, RuntimeError)) as caught,
+                authorization_scope(runtime.source.authorization, state_path=path),
+            ):
+                client.fetch_daily(
+                    "AAPL", on_http_rate_limited=callback if boundary == "callback" else None
+                )
+    finally:
+        runtime.close()
     if boundary == "transport":
         assert caught.value.observed_bytes == 5
-        assert observed == [(5, 0)]
-    actual = 25 if boundary == "wire" else 5 if boundary == "header" and buffered else 0
     with shared.connection() as db:
-        assert tuple(db.execute("SELECT requests,bytes FROM full_quota").fetchone()) == (
-            1,
-            max(10, actual),
-        )
+        assert tuple(
+            db.execute(
+                "SELECT requests,bytes FROM full_quota WHERE account=? AND window=?",
+                ("actual-twelve-data-account", window),
+            ).fetchone()
+        ) == (2, 10)
         assert (
             db.execute(
                 "SELECT next_at FROM full_pacing WHERE account='actual-twelve-data-account'"
             ).fetchone()[0]
             == started + 60
         )
-        violation = db.execute("SELECT * FROM full_capacity_violation").fetchone()
-        if boundary in {"header", "wire"}:
-            assert violation["received_bytes"] == actual
-            assert violation["declared_bytes"] == (
-                100 if boundary == "header" else 25 if buffered else 0
-            )
-        else:
-            assert violation is None
+        # Response bounds raise to the caller; the provider client records no violation.
+        assert db.execute("SELECT * FROM full_capacity_violation").fetchone() is None
     restarted = FullMarketState(path)
 
     def reserve():
@@ -1579,14 +1438,9 @@ def test_twelve_data_own_permit_persists_429_before_every_error_boundary(
             minute_limit=100,
         )
 
-    if violation:
-        clock.elapsed += 61
-        with pytest.raises(QuotaBlockedError, match="capacity violation"):
-            reserve()
-    else:
-        assert reserve()[0] == pytest.approx(60)
-        clock.elapsed += 60
-        assert reserve()[0] == 0
+    assert reserve()[0] == pytest.approx(60)
+    clock.elapsed += 60
+    assert reserve()[0] == 0
     allocation = tmp_path / "account.json"
     allocation.write_text('{"source_requests_per_minute":120}')
     monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(allocation))
@@ -1595,17 +1449,7 @@ def test_twelve_data_own_permit_persists_429_before_every_error_boundary(
 
 
 @pytest.mark.parametrize("status", [201, 206])
-def test_twelve_data_success_shaped_non_200_is_accounted_then_rejected(
-    tmp_path, monkeypatch, status
-):
-    from findb_fetcher import account_governor
-    from findb_fetcher.account_governor import Permit
-
-    shared = FullMarketState(tmp_path / "shared.sqlite3")
-    permit = Permit(shared, "real-account", "2026-10-01", 100)
-    observed = []
-    monkeypatch.setattr(permit, "observe", lambda size, **kwargs: observed.append(size))
-    monkeypatch.setattr(account_governor, "provider_permit", lambda _: permit)
+def test_twelve_data_success_shaped_non_200_is_rejected_with_observed_bytes(status):
     raw = b'{"status":"ok","values":[]}'
     with httpx.Client(
         transport=httpx.MockTransport(lambda _: httpx.Response(status, content=raw))
@@ -1613,7 +1457,6 @@ def test_twelve_data_success_shaped_non_200_is_accounted_then_rejected(
         client = TwelveDataClient(TwelveDataConfig(api_key="offline-secret"), client=http)
         with pytest.raises(TwelveDataResponseError) as caught:
             client.fetch_daily("AAPL")
-    assert observed == [len(raw)]
     assert caught.value.status_code == status
     assert caught.value.observed_bytes == len(raw)
 

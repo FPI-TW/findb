@@ -21,12 +21,7 @@ from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_cli import load_config
 from findb_fetcher.full_market_client import FullMarketSourceClient
 from findb_fetcher.full_market_errors import MemberUnavailableError
-from findb_fetcher.full_market_runtime import (
-    ReadinessBlockedError,
-    load_readiness,
-    split_rows,
-    validate_capacity,
-)
+from findb_fetcher.full_market_runtime import ReadinessBlockedError, load_readiness
 from findb_fetcher.full_market_state import FullMarketState, FullMarketStateError, QuotaBlockedError
 from findb_fetcher.full_market_universe import (
     UniverseSnapshotError,
@@ -357,18 +352,6 @@ def test_taifex_history_requests_exact_product_and_date() -> None:
     assert "queryStartDate=2026%2F10%2F01" in calls[0]
 
 
-def test_full_scale_rows_bound_bytes_and_row_count_without_loss() -> None:
-    rows = [
-        {"symbol": f"S{index:05}", "close": "1234567890.123456", "name": "台灣股票" * 20}
-        for index in range(30000)
-    ]
-    chunks = split_rows(rows, max_rows=1000, max_bytes=50000)
-    assert [row for chunk in chunks for row in chunk] == rows
-    assert all(len(chunk) <= 1000 and len(canonical_bytes(chunk)) <= 50000 for chunk in chunks)
-    with pytest.raises(ReadinessBlockedError, match="one provider row"):
-        split_rows([{"x": "a" * 100}], max_bytes=10)
-
-
 def test_quota_shared_us_hk_persists_restart_and_429(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite3"
     first = FullMarketState(path)
@@ -481,11 +464,6 @@ def test_unknown_or_insufficient_readiness_blocks_no_false_subset(tmp_path: Path
     assert load_readiness(path, "twelve_data", ["us_equity_eod"], now=now) == proof
     with pytest.raises(ReadinessBlockedError):
         load_readiness(path, "twelve_data", ["tw_equity_eod"], now=now)
-    validate_capacity(proof, 5000, seconds_available=1000)
-    with pytest.raises(ReadinessBlockedError, match="full coverage"):
-        validate_capacity(proof, 10000, seconds_available=1000)
-    with pytest.raises(ReadinessBlockedError):
-        validate_capacity(proof, 5000, seconds_available=10)
 
 
 def test_finlab_etf_only_explicit_production_scope() -> None:
