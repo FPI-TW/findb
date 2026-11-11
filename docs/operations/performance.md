@@ -88,7 +88,11 @@ prepare→ingest response p50 1.361 秒吻合，推論 plan lock 才是全域串
 
 - **P0 量測（已實作）**：`Plan summary refreshed` log 記錄 `lock_wait_ms`、`reconcile_ms`、
   `total_ms`；`Canonical ingestion accepted` 記錄 `server_ms`；`Normalization settled` 記錄
-  `queue_wait_ms`（job 建立至 run started）、`normalize_ms` 與 `settle_ms`。
+  `queue_wait_ms`（job 建立至 run started）、`normalize_ms` 與 `settle_ms`。API 角色
+  （serve／ingest）在 FastAPI lifespan 期間以 INFO 輸出 `app.*` log，格式為
+  `<UTC ISO 時間>Z <LEVEL> <logger>: <message>`；worker 沿用 Celery 的 root logging。
+  先前 uvicorn 角色只輸出 WARNING 以上，`Canonical ingestion accepted` 不會出現；舊輪次的
+  ingest server span 改以 `ingestion_attempt.completed_at - created_at` 近似。
 - **P1 summary 5→1 次完整重算（已實作，待 production 重測）**：非 terminal、非
   `sequenced_snapshot` run 建立時只單調更新 latest run metadata；processing 不刷新；queue
   只在 terminal commit 前重算一次。規則見 [full_market.md](full_market.md) 的持久化完整度摘要。
