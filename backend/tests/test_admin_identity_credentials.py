@@ -66,6 +66,32 @@ async def test_bootstrap_requires_explicit_break_glass_and_one_credential(client
 
 
 @pytest.mark.asyncio
+async def test_non_ascii_admin_key_is_rejected_not_a_server_error(
+    client: AsyncClient, admin_headers: dict
+):
+    from app.services.security_events import auth_failure_counts
+
+    # Starlette decodes headers as latin-1, so a raw 0xE9 byte arrives as "é".
+    non_ascii = {"X-API-Key": "test-break-glass-k\xe9y".encode("latin-1")}
+    before = auth_failure_counts().get("admin", 0)
+
+    admin = await client.get("/api/v1/admin/universes", headers=non_ascii)
+    assert admin.status_code == 403, admin.text
+    assert auth_failure_counts().get("admin", 0) == before + 1
+
+    bootstrap = await client.post(
+        "/api/v1/admin/auth/bootstrap",
+        headers=non_ascii,
+        json={
+            "username": "unicode-owner",
+            "display_name": "Unicode Owner",
+            "password": "correct horse battery staple",
+        },
+    )
+    assert bootstrap.status_code == 403, bootstrap.text
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_session_dual_credential_and_last_owner_protection(
     client: AsyncClient, admin_headers: dict
 ):

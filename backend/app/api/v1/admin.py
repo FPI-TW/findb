@@ -21,6 +21,7 @@ from app.api.deps import (
     require_operator,
     require_owner,
     require_viewer,
+    secret_equals,
     verify_admin_api_key,
 )
 from app.config import get_settings
@@ -626,9 +627,7 @@ async def bootstrap_admin(
     expected = get_admin_break_glass_api_key()
     if not supplied:
         raise HTTPException(status_code=401, detail="Missing break-glass credential")
-    from hmac import compare_digest
-
-    if not expected or not compare_digest(supplied, expected):
+    if not expected or not secret_equals(supplied, expected):
         raise HTTPException(status_code=403, detail="Invalid break-glass credential")
     await lock_admin_identity(db)
     if (

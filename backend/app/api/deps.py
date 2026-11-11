@@ -49,6 +49,11 @@ def get_admin_break_glass_api_key() -> str:
     return settings.ADMIN_BREAK_GLASS_API_KEY.strip()
 
 
+def secret_equals(supplied: str, expected: str) -> bool:
+    """Constant-time compare; header values may carry non-ASCII latin-1 characters."""
+    return compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+
+
 def _extract_client_ip(request: Request) -> str | None:
     if settings.SOURCE_TRUST_PROXY_HEADERS:
         forwarded_for = request.headers.get("x-forwarded-for")
@@ -244,7 +249,7 @@ async def verify_admin_api_key(
         raise HTTPException(status_code=401, detail="Missing admin credential")
 
     break_glass = get_admin_break_glass_api_key()
-    if break_glass and compare_digest(api_key, break_glass):
+    if break_glass and secret_equals(api_key, break_glass):
         return AdminPrincipal(
             "break_glass",
             sha256(api_key.encode("utf-8")).hexdigest()[:12],
