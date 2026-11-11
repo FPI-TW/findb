@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import case, func
+from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -144,134 +144,142 @@ class FuturesEODContractNormalizer(BaseNormalizer):
                     result.failed_records += 1
                     continue
                 try:
-                    instrument = await self.get_or_create_instrument(
-                        row.product_code, currency="TWD", market="TW", asset_class="future"
-                    )
-                    instrument_id = instrument.instrument_id
-                    priority, fetched_at = self._source_control_values(source)
-                    now = utc_now()
-                    contract_insert = insert(FuturesContract).values(
-                        contract_id=uuid7(),
-                        instrument_id=instrument_id,
-                        contract_code=row.contract_code,
-                        contract_month=row.contract_month,
-                        currency="TWD",
-                        source=source,
-                        source_priority=priority,
-                        source_fetched_at=fetched_at,
-                        asof_ts=now,
-                        run_id=run_id,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    contract_stmt = contract_insert.on_conflict_do_update(
-                        constraint="uq_futures_contract",
-                        set_={
-                            "contract_month": contract_insert.excluded.contract_month,
-                            "source": contract_insert.excluded.source,
-                            "source_priority": contract_insert.excluded.source_priority,
-                            "source_fetched_at": contract_insert.excluded.source_fetched_at,
-                            "asof_ts": contract_insert.excluded.asof_ts,
-                            "run_id": contract_insert.excluded.run_id,
-                            "updated_at": contract_insert.excluded.updated_at,
-                        },
-                        where=self._incoming_source_wins(
-                            FuturesContract.__table__, contract_insert.excluded
-                        ),
-                    ).returning(FuturesContract.contract_id)
-                    contract_id = (await self.db.execute(contract_stmt)).scalar_one_or_none()
-                    if contract_id is None:
-                        from sqlalchemy import select
-
-                        contract_id = (
-                            await self.db.execute(
-                                select(FuturesContract.contract_id).where(
-                                    FuturesContract.instrument_id == instrument_id,
-                                    FuturesContract.contract_code == row.contract_code,
-                                )
-                            )
-                        ).scalar_one()
-                    values = row.model_dump()
-                    quote_insert = insert(FuturesContractEOD).values(
-                        id=uuid7(),
-                        instrument_id=instrument_id,
-                        contract_id=contract_id,
-                        trade_date=row.trade_date,
-                        session=row.session,
-                        **{
-                            field: values[field]
-                            for field in (
-                                "open",
-                                "high",
-                                "low",
-                                "close",
-                                "volume",
-                                "settlement_price",
-                                "open_interest",
-                            )
-                        },
-                        source=source,
-                        source_priority=priority,
-                        source_fetched_at=fetched_at,
-                        asof_ts=now,
-                        run_id=run_id,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    quote_stmt = quote_insert.on_conflict_do_update(
-                        constraint="uq_futures_contract_eod_slot",
-                        set_={
-                            field: getattr(quote_insert.excluded, field)
-                            for field in (
-                                "open",
-                                "high",
-                                "low",
-                                "close",
-                                "volume",
-                                "settlement_price",
-                                "open_interest",
-                                "source",
-                                "source_priority",
-                                "source_fetched_at",
-                                "asof_ts",
-                                "run_id",
-                                "updated_at",
-                            )
-                        },
-                        where=self._incoming_source_wins(
-                            FuturesContractEOD.__table__, quote_insert.excluded
-                        ),
-                    ).returning(FuturesContractEOD.id)
-                    applied = (await self.db.execute(quote_stmt)).scalar_one_or_none()
-                    if applied is None:
-                        result.precedence_rejected_records += 1
-                    else:
-                        result.success_records += 1
-                        stats_insert = insert(InstrumentStats).values(
+                    # One savepoint per row: a non-SQL failure must not commit the
+                    # contract rewrite without its quote and stats.
+                    async with self.db.begin_nested():
+                        instrument = await self.get_or_create_instrument(
+                            row.product_code, currency="TWD", market="TW", asset_class="future"
+                        )
+                        instrument_id = instrument.instrument_id
+                        priority, fetched_at = self._source_control_values(source)
+                        now = utc_now()
+                        contract_insert = insert(FuturesContract).values(
+                            contract_id=uuid7(),
                             instrument_id=instrument_id,
-                            futures_first_date=row.trade_date,
-                            futures_latest_date=row.trade_date,
+                            contract_code=row.contract_code,
+                            contract_month=row.contract_month,
+                            currency="TWD",
+                            source=source,
+                            source_priority=priority,
+                            source_fetched_at=fetched_at,
+                            asof_ts=now,
+                            run_id=run_id,
+                            created_at=now,
                             updated_at=now,
                         )
-                        await self.db.execute(
-                            stats_insert.on_conflict_do_update(
-                                index_elements=["instrument_id"],
-                                set_={
-                                    "futures_first_date": func.least(
-                                        InstrumentStats.futures_first_date,
-                                        stats_insert.excluded.futures_first_date,
-                                    ),
-                                    "futures_latest_date": func.greatest(
-                                        InstrumentStats.futures_latest_date,
-                                        stats_insert.excluded.futures_latest_date,
-                                    ),
-                                    "updated_at": now,
-                                },
-                            )
+                        contract_stmt = contract_insert.on_conflict_do_update(
+                            constraint="uq_futures_contract",
+                            set_={
+                                "contract_month": contract_insert.excluded.contract_month,
+                                "source": contract_insert.excluded.source,
+                                "source_priority": contract_insert.excluded.source_priority,
+                                "source_fetched_at": contract_insert.excluded.source_fetched_at,
+                                "asof_ts": contract_insert.excluded.asof_ts,
+                                "run_id": contract_insert.excluded.run_id,
+                                "updated_at": contract_insert.excluded.updated_at,
+                            },
+                            where=self._incoming_source_wins(
+                                FuturesContract.__table__, contract_insert.excluded
+                            ),
+                        ).returning(FuturesContract.contract_id)
+                        contract_id = (await self.db.execute(contract_stmt)).scalar_one_or_none()
+                        if contract_id is None:
+                            contract_id = (
+                                await self.db.execute(
+                                    select(FuturesContract.contract_id).where(
+                                        FuturesContract.instrument_id == instrument_id,
+                                        FuturesContract.contract_code == row.contract_code,
+                                    )
+                                )
+                            ).scalar_one()
+                        values = row.model_dump()
+                        quote_insert = insert(FuturesContractEOD).values(
+                            id=uuid7(),
+                            instrument_id=instrument_id,
+                            contract_id=contract_id,
+                            trade_date=row.trade_date,
+                            session=row.session,
+                            **{
+                                field: values[field]
+                                for field in (
+                                    "open",
+                                    "high",
+                                    "low",
+                                    "close",
+                                    "volume",
+                                    "settlement_price",
+                                    "open_interest",
+                                )
+                            },
+                            source=source,
+                            source_priority=priority,
+                            source_fetched_at=fetched_at,
+                            asof_ts=now,
+                            run_id=run_id,
+                            created_at=now,
+                            updated_at=now,
                         )
+                        quote_stmt = quote_insert.on_conflict_do_update(
+                            constraint="uq_futures_contract_eod_slot",
+                            set_={
+                                field: getattr(quote_insert.excluded, field)
+                                for field in (
+                                    "open",
+                                    "high",
+                                    "low",
+                                    "close",
+                                    "volume",
+                                    "settlement_price",
+                                    "open_interest",
+                                    "source",
+                                    "source_priority",
+                                    "source_fetched_at",
+                                    "asof_ts",
+                                    "run_id",
+                                    "updated_at",
+                                )
+                            },
+                            where=self._incoming_source_wins(
+                                FuturesContractEOD.__table__, quote_insert.excluded
+                            ),
+                        ).returning(FuturesContractEOD.id)
+                        applied = (await self.db.execute(quote_stmt)).scalar_one_or_none()
+                        if applied is not None:
+                            stats_insert = insert(InstrumentStats).values(
+                                instrument_id=instrument_id,
+                                futures_first_date=row.trade_date,
+                                futures_latest_date=row.trade_date,
+                                updated_at=now,
+                            )
+                            await self.db.execute(
+                                stats_insert.on_conflict_do_update(
+                                    index_elements=["instrument_id"],
+                                    set_={
+                                        "futures_first_date": func.least(
+                                            InstrumentStats.futures_first_date,
+                                            stats_insert.excluded.futures_first_date,
+                                        ),
+                                        "futures_latest_date": func.greatest(
+                                            InstrumentStats.futures_latest_date,
+                                            stats_insert.excluded.futures_latest_date,
+                                        ),
+                                        "updated_at": now,
+                                    },
+                                )
+                            )
                 except SQLAlchemyError:
                     raise
                 except Exception as exc:
+                    # The rolled-back row may have created the instrument; drop cached ORM
+                    # rows and only reference an instrument that still exists.
+                    self._instrument_cache.clear()
+                    self._identifier_cache.clear()
+                    if instrument_id is not None:
+                        instrument_id = await self.db.scalar(
+                            select(Instrument.instrument_id).where(
+                                Instrument.instrument_id == instrument_id
+                            )
+                        )
                     issue = DQIssueRecord(
                         issue_type="FUTURES_PROCESSING_ERROR",
                         severity="error",
@@ -281,6 +289,11 @@ class FuturesEODContractNormalizer(BaseNormalizer):
                     await self.record_dq_issue(issue, run_id, instrument_id)
                     result.dq_issues.append(issue)
                     result.failed_records += 1
+                    continue
+                if applied is None:
+                    result.precedence_rejected_records += 1
+                else:
+                    result.success_records += 1
             await self.record_precedence_rejection_summary(result, run_id)
             await self.update_run_status(
                 run_id,
