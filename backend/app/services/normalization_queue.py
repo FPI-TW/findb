@@ -10,6 +10,7 @@ from uuid import UUID
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import get_settings
@@ -36,6 +37,7 @@ from app.utils import utc_now, uuid7
 settings = get_settings()
 logger = logging.getLogger(__name__)
 TERMINAL_STATUSES = {"completed", "completed_with_errors", "failed"}
+LOCK_NOT_AVAILABLE = "55P03"
 
 
 class PermanentNormalizationError(RuntimeError):
@@ -411,6 +413,67 @@ async def _defer_for_lock_contention(
     return True
 
 
+async def _acquire_dataset_lock(session: AsyncSession, dataset_key: str) -> bool:
+    """Queue briefly for the dataset lock; defer only when its holder outlasts the wait.
+
+    PostgreSQL grants advisory lock waiters in order, so this replaces racing
+    randomized redeliveries that let a job lose repeatedly. The lock stays
+    session-level and survives the commit that ends the bounded lock_timeout.
+    """
+    wait_ms = settings.NORMALIZATION_LOCK_WAIT_MS
+    if wait_ms <= 0:
+        return bool(
+            await session.scalar(
+                text("SELECT pg_try_advisory_lock(hashtext(:dataset_key))"),
+                {"dataset_key": dataset_key},
+            )
+        )
+    await session.execute(
+        text("SELECT set_config('lock_timeout', :timeout, true)"),
+        {"timeout": f"{wait_ms}ms"},
+    )
+    try:
+        await session.execute(
+            text("SELECT pg_advisory_lock(hashtext(:dataset_key))"),
+            {"dataset_key": dataset_key},
+        )
+    except DBAPIError as exc:
+        await session.rollback()
+        if getattr(exc.orig, "sqlstate", None) == LOCK_NOT_AVAILABLE:
+            return False
+        raise
+    await session.commit()
+    return True
+
+
+async def _current_delivery(
+    session: AsyncSession, run_id: UUID, delivery_id: UUID
+) -> tuple[NormalizationJob, IngestionRun] | None:
+    """Return the job and run only while this delivery still owns unfinished work."""
+    job = (
+        await session.execute(
+            select(NormalizationJob)
+            .where(NormalizationJob.run_id == run_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    run = await session.get(IngestionRun, run_id, populate_existing=True)
+    if job is None or run is None:
+        logger.warning("Ignoring normalization message for missing run %s", run_id)
+        return None
+    if run.status in TERMINAL_STATUSES or job.status in TERMINAL_STATUSES:
+        if job.status not in TERMINAL_STATUSES:
+            job.status = run.status
+            job.completed_at = run.completed_at or utc_now()
+            job.updated_at = utc_now()
+            await session.commit()
+        return None
+    if job.delivery_id != delivery_id:
+        logger.info("Ignoring stale delivery %s for run %s", delivery_id, run_id)
+        return None
+    return job, run
+
+
 async def execute_normalization(
     run_id: UUID,
     delivery_id: UUID,
@@ -433,40 +496,18 @@ async def execute_normalization(
             )
             async with session_factory() as session:
                 await _heartbeat(session, worker_id, run_id)
-                job_result = await session.execute(
-                    select(NormalizationJob).where(NormalizationJob.run_id == run_id)
-                )
-                job = job_result.scalar_one_or_none()
-                run = await session.get(IngestionRun, run_id)
-                if job is None or run is None:
-                    logger.warning("Ignoring normalization message for missing run %s", run_id)
+                current = await _current_delivery(session, run_id, delivery_id)
+                if current is None:
                     await _heartbeat(session, worker_id, None)
                     return
-                if run.status in TERMINAL_STATUSES or job.status in TERMINAL_STATUSES:
-                    if job.status not in TERMINAL_STATUSES:
-                        job.status = run.status
-                        job.completed_at = run.completed_at or utc_now()
-                        job.updated_at = utc_now()
-                        await session.commit()
-                    await _heartbeat(session, worker_id, None)
-                    return
-                if job.delivery_id != delivery_id:
-                    logger.info("Ignoring stale delivery %s for run %s", delivery_id, run_id)
-                    await _heartbeat(session, worker_id, None)
-                    return
+                job, run = current
                 job_id = job.job_id
                 dataset_key = job.dataset_key
 
-                lock_acquired = bool(
-                    await session.scalar(
-                        text("SELECT pg_try_advisory_lock(hashtext(:dataset_key))"),
-                        {"dataset_key": dataset_key},
-                    )
-                )
-                if not lock_acquired:
+                if not await _acquire_dataset_lock(session, dataset_key):
                     deferred = await _defer_for_lock_contention(
                         session,
-                        job_id=job.job_id,
+                        job_id=job_id,
                         run_id=run_id,
                         delivery_id=delivery_id,
                     )
@@ -479,6 +520,11 @@ async def execute_normalization(
                     return
 
                 try:
+                    # The previous holder may have settled a duplicate of this delivery.
+                    current = await _current_delivery(session, run_id, delivery_id)
+                    if current is None:
+                        return
+                    job, run = current
                     if job.status != "processing":
                         job.attempt_count += 1
                     attempt_count = job.attempt_count

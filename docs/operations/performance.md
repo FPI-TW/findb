@@ -84,7 +84,15 @@ prepare→ingest response p50 1.361 秒吻合，推論 plan lock 才是全域串
 
 ### 優化順序與重新驗收
 
-追蹤於 issue #504。
+追蹤於 issue #504。執行順序：P3 → P5 → P2 → P4。
+
+PR #508 的 staging 驗收（2026-11-11，Twelve Data 續抓 us_equity_eod 11-09，plan data
+405→1,132，727 runs）：交付 16.27→31.7 runs／分鐘，相鄰 run 間隔 p50 3.455→1.787 秒，
+ingest server span p50 0.380→0.072 秒，ingest 端完整重算 0、worker 727／727 每筆一次，
+summary 與完整 `reconcile_plan` 一致。可確定歸因的是 ingest 約 0.31 秒與 worker 端；間隔
+多省的約 1.1 秒尚無法歸因（基線後 staging Fetcher 另部署 #474、#475）。07:28 起單次重算
+隨 plan 進度變慢（reconcile p95 552 毫秒），worker 每筆開始超過進件間隔，deferral 由 0 增至
+74、queue wait p95 升至 8.86 秒，因此先做 P3 與 P5。
 
 - **P0 量測（已實作）**：`Plan summary refreshed` log 記錄 `lock_wait_ms`、`reconcile_ms`、
   `total_ms`；`Canonical ingestion accepted` 記錄 `server_ms`；`Normalization settled` 記錄
@@ -96,12 +104,16 @@ prepare→ingest response p50 1.361 秒吻合，推論 plan lock 才是全域串
 - **P1 summary 5→1 次完整重算（已實作，待 production 重測）**：非 terminal、非
   `sequenced_snapshot` run 建立時只單調更新 latest run metadata；processing 不刷新；queue
   只在 terminal commit 前重算一次。規則見 [full_market.md](full_market.md) 的持久化完整度摘要。
+- **P3 鎖競爭（已實作，待 staging 驗收）**：拿不到 dataset 鎖時先在 PostgreSQL 鎖佇列依序
+  等待最多 `NORMALIZATION_LOCK_WAIT_MS`（預設 10 秒），逾時才延後重送；取得鎖後重新讀取
+  job／run，不重複處理已結算的重複 delivery。鎖與持有範圍不變。規則見
+  [ingestion.md](ingestion.md)。不直接刪鎖或增加 worker 數。
+- **P5 summary 增量計數**：terminal 時只依該 run 涉及成員增減計數，不再每筆全 cohort
+  `reconcile_plan`；完整 reconcile 保留給 plan 建立、outcome、historical repair、sequenced
+  snapshot 與修復工具，並證明兩者一致。驗收：`reconcile_ms` 不再隨 plan 進度上升。
 - **P2 Fetcher 往返**：已有 receipt 的 normalizing 重訪只查 run status，不再 prepare、不計入
   `max_members`；再合併重複 intent／confirm，保留實際 dispatch 邊界即時授權與 durable
-  prepared ACK。不要以延長 freshness 或快取 stopped 前的 grant 取代。
-- **P3 鎖競爭（P1 後重測再決定）**：若 deferral 仍多，優先改為 worker 內等待
-  `pg_advisory_lock` 並設 `lock_timeout`，取代隨機重送；縮小鎖粒度前須先確認 dataset 級鎖
-  保護的不變式。不直接刪鎖或增加 worker 數。
+  prepared ACK。不要以延長 freshness 或快取 stopped 前的 grant 取代。先補逐 RPC 計時。
 - **P4** 再驗證 provider batch 與同一 frozen part 的多列交付。Twelve Data 官方支援多 symbol
   `time_series`，但 credits 仍按 symbol 計費；現有 governor 的單次單 symbol 計帳與
   adapter／journal／raw lineage 也須一起調整，不能只將 symbol 串接或提高 concurrency。
