@@ -75,8 +75,10 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 | 即時抓取授權 | Source `full-market/authorization?consumer=full_market\|maintenance` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、Source credential、baseline 與 provider cutover；deprecated `full_market_enabled` 固定為 `true` |
 
 Source `execution-config?execution_profile=full_market` 已發布 credential 範圍內的排程快照，
-不包含 running／quota 授權；Admin 的逐 feed schedule 使用相同 resolver。現階段 Fetcher 仍讀
-生成的本機相容設定，不能因新 API 存在就刪除舊檔或改寫 frozen plan deadline。
+不包含 running／quota 授權；Admin 的逐 feed schedule 使用相同 resolver。Fetcher daily 每輪規劃前
+讀取這份快照，image 只保存非排程的 execution descriptors 與 bootstrap；API 失敗時停止新日期的規劃，
+既有 prepared recovery 與 historical 不受影響。已建立的 plan 沿用凍結的 `deadline_at`，不因快照更新而改寫
+（見 [provider_metadata](../architecture/provider_metadata.md)）。
 
 新 daily 入列使用安裝 feeds 與 admission 的交集；新抓取仍須通過即時授權、交易日期／窗口及平台配額。
 FactSet 的安裝 feed 也不代表已獲准取得 HK 新資料，仍須發布 baseline 並明確 cutover。
@@ -214,7 +216,8 @@ Migration `91a4c7e2d630` 保留既有計畫及歷史項目，用升級當時有�
 ### 來源尚未發布的等待與休市判定
 
 FinLab daily 回傳 target-not-ready，或 FactSet daily 成功查詢但出現 `no_source_row` 時，以
-provider work 建立時間加上 feed `completion_window_seconds` 作為 immutable publication deadline。
+provider work 建立時間加上 feed 的 `publication_retry_window_seconds`（catalog 與 execution-config 的欄位名稱；
+Fetcher runtime 內部的 feed 欄位是 `completion_window_seconds`）作為 immutable publication deadline。
 截止前安全 close／drain 並排到 provider FIFO 尾端，單次最長等待 15 分鐘；這種等待不消耗
 local `FULL_WORK_MAX_ATTEMPTS`。FactSet 只保存缺列 observation，不將空結果保存成可 replay 的
 authoritative snapshot，因此下輪會重新查詢。FinLab 與 FactSet 的其他永久格式、mapping、DQ、
@@ -975,6 +978,41 @@ consumer 的並行度或速率，須重新評估，必要時改以兩環境 allo
 回補天數由管理者建立回補時決定；完整範圍回補在 production 執行。Staging fetcher 主機記憶體小（見
 [部署 OOM 紀錄](deployment.md#2026-10-22-staging-historical-finlab-oom-阻擋部署)），FinLab worker 一律載入
 整張 dataset；staging 只做少量回補，啟動後須觀察記憶體與 OOM。
+
+### Provider 變更的驗收清單
+
+改到 provider adapter、成員交付、結算規則或排程的變更都照這份清單驗收。部署成功只代表 container 換版完成，
+不代表抓取正確（見 [deployment](deployment.md)）；清單裡的數字要寫回對應的 issue 或 PR。
+
+合併前：
+
+- `pnpm check`、`pnpm test:fetcher`、`pnpm test:backend` 都通過。只改 `fetcher/` 也要跑 Backend 測試，因為
+  Backend 的 provider work 測試會驅動真正的 Fetcher runtime。改到 catalog 另外執行 `pnpm contracts:check`。
+- 行為改變對應的 `docs/` 內容在同一個 PR 更新。
+- Staging 所有 controls 已停止（desired 與 observed 都是 stopped），沒有進行中的 historical 或 maintenance
+  work。Fetcher 部署會重建所有 provider 的 container，有工作在執行時部署會失敗並還原。
+
+Staging 驗收（一次只啟動一個 provider，結束後停止）：
+
+1. 啟動前確認各 dataset 的首次日期與既有 plan：啟動後會從首次日期補抓到今天，驗收只留一個交易日。
+2. Owner 啟動該 provider 的 control，等 daily 的 provider work 結束。
+3. 核對 daily 的結果：
+   - work 的結束狀態與 `failure_code` 符合預期。
+   - Plan 統計符合 `expected = data + no_data + missing + blocked`，`missing` 為 0，每個 blocked 成員都有原因。
+   - 這次的 `ingestion_run` 全部 completed，沒有新的 `dq_issue`。
+   - Canonical 筆數等於 `data`；抽一檔從 Serve 查得到，數值與來源一致。
+4. 建立一筆單日的 historical request，核對結束狀態、逐成員結果與耗時。
+5. 核對資源：container 沒有 OOM、記憶體峰值（cgroup 的 `memory.peak`）、provider work journal 的檔案大小。
+   FinLab 每張表是整段歷史，staging 主機記憶體小，這一項不可省略。
+6. 核對 log：有 `delivery_timing`，沒有 traceback。Container log 在下一次部署重建時會消失，要先取出需要的部分。
+7. 停止 control，確認 observed 也是 stopped。
+
+Production：
+
+- 選所有 provider 的 daily 都不在執行的時段。停止所有 controls 並等 observed 也是 stopped，確認沒有進行中的
+  historical 或 maintenance work，再 promote staging 已接受的 bundle。同一批有 Backend 變更時 Backend 先部署。
+- 部署後重新啟動 controls。以部署後第一次 daily 重做上面第 3、5、6 項。
+- 結果不符預期時，用 production 部署 workflow 的 rollback 模式回到上一個已接受的 bundle。
 
 ### 以 historical 回補 Full 缺漏（Twelve Data、FinLab）
 
