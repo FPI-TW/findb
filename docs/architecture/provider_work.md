@@ -158,6 +158,10 @@ Tail retry 的 settlement proof 同時保存 canonical `pending_source_errors` m
 drain-only owner 補報，但 acquisition fence 繼續拒絕新抓取／intent。補報使用一般短 backoff，
 不延至下一抓取窗口或 cooldown 結束；原帳號 cooldown 不清除。ACK 後下一次 settlement
 不再攜帶此 continuation，恢復一般 FIFO gate，不能永久保留補報例外。
+
+Claim 與唯讀 projection 都以「這筆 prepared 是否已有同一 work、同一 member 的 receipt」判斷有沒有待排空的交付。
+`provider_work_receipt` 的 `idx_provider_work_receipt_member`（`work_id, member_key`，migration `c5e7a9b1d3f6`）
+讓這個判斷走索引；沒有它時每次判斷都要掃過整張 receipt，成本是 prepared 筆數乘以 receipt 筆數。
 Maintenance explicit refresh 與 daily cycle 自動領取 refresh 共用同一 round executor：已知 catalogue／
 official HTTP 503、transport 與 quota wait 會先停止 SDK／證明 reap、close、排空 accepted runs，再 tail
 retry；格式、auth／scope 永久拒絕安全結束 failed/manual。只有 owner fence、失聯或無法證明 child
