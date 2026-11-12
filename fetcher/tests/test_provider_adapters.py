@@ -39,6 +39,7 @@ from findb_fetcher.providers.finlab import (
     FinLabConfigError,
     FinLabDatasetTable,
     FinLabOperationalError,
+    FinLabSdkError,
     FinLabTargetNotReadyError,
     FinLabValueError,
 )
@@ -107,7 +108,8 @@ def test_registry_covers_every_published_provider_with_its_capabilities():
         assert adapter.scheduled_maintenance is (provider != "taifex")
         assert adapter.batch is (provider == "factset")
         assert (adapter.dated_universe_code is not None) is (provider == "taifex")
-        assert (adapter.outage_retry_seconds is not None) is (provider == "taifex")
+        assert (adapter.outage_retry_seconds is not None) is (provider in {"taifex", "finlab"})
+        assert adapter.outage_holds_plan is (provider == "finlab")
         assert (adapter.shared_response_prefix is not None) is (provider == "finlab")
         assert adapter.catalogue_datasets == {
             "twelve_data": ("us_equity_eod",),
@@ -142,7 +144,15 @@ def _td(status=None, *, category=None, provider_code=None):
         (TwelveDataAdapter, FinLabOperationalError("x"), "round", ProviderFailure(FailureKind.PASSTHROUGH)),
         # FinLab: target-not-ready waits for publication; maintenance codes are fixed.
         (FinLabAdapter, FinLabTargetNotReadyError("x"), "member", ProviderFailure(FailureKind.ROUND_RETRY, wait="publication", code="finlab_target_not_ready")),
-        (FinLabAdapter, FinLabOperationalError("x"), "member", ProviderFailure(FailureKind.PASSTHROUGH)),
+        # A table that cannot be fetched fails for every member: the plan waits as a whole.
+        (FinLabAdapter, FinLabOperationalError("x"), "member", ProviderFailure(FailureKind.ROUND_RETRY, wait="outage", code="finlab_sdk_error", retry_after=300)),
+        (FinLabAdapter, FinLabOperationalError("x", "network"), "member", ProviderFailure(FailureKind.ROUND_RETRY, wait="outage", code="finlab_network", retry_after=300)),
+        (FinLabAdapter, FinLabOperationalError("x", "quota"), "member", ProviderFailure(FailureKind.ROUND_RETRY, wait="outage", code="finlab_quota", retry_after=1800)),
+        (FinLabAdapter, FinLabSdkError("x"), "member", ProviderFailure(FailureKind.ROUND_RETRY, wait="outage", code="finlab_table_invalid", retry_after=300)),
+        # No retry clears a rejected credential or a broken configuration.
+        (FinLabAdapter, FinLabOperationalError("x", "auth"), "member", ProviderFailure(FailureKind.WORK_FAILED, code="finlab_auth")),
+        (FinLabAdapter, FinLabConfigError("x"), "member", ProviderFailure(FailureKind.WORK_FAILED, code="finlab_config")),
+        (FinLabAdapter, FinLabOperationalError("x", "auth"), "maintenance", ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_AUTH")),
         (FinLabAdapter, FinLabOperationalError("x"), "round", ProviderFailure(FailureKind.PASSTHROUGH)),
         (FinLabAdapter, FinLabOperationalError("x"), "maintenance", ProviderFailure(FailureKind.ROUND_RETRY, code="MAINTENANCE_FINLAB_OPERATIONAL")),
         (FinLabAdapter, FinLabConfigError("x"), "maintenance", ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_CONFIG")),
