@@ -285,6 +285,27 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `source_proven_no_trade` | 已完成。FinLab 當日四個價格全空、成交量為空或 0，視為當日沒有成交，附整張表 bundle 的 SHA-256 回報 `no_trade` 證據；TAIFEX 依報表的無成交列。<br>FinLab 價格全空但成交量大於 0 不算無成交，而是照常交付一列日 K（成員狀態為一般的已完成）：開、高、低、收都填該成員最近一個有值的收盤價（不限前一個交易日，除權息日也一樣），成交量照 FinLab 的值。這種成員每個交易日都有，成交股數多半不足一張。共用的五表 bundle raw 保留原始空值，並在 `close.previous` 記下所用的收盤價與其日期 |
 | `member_unavailable` | Provider 回應本身正常，但只有該成員不能使用。只擋下該檔，不重試、不重新下載共用表或報表、不結束這一輪；Backend 記為 blocked，細分原因看 `full_work_diagnostic.category` 的 `member:<code>`：<br>FinLab：部分價格欄位空值、價格全空且成交量大於 0 卻沒有任何較早的收盤價、OHLC 越界、成交量非整數（`source_error`），或表中還沒有這個代號，例如剛上市（`member:missing_symbol`，`empty_response`）。<br>Twelve Data：回應的幣別與凍結 release 成員不同（`member:identity_mismatch`，`source_error`）。<br>TAIFEX：該列沒有任何觀測值（`member:no_observation`，`source_error`）；plan 凍結的是同一交易日的 dated universe，而當日報表沒有該 contract／session（`member:missing_contract`，`empty_response`）。#307 之前以較舊 universe 凍結的 plan 缺 contract 時，可能是 universe 落後於轉倉，仍以一般 `source_error` 結束這一輪並重試 |
 
+FinLab 抓表失敗時，`full_work_diagnostic.category` 記為 `finlab_sdk:<code>`，Fetcher 另輸出一行
+`{"finlab_sdk_failure": {"dataset", "code"}}`。`code` 是有界的失敗類別，不含 FinLab 的原始訊息、token 或憑證內容：
+
+| code | 意思 | 來源 |
+| --- | --- | --- |
+| `auth` | FinLab API 回覆 token 無效或帳號不存在 | 子程序依 SDK 的固定錯誤字串判斷 |
+| `quota` | FinLab API 回覆當日用量已達上限 | 同上 |
+| `network` | 連線失敗、被重設、TLS 或 DNS 錯誤 | 子程序依例外型別判斷 |
+| `timeout` | 單一請求逾時 | 同上 |
+| `bad_response` | 回應不是合法的 JSON | 同上 |
+| `memory` | 子程序記憶體不足（Python `MemoryError`） | 同上 |
+| `os_error` | 其他作業系統錯誤，例如寫入 SDK cache 失敗 | 同上 |
+| `sdk_error` | 以上都不是 | 同上 |
+| `killed` | 子程序被 signal 終止，例如 OOM kill | 父程序依結束狀態判斷 |
+| `crashed` | 子程序沒有回覆就結束 | 同上 |
+| `process_timeout` | 子程序在整體時限內沒有回覆 | 父程序 |
+| `dispatch_expired` | 授權在實際呼叫 SDK 前已過期，沒有呼叫 | 父程序 |
+| `account_quota`、`acquisition` | 本機帳號 governor 的額度等待，或取得授權時失敗 | 父程序 |
+
+FactSet 的子程序也會回報同一套類別（沒有 `auth`、`quota` 的 API 判斷），但目前只有 FinLab 把它寫進 diagnostic 與 log。
+
 診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source
 credential、config 與 `FETCHER_ACCOUNT_STATE_PATH` 執行，明確指定 profile／state path：
 

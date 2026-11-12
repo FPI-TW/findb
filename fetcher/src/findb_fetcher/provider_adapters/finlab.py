@@ -300,4 +300,6 @@ class FinLabAdapter(ProviderAdapter):
     def diagnostic(self, exc: BaseException) -> dict[str, Any] | None:
         if isinstance(exc, FinLabValueError):
             return {"category": f"finlab_value:{exc.code}"}
+        if isinstance(exc, FinLabOperationalError):
+            return {"category": f"finlab_sdk:{exc.code}"}
         return None
