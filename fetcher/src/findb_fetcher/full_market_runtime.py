@@ -233,6 +233,25 @@ def _governed(method):
     return run
 
 
+def only_mapping_gaps(plan: dict[str, Any]) -> list[str] | None:
+    """The plan's mapping-gap members when they are all it still lacks, else None.
+
+    Source evaluates the same summary to accept a partial settlement, so the
+    decision uses its counts and its bounded gap list rather than local state.
+    """
+    summary = plan.get("summary") or {}
+    gaps = summary.get("gaps") or []
+    blocked = summary.get("blocked")
+    if (
+        summary.get("missing") != 0
+        or not blocked
+        or blocked != summary.get("mapping_gap")
+        or len(gaps) != blocked
+    ):
+        return None
+    return sorted(gap["member_key"] for gap in gaps)
+
+
 class FullMarketRuntime:
     def __init__(
         self,
@@ -1272,6 +1291,7 @@ class FullMarketRuntime:
                 }
         while True:
             desired = outcome
+            mapping_gaps = None
             if desired is None:
                 plan = self.source.evaluate(owner.journal.manifest()["plan_id"])
                 self.state.evaluate(plan)
@@ -1288,6 +1308,12 @@ class FullMarketRuntime:
                     if (manual and not self.daily_policy) or not pending
                     else "retry"
                 )
+                if desired == "failed" and not manual and not pending:
+                    # Nothing is left to acquire and no retry maps a symbol the
+                    # provider lacks: the work is partial, not a failure.
+                    mapping_gaps = only_mapping_gaps(plan)
+                    if mapping_gaps is not None:
+                        desired = "partial"
                 no_data_retry_at = self.state.no_data_retry_at(plan["plan_id"])
                 if desired == "retry" and no_data_retry_at is not None and not pending_errors:
                     # Every remaining member is backing off, so an earlier round would be empty.
@@ -1323,6 +1349,8 @@ class FullMarketRuntime:
                                 ).total_seconds()
                             ),
                         )
+                if mapping_gaps is not None:
+                    proof["mapping_gaps"] = mapping_gaps
                 if desired == "failed":
                     proof = {
                         **proof,

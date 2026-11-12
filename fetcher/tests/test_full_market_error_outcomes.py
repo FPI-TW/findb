@@ -966,6 +966,7 @@ class _SettleOwner:
         self.journal = SimpleNamespace(manifest=lambda: {"plan_id": "p"})
         self.settled = []
         self.delays = []
+        self.proofs = []
 
     def request(self, *_):
         return {}
@@ -976,6 +977,7 @@ class _SettleOwner:
     def settle(self, desired, **kwargs):
         self.settled.append((desired, kwargs.get("failure_code")))
         self.delays.append(kwargs.get("delay"))
+        self.proofs.append(kwargs.get("proof"))
 
 
 @pytest.mark.parametrize(
@@ -1004,6 +1006,112 @@ def test_settlement_only_lets_member_scoped_manuals_continue_the_plan(
     try:
         runtime._settle_queued_round(owner)
         assert owner.settled == [expected]
+    finally:
+        runtime.close()
+
+
+def _gap(key: str, reason: str = "mapping_gap") -> dict:
+    return {"member_key": key, "status": "blocked", "reason": reason}
+
+
+@pytest.mark.parametrize(
+    "other,summary,expected,mapping_gaps",
+    [
+        # Mapping gaps are all the plan lacks: nothing is left to acquire or review.
+        (
+            "complete",
+            {"missing": 0, "blocked": 1, "mapping_gap": 1, "gaps": [_gap("AAPL")]},
+            ("partial", None),
+            ["AAPL"],
+        ),
+        (
+            "mapping_gap",
+            {"missing": 0, "blocked": 2, "mapping_gap": 2, "gaps": [_gap("MSFT"), _gap("AAPL")]},
+            ("partial", None),
+            ["AAPL", "MSFT"],
+        ),
+        # Source still misses a member, or another member is blocked for its own reason.
+        (
+            "complete",
+            {"missing": 1, "blocked": 1, "mapping_gap": 1, "gaps": [_gap("AAPL")]},
+            ("failed", "MANUAL_INTERVENTION_REQUIRED"),
+            None,
+        ),
+        (
+            "member_unavailable",
+            {
+                "missing": 0,
+                "blocked": 2,
+                "mapping_gap": 1,
+                "gaps": [_gap("AAPL"), _gap("MSFT", "source_error")],
+            },
+            ("failed", "MANUAL_INTERVENTION_REQUIRED"),
+            None,
+        ),
+        # Source truncated its gap list, so the members cannot be named.
+        (
+            "mapping_gap",
+            {"missing": 0, "blocked": 2, "mapping_gap": 2, "gaps": [_gap("AAPL")]},
+            ("failed", "MANUAL_INTERVENTION_REQUIRED"),
+            None,
+        ),
+        # A plan with no gaps at all is judged by its status alone.
+        (
+            "complete",
+            {"missing": 0, "blocked": 0, "mapping_gap": 0, "gaps": []},
+            ("failed", "MANUAL_INTERVENTION_REQUIRED"),
+            None,
+        ),
+    ],
+)
+def test_a_plan_lacking_only_mapping_gaps_settles_partial(
+    tmp_path, other, summary, expected, mapping_gaps
+):
+    runtime, source, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {
+        **plan,
+        "status": "incomplete",
+        "summary": {**plan["summary"], **summary},
+    }
+    runtime.state.finish("fp1:123:AAPL", status="manual", reason="mapping_gap")
+    if other == "complete":
+        runtime.state.finish("fp1:123:MSFT", status="complete")
+    else:
+        runtime.state.finish("fp1:123:MSFT", status="manual", reason=other)
+    owner = _SettleOwner()
+    try:
+        runtime._settle_queued_round(owner)
+        assert owner.settled == [expected]
+        assert owner.proofs[0].get("mapping_gaps") == mapping_gaps
+        assert ("manual_reason" in owner.proofs[0]) is (expected[0] == "failed")
+    finally:
+        runtime.close()
+
+
+def test_a_systemic_manual_member_still_fails_a_plan_lacking_only_mapping_gaps(tmp_path):
+    runtime, source, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {
+        **plan,
+        "status": "incomplete",
+        "summary": {
+            **plan["summary"],
+            "missing": 0,
+            "blocked": 1,
+            "mapping_gap": 1,
+            "gaps": [_gap("AAPL")],
+        },
+    }
+    runtime.state.finish("fp1:123:AAPL", status="manual", reason="mapping_gap")
+    runtime.state.finish("fp1:123:MSFT", status="manual", reason="source_rejected")
+    owner = _SettleOwner()
+    try:
+        runtime._settle_queued_round(owner)
+        assert owner.settled == [("failed", "MANUAL_INTERVENTION_REQUIRED")]
+        assert "mapping_gaps" not in owner.proofs[0]
     finally:
         runtime.close()
 

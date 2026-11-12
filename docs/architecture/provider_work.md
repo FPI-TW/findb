@@ -140,6 +140,12 @@ accepted runs 結束），已完成者記為 complete，下一次 attempt 因此
 即重新計算，provider 恢復後可接續。全面無資料時，breaker 中斷後接續同一輪的未抓成員，累計 5 次即結束 plan：大型
 plan 約 100 次呼叫（5 × 20 個 member），小型 plan 另含每輪未滿 20 個、未觸發 breaker 的尾端成員。
 沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source canonical evidence 判定，不計為成功或 no_data。
+唯一的例外是 plan 只缺對應缺口：Source 的 plan 統計 `missing` 為 0、`blocked` 全部是 `mapping_gap` 時，work 以
+`partial` 結算，proof 的 `mapping_gaps` 列出這些成員，Source 以同一份統計驗證後才接受。對應缺口不會呼叫
+provider，也沒有重試能解決，所以不算 work 的失敗；plan 的統計不變，這些成員仍是 blocked。Source 的缺口清單
+上限 1,000 筆，超過時無法列舉，仍以 `failed` 結算。之後 universe 取得對應時，該成員在 plan 上變成 missing，
+以 historical 回補。FactSet daily 走整批路徑，原本就以逐成員 evidence 結算 `partial`。此規則需要 Backend 先部署：
+舊版 Source 會拒絕這種 `partial`。
 Tail round 不再對已終結、退避中或等待重試輪的 member 查詢 prepared。
 原 controls／request 仍允許抓取時，下一 attempt 才可接續同一 frozen scope 的剩餘 members。
 Daily member 的一般例外會先持久保存 `source_error_pending`，再回報 Source `source_error`；

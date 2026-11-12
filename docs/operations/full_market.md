@@ -277,7 +277,7 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | attempts=0／無 observation | 尚未嘗試，不能視為已被 SDK 拒絕 |
 | `empty_response` | 有空回應證據，原因未知；檢查觀測額度與下一次時間 |
 | `unknown_dispatch` | 曾保留未知派送責任，尚未證實空回應；同樣檢查觀測額度與退避 |
-| `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據 |
+| `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據。Plan 只缺這種成員時，daily work 以 `partial` 結束而不是 `failed`；plan 統計仍把它們算作 blocked（見 [provider_work](../architecture/provider_work.md)） |
 | `retry_exhausted` | 本地一般失敗額度（`FULL_WORK_MAX_ATTEMPTS`，5 次，所有 provider 一致）耗盡，不等於五次 native 請求 |
 | `no_data` | Twelve Data 回報該檔該日無資料，或單檔回 404（`not_found`，例如清單已列出但日線尚未提供的新代號），不停止其他成員；依額度重試，不算成功或 no_data。兩者以 Fetcher SQLite `full_work_diagnostic.category` 分辨，Admin API 與 Dashboard 都只顯示 `source_error` |
 | `no_data_exhausted` | `no_data` 額度耗盡（plan 重試輪每輪結算後依序等待 30、60、60、120 分鐘，進度見 Fetcher SQLite `full_no_data_round`），缺漏須另行回補；只影響該檔。Breaker 連續觸發 5 次且其間沒有資料才結束 plan，此時先查是否為未發布休市日 |
