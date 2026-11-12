@@ -772,6 +772,7 @@ Deployment credential reconciliation 以 SHA-256 建立 queue-health Admin viewe
 Fetcher Source credential bridge 只跨 unit 傳送 hashes，不授予 instance role 跨 unit讀取 secrets。
 四個 active provider 的 Source scopes 必須涵蓋對應五條 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
 
+兩環境的 FinDB origin 都只接受 Cloudflare published CIDRs 的 443，沒有 80、SSH 或其他 port；Fetcher 主機沒有 ingress。staging 的 origin SG 由 `infra/tofu/staging/network.tf` 管理，主機上不得再掛其他對外 SG。
 FinDB RDS 不公開且只接受 FinDB security group；Fetcher 不連 FinDB DB。FactSet consumer 另以 TLS 唯讀連接供應商 MySQL RDS，使用獨立 credentials。Source 經 Cloudflare／nginx 還原可信 IP 後執行 allowlist。
 nginx 非敏感設定在 `/etc/findb/nginx`，TLS、lookup key 在 `/run/findb-runtime-secrets/nginx`，
 systemd 在 Docker 啟動前重建 tmpfs；缺失時 fail closed。Serve API 保持唯讀。
