@@ -790,6 +790,30 @@ DB 另比對 plans、parts、members、first dates、admissions 與 historical r
 
 Native 資料驗收另列每條 feed 的實際結果與未解問題，見 [backlog](../dev/backlog.md)。
 
+### Staging 驗收用 Admin 帳號
+
+Admin 沒有刪除使用者的 API，帳號列建立後會永久留在使用者清單中。需要以具名使用者實測時
+（例如登入、改密碼、session 撤銷），一律重複使用下列 staging 帳號，不要另建新帳號：
+
+| username | user_id | role | 建立 | 首次用途 |
+| --- | --- | --- | --- | --- |
+| `verify-498-33387c` | `01a1cd13-e2ec-7d18-8b63-1ea6f70d1b15` | viewer | 2026-11-12 | #498 change-password 撤銷驗收 |
+| `verify-498-4abfe5` | `01a1cd70-4f44-7181-b88b-6362824258c4` | viewer | 2026-11-12 | #531 security event log 格式驗收 |
+
+- 兩個帳號平時保持停用（`is_active=false`），也不保存密碼；需要兩個獨立使用者時才同時啟用兩個。
+- 使用流程，全部以 Owner credential 呼叫 Admin API：
+  1. `PATCH /api/v1/admin/users/{user_id}`，body `{"is_active": true}`。
+  2. `POST /api/v1/admin/users/{user_id}/reset-password`，body 帶本次隨機產生的密碼。reset 會撤銷該使用者所有
+     session，並把 `must_change_password` 設為 true。
+  3. 登入後先呼叫 `POST /api/v1/admin/auth/change-password` 改成另一組隨機密碼，解除強制改密碼；改之前
+     其他 Admin 路由一律回 403。改密碼同樣會撤銷所有 session，連本次 session 也會失效，必須用新密碼重新登入後才能驗收。
+  4. 驗收完成後 `PATCH /api/v1/admin/users/{user_id}`，body `{"is_active": false}`。停用會撤銷所有 session。
+- 密碼只在執行驗收的程式記憶體內產生與使用，不得印出、寫入檔案或貼到 issue。
+- 每次啟用、reset、改密碼與停用都會寫入 admin audit（`update`、`reset_password`、`change_password`），在 issue 記錄用途與時間即可，不需更新本表。
+- 2026-11-12 已用 `verify-498-33387c` 在 staging 實測過上述流程。
+- 除非要測試告警，驗收時不要送出無效 API key：那會觸發 `findb-staging-invalid-credential-events` 告警並寄出 SNS 通知。
+- 需要 operator 或 owner 權限的驗收，先用同一個 `PATCH` 暫時調整 `role`，結束後改回 viewer 再停用。
+
 ## 日曆政策設定切換
 
 Backend `runtime/configuration` 加入四個獨立開關：`TWELVE_DATA_SKIP_NON_TRADING_DAYS`、
