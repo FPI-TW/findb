@@ -300,6 +300,9 @@ Source／Admin plan 列表、dataset 篩選與監控端點仍接受 `execution_p
 Admin 計畫查詢支援 `dataset_key` 與 `trade_date`；指定任一 `page/page_size` 即啟用分頁（缺省值 1／25，
 每頁上限 100）；回傳 `data` 及標準 `pagination`。依交易日、建立時間、plan ID 降冪穩定排序。
 只使用舊 `limit` 時保持原 `{data}` 回應與預設 20 筆；`limit` 與任一分頁參數混用回傳 422。
+列表加上 `summary_only=true` 時只回傳已持久化的統計：`summary.gaps` 為空陣列、各 part 的 `member_keys` 為空陣列，
+其餘欄位與計數不變。未指定時每個 plan 都會重新分類全部成員並列出缺口，資料量大時每次請求要數秒；需要缺口明細時
+改對單一 plan 讀 `/{plan_id}/summary`。
 `GET /admin/delivery-plans/datasets` 回傳 `{"data":["dataset_key", ...]}`，由指定 profile 的全部計畫去重並排序，
 不受日期或最近筆數限制。以上端點須具 viewer 以上 Admin 權限，皆為唯讀，不改交付狀態。
 缺口總數使用 `missing + blocked`；`summary.gaps` 明細最多 1,000 筆。

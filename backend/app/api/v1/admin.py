@@ -391,9 +391,11 @@ async def list_full_market_delivery_plans(
     limit: int | None = Query(default=None, ge=1, le=100),
     page: int | None = Query(default=None, ge=1),
     page_size: int | None = Query(default=None, ge=1, le=100),
+    summary_only: bool = Query(default=False),
     _: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ) -> DeliveryPlanListResponse | PaginatedDeliveryPlanListResponse:
+    """List plans; ``summary_only`` returns stored counts without member keys or gaps."""
     if limit is not None and (page is not None or page_size is not None):
         raise HTTPException(status_code=422, detail="limit cannot be combined with page/page_size")
     return await list_delivery_plans(
@@ -404,6 +406,7 @@ async def list_full_market_delivery_plans(
         limit=limit,
         page=page,
         page_size=page_size,
+        summary_only=summary_only,
     )
 
 

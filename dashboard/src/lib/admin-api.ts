@@ -20,6 +20,30 @@ export const deliveryPlansRequestSchema = z.object({
 })
 export type DeliveryPlansRequest = z.infer<typeof deliveryPlansRequestSchema>
 
+export const deliveryPlanSummaryRequestSchema = z.object({ planId: z.uuid() })
+export type DeliveryPlanSummaryRequest = z.infer<
+  typeof deliveryPlanSummaryRequestSchema
+>
+
+// The plan list carries counts only; `gaps` is filled by the per-plan summary read.
+export const deliveryPlanSummarySchema = z.object({
+  expected: z.number().int().nonnegative(),
+  data: z.number().int().nonnegative(),
+  no_data: z.number().int().nonnegative(),
+  missing: z.number().int().nonnegative(),
+  blocked: z.number().int().nonnegative(),
+  deadline_at: isoDateTime,
+  is_late: z.boolean(),
+  gaps: z.array(
+    z.object({
+      member_key: z.string(),
+      status: z.string(),
+      reason: z.string().nullable().optional(),
+    })
+  ),
+})
+export type DeliveryPlanSummary = z.infer<typeof deliveryPlanSummarySchema>
+
 export const deliveryPlansSchema = z.object({
   skipped: z
     .array(
@@ -65,22 +89,7 @@ export const deliveryPlansSchema = z.object({
           member_sha256: z.string(),
         })
       ),
-      summary: z.object({
-        expected: z.number().int().nonnegative(),
-        data: z.number().int().nonnegative(),
-        no_data: z.number().int().nonnegative(),
-        missing: z.number().int().nonnegative(),
-        blocked: z.number().int().nonnegative(),
-        deadline_at: isoDateTime,
-        is_late: z.boolean(),
-        gaps: z.array(
-          z.object({
-            member_key: z.string(),
-            status: z.string(),
-            reason: z.string().nullable().optional(),
-          })
-        ),
-      }),
+      summary: deliveryPlanSummarySchema,
     })
   ),
 })

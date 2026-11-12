@@ -17,6 +17,7 @@ import { Label } from "../../components/ui/label"
 import {
   loadDeliveryPlans,
   loadDeliveryPlanDatasets,
+  loadDeliveryPlanSummary,
 } from "../../lib/admin.functions"
 import type { DeliveryPlan } from "../../lib/admin-api"
 import { formatDate, Panel } from "./operations.shared"
@@ -90,7 +91,24 @@ const columns: ColumnDef<DeliveryPlan, unknown>[] = [
 ]
 
 function PlanDetails({ plan }: { plan: DeliveryPlan }) {
-  const { summary } = plan
+  const loadSummary = useServerFn(loadDeliveryPlanSummary)
+  const scope = useProtectedQueryScope()
+  const total = plan.summary.missing + plan.summary.blocked
+  // The list carries counts only; the members behind them load once the row is open.
+  const queryKey = [
+    "operations",
+    "delivery-plan-summary",
+    scope,
+    plan.plan_id,
+  ] as const
+  useRegisterOperationsQuery(queryKey, total > 0)
+  const details = useQuery({
+    ...manualQueryOptions,
+    queryKey,
+    queryFn: () => loadSummary({ data: { planId: plan.plan_id } }),
+    enabled: total > 0,
+  })
+  const gaps = details.data?.gaps
   return (
     <div className="space-y-3">
       <p className="break-all text-xs">
@@ -100,13 +118,28 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
         預期 = 有資料 + 正常無資料 + 缺漏 +
         受阻。正常無資料須有持久化證據，不代表失敗。
       </p>
-      <p className="text-sm font-medium">
-        待處理缺口：已列出 {summary.gaps.length}／總缺口{" "}
-        {summary.missing + summary.blocked}（明細上限 1,000 筆）
-      </p>
-      {summary.gaps.length ? (
+      {total === 0 ? (
+        <p className="text-sm text-muted">此計畫沒有待處理缺口。</p>
+      ) : (
+        <>
+          <p className="text-sm font-medium">
+            待處理缺口：
+            {gaps ? `已列出 ${gaps.length}／` : ""}總缺口 {total}
+            （明細上限 1,000 筆）
+          </p>
+          <QueryStatus
+            hasData={details.data !== undefined}
+            pending={details.isFetching}
+            error={details.error}
+            updatedAt={details.dataUpdatedAt}
+            onRetry={() => void details.refetch({ cancelRefetch: false })}
+            label="缺口明細"
+          />
+        </>
+      )}
+      {gaps?.length ? (
         <ul className="max-h-64 space-y-1 overflow-auto text-xs">
-          {summary.gaps.map(gap => (
+          {gaps.map(gap => (
             <li key={`${gap.member_key}:${gap.status}`}>
               <span className="font-mono">{gap.member_key}</span>：
               {gap.status === "missing"
@@ -126,9 +159,7 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
             </li>
           ))}
         </ul>
-      ) : (
-        <p className="text-sm text-muted">此計畫沒有待處理缺口。</p>
-      )}
+      ) : null}
     </div>
   )
 }

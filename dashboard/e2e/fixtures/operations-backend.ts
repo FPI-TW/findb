@@ -76,7 +76,7 @@ let authenticationFailurePaths: string[] = []
 let overviewFailurePath = ""
 
 const plans = Array.from({ length: 31 }, (_, index) => ({
-  plan_id: `plan-${index}`,
+  plan_id: `0195a000-0000-7000-8000-${String(index).padStart(12, "0")}`,
   execution_profile: "full_market",
   dataset_key: index === 30 ? "old_dataset" : "tw_futures_eod",
   provider: "taifex",
@@ -217,9 +217,17 @@ createServer(async (request, response) => {
     if (plansDelay)
       await new Promise(resolve => setTimeout(resolve, plansDelay))
     if (plansError) return send({ detail: "Unavailable" }, 503)
+    // As the Backend does for summary_only: counts without the gap details.
+    const listed =
+      url.searchParams.get("summary_only") === "true"
+        ? plans.map(plan => ({
+            ...plan,
+            summary: { ...plan.summary, gaps: [] },
+          }))
+        : plans
     return send(
       paginated(
-        plans.filter(
+        listed.filter(
           plan =>
             (!url.searchParams.get("dataset_key") ||
               plan.dataset_key === url.searchParams.get("dataset_key")) &&
@@ -229,6 +237,14 @@ createServer(async (request, response) => {
         url.searchParams
       )
     )
+  }
+  const planSummary =
+    /^\/api\/v1\/admin\/delivery-plans\/([^/]+)\/summary$/.exec(path)
+  if (planSummary) {
+    const plan = plans.find(item => item.plan_id === planSummary[1])
+    return plan
+      ? send(plan.summary)
+      : send({ detail: "Delivery plan not found" }, 404)
   }
   if (path === "/api/v1/admin/missing-deliveries")
     return send(

@@ -8,6 +8,7 @@ import {
   historicalBackfillCancelSchema,
   historicalBackfillCreateSchema,
   historicalBackfillPreviewSchema,
+  deliveryPlanSummaryRequestSchema,
   deliveryPlansRequestSchema,
   deliveryResourceRequestSchema,
   universeCandidatesRequestSchema,
@@ -20,6 +21,7 @@ import {
   cancelHistoricalBackfillData,
   createHistoricalBackfillData,
   previewHistoricalBackfillData,
+  fetchDeliveryPlanSummaryData,
   fetchDeliveryPlansData,
   fetchDeliveryPlanDatasetsData,
   fetchDeliveryResourceData,
@@ -61,6 +63,18 @@ export const loadDeliveryPlans = createServerFn({ method: "POST" })
     setResponseHeader("Vary", "Cookie")
     return withDashboardAuthentication(() =>
       fetchDeliveryPlansData(data, session.token, config.apiBaseUrl)
+    )
+  })
+
+export const loadDeliveryPlanSummary = createServerFn({ method: "POST" })
+  .validator(deliveryPlanSummaryRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    setResponseHeader("Cache-Control", "no-store")
+    setResponseHeader("Vary", "Cookie")
+    return withDashboardAuthentication(() =>
+      fetchDeliveryPlanSummaryData(data, session.token, config.apiBaseUrl)
     )
   })
 

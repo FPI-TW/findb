@@ -1167,6 +1167,47 @@ async def get_plan(
     return await plan_response(db, plan)
 
 
+async def plan_summary_response(db: AsyncSession, plan: DailyDeliveryPlan) -> DeliveryPlanResponse:
+    """A plan's stored counts for a list: no member keys and no gap details.
+
+    Classifying a plan reads every member and its write evidence; a list of
+    plans would repeat that per row on every refresh. The per-plan summary
+    read still classifies and lists the gaps.
+    """
+    from app.services.delivery_plan_summary import stored_summary_response
+
+    parts = list(
+        (
+            await db.scalars(
+                select(DailyDeliveryPart)
+                .where(DailyDeliveryPart.plan_id == plan.plan_id)
+                .order_by(DailyDeliveryPart.part_number)
+            )
+        ).all()
+    )
+    summary = await stored_summary_response(db, plan)
+    return DeliveryPlanResponse(
+        plan_id=plan.plan_id,
+        execution_profile=execution_profile(plan.execution_profile),
+        dataset_key=plan.dataset_key,
+        provider=plan.provider,
+        trade_date=plan.trade_date,
+        release_id=plan.release_id,
+        deadline_at=plan.deadline_at,
+        status="complete" if summary.data + summary.no_data == summary.expected else "incomplete",
+        parts=[
+            DeliveryPartResponse(
+                part_id=part.part_id,
+                work_item_id=part.work_item_id,
+                member_keys=[],
+                member_sha256=part.member_sha256,
+            )
+            for part in parts
+        ],
+        summary=summary,
+    )
+
+
 async def plan_response(db: AsyncSession, plan: DailyDeliveryPlan) -> DeliveryPlanResponse:
     """Shape a stored plan without Source scope; retired providers stay readable."""
     plan_id = plan.plan_id
