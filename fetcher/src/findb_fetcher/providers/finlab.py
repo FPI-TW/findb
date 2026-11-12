@@ -71,7 +71,23 @@ class FinLabSdkError(FinLabError):
 
 
 class FinLabOperationalError(FinLabSdkError):
-    """Acquisition or accounting failed; never classify this as a mapping gap."""
+    """Acquisition or accounting failed; never classify this as a mapping gap.
+
+    ``code`` is a bounded class of what failed (auth, quota, network, timeout,
+    killed, ...); the provider's own message never travels with it.
+    """
+
+    def __init__(self, message: str, code: str = "sdk_error") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class FinLabNativeError(Exception):
+    """A FinLab API answer the worker classifies itself, without its message."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.native_failure_code = code
 
 
 class FinLabTargetNotReadyError(FinLabSdkError, FinLabPayloadError):
@@ -255,9 +271,18 @@ class FinLabSdkGateway:
                             # __exit__ records whether get already dispatched;
                             # only the outer boundary may classify a quota wait.
                             raise
-                        except Exception:
+                        except Exception as exc:
+                            from findb_fetcher.provider_process import ProviderProcessError
+                            from findb_fetcher.provider_worker import failure_code
+
+                            code = (
+                                exc.code
+                                if isinstance(exc, ProviderProcessError)
+                                else failure_code(exc)
+                            )
+                            _log_sdk_failure(dataset.strip(), code)
                             raise FinLabOperationalError(
-                                "FinLab SDK dataset retrieval failed"
+                                "FinLab SDK dataset retrieval failed", code
                             ) from None
                     if account:
                         try:
@@ -297,12 +322,12 @@ class FinLabSdkGateway:
         except QuotaBlockedError as exc:
             if exc.quota_wait and not exc.dispatched:
                 raise
-            raise FinLabOperationalError("FinLab acquisition failed") from None
+            raise FinLabOperationalError("FinLab acquisition failed", "account_quota") from None
         except FinLabSdkError:
             raise
         except Exception:
             # Never expose provider/credential context, including scope failures.
-            raise FinLabOperationalError("FinLab acquisition failed") from None
+            raise FinLabOperationalError("FinLab acquisition failed", "acquisition") from None
 
 
 def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> tuple[object, int | None]:
@@ -320,12 +345,40 @@ def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> tuple[
     utils.check_version = lambda: None
     get = data.get
     _disable_frame_cache(_file_storages(data, get))
+    _classify_api_errors(get)
     authorize()
     # Pinned 1.5.7 login only installs the token locally; get is the native I/O.
     sdk.login(payload["token"])
     frame = get(payload["dataset"])
     observed = _dataframe_response_bytes(frame) if payload["account"] else None
     return _reviewed_columns(frame, payload["symbols"]), observed
+
+
+def _classify_api_errors(get: object) -> None:
+    """Turn the pinned SDK's auth and quota answers into classified failures.
+
+    Left alone, 1.5.7 answers an auth error by prompting for a token on stdin and
+    a quota error with a bare ``Exception``; both would reach the parent as an
+    unclassified failure. Only the API's fixed error strings are compared, and
+    none of them leaves the worker.
+    """
+    namespace = getattr(get, "__globals__", None)
+    if not isinstance(namespace, dict):
+        return
+    handle = namespace.get("_handle_fetch_error")
+    auth_errors = namespace.get("_AUTH_ERRORS")
+    if not callable(handle) or not isinstance(auth_errors, (list, tuple)):
+        return
+
+    def classified(ret: Any, *args: Any, **kwargs: Any) -> Any:
+        error = ret.get("error") if isinstance(ret, dict) else None
+        if error in auth_errors:
+            raise FinLabNativeError("auth")
+        if isinstance(error, str) and error.startswith("Usage exceed"):
+            raise FinLabNativeError("quota")
+        return handle(ret, *args, **kwargs)
+
+    namespace["_handle_fetch_error"] = classified
 
 
 def _reviewed_columns(frame: Any, symbols: Sequence[str]) -> object:
@@ -764,6 +817,18 @@ def _log_target_not_ready(dataset: str, target_date: date, table: FinLabDatasetT
                     "latest": [list(pair) for pair in zip(table.dates, table.observed)],
                 }
             },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+
+
+def _log_sdk_failure(dataset: str, code: str) -> None:
+    """One line per failed table fetch: which table, and the bounded failure class."""
+    print(
+        json.dumps(
+            {"finlab_sdk_failure": {"dataset": dataset, "code": code}},
             ensure_ascii=False,
             separators=(",", ":"),
         ),
