@@ -1003,7 +1003,8 @@ PR3 只解除 historical 執行與 planner 的本機排程依賴，不新增 DB 
 Historical `--check` 驗證連線設定及 package metadata 的版本／digest／provider scope，不會 claim、
 建立 state 或抓取 provider。PR4 已解除 daily 與部署工具的剩餘依賴，舊排程檔只保留在測試 fixture。
 
-沿用目前 schema-v4 單次交易、三 images／四 providers／十二 consumers inventory、
+沿用當時的 schema-v4 單次交易、三 images／四 providers／十二 consumers inventory（Pilot 退役後為八個，見
+[Runtime 與持久化狀態](#runtime-與持久化狀態)）、
 whole-work owner lock、checkpoint identity、immutable decision 與 committed receipt；不新增部署入口
 或第二次啟動。現有 change policy 會選取 Fetcher rollout，Backend CI 仍需驗證跨套件 runtime tests。
 合併後可依既有 staging CD 驗證 PR3；production 等 PR4 整合驗收後，以 PR3＋4 同一組 accepted
