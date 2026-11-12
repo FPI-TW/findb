@@ -43,6 +43,14 @@ Rate limit 與 security event 依 client IP 分桶。Admin 登入有兩層限制
 （`resource_type=admin_session`），次數由 audit 計算，所以各 worker 共用、restart 也不會歸零。
 撤銷時另寫 `admin_session_revoked` security event，不記錄輸入的密碼。
 
+Security event 的 log 是單行，欄位直接寫在訊息中，不依賴 log formatter：
+
+- `API credential rejected credential_kind=... endpoint='...' client_ip='...'`
+- `Admin session revoked reason=... session_id=... endpoint='...' client_ip='...'`
+
+來自請求的 `endpoint` 與 `client_ip` 以引號輸出並跳脫控制字元，偽造的換行不能產生假的 log 行。
+任何 log 都不包含輸入的 key 或密碼。
+
 Source、Serve 與登入的限流狀態都存在各 process 的記憶體中，restart 後重置。每個 limiter 只保留
 window 內的時間戳；過期的身分會定期清掉，追蹤數量超過 `RATE_LIMIT_MAX_TRACKED_KEYS`
 （預設 10,000）時，最久未使用的身分會先被淘汰。所以一次性的訪客 IP 或輪換的 username

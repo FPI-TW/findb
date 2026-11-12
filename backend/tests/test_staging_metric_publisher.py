@@ -476,7 +476,11 @@ def test_invalid_credential_events_are_counted_without_log_dimensions(
                 Mock(
                     returncode=0,
                     stdout="",
-                    stderr="API credential rejected\nAPI credential rejected\n",
+                    stderr=(
+                        "API credential rejected credential_kind=serve endpoint="
+                        "'/API credential rejected' client_ip='203.0.113.7'\n"
+                        "API credential rejected\n"
+                    ),
                 ),
             ]
         ),

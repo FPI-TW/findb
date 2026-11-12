@@ -590,7 +590,12 @@ def _invalid_credential_event_metrics() -> tuple[list[dict[str, Any]], list[str]
         result = _run(["docker", "logs", "--since", "10m", container])
         if result.returncode != 0:
             return [], [f"invalid-credential log query failed for {container}"]
-        events += (result.stdout + result.stderr).count("API credential rejected")
+        # One event per line; the line also carries the request path, which may repeat
+        # the message text.
+        events += sum(
+            "API credential rejected" in line
+            for line in (result.stdout + result.stderr).splitlines()
+        )
     return [
         _metric(
             "InvalidCredentialEvents",
