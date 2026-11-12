@@ -69,7 +69,9 @@ from findb_fetcher.provider_adapters import (
 from findb_fetcher.provider_process import ProviderProcessError
 from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
+    ProviderOutagePendingError,
     ProviderPublicationPendingError,
+    ProviderWorkRejectedError,
 )
 from findb_fetcher.provider_work import (
     ProviderWorkAcquisitionStopped,
@@ -1085,6 +1087,17 @@ class FullMarketRuntime:
                         failure_code="DAILY_PROVIDER_NOT_READY",
                         retry_delay_seconds=exc.retry_after_seconds,
                     )
+                except ProviderOutagePendingError as exc:
+                    self.pause()
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry",
+                        failure_code="DAILY_PROVIDER_UNAVAILABLE",
+                        retry_delay_seconds=exc.retry_after_seconds,
+                    )
+                except ProviderWorkRejectedError as exc:
+                    self.pause()
+                    self._settle_queued_round(owner, outcome="failed", failure_code=exc.code)
                 except CalendarDecisionRepairRequiredError:
                     self.pause()
                     self._settle_queued_round(
@@ -1836,6 +1849,14 @@ class FullMarketRuntime:
                         "Source provider owner fence differs"
                     ) from None
                 failure = self.adapter.classify(exc, "member")
+                if failure.kind is FailureKind.WORK_FAILED:
+                    # The provider rejects every member alike (credential,
+                    # configuration): the work ends without charging this one.
+                    self._record_diagnostic(key, exc)
+                    self.state.defer_wait(key, now=time.time(), reason="provider_rejected")
+                    raise ProviderWorkRejectedError(
+                        failure.code or "provider_rejected", "DAILY_PROVIDER_REJECTED"
+                    ) from None
                 if failure.wait == "publication":
                     # The provider has not published the target date for the cohort yet.
                     retry_delay = self._publication_retry_delay(owner, feed)
@@ -1899,12 +1920,28 @@ class FullMarketRuntime:
                     # member failure budget and ends this round for a later retry,
                     # until the plan's outage exceeds its bounded retry window.
                     delay = max(60, math.ceil(failure.retry_after))
-                    if self.state.defer_provider_outage(
+                    deferred = self.state.defer_provider_outage(
                         key,
                         now=time.time(),
                         delay_seconds=delay,
                         limit_seconds=self.adapter.outage_retry_seconds or 0,
-                    ):
+                    )
+                    if self.adapter.outage_holds_plan:
+                        # Every member is read from the observation that failed, so
+                        # the next one would only repeat the failure a minute later.
+                        self._record_diagnostic(key, exc)
+                        if deferred:
+                            raise ProviderOutagePendingError(
+                                failure.code or "provider_unavailable",
+                                retry_after_seconds=delay,
+                            ) from None
+                        # Return the claim: the member never had a table to be read from.
+                        self.state.defer_wait(key, now=time.time(), reason="provider_unavailable")
+                        raise ProviderWorkRejectedError(
+                            failure.code or "provider_unavailable",
+                            "DAILY_PROVIDER_OUTAGE_EXHAUSTED",
+                        ) from None
+                    if deferred:
                         return False
                     self.state.stage_source_error(key)
                     self.source.outcome(

@@ -57,6 +57,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     from findb_fetcher.full_market_runtime import FullMarketRuntime
     from findb_fetcher.full_market_state import FullMarketState
     from findb_fetcher.platform_limits import limits
+    from findb_fetcher.provider_wait import ProviderOutagePendingError
 
     from tests import test_full_market as fixtures
 
@@ -281,7 +282,17 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                     )
                     state.record_plan(plan, h.provider)
                     release = source.release(str(db_plan.release_id))
-                    result = runtime._deliver_plan(plan, release, feed)
+                    try:
+                        result = runtime._deliver_plan(plan, release, feed)
+                    except ProviderOutagePendingError as exc:
+                        # The cycle settles a shared-table outage as a delayed retry.
+                        runtime._settle_queued_round(
+                            owner,
+                            outcome="retry",
+                            failure_code="DAILY_PROVIDER_UNAVAILABLE",
+                            retry_delay_seconds=exc.retry_after_seconds,
+                        )
+                        return False
                     runtime._settle_queued_round(owner)
                     return result
             finally:
@@ -319,8 +330,9 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                 )
             )
         )
-        if h.provider == "taifex":
-            # One exchange report serves every member, so an outage blocks no member.
+        if h.provider in {"taifex", "finlab"}:
+            # One exchange report or SDK table serves every member, so an outage
+            # blocks no member.
             assert reported == []
         else:
             assert len(reported) == 1

@@ -125,6 +125,9 @@ member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain
 accepted runs 結束），已完成者記為 complete，下一次 attempt 因此直接排到下一個 no-data 重試輪，而不是一分鐘後
 只為讀取 run 狀態再開一次 attempt；失敗或無法讀取的 run 保留原本的重訪。
 其他原因（`source_error`、`normalizing`、quota 等待、FinLab 發布等待、TAIFEX outage 等）仍依逐檔 `next_at`。
+FinLab 的抓表失敗是例外：五張表由整個 cohort 共用，失敗時整個 plan 一起等待（`DAILY_PROVIDER_UNAVAILABLE`，
+依失敗類別等 5 或 30 分鐘），不依逐檔 `next_at`，也不記在任何成員身上；規則見
+[Full market runbook](../operations/full_market.md)。
 美股第一輪約 3.5 小時，之後 4 個重試輪通常各只需數分鐘，work 約在隔日 06:50 UTC 結算。
 重試不增加呼叫次數，晚到的列多半是成交量 0、價格不變的占位資料，仍照常寫入。只剩等待重試輪
 的成員時，下一 attempt 排到下一輪最早時間；若有其他原因的成員更早到期，則依最早時間排程，不空轉。同一輪連續
