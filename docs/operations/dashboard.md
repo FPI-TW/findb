@@ -113,7 +113,8 @@ API 回傳的其他供應商仍可動態補入；固定清單也供 Source 憑�
 初次回應前顯示 loading，使用既有 operations query refresh 註冊與 session query scope。
 
 Shioaji daily 另顯示每日抓取窗口／下次開窗時間、最近已結算批次成員數與耗時、完成／待處理／
-人工處理數，以及最近實際失敗原因。`第 N 輪` 是 FIFO 輪替次數，不能解讀為成員失敗重試。
+人工處理數，以及最近實際失敗原因。`第 N 次執行` 是 provider work 的 queue attempt 序號（FIFO 輪替），停止／恢復、Source 錯誤或批次讓出
+都會開始新的一次；它不是成員失敗重試，也不是 no-data 重試輪數（後者含首輪最多 5 輪，記在 Fetcher）。
 「每日抓取窗口外」與「等待共用帳號配額或冷卻」是等待狀態；23:00 後未完整交付仍保留逾期告警。
 批次統計是 Fetcher checkpoint 的執行證據，最終資料完整性以交付計畫 canonical evidence 為準。
 

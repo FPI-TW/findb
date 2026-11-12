@@ -87,7 +87,7 @@ test("authenticated provider queue shows active daily work and historical FIFO w
   await expect(queue.getByText("等待同供應商目前工作完成")).toBeVisible()
   await expect(queue.getByText("僅排空原交付")).toBeVisible()
   await expect(queue.getByText("2099-10-19T01:00:00Z")).toBeVisible()
-  await expect(queue.getByText("第 2 輪", { exact: false })).toBeVisible()
+  await expect(queue.getByText("第 2 次執行", { exact: false })).toBeVisible()
   await expect(
     queue.getByText("2026-10-07T01:00:00Z", { exact: true })
   ).toHaveCount(3)
