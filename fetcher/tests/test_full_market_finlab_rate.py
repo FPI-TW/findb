@@ -20,10 +20,16 @@ from findb_fetcher.full_market_state import FullMarketState
 from findb_fetcher.full_market_universe import canonical_bytes, checksum
 from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
+    ProviderOutagePendingError,
     ProviderPublicationPendingError,
+    ProviderWorkRejectedError,
 )
 from findb_fetcher.provider_work import WorkJournal
-from findb_fetcher.providers.finlab import FinLabDatasetTable, FinLabTargetNotReadyError
+from findb_fetcher.providers.finlab import (
+    FinLabDatasetTable,
+    FinLabOperationalError,
+    FinLabTargetNotReadyError,
+)
 from test_full_market import _checkpoint_reserve, _proof, _runtime
 
 
@@ -95,7 +101,7 @@ def _finlab_runtime(
         "parts": [{"work_item_id": dataset, "member_keys": list(symbols)}],
     }
     runtime.state.record_plan(plan, "finlab")
-    gateway = SimpleNamespace(calls=[], fail_at=None)
+    gateway = SimpleNamespace(calls=[], fail_at=None, failure="network")
     from findb_fetcher import acquisition
 
     platform_limits = acquisition.limits
@@ -113,7 +119,8 @@ def _finlab_runtime(
     def sdk_get(name: str, *, target_date: date, symbols: tuple[str, ...]) -> Any:
         gateway.calls.append((name, clock.elapsed, symbols))
         if len(gateway.calls) == gateway.fail_at:
-            raise RuntimeError("offline SDK failure")
+            # What the real gateway raises for any failed table fetch.
+            raise FinLabOperationalError("offline SDK failure", gateway.failure)
         value = 1000 if name == "price:成交股數" else 10
         # The first SDK call includes initialization time; next call must still be paced.
         if len(gateway.calls) == 1:
@@ -373,7 +380,13 @@ def test_finlab_partial_bundle_remains_durable_unresolved(
     runtime.delivery = SimpleNamespace(
         prepare=lambda *args: pytest.fail("partial bundle delivered")
     )
-    runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    if boundary == "failure":
+        # A failed table fetch holds the whole plan; no member answers for it.
+        with pytest.raises(ProviderOutagePendingError) as pending:
+            runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+        assert pending.value.retry_after_seconds == 300
+    else:
+        runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
     expected_calls = 3 if boundary == "failure" else 2
     assert len(context.gateway.calls) == expected_calls
     assert (dataset, date(2026, 10, 1)) not in runtime.adapter.bundles
@@ -389,23 +402,120 @@ def test_finlab_partial_bundle_remains_durable_unresolved(
             if boundary in {"daily", "minute"}
             else "suspended"
             if boundary == "stop"
-            else "source_error"
+            else "provider_unavailable"
         )
     # Pre-start minute rejection creates no known request debt.
     assert _quota(runtime, "2026-10-01")[0] == (3 if boundary == "failure" else 2)
     assert _quota(runtime, "2026-10-01T12:01")[0] == expected_calls
-    assert source.outcomes == (
-        [
-            {
-                "work_item_id": context.plan["parts"][0]["work_item_id"],
-                "member_key": context.plan["parts"][0]["member_keys"][0],
-                "reason": "source_error",
-            }
-        ]
-        if boundary == "failure"
-        else []
-    )
+    assert source.outcomes == []
     assert all(wait <= 1 for wait in clock.waits)
+    runtime.http.close()
+
+
+def _work_rows(runtime: Any, plan: dict) -> dict[str, tuple[str, str | None, int]]:
+    with runtime.state.connection() as db:
+        return {
+            row["member_key"]: (row["status"], row["reason"], row["attempts"])
+            for row in db.execute(
+                "SELECT member_key,status,reason,attempts FROM full_work WHERE plan_id=?",
+                (plan["plan_id"],),
+            )
+        }
+
+
+def test_finlab_table_failure_holds_the_plan_without_charging_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, source, raw, clock, context = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
+    first, second = context.plan["parts"][0]["member_keys"]
+    context.gateway.fail_at = 1
+    runtime.delivery = SimpleNamespace(prepare=lambda *args: pytest.fail("delivered"))
+
+    with pytest.raises(ProviderOutagePendingError) as pending:
+        runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+
+    assert str(pending.value) == "finlab_network" and pending.value.retry_after_seconds == 300
+    # Only the member being read is deferred, and no attempt is charged to anyone.
+    assert _work_rows(runtime, context.plan) == {
+        first: ("pending", "provider_unavailable", 0),
+        second: ("pending", None, 0),
+    }
+    assert source.outcomes == [] and raw.calls == []
+    with runtime.state.connection() as db:
+        assert [row[0] for row in db.execute("SELECT category FROM full_work_diagnostic")] == [
+            "finlab_sdk:network"
+        ]
+
+    # The quota does not come back in minutes: the plan waits longer.
+    clock.elapsed += 400
+    context.gateway.fail_at, context.gateway.failure = len(context.gateway.calls) + 1, "quota"
+    with pytest.raises(ProviderOutagePendingError) as pending:
+        runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    assert str(pending.value) == "finlab_quota" and pending.value.retry_after_seconds == 1800
+
+    # Past the outage window the work ends; members are still not charged one by one.
+    clock.elapsed += 4 * 3600
+    context.gateway.fail_at, context.gateway.failure = len(context.gateway.calls) + 1, "network"
+    with pytest.raises(ProviderWorkRejectedError) as rejected:
+        runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    assert rejected.value.code == "DAILY_PROVIDER_OUTAGE_EXHAUSTED"
+    assert source.outcomes == []
+    assert {row[2] for row in _work_rows(runtime, context.plan).values()} == {0}
+    assert not runtime.state.has_blocking_manual(context.plan["plan_id"])
+    runtime.http.close()
+
+
+def test_finlab_rejected_credential_ends_the_work_at_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, source, raw, clock, context = _finlab_runtime(tmp_path, monkeypatch, "tw_etf_eod")
+    context.gateway.fail_at, context.gateway.failure = 1, "auth"
+
+    with pytest.raises(ProviderWorkRejectedError) as rejected:
+        runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+
+    assert rejected.value.code == "DAILY_PROVIDER_REJECTED" and str(rejected.value) == "finlab_auth"
+    assert len(context.gateway.calls) == 1 and source.outcomes == []
+    # The claimed member is released without a charge; the other was never read.
+    assert set(_work_rows(runtime, context.plan).values()) == {
+        ("pending", None, 0),
+        ("pending", "provider_rejected", 0),
+    }
+    with runtime.state.connection() as db:
+        assert [row[0] for row in db.execute("SELECT category FROM full_work_diagnostic")] == [
+            "finlab_sdk:auth"
+        ]
+        assert db.execute("SELECT COUNT(*) FROM full_provider_outage").fetchone()[0] == 0
+    runtime.http.close()
+
+
+def test_a_successful_fetch_ends_the_finlab_outage_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, source, raw, clock, context = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
+    context.gateway.fail_at = 1
+    runtime.delivery = SimpleNamespace(
+        prepare=lambda request: SimpleNamespace(body=canonical_bytes(request), request=request),
+        deliver=lambda body: SimpleNamespace(run_id=UUID(int=1)),
+        get_run_status=lambda *args, **kwargs: SimpleNamespace(
+            status="completed", failed_records=0, total_records=1, success_records=1
+        ),
+    )
+    with pytest.raises(ProviderOutagePendingError):
+        runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    with runtime.state.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM full_provider_outage").fetchone()[0] == 1
+
+    clock.elapsed += 400
+    context.gateway.fail_at = None
+    runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+
+    with runtime.state.connection() as db:
+        assert db.execute("SELECT COUNT(*) FROM full_provider_outage").fetchone()[0] == 0
+    assert {row[0] for row in _work_rows(runtime, context.plan).values()} <= {
+        "complete",
+        "prepared",
+    }
     runtime.http.close()
 
 

@@ -50,6 +50,14 @@ from findb_fetcher.providers.finlab import (
 # Shared FinLab evidence URL; the bundle checksum identifies the exact observation.
 FINLAB_PRICE_EVIDENCE_URL = "https://www.finlab.tw/data/price-close?dataset={dataset}"
 FINLAB_PRICE_FIELDS = ("open", "high", "low", "close")
+# A table that cannot be fetched fails for every member alike. The plan retries it
+# as a whole for this long, then the work ends; no member is charged for it.
+FINLAB_OUTAGE_RETRY_SECONDS = 4 * 3600
+FINLAB_OUTAGE_DELAY_SECONDS = 5 * 60
+# The daily quota does not come back within minutes.
+FINLAB_QUOTA_DELAY_SECONDS = 30 * 60
+# Failure classes no retry can clear: the work ends at once.
+_FINLAB_PERMANENT = frozenset({"auth"})
 
 
 def finlab_no_trade(values: Mapping[str, object]) -> bool:
@@ -83,6 +91,8 @@ class FinLabAdapter(ProviderAdapter):
     shared_response_prefix = "finlab_dataset:"
     # Catalogue presence is an SDK observation inside ``build_universe``.
     catalogue_datasets = None
+    outage_retry_seconds = FINLAB_OUTAGE_RETRY_SECONDS
+    outage_holds_plan = True
 
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
@@ -279,8 +289,30 @@ class FinLabAdapter(ProviderAdapter):
                 wait="publication",
                 code="finlab_target_not_ready",
             )
+        if phase == "member" and isinstance(exc, (FinLabSdkError, FinLabConfigError)):
+            # Only the shared table fetch raises these in the member loop, so the
+            # failure belongs to the provider or the account, never to this member.
+            code = (
+                exc.code
+                if isinstance(exc, FinLabOperationalError)
+                else "config"
+                if isinstance(exc, FinLabConfigError)
+                else "table_invalid"
+            )
+            if isinstance(exc, FinLabConfigError) or code in _FINLAB_PERMANENT:
+                return ProviderFailure(FailureKind.WORK_FAILED, code="finlab_" + code)
+            return ProviderFailure(
+                FailureKind.ROUND_RETRY,
+                wait="outage",
+                code="finlab_" + code,
+                retry_after=(
+                    FINLAB_QUOTA_DELAY_SECONDS if code == "quota" else FINLAB_OUTAGE_DELAY_SECONDS
+                ),
+            )
         if phase == "maintenance":
             if isinstance(exc, FinLabOperationalError):
+                if exc.code in _FINLAB_PERMANENT:
+                    return ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_AUTH")
                 return ProviderFailure(
                     FailureKind.ROUND_RETRY, code="MAINTENANCE_FINLAB_OPERATIONAL"
                 )

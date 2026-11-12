@@ -210,6 +210,10 @@ class ProviderAdapter:
     shared_response_prefix: ClassVar[str | None] = None
     # Bounded retry window of a ``wait="outage"`` failure; a success clears it.
     outage_retry_seconds: ClassVar[int | None] = None
+    # The outage is of one observation the whole cohort is read from: the plan waits
+    # as a whole, and an exhausted window ends the work instead of charging the
+    # members one at a time.
+    outage_holds_plan: ClassVar[bool] = False
     # ``acquire_batch`` replaces the member loop (see FactSet).
     batch: ClassVar[bool] = False
     # Journal key of the batch's native snapshot, and the pending reason it raises.
