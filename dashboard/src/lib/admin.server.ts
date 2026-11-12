@@ -20,12 +20,14 @@ import {
   historicalBackfillScopesSchema,
   historicalBackfillPreviewResponseSchema,
   deliveryPlansSchema,
+  deliveryPlanSummarySchema,
   deliveryPlanDatasetsSchema,
   deliveryResourceResponseSchema,
   universeCandidatesSchema,
   universeDiffSchema,
   type DeliveryResourceRequest,
   type DeliveryPlansRequest,
+  type DeliveryPlanSummaryRequest,
   type SchedulerMutationRequest,
   type UniverseCandidatesRequest,
   type PanelResult,
@@ -50,6 +52,9 @@ export async function fetchDeliveryPlansData(
     execution_profile: "full_market",
     page: String(request.page),
     page_size: String(request.pageSize),
+    // Counts only: classifying every listed plan on each refresh is slow, so
+    // gap details load per plan when its row is expanded.
+    summary_only: "true",
   })
   if (request.datasetKey) params.set("dataset_key", request.datasetKey)
   if (request.tradeDate) params.set("trade_date", request.tradeDate)
@@ -58,6 +63,21 @@ export async function fetchDeliveryPlansData(
     sessionToken,
     `/api/v1/admin/delivery-plans?${params}`,
     deliveryPlansSchema,
+    fetchImplementation
+  )
+}
+
+export async function fetchDeliveryPlanSummaryData(
+  request: DeliveryPlanSummaryRequest,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return fetchTarget(
+    safeBaseUrl(baseUrlValue),
+    sessionToken,
+    `/api/v1/admin/delivery-plans/${encodeURIComponent(request.planId)}/summary`,
+    deliveryPlanSummarySchema,
     fetchImplementation
   )
 }

@@ -187,6 +187,8 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
   await page.clock.install()
   await login(page)
   await page.getByRole("button", { name: "展開詳細資料" }).first().click()
+  // Gap details load after the row opens; measure the layout once they are in.
+  await expect(page.getByText("已列出 2／總缺口 2")).toBeVisible()
   const table = page.getByRole("table", { name: "交付計畫", exact: true })
   const viewport = table.locator("..")
   const focus = page.getByLabel("交易日", { exact: true })

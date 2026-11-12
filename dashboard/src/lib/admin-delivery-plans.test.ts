@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { fetchDeliveryPlansData } from "./admin.server"
+import {
+  fetchDeliveryPlanSummaryData,
+  fetchDeliveryPlansData,
+} from "./admin.server"
 
 const plan = {
   plan_id: "plan-1",
@@ -55,7 +58,7 @@ describe("delivery plan session proxy", () => {
     )
     const [url, init] = fetchMock.mock.calls[0] ?? []
     expect(String(url)).toBe(
-      "https://api.example.test/api/v1/admin/delivery-plans?execution_profile=full_market&page=1&page_size=25&dataset_key=tw_futures_eod&trade_date=2026-10-01"
+      "https://api.example.test/api/v1/admin/delivery-plans?execution_profile=full_market&page=1&page_size=25&summary_only=true&dataset_key=tw_futures_eod&trade_date=2026-10-01"
     )
     expect(init.headers).toEqual({
       Authorization: "Bearer session-token",
@@ -82,5 +85,42 @@ describe("delivery plan session proxy", () => {
         fetchMock
       )
     ).rejects.toThrow("503")
+  })
+
+  it("reads one plan's gap details from its own summary endpoint", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify(plan.summary), { status: 200 })
+      )
+    const planId = "0195a000-0000-7000-8000-000000000001"
+    const summary = await fetchDeliveryPlanSummaryData(
+      { planId },
+      "session-token",
+      "https://api.example.test",
+      fetchMock
+    )
+    const [url, init] = fetchMock.mock.calls[0] ?? []
+    expect(String(url)).toBe(
+      `https://api.example.test/api/v1/admin/delivery-plans/${planId}/summary`
+    )
+    expect(init.headers).toEqual({
+      Authorization: "Bearer session-token",
+      Accept: "application/json",
+    })
+    expect(summary.gaps).toEqual(plan.summary.gaps)
+  })
+
+  it("only accepts a plan id that cannot change the request path", async () => {
+    const { deliveryPlanSummaryRequestSchema } = await import("./admin-api")
+    for (const planId of ["", "p1", "../schedulers", "a/b", "plan-1?x=1"])
+      expect(
+        deliveryPlanSummaryRequestSchema.safeParse({ planId }).success
+      ).toBe(false)
+    expect(
+      deliveryPlanSummaryRequestSchema.safeParse({
+        planId: "0195a000-0000-7000-8000-000000000001",
+      }).success
+    ).toBe(true)
   })
 })
