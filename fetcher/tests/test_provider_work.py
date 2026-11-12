@@ -168,6 +168,7 @@ with host_lock(sys.argv[1], root=Path(sys.argv[2])):
         TwelveDataResponse({"values": [{"close": "1"}]}, raw_bytes=b'{"values":[{"close":"1"}]}'),
         FinLabDatasetTable(("2026-10-15",), ("2330",), ((1, None),)),
         FinLabDatasetTable(("2026-10-15",), ("2330",), ((None,),), (("2330", "2026-10-14", 12.5),)),
+        FinLabDatasetTable(("2026-10-13", "2026-10-14"), (), (), (), (1948, 1930)),
         b"native-taifex-report\r\n",
     ],
 )
@@ -431,3 +432,29 @@ def test_target_validation_requires_requested_end_date_not_an_earlier_row_in_win
     assert _target_rows_present(
         {"values": [{"datetime": "2026-10-14"}, {"datetime": "2026-10-15"}]}, arguments
     )
+
+
+def test_an_unchanged_observation_is_recorded_once(tmp_path):
+    journal = queue.WorkJournal(tmp_path / "work.sqlite3", "stable")
+    other = queue.WorkJournal(tmp_path / "work.sqlite3", "other-work")
+
+    for body in (b"not-ready-a", b"not-ready-a", b"not-ready-b", b"not-ready-b", b"not-ready-a"):
+        journal.observe_response("finlab_dataset:close", body, origin="native")
+    journal.observe_response("finlab_dataset:close", b"not-ready-a", origin="legacy_cache")
+    journal.observe_response("finlab_dataset:open", b"not-ready-a", origin="native")
+    other.observe_response("finlab_dataset:close", b"not-ready-a", origin="native")
+
+    with journal.connection() as db:
+        rows = db.execute(
+            "SELECT work_key,response_key,origin,body FROM work_response_observation ORDER BY rowid"
+        ).fetchall()
+    # Only a repeat of the latest observation for the same work, key and origin is skipped.
+    assert [tuple(row) for row in rows] == [
+        ("stable", "finlab_dataset:close", "native", b"not-ready-a"),
+        ("stable", "finlab_dataset:close", "native", b"not-ready-b"),
+        ("stable", "finlab_dataset:close", "native", b"not-ready-a"),
+        ("stable", "finlab_dataset:close", "legacy_cache", b"not-ready-a"),
+        ("stable", "finlab_dataset:open", "native", b"not-ready-a"),
+        ("other-work", "finlab_dataset:close", "native", b"not-ready-a"),
+    ]
+    assert journal.has_response_observation("finlab_dataset:", prefix=True)

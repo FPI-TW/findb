@@ -212,8 +212,10 @@ def test_negative_snapshot_survives_restart_and_valid_cache_replays_without_sdk(
             queue._current.reset(token)
             owner.stop()
 
-    with pytest.raises(finlab.FinLabTargetNotReadyError):
-        fetch(journal)
+    # The second poll sees the same table, so it adds no observation.
+    for _ in range(2):
+        with pytest.raises(finlab.FinLabTargetNotReadyError):
+            fetch(journal)
     with journal.connection() as db:
         rejected = db.execute("SELECT body,sha256,origin FROM work_response_observation").fetchall()
         assert db.execute("SELECT COUNT(*) FROM work_response").fetchone()[0] == 0
@@ -221,18 +223,21 @@ def test_negative_snapshot_survives_restart_and_valid_cache_replays_without_sdk(
     raw, digest, _ = rejected[0]
     assert hashlib.sha256(raw).hexdigest() == digest
     snapshot = json.loads(raw)["data"]
+    # Bounded negative evidence: the latest date served and its observed count,
+    # never the table's cell values.
     assert snapshot == {
         "dates": ["2026-10-14"],
-        "symbols": ["2330"],
-        "values": [[42]],
+        "symbols": [],
+        "values": [],
         "previous": [],
+        "observed": [1],
     }
     assert b"must-not-be-saved" not in raw
     frame[0] = Frame()
     reopened = queue.WorkJournal(journal_path, "original")
     assert fetch(reopened).dates == (DAY.isoformat(),)
     assert fetch(queue.WorkJournal(journal_path, "original")).values == ((42,),)
-    assert calls == ["login", "get", "login", "get"]
+    assert calls == ["login", "get"] * 3
     with reopened.connection() as db:
         assert (
             db.execute("SELECT body,sha256,origin FROM work_response_observation").fetchall()

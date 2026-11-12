@@ -42,6 +42,8 @@ FINLAB_FIELD_DATASETS: Mapping[str, str] = MappingProxyType(
 )
 _MAX_SOURCE_REQUEST_BYTES = 1024 * 1024
 _FRAME_JSON_COLUMN_BATCH = 16
+# Latest dates kept as evidence when a table does not serve the target date yet.
+_NOT_READY_TAIL_DATES = 5
 
 
 class FinLabError(RuntimeError):
@@ -86,6 +88,9 @@ class FinLabDatasetTable:
     # Close table only: (symbol, date, close) of the latest earlier observed close,
     # for each symbol whose target close is empty.
     previous: tuple[tuple[str, str, object], ...] = ()
+    # A table without the target date only: per kept date, how many reviewed
+    # symbols have a value. ``symbols`` and ``values`` then stay empty.
+    observed: tuple[int, ...] = ()
 
 
 def unobserved(value: object) -> bool:
@@ -269,13 +274,16 @@ class FinLabSdkGateway:
                             return _catalogue_from_dataframe(
                                 frame, reviewed_symbols=reviewed_symbols
                             )
-                        return _table_from_dataframe(
+                        table = _table_from_dataframe(
                             frame,
                             target_date=target_date,
                             reviewed_symbols=reviewed_symbols,
                             allow_missing_symbols=self.allow_missing_symbols,
                             carry_previous=dataset.strip() == FINLAB_FIELD_DATASETS["close"],
                         )
+                        if table.dates != (target_date.isoformat(),):
+                            _log_target_not_ready(dataset.strip(), target_date, table)
+                        return table
                     except FinLabSdkError as exc:
                         raise type(exc)(str(exc)) from None
                     except Exception:
@@ -691,17 +699,27 @@ def _table_from_dataframe(
             raise FinLabTargetNotReadyError(
                 "FinLab dataset does not contain exactly one target date"
             )
-        # Only reviewed table data is captured, never DataFrame attrs or SDK
-        # objects. This snapshot is negative evidence, not replay authority.
+        # Negative evidence, not replay authority, and bounded: the latest dates the
+        # table serves and how many reviewed symbols each has a value for. Cell values
+        # of a full history table never leave the frame.
+        tail = sorted((value, position) for position, value in enumerate(dates))[
+            -_NOT_READY_TAIL_DATES:
+        ]
         try:
-            rows = tuple(
-                tuple(_snapshot_scalar(loc[index, symbol]) for symbol in reviewed_symbols)
-                for index in index_values
+            observed = tuple(
+                sum(
+                    not unobserved(loc[index_values[position], symbol])
+                    for symbol in reviewed_symbols
+                )
+                for _, position in tail
             )
         except Exception:
             raise FinLabSdkError("FinLab dataset observation cannot be read") from None
         return FinLabDatasetTable(
-            tuple(value.isoformat() for value in dates), reviewed_symbols, rows
+            dates=tuple(value.isoformat() for value, _ in tail),
+            symbols=(),
+            values=(),
+            observed=observed,
         )
     try:
         row = tuple(loc[index_values[matching[0]], symbol] for symbol in reviewed_symbols)
@@ -732,6 +750,24 @@ def _table_from_dataframe(
         symbols=reviewed_symbols,
         values=(row,),
         previous=tuple(previous),
+    )
+
+
+def _log_target_not_ready(dataset: str, target_date: date, table: FinLabDatasetTable) -> None:
+    """One line per poll: what the table served instead of the target date."""
+    print(
+        json.dumps(
+            {
+                "finlab_target_not_ready": {
+                    "dataset": dataset,
+                    "target_date": target_date.isoformat(),
+                    "latest": [list(pair) for pair in zip(table.dates, table.observed)],
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        flush=True,
     )
 
 
