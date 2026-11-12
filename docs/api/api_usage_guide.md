@@ -342,6 +342,18 @@ Serve consumer；同一請求不得同時帶Bearer session與`X-API-Key`。完�
 | `429` | Rate limit，依`Retry-After`重試 |
 | `503` | DB或ingestion暫時不可用，可安全重試 |
 
+### 403 從哪裡來
+
+所有對外請求都先經過 Cloudflare，再經過 nginx，最後才到 FinDB。三層都可能回 403，用 response body 判斷是哪一層：
+
+| 來源 | Body 特徵 | 原因與處理 |
+| --- | --- | --- |
+| Cloudflare | JSON 含 `"cloudflare_error": true`、`"error_code": 1010`、`"error_name": "browser_signature_banned"` | 依 User-Agent 封鎖。目前只有 Python 標準庫 `urllib` 的預設 UA（`Python-urllib/3.x`）會被擋；`requests`、`httpx`、`aiohttp` 與 curl 的預設 UA 都可以通過。用 `urllib` 時請自訂 `User-Agent`，例如 `my-app/1.0`。請求沒有到達 FinDB，不會留下 security event，也不會計入 rate limit。 |
+| nginx | `{"detail":"Source API client IP not allowlisted"}` | 只出現在 `/api/v1/source/*`：來源 IP 不在 Source allowlist 中。 |
+| FinDB | JSON `detail`，例如 `Invalid API key`、`Invalid admin credential`、`Insufficient admin role`、`Password change required`，或 `Source ... scope denied` | credential 無效、權限不足，或 scope 不符。 |
+
+上表的 Cloudflare 行為是 2026-11-12 在 staging 與 production 實測的結果，兩個環境相同。Cloudflare 的 security 設定不在 repo 的 IaC 內，調整後須重新實測並更新本表。
+
 Canonical ingest error提供穩定`code`及可用時的`attempt_id`；client依code分類，不解析
 人類訊息。Datetime使用含timezone的ISO 8601並正規化為UTC；業務日期用`YYYY-MM-DD`；
 UUID視為opaque string；財務decimal不得轉成binary float後計算。
