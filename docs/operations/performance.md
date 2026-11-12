@@ -178,9 +178,13 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
   authorization），約 1,900 個成員在 RPC 偏慢時需 19 分鐘才回報 stopped。現改為同一輪一旦 gate 回報
   不可抓取，後續沒有本機 prepared body 的成員直接略過；本機已 prepared 的仍交付或查狀態，Source
   保留的 bytes 由下次執行中的 attempt 照常 restore（`retry` settle 允許其保持 pending）。
-- **P4b** 同一 frozen part 合併成一筆多列 ingest 可再省 Source RPC，但會改變逐成員 receipt、no-data
-  重試與 prepared 語意，待 P4a 驗收後再評估。參考[官方 batch 說明](https://support.twelvedata.com/en/articles/5203360-batch-api-requests)
-  與[credits 說明](https://support.twelvedata.com/en/articles/5615854-credits)。
+- **Production 首輪（`findb-v0.1.31`／`fetcher-v0.1.31`，2026-11-11 交易日）**：5,107 筆 run 於 22:00:15–22:36:49 UTC
+  交付（約 37 分鐘、139.7 runs／分鐘），最後一筆 run 0.5 秒後即 normalize 完成；queue wait p95／max 1.14／1.96 秒，
+  無 deadlock 或 HTTP 500。對照 11-10 舊版（平均 11.5 runs／分鐘、queue wait p95／max 337／3,077 秒）。
+  首輪後依 no-data 重試輪續抓，至第 4 輪時剩 147 個 no-data 成員。
+- **P4b（已移出範圍）**：同一 frozen part 合併成一筆多列 ingest 估計僅再省每檔約 240 毫秒，但須重寫逐成員
+  prepared／receipt 與 crash replay、單列 DQ 失敗會連坐整個 run、no-data 重試輪會產生多筆不同組成的 run；
+  2026-11-12 經 Owner 決定不在 #504 範圍。
 
 每階段重測完整 cohort 的 first-dispatch→last-dispatch、last-accept→last-terminal、
 RPC／member、summary refresh／run、plan lock wait、queue wait p50／p95／max、lock

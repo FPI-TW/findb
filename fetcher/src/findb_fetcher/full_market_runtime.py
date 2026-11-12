@@ -87,6 +87,9 @@ from findb_fetcher.raw_storage import (
 
 # Fetcher logs one delivery timing line per interval during a long plan delivery.
 DELIVERY_TIMING_INTERVAL_SECONDS = 60
+# Settlement waits at most this long for just-accepted runs before scheduling.
+NORMALIZING_SETTLE_WAIT_SECONDS = 60
+NONTERMINAL_RUN_STATUSES = frozenset({"queued", "pending", "processing", "retrying"})
 
 
 class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
@@ -1237,6 +1240,7 @@ class FullMarketRuntime:
         if owner.work["kind"] == "daily" and plan_id:
             # The next no-data retry round waits from this settlement, not from each member.
             self.state.advance_no_data_round(plan_id, now=time.time())
+            self._record_finished_runs(plan_id)
             with self.state.connection() as db:
                 pending_errors = sorted(
                     row[0]
@@ -1686,7 +1690,7 @@ class FullMarketRuntime:
                         self.state.save_sequence_receipt(key, request_identity, saved_run)
                         self.state.finish(key, status="prepared", receipt=saved_run)
                     run = self.delivery.get_run_status(UUID(saved_run), expected=immutable)
-                    if run.status in {"queued", "pending", "processing", "retrying"}:
+                    if run.status in NONTERMINAL_RUN_STATUSES:
                         normalizing = True
                         break
                     if (
@@ -1928,6 +1932,53 @@ class FullMarketRuntime:
             return tuple(dict.fromkeys(symbols))
 
         return candidates
+
+    def _record_finished_runs(self, plan_id: str) -> None:
+        """Complete members whose accepted runs finished while this round closed.
+
+        Settlement waits for those runs anyway. Left as ``normalizing``, each would
+        schedule an attempt a minute later only to read its run status, so every
+        no-data retry round would take two attempts. A failed or unreadable run keeps
+        its regular revisit, which reports it as before.
+        """
+        deadline = time.monotonic() + NORMALIZING_SETTLE_WAIT_SECONDS
+        while True:
+            with self.state.connection() as db:
+                keys = [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT key FROM full_work WHERE plan_id=? AND status='prepared' "
+                        "AND reason='normalizing'",
+                        (plan_id,),
+                    )
+                ]
+            waiting = False
+            for key in keys:
+                try:
+                    runs, prepared = self._saved_runs(key), self.state.prepared(key)
+                    if runs is None or prepared is None:
+                        continue
+                    statuses = [
+                        self.delivery.get_run_status(UUID(run), expected=delivered_snapshot(body))
+                        for body, run in zip(json.loads(prepared), runs, strict=True)
+                    ]
+                except (ValueError, KeyError, TypeError):
+                    # A body this check cannot read keeps its regular revisit.
+                    continue
+                except Exception:
+                    return
+                if any(run.status in NONTERMINAL_RUN_STATUSES for run in statuses):
+                    waiting = True
+                elif all(
+                    run.status == "completed"
+                    and not run.failed_records
+                    and run.success_records == run.total_records
+                    for run in statuses
+                ):
+                    self.state.finish(key, status="complete")
+            if not waiting or time.monotonic() >= deadline:
+                return
+            time.sleep(2)
 
     def _saved_runs(self, key: str) -> list[str] | None:
         """Runs for every prepared body of a member, or None while any needs delivery."""

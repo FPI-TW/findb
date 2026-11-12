@@ -90,7 +90,7 @@ export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
                         <th className="p-2">來源 / 日期</th>
                         <th className="p-2">狀態 / 順位</th>
                         <th className="p-2">等待原因</th>
-                        <th className="p-2">輪替 / 最早時間</th>
+                        <th className="p-2">執行次數 / 最早時間</th>
                         <th className="p-2">心跳</th>
                       </tr>
                     </thead>
@@ -131,7 +131,9 @@ export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
                               : "—"}
                           </td>
                           <td className="p-2">
-                            第 {work.attempt_number} 輪
+                            {/* Queue attempts, not no-data retry rounds: a stop,
+                                Source error or batch yield also starts one. */}
+                            第 {work.attempt_number} 次執行
                             <div className="text-muted">{work.not_before}</div>
                             {work.last_batch?.processed !== undefined && (
                               <div>

@@ -121,6 +121,9 @@ member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain
 兩次抓取至少相隔這些時間。輪號與下一輪時間保存在 Fetcher SQLite `full_no_data_round`，跨 queue attempt 與重啟；
 一輪被 Source 不可用、quota、breaker 或重啟中斷時，下一 attempt 只接續本輪尚未抓的成員，不重抓也不提早進入下一輪。
 沒有輪次紀錄的進行中 plan 從最少嘗試次數的 `no_data` 成員接續，並以該次數對應的間隔等待。
+結算一輪前，Fetcher 先讀取本輪剛交付、仍標為 normalizing 成員的 run 狀態（最多等 60 秒；結算本來就要等
+accepted runs 結束），已完成者記為 complete，下一次 attempt 因此直接排到下一個 no-data 重試輪，而不是一分鐘後
+只為讀取 run 狀態再開一次 attempt；失敗或無法讀取的 run 保留原本的重訪。
 其他原因（`source_error`、`normalizing`、quota 等待、FinLab 發布等待、TAIFEX outage 等）仍依逐檔 `next_at`。
 美股第一輪約 3.5 小時，之後 4 個重試輪通常各只需數分鐘，work 約在隔日 06:50 UTC 結算。
 重試不增加呼叫次數，晚到的列多半是成交量 0、價格不變的占位資料，仍照常寫入。只剩等待重試輪

@@ -1131,3 +1131,61 @@ def test_existing_checkpoint_gains_diagnostic_table_without_rewriting_work(tmp_p
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM full_work ORDER BY key").fetchall() == before
     assert reopened.prepared("fp1:123:AAPL") == b"prepared delivery"
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_settlement_records_finished_runs_so_the_next_attempt_is_the_next_round(
+    tmp_path, monkeypatch, finished
+):
+    from uuid import UUID
+
+    from findb_fetcher import full_market_runtime as runtime_module
+    from findb_fetcher.full_market_universe import canonical_bytes
+
+    runtime, source, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    # AAPL waits for the next no-data round; MSFT was delivered late in this round.
+    runtime.state.finish("fp1:123:AAPL", status="pending", reason="no_data", now=time.time())
+    with runtime.state.connection() as db:
+        db.execute("UPDATE full_work SET attempts=1 WHERE key='fp1:123:AAPL'")
+    request = {
+        "idempotency_key": "full:msft",
+        "dataset_key": "us_equity_eod",
+        "schema_id": "market_eod",
+        "schema_version": 1,
+    }
+    runtime.state.prepare("fp1:123:MSFT", canonical_bytes([request]))
+    runtime.state.save_sequence_receipt("fp1:123:MSFT", "full:msft", str(UUID(int=7)))
+    runtime.state.finish("fp1:123:MSFT", status="prepared", reason="normalizing", now=time.time())
+    reads = []
+
+    class Delivery:
+        def get_run_status(self, run_id, *, expected):
+            reads.append((run_id, expected.idempotency_key))
+            return SimpleNamespace(
+                status="completed" if finished else "processing",
+                failed_records=0,
+                total_records=1,
+                success_records=1,
+            )
+
+    runtime.delivery = Delivery()
+    monkeypatch.setattr(runtime_module, "NORMALIZING_SETTLE_WAIT_SECONDS", 0)
+    owner = _SettleOwner()
+    try:
+        runtime._settle_queued_round(owner)
+    finally:
+        runtime.close()
+    assert reads == [(UUID(int=7), "full:msft")]
+    statuses = _statuses(runtime)
+    assert owner.settled == [("retry", None)]
+    if finished:
+        # No near-immediate attempt just to read MSFT: the next one is the no-data round.
+        assert statuses["MSFT"][0] == "complete"
+        assert owner.delays[-1] > 25 * 60
+    else:
+        # A run still processing keeps its one-minute revisit.
+        assert statuses["MSFT"][:2] == ("prepared", "normalizing")
+        assert owner.delays[-1] <= 61
