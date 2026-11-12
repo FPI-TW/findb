@@ -182,7 +182,8 @@ def test_worker_returns_only_reviewed_columns_with_complete_frame_bytes(monkeypa
     frame = Frame([])
     frame.columns = Columns(["2330", *(str(i) for i in range(32)), "0050"])
     frame.loc = Loc(frame)
-    reviewed, observed = native_get(monkeypatch, frame, account=account)
+    reviewed, observed, usage = native_get(monkeypatch, frame, account=account)
+    assert usage is None
     # The parent never receives the complete table, only its accounted size.
     assert reviewed.columns == ("2330", "0050")
     assert observed == (len(frame.fragment(frame.columns).encode()) if account else None)
@@ -190,4 +191,4 @@ def test_worker_returns_only_reviewed_columns_with_complete_frame_bytes(monkeypa
 
 def test_worker_returns_invalid_frame_whole_for_typed_parent_validation(monkeypatch):
     frame = Frame(Columns(["2330", "2330"]))
-    assert native_get(monkeypatch, frame, account=False) == (frame, None)
+    assert native_get(monkeypatch, frame, account=False) == (frame, None, None)

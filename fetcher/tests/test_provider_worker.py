@@ -29,7 +29,7 @@ return identities
 
 
 def _call(dataset, **kwargs):
-    frame, _ = supervised_call(
+    frame, _, _ = supervised_call(
         "finlab.get",
         {"token": "offline", "dataset": dataset, "symbols": ("2330",), "account": False},
         **kwargs,
@@ -68,7 +68,7 @@ def test_credentials_stay_out_of_worker_argv_and_environment(tmp_path, monkeypat
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "source-secret-marker")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "cloud-marker")
     monkeypatch.setenv("FINLAB_API_TOKEN", "installed-marker")
-    observed, _ = supervised_call(
+    observed, _, _ = supervised_call(
         "finlab.get",
         {"token": "worker-secret-marker", "dataset": "x", "symbols": ("2330",), "account": False},
     )
