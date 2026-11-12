@@ -87,6 +87,12 @@ from findb_fetcher.raw_storage import (
 
 # Fetcher logs one delivery timing line per interval during a long plan delivery.
 DELIVERY_TIMING_INTERVAL_SECONDS = 60
+# One official listing download, start to finish. The client's read timeout only
+# bounds each chunk; the slowest page observed took just under nine minutes.
+OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS = 20 * 60
+# Maintenance works of one provider run back to back and read the same listings;
+# a later one reuses what an earlier one downloaded this recently.
+OFFICIAL_SNAPSHOT_REUSE_SECONDS = 30 * 60
 # Settlement waits at most this long for just-accepted runs before scheduling.
 NORMALIZING_SETTLE_WAIT_SECONDS = 60
 NONTERMINAL_RUN_STATUSES = frozenset({"queued", "pending", "processing", "retrying"})
@@ -294,6 +300,10 @@ class FullMarketRuntime:
         self.proof: dict[str, Any] = {}
         self.reservation_window = ""
         self.snapshot_objects: dict[str, RawObject] = {}
+        # url -> (downloaded at, body, R2 object), for sibling maintenance works only.
+        self._recent_snapshots: dict[str, tuple[float, bytes, RawObject]] = {}
+        # Set by the worker around a cycle: reports liveness to the scheduler control.
+        self.heartbeat: Callable[[], Any] | None = None
         self.catalogue_evidence: dict[str, bytes] = {}
         # Source stable work identity is immutable, so one acknowledged enqueue
         # per process is enough; every later cycle would only replay it.
@@ -384,11 +394,50 @@ class FullMarketRuntime:
             until=time.time() + 60,
         )
 
+    def _download_progress(self) -> None:
+        """Keep the control heartbeat alive while one long download blocks the cycle."""
+        if self.heartbeat is None:
+            return
+        try:
+            self.heartbeat()
+        except Exception:
+            # Liveness reporting never decides the fate of the download itself.
+            pass
+
+    def _recent_snapshot(self, url: str) -> tuple[bytes, RawObject] | None:
+        """A listing a sibling maintenance work of this process just downloaded."""
+        from findb_fetcher.provider_work import active
+
+        now = time.monotonic()
+        for stale in [
+            key
+            for key, (at, _, _) in self._recent_snapshots.items()
+            if now - at > OFFICIAL_SNAPSHOT_REUSE_SECONDS
+        ]:
+            del self._recent_snapshots[stale]
+        owner = active()
+        # Daily and historical works read dated reports whose content changes as
+        # the exchange publishes; only universe refreshes share their listings.
+        if owner is None or owner.work.get("kind") != "maintenance":
+            return None
+        recent = self._recent_snapshots.get(url)
+        return None if recent is None else (recent[1], recent[2])
+
     def _read_response(
-        self, response: httpx.Response, *, bound: int, provider_response: bool
+        self,
+        response: httpx.Response,
+        *,
+        bound: int,
+        provider_response: bool,
+        time_limit: float | None = None,
     ) -> bytes:
         try:
-            return read_identity_response(response, bound=bound)
+            return read_identity_response(
+                response,
+                bound=bound,
+                time_limit=time_limit,
+                on_progress=self._download_progress,
+            )
         except BoundedResponseError as exc:
             if provider_response and (exc.observed_bytes or exc.declared_bytes):
                 self._observed_response(exc.observed_bytes, declared=exc.declared_bytes)
@@ -405,6 +454,10 @@ class FullMarketRuntime:
             if not self.runtime_window()["open"]:
                 raise DailyWindowClosedError("daily acquisition window closed")
             raise ProviderWorkAcquisitionStopped("scheduler acquisition stopped")
+        recent = self._recent_snapshot(url)
+        if recent is not None:
+            body, self.snapshot_objects[url] = recent
+            return body
         # Official listings consume the same enrolled response bound and account
         # bytes as provider data; the parser ceiling is an additional constraint.
         bound = min(int(self.proof["max_response_bytes"]), MAX_SNAPSHOT_BYTES)
@@ -419,7 +472,12 @@ class FullMarketRuntime:
                 # Status is known before a bounded read can reject its body.
                 self._rate_limited()
             try:
-                body = self._read_response(response, bound=bound, provider_response=True)
+                body = self._read_response(
+                    response,
+                    bound=bound,
+                    provider_response=True,
+                    time_limit=OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS,
+                )
             except (ReadinessBlockedError, httpx.HTTPError) as exc:
                 if response.status_code != 200:
                     raise ProviderHTTPError(
@@ -435,9 +493,9 @@ class FullMarketRuntime:
             # report resolver handles fallback/retry without fabricating evidence.
             if url in EMPTY_OFFICIAL_SNAPSHOT_URLS and not body:
                 return body
-            self.snapshot_objects[url] = self._persist(
-                body, official_snapshot_dataset(url), "official_universe"
-            )
+            stored = self._persist(body, official_snapshot_dataset(url), "official_universe")
+            self.snapshot_objects[url] = stored
+            self._recent_snapshots[url] = (time.monotonic(), body, stored)
             return body
 
     def _ensure_proof(self) -> None:

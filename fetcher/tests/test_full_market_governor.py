@@ -18,6 +18,7 @@ import httpx
 import pytest
 
 import findb_fetcher.full_market_runtime as runtime_module
+from findb_fetcher import full_market_cli, provider_work
 from findb_fetcher.full_market_runtime import ReadinessBlockedError
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.full_market_universe import TAIFEX_URL, canonical_bytes
@@ -1593,3 +1594,178 @@ def test_finlab_catalogue_operational_failure_does_not_submit_mapping_gaps(
                 == 1
             )
     runtime.http.close()
+
+
+def _stream(*chunks: bytes) -> httpx.SyncByteStream:
+    class Chunks(httpx.SyncByteStream):
+        def __iter__(self) -> Any:
+            yield from chunks
+
+    return Chunks()
+
+
+def test_a_trickling_download_ends_at_its_total_time_limit(monkeypatch):
+    from findb_fetcher import http_response
+
+    # One chunk every 100 seconds: each read is within the client's read timeout.
+    clock = iter(range(0, 10_000, 100))
+    monkeypatch.setattr(http_response, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    response = httpx.Response(200, stream=_stream(*[b"x" * 10] * 20))
+
+    with pytest.raises(httpx.ReadTimeout) as caught:
+        http_response.read_identity_response(response, bound=1000, time_limit=250)
+
+    # Chunks at 100, 200 and 300 seconds were read before the limit was noticed.
+    assert caught.value.observed_bytes == 30
+
+
+def test_a_long_download_reports_progress_at_most_once_per_interval(monkeypatch):
+    from findb_fetcher import http_response
+
+    clock = iter([0, 10, 20, 31, 40, 62, 70])
+    monkeypatch.setattr(http_response, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    reports: list[int] = []
+    response = httpx.Response(200, stream=_stream(*[b"x"] * 6))
+
+    body = http_response.read_identity_response(
+        response, bound=100, on_progress=lambda: reports.append(1), progress_seconds=30
+    )
+
+    assert body == b"x" * 6
+    # Reported at 31 and 62 seconds, not on every chunk.
+    assert len(reports) == 2
+
+
+def _owned(tmp_path: Path, key: str, kind: str) -> Any:
+    """A minimal owner whose journal makes the snapshot durable for that work."""
+    return SimpleNamespace(
+        # Not the acquiring provider: dispatch accounting stays with the unit boundary.
+        provider="unit-owner",
+        work={"kind": kind, "state": "open"},
+        journal=provider_work.WorkJournal(tmp_path / "work.sqlite3", key),
+        dispatch_observations=0,
+        authorize=lambda: None,
+        reserve=lambda request: None,
+    )
+
+
+def test_sibling_maintenance_works_share_one_official_download(tmp_path):
+    from findb_fetcher.full_market_universe import NASDAQ_URLS
+
+    runtime, _, raw = _runtime(tmp_path)
+    runtime.proof = {"max_response_bytes": 1000}
+    requests: list[str] = []
+
+    def response(request):
+        requests.append(str(request.url))
+        return httpx.Response(200, content=b"official listing")
+
+    runtime.http.close()
+    runtime.http = httpx.Client(transport=httpx.MockTransport(response))
+    url = NASDAQ_URLS[0]
+
+    def snapshot(key: str, kind: str) -> bytes:
+        runtime.snapshot_objects.clear()
+        token = provider_work._current.set(_owned(tmp_path, key, kind))
+        try:
+            return runtime._snapshot(url)
+        finally:
+            provider_work._current.reset(token)
+
+    try:
+        assert snapshot("equity-refresh", "maintenance") == b"official listing"
+        first = runtime.snapshot_objects[url]
+        # The sibling refresh reuses the bytes and their R2 object without a request.
+        assert snapshot("etf-refresh", "maintenance") == b"official listing"
+        assert runtime.snapshot_objects[url] is first
+        assert len(requests) == 1 and len(raw.calls) == 1
+        # Each work still keeps its own durable copy for replay.
+        with provider_work.WorkJournal(tmp_path / "work.sqlite3", "x").connection() as db:
+            saved = db.execute(
+                "SELECT work_key FROM work_response WHERE response_key LIKE 'official_snapshot:%'"
+            ).fetchall()
+        assert sorted(row[0] for row in saved) == ["equity-refresh", "etf-refresh"]
+        # A daily work reads dated reports that change as they are published.
+        assert snapshot("daily", "daily") == b"official listing"
+        assert len(requests) == 2
+        # Outside the reuse window the listing is downloaded again.
+        at, body, stored = runtime._recent_snapshots[url]
+        runtime._recent_snapshots[url] = (
+            at - runtime_module.OFFICIAL_SNAPSHOT_REUSE_SECONDS - 1,
+            body,
+            stored,
+        )
+        assert snapshot("later-refresh", "maintenance") == b"official listing"
+        assert len(requests) == 3
+    finally:
+        runtime.close()
+
+
+def test_official_download_keeps_the_control_heartbeat(tmp_path, monkeypatch):
+    from findb_fetcher import http_response
+    from findb_fetcher.full_market_universe import NASDAQ_URLS
+
+    runtime, _, _ = _runtime(tmp_path)
+    runtime.proof = {"max_response_bytes": 1000}
+    clock = iter(range(0, 10_000, 40))
+    monkeypatch.setattr(http_response, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    runtime.http.close()
+    runtime.http = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=_stream(*[b"x" * 10] * 5))
+        )
+    )
+    beats: list[int] = []
+
+    def heartbeat() -> None:
+        beats.append(1)
+        raise RuntimeError("control unavailable")
+
+    runtime.heartbeat = heartbeat
+    try:
+        # A failing heartbeat never fails the download it accompanies.
+        assert runtime._snapshot(NASDAQ_URLS[0]) == b"x" * 50
+        assert len(beats) == 5
+    finally:
+        runtime.close()
+
+
+def test_the_worker_installs_the_heartbeat_only_for_the_cycle(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(full_market_cli, "prune_ledger", lambda: None)
+    polls: list[str] = []
+    seen: list[bool] = []
+
+    def poll(**kwargs: Any) -> Any:
+        polls.append(kwargs["observed_state"])
+        return SimpleNamespace(desired_state="running")
+
+    def cycle() -> dict:
+        seen.append(runtime.heartbeat is not None)
+        runtime.heartbeat()
+        return {"status": "ok"}
+
+    runtime = SimpleNamespace(
+        heartbeat=None,
+        prune_closed_state=lambda: None,
+        drain=lambda: seen.append(runtime.heartbeat is not None),
+        pause=lambda: None,
+        cycle=cycle,
+    )
+    control = SimpleNamespace(poll=poll)
+
+    assert (
+        full_market_cli.run_worker(
+            runtime,
+            control,
+            lambda: True,
+            stopped=threading.Event(),
+            run_forever=False,
+            poll_seconds=1,
+        )
+        == 0
+    )
+    # Drain runs without it; the cycle has it; afterwards it is gone again.
+    assert seen == [False, True] and runtime.heartbeat is None
+    assert polls == ["stopped", "running", "running", "stopped"]

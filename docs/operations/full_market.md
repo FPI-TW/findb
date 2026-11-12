@@ -1162,6 +1162,18 @@ detached bytes checksum 加入 release evidence。SDK 資料錯誤只影響該 f
 回應 accounting 或 R2 失敗中止 refresh，不發布假缺漏。TW 目錄的 effective date 使用台北日期，
 universe request 的未來日期檢查亦依 source timezone 判定。
 
+官方名單下載的時間限制與共用：
+
+- 單一官方名單的下載總時限是 20 分鐘（`OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS`）。HTTP client 的 30 秒 timeout 只限制
+  每次讀取的等待，對方持續慢速回應時原本沒有上限；超過總時限視為傳輸逾時，依 `MAINTENANCE_TRANSPORT` 重試。
+  目前量到最慢的 ISIN 頁約 9 分鐘。
+- 同一個 Fetcher 程序裡，maintenance work 在 30 分鐘內下載過的官方名單，下一筆 maintenance work 直接沿用
+  （內容與 R2 物件都沿用，不再送出請求）。股票與 ETF 的 universe refresh 讀的是同樣四個頁面，因此只下載一次；
+  每筆 work 仍各自在 journal 保存一份以供重播。Daily 與 historical 讀的是會隨發布更新的報表，不沿用。
+- 下載期間每 30 秒回報一次 scheduler control 的 heartbeat，長時間下載不再讓 heartbeat 超過告警門檻。
+- FinLab 取一張表的子程序時限是 10 分鐘（`FINLAB_GET_TIMEOUT_SECONDS`，原本沿用 30 分鐘的預設值）；逾時記為
+  `finlab_sdk` 的 `process_timeout`。
+
 TW universe 成員帶有 ISIN 的上市日（`listed_date`，存於 `universe_member_listing`）。ISIN 會提前列出尚未上市的商品，所以上市日
 欄位缺漏或格式錯誤時整份名單 fail closed，不視為已上市；parser 與 release 都不依上市日過濾，因為
 release 會被之後的日期沿用。建立 daily plan 時才以 trade date 判斷：`listed_date > trade_date` 的成員

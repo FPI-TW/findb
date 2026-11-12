@@ -41,6 +41,9 @@ FINLAB_FIELD_DATASETS: Mapping[str, str] = MappingProxyType(
     }
 )
 _MAX_SOURCE_REQUEST_BYTES = 1024 * 1024
+# One table fetch normally takes 3-10 seconds; the supervisor's default of 30
+# minutes would let five stuck tables hold the provider owner for hours.
+FINLAB_GET_TIMEOUT_SECONDS = 10 * 60
 _FRAME_JSON_COLUMN_BATCH = 16
 
 
@@ -238,6 +241,7 @@ class FinLabSdkGateway:
                                         "account": account,
                                     },
                                     checkpoint=operation.dispatch_checkpoint,
+                                    timeout=FINLAB_GET_TIMEOUT_SECONDS,
                                 )
                             else:
                                 # Pinned 1.5.7 login only installs the token locally;

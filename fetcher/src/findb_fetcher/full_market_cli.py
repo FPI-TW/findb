@@ -108,6 +108,8 @@ def run_worker(
         observed = control.poll(observed_state="stopped")
         if observed.desired_state == "running" and can_acquire():
             control.poll(observed_state="running", cycle_started_at=datetime.now(timezone.utc))
+            # A long official download blocks the cycle; it keeps reporting through this.
+            runtime.heartbeat = lambda: control.poll(observed_state="running")
             try:
                 health = runtime.cycle()
                 print(json.dumps(health, separators=(",", ":")), flush=True)
@@ -133,6 +135,8 @@ def run_worker(
                 )
                 if not run_forever:
                     return 2
+            finally:
+                runtime.heartbeat = None
         else:
             runtime.pause()
         return 0
