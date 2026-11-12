@@ -319,6 +319,28 @@ def test_sdk_gateway_carries_the_latest_earlier_close_for_empty_target_cells() -
     assert volume.previous == ()
 
 
+def test_the_gateway_keeps_the_class_and_logs_it(capsys) -> None:
+    secret = "provider-words-that-must-not-leak"
+
+    def get(dataset: str) -> None:
+        raise ConnectionResetError(secret)
+
+    sdk = SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=get))
+
+    from findb_fetcher.providers.finlab import FinLabOperationalError
+
+    with pytest.raises(FinLabOperationalError) as raised:
+        FinLabSdkGateway(api_token="test-token", _sdk=sdk).fetch_dataset(
+            "price:收盤價", target_date=TARGET_DATE, symbols=("2330",)
+        )
+
+    assert raised.value.code == "network"
+    assert secret not in "".join(traceback.format_exception(raised.value))
+    assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == [
+        {"finlab_sdk_failure": {"dataset": "price:收盤價", "code": "network"}}
+    ]
+
+
 @pytest.mark.parametrize("failure_location", ["index", "row"])
 def test_sdk_gateway_sanitizes_dataframe_exceptions_that_contain_the_token(
     failure_location: str,
