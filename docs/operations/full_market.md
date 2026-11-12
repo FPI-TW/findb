@@ -279,8 +279,8 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `no_data` | Twelve Data 回報該檔該日無資料，或單檔回 404（`not_found`，例如清單已列出但日線尚未提供的新代號），不停止其他成員；依額度重試，不算成功或 no_data。兩者以 Fetcher SQLite `full_work_diagnostic.category` 分辨，Admin API 與 Dashboard 都只顯示 `source_error` |
 | `no_data_exhausted` | `no_data` 額度耗盡（plan 重試輪每輪結算後依序等待 30、60、60、120 分鐘，進度見 Fetcher SQLite `full_no_data_round`），缺漏須另行回補；只影響該檔。Breaker 連續觸發 5 次且其間沒有資料才結束 plan，此時先查是否為未發布休市日 |
 | `prepared/normalizing` | 應查 Backend run 與序列收據；可能已完成，不能據此宣稱 queue 卡住 |
-| `source_proven_no_trade` | 已完成。FinLab 當日四個價格全空、成交量為空或 0，視為當日沒有成交，附整張表 bundle 的 SHA-256 回報 `no_trade` 證據；TAIFEX 依報表的無成交列 |
-| `member_unavailable` | Provider 回應本身正常，但只有該成員不能使用。只擋下該檔，不重試、不重新下載共用表或報表、不結束這一輪；Backend 記為 blocked，細分原因看 `full_work_diagnostic.category` 的 `member:<code>`：<br>FinLab：部分欄位空值、OHLC 越界、成交量非整數（`source_error`），或表中還沒有這個代號，例如剛上市（`member:missing_symbol`，`empty_response`）。<br>Twelve Data：回應的幣別與凍結 release 成員不同（`member:identity_mismatch`，`source_error`）。<br>TAIFEX：該列沒有任何觀測值（`member:no_observation`，`source_error`）；plan 凍結的是同一交易日的 dated universe，而當日報表沒有該 contract／session（`member:missing_contract`，`empty_response`）。#307 之前以較舊 universe 凍結的 plan 缺 contract 時，可能是 universe 落後於轉倉，仍以一般 `source_error` 結束這一輪並重試 |
+| `source_proven_no_trade` | 已完成。FinLab 當日四個價格全空、成交量為空或 0，視為當日沒有成交，附整張表 bundle 的 SHA-256 回報 `no_trade` 證據；TAIFEX 依報表的無成交列。<br>FinLab 價格全空但成交量大於 0 不算無成交，而是照常交付一列日 K（成員狀態為一般的已完成）：開、高、低、收都填該成員最近一個有值的收盤價（不限前一個交易日，除權息日也一樣），成交量照 FinLab 的值。這種成員每個交易日都有，成交股數多半不足一張。共用的五表 bundle raw 保留原始空值，並在 `close.previous` 記下所用的收盤價與其日期 |
+| `member_unavailable` | Provider 回應本身正常，但只有該成員不能使用。只擋下該檔，不重試、不重新下載共用表或報表、不結束這一輪；Backend 記為 blocked，細分原因看 `full_work_diagnostic.category` 的 `member:<code>`：<br>FinLab：部分價格欄位空值、價格全空且成交量大於 0 卻沒有任何較早的收盤價、OHLC 越界、成交量非整數（`source_error`），或表中還沒有這個代號，例如剛上市（`member:missing_symbol`，`empty_response`）。<br>Twelve Data：回應的幣別與凍結 release 成員不同（`member:identity_mismatch`，`source_error`）。<br>TAIFEX：該列沒有任何觀測值（`member:no_observation`，`source_error`）；plan 凍結的是同一交易日的 dated universe，而當日報表沒有該 contract／session（`member:missing_contract`，`empty_response`）。#307 之前以較舊 universe 凍結的 plan 缺 contract 時，可能是 universe 落後於轉倉，仍以一般 `source_error` 結束這一輪並重試 |
 
 診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source
 credential、config 與 `FETCHER_ACCOUNT_STATE_PATH` 執行，明確指定 profile／state path：
@@ -991,6 +991,7 @@ Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類�
 | --- | --- | --- |
 | 寫入 canonical | `data` | 繼續 |
 | FinLab 價格全空且無成交量 | `no_data`，附五表 bundle 的 raw | 繼續 |
+| FinLab 價格全空但成交量大於 0 | `data`：開高低收填最近一個有值的收盤價，規則與 daily 相同 | 繼續 |
 | Twelve Data no_data／404、FinLab 表中沒有該 symbol | `missing`（`no_source_row`） | 繼續 |
 | FinLab OHLC 等單檔值不合法、Twelve Data 幣別不符或 mapper 拒絕、Source DQ 拒絕 | `invalid`（`row_structure_invalid`），附 raw | 繼續 |
 | 限流、provider 暫時錯誤、FinLab 尚未發布該日期 | — | 整日稍後重試；已完成成員不重抓 |

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -82,6 +83,19 @@ class FinLabDatasetTable:
     dates: tuple[str, ...]
     symbols: tuple[str, ...]
     values: tuple[tuple[object, ...], ...]
+    # Close table only: (symbol, date, close) of the latest earlier observed close,
+    # for each symbol whose target close is empty.
+    previous: tuple[tuple[str, str, object], ...] = ()
+
+
+def unobserved(value: object) -> bool:
+    """FinLab leaves a cell empty (None or a non-finite number) when it has no value."""
+    if value is None or isinstance(value, bool):
+        return value is None
+    try:
+        return not math.isfinite(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
 
 
 class FinLabDatasetGateway(Protocol):
@@ -260,6 +274,7 @@ class FinLabSdkGateway:
                             target_date=target_date,
                             reviewed_symbols=reviewed_symbols,
                             allow_missing_symbols=self.allow_missing_symbols,
+                            carry_previous=dataset.strip() == FINLAB_FIELD_DATASETS["close"],
                         )
                     except FinLabSdkError as exc:
                         raise type(exc)(str(exc)) from None
@@ -646,11 +661,14 @@ def _table_from_dataframe(
     target_date: date,
     reviewed_symbols: tuple[str, ...],
     allow_missing_symbols: bool = False,
+    carry_previous: bool = False,
 ) -> FinLabDatasetTable:
     """Narrow a pandas-like FinLab frame to exactly one validated date row.
 
     With ``allow_missing_symbols`` the table keeps only reviewed symbols present
     as columns, so a symbol FinLab does not serve yet stays a per-member gap.
+    With ``carry_previous`` each symbol whose target value is empty also carries
+    its latest earlier observed value, the only history that leaves the frame.
     """
     index_values, dates, column_values = _frame_axes(frame)
     loc = getattr(frame, "loc", None)
@@ -689,10 +707,31 @@ def _table_from_dataframe(
         row = tuple(loc[index_values[matching[0]], symbol] for symbol in reviewed_symbols)
     except Exception as exc:
         raise FinLabSdkError("FinLab dataset target row cannot be read") from exc
+    previous: list[tuple[str, str, object]] = []
+    if carry_previous:
+        # Latest first; the frame's own row order is never trusted.
+        earlier = sorted(
+            ((value, position) for position, value in enumerate(dates) if value < target_date),
+            reverse=True,
+        )
+        try:
+            for symbol, value in zip(reviewed_symbols, row, strict=True):
+                if not unobserved(value):
+                    continue
+                for day, position in earlier:
+                    observed = loc[index_values[position], symbol]
+                    if not unobserved(observed):
+                        previous.append((symbol, day.isoformat(), _snapshot_scalar(observed)))
+                        break
+        except FinLabSdkError:
+            raise
+        except Exception as exc:
+            raise FinLabSdkError("FinLab dataset earlier rows cannot be read") from exc
     return FinLabDatasetTable(
         dates=(target_date.isoformat(),),
         symbols=reviewed_symbols,
         values=(row,),
+        previous=tuple(previous),
     )
 
 

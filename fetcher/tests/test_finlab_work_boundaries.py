@@ -221,7 +221,12 @@ def test_negative_snapshot_survives_restart_and_valid_cache_replays_without_sdk(
     raw, digest, _ = rejected[0]
     assert hashlib.sha256(raw).hexdigest() == digest
     snapshot = json.loads(raw)["data"]
-    assert snapshot == {"dates": ["2026-10-14"], "symbols": ["2330"], "values": [[42]]}
+    assert snapshot == {
+        "dates": ["2026-10-14"],
+        "symbols": ["2330"],
+        "values": [[42]],
+        "previous": [],
+    }
     assert b"must-not-be-saved" not in raw
     frame[0] = Frame()
     reopened = queue.WorkJournal(journal_path, "original")
