@@ -49,8 +49,12 @@ _JOURNAL_REPLAY_TABLES = (
     "work_source_error",
 )
 # Response caches retire only where every body is known to have an R2 copy;
-# other formats (SDK datasets, official snapshots, exchange reports) are kept.
+# other formats (SDK datasets, exchange reports) are kept.
 _R2_BACKED_RESPONSES = frozenset({"twelve_data"})
+# Responses that are persisted to R2 inside the call that fetches them, so every
+# journaled body has its copy whichever provider owns the work. Official exchange
+# listings are by far the largest rows (one ISIN page is over 10 MB).
+_R2_BACKED_RESPONSE_NAMES = ("official_snapshot",)
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
@@ -1043,13 +1047,13 @@ def prune_closed_journal(
                 str(key)
                 for (key,) in db.execute(
                     "SELECT work_key FROM work_manifest UNION SELECT work_key FROM work_delivery "
-                    "UNION SELECT work_key FROM work_job"
+                    "UNION SELECT work_key FROM work_job UNION SELECT work_key FROM work_response"
                 )
                 if _UUID.fullmatch(str(key))
             )
         closed = closed_work_times(source, work_ids=keys)
         cutoff = now - CLOSED_WORK_RETENTION_SECONDS
-        removed = {"works": 0, "unreceipted": 0}
+        removed = {"works": 0, "unreceipted": 0, "responses": 0}
         for key in keys:
             if closed.get(key, now) >= cutoff:
                 continue
@@ -1067,8 +1071,23 @@ def prune_closed_journal(
                     else ()
                 )
                 for table in tables:
-                    db.execute(f"DELETE FROM {table} WHERE work_key=?", (key,))
+                    deleted = db.execute(f"DELETE FROM {table} WHERE work_key=?", (key,)).rowcount
+                    if table == "work_response":
+                        removed["responses"] += deleted
+                if provider not in _R2_BACKED_RESPONSES:
+                    for name in _R2_BACKED_RESPONSE_NAMES:
+                        prefix = name + ":"
+                        removed["responses"] += db.execute(
+                            "DELETE FROM work_response WHERE work_key=? "
+                            "AND substr(response_key,1,?)=?",
+                            (key, len(prefix), prefix),
+                        ).rowcount
             removed["works"] += 1
+        # Deleted pages are reused by later writes; the file itself only shrinks
+        # after an operator VACUUM, so report how much of it is already free.
+        page_size = db.execute("PRAGMA page_size").fetchone()[0]
+        removed["file_bytes"] = db.execute("PRAGMA page_count").fetchone()[0] * page_size
+        removed["free_bytes"] = db.execute("PRAGMA freelist_count").fetchone()[0] * page_size
         return removed
     finally:
         db.close()
