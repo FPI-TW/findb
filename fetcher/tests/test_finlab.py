@@ -286,6 +286,39 @@ def test_sdk_gateway_sanitizes_provider_exceptions_that_contain_the_token() -> N
     assert raised.value.__cause__ is None
 
 
+def test_sdk_gateway_carries_the_latest_earlier_close_for_empty_target_cells() -> None:
+    nan = float("nan")
+    # Deliberately out of order: the latest earlier date wins, not the nearest row.
+    index = (date(2026, 7, 27), TARGET_DATE, date(2026, 7, 24), date(2026, 7, 28))
+    cells = {
+        "2330": (990, 1000, 980, 995),
+        "3085": (25.4, nan, 25.1, nan),
+        "6680": (nan, None, 49.2, nan),
+        "7770": (nan, nan, nan, nan),
+    }
+    frame = SimpleNamespace(
+        index=index,
+        columns=tuple(cells),
+        loc=_Loc(
+            {
+                (day, symbol): row[position]
+                for symbol, row in cells.items()
+                for position, day in enumerate(index)
+            }
+        ),
+    )
+    sdk = SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=lambda dataset: frame))
+    gateway = FinLabSdkGateway(api_token="test-token", _sdk=sdk)
+
+    close = gateway.fetch_dataset("price:收盤價", target_date=TARGET_DATE, symbols=tuple(cells))
+    volume = gateway.fetch_dataset("price:成交股數", target_date=TARGET_DATE, symbols=tuple(cells))
+
+    assert close.dates == ("2026-07-29",)
+    # An observed target carries nothing; a symbol never observed has nothing to carry.
+    assert close.previous == (("3085", "2026-07-27", 25.4), ("6680", "2026-07-24", 49.2))
+    assert volume.previous == ()
+
+
 @pytest.mark.parametrize("failure_location", ["index", "row"])
 def test_sdk_gateway_sanitizes_dataframe_exceptions_that_contain_the_token(
     failure_location: str,

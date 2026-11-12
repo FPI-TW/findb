@@ -167,6 +167,7 @@ with host_lock(sys.argv[1], root=Path(sys.argv[2])):
     [
         TwelveDataResponse({"values": [{"close": "1"}]}, raw_bytes=b'{"values":[{"close":"1"}]}'),
         FinLabDatasetTable(("2026-10-15",), ("2330",), ((1, None),)),
+        FinLabDatasetTable(("2026-10-15",), ("2330",), ((None,),), (("2330", "2026-10-14", 12.5),)),
         b"native-taifex-report\r\n",
     ],
 )

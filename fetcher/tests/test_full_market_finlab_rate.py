@@ -459,7 +459,12 @@ def test_finlab_member_failures_stay_member_scoped(
         "1538": {"open": nan, "high": nan, "low": nan, "close": nan, "volume": nan},
         "1589": {"open": 10, "high": 9, "low": 8, "close": 10, "volume": 1000},
         "4804": {"open": 10, "high": nan, "low": 9, "close": 10, "volume": 1000},
+        # Shares changed hands without a regular-session price: an earlier close exists.
+        "3085": {"open": nan, "high": nan, "low": nan, "close": nan, "volume": 42},
+        # The same pattern for a symbol FinLab has never priced: nothing to carry.
+        "7770": {"open": nan, "high": nan, "low": nan, "close": nan, "volume": 1},
     }
+    earlier_close = (("1538", "2026-09-30", 7.24), ("3085", "2026-09-29", 25.4))
     fields = {
         "price:開盤價": "open",
         "price:最高價": "high",
@@ -492,6 +497,7 @@ def test_finlab_member_failures_stay_member_scoped(
                 dates=(target_date.isoformat(),),
                 symbols=present,
                 values=(tuple(observations[symbol][fields[name]] for symbol in present),),
+                previous=earlier_close if name == "price:收盤價" else (),
             )
 
     context.gateway.fetch_dataset = fetch_dataset
@@ -509,12 +515,32 @@ def test_finlab_member_failures_stay_member_scoped(
     calls = context.gateway.calls
     assert len(calls) == 5
     assert all(call[2] == (*served, "00416A") for call in calls)
-    assert [request["payload"]["data"][0]["symbol"] for request in delivered] == ["2330"]
+    rows = {
+        request["payload"]["data"][0]["symbol"]: request["payload"]["data"][0]
+        for request in delivered
+    }
+    assert list(rows) == ["2330", "3085"]
+    assert {field: rows["3085"][field] for field in ("open", "high", "low", "close", "volume")} == {
+        "open": "25.4",
+        "high": "25.4",
+        "low": "25.4",
+        "close": "25.4",
+        "volume": 42,
+    }
+    # The shared raw keeps the empty cells and where each carried close came from.
+    shared = json.loads(raw.calls[0])
+    assert shared["close"]["previous"] == [
+        ["1538", "2026-09-30", "7.24"],
+        ["3085", "2026-09-29", "25.4"],
+    ]
+    assert shared["close"]["values"][0][shared["close"]["symbols"].index("3085")] == "nan"
+    assert "previous" not in shared["open"]
     outcomes = {item["member_key"]: item for item in source.outcomes}
     assert {key: item["reason"] for key, item in outcomes.items()} == {
         "1538": "no_trade",
         "1589": "source_error",
         "4804": "source_error",
+        "7770": "source_error",
         "00416A": "empty_response",
         "00418A": "mapping_gap",
     }
@@ -540,9 +566,16 @@ def test_finlab_member_failures_stay_member_scoped(
         "1538": ("complete", "source_proven_no_trade"),
         "1589": ("manual", "member_unavailable"),
         "4804": ("manual", "member_unavailable"),
+        "3085": ("complete", None),
+        "7770": ("manual", "member_unavailable"),
         "00416A": ("manual", "member_unavailable"),
         "00418A": ("manual", "mapping_gap"),
     }
-    assert diagnostics == ["member:missing_symbol", "member:non_finite", "member:ohlc_bounds"]
+    assert diagnostics == [
+        "member:missing_symbol",
+        "member:non_finite",
+        "member:non_finite",
+        "member:ohlc_bounds",
+    ]
     assert not runtime.state.has_blocking_manual(context.plan["plan_id"])
     runtime.http.close()

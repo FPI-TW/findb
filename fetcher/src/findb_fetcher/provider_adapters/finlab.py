@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.metadata
-import math
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from typing import Any
@@ -42,6 +41,7 @@ from findb_fetcher.providers.finlab import (
     FinLabTargetNotReadyError,
     FinLabValueError,
     build_finlab_dataset_bundle,
+    unobserved,
 )
 from findb_fetcher.providers.finlab import (
     build_market_eod_request as finlab_request,
@@ -52,32 +52,29 @@ FINLAB_PRICE_EVIDENCE_URL = "https://www.finlab.tw/data/price-close?dataset={dat
 FINLAB_PRICE_FIELDS = ("open", "high", "low", "close")
 
 
-def _unobserved(value: object) -> bool:
-    if value is None or isinstance(value, bool):
-        return value is None
-    try:
-        return not math.isfinite(float(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return False
-
-
 def finlab_no_trade(values: Mapping[str, object]) -> bool:
     """FinLab leaves every price empty, with no positive volume, on a day without trades."""
     volume = values["volume"]
-    return all(_unobserved(values[field]) for field in FINLAB_PRICE_FIELDS) and (
-        _unobserved(volume) or volume == 0
+    return all(unobserved(values[field]) for field in FINLAB_PRICE_FIELDS) and (
+        unobserved(volume) or volume == 0
     )
+
+
+def _table_payload(table: FinLabDatasetTable) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "dates": table.dates,
+        "symbols": table.symbols,
+        "values": [[str(value) for value in row] for row in table.values],
+    }
+    if table.previous:
+        # Provenance of every carried price: the earlier close and its date.
+        payload["previous"] = [[symbol, day, str(value)] for symbol, day, value in table.previous]
+    return payload
 
 
 def table_bytes(table: FinLabDatasetTable) -> bytes:
     """The exact detached bytes of one SDK table, as accounted and persisted."""
-    return canonical_bytes(
-        {
-            "dates": table.dates,
-            "symbols": table.symbols,
-            "values": [[str(value) for value in row] for row in table.values],
-        }
-    )
+    return canonical_bytes(_table_payload(table))
 
 
 class FinLabAdapter(ProviderAdapter):
@@ -207,14 +204,7 @@ class FinLabAdapter(ProviderAdapter):
                 )
                 context.observe_response(len(table_bytes(tables[field])))
             table_raw = canonical_bytes(
-                {
-                    field: {
-                        "dates": table.dates,
-                        "symbols": table.symbols,
-                        "values": [[str(value) for value in row] for row in table.values],
-                    }
-                    for field, table in tables.items()
-                }
+                {field: _table_payload(table) for field, table in tables.items()}
             )
             # Five independent field responses share a bounded derived bundle.
             if len(table_raw) > 5 * context.max_response_bytes + 64:
@@ -245,6 +235,13 @@ class FinLabAdapter(ProviderAdapter):
                 },
                 stored,
             )
+        if all(unobserved(values[field]) for field in FINLAB_PRICE_FIELDS):
+            # Positive volume with every price empty: open, high, low and close are
+            # the latest earlier close; volume stays as served.
+            earlier = {symbol: close for symbol, _, close in tables["close"].previous}
+            carried = earlier.get(provider_symbol)
+            if carried is not None:
+                values.update(dict.fromkeys(FINLAB_PRICE_FIELDS, carried))
         single_config = FinLabDatasetConfig(
             dataset_key=dataset,
             market="TW",
@@ -256,12 +253,7 @@ class FinLabAdapter(ProviderAdapter):
         )
         single_tables = {
             field: FinLabDatasetTable(
-                dates=table.dates,
-                symbols=(member["provider_symbol"],),
-                values=tuple(
-                    (values[table.symbols.index(member["provider_symbol"])],)
-                    for values in table.values
-                ),
+                dates=table.dates, symbols=(provider_symbol,), values=((values[field],),)
             )
             for field, table in tables.items()
         }

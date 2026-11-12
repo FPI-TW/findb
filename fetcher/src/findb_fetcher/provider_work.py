@@ -577,6 +577,8 @@ def durable_response(
                     tuple(data["dates"]),
                     tuple(data["symbols"]),
                     tuple(tuple(row) for row in data["values"]),
+                    # Rows saved before the field existed carry no earlier close.
+                    tuple(tuple(item) for item in data.get("previous", ())),
                 )
             elif kind in {"dict", "list", "tuple"}:
                 result = tuple(data) if kind == "tuple" else data
