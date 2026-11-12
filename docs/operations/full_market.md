@@ -995,6 +995,11 @@ Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類�
 | FinLab OHLC 等單檔值不合法、Twelve Data 幣別不符或 mapper 拒絕、Source DQ 拒絕 | `invalid`（`row_structure_invalid`），附 raw | 繼續 |
 | 限流、provider 暫時錯誤、FinLab 尚未發布該日期 | — | 整日稍後重試；已完成成員不重抓 |
 
+成員送出後不逐檔等待 normalization：已接受的 run 先不讀取結果，繼續抓取與交付後面的成員，同時最多保留 16 筆
+未讀取的 run，超過時才讀取最早的一筆；全部成員送出後再讀完剩下的。讀取時 run 仍在佇列才等待（0.25、0.5、1、2 秒
+遞增），單筆最長 30 秒，逾時則整日稍後重試，已讀取的成員結果保留。交付期間每 60 秒與結束時輸出與 daily 相同格式的
+`delivery_timing`，以 `item_id` 標示，另含 `step normalization_wait`。
+
 確定性的成員錯誤不觸發整日重試。暫時錯誤每成員（FinLab 為每日期共用表）最多 5 次 native 嘗試，用盡後
 該成員記 `missing`；FinLab 共用表用盡則該日期失敗。有任何非 data／no_data 成員時 item 為 `partial`，
 Backend 逐成員驗證 evidence 與本 work 的實際寫入證據。本變更前建立的 request（沒有 cohort）仍沿用舊

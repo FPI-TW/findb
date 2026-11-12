@@ -156,7 +156,8 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
   `{"delivery_timing": {"plan_id", "members", "seconds", "final", "timing"}}`；`members` 為該區間
   claim 的成員數（含只查狀態的重訪），`timing` 為 `{route 或 step: [次數, 總毫秒]}`：Source RPC
   依 route template（`{id}` 取代 UUID、不含 query），另有 `step provider_acquire`（含 R2）與
-  `step raw_persist`。計時只進 log，不寫入 durable batch 或 settlement proof。部署中的 runtime
+  `step raw_persist`。計時只進 log，不寫入 durable batch 或 settlement proof。Historical 逐成員回補輸出同一格式
+  （`item_id` 取代 `plan_id`，另有 `step normalization_wait`）。部署中的 runtime
   沒有 daily batch policy（`max_members`／`max_seconds` 只在設定時生效），計時因此不依附 batch。授權類 RPC（每檔約 10 次、0.57 秒）
   是 dispatch 邊界的即時授權，是否能合併須先以這組計時拆解後另案評估。
 - **P4a provider batch（已實作，staging 已驗收）**：同一 part 的待抓成員共用一次逗號

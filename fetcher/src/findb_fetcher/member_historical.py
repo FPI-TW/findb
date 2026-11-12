@@ -7,6 +7,10 @@ download per date. A deterministic one-member failure becomes that member's
 evidence; only shared or transient failures retry the date. Each member's
 prepared body, receipt and outcome are journaled under the fenced owner, so a
 reclaimed date replays them without acquiring or delivering again.
+
+A delivered member's run is read back only after the next members are delivered,
+so normalization overlaps acquisition instead of holding each member. The backlog
+of unread runs is bounded, which keeps a deferred date cheap to resume.
 """
 
 from __future__ import annotations
@@ -14,12 +18,14 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 import httpx
 
+from findb_fetcher import rpc_timing
 from findb_fetcher.client import (
     SourceAPIClient,
     SourceAPIResponseError,
@@ -55,7 +61,21 @@ from findb_fetcher.raw_storage import (
 FULL_RELEASE_COHORT = "full_release"
 # Native acquisitions per member, and per shared date table, before giving up.
 MEMBER_ATTEMPTS = 5
+# One timing line per interval during a long date, in the Full daily format.
+TIMING_INTERVAL_SECONDS = 60
+# Accepted runs left unread while later members are acquired and delivered.
+UNCONFIRMED_WINDOW = 16
+# An accepted run still queued is polled again after these delays, the last one repeating.
+_CONFIRM_DELAYS = (0.25, 0.5, 1.0, 2.0)
 _JOURNAL = "member-historical:"
+
+
+@dataclass(frozen=True, slots=True)
+class _Accepted:
+    """A delivered member whose run has not been read back yet."""
+
+    prepared: Any
+    run_id: UUID
 
 
 def full_release_cohort(item: HistoricalWorkItem) -> bool:
@@ -84,6 +104,7 @@ class MemberHistoricalRunner:
         self.adapter = adapter or adapter_for(provider)
         self.limits = limits or platform_limits(provider)
         self._shared_raw: RawObject | None = None
+        self._timing: dict[str, Any] = {"item_id": None, "since": 0.0, "members": 0}
 
     @classmethod
     def from_env(cls, provider: str) -> MemberHistoricalRunner:
@@ -138,11 +159,30 @@ class MemberHistoricalRunner:
         )
         # The shared native observation (FinLab bundle) a member failure may cite.
         self._shared_raw = None
+        self._timing = {"item_id": str(item.item_id), "since": time.monotonic(), "members": 0}
+        rpc_timing.drain()
+        outcomes: dict[str, dict[str, Any]] = {}
+        accepted: dict[str, _Accepted] = {}
         try:
-            outcomes = [self._member(owner, item, feed, member, members) for member in members]
+            try:
+                for member in members:
+                    step = self._member(owner, item, feed, member, members)
+                    if isinstance(step, _Accepted):
+                        accepted[member["member_key"]] = step
+                    else:
+                        outcomes[member["member_key"]] = step
+                    while len(accepted) > UNCONFIRMED_WINDOW:
+                        oldest = next(iter(accepted))
+                        outcomes[oldest] = self._confirm(owner, oldest, accepted.pop(oldest))
+                    self._timing["members"] += 1
+                    self._log_timing()
+            finally:
+                # Native tables never outlive the owned date.
+                self.adapter.reset()
+            for key, run in accepted.items():
+                outcomes[key] = self._confirm(owner, key, run)
         finally:
-            # Native tables never outlive the owned date.
-            self.adapter.reset()
+            self._log_timing(final=True)
         evidence = {
             "version": 2,
             "schema_id": contract["schema_id"],
@@ -150,9 +190,35 @@ class MemberHistoricalRunner:
             "trade_date": item.trade_date.isoformat(),
             "item_id": str(item.item_id),
             "request_id": str(item.request_id),
-            "members": outcomes,
+            "members": [outcomes[member["member_key"]] for member in members],
         }
         return HistoricalRunResult(None, evidence, completion_status(evidence))
+
+    def _log_timing(self, *, final: bool = False) -> None:
+        """Log ``{route template or step: [count, total_ms]}`` once a minute and at the end.
+
+        Diagnostics only, in the Full daily ``delivery_timing`` shape; ``members`` counts
+        the members acquired or delivered in the interval.
+        """
+        elapsed = time.monotonic() - self._timing["since"]
+        if not final and elapsed < TIMING_INTERVAL_SECONDS:
+            return
+        print(
+            json.dumps(
+                {
+                    "delivery_timing": {
+                        "item_id": self._timing["item_id"],
+                        "members": self._timing["members"],
+                        "seconds": round(elapsed, 3),
+                        "final": final,
+                        "timing": rpc_timing.drain(),
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        self._timing.update(since=time.monotonic(), members=0)
 
     def _context(
         self,
@@ -216,7 +282,7 @@ class MemberHistoricalRunner:
         feed: dict,
         member: dict,
         cohort: list[dict],
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | _Accepted:
         key = member["member_key"]
         saved = owner.journal.response(_JOURNAL + "outcome:" + key)
         if saved is not None:
@@ -226,11 +292,11 @@ class MemberHistoricalRunner:
         if len(restored) > 1:
             raise ValueError("historical prepared member identity is ambiguous")
         if restored:
-            outcome = self._deliver(owner, key, job_key, json.loads(restored[0]))
-        else:
-            outcome = self._acquire(owner, item, feed, member, cohort, key, job_key)
-        owner.journal.response(_JOURNAL + "outcome:" + key, canonical_bytes(outcome))
-        return outcome
+            return self._deliver(owner, key, job_key, json.loads(restored[0]))
+        step = self._acquire(owner, item, feed, member, cohort, key, job_key)
+        if not isinstance(step, _Accepted):
+            owner.journal.response(_JOURNAL + "outcome:" + key, canonical_bytes(step))
+        return step
 
     def _acquire(
         self,
@@ -241,7 +307,7 @@ class MemberHistoricalRunner:
         cohort: list[dict],
         key: str,
         job_key: str,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | _Accepted:
         # A shared native table spends one date budget, never one per member.
         shared = self.adapter.pending_shared_fetch(item.dataset_key, item.trade_date)
         operation = (
@@ -260,7 +326,10 @@ class MemberHistoricalRunner:
         persisted: list[RawObject] = []
         try:
             try:
-                result = self.adapter.acquire(member, self._context(item, feed, cohort, persisted))
+                with rpc_timing.timed("step provider_acquire"):
+                    result = self.adapter.acquire(
+                        member, self._context(item, feed, cohort, persisted)
+                    )
             finally:
                 if shared and persisted:
                     self._shared_raw = persisted[0]
@@ -318,7 +387,7 @@ class MemberHistoricalRunner:
             raise ReadinessBlockedError("prepared Source body exceeds byte bound")
         return self._deliver(owner, key, job_key, request)
 
-    def _deliver(self, owner, key: str, job_key: str, request: dict) -> dict[str, Any]:
+    def _deliver(self, owner, key: str, job_key: str, request: dict) -> _Accepted:
         try:
             prepared = self.delivery.prepare(request, job_key=job_key)
         except ProviderWorkAcquisitionStopped:
@@ -328,10 +397,15 @@ class MemberHistoricalRunner:
             "receipt:" + key,
             lambda: {"run_id": str(self.delivery.deliver(prepared).run_id)},
         )
+        return _Accepted(prepared, UUID(receipt["run_id"]))
+
+    def _confirm(self, owner, key: str, accepted: _Accepted) -> dict[str, Any]:
+        """Read one accepted run's row outcome, waiting only while it is still queued."""
         deadline = time.monotonic() + 30
+        polls = 0
         while True:
             try:
-                terminal = self.delivery.get_run_status(UUID(receipt["run_id"]), expected=prepared)
+                terminal = self.delivery.get_run_status(accepted.run_id, expected=accepted.prepared)
             except (SourceAPITransportError, httpx.TransportError):
                 raise HistoricalWorkDeferredError("Source status unavailable") from None
             except SourceAPIResponseError as exc:
@@ -343,7 +417,9 @@ class MemberHistoricalRunner:
             if time.monotonic() >= deadline or owner.failed.is_set():
                 # Settlement drains accepted runs before releasing ownership.
                 raise HistoricalWorkDeferredError("EOD normalization pending")
-            time.sleep(2)
+            with rpc_timing.timed("step normalization_wait"):
+                time.sleep(_CONFIRM_DELAYS[min(polls, len(_CONFIRM_DELAYS) - 1)])
+            polls += 1
         if terminal.total_records != 1:
             raise ValueError("historical member terminal row count differs")
         if (
@@ -351,10 +427,13 @@ class MemberHistoricalRunner:
             and terminal.success_records == 1
             and terminal.failed_records == 0
         ):
-            return {"member_key": key, "outcome": "data"}
-        if terminal.failed_records == 1 and terminal.success_records == 0:
-            return {"member_key": key, "outcome": "invalid", "reason": "row_structure_invalid"}
-        raise ValueError("historical member normalization did not produce a row outcome")
+            outcome = {"member_key": key, "outcome": "data"}
+        elif terminal.failed_records == 1 and terminal.success_records == 0:
+            outcome = {"member_key": key, "outcome": "invalid", "reason": "row_structure_invalid"}
+        else:
+            raise ValueError("historical member normalization did not produce a row outcome")
+        owner.journal.response(_JOURNAL + "outcome:" + key, canonical_bytes(outcome))
+        return outcome
 
 
 def _recorded(persisted: list[RawObject], stored: RawObject) -> RawObject:
