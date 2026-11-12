@@ -13,6 +13,8 @@ import importlib
 import json
 import math
 import re
+import sqlite3
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -253,7 +255,7 @@ class FinLabSdkGateway:
                             if self._sdk is None:
                                 from findb_fetcher.provider_process import supervised_call
 
-                                frame, observed = supervised_call(
+                                frame, observed, usage = supervised_call(
                                     "finlab.get",
                                     {
                                         "token": self.api_token,
@@ -270,7 +272,7 @@ class FinLabSdkGateway:
                                 operation.dispatch_checkpoint()
                                 login(self.api_token)
                                 frame = get(dataset.strip())
-                                observed = None
+                                observed = usage = None
                         except QuotaBlockedError:
                             # __exit__ records whether get already dispatched;
                             # only the outer boundary may classify a quota wait.
@@ -288,6 +290,8 @@ class FinLabSdkGateway:
                             raise FinLabOperationalError(
                                 "FinLab SDK dataset retrieval failed", code
                             ) from None
+                        if usage is not None:
+                            _record_usage(operation, dataset.strip(), usage)
                     if account:
                         try:
                             if observed is None:
@@ -334,11 +338,14 @@ class FinLabSdkGateway:
             raise FinLabOperationalError("FinLab acquisition failed", "acquisition") from None
 
 
-def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> tuple[object, int | None]:
+def native_get(
+    payload: dict[str, Any], authorize: Callable[[], None]
+) -> tuple[object, int | None, dict[str, float] | None]:
     """Worker-side pinned SDK dataset get with one fresh grant before native I/O.
 
-    Returns the frame narrowed to reviewed columns and, when the parent accounts
-    usage, the complete frame's response bytes. The full table never crosses
+    Returns the frame narrowed to reviewed columns, the complete frame's
+    response bytes when the parent accounts usage, and the account's daily
+    quota usage when the FinLab API reported it. The full table never crosses
     the pipe, so the parent does not hold a second copy of it.
     """
     sdk = importlib.import_module("finlab")
@@ -350,12 +357,13 @@ def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> tuple[
     get = data.get
     _disable_frame_cache(_file_storages(data, get))
     _classify_api_errors(get)
+    usage = _observe_api_usage(get)
     authorize()
     # Pinned 1.5.7 login only installs the token locally; get is the native I/O.
     sdk.login(payload["token"])
     frame = get(payload["dataset"])
     observed = _dataframe_response_bytes(frame) if payload["account"] else None
-    return _reviewed_columns(frame, payload["symbols"]), observed
+    return _reviewed_columns(frame, payload["symbols"]), observed, usage or None
 
 
 def _classify_api_errors(get: object) -> None:
@@ -383,6 +391,72 @@ def _classify_api_errors(get: object) -> None:
         return handle(ret, *args, **kwargs)
 
     namespace["_handle_fetch_error"] = classified
+
+
+def _observe_api_usage(get: object) -> dict[str, float]:
+    """Capture the daily quota usage the FinLab API reports with a table request.
+
+    The pinned SDK only prints ``quota`` and ``limit_size`` (both in MB); the dict
+    returned here is filled when a request reaches the API, and stays empty when
+    the SDK serves the table from its local cache without asking.
+    """
+    usage: dict[str, float] = {}
+    namespace = getattr(get, "__globals__", None)
+    fetch = namespace.get("fetch_data") if isinstance(namespace, dict) else None
+    if not callable(fetch):
+        return usage
+
+    def observed(*args: Any, **kwargs: Any) -> Any:
+        ret = fetch(*args, **kwargs)
+        if isinstance(ret, dict):
+            reported = [ret.get("quota"), ret.get("limit_size")]
+            megabytes = [
+                float(value)
+                for value in reported
+                if isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value >= 0
+            ]
+            if len(megabytes) == 2:
+                usage.update(used_mb=megabytes[0], limit_mb=megabytes[1])
+        return ret
+
+    assert isinstance(namespace, dict)
+    namespace["fetch_data"] = observed
+    return usage
+
+
+def _record_usage(operation: Any, dataset: str, usage: Mapping[str, float]) -> None:
+    """Keep the account's reported daily usage in the governor ledger and the log."""
+    megabyte = 1024 * 1024
+    used, limit = int(usage["used_mb"] * megabyte), int(usage["limit_mb"] * megabyte)
+    try:
+        operation.usage(
+            {
+                "observed_at": time.time(),
+                "bytes": used,
+                "limit_bytes": limit,
+                "remaining_bytes": max(0, limit - used),
+            }
+        )
+    except sqlite3.Error:
+        # The sample is informational; a ledger hiccup never fails the fetch it rode on.
+        pass
+    print(
+        json.dumps(
+            {
+                "finlab_quota": {
+                    "dataset": dataset,
+                    "used_mb": round(usage["used_mb"], 1),
+                    "limit_mb": round(usage["limit_mb"], 1),
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
 
 
 def _reviewed_columns(frame: Any, symbols: Sequence[str]) -> object:

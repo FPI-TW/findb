@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 import time
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -72,16 +73,19 @@ def test_real_worker_dispatches_get_after_one_fresh_grant(tmp_path, monkeypatch,
             return work_authorization("finlab", body) if route.endswith("/authorize") else {}
 
     record = f"open({str(events)!r}, 'a').write('{{event}}:' + str(os.getpid()) + '\\n')\n"
-    install_fake_sdk(
-        monkeypatch,
-        tmp_path / "sdk",
-        fake_finlab(
-            record.replace("{event}", "get")
-            + f"import datetime\nfrom provider_worker_support import Frame\nreturn Frame({DAY!r})",
-            login=f"open({str(logged_in)!r}, 'w').close()",
-            check_version=record.replace("{event}", "pypi"),
-        ),
+    files = fake_finlab(
+        record.replace("{event}", "get")
+        + "fetch_data(dataset)\n"
+        + f"import datetime\nfrom provider_worker_support import Frame\nreturn Frame({DAY!r})",
+        login=f"open({str(logged_in)!r}, 'w').close()",
+        check_version=record.replace("{event}", "pypi"),
     )
+    # The FinLab API reports the account's daily usage with every table request.
+    files["finlab/data.py"] += (
+        "\n\ndef fetch_data(dataset, time_saved=None):\n"
+        "    return {'quota': 12.5, 'limit_size': 5000}\n"
+    )
+    install_fake_sdk(monkeypatch, tmp_path / "sdk", files)
     native = SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=lambda name: None))
     original_import = finlab.importlib.import_module
     monkeypatch.setattr(
@@ -118,6 +122,14 @@ def test_real_worker_dispatches_get_after_one_fresh_grant(tmp_path, monkeypatch,
         ):
             if fault in {None, "slow_fence"}:
                 assert fetch().symbols == ("2330",)
+                # The reported usage is kept beside the acquisition it came with.
+                megabyte = 1024 * 1024
+                with sqlite3.connect(path) as ledger:
+                    assert ledger.execute(
+                        "SELECT bytes,limit_bytes,remaining_bytes FROM acquisition_usage"
+                    ).fetchall() == [
+                        (int(12.5 * megabyte), 5000 * megabyte, int(4987.5 * megabyte))
+                    ]
             else:
                 error = (
                     queue.ProviderWorkAcquisitionStopped

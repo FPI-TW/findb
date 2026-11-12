@@ -775,7 +775,7 @@ Prepare SSM：`477ef221-ad3e-4086-9389-76f26bfe794b`；Backend 刪除：
 | Provider | 適用限制 | 用量核對與超限處理 |
 | --- | --- | --- |
 | Twelve Data | 1597 API credits／分鐘 | Durable governor 依 1597／分鐘平均 pacing，分鐘與日窗口以 credits（一次 batch 的 symbol 數）計；HTTP 429 與 HTTP 200 payload code 429 均寫入 60 秒帳號 cooldown 後等待／重試。實際帳號用量以 readiness probe 的 `/api_usage` 人工核對；每日路徑尚未讀取 response credit headers |
-| FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置 |
+| FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置。API 隨每次取表回報的當日用量（`quota`／`limit_size`）會記錄下來：Fetcher log 的 `{"finlab_quota": {"dataset", "used_mb", "limit_mb"}}`，以及帳號 governor SQLite 的 `acquisition_usage`（`bytes`／`limit_bytes`／`remaining_bytes`，與該次取表的 `acquisition_intent` 同一個 `operation_id`）。SDK 直接讀本機 cache、沒有向 API 發出請求時不會有紀錄 |
 | Shioaji | 500 MB／日、行情查詢 50 次／10 秒 | 以 `api.usage()` 的 bytes／limit_bytes／remaining_bytes 核對；API 回報的 524288000 bytes 為 500 MiB；依 10 秒視窗控制查詢速率 |
 | TAIFEX | OpenAPI 不需帳號，未公布明確 requests／bytes 數值上限 | 以 HTTP 429 作為觸及平台上限的訊號，依 `Retry-After` 或既有 backoff 等待／重試，不自行設定 provider 配額數值 |
 
