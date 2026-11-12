@@ -394,9 +394,11 @@ not-published 或永久格式錯誤，不能轉成 no_data。下一合法 attemp
 原 failure budget／account cooldown／scope 不重設。target validation hook 是純函式，不能隱含 provider I/O。
 既有 valid legacy cache 驗證後 byte-for-byte 沿用；invalid legacy cache 原 row 不刪、不覆寫，後續有效
 response 使用 validated namespace。已有 prepared／receipt 優先恢復，其 body／idempotency／raw 不改寫。
-FinLab 缺少 target 時先保存原日期軸、reviewed symbols 與安全 scalar cells 的 table snapshot／digest，
-再回報 target-not-ready；不保存 DataFrame attrs、SDK config 或任意物件字串。負向觀測不授權 replay，
-重啟後可依原 budget 重抓，valid legacy table 仍可沿用；已有 prepared bytes 不改寫。
+FinLab 缺少 target 時先保存有界的負向觀測，再回報 target-not-ready：只有表內最新 5 個日期，以及每個日期有值的
+reviewed symbols 數量，不保存任何儲存格的值、DataFrame attrs、SDK config 或任意物件字串（整張歷史表約 940 萬格，
+逐格轉存一次要 48 秒、57 MB）。同一 work、同一 response key 的觀測內容與上一筆相同時不重複寫入；每次輪詢另輸出一行
+`{"finlab_target_not_ready": {"dataset", "target_date", "latest": [[日期, 有值數量], …]}}`，可用來看來源發布的進度。
+負向觀測不授權 replay，重啟後可依原 budget 重抓，valid legacy table 仍可沿用；已有 prepared bytes 不改寫。
 Shioaji invalid/date payload 保持既有永久 `KBARS_PAYLOAD` 規則，
 七向量皆空則獨立分類 `empty_response / unknown`，daily 每 work／symbol／date 最多三次原生觀測、
 間隔至少十五分鐘；原始 bytes、checksum 與未知派送 debt 保留，不構成 no_data。

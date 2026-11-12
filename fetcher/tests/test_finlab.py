@@ -319,6 +319,50 @@ def test_sdk_gateway_carries_the_latest_earlier_close_for_empty_target_cells() -
     assert volume.previous == ()
 
 
+def test_a_table_without_the_target_date_keeps_only_bounded_evidence() -> None:
+    """The production table shape: a not-ready poll must not walk the whole history."""
+    from dataclasses import asdict
+    from datetime import timedelta
+
+    from findb_fetcher import provider_work
+    from findb_fetcher.providers import finlab
+
+    rows, columns = 4806, 1949
+    start = date(2007, 4, 23)
+    # Deliberately newest first: the kept dates are the latest, not the last rows.
+    index = tuple(start + timedelta(days=offset) for offset in reversed(range(rows)))
+    symbols = tuple(str(1000 + number) for number in range(columns))
+    newest = index[0]
+
+    class CountingLoc:
+        reads = 0
+
+        def __getitem__(self, key: tuple[date, str]) -> object:
+            CountingLoc.reads += 1
+            day, symbol = key
+            # On the newest date every tenth symbol is still empty.
+            return float("nan") if day == newest and int(symbol) % 10 == 0 else 12.5
+
+    frame = SimpleNamespace(index=index, columns=symbols, loc=CountingLoc())
+    # Inside an owned work the observation is kept as evidence instead of raising.
+    token = provider_work._current.set(object())
+    try:
+        table = finlab._table_from_dataframe(
+            frame, target_date=newest + timedelta(days=1), reviewed_symbols=symbols
+        )
+    finally:
+        provider_work._current.reset(token)
+
+    assert table.dates == tuple(
+        (newest - timedelta(days=offset)).isoformat() for offset in reversed(range(5))
+    )
+    assert (table.symbols, table.values, table.previous) == ((), (), ())
+    assert table.observed == (columns, columns, columns, columns, columns - columns // 10 - 1)
+    # Five rows are read; the full history would be 9.4 million cells.
+    assert CountingLoc.reads == 5 * columns
+    assert len(json.dumps(asdict(table))) < 1024
+
+
 @pytest.mark.parametrize("failure_location", ["index", "row"])
 def test_sdk_gateway_sanitizes_dataframe_exceptions_that_contain_the_token(
     failure_location: str,

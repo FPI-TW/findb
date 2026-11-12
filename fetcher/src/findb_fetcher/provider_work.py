@@ -395,11 +395,23 @@ class WorkJournal:
         return shas
 
     def observe_response(self, key: str, body: bytes, *, origin: str) -> None:
-        """Keep rejected target observations without making them replay authority."""
+        """Keep rejected target observations without making them replay authority.
+
+        A poll that observes exactly what the previous one did adds no row: the
+        evidence is unchanged, and an unpublished date is polled many times.
+        """
+        sha256 = hashlib.sha256(body).hexdigest()
         with self.connection() as db:
+            latest = db.execute(
+                "SELECT sha256 FROM work_response_observation WHERE work_key=? "
+                "AND response_key=? AND origin=? ORDER BY rowid DESC LIMIT 1",
+                (self.key, key, origin),
+            ).fetchone()
+            if latest is not None and latest[0] == sha256:
+                return
             db.execute(
                 "INSERT INTO work_response_observation VALUES(?,?,?,?,?,?)",
-                (self.key, key, time.time(), origin, body, hashlib.sha256(body).hexdigest()),
+                (self.key, key, time.time(), origin, body, sha256),
             )
 
     def has_response_observation(
@@ -577,8 +589,9 @@ def durable_response(
                     tuple(data["dates"]),
                     tuple(data["symbols"]),
                     tuple(tuple(row) for row in data["values"]),
-                    # Rows saved before the field existed carry no earlier close.
+                    # Rows saved before these fields existed carry neither.
                     tuple(tuple(item) for item in data.get("previous", ())),
+                    tuple(data.get("observed", ())),
                 )
             elif kind in {"dict", "list", "tuple"}:
                 result = tuple(data) if kind == "tuple" else data
