@@ -1196,21 +1196,31 @@ detached bytes checksum 加入 release evidence。SDK 資料錯誤只影響該 f
 回應 accounting 或 R2 失敗中止 refresh，不發布假缺漏。TW 目錄的 effective date 使用台北日期，
 universe request 的未來日期檢查亦依 source timezone 判定。
 
-官方名單下載的時間限制與共用：
+官方名單下載的來源、時間限制與共用：
 
+- TW 的商品名單來自 ISIN 網站的分類查詢（`class_main.jsp`，依市場與證券別各查一次）。股票的 universe refresh 讀
+  TWSE／TPEx 公司清單與上市、上櫃股票兩個查詢；ETF 的 universe refresh 只讀上市、上櫃 ETF 兩個查詢。四個查詢
+  合計約 1.1 MB，從 production 主機每個 1–26 秒。不下載 `C_public.jsp` 的完整頁面：兩頁合計 13.6 MB，其中 97% 是
+  權證，從 Fetcher 主機下載要 7–9 分鐘。
+- 分類查詢的參數沒有官方文件，所以每次都驗證回應：欄位名稱、每一列的連續編號、市場別與有價證券別都要符合
+  查詢條件，頁面要完整結束。查無資料（HTTP 200 的轉址頁）、頁面被截斷或內容不符時整份名單 fail closed：該筆
+  maintenance work 以 `MAINTENANCE_FORMAT_OR_SCOPE` 結束，不發布，daily 繼續使用上一份 release，下一次 refresh
+  重新下載。完整但筆數異常減少的回應由 Backend 的 2% 變更門檻擋下。
 - 單一官方名單的下載總時限是 20 分鐘（`OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS`）。HTTP client 的 30 秒 timeout 只限制
   每次讀取的等待，對方持續慢速回應時原本沒有上限；超過總時限視為傳輸逾時，依 `MAINTENANCE_TRANSPORT` 重試。
-  目前量到最慢的 ISIN 頁約 9 分鐘。
-- 同一個 Fetcher 程序裡，maintenance work 在 30 分鐘內下載過的官方名單，下一筆 maintenance work 直接沿用
-  （內容與 R2 物件都沿用，不再送出請求）。股票與 ETF 的 universe refresh 讀的是同樣四個頁面，因此只下載一次；
-  每筆 work 仍各自在 journal 保存一份以供重播。Daily 與 historical 讀的是會隨發布更新的報表，不沿用。
+- 同一個 Fetcher 程序裡，maintenance work 在 30 分鐘內下載過的同一個網址，下一筆 maintenance work 直接沿用
+  （內容與 R2 物件都沿用，不再送出請求）；每筆 work 仍各自在 journal 保存一份以供重播。股票與 ETF 的
+  universe refresh 讀的網址不同，所以只有同一個 dataset 在 30 分鐘內再次 refresh 時才會沿用。Daily 與 historical
+  讀的是會隨發布更新的報表，不沿用。
 - 下載期間每 30 秒回報一次 scheduler control 的 heartbeat，長時間下載不再讓 heartbeat 超過告警門檻。
 - FinLab 取一張表的子程序時限是 10 分鐘（`FINLAB_GET_TIMEOUT_SECONDS`，原本沿用 30 分鐘的預設值）；逾時記為
   `finlab_sdk` 的 `process_timeout`。
 
-TW universe 成員帶有 ISIN 的上市日（`listed_date`，存於 `universe_member_listing`）。ISIN 會提前列出尚未上市的商品，所以上市日
+TW universe 成員帶有 ISIN 的上市日（`listed_date`，存於 `universe_member_listing`）。ISIN 可能在上市前就列出商品，所以上市日
 欄位缺漏或格式錯誤時整份名單 fail closed，不視為已上市；parser 與 release 都不依上市日過濾，因為
-release 會被之後的日期沿用。建立 daily plan 時才以 trade date 判斷：`listed_date > trade_date` 的成員
+release 會被之後的日期沿用。分類查詢不保證提前列出：2026-11-13 查核時，上市日在下一個交易日的權證已列出，
+上市日在六天後的兩檔 ETF 尚未列出（完整頁面已列出）。新上市的商品要等分類查詢列出之後的下一次 universe refresh
+才進入 release。建立 daily plan 時才以 trade date 判斷：`listed_date > trade_date` 的成員
 不列入 expected，上市當日起列入；已上市但仍是 mapping gap 的成員維持 blocked 與告警。沒有上市日
 的成員（其他市場、或上市日加入前建立的 release）視為已上市。Plan 有排除成員時，`member_sha256`
 改為過濾後成員的 digest；沒有排除時與 release 相同。第一次帶入上市日的 release 不把「補上上市日」

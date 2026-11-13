@@ -32,12 +32,14 @@ from findb_fetcher.full_market_universe import (
     parse_nasdaq,
     parse_tw_companies,
     parse_tw_etfs,
+    parse_tw_ordinary,
     scope_us_members,
     universe_request,
 )
 from findb_fetcher.providers.finlab import FinLabDatasetConfig, FinLabSymbol
 from findb_fetcher.providers.taifex import fetch_report, parse_report, report_members
 from findb_fetcher.readiness_probe import probe_twelve_data
+from isin_support import NOT_FOUND, class_page
 
 
 def test_nasdaq_major_common_adr_excludes_other_instruments() -> None:
@@ -219,12 +221,13 @@ def test_hkex_codes_board_currency_and_future_snapshot() -> None:
     assert mapped[1]["mapping_status"] == "gap"
 
 
-def test_tw_etf_sections_include_active_leveraged_inverse_bond_only() -> None:
-    html = "<table><tr><td>股票</td></tr><tr><td>2330 台積電</td><td>x</td><td>x</td><td>x</td><td>x</td><td>x</td></tr><tr><td>ETF</td></tr>"
-    for symbol in ("00980A", "00631L", "00632R", "00679B"):
-        html += f"<tr><td>{symbol}　ETF</td><td>x</td><td>2026/11/03</td><td>x</td><td>x</td><td>x</td></tr>"
-    html += "<tr><td>ETN</td></tr><tr><td>020000 ETN</td><td>x</td><td>x</td><td>x</td><td>x</td><td>x</td></tr></table>"
-    members = parse_tw_etfs(html.encode("cp950"), otc=True)
+def test_tw_etf_query_includes_active_leveraged_inverse_and_bond_etfs() -> None:
+    page = class_page(
+        [(symbol, "CEOIEU", "2026/11/03") for symbol in ("00980A", "00631L", "00632R", "00679B")],
+        otc=True,
+        security_type="ETF",
+    )
+    members = parse_tw_etfs(page, otc=True)
     assert [member["symbol"] for member in members] == ["00980A", "00631L", "00632R", "00679B"]
     assert all(
         member["exchange"] == "ROCO"
@@ -1277,39 +1280,60 @@ def test_nasdaq_effective_timestamp_uses_official_date_not_utc_today() -> None:
         )
 
 
-def test_tw_ordinary_requires_official_stock_section_cfi_excludes_four_digit_tdr() -> None:
-    from findb_fetcher.full_market_universe import parse_tw_ordinary
-
-    html = "<table><tr><td>股票</td></tr>"
-    for symbol, cfi in (
-        ("2330", "ESVUFR"),
-        ("9103", "EDXXXX"),
-        ("1234", "EPXXXX"),
-        ("8888", "UNKNOWN"),
-    ):
-        html += f"<tr><td>{symbol} 股票</td><td>ISIN</td><td>2026/01/01</td><td>上市</td><td>產業</td><td>{cfi}</td><td></td></tr>"
-    html += "<tr><td>臺灣存託憑證(TDR)</td></tr><tr><td>9105 TDR</td><td>x</td><td>x</td><td>x</td><td>x</td><td>ESVUFR</td></tr></table>"
-    members = parse_tw_ordinary(html.encode("cp950"))
+def test_tw_ordinary_cfi_excludes_four_digit_tdr_and_preferred() -> None:
+    page = class_page(
+        [
+            ("2330", "ESVUFR", "2026/01/01"),
+            ("9103", "EDXXXX", "2026/01/01"),
+            ("1234", "EPXXXX", "2026/01/01"),
+            ("8888", "UNKNOWN", "2026/01/01"),
+        ]
+    )
+    members = parse_tw_ordinary(page)
     assert [(member["symbol"], member["classification"]) for member in members] == [
         ("2330", "ordinary"),
         ("8888", "classification_gap"),
     ]
     assert {member["listed_date"] for member in members} == {"2026-01-01"}
+    assert {member["exchange"] for member in members} == {"XTAI"}
 
 
 @pytest.mark.parametrize("listed", ["", "x", "2026-11-03", "2026/13/01", "2026/02/30"])
-@pytest.mark.parametrize("section", ["股票", "ETF"])
-def test_tw_listing_date_missing_or_malformed_fails_closed(listed: str, section: str) -> None:
-    from findb_fetcher.full_market_universe import UniverseSnapshotError, parse_tw_ordinary
-
-    symbol = "2330" if section == "股票" else "00980A"
-    html = (
-        f"<table><tr><td>{section}</td></tr><tr><td>{symbol} 名稱</td><td>ISIN</td>"
-        f"<td>{listed}</td><td>上市</td><td>產業</td><td>ESVUFR</td></tr></table>"
-    )
-    parse = parse_tw_ordinary if section == "股票" else parse_tw_etfs
+@pytest.mark.parametrize("security_type", ["股票", "ETF"])
+def test_tw_listing_date_missing_or_malformed_fails_closed(listed: str, security_type: str) -> None:
+    symbol = "2330" if security_type == "股票" else "00980A"
+    parse = parse_tw_ordinary if security_type == "股票" else parse_tw_etfs
     with pytest.raises(UniverseSnapshotError, match="listing date"):
-        parse(html.encode("cp950"))
+        parse(class_page([(symbol, "ESVUFR", listed)], security_type=security_type))
+
+
+_STOCKS = [("2330", "ESVUFR", "1994/09/05"), ("2317", "ESVUFR", "1991/06/18")]
+
+
+@pytest.mark.parametrize(
+    ("page", "reason"),
+    [
+        # The site answered another market or security type than the one asked.
+        (class_page(_STOCKS, otc=True), "differs from the request"),
+        (class_page(_STOCKS, security_type="ETF"), "differs from the request"),
+        (class_page(_STOCKS, security_type="特別股"), "differs from the request"),
+        # A row went missing: the site numbers every row of the result.
+        (class_page(_STOCKS).replace(b" 2 ", b" 3 "), "differs from the request"),
+        (class_page(_STOCKS).replace(b"<td></td>\n</tr>", b"</tr>"), "differs from the request"),
+        (NOT_FOUND, "empty or its columns changed"),
+        (class_page([]), "empty or its columns changed"),
+        (class_page(_STOCKS).replace("備註".encode("cp950"), b"Remark"), "columns changed"),
+        # A page cut off after a complete row still parses as rows.
+        (class_page(_STOCKS).replace(b"</html>", b""), "incomplete"),
+        (class_page([("23-30", "ESVUFR", "1994/09/05")]), "identity is invalid"),
+        (class_page([("9103", "EDXXXX", "2000/01/01")]), "no shares"),
+    ],
+)
+def test_tw_isin_class_query_that_differs_from_the_request_fails_closed(
+    page: bytes, reason: str
+) -> None:
+    with pytest.raises(UniverseSnapshotError, match=reason):
+        parse_tw_ordinary(page)
 
 
 def test_hk_actual_equity_board_labels_and_official_rmb_iso_currency() -> None:
