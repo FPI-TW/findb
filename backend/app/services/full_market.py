@@ -21,7 +21,9 @@ from app.models.canonical import (
     MarketDataEOD,
     MarketDataMinute,
 )
+from app.models.provider_work import ProviderWork
 from app.models.registry import (
+    AdminAuditEvent,
     DailyDeliveryMember,
     DailyDeliveryPart,
     DailyDeliveryPlan,
@@ -297,7 +299,9 @@ async def submit_universe(
     body: UniverseSubmitRequest,
     *,
     allowed_datasets: list[str] | None,
+    manual_refresh: ProviderWork | None = None,
 ) -> UniverseReleaseResponse:
+    """Store one release; ``manual_refresh`` is the Owner-requested work submitting it."""
     dataset = await _scope(
         db,
         dataset_key=body.dataset_key,
@@ -335,6 +339,10 @@ async def submit_universe(
         .first()
     )
     if existing is not None:
+        # The same list may already wait as a candidate from an earlier refresh.
+        if existing.status == "candidate" and manual_refresh is not None:
+            await _approve_manual_refresh(db, existing, manual_refresh)
+            await db.commit()
         return _release_response(existing)
     prior = (
         await db.execute(
@@ -439,8 +447,62 @@ async def submit_universe(
         db.add(UniverseMember(member_id=member_id, release_id=release.release_id, **values))
         if listed_date is not None:
             db.add(UniverseMemberListing(member_id=member_id, listed_date=listed_date))
+    if status == "candidate" and manual_refresh is not None:
+        await db.flush()
+        await _approve_manual_refresh(db, release, manual_refresh)
     await db.commit()
     return _release_response(release)
+
+
+async def _approve_manual_refresh(
+    db: AsyncSession, release: UniverseRelease, work: ProviderWork
+) -> None:
+    """Publish a candidate submitted by an Owner-requested refresh; the request is the approval."""
+    from app.services.universe_refresh import MANUAL_REFRESH
+
+    request = work.scope[MANUAL_REFRESH]
+    first_baseline = (
+        await db.scalar(
+            select(UniverseRelease.release_id)
+            .where(
+                UniverseRelease.dataset_key == release.dataset_key,
+                UniverseRelease.provider == release.provider,
+                UniverseRelease.status == "published",
+            )
+            .limit(1)
+        )
+    ) is None
+    await publish_universe(
+        db,
+        release.release_id,
+        UniversePublishRequest(
+            evidence_note=(
+                f"Manual universe refresh {work.work_id} requested by "
+                f"{request['display_name']}: {request['note']}"
+            )[:2000],
+            first_baseline_approved=first_baseline,
+            threshold_exception_approved=True,
+        ),
+        actor=request["requested_by"],
+    )
+    db.add(
+        AdminAuditEvent(
+            event_id=uuid7(),
+            actor_type=request["actor_type"],
+            actor_id=request["actor_id"],
+            actor_display_name=request["display_name"],
+            action="publish",
+            resource_type="universe_release",
+            resource_id=str(release.release_id),
+            details={
+                "manual_refresh_work_id": str(work.work_id),
+                "first_baseline_approved": first_baseline,
+                "threshold_exception_approved": True,
+                "evidence_note": request["note"],
+            },
+            created_at=utc_now(),
+        )
+    )
 
 
 async def list_universes(

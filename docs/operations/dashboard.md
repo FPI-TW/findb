@@ -13,7 +13,7 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 
 ## 交付監控
 
-入口為 `/dashboard/operations/deliveries`，分為計畫、缺漏告警、Universe 候選與歷史回補；
+入口為 `/dashboard/operations/deliveries`，分為計畫、缺漏告警、Universe 名單與歷史回補；
 viewer 不顯示歷史回補。Pilot profile 已退役，頁面只呈現 Full market，沒有執行模式分頁；
 Dashboard 所有請求固定帶 `execution_profile=full_market`。
 尚未啟動、已有啟動日期但尚無計畫、以及已建立計畫的實際缺漏分別呈現。
@@ -26,13 +26,19 @@ Dashboard 所有請求固定帶 `execution_profile=full_market`。
 - 缺漏告警追蹤資料集／日期層級的交付；「帶入回補」僅切換分頁並填入條件。
   operator／owner 仍需預覽交易日、確認與送出，才會建立回補。
 - TAIFEX 同日 universe 候選超過交付截止仍未發布時，告警顯示「Universe 等待發布」與候選數，
-  不提供無效的歷史回補捷徑。Universe 候選分頁唯讀列出待發布版本，並可檢視相對最近 published
-  release 的新增、移除、欄位變更與未變更成員數；發布仍由既有 Owner API 治理。
+  不提供無效的歷史回補捷徑。
+- Universe 名單分頁上方列出每個可更新名單的資料集：目前發布的名單（生效日、成員數、發布時間與發布者）、
+  較新的待發布候選，以及最近一次手動更新的狀態、要求者與失敗代碼。Owner 可按「手動更新」排入一次名單更新；
+  確認對話框說明手動更新等同核准（取得的名單直接發布，不受 2% 門檻限制，尚無 baseline 時成為第一份 baseline），
+  並要求填寫至少 10 個字的原因。同一資料集有未結束的手動更新時按鈕停用；viewer 與 operator 只看得到狀態。
+  規則見 [Full market](full_market.md)。
+- 同一分頁下方唯讀列出待發布版本，並可檢視相對最近 published release 的新增、移除、欄位變更與未變更成員數；
+  個別候選的發布仍由既有 Owner API 治理。
 - 切換分頁會保留本次進入頁面後的回補草稿；重新載入頁面不保留未提交草稿。
   手動與定期更新不改寫草稿、預覽或確認狀態；修改參數或帶入新的告警會取消先前預覽與確認，
   較晚完成的舊預覽也不能授權目前草稿。建立後由回補紀錄刷新顯示已建立請求。
 
-URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、Universe 候選 `cp/cps`、回補 `bp/bps`
+URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、Universe 名單分頁的候選清單 `cp/cps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
 舊連結帶的 `profile` 參數會被忽略，不報錯也不切換內容。
 計畫是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
@@ -43,7 +49,7 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 並在固定高度狀態列顯示更新進度。失敗顯示錯誤、最後成功時間與重試；失敗請求不推進成功時間。
 新篩選無快取時使用骨架，避免把上一條件的資料誤當成新結果。
 
-頁首「重新整理」只刷新目前頁面／分頁與必要的選項查詢。概況、DQ、全市場計畫、缺漏告警、Universe 候選及
+頁首「重新整理」只刷新目前頁面／分頁與必要的選項查詢。概況、DQ、全市場計畫、缺漏告警、Universe 名單與候選及
 回補紀錄每 60 秒更新；隱藏分頁及瀏覽器背景停止輪詢，重新可見時只有超過 60 秒的資料才補刷新。
 稽核、交易日曆、使用者與憑證不定時輪詢，使用手動刷新及操作後失效重取。
 

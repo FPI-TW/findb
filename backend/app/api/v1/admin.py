@@ -118,6 +118,10 @@ from app.schemas.admin import (
     SourceClientListResponse,
     SourceClientResponse,
     SuccessResponse,
+    UniverseFeedListResponse,
+    UniverseFeedResponse,
+    UniverseRefreshRequest,
+    UniverseRefreshResponse,
     UniverseReleaseAdminResponse,
     UniverseReleaseDiffResponse,
     UniverseReleaseListResponse,
@@ -240,6 +244,12 @@ from app.services.source_clients import (
     rotate_source_client,
 )
 from app.services.universe_queries import get_universe_release_diff, list_universe_releases
+from app.services.universe_refresh import (
+    UniverseRefreshError,
+    list_feeds,
+    present_refresh,
+    request_refresh,
+)
 from app.utils import utc_now
 from app.vocabulary import normalize_market
 from scripts.generate_instrument_cache import main as run_cache_generation
@@ -312,6 +322,56 @@ async def list_full_market_universes(
             total_pages=(total + page_size - 1) // page_size if total else 0,
         ),
     )
+
+
+@router.get("/universes/feeds", response_model=UniverseFeedListResponse)
+async def list_full_market_universe_feeds(
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseFeedListResponse:
+    """Each refreshable feed with its published release and latest manual refresh."""
+    return UniverseFeedListResponse(
+        data=[UniverseFeedResponse.model_validate(row) for row in await list_feeds(db)]
+    )
+
+
+@router.post(
+    "/universes/refresh",
+    response_model=UniverseRefreshResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_full_market_universe_refresh(
+    body: UniverseRefreshRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseRefreshResponse:
+    """Queue one universe refresh; its release is published as approved by this Owner."""
+    try:
+        work = await request_refresh(
+            db,
+            provider=body.provider,
+            dataset_key=body.dataset_key,
+            note=body.evidence_note,
+            principal=principal,
+        )
+    except UniverseRefreshError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="request_refresh",
+        resource_type="universe",
+        resource_id=str(work.work_id),
+        details={
+            "provider": work.provider,
+            "dataset_key": work.dataset_key,
+            "evidence_note": body.evidence_note,
+            "approves_release": True,
+        },
+        commit=False,
+    )
+    await db.commit()
+    return UniverseRefreshResponse.model_validate(present_refresh(work))
 
 
 @router.get("/universes/{release_id}/diff", response_model=UniverseReleaseDiffResponse)

@@ -271,6 +271,13 @@ Viewer 可用 `GET /admin/universes?status=candidate` 列出待發布版本，�
 最近 published release。列表另支援 `dataset_key`、`provider`、`effective_date`、`page`、
 `page_size`；兩個端點均為唯讀，不會發布候選或建立 daily plan。
 
+`GET /admin/universes/feeds`（Viewer 以上）列出每個可更新名單的 provider／dataset：目前 published 的 release、
+較新的待發布 candidate，以及最近一次手動更新的狀態。Owner 可用 `POST /admin/universes/refresh` 排入一次名單
+更新，body 為 `provider`、`dataset_key` 與至少 10 個字的 `evidence_note`，回應 202 與 `work_id`。
+**手動更新等同核准**：這筆更新送出的名單直接發布，不受 2% 門檻限制，沒有 baseline 時作為第一份 baseline；
+`published_by` 是提出要求的 Owner，要求與發布各留一筆 audit。同一 dataset 已有未結束的手動更新時回 409；
+TAIFEX 的名單由每日報表產生，不提供手動更新（404）。
+
 Owner 使用既有 `PATCH /admin/schedulers/{scheduler_key}`，傳 `desired_state` 與
 `expected_revision`。啟動資格檢查 Owner published baseline，不要求設定日曆；通過後，
 凍結 ready feeds；部分 scope 可 start，重複

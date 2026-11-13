@@ -934,7 +934,7 @@ latest 日期不符時使用 TX／MTX／TMF／TE／TF 分產品歷史報表，�
 重試時間，provider-work `retry_at` 亦使用相同剩餘延遲，不再每 60 秒重新 claim；CLI health 的
 `date_prerequisites` 可查詢，其他已凍結日期繼續補抓。
 交付截止後若同日 candidate 仍未發布，missing-delivery alert 以
-`DATED_UNIVERSE_PENDING` 區別一般資料缺漏；Dashboard「Universe 候選」或 Admin
+`DATED_UNIVERSE_PENDING` 區別一般資料缺漏；Dashboard「Universe 名單」或 Admin
 `GET /admin/universes?status=candidate` 可列出候選，`GET /admin/universes/{release_id}/diff`
 可唯讀核對相對最近 published release 的成員差異。這些入口不會自動發布或改寫 plan。
 HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期略過。
@@ -964,7 +964,20 @@ TAIFEX provider work 0、checkpoint `unresolved=[]`／`manual_required=0`；Full
 維持 stopped。
 
 一般股票 universe 的自動發布使用 2% 變更門檻，不另設絕對筆數上限；異動比例超過時保留 candidate，
-由 Owner 附 exception approval 發布。TAIFEX 到期換倉另使用
+由 Owner 附 exception approval 發布。Owner 也可以在 Dashboard「Universe 名單」手動更新名單，手動更新
+等同核准：
+
+- Backend 排入一筆 maintenance work（stable key `maintenance:<dataset>:manual:<id>`，scope 帶 `manual_refresh`），
+  Fetcher 依佇列順序執行。這筆 work 執行期間送出的名單直接發布，不受 2% 門檻限制；尚無 baseline 時成為
+  第一份 baseline。當天已有內容相同、停在 candidate 的名單時，發布的就是那一份。
+- `published_by` 記為提出要求的 Owner，`approval_note` 帶 work ID 與 Owner 填寫的原因；要求與發布各留一筆
+  admin audit。
+- 核准只在這筆 work 持有該 provider 的 owner 期間有效：排入但尚未執行、已結束，或排程自己排入的名單更新，
+  都照原本的門檻判定。Source API 拒絕帶 `manual_refresh` 的 enqueue，Fetcher 無法自行取得核准。
+- Control 停止時也會執行：maintenance 不要求 control 是 running，只需要該 provider 的 Fetcher 在運作。
+- 同一個 dataset 同時只能有一筆未結束的手動更新。TAIFEX 的名單由每日報表產生，不提供手動更新。
+
+TAIFEX 到期換倉另使用
 fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週契約、regular／after_hours、
 相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
 共同契約可依官方報表增加 session，但不得移除既有 session。兩種規則的比較基準皆為 effective date

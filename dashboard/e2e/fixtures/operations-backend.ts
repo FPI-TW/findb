@@ -10,6 +10,9 @@ import {
   providerWorkSchema,
   schedulerSchema,
   type Scheduler,
+  universeFeedsSchema,
+  type UniverseRefresh,
+  universeRefreshSchema,
 } from "../../src/lib/admin-api.ts"
 import { adminUserSchema } from "../../src/lib/admin-governance-api.ts"
 
@@ -74,6 +77,7 @@ let previews: unknown[] = []
 let previewDelay = 0
 let authenticationFailurePaths: string[] = []
 let overviewFailurePath = ""
+let universeRefresh: UniverseRefresh | null = null
 
 const plans = Array.from({ length: 31 }, (_, index) => ({
   plan_id: `0195a000-0000-7000-8000-${String(index).padStart(12, "0")}`,
@@ -152,6 +156,7 @@ createServer(async (request, response) => {
     previewDelay = 0
     authenticationFailurePaths = []
     overviewFailurePath = ""
+    universeRefresh = null
     rows = [
       scheduler("full_market_finlab_v1", "finlab", true),
       scheduler("full_market_twelve_data_v1", "twelve_data"),
@@ -351,6 +356,43 @@ createServer(async (request, response) => {
         },
       ],
     })
+  if (path === "/api/v1/admin/universes")
+    return send(paginated([], url.searchParams))
+  if (path === "/api/v1/admin/universes/feeds")
+    return send(
+      universeFeedsSchema.parse({
+        data: [
+          {
+            provider: "finlab",
+            dataset_key: "tw_etf_eod",
+            published: null,
+            candidate: null,
+            refresh: universeRefresh,
+          },
+        ],
+      })
+    )
+  if (path === "/api/v1/admin/universes/refresh") {
+    if (request.method !== "POST")
+      return send({ detail: "Method not allowed" }, 405)
+    if (role !== "owner")
+      return send({ detail: "Insufficient admin role" }, 403)
+    if (universeRefresh)
+      return send({ detail: "A manual universe refresh is in progress" }, 409)
+    universeRefresh = universeRefreshSchema.parse({
+      work_id: "019565d2-f838-7c91-85c1-72d4d7bbbeb0",
+      provider: data.provider,
+      dataset_key: data.dataset_key,
+      state: "queued",
+      requested_by: "E2E Owner",
+      requested_at: timestamp,
+      note: data.evidence_note,
+      completed_at: null,
+      failure_code: null,
+    })
+    mutations.push({ path, ...data })
+    return send(universeRefresh, 202)
+  }
   if (path === "/api/v1/admin/schedulers")
     return send({
       success: true,

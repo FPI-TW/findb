@@ -106,6 +106,7 @@ from app.services.scheduler_control import (
     scheduler_dataset_keys,
 )
 from app.services.slot_identity import CanonicalSlotId
+from app.services.universe_refresh import owning_refresh
 from app.utils import utc_now
 
 router = APIRouter()
@@ -302,7 +303,15 @@ async def submit_universe_endpoint(
 ) -> UniverseReleaseResponse:
     _, datasets = _full_market_source_scope(db, body.provider)
     try:
-        return await submit_universe(db, body, allowed_datasets=datasets)
+        return await submit_universe(
+            db,
+            body,
+            allowed_datasets=datasets,
+            # An Owner-requested refresh that owns the provider approves its own release.
+            manual_refresh=await owning_refresh(
+                db, provider=body.provider, dataset_key=body.dataset_key
+            ),
+        )
     except FullMarketError as exc:
         raise _full_market_http_error(exc) from exc
 

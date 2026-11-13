@@ -540,3 +540,52 @@ test("retired profile deep links show daily plans without profile tabs or pilot 
     (await (await request.get(`${backend}/fixture/state`)).json()).mutations
   ).toEqual([])
 })
+
+test("owner refreshes a universe by hand after reading the approval; a viewer cannot", async ({
+  page,
+  request,
+}) => {
+  const refreshPath = "/api/v1/admin/universes/refresh"
+  await request.post(`${backend}/fixture/reset`, { data: { role: "owner" } })
+  await login(page)
+  await page.getByRole("tab", { name: "Universe 名單" }).click()
+  await expect(page).toHaveURL(/tab=candidates/)
+  const table = page.getByRole("table", { name: "Universe 名單", exact: true })
+  await expect(table).toContainText("尚未發布 baseline")
+  const trigger = page.getByRole("button", { name: "手動更新 tw_etf_eod 名單" })
+  await trigger.click()
+  const dialog = page.getByRole("alertdialog")
+  await expect(dialog).toContainText("手動更新等同核准")
+  await expect(dialog).toContainText("會成為第一份 baseline")
+  const confirm = dialog.getByRole("button", { name: "確認更新並核准" })
+  await expect(confirm).toBeDisabled()
+  // Escape leaves nothing behind.
+  await page.keyboard.press("Escape")
+  await expect(dialog).toHaveCount(0)
+  let state = await (await request.get(`${backend}/fixture/state`)).json()
+  expect(state.mutations).toEqual([])
+
+  await trigger.click()
+  await dialog.getByLabel("更新原因").fill("已核對交易所公告的新上市商品")
+  await confirm.click()
+  await expect(table).toContainText("排隊中")
+  await expect(table).toContainText("E2E Owner")
+  await expect(trigger).toBeDisabled()
+  state = await (await request.get(`${backend}/fixture/state`)).json()
+  expect(state.mutations).toEqual([
+    {
+      path: refreshPath,
+      provider: "finlab",
+      dataset_key: "tw_etf_eod",
+      evidence_note: "已核對交易所公告的新上市商品",
+    },
+  ])
+
+  await request.post(`${backend}/fixture/reset`, { data: { role: "viewer" } })
+  await login(page, "viewer")
+  await page.getByRole("tab", { name: "Universe 名單" }).click()
+  await expect(table).toContainText("僅 owner 可更新")
+  await expect(page.getByRole("button", { name: /手動更新/ })).toHaveCount(0)
+  state = await (await request.get(`${backend}/fixture/state`)).json()
+  expect(state.mutations).toEqual([])
+})
