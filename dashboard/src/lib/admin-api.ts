@@ -405,6 +405,41 @@ export type UniverseCandidate = z.infer<
   typeof universeCandidatesSchema
 >["data"][number]
 
+export const universeRefreshSchema = z.object({
+  work_id: z.uuid(),
+  provider: z.string(),
+  dataset_key: z.string(),
+  state: z.string(),
+  requested_by: z.string(),
+  requested_at: isoDateTime,
+  note: z.string(),
+  completed_at: nullableDateTime,
+  failure_code: z.string().nullable(),
+})
+export type UniverseRefresh = z.infer<typeof universeRefreshSchema>
+
+export const universeFeedsSchema = z.object({
+  data: z.array(
+    z.object({
+      provider: z.string(),
+      dataset_key: z.string(),
+      published: universeReleaseSchema.nullable(),
+      candidate: universeReleaseSchema.nullable(),
+      refresh: universeRefreshSchema.nullable(),
+    })
+  ),
+})
+export type UniverseFeed = z.infer<typeof universeFeedsSchema>["data"][number]
+
+export const universeRefreshRequestSchema = z.object({
+  provider: z.string().trim().min(1).max(50),
+  datasetKey: z.string().trim().min(1).max(50),
+  note: z.string().trim().min(10).max(500),
+})
+export type UniverseRefreshRequest = z.infer<
+  typeof universeRefreshRequestSchema
+>
+
 export const universeDiffRequestSchema = z.object({ releaseId: z.uuid() })
 export type UniverseDiffRequest = z.infer<typeof universeDiffRequestSchema>
 

@@ -7,6 +7,7 @@ import { DeliveryAlertsPanel } from "./DeliveryAlertsPanel"
 import { HistoricalBackfillsPanel } from "./HistoricalBackfillsPanel"
 import { ProviderWorkPanel } from "./ProviderWorkPanel"
 import { UniverseCandidatesPanel } from "./UniverseCandidatesPanel"
+import { UniverseFeedsPanel } from "./UniverseFeedsPanel"
 import { PageIntro } from "./operations.shared"
 import {
   deliveriesSearchSchema,
@@ -19,7 +20,7 @@ export type DeliveriesSearchUpdate =
 const tabs = [
   { value: "plans", label: "交付計畫" },
   { value: "alerts", label: "缺漏告警" },
-  { value: "candidates", label: "Universe 候選" },
+  { value: "candidates", label: "Universe 名單" },
   { value: "backfills", label: "歷史回補" },
 ] as const
 
@@ -77,11 +78,14 @@ export function DeliveriesPage({
               }}
             />
           ) : tab === "candidates" ? (
-            <UniverseCandidatesPanel
-              search={search}
-              updateSearch={updateSearch}
-              active={selected === tab}
-            />
+            <>
+              <UniverseFeedsPanel role={role} active={selected === tab} />
+              <UniverseCandidatesPanel
+                search={search}
+                updateSearch={updateSearch}
+                active={selected === tab}
+              />
+            </>
           ) : (
             <HistoricalBackfillsPanel
               search={search}

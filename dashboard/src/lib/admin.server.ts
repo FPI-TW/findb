@@ -25,11 +25,14 @@ import {
   deliveryResourceResponseSchema,
   universeCandidatesSchema,
   universeDiffSchema,
+  universeFeedsSchema,
+  universeRefreshSchema,
   type DeliveryResourceRequest,
   type DeliveryPlansRequest,
   type DeliveryPlanSummaryRequest,
   type SchedulerMutationRequest,
   type UniverseCandidatesRequest,
+  type UniverseRefreshRequest,
   type PanelResult,
 } from "./admin-api"
 import {
@@ -118,6 +121,59 @@ export async function fetchUniverseDiffData(
     universeDiffSchema,
     fetchImplementation
   )
+}
+
+export async function fetchUniverseFeedsData(
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return fetchTarget(
+    safeBaseUrl(baseUrlValue),
+    sessionToken,
+    "/api/v1/admin/universes/feeds",
+    universeFeedsSchema,
+    fetchImplementation
+  )
+}
+
+export async function requestUniverseRefreshData(
+  request: UniverseRefreshRequest,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  const response = await fetchImplementation(
+    new URL("/api/v1/admin/universes/refresh", safeBaseUrl(baseUrlValue)),
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sessionToken}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        provider: request.provider,
+        dataset_key: request.datasetKey,
+        evidence_note: request.note,
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    }
+  )
+  if (!response.ok) {
+    await assertDashboardAuthentication(response)
+    if (response.status === 409)
+      throw new Error("這個資料集已有進行中的手動更新，請等它完成。")
+    if (response.status === 404)
+      throw new Error("這個資料集不支援手動更新名單。")
+    throw new Error(`FinDB API request failed (${response.status})`)
+  }
+  try {
+    return universeRefreshSchema.parse(await response.json())
+  } catch {
+    throw new Error("FinDB API returned an unexpected response")
+  }
 }
 
 function isTimeoutError(reason: unknown) {

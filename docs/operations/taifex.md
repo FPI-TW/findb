@@ -75,7 +75,7 @@ Operator 以 `PATCH /admin/calendars/TAIFEX/{trade_date}`（帶 `expected_revisi
 ## 排查
 
 1. `findb-fetch-runtime` health 的 `date_prerequisites` 列出等待中的日期與原因；Dashboard
-   「Universe 候選」與 `GET /admin/universes?status=candidate` 列出未自動發布的 candidate。
+   「Universe 名單」與 `GET /admin/universes?status=candidate` 列出未自動發布的 candidate。
 2. 以官方 CSV 判斷原因：空表頭代表休市或尚未上市；只有盤後列代表尚未發布完成，等待即可；
    完整報表但仍為 candidate 時，以 `GET /admin/universes/{release_id}/diff` 核對差異。
 3. 舊 candidate 依 [Full market](full_market.md) 的 `reconcile_taifex_rollover.py` 先預覽再套用；
