@@ -49,6 +49,18 @@ Runtime 執行既有 claim／owner recovery、prepared drain 與
 settlement；只有 idle drain 丟棄的完整 health 統計被省略。明確 `--health` 與正常 cycle 的輸出
 保留，plan／provider 狀態索引降低摘要查詢成本。
 
+Health 輸出不隨失敗成員數成長，避免把同一個 container log（json-file，10 MB × 3 檔）裡的
+`delivery_timing` 與診斷輸出輪替掉：
+
+- 每個未完成 plan 以 `failure_counts` 回報各原因的成員數；`failures` 只列範例，整份 health 合計最多 20 筆
+  （`HEALTH_FAILURE_SAMPLES`，由最早的 plan 開始列）。完整的失敗成員由 Dashboard 交付計畫的缺口明細或
+  Admin `GET /admin/delivery-plans/{plan_id}/summary` 查詢；settlement proof 仍帶該 plan 的完整清單。
+- Cycle 印出的 health 單行上限 16 KB（`HEALTH_LINE_LIMIT_BYTES`）。超過時先拿掉 `failures` 範例，仍超過則只保留
+  純量欄位與 `plans_count`／`unresolved_count`／`date_prerequisites_count`／`provider_outages_count`，兩種情況都帶
+  `truncated: true`。`--health` 是一次性查詢，不套用單行上限。
+- 內容沒有變化時（不計 `observed_at`），cycle 的 health 每 10 分鐘才重複一次（`HEALTH_LOG_INTERVAL_SECONDS`），
+  有變化時當輪就印。Control 的 heartbeat 與輪詢不受影響；log 一段時間沒有 health 行不代表程序停住。
+
 本次 SQLite 變更僅新增索引與 reconciliation table，啟動時在原 schema lock 下建立，不需
 PostgreSQL migration，也不重建 checkpoint、清除 body／receipt 或重設 governor。
 部署後應在 controls stopped、必要交付完成時，核對 runtime CPU、owner、prepared／receipt、

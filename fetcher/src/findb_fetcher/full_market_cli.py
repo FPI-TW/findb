@@ -9,6 +9,7 @@ import re
 import sqlite3
 import sys
 import threading
+import time
 from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timezone
@@ -53,6 +54,42 @@ def load_config(path: Path) -> dict[str, Any]:
     return value
 
 
+# A health line is written every cycle next to timing and diagnostic lines that share
+# the container's rotated log; its size must not grow with the plans it reports.
+HEALTH_LINE_LIMIT_BYTES = 16 * 1024
+# An unchanged report is repeated at this interval instead of every cycle.
+HEALTH_LOG_INTERVAL_SECONDS = 600
+
+
+def health_line(health: dict[str, Any], *, limit: int = HEALTH_LINE_LIMIT_BYTES) -> str:
+    """One JSON log line within ``limit``; detail is dropped and marked before it is exceeded."""
+
+    def encode(value: dict[str, Any]) -> str:
+        return json.dumps(value, separators=(",", ":"))
+
+    line = encode(health)
+    if len(line.encode()) <= limit:
+        return line
+    plans = health.get("plans", [])
+    reduced = {
+        **health,
+        "plans": [{k: v for k, v in plan.items() if k != "failures"} for plan in plans],
+        "truncated": True,
+    }
+    line = encode(reduced)
+    if len(line.encode()) <= limit:
+        return line
+    # Counts only: the checkpoint keeps every plan for ``--health`` and SQL.
+    lists = ("plans", "unresolved", "date_prerequisites", "provider_outages")
+    return encode(
+        {
+            **{key: value for key, value in health.items() if key not in lists},
+            **{f"{key}_count": len(health.get(key, [])) for key in lists},
+            "truncated": True,
+        }
+    )
+
+
 def acquisition_gate(
     execution_profile: str, control: SchedulerControlClient, source: FullMarketSourceClient
 ) -> Callable[[], bool]:
@@ -88,6 +125,16 @@ def run_worker(
     run_forever: bool,
     poll_seconds: float,
 ) -> int:
+    logged: dict[str, Any] = {"report": None, "at": 0.0}
+
+    def log_health(health: dict[str, Any]) -> None:
+        report = {key: value for key, value in health.items() if key != "observed_at"}
+        now = time.monotonic()
+        if report == logged["report"] and now - logged["at"] < HEALTH_LOG_INTERVAL_SECONDS:
+            return
+        logged.update(report=report, at=now)
+        print(health_line(health), flush=True)
+
     def iteration() -> int:
         try:
             pruned = prune_ledger()
@@ -111,8 +158,7 @@ def run_worker(
             # A long official download blocks the cycle; it keeps reporting through this.
             runtime.heartbeat = lambda: control.poll(observed_state="running")
             try:
-                health = runtime.cycle()
-                print(json.dumps(health, separators=(",", ":")), flush=True)
+                log_health(runtime.cycle())
                 control.poll(
                     observed_state="stopped", cycle_completed_at=datetime.now(timezone.utc)
                 )
@@ -122,16 +168,12 @@ def run_worker(
                 if transient_source_error(exc):
                     raise
                 control.poll(observed_state="stopped", last_error="full_market_cycle_blocked")
-                print(
-                    json.dumps(
-                        {
-                            "provider": runtime.provider,
-                            "status": "blocked",
-                            **runtime.state.health(runtime.provider),
-                        },
-                        separators=(",", ":"),
-                    ),
-                    flush=True,
+                log_health(
+                    {
+                        "provider": runtime.provider,
+                        "status": "blocked",
+                        **runtime.state.health(runtime.provider),
+                    }
                 )
                 if not run_forever:
                     return 2
