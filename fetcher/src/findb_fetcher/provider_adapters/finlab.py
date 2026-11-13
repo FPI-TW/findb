@@ -10,7 +10,8 @@ from typing import Any
 from findb_fetcher.full_market_errors import MemberUnavailableError, ReadinessBlockedError
 from findb_fetcher.full_market_universe import (
     TW_COMPANY_URLS,
-    TW_ISIN_URLS,
+    TW_ISIN_ETF_URLS,
+    TW_ISIN_STOCK_URLS,
     canonical_bytes,
     checksum,
     parse_tw_companies,
@@ -114,30 +115,40 @@ class FinLabAdapter(ProviderAdapter):
         self, feeds: Sequence[Mapping[str, Any]], context: UniverseContext
     ) -> dict[str, UniverseSnapshot]:
         """TWSE/TPEx official lists, mapped by FinLab SDK column presence."""
-        snapshots = {url: context.snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)}
-        companies = {
-            (member["symbol"], member["exchange"])
-            for index, url in enumerate(TW_COMPANY_URLS)
-            for member in parse_tw_companies(snapshots[url], otc=bool(index))
-        }
-        equity = [
-            member
-            for index, url in enumerate(TW_ISIN_URLS)
-            for member in parse_tw_ordinary(snapshots[url], otc=bool(index))
-        ]
-        for member in equity:
-            if (member["symbol"], member["exchange"]) not in companies:
-                member["classification"] = "classification_gap"
-        etfs = [
-            member
-            for index, url in enumerate(TW_ISIN_URLS)
-            for member in parse_tw_etfs(snapshots[url], otc=bool(index))
-        ]
+        # Each dataset downloads only its own lists; a refresh covers one dataset.
+        cohorts: dict[str, list[dict[str, Any]]] = {}
+        official: dict[str, dict[str, bytes]] = {}
+        if "tw_equity_eod" in context.zones:
+            snapshots = {
+                url: context.snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_STOCK_URLS)
+            }
+            companies = {
+                (member["symbol"], member["exchange"])
+                for index, url in enumerate(TW_COMPANY_URLS)
+                for member in parse_tw_companies(snapshots[url], otc=bool(index))
+            }
+            equity = [
+                member
+                for index, url in enumerate(TW_ISIN_STOCK_URLS)
+                for member in parse_tw_ordinary(snapshots[url], otc=bool(index))
+            ]
+            for member in equity:
+                if (member["symbol"], member["exchange"]) not in companies:
+                    member["classification"] = "classification_gap"
+            cohorts["tw_equity_eod"], official["tw_equity_eod"] = equity, snapshots
+        if "tw_etf_eod" in context.zones:
+            snapshots = {url: context.snapshot(url) for url in TW_ISIN_ETF_URLS}
+            cohorts["tw_etf_eod"] = [
+                member
+                for index, url in enumerate(TW_ISIN_ETF_URLS)
+                for member in parse_tw_etfs(snapshots[url], otc=bool(index))
+            ]
+            official["tw_etf_eod"] = snapshots
         # Catalogue presence is independent of daily OHLCV completeness.
         catalogue_snapshots: dict[str, dict[str, bytes]] = {}
         context.refresh_limits()
         gateway = self.gateway(context.observe_response)
-        for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
+        for dataset, members in cohorts.items():
             if dataset not in context.dataset_keys:
                 continue
             try:
@@ -167,17 +178,11 @@ class FinLabAdapter(ProviderAdapter):
                 )
         groups = {
             dataset: UniverseSnapshot(
-                context.observed_at.astimezone(context.zones[dataset]).date(), members, evidence
+                context.observed_at.astimezone(context.zones[dataset]).date(),
+                members,
+                official[dataset],
             )
-            for dataset, members, evidence in (
-                (
-                    "tw_equity_eod",
-                    equity,
-                    {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
-                ),
-                ("tw_etf_eod", etfs, {url: snapshots[url] for url in TW_ISIN_URLS}),
-            )
-            if dataset in context.zones
+            for dataset, members in cohorts.items()
         }
         for dataset, evidence in catalogue_snapshots.items():
             groups[dataset].evidence.update(evidence)

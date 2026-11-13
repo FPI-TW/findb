@@ -124,8 +124,7 @@ Full worker 每日對自己的 provider 清理一次已結案工作的本機狀�
 - Provider-work journal（主機共用的 `provider-work.sqlite3`）：刪除 `work_delivery`、`work_job`、
   `work_budget`、`work_cooldown`、`work_source_error`。Twelve Data 的回應已確認有 R2 副本，另刪
   `work_response`、`work_response_observation` 與 `work_manifest`。官方名單快照
-  （`work_response` 的 `official_snapshot:*`）在下載的同一次呼叫內就寫入 R2，所以不分 provider 一律刪除；
-  它是 journal 裡最大的資料（單一 ISIN 頁超過 10 MB，staging 837 MB 的檔案裡佔 672 MB）。其他格式
+  （`work_response` 的 `official_snapshot:*`）在下載的同一次呼叫內就寫入 R2，所以不分 provider 一律刪除。其他格式
   （FinLab dataset、TAIFEX 報表、FactSet 回應、catalogue）的回應、觀測與 manifest 保留，這些列都很小。
   任一 delivery 缺 receipt 的工作整筆保留。只寫過回應、沒有 manifest 或 delivery 的工作同樣納入清理。
 - Full checkpoint：以 `daily:full_market:<dataset>:<trade_date>` 對應 plan，刪除該 plan 的
