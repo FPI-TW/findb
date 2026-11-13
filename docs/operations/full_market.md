@@ -1196,6 +1196,19 @@ detached bytes checksum 加入 release evidence。SDK 資料錯誤只影響該 f
 回應 accounting 或 R2 失敗中止 refresh，不發布假缺漏。TW 目錄的 effective date 使用台北日期，
 universe request 的未來日期檢查亦依 source timezone 判定。
 
+名單更新（universe refresh）的時間跟著 daily 的排程時刻，不跟著上一次完成的時間：
+
+- 到期時間是該 provider 排程時刻的下一次（FinLab 為每天台北 18:00，取自 Backend 發布的排程）。名單更新完成後，
+  不論是排程、啟動後補跑或手動觸發，下一次都回到排程時刻，所以不會每天往後漂移，也不會跟著 control 的啟動時間走。
+- 排程時刻那一輪 cycle 先排入名單更新，再排入當天的 daily。佇列先進先出，當天的 plan 因此使用當天排程時刻取得的
+  名單；已經在佇列裡的較早工作仍排在名單更新前面。
+- 只有 control 是 running 時才會排入。停止期間不更新；啟動時若已過到期時間，第一輪就先補一次，下一次回到排程時刻。
+  已經排入的名單更新不受之後的停止影響，會照常完成。
+- 同一個排程時刻只有一筆名單更新（stable key 帶該時刻的 UTC 時間）。失敗時當天的 daily 使用上一份 release，
+  下一個排程時刻再試；因傳輸問題重試的那一筆會排到佇列尾端，當天的 daily 先跑。
+- Fetcher 取不到排程時（例如手動執行 `--sync-universes` 的程序），完成後的下一次到期時間退回 24 小時後。
+- TAIFEX 不跑每日名單更新，不受這些規則影響。
+
 官方名單下載的來源、時間限制與共用：
 
 - TW 的商品名單來自 ISIN 網站的分類查詢（`class_main.jsp`，依市場與證券別各查一次）。股票的 universe refresh 讀
