@@ -8,9 +8,10 @@ import os
 import re
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as clock_time
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -102,6 +103,28 @@ NONTERMINAL_RUN_STATUSES = frozenset({"queued", "pending", "processing", "retryi
 
 class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
     """A proven daily-window wait, including authoritative Source denial."""
+
+
+def refresh_slots(
+    feeds: Iterable[Mapping[str, Any]], now: datetime
+) -> tuple[datetime, datetime] | None:
+    """The daily scheduled time at or before ``now`` and the next one after it.
+
+    A universe refresh belongs to a scheduled time rather than to its own
+    completion, so its hour neither drifts nor follows the last control start.
+    """
+    latest: datetime | None = None
+    upcoming: datetime | None = None
+    for feed in feeds:
+        local = now.astimezone(ZoneInfo(feed["source_timezone"]))
+        today = datetime.combine(
+            local.date(), clock_time.fromisoformat(feed["scheduled_time"]), local.tzinfo
+        )
+        passed = today if today <= local else today - timedelta(days=1)
+        following = passed + timedelta(days=1)
+        latest = passed if latest is None or passed > latest else latest
+        upcoming = following if upcoming is None or following < upcoming else upcoming
+    return None if latest is None or upcoming is None else (latest, upcoming)
 
 
 def load_readiness(
@@ -294,6 +317,8 @@ class FullMarketRuntime:
             feed["dataset_key"]: feed["contract"] for feed in acquisition_feeds(provider)
         }
         self.schedule_snapshot: ExecutionSnapshot | None = None
+        # The schedule the latest universe refresh resolved its dates from.
+        self.refresh_snapshot: ExecutionSnapshot | None = None
         self.installed_feeds = list(self.feeds)
         self.http = client or httpx.Client(timeout=30)
         self.owns_http = client is None
@@ -672,6 +697,7 @@ class FullMarketRuntime:
             profile=self.execution_profile,
             complete_scope=False,
         )
+        self.refresh_snapshot = snapshot
         published = {feed["dataset_key"]: feed["source_timezone"] for feed in snapshot.feeds}
         if any(feed["dataset_key"] not in published for feed in feeds):
             raise ReadinessBlockedError("Source universe timezone unavailable")
@@ -831,13 +857,25 @@ class FullMarketRuntime:
             self.pause()
             # The manifest is already durable; closed-round replay uses it.
             owner.settle("completed", proof={"no_data": ["universe_refresh"]})
-            now = datetime.now(timezone.utc).timestamp()
-            self.state.refresh(self.provider, now=now, result=results, next_at=now + 86400)
+            now = datetime.now(timezone.utc)
+            self.state.refresh(
+                self.provider,
+                now=now.timestamp(),
+                result=results,
+                next_at=self._next_refresh_at(now),
+            )
             return results
         self._settle_queued_round(
             owner, outcome="retry" if retryable else "failed", failure_code=code
         )
         return [{"status": "queued" if retryable else "manual", "reason": code}]
+
+    def _next_refresh_at(self, now: datetime) -> float:
+        """The provider's next scheduled daily time, whoever asked for this refresh."""
+        snapshot = self.schedule_snapshot or self.refresh_snapshot
+        slots = refresh_slots(snapshot.feeds if snapshot else (), now)
+        # Without a published schedule the refresh keeps its former daily interval.
+        return slots[1].timestamp() if slots else now.timestamp() + 86400
 
     def _settle_retired_work(self, owner) -> None:
         """Drain original deliveries without turning compatibility scope into acquisition."""
@@ -963,6 +1001,27 @@ class FullMarketRuntime:
             )
             if pending_feed:
                 due.append((date.fromisoformat(plan["trade_date"]), pending_feed))
+        slots = refresh_slots(planning_feeds, now)
+        if (
+            admitted
+            and slots
+            and self.adapter.scheduled_maintenance
+            and self.state.refresh_due(self.provider, now.timestamp())
+        ):
+            # Enqueued ahead of this round's dates: their plans freeze the list
+            # observed at their own scheduled time. One work per scheduled time,
+            # so a failed refresh is tried again at the next one.
+            slot = slots[0].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+            for feed in planning_feeds:
+                if feed["dataset_key"] in admitted:
+                    self._enqueue(
+                        {
+                            "stable_key": f"maintenance:{feed['dataset_key']}:{slot}",
+                            "kind": "maintenance",
+                            "dataset_key": feed["dataset_key"],
+                            "scope": {"dataset_key": feed["dataset_key"]},
+                        }
+                    )
         for day, feed in sorted(due, key=lambda value: (value[0], value[1]["dataset_key"])):
             self._enqueue(
                 {
@@ -974,21 +1033,6 @@ class FullMarketRuntime:
                     "scope": {"feed": feed},
                 }
             )
-        if (
-            admitted
-            and self.adapter.scheduled_maintenance
-            and self.state.refresh_due(self.provider, now.timestamp())
-        ):
-            for feed in planning_feeds:
-                if feed["dataset_key"] in admitted:
-                    self._enqueue(
-                        {
-                            "stable_key": f"maintenance:{feed['dataset_key']}:{now.date()}",
-                            "kind": "maintenance",
-                            "dataset_key": feed["dataset_key"],
-                            "scope": {"dataset_key": feed["dataset_key"]},
-                        }
-                    )
         try:
             with claimed_work(
                 self.source,
