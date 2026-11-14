@@ -6,8 +6,11 @@ locals {
   # policy size once custom coverage is enabled. Keep refresh access bounded to
   # this stack's deterministic staging alarm-name prefix instead.
   infra_plan_operational_alarm_arn = "arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:findb-staging-*"
-  infra_plan_dlm_policy_arn        = "arn:${data.aws_partition.current.partition}:dlm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:policy/*"
-  infra_plan_dlm_role_arn          = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/findb-staging-dlm-root-volume-backup"
+  # One more exact log group ARN exceeds the same limit. Tag refresh is bounded
+  # to this stack's staging log-group prefix, the scope its logs KMS key admits.
+  infra_plan_log_group_arn  = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${var.ssm_log_group_prefix}/*"
+  infra_plan_dlm_policy_arn = "arn:${data.aws_partition.current.partition}:dlm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:policy/*"
+  infra_plan_dlm_role_arn   = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/findb-staging-dlm-root-volume-backup"
 }
 
 data "aws_iam_policy_document" "infra_plan_trust" {
@@ -194,13 +197,10 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid     = "ReadExactSsmLogGroupTags"
-    effect  = "Allow"
-    actions = ["logs:ListTagsForResource"]
-    resources = concat(
-      [for group in aws_cloudwatch_log_group.ssm : group.arn],
-      [aws_cloudwatch_log_group.fetcher_containers.arn],
-    )
+    sid       = "ReadStagingLogGroupTags"
+    effect    = "Allow"
+    actions   = ["logs:ListTagsForResource"]
+    resources = [local.infra_plan_log_group_arn]
   }
 
   statement {

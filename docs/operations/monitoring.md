@@ -348,7 +348,10 @@ its backend is fully pinned and its tracked tfvars already holds the real values
    The read-only plan role scopes CloudWatch alarm refresh to the deterministic
    `findb-staging-*` alarm ARN prefix. This bounded prefix is intentional: listing
    every custom alarm ARN for both metadata and tag refresh exceeds IAM's
-   aggregate inline role-policy size limit.
+   aggregate inline role-policy size limit. Log-group tag refresh is bounded the
+   same way, to the `/findb/staging/` log-group prefix: the policy has well under
+   100 bytes of headroom, so one more exact ARN no longer fits. Check the size of
+   `staging-infra-plan-read-only` before adding any statement or resource to it.
 4. Apply only that reviewed fresh plan. Confirm both associations succeed,
    wait for two five-minute datapoints, verify every non-sparse alarm settles
    to `OK`, and retain the apply and association records. A breaching or
