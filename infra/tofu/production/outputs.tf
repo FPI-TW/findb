@@ -56,6 +56,9 @@ output "ssm_log_groups" {
     for unit, group in aws_cloudwatch_log_group.ssm : unit => group.name
   }
 }
+output "fetcher_container_log_group" {
+  value = aws_cloudwatch_log_group.fetcher_containers.name
+}
 output "aws_configuration_locations" {
   description = "Nonsecret resource locations for SSM deployment configuration and host runtime configuration."
   value = {

@@ -418,6 +418,15 @@ resource "aws_cloudwatch_log_group" "ssm" {
   tags              = merge(local.common_tags, { DeploymentUnit = each.key })
 }
 
+# Output of the long-running Fetcher containers, one stream per container name.
+# The stream outlives the container, which every deployment replaces.
+resource "aws_cloudwatch_log_group" "fetcher_containers" {
+  name              = "${var.ssm_log_group_prefix}/fetcher/containers"
+  retention_in_days = var.ssm_log_retention_days
+  kms_key_id        = aws_kms_key.deploy_bundle.arn
+  tags              = merge(local.common_tags, { DeploymentUnit = "fetcher" })
+}
+
 resource "aws_ssm_document" "session_manager_preferences" {
   for_each = local.unit_config
 

@@ -85,6 +85,7 @@ def test_production_container_arguments_bind_full_and_historical_inspection(
         args_env = {
             **script_env(),
             "APP_ENVIRONMENT": "production",
+            "AWS_REGION": "ap-southeast-1",
             "FETCHER_CONSUMER_PROFILE": consumer,
             "FETCHER_ACCOUNT_STATE_PATH": governor,
             "SOURCE_CLIENT_KEY": "source-fixture",
@@ -98,7 +99,7 @@ def test_production_container_arguments_bind_full_and_historical_inspection(
             [
                 "set -euo pipefail",
                 f"provider={provider.replace('_', '-')}",
-                f"candidate={name}; historical_name={name}",
+                f"candidate={name}; stable={name}; historical_name={name}",
                 f"image={image}",
                 "accepted_release=true",
                 "state_dir=/checkpoint; cache_dir=-; historical_state_dir=/checkpoint/historical",
@@ -125,6 +126,19 @@ def test_production_container_arguments_bind_full_and_historical_inspection(
             check=True,
         )
         arguments = completed.stdout.splitlines()
+        # Output ships to CloudWatch under the stable name and never blocks the container.
+        assert arguments[arguments.index("--log-driver") + 1] == "awslogs"
+        assert [
+            arguments[index + 1] for index, arg in enumerate(arguments[:-1]) if arg == "--log-opt"
+        ] == [
+            "awslogs-region=ap-southeast-1",
+            "awslogs-group=/findb/production/fetcher/containers",
+            f"awslogs-stream={name}",
+            "mode=non-blocking",
+            "max-buffer-size=4m",
+            "cache-max-size=10m",
+            "cache-max-file=3",
+        ]
         env = {}
         mounts = []
         for index, arg in enumerate(arguments[:-1]):

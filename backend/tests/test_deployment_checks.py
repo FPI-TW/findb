@@ -3830,6 +3830,7 @@ def test_account_mount_is_nounset_safe_and_preserves_complete_installed_mounts(a
             "/bin/bash",
             "-c",
             "set -euo pipefail\nstate_dir=/state\n"
+            "AWS_REGION=ap-southeast-1\nAPP_ENVIRONMENT=staging\nstable=findb-full-market-finlab\n"
             + declaration
             + "\n"
             + args
@@ -3843,6 +3844,11 @@ def test_account_mount_is_nounset_safe_and_preserves_complete_installed_mounts(a
     values = result.stdout.splitlines()
     assert "type=bind,src=/state,dst=/state" in values
     assert "" not in values
+    # Output ships to the environment's log group under the stable container name.
+    assert values[values.index("--log-driver") + 1] == "awslogs"
+    assert "awslogs-group=/findb/staging/fetcher/containers" in values
+    assert "awslogs-stream=findb-full-market-finlab" in values
+    assert "mode=non-blocking" in values
     if allocation == "installed":
         assert values[-4:] == [
             "--mount",

@@ -235,8 +235,11 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         in permissions
     )
     assert "ssm:DescribeDocumentPermission" in permissions
-    assert 'sid       = "ReadExactSsmLogGroupTags"' in permissions
-    assert "resources = [for group in aws_cloudwatch_log_group.ssm : group.arn]" in permissions
+    log_group_tags = _statement_by_sid(permissions, "ReadExactSsmLogGroupTags")
+    assert 'actions = ["logs:ListTagsForResource"]' in log_group_tags
+    assert "[for group in aws_cloudwatch_log_group.ssm : group.arn]," in log_group_tags
+    assert "[aws_cloudwatch_log_group.fetcher_containers.arn]," in log_group_tags
+    assert '"*"' not in log_group_tags
     assert 'sid    = "ReadExactSecretMetadata"' in permissions
     metadata = permissions.split('sid    = "ReadExactSecretMetadata"', 1)[1].split(
         "statement {", 1
@@ -448,6 +451,20 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     log_write_statement = _statement_by_sid(instance_policy, "WriteOwnSsmLogs")
     assert "aws_cloudwatch_log_group.ssm[each.key].arn" in log_write_statement
     assert 'resources = ["*"]' not in log_write_statement
+    # Only the Fetcher host ships container output, and only into its own group.
+    container_logs = instance_policy.split('sid       = "WriteFetcherContainerLogs"', 1)
+    assert len(container_logs) == 2
+    assert (
+        container_logs[0]
+        .rstrip()
+        .endswith('for_each = each.key == "fetcher" ? [true] : []\n    content {')
+    )
+    container_log_statement = container_logs[1].split("\n    }", 1)[0]
+    assert 'actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]' in container_log_statement
+    assert (
+        'resources = ["${aws_cloudwatch_log_group.fetcher_containers.arn}:*"]'
+        in container_log_statement
+    )
     for policy, sid in (
         (deploy_policy, "PublishOwnDeploymentFailureMetric"),
         (instance_policy, "PublishStagingOperationalMetrics"),
@@ -561,6 +578,13 @@ def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:
 
     assert 'resource "aws_cloudwatch_log_group" "ssm"' in main
     assert "retention_in_days = var.ssm_log_retention_days" in main
+    container_logs = main.split('resource "aws_cloudwatch_log_group" "fetcher_containers"', 1)[
+        1
+    ].split("\n}", 1)[0]
+    # Under the prefix the logs KMS key policy already admits, with a retention period.
+    assert 'name              = "${var.ssm_log_group_prefix}/fetcher/containers"' in container_logs
+    assert "retention_in_days = var.ssm_log_retention_days" in container_logs
+    assert "kms_key_id        = aws_kms_key.deploy_bundle.arn" in container_logs
     assert "kms_key_id        = aws_kms_key.deploy_bundle.arn" in main
     assert 'resource "aws_ssm_document" "session_manager_preferences"' in main
     assert "cloudWatchLogGroupName" in main

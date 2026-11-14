@@ -40,6 +40,16 @@ data "aws_iam_policy_document" "instance_base" {
     resources = ["${aws_cloudwatch_log_group.ssm[each.key].arn}:*"]
 
   }
+  # The Docker daemon on the Fetcher host ships container output with the
+  # instance role; it creates one stream per container name and appends to it.
+  dynamic "statement" {
+    for_each = each.key == "fetcher" ? [true] : []
+    content {
+      sid       = "WriteFetcherContainerLogs"
+      actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+      resources = ["${aws_cloudwatch_log_group.fetcher_containers.arn}:*"]
+    }
+  }
   statement {
     sid       = "ReadOwnSecrets"
     actions   = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue"]
@@ -114,6 +124,17 @@ resource "aws_cloudwatch_log_group" "ssm" {
   kms_key_id        = aws_kms_key.logs.arn
   tags = merge(local.common_tags, {
     DeploymentUnit = each.key
+  })
+}
+
+# Output of the long-running Fetcher containers, one stream per container name.
+# The stream outlives the container, which every deployment replaces.
+resource "aws_cloudwatch_log_group" "fetcher_containers" {
+  name              = "/findb/production/fetcher/containers"
+  retention_in_days = 90
+  kms_key_id        = aws_kms_key.logs.arn
+  tags = merge(local.common_tags, {
+    DeploymentUnit = "fetcher"
   })
 }
 

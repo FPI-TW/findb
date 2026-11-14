@@ -88,6 +88,11 @@ output "ssm_log_group_names" {
   }
 }
 
+output "fetcher_container_log_group_name" {
+  description = "CloudWatch log group that receives the output of the Fetcher containers."
+  value       = aws_cloudwatch_log_group.fetcher_containers.name
+}
+
 output "session_manager_document_names" {
   description = "Custom Session Manager preference document name for each staging unit."
   value = {

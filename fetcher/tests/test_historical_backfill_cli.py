@@ -8,9 +8,11 @@ import signal
 import subprocess
 import sys
 import threading
+from types import SimpleNamespace
 
 import pytest
 
+from findb_fetcher import historical_backfill_cli as cli
 from findb_fetcher.historical_backfill_cli import run_worker
 
 PROCESS = r"""
@@ -107,3 +109,32 @@ def test_one_shot_drains_until_no_work(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("findb_fetcher.historical_backfill_cli.run_once", run_once)
     run_worker(None, None, run_forever=False, stop_event=threading.Event())  # type: ignore[arg-type]
     assert calls == [True, True, False]
+
+
+def test_unexpected_worker_failure_prints_its_class_only(monkeypatch, capsys) -> None:
+    class Control:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+    closed: list[bool] = []
+    runner = SimpleNamespace(close=lambda: closed.append(True))
+
+    def run_once(*_: object) -> bool:
+        raise RuntimeError("provider said: token=secret-provider-error")
+
+    monkeypatch.setattr(cli.FetcherConfig, "from_env", classmethod(lambda cls: None))
+    monkeypatch.setattr(cli, "HistoricalControlClient", lambda *args, **kwargs: Control())
+    monkeypatch.setattr(cli.FinLabHistoricalRunner, "from_env", classmethod(lambda cls: runner))
+    monkeypatch.setattr(cli, "run_once", run_once)
+
+    assert cli.main(["--provider", "finlab"]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.err.strip() == (
+        '{"error": "historical_worker_failed", "failure": "RuntimeError"}'
+    )
+    assert "secret-provider-error" not in captured.out + captured.err
+    assert closed == [True]
