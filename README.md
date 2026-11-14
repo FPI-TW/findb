@@ -154,6 +154,8 @@ make test
   不執行測試或 build。每次改動完成後及 commit 前都應執行。
 - `pnpm test`（或 `make test`）執行 contracts drift、Backend、Fetcher，以及 Dashboard
   unit、browser component 與 e2e 的所有測試層級。
+- `pnpm test:parallel`（或 `make test-parallel`）同時執行上述所有層級，適合功能完成後快速跑完整測試；
+  `--workers` 與 `--jobs` 控制 CPU 負載，見 `docs/operations/testing.md`。
 - `pnpm format` 會修改檔案，`pnpm build` 則獨立驗證 build，兩者都不屬於 `check`。
 
 `pnpm setup` 會安裝 dependencies、Dashboard Chromium，以及 pre-commit / pre-push hooks。
