@@ -113,6 +113,48 @@ def test_journal_retires_only_week_old_closed_and_receipted_works(
     assert prune_closed_journal(source, "taifex", root=tmp_path, now=NOW + 60) is not None
 
 
+def test_failed_journal_pass_keeps_its_progress_and_retries_within_the_hour(
+    tmp_path: Path,
+) -> None:
+    path = _journal(tmp_path)
+    source = _Source({OLD_WORK: OLD, RESPONSE_ONLY: OLD})
+    with sqlite3.connect(path) as db:
+        # The second closed work cannot be retired on the first pass.
+        db.execute(
+            "CREATE TRIGGER stuck BEFORE DELETE ON work_response "
+            f"WHEN old.work_key='{RESPONSE_ONLY}' BEGIN SELECT RAISE(ABORT,'stuck'); END"
+        )
+
+    with pytest.raises(sqlite3.Error):
+        prune_closed_journal(source, "finlab", root=tmp_path, now=NOW)
+
+    # The first work stays retired, and the day's claim is released to an hour.
+    assert OLD_WORK not in _keys(path, "work_delivery")
+    assert (RESPONSE_ONLY, "official_snapshot") in _responses(path)
+    assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 3599) is None
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TRIGGER stuck")
+    removed = prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 3600)
+    assert removed is not None and removed["responses"] == 1
+    assert (RESPONSE_ONLY, "official_snapshot") not in _responses(path)
+    # A completed pass holds the claim for the whole day again.
+    assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 7200) is None
+
+
+def test_source_failure_after_the_claim_is_also_retried_within_the_hour(tmp_path: Path) -> None:
+    _journal(tmp_path)
+
+    class Unavailable:
+        def request(self, *args: Any) -> dict[str, Any]:
+            raise RuntimeError("Source unavailable")
+
+    with pytest.raises(RuntimeError):
+        prune_closed_journal(Unavailable(), "finlab", root=tmp_path, now=NOW)
+    source = _Source({OLD_WORK: OLD})
+    assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 60) is None
+    assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 3600) is not None
+
+
 def test_missing_journal_is_never_created(tmp_path: Path) -> None:
     assert prune_closed_journal(_Source({}), "finlab", root=tmp_path, now=NOW) is None
     assert not (tmp_path / "provider-work.sqlite3").exists()
@@ -200,3 +242,35 @@ def test_retention_failure_does_not_stop_the_worker(monkeypatch, capsys) -> None
     out = capsys.readouterr().out
     assert '"closed_work_retention": {"failed": "RuntimeError"}' in out
     assert "Source unavailable" not in out
+
+
+def test_sqlite_retention_failure_logs_its_result_code_only(monkeypatch, capsys, tmp_path) -> None:
+    path = tmp_path / "busy.sqlite3"
+    holder = sqlite3.connect(path)
+    holder.execute("CREATE TABLE t(x)")
+    holder.execute("BEGIN IMMEDIATE")
+
+    def locked():
+        waiter = sqlite3.connect(path, timeout=0)
+        try:
+            waiter.execute("BEGIN IMMEDIATE")
+        finally:
+            waiter.close()
+
+    monkeypatch.setattr(full_market_cli, "prune_ledger", lambda: None)
+    runtime = SimpleNamespace(prune_closed_state=locked, drain=lambda: None, pause=lambda: None)
+    control = SimpleNamespace(poll=lambda **_: SimpleNamespace(desired_state="stopped"))
+    try:
+        full_market_cli.run_worker(
+            runtime,
+            control,
+            lambda: True,
+            stopped=threading.Event(),
+            run_forever=False,
+            poll_seconds=1,
+        )
+    finally:
+        holder.close()
+    out = capsys.readouterr().out
+    assert '"closed_work_retention": {"failed": "OperationalError", "code": "SQLITE_BUSY"}' in out
+    assert "locked" not in out

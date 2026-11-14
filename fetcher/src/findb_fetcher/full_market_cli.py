@@ -146,9 +146,13 @@ def run_worker(
         try:
             retired = runtime.prune_closed_state()
         except Exception as exc:
-            # Housekeeping too: Source or SQLite trouble retries tomorrow without
-            # stopping acquisition, and only the bounded class name is logged.
+            # Housekeeping too: Source or SQLite trouble retries later without
+            # stopping acquisition. Only bounded names are logged: the exception
+            # class and, for SQLite, its result code such as SQLITE_BUSY.
             retired = {"failed": re.sub(r"[^A-Za-z0-9_]", "", type(exc).__name__)[:60]}
+            code = getattr(exc, "sqlite_errorname", None)
+            if isinstance(code, str) and re.fullmatch(r"SQLITE_[A-Z_]{1,40}", code):
+                retired["code"] = code
         if retired is not None:
             print(json.dumps({"closed_work_retention": retired}), flush=True)
         runtime.drain()

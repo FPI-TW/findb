@@ -39,6 +39,10 @@ T = TypeVar("T")
 # stay in R2 for 90 days, so this only bounds local recovery evidence.
 CLOSED_WORK_RETENTION_SECONDS = 7 * 86400
 CLOSED_WORK_PRUNE_INTERVAL_SECONDS = 86400
+# A failed pass keeps what it already retired and is tried again this soon.
+CLOSED_WORK_PRUNE_RETRY_SECONDS = 3600
+# Every provider on the host writes the same journal; retention waits for them.
+CLOSED_WORK_PRUNE_BUSY_SECONDS = 30
 CLOSED_LOOKUP_BATCH = 500
 # Replay state that only an open work reads.
 _JOURNAL_REPLAY_TABLES = (
@@ -1032,13 +1036,15 @@ def prune_closed_journal(
     Runs at most once a day per provider. The journal is shared by every provider
     on the host; Source answers only for the caller's own scope, so each provider
     retires only its own works. A work with any delivery lacking a receipt keeps
-    everything, since its acceptance is not proven locally.
+    everything, since its acceptance is not proven locally. A pass that fails
+    partway keeps the works it already retired and runs again within the hour.
     """
     path = journal_path(root)
     if not path.is_file():
         return None
     now = time.time() if now is None else now
-    db = sqlite3.connect(path)
+    db = sqlite3.connect(path, timeout=CLOSED_WORK_PRUNE_BUSY_SECONDS)
+    claimed = False
     try:
         db.execute("PRAGMA journal_mode=WAL")
         with db:
@@ -1064,6 +1070,7 @@ def prune_closed_journal(
                 )
                 if _UUID.fullmatch(str(key))
             )
+        claimed = True
         closed = closed_work_times(source, work_ids=keys)
         cutoff = now - CLOSED_WORK_RETENTION_SECONDS
         removed = {"works": 0, "unreceipted": 0, "responses": 0}
@@ -1102,6 +1109,19 @@ def prune_closed_journal(
         removed["file_bytes"] = db.execute("PRAGMA page_count").fetchone()[0] * page_size
         removed["free_bytes"] = db.execute("PRAGMA freelist_count").fetchone()[0] * page_size
         return removed
+    except Exception:
+        if claimed:
+            # The claim held the whole day; a failed pass gives most of it back.
+            try:
+                db.rollback()
+                with db:
+                    db.execute(
+                        "UPDATE work_retention SET next_at=? WHERE provider=?",
+                        (now + CLOSED_WORK_PRUNE_RETRY_SECONDS, provider),
+                    )
+            except sqlite3.Error:
+                pass
+        raise
     finally:
         db.close()
 

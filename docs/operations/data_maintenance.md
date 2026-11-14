@@ -115,7 +115,10 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 
 Full worker 每日對自己的 provider 清理一次已結案工作的本機狀態；同一 provider 的 consumers 以
 `work_retention`（journal）與 `checkpoint_retention`（Full checkpoint）記錄下次時間，不重複執行。
-清理失敗只輸出 `closed_work_retention` 診斷（只含例外類別名稱），不阻擋抓取，隔天重試。
+清理失敗只輸出 `closed_work_retention` 診斷，不阻擋抓取：內容是例外類別名稱，SQLite 的錯誤另帶結果代碼
+（例如 `{"failed": "OperationalError", "code": "SQLITE_BUSY"}`），不含錯誤訊息。Journal 的清理逐筆工作提交，
+失敗時已清掉的工作維持清除，下一次嘗試提前到一小時後（`CLOSED_WORK_PRUNE_RETRY_SECONDS`），不等到隔天；
+同一台主機的所有 provider 共用 journal，清理等待其他寫入最多 30 秒（`CLOSED_WORK_PRUNE_BUSY_SECONDS`）。
 
 - 是否結案由 Source 判定：Fetcher 以 `POST /api/v1/source/provider-work/closed` 查詢（唯讀，
   依 Source credential 的 provider／dataset scope 回答，一次最多 500 筆）；仍在進行、未知或越權的
