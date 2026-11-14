@@ -274,7 +274,10 @@ The stack enforces the required `Project=findb`, `Environment`, `DeploymentUnit`
 `Owner`, and `BackupOwner` tags on each existing instance. It creates separate
 OIDC deploy roles for `staging-findb` and `staging-fetcher`, separate EC2
 instance roles/profiles, unit-specific CloudWatch log groups with retention,
-and unit-specific Session Manager preference documents. The deploy bundle
+and unit-specific Session Manager preference documents. One more log group,
+`/findb/staging/fetcher/containers`, receives the output of the long-running
+Fetcher containers; only the Fetcher instance role may create streams in it and
+append to them (see `docs/operations/monitoring.md`). The deploy bundle
 bucket is private, versioned, KMS encrypted, and all role object permissions
 are restricted to either `findb/` or `fetcher/`.
 

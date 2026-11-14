@@ -194,10 +194,13 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid       = "ReadExactSsmLogGroupTags"
-    effect    = "Allow"
-    actions   = ["logs:ListTagsForResource"]
-    resources = [for group in aws_cloudwatch_log_group.ssm : group.arn]
+    sid     = "ReadExactSsmLogGroupTags"
+    effect  = "Allow"
+    actions = ["logs:ListTagsForResource"]
+    resources = concat(
+      [for group in aws_cloudwatch_log_group.ssm : group.arn],
+      [aws_cloudwatch_log_group.fetcher_containers.arn],
+    )
   }
 
   statement {

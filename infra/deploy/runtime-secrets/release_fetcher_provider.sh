@@ -485,13 +485,23 @@ docker run --rm \
   "$image" "$@" --require-stopped
 fi
 
+# Container output goes to CloudWatch Logs under the stable container name, so
+# it survives the replacement every deployment makes. Non-blocking: neither a
+# start nor a write waits for CloudWatch, and the daemon keeps retrying while the
+# group or permission is missing. The local cache keeps `docker logs` working.
 common_args=(
   --user 10001:10001
   --read-only
   --cap-drop ALL
   --security-opt no-new-privileges
-  --log-opt max-size=10m
-  --log-opt max-file=3
+  --log-driver awslogs
+  --log-opt "awslogs-region=$AWS_REGION"
+  --log-opt "awslogs-group=/findb/$APP_ENVIRONMENT/fetcher/containers"
+  --log-opt "awslogs-stream=$stable"
+  --log-opt mode=non-blocking
+  --log-opt max-buffer-size=4m
+  --log-opt cache-max-size=10m
+  --log-opt cache-max-file=3
   --tmpfs /tmp:rw,noexec,nosuid,size=16m
   --mount "type=bind,src=$state_dir,dst=$state_dir"
   ${account_mount[@]+"${account_mount[@]}"}

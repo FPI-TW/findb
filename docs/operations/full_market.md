@@ -49,7 +49,7 @@ Runtime 執行既有 claim／owner recovery、prepared drain 與
 settlement；只有 idle drain 丟棄的完整 health 統計被省略。明確 `--health` 與正常 cycle 的輸出
 保留，plan／provider 狀態索引降低摘要查詢成本。
 
-Health 輸出不隨失敗成員數成長，避免把同一個 container log（json-file，10 MB × 3 檔）裡的
+Health 輸出不隨失敗成員數成長，避免把同一個 container 的本機 log 快取（10 MB × 3 檔）裡的
 `delivery_timing` 與診斷輸出輪替掉：
 
 - 每個未完成 plan 以 `failure_counts` 回報各原因的成員數；`failures` 只列範例，整份 health 合計最多 20 筆
@@ -1063,7 +1063,9 @@ Staging 驗收（一次只啟動一個 provider，結束後停止）：
 4. 建立一筆單日的 historical request，核對結束狀態、逐成員結果與耗時。
 5. 核對資源：container 沒有 OOM、記憶體峰值（cgroup 的 `memory.peak`）、provider work journal 的檔案大小。
    FinLab 每張表是整段歷史，staging 主機記憶體小，這一項不可省略。
-6. 核對 log：有 `delivery_timing`，沒有 traceback。Container log 在下一次部署重建時會消失，要先取出需要的部分。
+6. 核對 log：有 `delivery_timing`，沒有 traceback。Container 的輸出同時送到 CloudWatch 的
+   `/findb/<環境>/fetcher/containers`（每個 container 名稱一個 stream），部署重建後仍查得到；
+   `docker logs` 只看得到目前這個 container 的本機快取。
 7. 停止 control，確認 observed 也是 stopped。
 
 Production：
