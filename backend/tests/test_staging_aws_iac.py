@@ -235,11 +235,14 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         in permissions
     )
     assert "ssm:DescribeDocumentPermission" in permissions
-    log_group_tags = _statement_by_sid(permissions, "ReadExactSsmLogGroupTags")
-    assert 'actions = ["logs:ListTagsForResource"]' in log_group_tags
-    assert "[for group in aws_cloudwatch_log_group.ssm : group.arn]," in log_group_tags
-    assert "[aws_cloudwatch_log_group.fetcher_containers.arn]," in log_group_tags
-    assert '"*"' not in log_group_tags
+    # Exact ARNs for every log group exceed the role's inline policy size limit.
+    log_group_tags = _statement_by_sid(permissions, "ReadStagingLogGroupTags")
+    assert 'actions   = ["logs:ListTagsForResource"]' in log_group_tags
+    assert "resources = [local.infra_plan_log_group_arn]" in log_group_tags
+    assert (
+        ':log-group:${var.ssm_log_group_prefix}/*"'
+        in plan.split("infra_plan_log_group_arn", 1)[1].split("\n", 1)[0]
+    )
     assert 'sid    = "ReadExactSecretMetadata"' in permissions
     metadata = permissions.split('sid    = "ReadExactSecretMetadata"', 1)[1].split(
         "statement {", 1
