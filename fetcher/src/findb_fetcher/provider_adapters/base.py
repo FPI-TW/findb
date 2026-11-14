@@ -92,6 +92,9 @@ class AcquisitionContext:
     cohort: Sequence[Mapping[str, Any]] | None = None
     # The frozen universe release's effective date, when the caller knows it.
     universe_effective_date: date | None = None
+    # Provider symbols of this part that may share one native request, starting
+    # with this member; evaluated only when the adapter really dispatches.
+    batch_candidates: Callable[[], tuple[str, ...]] | None = None
 
     @property
     def max_response_bytes(self) -> int:
@@ -207,6 +210,10 @@ class ProviderAdapter:
     shared_response_prefix: ClassVar[str | None] = None
     # Bounded retry window of a ``wait="outage"`` failure; a success clears it.
     outage_retry_seconds: ClassVar[int | None] = None
+    # The outage is of one observation the whole cohort is read from: the plan waits
+    # as a whole, and an exhausted window ends the work instead of charging the
+    # members one at a time.
+    outage_holds_plan: ClassVar[bool] = False
     # ``acquire_batch`` replaces the member loop (see FactSet).
     batch: ClassVar[bool] = False
     # Journal key of the batch's native snapshot, and the pending reason it raises.

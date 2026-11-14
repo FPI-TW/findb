@@ -18,6 +18,7 @@ from app.api.deps import (
     AdminPrincipal,
     enforce_admin_login_rate_limit,
     get_admin_break_glass_api_key,
+    request_client_ip,
     require_operator,
     require_owner,
     require_viewer,
@@ -117,6 +118,10 @@ from app.schemas.admin import (
     SourceClientListResponse,
     SourceClientResponse,
     SuccessResponse,
+    UniverseFeedListResponse,
+    UniverseFeedResponse,
+    UniverseRefreshRequest,
+    UniverseRefreshResponse,
     UniverseReleaseAdminResponse,
     UniverseReleaseDiffResponse,
     UniverseReleaseListResponse,
@@ -148,12 +153,14 @@ from app.services.admin import (
 )
 from app.services.admin_audit import record_admin_audit
 from app.services.admin_identity import (
+    PASSWORD_CHANGE_FAILED_ACTION,
     active_owner_count,
     authenticate_user,
     create_user,
     issue_session,
     lock_admin_identity,
     revoke_session,
+    revoke_session_after_password_failures,
     set_password,
     temporary_password,
     update_user,
@@ -227,6 +234,7 @@ from app.services.scheduler_control import (
     present_admin_scheduler_control,
     update_scheduler_desired_state,
 )
+from app.services.security_events import record_admin_session_revoked
 from app.services.slot_identity import normalize_slot_id
 from app.services.source_clients import (
     SourceProviderScopeError,
@@ -236,6 +244,12 @@ from app.services.source_clients import (
     rotate_source_client,
 )
 from app.services.universe_queries import get_universe_release_diff, list_universe_releases
+from app.services.universe_refresh import (
+    UniverseRefreshError,
+    list_feeds,
+    present_refresh,
+    request_refresh,
+)
 from app.utils import utc_now
 from app.vocabulary import normalize_market
 from scripts.generate_instrument_cache import main as run_cache_generation
@@ -308,6 +322,56 @@ async def list_full_market_universes(
             total_pages=(total + page_size - 1) // page_size if total else 0,
         ),
     )
+
+
+@router.get("/universes/feeds", response_model=UniverseFeedListResponse)
+async def list_full_market_universe_feeds(
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseFeedListResponse:
+    """Each refreshable feed with its published release and latest manual refresh."""
+    return UniverseFeedListResponse(
+        data=[UniverseFeedResponse.model_validate(row) for row in await list_feeds(db)]
+    )
+
+
+@router.post(
+    "/universes/refresh",
+    response_model=UniverseRefreshResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_full_market_universe_refresh(
+    body: UniverseRefreshRequest,
+    principal: AdminPrincipal = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> UniverseRefreshResponse:
+    """Queue one universe refresh; its release is published as approved by this Owner."""
+    try:
+        work = await request_refresh(
+            db,
+            provider=body.provider,
+            dataset_key=body.dataset_key,
+            note=body.evidence_note,
+            principal=principal,
+        )
+    except UniverseRefreshError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    await record_admin_audit(
+        db,
+        principal,
+        action="request_refresh",
+        resource_type="universe",
+        resource_id=str(work.work_id),
+        details={
+            "provider": work.provider,
+            "dataset_key": work.dataset_key,
+            "evidence_note": body.evidence_note,
+            "approves_release": True,
+        },
+        commit=False,
+    )
+    await db.commit()
+    return UniverseRefreshResponse.model_validate(present_refresh(work))
 
 
 @router.get("/universes/{release_id}/diff", response_model=UniverseReleaseDiffResponse)
@@ -387,9 +451,11 @@ async def list_full_market_delivery_plans(
     limit: int | None = Query(default=None, ge=1, le=100),
     page: int | None = Query(default=None, ge=1),
     page_size: int | None = Query(default=None, ge=1, le=100),
+    summary_only: bool = Query(default=False),
     _: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
 ) -> DeliveryPlanListResponse | PaginatedDeliveryPlanListResponse:
+    """List plans; ``summary_only`` returns stored counts without member keys or gaps."""
     if limit is not None and (page is not None or page_size is not None):
         raise HTTPException(status_code=422, detail="limit cannot be combined with page/page_size")
     return await list_delivery_plans(
@@ -400,6 +466,7 @@ async def list_full_market_delivery_plans(
         limit=limit,
         page=page,
         page_size=page_size,
+        summary_only=summary_only,
     )
 
 
@@ -751,13 +818,41 @@ async def patch_scheduler(
 @router.post("/auth/change-password", response_model=SuccessResponse)
 async def change_admin_password(
     body: ChangePasswordRequest,
+    request: Request,
     principal: AdminPrincipal = Depends(verify_admin_api_key),
     db: AsyncSession = Depends(get_db),
 ):
     if principal.actor_type != "user" or principal.actor_id is None:
         raise HTTPException(status_code=403, detail="User session required")
     user = await db.get(AdminUser, UUID(principal.actor_id))
-    if user is None or not verify_password(user.password_hash, body.current_password):
+    if user is None:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if not verify_password(user.password_hash, body.current_password):
+        if principal.session_id is not None:
+            # A stolen session must not get unlimited guesses at the current password.
+            await record_admin_audit(
+                db,
+                principal,
+                action=PASSWORD_CHANGE_FAILED_ACTION,
+                resource_type="admin_session",
+                resource_id=principal.session_id,
+                commit=False,
+            )
+            if await revoke_session_after_password_failures(
+                db,
+                UUID(principal.session_id),
+                max_failures=settings.ADMIN_PASSWORD_CHANGE_MAX_FAILURES,
+            ):
+                record_admin_session_revoked(
+                    "change_password_failures",
+                    session_id=principal.session_id,
+                    endpoint=request.url.path,
+                    client_ip=request_client_ip(request),
+                )
+                raise HTTPException(
+                    status_code=401,
+                    detail="Too many incorrect current passwords; session revoked",
+                )
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     await set_password(db, user, body.new_password, must_change=False, commit=False)
     await record_admin_audit(

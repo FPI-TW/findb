@@ -144,7 +144,7 @@ it("isolates provider lists and preserves selection and FIFO order on refresh", 
   expect(
     screen.getByText("等待確認舊程序已停止並復原原工作")
   ).toBeInTheDocument()
-  expect(screen.getByText("第 2 輪")).toBeInTheDocument()
+  expect(screen.getByText("第 2 次執行")).toBeInTheDocument()
   expect(screen.getByText("2026-10-19T00:59:00Z")).toBeInTheDocument()
   expect(screen.getByText("僅排空原交付")).toBeInTheDocument()
   expect(screen.getByText("等待市場收盤或重試時間")).toBeInTheDocument()
@@ -220,7 +220,7 @@ it("distinguishes daily window, rotation progress and actual failure", () => {
   render(<ProviderWorkPanel />)
   fireEvent.click(screen.getByRole("tab", { name: "twelve_data (1)" }))
   expect(screen.getByText("每日抓取窗口外")).toBeVisible()
-  expect(screen.getByText("第 42 輪")).toBeVisible()
+  expect(screen.getByText("第 42 次執行")).toBeVisible()
   expect(screen.getByText("最近批次：25 個成員 · 12.5 秒")).toBeVisible()
   expect(screen.getByText("下次開窗：2026-10-29T18:00:00+08:00")).toBeVisible()
   expect(screen.getByText("最近實際失敗：retry_exhausted")).toBeVisible()

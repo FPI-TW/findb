@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import (
+    MANUAL_CORRECTION_PRIORITY,
     Instrument,
     InstrumentIdentifier,
     InstrumentStats,
@@ -125,11 +126,14 @@ class BaseNormalizer(ABC):
 
     @staticmethod
     def _incoming_source_wins(table, excluded):
-        return (excluded.source_priority < table.c.source_priority) | (
-            (excluded.source_priority == table.c.source_priority)
-            & (
-                table.c.source_fetched_at.is_(None)
-                | (excluded.source_fetched_at >= table.c.source_fetched_at)
+        return (table.c.source_priority != MANUAL_CORRECTION_PRIORITY) & (
+            (excluded.source_priority < table.c.source_priority)
+            | (
+                (excluded.source_priority == table.c.source_priority)
+                & (
+                    table.c.source_fetched_at.is_(None)
+                    | (excluded.source_fetched_at >= table.c.source_fetched_at)
+                )
             )
         )
 
@@ -661,9 +665,17 @@ class BaseNormalizer(ABC):
                     data_date=run.batch_data_date or run.created_at.date(),
                     delivery_mode=run.delivery_mode,
                 )
-            from app.services.delivery_plan_summary import refresh_summaries_for_run
+            # Processing moves no summary field. A queue caller publishes the
+            # terminal summary once, after it settles the run's final fields.
+            from app.services.delivery_plan_summary import (
+                TERMINAL_RUN_STATUSES,
+                refresh_summaries_for_run,
+            )
 
-            await refresh_summaries_for_run(self.db, run)
+            if status in TERMINAL_RUN_STATUSES and not self.dataset_config.get(
+                "_defer_summary_refresh"
+            ):
+                await refresh_summaries_for_run(self.db, run)
 
     def _build_processing_error_issue(
         self,

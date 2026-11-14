@@ -15,6 +15,7 @@ import { deliveriesSearchSchema } from "./operations.search"
 const mocks = vi.hoisted(() => ({
   loadDeliveryPlans: vi.fn(),
   loadDeliveryPlanDatasets: vi.fn(),
+  loadDeliveryPlanSummary: vi.fn(),
 }))
 vi.mock("@tanstack/react-start", async importOriginal => ({
   ...(await importOriginal<typeof import("@tanstack/react-start")>()),
@@ -40,12 +41,14 @@ const plan = {
     blocked: 1,
     deadline_at: "2026-10-01T15:00:00Z",
     is_late: true,
-    gaps: [
-      { member_key: "TX", status: "missing", reason: "pending" },
-      { member_key: "MTX", status: "blocked", reason: "rate_limited" },
-    ],
+    // The list carries counts only; details come from the per-plan summary.
+    gaps: [],
   },
 }
+const gaps = [
+  { member_key: "TX", status: "missing", reason: "pending" },
+  { member_key: "MTX", status: "blocked", reason: "rate_limited" },
+]
 const pagination = { page: 1, page_size: 25, total_records: 1, total_pages: 1 }
 function PanelHarness({ active }: { active: boolean }) {
   const [search, updateSearch] = useState(() =>
@@ -75,6 +78,7 @@ beforeEach(() => {
     data: ["old_dataset", "tw_futures_eod"],
   })
   mocks.loadDeliveryPlans.mockResolvedValue({ data: [plan], pagination })
+  mocks.loadDeliveryPlanSummary.mockResolvedValue({ ...plan.summary, gaps })
 })
 afterEach(() => {
   cleanup()
@@ -100,16 +104,66 @@ describe("full market plans", () => {
     expect(
       screen.getByRole("columnheader", { name: "正常無資料" })
     ).toBeInTheDocument()
+    // Nothing is asked about a plan's members until its row is opened.
+    expect(mocks.loadDeliveryPlanSummary).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole("button", { name: "展開詳細資料" }))
-    expect(screen.getByText("TX")).toBeInTheDocument()
+    expect(await screen.findByText("TX")).toBeInTheDocument()
+    expect(mocks.loadDeliveryPlanSummary).toHaveBeenCalledWith({
+      data: { planId: "p1" },
+    })
     expect(
       screen.getByText(/來源請求頻率受限（rate_limited）/)
     ).toBeInTheDocument()
     expect(screen.getByText(/已列出 2／總缺口 2/)).toBeInTheDocument()
   })
+  it("shows the gap total while details load, and keeps it when they fail", async () => {
+    let resolve!: (data: unknown) => void
+    mocks.loadDeliveryPlanSummary.mockReturnValue(
+      new Promise(value => {
+        resolve = value
+      })
+    )
+    const { client } = renderPanel()
+    fireEvent.click(await screen.findByRole("button", { name: "展開詳細資料" }))
+    expect(await screen.findByText("正在載入缺口明細…")).toBeInTheDocument()
+    expect(screen.getByText(/總缺口 2/)).toBeInTheDocument()
+    expect(screen.queryByText(/已列出/)).not.toBeInTheDocument()
+    expect(screen.queryByText("此計畫沒有待處理缺口。")).not.toBeInTheDocument()
+    await act(async () => resolve({ ...plan.summary, gaps }))
+    expect(await screen.findByText("TX")).toBeInTheDocument()
+    mocks.loadDeliveryPlanSummary.mockRejectedValue(new Error("HTTP 503"))
+    await act(() =>
+      client.refetchQueries({
+        queryKey: ["operations", "delivery-plan-summary"],
+      })
+    )
+    expect(
+      await screen.findByText(/缺口明細更新失敗，保留最後成功資料/)
+    ).toBeInTheDocument()
+    expect(screen.getByText("TX")).toBeInTheDocument()
+  })
+  it("does not ask for details of a plan without gaps", async () => {
+    mocks.loadDeliveryPlans.mockResolvedValue({
+      data: [
+        {
+          ...plan,
+          status: "complete",
+          summary: { ...plan.summary, data: 4, missing: 0, blocked: 0 },
+        },
+      ],
+      pagination,
+    })
+    renderPanel()
+    fireEvent.click(await screen.findByRole("button", { name: "展開詳細資料" }))
+    expect(
+      await screen.findByText("此計畫沒有待處理缺口。")
+    ).toBeInTheDocument()
+    expect(mocks.loadDeliveryPlanSummary).not.toHaveBeenCalled()
+  })
   it("retains expanded rows and prior results after refetch failure, then recovers", async () => {
     const { client } = renderPanel()
     fireEvent.click(await screen.findByRole("button", { name: "展開詳細資料" }))
+    expect(await screen.findByText("TX")).toBeInTheDocument()
     mocks.loadDeliveryPlans.mockRejectedValue(new Error("HTTP 503"))
     await act(() =>
       client.refetchQueries({ queryKey: ["operations", "delivery-plans"] })
@@ -186,25 +240,26 @@ describe("full market plans", () => {
       data: [
         {
           ...plan,
-          summary: {
-            ...plan.summary,
-            expected: 1505,
-            missing: 1501,
-            gaps: [
-              {
-                member_key: "TX",
-                status: "blocked",
-                reason: "new_provider_reason",
-              },
-            ],
-          },
+          summary: { ...plan.summary, expected: 1505, missing: 1501 },
         },
       ],
       pagination,
     })
+    mocks.loadDeliveryPlanSummary.mockResolvedValue({
+      ...plan.summary,
+      expected: 1505,
+      missing: 1501,
+      gaps: [
+        {
+          member_key: "TX",
+          status: "blocked",
+          reason: "new_provider_reason",
+        },
+      ],
+    })
     renderPanel()
     fireEvent.click(await screen.findByRole("button", { name: "展開詳細資料" }))
-    expect(screen.getByText(/已列出 1／總缺口 1502/)).toBeInTheDocument()
+    expect(await screen.findByText(/已列出 1／總缺口 1502/)).toBeInTheDocument()
     expect(screen.getByText(/new_provider_reason/)).toBeInTheDocument()
   })
 })

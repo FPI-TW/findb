@@ -457,6 +457,18 @@ data "aws_iam_policy_document" "instance_permissions" {
     }
   }
 
+  # The Docker daemon on the Fetcher host ships container output with the
+  # instance role; it creates one stream per container name and appends to it.
+  dynamic "statement" {
+    for_each = each.key == "fetcher" ? [true] : []
+    content {
+      sid       = "WriteFetcherContainerLogs"
+      effect    = "Allow"
+      actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+      resources = ["${aws_cloudwatch_log_group.fetcher_containers.arn}:*"]
+    }
+  }
+
   // DescribeLogGroups does not support resource-level permissions. The agent
   // calls it before publishing to the unit-scoped log group above.
   statement {

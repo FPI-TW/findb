@@ -327,6 +327,9 @@ class DailyDeliveryPlanSummary(Base):
     last_failure_code: Mapped[Optional[str]] = mapped_column(String(50))
     policy_outcome: Mapped[Optional[str]] = mapped_column(String(20))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Equal to updated_at only when the same writer also maintained the part
+    # counts; any other writer (e.g. a rolled-back release) forces a full refresh.
+    parts_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class DailyExecutionDecision(Base):
@@ -360,6 +363,15 @@ class DailyDeliveryPart(Base):
     __table_args__ = (
         UniqueConstraint("plan_id", "part_number", name="uq_daily_delivery_part_number"),
         UniqueConstraint("work_item_id", name="uq_daily_delivery_part_work_item"),
+        CheckConstraint(
+            "num_nulls(data_count, no_data_count, missing_count, blocked_count, "
+            "mapping_gap_count) IN (0, 5) "
+            "AND (data_count IS NULL OR (data_count >= 0 AND no_data_count >= 0 "
+            "AND missing_count >= 0 AND blocked_count >= 0 AND mapping_gap_count >= 0 "
+            "AND mapping_gap_count <= blocked_count AND "
+            "expected_count = data_count + no_data_count + missing_count + blocked_count))",
+            name="delivery_part_summary_counts",
+        ),
     )
 
     part_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
@@ -370,6 +382,13 @@ class DailyDeliveryPart(Base):
     work_item_id: Mapped[str] = mapped_column(String(100), nullable=False)
     member_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     expected_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Part share of the plan summary, so a write reclassifies only its part;
+    # NULL until a full refresh initializes the plan.
+    data_count: Mapped[Optional[int]] = mapped_column(Integer)
+    no_data_count: Mapped[Optional[int]] = mapped_column(Integer)
+    missing_count: Mapped[Optional[int]] = mapped_column(Integer)
+    blocked_count: Mapped[Optional[int]] = mapped_column(Integer)
+    mapping_gap_count: Mapped[Optional[int]] = mapped_column(Integer)
 
     plan: Mapped["DailyDeliveryPlan"] = relationship(back_populates="parts")
     members: Mapped[list["DailyDeliveryMember"]] = relationship(

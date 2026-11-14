@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
+import sys
 import threading
 from typing import cast
 
@@ -53,6 +56,16 @@ def main(argv: list[str] | None = None) -> int:
         with HistoricalControlClient(FetcherConfig.from_env(), provider=args.provider) as control:
             try:
                 run_worker(control, runner, run_forever=args.run_forever, stop_event=stopper)
+            except Exception as exc:
+                # Container output is shipped and retained: name the failure class only.
+                # A traceback would carry the message, which can quote a provider reply.
+                failure = re.sub(r"[^A-Za-z0-9_]", "", type(exc).__name__)[:60]
+                print(
+                    json.dumps({"error": "historical_worker_failed", "failure": failure}),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 2
             finally:
                 close = getattr(runner, "close", None)
                 if callable(close):

@@ -115,7 +115,10 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 
 Full worker 每日對自己的 provider 清理一次已結案工作的本機狀態；同一 provider 的 consumers 以
 `work_retention`（journal）與 `checkpoint_retention`（Full checkpoint）記錄下次時間，不重複執行。
-清理失敗只輸出 `closed_work_retention` 診斷（只含例外類別名稱），不阻擋抓取，隔天重試。
+清理失敗只輸出 `closed_work_retention` 診斷，不阻擋抓取：內容是例外類別名稱，SQLite 的錯誤另帶結果代碼
+（例如 `{"failed": "OperationalError", "code": "SQLITE_BUSY"}`），不含錯誤訊息。Journal 的清理逐筆工作提交，
+失敗時已清掉的工作維持清除，下一次嘗試提前到一小時後（`CLOSED_WORK_PRUNE_RETRY_SECONDS`），不等到隔天；
+同一台主機的所有 provider 共用 journal，清理等待其他寫入最多 30 秒（`CLOSED_WORK_PRUNE_BUSY_SECONDS`）。
 
 - 是否結案由 Source 判定：Fetcher 以 `POST /api/v1/source/provider-work/closed` 查詢（唯讀，
   依 Source credential 的 provider／dataset scope 回答，一次最多 500 筆）；仍在進行、未知或越權的
@@ -123,13 +126,18 @@ Full worker 每日對自己的 provider 清理一次已結案工作的本機狀�
 - 只清 Source `completed_at` 已超過 7 天的工作。R2 保存 provider bytes 90 天，本機只保留恢復所需。
 - Provider-work journal（主機共用的 `provider-work.sqlite3`）：刪除 `work_delivery`、`work_job`、
   `work_budget`、`work_cooldown`、`work_source_error`。Twelve Data 的回應已確認有 R2 副本，另刪
-  `work_response`、`work_response_observation` 與 `work_manifest`；其他格式（FinLab dataset、官方
-  名單、TAIFEX 報表、catalogue）的回應與 manifest 保留。任一 delivery 缺 receipt 的工作整筆保留。
+  `work_response`、`work_response_observation` 與 `work_manifest`。官方名單快照
+  （`work_response` 的 `official_snapshot:*`）在下載的同一次呼叫內就寫入 R2，所以不分 provider 一律刪除。其他格式
+  （FinLab dataset、TAIFEX 報表、FactSet 回應、catalogue）的回應、觀測與 manifest 保留，這些列都很小。
+  任一 delivery 缺 receipt 的工作整筆保留。只寫過回應、沒有 manifest 或 delivery 的工作同樣納入清理。
 - Full checkpoint：以 `daily:full_market:<dataset>:<trade_date>` 對應 plan，刪除該 plan 的
   `full_work` 及其 receipt、diagnostic、empty outcome、member repair，以及 plan、reconcile、outage、
   no-data trip／round 與 schedule 列。仍有 prepared body 但沒有 receipt 的 plan 整筆保留。
 - 已結案的工作不會再被領取，因此沒有路徑會再讀這些列；`full_cursor` 與 account governor 不在此範圍。
-- 刪除後不自動 VACUUM，空間由 SQLite 重用；要縮小檔案時，在 controls 停止後另行 VACUUM。
+- 刪除後不自動 VACUUM，空間由 SQLite 重用，檔案不會再變大但也不會縮小。`closed_work_retention` 的
+  `journal.file_bytes` 與 `journal.free_bytes` 顯示檔案大小與其中已釋放、可重用的部分，`journal.responses`
+  是這次刪除的回應列數。要縮小檔案時，在該主機所有 provider 的 controls 停止後另行 VACUUM（會重寫整個檔案，
+  需要與檔案大小相當的可用磁碟空間）。
 
 ## PostgreSQL 暫存副本保留
 

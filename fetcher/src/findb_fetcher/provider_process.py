@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -13,9 +14,22 @@ from typing import Any
 
 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError, inherited_fds
 
+_FAILURE_CODE = re.compile(r"[a-z_]{1,24}")
+
 
 class ProviderProcessError(RuntimeError):
-    pass
+    """``code`` is a bounded failure class; the message never carries provider text.
+
+    The worker reports its own class (see ``provider_worker.failure_code``). The
+    parent adds the ones only it can see: ``process_timeout`` (no answer before
+    the deadline), ``dispatch_expired`` (the grant expired before native I/O),
+    ``killed`` (the worker died from a signal, as after an OOM kill) and
+    ``crashed`` (it exited without answering).
+    """
+
+    def __init__(self, message: str, code: str = "sdk_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def provider_environment() -> dict[str, str]:
@@ -67,6 +81,8 @@ def supervised_call(
         child.close()
     value = None
     succeeded = False
+    failure: str | None = None
+    natural_exit: int | None = None
     try:
         expires = time.monotonic() + timeout
         parent.send((operation, payload, checkpoint is not None))
@@ -79,11 +95,24 @@ def supervised_call(
                 parent.send(checkpoint())
                 continue
             succeeded = event == "result"
+            if event == "expired":
+                failure = "dispatch_expired"
+            elif event == "error":
+                failure = (
+                    value if isinstance(value, str) and _FAILURE_CODE.fullmatch(value) else None
+                ) or "sdk_error"
             break
+        else:
+            failure = "process_timeout"
     except (BrokenPipeError, ConnectionResetError):
         # The worker exited before reading its request; reap it below.
         pass
     finally:
+        if not succeeded and failure is None:
+            # The pipe closed without an answer: let the worker's own exit status
+            # arrive before the group is signalled, so a kill is told from a crash.
+            _wait(process, 0.5)
+        natural_exit = process.poll()
         # Terminate the entire SDK process group, including descendants that
         # might otherwise outlive a successful return. The inherited whole-work
         # descriptor remains held by any child until its actual death.
@@ -117,5 +146,7 @@ def supervised_call(
                 raise ProviderWorkRecoveryBlockedError("provider descendant process group remains")
             time.sleep(0.02)
     if not succeeded:
-        raise ProviderProcessError("isolated provider SDK call failed")
+        if failure is None:
+            failure = "killed" if natural_exit is not None and natural_exit < 0 else "crashed"
+        raise ProviderProcessError("isolated provider SDK call failed", failure)
     return value

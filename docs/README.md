@@ -19,7 +19,7 @@
 | 管理staging原生／custom告警、SNS確認、collector與synthetic通知測試 | [operations/monitoring.md](operations/monitoring.md) |
 | 驗證ingestion、監控queue、診斷delivery或重建RabbitMQ | [operations/ingestion.md](operations/ingestion.md) |
 | 執行partial dump、seed、backfill、cache、reset或raw retention | [operations/data_maintenance.md](operations/data_maintenance.md) |
-| 重跑staging query／ingest baseline或判斷何時進行效能優化 | [operations/performance.md](operations/performance.md) |
+| 重跑staging／production效能基線或判斷何時進行效能優化 | [operations/performance.md](operations/performance.md) |
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
 | 查看待分流的全專案風險與孤兒盤點 | [dev/project-risk-review.md](dev/project-risk-review.md) |
 | FactSet 港股 EOD、每日 HKEX 清單與現行名單回補 | [operations/factset_hk.md](operations/factset_hk.md) |

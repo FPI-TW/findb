@@ -347,8 +347,19 @@ async def test_summary_only_read_is_bounded_and_read_only_with_history(
 
 
 @pytest.mark.asyncio
-async def test_competing_outcome_writers_serialize_summaries(test_session, test_engine):
+@pytest.mark.parametrize("scope", ["plan", "part"])
+async def test_competing_outcome_writers_serialize_summaries(test_session, test_engine, scope):
+    from app.services.delivery_plan_summary import refresh_part_summary
+
     _, _, plan = await _activated_plan(test_session, count=1)
+
+    async def refresh(db, plan_id):
+        if scope == "plan":
+            return await refresh_plan_summary(db, plan_id)
+        # Both members share one part; the waiter must apply its own difference
+        # on top of the counts the first writer committed.
+        return await refresh_part_summary(db, plan_id, plan.parts[0].part_id)
+
     members = list(
         await test_session.scalars(
             select(DailyDeliveryMember)
@@ -362,7 +373,7 @@ async def test_competing_outcome_writers_serialize_summaries(test_session, test_
     async with factory() as first:
         row = await first.get(DailyDeliveryMember, ids[0])
         row.outcome = "blocked"
-        await refresh_plan_summary(first, plan.plan_id)
+        await refresh(first, plan.plan_id)
 
         async def writer():
             async with factory() as second:
@@ -370,7 +381,7 @@ async def test_competing_outcome_writers_serialize_summaries(test_session, test_
                 row.outcome = "blocked"
                 await second.flush()
                 entered.set()
-                await refresh_plan_summary(second, plan.plan_id)
+                await refresh(second, plan.plan_id)
                 await second.commit()
 
         task = asyncio.create_task(writer())
@@ -387,6 +398,7 @@ async def test_competing_outcome_writers_serialize_summaries(test_session, test_
     async with factory() as db:
         stored = await summary(db, plan.plan_id)
         assert stored.blocked_count == 2 and stored.missing_count == 0
+        await _part_counts_match(db, plan.plan_id)
 
 
 @pytest.mark.asyncio
@@ -418,3 +430,463 @@ async def test_failed_retry_updates_plan_summary_and_freshness(test_session):
     ].feeds[0]
     assert full_feed.latest_successful_data_date is None
     assert full_feed.last_run_id == run.run_id and full_feed.last_failure_code == "RETRY_EXHAUSTED"
+
+
+def _count_reconciles(monkeypatch, parts=None):
+    """Record full-cohort classifications; part-scoped ones go to ``parts``."""
+    from app.services import full_market
+
+    calls = []
+    original = full_market.classify_plan
+
+    async def counted(db, plan, members=None):
+        if members is None:
+            calls.append(plan.plan_id)
+        elif parts is not None:
+            parts.append(len(members))
+        return await original(db, plan, members)
+
+    async def reconcile(db, plan, **kwargs):
+        return full_market.summarize_states(plan, await original(db, plan), **kwargs)
+
+    monkeypatch.setattr(full_market, "classify_plan", counted)
+    return calls, reconcile
+
+
+async def _part_counts_match(db, plan_id):
+    stored = await summary(db, plan_id)
+    parts = list(
+        await db.scalars(
+            select(DailyDeliveryPart)
+            .where(DailyDeliveryPart.plan_id == plan_id)
+            .execution_options(populate_existing=True)
+        )
+    )
+    for key in ("data_count", "no_data_count", "missing_count", "blocked_count"):
+        assert sum(getattr(part, key) for part in parts) == getattr(stored, key)
+    assert stored.parts_synced_at == stored.updated_at
+
+
+async def _assert_matches_reconcile(db, plan_id, reconcile):
+    stored = await summary(db, plan_id)
+    expected = await reconcile(db, await db.get(DailyDeliveryPlan, plan_id), gap_limit=0)
+    assert (
+        stored.expected_count,
+        stored.data_count,
+        stored.no_data_count,
+        stored.missing_count,
+        stored.blocked_count,
+    ) == (expected.expected, expected.data, expected.no_data, expected.missing, expected.blocked)
+    return stored
+
+
+@pytest.mark.asyncio
+async def test_queued_run_advances_metadata_without_reconcile(test_session, monkeypatch):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    calls, reconcile = _count_reconciles(monkeypatch)
+    service = IngestionService(test_session)
+    runs = [
+        await service.create_ingestion_run(
+            dataset.dataset_key,
+            source="taifex",
+            delivery_part_id=plan.parts[0].part_id,
+            schema_id="futures_eod",
+            schema_version=1,
+            batch_data_date=DAY,
+            policy_outcome="warn",
+        )
+        for _ in range(2)
+    ]
+    assert calls == []
+    stored = await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
+    assert (stored.latest_run_id, stored.policy_outcome) == (runs[-1].run_id, "warn")
+    assert stored.missing_count == 2
+
+
+@pytest.mark.asyncio
+async def test_deferred_normalizer_leaves_one_terminal_refresh_to_caller(test_session, monkeypatch):
+    from app.services.delivery_plan_summary import refresh_summaries_for_run
+
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    member = await test_session.scalar(
+        select(DailyDeliveryMember)
+        .where(DailyDeliveryMember.plan_id == plan.plan_id)
+        .order_by(DailyDeliveryMember.member_key)
+    )
+    run = await IngestionService(test_session).create_ingestion_run(
+        dataset.dataset_key,
+        source="taifex",
+        delivery_part_id=plan.parts[0].part_id,
+        schema_id="futures_eod",
+        schema_version=1,
+        batch_data_date=DAY,
+    )
+    parts: list[int] = []
+    calls, reconcile = _count_reconciles(monkeypatch, parts)
+    normalizer = FuturesEODContractNormalizer(
+        test_session, {**dataset.config, "_defer_summary_refresh": True}
+    )
+    await normalizer.process({"data": [_quote(session=member.session)]}, run.run_id, commit=False)
+    size = len(plan.parts[0].member_keys)
+    # Only the completion alert check has looked at the part so far.
+    assert parts == [size] and (await summary(test_session, plan.plan_id)).data_count == 0
+    await refresh_summaries_for_run(test_session, run)
+    # The terminal refresh reclassifies only the run's part, never the cohort.
+    assert calls == [] and parts == [size, size]
+    stored = await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
+    assert stored.data_count == 1 and stored.last_completed_at is not None
+    assert stored.latest_run_id == run.run_id
+    await _part_counts_match(test_session, plan.plan_id)
+
+
+@pytest.mark.asyncio
+async def test_full_refresh_never_regresses_newer_latest_run(test_session):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    await IngestionService(test_session).create_ingestion_run(
+        dataset.dataset_key,
+        source="taifex",
+        delivery_part_id=plan.parts[0].part_id,
+        schema_id="futures_eod",
+        schema_version=1,
+        batch_data_date=DAY,
+    )
+    # A run recorded without the plan lock after this refresh observed the scope.
+    newer_id, newer_at = uuid7(), utc_now() + timedelta(seconds=1)
+    stored = await summary(test_session, plan.plan_id)
+    stored.latest_run_id, stored.latest_run_created_at = newer_id, newer_at
+    stored.policy_outcome = "warn"
+    member = await test_session.scalar(
+        select(DailyDeliveryMember).where(DailyDeliveryMember.plan_id == plan.plan_id).limit(1)
+    )
+    member.outcome = "blocked"
+    await refresh_plan_summary(test_session, plan.plan_id)
+    stored = await summary(test_session, plan.plan_id)
+    assert (stored.latest_run_id, stored.latest_run_created_at) == (newer_id, newer_at)
+    assert stored.policy_outcome == "warn" and stored.blocked_count == 1
+
+
+async def _first_member(db, plan_id):
+    return await db.scalar(
+        select(DailyDeliveryMember)
+        .where(DailyDeliveryMember.plan_id == plan_id)
+        .order_by(DailyDeliveryMember.member_key)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("untrusted", ["never_initialized", "other_release"])
+async def test_untrusted_part_counts_take_one_full_refresh(test_session, monkeypatch, untrusted):
+    from app.services.delivery_plan_summary import refresh_summaries_for_run
+
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    if untrusted == "never_initialized":
+        # Plans created before part counts existed.
+        await test_session.execute(
+            text(
+                "UPDATE daily_delivery_part SET data_count = NULL, no_data_count = NULL, "
+                "missing_count = NULL, blocked_count = NULL, mapping_gap_count = NULL "
+                "WHERE plan_id = :plan_id"
+            ),
+            {"plan_id": plan.plan_id},
+        )
+    else:
+        # A rolled-back release rewrites the summary without maintaining parts.
+        await test_session.execute(
+            text(
+                "UPDATE daily_delivery_plan_summary SET updated_at = now() WHERE plan_id = :plan_id"
+            ),
+            {"plan_id": plan.plan_id},
+        )
+    member = await _first_member(test_session, plan.plan_id)
+    run = await IngestionService(test_session).create_ingestion_run(
+        dataset.dataset_key,
+        source="taifex",
+        delivery_part_id=plan.parts[0].part_id,
+        schema_id="futures_eod",
+        schema_version=1,
+        batch_data_date=DAY,
+    )
+    parts: list[int] = []
+    calls, reconcile = _count_reconciles(monkeypatch, parts)
+    normalizer = FuturesEODContractNormalizer(
+        test_session, {**dataset.config, "_defer_summary_refresh": True}
+    )
+    await normalizer.process({"data": [_quote(session=member.session)]}, run.run_id, commit=False)
+    await refresh_summaries_for_run(test_session, run)
+    # The completion check and the refresh each classify the cohort once.
+    assert calls == [plan.plan_id, plan.plan_id]
+    await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
+    await _part_counts_match(test_session, plan.plan_id)
+    # Counts are trusted again, so the next write is part-scoped.
+    calls.clear()
+    blocked = DeliveryOutcomeRequest(
+        version=1,
+        work_item_id=plan.parts[0].work_item_id,
+        member_key=(
+            await test_session.scalars(
+                select(DailyDeliveryMember.member_key)
+                .where(DailyDeliveryMember.plan_id == plan.plan_id)
+                .order_by(DailyDeliveryMember.member_key.desc())
+            )
+        ).first(),
+        outcome="blocked",
+        reason="source_error",
+    )
+    await record_outcome(
+        test_session,
+        plan.plan_id,
+        blocked,
+        provider="taifex",
+        allowed_datasets=[dataset.dataset_key],
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_outcome_updates_its_part_and_responds_from_stored_counts(test_session, monkeypatch):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    member = await _first_member(test_session, plan.plan_id)
+    parts: list[int] = []
+    calls, reconcile = _count_reconciles(monkeypatch, parts)
+    blocked = DeliveryOutcomeRequest(
+        version=1,
+        work_item_id=plan.parts[0].work_item_id,
+        member_key=member.member_key,
+        outcome="blocked",
+        reason="source_error",
+    )
+    response = await record_outcome(
+        test_session,
+        plan.plan_id,
+        blocked,
+        provider="taifex",
+        allowed_datasets=[dataset.dataset_key],
+    )
+    replay = await record_outcome(
+        test_session,
+        plan.plan_id,
+        blocked,
+        provider="taifex",
+        allowed_datasets=[dataset.dataset_key],
+    )
+    assert calls == [] and parts == [len(plan.parts[0].member_keys)]
+    stored = await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
+    for result in (response, replay):
+        assert (result.expected, result.blocked, result.missing, result.mapping_gap) == (
+            stored.expected_count,
+            1,
+            stored.missing_count,
+            0,
+        )
+        assert result.gaps == []
+    await _part_counts_match(test_session, plan.plan_id)
+
+
+@pytest.mark.asyncio
+async def test_mapping_gap_outcome_keeps_counts_and_mapping_gap_total(test_session, monkeypatch):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    member = await _first_member(test_session, plan.plan_id)
+    member.mapping_status = "gap"
+    await refresh_plan_summary(test_session, plan.plan_id)
+    before = await summary(test_session, plan.plan_id)
+    counts = (before.blocked_count, before.missing_count)
+    calls, reconcile = _count_reconciles(monkeypatch)
+    gap = DeliveryOutcomeRequest(
+        version=1,
+        work_item_id=plan.parts[0].work_item_id,
+        member_key=member.member_key,
+        outcome="blocked",
+        reason="mapping_gap",
+    )
+    response = await record_outcome(
+        test_session, plan.plan_id, gap, provider="taifex", allowed_datasets=[dataset.dataset_key]
+    )
+    stored = await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
+    assert calls == [] and (stored.blocked_count, stored.missing_count) == counts == (1, 1)
+    full = await reconcile(test_session, plan, gap_limit=0)
+    assert response.mapping_gap == full.mapping_gap == 1 and response.is_late == full.is_late
+
+
+@pytest.mark.asyncio
+async def test_alert_check_classifies_only_the_run_part(test_session, monkeypatch):
+    from app.services.delivery_plan_summary import plan_complete_with_part
+
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    member = await _first_member(test_session, plan.plan_id)
+    parts: list[int] = []
+    calls, _ = _count_reconciles(monkeypatch, parts)
+    part_id = plan.parts[0].part_id
+    assert not await plan_complete_with_part(test_session, plan, part_id)
+    run = await IngestionService(test_session).create_ingestion_run(
+        dataset.dataset_key,
+        source="taifex",
+        delivery_part_id=part_id,
+        schema_id="futures_eod",
+        schema_version=1,
+        batch_data_date=DAY,
+    )
+    others = list(
+        await test_session.scalars(
+            select(DailyDeliveryMember).where(
+                DailyDeliveryMember.plan_id == plan.plan_id,
+                DailyDeliveryMember.member_id != member.member_id,
+            )
+        )
+    )
+    for other in others:
+        other.outcome = "no_data"
+    await refresh_plan_summary(test_session, plan.plan_id)
+    calls.clear()
+    normalizer = FuturesEODContractNormalizer(
+        test_session, {**dataset.config, "_defer_summary_refresh": True}
+    )
+    # The pending write completes the plan before the summary itself is refreshed.
+    await normalizer.process({"data": [_quote(session=member.session)]}, run.run_id, commit=False)
+    assert await plan_complete_with_part(test_session, plan, part_id)
+    assert (await summary(test_session, plan.plan_id)).data_count == 0
+    assert calls == [] and set(parts) == {len(plan.parts[0].member_keys)}
+
+
+@pytest.mark.asyncio
+async def test_drift_audit_corrects_only_unchanged_stale_counts(test_session, caplog):
+    from app.services.delivery_plan_summary import correct_summary_drift, stored_counts
+    from app.services.full_market import reconcile_plan
+
+    _, _, plan = await _activated_plan(test_session, count=1)
+    await test_session.execute(
+        text(
+            "UPDATE daily_delivery_plan_summary SET missing_count = missing_count - 1, "
+            "blocked_count = blocked_count + 1 WHERE plan_id = :plan_id"
+        ),
+        {"plan_id": plan.plan_id},
+    )
+    before = await stored_counts(test_session, plan.plan_id)
+    full = await reconcile_plan(test_session, plan, gap_limit=0)
+    # A summary written after the snapshot is not comparable with it.
+    await test_session.execute(
+        text("UPDATE daily_delivery_plan_summary SET updated_at = now() WHERE plan_id = :plan_id"),
+        {"plan_id": plan.plan_id},
+    )
+    assert not await correct_summary_drift(test_session, plan.plan_id, before, full)
+    before = await stored_counts(test_session, plan.plan_id)
+    with caplog.at_level("WARNING", logger="app.services.delivery_plan_summary"):
+        assert await correct_summary_drift(test_session, plan.plan_id, before, full)
+    assert "Plan summary drift corrected" in caplog.text
+    stored = await summary(test_session, plan.plan_id)
+    assert (stored.missing_count, stored.blocked_count) == (full.missing, full.blocked)
+    await _part_counts_match(test_session, plan.plan_id)
+    before = await stored_counts(test_session, plan.plan_id)
+    assert not await correct_summary_drift(test_session, plan.plan_id, before, full)
+
+
+@pytest.mark.asyncio
+async def test_part_classification_matches_full_cohort_across_parts(test_session):
+    from app.services.full_market import classify_plan
+    from app.services.normalize.contracts import MarketEODContractNormalizer
+
+    dataset, body, plan = await _activated_plan(test_session, "us_equity_eod", count=51)
+    assert len(plan.parts) == 2
+    part = plan.parts[1]
+    symbol = part.member_keys[0]
+    run = await IngestionService(test_session).create_ingestion_run(
+        dataset.dataset_key,
+        source=body.provider,
+        delivery_part_id=part.part_id,
+        schema_id="market_eod",
+        schema_version=1,
+        batch_data_date=DAY,
+    )
+    normalizer = MarketEODContractNormalizer(
+        test_session, {**dataset.config, "_ingest_source": body.provider}
+    )
+    row = {
+        "symbol": symbol,
+        "source_symbol": symbol,
+        "trade_date": DAY.isoformat(),
+        "currency": "USD",
+        "open": "100",
+        "high": "110",
+        "low": "90",
+        "close": "105",
+        "volume": 5,
+    }
+    await normalizer.process({"data": [row]}, run.run_id)
+    full = {
+        item.member.member_key: (item.state, item.reason)
+        for item in await classify_plan(test_session, plan)
+    }
+    assert full[symbol] == ("data", None)
+    for frozen in plan.parts:
+        members = list(
+            await test_session.scalars(
+                select(DailyDeliveryMember).where(DailyDeliveryMember.part_id == frozen.part_id)
+            )
+        )
+        scoped = await classify_plan(test_session, plan, members)
+        assert {item.member.member_key: (item.state, item.reason) for item in scoped} == {
+            key: full[key] for key in frozen.member_keys
+        }
+    stored = await summary(test_session, plan.plan_id)
+    assert stored.data_count == 1
+    await _part_counts_match(test_session, plan.plan_id)
+
+
+@pytest.mark.asyncio
+async def test_outcome_waits_behind_a_part_refresh_without_deadlock(test_session, test_engine):
+    dataset, _, plan = await _activated_plan(test_session, count=1)
+    member = await _first_member(test_session, plan.plan_id)
+    body = DeliveryOutcomeRequest(
+        version=1,
+        work_item_id=plan.parts[0].work_item_id,
+        member_key=member.member_key,
+        outcome="blocked",
+        reason="source_error",
+    )
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def outcome():
+        async with factory() as source:
+            return await record_outcome(
+                source,
+                plan.plan_id,
+                body,
+                provider="taifex",
+                allowed_datasets=[dataset.dataset_key],
+            )
+
+    async with factory() as worker:
+        # A worker's part refresh takes the plan lock first...
+        await worker.execute(
+            select(DailyDeliveryPlan)
+            .where(DailyDeliveryPlan.plan_id == plan.plan_id)
+            .with_for_update()
+        )
+        task = asyncio.create_task(outcome())
+        try:
+            # ...while the outcome locks its member and queues for the plan lock...
+            for _ in range(100):
+                waiting = await worker.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                        "WHERE NOT l.granted AND a.datname = current_database()"
+                    )
+                )
+                if waiting:
+                    break
+                await asyncio.sleep(0.05)
+            assert waiting
+            # ...then writes the part counts, which the outcome must not hold.
+            await worker.execute(text("SET LOCAL lock_timeout = '5s'"))
+            await worker.execute(
+                text(
+                    "UPDATE daily_delivery_part SET data_count = data_count WHERE part_id = :part"
+                ),
+                {"part": plan.parts[0].part_id},
+            )
+            await worker.commit()
+            summary = await asyncio.wait_for(task, 10)
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+    assert summary.blocked == 1

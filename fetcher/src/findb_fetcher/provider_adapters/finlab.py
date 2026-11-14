@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.metadata
-import math
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from typing import Any
@@ -11,7 +10,8 @@ from typing import Any
 from findb_fetcher.full_market_errors import MemberUnavailableError, ReadinessBlockedError
 from findb_fetcher.full_market_universe import (
     TW_COMPANY_URLS,
-    TW_ISIN_URLS,
+    TW_ISIN_ETF_URLS,
+    TW_ISIN_STOCK_URLS,
     canonical_bytes,
     checksum,
     parse_tw_companies,
@@ -42,6 +42,7 @@ from findb_fetcher.providers.finlab import (
     FinLabTargetNotReadyError,
     FinLabValueError,
     build_finlab_dataset_bundle,
+    unobserved,
 )
 from findb_fetcher.providers.finlab import (
     build_market_eod_request as finlab_request,
@@ -50,34 +51,39 @@ from findb_fetcher.providers.finlab import (
 # Shared FinLab evidence URL; the bundle checksum identifies the exact observation.
 FINLAB_PRICE_EVIDENCE_URL = "https://www.finlab.tw/data/price-close?dataset={dataset}"
 FINLAB_PRICE_FIELDS = ("open", "high", "low", "close")
-
-
-def _unobserved(value: object) -> bool:
-    if value is None or isinstance(value, bool):
-        return value is None
-    try:
-        return not math.isfinite(float(value))  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return False
+# A table that cannot be fetched fails for every member alike. The plan retries it
+# as a whole for this long, then the work ends; no member is charged for it.
+FINLAB_OUTAGE_RETRY_SECONDS = 4 * 3600
+FINLAB_OUTAGE_DELAY_SECONDS = 5 * 60
+# The daily quota does not come back within minutes.
+FINLAB_QUOTA_DELAY_SECONDS = 30 * 60
+# Failure classes no retry can clear: the work ends at once.
+_FINLAB_PERMANENT = frozenset({"auth"})
 
 
 def finlab_no_trade(values: Mapping[str, object]) -> bool:
     """FinLab leaves every price empty, with no positive volume, on a day without trades."""
     volume = values["volume"]
-    return all(_unobserved(values[field]) for field in FINLAB_PRICE_FIELDS) and (
-        _unobserved(volume) or volume == 0
+    return all(unobserved(values[field]) for field in FINLAB_PRICE_FIELDS) and (
+        unobserved(volume) or volume == 0
     )
+
+
+def _table_payload(table: FinLabDatasetTable) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "dates": table.dates,
+        "symbols": table.symbols,
+        "values": [[str(value) for value in row] for row in table.values],
+    }
+    if table.previous:
+        # Provenance of every carried price: the earlier close and its date.
+        payload["previous"] = [[symbol, day, str(value)] for symbol, day, value in table.previous]
+    return payload
 
 
 def table_bytes(table: FinLabDatasetTable) -> bytes:
     """The exact detached bytes of one SDK table, as accounted and persisted."""
-    return canonical_bytes(
-        {
-            "dates": table.dates,
-            "symbols": table.symbols,
-            "values": [[str(value) for value in row] for row in table.values],
-        }
-    )
+    return canonical_bytes(_table_payload(table))
 
 
 class FinLabAdapter(ProviderAdapter):
@@ -86,6 +92,8 @@ class FinLabAdapter(ProviderAdapter):
     shared_response_prefix = "finlab_dataset:"
     # Catalogue presence is an SDK observation inside ``build_universe``.
     catalogue_datasets = None
+    outage_retry_seconds = FINLAB_OUTAGE_RETRY_SECONDS
+    outage_holds_plan = True
 
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
@@ -107,30 +115,40 @@ class FinLabAdapter(ProviderAdapter):
         self, feeds: Sequence[Mapping[str, Any]], context: UniverseContext
     ) -> dict[str, UniverseSnapshot]:
         """TWSE/TPEx official lists, mapped by FinLab SDK column presence."""
-        snapshots = {url: context.snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)}
-        companies = {
-            (member["symbol"], member["exchange"])
-            for index, url in enumerate(TW_COMPANY_URLS)
-            for member in parse_tw_companies(snapshots[url], otc=bool(index))
-        }
-        equity = [
-            member
-            for index, url in enumerate(TW_ISIN_URLS)
-            for member in parse_tw_ordinary(snapshots[url], otc=bool(index))
-        ]
-        for member in equity:
-            if (member["symbol"], member["exchange"]) not in companies:
-                member["classification"] = "classification_gap"
-        etfs = [
-            member
-            for index, url in enumerate(TW_ISIN_URLS)
-            for member in parse_tw_etfs(snapshots[url], otc=bool(index))
-        ]
+        # Each dataset downloads only its own lists; a refresh covers one dataset.
+        cohorts: dict[str, list[dict[str, Any]]] = {}
+        official: dict[str, dict[str, bytes]] = {}
+        if "tw_equity_eod" in context.zones:
+            snapshots = {
+                url: context.snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_STOCK_URLS)
+            }
+            companies = {
+                (member["symbol"], member["exchange"])
+                for index, url in enumerate(TW_COMPANY_URLS)
+                for member in parse_tw_companies(snapshots[url], otc=bool(index))
+            }
+            equity = [
+                member
+                for index, url in enumerate(TW_ISIN_STOCK_URLS)
+                for member in parse_tw_ordinary(snapshots[url], otc=bool(index))
+            ]
+            for member in equity:
+                if (member["symbol"], member["exchange"]) not in companies:
+                    member["classification"] = "classification_gap"
+            cohorts["tw_equity_eod"], official["tw_equity_eod"] = equity, snapshots
+        if "tw_etf_eod" in context.zones:
+            snapshots = {url: context.snapshot(url) for url in TW_ISIN_ETF_URLS}
+            cohorts["tw_etf_eod"] = [
+                member
+                for index, url in enumerate(TW_ISIN_ETF_URLS)
+                for member in parse_tw_etfs(snapshots[url], otc=bool(index))
+            ]
+            official["tw_etf_eod"] = snapshots
         # Catalogue presence is independent of daily OHLCV completeness.
         catalogue_snapshots: dict[str, dict[str, bytes]] = {}
         context.refresh_limits()
         gateway = self.gateway(context.observe_response)
-        for dataset, members in (("tw_equity_eod", equity), ("tw_etf_eod", etfs)):
+        for dataset, members in cohorts.items():
             if dataset not in context.dataset_keys:
                 continue
             try:
@@ -160,17 +178,11 @@ class FinLabAdapter(ProviderAdapter):
                 )
         groups = {
             dataset: UniverseSnapshot(
-                context.observed_at.astimezone(context.zones[dataset]).date(), members, evidence
+                context.observed_at.astimezone(context.zones[dataset]).date(),
+                members,
+                official[dataset],
             )
-            for dataset, members, evidence in (
-                (
-                    "tw_equity_eod",
-                    equity,
-                    {url: snapshots[url] for url in (*TW_COMPANY_URLS, *TW_ISIN_URLS)},
-                ),
-                ("tw_etf_eod", etfs, {url: snapshots[url] for url in TW_ISIN_URLS}),
-            )
-            if dataset in context.zones
+            for dataset, members in cohorts.items()
         }
         for dataset, evidence in catalogue_snapshots.items():
             groups[dataset].evidence.update(evidence)
@@ -207,14 +219,7 @@ class FinLabAdapter(ProviderAdapter):
                 )
                 context.observe_response(len(table_bytes(tables[field])))
             table_raw = canonical_bytes(
-                {
-                    field: {
-                        "dates": table.dates,
-                        "symbols": table.symbols,
-                        "values": [[str(value) for value in row] for row in table.values],
-                    }
-                    for field, table in tables.items()
-                }
+                {field: _table_payload(table) for field, table in tables.items()}
             )
             # Five independent field responses share a bounded derived bundle.
             if len(table_raw) > 5 * context.max_response_bytes + 64:
@@ -245,6 +250,13 @@ class FinLabAdapter(ProviderAdapter):
                 },
                 stored,
             )
+        if all(unobserved(values[field]) for field in FINLAB_PRICE_FIELDS):
+            # Positive volume with every price empty: open, high, low and close are
+            # the latest earlier close; volume stays as served.
+            earlier = {symbol: close for symbol, _, close in tables["close"].previous}
+            carried = earlier.get(provider_symbol)
+            if carried is not None:
+                values.update(dict.fromkeys(FINLAB_PRICE_FIELDS, carried))
         single_config = FinLabDatasetConfig(
             dataset_key=dataset,
             market="TW",
@@ -256,12 +268,7 @@ class FinLabAdapter(ProviderAdapter):
         )
         single_tables = {
             field: FinLabDatasetTable(
-                dates=table.dates,
-                symbols=(member["provider_symbol"],),
-                values=tuple(
-                    (values[table.symbols.index(member["provider_symbol"])],)
-                    for values in table.values
-                ),
+                dates=table.dates, symbols=(provider_symbol,), values=((values[field],),)
             )
             for field, table in tables.items()
         }
@@ -287,8 +294,30 @@ class FinLabAdapter(ProviderAdapter):
                 wait="publication",
                 code="finlab_target_not_ready",
             )
+        if phase == "member" and isinstance(exc, (FinLabSdkError, FinLabConfigError)):
+            # Only the shared table fetch raises these in the member loop, so the
+            # failure belongs to the provider or the account, never to this member.
+            code = (
+                exc.code
+                if isinstance(exc, FinLabOperationalError)
+                else "config"
+                if isinstance(exc, FinLabConfigError)
+                else "table_invalid"
+            )
+            if isinstance(exc, FinLabConfigError) or code in _FINLAB_PERMANENT:
+                return ProviderFailure(FailureKind.WORK_FAILED, code="finlab_" + code)
+            return ProviderFailure(
+                FailureKind.ROUND_RETRY,
+                wait="outage",
+                code="finlab_" + code,
+                retry_after=(
+                    FINLAB_QUOTA_DELAY_SECONDS if code == "quota" else FINLAB_OUTAGE_DELAY_SECONDS
+                ),
+            )
         if phase == "maintenance":
             if isinstance(exc, FinLabOperationalError):
+                if exc.code in _FINLAB_PERMANENT:
+                    return ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_AUTH")
                 return ProviderFailure(
                     FailureKind.ROUND_RETRY, code="MAINTENANCE_FINLAB_OPERATIONAL"
                 )
@@ -308,4 +337,6 @@ class FinLabAdapter(ProviderAdapter):
     def diagnostic(self, exc: BaseException) -> dict[str, Any] | None:
         if isinstance(exc, FinLabValueError):
             return {"category": f"finlab_value:{exc.code}"}
+        if isinstance(exc, FinLabOperationalError):
+            return {"category": f"finlab_sdk:{exc.code}"}
         return None

@@ -369,3 +369,135 @@ def test_authoritative_window_denial_preserves_budget_even_if_local_clock_is_ope
         )
     assert runtime.last_batch["reason"] == "acquisition_window_closed"
     assert source.outcomes == []
+
+
+def test_status_only_revisits_do_not_spend_member_budget(tmp_path, monkeypatch, capsys):
+    from uuid import UUID
+
+    from findb_fetcher.full_market_universe import canonical_bytes
+
+    runtime, _, release, plan, acquired, _, _ = harness(tmp_path, monkeypatch, count=40)
+    statuses = []
+
+    class Delivery:
+        def prepare(self, value):
+            pytest.fail("an accepted body is not prepared again")
+
+        def deliver(self, value):
+            pytest.fail("an accepted body is not delivered again")
+
+        def get_run_status(self, run_id, *, expected):
+            statuses.append(expected.idempotency_key)
+            return SimpleNamespace(
+                status="processing", failed_records=0, total_records=1, success_records=1
+            )
+
+    runtime.delivery = Delivery()
+    for i in range(10):
+        key = f"part:S{i}"
+        request = {
+            "idempotency_key": f"full:S{i}",
+            "dataset_key": "tw_equity_eod",
+            "schema_id": "market_eod",
+            "schema_version": 1,
+        }
+        runtime.state.prepare(key, canonical_bytes([request]))
+        runtime.state.save_sequence_receipt(key, request["idempotency_key"], str(UUID(int=i + 1)))
+    runtime._deliver_plan(plan, release, {})
+    # Ten normalizing members only read their runs; all 25 budget slots stay
+    # with members that still need a provider acquisition.
+    assert statuses == [f"full:S{i}" for i in range(10)]
+    assert acquired == [f"S{i}" for i in range(10, 35)]
+    assert runtime.last_batch["processed"] == 25
+    # Timing is logged per batch but never enters the durable batch/proof.
+    assert "timing" not in runtime.state.plan_progress(plan["plan_id"])["last_batch"]
+    logged = [
+        json.loads(line)["delivery_timing"]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"delivery_timing"')
+    ]
+    # 10 status-only revisits plus 25 acquisitions, logged at the end of delivery.
+    assert logged[-1]["final"] and logged[-1]["members"] == 35
+    assert isinstance(logged[-1]["timing"], dict)
+
+
+def test_delivery_timing_logs_each_interval_without_daily_policy(tmp_path, monkeypatch, capsys):
+    runtime, _, release, plan, acquired, _, elapsed = harness(tmp_path, monkeypatch, count=5)
+    runtime.daily_policy = None
+
+    def slow(member, *args):
+        acquired.append(member["member_key"])
+        elapsed[0] += 25
+        return []
+
+    runtime._acquire = slow
+    runtime._deliver_plan(plan, release, {})
+    logged = [
+        json.loads(line)["delivery_timing"]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"delivery_timing"')
+    ]
+    # Production runs without a batch policy: a long delivery still logs once a
+    # minute, then a final line for the remainder.
+    assert [entry["final"] for entry in logged] == [False, True]
+    assert [entry["members"] for entry in logged] == [4, 1]
+    assert logged[0]["seconds"] == 75
+    assert len(acquired) == 5
+
+
+def test_closed_acquisition_skips_remaining_unprepared_members(tmp_path, monkeypatch):
+    from uuid import UUID
+
+    from findb_fetcher import provider_work
+    from findb_fetcher.full_market_universe import canonical_bytes
+
+    runtime, _, release, plan, acquired, _, _ = harness(tmp_path, monkeypatch, count=6)
+    runtime.daily_policy = None
+    restores, gates, statuses = [], [], []
+
+    class Owner:
+        dispatch_observations = 0
+        journal = None
+        work = {"kind": "daily", "state": "open"}
+
+        def restore(self, *, member_key):
+            restores.append(member_key)
+            return []
+
+        def authorize(self):
+            return None
+
+        def request(self, action):
+            return {"work_id": None, "trade_date": None, "repair_required": False}
+
+    class Delivery:
+        def get_run_status(self, run_id, *, expected):
+            statuses.append(expected.idempotency_key)
+            return SimpleNamespace(
+                status="completed", failed_records=0, total_records=1, success_records=1
+            )
+
+    monkeypatch.setattr(provider_work, "require_owner", lambda provider: Owner())
+    allowed = iter([True, False])  # the scheduler stops after the first acquisition
+
+    def gate():
+        gates.append(True)
+        return next(allowed, False)
+
+    runtime._acquisition_allowed = gate
+    runtime.delivery = Delivery()
+    request = {
+        "idempotency_key": "full:S4",
+        "dataset_key": "tw_equity_eod",
+        "schema_id": "market_eod",
+        "schema_version": 1,
+    }
+    runtime.state.prepare("part:S4", canonical_bytes([request]))
+    runtime.state.save_sequence_receipt("part:S4", "full:S4", str(UUID(int=4)))
+    runtime._deliver_plan(plan, release, {})
+    assert acquired == ["S0"]
+    # After the gate first says no, unprepared members cost no probe or gate RPC...
+    assert restores == ["S0", "S1"] and len(gates) == 2
+    # ...while a locally prepared body still settles its run.
+    assert statuses == ["full:S4"]
+    assert runtime.state.plan_progress(plan["plan_id"])["counts"] == {"complete": 2, "pending": 4}

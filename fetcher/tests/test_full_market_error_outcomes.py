@@ -966,6 +966,7 @@ class _SettleOwner:
         self.journal = SimpleNamespace(manifest=lambda: {"plan_id": "p"})
         self.settled = []
         self.delays = []
+        self.proofs = []
 
     def request(self, *_):
         return {}
@@ -976,6 +977,7 @@ class _SettleOwner:
     def settle(self, desired, **kwargs):
         self.settled.append((desired, kwargs.get("failure_code")))
         self.delays.append(kwargs.get("delay"))
+        self.proofs.append(kwargs.get("proof"))
 
 
 @pytest.mark.parametrize(
@@ -1004,6 +1006,112 @@ def test_settlement_only_lets_member_scoped_manuals_continue_the_plan(
     try:
         runtime._settle_queued_round(owner)
         assert owner.settled == [expected]
+    finally:
+        runtime.close()
+
+
+def _gap(key: str, reason: str = "mapping_gap") -> dict:
+    return {"member_key": key, "status": "blocked", "reason": reason}
+
+
+@pytest.mark.parametrize(
+    "other,summary,expected,mapping_gaps",
+    [
+        # Mapping gaps are all the plan lacks: nothing is left to acquire or review.
+        (
+            "complete",
+            {"missing": 0, "blocked": 1, "mapping_gap": 1, "gaps": [_gap("AAPL")]},
+            ("partial", None),
+            ["AAPL"],
+        ),
+        (
+            "mapping_gap",
+            {"missing": 0, "blocked": 2, "mapping_gap": 2, "gaps": [_gap("MSFT"), _gap("AAPL")]},
+            ("partial", None),
+            ["AAPL", "MSFT"],
+        ),
+        # Source still misses a member, or another member is blocked for its own reason.
+        (
+            "complete",
+            {"missing": 1, "blocked": 1, "mapping_gap": 1, "gaps": [_gap("AAPL")]},
+            ("failed", "MANUAL_INTERVENTION_REQUIRED"),
+            None,
+        ),
+        (
+            "member_unavailable",
+            {
+                "missing": 0,
+                "blocked": 2,
+                "mapping_gap": 1,
+                "gaps": [_gap("AAPL"), _gap("MSFT", "source_error")],
+            },
+            ("failed", "MANUAL_INTERVENTION_REQUIRED"),
+            None,
+        ),
+        # Source truncated its gap list, so the members cannot be named.
+        (
+            "mapping_gap",
+            {"missing": 0, "blocked": 2, "mapping_gap": 2, "gaps": [_gap("AAPL")]},
+            ("failed", "MANUAL_INTERVENTION_REQUIRED"),
+            None,
+        ),
+        # A plan with no gaps at all is judged by its status alone.
+        (
+            "complete",
+            {"missing": 0, "blocked": 0, "mapping_gap": 0, "gaps": []},
+            ("failed", "MANUAL_INTERVENTION_REQUIRED"),
+            None,
+        ),
+    ],
+)
+def test_a_plan_lacking_only_mapping_gaps_settles_partial(
+    tmp_path, other, summary, expected, mapping_gaps
+):
+    runtime, source, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {
+        **plan,
+        "status": "incomplete",
+        "summary": {**plan["summary"], **summary},
+    }
+    runtime.state.finish("fp1:123:AAPL", status="manual", reason="mapping_gap")
+    if other == "complete":
+        runtime.state.finish("fp1:123:MSFT", status="complete")
+    else:
+        runtime.state.finish("fp1:123:MSFT", status="manual", reason=other)
+    owner = _SettleOwner()
+    try:
+        runtime._settle_queued_round(owner)
+        assert owner.settled == [expected]
+        assert owner.proofs[0].get("mapping_gaps") == mapping_gaps
+        assert ("manual_reason" in owner.proofs[0]) is (expected[0] == "failed")
+    finally:
+        runtime.close()
+
+
+def test_a_systemic_manual_member_still_fails_a_plan_lacking_only_mapping_gaps(tmp_path):
+    runtime, source, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {
+        **plan,
+        "status": "incomplete",
+        "summary": {
+            **plan["summary"],
+            "missing": 0,
+            "blocked": 1,
+            "mapping_gap": 1,
+            "gaps": [_gap("AAPL")],
+        },
+    }
+    runtime.state.finish("fp1:123:AAPL", status="manual", reason="mapping_gap")
+    runtime.state.finish("fp1:123:MSFT", status="manual", reason="source_rejected")
+    owner = _SettleOwner()
+    try:
+        runtime._settle_queued_round(owner)
+        assert owner.settled == [("failed", "MANUAL_INTERVENTION_REQUIRED")]
+        assert "mapping_gaps" not in owner.proofs[0]
     finally:
         runtime.close()
 
@@ -1131,3 +1239,61 @@ def test_existing_checkpoint_gains_diagnostic_table_without_rewriting_work(tmp_p
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM full_work ORDER BY key").fetchall() == before
     assert reopened.prepared("fp1:123:AAPL") == b"prepared delivery"
+
+
+@pytest.mark.parametrize("finished", [True, False])
+def test_settlement_records_finished_runs_so_the_next_attempt_is_the_next_round(
+    tmp_path, monkeypatch, finished
+):
+    from uuid import UUID
+
+    from findb_fetcher import full_market_runtime as runtime_module
+    from findb_fetcher.full_market_universe import canonical_bytes
+
+    runtime, source, _ = _runtime(tmp_path)
+    plan = _plan()
+    runtime.state.record_plan(plan, runtime.provider)
+    source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
+    # AAPL waits for the next no-data round; MSFT was delivered late in this round.
+    runtime.state.finish("fp1:123:AAPL", status="pending", reason="no_data", now=time.time())
+    with runtime.state.connection() as db:
+        db.execute("UPDATE full_work SET attempts=1 WHERE key='fp1:123:AAPL'")
+    request = {
+        "idempotency_key": "full:msft",
+        "dataset_key": "us_equity_eod",
+        "schema_id": "market_eod",
+        "schema_version": 1,
+    }
+    runtime.state.prepare("fp1:123:MSFT", canonical_bytes([request]))
+    runtime.state.save_sequence_receipt("fp1:123:MSFT", "full:msft", str(UUID(int=7)))
+    runtime.state.finish("fp1:123:MSFT", status="prepared", reason="normalizing", now=time.time())
+    reads = []
+
+    class Delivery:
+        def get_run_status(self, run_id, *, expected):
+            reads.append((run_id, expected.idempotency_key))
+            return SimpleNamespace(
+                status="completed" if finished else "processing",
+                failed_records=0,
+                total_records=1,
+                success_records=1,
+            )
+
+    runtime.delivery = Delivery()
+    monkeypatch.setattr(runtime_module, "NORMALIZING_SETTLE_WAIT_SECONDS", 0)
+    owner = _SettleOwner()
+    try:
+        runtime._settle_queued_round(owner)
+    finally:
+        runtime.close()
+    assert reads == [(UUID(int=7), "full:msft")]
+    statuses = _statuses(runtime)
+    assert owner.settled == [("retry", None)]
+    if finished:
+        # No near-immediate attempt just to read MSFT: the next one is the no-data round.
+        assert statuses["MSFT"][0] == "complete"
+        assert owner.delays[-1] > 25 * 60
+    else:
+        # A run still processing keeps its one-minute revisit.
+        assert statuses["MSFT"][:2] == ("prepared", "normalizing")
+        assert owner.delays[-1] <= 61

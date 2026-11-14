@@ -37,6 +37,20 @@ Rate limit 與 security event 依 client IP 分桶。Admin 登入有兩層限制
 - 同一個 client IP 的所有 username 合計：`ADMIN_LOGIN_IP_RATE_LIMIT_REQUESTS`，預設 20 次。
   只換 username 也無法無限嘗試，或無限建立新的桶。
 
+`POST /api/v1/admin/auth/change-password` 以 session 計算舊密碼錯誤次數。同一個 session 累計
+`ADMIN_PASSWORD_CHANGE_MAX_FAILURES`（預設 5）次後，該 session 會被撤銷並回 401，必須重新登入；
+同一使用者的其他 session 各自計算。每次錯誤都會寫入 `change_password_failed` admin audit
+（`resource_type=admin_session`），次數由 audit 計算，所以各 worker 共用、restart 也不會歸零。
+撤銷時另寫 `admin_session_revoked` security event，不記錄輸入的密碼。
+
+Security event 的 log 是單行，欄位直接寫在訊息中，不依賴 log formatter：
+
+- `API credential rejected credential_kind=... endpoint='...' client_ip='...'`
+- `Admin session revoked reason=... session_id=... endpoint='...' client_ip='...'`
+
+來自請求的 `endpoint` 與 `client_ip` 以引號輸出並跳脫控制字元，偽造的換行不能產生假的 log 行。
+任何 log 都不包含輸入的 key 或密碼。
+
 Source、Serve 與登入的限流狀態都存在各 process 的記憶體中，restart 後重置。每個 limiter 只保留
 window 內的時間戳；過期的身分會定期清掉，追蹤數量超過 `RATE_LIMIT_MAX_TRACKED_KEYS`
 （預設 10,000）時，最久未使用的身分會先被淘汰。所以一次性的訪客 IP 或輪換的 username
@@ -257,6 +271,13 @@ Viewer 可用 `GET /admin/universes?status=candidate` 列出待發布版本，�
 最近 published release。列表另支援 `dataset_key`、`provider`、`effective_date`、`page`、
 `page_size`；兩個端點均為唯讀，不會發布候選或建立 daily plan。
 
+`GET /admin/universes/feeds`（Viewer 以上）列出每個可更新名單的 provider／dataset：目前 published 的 release、
+較新的待發布 candidate，以及最近一次手動更新的狀態。Owner 可用 `POST /admin/universes/refresh` 排入一次名單
+更新，body 為 `provider`、`dataset_key` 與至少 10 個字的 `evidence_note`，回應 202 與 `work_id`。
+**手動更新等同核准**：這筆更新送出的名單直接發布，不受 2% 門檻限制，沒有 baseline 時作為第一份 baseline；
+`published_by` 是提出要求的 Owner，要求與發布各留一筆 audit。同一 dataset 已有未結束的手動更新時回 409；
+TAIFEX 的名單由每日報表產生，不提供手動更新（404）。
+
 Owner 使用既有 `PATCH /admin/schedulers/{scheduler_key}`，傳 `desired_state` 與
 `expected_revision`。啟動資格檢查 Owner published baseline，不要求設定日曆；通過後，
 凍結 ready feeds；部分 scope 可 start，重複
@@ -286,6 +307,9 @@ Source／Admin plan 列表、dataset 篩選與監控端點仍接受 `execution_p
 Admin 計畫查詢支援 `dataset_key` 與 `trade_date`；指定任一 `page/page_size` 即啟用分頁（缺省值 1／25，
 每頁上限 100）；回傳 `data` 及標準 `pagination`。依交易日、建立時間、plan ID 降冪穩定排序。
 只使用舊 `limit` 時保持原 `{data}` 回應與預設 20 筆；`limit` 與任一分頁參數混用回傳 422。
+列表加上 `summary_only=true` 時只回傳已持久化的統計：`summary.gaps` 為空陣列、各 part 的 `member_keys` 為空陣列，
+其餘欄位與計數不變。未指定時每個 plan 都會重新分類全部成員並列出缺口，資料量大時每次請求要數秒；需要缺口明細時
+改對單一 plan 讀 `/{plan_id}/summary`。
 `GET /admin/delivery-plans/datasets` 回傳 `{"data":["dataset_key", ...]}`，由指定 profile 的全部計畫去重並排序，
 不受日期或最近筆數限制。以上端點須具 viewer 以上 Admin 權限，皆為唯讀，不改交付狀態。
 缺口總數使用 `missing + blocked`；`summary.gaps` 明細最多 1,000 筆。
@@ -303,6 +327,11 @@ EOD correction（`PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}`）在同
 先鎖定該筆行情，再合併修正欄位、執行阻擋性 DQ、寫入 audit 與 stats。同一行情的並行修正會依序執行；
 後到的修正以前一筆提交後的值重新驗證，合併後違反 OHLC 規則時回 422，不會把兩筆部分修正合成
 未經 DQ 的值。Normalizer upsert 取得同一個 row lock，因此與修正之間也是以整列為單位依序套用。
+
+人工修正優先於之後的所有 ingest。修正會把該列的 `source_priority` 設為 Admin 專用值
+（int4 最小值，比任何 dataset `source_precedence` 都優先），`source` 與 `source_fetched_at`
+保持原值。之後的 rerun、同 provider 較新的 fetch，或優先度更高的 provider 都不會再覆寫這一列；
+HK cutover 重設 Twelve Data 優先度時也會略過。要再改這一列，只能送出新的修正。
 
 Instrument cache的coverage與Serve instrument契約一致，包含`eod`、`minute`及可空的`futures`；
 既有只含前兩者的cache仍可讀取，下一次Admin替換或更新時會正規化為`futures: null`。
@@ -322,6 +351,18 @@ Serve consumer；同一請求不得同時帶Bearer session與`X-API-Key`。完�
 | `413` | Request或payload超限 |
 | `429` | Rate limit，依`Retry-After`重試 |
 | `503` | DB或ingestion暫時不可用，可安全重試 |
+
+### 403 從哪裡來
+
+所有對外請求都先經過 Cloudflare，再經過 nginx，最後才到 FinDB。三層都可能回 403，用 response body 判斷是哪一層：
+
+| 來源 | Body 特徵 | 原因與處理 |
+| --- | --- | --- |
+| Cloudflare | JSON 含 `"cloudflare_error": true`、`"error_code": 1010`、`"error_name": "browser_signature_banned"` | 依 User-Agent 封鎖。目前只有 Python 標準庫 `urllib` 的預設 UA（`Python-urllib/3.x`）會被擋；`requests`、`httpx`、`aiohttp` 與 curl 的預設 UA 都可以通過。用 `urllib` 時請自訂 `User-Agent`，例如 `my-app/1.0`。請求沒有到達 FinDB，不會留下 security event，也不會計入 rate limit。 |
+| nginx | `{"detail":"Source API client IP not allowlisted"}` | 只出現在 `/api/v1/source/*`：來源 IP 不在 Source allowlist 中。 |
+| FinDB | JSON `detail`，例如 `Invalid API key`、`Invalid admin credential`、`Insufficient admin role`、`Password change required`，或 `Source ... scope denied` | credential 無效、權限不足，或 scope 不符。 |
+
+上表的 Cloudflare 行為是 2026-11-12 在 staging 與 production 實測的結果，兩個環境相同。Cloudflare 的 security 設定不在 repo 的 IaC 內，調整後須重新實測並更新本表。
 
 Canonical ingest error提供穩定`code`及可用時的`attempt_id`；client依code分類，不解析
 人類訊息。Datetime使用含timezone的ISO 8601並正規化為UTC；業務日期用`YYYY-MM-DD`；

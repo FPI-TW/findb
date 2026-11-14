@@ -27,9 +27,11 @@ from findb_fetcher.full_market_universe import (
     NASDAQ_URLS,
     TAIFEX_URL,
     TW_COMPANY_URLS,
-    TW_ISIN_URLS,
+    TW_ISIN_ETF_URLS,
+    TW_ISIN_STOCK_URLS,
     canonical_bytes,
 )
+from isin_support import class_page
 from test_provider_adapter_golden import _clock, _runtime
 
 GOLDEN = Path(__file__).parent / "fixtures/provider_universe_golden.json"
@@ -196,19 +198,6 @@ def test_factset_universe_refresh_is_byte_identical(tmp_path, monkeypatch):
     _check("factset", {"queried": queried, **result})
 
 
-def _isin(rows: list[tuple[str, str, str]], *, etf: bool = False) -> bytes:
-    html = "<table><tr><td>股票</td></tr>"
-    for symbol, cfi, listed in rows:
-        if symbol == "ETF":
-            html += "<tr><td>ETF</td></tr>"
-            continue
-        html += (
-            f"<tr><td>{symbol}　名稱</td><td>TW000{symbol}</td><td>{listed}</td>"
-            f"<td>上市</td><td>產業</td><td>{cfi}</td><td></td></tr>"
-        )
-    return (html + "</table>").encode("cp950")
-
-
 @pytest.mark.parametrize("dataset_keys", [["tw_equity_eod"], ["tw_etf_eod"]], ids=["equity", "etf"])
 def test_finlab_universe_refresh_is_byte_identical(tmp_path, monkeypatch, dataset_keys):
     import importlib.metadata
@@ -233,21 +222,17 @@ def test_finlab_universe_refresh_is_byte_identical(tmp_path, monkeypatch, datase
     official = {
         TW_COMPANY_URLS[0]: '[{"公司代號":"2330"},{"公司代號":"1101"}]'.encode(),
         TW_COMPANY_URLS[1]: b'[{"SecuritiesCompanyCode":"6488"}]',
-        TW_ISIN_URLS[0]: _isin(
+        TW_ISIN_STOCK_URLS[0]: class_page(
             [
                 ("2330", "ESVUFR", "1994/09/05"),
                 ("1101", "ESVUFR", "1962/02/09"),
                 ("2317", "ESVUFR", "1991/06/18"),
-                ("ETF", "", ""),
-                ("0050", "CEOGEU", "2003/06/30"),
             ]
         ),
-        TW_ISIN_URLS[1]: _isin(
-            [
-                ("6488", "ESVUFR", "2014/03/26"),
-                ("ETF", "", ""),
-                ("00632R", "CEOGEU", "2014/10/31"),
-            ]
+        TW_ISIN_STOCK_URLS[1]: class_page([("6488", "ESVUFR", "2014/03/26")], otc=True),
+        TW_ISIN_ETF_URLS[0]: class_page([("0050", "CEOGEU", "2003/06/30")], security_type="ETF"),
+        TW_ISIN_ETF_URLS[1]: class_page(
+            [("00632R", "CEOGEU", "2014/10/31")], otc=True, security_type="ETF"
         ),
     }
     result = _refresh(tmp_path, monkeypatch, "finlab", official, dataset_keys)

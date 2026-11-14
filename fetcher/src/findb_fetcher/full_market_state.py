@@ -38,6 +38,19 @@ FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS = 1800
 ACCOUNT_LEDGER_RETENTION_SECONDS = 7 * 86400
 ACCOUNT_LEDGER_PRUNE_INTERVAL_SECONDS = 86400
 ACCOUNT_LEDGER_PRUNE_BATCH = 5000
+# Member-level failure reasons a plan reports; the others are transient states.
+_FAILURE_REASONS = (
+    "source_error",
+    "source_rejected",
+    "normalization_failed",
+    "mapping_gap",
+    "member_unavailable",
+    "retry_exhausted",
+    "empty_response",
+    "unknown_dispatch",
+)
+# Failed members one health report lists as examples, across all its plans.
+HEALTH_FAILURE_SAMPLES = 20
 CLOSED_PLAN_RETENTION_SECONDS = 7 * 86400
 CLOSED_PLAN_PRUNE_INTERVAL_SECONDS = 86400
 
@@ -736,7 +749,12 @@ class FullMarketState:
                 (scope, cursor or 0, canonical_bytes(batch) if batch is not None else None, cursor),
             )
 
-    def plan_progress(self, plan_id: str) -> dict[str, Any]:
+    def plan_progress(self, plan_id: str, *, failure_limit: int | None = None) -> dict[str, Any]:
+        """Counts, failed members and the last batch of one plan.
+
+        ``failure_limit`` bounds the listed members; ``failure_counts`` always covers them all.
+        """
+        failed = f"plan_id=? AND reason IN ({','.join('?' * len(_FAILURE_REASONS))})"
         with self.connection() as db:
             counts = dict(
                 db.execute(
@@ -744,15 +762,22 @@ class FullMarketState:
                     (plan_id,),
                 ).fetchall()
             )
+            failure_counts = dict(
+                db.execute(
+                    f"SELECT reason,COUNT(*) FROM full_work WHERE {failed} GROUP BY reason ORDER BY reason",
+                    (plan_id, *_FAILURE_REASONS),
+                ).fetchall()
+            )
             failures = db.execute(
-                "SELECT member_key,reason,attempts FROM full_work WHERE plan_id=? AND reason IN ('source_error','source_rejected','normalization_failed','mapping_gap','member_unavailable','retry_exhausted','empty_response','unknown_dispatch') ORDER BY key",
-                (plan_id,),
+                f"SELECT member_key,reason,attempts FROM full_work WHERE {failed} ORDER BY key LIMIT ?",
+                (plan_id, *_FAILURE_REASONS, -1 if failure_limit is None else failure_limit),
             ).fetchall()
             batch = db.execute(
                 "SELECT batch FROM full_schedule WHERE scope=?", (plan_id,)
             ).fetchone()
         return {
             "counts": counts,
+            "failure_counts": failure_counts,
             "failures": [dict(row) for row in failures],
             "last_batch": json.loads(batch[0]) if batch and batch[0] else None,
         }
@@ -1262,6 +1287,14 @@ class FullMarketState:
                     (provider,),
                 ).fetchall()
             )
+        # Health is logged every cycle: each plan reports its failures as counts,
+        # and the whole report lists only a few failed members as examples.
+        plans = []
+        samples = HEALTH_FAILURE_SAMPLES
+        for gap in gaps:
+            progress = self.plan_progress(gap["plan_id"], failure_limit=samples)
+            samples -= len(progress["failures"])
+            plans.append({**gap, **progress})
         return {
             "acquisition_protocol_version": 2,
             "universe_refresh": json.loads(refresh["result"]) if refresh else [],
@@ -1271,6 +1304,6 @@ class FullMarketState:
             "date_prerequisites": prerequisites,
             "provider_outages": outages,
             "source_error_diagnostics": diagnostics,
-            "plans": [{**gap, **self.plan_progress(gap["plan_id"])} for gap in gaps],
+            "plans": plans,
             "observed_at": datetime.now(timezone.utc).isoformat(),
         }

@@ -8,10 +8,12 @@ import {
   historicalBackfillCancelSchema,
   historicalBackfillCreateSchema,
   historicalBackfillPreviewSchema,
+  deliveryPlanSummaryRequestSchema,
   deliveryPlansRequestSchema,
   deliveryResourceRequestSchema,
   universeCandidatesRequestSchema,
   universeDiffRequestSchema,
+  universeRefreshRequestSchema,
 } from "./admin-api"
 import {
   fetchDashboardData,
@@ -20,11 +22,14 @@ import {
   cancelHistoricalBackfillData,
   createHistoricalBackfillData,
   previewHistoricalBackfillData,
+  fetchDeliveryPlanSummaryData,
   fetchDeliveryPlansData,
   fetchDeliveryPlanDatasetsData,
   fetchDeliveryResourceData,
   fetchUniverseCandidatesData,
   fetchUniverseDiffData,
+  fetchUniverseFeedsData,
+  requestUniverseRefreshData,
 } from "./admin.server"
 import {
   assertSameOrigin,
@@ -61,6 +66,18 @@ export const loadDeliveryPlans = createServerFn({ method: "POST" })
     setResponseHeader("Vary", "Cookie")
     return withDashboardAuthentication(() =>
       fetchDeliveryPlansData(data, session.token, config.apiBaseUrl)
+    )
+  })
+
+export const loadDeliveryPlanSummary = createServerFn({ method: "POST" })
+  .validator(deliveryPlanSummaryRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    setResponseHeader("Cache-Control", "no-store")
+    setResponseHeader("Vary", "Cookie")
+    return withDashboardAuthentication(() =>
+      fetchDeliveryPlanSummaryData(data, session.token, config.apiBaseUrl)
     )
   })
 
@@ -180,5 +197,32 @@ export const loadUniverseDiff = createServerFn({ method: "POST" })
     markPrivateResponse()
     return withDashboardAuthentication(() =>
       fetchUniverseDiffData(data.releaseId, session.token, config.apiBaseUrl)
+    )
+  })
+
+export const loadUniverseFeeds = createServerFn({ method: "POST" }).handler(
+  async () => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    markPrivateResponse()
+    return withDashboardAuthentication(() =>
+      fetchUniverseFeedsData(session.token, config.apiBaseUrl)
+    )
+  }
+)
+
+export const requestUniverseRefresh = createServerFn({ method: "POST" })
+  .validator(universeRefreshRequestSchema)
+  .handler(async ({ data }) => {
+    assertSameOrigin()
+    const session = await requireDashboardSession()
+    // The refresh publishes its release as approved, which only an Owner may do.
+    if (session.user.role !== "owner") {
+      throw new Error("沒有執行此操作的權限。")
+    }
+    const config = getDashboardConfig()
+    markPrivateResponse()
+    return withDashboardAuthentication(() =>
+      requestUniverseRefreshData(data, session.token, config.apiBaseUrl)
     )
   })

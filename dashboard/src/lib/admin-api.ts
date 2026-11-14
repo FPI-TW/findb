@@ -20,6 +20,30 @@ export const deliveryPlansRequestSchema = z.object({
 })
 export type DeliveryPlansRequest = z.infer<typeof deliveryPlansRequestSchema>
 
+export const deliveryPlanSummaryRequestSchema = z.object({ planId: z.uuid() })
+export type DeliveryPlanSummaryRequest = z.infer<
+  typeof deliveryPlanSummaryRequestSchema
+>
+
+// The plan list carries counts only; `gaps` is filled by the per-plan summary read.
+export const deliveryPlanSummarySchema = z.object({
+  expected: z.number().int().nonnegative(),
+  data: z.number().int().nonnegative(),
+  no_data: z.number().int().nonnegative(),
+  missing: z.number().int().nonnegative(),
+  blocked: z.number().int().nonnegative(),
+  deadline_at: isoDateTime,
+  is_late: z.boolean(),
+  gaps: z.array(
+    z.object({
+      member_key: z.string(),
+      status: z.string(),
+      reason: z.string().nullable().optional(),
+    })
+  ),
+})
+export type DeliveryPlanSummary = z.infer<typeof deliveryPlanSummarySchema>
+
 export const deliveryPlansSchema = z.object({
   skipped: z
     .array(
@@ -65,22 +89,7 @@ export const deliveryPlansSchema = z.object({
           member_sha256: z.string(),
         })
       ),
-      summary: z.object({
-        expected: z.number().int().nonnegative(),
-        data: z.number().int().nonnegative(),
-        no_data: z.number().int().nonnegative(),
-        missing: z.number().int().nonnegative(),
-        blocked: z.number().int().nonnegative(),
-        deadline_at: isoDateTime,
-        is_late: z.boolean(),
-        gaps: z.array(
-          z.object({
-            member_key: z.string(),
-            status: z.string(),
-            reason: z.string().nullable().optional(),
-          })
-        ),
-      }),
+      summary: deliveryPlanSummarySchema,
     })
   ),
 })
@@ -395,6 +404,41 @@ export const universeCandidatesSchema = z.object({
 export type UniverseCandidate = z.infer<
   typeof universeCandidatesSchema
 >["data"][number]
+
+export const universeRefreshSchema = z.object({
+  work_id: z.uuid(),
+  provider: z.string(),
+  dataset_key: z.string(),
+  state: z.string(),
+  requested_by: z.string(),
+  requested_at: isoDateTime,
+  note: z.string(),
+  completed_at: nullableDateTime,
+  failure_code: z.string().nullable(),
+})
+export type UniverseRefresh = z.infer<typeof universeRefreshSchema>
+
+export const universeFeedsSchema = z.object({
+  data: z.array(
+    z.object({
+      provider: z.string(),
+      dataset_key: z.string(),
+      published: universeReleaseSchema.nullable(),
+      candidate: universeReleaseSchema.nullable(),
+      refresh: universeRefreshSchema.nullable(),
+    })
+  ),
+})
+export type UniverseFeed = z.infer<typeof universeFeedsSchema>["data"][number]
+
+export const universeRefreshRequestSchema = z.object({
+  provider: z.string().trim().min(1).max(50),
+  datasetKey: z.string().trim().min(1).max(50),
+  note: z.string().trim().min(10).max(500),
+})
+export type UniverseRefreshRequest = z.infer<
+  typeof universeRefreshRequestSchema
+>
 
 export const universeDiffRequestSchema = z.object({ releaseId: z.uuid() })
 export type UniverseDiffRequest = z.infer<typeof universeDiffRequestSchema>

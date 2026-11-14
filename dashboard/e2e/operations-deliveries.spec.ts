@@ -87,7 +87,7 @@ test("authenticated provider queue shows active daily work and historical FIFO w
   await expect(queue.getByText("等待同供應商目前工作完成")).toBeVisible()
   await expect(queue.getByText("僅排空原交付")).toBeVisible()
   await expect(queue.getByText("2099-10-19T01:00:00Z")).toBeVisible()
-  await expect(queue.getByText("第 2 輪", { exact: false })).toBeVisible()
+  await expect(queue.getByText("第 2 次執行", { exact: false })).toBeVisible()
   await expect(
     queue.getByText("2026-10-07T01:00:00Z", { exact: true })
   ).toHaveCount(3)
@@ -187,6 +187,8 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
   await page.clock.install()
   await login(page)
   await page.getByRole("button", { name: "展開詳細資料" }).first().click()
+  // Gap details load after the row opens; measure the layout once they are in.
+  await expect(page.getByText("已列出 2／總缺口 2")).toBeVisible()
   const table = page.getByRole("table", { name: "交付計畫", exact: true })
   const viewport = table.locator("..")
   const focus = page.getByLabel("交易日", { exact: true })
@@ -537,4 +539,53 @@ test("retired profile deep links show daily plans without profile tabs or pilot 
   expect(
     (await (await request.get(`${backend}/fixture/state`)).json()).mutations
   ).toEqual([])
+})
+
+test("owner refreshes a universe by hand after reading the approval; a viewer cannot", async ({
+  page,
+  request,
+}) => {
+  const refreshPath = "/api/v1/admin/universes/refresh"
+  await request.post(`${backend}/fixture/reset`, { data: { role: "owner" } })
+  await login(page)
+  await page.getByRole("tab", { name: "Universe 名單" }).click()
+  await expect(page).toHaveURL(/tab=candidates/)
+  const table = page.getByRole("table", { name: "Universe 名單", exact: true })
+  await expect(table).toContainText("尚未發布 baseline")
+  const trigger = page.getByRole("button", { name: "手動更新 tw_etf_eod 名單" })
+  await trigger.click()
+  const dialog = page.getByRole("alertdialog")
+  await expect(dialog).toContainText("手動更新等同核准")
+  await expect(dialog).toContainText("會成為第一份 baseline")
+  const confirm = dialog.getByRole("button", { name: "確認更新並核准" })
+  await expect(confirm).toBeDisabled()
+  // Escape leaves nothing behind.
+  await page.keyboard.press("Escape")
+  await expect(dialog).toHaveCount(0)
+  let state = await (await request.get(`${backend}/fixture/state`)).json()
+  expect(state.mutations).toEqual([])
+
+  await trigger.click()
+  await dialog.getByLabel("更新原因").fill("已核對交易所公告的新上市商品")
+  await confirm.click()
+  await expect(table).toContainText("排隊中")
+  await expect(table).toContainText("E2E Owner")
+  await expect(trigger).toBeDisabled()
+  state = await (await request.get(`${backend}/fixture/state`)).json()
+  expect(state.mutations).toEqual([
+    {
+      path: refreshPath,
+      provider: "finlab",
+      dataset_key: "tw_etf_eod",
+      evidence_note: "已核對交易所公告的新上市商品",
+    },
+  ])
+
+  await request.post(`${backend}/fixture/reset`, { data: { role: "viewer" } })
+  await login(page, "viewer")
+  await page.getByRole("tab", { name: "Universe 名單" }).click()
+  await expect(table).toContainText("僅 owner 可更新")
+  await expect(page.getByRole("button", { name: /手動更新/ })).toHaveCount(0)
+  state = await (await request.get(`${backend}/fixture/state`)).json()
+  expect(state.mutations).toEqual([])
 })

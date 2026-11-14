@@ -22,8 +22,11 @@ Source commit
   -> run/job terminal state
 ```
 
-同dataset以PostgreSQL advisory lock串行；不同dataset可並行。Consumer timeout必須高於
-Celery hard time limit及graceful shutdown所需時間。
+同dataset以PostgreSQL advisory lock串行；不同dataset可並行。鎖被占用時，worker先在
+PostgreSQL鎖佇列依序等待最多`NORMALIZATION_LOCK_WAIT_MS`（預設10秒；`0`改回立即嘗試），
+逾時才建立一筆延後5～15秒的新delivery；取得鎖後重新讀取job／run，若重複delivery已由前一個
+持有者結算即直接放鎖返回。等待只在取鎖的短transaction內生效，取得後即commit，不延伸到後續
+statement。Consumer timeout必須高於Celery hard time limit及graceful shutdown所需時間。
 
 ## Scheduler operation
 

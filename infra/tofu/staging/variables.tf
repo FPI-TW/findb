@@ -55,6 +55,37 @@ variable "fetcher_instance_id" {
   type        = string
 }
 
+variable "findb_vpc_id" {
+  description = "VPC of the existing FinDB staging instance; the Cloudflare-only origin security group is created in it."
+  type        = string
+
+  validation {
+    condition     = can(regex("^vpc-[0-9a-f]{8,17}$", var.findb_vpc_id))
+    error_message = "findb_vpc_id must be a VPC ID."
+  }
+}
+
+variable "findb_rds_client_security_group_id" {
+  description = "Existing security group that lets the FinDB staging instance reach RDS; referenced, not managed."
+  type        = string
+
+  validation {
+    condition     = can(regex("^sg-[0-9a-f]{8,17}$", var.findb_rds_client_security_group_id))
+    error_message = "findb_rds_client_security_group_id must be a security group ID."
+  }
+}
+
+# Cloudflare published ranges (https://www.cloudflare.com/ips/); keep equal to production.
+variable "cloudflare_ipv4_cidrs" {
+  type    = list(string)
+  default = ["173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"]
+}
+
+variable "cloudflare_ipv6_cidrs" {
+  type    = list(string)
+  default = ["2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32"]
+}
+
 variable "findb_rds_instance_identifier" {
   description = "Existing FinDB staging RDS DB instance identifier monitored by native CloudWatch metrics; it is referenced, not managed."
   type        = string

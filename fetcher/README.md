@@ -247,7 +247,8 @@ no-data。僅具日期、商品、session、URL/checksum、觀察時間及實質
 證據可以完成 no-data。TAIFEX 明確零 volume 且無成交價會附官方 report 證據提交 no-trade；
 其他未能提供來源證據的商品保持缺口。八次無法恢復的 acquisition/source failure、mapping gap
 或 normalization failure 轉 manual，`--health` 保留 unresolved、late 及 manual-required，交由
-營運人員核實處置，不跳過後將整份 plan 宣稱完成。
+營運人員核實處置，不跳過後將整份 plan 宣稱完成。Health 以各原因的筆數回報失敗成員，只附少量範例；
+cycle 的 health log 有單行上限且內容不變時不逐輪重複，規則見 `docs/operations/full_market.md`。
 
 ## 部署與驗收
 

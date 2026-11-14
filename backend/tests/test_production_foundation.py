@@ -30,6 +30,22 @@ def test_production_hosts_install_the_compose_v2_runtime_dependency() -> None:
     assert '"docker compose version >/dev/null"' in compute
 
 
+def test_only_the_production_fetcher_host_ships_container_output_to_its_log_group() -> None:
+    compute = (REPO_ROOT / "infra/tofu/production/compute.tf").read_text(encoding="utf-8")
+    group = compute.split('resource "aws_cloudwatch_log_group" "fetcher_containers"', 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert 'name              = "/findb/production/fetcher/containers"' in group
+    assert "retention_in_days = 90" in group
+    assert "kms_key_id        = aws_kms_key.logs.arn" in group
+
+    before, statement = compute.split('sid       = "WriteFetcherContainerLogs"', 1)
+    assert before.rstrip().endswith('for_each = each.key == "fetcher" ? [true] : []\n    content {')
+    statement = statement.split("\n    }", 1)[0]
+    assert 'actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]' in statement
+    assert 'resources = ["${aws_cloudwatch_log_group.fetcher_containers.arn}:*"]' in statement
+
+
 def test_only_findb_production_deployer_can_resolve_the_rds_endpoint() -> None:
     iam = (REPO_ROOT / "infra/tofu/production/iam.tf").read_text(encoding="utf-8")
     deploy_policy = iam.split('data "aws_iam_policy_document" "deploy"', 1)[1].split(

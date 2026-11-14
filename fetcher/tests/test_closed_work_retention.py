@@ -22,6 +22,9 @@ OLD_WORK = "019a0000-0000-7000-8000-000000000001"
 UNRECEIPTED = "019a0000-0000-7000-8000-000000000002"
 RECENT_WORK = "019a0000-0000-7000-8000-000000000003"
 OPEN_WORK = "019a0000-0000-7000-8000-000000000004"
+# A closed work that only ever journaled responses (no manifest, delivery or job).
+RESPONSE_ONLY = "019a0000-0000-7000-8000-000000000005"
+SNAPSHOT = "official_snapshot:" + "a" * 64
 
 
 class _Source:
@@ -54,7 +57,23 @@ def _journal(tmp_path: Path) -> Path:
             )
             db.execute("INSERT INTO work_budget VALUES(?,?,?)", (key, "op", 1))
             db.execute("INSERT INTO work_response VALUES(?,?,?,?)", (key, "r", b"{}", "0" * 64))
+            db.execute(
+                "INSERT INTO work_response VALUES(?,?,?,?)", (key, SNAPSHOT, b"x" * 4096, "0" * 64)
+            )
+    with WorkJournal(path, RESPONSE_ONLY).connection() as db:
+        db.execute(
+            "INSERT INTO work_response VALUES(?,?,?,?)",
+            (RESPONSE_ONLY, SNAPSHOT, b"x" * 4096, "0" * 64),
+        )
     return path
+
+
+def _responses(path: Path) -> set[tuple[str, str]]:
+    with sqlite3.connect(path) as db:
+        return {
+            (row[0], row[1].split(":")[0])
+            for row in db.execute("SELECT work_key,response_key FROM work_response")
+        }
 
 
 def _keys(path: Path, table: str) -> set[str]:
@@ -69,20 +88,71 @@ def test_journal_retires_only_week_old_closed_and_receipted_works(
     tmp_path: Path, provider: str, responses_retired: bool
 ) -> None:
     path = _journal(tmp_path)
-    source = _Source({OLD_WORK: OLD, UNRECEIPTED: OLD, RECENT_WORK: RECENT})
+    source = _Source({OLD_WORK: OLD, UNRECEIPTED: OLD, RECENT_WORK: RECENT, RESPONSE_ONLY: OLD})
 
     removed = prune_closed_journal(source, provider, root=tmp_path, now=NOW)
 
-    assert removed == {"works": 1, "unreceipted": 1}
+    assert removed is not None
+    assert {key: removed[key] for key in ("works", "unreceipted")} == {
+        "works": 2,
+        "unreceipted": 1,
+    }
     kept = {UNRECEIPTED, RECENT_WORK, OPEN_WORK}
     assert _keys(path, "work_delivery") == kept
     assert _keys(path, "work_budget") == kept
-    assert _keys(path, "work_response") == (kept if responses_retired else kept | {OLD_WORK})
     assert _keys(path, "work_manifest") == (kept if responses_retired else kept | {OLD_WORK})
+    # Official snapshots have an R2 copy whoever owns the work, so they always go;
+    # the provider's other responses go only where every body is R2-backed.
+    untouched = {(key, name) for key in kept for name in ("r", "official_snapshot")}
+    assert _responses(path) == (untouched if responses_retired else untouched | {(OLD_WORK, "r")})
+    assert removed["responses"] == (3 if responses_retired else 2)
+    assert removed["file_bytes"] > 0 and 0 <= removed["free_bytes"] < removed["file_bytes"]
     # Once a day per provider: the next pass neither asks Source nor deletes.
     assert prune_closed_journal(source, provider, root=tmp_path, now=NOW + 60) is None
     assert len(source.calls) == 1
     assert prune_closed_journal(source, "taifex", root=tmp_path, now=NOW + 60) is not None
+
+
+def test_failed_journal_pass_keeps_its_progress_and_retries_within_the_hour(
+    tmp_path: Path,
+) -> None:
+    path = _journal(tmp_path)
+    source = _Source({OLD_WORK: OLD, RESPONSE_ONLY: OLD})
+    with sqlite3.connect(path) as db:
+        # The second closed work cannot be retired on the first pass.
+        db.execute(
+            "CREATE TRIGGER stuck BEFORE DELETE ON work_response "
+            f"WHEN old.work_key='{RESPONSE_ONLY}' BEGIN SELECT RAISE(ABORT,'stuck'); END"
+        )
+
+    with pytest.raises(sqlite3.Error):
+        prune_closed_journal(source, "finlab", root=tmp_path, now=NOW)
+
+    # The first work stays retired, and the day's claim is released to an hour.
+    assert OLD_WORK not in _keys(path, "work_delivery")
+    assert (RESPONSE_ONLY, "official_snapshot") in _responses(path)
+    assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 3599) is None
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TRIGGER stuck")
+    removed = prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 3600)
+    assert removed is not None and removed["responses"] == 1
+    assert (RESPONSE_ONLY, "official_snapshot") not in _responses(path)
+    # A completed pass holds the claim for the whole day again.
+    assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 7200) is None
+
+
+def test_source_failure_after_the_claim_is_also_retried_within_the_hour(tmp_path: Path) -> None:
+    _journal(tmp_path)
+
+    class Unavailable:
+        def request(self, *args: Any) -> dict[str, Any]:
+            raise RuntimeError("Source unavailable")
+
+    with pytest.raises(RuntimeError):
+        prune_closed_journal(Unavailable(), "finlab", root=tmp_path, now=NOW)
+    source = _Source({OLD_WORK: OLD})
+    assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 60) is None
+    assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 3600) is not None
 
 
 def test_missing_journal_is_never_created(tmp_path: Path) -> None:
@@ -172,3 +242,35 @@ def test_retention_failure_does_not_stop_the_worker(monkeypatch, capsys) -> None
     out = capsys.readouterr().out
     assert '"closed_work_retention": {"failed": "RuntimeError"}' in out
     assert "Source unavailable" not in out
+
+
+def test_sqlite_retention_failure_logs_its_result_code_only(monkeypatch, capsys, tmp_path) -> None:
+    path = tmp_path / "busy.sqlite3"
+    holder = sqlite3.connect(path)
+    holder.execute("CREATE TABLE t(x)")
+    holder.execute("BEGIN IMMEDIATE")
+
+    def locked():
+        waiter = sqlite3.connect(path, timeout=0)
+        try:
+            waiter.execute("BEGIN IMMEDIATE")
+        finally:
+            waiter.close()
+
+    monkeypatch.setattr(full_market_cli, "prune_ledger", lambda: None)
+    runtime = SimpleNamespace(prune_closed_state=locked, drain=lambda: None, pause=lambda: None)
+    control = SimpleNamespace(poll=lambda **_: SimpleNamespace(desired_state="stopped"))
+    try:
+        full_market_cli.run_worker(
+            runtime,
+            control,
+            lambda: True,
+            stopped=threading.Event(),
+            run_forever=False,
+            poll_seconds=1,
+        )
+    finally:
+        holder.close()
+    out = capsys.readouterr().out
+    assert '"closed_work_retention": {"failed": "OperationalError", "code": "SQLITE_BUSY"}' in out
+    assert "locked" not in out

@@ -39,6 +39,10 @@ T = TypeVar("T")
 # stay in R2 for 90 days, so this only bounds local recovery evidence.
 CLOSED_WORK_RETENTION_SECONDS = 7 * 86400
 CLOSED_WORK_PRUNE_INTERVAL_SECONDS = 86400
+# A failed pass keeps what it already retired and is tried again this soon.
+CLOSED_WORK_PRUNE_RETRY_SECONDS = 3600
+# Every provider on the host writes the same journal; retention waits for them.
+CLOSED_WORK_PRUNE_BUSY_SECONDS = 30
 CLOSED_LOOKUP_BATCH = 500
 # Replay state that only an open work reads.
 _JOURNAL_REPLAY_TABLES = (
@@ -49,8 +53,12 @@ _JOURNAL_REPLAY_TABLES = (
     "work_source_error",
 )
 # Response caches retire only where every body is known to have an R2 copy;
-# other formats (SDK datasets, official snapshots, exchange reports) are kept.
+# other formats (SDK datasets, exchange reports) are kept.
 _R2_BACKED_RESPONSES = frozenset({"twelve_data"})
+# Responses that are persisted to R2 inside the call that fetches them, so every
+# journaled body has its copy whichever provider owns the work. Official exchange
+# listings are by far the largest rows (one ISIN page is over 10 MB).
+_R2_BACKED_RESPONSE_NAMES = ("official_snapshot",)
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
@@ -395,11 +403,23 @@ class WorkJournal:
         return shas
 
     def observe_response(self, key: str, body: bytes, *, origin: str) -> None:
-        """Keep rejected target observations without making them replay authority."""
+        """Keep rejected target observations without making them replay authority.
+
+        A poll that observes exactly what the previous one did adds no row: the
+        evidence is unchanged, and an unpublished date is polled many times.
+        """
+        sha256 = hashlib.sha256(body).hexdigest()
         with self.connection() as db:
+            latest = db.execute(
+                "SELECT sha256 FROM work_response_observation WHERE work_key=? "
+                "AND response_key=? AND origin=? ORDER BY rowid DESC LIMIT 1",
+                (self.key, key, origin),
+            ).fetchone()
+            if latest is not None and latest[0] == sha256:
+                return
             db.execute(
                 "INSERT INTO work_response_observation VALUES(?,?,?,?,?,?)",
-                (self.key, key, time.time(), origin, body, hashlib.sha256(body).hexdigest()),
+                (self.key, key, time.time(), origin, body, sha256),
             )
 
     def has_response_observation(
@@ -577,6 +597,9 @@ def durable_response(
                     tuple(data["dates"]),
                     tuple(data["symbols"]),
                     tuple(tuple(row) for row in data["values"]),
+                    # Rows saved before these fields existed carry neither.
+                    tuple(tuple(item) for item in data.get("previous", ())),
+                    tuple(data.get("observed", ())),
                 )
             elif kind in {"dict", "list", "tuple"}:
                 result = tuple(data) if kind == "tuple" else data
@@ -649,6 +672,10 @@ class ProviderWorkSession:
         # Only current-reservation evidence; durable budgets/account debt remain
         # in their existing journals and survive a new session or process.
         self.dispatch_observations = 0
+        # Preparation stages already acknowledged for identical bytes. Source
+        # treats a repeated stage as a no-op fence check and ingest re-checks the
+        # fence itself, so one acknowledgement per stage is the durable evidence.
+        self._acknowledged: set[tuple[str, str, str | None]] = set()
         self.failed = threading.Event()
         self._stop = threading.Event()
         self._heartbeat = threading.Thread(target=self._beat, daemon=True)
@@ -778,7 +805,7 @@ class ProviderWorkSession:
         if self.failed.is_set():
             raise ProviderWorkRecoveryBlockedError("provider work heartbeat is unavailable")
         self.journal.prepare(prepared.idempotency_key, prepared.body)
-        self._preparation_request("prepare", body=prepared.body.decode(), stage="confirm")
+        self.acknowledge(prepared.body.decode(), "confirm")
         return {
             "X-FinDB-Work-Id": self.work["work_id"],
             "X-FinDB-Work-Generation": str(self.work["generation"]),
@@ -796,7 +823,16 @@ class ProviderWorkSession:
         body = json.dumps(
             request, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
         )
-        self._preparation_request("prepare", body=body, stage="intent", job_key=job_key)
+        self.acknowledge(body, "intent", job_key=job_key)
+
+    def acknowledge(self, body: str, stage: str, *, job_key: str | None = None) -> None:
+        """Send one durable preparation stage once per session for identical bytes."""
+        identity = (stage, hashlib.sha256(body.encode()).hexdigest(), job_key)
+        if identity in self._acknowledged:
+            self._check_local_fence()
+            return
+        self._preparation_request("prepare", body=body, stage=stage, job_key=job_key)
+        self._acknowledged.add(identity)
 
     def drain_prepared(self, *, pending_only: bool = False, skip: set[str] | None = None) -> list:
         """Replay only server-retained original bytes; never reconstruct or fetch."""
@@ -1000,13 +1036,15 @@ def prune_closed_journal(
     Runs at most once a day per provider. The journal is shared by every provider
     on the host; Source answers only for the caller's own scope, so each provider
     retires only its own works. A work with any delivery lacking a receipt keeps
-    everything, since its acceptance is not proven locally.
+    everything, since its acceptance is not proven locally. A pass that fails
+    partway keeps the works it already retired and runs again within the hour.
     """
     path = journal_path(root)
     if not path.is_file():
         return None
     now = time.time() if now is None else now
-    db = sqlite3.connect(path)
+    db = sqlite3.connect(path, timeout=CLOSED_WORK_PRUNE_BUSY_SECONDS)
+    claimed = False
     try:
         db.execute("PRAGMA journal_mode=WAL")
         with db:
@@ -1028,13 +1066,14 @@ def prune_closed_journal(
                 str(key)
                 for (key,) in db.execute(
                     "SELECT work_key FROM work_manifest UNION SELECT work_key FROM work_delivery "
-                    "UNION SELECT work_key FROM work_job"
+                    "UNION SELECT work_key FROM work_job UNION SELECT work_key FROM work_response"
                 )
                 if _UUID.fullmatch(str(key))
             )
+        claimed = True
         closed = closed_work_times(source, work_ids=keys)
         cutoff = now - CLOSED_WORK_RETENTION_SECONDS
-        removed = {"works": 0, "unreceipted": 0}
+        removed = {"works": 0, "unreceipted": 0, "responses": 0}
         for key in keys:
             if closed.get(key, now) >= cutoff:
                 continue
@@ -1052,9 +1091,37 @@ def prune_closed_journal(
                     else ()
                 )
                 for table in tables:
-                    db.execute(f"DELETE FROM {table} WHERE work_key=?", (key,))
+                    deleted = db.execute(f"DELETE FROM {table} WHERE work_key=?", (key,)).rowcount
+                    if table == "work_response":
+                        removed["responses"] += deleted
+                if provider not in _R2_BACKED_RESPONSES:
+                    for name in _R2_BACKED_RESPONSE_NAMES:
+                        prefix = name + ":"
+                        removed["responses"] += db.execute(
+                            "DELETE FROM work_response WHERE work_key=? "
+                            "AND substr(response_key,1,?)=?",
+                            (key, len(prefix), prefix),
+                        ).rowcount
             removed["works"] += 1
+        # Deleted pages are reused by later writes; the file itself only shrinks
+        # after an operator VACUUM, so report how much of it is already free.
+        page_size = db.execute("PRAGMA page_size").fetchone()[0]
+        removed["file_bytes"] = db.execute("PRAGMA page_count").fetchone()[0] * page_size
+        removed["free_bytes"] = db.execute("PRAGMA freelist_count").fetchone()[0] * page_size
         return removed
+    except Exception:
+        if claimed:
+            # The claim held the whole day; a failed pass gives most of it back.
+            try:
+                db.rollback()
+                with db:
+                    db.execute(
+                        "UPDATE work_retention SET next_at=? WHERE provider=?",
+                        (now + CLOSED_WORK_PRUNE_RETRY_SECONDS, provider),
+                    )
+            except sqlite3.Error:
+                pass
+        raise
     finally:
         db.close()
 

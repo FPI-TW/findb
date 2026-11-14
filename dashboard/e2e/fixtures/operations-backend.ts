@@ -10,6 +10,9 @@ import {
   providerWorkSchema,
   schedulerSchema,
   type Scheduler,
+  universeFeedsSchema,
+  type UniverseRefresh,
+  universeRefreshSchema,
 } from "../../src/lib/admin-api.ts"
 import { adminUserSchema } from "../../src/lib/admin-governance-api.ts"
 
@@ -74,9 +77,10 @@ let previews: unknown[] = []
 let previewDelay = 0
 let authenticationFailurePaths: string[] = []
 let overviewFailurePath = ""
+let universeRefresh: UniverseRefresh | null = null
 
 const plans = Array.from({ length: 31 }, (_, index) => ({
-  plan_id: `plan-${index}`,
+  plan_id: `0195a000-0000-7000-8000-${String(index).padStart(12, "0")}`,
   execution_profile: "full_market",
   dataset_key: index === 30 ? "old_dataset" : "tw_futures_eod",
   provider: "taifex",
@@ -152,6 +156,7 @@ createServer(async (request, response) => {
     previewDelay = 0
     authenticationFailurePaths = []
     overviewFailurePath = ""
+    universeRefresh = null
     rows = [
       scheduler("full_market_finlab_v1", "finlab", true),
       scheduler("full_market_twelve_data_v1", "twelve_data"),
@@ -217,9 +222,17 @@ createServer(async (request, response) => {
     if (plansDelay)
       await new Promise(resolve => setTimeout(resolve, plansDelay))
     if (plansError) return send({ detail: "Unavailable" }, 503)
+    // As the Backend does for summary_only: counts without the gap details.
+    const listed =
+      url.searchParams.get("summary_only") === "true"
+        ? plans.map(plan => ({
+            ...plan,
+            summary: { ...plan.summary, gaps: [] },
+          }))
+        : plans
     return send(
       paginated(
-        plans.filter(
+        listed.filter(
           plan =>
             (!url.searchParams.get("dataset_key") ||
               plan.dataset_key === url.searchParams.get("dataset_key")) &&
@@ -229,6 +242,14 @@ createServer(async (request, response) => {
         url.searchParams
       )
     )
+  }
+  const planSummary =
+    /^\/api\/v1\/admin\/delivery-plans\/([^/]+)\/summary$/.exec(path)
+  if (planSummary) {
+    const plan = plans.find(item => item.plan_id === planSummary[1])
+    return plan
+      ? send(plan.summary)
+      : send({ detail: "Delivery plan not found" }, 404)
   }
   if (path === "/api/v1/admin/missing-deliveries")
     return send(
@@ -335,6 +356,43 @@ createServer(async (request, response) => {
         },
       ],
     })
+  if (path === "/api/v1/admin/universes")
+    return send(paginated([], url.searchParams))
+  if (path === "/api/v1/admin/universes/feeds")
+    return send(
+      universeFeedsSchema.parse({
+        data: [
+          {
+            provider: "finlab",
+            dataset_key: "tw_etf_eod",
+            published: null,
+            candidate: null,
+            refresh: universeRefresh,
+          },
+        ],
+      })
+    )
+  if (path === "/api/v1/admin/universes/refresh") {
+    if (request.method !== "POST")
+      return send({ detail: "Method not allowed" }, 405)
+    if (role !== "owner")
+      return send({ detail: "Insufficient admin role" }, 403)
+    if (universeRefresh)
+      return send({ detail: "A manual universe refresh is in progress" }, 409)
+    universeRefresh = universeRefreshSchema.parse({
+      work_id: "019565d2-f838-7c91-85c1-72d4d7bbbeb0",
+      provider: data.provider,
+      dataset_key: data.dataset_key,
+      state: "queued",
+      requested_by: "E2E Owner",
+      requested_at: timestamp,
+      note: data.evidence_note,
+      completed_at: null,
+      failure_code: null,
+    })
+    mutations.push({ path, ...data })
+    return send(universeRefresh, 202)
+  }
   if (path === "/api/v1/admin/schedulers")
     return send({
       success: true,

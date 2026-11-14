@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from findb_fetcher import rpc_timing
 from findb_fetcher.account_governor import source_permit
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.execution_metadata import provider_ids
@@ -134,6 +135,17 @@ class FullMarketSourceClient:
         body: dict[str, Any] | None = None,
         *,
         _authorization: bool = False,
+    ) -> dict[str, Any]:
+        with rpc_timing.timed(rpc_timing.route(method, path)):
+            return self._request(method, path, body, _authorization=_authorization)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None,
+        *,
+        _authorization: bool,
     ) -> dict[str, Any]:
         encoded = canonical_bytes(body) if body is not None else None
         for attempt in range(self.config.max_attempts):

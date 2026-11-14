@@ -49,6 +49,18 @@ Runtime 執行既有 claim／owner recovery、prepared drain 與
 settlement；只有 idle drain 丟棄的完整 health 統計被省略。明確 `--health` 與正常 cycle 的輸出
 保留，plan／provider 狀態索引降低摘要查詢成本。
 
+Health 輸出不隨失敗成員數成長，避免把同一個 container 的本機 log 快取（10 MB × 3 檔）裡的
+`delivery_timing` 與診斷輸出輪替掉：
+
+- 每個未完成 plan 以 `failure_counts` 回報各原因的成員數；`failures` 只列範例，整份 health 合計最多 20 筆
+  （`HEALTH_FAILURE_SAMPLES`，由最早的 plan 開始列）。完整的失敗成員由 Dashboard 交付計畫的缺口明細或
+  Admin `GET /admin/delivery-plans/{plan_id}/summary` 查詢；settlement proof 仍帶該 plan 的完整清單。
+- Cycle 印出的 health 單行上限 16 KB（`HEALTH_LINE_LIMIT_BYTES`）。超過時先拿掉 `failures` 範例，仍超過則只保留
+  純量欄位與 `plans_count`／`unresolved_count`／`date_prerequisites_count`／`provider_outages_count`，兩種情況都帶
+  `truncated: true`。`--health` 是一次性查詢，不套用單行上限。
+- 內容沒有變化時（不計 `observed_at`），cycle 的 health 每 10 分鐘才重複一次（`HEALTH_LOG_INTERVAL_SECONDS`），
+  有變化時當輪就印。Control 的 heartbeat 與輪詢不受影響；log 一段時間沒有 health 行不代表程序停住。
+
 本次 SQLite 變更僅新增索引與 reconciliation table，啟動時在原 schema lock 下建立，不需
 PostgreSQL migration，也不重建 checkpoint、清除 body／receipt 或重設 governor。
 部署後應在 controls stopped、必要交付完成時，核對 runtime CPU、owner、prepared／receipt、
@@ -75,8 +87,10 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 | 即時抓取授權 | Source `full-market/authorization?consumer=full_market\|maintenance` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、Source credential、baseline 與 provider cutover；deprecated `full_market_enabled` 固定為 `true` |
 
 Source `execution-config?execution_profile=full_market` 已發布 credential 範圍內的排程快照，
-不包含 running／quota 授權；Admin 的逐 feed schedule 使用相同 resolver。現階段 Fetcher 仍讀
-生成的本機相容設定，不能因新 API 存在就刪除舊檔或改寫 frozen plan deadline。
+不包含 running／quota 授權；Admin 的逐 feed schedule 使用相同 resolver。Fetcher daily 每輪規劃前
+讀取這份快照，image 只保存非排程的 execution descriptors 與 bootstrap；API 失敗時停止新日期的規劃，
+既有 prepared recovery 與 historical 不受影響。已建立的 plan 沿用凍結的 `deadline_at`，不因快照更新而改寫
+（見 [provider_metadata](../architecture/provider_metadata.md)）。
 
 新 daily 入列使用安裝 feeds 與 admission 的交集；新抓取仍須通過即時授權、交易日期／窗口及平台配額。
 FactSet 的安裝 feed 也不代表已獲准取得 HK 新資料，仍須發布 baseline 並明確 cutover。
@@ -214,7 +228,8 @@ Migration `91a4c7e2d630` 保留既有計畫及歷史項目，用升級當時有�
 ### 來源尚未發布的等待與休市判定
 
 FinLab daily 回傳 target-not-ready，或 FactSet daily 成功查詢但出現 `no_source_row` 時，以
-provider work 建立時間加上 feed `completion_window_seconds` 作為 immutable publication deadline。
+provider work 建立時間加上 feed 的 `publication_retry_window_seconds`（catalog 與 execution-config 的欄位名稱；
+Fetcher runtime 內部的 feed 欄位是 `completion_window_seconds`）作為 immutable publication deadline。
 截止前安全 close／drain 並排到 provider FIFO 尾端，單次最長等待 15 分鐘；這種等待不消耗
 local `FULL_WORK_MAX_ATTEMPTS`。FactSet 只保存缺列 observation，不將空結果保存成可 replay 的
 authoritative snapshot，因此下輪會重新查詢。FinLab 與 FactSet 的其他永久格式、mapping、DQ、
@@ -274,13 +289,47 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | attempts=0／無 observation | 尚未嘗試，不能視為已被 SDK 拒絕 |
 | `empty_response` | 有空回應證據，原因未知；檢查觀測額度與下一次時間 |
 | `unknown_dispatch` | 曾保留未知派送責任，尚未證實空回應；同樣檢查觀測額度與退避 |
-| `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據 |
+| `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據。Plan 只缺這種成員時，daily work 以 `partial` 結束而不是 `failed`；plan 統計仍把它們算作 blocked（見 [provider_work](../architecture/provider_work.md)） |
 | `retry_exhausted` | 本地一般失敗額度（`FULL_WORK_MAX_ATTEMPTS`，5 次，所有 provider 一致）耗盡，不等於五次 native 請求 |
 | `no_data` | Twelve Data 回報該檔該日無資料，或單檔回 404（`not_found`，例如清單已列出但日線尚未提供的新代號），不停止其他成員；依額度重試，不算成功或 no_data。兩者以 Fetcher SQLite `full_work_diagnostic.category` 分辨，Admin API 與 Dashboard 都只顯示 `source_error` |
 | `no_data_exhausted` | `no_data` 額度耗盡（plan 重試輪每輪結算後依序等待 30、60、60、120 分鐘，進度見 Fetcher SQLite `full_no_data_round`），缺漏須另行回補；只影響該檔。Breaker 連續觸發 5 次且其間沒有資料才結束 plan，此時先查是否為未發布休市日 |
 | `prepared/normalizing` | 應查 Backend run 與序列收據；可能已完成，不能據此宣稱 queue 卡住 |
-| `source_proven_no_trade` | 已完成。FinLab 當日四個價格全空、成交量為空或 0，視為當日沒有成交，附整張表 bundle 的 SHA-256 回報 `no_trade` 證據；TAIFEX 依報表的無成交列 |
-| `member_unavailable` | Provider 回應本身正常，但只有該成員不能使用。只擋下該檔，不重試、不重新下載共用表或報表、不結束這一輪；Backend 記為 blocked，細分原因看 `full_work_diagnostic.category` 的 `member:<code>`：<br>FinLab：部分欄位空值、OHLC 越界、成交量非整數（`source_error`），或表中還沒有這個代號，例如剛上市（`member:missing_symbol`，`empty_response`）。<br>Twelve Data：回應的幣別與凍結 release 成員不同（`member:identity_mismatch`，`source_error`）。<br>TAIFEX：該列沒有任何觀測值（`member:no_observation`，`source_error`）；plan 凍結的是同一交易日的 dated universe，而當日報表沒有該 contract／session（`member:missing_contract`，`empty_response`）。#307 之前以較舊 universe 凍結的 plan 缺 contract 時，可能是 universe 落後於轉倉，仍以一般 `source_error` 結束這一輪並重試 |
+| `source_proven_no_trade` | 已完成。FinLab 當日四個價格全空、成交量為空或 0，視為當日沒有成交，附整張表 bundle 的 SHA-256 回報 `no_trade` 證據；TAIFEX 依報表的無成交列。<br>FinLab 價格全空但成交量大於 0 不算無成交，而是照常交付一列日 K（成員狀態為一般的已完成）：開、高、低、收都填該成員最近一個有值的收盤價（不限前一個交易日，除權息日也一樣），成交量照 FinLab 的值。這種成員每個交易日都有，成交股數多半不足一張。共用的五表 bundle raw 保留原始空值，並在 `close.previous` 記下所用的收盤價與其日期 |
+| `member_unavailable` | Provider 回應本身正常，但只有該成員不能使用。只擋下該檔，不重試、不重新下載共用表或報表、不結束這一輪；Backend 記為 blocked，細分原因看 `full_work_diagnostic.category` 的 `member:<code>`：<br>FinLab：部分價格欄位空值、價格全空且成交量大於 0 卻沒有任何較早的收盤價、OHLC 越界、成交量非整數（`source_error`），或表中還沒有這個代號，例如剛上市（`member:missing_symbol`，`empty_response`）。<br>Twelve Data：回應的幣別與凍結 release 成員不同（`member:identity_mismatch`，`source_error`）。<br>TAIFEX：該列沒有任何觀測值（`member:no_observation`，`source_error`）；plan 凍結的是同一交易日的 dated universe，而當日報表沒有該 contract／session（`member:missing_contract`，`empty_response`）。#307 之前以較舊 universe 凍結的 plan 缺 contract 時，可能是 universe 落後於轉倉，仍以一般 `source_error` 結束這一輪並重試 |
+
+FinLab 抓表失敗時，`full_work_diagnostic.category` 記為 `finlab_sdk:<code>`，Fetcher 另輸出一行
+`{"finlab_sdk_failure": {"dataset", "code"}}`。`code` 是有界的失敗類別，不含 FinLab 的原始訊息、token 或憑證內容：
+
+| code | 意思 | 來源 |
+| --- | --- | --- |
+| `auth` | FinLab API 回覆 token 無效或帳號不存在 | 子程序依 SDK 的固定錯誤字串判斷 |
+| `quota` | FinLab API 回覆當日用量已達上限 | 同上 |
+| `network` | 連線失敗、被重設、TLS 或 DNS 錯誤 | 子程序依例外型別判斷 |
+| `timeout` | 單一請求逾時 | 同上 |
+| `bad_response` | 回應不是合法的 JSON | 同上 |
+| `memory` | 子程序記憶體不足（Python `MemoryError`） | 同上 |
+| `os_error` | 其他作業系統錯誤，例如寫入 SDK cache 失敗 | 同上 |
+| `sdk_error` | 以上都不是 | 同上 |
+| `killed` | 子程序被 signal 終止，例如 OOM kill | 父程序依結束狀態判斷 |
+| `crashed` | 子程序沒有回覆就結束 | 同上 |
+| `process_timeout` | 子程序在整體時限內沒有回覆 | 父程序 |
+| `dispatch_expired` | 授權在實際呼叫 SDK 前已過期，沒有呼叫 | 父程序 |
+| `account_quota`、`acquisition` | 本機帳號 governor 的額度等待，或取得授權時失敗 | 父程序 |
+
+FactSet 的子程序也會回報同一套類別（沒有 `auth`、`quota` 的 API 判斷），但目前只有 FinLab 把它寫進 diagnostic 與 log。
+
+FinLab daily 的抓表失敗是整個 cohort 共用的失敗，不記在任何成員身上（不回報 `source_error`、不扣成員的嘗試次數）：
+
+| 類別 | 處理 |
+| --- | --- |
+| `auth`、設定錯誤（缺 token 等） | 重試沒有用：work 立刻以 `failed`／`DAILY_PROVIDER_REJECTED` 結束 |
+| `quota` | 整個 plan 等 30 分鐘後重試，結算為 `retry`／`DAILY_PROVIDER_UNAVAILABLE` |
+| 其他（`network`、`timeout`、`killed`、表格無法通過驗證等） | 整個 plan 等 5 分鐘後重試，同上 |
+
+同一個 plan 的抓表失敗從第一次起算，持續超過 4 小時（`FINLAB_OUTAGE_RETRY_SECONDS`）仍未成功時，work 以
+`failed`／`DAILY_PROVIDER_OUTAGE_EXHAUSTED` 結束；任何一次抓表成功就重新計算。Work 結束後成員仍是 pending，
+缺漏以 historical 回補。「目標日期尚未發布」不屬於這裡，仍走上面的發布等待。Historical 的抓表失敗本來就以日期為單位重試
+（每個日期最多 5 次），沒有改變。TAIFEX 的報表 outage 維持原本的規則：延後當下那個成員、window 是 12 小時。
 
 診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source
 credential、config 與 `FETCHER_ACCOUNT_STATE_PATH` 執行，明確指定 profile／state path：
@@ -737,10 +786,21 @@ Prepare SSM：`477ef221-ad3e-4086-9389-76f26bfe794b`；Backend 刪除：
 
 | Provider | 適用限制 | 用量核對與超限處理 |
 | --- | --- | --- |
-| Twelve Data | 1597 API credits／分鐘 | Durable governor 依 1597／分鐘平均 pacing；HTTP 429 與 HTTP 200 payload code 429 均寫入 60 秒帳號 cooldown 後等待／重試。實際帳號用量以 readiness probe 的 `/api_usage` 人工核對；每日路徑尚未讀取 response credit headers |
-| FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置 |
+| Twelve Data | 1597 API credits／分鐘 | Durable governor 依 1597／分鐘平均 pacing，分鐘與日窗口以 credits（一次 batch 的 symbol 數）計；HTTP 429 與 HTTP 200 payload code 429 均寫入 60 秒帳號 cooldown 後等待／重試。實際帳號用量以 readiness probe 的 `/api_usage` 人工核對；每日路徑尚未讀取 response credit headers |
+| FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置。API 隨每次取表回報的當日用量（`quota`／`limit_size`）會記錄下來：Fetcher log 的 `{"finlab_quota": {"dataset", "used_mb", "limit_mb"}}`，以及帳號 governor SQLite 的 `acquisition_usage`（`bytes`／`limit_bytes`／`remaining_bytes`，與該次取表的 `acquisition_intent` 同一個 `operation_id`）。SDK 直接讀本機 cache、沒有向 API 發出請求時不會有紀錄 |
 | Shioaji | 500 MB／日、行情查詢 50 次／10 秒 | 以 `api.usage()` 的 bytes／limit_bytes／remaining_bytes 核對；API 回報的 524288000 bytes 為 500 MiB；依 10 秒視窗控制查詢速率 |
 | TAIFEX | OpenAPI 不需帳號，未公布明確 requests／bytes 數值上限 | 以 HTTP 429 作為觸及平台上限的訊號，依 `Retry-After` 或既有 backoff 等待／重試，不自行設定 provider 配額數值 |
+
+Twelve Data daily 以同一 frozen part 為單位共用 provider 請求：part 中第一個需要抓取的成員，把同 part
+後續仍需抓取的成員（已 mapping、沒有 prepared body、eligible：無 lease、退避或未到的 no-data 重試輪）
+一起以逗號 `symbol` 發一次 `/time_series`，最多 50 個、每 symbol 1 credit；mapping gap 與已完成成員不加入、
+不計費。回應必須正好以要求的 symbol 為 key，缺少或多出任何 key 即整批失敗；一次只有一個 symbol 時沿用
+單檔請求。整批回應只存一個 R2 raw object，作為它所服務每個成員的 lineage；每個成員再由自己的項目建出
+request，照常逐檔 prepare／ingest／receipt。單一 symbol 的錯誤（例如 `no_data`、404）只讓該成員走原本的
+member 失敗、no-data 重試輪與 breaker；整批錯誤（例如 429）由觸發的成員承擔。Journal 只有在每個 symbol
+都已有目標日資料時才允許重播該 batch，重試輪因此會重新詢問；未取用的項目最多保留 300 秒。
+實測（2026-11-11）：回應以 symbol 為 key，錯誤項為 `{code, message, meta, status:"error"}`，其 `meta.symbol`
+為整串清單；無效代號也計費（`api-credits-request` 等於 symbol 數）。
 
 Twelve Data credits 計算見[官方說明](https://support.twelvedata.com/en/articles/5615854-credits)；
 Shioaji 限制見[官方使用限制](https://sinotrade.github.io/zh/tutor/limit/)；TAIFEX 平台與 endpoint
@@ -886,7 +946,7 @@ latest 日期不符時使用 TX／MTX／TMF／TE／TF 分產品歷史報表，�
 重試時間，provider-work `retry_at` 亦使用相同剩餘延遲，不再每 60 秒重新 claim；CLI health 的
 `date_prerequisites` 可查詢，其他已凍結日期繼續補抓。
 交付截止後若同日 candidate 仍未發布，missing-delivery alert 以
-`DATED_UNIVERSE_PENDING` 區別一般資料缺漏；Dashboard「Universe 候選」或 Admin
+`DATED_UNIVERSE_PENDING` 區別一般資料缺漏；Dashboard「Universe 名單」或 Admin
 `GET /admin/universes?status=candidate` 可列出候選，`GET /admin/universes/{release_id}/diff`
 可唯讀核對相對最近 published release 的成員差異。這些入口不會自動發布或改寫 plan。
 HTTP、認證、配額、cooldown 與 R2 故障仍中止本輪，不冒充日期略過。
@@ -916,7 +976,20 @@ TAIFEX provider work 0、checkpoint `unresolved=[]`／`manual_required=0`；Full
 維持 stopped。
 
 一般股票 universe 的自動發布使用 2% 變更門檻，不另設絕對筆數上限；異動比例超過時保留 candidate，
-由 Owner 附 exception approval 發布。TAIFEX 到期換倉另使用
+由 Owner 附 exception approval 發布。Owner 也可以在 Dashboard「Universe 名單」手動更新名單，手動更新
+等同核准：
+
+- Backend 排入一筆 maintenance work（stable key `maintenance:<dataset>:manual:<id>`，scope 帶 `manual_refresh`），
+  Fetcher 依佇列順序執行。這筆 work 執行期間送出的名單直接發布，不受 2% 門檻限制；尚無 baseline 時成為
+  第一份 baseline。當天已有內容相同、停在 candidate 的名單時，發布的就是那一份。
+- `published_by` 記為提出要求的 Owner，`approval_note` 帶 work ID 與 Owner 填寫的原因；要求與發布各留一筆
+  admin audit。
+- 核准只在這筆 work 持有該 provider 的 owner 期間有效：排入但尚未執行、已結束，或排程自己排入的名單更新，
+  都照原本的門檻判定。Source API 拒絕帶 `manual_refresh` 的 enqueue，Fetcher 無法自行取得核准。
+- Control 停止時也會執行：maintenance 不要求 control 是 running，只需要該 provider 的 Fetcher 在運作。
+- 同一個 dataset 同時只能有一筆未結束的手動更新。TAIFEX 的名單由每日報表產生，不提供手動更新。
+
+TAIFEX 到期換倉另使用
 fail-closed 結構規則：只接受 TX／MTX／TMF／TE／TF、合法月／週契約、regular／after_hours、
 相同產品集合、每產品最多一個月契約及一個週契約向前替換，且當期契約不得早於 effective month；
 共同契約可依官方報表增加 session，但不得移除既有 session。兩種規則的比較基準皆為 effective date
@@ -965,6 +1038,43 @@ consumer 的並行度或速率，須重新評估，必要時改以兩環境 allo
 [部署 OOM 紀錄](deployment.md#2026-10-22-staging-historical-finlab-oom-阻擋部署)），FinLab worker 一律載入
 整張 dataset；staging 只做少量回補，啟動後須觀察記憶體與 OOM。
 
+### Provider 變更的驗收清單
+
+改到 provider adapter、成員交付、結算規則或排程的變更都照這份清單驗收。部署成功只代表 container 換版完成，
+不代表抓取正確（見 [deployment](deployment.md)）；清單裡的數字要寫回對應的 issue 或 PR。
+
+合併前：
+
+- `pnpm check`、`pnpm test:fetcher`、`pnpm test:backend` 都通過。只改 `fetcher/` 也要跑 Backend 測試，因為
+  Backend 的 provider work 測試會驅動真正的 Fetcher runtime。改到 catalog 另外執行 `pnpm contracts:check`。
+- 行為改變對應的 `docs/` 內容在同一個 PR 更新。
+- Staging 所有 controls 已停止（desired 與 observed 都是 stopped），沒有進行中的 historical 或 maintenance
+  work。Fetcher 部署會重建所有 provider 的 container，有工作在執行時部署會失敗並還原。
+
+Staging 驗收（一次只啟動一個 provider，結束後停止）：
+
+1. 啟動前確認各 dataset 的首次日期與既有 plan：啟動後會從首次日期補抓到今天，驗收只留一個交易日。
+2. Owner 啟動該 provider 的 control，等 daily 的 provider work 結束。
+3. 核對 daily 的結果：
+   - work 的結束狀態與 `failure_code` 符合預期。
+   - Plan 統計符合 `expected = data + no_data + missing + blocked`，`missing` 為 0，每個 blocked 成員都有原因。
+   - 這次的 `ingestion_run` 全部 completed，沒有新的 `dq_issue`。
+   - Canonical 筆數等於 `data`；抽一檔從 Serve 查得到，數值與來源一致。
+4. 建立一筆單日的 historical request，核對結束狀態、逐成員結果與耗時。
+5. 核對資源：container 沒有 OOM、記憶體峰值（cgroup 的 `memory.peak`）、provider work journal 的檔案大小。
+   FinLab 每張表是整段歷史，staging 主機記憶體小，這一項不可省略。
+6. 核對 log：有 `delivery_timing`，沒有 traceback。Container 的輸出同時送到 CloudWatch 的
+   `/findb/<環境>/fetcher/containers`（每個 container 名稱一個 stream），部署重建後仍查得到；
+   `docker logs` 只看得到目前這個 container 的本機快取。
+7. 停止 control，確認 observed 也是 stopped。
+
+Production：
+
+- 選所有 provider 的 daily 都不在執行的時段。停止所有 controls 並等 observed 也是 stopped，確認沒有進行中的
+  historical 或 maintenance work，再 promote staging 已接受的 bundle。同一批有 Backend 變更時 Backend 先部署。
+- 部署後重新啟動 controls。以部署後第一次 daily 重做上面第 3、5、6 項。
+- 結果不符預期時，用 production 部署 workflow 的 rollback 模式回到上一個已接受的 bundle。
+
 ### 以 historical 回補 Full 缺漏（Twelve Data、FinLab）
 
 Twelve Data `us_equity_eod`、FinLab `tw_equity_eod` 與 `tw_etf_eod` 的 historical request 建立時，每個要抓的
@@ -980,9 +1090,15 @@ Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類�
 | --- | --- | --- |
 | 寫入 canonical | `data` | 繼續 |
 | FinLab 價格全空且無成交量 | `no_data`，附五表 bundle 的 raw | 繼續 |
+| FinLab 價格全空但成交量大於 0 | `data`：開高低收填最近一個有值的收盤價，規則與 daily 相同 | 繼續 |
 | Twelve Data no_data／404、FinLab 表中沒有該 symbol | `missing`（`no_source_row`） | 繼續 |
 | FinLab OHLC 等單檔值不合法、Twelve Data 幣別不符或 mapper 拒絕、Source DQ 拒絕 | `invalid`（`row_structure_invalid`），附 raw | 繼續 |
 | 限流、provider 暫時錯誤、FinLab 尚未發布該日期 | — | 整日稍後重試；已完成成員不重抓 |
+
+成員送出後不逐檔等待 normalization：已接受的 run 先不讀取結果，繼續抓取與交付後面的成員，同時最多保留 16 筆
+未讀取的 run，超過時才讀取最早的一筆；全部成員送出後再讀完剩下的。讀取時 run 仍在佇列才等待（0.25、0.5、1、2 秒
+遞增），單筆最長 30 秒，逾時則整日稍後重試，已讀取的成員結果保留。交付期間每 60 秒與結束時輸出與 daily 相同格式的
+`delivery_timing`，以 `item_id` 標示，另含 `step normalization_wait`。
 
 確定性的成員錯誤不觸發整日重試。暫時錯誤每成員（FinLab 為每日期共用表）最多 5 次 native 嘗試，用盡後
 該成員記 `missing`；FinLab 共用表用盡則該日期失敗。有任何非 data／no_data 成員時 item 為 `partial`，
@@ -1024,10 +1140,30 @@ API 的 `execution_profile` 參數保留但只接受 `full_market`，其他值�
 snapshot；交易日曆、首次日期與 deadline 仍依查詢時間計算，停止 scheduler 不會凍結
 時間判斷。頁面更新不會觸發抓取或摘要寫入。
 
-摘要以 immutable plan ID 區分。建立 plan、接受新 run／分鐘重試、
-normalization 完成或失敗、retry／retry exhausted、no-data／blocked outcome 變更時，
-只刷新受影響的 plan，與原始資料／run／實際寫入證據在同一 transaction commit。
-Plan row lock 串行化同 plan 的競爭寫入；失敗 rollback 不得先公布摘要。
+摘要以 immutable plan ID 區分，與原始資料／run／實際寫入證據在同一 transaction commit；
+Plan row lock 串行化同 plan 的摘要寫入，失敗 rollback 不得先公布摘要。鎖順序固定為 plan → part：
+摘要寫入者在 plan lock 下更新 part 計數；outcome 只鎖自己的 member 列（`FOR UPDATE OF`），不鎖
+join 到的 part，再取 plan lock，避免與 worker 的 part 更新互相等待而死結。
+`daily_delivery_part` 另存各 part 的 data／no_data／missing／blocked／mapping_gap 計數，
+各 part 加總等於 plan 摘要。成員狀態只取決於自身的 canonical、證據、outcome 與 mapping，
+因此：
+
+- 建立 plan、分鐘資料（`sequenced_snapshot`）的 run、受控重建與缺少摘要的初始化，對整個
+  cohort 完整重算，並重寫所有 part 計數。
+- Daily run 的 terminal（完成、失敗、retry exhausted）與 no-data／blocked outcome，只在 plan
+  lock 下重新分類該 part（約 50 個成員），把差值加到 plan 摘要；outcome 回應直接讀已更新的
+  計數，`gaps` 為空，完整缺口由 GET plan 或 Admin reconcile 提供。
+- Historical run 只重新分類它實際寫入成員所在的 part（同 provider／dataset／date 的 plan）。
+- `resolve_missing_delivery_for_run` 以已存摘要加上該 part 的重新分類判斷 plan 是否完成，
+  不再分類整個 cohort。
+
+Part 計數為 NULL（既有 plan）或 `parts_synced_at` 不等於 `updated_at`（其他 release 寫過
+摘要）時不可信，該次寫入改走完整重算並重新初始化。接受非 terminal、非 `sequenced_snapshot`
+的新 run 不會改變計數，只以單調條件更新 latest run metadata，不取 plan lock、不重算；完整
+重算寫回時也只在其 latest run 不舊於已記錄者時覆寫 metadata。Processing 狀態不刷新摘要；
+queue worker 只在 terminal commit 前刷新一次，直接呼叫 normalizer 時由 terminal 狀態更新
+負責。Missing-delivery 掃描本來就對逾期 plan 完整分類，順便與已存摘要比對：掃描期間摘要
+未被寫入但計數不同時，記 `Plan summary drift corrected` warning 並完整重算修正。
 Historical 實際寫入的修復會更新同 dataset／provider／date 的 plan 摘要：FactSet、Twelve Data 與
 FinLab 的 historical work 只要以相同契約、相同 provider symbol 凍結該成員並有本 work 的 receipt 與
 canonical 寫入證據，該成員即算 data，解除 gap 與 missing-delivery 告警；原 Full work 的結算不改寫。
@@ -1064,6 +1200,9 @@ uv --directory backend run python scripts/rebuild_delivery_plan_summaries.py --p
 工具也接受 `--dataset` 與 `--batch-size`（1–100，預設 5）。Canonical／證據的直接維修應在
 維護時段完成並重建，避免讓已維修但尚未重建的摘要對外顯示。一般 application 寫入不需要
 人工重建，所有 GET 仍保持唯讀。Schema 為 additive；移除摘要表前須停止新版 application。
+Migration `b4d6f8a1c3e5` 只新增 nullable 的 part 計數與 `parts_synced_at`，不回填；既有 plan
+在下一次寫入時完整重算一次。回滾到前一版不需降版：舊版忽略新欄位，其摘要寫入讓
+`parts_synced_at` 落後，新版回來後先完整重算；降版只刪除這些衍生計數。
 
 ## 用量與傳輸保護
 
@@ -1084,9 +1223,44 @@ detached bytes checksum 加入 release evidence。SDK 資料錯誤只影響該 f
 回應 accounting 或 R2 失敗中止 refresh，不發布假缺漏。TW 目錄的 effective date 使用台北日期，
 universe request 的未來日期檢查亦依 source timezone 判定。
 
-TW universe 成員帶有 ISIN 的上市日（`listed_date`，存於 `universe_member_listing`）。ISIN 會提前列出尚未上市的商品，所以上市日
+名單更新（universe refresh）的時間跟著 daily 的排程時刻，不跟著上一次完成的時間：
+
+- 到期時間是該 provider 排程時刻的下一次（FinLab 為每天台北 18:00，取自 Backend 發布的排程）。名單更新完成後，
+  不論是排程、啟動後補跑或手動觸發，下一次都回到排程時刻，所以不會每天往後漂移，也不會跟著 control 的啟動時間走。
+- 排程時刻那一輪 cycle 先排入名單更新，再排入當天的 daily。佇列先進先出，當天的 plan 因此使用當天排程時刻取得的
+  名單；已經在佇列裡的較早工作仍排在名單更新前面。
+- 只有 control 是 running 時才會排入。停止期間不更新；啟動時若已過到期時間，第一輪就先補一次，下一次回到排程時刻。
+  已經排入的名單更新不受之後的停止影響，會照常完成。
+- 同一個排程時刻只有一筆名單更新（stable key 帶該時刻的 UTC 時間）。失敗時當天的 daily 使用上一份 release，
+  下一個排程時刻再試；因傳輸問題重試的那一筆會排到佇列尾端，當天的 daily 先跑。
+- Fetcher 取不到排程時（例如手動執行 `--sync-universes` 的程序），完成後的下一次到期時間退回 24 小時後。
+- TAIFEX 不跑每日名單更新，不受這些規則影響。
+
+官方名單下載的來源、時間限制與共用：
+
+- TW 的商品名單來自 ISIN 網站的分類查詢（`class_main.jsp`，依市場與證券別各查一次）。股票的 universe refresh 讀
+  TWSE／TPEx 公司清單與上市、上櫃股票兩個查詢；ETF 的 universe refresh 只讀上市、上櫃 ETF 兩個查詢。四個查詢
+  合計約 1.1 MB，從 production 主機每個 1–26 秒。不下載 `C_public.jsp` 的完整頁面：兩頁合計 13.6 MB，其中 97% 是
+  權證，從 Fetcher 主機下載要 7–9 分鐘。
+- 分類查詢的參數沒有官方文件，所以每次都驗證回應：欄位名稱、每一列的連續編號、市場別與有價證券別都要符合
+  查詢條件，頁面要完整結束。查無資料（HTTP 200 的轉址頁）、頁面被截斷或內容不符時整份名單 fail closed：該筆
+  maintenance work 以 `MAINTENANCE_FORMAT_OR_SCOPE` 結束，不發布，daily 繼續使用上一份 release，下一次 refresh
+  重新下載。完整但筆數異常減少的回應由 Backend 的 2% 變更門檻擋下。
+- 單一官方名單的下載總時限是 20 分鐘（`OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS`）。HTTP client 的 30 秒 timeout 只限制
+  每次讀取的等待，對方持續慢速回應時原本沒有上限；超過總時限視為傳輸逾時，依 `MAINTENANCE_TRANSPORT` 重試。
+- 同一個 Fetcher 程序裡，maintenance work 在 30 分鐘內下載過的同一個網址，下一筆 maintenance work 直接沿用
+  （內容與 R2 物件都沿用，不再送出請求）；每筆 work 仍各自在 journal 保存一份以供重播。股票與 ETF 的
+  universe refresh 讀的網址不同，所以只有同一個 dataset 在 30 分鐘內再次 refresh 時才會沿用。Daily 與 historical
+  讀的是會隨發布更新的報表，不沿用。
+- 下載期間每 30 秒回報一次 scheduler control 的 heartbeat，長時間下載不再讓 heartbeat 超過告警門檻。
+- FinLab 取一張表的子程序時限是 10 分鐘（`FINLAB_GET_TIMEOUT_SECONDS`，原本沿用 30 分鐘的預設值）；逾時記為
+  `finlab_sdk` 的 `process_timeout`。
+
+TW universe 成員帶有 ISIN 的上市日（`listed_date`，存於 `universe_member_listing`）。ISIN 可能在上市前就列出商品，所以上市日
 欄位缺漏或格式錯誤時整份名單 fail closed，不視為已上市；parser 與 release 都不依上市日過濾，因為
-release 會被之後的日期沿用。建立 daily plan 時才以 trade date 判斷：`listed_date > trade_date` 的成員
+release 會被之後的日期沿用。分類查詢不保證提前列出：2026-11-13 查核時，上市日在下一個交易日的權證已列出，
+上市日在六天後的兩檔 ETF 尚未列出（完整頁面已列出）。新上市的商品要等分類查詢列出之後的下一次 universe refresh
+才進入 release。建立 daily plan 時才以 trade date 判斷：`listed_date > trade_date` 的成員
 不列入 expected，上市當日起列入；已上市但仍是 mapping gap 的成員維持 blocked 與告警。沒有上市日
 的成員（其他市場、或上市日加入前建立的 release）視為已上市。Plan 有排除成員時，`member_sha256`
 改為過濾後成員的 digest；沒有排除時與 release 相同。第一次帶入上市日的 release 不把「補上上市日」

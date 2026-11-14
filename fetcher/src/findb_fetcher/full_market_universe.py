@@ -26,8 +26,31 @@ TW_COMPANY_URLS = (
     "https://openapi.twse.com.tw/v1/opendata/t187ap03_L",
     "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O",
 )
-TW_ISIN_URLS = tuple(
-    f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}" for mode in (2, 4)
+# ISIN class queries by market and security type, listed first and OTC second. The complete
+# ``C_public.jsp`` pages are 97% warrants and take minutes to reach the Fetcher hosts.
+_TW_ISIN_CLASS_QUERY = (
+    "https://isin.twse.com.tw/isin/class_main.jsp?owncode=&stockname=&isincode="
+    "&market={market}&issuetype={issuetype}&industry_code=&Page=1&chklike=Y"
+)
+TW_ISIN_STOCK_URLS = tuple(
+    _TW_ISIN_CLASS_QUERY.format(market=market, issuetype=issuetype)
+    for market, issuetype in ((1, "1"), (2, "4"))
+)
+TW_ISIN_ETF_URLS = tuple(
+    _TW_ISIN_CLASS_QUERY.format(market=market, issuetype=issuetype)
+    for market, issuetype in ((1, "I"), (2, "3"))
+)
+_TW_ISIN_CLASS_COLUMNS = (
+    "頁面編號",
+    "國際證券編碼",
+    "有價證券代號",
+    "有價證券名稱",
+    "市場別",
+    "有價證券別",
+    "產業別",
+    "公開發行/上市(櫃)/發行日",
+    "CFICode",
+    "備註",
 )
 TAIFEX_URL = "https://openapi.taifex.com.tw/v1/DailyMarketReportFut"
 TAIFEX_HISTORY_URL = "https://www.taifex.com.tw/cht/3/futDataDown"
@@ -63,7 +86,7 @@ def official_snapshot_dataset(url: str) -> str:
         return "hk_equity_eod"
     if url == TAIFEX_URL:
         return "tw_futures_eod"
-    return "tw_etf_eod" if url in TW_ISIN_URLS else "tw_equity_eod"
+    return "tw_etf_eod" if url in TW_ISIN_ETF_URLS else "tw_equity_eod"
 
 
 def canonical_bytes(value: object) -> bytes:
@@ -100,7 +123,7 @@ def _member(
 
 
 def _isin_listed_date(value: str) -> date:
-    """ISIN lists a security before it trades; its 上市日 column is required, never assumed."""
+    """A member's 上市日 decides its first plan date; it is required, never assumed."""
     matched = re.fullmatch(r"([0-9]{4})/([0-9]{2})/([0-9]{2})", value.strip())
     if matched is None:
         raise UniverseSnapshotError("Taiwan listing date is missing or malformed")
@@ -282,6 +305,8 @@ class _ISINParser(HTMLParser):
         self.rows: list[list[str]] = []
         self.row: list[str] = []
         self.cell: list[str] | None = None
+        # The closing tag follows the last row; a cut-off page never reaches it.
+        self.complete = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "tr":
@@ -299,6 +324,8 @@ class _ISINParser(HTMLParser):
             self.cell = None
         elif tag == "tr" and self.row:
             self.rows.append(self.row)
+        elif tag == "html":
+            self.complete = True
 
 
 def parse_tw_companies(raw: bytes, *, otc: bool = False) -> list[dict[str, Any]]:
@@ -316,75 +343,75 @@ def parse_tw_companies(raw: bytes, *, otc: bool = False) -> list[dict[str, Any]]
     return members
 
 
-def parse_tw_ordinary(raw: bytes, *, otc: bool = False) -> list[dict[str, Any]]:
+def _isin_class_rows(raw: bytes, *, otc: bool, security_type: str) -> list[list[str]]:
+    """Rows of one ISIN class query, proven to answer the market and type asked.
+
+    The query parameters are undocumented, so a response is only trusted when its
+    columns, its row numbering and every row's 市場別／有價證券別 match the request. A
+    query without results answers HTTP 200 with a redirect page and no table.
+    """
     if len(raw) > MAX_SNAPSHOT_BYTES:
         raise UniverseSnapshotError("ISIN snapshot exceeds size limit")
     parser = _ISINParser()
     parser.feed(raw.decode("cp950"))
-    in_stock = False
+    parser.close()
+    if len(parser.rows) < 2 or tuple(parser.rows[0]) != _TW_ISIN_CLASS_COLUMNS:
+        raise UniverseSnapshotError("ISIN class query is empty or its columns changed")
+    if not parser.complete:
+        raise UniverseSnapshotError("ISIN class query page is incomplete")
+    rows = parser.rows[1:]
+    market = "上櫃" if otc else "上市"
+    for number, row in enumerate(rows, 1):
+        if (
+            len(row) != len(_TW_ISIN_CLASS_COLUMNS)
+            or row[0] != str(number)
+            or row[4] != market
+            or row[5] != security_type
+        ):
+            raise UniverseSnapshotError("ISIN class query row differs from the request")
+    return rows
+
+
+def parse_tw_ordinary(raw: bytes, *, otc: bool = False) -> list[dict[str, Any]]:
     members = []
-    for row in parser.rows:
-        if len(row) == 1:
-            in_stock = row[0] == "股票"
-            continue
-        if not in_stock or len(row) < 6:
-            continue
+    for row in _isin_class_rows(raw, otc=otc, security_type="股票"):
         # CFI ES is an equity share. Depositary receipts ED and preferred EP are excluded,
         # including four-digit TDR codes; code length alone is not classification evidence.
-        cfi = row[5].strip()
+        cfi = row[8]
         if cfi.startswith(("ED", "EP")):
             continue
-        match = re.match(r"^([0-9]{4,6}[A-Z]?)\s+", row[0].replace("\u3000", " "))
-        if match is None:
+        if re.fullmatch(r"[0-9]{4,6}[A-Z]?", row[2]) is None:
             raise UniverseSnapshotError("Taiwan stock identity is invalid")
         member = _member(
-            match.group(1),
+            row[2],
             "ROCO" if otc else "XTAI",
             "TWD",
             "equity",
             "ordinary" if cfi.startswith("ES") else "classification_gap",
-            listed_date=_isin_listed_date(row[2]),
+            listed_date=_isin_listed_date(row[7]),
         )
         members.append(member)
     if not members:
-        raise UniverseSnapshotError("Taiwan ordinary stock section is empty or changed")
+        raise UniverseSnapshotError("Taiwan ordinary stock query has no shares")
     return members
 
 
 def parse_tw_etfs(raw: bytes, *, otc: bool = False) -> list[dict[str, Any]]:
-    if len(raw) > MAX_SNAPSHOT_BYTES:
-        raise UniverseSnapshotError("ISIN snapshot exceeds size limit")
-    parser = _ISINParser()
-    parser.feed(raw.decode("cp950"))
-    in_etf = False
     members = []
-    for row in parser.rows:
-        if len(row) == 1:
-            # Exact ETF section includes active, leveraged/inverse and bond ETFs.
-            in_etf = row[0] in {
-                "ETF",
-                "ETF（指數股票型基金）",
-                "指數股票型基金(ETF)",
-                "指數股票型基金（ETF）",
-            }
-            continue
-        if not in_etf or len(row) < 6:
-            continue
-        match = re.match(r"^([0-9]{4,6}[A-Z]?)\s+", row[0].replace("\u3000", " "))
-        if match is None:
+    # The ETF type includes active, leveraged/inverse and bond ETFs; ETNs are another type.
+    for row in _isin_class_rows(raw, otc=otc, security_type="ETF"):
+        if re.fullmatch(r"[0-9]{4,6}[A-Z]?", row[2]) is None:
             raise UniverseSnapshotError("Taiwan ETF identity is invalid")
         members.append(
             _member(
-                match.group(1),
+                row[2],
                 "ROCO" if otc else "XTAI",
                 "TWD",
                 "etf",
                 "ETF",
-                listed_date=_isin_listed_date(row[2]),
+                listed_date=_isin_listed_date(row[7]),
             )
         )
-    if not members:
-        raise UniverseSnapshotError("Taiwan ETF section is empty or changed")
     return members
 
 

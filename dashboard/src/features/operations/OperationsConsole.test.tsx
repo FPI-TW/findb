@@ -37,6 +37,8 @@ const mocks = vi.hoisted(() => ({
   loadDeliveryPlanDatasets: vi.fn(),
   loadUniverseCandidates: vi.fn(),
   loadUniverseDiff: vi.fn(),
+  loadUniverseFeeds: vi.fn(),
+  requestUniverseRefresh: vi.fn(),
   loadDeliveryResource: vi.fn(),
   updateScheduler: vi.fn(),
   createHistoricalBackfill: vi.fn(),

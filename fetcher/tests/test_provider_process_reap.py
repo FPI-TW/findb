@@ -43,7 +43,7 @@ def test_signal_race_still_reaps_exited_child_and_verifies_group(
         return killpg(pid, sig)
 
     monkeypatch.setattr(os, "killpg", raced)
-    assert _call("done") == ("completed", None)
+    assert _call("done") == ("completed", None, None)
     assert signal_error in observed and 0 in observed
     assert [process.poll() is not None for process in launched] == [True]
 

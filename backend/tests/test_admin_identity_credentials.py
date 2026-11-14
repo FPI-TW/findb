@@ -474,3 +474,68 @@ async def test_concurrent_owner_downgrades_keep_one_active_owner(test_engine):
             )
         ).scalars()
         assert len(list(active_owners)) == 1
+
+
+@pytest.mark.asyncio
+async def test_wrong_current_passwords_revoke_only_that_session(
+    client: AsyncClient, test_session: AsyncSession, monkeypatch, caplog
+):
+    from uuid import UUID
+
+    from app.api.deps import reset_source_rate_limit_state, settings
+    from app.models.registry import AdminAuditEvent, AdminSession
+
+    monkeypatch.setattr(settings, "ADMIN_PASSWORD_CHANGE_MAX_FAILURES", 3)
+    owner_session = await _bootstrap(client)
+    attacked = {"Authorization": f"Bearer {owner_session['access_token']}"}
+    other_login = await client.post(
+        "/api/v1/admin/auth/login",
+        json={"username": "root.owner", "password": "correct horse battery staple"},
+    )
+    other = {"Authorization": f"Bearer {other_login.json()['access_token']}"}
+
+    async def change(headers: dict, current: str):
+        return await client.post(
+            "/api/v1/admin/auth/change-password",
+            headers=headers,
+            json={"current_password": current, "new_password": "never applied password"},
+        )
+
+    for _ in range(2):
+        assert (await change(attacked, "guess")).status_code == 400
+    # In-process limiter state does not reset the durable count.
+    reset_source_rate_limit_state()
+    revoked = await change(attacked, "guess")
+    assert revoked.status_code == 401
+    assert "session revoked" in revoked.json()["detail"]
+    assert (await client.get("/api/v1/admin/auth/me", headers=attacked)).status_code == 403
+    assert (await change(attacked, "correct horse battery staple")).status_code == 403
+
+    events = [
+        record
+        for record in caplog.records
+        if getattr(record, "security_event", None) == "admin_session_revoked"
+    ]
+    assert [event.reason for event in events] == ["change_password_failures"]
+    attacked_session_id = events[0].session_id
+    attacked_row = await test_session.get(AdminSession, UUID(attacked_session_id))
+    assert attacked_row is not None and attacked_row.revoked_at is not None
+    failures = (
+        (
+            await test_session.execute(
+                select(AdminAuditEvent).where(AdminAuditEvent.action == "change_password_failed")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert {(row.resource_type, row.resource_id) for row in failures} == {
+        ("admin_session", attacked_session_id)
+    }
+    assert len(failures) == 3
+    assert "guess" not in caplog.text
+
+    # Another session of the same user keeps its own count and can still change it.
+    assert (await change(other, "guess")).status_code == 400
+    assert (await client.get("/api/v1/admin/auth/me", headers=other)).status_code == 200
+    assert (await change(other, "correct horse battery staple")).status_code == 200

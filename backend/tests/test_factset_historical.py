@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 from uuid import UUID
 
 import pytest
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.models.registry import DatasetRegistry, HistoricalBackfillRequest
@@ -350,3 +351,52 @@ async def test_cutover_is_explicit_and_keeps_v1_acceptance(test_session, monkeyp
     await test_session.refresh(dataset)
     assert dataset.config["hk_provider_cutover"] == before["hk_provider_cutover"]
     assert dataset.config["source_precedence"] == {"factset": -1, "twelve_data": 0}
+
+
+@pytest.mark.asyncio
+async def test_cutover_priority_reset_keeps_manual_corrections_pinned(test_session, monkeypatch):
+    from decimal import Decimal
+
+    from app.models.canonical import MANUAL_CORRECTION_PRIORITY, Instrument, MarketDataEOD
+    from app.utils import utc_now, uuid7
+
+    instrument = Instrument(
+        instrument_id=uuid7(),
+        asset_class="equity",
+        market="HK",
+        symbol="0005",
+        status="active",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    test_session.add(instrument)
+    await test_session.flush()
+    for trade_date, priority in (
+        (date(2026, 10, 15), 1000),
+        (date(2026, 10, 16), MANUAL_CORRECTION_PRIORITY),
+    ):
+        test_session.add(
+            MarketDataEOD(
+                instrument_id=instrument.instrument_id,
+                trade_date=trade_date,
+                close=Decimal("60"),
+                source="twelve_data",
+                source_priority=priority,
+                asof_ts=utc_now(),
+                created_at=utc_now(),
+                updated_at=utc_now(),
+            )
+        )
+    await test_session.flush()
+
+    await setup(test_session, monkeypatch)
+
+    rows = {
+        row.trade_date: row.source_priority
+        for row in await test_session.scalars(
+            select(MarketDataEOD)
+            .where(MarketDataEOD.instrument_id == instrument.instrument_id)
+            .execution_options(populate_existing=True)
+        )
+    }
+    assert rows == {date(2026, 10, 15): 0, date(2026, 10, 16): MANUAL_CORRECTION_PRIORITY}

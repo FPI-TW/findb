@@ -13,6 +13,8 @@ Fixture 使用 Node.js 原生 TypeScript 執行，需要支援 type stripping �
 交付監控案例另涵蓋三分頁 URL／瀏覽器歷史、完整資料集選項、分頁與草稿隔離、viewer 限制，
 以及三次輪詢與手動刷新時表格／篩選列位移不超過 1 CSS pixel、焦點／展開／捲動保留、失敗恢復與窄螢幕。
 `/fixture/delivery-config` 僅在本機 fixture 提供延遲／失敗注入，不屬於正式 API。
+Universe 名單案例以 owner 檢查手動更新的核准說明、原因必填、Escape 無副作用、送出一次的 payload 與送出後按鈕停用，
+並確認 viewer 沒有手動更新按鈕。
 
 回補驗收對 operator 與 owner 各自使用正常登入，檢查告警帶入的 provider／dataset／起訖日期、
 預覽無寫入、確認 gating、建立的完整 payload 只送出一次，以及刷新後紀錄可見。

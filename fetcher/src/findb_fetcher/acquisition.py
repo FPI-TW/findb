@@ -134,10 +134,14 @@ class Acquisition:
         state_path: Path | None = None,
         account: str | None = None,
         strict: bool = False,
+        units: int = 1,
     ) -> None:
+        if type(units) is not int or units < 1:
+            raise ValueError("acquisition units must be a positive integer")
         self.provider = provider
         self.kind = kind
-        self.units = 0 if kind == "cleanup" else 1
+        # Provider-charged units of one dispatch, e.g. one credit per batched symbol.
+        self.units = 0 if kind == "cleanup" else units
         self.strict = strict
         self.offline = (
             not strict
@@ -542,12 +546,12 @@ _quarantined: list[Any] = []
 
 @contextmanager
 def http_acquisition(
-    provider: str, client: Any, *, url: str, credential: str | None = None
+    provider: str, client: Any, *, url: str, credential: str | None = None, units: int = 1
 ) -> Iterator[tuple[Acquisition, dict[str, Any]]]:
     from findb_fetcher.http_boundary import extensions, prepare_transport
 
     prepare_transport(client, url)
-    with Acquisition(provider, credential=credential) as operation:
+    with Acquisition(provider, credential=credential, units=units) as operation:
 
         def headers(status: int, values: Any) -> None:
             if status == 429:

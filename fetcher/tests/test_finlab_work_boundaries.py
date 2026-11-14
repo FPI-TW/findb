@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 import time
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -72,16 +73,19 @@ def test_real_worker_dispatches_get_after_one_fresh_grant(tmp_path, monkeypatch,
             return work_authorization("finlab", body) if route.endswith("/authorize") else {}
 
     record = f"open({str(events)!r}, 'a').write('{{event}}:' + str(os.getpid()) + '\\n')\n"
-    install_fake_sdk(
-        monkeypatch,
-        tmp_path / "sdk",
-        fake_finlab(
-            record.replace("{event}", "get")
-            + f"import datetime\nfrom provider_worker_support import Frame\nreturn Frame({DAY!r})",
-            login=f"open({str(logged_in)!r}, 'w').close()",
-            check_version=record.replace("{event}", "pypi"),
-        ),
+    files = fake_finlab(
+        record.replace("{event}", "get")
+        + "fetch_data(dataset)\n"
+        + f"import datetime\nfrom provider_worker_support import Frame\nreturn Frame({DAY!r})",
+        login=f"open({str(logged_in)!r}, 'w').close()",
+        check_version=record.replace("{event}", "pypi"),
     )
+    # The FinLab API reports the account's daily usage with every table request.
+    files["finlab/data.py"] += (
+        "\n\ndef fetch_data(dataset, time_saved=None):\n"
+        "    return {'quota': 12.5, 'limit_size': 5000}\n"
+    )
+    install_fake_sdk(monkeypatch, tmp_path / "sdk", files)
     native = SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=lambda name: None))
     original_import = finlab.importlib.import_module
     monkeypatch.setattr(
@@ -118,6 +122,14 @@ def test_real_worker_dispatches_get_after_one_fresh_grant(tmp_path, monkeypatch,
         ):
             if fault in {None, "slow_fence"}:
                 assert fetch().symbols == ("2330",)
+                # The reported usage is kept beside the acquisition it came with.
+                megabyte = 1024 * 1024
+                with sqlite3.connect(path) as ledger:
+                    assert ledger.execute(
+                        "SELECT bytes,limit_bytes,remaining_bytes FROM acquisition_usage"
+                    ).fetchall() == [
+                        (int(12.5 * megabyte), 5000 * megabyte, int(4987.5 * megabyte))
+                    ]
             else:
                 error = (
                     queue.ProviderWorkAcquisitionStopped
@@ -212,8 +224,10 @@ def test_negative_snapshot_survives_restart_and_valid_cache_replays_without_sdk(
             queue._current.reset(token)
             owner.stop()
 
-    with pytest.raises(finlab.FinLabTargetNotReadyError):
-        fetch(journal)
+    # The second poll sees the same table, so it adds no observation.
+    for _ in range(2):
+        with pytest.raises(finlab.FinLabTargetNotReadyError):
+            fetch(journal)
     with journal.connection() as db:
         rejected = db.execute("SELECT body,sha256,origin FROM work_response_observation").fetchall()
         assert db.execute("SELECT COUNT(*) FROM work_response").fetchone()[0] == 0
@@ -221,13 +235,21 @@ def test_negative_snapshot_survives_restart_and_valid_cache_replays_without_sdk(
     raw, digest, _ = rejected[0]
     assert hashlib.sha256(raw).hexdigest() == digest
     snapshot = json.loads(raw)["data"]
-    assert snapshot == {"dates": ["2026-10-14"], "symbols": ["2330"], "values": [[42]]}
+    # Bounded negative evidence: the latest date served and its observed count,
+    # never the table's cell values.
+    assert snapshot == {
+        "dates": ["2026-10-14"],
+        "symbols": [],
+        "values": [],
+        "previous": [],
+        "observed": [1],
+    }
     assert b"must-not-be-saved" not in raw
     frame[0] = Frame()
     reopened = queue.WorkJournal(journal_path, "original")
     assert fetch(reopened).dates == (DAY.isoformat(),)
     assert fetch(queue.WorkJournal(journal_path, "original")).values == ((42,),)
-    assert calls == ["login", "get", "login", "get"]
+    assert calls == ["login", "get"] * 3
     with reopened.connection() as db:
         assert (
             db.execute("SELECT body,sha256,origin FROM work_response_observation").fetchall()

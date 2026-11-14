@@ -772,6 +772,7 @@ Deployment credential reconciliation 以 SHA-256 建立 queue-health Admin viewe
 Fetcher Source credential bridge 只跨 unit 傳送 hashes，不授予 instance role 跨 unit讀取 secrets。
 四個 active provider 的 Source scopes 必須涵蓋對應五條 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
 
+兩環境的 FinDB origin 都只接受 Cloudflare published CIDRs 的 443，沒有 80、SSH 或其他 port；Fetcher 主機沒有 ingress。staging 的 origin SG 由 `infra/tofu/staging/network.tf` 管理，主機上不得再掛其他對外 SG。
 FinDB RDS 不公開且只接受 FinDB security group；Fetcher 不連 FinDB DB。FactSet consumer 另以 TLS 唯讀連接供應商 MySQL RDS，使用獨立 credentials。Source 經 Cloudflare／nginx 還原可信 IP 後執行 allowlist。
 nginx 非敏感設定在 `/etc/findb/nginx`，TLS、lookup key 在 `/run/findb-runtime-secrets/nginx`，
 systemd 在 Docker 啟動前重建 tmpfs；缺失時 fail closed。Serve API 保持唯讀。
@@ -789,6 +790,30 @@ DB 另比對 plans、parts、members、first dates、admissions 與 historical r
 新 profile／calendar snapshot 欄位依 migration 契約單獨驗證。
 
 Native 資料驗收另列每條 feed 的實際結果與未解問題，見 [backlog](../dev/backlog.md)。
+
+### Staging 驗收用 Admin 帳號
+
+Admin 沒有刪除使用者的 API，帳號列建立後會永久留在使用者清單中。需要以具名使用者實測時
+（例如登入、改密碼、session 撤銷），一律重複使用下列 staging 帳號，不要另建新帳號：
+
+| username | user_id | role | 建立 | 首次用途 |
+| --- | --- | --- | --- | --- |
+| `verify-498-33387c` | `01a1cd13-e2ec-7d18-8b63-1ea6f70d1b15` | viewer | 2026-11-12 | #498 change-password 撤銷驗收 |
+| `verify-498-4abfe5` | `01a1cd70-4f44-7181-b88b-6362824258c4` | viewer | 2026-11-12 | #531 security event log 格式驗收 |
+
+- 兩個帳號平時保持停用（`is_active=false`），也不保存密碼；需要兩個獨立使用者時才同時啟用兩個。
+- 使用流程，全部以 Owner credential 呼叫 Admin API：
+  1. `PATCH /api/v1/admin/users/{user_id}`，body `{"is_active": true}`。
+  2. `POST /api/v1/admin/users/{user_id}/reset-password`，body 帶本次隨機產生的密碼。reset 會撤銷該使用者所有
+     session，並把 `must_change_password` 設為 true。
+  3. 登入後先呼叫 `POST /api/v1/admin/auth/change-password` 改成另一組隨機密碼，解除強制改密碼；改之前
+     其他 Admin 路由一律回 403。改密碼同樣會撤銷所有 session，連本次 session 也會失效，必須用新密碼重新登入後才能驗收。
+  4. 驗收完成後 `PATCH /api/v1/admin/users/{user_id}`，body `{"is_active": false}`。停用會撤銷所有 session。
+- 密碼只在執行驗收的程式記憶體內產生與使用，不得印出、寫入檔案或貼到 issue。
+- 每次啟用、reset、改密碼與停用都會寫入 admin audit（`update`、`reset_password`、`change_password`），在 issue 記錄用途與時間即可，不需更新本表。
+- 2026-11-12 已用 `verify-498-33387c` 在 staging 實測過上述流程。
+- 除非要測試告警，驗收時不要送出無效 API key：那會觸發 `findb-staging-invalid-credential-events` 告警並寄出 SNS 通知。
+- 需要 operator 或 owner 權限的驗收，先用同一個 `PATCH` 暫時調整 `role`，結束後改回 viewer 再停用。
 
 ## 日曆政策設定切換
 
@@ -978,7 +1003,8 @@ PR3 只解除 historical 執行與 planner 的本機排程依賴，不新增 DB 
 Historical `--check` 驗證連線設定及 package metadata 的版本／digest／provider scope，不會 claim、
 建立 state 或抓取 provider。PR4 已解除 daily 與部署工具的剩餘依賴，舊排程檔只保留在測試 fixture。
 
-沿用目前 schema-v4 單次交易、三 images／四 providers／十二 consumers inventory、
+沿用當時的 schema-v4 單次交易、三 images／四 providers／十二 consumers inventory（Pilot 退役後為八個，見
+[Runtime 與持久化狀態](#runtime-與持久化狀態)）、
 whole-work owner lock、checkpoint identity、immutable decision 與 committed receipt；不新增部署入口
 或第二次啟動。現有 change policy 會選取 Fetcher rollout，Backend CI 仍需驗證跨套件 runtime tests。
 合併後可依既有 staging CD 驗證 PR3；production 等 PR4 整合驗收後，以 PR3＋4 同一組 accepted
@@ -1659,7 +1685,8 @@ candidate deployment 才從退役前版本補做退役。正式 image 的 contai
 
 ### Staging 驗收清單
 
-以下 staging 驗收尚未執行；production 已依 Owner 決定先行發布，不因此將本清單視為通過。
+此清單作為後續發布的核對規則。2026-11-10 兩環境的實測結果見
+[PR5 兩環境整合驗收](#pr5-兩環境整合驗收)。
 
 - 合併前確認 PR 最新 commit 的 Required CI 全綠，並處理 review findings。合併後由既有
   schema-v4 staging CD 建立 candidate，記錄 Backend／Dashboard digest、deployment attempt
@@ -1692,12 +1719,12 @@ image build 或殘留 inventory 失敗。復原核對 SSM：`2a8d0998-6a22-428b-
 `69bd242775e85ba0aaf20af2fd342337488cfc04a16a1a9a45b310ad39ff7402-42750921079-2`，
 transaction committed、十二個 consumers 皆為 accepted healthy、零 restart／OOM，三個 image
 digests 符合本次 candidate。部署後 SSM：`9eb2e8bf-8e13-4cf9-afe0-d25f8f69f97d`。
-此紀錄確認部署恢復；上方 PR5 migration／UI 的完整 staging 驗收仍須執行。
+此紀錄確認部署恢復；migration／UI 的核對結果見 [PR5 兩環境整合驗收](#pr5-兩環境整合驗收)。
 
 ### PR5 production 發布與唯讀驗收
 
 2026-11-10 依 Owner 決定 promotion PR5 `8104e48af631821a9c82a2e2ccb7b5d31b761eae`，版本為
-`findb-v0.1.24`；上方 staging migration／UI 驗收清單未先執行，維持未完成。Fetcher 程式自
+`findb-v0.1.24`；當時未先執行上方 staging 驗收清單，後續結果見下節。Fetcher 程式自
 `d86b633aae3ac83cdb0ab1f789057d16d28b1f2c` 未變更，production 維持 `fetcher-v0.1.28`，未重部署。
 
 發布前唯讀盤點（SSM `7e715b8f-e1e9-4b2e-be73-0e1972ac4c6a`，`SET TRANSACTION READ ONLY`）：
@@ -1732,6 +1759,44 @@ findb/production/accepted/8104e48af631821a9c82a2e2ccb7b5d31b761eae/b4f07bf17489d
 - 公開 `/health` 與 `/dashboard/lookup` 均 HTTP 200。
 
 PR5 accepted 後 Backend rollback 下限為 `findb-v0.1.24`；`e9f4a1c6b3d5` downgrade 明確拒絕，
-資料修復採 forward fix。未驗證項目：Dashboard 實際畫面的市場分組與無 Slot 標示、新 plan 採
-catalog deadline（需 Owner 恢復 controls 後產生）、既有 slot ingress 相容性（需 Source 寫入），
-以及 staging 驗收清單。Controls 由 Owner 恢復原先運行項目，本次未變更。
+資料修復採 forward fix。Dashboard 畫面與 staging 驗收清單的結果見下節。
+Controls 由 Owner 恢復原先運行項目，本次未變更。
+
+### PR5 兩環境整合驗收
+
+2026-11-10 對已部署的 PR5 做唯讀 DB／API、Fetcher runtime 與登入後 Dashboard 驗收。
+Staging FinDB／Fetcher current 為 `ca5da5fe9b76596028f95d18a520b17e7d334c06`（CD
+[42770804653](https://github.com/FPI-TW/findb/actions/runs/42770804653)／
+[42770804655](https://github.com/FPI-TW/findb/actions/runs/42770804655)）；production FinDB 為
+上述 PR5 `8104e48`，Fetcher 保持 PR4 `d86b633`。兩環境 Backend metadata SHA-256 相同：
+`e6a89f5b6f509ef73098c9109e52d11485bfc30a2bcc846ed77f2a6471c7eb44`。
+
+| 核對 | Staging | Production |
+| --- | --- | --- |
+| DB revision／preflight | `e9f4a1c6b3d5`；13 筆全部 already_compliant | 同左 |
+| Admin schedulers／freshness | Pilot／Full 各五條 feed 與 catalog 時間一致 | 同左 |
+| Source execution-config | 四 providers × 兩 profiles，scope／environment／digest／no-store 通過 | 同左；既有 PR4 Fetcher 相容 |
+| Runtime inventory | 12 accepted healthy consumers，零 restart／OOM | 同左 |
+| Historical／daily CLI check | 四 providers 通過；無舊排程檔；FinLab historical 僅 equity | 同左 |
+| Dashboard 實際畫面 | 依 HK／TW／US 分組、逐 feed 時間／時區、無 Slot | 同左 |
+| GET 前後業務快照 | 14 controls、14 first dates、70 plans 不變 | 13 controls、7 first dates、142 plans 不變 |
+
+- 顯示時間：美股紐約 17:00、港股香港 18:30、FinLab equity／ETF 台北 18:00、TAIFEX 台北 17:00。
+  瀏覽器既有頁面可能仍持有舊 SPA，重新載入後即為新版。
+- Staging 另與遷移前 PR3＋4 的相同唯讀查詢比較：controls、first dates、plans（含 identity／
+  deadline／member hash／expected count）指紋完全一致；Admin 回傳的 70／142 筆既有 plan
+  deadline 逐筆等於 DB frozen 值。
+- 在兩環境已安裝的 Backend 以純函式驗證紐約 DST 前後的觸發邊界、新 plan deadline 次日台北
+  09:00 與 bounded 09:15 分開；以實際 DB config 的記憶體副本驗證 seed 投影可重複執行、未知
+  clock override 被拒絕。
+- 線上沒有執行 seed、寫入 override、建立驗收 plan 或送出測試 ingress；migration 原子性、實際
+  plan 建立與 slot ingress 相容由隔離測試驗證。此結果不代替各 provider 交易日準時交付的營運驗收。
+- 驗收未啟停 controls；FactSet native 終態依 Owner 指示略過，既有 partial 請求不列為通過。
+
+| 唯讀驗收 | SSM command ID |
+| --- | --- |
+| Staging DB／Admin／安裝版本時間計算 | `e2a49c45-beb5-414f-8fc7-d6bc58eb4ca5` |
+| Production DB／Admin／安裝版本時間計算 | `bee41f1e-8202-4fcd-a2be-b8c4e26c436a` |
+| Staging Fetcher／Source／bootstrap | `3d41e583-c366-45af-aa7c-19e0de28af9f` |
+| Production Fetcher／Source／bootstrap | `41868d31-b4df-4a39-b480-3d5bdf5c0d7e` |
+| Staging 與遷移前 frozen evidence 指紋比較 | `27653209-7c23-48cf-a0d6-9c8f7aab4110` |

@@ -992,6 +992,44 @@ async def close(db: AsyncSession, **identity) -> None:
         attempt.state = "closed"
 
 
+async def validate_mapping_gap_partial(db: AsyncSession, work: ProviderWork, proof: dict) -> None:
+    """A per-member daily plan may end partial only when mapping gaps are all it lacks.
+
+    Every other member already has data or no-data evidence in the plan, and the
+    proof names exactly the plan's mapping-gap members. The plan keeps counting
+    them as blocked; only the work stops being a failure nobody can act on.
+    """
+    from app.services.full_market import get_plan
+
+    manifest = work.manifest or {}
+    plan = await get_plan(
+        db,
+        UUID(manifest["plan_id"]),
+        provider=work.provider,
+        allowed_datasets=[work.dataset_key],
+    )
+    summary = plan.summary
+    claimed = proof.get("mapping_gaps")
+    if (
+        plan.trade_date != work.trade_date
+        or plan.execution_profile != work.execution_profile
+        or summary.missing
+        or not summary.blocked
+        or summary.blocked != summary.mapping_gap
+        # The summary lists a bounded number of gaps; a longer list cannot be compared.
+        or len(summary.gaps) != summary.blocked
+        or not isinstance(claimed, list)
+        or any(not isinstance(key, str) for key in claimed)
+        or len(claimed) != len(set(claimed))
+        or set(claimed) != {gap["member_key"] for gap in summary.gaps}
+        or not set(claimed) <= {row["key"] for row in manifest.get("members", [])}
+    ):
+        raise ProviderWorkError(
+            "partial daily settlement requires mapping gaps to be the only unresolved members",
+            code="PROVIDER_WORK_INVALID_PROOF",
+        )
+
+
 async def settle(
     db: AsyncSession,
     *,
@@ -1046,7 +1084,14 @@ async def settle(
         "schema_id": "market_eod",
         "schema_version": eod_contract_version(work),
     }
-    if outcome == "partial" or outcome == "completed" and eod_v2:
+    if (
+        outcome == "partial"
+        and work.kind == "daily"
+        and (work.manifest or {}).get("plan_id")
+        and "contract" not in (work.manifest or {})
+    ):
+        await validate_mapping_gap_partial(db, work, proof)
+    elif outcome == "partial" or outcome == "completed" and eod_v2:
         from app.schemas.eod_completion import EODCompletionEvidence
         from app.services.eod_completion import validate_eod_completion
 

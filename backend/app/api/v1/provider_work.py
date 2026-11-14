@@ -13,6 +13,7 @@ from app.dependencies import get_db
 from app.execution_profiles import execution_profile
 from app.schemas.calendar_closure import CalendarClosureInventory
 from app.services import provider_work as service
+from app.services.universe_refresh import MANUAL_REFRESH
 
 router = APIRouter(prefix="/provider-work", dependencies=[Depends(verify_source_api_key)])
 
@@ -116,6 +117,8 @@ async def enqueue(body: EnqueueRequest, db: AsyncSession = Depends(get_db)) -> d
         body.trade_date is not None
         or body.execution_profile is not None
         or not body.stable_key.startswith(f"maintenance:{body.dataset_key}:")
+        # An Owner approval travels in this key and only the Admin API may write it.
+        or MANUAL_REFRESH in body.scope
     ):
         raise HTTPException(status_code=422, detail="maintenance stable work identity differs")
     if body.kind == "daily" and (

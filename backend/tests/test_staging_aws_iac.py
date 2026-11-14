@@ -100,6 +100,45 @@ def test_staging_references_existing_ec2_and_only_manages_required_tags() -> Non
     assert "associate-iam-instance-profile" in _read(STAGING_ROOT / "outputs.tf")
 
 
+def _hcl_default(source: str, name: str) -> list[str]:
+    match = re.search(rf'variable "{name}" \{{.*?default = \[(.*?)\]', source, re.S)
+    assert match is not None, name
+    return re.findall(r'"([^"]+)"', match.group(1))
+
+
+def test_findb_origin_accepts_only_cloudflare_https_like_production() -> None:
+    network = _read(STAGING_ROOT / "network.tf")
+    variables = _read(STAGING_ROOT / "variables.tf")
+    production_variables = _read(TOFU_ROOT / "production" / "variables.tf")
+    tfvars = _read(STAGING_ROOT / "terraform.tfvars.example")
+
+    group = network.split('resource "aws_security_group" "findb_origin"', 1)[1].split(
+        'resource "aws_network_interface_sg_attachment"', 1
+    )[0]
+    ingress = re.findall(r"ingress \{(.*?)\n  \}", group, re.S)
+    assert len(ingress) == 2
+    for rule in ingress:
+        assert re.search(r"from_port\s+= 443", rule) and re.search(r"to_port\s+= 443", rule)
+    assert "cidr_blocks = var.cloudflare_ipv4_cidrs" in ingress[0]
+    assert "ipv6_cidr_blocks = var.cloudflare_ipv6_cidrs" in ingress[1]
+    egress = group.split("egress {", 1)[1]
+    assert "0.0.0.0/0" not in "".join(ingress) and "0.0.0.0/0" in egress
+    assert "vpc_id      = var.findb_vpc_id" in group
+    for name in ("cloudflare_ipv4_cidrs", "cloudflare_ipv6_cidrs"):
+        assert _hcl_default(variables, name) == _hcl_default(production_variables, name)
+
+    assert "network_interface_id = data.aws_instance.findb.network_interface_id" in network
+    assert 'check "findb_origin_groups"' in network
+    assert "var.findb_rds_client_security_group_id," in network
+    assert "aws_security_group.findb_origin.id," in network
+    assert re.search(r'findb_vpc_id\s+= "vpc-[0-9a-f]+"', tfvars)
+    assert re.search(r'findb_rds_client_security_group_id\s+= "sg-[0-9a-f]+"', tfvars)
+    # Existing groups are referenced only; none is imported or managed here.
+    source = "\n".join(_read(path) for path in STAGING_ROOT.glob("*.tf"))
+    assert source.count('resource "aws_security_group"') == 1
+    assert "aws_security_group_rule" not in source and "import {" not in source
+
+
 def test_provider_and_instance_tag_contract_are_explicit_and_have_no_filesystem_markers() -> None:
     versions = _read(STAGING_ROOT / "versions.tf")
     variables = _read(STAGING_ROOT / "variables.tf")
@@ -163,7 +202,7 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
     )[0]
     assert 'sid    = "ReadResourceLessMetadata"' in permissions
     assert (
-        'actions = [\n      "ec2:DescribeInstanceAttribute",\n      "ec2:DescribeInstanceCreditSpecifications",\n      "ec2:DescribeInstances",\n      "ec2:DescribeInstanceTypes",\n      "ec2:DescribeTags",\n      "ec2:DescribeVolumes",\n      "ec2:DescribeVpcs",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "ssm:DescribeAssociation",\n      "ssm:ListAssociations",\n      "sts:GetCallerIdentity",\n    ]'
+        'actions = [\n      "ec2:DescribeInstanceAttribute",\n      "ec2:DescribeInstanceCreditSpecifications",\n      "ec2:DescribeInstances",\n      "ec2:DescribeInstanceTypes",\n      "ec2:DescribeNetworkInterfaces",\n      "ec2:DescribeSecurityGroupRules",\n      "ec2:DescribeSecurityGroups",\n      "ec2:DescribeTags",\n      "ec2:DescribeVolumes",\n      "ec2:DescribeVpcs",\n      "kms:ListAliases",\n      "logs:DescribeLogGroups",\n      "ssm:DescribeAssociation",\n      "ssm:ListAssociations",\n      "sts:GetCallerIdentity",\n    ]'
         in permissions
     )
     assert 'resources = ["*"]' in permissions
@@ -196,8 +235,14 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         in permissions
     )
     assert "ssm:DescribeDocumentPermission" in permissions
-    assert 'sid       = "ReadExactSsmLogGroupTags"' in permissions
-    assert "resources = [for group in aws_cloudwatch_log_group.ssm : group.arn]" in permissions
+    # Exact ARNs for every log group exceed the role's inline policy size limit.
+    log_group_tags = _statement_by_sid(permissions, "ReadStagingLogGroupTags")
+    assert 'actions   = ["logs:ListTagsForResource"]' in log_group_tags
+    assert "resources = [local.infra_plan_log_group_arn]" in log_group_tags
+    assert (
+        ':log-group:${var.ssm_log_group_prefix}/*"'
+        in plan.split("infra_plan_log_group_arn", 1)[1].split("\n", 1)[0]
+    )
     assert 'sid    = "ReadExactSecretMetadata"' in permissions
     metadata = permissions.split('sid    = "ReadExactSecretMetadata"', 1)[1].split(
         "statement {", 1
@@ -409,6 +454,20 @@ def test_deploy_and_instance_roles_are_separate_and_unit_scoped() -> None:
     log_write_statement = _statement_by_sid(instance_policy, "WriteOwnSsmLogs")
     assert "aws_cloudwatch_log_group.ssm[each.key].arn" in log_write_statement
     assert 'resources = ["*"]' not in log_write_statement
+    # Only the Fetcher host ships container output, and only into its own group.
+    container_logs = instance_policy.split('sid       = "WriteFetcherContainerLogs"', 1)
+    assert len(container_logs) == 2
+    assert (
+        container_logs[0]
+        .rstrip()
+        .endswith('for_each = each.key == "fetcher" ? [true] : []\n    content {')
+    )
+    container_log_statement = container_logs[1].split("\n    }", 1)[0]
+    assert 'actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]' in container_log_statement
+    assert (
+        'resources = ["${aws_cloudwatch_log_group.fetcher_containers.arn}:*"]'
+        in container_log_statement
+    )
     for policy, sid in (
         (deploy_policy, "PublishOwnDeploymentFailureMetric"),
         (instance_policy, "PublishStagingOperationalMetrics"),
@@ -522,6 +581,13 @@ def test_logs_session_preferences_and_bundle_bucket_are_unit_specific() -> None:
 
     assert 'resource "aws_cloudwatch_log_group" "ssm"' in main
     assert "retention_in_days = var.ssm_log_retention_days" in main
+    container_logs = main.split('resource "aws_cloudwatch_log_group" "fetcher_containers"', 1)[
+        1
+    ].split("\n}", 1)[0]
+    # Under the prefix the logs KMS key policy already admits, with a retention period.
+    assert 'name              = "${var.ssm_log_group_prefix}/fetcher/containers"' in container_logs
+    assert "retention_in_days = var.ssm_log_retention_days" in container_logs
+    assert "kms_key_id        = aws_kms_key.deploy_bundle.arn" in container_logs
     assert "kms_key_id        = aws_kms_key.deploy_bundle.arn" in main
     assert 'resource "aws_ssm_document" "session_manager_preferences"' in main
     assert "cloudWatchLogGroupName" in main

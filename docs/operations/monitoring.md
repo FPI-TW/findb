@@ -348,7 +348,10 @@ its backend is fully pinned and its tracked tfvars already holds the real values
    The read-only plan role scopes CloudWatch alarm refresh to the deterministic
    `findb-staging-*` alarm ARN prefix. This bounded prefix is intentional: listing
    every custom alarm ARN for both metadata and tag refresh exceeds IAM's
-   aggregate inline role-policy size limit.
+   aggregate inline role-policy size limit. Log-group tag refresh is bounded the
+   same way, to the `/findb/staging/` log-group prefix: the policy has well under
+   100 bytes of headroom, so one more exact ARN no longer fits. Check the size of
+   `staging-infra-plan-read-only` before adding any statement or resource to it.
 4. Apply only that reviewed fresh plan. Confirm both associations succeed,
    wait for two five-minute datapoints, verify every non-sparse alarm settles
    to `OK`, and retain the apply and association records. A breaching or
@@ -425,6 +428,48 @@ use the controlled recipient replacement procedure above and reconfirm the
 replacement. If the runbook test must be repeated, use a clearly labelled
 synthetic reason and reset the selected alarm to `OK` again.
 
+## Fetcher container logs
+
+The long-running Fetcher containers (`findb-full-market-*` and `findb-historical-*`)
+send their output to one CloudWatch log group per environment,
+`/findb/<environment>/fetcher/containers`, with one stream per container name.
+The stream belongs to the name, not to the container, so the output from before a
+deployment stays readable after the deployment replaces the container.
+
+- The Docker daemon ships the output with the Fetcher instance role
+  (`logs:CreateLogStream` and `logs:PutLogEvents` on that group only). Retention
+  is 90 days in production and `ssm_log_retention_days` in staging; both groups
+  use the environment's existing KMS key for logs.
+- Shipping is non-blocking. A container start or a log write never waits for
+  CloudWatch; while CloudWatch is unreachable, or before the log group and
+  permission exist, the daemon keeps retrying and holds up to 4 MB in memory per
+  container, dropping the oldest lines beyond that. No alarm watches this path:
+  check `journalctl -u docker` on the host for `awslogs` errors when a stream
+  stops advancing.
+- `docker logs <container>` still works from the daemon's local cache
+  (10 MB × 3 files per container), but only for the current container.
+- Preflight and bootstrap containers (`--check`, `--require-stopped`,
+  `--initialize-state`) run with `--rm` and are not shipped; their result is in
+  the SSM command output.
+- The stream carries what the Fetcher prints: health lines, `delivery_timing`,
+  retention and quota diagnostics, all as bounded names, counts and identifiers.
+  Provider SDK child processes have no stdout or stderr, credentials travel in
+  headers rather than URLs, and both long-running entrypoints report an
+  unexpected failure by exception class instead of a traceback, so no token,
+  credential or provider message reaches the stream.
+
+Reading one container's recent output:
+
+```bash
+aws logs tail /findb/production/fetcher/containers \
+  --log-stream-names findb-full-market-finlab --since 2h
+```
+
+The log group and the instance-role statement are OpenTofu resources and are
+applied by the operator with the usual plan/apply procedure. The deployment
+script change is safe to deploy before or after that apply: before it, the
+containers run normally and only the local cache has the output.
+
 ## Coverage gaps and cost / retention caveats
 
 The applied custom coverage includes disk/inode use, required container
@@ -464,7 +509,9 @@ notifications, and customer-managed KMS key/API use. CloudWatch native metric
 retention is controlled by AWS service behavior rather than this stack; this
 slice creates no custom metric retention policy. SNS does not provide a
 durable incident archive in this configuration. Keep the existing SSM
-CloudWatch Logs retention policy separate from these alarms. Custom metric
+CloudWatch Logs retention policy separate from these alarms. The Fetcher
+container log group adds CloudWatch Logs ingestion and storage charges in
+proportion to what the containers print. Custom metric
 retention follows the CloudWatch service lifecycle; the stack does not create
 a separate retention resource. Retain
 operator test evidence according to the project's change/audit practice.

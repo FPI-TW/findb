@@ -32,6 +32,9 @@ TWELVE_DATA_PRICE_ADJUSTMENT = "none"
 # Durable response identity for the price basis; pre-basis bytes were split-adjusted.
 TWELVE_DATA_RESPONSE_BASIS = "adjust-" + TWELVE_DATA_PRICE_ADJUSTMENT + "-v1"
 TWELVE_DATA_DAILY_RESPONSE = "twelve_daily"
+TWELVE_DATA_DAILY_BATCH_RESPONSE = "twelve_daily_batch"
+# One frozen delivery part; the provider documents no batch ceiling.
+TWELVE_DATA_MAX_BATCH_SYMBOLS = 50
 _DAILY_RESPONSE_FIELDS = ("symbol", "start_date", "end_date", "outputsize", "exchange")
 # Bounded diagnostic vocabulary. Provider messages never enter durable state.
 TWELVE_DATA_ERROR_CATEGORIES = frozenset(
@@ -119,6 +122,8 @@ class TwelveDataResponse(dict[str, Any]):
     def __init__(self, payload: Mapping[str, Any], *, raw_bytes: bytes) -> None:
         super().__init__(payload)
         self.raw_bytes = raw_bytes
+        # The live acquisition of a batch; a journal replay has none.
+        self.operation: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +197,33 @@ def _target_rows_present(value: Any, arguments: dict[str, Any]) -> bool:
         return False
 
 
+_BATCH_RESPONSE_FIELDS = ("symbols", "start_date", "end_date")
+
+
+def _batch_target_rows_present(value: Any, arguments: dict[str, Any]) -> bool:
+    """Replay a batch only when every symbol already served its target date."""
+    try:
+        return all(
+            entry.get("status") == "ok" and _target_rows_present(entry, arguments)
+            for entry in (value[symbol] for symbol in arguments["symbols"])
+        )
+    except (KeyError, TypeError, AttributeError):
+        return False
+
+
+class _Replayed:
+    """A journaled batch replays without a live dispatch to rate-limit."""
+
+    started_at = None
+    possibly_started = True
+
+    def rate_limited(self, retry_after: str | None = None) -> None:
+        return None
+
+
+_REPLAYED = _Replayed()
+
+
 class TwelveDataClient:
     """Small synchronous client for the provider's daily time-series endpoint."""
 
@@ -205,67 +237,22 @@ class TwelveDataClient:
         self._client = client or httpx.Client(timeout=config.timeout_seconds)
         self._owns_client = client is None
 
-    @durable_response(
-        TWELVE_DATA_DAILY_RESPONSE,
-        _DAILY_RESPONSE_FIELDS,
-        target_valid=_target_rows_present,
-        basis=TWELVE_DATA_RESPONSE_BASIS,
-    )
-    def fetch_daily(
+    def _time_series(
         self,
-        symbol: str,
+        params: dict[str, str | int],
         *,
-        start_date: date | None = None,
-        end_date: date | None = None,
-        outputsize: int | None = None,
-        exchange: str | None = None,
-        max_response_bytes: int | None = None,
-        on_http_rate_limited: Callable[[], None] | None = None,
-    ) -> TwelveDataResponse:
-        """Fetch daily rows using inclusive exchange-local date bounds.
+        bound: int,
+        on_http_rate_limited: Callable[[], None] | None,
+    ) -> tuple[dict[str, Any], bytes, Any]:
+        """One governed ``/time_series`` dispatch, charged one unit per requested symbol.
 
-        The provider upper bound is the following midnight; callers must map
-        only their requested dates while retaining the exact raw response.
+        Returns the decoded HTTP 200 JSON object, its exact bytes and the
+        acquisition; transport, HTTP and non-object failures raise here.
         """
-        if end_date == date.max:
-            raise ValueError("end_date must allow a following midnight")
-        bound = self._config.max_response_bytes
-        if max_response_bytes is not None:
-            if type(max_response_bytes) is not int or max_response_bytes < 1:
-                raise ValueError("response byte bound must be a positive integer")
-            bound = min(bound, max_response_bytes)
-        normalized_symbol = symbol.strip()
-        if not normalized_symbol or len(normalized_symbol) > 100:
-            raise ValueError("symbol must contain between 1 and 100 characters")
-        if start_date is not None and end_date is not None and start_date > end_date:
-            raise ValueError("start_date must not be after end_date")
-        if outputsize is not None and not 1 <= outputsize <= 5000:
-            raise ValueError("outputsize must be between 1 and 5000")
-        if start_date is not None and end_date is not None and outputsize is not None:
-            raise ValueError("outputsize must be omitted when both date bounds are set")
-
-        params: dict[str, str | int] = {
-            "symbol": normalized_symbol,
-            "interval": "1day",
-            "order": "asc",
-            "format": "JSON",
-            "adjust": TWELVE_DATA_PRICE_ADJUSTMENT,
-        }
-        if start_date is not None:
-            params["start_date"] = start_date.isoformat()
-        if end_date is not None:
-            params["end_date"] = (end_date + timedelta(days=1)).isoformat()
-        if outputsize is not None:
-            params["outputsize"] = outputsize
-        if exchange is not None:
-            normalized_exchange = exchange.strip()
-            if _EXCHANGE_PATTERN.fullmatch(normalized_exchange) is None:
-                raise ValueError("exchange must contain 1 to 100 supported ASCII characters")
-            params["exchange"] = normalized_exchange
-
         from findb_fetcher.acquisition import http_acquisition
 
         response_status_code = None
+        units = len(str(params["symbol"]).split(","))
         try:
             with (
                 http_acquisition(
@@ -273,6 +260,7 @@ class TwelveDataClient:
                     self._client,
                     url=f"{self._config.base_url}/time_series",
                     credential=self._config._identity_credential,
+                    units=units,
                 ) as (operation, extensions),
                 self._client.stream(
                     "GET",
@@ -344,9 +332,83 @@ class TwelveDataClient:
                 category="malformed_response",
             )
 
-        provider_status = payload.get("status")
+        return payload, raw_bytes, operation
+
+    @durable_response(
+        TWELVE_DATA_DAILY_RESPONSE,
+        _DAILY_RESPONSE_FIELDS,
+        target_valid=_target_rows_present,
+        basis=TWELVE_DATA_RESPONSE_BASIS,
+    )
+    def fetch_daily(
+        self,
+        symbol: str,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        outputsize: int | None = None,
+        exchange: str | None = None,
+        max_response_bytes: int | None = None,
+        on_http_rate_limited: Callable[[], None] | None = None,
+    ) -> TwelveDataResponse:
+        """Fetch daily rows using inclusive exchange-local date bounds.
+
+        The provider upper bound is the following midnight; callers must map
+        only their requested dates while retaining the exact raw response.
+        """
+        if end_date == date.max:
+            raise ValueError("end_date must allow a following midnight")
+        bound = self._config.max_response_bytes
+        if max_response_bytes is not None:
+            if type(max_response_bytes) is not int or max_response_bytes < 1:
+                raise ValueError("response byte bound must be a positive integer")
+            bound = min(bound, max_response_bytes)
+        normalized_symbol = symbol.strip()
+        if not normalized_symbol or len(normalized_symbol) > 100:
+            raise ValueError("symbol must contain between 1 and 100 characters")
+        if start_date is not None and end_date is not None and start_date > end_date:
+            raise ValueError("start_date must not be after end_date")
+        if outputsize is not None and not 1 <= outputsize <= 5000:
+            raise ValueError("outputsize must be between 1 and 5000")
+        if start_date is not None and end_date is not None and outputsize is not None:
+            raise ValueError("outputsize must be omitted when both date bounds are set")
+
+        params: dict[str, str | int] = {
+            "symbol": normalized_symbol,
+            "interval": "1day",
+            "order": "asc",
+            "format": "JSON",
+            "adjust": TWELVE_DATA_PRICE_ADJUSTMENT,
+        }
+        if start_date is not None:
+            params["start_date"] = start_date.isoformat()
+        if end_date is not None:
+            params["end_date"] = (end_date + timedelta(days=1)).isoformat()
+        if outputsize is not None:
+            params["outputsize"] = outputsize
+        if exchange is not None:
+            normalized_exchange = exchange.strip()
+            if _EXCHANGE_PATTERN.fullmatch(normalized_exchange) is None:
+                raise ValueError("exchange must contain 1 to 100 supported ASCII characters")
+            params["exchange"] = normalized_exchange
+
+        payload, raw_bytes, operation = self._time_series(
+            params, bound=bound, on_http_rate_limited=on_http_rate_limited
+        )
+        self._raise_unless_ok(payload, operation, on_http_rate_limited)
+        return TwelveDataResponse(payload, raw_bytes=raw_bytes)
+
+    def _raise_unless_ok(
+        self,
+        payload: Any,
+        operation: Any,
+        on_http_rate_limited: Callable[[], None] | None,
+    ) -> None:
+        """Raise the provider-reported error of one series object, as for a single request."""
+        dispatched = operation.started_at is not None or operation.possibly_started
+        provider_status = payload.get("status") if isinstance(payload, dict) else None
         if provider_status == "error":
-            raw_provider_code = payload.get("code", response_status_code)
+            raw_provider_code = payload.get("code", 200)
             provider_code = _provider_code(raw_provider_code)
             if provider_code == 429:
                 operation.rate_limited()
@@ -355,19 +417,109 @@ class TwelveDataClient:
             provider_message = _redacted_message(payload.get("message"), self._config.api_key)
             raise TwelveDataResponseError(
                 f"Twelve Data request failed ({raw_provider_code}): {provider_message}",
-                status_code=response_status_code,
-                dispatched=operation.started_at is not None or operation.possibly_started,
+                status_code=200,
+                dispatched=dispatched,
                 provider_code=provider_code,
                 category=_message_category(payload.get("message"), provider_code),
             )
         if provider_status != "ok":
             raise TwelveDataResponseError(
                 "Twelve Data response status must be 'ok'",
-                status_code=response_status_code,
-                dispatched=operation.started_at is not None or operation.possibly_started,
+                status_code=200,
+                dispatched=dispatched,
                 category="malformed_response",
             )
-        return TwelveDataResponse(payload, raw_bytes=raw_bytes)
+
+    @durable_response(
+        TWELVE_DATA_DAILY_BATCH_RESPONSE,
+        _BATCH_RESPONSE_FIELDS,
+        target_valid=_batch_target_rows_present,
+        basis=TWELVE_DATA_RESPONSE_BASIS,
+    )
+    def fetch_daily_batch(
+        self,
+        symbols: tuple[str, ...],
+        *,
+        start_date: date,
+        end_date: date,
+        max_response_bytes: int | None = None,
+        on_http_rate_limited: Callable[[], None] | None = None,
+    ) -> TwelveDataResponse:
+        """One comma-separated ``/time_series`` request for several symbols.
+
+        The provider charges one credit per symbol and keys the reply by the
+        requested symbol; each value is a single-request series object or that
+        symbol's own error. Anything but exactly the requested keys fails the
+        whole batch. Use ``batch_series`` to read one symbol.
+        """
+        if (
+            not isinstance(symbols, tuple)
+            or not 2 <= len(symbols) <= TWELVE_DATA_MAX_BATCH_SYMBOLS
+            or len(set(symbols)) != len(symbols)
+            or any(
+                not isinstance(symbol, str)
+                or symbol != symbol.strip()
+                or not symbol
+                or len(symbol) > 100
+                or "," in symbol
+                for symbol in symbols
+            )
+        ):
+            raise ValueError("batch symbols must be 2 to 50 distinct comma-free symbols")
+        if start_date > end_date or end_date == date.max:
+            raise ValueError("batch dates must be an ordered inclusive range")
+        bound = self._config.max_response_bytes
+        if max_response_bytes is not None:
+            if type(max_response_bytes) is not int or max_response_bytes < 1:
+                raise ValueError("response byte bound must be a positive integer")
+            bound = min(bound, max_response_bytes)
+        params: dict[str, str | int] = {
+            "symbol": ",".join(symbols),
+            "interval": "1day",
+            "order": "asc",
+            "format": "JSON",
+            "adjust": TWELVE_DATA_PRICE_ADJUSTMENT,
+            "start_date": start_date.isoformat(),
+            "end_date": (end_date + timedelta(days=1)).isoformat(),
+        }
+        payload, raw_bytes, operation = self._time_series(
+            params, bound=bound, on_http_rate_limited=on_http_rate_limited
+        )
+        if set(payload) != set(symbols):
+            # A whole-request error (quota, auth) replaces the symbol map.
+            self._raise_unless_ok(payload, operation, on_http_rate_limited)
+            raise TwelveDataResponseError(
+                "Twelve Data batch response must key exactly the requested symbols",
+                status_code=200,
+                dispatched=True,
+                category="malformed_response",
+            )
+        if any(
+            not isinstance(entry, dict) or entry.get("status") not in {"ok", "error"}
+            for entry in payload.values()
+        ):
+            raise TwelveDataResponseError(
+                "Twelve Data batch entries must be series objects",
+                status_code=200,
+                dispatched=True,
+                category="malformed_response",
+            )
+        response = TwelveDataResponse(payload, raw_bytes=raw_bytes)
+        response.operation = operation
+        return response
+
+    def batch_series(
+        self,
+        response: TwelveDataResponse,
+        symbol: str,
+        *,
+        on_http_rate_limited: Callable[[], None] | None = None,
+    ) -> TwelveDataResponse:
+        """One symbol of a batch as a single-request series, over the shared batch bytes."""
+        entry = response[symbol]
+        operation = getattr(response, "operation", None) or _REPLAYED
+        self._raise_unless_ok(entry, operation, on_http_rate_limited)
+        return TwelveDataResponse(entry, raw_bytes=response.raw_bytes)
 
     def close(self) -> None:
         if self._owns_client:

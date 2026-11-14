@@ -599,6 +599,38 @@ class UniverseReleaseListResponse(PaginatedResponse[UniverseReleaseAdminResponse
     pass
 
 
+class UniverseRefreshRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    provider: str = Field(min_length=1, max_length=50)
+    dataset_key: str = Field(min_length=1, max_length=50)
+    # Recorded as the approval note of the release this refresh publishes.
+    evidence_note: str = Field(min_length=10, max_length=500)
+
+
+class UniverseRefreshResponse(BaseModel):
+    work_id: UUID
+    provider: str
+    dataset_key: str
+    state: str
+    requested_by: str
+    requested_at: datetime
+    note: str
+    completed_at: datetime | None = None
+    failure_code: str | None = None
+
+
+class UniverseFeedResponse(BaseModel):
+    provider: str
+    dataset_key: str
+    published: UniverseReleaseAdminResponse | None = None
+    candidate: UniverseReleaseAdminResponse | None = None
+    refresh: UniverseRefreshResponse | None = None
+
+
+class UniverseFeedListResponse(BaseModel):
+    data: list[UniverseFeedResponse]
+
+
 class UniverseMemberChangeResponse(BaseModel):
     member_key: str
     changed_fields: list[str]

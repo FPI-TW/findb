@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     NORMALIZATION_TASK_SOFT_TIME_LIMIT: int = 1_800
     NORMALIZATION_TASK_TIME_LIMIT: int = 2_100
     NORMALIZATION_LEASE_SECONDS: int = 2_400
+    # Bounded wait for a held dataset lock before falling back to a delayed redelivery.
+    NORMALIZATION_LOCK_WAIT_MS: int = 10_000
     NORMALIZATION_CONSUMER_TIMEOUT_MS: int = 3_600_000
     OUTBOX_POLL_SECONDS: float = 1.0
     OUTBOX_BATCH_SIZE: int = 100
@@ -107,6 +109,8 @@ class Settings(BaseSettings):
     ADMIN_LOGIN_RATE_LIMIT_WINDOW: int = Field(default=300, ge=1)
     # Total login attempts per trusted client IP across all usernames.
     ADMIN_LOGIN_IP_RATE_LIMIT_REQUESTS: int = Field(default=20, ge=1)
+    # Wrong current passwords one session may submit to change-password before it is revoked.
+    ADMIN_PASSWORD_CHANGE_MAX_FAILURES: int = Field(default=5, ge=1)
     CREDENTIAL_USAGE_FLUSH_SECONDS: int = Field(default=60, ge=1)
 
     # Rate Limiting

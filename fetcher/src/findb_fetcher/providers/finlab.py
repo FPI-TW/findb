@@ -11,7 +11,10 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
 import re
+import sqlite3
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -40,7 +43,12 @@ FINLAB_FIELD_DATASETS: Mapping[str, str] = MappingProxyType(
     }
 )
 _MAX_SOURCE_REQUEST_BYTES = 1024 * 1024
+# One table fetch normally takes 3-10 seconds; the supervisor's default of 30
+# minutes would let five stuck tables hold the provider owner for hours.
+FINLAB_GET_TIMEOUT_SECONDS = 10 * 60
 _FRAME_JSON_COLUMN_BATCH = 16
+# Latest dates kept as evidence when a table does not serve the target date yet.
+_NOT_READY_TAIL_DATES = 5
 
 
 class FinLabError(RuntimeError):
@@ -68,7 +76,23 @@ class FinLabSdkError(FinLabError):
 
 
 class FinLabOperationalError(FinLabSdkError):
-    """Acquisition or accounting failed; never classify this as a mapping gap."""
+    """Acquisition or accounting failed; never classify this as a mapping gap.
+
+    ``code`` is a bounded class of what failed (auth, quota, network, timeout,
+    killed, ...); the provider's own message never travels with it.
+    """
+
+    def __init__(self, message: str, code: str = "sdk_error") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class FinLabNativeError(Exception):
+    """A FinLab API answer the worker classifies itself, without its message."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.native_failure_code = code
 
 
 class FinLabTargetNotReadyError(FinLabSdkError, FinLabPayloadError):
@@ -82,6 +106,22 @@ class FinLabDatasetTable:
     dates: tuple[str, ...]
     symbols: tuple[str, ...]
     values: tuple[tuple[object, ...], ...]
+    # Close table only: (symbol, date, close) of the latest earlier observed close,
+    # for each symbol whose target close is empty.
+    previous: tuple[tuple[str, str, object], ...] = ()
+    # A table without the target date only: per kept date, how many reviewed
+    # symbols have a value. ``symbols`` and ``values`` then stay empty.
+    observed: tuple[int, ...] = ()
+
+
+def unobserved(value: object) -> bool:
+    """FinLab leaves a cell empty (None or a non-finite number) when it has no value."""
+    if value is None or isinstance(value, bool):
+        return value is None
+    try:
+        return not math.isfinite(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
 
 
 class FinLabDatasetGateway(Protocol):
@@ -215,7 +255,7 @@ class FinLabSdkGateway:
                             if self._sdk is None:
                                 from findb_fetcher.provider_process import supervised_call
 
-                                frame, observed = supervised_call(
+                                frame, observed, usage = supervised_call(
                                     "finlab.get",
                                     {
                                         "token": self.api_token,
@@ -224,6 +264,7 @@ class FinLabSdkGateway:
                                         "account": account,
                                     },
                                     checkpoint=operation.dispatch_checkpoint,
+                                    timeout=FINLAB_GET_TIMEOUT_SECONDS,
                                 )
                             else:
                                 # Pinned 1.5.7 login only installs the token locally;
@@ -231,15 +272,26 @@ class FinLabSdkGateway:
                                 operation.dispatch_checkpoint()
                                 login(self.api_token)
                                 frame = get(dataset.strip())
-                                observed = None
+                                observed = usage = None
                         except QuotaBlockedError:
                             # __exit__ records whether get already dispatched;
                             # only the outer boundary may classify a quota wait.
                             raise
-                        except Exception:
+                        except Exception as exc:
+                            from findb_fetcher.provider_process import ProviderProcessError
+                            from findb_fetcher.provider_worker import failure_code
+
+                            code = (
+                                exc.code
+                                if isinstance(exc, ProviderProcessError)
+                                else failure_code(exc)
+                            )
+                            _log_sdk_failure(dataset.strip(), code)
                             raise FinLabOperationalError(
-                                "FinLab SDK dataset retrieval failed"
+                                "FinLab SDK dataset retrieval failed", code
                             ) from None
+                        if usage is not None:
+                            _record_usage(operation, dataset.strip(), usage)
                     if account:
                         try:
                             if observed is None:
@@ -255,12 +307,16 @@ class FinLabSdkGateway:
                             return _catalogue_from_dataframe(
                                 frame, reviewed_symbols=reviewed_symbols
                             )
-                        return _table_from_dataframe(
+                        table = _table_from_dataframe(
                             frame,
                             target_date=target_date,
                             reviewed_symbols=reviewed_symbols,
                             allow_missing_symbols=self.allow_missing_symbols,
+                            carry_previous=dataset.strip() == FINLAB_FIELD_DATASETS["close"],
                         )
+                        if table.dates != (target_date.isoformat(),):
+                            _log_target_not_ready(dataset.strip(), target_date, table)
+                        return table
                     except FinLabSdkError as exc:
                         raise type(exc)(str(exc)) from None
                     except Exception:
@@ -274,19 +330,22 @@ class FinLabSdkGateway:
         except QuotaBlockedError as exc:
             if exc.quota_wait and not exc.dispatched:
                 raise
-            raise FinLabOperationalError("FinLab acquisition failed") from None
+            raise FinLabOperationalError("FinLab acquisition failed", "account_quota") from None
         except FinLabSdkError:
             raise
         except Exception:
             # Never expose provider/credential context, including scope failures.
-            raise FinLabOperationalError("FinLab acquisition failed") from None
+            raise FinLabOperationalError("FinLab acquisition failed", "acquisition") from None
 
 
-def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> tuple[object, int | None]:
+def native_get(
+    payload: dict[str, Any], authorize: Callable[[], None]
+) -> tuple[object, int | None, dict[str, float] | None]:
     """Worker-side pinned SDK dataset get with one fresh grant before native I/O.
 
-    Returns the frame narrowed to reviewed columns and, when the parent accounts
-    usage, the complete frame's response bytes. The full table never crosses
+    Returns the frame narrowed to reviewed columns, the complete frame's
+    response bytes when the parent accounts usage, and the account's daily
+    quota usage when the FinLab API reported it. The full table never crosses
     the pipe, so the parent does not hold a second copy of it.
     """
     sdk = importlib.import_module("finlab")
@@ -297,12 +356,107 @@ def native_get(payload: dict[str, Any], authorize: Callable[[], None]) -> tuple[
     utils.check_version = lambda: None
     get = data.get
     _disable_frame_cache(_file_storages(data, get))
+    _classify_api_errors(get)
+    usage = _observe_api_usage(get)
     authorize()
     # Pinned 1.5.7 login only installs the token locally; get is the native I/O.
     sdk.login(payload["token"])
     frame = get(payload["dataset"])
     observed = _dataframe_response_bytes(frame) if payload["account"] else None
-    return _reviewed_columns(frame, payload["symbols"]), observed
+    return _reviewed_columns(frame, payload["symbols"]), observed, usage or None
+
+
+def _classify_api_errors(get: object) -> None:
+    """Turn the pinned SDK's auth and quota answers into classified failures.
+
+    Left alone, 1.5.7 answers an auth error by prompting for a token on stdin and
+    a quota error with a bare ``Exception``; both would reach the parent as an
+    unclassified failure. Only the API's fixed error strings are compared, and
+    none of them leaves the worker.
+    """
+    namespace = getattr(get, "__globals__", None)
+    if not isinstance(namespace, dict):
+        return
+    handle = namespace.get("_handle_fetch_error")
+    auth_errors = namespace.get("_AUTH_ERRORS")
+    if not callable(handle) or not isinstance(auth_errors, (list, tuple)):
+        return
+
+    def classified(ret: Any, *args: Any, **kwargs: Any) -> Any:
+        error = ret.get("error") if isinstance(ret, dict) else None
+        if error in auth_errors:
+            raise FinLabNativeError("auth")
+        if isinstance(error, str) and error.startswith("Usage exceed"):
+            raise FinLabNativeError("quota")
+        return handle(ret, *args, **kwargs)
+
+    namespace["_handle_fetch_error"] = classified
+
+
+def _observe_api_usage(get: object) -> dict[str, float]:
+    """Capture the daily quota usage the FinLab API reports with a table request.
+
+    The pinned SDK only prints ``quota`` and ``limit_size`` (both in MB); the dict
+    returned here is filled when a request reaches the API, and stays empty when
+    the SDK serves the table from its local cache without asking.
+    """
+    usage: dict[str, float] = {}
+    namespace = getattr(get, "__globals__", None)
+    fetch = namespace.get("fetch_data") if isinstance(namespace, dict) else None
+    if not callable(fetch):
+        return usage
+
+    def observed(*args: Any, **kwargs: Any) -> Any:
+        ret = fetch(*args, **kwargs)
+        if isinstance(ret, dict):
+            reported = [ret.get("quota"), ret.get("limit_size")]
+            megabytes = [
+                float(value)
+                for value in reported
+                if isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value >= 0
+            ]
+            if len(megabytes) == 2:
+                usage.update(used_mb=megabytes[0], limit_mb=megabytes[1])
+        return ret
+
+    assert isinstance(namespace, dict)
+    namespace["fetch_data"] = observed
+    return usage
+
+
+def _record_usage(operation: Any, dataset: str, usage: Mapping[str, float]) -> None:
+    """Keep the account's reported daily usage in the governor ledger and the log."""
+    megabyte = 1024 * 1024
+    used, limit = int(usage["used_mb"] * megabyte), int(usage["limit_mb"] * megabyte)
+    try:
+        operation.usage(
+            {
+                "observed_at": time.time(),
+                "bytes": used,
+                "limit_bytes": limit,
+                "remaining_bytes": max(0, limit - used),
+            }
+        )
+    except sqlite3.Error:
+        # The sample is informational; a ledger hiccup never fails the fetch it rode on.
+        pass
+    print(
+        json.dumps(
+            {
+                "finlab_quota": {
+                    "dataset": dataset,
+                    "used_mb": round(usage["used_mb"], 1),
+                    "limit_mb": round(usage["limit_mb"], 1),
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
 
 
 def _reviewed_columns(frame: Any, symbols: Sequence[str]) -> object:
@@ -646,11 +800,14 @@ def _table_from_dataframe(
     target_date: date,
     reviewed_symbols: tuple[str, ...],
     allow_missing_symbols: bool = False,
+    carry_previous: bool = False,
 ) -> FinLabDatasetTable:
     """Narrow a pandas-like FinLab frame to exactly one validated date row.
 
     With ``allow_missing_symbols`` the table keeps only reviewed symbols present
     as columns, so a symbol FinLab does not serve yet stays a per-member gap.
+    With ``carry_previous`` each symbol whose target value is empty also carries
+    its latest earlier observed value, the only history that leaves the frame.
     """
     index_values, dates, column_values = _frame_axes(frame)
     loc = getattr(frame, "loc", None)
@@ -673,26 +830,87 @@ def _table_from_dataframe(
             raise FinLabTargetNotReadyError(
                 "FinLab dataset does not contain exactly one target date"
             )
-        # Only reviewed table data is captured, never DataFrame attrs or SDK
-        # objects. This snapshot is negative evidence, not replay authority.
+        # Negative evidence, not replay authority, and bounded: the latest dates the
+        # table serves and how many reviewed symbols each has a value for. Cell values
+        # of a full history table never leave the frame.
+        tail = sorted((value, position) for position, value in enumerate(dates))[
+            -_NOT_READY_TAIL_DATES:
+        ]
         try:
-            rows = tuple(
-                tuple(_snapshot_scalar(loc[index, symbol]) for symbol in reviewed_symbols)
-                for index in index_values
+            observed = tuple(
+                sum(
+                    not unobserved(loc[index_values[position], symbol])
+                    for symbol in reviewed_symbols
+                )
+                for _, position in tail
             )
         except Exception:
             raise FinLabSdkError("FinLab dataset observation cannot be read") from None
         return FinLabDatasetTable(
-            tuple(value.isoformat() for value in dates), reviewed_symbols, rows
+            dates=tuple(value.isoformat() for value, _ in tail),
+            symbols=(),
+            values=(),
+            observed=observed,
         )
     try:
         row = tuple(loc[index_values[matching[0]], symbol] for symbol in reviewed_symbols)
     except Exception as exc:
         raise FinLabSdkError("FinLab dataset target row cannot be read") from exc
+    previous: list[tuple[str, str, object]] = []
+    if carry_previous:
+        # Latest first; the frame's own row order is never trusted.
+        earlier = sorted(
+            ((value, position) for position, value in enumerate(dates) if value < target_date),
+            reverse=True,
+        )
+        try:
+            for symbol, value in zip(reviewed_symbols, row, strict=True):
+                if not unobserved(value):
+                    continue
+                for day, position in earlier:
+                    observed = loc[index_values[position], symbol]
+                    if not unobserved(observed):
+                        previous.append((symbol, day.isoformat(), _snapshot_scalar(observed)))
+                        break
+        except FinLabSdkError:
+            raise
+        except Exception as exc:
+            raise FinLabSdkError("FinLab dataset earlier rows cannot be read") from exc
     return FinLabDatasetTable(
         dates=(target_date.isoformat(),),
         symbols=reviewed_symbols,
         values=(row,),
+        previous=tuple(previous),
+    )
+
+
+def _log_target_not_ready(dataset: str, target_date: date, table: FinLabDatasetTable) -> None:
+    """One line per poll: what the table served instead of the target date."""
+    print(
+        json.dumps(
+            {
+                "finlab_target_not_ready": {
+                    "dataset": dataset,
+                    "target_date": target_date.isoformat(),
+                    "latest": [list(pair) for pair in zip(table.dates, table.observed)],
+                }
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+
+
+def _log_sdk_failure(dataset: str, code: str) -> None:
+    """One line per failed table fetch: which table, and the bounded failure class."""
+    print(
+        json.dumps(
+            {"finlab_sdk_failure": {"dataset": dataset, "code": code}},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        flush=True,
     )
 
 

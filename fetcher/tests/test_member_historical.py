@@ -367,3 +367,137 @@ def test_cohort_items_complete_with_member_evidence(monkeypatch):
     item = _item("twelve_data", "us_equity_eod", [_member("O", "USD")])
     assert _member_evidence(item)
     assert not _member_evidence(SimpleNamespace(provider="twelve_data", universe_snapshot=None))
+
+
+class _RowAdapter:
+    """One valid row per member, without any provider call."""
+
+    def pending_shared_fetch(self, dataset_key: str, trade_date: date) -> bool:
+        return False
+
+    def acquire(self, member: dict, context: Any) -> Any:
+        from findb_fetcher.provider_adapters import AcquisitionResult
+
+        stored = context.persist(canonical_bytes({"member": member["symbol"]}), member["symbol"])
+        return AcquisitionResult.data(
+            {
+                "dataset_key": context.dataset_key,
+                "schema_id": "market_eod",
+                "schema_version": 1,
+                "source": "finlab",
+                "payload": {"batch": {}, "data": [{"symbol": member["symbol"]}]},
+            },
+            stored,
+        )
+
+    def member_outcome(self, exc: BaseException) -> None:
+        return None
+
+    def reset(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+class _QueuedDelivery(_Delivery):
+    """Records the call order; ``queued`` maps a symbol to its non-terminal reads."""
+
+    def __init__(self, queued: dict[str, int] | None = None) -> None:
+        super().__init__()
+        self.events: list[tuple[str, str]] = []
+        self.queued = dict(queued or {})
+
+    def deliver(self, request: dict) -> Any:
+        self.events.append(("deliver", request["payload"]["data"][0]["symbol"]))
+        return super().deliver(request)
+
+    def get_run_status(self, run_id: UUID, *, expected: dict) -> Any:
+        symbol = expected["payload"]["data"][0]["symbol"]
+        self.events.append(("status", symbol))
+        if self.queued.get(symbol, 0) > 0:
+            self.queued[symbol] -= 1
+            return SimpleNamespace(status="queued")
+        return super().get_run_status(run_id, expected=expected)
+
+
+def _row_runner(monkeypatch, tmp_path, count: int, delivery: _QueuedDelivery):
+    members = [{**_member(f"{1101 + index}", "TWD"), "exchange": "XTAI"} for index in range(count)]
+    item = _item("finlab", "tw_equity_eod", members)
+    runner, owner, _ = _runner(monkeypatch, tmp_path, "finlab", item, delivery)
+    runner.adapter = _RowAdapter()
+    clock = SimpleNamespace(now=1000.0, sleeps=[])
+
+    def sleep(seconds: float) -> None:
+        clock.sleeps.append(seconds)
+        clock.now += seconds
+
+    monkeypatch.setattr(member_historical.time, "sleep", sleep)
+    monkeypatch.setattr(member_historical.time, "monotonic", lambda: clock.now)
+    return runner, item, clock, [member["member_key"] for member in members]
+
+
+def test_runs_are_read_back_behind_a_bounded_window_without_waiting(monkeypatch, tmp_path, capsys):
+    window = member_historical.UNCONFIRMED_WINDOW
+    delivery = _QueuedDelivery()
+    runner, item, clock, keys = _row_runner(monkeypatch, tmp_path, window + 3, delivery)
+    try:
+        result = runner.run(item)
+    finally:
+        runner.close()
+
+    # No run is read until a full window of later members has been delivered.
+    first_status = delivery.events.index(("status", keys[0]))
+    assert delivery.events[:first_status] == [("deliver", key) for key in keys[: window + 1]]
+    assert [symbol for kind, symbol in delivery.events if kind == "status"] == keys
+    unread = 0
+    for kind, _ in delivery.events:
+        unread += 1 if kind == "deliver" else -1
+        assert unread <= window + 1
+    # Terminal runs cost one read each and no sleep.
+    assert clock.sleeps == []
+    assert [row["member_key"] for row in result.result_evidence["members"]] == keys
+    assert {row["outcome"] for row in result.result_evidence["members"]} == {"data"}
+    assert result.status == "completed"
+    lines = [
+        json.loads(line)["delivery_timing"]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"delivery_timing"')
+    ]
+    assert [line["final"] for line in lines] == [True]
+    assert lines[0]["item_id"] == str(ITEM) and lines[0]["members"] == window + 3
+    assert lines[0]["timing"]["step provider_acquire"][0] == window + 3
+
+
+def test_a_queued_run_is_polled_with_short_growing_delays(monkeypatch, tmp_path):
+    delivery = _QueuedDelivery({"1102": 5})
+    runner, item, clock, keys = _row_runner(monkeypatch, tmp_path, 2, delivery)
+    try:
+        result = runner.run(item)
+    finally:
+        runner.close()
+
+    assert clock.sleeps == [0.25, 0.5, 1.0, 2.0, 2.0]
+    assert {row["member_key"]: row["outcome"] for row in result.result_evidence["members"]} == {
+        "1101": "data",
+        "1102": "data",
+    }
+
+
+def test_a_run_still_queued_after_the_deadline_defers_and_keeps_read_outcomes(
+    monkeypatch, tmp_path
+):
+    delivery = _QueuedDelivery({"1102": 10_000})
+    runner, item, clock, keys = _row_runner(monkeypatch, tmp_path, 2, delivery)
+    owner = member_historical.active()
+    try:
+        with pytest.raises(HistoricalWorkDeferredError, match="normalization pending"):
+            runner.run(item)
+    finally:
+        runner.close()
+
+    assert 30 <= sum(clock.sleeps) < 34
+    # The member read before the stuck one keeps its outcome for the resumed date.
+    saved = owner.journal.response("member-historical:outcome:1101")
+    assert json.loads(saved) == {"member_key": "1101", "outcome": "data"}
+    assert owner.journal.response("member-historical:outcome:1102") is None

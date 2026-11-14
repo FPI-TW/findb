@@ -98,6 +98,15 @@ Daily 首次 enqueue 凍結 published calendar close；重複 enqueue 不因後�
 不同 providers 可以並行；同 provider 的 universe／catalogue、抓取、raw persistence、prepared delivery、
 normalization 與 completion proof 共用整個 owner，不能以一次 Source `202` 作為釋放條件。
 
+同一 owner session 內，相同 bytes（與 job binding）的每個 prepared stage（`intent`、`confirm`）只送一次：
+acquisition 先記 intent，delivery prepare 再 confirm；ingest 送出前不再重送 confirm，因為 Source 對重複
+stage 只做 fence 檢查，ingest 本身也以同一 fence 驗證並在 fence 不符時回 `PROVIDER_WORK_FENCE`。略過的
+stage 仍做本機 fence 檢查；stage 失敗不記為已確認，下次照常重送。每個 body 都已有 run 的成員重訪時只
+GET run status，不重新 prepare，也不占 daily `max_members`（`max_seconds` 照常計時）。
+同一輪成員迴圈中，acquisition gate（停止、暫停或窗口外）一旦回報不可抓取即視為本輪已關閉：之後沒有
+本機 prepared body 的成員不再 restore probe 或重查 gate；本機已 prepared 的成員照常交付或查狀態，Source
+保留而本機沒有的 bytes 保持 pending，由下次執行中的 attempt restore。Drain-only 輪仍逐檔 restore。
+
 Retryable round 必須先關閉 acquisition／acceptance、排空所有 accepted runs，再把下一 attempt
 附加到 FIFO 尾端並設定 `not_before`。原 frozen manifest、prepared bytes、receipts 與 operation budgets
 跨 queue retry 保留。等待 quota／queue 不是 provider failure；永久格式／DQ failure 保留 failed／manual。
@@ -112,7 +121,13 @@ member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain
 兩次抓取至少相隔這些時間。輪號與下一輪時間保存在 Fetcher SQLite `full_no_data_round`，跨 queue attempt 與重啟；
 一輪被 Source 不可用、quota、breaker 或重啟中斷時，下一 attempt 只接續本輪尚未抓的成員，不重抓也不提早進入下一輪。
 沒有輪次紀錄的進行中 plan 從最少嘗試次數的 `no_data` 成員接續，並以該次數對應的間隔等待。
+結算一輪前，Fetcher 先讀取本輪剛交付、仍標為 normalizing 成員的 run 狀態（最多等 60 秒；結算本來就要等
+accepted runs 結束），已完成者記為 complete，下一次 attempt 因此直接排到下一個 no-data 重試輪，而不是一分鐘後
+只為讀取 run 狀態再開一次 attempt；失敗或無法讀取的 run 保留原本的重訪。
 其他原因（`source_error`、`normalizing`、quota 等待、FinLab 發布等待、TAIFEX outage 等）仍依逐檔 `next_at`。
+FinLab 的抓表失敗是例外：五張表由整個 cohort 共用，失敗時整個 plan 一起等待（`DAILY_PROVIDER_UNAVAILABLE`，
+依失敗類別等 5 或 30 分鐘），不依逐檔 `next_at`，也不記在任何成員身上；規則見
+[Full market runbook](../operations/full_market.md)。
 美股第一輪約 3.5 小時，之後 4 個重試輪通常各只需數分鐘，work 約在隔日 06:50 UTC 結算。
 重試不增加呼叫次數，晚到的列多半是成交量 0、價格不變的占位資料，仍照常寫入。只剩等待重試輪
 的成員時，下一 attempt 排到下一輪最早時間；若有其他原因的成員更早到期，則依最早時間排程，不空轉。同一輪連續
@@ -128,6 +143,12 @@ member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain
 即重新計算，provider 恢復後可接續。全面無資料時，breaker 中斷後接續同一輪的未抓成員，累計 5 次即結束 plan：大型
 plan 約 100 次呼叫（5 × 20 個 member），小型 plan 另含每輪未滿 20 個、未觸發 breaker 的尾端成員。
 沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source canonical evidence 判定，不計為成功或 no_data。
+唯一的例外是 plan 只缺對應缺口：Source 的 plan 統計 `missing` 為 0、`blocked` 全部是 `mapping_gap` 時，work 以
+`partial` 結算，proof 的 `mapping_gaps` 列出這些成員，Source 以同一份統計驗證後才接受。對應缺口不會呼叫
+provider，也沒有重試能解決，所以不算 work 的失敗；plan 的統計不變，這些成員仍是 blocked。Source 的缺口清單
+上限 1,000 筆，超過時無法列舉，仍以 `failed` 結算。之後 universe 取得對應時，該成員在 plan 上變成 missing，
+以 historical 回補。FactSet daily 走整批路徑，原本就以逐成員 evidence 結算 `partial`。此規則需要 Backend 先部署：
+舊版 Source 會拒絕這種 `partial`。
 Tail round 不再對已終結、退避中或等待重試輪的 member 查詢 prepared。
 原 controls／request 仍允許抓取時，下一 attempt 才可接續同一 frozen scope 的剩餘 members。
 Daily member 的一般例外會先持久保存 `source_error_pending`，再回報 Source `source_error`；
@@ -140,6 +161,10 @@ Tail retry 的 settlement proof 同時保存 canonical `pending_source_errors` m
 drain-only owner 補報，但 acquisition fence 繼續拒絕新抓取／intent。補報使用一般短 backoff，
 不延至下一抓取窗口或 cooldown 結束；原帳號 cooldown 不清除。ACK 後下一次 settlement
 不再攜帶此 continuation，恢復一般 FIFO gate，不能永久保留補報例外。
+
+Claim 與唯讀 projection 都以「這筆 prepared 是否已有同一 work、同一 member 的 receipt」判斷有沒有待排空的交付。
+`provider_work_receipt` 的 `idx_provider_work_receipt_member`（`work_id, member_key`，migration `c5e7a9b1d3f6`）
+讓這個判斷走索引；沒有它時每次判斷都要掃過整張 receipt，成本是 prepared 筆數乘以 receipt 筆數。
 Maintenance explicit refresh 與 daily cycle 自動領取 refresh 共用同一 round executor：已知 catalogue／
 official HTTP 503、transport 與 quota wait 會先停止 SDK／證明 reap、close、排空 accepted runs，再 tail
 retry；格式、auth／scope 永久拒絕安全結束 failed/manual。只有 owner fence、失聯或無法證明 child
@@ -372,9 +397,11 @@ not-published 或永久格式錯誤，不能轉成 no_data。下一合法 attemp
 原 failure budget／account cooldown／scope 不重設。target validation hook 是純函式，不能隱含 provider I/O。
 既有 valid legacy cache 驗證後 byte-for-byte 沿用；invalid legacy cache 原 row 不刪、不覆寫，後續有效
 response 使用 validated namespace。已有 prepared／receipt 優先恢復，其 body／idempotency／raw 不改寫。
-FinLab 缺少 target 時先保存原日期軸、reviewed symbols 與安全 scalar cells 的 table snapshot／digest，
-再回報 target-not-ready；不保存 DataFrame attrs、SDK config 或任意物件字串。負向觀測不授權 replay，
-重啟後可依原 budget 重抓，valid legacy table 仍可沿用；已有 prepared bytes 不改寫。
+FinLab 缺少 target 時先保存有界的負向觀測，再回報 target-not-ready：只有表內最新 5 個日期，以及每個日期有值的
+reviewed symbols 數量，不保存任何儲存格的值、DataFrame attrs、SDK config 或任意物件字串（整張歷史表約 940 萬格，
+逐格轉存一次要 48 秒、57 MB）。同一 work、同一 response key 的觀測內容與上一筆相同時不重複寫入；每次輪詢另輸出一行
+`{"finlab_target_not_ready": {"dataset", "target_date", "latest": [[日期, 有值數量], …]}}`，可用來看來源發布的進度。
+負向觀測不授權 replay，重啟後可依原 budget 重抓，valid legacy table 仍可沿用；已有 prepared bytes 不改寫。
 Shioaji invalid/date payload 保持既有永久 `KBARS_PAYLOAD` 規則，
 七向量皆空則獨立分類 `empty_response / unknown`，daily 每 work／symbol／date 最多三次原生觀測、
 間隔至少十五分鐘；原始 bytes、checksum 與未知派送 debt 保留，不構成 no_data。

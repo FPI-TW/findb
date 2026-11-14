@@ -120,6 +120,8 @@ class ProviderWorkReceipt(Base):
     """A run can never be adopted by a different stable work, including replay."""
 
     __tablename__ = "provider_work_receipt"
+    # Queue projection and claim ask, per prepared delivery, whether its receipt exists.
+    __table_args__ = (Index("idx_provider_work_receipt_member", "work_id", "member_key"),)
     run_id: Mapped[UUID] = mapped_column(
         ForeignKey("ingestion_run.run_id", ondelete="RESTRICT"), primary_key=True
     )

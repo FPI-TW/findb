@@ -21,7 +21,7 @@ async def test_finlab_native_catalogue_known_failure_settles(
     from findb_fetcher.full_market_client import FullMarketSourceClient
     from findb_fetcher.full_market_runtime import FullMarketRuntime
     from findb_fetcher.full_market_state import FullMarketState
-    from findb_fetcher.full_market_universe import TW_COMPANY_URLS, TW_ISIN_URLS
+    from findb_fetcher.full_market_universe import TW_COMPANY_URLS, TW_ISIN_STOCK_URLS
 
     h = native_runtime
     h.db.add(FullMarketEnvironment(environment=h.environment))
@@ -68,9 +68,29 @@ async def test_finlab_native_catalogue_known_failure_settles(
         },
     )
     assert following.status_code == 200
-    html = "<table><tr><td>股票</td></tr><tr><td>2330 company</td><td>x</td><td>1994/09/05</td><td>x</td><td>x</td><td>ESXXXX</td></tr><tr><td>ETF</td></tr><tr><td>0050 etf</td><td>x</td><td>2003/06/30</td><td>x</td><td>x</td><td>CEXXXX</td></tr></table>".encode(
-        "cp950"
-    )
+
+    def isin_page(symbol: str, market: str) -> bytes:
+        columns = (
+            "頁面編號",
+            "國際證券編碼",
+            "有價證券代號",
+            "有價證券名稱",
+            "市場別",
+            "有價證券別",
+            "產業別",
+            "公開發行/上市(櫃)/發行日",
+            "CFICode",
+            "備註",
+        )
+        cells = ("1", "ISIN", symbol, "company", market, "股票", "", "1994/09/05", "ESXXXX", "")
+        return (
+            "<html><table>"
+            + "".join(
+                "<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>"
+                for row in (columns, cells)
+            )
+            + "</table></html>"
+        ).encode("cp950")
 
     def official(request):
         url = str(request.url)
@@ -79,12 +99,12 @@ async def test_finlab_native_catalogue_known_failure_settles(
             return httpx.Response(
                 200, json=[{key: "2330" if url == TW_COMPANY_URLS[0] else "2317"}], request=request
             )
-        assert url in TW_ISIN_URLS, url
+        assert url in TW_ISIN_STOCK_URLS, url
         return httpx.Response(
             200,
-            content=html
-            if url == TW_ISIN_URLS[0]
-            else html.replace(b"2330", b"2317").replace(b"0050", b"0056"),
+            content=isin_page("2330", "上市")
+            if url == TW_ISIN_STOCK_URLS[0]
+            else isin_page("2317", "上櫃"),
             request=request,
         )
 

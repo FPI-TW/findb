@@ -128,7 +128,7 @@ export function DeliveryAlertsPanel({
     >
       <p className="mb-3 text-sm text-muted">
         只顯示所選模式的資料集／日期交付告警；dated universe
-        超過完成窗口仍未發布時會顯示專用提示，可前往「Universe 候選」查看差異。
+        超過完成窗口仍未發布時會顯示專用提示，可前往「Universe 名單」查看差異。
       </p>
       <QueryStatus
         hasData={query.data !== undefined}

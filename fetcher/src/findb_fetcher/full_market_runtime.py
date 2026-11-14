@@ -8,9 +8,10 @@ import os
 import re
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from datetime import time as clock_time
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -20,11 +21,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from findb_fetcher import rpc_timing
 from findb_fetcher.acquisition import authorization_scope, http_acquisition
 from findb_fetcher.client import (
     SourceAPIClient,
     SourceAPIResponseError,
     SourceAPITransportError,
+    delivered_snapshot,
     permanent_source_failure,
 )
 from findb_fetcher.config import app_environment
@@ -67,7 +70,9 @@ from findb_fetcher.provider_adapters import (
 from findb_fetcher.provider_process import ProviderProcessError
 from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
+    ProviderOutagePendingError,
     ProviderPublicationPendingError,
+    ProviderWorkRejectedError,
 )
 from findb_fetcher.provider_work import (
     ProviderWorkAcquisitionStopped,
@@ -83,9 +88,43 @@ from findb_fetcher.raw_storage import (
     attach_raw_object,
 )
 
+# Fetcher logs one delivery timing line per interval during a long plan delivery.
+DELIVERY_TIMING_INTERVAL_SECONDS = 60
+# One official listing download, start to finish. The client's read timeout only
+# bounds each chunk; the slowest page observed took just under nine minutes.
+OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS = 20 * 60
+# Maintenance works of one provider run back to back and read the same listings;
+# a later one reuses what an earlier one downloaded this recently.
+OFFICIAL_SNAPSHOT_REUSE_SECONDS = 30 * 60
+# Settlement waits at most this long for just-accepted runs before scheduling.
+NORMALIZING_SETTLE_WAIT_SECONDS = 60
+NONTERMINAL_RUN_STATUSES = frozenset({"queued", "pending", "processing", "retrying"})
+
 
 class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
     """A proven daily-window wait, including authoritative Source denial."""
+
+
+def refresh_slots(
+    feeds: Iterable[Mapping[str, Any]], now: datetime
+) -> tuple[datetime, datetime] | None:
+    """The daily scheduled time at or before ``now`` and the next one after it.
+
+    A universe refresh belongs to a scheduled time rather than to its own
+    completion, so its hour neither drifts nor follows the last control start.
+    """
+    latest: datetime | None = None
+    upcoming: datetime | None = None
+    for feed in feeds:
+        local = now.astimezone(ZoneInfo(feed["source_timezone"]))
+        today = datetime.combine(
+            local.date(), clock_time.fromisoformat(feed["scheduled_time"]), local.tzinfo
+        )
+        passed = today if today <= local else today - timedelta(days=1)
+        following = passed + timedelta(days=1)
+        latest = passed if latest is None or passed > latest else latest
+        upcoming = following if upcoming is None or following < upcoming else upcoming
+    return None if latest is None or upcoming is None else (latest, upcoming)
 
 
 def load_readiness(
@@ -225,6 +264,25 @@ def _governed(method):
     return run
 
 
+def only_mapping_gaps(plan: dict[str, Any]) -> list[str] | None:
+    """The plan's mapping-gap members when they are all it still lacks, else None.
+
+    Source evaluates the same summary to accept a partial settlement, so the
+    decision uses its counts and its bounded gap list rather than local state.
+    """
+    summary = plan.get("summary") or {}
+    gaps = summary.get("gaps") or []
+    blocked = summary.get("blocked")
+    if (
+        summary.get("missing") != 0
+        or not blocked
+        or blocked != summary.get("mapping_gap")
+        or len(gaps) != blocked
+    ):
+        return None
+    return sorted(gap["member_key"] for gap in gaps)
+
+
 class FullMarketRuntime:
     def __init__(
         self,
@@ -259,6 +317,8 @@ class FullMarketRuntime:
             feed["dataset_key"]: feed["contract"] for feed in acquisition_feeds(provider)
         }
         self.schedule_snapshot: ExecutionSnapshot | None = None
+        # The schedule the latest universe refresh resolved its dates from.
+        self.refresh_snapshot: ExecutionSnapshot | None = None
         self.installed_feeds = list(self.feeds)
         self.http = client or httpx.Client(timeout=30)
         self.owns_http = client is None
@@ -267,12 +327,17 @@ class FullMarketRuntime:
         self.proof: dict[str, Any] = {}
         self.reservation_window = ""
         self.snapshot_objects: dict[str, RawObject] = {}
+        # url -> (downloaded at, body, R2 object), for sibling maintenance works only.
+        self._recent_snapshots: dict[str, tuple[float, bytes, RawObject]] = {}
+        # Set by the worker around a cycle: reports liveness to the scheduler control.
+        self.heartbeat: Callable[[], Any] | None = None
         self.catalogue_evidence: dict[str, bytes] = {}
         # Source stable work identity is immutable, so one acknowledged enqueue
         # per process is enough; every later cycle would only replay it.
         self.enqueued_keys: set[str] = set()
         self.daily_policy = None
         self.last_batch: dict[str, Any] = {}
+        self._timing: dict[str, Any] = {"plan_id": None, "since": 0.0, "members": 0}
 
     def close(self) -> None:
         self.adapter.close()
@@ -356,11 +421,50 @@ class FullMarketRuntime:
             until=time.time() + 60,
         )
 
+    def _download_progress(self) -> None:
+        """Keep the control heartbeat alive while one long download blocks the cycle."""
+        if self.heartbeat is None:
+            return
+        try:
+            self.heartbeat()
+        except Exception:
+            # Liveness reporting never decides the fate of the download itself.
+            pass
+
+    def _recent_snapshot(self, url: str) -> tuple[bytes, RawObject] | None:
+        """A listing a sibling maintenance work of this process just downloaded."""
+        from findb_fetcher.provider_work import active
+
+        now = time.monotonic()
+        for stale in [
+            key
+            for key, (at, _, _) in self._recent_snapshots.items()
+            if now - at > OFFICIAL_SNAPSHOT_REUSE_SECONDS
+        ]:
+            del self._recent_snapshots[stale]
+        owner = active()
+        # Daily and historical works read dated reports whose content changes as
+        # the exchange publishes; only universe refreshes share their listings.
+        if owner is None or owner.work.get("kind") != "maintenance":
+            return None
+        recent = self._recent_snapshots.get(url)
+        return None if recent is None else (recent[1], recent[2])
+
     def _read_response(
-        self, response: httpx.Response, *, bound: int, provider_response: bool
+        self,
+        response: httpx.Response,
+        *,
+        bound: int,
+        provider_response: bool,
+        time_limit: float | None = None,
     ) -> bytes:
         try:
-            return read_identity_response(response, bound=bound)
+            return read_identity_response(
+                response,
+                bound=bound,
+                time_limit=time_limit,
+                on_progress=self._download_progress,
+            )
         except BoundedResponseError as exc:
             if provider_response and (exc.observed_bytes or exc.declared_bytes):
                 self._observed_response(exc.observed_bytes, declared=exc.declared_bytes)
@@ -377,6 +481,10 @@ class FullMarketRuntime:
             if not self.runtime_window()["open"]:
                 raise DailyWindowClosedError("daily acquisition window closed")
             raise ProviderWorkAcquisitionStopped("scheduler acquisition stopped")
+        recent = self._recent_snapshot(url)
+        if recent is not None:
+            body, self.snapshot_objects[url] = recent
+            return body
         # Official listings consume the same enrolled response bound and account
         # bytes as provider data; the parser ceiling is an additional constraint.
         bound = min(int(self.proof["max_response_bytes"]), MAX_SNAPSHOT_BYTES)
@@ -391,7 +499,12 @@ class FullMarketRuntime:
                 # Status is known before a bounded read can reject its body.
                 self._rate_limited()
             try:
-                body = self._read_response(response, bound=bound, provider_response=True)
+                body = self._read_response(
+                    response,
+                    bound=bound,
+                    provider_response=True,
+                    time_limit=OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS,
+                )
             except (ReadinessBlockedError, httpx.HTTPError) as exc:
                 if response.status_code != 200:
                     raise ProviderHTTPError(
@@ -407,9 +520,9 @@ class FullMarketRuntime:
             # report resolver handles fallback/retry without fabricating evidence.
             if url in EMPTY_OFFICIAL_SNAPSHOT_URLS and not body:
                 return body
-            self.snapshot_objects[url] = self._persist(
-                body, official_snapshot_dataset(url), "official_universe"
-            )
+            stored = self._persist(body, official_snapshot_dataset(url), "official_universe")
+            self.snapshot_objects[url] = stored
+            self._recent_snapshots[url] = (time.monotonic(), body, stored)
             return body
 
     def _ensure_proof(self) -> None:
@@ -584,6 +697,7 @@ class FullMarketRuntime:
             profile=self.execution_profile,
             complete_scope=False,
         )
+        self.refresh_snapshot = snapshot
         published = {feed["dataset_key"]: feed["source_timezone"] for feed in snapshot.feeds}
         if any(feed["dataset_key"] not in published for feed in feeds):
             raise ReadinessBlockedError("Source universe timezone unavailable")
@@ -743,13 +857,25 @@ class FullMarketRuntime:
             self.pause()
             # The manifest is already durable; closed-round replay uses it.
             owner.settle("completed", proof={"no_data": ["universe_refresh"]})
-            now = datetime.now(timezone.utc).timestamp()
-            self.state.refresh(self.provider, now=now, result=results, next_at=now + 86400)
+            now = datetime.now(timezone.utc)
+            self.state.refresh(
+                self.provider,
+                now=now.timestamp(),
+                result=results,
+                next_at=self._next_refresh_at(now),
+            )
             return results
         self._settle_queued_round(
             owner, outcome="retry" if retryable else "failed", failure_code=code
         )
         return [{"status": "queued" if retryable else "manual", "reason": code}]
+
+    def _next_refresh_at(self, now: datetime) -> float:
+        """The provider's next scheduled daily time, whoever asked for this refresh."""
+        snapshot = self.schedule_snapshot or self.refresh_snapshot
+        slots = refresh_slots(snapshot.feeds if snapshot else (), now)
+        # Without a published schedule the refresh keeps its former daily interval.
+        return slots[1].timestamp() if slots else now.timestamp() + 86400
 
     def _settle_retired_work(self, owner) -> None:
         """Drain original deliveries without turning compatibility scope into acquisition."""
@@ -875,6 +1001,27 @@ class FullMarketRuntime:
             )
             if pending_feed:
                 due.append((date.fromisoformat(plan["trade_date"]), pending_feed))
+        slots = refresh_slots(planning_feeds, now)
+        if (
+            admitted
+            and slots
+            and self.adapter.scheduled_maintenance
+            and self.state.refresh_due(self.provider, now.timestamp())
+        ):
+            # Enqueued ahead of this round's dates: their plans freeze the list
+            # observed at their own scheduled time. One work per scheduled time,
+            # so a failed refresh is tried again at the next one.
+            slot = slots[0].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+            for feed in planning_feeds:
+                if feed["dataset_key"] in admitted:
+                    self._enqueue(
+                        {
+                            "stable_key": f"maintenance:{feed['dataset_key']}:{slot}",
+                            "kind": "maintenance",
+                            "dataset_key": feed["dataset_key"],
+                            "scope": {"dataset_key": feed["dataset_key"]},
+                        }
+                    )
         for day, feed in sorted(due, key=lambda value: (value[0], value[1]["dataset_key"])):
             self._enqueue(
                 {
@@ -886,21 +1033,6 @@ class FullMarketRuntime:
                     "scope": {"feed": feed},
                 }
             )
-        if (
-            admitted
-            and self.adapter.scheduled_maintenance
-            and self.state.refresh_due(self.provider, now.timestamp())
-        ):
-            for feed in planning_feeds:
-                if feed["dataset_key"] in admitted:
-                    self._enqueue(
-                        {
-                            "stable_key": f"maintenance:{feed['dataset_key']}:{now.date()}",
-                            "kind": "maintenance",
-                            "dataset_key": feed["dataset_key"],
-                            "scope": {"dataset_key": feed["dataset_key"]},
-                        }
-                    )
         try:
             with claimed_work(
                 self.source,
@@ -1057,6 +1189,17 @@ class FullMarketRuntime:
                         failure_code="DAILY_PROVIDER_NOT_READY",
                         retry_delay_seconds=exc.retry_after_seconds,
                     )
+                except ProviderOutagePendingError as exc:
+                    self.pause()
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry",
+                        failure_code="DAILY_PROVIDER_UNAVAILABLE",
+                        retry_delay_seconds=exc.retry_after_seconds,
+                    )
+                except ProviderWorkRejectedError as exc:
+                    self.pause()
+                    self._settle_queued_round(owner, outcome="failed", failure_code=exc.code)
                 except CalendarDecisionRepairRequiredError:
                     self.pause()
                     self._settle_queued_round(
@@ -1231,6 +1374,7 @@ class FullMarketRuntime:
         if owner.work["kind"] == "daily" and plan_id:
             # The next no-data retry round waits from this settlement, not from each member.
             self.state.advance_no_data_round(plan_id, now=time.time())
+            self._record_finished_runs(plan_id)
             with self.state.connection() as db:
                 pending_errors = sorted(
                     row[0]
@@ -1262,6 +1406,7 @@ class FullMarketRuntime:
                 }
         while True:
             desired = outcome
+            mapping_gaps = None
             if desired is None:
                 plan = self.source.evaluate(owner.journal.manifest()["plan_id"])
                 self.state.evaluate(plan)
@@ -1278,6 +1423,12 @@ class FullMarketRuntime:
                     if (manual and not self.daily_policy) or not pending
                     else "retry"
                 )
+                if desired == "failed" and not manual and not pending:
+                    # Nothing is left to acquire and no retry maps a symbol the
+                    # provider lacks: the work is partial, not a failure.
+                    mapping_gaps = only_mapping_gaps(plan)
+                    if mapping_gaps is not None:
+                        desired = "partial"
                 no_data_retry_at = self.state.no_data_retry_at(plan["plan_id"])
                 if desired == "retry" and no_data_retry_at is not None and not pending_errors:
                     # Every remaining member is backing off, so an earlier round would be empty.
@@ -1313,6 +1464,8 @@ class FullMarketRuntime:
                                 ).total_seconds()
                             ),
                         )
+                if mapping_gaps is not None:
+                    proof["mapping_gaps"] = mapping_gaps
                 if desired == "failed":
                     proof = {
                         **proof,
@@ -1464,6 +1617,8 @@ class FullMarketRuntime:
     ) -> bool:
         self._batch_started = time.monotonic()
         self.last_batch = {"processed": 0, "reason": "scanned", "plan_id": plan["plan_id"]}
+        self._timing = {"plan_id": plan["plan_id"], "since": self._batch_started, "members": 0}
+        rpc_timing.drain()
         try:
             return self._deliver_members(
                 plan, release, feed, drain_only=drain_only, drain_keys=drain_keys
@@ -1474,6 +1629,33 @@ class FullMarketRuntime:
                     time.monotonic() - self._batch_started, 3
                 )
                 self.state.schedule_save(plan["plan_id"], batch=self.last_batch)
+            self._log_delivery_timing(final=True)
+
+    def _log_delivery_timing(self, *, final: bool = False) -> None:
+        """Log ``{route template or step: [count, total_ms]}`` once a minute and at the end.
+
+        Diagnostics only: a plan delivery can run for hours without a daily
+        batch policy, and timing never enters the durable batch or settlement proof.
+        """
+        elapsed = time.monotonic() - self._timing["since"]
+        if not final and elapsed < DELIVERY_TIMING_INTERVAL_SECONDS:
+            return
+        print(
+            json.dumps(
+                {
+                    "delivery_timing": {
+                        "plan_id": self._timing["plan_id"],
+                        "members": self._timing["members"],
+                        "seconds": round(elapsed, 3),
+                        "final": final,
+                        "timing": rpc_timing.drain(),
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        self._timing.update(since=time.monotonic(), members=0)
 
     def _deliver_members(
         self,
@@ -1507,6 +1689,11 @@ class FullMarketRuntime:
         ordered = ordered[offset:] + ordered[:offset]
         calendar_checked = False
         no_data_streak = 0
+        # Once this pass sees acquisition closed (stopped, suspended or outside the
+        # window) it stays closed: unprepared members are skipped without a restore
+        # probe or another gate RPC each. Locally prepared bodies still deliver;
+        # server-retained ones stay pending for the next running attempt.
+        acquisition_closed = False
         for index, (part, member_key) in ordered:
             key = part["work_item_id"] + ":" + member_key
             if drain_keys is not None and key not in drain_keys:
@@ -1521,6 +1708,8 @@ class FullMarketRuntime:
                     return True
             if not self.state.eligible(key, now=time.time()):
                 continue
+            if acquisition_closed and self.state.prepared(key) is None:
+                continue
             if self.state.prepared(key) is None:
                 restored = owner.restore(member_key=member_key)
                 if restored:
@@ -1528,6 +1717,7 @@ class FullMarketRuntime:
                         key, canonical_bytes([json.loads(body) for body in restored])
                     )
             if self.state.prepared(key) is None and (drain_only or not self._acquisition_allowed()):
+                acquisition_closed = not drain_only
                 continue
             if self.daily_policy and (
                 self.last_batch["processed"] >= self.daily_policy["max_members"]
@@ -1556,8 +1746,12 @@ class FullMarketRuntime:
                 next_cursor=(index + 1) % len(entries) if self.daily_policy else None,
             ):
                 continue
-            if self.daily_policy:
+            # A member whose every body already has a run only reads status: it
+            # makes no provider call, so it spends none of the batch's budget.
+            if self.daily_policy and self._saved_runs(key) is None:
                 self.last_batch["processed"] += 1
+            self._timing["members"] += 1
+            self._log_delivery_timing()
             dispatch_before = owner.dispatch_observations
             try:
                 if member["mapping_status"] != "mapped":
@@ -1587,7 +1781,11 @@ class FullMarketRuntime:
                             "published calendar is now closed"
                         ) from None
                     owner.authorize()
-                    requests = self._acquire(member, plan, part, release, feed)
+                    candidates = self._batch_candidates(part, member_key, members, drain_keys)
+                    # Providers without shared requests keep the original call shape.
+                    requests = self._acquire(
+                        member, plan, part, release, feed, *([candidates] if candidates else [])
+                    )
                     no_data_streak = 0
                     self.state.clear_no_data_trips(plan["plan_id"])
                     if self.adapter.outage_retry_seconds is not None:
@@ -1611,7 +1809,6 @@ class FullMarketRuntime:
                 normalizing = False
                 prepared_requests = json.loads(prepared)
                 for request in prepared_requests:
-                    immutable = self.delivery.prepare(request)
                     request_identity = request.get("idempotency_key") or checksum(
                         canonical_bytes(request)
                     )
@@ -1623,13 +1820,20 @@ class FullMarketRuntime:
                         saved_run = self.state.receipt(key)
                         if saved_run is not None:
                             self.state.save_sequence_receipt(key, request_identity, saved_run)
+                    # An accepted body never needs another durable preparation
+                    # round trip; checking its run only needs its identity.
+                    immutable = (
+                        delivered_snapshot(request)
+                        if saved_run is not None
+                        else self.delivery.prepare(request)
+                    )
                     if saved_run is None:
                         receipt = self.delivery.deliver(immutable)
                         saved_run = str(receipt.run_id)
                         self.state.save_sequence_receipt(key, request_identity, saved_run)
                         self.state.finish(key, status="prepared", receipt=saved_run)
                     run = self.delivery.get_run_status(UUID(saved_run), expected=immutable)
-                    if run.status in {"queued", "pending", "processing", "retrying"}:
+                    if run.status in NONTERMINAL_RUN_STATUSES:
                         normalizing = True
                         break
                     if (
@@ -1747,6 +1951,14 @@ class FullMarketRuntime:
                         "Source provider owner fence differs"
                     ) from None
                 failure = self.adapter.classify(exc, "member")
+                if failure.kind is FailureKind.WORK_FAILED:
+                    # The provider rejects every member alike (credential,
+                    # configuration): the work ends without charging this one.
+                    self._record_diagnostic(key, exc)
+                    self.state.defer_wait(key, now=time.time(), reason="provider_rejected")
+                    raise ProviderWorkRejectedError(
+                        failure.code or "provider_rejected", "DAILY_PROVIDER_REJECTED"
+                    ) from None
                 if failure.wait == "publication":
                     # The provider has not published the target date for the cohort yet.
                     retry_delay = self._publication_retry_delay(owner, feed)
@@ -1810,12 +2022,28 @@ class FullMarketRuntime:
                     # member failure budget and ends this round for a later retry,
                     # until the plan's outage exceeds its bounded retry window.
                     delay = max(60, math.ceil(failure.retry_after))
-                    if self.state.defer_provider_outage(
+                    deferred = self.state.defer_provider_outage(
                         key,
                         now=time.time(),
                         delay_seconds=delay,
                         limit_seconds=self.adapter.outage_retry_seconds or 0,
-                    ):
+                    )
+                    if self.adapter.outage_holds_plan:
+                        # Every member is read from the observation that failed, so
+                        # the next one would only repeat the failure a minute later.
+                        self._record_diagnostic(key, exc)
+                        if deferred:
+                            raise ProviderOutagePendingError(
+                                failure.code or "provider_unavailable",
+                                retry_after_seconds=delay,
+                            ) from None
+                        # Return the claim: the member never had a table to be read from.
+                        self.state.defer_wait(key, now=time.time(), reason="provider_unavailable")
+                        raise ProviderWorkRejectedError(
+                            failure.code or "provider_unavailable",
+                            "DAILY_PROVIDER_OUTAGE_EXHAUSTED",
+                        ) from None
+                    if deferred:
                         return False
                     self.state.stage_source_error(key)
                     self.source.outcome(
@@ -1834,6 +2062,108 @@ class FullMarketRuntime:
                 return False
 
         return True
+
+    def _batch_candidates(
+        self,
+        part: dict[str, Any],
+        member_key: str,
+        members: dict[str, dict[str, Any]],
+        drain_keys: set[str] | None,
+    ) -> Callable[[], tuple[str, ...]] | None:
+        """Later members of this part that this pass will acquire, for a shared request.
+
+        Only members that would reach a provider call now qualify: mapped, without
+        a prepared body, and eligible (no lease, backoff or pending no-data round).
+        """
+        limit = getattr(self.adapter, "member_batch_limit", 0)
+        if limit < 2:
+            return None
+
+        def candidates() -> tuple[str, ...]:
+            now = time.time()
+            symbols = [members[member_key]["provider_symbol"]]
+            keys = part["member_keys"]
+            for other in keys[keys.index(member_key) + 1 :]:
+                key = part["work_item_id"] + ":" + other
+                candidate = members[other]
+                if (
+                    candidate["mapping_status"] != "mapped"
+                    or (drain_keys is not None and key not in drain_keys)
+                    or self.state.prepared(key) is not None
+                    or not self.state.eligible(key, now=now)
+                ):
+                    continue
+                symbols.append(candidate["provider_symbol"])
+                if len(symbols) == limit:
+                    break
+            return tuple(dict.fromkeys(symbols))
+
+        return candidates
+
+    def _record_finished_runs(self, plan_id: str) -> None:
+        """Complete members whose accepted runs finished while this round closed.
+
+        Settlement waits for those runs anyway. Left as ``normalizing``, each would
+        schedule an attempt a minute later only to read its run status, so every
+        no-data retry round would take two attempts. A failed or unreadable run keeps
+        its regular revisit, which reports it as before.
+        """
+        deadline = time.monotonic() + NORMALIZING_SETTLE_WAIT_SECONDS
+        while True:
+            with self.state.connection() as db:
+                keys = [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT key FROM full_work WHERE plan_id=? AND status='prepared' "
+                        "AND reason='normalizing'",
+                        (plan_id,),
+                    )
+                ]
+            waiting = False
+            for key in keys:
+                try:
+                    runs, prepared = self._saved_runs(key), self.state.prepared(key)
+                    if runs is None or prepared is None:
+                        continue
+                    statuses = [
+                        self.delivery.get_run_status(UUID(run), expected=delivered_snapshot(body))
+                        for body, run in zip(json.loads(prepared), runs, strict=True)
+                    ]
+                except (ValueError, KeyError, TypeError):
+                    # A body this check cannot read keeps its regular revisit.
+                    continue
+                except Exception:
+                    return
+                if any(run.status in NONTERMINAL_RUN_STATUSES for run in statuses):
+                    waiting = True
+                elif all(
+                    run.status == "completed"
+                    and not run.failed_records
+                    and run.success_records == run.total_records
+                    for run in statuses
+                ):
+                    self.state.finish(key, status="complete")
+            if not waiting or time.monotonic() >= deadline:
+                return
+            time.sleep(2)
+
+    def _saved_runs(self, key: str) -> list[str] | None:
+        """Runs for every prepared body of a member, or None while any needs delivery."""
+        prepared = self.state.prepared(key)
+        if prepared is None:
+            return None
+        requests = json.loads(prepared)
+        runs = []
+        for request in requests:
+            run = self.state.sequence_receipt(
+                key, request.get("idempotency_key") or checksum(canonical_bytes(request))
+            )
+            if run is None and len(requests) == 1:
+                run = self.state.receipt(key)
+            if run is None:
+                return None
+            runs.append(run)
+        return runs
 
     def _price_basis_manual(
         self, plan: dict[str, Any], part: dict[str, Any], member_key: str, key: str
@@ -1934,13 +2264,14 @@ class FullMarketRuntime:
         *,
         payload_format: RawPayloadFormat = "json",
     ) -> RawObject:
-        stored = self.raw_store.persist(
-            raw,
-            dataset_key=dataset,
-            source_symbol=symbol.replace("|", ":"),
-            provider=self.provider,
-            payload_format=payload_format,
-        )
+        with rpc_timing.timed("step raw_persist"):
+            stored = self.raw_store.persist(
+                raw,
+                dataset_key=dataset,
+                source_symbol=symbol.replace("|", ":"),
+                provider=self.provider,
+                payload_format=payload_format,
+            )
         if stored.sha256 != checksum(raw) or stored.size_bytes != len(raw):
             raise ReadinessBlockedError("R2 raw persistence identity differs from acquired bytes")
         return stored
@@ -2010,8 +2341,13 @@ class FullMarketRuntime:
         part: dict[str, Any],
         release: dict[str, Any],
         feed: dict[str, Any],
+        batch_candidates: Callable[[], tuple[str, ...]] | None = None,
     ) -> list[dict[str, Any]]:
-        result = self.adapter.acquire(member, self._acquisition_context(plan, part, release, feed))
+        context = self._acquisition_context(plan, part, release, feed)
+        if batch_candidates is not None:
+            context = replace(context, batch_candidates=batch_candidates)
+        with rpc_timing.timed("step provider_acquire"):
+            result = self.adapter.acquire(member, context)
         if result.no_trade is not None:
             self.source.outcome(
                 plan["plan_id"],

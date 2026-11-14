@@ -286,6 +286,105 @@ def test_sdk_gateway_sanitizes_provider_exceptions_that_contain_the_token() -> N
     assert raised.value.__cause__ is None
 
 
+def test_sdk_gateway_carries_the_latest_earlier_close_for_empty_target_cells() -> None:
+    nan = float("nan")
+    # Deliberately out of order: the latest earlier date wins, not the nearest row.
+    index = (date(2026, 7, 27), TARGET_DATE, date(2026, 7, 24), date(2026, 7, 28))
+    cells = {
+        "2330": (990, 1000, 980, 995),
+        "3085": (25.4, nan, 25.1, nan),
+        "6680": (nan, None, 49.2, nan),
+        "7770": (nan, nan, nan, nan),
+    }
+    frame = SimpleNamespace(
+        index=index,
+        columns=tuple(cells),
+        loc=_Loc(
+            {
+                (day, symbol): row[position]
+                for symbol, row in cells.items()
+                for position, day in enumerate(index)
+            }
+        ),
+    )
+    sdk = SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=lambda dataset: frame))
+    gateway = FinLabSdkGateway(api_token="test-token", _sdk=sdk)
+
+    close = gateway.fetch_dataset("price:收盤價", target_date=TARGET_DATE, symbols=tuple(cells))
+    volume = gateway.fetch_dataset("price:成交股數", target_date=TARGET_DATE, symbols=tuple(cells))
+
+    assert close.dates == ("2026-07-29",)
+    # An observed target carries nothing; a symbol never observed has nothing to carry.
+    assert close.previous == (("3085", "2026-07-27", 25.4), ("6680", "2026-07-24", 49.2))
+    assert volume.previous == ()
+
+
+def test_a_table_without_the_target_date_keeps_only_bounded_evidence() -> None:
+    """The production table shape: a not-ready poll must not walk the whole history."""
+    from dataclasses import asdict
+    from datetime import timedelta
+
+    from findb_fetcher import provider_work
+    from findb_fetcher.providers import finlab
+
+    rows, columns = 4806, 1949
+    start = date(2007, 4, 23)
+    # Deliberately newest first: the kept dates are the latest, not the last rows.
+    index = tuple(start + timedelta(days=offset) for offset in reversed(range(rows)))
+    symbols = tuple(str(1000 + number) for number in range(columns))
+    newest = index[0]
+
+    class CountingLoc:
+        reads = 0
+
+        def __getitem__(self, key: tuple[date, str]) -> object:
+            CountingLoc.reads += 1
+            day, symbol = key
+            # On the newest date every tenth symbol is still empty.
+            return float("nan") if day == newest and int(symbol) % 10 == 0 else 12.5
+
+    frame = SimpleNamespace(index=index, columns=symbols, loc=CountingLoc())
+    # Inside an owned work the observation is kept as evidence instead of raising.
+    token = provider_work._current.set(object())
+    try:
+        table = finlab._table_from_dataframe(
+            frame, target_date=newest + timedelta(days=1), reviewed_symbols=symbols
+        )
+    finally:
+        provider_work._current.reset(token)
+
+    assert table.dates == tuple(
+        (newest - timedelta(days=offset)).isoformat() for offset in reversed(range(5))
+    )
+    assert (table.symbols, table.values, table.previous) == ((), (), ())
+    assert table.observed == (columns, columns, columns, columns, columns - columns // 10 - 1)
+    # Five rows are read; the full history would be 9.4 million cells.
+    assert CountingLoc.reads == 5 * columns
+    assert len(json.dumps(asdict(table))) < 1024
+
+
+def test_the_gateway_keeps_the_class_and_logs_it(capsys) -> None:
+    secret = "provider-words-that-must-not-leak"
+
+    def get(dataset: str) -> None:
+        raise ConnectionResetError(secret)
+
+    sdk = SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=get))
+
+    from findb_fetcher.providers.finlab import FinLabOperationalError
+
+    with pytest.raises(FinLabOperationalError) as raised:
+        FinLabSdkGateway(api_token="test-token", _sdk=sdk).fetch_dataset(
+            "price:收盤價", target_date=TARGET_DATE, symbols=("2330",)
+        )
+
+    assert raised.value.code == "network"
+    assert secret not in "".join(traceback.format_exception(raised.value))
+    assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == [
+        {"finlab_sdk_failure": {"dataset": "price:收盤價", "code": "network"}}
+    ]
+
+
 @pytest.mark.parametrize("failure_location", ["index", "row"])
 def test_sdk_gateway_sanitizes_dataframe_exceptions_that_contain_the_token(
     failure_location: str,

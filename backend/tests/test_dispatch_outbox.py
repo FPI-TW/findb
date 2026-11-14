@@ -164,6 +164,11 @@ async def test_summary_backfill_failure_closes_transaction_and_waits_before_retr
             async with session_factory() as session:
                 async with asyncio.timeout(1):
                     await session.execute(text("SELECT pg_advisory_xact_lock(942713)"))
+            # The loop logs only after its session finishes closing, which can be just
+            # after the lock is released; cancelling earlier would skip the log (#510).
+            async with asyncio.timeout(1):
+                while "Failed to initialize delivery plan summaries" not in caplog.text:
+                    await asyncio.sleep(0.01)
         finally:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

@@ -10,7 +10,7 @@ from app.models.registry import DailyDeliveryPlan, DailyExecutionDecision
 from app.schemas.admin import DeliveryPlanListResponse, PaginatedDeliveryPlanListResponse
 from app.schemas.common import PaginationInfo
 from app.services.effective_calendar import PROVIDER_CALENDAR_SWITCHES, execution_policy
-from app.services.full_market import _skip_response, plan_response
+from app.services.full_market import _skip_response, plan_response, plan_summary_response
 
 
 async def list_plan_datasets(
@@ -41,6 +41,7 @@ async def list_delivery_plans(
     page: int | None,
     page_size: int | None,
     profile: ExecutionProfile = "full_market",
+    summary_only: bool = False,
 ) -> DeliveryPlanListResponse | PaginatedDeliveryPlanListResponse:
     stmt = select(DailyDeliveryPlan).where(DailyDeliveryPlan.execution_profile == profile)
     if dataset_key is not None:
@@ -63,7 +64,8 @@ async def list_delivery_plans(
         stmt = stmt.offset((current_page - 1) * size)
     plans = (await db.scalars(stmt)).all()
     # Admin reads history; Source provider scope must not hide retired providers.
-    data = [await plan_response(db, plan) for plan in plans]
+    shape = plan_summary_response if summary_only else plan_response
+    data = [await shape(db, plan) for plan in plans]
     skips = select(DailyExecutionDecision).where(
         DailyExecutionDecision.execution_profile == profile,
         DailyExecutionDecision.kind == "skipped_calendar",

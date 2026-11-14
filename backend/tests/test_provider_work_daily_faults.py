@@ -57,6 +57,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     from findb_fetcher.full_market_runtime import FullMarketRuntime
     from findb_fetcher.full_market_state import FullMarketState
     from findb_fetcher.platform_limits import limits
+    from findb_fetcher.provider_wait import ProviderOutagePendingError
 
     from tests import test_full_market as fixtures
 
@@ -76,25 +77,31 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         observed_calls = []
 
         def rate_limited(request):
-            h.native(["daily", request.url.params["symbol"]])
-            observed_calls.append(request.url.params["symbol"])
+            symbols = request.url.params["symbol"]
+            h.native(["daily", symbols])
+            observed_calls.append(symbols)
+            # A comma batch carries each symbol's own answer inside an HTTP 200
+            # map; the fault applies to the first requested symbol only.
+            first = symbols.split(",")[0]
             if member_no_data:
                 if len(observed_calls) == 1:
-                    return httpx.Response(
-                        400,
-                        json={
-                            "code": 400,
-                            "message": "No data is available on the specified dates.",
-                            "status": "error",
-                        },
-                        request=request,
-                    )
+                    error = {
+                        "code": 400,
+                        "message": "No data is available on the specified dates.",
+                        "status": "error",
+                    }
+                    if "," not in symbols:
+                        return httpx.Response(400, json=error, request=request)
+                    payload = transport(request).json()
+                    payload[first] = error
+                    return httpx.Response(200, json=payload, request=request)
                 return transport(request)
             if not_published:
                 response = transport(request)
                 if len(observed_calls) == 1:
                     payload = response.json()
-                    payload["values"][0]["datetime"] = (DAY - timedelta(days=1)).isoformat()
+                    series = payload[first] if "," in symbols else payload
+                    series["values"][0]["datetime"] = (DAY - timedelta(days=1)).isoformat()
                     return httpx.Response(200, json=payload, request=request)
                 return response
             return httpx.Response(
@@ -275,7 +282,17 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                     )
                     state.record_plan(plan, h.provider)
                     release = source.release(str(db_plan.release_id))
-                    result = runtime._deliver_plan(plan, release, feed)
+                    try:
+                        result = runtime._deliver_plan(plan, release, feed)
+                    except ProviderOutagePendingError as exc:
+                        # The cycle settles a shared-table outage as a delayed retry.
+                        runtime._settle_queued_round(
+                            owner,
+                            outcome="retry",
+                            failure_code="DAILY_PROVIDER_UNAVAILABLE",
+                            retry_delay_seconds=exc.retry_after_seconds,
+                        )
+                        return False
                     runtime._settle_queued_round(owner)
                     return result
             finally:
@@ -313,8 +330,9 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                 )
             )
         )
-        if h.provider == "taifex":
-            # One exchange report serves every member, so an outage blocks no member.
+        if h.provider in {"taifex", "finlab"}:
+            # One exchange report or SDK table serves every member, so an outage
+            # blocks no member.
             assert reported == []
         else:
             assert len(reported) == 1
@@ -407,10 +425,12 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     saved = await prepared_map(h.db, work.work_id)
     assert all(saved[key]["body"] == value["body"] for key, value in descriptors.items())
     if member_no_data:
-        assert observed_calls == ["AAPL", "MSFT", "AAPL"]
+        # MSFT is served from the shared batch; only AAPL is asked again.
+        assert observed_calls == ["AAPL,MSFT", "AAPL"]
     if not_published:
+        # The stale batch is never replayed: the restart asks for the same members again.
         assert observed_calls == (
-            ["AAPL", "AAPL", "MSFT"]
+            ["AAPL,MSFT", "AAPL,MSFT"]
             if h.dataset == "us_equity_eod"
             else ["00005", "00005", "00700"]
         )

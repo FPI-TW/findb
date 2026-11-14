@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+
 import httpx
 
 
@@ -12,7 +15,21 @@ class BoundedResponseError(RuntimeError):
         super().__init__(message)
 
 
-def read_identity_response(response: httpx.Response, *, bound: int) -> bytes:
+def read_identity_response(
+    response: httpx.Response,
+    *,
+    bound: int,
+    time_limit: float | None = None,
+    on_progress: Callable[[], None] | None = None,
+    progress_seconds: float = 30,
+) -> bytes:
+    """Read an identity-encoded body within ``bound`` bytes.
+
+    The client's read timeout only bounds the wait for each chunk, so a server
+    that keeps trickling bytes has no total limit; ``time_limit`` adds one.
+    ``on_progress`` runs at most every ``progress_seconds`` while chunks arrive,
+    for a caller that must keep reporting liveness during a long download.
+    """
     encoding = response.headers.get("content-encoding", "identity")
     identity = encoding.strip().lower() == "identity"
     received = (
@@ -40,6 +57,7 @@ def read_identity_response(response: httpx.Response, *, bound: int) -> bytes:
         raise BoundedResponseError("unsupported Content-Encoding", observed_bytes=received)
     raw = bytearray()
     chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
+    started = reported = time.monotonic()
     try:
         for chunk in chunks:
             observed = len(raw) + len(chunk)
@@ -48,6 +66,13 @@ def read_identity_response(response: httpx.Response, *, bound: int) -> bytes:
                     "response exceeds the size limit", observed_bytes=observed
                 )
             raw.extend(chunk)
+            now = time.monotonic()
+            if time_limit is not None and now - started > time_limit:
+                # A transport timeout: retried like any other, never a format error.
+                raise httpx.ReadTimeout("response exceeded its total time limit")
+            if on_progress is not None and now - reported >= progress_seconds:
+                reported = now
+                on_progress()
     except httpx.HTTPError as exc:
         # Preserve the transport error type and only account bytes actually read.
         exc.observed_bytes = len(raw)  # type: ignore[attr-defined]

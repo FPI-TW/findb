@@ -15,7 +15,7 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.canonical import InstrumentStats, MarketDataEOD
+from app.models.canonical import MANUAL_CORRECTION_PRIORITY, InstrumentStats, MarketDataEOD
 from app.models.correction import CanonicalCorrection
 from app.models.raw import RawMarketPayload
 from app.models.registry import DQIssue, IngestionRun
@@ -225,6 +225,8 @@ async def patch_eod_record(
         )
 
     _validate_blocking_dq_rules(eod)
+    # The corrected row now outranks every ingest; only another correction changes it.
+    eod.source_priority = MANUAL_CORRECTION_PRIORITY
 
     after = _snapshot(eod, changed_fields)
 

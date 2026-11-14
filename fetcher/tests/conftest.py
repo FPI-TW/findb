@@ -65,6 +65,7 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         "test_finlab_dataframe_bytes.py",
         "test_finlab_native_identity.py",
         "test_twelve_data.py",
+        "test_twelve_data_batch.py",
         "test_twelve_data_catalogue_scope.py",
         "test_taifex_dated_universe.py",
         "test_full_market.py",

@@ -24,7 +24,18 @@ runtime-secret metadata foundation. It creates IAM, target-specific KMS keys,
 Secrets Manager metadata, S3, CloudWatch, and SSM resources and references the
 two existing staging EC2 instances. It does not put secret versions or values
 in OpenTofu state, and it does not import or recreate EC2, RDS, VPC, subnets,
-security groups, Cloudflare R2 buckets, or DNS.
+existing security groups, Cloudflare R2 buckets, or DNS.
+
+`staging/network.tf` creates exactly one security group, the FinDB origin group,
+and attaches it to the existing FinDB instance's primary interface. Like
+production, it accepts only HTTPS from Cloudflare's published IPv4/IPv6 ranges
+(the variable defaults must equal production's) and has no SSH. The instance
+must carry only that group and the referenced RDS client group; a `check` block
+warns on plan when any other group, such as the retired world-open
+`launch-wizard-1`, is attached again. Attaching the group does not detach the
+old one, so the first rollout ends with a one-time operator detach of
+`launch-wizard-1` from the instance. That group stays on the RDS interface,
+where it opens no listening port.
 
 The Phase 6 monitoring stack declares a private KMS-encrypted SNS
 operational-alert topic, one required email subscription, native CloudWatch
@@ -263,7 +274,10 @@ The stack enforces the required `Project=findb`, `Environment`, `DeploymentUnit`
 `Owner`, and `BackupOwner` tags on each existing instance. It creates separate
 OIDC deploy roles for `staging-findb` and `staging-fetcher`, separate EC2
 instance roles/profiles, unit-specific CloudWatch log groups with retention,
-and unit-specific Session Manager preference documents. The deploy bundle
+and unit-specific Session Manager preference documents. One more log group,
+`/findb/staging/fetcher/containers`, receives the output of the long-running
+Fetcher containers; only the Fetcher instance role may create streams in it and
+append to them (see `docs/operations/monitoring.md`). The deploy bundle
 bucket is private, versioned, KMS encrypted, and all role object permissions
 are restricted to either `findb/` or `fetcher/`.
 
