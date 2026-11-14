@@ -1047,6 +1047,10 @@ def prune_closed_journal(
     claimed = False
     try:
         db.execute("PRAGMA journal_mode=WAL")
+        # Debian's SQLite zeroes every page a delete frees, and the statement keeps
+        # the old pages in a temporary file until it ends: a work's snapshots are
+        # larger than the 16 MiB /tmp. Freed pages are left as they are instead.
+        db.execute("PRAGMA secure_delete=OFF")
         with db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS work_retention(provider TEXT PRIMARY KEY, next_at REAL NOT NULL)"

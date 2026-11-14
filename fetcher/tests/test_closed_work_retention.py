@@ -155,6 +155,38 @@ def test_source_failure_after_the_claim_is_also_retried_within_the_hour(tmp_path
     assert prune_closed_journal(source, "finlab", root=tmp_path, now=NOW + 3600) is not None
 
 
+def test_retiring_snapshots_does_not_rewrite_the_pages_it_frees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "provider-work.sqlite3"
+    body = b"x" * (8 << 20)
+    with WorkJournal(path, OLD_WORK).connection() as db:
+        db.execute(
+            "INSERT INTO work_response VALUES(?,?,?,?)", (OLD_WORK, SNAPSHOT, body, "0" * 64)
+        )
+    connect = sqlite3.connect
+
+    def image_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        # The image's SQLite is built to zero freed pages unless a connection opts out.
+        db = connect(*args, **kwargs)
+        db.execute("PRAGMA secure_delete=ON")
+        return db
+
+    monkeypatch.setattr(sqlite3, "connect", image_connect)
+    # An open connection keeps the WAL file, which records every page the pass wrote.
+    holder = connect(path)
+    try:
+        holder.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        removed = prune_closed_journal(_Source({OLD_WORK: OLD}), "finlab", root=tmp_path, now=NOW)
+        assert removed is not None and removed["responses"] == 1
+        assert removed["free_bytes"] >= len(body)
+        # Zeroing the snapshot would write all of it again, and inside the statement
+        # the same pages go to /tmp, which holds 16 MiB on a consumer.
+        assert Path(f"{path}-wal").stat().st_size < len(body) // 8
+    finally:
+        holder.close()
+
+
 def test_missing_journal_is_never_created(tmp_path: Path) -> None:
     assert prune_closed_journal(_Source({}), "finlab", root=tmp_path, now=NOW) is None
     assert not (tmp_path / "provider-work.sqlite3").exists()
