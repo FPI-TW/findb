@@ -138,6 +138,9 @@ Full worker 每日對自己的 provider 清理一次已結案工作的本機狀�
   `journal.file_bytes` 與 `journal.free_bytes` 顯示檔案大小與其中已釋放、可重用的部分，`journal.responses`
   是這次刪除的回應列數。要縮小檔案時，在該主機所有 provider 的 controls 停止後另行 VACUUM（會重寫整個檔案，
   需要與檔案大小相當的可用磁碟空間）。
+- Journal 的清理連線設定 `secure_delete=OFF`。Image 內的 SQLite 預設會把釋放的每一頁覆寫為零，同一句刪除
+  還會把這些頁的原內容暫存到 `/tmp`；單筆工作的官方名單快照約 20 MB，超過 consumer 的 16 MiB `/tmp`，清理會以
+  `SQLITE_FULL` 失敗。關閉後釋放的頁不再重寫，不佔 `/tmp`，也不會把刪掉的內容再寫進 WAL 一次。
 
 ## PostgreSQL 暫存副本保留
 
