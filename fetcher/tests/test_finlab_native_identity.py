@@ -1,9 +1,8 @@
-"""Offline FinLab 1.5.7 token equivalence, debt, locks and environment snapshots."""
+"""Offline FinLab API-token equivalence, debt, locks and environment snapshots."""
 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import multiprocessing
 import os
@@ -36,19 +35,10 @@ def _grant():
 
 @pytest.fixture
 def native():
-    # An optional audited 1.5.7 __init__.py runs the same tests with the actual
-    # wheel's pure-Python login/get_token. Ordinary CI uses its offline semantics.
-    source = os.getenv("FINDB_TEST_FINLAB_NATIVE_SOURCE")
-    if source:
-        spec = importlib.util.spec_from_file_location("offline_native_finlab", source)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        assert module.__version__ == "1.5.7"
-        return module
-
+    # Offline semantics of the pinned SDK's login(token)/get_token; the real
+    # ones are checked in test_finlab_sdk_contract.py when the SDK is installed.
     def login(token):
         os.environ["FINLAB_API_TOKEN"] = token[:64]
-        os.environ["finlab_id_token"] = token[:64]
 
     return SimpleNamespace(login=login, get_token=lambda: os.environ["FINLAB_API_TOKEN"][:64])
 
@@ -58,7 +48,6 @@ def state(tmp_path, monkeypatch):
     path = tmp_path / "governor.sqlite3"
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
     monkeypatch.setenv("FINLAB_API_TOKEN", TOKEN)
-    monkeypatch.setenv("finlab_id_token", "installed-id")
     monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(tmp_path / "missing.json"))
     return FullMarketState(path)
 
@@ -108,7 +97,6 @@ def test_equivalent_native_token_respects_known_pin_allocation_and_300s_cooldown
     _invoke(gateway)
     assert calls == [TOKEN]
     assert os.environ["FINLAB_API_TOKEN"] == TOKEN
-    assert os.environ["finlab_id_token"] == "installed-id"
     with state.connection() as db:
         assert (
             db.execute(
@@ -297,7 +285,6 @@ def test_factory_and_identity_snapshot_each_sdk_phase_and_failure(
         assert snapshots == [TOKEN]
         assert gateway.api_token == TOKEN
         assert os.environ["FINLAB_API_TOKEN"] == TOKEN
-        assert os.environ["finlab_id_token"] == "installed-id"
     finally:
         release.set()
 

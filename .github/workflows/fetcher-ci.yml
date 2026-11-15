@@ -94,6 +94,8 @@ jobs:
           docker run --rm "$generic_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is None else 1)'
           docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .
           docker run --rm "$finlab_image" python -c 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("finlab") is not None else 1)'
+          # The worker hooks SDK internals; the image must carry the reviewed release.
+          docker run --rm "$finlab_image" python -c 'from findb_fetcher.providers.finlab import verify_sdk_contract; verify_sdk_contract()'
           docker run --rm "$finlab_image"
           docker run --rm "$finlab_image" findb-fetch-historical-backfill --help
 

@@ -38,7 +38,7 @@ def test_real_worker_dispatches_get_after_one_fresh_grant(tmp_path, monkeypatch,
     monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", str(path))
     logged_in, events = tmp_path / "logged-in", tmp_path / "events"
     grants = []
-    # Pinned 1.5.7 login is local: one READY covers login and get. The fake
+    # The pinned login(token) is local: one READY covers login and get. The fake
     # clock drives the parent; the worker only sees its verdict.
     elapsed = [0.0]
     epoch = time.time()
@@ -75,15 +75,15 @@ def test_real_worker_dispatches_get_after_one_fresh_grant(tmp_path, monkeypatch,
     record = f"open({str(events)!r}, 'a').write('{{event}}:' + str(os.getpid()) + '\\n')\n"
     files = fake_finlab(
         record.replace("{event}", "get")
-        + "fetch_data(dataset)\n"
+        + "fetch_metadata_batch({dataset: None})\n"
         + f"import datetime\nfrom provider_worker_support import Frame\nreturn Frame({DAY!r})",
         login=f"open({str(logged_in)!r}, 'w').close()",
         check_version=record.replace("{event}", "pypi"),
-    )
-    # The FinLab API reports the account's daily usage with every table request.
-    files["finlab/data.py"] += (
-        "\n\ndef fetch_data(dataset, time_saved=None):\n"
-        "    return {'quota': 12.5, 'limit_size': 5000}\n"
+        # The FinLab API reports the account's daily usage with every table request.
+        metadata=(
+            "return {name: types.SimpleNamespace(quota=12.5, limit_size=5000)"
+            " for name in request_map}"
+        ),
     )
     install_fake_sdk(monkeypatch, tmp_path / "sdk", files)
     native = SimpleNamespace(login=lambda token: None, data=SimpleNamespace(get=lambda name: None))

@@ -256,7 +256,7 @@ class RuntimeHarness:
         from findb_fetcher import historical_runtime as adapters
         from findb_fetcher.client import SourceAPIClient
         from findb_fetcher.full_market_client import FullMarketSourceClient
-        from findb_fetcher.providers.finlab import FinLabSdkGateway
+        from findb_fetcher.providers.finlab import FINLAB_SDK_VERSION, FinLabSdkGateway
         from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
         from findb_fetcher.raw_storage import RawObject
 
@@ -378,7 +378,7 @@ class RuntimeHarness:
         self.patch.setattr(
             importlib.metadata,
             "version",
-            lambda name: "1.5.7" if name == "finlab" else version(name),
+            lambda name: FINLAB_SDK_VERSION if name == "finlab" else version(name),
         )
 
     def runner(self):

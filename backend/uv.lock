@@ -445,7 +445,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.40,<2.0" },
-    { name = "finlab", marker = "extra == 'finlab'", specifier = "==1.5.7" },
+    { name = "finlab", marker = "extra == 'finlab'", specifier = "==2.3.11" },
     { name = "httpx", specifier = ">=0.28.1,<0.29.0" },
     { name = "jsonschema", extras = ["format"], specifier = ">=4.25.1,<5.0.0" },
     { name = "pymysql", marker = "extra == 'factset'", specifier = ">=1.1.1,<2" },

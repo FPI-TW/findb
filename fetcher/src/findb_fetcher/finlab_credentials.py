@@ -1,4 +1,4 @@
-"""Pinned FinLab 1.5.7 credential semantics and installed-environment snapshots."""
+"""Pinned FinLab SDK API-token semantics and installed-environment snapshots."""
 
 import os
 import threading
@@ -7,11 +7,11 @@ from contextlib import contextmanager
 
 _SDK_LOCK = threading.Lock()
 _SDK_CONTEXT = threading.local()
-_TOKEN_NAMES = ("FINLAB_API_TOKEN", "finlab_id_token")
+_TOKEN_NAMES = ("FINLAB_API_TOKEN",)
 
 
 def effective_token(credential: str) -> str:
-    # The gateway strips surrounding whitespace before native LoginPanel.login;
+    # The gateway strips surrounding whitespace before the native login(token);
     # both native login and get_token then select the first 64 characters.
     return credential.strip()[:64]
 

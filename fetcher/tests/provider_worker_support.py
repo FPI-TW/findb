@@ -56,17 +56,44 @@ def _body(code: str) -> str:
     return textwrap.indent(textwrap.dedent(code).strip() or "pass", "    ")
 
 
-def fake_finlab(get: str, *, login: str = "", check_version: str = "") -> dict[str, str]:
-    """Pinned 1.5.7 layout: local login, ``data.get`` calling ``utils.check_version``."""
-    prelude = "import os\nimport sys\nimport time\n\n"
+def fake_finlab(
+    get: str, *, login: str = "", check_version: str = "", metadata: str = "return {}"
+) -> dict[str, str]:
+    """Pinned SDK layout the worker relies on.
+
+    ``login(token)`` is local and ``get_token()`` names the token kind; ``data``
+    is a package whose ``get`` lives in ``finlab.data.get`` beside
+    ``fetch_metadata_batch`` and calls ``utils.check_version``; quota and auth
+    failures are typed. ``get`` and ``metadata`` are function bodies; ``get`` may
+    append to ``receipts``, which ``data.download_usage()`` hands to its caller.
+    """
+    prelude = "import os\nimport sys\nimport time\nimport types\n\n"
     return {
         "finlab/__init__.py": prelude
-        + "def login(token):\n"
-        + _body(login + '\nos.environ["FINLAB_API_TOKEN"] = token[:64]')
+        + "def login(api_token=None):\n"
+        + _body(login + '\nos.environ["FINLAB_API_TOKEN"] = api_token[:64]')
+        + "\n\n\ndef get_token():\n"
+        + _body('return os.environ["FINLAB_API_TOKEN"][:64], "api_token"')
         + "\n",
         "finlab/utils.py": prelude + "def check_version():\n" + _body(check_version) + "\n",
-        "finlab/data.py": prelude
-        + "import finlab.utils\n\n\ndef get(dataset):\n"
+        "finlab/exceptions.py": (
+            "class FinlabError(Exception):\n    pass\n\n\n"
+            "class DataError(FinlabError):\n    pass\n\n\n"
+            "class QuotaExceededError(DataError, RuntimeError):\n    pass\n\n\n"
+            "class AuthError(FinlabError):\n    pass\n"
+        ),
+        "finlab/data/__init__.py": (
+            "import importlib\nfrom contextlib import contextmanager\n\n"
+            '_module = importlib.import_module("finlab.data.get")\n'
+            "get = _module.get\n\n\n"
+            "@contextmanager\ndef download_usage():\n    yield _module.receipts\n"
+        ),
+        "finlab/data/get.py": prelude
+        + "import finlab\nimport finlab.exceptions\nimport finlab.utils\n\n"
+        + "receipts = []\n\n\n"
+        + "def fetch_metadata_batch(request_map):\n"
+        + _body(metadata)
+        + "\n\n\ndef get(dataset):\n"
         + _body("finlab.utils.check_version()\n" + textwrap.dedent(get))
         + "\n",
     }

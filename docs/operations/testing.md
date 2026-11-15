@@ -555,11 +555,13 @@ Backend 健康命令 `8789d81c-6a7b-4b26-a969-d44bde78d4f8` 確認 ingest／serv
 
 `fetcher/tests/test_finlab_file_cache.py` 覆蓋五欄位重複呼叫的 frame 釋放、
 實際 storage 與舊 package alias、storage replacement、各錯誤路徑及 SDK lock。
-驗證 optional FinLab SDK 時，另以固定 1.5.7、封鎖外網的測試檢查真實 FileStorage：
-有效磁碟檔案重複讀取不下載、bytes／expiry／created 不變，以及 CacheStorage 不被清除。
-外部 process 更新 pickle 後，`use_cache=False` 沿用 SDK 原生 `_created` 行為；
-`.recent` 可能使用較舊的 `time_saved`，須驗證 hash 不符仍走原生完整下載 fallback。
-不把所有過期／外部改寫檔案的請求完全相同列為保證，也不以離線測試取代 staging 記憶體觀測。
+一般測試不安裝 optional FinLab SDK，以假的 SDK 套件模擬固定版本的結構。安裝 SDK
+（`uv --directory fetcher sync --extra finlab`）後，`fetcher/tests/test_finlab_sdk_contract.py` 會以真實的
+SDK 執行 exec'd worker：只替換 worker 內的 HTTP 傳輸並拒絕所有 socket，每個情境使用獨立的 interpreter 與
+home 目錄。涵蓋整表下載後投影成單一目標日、已有 cache 時先要求更新再 fallback 到整表、API 回報的用量與
+計費位元組數、只送出 API token、不詢問 PyPI，以及認證、配額、網路失敗各自的失敗類別（認證錯誤不得開啟
+SDK 的登入）。沒有安裝 SDK 時整個模組略過；CI 改在建好的 FinLab image 裡執行 `verify_sdk_contract()`，
+確認 image 內是審核過的版本與結構。離線測試不取代 staging 的記憶體觀測與真實 API 驗收。
 
 ## 有效日曆政策回歸
 

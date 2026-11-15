@@ -472,9 +472,10 @@ work-fence 授權、再取得 fresh Source account grant，純本機重驗 fence
 此期限，過期直接停止，不在 child 增設重試。Parent 每個 boundary 沿用原最多三次
 授權限制；owner 或 account 證據持續過期時有界停止。
 
-FinLab 1.5.7 的 `login(token)` 只在 worker 內設定 token、沒有網路 I/O，因此只在 login 與
-`data.get` 前送出一次 READY；worker 另停用 SDK 在每個新 process 都會發出、沒有 timeout 的
-PyPI 版本檢查。`data.get` 一律載入整張 dataset；worker 只回傳 reviewed symbols 欄位，
+FinLab SDK（固定版本見 [Full market](../operations/full_market.md)）的 `login(token)` 只在 worker 內設定
+token、沒有網路 I/O，因此只在 login 與 `data.get` 前送出一次 READY；worker 另停用 SDK 的 PyPI 版本檢查，
+並在選取 token 後拒絕 SDK 之後的任何登入嘗試。送出 READY 之前先確認安裝的 SDK 具備 worker 依賴的名稱，
+不符時不要求授權、不發出請求。`data.get` 一律載入整張 dataset；worker 只回傳 reviewed symbols 欄位，
 需要用量核對時另回傳完整表的 response bytes，父行程不再持有完整表。欄位或日期不合法時原表整份回傳，
 由父行程產生與 in-process 路徑相同的型別化驗證錯誤。FactSet `connect` 是真實網路 I/O，connect 與 SELECT 前各送出一次 READY。
 SELECT 前重新授權不重建 acquisition intent、不重設 started_at、不重複計費；已派送 connect 的原責任與

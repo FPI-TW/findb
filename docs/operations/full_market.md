@@ -302,8 +302,9 @@ FinLab 抓表失敗時，`full_work_diagnostic.category` 記為 `finlab_sdk:<cod
 
 | code | 意思 | 來源 |
 | --- | --- | --- |
-| `auth` | FinLab API 回覆 token 無效或帳號不存在 | 子程序依 SDK 的固定錯誤字串判斷 |
-| `quota` | FinLab API 回覆當日用量已達上限 | 同上 |
+| `auth` | FinLab API 回覆 token 無效或帳號不存在；或 SDK 選到的身分不是設定的 API token | 子程序判斷：SDK 的認證例外，或 SDK 試圖開啟登入（子程序一律拒絕） |
+| `quota` | FinLab API 回覆當日用量已達上限 | 子程序依 SDK 的配額例外型別判斷 |
+| `sdk_contract` | 安裝的 SDK 缺少子程序依賴的名稱，不是審核過的版本 | 子程序在要求授權與任何網路請求之前檢查；不重試，work 直接結束 |
 | `network` | 連線失敗、被重設、TLS 或 DNS 錯誤 | 子程序依例外型別判斷 |
 | `timeout` | 單一請求逾時 | 同上 |
 | `bad_response` | 回應不是合法的 JSON | 同上 |
@@ -787,7 +788,7 @@ Prepare SSM：`477ef221-ad3e-4086-9389-76f26bfe794b`；Backend 刪除：
 | Provider | 適用限制 | 用量核對與超限處理 |
 | --- | --- | --- |
 | Twelve Data | 1597 API credits／分鐘 | Durable governor 依 1597／分鐘平均 pacing，分鐘與日窗口以 credits（一次 batch 的 symbol 數）計；HTTP 429 與 HTTP 200 payload code 429 均寫入 60 秒帳號 cooldown 後等待／重試。實際帳號用量以 readiness probe 的 `/api_usage` 人工核對；每日路徑尚未讀取 response credit headers |
-| FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置。API 隨每次取表回報的當日用量（`quota`／`limit_size`）會記錄下來：Fetcher log 的 `{"finlab_quota": {"dataset", "used_mb", "limit_mb"}}`，以及帳號 governor SQLite 的 `acquisition_usage`（`bytes`／`limit_bytes`／`remaining_bytes`，與該次取表的 `acquisition_intent` 同一個 `operation_id`）。SDK 直接讀本機 cache、沒有向 API 發出請求時不會有紀錄 |
+| FinLab | 5000 MB／日 | 以 SDK API 回傳的 `quota`／`limit_size` 核對帳號累計用量，達限後等待平台重置。API 隨每次取表回報的當日用量（`quota`／`limit_size`）會記錄下來：Fetcher log 的 `{"finlab_quota": {"dataset", "used_mb", "limit_mb"}}`（API 有回報這次取表計費的位元組數時另帶 `billed_bytes`，是該次更新與整表下載的合計），以及帳號 governor SQLite 的 `acquisition_usage`（`bytes`／`limit_bytes`／`remaining_bytes`，與該次取表的 `acquisition_intent` 同一個 `operation_id`）。SDK 直接讀本機 cache、沒有向 API 發出請求時不會有紀錄 |
 | Shioaji | 500 MB／日、行情查詢 50 次／10 秒 | 以 `api.usage()` 的 bytes／limit_bytes／remaining_bytes 核對；API 回報的 524288000 bytes 為 500 MiB；依 10 秒視窗控制查詢速率 |
 | TAIFEX | OpenAPI 不需帳號，未公布明確 requests／bytes 數值上限 | 以 HTTP 429 作為觸及平台上限的訊號，依 `Retry-After` 或既有 backoff 等待／重試，不自行設定 provider 配額數值 |
 
@@ -1266,8 +1267,40 @@ release 會被之後的日期沿用。分類查詢不保證提前列出：2026-1
 改為過濾後成員的 digest；沒有排除時與 release 相同。第一次帶入上市日的 release 不把「補上上市日」
 算進 2% 變更比例，之後上市日改變才計入。
 
-Gateway 對 FinLab 1.5.7 原生 FileStorage 設定 `use_cache=False`，只釋放記憶體中的
-DataFrame references，保留既有磁碟檔案與到期 metadata；不呼叫會刪檔的 `clear()`。
+FinLab SDK 固定在 2.3.11（`fetcher/pyproject.toml` 與 `providers/finlab.py` 的 `FINLAB_SDK_VERSION`，
+兩者由測試核對一致）。Adapter 拒絕其他版本；子程序另外檢查它依賴的 SDK 名稱都存在，缺少時以
+`sdk_contract` 結束，不發出任何請求。升級 SDK 時依序做：改這兩處與 `uv.lock`、以
+`uv --directory fetcher sync --extra finlab` 安裝後執行 `tests/test_finlab_sdk_contract.py`、
+確認 CI 的 FinLab image 步驟通過 `verify_sdk_contract()`，再依
+[Provider 變更的驗收清單](#provider-變更的驗收清單)在 staging 驗收。
+
+- 身分只用 API token。子程序以 `login(token)` 選取 token 之後，就把 SDK 的登入入口換成拒絕：SDK 遇到認證
+  錯誤或找不到 token 時會開啟瀏覽器登入，在無人值守的 container 裡只會等到逾時。SDK 若選到別的身分
+  （例如 home 目錄下留有瀏覽器登入的憑證檔）也以 `auth` 結束，因為記帳的帳號就不是實際下載的帳號。
+- SDK 把 API token 登入標為已棄用（原訂 2026-08-01 之後移除）。2026-11-16 以正式帳號實測，2.3.11 送出的
+  API token 仍被接受。FinLab 停止接受時，症狀是所有取表都以 `auth` 結束；屆時要改用 SDK 的 refresh token
+  登入，identity 與帳號 governor 的對應要一併重新設計。
+- 本機 cache 在 host 的 `/var/lib/findb-finlab-fetcher/cache`（container 內 `~/finlab_db`，同環境的 FinLab consumers
+  共用，SDK 以檔案鎖協調）。每張表一個 `.feather`（價格表約 18 MB、成交股數約 30 MB），第二次讀取起旁邊另有
+  SDK 的解碼副本 `.decoded`（28–41 MB）；五張表合計約 260 MB。SDK 不寫 `/tmp`。
+- 升級後第一次取表：離線重現時，SDK 不拿 1.5.7 留下的 `.pickle` 要求差異更新，而是整張下載、寫成 `.feather`
+  並刪除舊檔。整張下載依壓縮後的檔案大小計費：2026-11-16 實測五張表合計約 103 MB 配額（`billed_bytes`），
+  每個環境一次。回復到 1.5.7 的 image 時，舊 SDK 讀不到 `.feather`，同樣會整張重新下載。
+- 記憶體：子程序設定 `ARROW_DEFAULT_MEMORY_POOL=system`（Arrow 預設的配置器不立即歸還已釋放的記憶體）。
+  以價格表大小的資料（4,808 × 2,800）與假的 API 在本機 Linux container 量測子程序的 RSS 峰值：
+
+  | 路徑 | 1.5.7 | 2.3.11 |
+  | --- | --- | --- |
+  | 整張下載 | 約 535 MB | 約 430 MB |
+  | 每日差異更新 | 約 535 MB | 約 680–710 MB（未設定配置器時約 880 MB） |
+
+  每日更新比 1.5.7 多約 150–175 MB：SDK 先載入本機的舊表，合併後再整張讀回。合成資料是不可壓縮的亂數，
+  比真實的表重：2026-11-16 以真實 API、staging 的 container 設定（`--read-only`、16 MB 的 `/tmp`、1 GiB
+  記憶體上限）取五張表，整張下載與讀取本機 cache 的子程序峰值都是約 360–375 MB，沒有 OOM。真實資料的
+  每日差異更新還沒量到（要等 FinLab 發布新資料的那次取表），staging 驗收時必須實測 `memory.peak` 與 OOM。
+
+Gateway 對 FinLab 原生 FileStorage 設定 `use_cache=False`，只釋放記憶體中的
+DataFrame references，保留既有磁碟檔案與修訂 metadata；不呼叫會刪檔的 `clear()`。
 SDK scope 內同時處理呼叫前後的實際 storage 與 package re-export，避免切換 storage 後
 舊物件仍保留整份歷史資料。純記憶體 CacheStorage 與自訂 storage 不變，避免清除唯一副本而增加下載。
 有效且未變動的檔案仍由磁碟命中；外部更新／過期時遵循 SDK 的 recent merge、hash 檢查及完整下載 fallback，
@@ -1279,8 +1312,8 @@ backoff，等待受 `FETCHER_MAX_RETRY_AFTER_SECONDS` 限制，嘗試次數受 `
 已安裝的 account ID 可沿用以保留 ledger，provider／credential fingerprint 與 ledger ID 對應
 會以 SQLite transaction 持久化；完成首次 pin 後，舊證據檔移除或修改不改用新 ledger，
 既有 debt/cooldown 不重設，也不輸出 credential。Twelve Data fingerprint 去除前後空白；
-FinLab 1.5.7 gateway、identity 與 installed allocation 比對均使用 `credential.strip()[:64]`，
-符合 native `LoginPanel.login`／`get_token` 的前 64 字元選取，長 token 的後綴不另建帳號 ledger。
+FinLab gateway、identity 與 installed allocation 比對均使用 `credential.strip()[:64]`，
+符合 SDK `login(token)`／`get_token` 的前 64 字元選取，長 token 的後綴不另建帳號 ledger。
 同一有效 credential 的空白格式變動不另建 ledger。Full／Pilot／historical Shioaji 的 key／secret 與 SDK 輸入一致去除前後空白；
 只合併可由同一有效 credential 證明關聯的 pins：FinLab 包含明確提供與 SDK 等值 installed
 token 的 raw、舊去空白與新 SDK 等值 fingerprints；未知或不同實際 key 不合併。Request debt
@@ -1300,7 +1333,7 @@ SQLite transaction 只做短暫 ledger 更新，不跨 network／SDK 等待；�
 HTTP 在 transport send boundary、FinLab 在 `data.get`、Shioaji 在 child `api.kbars` 記錄 actual start。
 Twelve Data HTTP boundary 使用該 client 實際 config credential（保留 raw／normalized pin 合併），
 即使環境變數指向另一個 key，account lock、request debt 與 cooldown 都跟隨實際送出的 key。
-FinLab 1.5.7 的 headless `login(token)` 只選取 process-global token，不算上游 acquisition；
+FinLab SDK 的 `login(token)` 只選取 process-global token，不算上游 acquisition；
 正式路徑的 login 與 `data.get` 在 exec'd provider worker 內執行，一次授權涵蓋兩者。
 所有 `FinLabSdkGateway` 以 process-wide SDK lock 保護最後授權、login、`data.get`、finalization、
 完整回應計量、目標投影與 FileStorage 記憶體快取清理；Acquisition 仍在 `data.get` 後完成，

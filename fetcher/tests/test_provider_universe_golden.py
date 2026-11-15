@@ -202,13 +202,17 @@ def test_factset_universe_refresh_is_byte_identical(tmp_path, monkeypatch):
 def test_finlab_universe_refresh_is_byte_identical(tmp_path, monkeypatch, dataset_keys):
     import importlib.metadata
 
-    from findb_fetcher.providers.finlab import FinLabDatasetTable, FinLabSdkGateway
+    from findb_fetcher.providers.finlab import (
+        FINLAB_SDK_VERSION,
+        FinLabDatasetTable,
+        FinLabSdkGateway,
+    )
 
     real_version = importlib.metadata.version
     monkeypatch.setattr(
         importlib.metadata,
         "version",
-        lambda name: "1.5.7" if name == "finlab" else real_version(name),
+        lambda name: FINLAB_SDK_VERSION if name == "finlab" else real_version(name),
     )
     observed: list[tuple[str, ...]] = []
 

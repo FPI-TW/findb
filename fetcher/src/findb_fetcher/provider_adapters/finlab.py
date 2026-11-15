@@ -31,6 +31,7 @@ from findb_fetcher.provider_adapters.base import (
 )
 from findb_fetcher.providers.finlab import (
     FINLAB_FIELD_DATASETS,
+    FINLAB_SDK_VERSION,
     FinLabConfigError,
     FinLabDatasetConfig,
     FinLabDatasetTable,
@@ -57,8 +58,13 @@ FINLAB_OUTAGE_RETRY_SECONDS = 4 * 3600
 FINLAB_OUTAGE_DELAY_SECONDS = 5 * 60
 # The daily quota does not come back within minutes.
 FINLAB_QUOTA_DELAY_SECONDS = 30 * 60
-# Failure classes no retry can clear: the work ends at once.
-_FINLAB_PERMANENT = frozenset({"auth"})
+# Failure classes no retry can clear: the work ends at once. The value is the
+# maintenance work's failure code.
+_FINLAB_PERMANENT = {
+    "auth": "MAINTENANCE_FINLAB_AUTH",
+    # The installed SDK is not the reviewed release; only a new image clears it.
+    "sdk_contract": "MAINTENANCE_FINLAB_CONFIG",
+}
 
 
 def finlab_no_trade(values: Mapping[str, object]) -> bool:
@@ -103,7 +109,7 @@ class FinLabAdapter(ProviderAdapter):
 
     def gateway(self, observe_response: Callable[[int], None]) -> FinLabSdkGateway:
         try:
-            if importlib.metadata.version("finlab") != "1.5.7":
+            if importlib.metadata.version("finlab") != FINLAB_SDK_VERSION:
                 raise ReadinessBlockedError("FinLab SDK version is unsupported")
         except importlib.metadata.PackageNotFoundError:
             raise ReadinessBlockedError("FinLab pinned SDK is unavailable") from None
@@ -317,7 +323,9 @@ class FinLabAdapter(ProviderAdapter):
         if phase == "maintenance":
             if isinstance(exc, FinLabOperationalError):
                 if exc.code in _FINLAB_PERMANENT:
-                    return ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_AUTH")
+                    return ProviderFailure(
+                        FailureKind.WORK_FAILED, code=_FINLAB_PERMANENT[exc.code]
+                    )
                 return ProviderFailure(
                     FailureKind.ROUND_RETRY, code="MAINTENANCE_FINLAB_OPERATIONAL"
                 )
