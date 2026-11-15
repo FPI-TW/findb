@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import traceback
+from contextlib import nullcontext
 from datetime import date
 from types import SimpleNamespace
 
@@ -168,11 +169,17 @@ class Loc:
 
 def native_get(monkeypatch, frame, *, account):
     modules = {
-        "finlab": SimpleNamespace(login=lambda _: None),
-        "finlab.data": SimpleNamespace(get=lambda _: frame),
+        "finlab": SimpleNamespace(login=lambda _: None, get_token=lambda: ("offline", "api_token")),
+        "finlab.data": SimpleNamespace(get=lambda _: frame, download_usage=lambda: nullcontext([])),
+        "finlab.data.get": SimpleNamespace(fetch_metadata_batch=lambda request_map: {}),
+        "finlab.exceptions": SimpleNamespace(
+            QuotaExceededError=RuntimeError, AuthError=LookupError
+        ),
         "finlab.utils": SimpleNamespace(),
     }
     monkeypatch.setattr(finlab.importlib, "import_module", modules.__getitem__)
+    # The worker sets this for its own process; restore it after an in-process call.
+    monkeypatch.delenv("ARROW_DEFAULT_MEMORY_POOL", raising=False)
     payload = {"token": "offline", "dataset": "x", "symbols": ("0050", "2330"), "account": account}
     return finlab.native_get(payload, lambda: None)
 

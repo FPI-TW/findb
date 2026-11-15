@@ -196,9 +196,9 @@ canonical 更新的持久化寫入證據按 plan 保留，後續寫入不會讓�
 account ID 或使用 credential fingerprint；不設跨環境分配、所有行情的日請求預算、deadline capacity proof
 或 enrolled response bounds。只套用 Twelve Data 1597 credits／分鐘、FinLab API 每日 5000 MB；TAIFEX 為公開 OpenAPI，以 429 cooldown 處理。
 首次升級以可用的舊 allocation account ID 建立持久化對照；完成 pin 後，證據檔變動不重設
-ledger。Twelve Data fingerprint 跟隨 provider config 去除 credential 前後空白；FinLab 1.5.7
-的 gateway、identity 與 allocation 比對一致使用 `credential.strip()[:64]`，符合 native
-`LoginPanel.login`／`get_token` 的前 64 字元選取。非空白長 token 的後綴不代表另一帳號，
+ledger。Twelve Data fingerprint 跟隨 provider config 去除 credential 前後空白；FinLab SDK（固定 2.3.11）
+的 gateway、identity 與 allocation 比對一致使用 `credential.strip()[:64]`，符合 SDK
+`login(token)`／`get_token` 的前 64 字元選取。非空白長 token 的後綴不代表另一帳號，
 同一有效 credential 的格式變動沿用已 pin 的用量、配額與 cooldown。所有 SDK 入口依實際傳入的 key 綁定 account，顯式 key 不受其他
 environment key 覆蓋；FinLab 保留明確提供與 SDK 等值 installed token 的 raw、舊去空白、
 新 SDK 等值 fingerprints，proven pins 以 literal allocation prefix 冪等合併已知 debt／cooldown。若首次 pin 前 allocation 遺失、損壞或缺少可用 account ID，無法辨識舊 ledger，
@@ -207,7 +207,7 @@ environment key 覆蓋；FinLab 保留明確提供與 SDK 等值 installed token
 與 governor 可維持接續。並行 pin／merge 使用 identity mutex、排序 account locks 與短 SQLite transaction。
 FinLab 用量以平台 SDK API 為權威，detached bytes 不代表 network usage。Source API 自行執行 DB-backed key rate limit 與 429。
 Twelve Data HTTP transport boundary 同樣使用 client 的實際 config key，環境 key 不得改寫帳號
-lock／debt／cooldown。FinLab 1.5.7 的 `login` 只修改 process-global token，所有 gateways
+lock／debt／cooldown。FinLab SDK 的 `login(token)` 只修改 process-global token，所有 gateways
 以 process-wide SDK lock 保護 token 選取至 `data.get` 完成與 durable finalization；SDK lock
 先於 account lock，拒絕授權釋放 lock，同 thread recursive dispatch 明確拒絕。
 Account identity 在 login 前建立，結束 scope 還原 SDK 修改的 token environment，避免污染
@@ -222,7 +222,7 @@ Governor rollback inspection 也計入跨 UTC 換日仍有效的 unknown rolling
 不因重啟或升級重設；首次 pin 無法辨識舊 ledger 的例外與風險見上文。
 舊 capacity violation 不再封鎖新抓取；HTTP identity encoding、Content-Length、串流大小、
 SDK／IPC／R2 bounds、schema 與 provenance 驗證保留。不合法 response 不建立成功 raw 或 prepared body。
-FinLab 1.5.7 對 dataset/date 取得五個 OHLCV 欄位，再投影成各商品 bundle，成功 cache 供商品共用。
+FinLab 對 dataset/date 取得五個 OHLCV 欄位，再投影成各商品 bundle，成功 cache 供商品共用。
 
 TAIFEX 保留 `TX/MTX/TMF/TE/TF` 實際月／週代碼，排除含 `/` 的價差合約，保留一般／盤後及
 官方 attribution date、各時段 volume；不推算 expiry date、不產生 continuous series，也不以

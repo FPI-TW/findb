@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from findb_fetcher.full_market_universe import NASDAQ_URLS, checksum, parse_nasdaq
+from findb_fetcher.providers.finlab import FINLAB_SDK_VERSION
 
 
 def provider_environment(path: Path) -> dict[str, str]:
@@ -98,7 +99,7 @@ def probe_twelve_data(key: str, *, client: httpx.Client | None = None) -> dict[s
 
 
 def probe_installed_sdk(provider: str) -> dict[str, Any]:
-    pinned = {"finlab": "1.5.7"}[provider]
+    pinned = {"finlab": FINLAB_SDK_VERSION}[provider]
     result = {
         "provider": provider,
         "status": "unknown",

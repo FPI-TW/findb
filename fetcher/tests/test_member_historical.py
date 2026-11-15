@@ -248,11 +248,13 @@ def _finlab_table(symbols, values):
 def test_finlab_downloads_five_tables_once_and_isolates_members(
     monkeypatch, tmp_path, dataset, asset_class
 ):
-    from findb_fetcher.providers.finlab import FinLabSdkGateway
+    from findb_fetcher.providers.finlab import FINLAB_SDK_VERSION, FinLabSdkGateway
 
     real = importlib.metadata.version
     monkeypatch.setattr(
-        importlib.metadata, "version", lambda name: "1.5.7" if name == "finlab" else real(name)
+        importlib.metadata,
+        "version",
+        lambda name: FINLAB_SDK_VERSION if name == "finlab" else real(name),
     )
     served = ("2330", "1101", "2317")
     prices = {
@@ -304,11 +306,17 @@ def test_finlab_downloads_five_tables_once_and_isolates_members(
 
 
 def test_finlab_unpublished_date_retries_the_date_within_one_shared_budget(monkeypatch, tmp_path):
-    from findb_fetcher.providers.finlab import FinLabSdkGateway, FinLabTargetNotReadyError
+    from findb_fetcher.providers.finlab import (
+        FINLAB_SDK_VERSION,
+        FinLabSdkGateway,
+        FinLabTargetNotReadyError,
+    )
 
     real = importlib.metadata.version
     monkeypatch.setattr(
-        importlib.metadata, "version", lambda name: "1.5.7" if name == "finlab" else real(name)
+        importlib.metadata,
+        "version",
+        lambda name: FINLAB_SDK_VERSION if name == "finlab" else real(name),
     )
     attempts = []
 

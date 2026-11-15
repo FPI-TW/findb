@@ -204,11 +204,14 @@ def test_disabled_manifest_uses_only_the_reviewed_finlab_pilot_universe() -> Non
     assert {item.source_symbol for item in universe.symbols} == {"2330", "2317"}
 
 
-def test_finlab_dependency_stays_on_token_compatible_release() -> None:
+def test_finlab_dependency_is_pinned_to_the_reviewed_release() -> None:
+    from findb_fetcher.providers.finlab import FINLAB_SDK_VERSION
+
     pyproject = Path(__file__).parents[1] / "pyproject.toml"
     config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
 
-    assert config["project"]["optional-dependencies"]["finlab"] == ["finlab==1.5.7"]
+    # The worker hooks SDK internals; the adapter refuses any other release.
+    assert config["project"]["optional-dependencies"]["finlab"] == [f"finlab=={FINLAB_SDK_VERSION}"]
 
 
 class _Loc:

@@ -153,6 +153,9 @@ def _td(status=None, *, category=None, provider_code=None):
         (FinLabAdapter, FinLabOperationalError("x", "auth"), "member", ProviderFailure(FailureKind.WORK_FAILED, code="finlab_auth")),
         (FinLabAdapter, FinLabConfigError("x"), "member", ProviderFailure(FailureKind.WORK_FAILED, code="finlab_config")),
         (FinLabAdapter, FinLabOperationalError("x", "auth"), "maintenance", ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_AUTH")),
+        # Nor an installed SDK that is not the reviewed release.
+        (FinLabAdapter, FinLabOperationalError("x", "sdk_contract"), "member", ProviderFailure(FailureKind.WORK_FAILED, code="finlab_sdk_contract")),
+        (FinLabAdapter, FinLabOperationalError("x", "sdk_contract"), "maintenance", ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_CONFIG")),
         (FinLabAdapter, FinLabOperationalError("x"), "round", ProviderFailure(FailureKind.PASSTHROUGH)),
         (FinLabAdapter, FinLabOperationalError("x"), "maintenance", ProviderFailure(FailureKind.ROUND_RETRY, code="MAINTENANCE_FINLAB_OPERATIONAL")),
         (FinLabAdapter, FinLabConfigError("x"), "maintenance", ProviderFailure(FailureKind.WORK_FAILED, code="MAINTENANCE_FINLAB_CONFIG")),

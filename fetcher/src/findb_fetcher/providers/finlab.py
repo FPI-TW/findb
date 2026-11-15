@@ -12,6 +12,7 @@ import hashlib
 import importlib
 import json
 import math
+import os
 import re
 import sqlite3
 import time
@@ -29,6 +30,9 @@ from findb_fetcher.provider_work import durable_response
 from findb_fetcher.raw_storage import RawPayloadStore, attach_raw_object
 
 FINLAB_SOURCE = "finlab"
+# The only SDK release whose internals this module is reviewed against; the
+# optional dependency, the adapter and the readiness probe all pin it.
+FINLAB_SDK_VERSION = "2.3.11"
 _IDENTIFIER = re.compile(r"^[a-z0-9_]{1,50}$")
 _SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,49}$")
 _REQUIRED_FIELDS = ("open", "high", "low", "close", "volume")
@@ -138,14 +142,14 @@ class FinLabDatasetGateway(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class FinLabSdkGateway:
-    """Headless, lazy FinLab SDK 1.5.7 gateway.
+    """Headless, lazy gateway for the pinned FinLab SDK (``FINLAB_SDK_VERSION``).
 
     Importing this module never imports FinLab.  The SDK is loaded only when a
     disabled-by-default caller explicitly invokes ``fetch_dataset``.  Tokens
     are accepted solely through this object or ``FINLAB_API_TOKEN`` and are
-    deliberately excluded from representations and error messages.  The
-    optional dependency is intentionally pinned to the last release before
-    FinLab 1.5.8 introduced its browser-based Firebase login flow.
+    deliberately excluded from representations and error messages.  The SDK's
+    browser-based login is never used: the worker selects the API token through
+    the legacy ``login(token)`` and refuses every interactive login afterwards.
     """
 
     api_token: str = dataclass_field(repr=False, compare=False)
@@ -267,7 +271,7 @@ class FinLabSdkGateway:
                                     timeout=FINLAB_GET_TIMEOUT_SECONDS,
                                 )
                             else:
-                                # Pinned 1.5.7 login only installs the token locally;
+                                # The pinned login(token) only installs the token locally;
                                 # one grant covers it and the dataset get I/O.
                                 operation.dispatch_checkpoint()
                                 login(self.api_token)
@@ -348,68 +352,121 @@ def native_get(
     quota usage when the FinLab API reported it. The full table never crosses
     the pipe, so the parent does not hold a second copy of it.
     """
+    # Arrow's default allocator keeps freed memory. Merging a daily update into a
+    # full table then peaks about 200 MB higher; it must be chosen before the
+    # SDK imports Arrow.
+    os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
     sdk = importlib.import_module("finlab")
     data = importlib.import_module("finlab.data")
-    # check_version() issues an unbounded PyPI request on every fresh process;
+    # check_version() asks PyPI for the newest release on a fresh machine cache;
     # the SDK version is pinned, so the check never informs acquisition.
     utils: Any = importlib.import_module("finlab.utils")
     utils.check_version = lambda: None
+    seams = _sdk_seams(sdk, data)
     get = data.get
     _disable_frame_cache(_file_storages(data, get))
-    _classify_api_errors(get)
-    usage = _observe_api_usage(get)
+    usage = _observe_api_usage(seams.metadata)
     authorize()
-    # Pinned 1.5.7 login only installs the token locally; get is the native I/O.
-    sdk.login(payload["token"])
-    frame = get(payload["dataset"])
+    _select_api_token(sdk, payload["token"])
+    try:
+        with seams.download_usage() as receipts:
+            frame = get(payload["dataset"])
+    except seams.quota_error:
+        raise FinLabNativeError("quota") from None
+    except seams.auth_error:
+        raise FinLabNativeError("auth") from None
+    billed = _billed_bytes(receipts)
+    if usage and billed is not None:
+        usage["billed_bytes"] = billed
     observed = _dataframe_response_bytes(frame) if payload["account"] else None
     return _reviewed_columns(frame, payload["symbols"]), observed, usage or None
 
 
-def _classify_api_errors(get: object) -> None:
-    """Turn the pinned SDK's auth and quota answers into classified failures.
+@dataclass(frozen=True, slots=True)
+class _SdkSeams:
+    """The pinned SDK's own names this worker relies on, resolved once."""
 
-    Left alone, 1.5.7 answers an auth error by prompting for a token on stdin and
-    a quota error with a bare ``Exception``; both would reach the parent as an
-    unclassified failure. Only the API's fixed error strings are compared, and
-    none of them leaves the worker.
+    metadata: Any
+    download_usage: Callable[[], Any]
+    quota_error: type[BaseException]
+    auth_error: type[BaseException]
+
+
+def _sdk_seams(sdk: object, data: object) -> _SdkSeams:
+    """Fail closed when the installed SDK is not shaped like the reviewed release.
+
+    Without these names an auth answer would open the SDK's browser login, a
+    quota answer would look like any other failure, and usage would silently
+    stop being recorded.
     """
-    namespace = getattr(get, "__globals__", None)
-    if not isinstance(namespace, dict):
-        return
-    handle = namespace.get("_handle_fetch_error")
-    auth_errors = namespace.get("_AUTH_ERRORS")
-    if not callable(handle) or not isinstance(auth_errors, (list, tuple)):
-        return
+    try:
+        metadata = importlib.import_module("finlab.data.get")
+        exceptions = importlib.import_module("finlab.exceptions")
+    except ImportError:
+        raise FinLabNativeError("sdk_contract") from None
+    download_usage = getattr(data, "download_usage", None)
+    quota_error = getattr(exceptions, "QuotaExceededError", None)
+    auth_error = getattr(exceptions, "AuthError", None)
+    if not (
+        callable(getattr(sdk, "login", None))
+        and callable(getattr(sdk, "get_token", None))
+        and callable(getattr(metadata, "fetch_metadata_batch", None))
+        and callable(download_usage)
+        and isinstance(quota_error, type)
+        and issubclass(quota_error, BaseException)
+        and isinstance(auth_error, type)
+        and issubclass(auth_error, BaseException)
+    ):
+        raise FinLabNativeError("sdk_contract")
+    return _SdkSeams(metadata, download_usage, quota_error, auth_error)
 
-    def classified(ret: Any, *args: Any, **kwargs: Any) -> Any:
-        error = ret.get("error") if isinstance(ret, dict) else None
-        if error in auth_errors:
-            raise FinLabNativeError("auth")
-        if isinstance(error, str) and error.startswith("Usage exceed"):
-            raise FinLabNativeError("quota")
-        return handle(ret, *args, **kwargs)
 
-    namespace["_handle_fetch_error"] = classified
+def verify_sdk_contract() -> None:
+    """Offline check that the installed SDK is the reviewed release and shape."""
+    import importlib.metadata
+
+    if importlib.metadata.version("finlab") != FINLAB_SDK_VERSION:
+        raise FinLabSdkError("FinLab SDK version is unsupported")
+    try:
+        _sdk_seams(importlib.import_module("finlab"), importlib.import_module("finlab.data"))
+    except FinLabNativeError:
+        raise FinLabSdkError("FinLab SDK does not expose the reviewed data API") from None
 
 
-def _observe_api_usage(get: object) -> dict[str, float]:
+def _refused_login(*args: object, **kwargs: object) -> None:
+    raise FinLabNativeError("auth")
+
+
+def _select_api_token(sdk: Any, token: str) -> None:
+    """Select the API token locally and leave the SDK no other way to log in.
+
+    The pinned SDK answers an auth error, or a missing token, by starting its
+    browser login. It also prefers a saved browser session over the API token;
+    the accounted identity would then not be the one that downloads.
+    """
+    sdk.login(token)
+    sdk.login = _refused_login
+    if sdk.get_token() != (effective_token(token), "api_token"):
+        raise FinLabNativeError("auth")
+
+
+def _observe_api_usage(metadata: Any) -> dict[str, float]:
     """Capture the daily quota usage the FinLab API reports with a table request.
 
-    The pinned SDK only prints ``quota`` and ``limit_size`` (both in MB); the dict
+    Every metadata reply carries ``quota`` and ``limit_size`` (both in MB); the dict
     returned here is filled when a request reaches the API, and stays empty when
     the SDK serves the table from its local cache without asking.
     """
     usage: dict[str, float] = {}
-    namespace = getattr(get, "__globals__", None)
-    fetch = namespace.get("fetch_data") if isinstance(namespace, dict) else None
-    if not callable(fetch):
-        return usage
+    fetch = metadata.fetch_metadata_batch
 
     def observed(*args: Any, **kwargs: Any) -> Any:
-        ret = fetch(*args, **kwargs)
-        if isinstance(ret, dict):
-            reported = [ret.get("quota"), ret.get("limit_size")]
+        results = fetch(*args, **kwargs)
+        # One reply repeats the account's usage on every item; the highest is
+        # the usage after the whole request, and a later reply replaces it.
+        latest: tuple[float, float] | None = None
+        for result in results.values() if isinstance(results, Mapping) else ():
+            reported = [getattr(result, "quota", None), getattr(result, "limit_size", None)]
             megabytes = [
                 float(value)
                 for value in reported
@@ -418,13 +475,25 @@ def _observe_api_usage(get: object) -> dict[str, float]:
                 and math.isfinite(value)
                 and value >= 0
             ]
-            if len(megabytes) == 2:
-                usage.update(used_mb=megabytes[0], limit_mb=megabytes[1])
-        return ret
+            if len(megabytes) == 2 and (latest is None or megabytes[0] > latest[0]):
+                latest = (megabytes[0], megabytes[1])
+        if latest is not None:
+            usage.update(used_mb=latest[0], limit_mb=latest[1])
+        return results
 
-    assert isinstance(namespace, dict)
-    namespace["fetch_data"] = observed
+    metadata.fetch_metadata_batch = observed
     return usage
+
+
+def _billed_bytes(receipts: object) -> int | None:
+    """Bytes the API says it charged for this get; ``None`` when it did not say."""
+    billed = [
+        row.get("billed_bytes")
+        for row in (receipts if isinstance(receipts, list) else ())
+        if isinstance(row, dict)
+    ]
+    counted = [value for value in billed if isinstance(value, int) and not isinstance(value, bool)]
+    return sum(counted) if counted and all(value >= 0 for value in counted) else None
 
 
 def _record_usage(operation: Any, dataset: str, usage: Mapping[str, float]) -> None:
@@ -443,15 +512,16 @@ def _record_usage(operation: Any, dataset: str, usage: Mapping[str, float]) -> N
     except sqlite3.Error:
         # The sample is informational; a ledger hiccup never fails the fetch it rode on.
         pass
+    line: dict[str, object] = {
+        "dataset": dataset,
+        "used_mb": round(usage["used_mb"], 1),
+        "limit_mb": round(usage["limit_mb"], 1),
+    }
+    if "billed_bytes" in usage:
+        line["billed_bytes"] = int(usage["billed_bytes"])
     print(
         json.dumps(
-            {
-                "finlab_quota": {
-                    "dataset": dataset,
-                    "used_mb": round(usage["used_mb"], 1),
-                    "limit_mb": round(usage["limit_mb"], 1),
-                }
-            },
+            {"finlab_quota": line},
             ensure_ascii=False,
             separators=(",", ":"),
         ),
@@ -485,7 +555,7 @@ def _disable_frame_cache(storages: tuple[Any, ...]) -> None:
     for storage in storages:
         cache = getattr(storage, "_cache", None)
         if type(cache) is dict:
-            # Native FileStorage still reads/writes its existing pickle files.
+            # Native FileStorage still reads/writes its existing cache files.
             # Do not call clear(): it deletes disk data. CacheStorage must retain
             # its memory-only data to avoid additional upstream downloads.
             storage.use_cache = False

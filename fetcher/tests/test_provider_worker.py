@@ -75,6 +75,8 @@ def test_credentials_stay_out_of_worker_argv_and_environment(tmp_path, monkeypat
     # Only the SDK's own login installs the token, after the worker started.
     environment = observed["environment"]
     assert environment.pop("FINLAB_API_TOKEN") == "worker-secret-marker"
+    # The worker's own allocator choice for the SDK, made before importing it.
+    assert environment.pop("ARROW_DEFAULT_MEMORY_POOL") == "system"
     assert set(environment) <= {
         "PATH",
         "HOME",

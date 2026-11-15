@@ -28,7 +28,7 @@ factset = [
     "PyMySQL>=1.1.1,<2",
 ]
 finlab = [
-    "finlab==1.5.7",
+    "finlab==2.3.11",
 ]
 
 [dependency-groups]

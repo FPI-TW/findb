@@ -195,12 +195,11 @@ def test_rollback_inspection_matches_rolling_unknown_login_across_midnight(
 
 
 def _finlab_sdk(http, logins):
-    # Pinned 1.5.7 LoginPanel.login/get_token select/read this process-global
+    # The pinned login(token)/get_token select/read this process-global
     # environment token; the fetch adapter sends get_token() as api_token.
     def login(token):
         logins.append(token)
         __import__("os").environ["FINLAB_API_TOKEN"] = token[:64]
-        __import__("os").environ["finlab_id_token"] = token[:64]
 
     def get(dataset):
         import os
@@ -297,7 +296,6 @@ def test_finlab_sdk_token_selection_preserves_installed_environment_identity(
         json.dumps({"provider": "finlab", "account": {"account_id": "installed-A"}})
     )
     monkeypatch.setenv("FETCHER_ACCOUNT_ALLOCATION_FILE", str(allocation))
-    monkeypatch.setenv("finlab_id_token", "original-id")
     calls, logins = [], []
 
     def deny():
@@ -313,13 +311,11 @@ def test_finlab_sdk_token_selection_preserves_installed_environment_identity(
         with authorization_scope(deny), pytest.raises(FinLabSdkError):
             b.fetch_dataset("price:開盤價", target_date=date(2026, 10, 12), symbols=("2330",))
         assert os.environ["FINLAB_API_TOKEN"] == "environment-finlab"
-        assert os.environ["finlab_id_token"] == "original-id"
         a = FinLabSdkGateway("environment-finlab", _sdk=sdk)
         with authorization_scope(_grant):
             a.fetch_dataset("price:開盤價", target_date=date(2026, 10, 12), symbols=("2330",))
     assert calls == ["environment-finlab"]
     assert os.environ["FINLAB_API_TOKEN"] == "environment-finlab"
-    assert os.environ["finlab_id_token"] == "original-id"
     with governor.connection() as db:
         assert [
             tuple(row)

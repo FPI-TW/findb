@@ -3122,6 +3122,8 @@ def test_fetcher_ci_builds_and_inspects_isolated_provider_images() -> None:
     assert "exit 0" not in build
     assert 'docker build -f fetcher/Dockerfile.finlab -t "$finlab_image" .' in finlab
     assert 'find_spec("finlab") is not None' in finlab
+    # Ordinary tests run without the optional SDK; the built image checks its shape.
+    assert "verify_sdk_contract()" in finlab
     assert 'docker run --rm "$finlab_image"\n' in finlab
     assert str(test_job["timeout-minutes"]) == "15"
 

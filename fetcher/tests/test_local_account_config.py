@@ -47,7 +47,7 @@ def _process(local, provider, mode):
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("FETCHER_", "SOURCE_", "FINLAB_", "TWELVE_DATA_"))
-        and key not in {"APP_ENVIRONMENT", "finlab_id_token"}
+        and key != "APP_ENVIRONMENT"
     }
     env["PYTHONPATH"] = str(FETCHER_DIR / "src")
     result = subprocess.run(

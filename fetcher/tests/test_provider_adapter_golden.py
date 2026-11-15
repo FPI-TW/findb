@@ -308,14 +308,14 @@ def _finlab_table(symbols: tuple[str, ...], values: tuple[object, ...]) -> Any:
 def test_finlab_member_acquisition_is_byte_identical(tmp_path, monkeypatch, dataset, asset_class):
     import importlib.metadata
 
-    from findb_fetcher.providers.finlab import FinLabSdkGateway
+    from findb_fetcher.providers.finlab import FINLAB_SDK_VERSION, FinLabSdkGateway
 
     _clock(monkeypatch)
     real_version = importlib.metadata.version
     monkeypatch.setattr(
         importlib.metadata,
         "version",
-        lambda name: "1.5.7" if name == "finlab" else real_version(name),
+        lambda name: FINLAB_SDK_VERSION if name == "finlab" else real_version(name),
     )
     # The table serves the mapped members except "9999"; "1101" did not trade.
     served = ("2330", "1101", "0050")
