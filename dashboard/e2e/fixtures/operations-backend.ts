@@ -71,7 +71,8 @@ let mutations: unknown[] = []
 let role = "owner"
 let reads: Record<string, number> = {}
 let plansError = false
-let plansDelay = 0
+let plansHeld = false
+let plansWaiting: (() => void)[] = []
 let backfills: HistoricalBackfill[] = []
 let previews: unknown[] = []
 let previewDelay = 0
@@ -133,6 +134,10 @@ const queue = queueHealthSchema.parse({
   oldest_missing_delivery_age_seconds: null,
 })
 
+function releasePlans() {
+  for (const release of plansWaiting.splice(0)) release()
+}
+
 createServer(async (request, response) => {
   const url = new URL(request.url!, "http://127.0.0.1")
   const path = url.pathname
@@ -150,7 +155,8 @@ createServer(async (request, response) => {
     mutations = []
     reads = {}
     plansError = false
-    plansDelay = 0
+    plansHeld = false
+    releasePlans()
     backfills = []
     previews = []
     previewDelay = 0
@@ -193,7 +199,12 @@ createServer(async (request, response) => {
   }
   if (path === "/fixture/delivery-config") {
     plansError = data.error ?? false
-    plansDelay = data.delay ?? 0
+    plansHeld = data.hold ?? false
+    releasePlans()
+    return send({ ok: true })
+  }
+  if (path === "/fixture/delivery-release") {
+    releasePlans()
     return send({ ok: true })
   }
   if (path === "/api/v1/admin/auth/login") {
@@ -219,8 +230,9 @@ createServer(async (request, response) => {
       data: ["old_dataset", "tw_futures_eod"],
     })
   if (path === "/api/v1/admin/delivery-plans") {
-    if (plansDelay)
-      await new Promise(resolve => setTimeout(resolve, plansDelay))
+    // Held reads stay in flight until the test releases them, however slow the host is.
+    if (plansHeld)
+      await new Promise<void>(resolve => plansWaiting.push(resolve))
     if (plansError) return send({ detail: "Unavailable" }, 503)
     // As the Backend does for summary_only: counts without the gap details.
     const listed =
