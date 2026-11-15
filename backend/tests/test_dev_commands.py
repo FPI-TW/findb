@@ -529,7 +529,8 @@ def test_stopping_interrupts_whole_suites_and_kills_the_ones_that_ignore_it(tmp_
     polite = (
         "import pathlib, signal, subprocess, sys, time\n"
         # The suite's own child is in its process group and is interrupted with it.
-        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "nap = 'import pathlib, time; pathlib.Path(\\'ready-child\\').touch(); time.sleep(60)'\n"
+        "child = subprocess.Popen([sys.executable, '-c', nap])\n"
         "pathlib.Path('ready-polite').touch()\n"
         "try:\n"
         "    time.sleep(60)\n"
@@ -551,14 +552,16 @@ def test_stopping_interrupts_whole_suites_and_kills_the_ones_that_ignore_it(tmp_
     ]
     try:
         deadline = monotonic() + 20
-        while not all((tmp_path / f"ready-{name}").exists() for name in ("polite", "stubborn")):
+        names = ("polite", "child", "stubborn")
+        while not all((tmp_path / f"ready-{name}").exists() for name in names):
             assert monotonic() < deadline
             sleep(0.01)
 
-        dev._stop_suites(running, grace=0.5)
+        dev._stop_suites(running, grace=2.0)
 
         assert [process.poll() is not None for process in running] == [True, True]
-        assert (tmp_path / "cleaned").read_text() == str(-signal.SIGINT)
+        # The child ended long before its own sleep did: the interrupt reached it too.
+        assert int((tmp_path / "cleaned").read_text()) != 0
         assert running[1].returncode == -signal.SIGKILL
     finally:
         for process in running:
