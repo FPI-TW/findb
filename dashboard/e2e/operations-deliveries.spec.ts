@@ -1,6 +1,16 @@
-import { expect, test, type Page } from "@playwright/test"
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test"
 const backend = "http://127.0.0.1:18081"
 const plansPath = "/api/v1/admin/delivery-plans"
+const backfillsPath = "/api/v1/admin/historical-backfills"
+async function reads(request: APIRequestContext, path: string) {
+  const state = await (await request.get(`${backend}/fixture/state`)).json()
+  return (state.reads[path] ?? 0) as number
+}
 async function login(page: Page, role = "owner") {
   await page.goto("/dashboard/login")
   await page.waitForLoadState("networkidle")
@@ -204,21 +214,14 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
     element.scrollTop,
     element.scrollLeft,
   ])
+  // Each refresh stays in flight until released, so its layout is measured mid-update.
   await request.post(`${backend}/fixture/delivery-config`, {
-    data: { delay: 400 },
+    data: { hold: true },
   })
   for (let index = 0; index < 3; index++) {
-    const count = (await (await request.get(`${backend}/fixture/state`)).json())
-      .reads[plansPath]
+    const count = await reads(request, plansPath)
     await page.clock.fastForward(60_000)
-    await expect
-      .poll(
-        async () =>
-          (await (await request.get(`${backend}/fixture/state`)).json()).reads[
-            plansPath
-          ]
-      )
-      .toBe(count + 1)
+    await expect.poll(() => reads(request, plansPath)).toBe(count + 1)
     await expect(
       page.getByText("正在更新交付計畫…", { exact: false })
     ).toBeVisible()
@@ -227,6 +230,7 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
     expect(
       Math.abs((await focus.boundingBox())!.y - toolbarBefore!.y)
     ).toBeLessThanOrEqual(1)
+    await request.post(`${backend}/fixture/delivery-release`)
     await expect(
       page.getByText("正在更新交付計畫…", { exact: false })
     ).toHaveCount(0)
@@ -250,6 +254,7 @@ test("three polling cycles and manual refresh preserve layout, focus, expansion 
   expect(
     Math.abs((await table.boundingBox())!.y - before!.y)
   ).toBeLessThanOrEqual(1)
+  await request.post(`${backend}/fixture/delivery-release`)
   await expect(
     page.getByText("正在更新交付計畫…", { exact: false })
   ).toHaveCount(0)
@@ -366,17 +371,20 @@ for (const role of ["operator", "owner"]) {
     await page.getByRole("tab", { name: "歷史回補" }).click()
     await expect(preview).toBeVisible()
     await expect(confirmation).toBeChecked()
-    await page.getByRole("button", { name: "重新整理", exact: true }).click()
-    const count = (await (await request.get(`${backend}/fixture/state`)).json())
-      .reads["/api/v1/admin/historical-backfills"]
+    const refresh = page.getByRole("button", { name: "重新整理", exact: true })
+    await expect(refresh).toBeEnabled()
+    const requested = await reads(request, backfillsPath)
+    await refresh.click()
+    // The live interval restarts when a fetch settles. Advancing the clock while this
+    // refresh is in flight fires the interval into it, and the next poll is a minute away.
+    await expect
+      .poll(() => reads(request, backfillsPath))
+      .toBeGreaterThan(requested)
+    await expect(refresh).toBeEnabled()
+    const count = await reads(request, backfillsPath)
     await page.clock.fastForward(60_000)
     await expect
-      .poll(
-        async () =>
-          (await (await request.get(`${backend}/fixture/state`)).json()).reads[
-            "/api/v1/admin/historical-backfills"
-          ]
-      )
+      .poll(() => reads(request, backfillsPath))
       .toBeGreaterThan(count)
     await expect(page.locator("#backfill-provider")).toHaveValue("finlab")
     await expect(page.locator("#backfill-dataset")).toHaveValue("tw_equity_eod")
