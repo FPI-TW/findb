@@ -1,5 +1,5 @@
 .PHONY: help up start restart down build migrate seed up-server up-db status logs test \
-	test-backend format check check-backend dashboard-install dashboard-dev dashboard-format \
+	test-parallel test-backend format check check-backend dashboard-install dashboard-dev dashboard-format \
 	dashboard-test dashboard-check dashboard-build dashboard-up fetcher-test fetcher-check \
 	fetcher-build contracts-export contracts-check
 
@@ -28,6 +28,7 @@ help:
 	@echo "  make status     Show complete stack status"
 	@echo "  make logs       Follow RabbitMQ, dispatcher, and worker logs"
 	@echo "  make test       Run every repo test level (unit, browser, and e2e)"
+	@echo "  make test-parallel    Run every repo test level at the same time"
 	@echo "  make test-backend     Run the DB-backed backend test suite"
 	@echo "  make dashboard-test   Run dashboard tests"
 	@echo "  make fetcher-test     Run Fetcher tests"
@@ -71,6 +72,9 @@ logs:
 
 test:
 	pnpm test
+
+test-parallel:
+	pnpm test:parallel
 
 test-backend:
 	pnpm test:backend

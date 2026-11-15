@@ -9,9 +9,69 @@ Pre-commit 與 pre-push 皆只執行 check，不執行測試；不得使用 `--n
 `--dist worksteal`，接著在同一 runner 的獨立序列 session 執行全部 `test_*migration*.py`。
 `uv --directory backend run python scripts/dev.py test-db --workers 0` 可將非 migration tests
 切回序列執行；migration tests 一律序列執行以重用 immutable templates。
-`pnpm test:infra` 使用 Backend pytest 環境，固定 `-n 2 --dist worksteal --timeout=300`，
-不需要 PostgreSQL。Backend pytest 設定每個測試 300 秒 timeout；卡住的測試會留下 traceback，
-而不是耗盡 job timeout。
+`pnpm test:infra` 使用 Backend pytest 環境，預設 `-n 2 --dist worksteal --timeout=300`，
+可用 `--workers` 調整，不需要 PostgreSQL。Backend pytest 設定每個測試 300 秒 timeout；
+卡住的測試會留下 traceback，而不是耗盡 job timeout。
+
+### 並行執行全部測試
+
+`pnpm test:parallel`／`make test-parallel` 同時執行 `pnpm test` 的每一個層級，用於功能完成後快速跑完
+完整測試。它不取代 `pnpm test`，CI 與 Git hooks 也不使用它。
+
+| 套件 | 內容 | 程序 |
+| --- | --- | --- |
+| `contracts` | `pnpm test:contracts` | 單一 |
+| `backend` | Backend 非 migration tests | `--workers` 個 xdist workers |
+| `migrations` | Backend `test_*migration*.py`，獨立序列 session | 單一 |
+| `infra` | `infra/tests` | `--workers` 個 xdist workers |
+| `fetcher` | `pnpm test:fetcher` | 單一 |
+| `dashboard-unit`／`dashboard-browser`／`dashboard-e2e` | Dashboard 三個層級 | 各自的 runner |
+
+```bash
+pnpm test:parallel                      # 預設：每套 2 個 workers，8 個套件同時執行
+pnpm test:parallel --workers 4          # 最快，CPU 負載最高
+pnpm test:parallel --jobs 2             # 同時最多 2 個套件，負載最低
+pnpm test:parallel --only backend infra # 只跑指定套件
+pnpm test:parallel --skip dashboard-e2e # 本機 3000 port 已被 dev server 佔用時
+```
+
+- 各套件的輸出寫入暫存目錄下各自的 log（開始時印出路徑），畫面只顯示每個套件完成的時間。
+  失敗的套件才印出完整輸出，最後是每個套件的結果、耗時與 runner 自己的統計（含 skipped 數）。
+  任一套件失敗時指令回傳非零狀態，其餘套件仍會跑完。
+- `--workers` 是 Backend 與 Infra 各自的 xdist worker 數（`0` 為序列）；`--jobs` 是同時執行的套件數上限，
+  較長的套件先啟動。兩者一起決定 CPU 負載。
+- 兩個 Backend session 需要 PostgreSQL：預設先啟動 Compose 的 `db`；若 PostgreSQL 已啟動，可加
+  `--no-start-db` 沿用 `TEST_DATABASE_URL` 指定的連線（預設為本機 5435），避免從另一個 worktree 重新
+  啟動 Compose 服務。兩個 session 各自建立名稱唯一的暫存 DB，可以同時使用同一個 server。
+- 指令為自己啟動的每個套件設定 `FINDB_TEST_PARALLEL_ACTIVE`，並拒絕在該變數存在時再次執行，避免測試
+  誤呼叫真實指令時一層層重複啟動全部套件。
+- 隨時可用 Ctrl-C 停止。每個套件在自己的 process group 執行；指令收到 Ctrl-C、`SIGTERM` 或 `SIGHUP` 時
+  不再啟動排隊中的套件，先對每個套件送出中斷，讓 pytest 刪除自己的暫存 DB，10 秒後仍未結束的才終止，
+  回傳 130。實測約 1 秒內全部結束，沒有殘留程序或暫存 DB。指令本身被 `SIGKILL` 時無法通知套件，
+  殘留的暫存 DB 依下方 [CI 與測試隔離](#ci-與測試隔離) 的說明清理。
+
+2026-11-15 在 18 核心、64 GiB 的 macOS 主機（Apple M5 Pro）沿用已啟動的 PostgreSQL 16，除另註明外每組量測一次；
+全機 CPU 使用率每 2 秒取樣一次，未執行測試時約 3%。CPU 時間是測試程序的 user 與 sys 合計，不含 Docker
+虛擬機內的 PostgreSQL。
+
+| 設定 | 總耗時 | 全機 CPU 平均 | 全機 CPU 峰值 | CPU 時間 |
+| --- | ---: | ---: | ---: | ---: |
+| `pnpm test`（依序） | 366 秒 | 未取樣 | 未取樣 | 413 秒 |
+| `--workers 2 --jobs 2` | 209 秒 | 22% | 55% | 463 秒 |
+| `--workers 4 --jobs 2` | 166 秒 | 29% | 90% | 499 秒 |
+| `--workers 2`（預設，兩次） | 146／153 秒 | 35% | 77% | 538／546 秒 |
+| `--workers 4 --jobs 3` | 132 秒 | 42% | 74% | 613 秒 |
+| `--workers 4` | 94 秒 | 63% | 86% | 688 秒 |
+| `--workers 6` | 91 秒 | 未取樣 | 未取樣 | 733 秒 |
+
+- 並行是用 CPU 換時間：同時執行的程序越多，總 CPU 時間越高，機器也越熱。預設值取中間，比依序快約 2.5 倍；
+  要最快用 `--workers 4`，要降低負載用 `--jobs`。
+- 超過 4 個 workers 沒有幫助：Fetcher 與 migration 都是單一程序，並行時各需約 90 秒，決定了總耗時的下限。
+- 記憶體不是限制：測試程序合計最高約 6 GB，各組量測期間全機沒有記憶體壓力，swap 沒有增加，系統也沒有回報
+  因過熱而降速。溫度本身需要 `sudo powermetrics` 才讀得到，未納入量測。
+- 測試數（預設設定）：Backend 2,316 passed／3 skipped、migration 45、Infra 977 passed／3 skipped 與 203 個
+  subtests、Fetcher 1,905、Dashboard unit 223／browser 9／e2e 16。
+
 直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
 因此測試中的 nested pytest subprocess 不會意外再建立 workers。
 本機比對 [FinDB CI](../../.github/workflows/findb-ci.yml)／[Fetcher CI](../../.github/workflows/fetcher-ci.yml)
@@ -24,7 +84,7 @@ Backend production image 的 migration regression 使用獨立容器 DB，涵蓋
 Backend 的三個 FactSet captured-native cases 需提供 `FINDB_FACTSET_NATIVE_SNAPSHOT_DIR`
 才會執行，未提供真實 HKEX／FactSet bytes 時依既定規則 skipped。兩個 ORM／migration parity
 cases 必須直接通過：CHECK 名稱／缺少約束與 server defaults 均納入比對，不保留 xfail。
-Infra 一般 job 的兩個 container cases 因未設
+Infra 一般 job 的三個 container cases 因未設
 image 而 skipped，應在建置 Backend image 後以 `FINDB_TEST_BACKEND_IMAGE` 另跑並確認通過。
 TAIFEX historical 只有一次 authorization dispatch attempt；prepare 與 authorize 之間跨越
 UTC 分鐘時，account window 不一致會依設計 fail closed，工作延到 FIFO 尾端重試並維持
@@ -274,7 +334,7 @@ Migration job 另以正式 `backend/Dockerfile` 建置 image，執行
 argv，在獨立 internal Docker network 與 PostgreSQL 16 上驗證空 DB、先前 accepted revision
 `a42c89d3e610` 升級、exact head、重跑與 sentinel 保留。Runtime image 不掛 repo、不含 Fetcher／
 pytest，不允許對外網路或寫入 root filesystem；fixture 只清理自己建立的 containers／network。
-一般 Infra suite 未指定 image 時略過這兩個案例；CI migration job 明確設定 image，不能略過。
+一般 Infra suite 未指定 image 時略過這三個案例；CI migration job 明確設定 image，不能略過。
 本機重現：
 
 ```bash
