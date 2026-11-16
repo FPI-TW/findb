@@ -124,15 +124,11 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
         RawStorageConfig(ACCOUNT, RAW_BUCKET, "fetcher-id", "fetcher-secret"), client=stores.r2
     )
 
-    # FinLab's whole scope as seed declares it; the Owner has activated one intraday dataset.
+    # FinLab's whole scope exactly as seed declares it; only one dataset gets a baseline.
     finlab_scope = PROVIDER_DATASET_SCOPE["finlab"]
     for item in DATASETS:
         if item["dataset_key"] in finlab_scope:
-            test_session.add(
-                DatasetRegistry(
-                    **deepcopy(item) | {"is_active": item["dataset_key"] == DATASET},
-                )
-            )
+            test_session.add(DatasetRegistry(**deepcopy(item)))
     await test_session.commit()
     dataset = await test_session.get(DatasetRegistry, DATASET)
     await _calendar(test_session, "TW", [DAY])

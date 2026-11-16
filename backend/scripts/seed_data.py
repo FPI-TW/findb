@@ -41,18 +41,6 @@ SUPPORTED_DATASETS = (
     "tw_equity_tick",
     "tw_etf_tick",
 )
-# Created inactive; an operator activates each one when its feed is ready.
-OPERATOR_ACTIVATED_DATASETS = frozenset(
-    {
-        "hk_equity_eod",
-        "tw_etf_eod",
-        "tw_futures_eod",
-        "tw_equity_bar_1m",
-        "tw_etf_bar_1m",
-        "tw_equity_tick",
-        "tw_etf_tick",
-    }
-)
 
 
 def _eod_delivery_expectation(
@@ -406,7 +394,11 @@ def _staged_eod_dataset(dataset_key: str, name: str, *, currency: str | None) ->
 
 
 def _staged_intraday_dataset(dataset_key: str, name: str) -> dict[str, Any]:
-    """One FinLab intraday dataset: delivered per symbol-day, only inside a daily plan."""
+    """One FinLab intraday dataset: delivered per symbol-day, only inside a daily plan.
+
+    Like every governed dataset it is active from the start; nothing is acquired
+    until its own universe baseline is published and the control is started.
+    """
     feed = _catalog_feed(dataset_key)
     assert feed.schedule is not None
     expectation = _eod_delivery_expectation(
@@ -438,7 +430,7 @@ def _staged_intraday_dataset(dataset_key: str, name: str) -> dict[str, Any]:
             "rows are canonical objects, volume in lots"
         ),
         config=config,
-    ) | {"is_active": False}
+    )
 
 
 DATASETS.extend(
@@ -608,7 +600,7 @@ async def seed_datasets(session: AsyncSession) -> None:
         existing.asset_class = dataset["asset_class"]
         existing.market = dataset["market"]
         existing.frequency = dataset["frequency"]
-        if dataset["dataset_key"] not in OPERATOR_ACTIVATED_DATASETS:
+        if dataset["dataset_key"] not in {"hk_equity_eod", "tw_etf_eod", "tw_futures_eod"}:
             existing.is_active = dataset["is_active"]
         existing.config = _merge_operator_config(
             dataset["dataset_key"],

@@ -1033,9 +1033,11 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 一筆交付，資料存 Canonical R2（見 [盤中儲存](../architecture/intraday_storage.md)）。目前只有程式與設定就緒，
 staging 的實際執行尚未驗收，進度見 [設計文件](../dev/finlab-intraday-batch1.md)。
 
-- **啟用**：四個 dataset 由 migration 建立，預設未啟用（`is_active=false`），部署不會開始抓取。Owner 逐條
-  把 dataset 設為啟用並發布它自己的 baseline；control 啟動時凍結當下可用的 dataset，所以在 control 執行中才
-  備妥的 dataset，要停止再啟動 control 才會納入。
+- **啟用**：四個 dataset 由 migration 建立，和其他 dataset 一樣是啟用狀態（系統沒有「啟用 dataset」的操作；
+  未啟用的 dataset 會讓排程卡片顯示設定錯誤，交付也會被拒收）。部署不會開始抓取：dataset 沒有 baseline 就不會
+  被納入，而第一份 baseline 只能由 Owner 在 Dashboard 的名單頁手動更新產生，排程的名單更新只處理已納入的
+  dataset。control 啟動時凍結當下可用的 dataset，所以在 control 執行中才有 baseline 的 dataset，要停止再啟動
+  control 才會納入。
 - **名單**：沿用台股日 K 的官方名單（TWSE／TPEx），不查 FinLab 的目錄。FinLab 沒有盤中標的清單，而且會提供
   日 K 價格表還沒有的標的（例如新上市），所以每個已分類的成員都會嘗試。
 - **排程**：台北 18:30，完成期限為隔日 08:00。FinLab 的 control 顯示的是該 provider 最早的 feed 時間

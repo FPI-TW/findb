@@ -18,15 +18,16 @@ from app.models.registry import (
 )
 from app.schemas.serve import MarketFreshnessSummaryResponse
 from app.services.market_freshness import list_market_freshness
+from app.services.source_clients import PROVIDER_DATASET_SCOPE
 from app.utils import uuid7
 from scripts.seed_data import DATASETS
 
 NOW = datetime(2026, 7, 22, 8, tzinfo=timezone.utc)
 
+# Each provider's whole Source scope, so a dataset seed declares wrongly shows up here.
 FULL_MARKET_SCOPES = {
-    "finlab": ["tw_equity_eod", "tw_etf_eod"],
-    "taifex": ["tw_futures_eod"],
-    "twelve_data": ["us_equity_eod"],
+    provider: list(PROVIDER_DATASET_SCOPE[provider])
+    for provider in ("finlab", "taifex", "twelve_data")
 }
 
 
@@ -280,7 +281,11 @@ async def test_partial_full_market_aggregates_enabled_scope_and_keeps_bounded_de
     assert row.status == "not_due"
     assert row.feed_count == 1
     assert row.fresh_feed_count == 0
-    assert row.pending_feeds[0].dataset_key == "tw_etf_eod"
+    # Every other FinLab dataset, the intraday ones included, only waits for its baseline.
+    assert {feed.dataset_key for feed in row.pending_feeds} == set(FULL_MARKET_SCOPES["finlab"]) - {
+        "tw_equity_eod"
+    }
+    assert all(feed.blockers == ("full_market_baseline_missing",) for feed in row.pending_feeds)
     assert row.last_successful_update_at is None
     assert row.last_heartbeat_at is None
     assert row.heartbeat_age_seconds is None

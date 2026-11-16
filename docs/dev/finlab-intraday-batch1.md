@@ -311,8 +311,9 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
    台股日 K 的官方名單）。合併後不會被執行，直到下一項把 feed 加進 catalog。
 5. 切換，Backend 與 Fetcher 同一個 PR：catalog 加入四條 feed、seed 與 registry provisioning 的四個 dataset、
    FinLab Source credential 範圍的 migration、排程的 dataset 對應，以及所有生成產物。限制見下一節。
-   （已完成：四個 dataset 建立時未啟用；以真實的 Fetcher 執行迴圈對真實的 Source 與 Worker 的整合測試，確認
-   排程規劃、抓取、交付、寫入與計劃計數整條路徑。）
+   （已完成：以真實的 Fetcher 執行迴圈對真實的 Source 與 Worker 的整合測試，確認排程規劃、抓取、交付、寫入
+   與計劃計數整條路徑。第一版把四個 dataset 建成未啟用，但系統沒有啟用 dataset 的操作，已由後續的 migration
+   改為啟用，改以 baseline 作為逐條開放的關卡。）
 6. Backend：Serve 的 1 分 K（含彙總刻度）與逐筆查詢；Dashboard 的查詢頁視需要另開。
 7. Staging 驗收：先只開股票的 1 分 K，再開 ETF 與逐筆。
 8. Production 上線與文件整併。
@@ -343,13 +344,13 @@ Staging 合併時 Backend 與 Fetcher 的部署同時開始。Fetcher 的新 con
 
 ### 啟用步驟（staging 驗收用）
 
-切換部署後四個 dataset 都未啟用，FinLab 的排程行為與部署前相同。每啟用一條：
+切換部署後四個 dataset 都沒有 baseline，FinLab 的排程行為與部署前相同。每開放一條：
 
-1. Owner 在 Admin 把該 dataset 設為啟用。
-2. 觸發該 dataset 的 universe 更新，確認成員數與日 K 的名單一致後發布 baseline。
-3. 啟動 FinLab 的 control（已在執行就先停止再啟動，讓新的 dataset 納入）。staging 會從首日開始補抓，驗收前
-   先把首日調成單日。
-4. 觀察計劃的 `data／no_data／missing／blocked`、Raw 與 Canonical R2 的物件、索引表，以及主機的記憶體。
+1. Owner 在 Dashboard 的名單頁對該 dataset 按「手動更新」。Control 停止時也會執行；完成後名單直接發布為
+   第一份 baseline。確認成員數與對應日 K 的名單一致。
+2. 啟動 FinLab 的 control（已在執行就先停止再啟動，讓新的 dataset 納入）。staging 會從首日開始補抓，而且
+   已有 baseline 的日 K 也會一起執行；驗收前先把首日調成單日。
+3. 觀察計劃的 `data／no_data／missing／blocked`、Raw 與 Canonical R2 的物件、索引表，以及主機的記憶體。
 
 驗收順序：先只開 `tw_equity_bar_1m`，通過後再開 ETF 與逐筆。
 
