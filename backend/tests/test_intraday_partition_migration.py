@@ -10,6 +10,7 @@ from tests.migration_database import get_active_migration_database_factory, run_
 
 BEFORE = "c5e7a9b1d3f6"
 INTRADAY_INDEX = "d6f8b0c2e4a7"
+DAY_LAYOUT_INDEX = "e7a9c1d3f5b8"
 
 INSERT = (
     "INSERT INTO intraday_partition(dataset_key,symbol,trade_date,row_count,source,"
@@ -80,3 +81,31 @@ async def test_intraday_index_roundtrip_validates_rows_and_blocks_a_lossy_downgr
         await run_alembic(url, INTRADAY_INDEX)
         async with engine.connect() as db:
             assert await _table_exists(db)
+
+        # The follow-up revision only adds the index of days waiting for their merge.
+        await run_alembic(url, DAY_LAYOUT_INDEX)
+        async with engine.begin() as db:
+            await db.execute(text(INSERT), VALID)
+            await db.execute(
+                text(INSERT), {**VALID, "symbol": "2330", "layout": "month", "key": "month-object"}
+            )
+            definition = await db.scalar(
+                text(
+                    "SELECT indexdef FROM pg_indexes "
+                    "WHERE indexname = 'idx_intraday_partition_day_layout'"
+                )
+            )
+            assert "WHERE" in definition and "'day'" in definition
+            await db.execute(text("DELETE FROM intraday_partition"))
+        await run_alembic(url, INTRADAY_INDEX, command="downgrade")
+        async with engine.connect() as db:
+            assert await _table_exists(db)
+            assert (
+                await db.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_indexes "
+                        "WHERE indexname = 'idx_intraday_partition_day_layout'"
+                    )
+                )
+                == 0
+            )

@@ -240,6 +240,22 @@ class CanonicalReader:
         _require_canonical_key(key)
         return _read(self._client, self._access.bucket, key, max_bytes=max_bytes)
 
+    def version(self, key: str) -> str | None:
+        """Return the stored version of ``key`` without its bytes, or ``None`` when absent."""
+        _require_canonical_key(key)
+        try:
+            response = self._client.head_object(Bucket=self._access.bucket, Key=key)
+        except ClientError as exc:
+            if _error_code(exc) in _NOT_FOUND:
+                return None
+            raise ObjectStorageError("object storage read failed") from None
+        except BotoCoreError:
+            raise ObjectStorageError("object storage read failed") from None
+        etag = str(response.get("ETag") or "")
+        if not etag:
+            raise ObjectStorageError("object storage did not report the stored version")
+        return etag
+
 
 class CanonicalPublisher(CanonicalReader):
     """Read and write access to canonical objects (Worker)."""

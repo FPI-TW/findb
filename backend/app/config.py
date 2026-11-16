@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY: str = ""
     CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN: str = ""
 
+    # Intraday day objects are merged into month objects by the Worker in idle time.
+    # A month is merged once it ended more than the grace days ago (exchange calendar);
+    # an interval of 0 disables the merge loop.
+    INTRADAY_MERGE_INTERVAL_SECONDS: int = 900
+    INTRADAY_MERGE_GRACE_DAYS: int = 3
+    INTRADAY_MERGE_BATCH_SIZE: int = 100
+
     # Durable normalization queue
     CELERY_BROKER_URL: str = "amqp://findb:findb@localhost:5672/%2Ffindb"
     NORMALIZATION_EXCHANGE: str = "findb.ingestion.v1"

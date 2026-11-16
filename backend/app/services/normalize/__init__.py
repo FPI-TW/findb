@@ -7,6 +7,7 @@ from app.services.normalize.contracts import (
     MarketEODV2ContractNormalizer,
     MarketMinuteContractNormalizer,
 )
+from app.services.normalize.intraday import IntradayPartitionContractNormalizer
 from app.services.normalize.types import MappedRecord, MarketMinuteRecord
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "MarketEODV2ContractNormalizer",
     "MarketMinuteContractNormalizer",
     "FuturesEODContractNormalizer",
+    "IntradayPartitionContractNormalizer",
 ]

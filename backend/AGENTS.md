@@ -71,6 +71,10 @@ Admin負責已認證的營運、修正與治理操作。
 - `futures_eod.v1` -> `FuturesEODContractNormalizer`，依實際產品／到期契約／交易日期／交易時段寫入
   `futures_contract_eod`；不得由契約價格產生 continuous 或產品層級 latest close。
   到期識別保留實際 `YYYYMM`、`YYYYMMW1..W5` 或 `YYYYMMF1..F5`，不得接受價差或連續合約。
+- `intraday_partition.v1` -> `IntradayPartitionContractNormalizer`（`normalize/intraday.py`）；資料列在
+  Raw R2 的物件裡，已由 Fetcher 轉成契約發布的欄位。整天驗證、整天替換，寫成 Canonical R2 的日檔並更新
+  `intraday_partition` 索引；不解析 provider 專屬欄位，不寫 PostgreSQL 行情表。規則見
+  `docs/architecture/intraday_storage.md`。
 
 Full market 的 universe 與 daily plan 核心由 `app/services/full_market.py` 管理。Source credentials 必須同時
 符合 provider 與 dataset scope；每日成員凍結後，以 `fp1:<part UUID hex>` 連結 ingestion run。

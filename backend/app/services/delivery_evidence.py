@@ -8,6 +8,7 @@ from app.models.canonical import (
     FuturesContract,
     FuturesContractEOD,
     Instrument,
+    IntradayPartition,
     MarketDataEOD,
     MarketDataMinute,
 )
@@ -35,6 +36,13 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
                 .join(model, model.instrument_id == Instrument.instrument_id)
                 .where(model.run_id == run.run_id)
                 .distinct()
+            )
+        )
+    elif run.schema_id == "intraday_partition":
+        # The index row names the run whose delivery is the stored day.
+        written = set(
+            await db.scalars(
+                select(IntradayPartition.symbol).where(IntradayPartition.run_id == run.run_id)
             )
         )
     else:

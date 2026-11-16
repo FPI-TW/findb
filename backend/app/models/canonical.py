@@ -515,6 +515,14 @@ class IntradayPartition(Base):
             name="intraday_partition_object_present",
         ),
         Index("idx_intraday_partition_dataset_date", "dataset_key", "trade_date"),
+        # Days still waiting for their month merge; small, since merged rows leave it.
+        Index(
+            "idx_intraday_partition_day_layout",
+            "dataset_key",
+            "symbol",
+            "trade_date",
+            postgresql_where=text("object_layout = 'day'"),
+        ),
     )
 
     dataset_key: Mapped[str] = mapped_column(
