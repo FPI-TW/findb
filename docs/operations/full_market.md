@@ -1283,9 +1283,12 @@ FinLab SDK 固定在 2.3.11（`fetcher/pyproject.toml` 與 `providers/finlab.py`
 - 本機 cache 在 host 的 `/var/lib/findb-finlab-fetcher/cache`（container 內 `~/finlab_db`，同環境的 FinLab consumers
   共用，SDK 以檔案鎖協調）。每張表一個 `.feather`（價格表約 18 MB、成交股數約 30 MB），第二次讀取起旁邊另有
   SDK 的解碼副本 `.decoded`（28–41 MB）；五張表合計約 260 MB。SDK 不寫 `/tmp`。
-- 升級後第一次取表：離線重現時，SDK 不拿 1.5.7 留下的 `.pickle` 要求差異更新，而是整張下載、寫成 `.feather`
-  並刪除舊檔。整張下載依壓縮後的檔案大小計費：2026-11-16 實測五張表合計約 103 MB 配額（`billed_bytes`），
-  每個環境一次。回復到 1.5.7 的 image 時，舊 SDK 讀不到 `.feather`，同樣會整張重新下載。
+- 升級後第一次取表只下載差異，不會整張重新下載：SDK 沿用 1.5.7 留下的 `.pickle` 要求差異更新，合併後寫成
+  `.feather`。2026-11-16 兩個環境的實際結果：staging 五張表合計計入 7.1 MB；production 每張 1.4–1.5 MB、合計
+  7.4 MB，之後 cache 只剩 `.feather` 與 `.decoded`。離線以假的 API 重現時曾得到「整張下載」的結果，與真實 API
+  不符，不可作為估算依據。
+- 本機沒有 cache 時才整張下載，依壓縮後的檔案大小計費：2026-11-16 實測五張表合計約 103 MB 配額
+  （`billed_bytes`）。回復到 1.5.7 的 image 時，舊 SDK 讀不到 `.feather`，預期會整張重新下載（未實測）。
 - 記憶體：子程序設定 `ARROW_DEFAULT_MEMORY_POOL=system`（Arrow 預設的配置器不立即歸還已釋放的記憶體）。
   以價格表大小的資料（4,808 × 2,800）與假的 API 在本機 Linux container 量測子程序的 RSS 峰值：
 
@@ -1295,9 +1298,11 @@ FinLab SDK 固定在 2.3.11（`fetcher/pyproject.toml` 與 `providers/finlab.py`
   | 每日差異更新 | 約 535 MB | 約 680–710 MB（未設定配置器時約 880 MB） |
 
   每日更新比 1.5.7 多約 150–175 MB：SDK 先載入本機的舊表，合併後再整張讀回。合成資料是不可壓縮的亂數，
-  比真實的表重：2026-11-16 以真實 API、staging 的 container 設定（`--read-only`、16 MB 的 `/tmp`、1 GiB
-  記憶體上限）取五張表，整張下載與讀取本機 cache 的子程序峰值都是約 360–375 MB，沒有 OOM。真實資料的
-  每日差異更新還沒量到（要等 FinLab 發布新資料的那次取表），staging 驗收時必須實測 `memory.peak` 與 OOM。
+  比真實的表重：2026-11-16 以真實 API、當時 staging 的 container 設定（`--read-only`、16 MB 的 `/tmp`、1 GiB
+  記憶體上限）取五張表，整張下載與讀取本機 cache 的子程序峰值都是約 360–375 MB，沒有 OOM。
+- 真實資料的每日差異更新（容器的 `memory.peak`，含檔案快取，都沒有 OOM）：staging 在 1 GiB 上限下是
+  785–800 MiB（2026-11-13 的 daily）；production 沒有上限，是 940 MiB（2026-11-16 的 daily）。Staging 的上限
+  因此已移除（見 `docs/operations/deployment.md`），之後在 staging 啟動 FinLab 時要留意主機的可用記憶體與 swap。
 
 Gateway 對 FinLab 原生 FileStorage 設定 `use_cache=False`，只釋放記憶體中的
 DataFrame references，保留既有磁碟檔案與修訂 metadata；不呼叫會刪檔的 `clear()`。
