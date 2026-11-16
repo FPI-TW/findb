@@ -57,6 +57,17 @@ Raw reader secret只接受`CLOUDFLARE_R2_RAW_READER_ACCESS_KEY_ID`、
 Canonical publisher與Canonical reader不是同一組credential。歷史`findb-fetcher-token`不屬於任何
 runtime catalog，不得保留或重新使用。
 
+憑證新增或輪替後，在該角色的 container 內以 `scripts/check_r2_access.py` 核對實際權限：Worker 讀一個既有的
+raw 物件並核對 SHA-256，在 Canonical bucket 的 `acceptance/r2-access-probe/` 下建立、取代、刪除一個探測物件，
+並確認帶版本條件的寫入會擋下重複建立與過期版本；Serve 讀探測物件。兩個唯讀憑證另外各嘗試寫入一次，必須被拒絕。
+腳本只輸出步驟與結果，不輸出憑證、網址或物件內容。
+
+```bash
+docker exec findb-worker python scripts/check_r2_access.py worker --raw-ref <r2://...> --raw-sha256 <sha256> --keep
+docker exec findb-serve python scripts/check_r2_access.py serve --canonical-key <上一步輸出的 key>
+docker exec findb-worker python scripts/check_r2_access.py worker --delete <同一個 key>
+```
+
 ## Staging／production 流程差異
 
 以下比較以 repository 的 workflow／部署腳本為準，不代表已即時查驗 Actions 執行紀錄或 AWS 設定值。
