@@ -451,14 +451,21 @@ class Transaction:
         rows = inventory()
         for row in rows:
             if owned(row, self.tx):
+                ended_by_itself = self.unit == "fetcher" and not row["State"]["Running"]
                 run("docker", "update", "--restart", "no", row["Id"])
                 run("docker", "stop", "--time", "90" if self.unit == "fetcher" else "30", row["Id"])
                 stopped = json.loads(run("docker", "inspect", row["Id"]))[0]
                 state = stopped["State"]
                 allowed_exit_codes = (0,) if self.unit == "fetcher" else (0, 143)
+                # A provisional consumer whose own process returned non-zero (a start the
+                # Source rejected, for instance) is why the transaction aborts; discarding
+                # it must not block restoring the originals. A killed one (signal exit,
+                # OOM, Docker error) or one this abort had to stop is still held to a
+                # graceful shutdown.
+                returned_by_itself = ended_by_itself and 0 < state["ExitCode"] < 128
                 if (
                     state["Running"]
-                    or state["ExitCode"] not in allowed_exit_codes
+                    or (state["ExitCode"] not in allowed_exit_codes and not returned_by_itself)
                     or state["OOMKilled"]
                     or state.get("Error")
                 ):
