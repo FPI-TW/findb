@@ -819,8 +819,10 @@ tofu -chdir=infra/tofu/production apply -input=false production.tfplan
 - 兩台 host 必須出現在 SSM managed nodes；使用 bounded SSM command 驗證 instance role、unit
   ECR pull、unit bundle read、cross-unit denial、runtime secret isolation與 RDS connectivity。
 - 驗證 CloudTrail multi-region/log validation、GuardDuty、DLM recovery point、RDS automated backup、
-  CloudWatch alarms 與寄至 `tyler.ho@fpitw.com` 的 SNS subscription。Custom metrics 在 collector
-  尚未健康發布時必須因 missing data 告警，不得把 `INSUFFICIENT_DATA` 當通過。
+  CloudWatch alarms 與寄至 `tyler.ho@fpitw.com` 的 SNS subscription。週期性健康指標在 collector
+  尚未健康發布時必須因 missing data 告警，不得把 `INSUFFICIENT_DATA` 當通過；事件計數（container
+  重啟、active-feed、invalid credential）缺資料不告警，由 `CollectorSuccess` 告警代表 collector
+  故障。告警規則與 staging 一致，差異見 [monitoring runbook](monitoring.md#environment-parity)。
 - 所有資源必須有 `Project=findb`、`Environment=production`、`DeploymentUnit`、`Owner`、
   `BackupOwner`，並在 Cost Explorer 啟用這些 cost allocation tags；不建立固定 Budget。
 

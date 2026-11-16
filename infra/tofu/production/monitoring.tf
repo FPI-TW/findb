@@ -38,38 +38,49 @@ locals {
   })
   retained_alarm_scheduler_keys = setunion(local.scheduler_keys, local.retired_scheduler_keys)
 
+  # Every entry states its own evaluation rule. The rules match the staging
+  # stack; backend/tests/test_monitoring_alarm_parity.py holds the contract and
+  # the reviewed differences. An event counter that publishes zero each run
+  # does not breach on a missing datum, because the collector alarm covers a
+  # failed or stopped collector.
   custom_alarms = merge(
     {
-      for unit in keys(local.units) : "${unit}_disk" => { unit = unit, metric = "DiskUsedPercent", resource = "/", op = "GreaterThanOrEqualToThreshold", threshold = 85 }
+      for unit in keys(local.units) : "${unit}_disk" => { unit = unit, metric = "DiskUsedPercent", resource = "/", op = "GreaterThanOrEqualToThreshold", threshold = 85, periods = 2, datapoints = 2, missing = "breaching" }
     },
     {
-      for unit in keys(local.units) : "${unit}_inode" => { unit = unit, metric = "InodeUsedPercent", resource = "/", op = "GreaterThanOrEqualToThreshold", threshold = 90 }
+      for unit in keys(local.units) : "${unit}_inode" => { unit = unit, metric = "InodeUsedPercent", resource = "/", op = "GreaterThanOrEqualToThreshold", threshold = 90, periods = 2, datapoints = 2, missing = "breaching" }
     },
     {
-      for unit in keys(local.units) : "${unit}_collector" => { unit = unit, metric = "CollectorSuccess", resource = "host", op = "LessThanThreshold", threshold = 1 }
+      for unit in keys(local.units) : "${unit}_collector" => { unit = unit, metric = "CollectorSuccess", resource = "host", op = "LessThanThreshold", threshold = 1, periods = 2, datapoints = 2, missing = "breaching" }
     },
     merge([for unit, containers in local.retained_alarm_containers : {
-      for container in containers : "${unit}_${container}_health" => { unit = unit, metric = "DockerContainerHealthy", resource = container, op = "LessThanThreshold", threshold = 1 }
+      for container in containers : "${unit}_${container}_health" => { unit = unit, metric = "DockerContainerHealthy", resource = container, op = "LessThanThreshold", threshold = 1, periods = 2, datapoints = 2, missing = "breaching" }
     }]...),
     merge([for unit, containers in local.retained_alarm_containers : {
-      for container in containers : "${unit}_${container}_restart" => { unit = unit, metric = "DockerRestartCount", resource = container, op = "GreaterThanOrEqualToThreshold", threshold = 3 }
+      for container in containers : "${unit}_${container}_restart" => { unit = unit, metric = "DockerRestartCount", resource = container, op = "GreaterThanOrEqualToThreshold", threshold = 3, periods = 1, datapoints = 1, missing = "notBreaching" }
     }]...),
     {
-      for key in local.retained_alarm_scheduler_keys : "scheduler_${key}_heartbeat" => { unit = "fetcher", metric = "SchedulerHeartbeatAgeSeconds", resource = key, op = "GreaterThanOrEqualToThreshold", threshold = 180 }
+      for container in local.monitored_containers.fetcher : "fetcher_${container}_runtime_security" => { unit = "fetcher", metric = "DockerRuntimeSecurityHealthy", resource = container, op = "LessThanThreshold", threshold = 1, periods = 2, datapoints = 2, missing = "breaching" }
     },
     {
-      for key in local.retained_alarm_scheduler_keys : "scheduler_${key}_freshness" => { unit = "fetcher", metric = "FeedFreshnessHealthy", resource = key, op = "LessThanThreshold", threshold = 1 }
+      for key in local.retained_alarm_scheduler_keys : "scheduler_${key}_heartbeat" => { unit = "fetcher", metric = "SchedulerHeartbeatAgeSeconds", resource = key, op = "GreaterThanOrEqualToThreshold", threshold = 180, periods = 2, datapoints = 2, missing = "breaching" }
     },
     {
-      rabbitmq_disk        = { unit = "findb", metric = "RabbitMQDiskAlarm", resource = "findb-rabbitmq", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
-      rabbitmq_memory      = { unit = "findb", metric = "RabbitMQMemoryAlarm", resource = "findb-rabbitmq", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
-      tls                  = { unit = "findb", metric = "TLSCertificateDaysRemaining", resource = "findb.tingfong.com", op = "LessThanOrEqualToThreshold", threshold = 30 }
-      rds_backup_lag       = { unit = "findb", metric = "RDSBackupLagSeconds", resource = aws_db_instance.production.identifier, op = "GreaterThanOrEqualToThreshold", threshold = 1800 }
-      dlm                  = { unit = "findb", metric = "DLMPolicyHealthy", resource = aws_dlm_lifecycle_policy.root.id, op = "LessThanThreshold", threshold = 1 }
-      rejected_credentials = { unit = "findb", metric = "InvalidCredentialEvents", resource = "api-credentials", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
-      active_feed_rejected = { unit = "findb", metric = "ActiveFeedRejectedAttempts", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
-      active_feed_empty    = { unit = "findb", metric = "ActiveFeedEmptySnapshots", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
-      active_feed_dq       = { unit = "findb", metric = "ActiveFeedDQErrors", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1 }
+      for key in local.retained_alarm_scheduler_keys : "scheduler_${key}_freshness" => { unit = "fetcher", metric = "FeedFreshnessHealthy", resource = key, op = "LessThanThreshold", threshold = 1, periods = 2, datapoints = 2, missing = "breaching" }
+    },
+    {
+      rabbitmq_disk             = { unit = "findb", metric = "RabbitMQDiskAlarm", resource = "findb-rabbitmq", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "breaching" }
+      rabbitmq_memory           = { unit = "findb", metric = "RabbitMQMemoryAlarm", resource = "findb-rabbitmq", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "breaching" }
+      tls                       = { unit = "findb", metric = "TLSCertificateDaysRemaining", resource = "findb.tingfong.com", op = "LessThanOrEqualToThreshold", threshold = 30, periods = 2, datapoints = 2, missing = "breaching" }
+      rds_backup_lag            = { unit = "findb", metric = "RDSBackupLagSeconds", resource = aws_db_instance.production.identifier, op = "GreaterThanOrEqualToThreshold", threshold = 1800, periods = 2, datapoints = 2, missing = "breaching" }
+      dlm                       = { unit = "findb", metric = "DLMPolicyHealthy", resource = aws_dlm_lifecycle_policy.root.id, op = "LessThanThreshold", threshold = 1, periods = 2, datapoints = 2, missing = "breaching" }
+      rejected_credentials      = { unit = "findb", metric = "InvalidCredentialEvents", resource = "api-credentials", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "notBreaching" }
+      active_feed_rejected      = { unit = "findb", metric = "ActiveFeedRejectedAttempts", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "notBreaching" }
+      active_feed_empty         = { unit = "findb", metric = "ActiveFeedEmptySnapshots", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "notBreaching" }
+      active_feed_dq            = { unit = "findb", metric = "ActiveFeedDQErrors", resource = "active-feeds", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "notBreaching" }
+      lineage_orphans           = { unit = "findb", metric = "LineageOrphanRows", resource = "canonical-and-raw", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "breaching" }
+      eod_default_partition     = { unit = "findb", metric = "EODDefaultPartitionRows", resource = "market_data_eod_default", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "breaching" }
+      credential_usage_mismatch = { unit = "findb", metric = "CredentialUsageAggregateMismatches", resource = "api-credentials", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "breaching" }
     },
   )
   metric_service = {
@@ -145,9 +156,15 @@ resource "aws_cloudwatch_metric_alarm" "rds" {
     connections = {
       metric = "DatabaseConnections", op = "GreaterThanOrEqualToThreshold", threshold = 80, unit = "Count"
     }
+    read_latency = {
+      metric = "ReadLatency", op = "GreaterThanOrEqualToThreshold", threshold = 0.1, unit = "Seconds"
+    }
+    write_latency = {
+      metric = "WriteLatency", op = "GreaterThanOrEqualToThreshold", threshold = 0.1, unit = "Seconds"
+    }
 
   }
-  alarm_name          = "findb-production-rds-${each.key}"
+  alarm_name          = "findb-production-rds-${replace(each.key, "_", "-")}"
   namespace           = "AWS/RDS"
   metric_name         = each.value.metric
   statistic           = "Average"
@@ -176,11 +193,11 @@ resource "aws_cloudwatch_metric_alarm" "custom" {
   metric_name         = each.value.metric
   statistic           = "Maximum"
   period              = 300
-  evaluation_periods  = 2
-  datapoints_to_alarm = 2
+  evaluation_periods  = each.value.periods
+  datapoints_to_alarm = each.value.datapoints
   threshold           = each.value.threshold
   comparison_operator = each.value.op
-  treat_missing_data  = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : "breaching"
+  treat_missing_data  = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : each.value.missing
   dimensions = {
     DeploymentUnit = each.value.unit, Resource = each.value.resource
   }

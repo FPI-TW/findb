@@ -3,7 +3,7 @@
 ## Scope and current evidence boundary
 
 `infra/tofu/staging/monitoring.tf` declares the Phase 6 control-plane baseline:
-one private KMS-encrypted SNS topic, one required email subscription, six
+one private KMS-encrypted SNS topic, one required email subscription, nine
 native EC2/RDS alarms, and the applied custom-metric expansion.
 The expansion uses two 30-minute SSM reconciliation associations to install and
 maintain a five-minute local systemd timer plus the dependency-free
@@ -41,9 +41,9 @@ collector hand-maintains current consumer names.
 
 - Both `monitoring.tf` roots read the inventory with `jsondecode(file(...))`. Every
   `consumers[].name` (currently `findb-full-market-*` and `findb-historical-*` for
-  FactSet, FinLab, TAIFEX and Twelve Data) gets health and restart alarms, plus a
-  runtime-security alarm on staging. Every `providers[]` entry gets heartbeat alarms
-  for its `full_market_<provider>_v1` control; production also gets freshness alarms.
+  FactSet, FinLab, TAIFEX and Twelve Data) gets health, restart and runtime-security
+  alarms. Every `providers[]` entry gets heartbeat and freshness alarms for its
+  `full_market_<provider>_v1` control.
 - `backend/scripts/export_provider_catalog.py` writes the same inventory into the
   `BEGIN/END GENERATED PROVIDER INVENTORY` block of
   `infra/monitoring/publish_staging_metrics.py`. Its `--check` mode, run by CI, fails
@@ -65,12 +65,13 @@ collector hand-maintains current consumer names.
   policy. They have no notification actions, `notBreaching` missing data and
   `RuntimeStatus=retired`. The collector no longer publishes them, so they settle to
   `OK`. Physically deleting them needs a separately approved retirement plan.
-- Staging controls are normally stopped, and the collector publishes no heartbeat for
-  a stopped control. Staging heartbeat alarms therefore treat missing data as not
-  breaching. A running control always reports its persisted heartbeat age, so a dead
-  consumer still breaches, and container health covers an absent consumer.
-  Production keeps breaching on missing data, so an unexpectedly stopped production
-  control is visible.
+- Staging controls are normally stopped, and the collector publishes neither a
+  heartbeat nor a freshness datum for a stopped control. Staging heartbeat and
+  freshness alarms therefore treat missing data as not breaching, so an unstarted
+  scheduler stays quiet. A running control always reports its persisted heartbeat age
+  and freshness status, so a dead consumer or a late feed still breaches, and container
+  health covers an absent consumer. Production keeps breaching on missing data, so an
+  unexpectedly stopped production control is visible.
 - The production alert topic is encrypted with the `logs` KMS key. Its policy grants
   `cloudwatch.amazonaws.com` `kms:Decrypt` and `kms:GenerateDataKey*`, scoped to this
   account and `findb-production-*` alarm ARNs. Without that grant every alarm action
@@ -154,9 +155,30 @@ an applied state proves those delivery results.
 
 ## Declared alarm contract
 
-The six native alarms use an explicit 300-second period, two evaluation periods, two
-datapoints to alarm, `treat_missing_data = "missing"`, enabled actions, the
-same SNS alarm action, and empty OK/INSUFFICIENT_DATA action lists. A missing
+### Environment parity
+
+Staging and production declare the same alarms with the same thresholds, evaluation
+periods and missing-data policy. Both stacks install the same collector, so every
+signal exists in both namespaces (`FinDB/Staging` and `FinDB/Production`).
+`backend/tests/test_monitoring_alarm_parity.py` holds the contract and fails when one
+stack adds, drops or retunes an alarm without the other. The tables below state the
+staging values; production differs only in these reviewed ways:
+
+| Difference | Staging | Production | Reason |
+| --- | --- | --- | --- |
+| Missing scheduler heartbeat or freshness datum | Not breaching | Breaching | Staging controls are normally stopped; a stopped production control must be visible |
+| RDS `FreeStorageSpace` threshold | `<= 5 GiB` | `<= 10 GiB` | 20 GiB allocated on staging, 100 GiB on production |
+| Alarm names and retired identities | `findb-staging-*` | `findb-production-*` | The zero-delete plan policy forbids renaming an existing alarm |
+
+Every active alarm notifies the operational topic on both the `ALARM` and the `OK`
+transition. Retired identities keep no actions.
+
+### Native alarms
+
+The nine native alarms use an explicit 300-second period, two evaluation periods and
+two datapoints to alarm (three of each for EC2 CPU, so a short burst on a burstable
+instance does not alarm), `treat_missing_data = "missing"`, enabled actions, the same
+SNS action for `ALARM` and `OK`, and an empty INSUFFICIENT_DATA action list. A missing
 native metric therefore remains visible as `INSUFFICIENT_DATA`; it is not
 silently treated as healthy or breaching.
 
@@ -164,24 +186,30 @@ silently treated as healthy or breaching.
 | --- | --- | --- |
 | Existing FinDB EC2 | `AWS/EC2` `StatusCheckFailed` / `Maximum` | `>= 1` for 2 × 5 minutes |
 | Existing Fetcher EC2 | `AWS/EC2` `StatusCheckFailed` / `Maximum` | `>= 1` for 2 × 5 minutes |
+| Both EC2 hosts | `AWS/EC2` `CPUUtilization` / `Average` | `>= 85%` for 3 × 5 minutes |
+| Existing `fin-db` RDS | `AWS/RDS` `CPUUtilization` / `Average` | `>= 85%` for 2 × 5 minutes |
 | Existing `fin-db` RDS | `AWS/RDS` `FreeStorageSpace` / `Average` | `<= 5 GiB` for 2 × 5 minutes |
 | Existing `fin-db` RDS | `AWS/RDS` `DatabaseConnections` / `Average` | `>= 80` for 2 × 5 minutes |
 | Existing `fin-db` RDS | `AWS/RDS` `ReadLatency` / `Average` | `>= 0.1` seconds for 2 × 5 minutes |
 | Existing `fin-db` RDS | `AWS/RDS` `WriteLatency` / `Average` | `>= 0.1` seconds for 2 × 5 minutes |
 
+### Custom alarms
+
 The custom expansion declares the following low-cardinality
 `FinDB/Staging` metrics. Every datum has only `DeploymentUnit` and a bounded
-`Resource` dimension. Missing periodic health metrics are breaching; the
-sparse `DeploymentFailure` metric treats missing data as healthy. Alarms wait
-for the first SSM association runs so normal metrics can be seeded before the
-breaching-on-missing alarms are created.
+`Resource` dimension. Missing periodic health metrics are breaching. Event
+counters (container restart count, the three active-feed counts and invalid
+credentials) and the sparse `DeploymentFailure` metric treat missing data as
+healthy and alarm on a single datum; the collector-success alarm covers a
+failed or stopped collector. Alarms wait for the first SSM association runs so
+normal metrics can be seeded before the breaching-on-missing alarms are created.
 
 | Coverage | Metric and condition |
 | --- | --- |
 | Both hosts | Root `DiskUsedPercent >= 85%`, `InodeUsedPercent >= 90%`, collector success `< 1` for 2 × 5 minutes |
 | Required containers | Health `< 1` for 2 × 5 minutes; current-container restart count `>= 3` |
 | RabbitMQ | Local disk or memory alarm flag `>= 1`; collected from `rabbitmq-diagnostics`, without credentials |
-| Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds for each running `full_market_<provider>_v1` control from the generated inventory; a stopped staging control publishes no datum and is not breaching |
+| Active Fetcher schedulers | Persisted heartbeat age `>= 180` seconds, or feed freshness `< 1` (a feed is partial, late, failed or never received), for 2 × 5 minutes for each running `full_market_<provider>_v1` control from the generated inventory; a stopped staging control publishes no datum and is not breaching |
 | RDS recovery | `LatestRestorableTime` lag `>= 1800` seconds, providing a continuous PITR/backup-lag signal |
 | DLM control plane | Exact root-volume policy health `< 1` for 2 × 5 minutes; query failure or missing data also breaches |
 | Public TLS certificate | Verified `notAfter` days remaining `<= 30` for 2 × 5 minutes; TLS query/verification failure suppresses the healthy datum and missing data breaches |
