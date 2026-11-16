@@ -21,7 +21,7 @@ from app.models.provider_work import ProviderWork
 from app.models.registry import SchedulerControl, SchedulerDataset
 from app.services import historical_backfill, provider_work
 from app.services.provider_work import prepared_map
-from app.services.source_clients import create_source_client
+from app.services.source_clients import PROVIDER_DATASET_SCOPE, create_source_client
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY as HISTORICAL_DAY
 from tests.test_canonical_ingest_api import _execute_run
@@ -99,21 +99,21 @@ async def test_daily_historical_handoff_with_real_fenced_source_and_proofs(
     from app.models.registry import DatasetRegistry
     from scripts.seed_data import DATASETS
 
-    test_session.add(
-        DatasetRegistry(
-            **deepcopy(next(item for item in DATASETS if item["dataset_key"] == "tw_etf_eod"))
-        )
-    )
+    # The FinLab consumer's scope is every FinLab feed; only the equity EOD one is admitted.
+    finlab_scope = PROVIDER_DATASET_SCOPE["finlab"]
+    for item in DATASETS:
+        if item["dataset_key"] in finlab_scope and item["dataset_key"] != "tw_equity_eod":
+            test_session.add(DatasetRegistry(**deepcopy(item)))
     key = "full_market_finlab_v1"
     control = await test_session.get(SchedulerControl, key)
     control.observed_state = "running"
-    test_session.add(SchedulerDataset(scheduler_key=key, dataset_key="tw_equity_eod"))
-    test_session.add(SchedulerDataset(scheduler_key=key, dataset_key="tw_etf_eod"))
+    for dataset_key in finlab_scope:
+        test_session.add(SchedulerDataset(scheduler_key=key, dataset_key=dataset_key))
     _, secret = await create_source_client(
         test_session,
         name="fifo-bridge",
         source_name="finlab",
-        allowed_datasets=["tw_equity_eod", "tw_etf_eod"],
+        allowed_datasets=list(finlab_scope),
         rate_limit_requests=100000,
         rate_limit_window=60,
         commit=False,

@@ -18,6 +18,7 @@ from app.models.base import Base
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.provider_catalog import FeedDefinition
 from app.services.effective_calendar import MARKETS
+from app.services.ingress_contracts import INTRADAY_DATASET_FREQUENCY
 from app.services.provider_metadata import acquisition_feeds, provider_catalog
 from app.utils import utc_now
 from scripts.preflight_catalog_schedule import migration_module
@@ -35,6 +36,22 @@ SUPPORTED_DATASETS = (
     "hk_equity_eod",
     "tw_etf_eod",
     "tw_futures_eod",
+    "tw_equity_bar_1m",
+    "tw_etf_bar_1m",
+    "tw_equity_tick",
+    "tw_etf_tick",
+)
+# Created inactive; an operator activates each one when its feed is ready.
+OPERATOR_ACTIVATED_DATASETS = frozenset(
+    {
+        "hk_equity_eod",
+        "tw_etf_eod",
+        "tw_futures_eod",
+        "tw_equity_bar_1m",
+        "tw_etf_bar_1m",
+        "tw_equity_tick",
+        "tw_etf_tick",
+    }
 )
 
 
@@ -145,6 +162,7 @@ def _contract_config(
     delivery_expectation: dict,
     accepted_schema_versions: list[int] | None = None,
     current_schema_version: int = 1,
+    record_kind: str | None = None,
 ) -> dict:
     """Return only contract, scope, and delivery policy keys.
 
@@ -163,9 +181,10 @@ def _contract_config(
             "currency": currency,
             **(
                 {"market_timezone": "Asia/Taipei", "price_adjustment": "none"}
-                if schema_id == "market_minute"
+                if schema_id in {"market_minute", "intraday_partition"}
                 else {}
             ),
+            **({"record_kind": record_kind} if record_kind is not None else {}),
         },
         "delivery_expectation": delivery_expectation,
     }
@@ -192,7 +211,14 @@ def _catalog_contract_config(
     dataset_key: str, *, currency: str | None, delivery_expectation: dict
 ) -> dict:
     feed = _catalog_feed(dataset_key)
+    # An intraday dataset stores one kind of record; the catalog frequency names it.
+    record_kinds = {frequency: kind for kind, frequency in INTRADAY_DATASET_FREQUENCY.items()}
     return _contract_config(
+        record_kind=(
+            record_kinds[feed.frequency]
+            if feed.contract.schema_id == "intraday_partition"
+            else None
+        ),
         schema_id=feed.contract.schema_id,
         market=feed.market,
         asset_class=feed.asset_class,
@@ -379,6 +405,51 @@ def _staged_eod_dataset(dataset_key: str, name: str, *, currency: str | None) ->
     )
 
 
+def _staged_intraday_dataset(dataset_key: str, name: str) -> dict[str, Any]:
+    """One FinLab intraday dataset: delivered per symbol-day, only inside a daily plan."""
+    feed = _catalog_feed(dataset_key)
+    assert feed.schedule is not None
+    expectation = _eod_delivery_expectation(
+        mode="incremental",
+        market=feed.calendar_market,
+        source=feed.provider,
+        minimum_count=0,
+        slot_id=feed.delivery.slot_id,
+        local_time=time.fromisoformat(feed.schedule.local_time).isoformat(),
+    )
+    # Completeness is the frozen plan's, never an aggregate count or a bounded monitor.
+    expectation["baseline"]["enabled"] = False
+    expectation["record_count"]["action"] = "disabled"
+    expectation["schedule"]["enabled"] = False
+    expectation["missing_delivery"] = {"action": "disabled", "expected_sources": []}
+    config = _catalog_contract_config(dataset_key, currency="TWD", delivery_expectation=expectation)
+    config["full_market"] = {
+        "enabled": False,
+        "required": True,
+        "activation_date": None,
+        "calendar_market": feed.calendar_market,
+    }
+    config["source_precedence"] = [feed.provider]
+    return _catalog_dataset(
+        dataset_key,
+        name=name,
+        description=(
+            f"Staged {feed.provider} {feed.contract.schema_id}.v1 intraday feed; "
+            "rows are canonical objects, volume in lots"
+        ),
+        config=config,
+    ) | {"is_active": False}
+
+
+DATASETS.extend(
+    [
+        _staged_intraday_dataset("tw_equity_bar_1m", "台股股票 1 分 K"),
+        _staged_intraday_dataset("tw_etf_bar_1m", "台灣 ETF 1 分 K"),
+        _staged_intraday_dataset("tw_equity_tick", "台股股票逐筆成交"),
+        _staged_intraday_dataset("tw_etf_tick", "台灣 ETF 逐筆成交"),
+    ]
+)
+
 DATASETS.extend(
     [
         # HK contract versions (current v2, accepted v1/v2 so retained v1 raw stays
@@ -537,7 +608,7 @@ async def seed_datasets(session: AsyncSession) -> None:
         existing.asset_class = dataset["asset_class"]
         existing.market = dataset["market"]
         existing.frequency = dataset["frequency"]
-        if dataset["dataset_key"] not in {"hk_equity_eod", "tw_etf_eod", "tw_futures_eod"}:
+        if dataset["dataset_key"] not in OPERATOR_ACTIVATED_DATASETS:
             existing.is_active = dataset["is_active"]
         existing.config = _merge_operator_config(
             dataset["dataset_key"],
@@ -548,7 +619,8 @@ async def seed_datasets(session: AsyncSession) -> None:
     await session.flush()
     for provider in sorted({feed.provider for feed in acquisition_feeds()}):
         feeds = [feed for feed in acquisition_feeds() if feed.provider == provider]
-        feed = feeds[0]
+        # The control shows when the provider's day starts: its earliest feed.
+        feed = min(feeds, key=lambda item: item.schedule.local_time if item.schedule else "")
         assert feed.schedule is not None
         datasets = [item.dataset_key for item in feeds]
         slot = feed.delivery.slot_id

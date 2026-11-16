@@ -30,7 +30,7 @@ async def credential(db, provider="finlab", datasets=None):
 
 
 @pytest.mark.parametrize(
-    "provider,count", [("finlab", 2), ("twelve_data", 1), ("factset", 1), ("taifex", 1)]
+    "provider,count", [("finlab", 6), ("twelve_data", 1), ("factset", 1), ("taifex", 1)]
 )
 async def test_publication_is_credential_scoped_and_independent_of_running(
     client, test_session, monkeypatch, provider, count

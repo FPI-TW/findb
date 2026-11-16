@@ -54,7 +54,22 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         ("factset", "hk_equity_eod"),
         ("finlab", "tw_equity_eod"),
         ("finlab", "tw_etf_eod"),
+        ("finlab", "tw_equity_bar_1m"),
+        ("finlab", "tw_etf_bar_1m"),
+        ("finlab", "tw_equity_tick"),
+        ("finlab", "tw_etf_tick"),
         ("taifex", "tw_futures_eod"),
+    }
+    # Intraday feeds deliver minute bars or ticks by reference; nothing else is non-daily.
+    assert {
+        f.dataset_key: (f.frequency, f.contract.schema_id)
+        for f in catalog.feeds
+        if f.frequency != "daily"
+    } == {
+        "tw_equity_bar_1m": ("minute", "intraday_partition"),
+        "tw_etf_bar_1m": ("minute", "intraday_partition"),
+        "tw_equity_tick": ("tick", "intraday_partition"),
+        "tw_etf_tick": ("tick", "intraday_partition"),
     }
     feeds = {f.dataset_key: f for f in catalog.feeds}
     assert feeds["hk_equity_eod"].contract.current_version == 2

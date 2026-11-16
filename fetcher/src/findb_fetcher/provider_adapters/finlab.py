@@ -10,6 +10,7 @@ import importlib.metadata
 import json
 import os
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import date, timezone
 from pathlib import Path
 from typing import Any
@@ -149,7 +150,12 @@ class FinLabAdapter(ProviderAdapter):
         official: dict[str, dict[str, bytes]] = {}
         intraday = [dataset for dataset in INTRADAY_DATASETS if dataset in context.zones]
         if intraday:
-            return self._intraday_universe(intraday, context)
+            groups = self._intraday_universe(intraday, context)
+            if len(intraday) == len(context.zones):
+                return groups
+            # A refresh of FinLab's whole scope carries daily datasets too.
+            daily = {key: zone for key, zone in context.zones.items() if key not in groups}
+            return groups | self.build_universe(feeds, replace(context, zones=daily))
         if "tw_equity_eod" in context.zones:
             snapshots = {
                 url: context.snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_STOCK_URLS)

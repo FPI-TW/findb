@@ -247,7 +247,14 @@ describe("governance pages", () => {
         scopes: ["tw_equity_eod"],
         policies: {
           source_name: "finlab",
-          allowed_datasets: ["tw_equity_eod", "tw_etf_eod"],
+          allowed_datasets: [
+            "tw_equity_bar_1m",
+            "tw_equity_eod",
+            "tw_equity_tick",
+            "tw_etf_bar_1m",
+            "tw_etf_eod",
+            "tw_etf_tick",
+          ],
         },
       },
     })
@@ -271,7 +278,14 @@ describe("governance pages", () => {
         data: expect.objectContaining({
           kind: "source",
           source_name: "finlab",
-          allowed_datasets: ["tw_equity_eod", "tw_etf_eod"],
+          allowed_datasets: [
+            "tw_equity_bar_1m",
+            "tw_equity_eod",
+            "tw_equity_tick",
+            "tw_etf_bar_1m",
+            "tw_etf_eod",
+            "tw_etf_tick",
+          ],
         }),
       })
     )

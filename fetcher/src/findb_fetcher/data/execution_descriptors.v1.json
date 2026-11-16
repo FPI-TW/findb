@@ -31,6 +31,31 @@
       "calendar_market": "TW",
       "capabilities": {
         "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "intraday_partition"
+      },
+      "dataset_key": "tw_equity_bar_1m",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "minute",
+      "historical_execution": null,
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "finlab"
+    },
+    {
+      "asset_class": "equity",
+      "calendar_market": "TW",
+      "capabilities": {
+        "acquisition": true,
         "historical": "declared",
         "source": true
       },
@@ -89,6 +114,56 @@
       "provider": "finlab"
     },
     {
+      "asset_class": "equity",
+      "calendar_market": "TW",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "intraday_partition"
+      },
+      "dataset_key": "tw_equity_tick",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "tick",
+      "historical_execution": null,
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "finlab"
+    },
+    {
+      "asset_class": "etf",
+      "calendar_market": "TW",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "intraday_partition"
+      },
+      "dataset_key": "tw_etf_bar_1m",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "minute",
+      "historical_execution": null,
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "finlab"
+    },
+    {
       "asset_class": "etf",
       "calendar_market": "TW",
       "capabilities": {
@@ -108,6 +183,31 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "daily",
+      "historical_execution": null,
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "finlab"
+    },
+    {
+      "asset_class": "etf",
+      "calendar_market": "TW",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "intraday_partition"
+      },
+      "dataset_key": "tw_etf_tick",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "tick",
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
@@ -201,7 +301,7 @@
       "provider": "twelve_data"
     }
   ],
-  "projection_sha256": "50ced8d1fd4b1c6e9a940f2348ecc59b81c89ab854cc70d5b6553a490dc6b869",
+  "projection_sha256": "87c33e3899e18ea9740abd14b1daa0d9c22b92fac2a9de51a3317061504f4702",
   "providers": [
     {
       "credential_env_names": [

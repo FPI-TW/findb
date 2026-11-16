@@ -18,7 +18,17 @@ from tests.test_canonical_ingest_api import _canonical_request
     ("provider", "expected"),
     [
         ("twelve_data", ["us_equity_eod"]),
-        ("finlab", ["tw_equity_eod", "tw_etf_eod"]),
+        (
+            "finlab",
+            [
+                "tw_equity_bar_1m",
+                "tw_equity_eod",
+                "tw_equity_tick",
+                "tw_etf_bar_1m",
+                "tw_etf_eod",
+                "tw_etf_tick",
+            ],
+        ),
         ("factset", ["hk_equity_eod"]),
         ("taifex", ["tw_futures_eod"]),
     ],

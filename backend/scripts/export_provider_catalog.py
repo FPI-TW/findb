@@ -28,6 +28,14 @@ def projection_digest(value: object) -> str:
     ).hexdigest()
 
 
+def _typescript_list(name: str, values: list[str]) -> list[str]:
+    """One object entry as Prettier prints it: on one line while it fits 80 columns."""
+    line = f"  {name}: {json.dumps(values)},"
+    if len(line) <= 80:
+        return [line]
+    return [f"  {name}: [", *(f"    {json.dumps(value)}," for value in values), "  ],"]
+
+
 def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
     data = catalog.canonical_data()
     envelope = {"schema_version": 1, "source_sha256": catalog.digest()}
@@ -110,7 +118,11 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
         "] as const",
         "export type SourceProvider = (typeof SOURCE_PROVIDERS)[number]",
         "export const SOURCE_PROVIDER_DATASETS = {",
-        *(f"  {provider}: {json.dumps(datasets)}," for provider, datasets in source_scopes.items()),
+        *(
+            line
+            for provider, datasets in source_scopes.items()
+            for line in _typescript_list(provider, datasets)
+        ),
         "} as const satisfies Record<SourceProvider, readonly string[]>",
         "export const DATASET_MARKETS: Record<string, string> = {",
         *(

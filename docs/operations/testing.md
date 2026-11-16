@@ -427,7 +427,7 @@ probe 送 EOF 並收完輸出。EOF grace 45 秒逾時後，僅對該測試建�
 scope／supported contracts、兩環境期貨 provisioning 政策，以及 TAIFEX Source → queue → canonical → Serve
 與重送；CI 缺少新 provider 的 catalog／startup acceptance 時 fail closed。
 
-Fixture tests 與 live pipeline observations 分開；live 門檻是四個 providers／五個 feeds 各自最新 eligible
+Fixture tests 與 live pipeline observations 分開；live 門檻是四個 providers／五條日線 feeds 各自最新 eligible
 已完成交易日的 frozen Full cohort coverage、同 run lineage 的 Source 202、raw、completed queue／canonical
 與 Serve proof。兩日期觀測不要求歷史 backfill。
 

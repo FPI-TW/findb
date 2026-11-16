@@ -110,7 +110,7 @@ GET run status，不重新 prepare，也不占 daily `max_members`（`max_second
 Retryable round 必須先關閉 acquisition／acceptance、排空所有 accepted runs，再把下一 attempt
 附加到 FIFO 尾端並設定 `not_before`。原 frozen manifest、prepared bytes、receipts 與 operation budgets
 跨 queue retry 保留。等待 quota／queue 不是 provider failure；永久格式／DQ failure 保留 failed／manual。
-Daily 五條 feeds 與 historical adapters 在觀察到第一個 retryable provider／Source 錯誤、transport
+Daily feeds 與 historical adapters 在觀察到第一個 retryable provider／Source 錯誤、transport
 unknown 或 terminal polling timeout 後，即停止該輪的新 provider I/O 與新 prepared intent；不繼續後續
 member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain，再安全 tail retry。
 例外是 Twelve Data 的成員層級 `no_data`（HTTP 400 "No data is available"）：它不代表 provider 或帳號

@@ -31,6 +31,9 @@ def complete_evidence():
         provider, dataset = feed["provider"], feed["dataset_key"]
         if not feed["capabilities"]["acquisition"]:
             continue
+        # The Backend export does not sample intraday feeds yet; see ``assess``.
+        if feed["contract"]["schema_id"] == "intraday_partition":
+            continue
         plan = {
             "plan_id": dataset,
             "dataset_key": dataset,

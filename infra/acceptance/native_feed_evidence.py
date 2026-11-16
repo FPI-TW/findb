@@ -26,7 +26,8 @@ def assess(backend: dict[str, Any], fetchers: dict[str, dict[str, Any]]) -> dict
     expected = {
         (f["provider"], f["dataset_key"])
         for f in catalog["feeds"]
-        if f["capabilities"]["acquisition"]
+        # The Backend export does not sample intraday feeds yet.
+        if f["capabilities"]["acquisition"] and f["contract"]["schema_id"] != "intraday_partition"
     }
     rows = backend["feeds"]
     actual = [(f["provider"], f["dataset_key"]) for f in rows]

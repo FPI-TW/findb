@@ -78,7 +78,12 @@ async def export(spec):
     trade_date = date.fromisoformat(spec["trade_date"])
     from app.services.provider_metadata import acquisition_feeds
 
-    catalog = [feed.model_dump() for feed in acquisition_feeds()]
+    # Intraday feeds store objects, not table rows; this sampler does not cover them yet.
+    catalog = [
+        feed.model_dump()
+        for feed in acquisition_feeds()
+        if feed.contract.schema_id != "intraday_partition"
+    ]
     feeds = []
     async with async_session_maker() as db:
         await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))

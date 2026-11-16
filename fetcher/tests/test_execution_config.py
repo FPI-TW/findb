@@ -12,6 +12,15 @@ from findb_fetcher.execution_config import resolve_execution_config
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from test_full_market import _runtime
 
+FINLAB_FEEDS = {
+    "tw_equity_eod",
+    "tw_etf_eod",
+    "tw_equity_bar_1m",
+    "tw_etf_bar_1m",
+    "tw_equity_tick",
+    "tw_etf_tick",
+}
+
 
 def resolve(value):
     return resolve_execution_config(
@@ -103,7 +112,10 @@ def test_maintenance_scope_may_be_narrower_but_never_unvalidated(fault):
             profile="full_market",
             complete_scope=False,
         )
-        assert [feed["dataset_key"] for feed in snapshot.feeds] == ["tw_equity_eod"]
+        assert [feed["dataset_key"] for feed in snapshot.feeds] == [
+            feed["dataset_key"] for feed in value["feeds"]
+        ]
+        assert len(snapshot.feeds) == len(FINLAB_FEEDS) - 1
     else:
         with pytest.raises((ValueError, KeyError)):
             resolve_execution_config(
@@ -120,7 +132,7 @@ def test_snapshot_is_detached_and_has_complete_authorized_scopes():
     snapshot = resolve(value)
     value["feeds"][0]["scheduled_time"] = "00:00"
     assert snapshot.feeds[0]["scheduled_time"] != "00:00"
-    assert {f["dataset_key"] for f in snapshot.feeds} == {"tw_equity_eod", "tw_etf_eod"}
+    assert {f["dataset_key"] for f in snapshot.feeds} == FINLAB_FEEDS
     assert all("slot_id" not in feed for feed in value["feeds"])
 
 
@@ -230,6 +242,55 @@ def test_published_clock_controls_due_dates_across_dst_and_year(
     assert [row["trade_date"] for row in daily] == [expected]
     assert daily[0]["scope"]["feed"]["scheduled_time"] == clock
     runtime.close()
+
+
+def test_a_date_queues_its_earlier_scheduled_feeds_first(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    import findb_fetcher.full_market_runtime as module
+    from findb_fetcher import provider_work
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            # 19:00 in Taipei: every FinLab feed of the day is due in the same round.
+            return datetime.fromisoformat("2026-11-13T11:00:00+00:00").astimezone(tz)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    monkeypatch.setenv("APP_ENVIRONMENT", "local")
+    runtime, source, _ = _runtime(tmp_path, provider="finlab")
+    source.execution_config = lambda: publication("finlab")
+    runtime._ensure_proof = lambda: None
+    source.request = lambda *args: {
+        "acquisition_allowed": True,
+        "admitted_dataset_keys": sorted(FINLAB_FEEDS),
+    }
+    source.universes = lambda *args: {
+        "activation": {"enabled": True, "activation_date": "2026-11-12"},
+        "published_release_id": "frozen",
+    }
+    enqueued = []
+    runtime._enqueue = enqueued.append
+
+    @contextmanager
+    def claim(*args, **kwargs):
+        yield None
+
+    monkeypatch.setattr(provider_work, "claimed_work", claim)
+    runtime.cycle()
+    runtime.close()
+
+    daily = [(r["trade_date"], r["dataset_key"]) for r in enqueued if r["kind"] == "daily"]
+    # The daily bars (18:00) of a date are never behind its hours of intraday work (18:30).
+    one_date = [
+        "tw_equity_eod",
+        "tw_etf_eod",
+        "tw_equity_bar_1m",
+        "tw_equity_tick",
+        "tw_etf_bar_1m",
+        "tw_etf_tick",
+    ]
+    assert daily == [(day, key) for day in ("2026-11-12", "2026-11-13") for key in one_date]
 
 
 @pytest.mark.parametrize("fault", [None, "http", "cache", "bytes", "object"])

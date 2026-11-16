@@ -38,9 +38,17 @@ def test_seed_and_frozen_migration_use_catalog_slots():
             continue
         schedule = definition["config"]["delivery_expectation"]["schedule"]
         assert schedule["slot_id"] == feed.delivery.slot_id, definition["dataset_key"]
-        assert module.DATASET_SLOTS[feed.dataset_key] == feed.delivery.slot_id
         assert module.CONTROL_SLOTS[f"full_market_{feed.provider}_v1"] == feed.delivery.slot_id
-    assert set(module.DATASET_SLOTS) == set(feeds)
+        # A feed added after the frozen migration is created by seed with its catalog slot.
+        if feed.dataset_key in module.DATASET_SLOTS:
+            assert module.DATASET_SLOTS[feed.dataset_key] == feed.delivery.slot_id
+    assert set(module.DATASET_SLOTS) <= set(feeds)
+    assert set(feeds) - set(module.DATASET_SLOTS) == {
+        "tw_equity_bar_1m",
+        "tw_etf_bar_1m",
+        "tw_equity_tick",
+        "tw_etf_tick",
+    }
 
 
 @pytest.mark.asyncio

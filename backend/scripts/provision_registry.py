@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from app.services.delivery_policy import DeliveryExpectation
@@ -326,18 +326,11 @@ async def provision_registry(
                 text("""
                     SELECT dataset_key, config
                     FROM dataset_registry
-                    WHERE dataset_key IN (
-                        'us_equity_eod',
-                        'tw_equity_eod',
-                        'tw_equity_minute',
-                        'tw_etf_minute',
-                        'hk_equity_eod',
-                        'tw_etf_eod',
-                        'tw_futures_eod'
-                    )
+                    WHERE dataset_key IN :dataset_keys
                     ORDER BY dataset_key
                     FOR UPDATE
-                """),
+                """).bindparams(bindparam("dataset_keys", expanding=True)),
+                {"dataset_keys": list(SUPPORTED_DATASETS)},
             )
             rows = result.mappings().all()
             new_configs, report = reconcile_supported_dataset_configs(

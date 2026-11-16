@@ -204,8 +204,9 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 - Provider catalog 放寬 feed 的頻率，新增四條 feed：股票與 ETF 各一條 1 分 K、各一條逐筆。
 - 完成度：成員「有資料」的依據改為索引表有該（標的、交易日）的列，不沿用分批快照的判定。
   `expected = data + no_data + missing + blocked` 的定義不變。
-- 排程時刻要等 FinLab 發布時點的量測結果。已知 60 分鐘行情的排程是台北 20:00；1 分 K 與逐筆的發布時點正在觀察
-  （2026-11-16 起）。
+- 排程時刻：台北 18:30，完成期限隔日 08:00。2026-11-16 實測 1 分 K 與逐筆約 17:00 發布；排在日 K（18:00）
+  之後，因為一個 provider 的工作由同一個 consumer 依序執行，四條盤中 feed 合計要數小時，不能排在日 K 前面。
+  同一個交易日的工作依排程時間排入佇列。
 - 新的 dataset 另起名稱（暫名 `tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick`），不沿用
   `tw_equity_minute`／`tw_etf_minute`。舊的兩條維持現狀，只供查詢 Shioaji 時期的歷史；部署文件已載明替代 provider
   不得沿用舊的收據與凍結計劃作為成功證據。
@@ -310,6 +311,8 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
    台股日 K 的官方名單）。合併後不會被執行，直到下一項把 feed 加進 catalog。
 5. 切換，Backend 與 Fetcher 同一個 PR：catalog 加入四條 feed、seed 與 registry provisioning 的四個 dataset、
    FinLab Source credential 範圍的 migration、排程的 dataset 對應，以及所有生成產物。限制見下一節。
+   （已完成：四個 dataset 建立時未啟用；以真實的 Fetcher 執行迴圈對真實的 Source 與 Worker 的整合測試，確認
+   排程規劃、抓取、交付、寫入與計劃計數整條路徑。）
 6. Backend：Serve 的 1 分 K（含彙總刻度）與逐筆查詢；Dashboard 的查詢頁視需要另開。
 7. Staging 驗收：先只開股票的 1 分 K，再開 ETF 與逐筆。
 8. Production 上線與文件整併。
@@ -330,6 +333,31 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 所以切換那一步的部署順序固定為：停止 FinLab 的 control → 部署 Backend → 部署 Fetcher → 重新啟動 control。
 Fetcher 的部署本來就要求 controls 停止。Staging 平時 controls 是停的，直接合併即可；production 要安排在
 沒有排程的時段。
+
+Production 不能只升 Backend：migration 一執行，FinLab 的排程就發布六條 feed，舊版 Fetcher 會拒收整份排程，
+FinLab 的日 K 也跟著停止規劃新日期，直到 Fetcher 升到同一版。
+
+Staging 合併時 Backend 與 Fetcher 的部署同時開始。Fetcher 的新 consumer 啟動時要求排程的 dataset 等於它
+安裝的 feed，如果它比 Backend 的 migration 早啟動就會失敗並自動回復；等 Backend 部署完成後重跑 Fetcher 部署
+即可。
+
+### 啟用步驟（staging 驗收用）
+
+切換部署後四個 dataset 都未啟用，FinLab 的排程行為與部署前相同。每啟用一條：
+
+1. Owner 在 Admin 把該 dataset 設為啟用。
+2. 觸發該 dataset 的 universe 更新，確認成員數與日 K 的名單一致後發布 baseline。
+3. 啟動 FinLab 的 control（已在執行就先停止再啟動，讓新的 dataset 納入）。staging 會從首日開始補抓，驗收前
+   先把首日調成單日。
+4. 觀察計劃的 `data／no_data／missing／blocked`、Raw 與 Canonical R2 的物件、索引表，以及主機的記憶體。
+
+驗收順序：先只開 `tw_equity_bar_1m`，通過後再開 ETF 與逐筆。
+
+### 這次沒有納入的
+
+- 失敗告警：`infra/monitoring/publish_staging_metrics.py` 的拒收／DQ 錯誤計數仍只看五條日線 feed。盤中每天
+  約四千六百筆交付，要先在 staging 看到實際的失敗率才能定門檻。
+- Native feed evidence（`infra/acceptance/`）的取樣只涵蓋日線 feed；盤中的資料在 Canonical R2，取樣方式不同。
 
 ## 已定事項
 

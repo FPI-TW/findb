@@ -34,8 +34,7 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 
 ## Active feeds
 
-五條 active feeds 的唯一靜態宣告在 `backend/configs/provider_catalog.v1.json`，兩個 execution profiles
-共用。Backend 消費生成 metadata 並發布 Source execution-config；Fetcher 每輪以完整動態快照規劃新日期，image 只包含非排程 descriptors 與 bootstrap。見 [provider metadata](provider_metadata.md)。
+九條 active feeds（五條日線、四條 FinLab 盤中）的唯一靜態宣告在 `backend/configs/provider_catalog.v1.json`。Backend 消費生成 metadata 並發布 Source execution-config；Fetcher 每輪以完整動態快照規劃新日期，image 只包含非排程 descriptors 與 bootstrap。見 [provider metadata](provider_metadata.md)。
 
 | Provider | Datasets | Contract |
 | --- | --- | --- |
