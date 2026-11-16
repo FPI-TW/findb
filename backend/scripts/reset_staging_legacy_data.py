@@ -114,6 +114,8 @@ TARGET_TABLES = (
     "public.instrument_identifiers",
     "public.instrument_stats",
     "public.instruments",
+    # Index only: the canonical objects it names live in R2 and are not removed here.
+    "public.intraday_partition",
     "public.macro_observation",
     "public.macro_series",
     "public.market_data_eod",

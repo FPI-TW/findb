@@ -60,11 +60,11 @@ Scheduler delivery可額外帶完整`delivery` object：`slot_id`、`scheduled_f
 | 欄位 | 規則 |
 | --- | --- |
 | `data_date` | 主要業務日期 |
-| `delivery_mode` | EOD使用`full_snapshot`、`incremental`或`backfill`；minute固定`sequenced_snapshot` |
+| `delivery_mode` | EOD使用`full_snapshot`、`incremental`或`backfill`；minute固定`sequenced_snapshot`；`intraday_partition`只接受`incremental`或`backfill` |
 | `declared_record_count` | 必須等於`len(data)` |
 | `coverage_start_date/end_date` | 跨日期時成對提供，`data_date`等於coverage end |
-| `source_raw_ref` | 選填的credential-free provider raw reference |
-| `source_raw_sha256` | 選填的lowercase SHA-256 |
+| `source_raw_ref` | 選填的credential-free provider raw reference；`intraday_partition`必填 |
+| `source_raw_sha256` | 選填的lowercase SHA-256；`intraday_partition`必填 |
 | `sequence/sequence_count` | 分批delivery時成對提供 |
 
 `full_snapshot`代表該資料日完整dataset universe；部分symbol使用`incremental`。
@@ -156,6 +156,31 @@ volume 明確為 0 才由 Fetcher 提交具持久化證據的 `no_trade`，不�
 volume 也未知時保持 blocked，不視為 no_data。Batch 仍使用共用 EOD coverage、raw
 reference 與 count validation；原始 TAIFEX 訊息由 Fetcher mapping，不由 Backend 解析。
 
+## `intraday_partition.v1`
+
+盤中資料（1 分 K、逐筆成交）以物件參照交付：一個 request 代表一檔標的的一個交易日，資料列不在
+request 內，而在 producer 已存進 Raw R2 的 Parquet 物件裡。契約已發布，但目前沒有 dataset 接受它
+（送入的 request 會被拒絕），對應的 normalizer 也尚未登錄。
+
+`data` 固定只有一筆，描述該分區：
+
+| 欄位 | 規則 |
+| --- | --- |
+| `symbol`、`trade_date` | 標的與台灣本地交易日；`trade_date` 必須等於 `batch.data_date` |
+| `record_kind` | `bar_1m` 或 `tick`，必須是 dataset 的 `defaults.record_kind` |
+| `rows_ref`、`rows_sha256`、`rows_bytes` | 資料列物件的 `r2://` 參照、SHA-256 與大小（上限 16 MiB） |
+| `row_count` | 資料列數，至少 1；`bar_1m` 不超過 1,440 |
+| `rows_format` | 固定 `parquet` |
+| `price_adjustment`、`volume_unit` | 固定 `none` 與 `lot`（張；上市櫃股票與 ETF 為 1,000 股） |
+
+Batch 的 `source_raw_ref`／`source_raw_sha256` 必填，指向 provider 原始檔，只作為證據保存，Backend
+不解析它。`declared_record_count` 固定為 1，不使用 `sequence`；coverage 若提供，必須等於 `data_date`。
+
+資料列物件的欄位由契約定義，發布在 JSON Schema 的 `x-findb-row-layouts[record_kind]`（欄位名稱、
+Arrow 型別、可否為空，依序排列）。Provider 欄位到這份配置的對應由 Fetcher 完成：時間一律是 UTC、
+`trade_date` 是交易所當地日期、`symbol` 是字串、價格未還原、成交量單位是張。當日沒有成交時不送
+request，沿用官方 no-data 證據。
+
 ## Frozen universe 與 daily plan protocol
 
 Control protocol v1 定義在 `backend/app/schemas/full_market.py`，與 ingest JSON Schema
@@ -220,6 +245,8 @@ artifact缺失、版本不符或內容不合法時fail closed。
 
 Dataset registry必須聲明schema ID、accepted/current versions、enforcement、market、
 asset class及必要defaults／delivery expectation。Dataset scope必須與contract一致。
+`intraday_partition` 的 dataset 另須聲明 `market_timezone=Asia/Taipei`、`price_adjustment=none` 與
+`record_kind`；一個 dataset 只保存一種盤中資料，其他種類的分區以 `INGRESS_SCHEMA_NOT_ALLOWED` 拒絕。
 
 已發布schema不得原地做breaking change。升級順序固定為：backend同時接受新舊版本、
 fixture／shadow驗證、Fetcher切換pin版本、觀察attempt／DQ／freshness、經保留期後停止舊版。
