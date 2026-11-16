@@ -507,3 +507,22 @@ def test_single_dispatch_store_disables_hidden_sdk_retries(monkeypatch):
         )
     assert failure.value.retryable and len(calls) == 1
     store._client.close()
+
+
+def test_r2_store_keeps_a_parquet_object_under_its_own_type_and_extension() -> None:
+    client = FakeR2()
+    raw = b"PAR1 provider partition PAR1"
+
+    stored = R2RawPayloadStore(_config(), client=client).persist(
+        raw,
+        dataset_key="tw_equity_bar_1m",
+        source_symbol="2330",
+        provider="finlab",
+        payload_format="parquet",
+    )
+
+    assert client.calls[0]["Body"] == raw
+    assert client.calls[0]["ContentType"] == "application/vnd.apache.parquet"
+    assert client.calls[0]["Key"].startswith("finlab/tw_equity_bar_1m/")
+    assert client.calls[0]["Key"].endswith(f"/{hashlib.sha256(raw).hexdigest()}.parquet")
+    assert stored.sha256 == hashlib.sha256(raw).hexdigest()

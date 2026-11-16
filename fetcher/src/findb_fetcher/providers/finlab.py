@@ -431,6 +431,9 @@ def verify_sdk_contract() -> None:
         _sdk_seams(importlib.import_module("finlab"), importlib.import_module("finlab.data"))
     except FinLabNativeError:
         raise FinLabSdkError("FinLab SDK does not expose the reviewed data API") from None
+    from findb_fetcher.providers.finlab_intraday import verify_intraday_contract
+
+    verify_intraday_contract()
 
 
 def _refused_login(*args: object, **kwargs: object) -> None:

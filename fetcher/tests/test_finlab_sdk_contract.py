@@ -211,7 +211,12 @@ def test_the_installed_sdk_is_the_reviewed_release_and_shape(tmp_path) -> None:
             "-c",
             "from findb_fetcher.providers.finlab import verify_sdk_contract; verify_sdk_contract()",
         ],
-        env={**os.environ, "HOME": str(tmp_path)},
+        # The image carries the contracts at their default path; here they are the repo's.
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "FETCHER_CONTRACTS_DIR": str(Path(__file__).resolve().parents[2] / "contracts"),
+        },
         capture_output=True,
         text=True,
         timeout=120,
