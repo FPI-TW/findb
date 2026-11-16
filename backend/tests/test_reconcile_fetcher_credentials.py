@@ -88,13 +88,13 @@ async def test_fetcher_credentials_reject_reused_hash(
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-async def test_unified_credentials_cover_five_feeds_without_profile_branch(test_session, target):
+async def test_unified_credentials_cover_every_feed_without_profile_branch(test_session, target):
     results = await reconcile_fetcher_credentials_in_session(
         test_session, _hashes(), deployment_target=target
     )
     assert len(results) == 4
     rows = (await test_session.scalars(select(SourceClient))).all()
-    assert sum(len(row.allowed_datasets) for row in rows) == 5
+    assert sum(len(row.allowed_datasets) for row in rows) == 9
     assert {row.source_name for row in rows} == {
         "twelve_data",
         "finlab",

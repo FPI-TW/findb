@@ -1,7 +1,9 @@
 # Provider metadata
 
-`backend/configs/provider_catalog.v1.json` 定義本次統一的四個 providers／五條 feeds：
-Twelve Data US EOD、FactSet HK EOD、FinLab TW equity／ETF EOD、TAIFEX futures EOD。
+`backend/configs/provider_catalog.v1.json` 定義四個 providers／九條 feeds：
+Twelve Data US EOD、FactSet HK EOD、FinLab TW equity／ETF EOD、TAIFEX futures EOD，以及 FinLab 的四條盤中 feed
+（`tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick`，契約 `intraday_partition.v1`）。
+只有盤中 feed 的頻率不是 `daily`：1 分 K 為 `minute`，逐筆為 `tick`。
 Shioaji 已完成退役，不列入這份 catalog；Twelve Data 不提供 HK。
 
 ## 目前導入階段

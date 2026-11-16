@@ -348,6 +348,166 @@
       "historical_execution": null
     },
     {
+      "provider": "finlab",
+      "dataset_key": "tw_equity_bar_1m",
+      "market": "TW",
+      "calendar_market": "TW",
+      "asset_class": "equity",
+      "frequency": "minute",
+      "contract": {
+        "schema_id": "intraday_partition",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "unsupported"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "18:30",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "08:00",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "publication_retry_window_seconds": 14400,
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "historical_execution": null
+    },
+    {
+      "provider": "finlab",
+      "dataset_key": "tw_etf_bar_1m",
+      "market": "TW",
+      "calendar_market": "TW",
+      "asset_class": "etf",
+      "frequency": "minute",
+      "contract": {
+        "schema_id": "intraday_partition",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "unsupported"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "18:30",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "08:00",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "publication_retry_window_seconds": 14400,
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "historical_execution": null
+    },
+    {
+      "provider": "finlab",
+      "dataset_key": "tw_equity_tick",
+      "market": "TW",
+      "calendar_market": "TW",
+      "asset_class": "equity",
+      "frequency": "tick",
+      "contract": {
+        "schema_id": "intraday_partition",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "unsupported"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "18:30",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "08:00",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "publication_retry_window_seconds": 14400,
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "historical_execution": null
+    },
+    {
+      "provider": "finlab",
+      "dataset_key": "tw_etf_tick",
+      "market": "TW",
+      "calendar_market": "TW",
+      "asset_class": "etf",
+      "frequency": "tick",
+      "contract": {
+        "schema_id": "intraday_partition",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "unsupported"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "18:30",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "08:00",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "publication_retry_window_seconds": 14400,
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "historical_execution": null
+    },
+    {
       "provider": "taifex",
       "dataset_key": "tw_futures_eod",
       "market": "TW",

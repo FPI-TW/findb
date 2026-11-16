@@ -851,7 +851,7 @@ Origin certificate secret固定使用單行 base64 欄位
 | Source | Dataset allowlist |
 | --- | --- |
 | `twelve_data` | `us_equity_eod` |
-| `finlab` | `tw_equity_eod`、`tw_etf_eod` |
+| `finlab` | `tw_equity_eod`、`tw_etf_eod`、`tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick` |
 | `taifex` | `tw_futures_eod` |
 | `factset` | `hk_equity_eod` |
 

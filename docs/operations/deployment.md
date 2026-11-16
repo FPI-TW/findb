@@ -633,7 +633,7 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 每次 Fetcher bundle v5 部署固定安裝八個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
 與一個 `findb-historical-<suffix>`。Daily 使用 `findb-fetch-runtime --execution-profile full_market`、
-五條 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝拓撲不隨設定改變。
+catalog 的 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝拓撲不隨設定改變。
 
 | 狀態 | 路徑 |
 | --- | --- |
@@ -805,7 +805,7 @@ application role 不具 superuser／CREATEDB／CREATEROLE，授予 public／raw 
 Deployment credential reconciliation 以 SHA-256 建立 queue-health Admin viewer、lookup Serve、static-cache Serve
 固定 identity，輪替保留 audit；preflight check-only transaction rollback，migration／初始化階段才 commit。
 Fetcher Source credential bridge 只跨 unit 傳送 hashes，不授予 instance role 跨 unit讀取 secrets。
-四個 active provider 的 Source scopes 必須涵蓋對應五條 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
+四個 active provider 的 Source scopes 必須涵蓋 catalog 中各自的 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
 
 兩環境的 FinDB origin 都只接受 Cloudflare published CIDRs 的 443，沒有 80、SSH 或其他 port；Fetcher 主機沒有 ingress。staging 的 origin SG 由 `infra/tofu/staging/network.tf` 管理，主機上不得再掛其他對外 SG。
 FinDB RDS 不公開且只接受 FinDB security group；Fetcher 不連 FinDB DB。FactSet consumer 另以 TLS 唯讀連接供應商 MySQL RDS，使用獨立 credentials。Source 經 Cloudflare／nginx 還原可信 IP 後執行 allowlist。

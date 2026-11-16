@@ -3,13 +3,13 @@
 Fetcher 是獨立 application，不 import Backend、不連 FinDB DB；透過受保護 Source API 交付 versioned contracts。
 環境身份由 `APP_ENVIRONMENT=local|staging|production` 載入，須符合 manifest 的 deployment_target。
 
-## 現行五條 feeds
+## 現行九條 feeds
 
 | Provider | Datasets |
 | --- | --- |
 | Twelve Data | `us_equity_eod` |
 | FactSet | `hk_equity_eod` |
-| FinLab | `tw_equity_eod`、`tw_etf_eod` |
+| FinLab | `tw_equity_eod`、`tw_etf_eod`；盤中 `tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick` |
 | TAIFEX | `tw_futures_eod` |
 
 唯一 daily recurring runtime 是 `findb-fetch-runtime`，execution profile 只有 `full_market`；

@@ -9,6 +9,7 @@ import textwrap
 import traceback
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -31,6 +32,7 @@ from findb_fetcher.provider_adapters.finlab import INTRADAY_DATASETS, FinLabAdap
 from findb_fetcher.provider_process import ProviderProcessError, supervised_call
 from findb_fetcher.providers.finlab import (
     FinLabConfigError,
+    FinLabDatasetTable,
     FinLabNativeError,
     FinLabOperationalError,
     FinLabSdkError,
@@ -857,3 +859,58 @@ def test_an_intraday_dataset_uses_the_daily_official_list_without_a_catalogue_re
     # Only this dataset's own lists were downloaded, and they are its evidence.
     assert set(snapshot_result.evidence) == set(requested)
     assert all(member["provider_symbol"] == member["symbol"] for member in snapshot_result.members)
+
+
+def test_a_refresh_of_the_whole_finlab_scope_builds_daily_and_intraday_universes() -> None:
+    official = {
+        TW_COMPANY_URLS[0]: '[{"公司代號":"2330"},{"公司代號":"7848"}]'.encode(),
+        TW_COMPANY_URLS[1]: b'[{"SecuritiesCompanyCode":"6488"}]',
+        TW_ISIN_STOCK_URLS[0]: class_page(
+            [("2330", "ESVUFR", "1994/09/05"), ("7848", "ESVUFR", "2026/11/10")]
+        ),
+        TW_ISIN_STOCK_URLS[1]: class_page([("6488", "ESVUFR", "2014/03/26")], otc=True),
+    }
+    catalogue: list[tuple[str, ...]] = []
+
+    class Gateway:
+        def fetch_catalogue(self, *, symbols):
+            catalogue.append(tuple(symbols))
+            # The daily price table does not carry the new listing yet.
+            return FinLabDatasetTable(dates=(), symbols=("2330", "6488"), values=())
+
+    adapter = FinLabAdapter()
+    adapter.gateway = lambda observe: Gateway()  # type: ignore[method-assign]
+    datasets = ["tw_equity_eod", "tw_equity_bar_1m", "tw_equity_tick"]
+    context = UniverseContext(
+        dataset_keys=datasets,
+        observed_at=FETCHED,
+        zones={dataset: TAIPEI for dataset in datasets},
+        snapshot=lambda url, provider_response=False: official[url],
+        catalogue=lambda **kwargs: pytest.fail("no catalogue expected"),
+        catalogue_evidence=lambda dataset: {},
+        persist=lambda raw, dataset, kind: SimpleNamespace(ref=f"{kind}/{dataset}"),
+        observe_response=lambda *args, **kwargs: None,
+        snapshot_objects={},
+        refresh_limits=lambda: None,
+        pace=lambda: None,
+    )
+
+    groups = adapter.build_universe([{"dataset_key": dataset} for dataset in datasets], context)
+
+    assert set(groups) == set(datasets)
+    statuses = {
+        dataset: {m["symbol"]: m["mapping_status"] for m in groups[dataset].members}
+        for dataset in datasets
+    }
+    # The daily dataset follows FinLab's price table; intraday attempts every classified member.
+    assert statuses["tw_equity_eod"] == {"2330": "mapped", "7848": "gap", "6488": "mapped"}
+    assert (
+        statuses["tw_equity_bar_1m"]
+        == statuses["tw_equity_tick"]
+        == {
+            "2330": "mapped",
+            "7848": "mapped",
+            "6488": "mapped",
+        }
+    )
+    assert catalogue == [("2330", "7848", "6488")]

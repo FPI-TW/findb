@@ -82,7 +82,7 @@ Scheduler 的 `dataset_keys` 是控制／Source 認證的相容範圍，不代�
 | 範圍 | 權威來源 | 用途 |
 | --- | --- | --- |
 | 相容 scope | `scheduler_dataset`／scheduler `dataset_keys` | 驗證 control identity 與 Source credential；Twelve Data 僅 US，HK 已永久退役 |
-| 安裝 feeds | `backend/configs/provider_catalog.v1.json` 及其生成的 Fetcher config | Backend catalog 與 Fetcher config 均為五條（Shioaji 分 K 僅保留歷史查詢，見 [deployment](deployment.md)）；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
+| 安裝 feeds | `backend/configs/provider_catalog.v1.json` 及其生成的 Fetcher config | Backend catalog 與 Fetcher config 均為九條：五條日線與 FinLab 的四條盤中 feed（Shioaji 分 K 僅保留歷史查詢，見 [deployment](deployment.md)）；Twelve Data 僅 US EOD，HK EOD 配置給 FactSet |
 | 凍結 admission | `admitted_dataset_keys`／`admission_id` | Owner 最近一次啟動時凍結的可用 datasets；停止後投影仍可能保留 |
 | 即時抓取授權 | Source `full-market/authorization?consumer=full_market\|maintenance` 的 `acquisition_allowed`／`acquisition_blockers` | 驗證 control、Source credential、baseline 與 provider cutover；deprecated `full_market_enabled` 固定為 `true` |
 
@@ -1017,14 +1017,39 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 建立 frozen plan。production 必須改用 `--deployment-target production`，且不得把 staging 輸出
 當作 production 核准。
 
-五個 active feed 的 baseline 對應如下，每個 dataset 都需要自己的 immutable release：
+各 feed 的 baseline 對應如下，每個 dataset 都需要自己的 immutable release：
 
 | Provider | Dataset | Calendar market |
 | --- | --- | --- |
 | Twelve Data | `us_equity_eod` | US |
 | FactSet | `hk_equity_eod` | HK |
 | FinLab | `tw_equity_eod`、`tw_etf_eod` | TW |
+| FinLab（盤中） | `tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick` | TW |
 | TAIFEX | `tw_futures_eod` | TAIFEX |
+
+### FinLab 盤中 feed
+
+四條盤中 feed 是 1 分 K 與逐筆成交，股票與 ETF 各一條，契約為 `intraday_partition.v1`：每個（標的、交易日）
+一筆交付，資料存 Canonical R2（見 [盤中儲存](../architecture/intraday_storage.md)）。目前只有程式與設定就緒，
+staging 的實際執行尚未驗收，進度見 [設計文件](../dev/finlab-intraday-batch1.md)。
+
+- **啟用**：四個 dataset 由 migration 建立，預設未啟用（`is_active=false`），部署不會開始抓取。Owner 逐條
+  把 dataset 設為啟用並發布它自己的 baseline；control 啟動時凍結當下可用的 dataset，所以在 control 執行中才
+  備妥的 dataset，要停止再啟動 control 才會納入。
+- **名單**：沿用台股日 K 的官方名單（TWSE／TPEx），不查 FinLab 的目錄。FinLab 沒有盤中標的清單，而且會提供
+  日 K 價格表還沒有的標的（例如新上市），所以每個已分類的成員都會嘗試。
+- **排程**：台北 18:30，完成期限為隔日 08:00。FinLab 的 control 顯示的是該 provider 最早的 feed 時間
+  （18:00）。同一個交易日的工作依排程時間排入佇列，日 K 一定排在盤中之前；跨日補抓時仍是日期優先。
+- **Historical**：不支援，回補不在第 1 批範圍。
+
+FinLab 對單一成員的回答與結果：
+
+| FinLab 的回答 | 結果 |
+| --- | --- |
+| 該日分區已發布 | `data`。FinLab 的原始檔與轉成契約欄位的檔都存 Raw R2，Worker 寫入日檔與索引後才計為有資料 |
+| 該日沒有成交（`no_trades`） | `no_data`，證據是 FinLab manifest 的該筆紀錄 |
+| FinLab 尚未驗證該交易日 | 沒有標的可取：整輪等待發布，不記在任何成員身上 |
+| 沒有該標的的分區 | 只影響該成員：回報 `blocked`（`empty_response`）並保留有限次重試，其他成員繼續 |
 
 ## 設定與啟動
 

@@ -46,6 +46,34 @@
     "feeds": [
       {
         "provider": "finlab",
+        "dataset_key": "tw_equity_bar_1m",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "equity",
+        "frequency": "minute",
+        "contract": {
+          "schema_id": "intraday_partition",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "18:30",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "08:00",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "finlab",
         "dataset_key": "tw_equity_eod",
         "market": "TW",
         "calendar_market": "TW",
@@ -78,6 +106,62 @@
       },
       {
         "provider": "finlab",
+        "dataset_key": "tw_equity_tick",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "equity",
+        "frequency": "tick",
+        "contract": {
+          "schema_id": "intraday_partition",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "18:30",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "08:00",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "finlab",
+        "dataset_key": "tw_etf_bar_1m",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "etf",
+        "frequency": "minute",
+        "contract": {
+          "schema_id": "intraday_partition",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "18:30",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "08:00",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "finlab",
         "dataset_key": "tw_etf_eod",
         "market": "TW",
         "calendar_market": "TW",
@@ -98,6 +182,34 @@
           "timezone": "Asia/Taipei",
           "local_time": "23:00",
           "trade_date_day_offset": 0
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "finlab",
+        "dataset_key": "tw_etf_tick",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "etf",
+        "frequency": "tick",
+        "contract": {
+          "schema_id": "intraday_partition",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "18:30",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "08:00",
+          "trade_date_day_offset": 1
         },
         "bounded_monitor": {
           "enabled": false,

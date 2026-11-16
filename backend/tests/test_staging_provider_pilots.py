@@ -39,7 +39,7 @@ def test_shared_feed_catalog_matches_source_scope_and_supported_contracts(target
     )
     specs = source_specs_for_profile("unified", target)
     declarations = {item["dataset_key"]: item["config"] for item in DATASETS}
-    assert len(catalog["feeds"]) == 5
+    assert len(catalog["feeds"]) == 9
     for spec in specs:
         acquisition = {
             feed["dataset_key"] for feed in catalog["feeds"] if feed["provider"] == spec.source_name

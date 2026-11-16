@@ -210,11 +210,16 @@ async def test_rbac_password_change_gate_and_unified_credential_lifecycle(
         },
     )
     assert provider_wide_source.status_code == 200
-    assert provider_wide_source.json()["data"]["scopes"] == ["tw_equity_eod", "tw_etf_eod"]
-    assert provider_wide_source.json()["data"]["policies"]["allowed_datasets"] == [
+    finlab_scope = [
+        "tw_equity_bar_1m",
         "tw_equity_eod",
+        "tw_equity_tick",
+        "tw_etf_bar_1m",
         "tw_etf_eod",
+        "tw_etf_tick",
     ]
+    assert provider_wide_source.json()["data"]["scopes"] == finlab_scope
+    assert provider_wide_source.json()["data"]["policies"]["allowed_datasets"] == finlab_scope
 
     created = await client.post(
         "/api/v1/admin/credentials",

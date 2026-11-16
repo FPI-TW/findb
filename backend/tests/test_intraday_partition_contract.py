@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 from datetime import date
-from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -26,7 +25,7 @@ from app.services.ingress_contracts import (
 )
 from app.services.normalization_queue import execute_normalization
 from app.services.normalize import intraday
-from app.services.source_clients import PROVIDER_DATASET_SCOPE, create_source_client
+from app.services.source_clients import create_source_client
 from tests.intraday_support import RAW_BUCKET, Stores, bars, parquet_bytes
 
 ACCOUNT = "a" * 32
@@ -277,15 +276,6 @@ def test_only_an_intraday_dataset_declares_the_kind_it_stores() -> None:
         DatasetContractDeclaration.model_validate(eod)
 
 
-@pytest.fixture
-def intraday_scope():
-    """The provider scope the catalog does not grant yet: no feed delivers this contract."""
-    assert "tw_equity_bar_1m" not in PROVIDER_DATASET_SCOPE["finlab"]
-    scope = (*PROVIDER_DATASET_SCOPE["finlab"], "tw_equity_bar_1m")
-    with patch.dict(PROVIDER_DATASET_SCOPE, {"finlab": scope}):
-        yield
-
-
 async def _seed(test_session, *, record_kind: str = "bar_1m") -> dict:
     test_session.add(
         DatasetRegistry(
@@ -317,7 +307,6 @@ async def test_an_accepted_partition_is_stored_by_the_queue_from_its_reference(
     owned_client: AsyncClient,
     test_session,
     test_engine,
-    intraday_scope,
     monkeypatch,
 ) -> None:
     headers = await _seed(test_session)
@@ -371,7 +360,6 @@ async def test_an_accepted_partition_is_stored_by_the_queue_from_its_reference(
 async def test_a_dataset_refuses_partitions_of_another_kind(
     owned_client: AsyncClient,
     test_session,
-    intraday_scope,
 ) -> None:
     headers = await _seed(test_session, record_kind="tick")
 

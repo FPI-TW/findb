@@ -1022,7 +1022,11 @@ class FullMarketRuntime:
                             "scope": {"dataset_key": feed["dataset_key"]},
                         }
                     )
-        for day, feed in sorted(due, key=lambda value: (value[0], value[1]["dataset_key"])):
+        # One owner works a provider's queue in order: within a date, a feed scheduled
+        # earlier is never queued behind a later one that happens to sort first.
+        for day, feed in sorted(
+            due, key=lambda value: (value[0], value[1]["scheduled_time"], value[1]["dataset_key"])
+        ):
             self._enqueue(
                 {
                     "stable_key": f"daily:{self.execution_profile}:{feed['dataset_key']}:{day}",

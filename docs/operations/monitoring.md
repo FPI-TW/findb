@@ -283,7 +283,7 @@ stderr空白，輸出分別保存於既有KMS-encrypted log groups。相鄰兩�
 
 ## Active-feed evidence and anomaly calibration
 
-`infra/acceptance/collect_native_feed_evidence.py` 以明確的 environment 與 trade date 收集共用 catalog 的五條 active feeds。舊五條 feed／固定商品的三個 CLI 已停用；其純函式
+`infra/acceptance/collect_native_feed_evidence.py` 以明確的 environment 與 trade date 收集共用 catalog 的五條日線 feeds；FinLab 的四條盤中 feed 存的是 Canonical R2 物件，這份取樣尚未涵蓋。舊五條 feed／固定商品的三個 CLI 已停用；其純函式
 保留作投影與有界 SSM transport 共用及回歸測試，不再作現行 native 驗收入口。
 
 ```bash
@@ -310,7 +310,7 @@ Shared account governor 的 recent operations、official usage 與 unknown／arm
 不得將缺少 usage 解讀為零用量，也不得抹除既有 debt 以通過驗收。
 
 每條 feed 至少有一筆真實非零資料，且該 plan 全部 expected 成員已有 data／有證據的 no_data，
-missing／blocked 為零、Fetcher 工作全部完成，才通過。五條 active feeds 全數通過才可將 staging native 結果用於
+missing／blocked 為零、Fetcher 工作全部完成，才通過。五條日線 feeds 全數通過才可將 staging native 結果用於
 production promotion 決策；all-no_data、未到排程時間、未建立 plan、空批次、quota failure 與部署
 健康成功皆不能替代。Production 使用同工具與 `--environment production`（`--profile` 只接受且預設
 `full_market`）；先完成 staging Full native 驗收，再依部署 runbook promotion 相同 digests。工具的 passed 只代表

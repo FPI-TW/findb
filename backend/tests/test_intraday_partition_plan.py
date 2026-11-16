@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
 from typing import get_args
-from unittest.mock import patch
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 import pytest
 from httpx import AsyncClient
@@ -20,12 +16,11 @@ from app.models.registry import DatasetRegistry, IngestionRun
 from app.provider_catalog import FeedDefinition
 from app.schemas.execution_config import FeedSchedule
 from app.schemas.full_market import DeliveryPlanCreateRequest
-from app.services import full_market_governance as governance
 from app.services.full_market import create_plan, get_plan
 from app.services.normalize import intraday
 from app.services.normalize.intraday import IntradayPartitionContractNormalizer
 from app.services.provider_metadata import acquisition_feeds
-from app.services.source_clients import PROVIDER_DATASET_SCOPE, create_source_client
+from app.services.source_clients import create_source_client
 from app.utils import utc_now
 from tests.full_market_fixtures import historical_admission
 from tests.intraday_support import (
@@ -40,34 +35,6 @@ from tests.intraday_support import (
 from tests.test_full_market import _baseline, _calendar
 
 DATASET = "tw_equity_bar_1m"
-
-
-@contextmanager
-def intraday_feed():
-    """The acquisition feed the catalog does not carry yet; everything else is live."""
-    assert DATASET not in governance.FULL_MARKET_FEEDS
-    descriptor = governance.FullMarketFeedDescriptor(
-        "intraday_partition", 1, "TW", "equity", "minute"
-    )
-    from app.services.feed_schedule import completion_deadline_at
-
-    def deadline(key, trade_date):
-        if key == DATASET:
-            return datetime.combine(
-                trade_date, datetime.min.time(), ZoneInfo("Asia/Taipei")
-            ).astimezone(timezone.utc) + timedelta(hours=23)
-        return completion_deadline_at(key, trade_date)
-
-    with (
-        patch("app.services.feed_schedule.completion_deadline_at", deadline),
-        patch.dict(
-            PROVIDER_DATASET_SCOPE, {"finlab": (*PROVIDER_DATASET_SCOPE["finlab"], DATASET)}
-        ),
-        patch.object(
-            governance, "FULL_MARKET_FEEDS", {**governance.FULL_MARKET_FEEDS, DATASET: descriptor}
-        ),
-    ):
-        yield
 
 
 @pytest.fixture
@@ -175,65 +142,57 @@ def _delivery(plan, stores: Stores, symbol: str, **partition) -> dict:
 async def test_a_plan_member_counts_as_data_once_its_day_is_stored_and_indexed(
     owned_client: AsyncClient, test_session, stores
 ) -> None:
-    with intraday_feed():
-        dataset, plan, headers = await _plan(test_session)
-        request = _delivery(plan, stores, "0001")
+    dataset, plan, headers = await _plan(test_session)
+    request = _delivery(plan, stores, "0001")
 
-        response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
 
-        assert response.status_code == 202, response.text
-        run_id = UUID(response.json()["run_id"])
-        run = await test_session.get(IngestionRun, run_id)
-        assert run.delivery_part_id == plan.parts[0].part_id
-        # Accepted is not delivered: nothing is stored yet, so the member is still missing.
-        summary = (
-            await get_plan(
-                test_session, plan.plan_id, provider="finlab", allowed_datasets=[DATASET]
-            )
-        ).summary
-        assert (summary.expected, summary.data, summary.missing) == (2, 0, 2)
+    assert response.status_code == 202, response.text
+    run_id = UUID(response.json()["run_id"])
+    run = await test_session.get(IngestionRun, run_id)
+    assert run.delivery_part_id == plan.parts[0].part_id
+    # Accepted is not delivered: nothing is stored yet, so the member is still missing.
+    summary = (
+        await get_plan(test_session, plan.plan_id, provider="finlab", allowed_datasets=[DATASET])
+    ).summary
+    assert (summary.expected, summary.data, summary.missing) == (2, 0, 2)
 
-        normalizer = IntradayPartitionContractNormalizer(
-            test_session,
-            {**dataset.config, "_ingest_source": "finlab", "_ingest_fetched_at": utc_now()},
-        )
-        result = await normalizer.process(request["payload"], run_id)
+    normalizer = IntradayPartitionContractNormalizer(
+        test_session,
+        {**dataset.config, "_ingest_source": "finlab", "_ingest_fetched_at": utc_now()},
+    )
+    result = await normalizer.process(request["payload"], run_id)
 
-        assert result.success_records == 1
-        partition = await test_session.scalar(select(IntradayPartition))
-        assert (partition.symbol, partition.run_id) == ("0001", run_id)
-        summary = (
-            await get_plan(
-                test_session, plan.plan_id, provider="finlab", allowed_datasets=[DATASET]
-            )
-        ).summary
-        assert (summary.expected, summary.data, summary.missing) == (2, 1, 1)
+    assert result.success_records == 1
+    partition = await test_session.scalar(select(IntradayPartition))
+    assert (partition.symbol, partition.run_id) == ("0001", run_id)
+    summary = (
+        await get_plan(test_session, plan.plan_id, provider="finlab", allowed_datasets=[DATASET])
+    ).summary
+    assert (summary.expected, summary.data, summary.missing) == (2, 1, 1)
 
 
 @pytest.mark.asyncio
 async def test_a_rejected_day_leaves_its_plan_member_missing(
     owned_client: AsyncClient, test_session, stores
 ) -> None:
-    with intraday_feed():
-        dataset, plan, headers = await _plan(test_session)
-        request = _delivery(plan, stores, "0001", row_count=4)
+    dataset, plan, headers = await _plan(test_session)
+    request = _delivery(plan, stores, "0001", row_count=4)
 
-        response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
-        assert response.status_code == 202, response.text
-        run_id = UUID(response.json()["run_id"])
-        normalizer = IntradayPartitionContractNormalizer(
-            test_session,
-            {**dataset.config, "_ingest_source": "finlab", "_ingest_fetched_at": utc_now()},
-        )
-        result = await normalizer.process(request["payload"], run_id)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
+    assert response.status_code == 202, response.text
+    run_id = UUID(response.json()["run_id"])
+    normalizer = IntradayPartitionContractNormalizer(
+        test_session,
+        {**dataset.config, "_ingest_source": "finlab", "_ingest_fetched_at": utc_now()},
+    )
+    result = await normalizer.process(request["payload"], run_id)
 
-        assert result.failed_records == 1
-        summary = (
-            await get_plan(
-                test_session, plan.plan_id, provider="finlab", allowed_datasets=[DATASET]
-            )
-        ).summary
-        assert (summary.expected, summary.data, summary.missing) == (2, 0, 2)
+    assert result.failed_records == 1
+    summary = (
+        await get_plan(test_session, plan.plan_id, provider="finlab", allowed_datasets=[DATASET])
+    ).summary
+    assert (summary.expected, summary.data, summary.missing) == (2, 0, 2)
 
 
 @pytest.mark.asyncio
@@ -249,16 +208,15 @@ async def test_a_rejected_day_leaves_its_plan_member_missing(
 async def test_a_partition_outside_the_frozen_plan_is_refused_before_it_is_kept(
     owned_client: AsyncClient, test_session, stores, change, reason
 ) -> None:
-    with intraday_feed():
-        _, plan, headers = await _plan(test_session)
-        request = _delivery(plan, stores, "0001")
-        request["payload"]["data"][0].update(change)
+    _, plan, headers = await _plan(test_session)
+    request = _delivery(plan, stores, "0001")
+    request["payload"]["data"][0].update(change)
 
-        response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
 
-        assert response.status_code == 409, response.text
-        assert reason in response.text
-        assert (await test_session.scalars(select(IngestionRun))).all() == []
+    assert response.status_code == 409, response.text
+    assert reason in response.text
+    assert (await test_session.scalars(select(IngestionRun))).all() == []
 
 
 def test_the_catalog_and_the_published_schedule_accept_intraday_frequencies() -> None:
