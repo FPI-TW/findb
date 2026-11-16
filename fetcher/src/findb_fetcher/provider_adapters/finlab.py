@@ -1,10 +1,17 @@
-"""FinLab: five shared OHLCV field tables per date, split into one request per member."""
+"""FinLab: five shared OHLCV field tables per date, split into one request per member.
+
+Intraday datasets differ: FinLab serves one partition per symbol and trade date,
+so each member is its own provider request and nothing is shared across members.
+"""
 
 from __future__ import annotations
 
 import importlib.metadata
+import json
+import os
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date
+from datetime import date, timezone
+from pathlib import Path
 from typing import Any
 
 from findb_fetcher.full_market_errors import MemberUnavailableError, ReadinessBlockedError
@@ -48,9 +55,24 @@ from findb_fetcher.providers.finlab import (
 from findb_fetcher.providers.finlab import (
     build_market_eod_request as finlab_request,
 )
+from findb_fetcher.providers.finlab_intraday import (
+    FinLabIntradayNotReadyError,
+    fetch_partition,
+    manifest_bytes,
+)
 
 # Shared FinLab evidence URL; the bundle checksum identifies the exact observation.
 FINLAB_PRICE_EVIDENCE_URL = "https://www.finlab.tw/data/price-close?dataset={dataset}"
+# The manifest entry FinLab answered for one symbol's trading day.
+FINLAB_INTRADAY_EVIDENCE_URL = "https://www.finlab.tw/data/intraday?dataset={dataset}"
+# Intraday datasets: the kind of record each stores and the daily dataset whose
+# official member list it shares.
+INTRADAY_DATASETS: Mapping[str, tuple[str, str]] = {
+    "tw_equity_bar_1m": ("bar_1m", "tw_equity_eod"),
+    "tw_equity_tick": ("tick", "tw_equity_eod"),
+    "tw_etf_bar_1m": ("bar_1m", "tw_etf_eod"),
+    "tw_etf_tick": ("tick", "tw_etf_eod"),
+}
 FINLAB_PRICE_FIELDS = ("open", "high", "low", "close")
 # A table that cannot be fetched fails for every member alike. The plan retries it
 # as a whole for this long, then the work ends; no member is charged for it.
@@ -103,6 +125,7 @@ class FinLabAdapter(ProviderAdapter):
 
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
+        self.layouts: dict[tuple[Any, Any, str], list[dict[str, Any]]] = {}
 
     def reset(self) -> None:
         self.bundles.clear()
@@ -124,6 +147,9 @@ class FinLabAdapter(ProviderAdapter):
         # Each dataset downloads only its own lists; a refresh covers one dataset.
         cohorts: dict[str, list[dict[str, Any]]] = {}
         official: dict[str, dict[str, bytes]] = {}
+        intraday = [dataset for dataset in INTRADAY_DATASETS if dataset in context.zones]
+        if intraday:
+            return self._intraday_universe(intraday, context)
         if "tw_equity_eod" in context.zones:
             snapshots = {
                 url: context.snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_STOCK_URLS)
@@ -194,8 +220,146 @@ class FinLabAdapter(ProviderAdapter):
             groups[dataset].evidence.update(evidence)
         return groups
 
+    def _intraday_universe(
+        self, datasets: Sequence[str], context: UniverseContext
+    ) -> dict[str, UniverseSnapshot]:
+        """The same official lists as the daily datasets, without a catalogue check.
+
+        FinLab has no listing of the symbols it serves intraday, and it serves some
+        the daily price table does not carry yet (a new listing, for one). Every
+        classified member is therefore attempted; a symbol FinLab does not have is
+        found out by its own partition request.
+        """
+        groups: dict[str, UniverseSnapshot] = {}
+        for dataset in datasets:
+            if INTRADAY_DATASETS[dataset][1] == "tw_equity_eod":
+                snapshots = {
+                    url: context.snapshot(url) for url in (*TW_COMPANY_URLS, *TW_ISIN_STOCK_URLS)
+                }
+                companies = {
+                    (member["symbol"], member["exchange"])
+                    for index, url in enumerate(TW_COMPANY_URLS)
+                    for member in parse_tw_companies(snapshots[url], otc=bool(index))
+                }
+                members = [
+                    member
+                    for index, url in enumerate(TW_ISIN_STOCK_URLS)
+                    for member in parse_tw_ordinary(snapshots[url], otc=bool(index))
+                ]
+                for member in members:
+                    if (member["symbol"], member["exchange"]) not in companies:
+                        member["classification"] = "classification_gap"
+            else:
+                snapshots = {url: context.snapshot(url) for url in TW_ISIN_ETF_URLS}
+                members = [
+                    member
+                    for index, url in enumerate(TW_ISIN_ETF_URLS)
+                    for member in parse_tw_etfs(snapshots[url], otc=bool(index))
+                ]
+            for member in members:
+                member["mapping_status"] = (
+                    "mapped" if member["classification"] != "classification_gap" else "gap"
+                )
+            groups[dataset] = UniverseSnapshot(
+                context.observed_at.astimezone(context.zones[dataset]).date(), members, snapshots
+            )
+        return groups
+
+    def _acquire_intraday(
+        self, member: Mapping[str, Any], context: AcquisitionContext
+    ) -> AcquisitionResult:
+        dataset, day = context.dataset_key, context.trade_date
+        record_kind = INTRADAY_DATASETS[dataset][0]
+        provider_symbol = member["provider_symbol"]
+        partition = fetch_partition(
+            self.gateway(context.observe_response),
+            record_kind=record_kind,
+            provider_symbol=provider_symbol,
+            symbol=member["symbol"],
+            trade_date=day,
+            layout=self._row_layout(context, record_kind),
+        )
+        if partition.status == "no_trades":
+            evidence = manifest_bytes(partition, dataset=dataset)
+            return AcquisitionResult.no_trade_evidence(
+                {
+                    "url": FINLAB_INTRADAY_EVIDENCE_URL.format(dataset=dataset),
+                    "sha256": checksum(evidence),
+                    "observed_at": context.fetched_at.isoformat(),
+                    "source_symbol": provider_symbol,
+                    "trade_date": day.isoformat(),
+                    "session": member.get("session"),
+                    "source_status": "no_trade",
+                    "source_excerpt": evidence.decode()[:500],
+                },
+                context.persist(evidence, provider_symbol),
+            )
+        # The provider's file is the evidence; the mapped rows are what is delivered.
+        original = context.persist(partition.original, provider_symbol, payload_format="parquet")
+        rows = context.persist(partition.rows, provider_symbol, payload_format="parquet")
+        contract = context.contract or {}
+        request = {
+            "dataset_key": dataset,
+            "schema_id": contract["schema_id"],
+            "schema_version": contract["current_version"],
+            "source": "finlab",
+            "request_key": f"finlab:{dataset}:{provider_symbol}:{day.isoformat()}",
+            "idempotency_key": f"finlab:{dataset}:{provider_symbol}:{day.isoformat()}",
+            "fetched_at": context.fetched_at.astimezone(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "payload": {
+                "batch": {
+                    "data_date": day.isoformat(),
+                    "delivery_mode": "incremental",
+                    "declared_record_count": 1,
+                },
+                "data": [
+                    {
+                        "symbol": member["symbol"],
+                        "source_symbol": provider_symbol,
+                        "trade_date": day.isoformat(),
+                        "record_kind": record_kind,
+                        "row_count": partition.row_count,
+                        "rows_ref": rows.ref,
+                        "rows_sha256": rows.sha256,
+                        "rows_bytes": rows.size_bytes,
+                        "rows_format": "parquet",
+                        "price_adjustment": "none",
+                        "volume_unit": "lot",
+                    }
+                ],
+            },
+        }
+        if context.delivery is not None:
+            request["delivery"] = dict(context.delivery)
+        return AcquisitionResult.data(request, original)
+
+    def _row_layout(self, context: AcquisitionContext, record_kind: str) -> list[dict[str, Any]]:
+        """The column layout the installed contract publishes for this record kind."""
+        contract = context.contract or {}
+        key = (contract.get("schema_id"), contract.get("current_version"), record_kind)
+        if key not in self.layouts:
+            if contract.get("schema_id") != "intraday_partition":
+                raise FinLabConfigError("FinLab intraday dataset has no partition contract")
+            path = (
+                Path(os.getenv("FETCHER_CONTRACTS_DIR", "/app/contracts"))
+                / "intraday_partition"
+                / f"v{int(contract['current_version'])}.schema.json"
+            )
+            try:
+                columns = json.loads(path.read_text(encoding="utf-8"))["x-findb-row-layouts"][
+                    record_kind
+                ]["columns"]
+            except (OSError, ValueError, KeyError, TypeError):
+                raise FinLabConfigError("FinLab intraday row layout is unavailable") from None
+            self.layouts[key] = [dict(column) for column in columns]
+        return self.layouts[key]
+
     def acquire(self, member: Mapping[str, Any], context: AcquisitionContext) -> AcquisitionResult:
         dataset, day = context.dataset_key, context.trade_date
+        if dataset in INTRADAY_DATASETS:
+            return self._acquire_intraday(member, context)
         cache_key = (dataset, day)
         if cache_key not in self.bundles:
             if context.cohort is None:
@@ -294,6 +458,24 @@ class FinLabAdapter(ProviderAdapter):
         return AcquisitionResult.data(request, stored)
 
     def classify(self, exc: BaseException, phase: Phase) -> ProviderFailure:
+        if phase == "member" and isinstance(exc, FinLabIntradayNotReadyError):
+            if exc.scope == "calendar":
+                # FinLab has not verified the trade date: no symbol can be served yet.
+                return ProviderFailure(
+                    FailureKind.ROUND_RETRY,
+                    wait="publication",
+                    code="finlab_target_not_ready",
+                )
+            # Only this symbol has no partition: not built yet, or not carried at
+            # all. It keeps its bounded retries and the other members go on; a long
+            # unbroken run of them holds the plan, which covers a day whose
+            # partitions are still being built.
+            return ProviderFailure(
+                FailureKind.MEMBER,
+                reason="empty_response",
+                no_data=True,
+                code="finlab_partition_not_ready",
+            )
         if phase == "member" and isinstance(exc, FinLabTargetNotReadyError):
             return ProviderFailure(
                 FailureKind.ROUND_RETRY,
@@ -334,6 +516,8 @@ class FinLabAdapter(ProviderAdapter):
         return PASSTHROUGH
 
     def pending_shared_fetch(self, dataset_key: str, trade_date: date) -> bool:
+        if dataset_key in INTRADAY_DATASETS:
+            return False
         return (dataset_key, trade_date) not in self.bundles
 
     def member_outcome(self, exc: BaseException) -> tuple[str, str | None] | None:
