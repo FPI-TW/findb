@@ -807,6 +807,12 @@ Fetcher Source credential bridge 只跨 unit 傳送 hashes，不授予 instance 
 
 兩環境的 FinDB origin 都只接受 Cloudflare published CIDRs 的 443，沒有 80、SSH 或其他 port；Fetcher 主機沒有 ingress。staging 的 origin SG 由 `infra/tofu/staging/network.tf` 管理，主機上不得再掛其他對外 SG。
 FinDB RDS 不公開且只接受 FinDB security group；Fetcher 不連 FinDB DB。FactSet consumer 另以 TLS 唯讀連接供應商 MySQL RDS，使用獨立 credentials。Source 經 Cloudflare／nginx 還原可信 IP 後執行 allowlist。
+nginx 還原真實 IP 時信任兩類來源（`cloudflare-real-ip.conf`）：Cloudflare 的 published CIDRs，以及 Docker bridge
+的私有位址範圍。後者是因為 nginx container 重新啟動後最先進來的連線可能由 Docker 的 port proxy 轉送，nginx
+看到的來源是 bridge gateway 而不是 Cloudflare；Cloudflare 會重複使用這條連線數分鐘，不信任它的話，這段期間經由它的
+Source 請求全部被 allowlist 拒絕（2026-11-16 staging 實例：nginx 重啟後 2.5 分鐘內 253 個 Source 請求有 16 個回 403，
+其中一個讓部署中的 Fetcher consumer 啟動失敗）。這項信任以上一段的 origin SG 為前提：能連進來的只有 Cloudflare，
+所以這類連線上的 `CF-Connecting-IP` 仍是 Cloudflare 寫的。放寬 origin SG 前必須先移除這兩個範圍。
 nginx 非敏感設定在 `/etc/findb/nginx`，TLS、lookup key 在 `/run/findb-runtime-secrets/nginx`，
 systemd 在 Docker 啟動前重建 tmpfs；缺失時 fail closed。Serve API 保持唯讀。
 

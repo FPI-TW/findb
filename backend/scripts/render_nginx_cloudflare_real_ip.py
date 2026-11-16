@@ -34,6 +34,18 @@ FALLBACK_CIDRS = (
 )
 
 
+# Docker's own bridge address pools. A connection that Docker's port proxy relays
+# (the ones queued on the published port while the nginx container is being
+# started) reaches nginx from the bridge gateway instead of from Cloudflare. The
+# origin security group admits HTTPS from Cloudflare only, so the header on such
+# a connection is still Cloudflare's; without this trust every request on it is
+# judged by the gateway address and the Source allowlist rejects it.
+DOCKER_PORT_PROXY_CIDRS = (
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+)
+
+
 def parse_cidr_lines(raw_value: str) -> list[str]:
     cidrs: list[str] = []
     for raw_cidr in raw_value.splitlines():
@@ -98,6 +110,8 @@ def render_cloudflare_real_ip(fetch_text: Callable[[str], str] = fetch_url) -> s
         "real_ip_recursive on;",
     ]
     lines.extend(f"set_real_ip_from {cidr};" for cidr in cidrs)
+    lines.append("# Connections relayed by Docker's port proxy; the origin admits Cloudflare only.")
+    lines.extend(f"set_real_ip_from {cidr};" for cidr in DOCKER_PORT_PROXY_CIDRS)
     return "\n".join(lines) + "\n"
 
 
