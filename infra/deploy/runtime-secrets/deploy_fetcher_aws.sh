@@ -454,8 +454,12 @@ rollback_named_full() {
       if [ "$id" = "$stable_id" ] || [ "$id" = "$previous_id" ]; then continue; fi
       running="$(docker inspect --format '{{.State.Running}}' "$name")" || return 1
       case "$running" in true|false) ;; *) return 1 ;; esac
-      if [ "$running" = true ]; then docker stop --time "$runtime_stop_timeout_seconds" "$name" >/dev/null || return 1; fi
-      require_retired_runtime "$name" || return 1
+      if [ "$running" = true ]; then
+        docker stop --time "$runtime_stop_timeout_seconds" "$name" >/dev/null || return 1
+        require_retired_runtime "$name" || return 1
+      else
+        require_discarded_runtime "$name" || return 1
+      fi
       docker rm "$name" >/dev/null || return 1
     fi
   done
@@ -592,6 +596,25 @@ require_retired_runtime() {
     fi
   fi
   # Docker's Error may include host details. Emit only a fixed safe reason.
+  echo "fetcher_aws_deploy=failed reason=runtime_retirement_failed runtime=$stable" >&2
+  return 1
+}
+
+# A runtime this transaction created and that ended by itself is the reason for
+# the rollback, not state to preserve: its own non-zero exit (a rejected start,
+# for instance) must not stop the originals from being restored. Only a process
+# that returned on its own qualifies; one that was killed (a signal exit, OOM or
+# a Docker error) still fails closed like any runtime that did not drain.
+require_discarded_runtime() {
+  local stable="$1" running exit_code oom error
+  running="$(docker inspect --format '{{.State.Running}}' "$stable")" || return 1
+  exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$stable")" || return 1
+  oom="$(docker inspect --format '{{.State.OOMKilled}}' "$stable")" || return 1
+  error="$(docker inspect --format '{{.State.Error}}' "$stable")" || return 1
+  if [ "$running" = false ] && [ "$oom" = false ] && [ -z "$error" ] \
+    && [[ "$exit_code" =~ ^[0-9]+$ ]] && [ "$exit_code" -lt 128 ]; then
+    return 0
+  fi
   echo "fetcher_aws_deploy=failed reason=runtime_retirement_failed runtime=$stable" >&2
   return 1
 }

@@ -30,6 +30,14 @@ PROVIDERS = tuple(
     for provider in ("twelve_data", "finlab", "taifex", "factset")
 )
 RETIRED = ("findb-pilot-shioaji", "findb-full-market-shioaji", "findb-historical-shioaji")
+# How a consumer started by the transaction can be found ended during activation.
+NEW_RUNTIME_ENDINGS = {
+    "new-exit-2": {"exit": 2},
+    "new-exit-1": {"exit": 1},
+    "new-exit-137": {"exit": 137},
+    "new-oom": {"exit": 137, "oom": True},
+    "new-error": {"exit": 1, "error": "private-error"},
+}
 
 
 def fake_call(state, command, args, parent, environ):
@@ -121,6 +129,17 @@ def fake_call(state, command, args, parent, environ):
                             "--run-forever",
                         ],
                     )
+            fault = state.get("fault", "")
+            if (
+                not status
+                and fault.startswith("new-")
+                and environ["FETCHER_DEPLOY_MODE"] == "activate"
+            ):
+                # The new consumer ends, or will not stop cleanly, after it was started.
+                if stable == PROVIDERS[0][0]:
+                    rows[stable].update(running=False, **NEW_RUNTIME_ENDINGS[fault.split("+")[0]])
+                elif stable == PROVIDERS[1][0] and fault.endswith("+unclean-stop"):
+                    rows[stable]["stop_exit"] = 137
             if not status and state.get("fault") == "provider_after":
                 status = 9
             if not status and state.get("fault") == "provider_signal":
@@ -727,6 +746,40 @@ def test_shared_health_failure_restores_original_identities_and_pointer():
         name: row["id"] for name, row in original.items()
     }
     assert all(row["running"] for row in state["rows"].values())
+
+
+@pytest.mark.parametrize("fault", ["new-exit-2", "new-exit-1"])
+def test_a_new_consumer_that_ended_by_itself_is_discarded_and_originals_restored(fault):
+    """A start the Source rejected ends the consumer with its own non-zero exit.
+
+    That exit is why the transaction aborts; it must not also block the rollback.
+    """
+    original = original_rows()
+    result, state, pointer = execute(original, mode="activate", fault=fault)
+
+    assert result.returncode != 0
+    assert "reason=activation_unhealthy runtime=" + PROVIDERS[0][0] in result.stderr
+    assert "runtime_retirement_failed" not in result.stderr
+    assert "transaction_rollback_failed" not in result.stderr
+    assert_restored(original, state)
+    assert all(row["running"] for row in state["rows"].values())
+    assert pointer == "b" * 64 + "-122-1"
+
+
+@pytest.mark.parametrize(
+    "fault", ["new-exit-137", "new-oom", "new-error", "new-exit-2+unclean-stop"]
+)
+def test_a_new_consumer_that_was_killed_or_did_not_drain_still_fails_closed(fault):
+    original = original_rows()
+    result, state, _ = execute(original, mode="activate", fault=fault)
+
+    assert result.returncode != 0
+    assert "reason=runtime_retirement_failed" in result.stderr
+    assert "reason=transaction_rollback_failed" in result.stderr
+    assert "private-error" not in result.stderr
+    # Nothing that existed before the transaction was deleted.
+    kept = {row["id"] for row in state["rows"].values()}
+    assert {row["id"] for row in original.values()} <= kept
 
 
 PILOT_RESIDUE = tuple(

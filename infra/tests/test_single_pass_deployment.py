@@ -539,6 +539,43 @@ def test_unclean_shutdown_blocks_automatic_restart_and_requires_recovery(host, o
     assert not any(call[:2] == ("docker", "start") for call in state["calls"])
 
 
+@pytest.mark.parametrize("exit_code", [2, 1])
+def test_a_provisional_consumer_that_returned_by_itself_does_not_block_the_restore(host, exit_code):
+    """A start the Source rejected ends the new consumer with its own exit code."""
+    tx, journal, state = host
+    state["rows"][-1]["State"].update(Running=False, Status="exited", ExitCode=exit_code)
+
+    tx.abort_locked(journal)
+
+    assert tx.load()["phase"] == "aborted"
+    assert {(r["Id"], r["Name"]) for r in state["rows"]} == {
+        (r["id"], "/" + r["name"]) for r in journal["originals"]
+    }
+    assert all(r["State"]["Running"] for r in state["rows"])
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [
+        # Killed rather than returned.
+        {"Running": False, "Status": "exited", "ExitCode": 137},
+        {"Running": False, "Status": "exited", "ExitCode": 2, "OOMKilled": True},
+        {"Running": False, "Status": "exited", "ExitCode": 2, "Error": "private-error"},
+        # Still running: the abort stops it, so it must drain like any other.
+        {"ExitCode": 2},
+    ],
+)
+def test_a_killed_or_undrained_provisional_consumer_still_requires_recovery(host, ending):
+    tx, journal, state = host
+    state["rows"][-1]["State"].update(ending)
+
+    with pytest.raises(ValueError, match="shutdown not graceful"):
+        tx.abort_locked(journal)
+
+    assert tx.load()["phase"] == "recovery_required"
+    assert not any(call[:2] == ("docker", "start") for call in state["calls"])
+
+
 def test_transaction_owns_only_full_market_and_historical_consumers():
     assert len(transaction.FETCHER_NAMES) == 8
     assert not any("pilot" in name for name in transaction.FETCHER_NAMES)
