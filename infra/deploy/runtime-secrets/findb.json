@@ -30,6 +30,7 @@
             "FINDB_STATIC_CACHE_BASE_URL",
             "CLOUDFLARE_R2_ACCOUNT_ID",
             "CLOUDFLARE_R2_CANONICAL_BUCKET",
+            "CLOUDFLARE_R2_RAW_BUCKET",
             "FINDB_TLS_CERT_PATH",
             "FINDB_TLS_PRIVATE_KEY_PATH",
             "PROVIDER_WORK_REQUIRED",
@@ -126,6 +127,7 @@
             "FINDB_STATIC_CACHE_BASE_URL",
             "CLOUDFLARE_R2_ACCOUNT_ID",
             "CLOUDFLARE_R2_CANONICAL_BUCKET",
+            "CLOUDFLARE_R2_RAW_BUCKET",
             "FINDB_TLS_CERT_PATH",
             "FINDB_TLS_PRIVATE_KEY_PATH",
             "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
@@ -191,16 +193,28 @@
           "optional_keys": [
             "CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN"
           ]
+        },
+        {
+          "name": "r2/raw-reader",
+          "required_keys": [
+            "CLOUDFLARE_R2_RAW_READER_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_RAW_READER_SECRET_ACCESS_KEY"
+          ],
+          "optional_keys": [
+            "CLOUDFLARE_R2_RAW_READER_SESSION_TOKEN"
+          ]
         }
       ],
       "distinct_keys": [
         [
           "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID",
-          "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID"
+          "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID",
+          "CLOUDFLARE_R2_RAW_READER_ACCESS_KEY_ID"
         ],
         [
           "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY",
-          "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"
+          "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY",
+          "CLOUDFLARE_R2_RAW_READER_SECRET_ACCESS_KEY"
         ]
       ]
     },
@@ -270,6 +284,16 @@
           "optional_keys": [
             "CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN"
           ]
+        },
+        {
+          "name": "r2/raw-reader",
+          "required_keys": [
+            "CLOUDFLARE_R2_RAW_READER_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_RAW_READER_SECRET_ACCESS_KEY"
+          ],
+          "optional_keys": [
+            "CLOUDFLARE_R2_RAW_READER_SESSION_TOKEN"
+          ]
         }
       ],
       "distinct_keys": [
@@ -285,11 +309,13 @@
         ],
         [
           "CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID",
-          "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID"
+          "CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID",
+          "CLOUDFLARE_R2_RAW_READER_ACCESS_KEY_ID"
         ],
         [
           "CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY",
-          "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY"
+          "CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY",
+          "CLOUDFLARE_R2_RAW_READER_SECRET_ACCESS_KEY"
         ]
       ]
     }

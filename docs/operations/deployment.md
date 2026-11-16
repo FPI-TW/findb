@@ -35,6 +35,28 @@ staging／production 完全一致，只有 values 不同。設定驗證／同步
 Runner 不讀取應用 secrets，由 instance role 在 host 以 tmpfs 載入最小 consumer scope。
 `APP_ENVIRONMENT=local|staging|production` 是應用環境輸入；immutable JSON 的 `deployment_target` 必須吻合。
 
+### R2 credential 邊界
+
+兩環境使用相同角色模型，但每個 credential 僅限自己的 bucket，不可跨環境共用。Cloudflare token
+名稱、R2權限、AWS secret metadata與runtime consumer應維持下表一致：
+
+| 環境 | 角色 | Cloudflare token | Bucket | R2權限 | AWS Secrets Manager | Runtime consumer |
+| --- | --- | --- | --- | --- | --- | --- |
+| staging | Raw publisher | `fetcher-staging` | `findb-staging-raw` | Object Write | `findb/staging/fetcher/r2/raw` | Fetcher all providers |
+| staging | Raw reader | `findb-staging-raw-reader` | `findb-staging-raw` | Object Read | `findb/staging/findb/r2/raw-reader` | FinDB Worker |
+| staging | Canonical publisher | `findb-staging-publisher` | `findb-staging-canonical` | Object Write | `findb/staging/findb/r2/canonical-publisher` | FinDB Worker |
+| staging | Canonical reader | `findb-staging-reader` | `findb-staging-canonical` | Object Read | `findb/staging/findb/r2/canonical-reader` | FinDB Serve |
+| production | Raw publisher | `findb-production-raw-publisher` | `findb-production-raw` | Object Write | `findb/production/fetcher/r2/raw` | Fetcher all providers |
+| production | Raw reader | `findb-production-raw-reader` | `findb-production-raw` | Object Read | `findb/production/findb/r2/raw-reader` | FinDB Worker |
+| production | Canonical publisher | `findb-production-canonical-publisher` | `findb-production-canonical` | Object Write | `findb/production/findb/r2/canonical-publisher` | FinDB Worker |
+| production | Canonical reader | `findb-production-canonical-reader-v2` | `findb-production-canonical` | Object Read | `findb/production/findb/r2/canonical-reader` | FinDB Serve |
+
+Raw reader secret只接受`CLOUDFLARE_R2_RAW_READER_ACCESS_KEY_ID`、
+`CLOUDFLARE_R2_RAW_READER_SECRET_ACCESS_KEY`及選填session token；Raw bucket名稱留在
+`findb/<environment>/findb/runtime/configuration`。部署目錄的distinct-key檢查必須保證Raw reader、
+Canonical publisher與Canonical reader不是同一組credential。歷史`findb-fetcher-token`不屬於任何
+runtime catalog，不得保留或重新使用。
+
 ## Staging／production 流程差異
 
 以下比較以 repository 的 workflow／部署腳本為準，不代表已即時查驗 Actions 執行紀錄或 AWS 設定值。

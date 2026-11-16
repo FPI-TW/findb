@@ -56,6 +56,7 @@ def test_catalogs_are_v2_and_use_target_derived_relative_names() -> None:
             "rabbitmq/runtime",
             "r2/canonical-publisher",
             "r2/canonical-reader",
+            "r2/raw-reader",
             "tls/origin-certificate",
         },
         "fetcher": {
@@ -108,6 +109,7 @@ def test_active_staging_catalog_matches_exact_metadata_and_no_ghcr_runtime_secre
         "findb/rabbitmq/runtime",
         "findb/r2/canonical-publisher",
         "findb/r2/canonical-reader",
+        "findb/r2/raw-reader",
         "fetcher/api/source/twelve-data",
         "fetcher/api/source/finlab",
         "fetcher/api/source/taifex",
@@ -293,9 +295,44 @@ def test_findb_production_runtime_configuration_schema_is_consumer_consistent() 
     assert declared[0] == declared[1]
     assert {
         "SOURCE_ALLOWLIST_CIDRS",
+        "CLOUDFLARE_R2_RAW_BUCKET",
         "FINDB_TLS_CERT_PATH",
         "FINDB_TLS_PRIVATE_KEY_PATH",
     } <= declared[0]
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+def test_findb_compose_loads_environment_scoped_raw_reader(target: str) -> None:
+    loader = _loader()
+    catalog = _catalog("findb")
+    compose = catalog["consumers"]["compose"]
+    payloads: dict[str, dict[str, str]] = {}
+
+    for secret in compose["secrets"]:
+        payload = {
+            key: f"{target}-{secret['name']}-{key}" for key in secret.get("required_keys", [])
+        }
+        for key in (
+            "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
+            "FINLAB_SKIP_NON_TRADING_DAYS",
+            "TAIFEX_SKIP_NON_TRADING_DAYS",
+        ):
+            if key in payload:
+                payload[key] = "true"
+        payloads[f"findb/{target}/findb/{secret['name']}"] = payload
+
+    loaded = loader.load_consumer(
+        catalog,
+        "compose",
+        lambda name: json.dumps(payloads[name]),
+        deployment_target=target,
+    )
+
+    assert loaded["CLOUDFLARE_R2_RAW_BUCKET"].startswith(f"{target}-runtime/configuration-")
+    assert loaded["CLOUDFLARE_R2_RAW_READER_ACCESS_KEY_ID"].startswith(f"{target}-r2/raw-reader-")
+    assert loaded["CLOUDFLARE_R2_RAW_READER_SECRET_ACCESS_KEY"].startswith(
+        f"{target}-r2/raw-reader-"
+    )
 
 
 def test_production_compose_required_inputs_are_provided_by_runtime_contract() -> None:

@@ -33,6 +33,9 @@ locals {
     "findb/r2/canonical-reader" = {
       unit = "findb", consumer = "serve"
     }
+    "findb/r2/raw-reader" = {
+      unit = "findb", consumer = "worker"
+    }
     "findb/runtime/configuration" = {
       unit = "findb", consumer = "compose"
     }

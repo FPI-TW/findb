@@ -6,6 +6,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_production_raw_reader_secret_is_worker_scoped() -> None:
+    secrets = (REPO_ROOT / "infra/tofu/production/secrets.tf").read_text(encoding="utf-8")
+
+    entry = secrets.split('"findb/r2/raw-reader" = {', 1)[1].split("}", 1)[0]
+    assert 'unit = "findb"' in entry
+    assert 'consumer = "worker"' in entry
+
+
 def test_production_hosts_use_explicit_eips_without_provider_replacement_drift() -> None:
     compute = (REPO_ROOT / "infra/tofu/production/compute.tf").read_text(encoding="utf-8")
     network = (REPO_ROOT / "infra/tofu/production/network.tf").read_text(encoding="utf-8")
