@@ -515,13 +515,9 @@ fi
 if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ]; then
   common_args+=("${readiness_mount[@]}")
 fi
-# FinLab SDK get loads a whole dataset. On the small staging host, keep one
-# table load from exhausting the whole host.
+# No consumer is memory-bounded: a table load that outgrows the host's free
+# memory goes to the host swap instead of being killed inside its container.
 expected_memory=0
-if [ "$APP_ENVIRONMENT" = staging ] && [ "$provider" = finlab ]; then
-  expected_memory=1073741824
-  common_args+=(--memory 1g --memory-swap 2g)
-fi
 if [ "$accepted_release" = false ]; then
   # Candidate mode has already executed the CLI's offline check and strict
   # stopped-state probe. Validate the final container configuration without

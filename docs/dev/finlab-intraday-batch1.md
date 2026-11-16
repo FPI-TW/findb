@@ -228,7 +228,7 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 | Normalization worker | 2 個並行 | 2 個並行，使用約 340 MiB |
 | RDS | db.t3.micro，20 GB，資料庫 520 MB | db.t4g.medium，100 GB（可自動擴到 500 GB），資料庫 1.6 GB |
 | Fetcher 主機 | t3.small：1.9 GB，可用約 1 GB；磁碟可用 7.9 GB | t3.medium：3.8 GB，可用約 2.6 GB；磁碟可用 13 GB |
-| FinLab container 記憶體上限 | 1 GiB | 沒有上限 |
+| FinLab container 記憶體上限 | 沒有上限（原本的 1 GiB 已移除） | 沒有上限 |
 
 照本文件建議的做法，**兩個環境都不需要升級硬體**。估算如下，逐筆的數字由幾檔熱門標的推算，實際應較低：
 
@@ -247,7 +247,7 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
   只留 Raw R2 的參照，否則每天各多約 340 MB，Fetcher 主機的磁碟撐不了多久。
 - **當月先存每日一檔，月份結束才合併成月檔。** 每天改寫整個月檔的話，逐筆的月檔每天要從 AWS 重新上傳，合計約 3 GB；
   改成月底合併可以省掉這部分的流量與 worker 時間。查詢時當月讀日檔、過去的月份讀月檔。
-- **需要並行抓取時，並行數受記憶體限制。** 每個取得用的子程序約 150 MB；staging 的 1 GiB 上限下最多約 4 個，
+- **需要並行抓取時，並行數受記憶體限制。** 每個取得用的子程序約 150 MB；staging 主機平時可用約 0.9 GB，最多約 4 個，
   production 可以到 8 個。
 
 不同決定下的硬體影響：

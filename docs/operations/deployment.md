@@ -1647,11 +1647,13 @@ Production 版本落後，運行問題延後處理；先以下列方式降低短
 - 兩環境 fetcher 主機由 OpenTofu `aws_ssm_association.fetcher_swap` 執行
   `infra/deploy/ensure_swap.sh`，維持單一 4 GiB `/swapfile`（寫入 fstab、`vm.swappiness = 10`），
   可重複執行。須在各環境 `tofu apply` 後才生效。
-- Staging 的 FinLab consumers（Pilot／Full／historical）由 `release_fetcher_provider.sh` 加上
-  `--memory 1g --memory-swap 2g`，candidate 與 activation 都核對 `HostConfig.Memory`；
-  其他 provider 與 production 不設上限。下次 staging Fetcher 部署重建容器後生效。
+- 兩環境的 Fetcher consumers 都不設容器記憶體上限；`release_fetcher_provider.sh` 在 candidate 與 activation
+  都核對 `HostConfig.Memory` 為 0，帶有上限的容器不會被接受。Staging 的 FinLab consumers 原本有
+  `--memory 1g --memory-swap 2g`，已移除：SDK 2.3.11 的每日差異更新在 production 量到的容器尖峰是 940 MiB
+  （2026-11-16，含檔案快取），離 1 GiB 太近。移除在下次 staging Fetcher 部署重建容器後生效。
 
-容器上限讓 FinLab 的 OOM 只影響該容器，但 `OOMKilled=true` 仍會被 preflight 拒絕部署；
+沒有容器上限時，FinLab 取表超過主機可用記憶體的部分由主機的 swap 吸收（staging 主機 1.9 GB，平時可用約
+0.9 GB）。若仍發生 OOM，被 kernel 終止的不一定是 FinLab 的容器；`OOMKilled=true` 一樣會被 preflight 拒絕部署，
 再次阻擋時依本節確認原因，經授權重啟容器後重試。
 
 ## Provider catalog PR3＋4 production 驗收

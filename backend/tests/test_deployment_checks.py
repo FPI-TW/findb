@@ -3863,14 +3863,10 @@ def test_account_mount_is_nounset_safe_and_preserves_complete_installed_mounts(a
 
 
 @pytest.mark.parametrize(
-    ("environment", "provider", "expected"),
-    [
-        ("staging", "finlab", ["--memory", "1g", "--memory-swap", "2g", "1073741824"]),
-        ("staging", "twelve-data", ["0"]),
-        ("production", "finlab", ["0"]),
-    ],
+    ("environment", "provider"),
+    [("staging", "finlab"), ("staging", "twelve-data"), ("production", "finlab")],
 )
-def test_only_staging_finlab_consumers_are_memory_bounded(environment, provider, expected):
+def test_no_fetcher_consumer_is_memory_bounded(environment, provider):
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
     start = helper.index("expected_memory=0\n")
     block = helper[start:].split('\nif [ "$accepted_release" = false ]', 1)[0]
@@ -3888,7 +3884,9 @@ def test_only_staging_finlab_consumers_are_memory_bounded(environment, provider,
         check=True,
         env=script_env(),
     )
-    assert result.stdout.splitlines() == expected
+    # No docker memory flag is added, and a container that has a limit is rejected.
+    assert result.stdout.splitlines() == ["0"]
+    assert "--memory" not in helper
 
 
 def test_aws_fetcher_release_rejects_unexpected_memory_limit(tmp_path: Path) -> None:
