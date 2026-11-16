@@ -13,6 +13,7 @@ from tests.migration_database import get_active_migration_database_factory, run_
 
 BEFORE = "e7a9c1d3f5b8"
 STAGED = "f8b0d2c4e6a9"
+ACTIVATED = "a9c1e3f5b7d0"
 INTRADAY = ("tw_equity_bar_1m", "tw_etf_bar_1m", "tw_equity_tick", "tw_etf_tick")
 CLIENT = (
     "INSERT INTO source_client(client_id,name,source_name,key_hash,allowed_datasets,"
@@ -141,3 +142,48 @@ async def test_intraday_feeds_are_staged_inactive_with_the_scopes_the_catalog_no
         await run_alembic(url, STAGED)
         async with engine.connect() as db:
             assert (await _scopes(db))["fetcher"] == staged_scope
+
+
+async def _active(db) -> dict[str, bool]:
+    rows = await db.execute(
+        text("SELECT dataset_key, is_active FROM dataset_registry WHERE dataset_key = ANY(:keys)"),
+        {"keys": list(INTRADAY)},
+    )
+    return dict(rows.all())
+
+
+@pytest.mark.asyncio
+async def test_the_intraday_datasets_are_active_like_every_governed_dataset():
+    async with get_active_migration_database_factory().clone(
+        "3553ed95cfbf", "findb_intraday_active"
+    ) as (url, engine):
+        await run_alembic(url, STAGED)
+        async with engine.connect() as db:
+            assert await _active(db) == dict.fromkeys(INTRADAY, False)
+            others = await db.scalar(text("SELECT count(*) FROM dataset_registry WHERE is_active"))
+
+        await run_alembic(url, ACTIVATED)
+
+        async with engine.connect() as db:
+            assert await _active(db) == dict.fromkeys(INTRADAY, True)
+            # Seed declares them active too, so a later seed run agrees with the migration.
+            assert all(
+                definition["is_active"]
+                for definition in DATASETS
+                if definition["dataset_key"] in INTRADAY
+            )
+            # No other dataset is touched.
+            assert (
+                await db.scalar(
+                    text(
+                        "SELECT count(*) FROM dataset_registry "
+                        "WHERE is_active AND dataset_key <> ALL(:keys)"
+                    ),
+                    {"keys": list(INTRADAY)},
+                )
+                == others
+            )
+
+        await run_alembic(url, STAGED, command="downgrade")
+        async with engine.connect() as db:
+            assert await _active(db) == dict.fromkeys(INTRADAY, False)
