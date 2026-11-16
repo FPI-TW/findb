@@ -72,6 +72,22 @@ class Settings(BaseSettings):
     SOURCE_MAX_PAYLOAD_BYTES: int = 1_000_000
     SOURCE_MAX_DATA_ITEMS: int = 5_000
 
+    # Cloudflare R2. Each credential is given to one role only (see
+    # docs/operations/deployment.md): Worker holds the Raw reader and the Canonical
+    # publisher, Serve the Canonical reader. Empty means this role has none.
+    CLOUDFLARE_R2_ACCOUNT_ID: str = ""
+    CLOUDFLARE_R2_RAW_BUCKET: str = ""
+    CLOUDFLARE_R2_RAW_READER_ACCESS_KEY_ID: str = ""
+    CLOUDFLARE_R2_RAW_READER_SECRET_ACCESS_KEY: str = ""
+    CLOUDFLARE_R2_RAW_READER_SESSION_TOKEN: str = ""
+    CLOUDFLARE_R2_CANONICAL_BUCKET: str = ""
+    CLOUDFLARE_R2_CANONICAL_PUBLISHER_ACCESS_KEY_ID: str = ""
+    CLOUDFLARE_R2_CANONICAL_PUBLISHER_SECRET_ACCESS_KEY: str = ""
+    CLOUDFLARE_R2_CANONICAL_PUBLISHER_SESSION_TOKEN: str = ""
+    CLOUDFLARE_R2_CANONICAL_READER_ACCESS_KEY_ID: str = ""
+    CLOUDFLARE_R2_CANONICAL_READER_SECRET_ACCESS_KEY: str = ""
+    CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN: str = ""
+
     # Durable normalization queue
     CELERY_BROKER_URL: str = "amqp://findb:findb@localhost:5672/%2Ffindb"
     NORMALIZATION_EXCHANGE: str = "findb.ingestion.v1"
