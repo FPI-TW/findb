@@ -73,6 +73,9 @@ staging 與 production 共用。
 
 ### 儲存：Canonical R2 上的 Parquet
 
+> 這一節已實作。現行行為以 [`docs/architecture/intraday_storage.md`](../architecture/intraday_storage.md)
+> 為準，以下保留設計的理由與估算。
+
 盤中資料不進 PostgreSQL 的行情表，改存 Canonical R2。PostgreSQL 只保存「哪一檔、哪一天、有沒有資料」的索引。
 
 理由：逐筆成交全市場每天粗估數百萬列，一年十億列以上，放進 PostgreSQL 會讓主資料庫的大小與備份時間由它主導；
@@ -140,8 +143,9 @@ intraday/v1/<dataset_key>/symbol=<代號>/year=<YYYY>/month=<MM>/day=<DD>/part.p
 所在物件（日檔或月檔）的鍵與版本、對應的 `run_id`。它有三個用途：完成度核對、Serve 決定要讀哪些檔、重抓時判斷
 是否已是同一份資料。
 
-**並行**：日檔各自獨立，不同交易日可以同時寫入。同一檔標的同一個月的月底合併一次只允許一個 worker 執行，以
-PostgreSQL 的鎖序列化；合併前核對各日檔的版本與索引記錄的一致，不一致就停下來，不覆蓋。
+**並行**：同一個 dataset 的正規化與月底合併都在既有的 dataset 鎖之下執行，同一時間只有一個寫入者。合併前核對
+各日檔的版本與索引記錄一致，不一致時該月份不合併、不覆蓋，下一輪再試。合併由 Worker 在沒有等待中的
+normalization 時執行，不需要新的服務或排程。
 
 ### 交付契約：以物件參照交付
 
@@ -281,8 +285,8 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 1. Backend：Canonical R2 的讀寫元件、Raw R2 的唯讀元件與設定；基礎設施補上對應的 credential。（已完成，
    staging 已驗證真實 R2 的讀寫）
 2. Backend，分兩個 PR：
-   1. `intraday_partition.v1` 契約、索引表的 migration 與資料模型。
-   2. Normalizer（驗證、寫日檔、索引與證據）與月底合併。
+   1. `intraday_partition.v1` 契約、索引表的 migration 與資料模型。（已實作）
+   2. Normalizer（驗證、寫日檔、索引與證據）與月底合併。（已實作）
 3. Backend：provider catalog 放寬頻率、四條 dataset 與 feed、完成度核對改用索引表。
 4. Fetcher：盤中取得的子程序操作（含欄位轉換）、adapter、Raw R2 的 Parquet 格式。
 5. Backend：Serve 的 1 分 K（含彙總刻度）與逐筆查詢；Dashboard 的查詢頁視需要另開。

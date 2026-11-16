@@ -22,7 +22,8 @@
 | 重跑staging／production效能基線或判斷何時進行效能優化 | [operations/performance.md](operations/performance.md) |
 | 查看尚未完成且已核准的工作 | [dev/backlog.md](dev/backlog.md) |
 | 查看待分流的全專案風險與孤兒盤點 | [dev/project-risk-review.md](dev/project-risk-review.md) |
-| FinLab 盤中資料（1 分 K、逐筆成交）導入的設計，待核准 | [dev/finlab-intraday-batch1.md](dev/finlab-intraday-batch1.md) |
+| 盤中資料（1 分 K、逐筆成交）在 Canonical R2 的物件、索引表、正規化規則與月底合併 | [architecture/intraday_storage.md](architecture/intraday_storage.md) |
+| FinLab 盤中資料導入的設計、已定事項與尚未完成的工作 | [dev/finlab-intraday-batch1.md](dev/finlab-intraday-batch1.md) |
 | FactSet 港股 EOD、每日 HKEX 清單與現行名單回補 | [operations/factset_hk.md](operations/factset_hk.md) |
 | TAIFEX 期貨 EOD 官方來源行為、日曆維護與待發布／休市排查 | [operations/taifex.md](operations/taifex.md) |
 | 追蹤 production native 資料及 rollback 驗收 | [dev/production-foundation-cutover-plan.md](dev/production-foundation-cutover-plan.md) |

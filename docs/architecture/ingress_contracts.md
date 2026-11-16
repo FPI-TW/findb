@@ -159,8 +159,8 @@ reference 與 count validation；原始 TAIFEX 訊息由 Fetcher mapping，不�
 ## `intraday_partition.v1`
 
 盤中資料（1 分 K、逐筆成交）以物件參照交付：一個 request 代表一檔標的的一個交易日，資料列不在
-request 內，而在 producer 已存進 Raw R2 的 Parquet 物件裡。契約已發布，但目前沒有 dataset 接受它
-（送入的 request 會被拒絕），對應的 normalizer 也尚未登錄。
+request 內，而在 producer 已存進 Raw R2 的 Parquet 物件裡。契約已發布並有對應的 normalizer，但目前
+沒有 dataset 接受它，送入的 request 會被拒絕。接受之後的處理見[盤中資料的儲存](intraday_storage.md)。
 
 `data` 固定只有一筆，描述該分區：
 

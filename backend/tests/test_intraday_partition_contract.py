@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+from datetime import date
 from unittest.mock import patch
 from uuid import UUID
 
@@ -23,7 +25,9 @@ from app.services.ingress_contracts import (
     validate_ingress_request,
 )
 from app.services.normalization_queue import execute_normalization
+from app.services.normalize import intraday
 from app.services.source_clients import PROVIDER_DATASET_SCOPE, create_source_client
+from tests.intraday_support import RAW_BUCKET, Stores, bars, parquet_bytes
 
 ACCOUNT = "a" * 32
 DIGEST = "b" * 64
@@ -309,29 +313,42 @@ async def _seed(test_session, *, record_kind: str = "bar_1m") -> dict:
 
 
 @pytest.mark.asyncio
-async def test_an_accepted_partition_keeps_only_its_reference_and_fails_closed_unprocessed(
+async def test_an_accepted_partition_is_stored_by_the_queue_from_its_reference(
     owned_client: AsyncClient,
     test_session,
     test_engine,
     intraday_scope,
+    monkeypatch,
 ) -> None:
     headers = await _seed(test_session)
+    stores = Stores()
+    monkeypatch.setattr(intraday, "raw_reader", lambda: stores.raw)
+    monkeypatch.setattr(intraday, "canonical_publisher", lambda: stores.canonical)
+    body = parquet_bytes(bars(day=date(2026, 7, 21)))
+    digest = hashlib.sha256(body).hexdigest()
+    key = f"finlab/tw_equity_bar_1m/0123456789abcdef/{digest}.rows.parquet"
+    stores.r2.objects[(RAW_BUCKET, key)] = body
+    request = _request(
+        row_count=3,
+        rows_ref=f"r2://{ACCOUNT}/{RAW_BUCKET}/{key}",
+        rows_sha256=digest,
+        rows_bytes=len(body),
+    )
 
-    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=_request())
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
 
     assert response.status_code == 202, response.text
-    body = response.json()
-    attempt = await test_session.get(IngestionAttempt, UUID(body["attempt_id"]))
-    run = await test_session.get(IngestionRun, UUID(body["run_id"]))
+    body_json = response.json()
+    attempt = await test_session.get(IngestionAttempt, UUID(body_json["attempt_id"]))
+    run = await test_session.get(IngestionRun, UUID(body_json["run_id"]))
     raw = await test_session.get(RawMarketPayload, run.raw_payload_id)
     assert attempt.status == "accepted"
     assert (run.schema_id, run.schema_version, run.raw_records) == ("intraday_partition", 1, 1)
+    # The retained payload is the description only; the rows stay in the bucket.
     assert raw.payload["batch"]["source_raw_ref"] == REF
-    assert raw.payload["data"][0]["rows_ref"] == ROWS_REF
-    assert raw.payload["data"] == [_request()["payload"]["data"][0]]
+    assert raw.payload["data"] == request["payload"]["data"]
+    assert await test_session.scalar(select(func.count()).select_from(IntradayPartition)) == 0
 
-    # No normalizer is registered for the contract yet: the run must end failed,
-    # not be treated as an empty success, and nothing may be indexed.
     run_id = run.run_id
     job = await test_session.scalar(
         select(NormalizationJob).where(NormalizationJob.run_id == run_id)
@@ -343,9 +360,11 @@ async def test_an_accepted_partition_keeps_only_its_reference_and_fails_closed_u
     )
     test_session.expire_all()
     run = await test_session.get(IngestionRun, run_id)
-    assert run.status == "failed"
-    assert run.failure_code == "NORMALIZER_NOT_CONFIGURED"
-    assert await test_session.scalar(select(func.count()).select_from(IntradayPartition)) == 0
+    assert (run.status, run.failure_code, run.success_records) == ("completed", None, 1)
+    partition = await test_session.scalar(select(IntradayPartition))
+    assert (partition.symbol, partition.row_count, partition.run_id) == ("2330", 3, run_id)
+    assert partition.source_raw_sha256 == DIGEST and partition.source_rows_sha256 == digest
+    assert partition.object_etag == stores.canonical.version(partition.object_key)
 
 
 @pytest.mark.asyncio

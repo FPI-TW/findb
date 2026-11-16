@@ -62,7 +62,7 @@ celery_app.conf.update(
     task_ignore_result=True,
     task_soft_time_limit=settings.NORMALIZATION_TASK_SOFT_TIME_LIMIT,
     task_time_limit=settings.NORMALIZATION_TASK_TIME_LIMIT,
-    imports=("app.workers.heartbeat",),
+    imports=("app.workers.heartbeat", "app.workers.intraday_merge"),
 )
 
 
