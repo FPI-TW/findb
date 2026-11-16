@@ -54,7 +54,10 @@ from app.schemas.serve import (
     ResolvedDateRangeResponse,
     SortDirection,
 )
-from app.services.ingress_contracts import DatasetContractDeclaration
+from app.services.ingress_contracts import (
+    INTRADAY_DATASET_FREQUENCY,
+    DatasetContractDeclaration,
+)
 
 LookupColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
 DataKind = Literal["eod", "minute", "futures_eod"]
@@ -77,6 +80,9 @@ SUPPORTED_ACTIVE_SCOPES = frozenset(
         ("market_minute", "TW", "etf"),
     }
 )
+
+
+INTRADAY_ACTIVE_SCOPES = frozenset({("TW", "equity"), ("TW", "etf")})
 
 
 @dataclass(frozen=True)
@@ -116,6 +122,20 @@ async def active_dataset_scopes(db: AsyncSession) -> tuple[ActiveDatasetScope, .
             frequency = row.frequency.strip().lower()
             if declaration.schema_enforcement != "enforce":
                 raise ValueError("schema enforcement must be enabled")
+            if schema_id == "intraday_partition":
+                # Intraday rows live in canonical objects, not in the tables these
+                # scopes describe. A correctly declared dataset is simply not part
+                # of them; a wrong one fails closed like any other active dataset.
+                if (
+                    set(declaration.accepted_schema_versions) != {1}
+                    or declaration.defaults.market != market
+                    or declaration.defaults.asset_class != asset_class
+                    or (market, asset_class) not in INTRADAY_ACTIVE_SCOPES
+                    or frequency
+                    != INTRADAY_DATASET_FREQUENCY[cast(str, declaration.defaults.record_kind)]
+                ):
+                    raise ValueError("active intraday dataset declaration is invalid")
+                continue
             if not set(declaration.accepted_schema_versions) <= SUPPORTED_SERVE_VERSIONS.get(
                 schema_id, frozenset()
             ):

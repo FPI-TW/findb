@@ -53,6 +53,7 @@ from app.schemas.ingress import (
     FuturesEODIngressRequest,
     FuturesEODRow,
     IngressRequest,
+    IntradayPartitionRow,
     MarketEODIngressRequest,
     MarketEODIngressRequestV2,
     MarketEODRow,
@@ -1522,7 +1523,7 @@ async def validate_ingest_part(
         frozen = universe[key]
         if frozen.mapping_status != "mapped" and key not in mappings:
             raise FullMarketError("Mapping-gap members cannot be submitted as data", 409)
-        if isinstance(row, (MarketEODRow, MarketMinuteRow)):
+        if isinstance(row, (MarketEODRow, MarketMinuteRow, IntradayPartitionRow)):
             effective_currency = (
                 row.currency if isinstance(row, MarketEODRow) else None
             ) or declaration.defaults.currency

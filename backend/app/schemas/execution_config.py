@@ -27,7 +27,7 @@ class FeedSchedule(BaseModel):
     market: str
     calendar_market: str
     asset_class: str
-    frequency: Literal["daily"]
+    frequency: Literal["daily", "minute", "tick"]
     contract: ContractDefinition
     scheduled_time: str
     source_timezone: str

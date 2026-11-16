@@ -233,6 +233,62 @@ async def test_unknown_or_mismatched_active_registry_config_fails_closed(
     assert "US" not in response.text
 
 
+def intraday_dataset(key: str, record_kind: str, *, asset_class: str = "equity") -> DatasetRegistry:
+    value = dataset(key, market="TW", asset_class=asset_class, schema_id="market_minute")
+    value.config.update(schema_id="intraday_partition")
+    value.config["defaults"]["record_kind"] = record_kind
+    value.frequency = {"bar_1m": "minute", "tick": "tick"}[record_kind]
+    return value
+
+
+@pytest.mark.asyncio
+async def test_active_intraday_datasets_do_not_take_the_table_backed_reads_down(
+    client: AsyncClient, test_session
+):
+    """Their rows are canonical objects, outside the scopes these endpoints serve."""
+    instrument_id = uuid7()
+    test_session.add_all(
+        [
+            dataset("tw_equity_eod", market="TW", asset_class="equity", schema_id="market_eod"),
+            intraday_dataset("tw_equity_bar_1m", "bar_1m"),
+            intraday_dataset("tw_etf_tick", "tick", asset_class="etf"),
+            instrument(instrument_id, "2330", market="TW"),
+            eod(instrument_id, date(2026, 9, 18), "1000"),
+        ]
+    )
+    await test_session.commit()
+
+    catalog = await client.get("/api/v1/serve/datasets")
+    assert catalog.status_code == 200, catalog.text
+    assert {row["dataset_key"] for row in catalog.json()["data"]} == {"tw_equity_eod"}
+    response = await client.get("/api/v1/serve/eod", params={"instrument_id": str(instrument_id)})
+    assert response.status_code == 200, response.text
+    assert len(response.json()["data"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["frequency", "version", "scope", "enforcement"])
+async def test_a_wrongly_declared_active_intraday_dataset_still_fails_closed(
+    client: AsyncClient, test_session, fault
+):
+    value = intraday_dataset("tw_equity_tick", "tick")
+    if fault == "frequency":
+        value.frequency = "minute"  # a tick dataset registered as minute bars
+    elif fault == "version":
+        value.config.update(accepted_schema_versions=[1, 2], current_schema_version=1)
+    elif fault == "scope":
+        value.market = "US"
+        value.config["defaults"]["market"] = "US"
+    else:
+        value.config["schema_enforcement"] = "audit"
+    test_session.add(value)
+    await test_session.commit()
+
+    response = await client.get("/api/v1/serve/datasets")
+
+    assert_error(response, 503, "SERVE_CONFIGURATION_INVALID")
+
+
 @pytest.mark.asyncio
 async def test_internally_consistent_unsupported_active_scope_fails_closed(
     client: AsyncClient, test_session

@@ -211,7 +211,11 @@
           "$ref": "#/$defs/DeliveryCompatibility"
         },
         "frequency": {
-          "const": "daily",
+          "enum": [
+            "daily",
+            "minute",
+            "tick"
+          ],
           "title": "Frequency",
           "type": "string"
         },
