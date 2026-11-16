@@ -568,6 +568,7 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             "fetcher/provider/factset",
             "fetcher/runtime/configuration",
             "findb/runtime/configuration",
+            "findb/r2/raw-reader",
             "findb/tls/origin-certificate",
         }
     }

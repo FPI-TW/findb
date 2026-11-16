@@ -106,7 +106,9 @@ TAIFEX OpenAPI 無帳號及明確數值配額，收到 429 時等待／重試。
 | Registry | dataset、scheduler、credential metadata、DQ | 長期治理狀態 |
 | Canonical | instrument、calendar、EOD、minute及其他read models | 長期保存，Serve只讀 |
 
-Raw與Canonical R2使用不同private buckets及credentials。Fetcher不得取得Canonical
+Raw與Canonical R2使用不同private buckets及credentials，staging／production也不得共用
+credential。Fetcher只持有其環境Raw bucket的publisher credential；FinDB Worker另持有同環境
+Raw reader與Canonical publisher，Serve只持有Canonical reader。Fetcher不得取得Canonical
 credential；FinDB不得取得provider credential或Fetcher state。RDS不保存R2 secret或
 presigned URL。
 

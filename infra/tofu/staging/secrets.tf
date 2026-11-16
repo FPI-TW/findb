@@ -72,6 +72,12 @@ locals {
       consumer      = "serve"
       status        = "active"
     }
+    "findb/r2/raw-reader" = {
+      unit          = "findb"
+      relative_name = "r2/raw-reader"
+      consumer      = "worker"
+      status        = "active"
+    }
     "fetcher/api/source/twelve-data" = {
       unit          = "fetcher"
       relative_name = "api/source/twelve-data"
