@@ -484,6 +484,69 @@ event.listen(
 )
 
 
+class IntradayPartition(Base):
+    """Index of canonical intraday objects: one symbol's trading day per row.
+
+    The bars or ticks themselves are Parquet objects in the canonical bucket.
+    A row exists only for a day that has data, and names the object currently
+    holding that day (the day object while its month is open, the month object
+    after compaction) with the version the store reported for it.  ``volume``
+    inside the objects is measured in lots, unlike the share-based EOD and
+    ``market_data_minute`` tables.
+    """
+
+    __tablename__ = "intraday_partition"
+    __table_args__ = (
+        CheckConstraint(
+            "symbol ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,49}$'",
+            name="intraday_partition_symbol_key_safe",
+        ),
+        CheckConstraint("row_count >= 1", name="intraday_partition_row_count_positive"),
+        CheckConstraint(
+            "source_raw_sha256 ~ '^[0-9a-f]{64}$' AND source_rows_sha256 ~ '^[0-9a-f]{64}$'",
+            name="intraday_partition_source_sha256",
+        ),
+        CheckConstraint(
+            "object_layout IN ('day', 'month')",
+            name="intraday_partition_object_layout",
+        ),
+        CheckConstraint(
+            "object_key <> '' AND object_etag <> ''",
+            name="intraday_partition_object_present",
+        ),
+        Index("idx_intraday_partition_dataset_date", "dataset_key", "trade_date"),
+    )
+
+    dataset_key: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("dataset_registry.dataset_key", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    symbol: Mapped[str] = mapped_column(String(50), primary_key=True)
+    # Taiwan local trading date.
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    # What this day was built from: the provider's own file, the delivered rows
+    # object mapped from it, and when it was fetched.  An identical redelivery
+    # changes nothing and an older fetch never replaces a newer one.
+    source_raw_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_rows_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    object_layout: Mapped[str] = mapped_column(String(10), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    object_etag: Mapped[str] = mapped_column(String(100), nullable=False)
+    run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class CorporateAction(Base):
     """
     Corporate actions such as splits and dividends.

@@ -38,6 +38,7 @@ from app.services.full_market import validate_ingest_part
 from app.services.ingestion_attempts import IngestionAttemptService
 from app.services.ingress_contracts import (
     parse_dataset_contract_declaration,
+    request_record_kind_allowed,
     validate_dataset_contract_scope,
     validate_ingress_request,
     validate_request_currency,
@@ -614,6 +615,8 @@ class IngestionService:
                 or retained_request.schema_version not in declaration.accepted_schema_versions
             ):
                 raise ValueError("retained schema is not accepted by the dataset")
+            if not request_record_kind_allowed(declaration, retained_request):
+                raise ValueError("retained partition kind is not stored by the dataset")
             if raw_payload.source.strip().lower() not in declaration.provider_scope():
                 raise ValueError("retained source is not allowed for the dataset")
         except ValueError as exc:
@@ -766,6 +769,11 @@ class IngestionService:
             )
 
         validate_request_currency(declaration, request)
+        if not request_record_kind_allowed(declaration, request):
+            raise IngressSchemaNotAllowedError(
+                f"Dataset {request.dataset_key} stores "
+                f"{declaration.defaults.record_kind} partitions only"
+            )
 
         delivery_part_id = await validate_ingest_part(self.db, request, dataset)
 

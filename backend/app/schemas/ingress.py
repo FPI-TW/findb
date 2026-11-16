@@ -2,11 +2,12 @@
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
-from typing import Annotated, Literal, Optional
+from types import MappingProxyType
+from typing import Annotated, Literal, NamedTuple, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -517,6 +518,120 @@ class MarketMinutePayload(BaseModel):
         return self
 
 
+# A stored object is named without credentials, query, encoded or dot segments.
+RAW_OBJECT_REF_PATTERN = (
+    r"^r2://[0-9a-f]{32}/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/[A-Za-z0-9_=-][A-Za-z0-9._=-]*)+$"
+)
+# The symbol becomes one segment of the canonical object key.
+INTRADAY_SYMBOL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,49}$"
+# Worker memory bound for one symbol's day; the largest sampled tick day is under 1 MiB.
+INTRADAY_MAX_ROWS_BYTES = 16 * 1024 * 1024
+INTRADAY_MAX_ROWS = 10_000_000
+MINUTES_PER_DAY = 1440
+
+
+class IntradayColumn(NamedTuple):
+    """One column of a rows object; ``type`` is the Arrow type as pyarrow prints it."""
+
+    name: str
+    type: str
+    nullable: bool
+    description: str
+
+
+# The producer maps its provider's fields to these columns, in this order, before
+# delivery; FinDB reads no other layout.  Instants are UTC; ``trade_date`` is the
+# exchange-local date; prices are unadjusted and volumes are in lots.
+INTRADAY_ROW_LAYOUTS: Mapping[str, tuple[IntradayColumn, ...]] = MappingProxyType(
+    {
+        "bar_1m": (
+            IntradayColumn("symbol", "string", False, "canonical symbol, leading zeros kept"),
+            IntradayColumn("trade_date", "date32[day]", False, "exchange-local trading date"),
+            IntradayColumn("bar_start_time", "timestamp[us, tz=UTC]", False, "start of the minute"),
+            IntradayColumn("session", "string", False, "trading session, e.g. regular"),
+            IntradayColumn("open", "double", False, "unadjusted"),
+            IntradayColumn("high", "double", False, "unadjusted"),
+            IntradayColumn("low", "double", False, "unadjusted"),
+            IntradayColumn("close", "double", False, "unadjusted"),
+            IntradayColumn("volume", "int64", False, "lots traded in the minute"),
+            IntradayColumn("trade_count", "int64", True, "trades in the minute"),
+            IntradayColumn("vwap", "double", True, "provider volume-weighted average price"),
+        ),
+        "tick": (
+            IntradayColumn("symbol", "string", False, "canonical symbol, leading zeros kept"),
+            IntradayColumn("trade_date", "date32[day]", False, "exchange-local trading date"),
+            IntradayColumn("trade_time", "timestamp[us, tz=UTC]", False, "time of the trade"),
+            IntradayColumn("sequence", "int64", False, "provider sequence within the day"),
+            IntradayColumn("price", "double", False, "unadjusted trade price"),
+            IntradayColumn("volume", "int64", False, "lots traded"),
+            IntradayColumn("tick_type", "int8", True, "provider trade-direction code, as given"),
+            IntradayColumn("bid_price", "double", True, "best bid at the trade"),
+            IntradayColumn("bid_volume", "int64", True, "lots at the best bid"),
+            IntradayColumn("ask_price", "double", True, "best ask at the trade"),
+            IntradayColumn("ask_volume", "int64", True, "lots at the best ask"),
+            IntradayColumn("session", "string", False, "e.g. regular, after_hours_fixed"),
+        ),
+    }
+)
+
+
+class IntradayPartitionRow(_IngressRow):
+    """One symbol's complete trading day, described but not carried.
+
+    The rows are in a stored object the producer already mapped to the layout
+    of ``record_kind`` (``INTRADAY_ROW_LAYOUTS``).  Its size, checksum and row
+    count are proven again before the object is used.
+    """
+
+    symbol: str = Field(pattern=INTRADAY_SYMBOL_PATTERN)
+    source_symbol: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    trade_date: date
+    record_kind: Literal["bar_1m", "tick"]
+    row_count: int = Field(ge=1, le=INTRADAY_MAX_ROWS)
+    rows_ref: str = Field(max_length=2048, pattern=RAW_OBJECT_REF_PATTERN)
+    rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rows_bytes: int = Field(ge=1, le=INTRADAY_MAX_ROWS_BYTES)
+    rows_format: Literal["parquet"]
+    price_adjustment: Literal["none"]
+    # One lot is the exchange board lot (張): 1,000 shares for TWSE/TPEx stocks and ETFs.
+    volume_unit: Literal["lot"]
+
+
+class IntradayPartitionBatch(IngressBatch):
+    """A by-reference delivery: provider evidence is mandatory, sequencing is absent."""
+
+    delivery_mode: Literal["incremental", "backfill"]  # type: ignore[assignment]
+    declared_record_count: Literal[1]  # type: ignore[assignment]
+    # The provider's own file for this day, kept as evidence; never parsed by FinDB.
+    source_raw_ref: str = Field(max_length=2048, pattern=RAW_OBJECT_REF_PATTERN)
+    source_raw_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sequence: None = None
+    sequence_count: None = None
+
+
+class IntradayPartitionPayload(BaseModel):
+    """Payload body for ``intraday_partition.v1``: exactly one symbol and trade date."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch: IntradayPartitionBatch
+    data: list[IntradayPartitionRow] = Field(min_length=1, max_length=1)
+
+    @model_validator(mode="after")
+    def validate_single_trading_day(self) -> "IntradayPartitionPayload":
+        partition = self.data[0]
+        if partition.trade_date != self.batch.data_date:
+            raise ValueError("partition trade_date must equal batch data_date")
+        if self.batch.coverage_start_date not in (None, self.batch.data_date) or (
+            self.batch.coverage_end_date not in (None, self.batch.data_date)
+        ):
+            raise ValueError("partition coverage must be the single batch data_date")
+        if partition.record_kind == "bar_1m" and partition.row_count > MINUTES_PER_DAY:
+            raise ValueError("a one-minute bar partition cannot exceed the minutes in a day")
+        ensure_payload_size_within_limit(self.model_dump(mode="json"))
+        return self
+
+
 class _IngressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -594,6 +709,14 @@ class FuturesEODIngressRequest(_IngressRequest):
     payload: FuturesEODPayload
 
 
+class IntradayPartitionIngressRequest(_IngressRequest):
+    """Complete ``intraday_partition.v1`` request."""
+
+    schema_id: Literal["intraday_partition"]
+    schema_version: Literal[1]
+    payload: IntradayPartitionPayload
+
+
 def minute_sequence_key_digest(
     *, dataset_key: str, data_date: date, snapshot_id: str, sequence: int
 ) -> str:
@@ -614,5 +737,10 @@ def minute_sequence_key_digest(
     ).hexdigest()
 
 
-IngressRequestV1 = MarketEODIngressRequest | MarketMinuteIngressRequest | FuturesEODIngressRequest
+IngressRequestV1 = (
+    MarketEODIngressRequest
+    | MarketMinuteIngressRequest
+    | FuturesEODIngressRequest
+    | IntradayPartitionIngressRequest
+)
 IngressRequest = IngressRequestV1 | MarketEODIngressRequestV2

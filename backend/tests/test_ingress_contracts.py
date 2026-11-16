@@ -367,6 +367,7 @@ def test_registry_dispatches_explicit_contract_version():
     assert isinstance(request, MarketEODIngressRequest)
     assert supported_contracts() == (
         ("futures_eod", 1),
+        ("intraday_partition", 1),
         ("market_eod", 1),
         ("market_eod", 2),
         ("market_minute", 1),

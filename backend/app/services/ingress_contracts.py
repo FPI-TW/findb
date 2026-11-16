@@ -8,9 +8,12 @@ from typing import Annotated, Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from app.schemas.ingress import (
+    INTRADAY_ROW_LAYOUTS,
+    MINUTES_PER_DAY,
     CurrencyCode,
     FuturesEODIngressRequest,
     IngressRequest,
+    IntradayPartitionIngressRequest,
     MarketEODIngressRequest,
     MarketEODIngressRequestV2,
     MarketMinuteIngressRequest,
@@ -24,6 +27,7 @@ ContractModel = (
     | type[MarketEODIngressRequestV2]
     | type[MarketMinuteIngressRequest]
     | type[FuturesEODIngressRequest]
+    | type[IntradayPartitionIngressRequest]
 )
 PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 
@@ -33,6 +37,7 @@ _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
         ("market_eod", 2): MarketEODIngressRequestV2,
         ("market_minute", 1): MarketMinuteIngressRequest,
         ("futures_eod", 1): FuturesEODIngressRequest,
+        ("intraday_partition", 1): IntradayPartitionIngressRequest,
     }
 )
 
@@ -55,6 +60,8 @@ class DatasetContractDefaults(BaseModel):
     currency: CurrencyCode | None = None
     market_timezone: Literal["Asia/Taipei"] | None = None
     price_adjustment: Literal["none"] | None = None
+    # The one kind of intraday record an ``intraday_partition`` dataset stores.
+    record_kind: Literal["bar_1m", "tick"] | None = None
 
     @field_validator("market")
     @classmethod
@@ -98,6 +105,17 @@ class DatasetContractDeclaration(BaseModel):
             raise ValueError(
                 "market_minute defaults require market_timezone=Asia/Taipei and price_adjustment=none"
             )
+        if self.schema_id == "intraday_partition" and (
+            self.defaults.market_timezone != "Asia/Taipei"
+            or self.defaults.price_adjustment != "none"
+            or self.defaults.record_kind is None
+        ):
+            raise ValueError(
+                "intraday_partition defaults require market_timezone=Asia/Taipei, "
+                "price_adjustment=none and a record_kind"
+            )
+        if self.schema_id != "intraday_partition" and self.defaults.record_kind is not None:
+            raise ValueError("record_kind is only declared by intraday_partition datasets")
         self.allowed_sources = [source.strip().lower() for source in self.allowed_sources]
         if any(
             not source or re.fullmatch(SOURCE_NAME_PATTERN, source) is None
@@ -329,6 +347,74 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
     ]
     if (schema_id, schema_version) == ("market_eod", 2):
         semantic_rules = [rule for rule in semantic_rules if not rule["id"].startswith("row.ohlc.")]
+    if schema_id == "intraday_partition":
+        # One described object per request: no rows to bound, order or deduplicate.
+        row_rules = (
+            "row.ohlc.",
+            "batch.sequence.",
+            "payload.coverage.",
+            "payload.declared_record_count.",
+            "payload.delivery_key.",
+            "payload.data.max_items",
+        )
+        semantic_rules = [rule for rule in semantic_rules if not rule["id"].startswith(row_rules)]
+        semantic_rules.extend(
+            [
+                {
+                    "id": "partition.single_trading_day",
+                    "scope": "payload",
+                    "description": "the partition trade_date equals batch.data_date; coverage dates, when present, equal it too",
+                    "parameters": {
+                        "left": "data[0].trade_date",
+                        "operator": "equal",
+                        "right": "batch.data_date",
+                        "coverage": ["batch.coverage_start_date", "batch.coverage_end_date"],
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "partition.bar_1m.row_count_bound",
+                    "scope": "payload.data[0]",
+                    "description": "a one-minute bar partition cannot hold more rows than a day has minutes",
+                    "parameters": {
+                        "when": {"record_kind": "bar_1m"},
+                        "left": "row_count",
+                        "operator": "less_than_or_equal",
+                        "right": MINUTES_PER_DAY,
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "partition.rows.layout",
+                    "scope": "payload.data[0]",
+                    "description": "the object at rows_ref holds exactly the columns of x-findb-row-layouts[record_kind], in order, for this symbol and trade_date only; the producer maps provider fields before delivery",
+                    "parameters": {
+                        "layout": "x-findb-row-layouts[record_kind]",
+                        "instants": "utc",
+                        "trade_date": "exchange_local",
+                        "enforcement_stage": "normalization",
+                    },
+                    "context_dependencies": [],
+                    "error_code": None,
+                },
+                {
+                    "id": "partition.record_kind.dataset_declared",
+                    "scope": "payload.data[0]",
+                    "description": "record_kind must be the kind the dataset declares",
+                    "parameters": {
+                        "row_field": "record_kind",
+                        "dataset_field": "defaults.record_kind",
+                        "operator": "equal",
+                    },
+                    "context_dependencies": [
+                        {"kind": "dataset_context", "path": "defaults.record_kind"}
+                    ],
+                    "error_code": "INGRESS_SCHEMA_NOT_ALLOWED",
+                },
+            ]
+        )
     if schema_id == "futures_eod":
         observation_fields = ["open", "high", "low", "close", "settlement_price", "open_interest"]
         schema["$defs"]["FuturesEODRow"]["anyOf"] = [
@@ -428,6 +514,12 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "payload.data[*].contract_code",
             "payload.data[*].contract_month",
             "payload.data[*].session",
+        ],
+        "intraday_partition": [
+            "payload.data[*].symbol",
+            "payload.data[*].source_symbol",
+            "payload.data[*].rows_ref",
+            "payload.data[*].rows_sha256",
         ],
         "market_eod": [
             "payload.data[*].symbol",
@@ -619,6 +711,16 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
         "x-findb-contract-scope": contract_scope,
         "x-findb-transformations": transformations,
         "x-findb-semantic-rules": semantic_rules,
+        **(
+            {
+                "x-findb-row-layouts": {
+                    kind: {"format": "parquet", "columns": [column._asdict() for column in columns]}
+                    for kind, columns in INTRADAY_ROW_LAYOUTS.items()
+                }
+            }
+            if schema_id == "intraday_partition"
+            else {}
+        ),
         **schema,
     }
 
@@ -679,3 +781,13 @@ def validate_request_currency(
         raise CurrencyRequiredError(
             "currency is required for every market_eod row when the dataset has no default currency"
         )
+
+
+def request_record_kind_allowed(
+    declaration: DatasetContractDeclaration,
+    request: IngressRequest,
+) -> bool:
+    """Whether the dataset stores the kind of intraday record this request delivers."""
+    return not isinstance(request, IntradayPartitionIngressRequest) or all(
+        row.record_kind == declaration.defaults.record_kind for row in request.payload.data
+    )

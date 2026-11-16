@@ -1,6 +1,6 @@
 # FinLab 盤中資料導入（#564 第 1 批）設計
 
-> 狀態：設計上的七項決定已由 Owner 於 2026-11-16 確認（見「已定事項」），尚未實作。追蹤 issue：
+> 狀態：設計上的決定已由 Owner 於 2026-11-16 確認（見「已定事項」）。實作進度見「工作拆分」。追蹤 issue：
 > [#564](https://github.com/FPI-TW/findb/issues/564)。
 > 完成後依 `docs/dev/` 的規則，把仍有效的內容整併到 `docs/` 的現行文件並刪除本檔。
 
@@ -115,9 +115,10 @@ intraday/v1/<dataset_key>/symbol=<代號>/year=<YYYY>/month=<MM>/day=<DD>/part.p
 
 **寫入流程**（暫存 → 合併）：
 
-1. Fetcher 把 FinLab 回傳的「標的 × 交易日」Parquet 原樣存進 Raw R2，這就是暫存檔。
-2. Backend 的 normalization worker 讀取該物件、驗證、轉換欄位，寫成該標的該交易日的日檔。重抓同一天時
-   **整天替換**。
+1. Fetcher 把 FinLab 回傳的「標的 × 交易日」Parquet 原樣存進 Raw R2 作為證據，另外把它轉成上表的欄位
+   （時間轉 UTC、欄位改名），也存進 Raw R2，這就是暫存檔。
+2. Backend 的 normalization worker 讀取暫存檔、驗證欄位與內容，寫成該標的該交易日的日檔。重抓同一天時
+   **整天替換**。Backend 不解析 FinLab 的原始檔。
 3. 寫入成功後，在 PostgreSQL 記錄這個「標的 × 交易日」的索引，同一個 transaction 寫入交付證據。
 4. 月份結束後，把該月的日檔合併成月檔並刪除日檔。查詢時當月讀日檔，過去的月份讀月檔。
 
@@ -134,20 +135,24 @@ intraday/v1/<dataset_key>/symbol=<代號>/year=<YYYY>/month=<MM>/day=<DD>/part.p
 | 空回應一律當成略過 | 只有 FinLab 明確標示 `no_trades` 或休市才記為無資料；其他空回應是失敗 | 被限流或配額用盡時的空回應不會被當成「已補完」 |
 | 目錄值會被讀取工具推斷成整數（`0050` 變 `50`） | 檔案內的 `symbol` 是字串，查詢一律經 Serve，不讓下游直接讀目錄 | 避免下游各自踩到型別推斷 |
 
-**PostgreSQL 的索引表**（新表 `intraday_partition`）：每個（dataset、標的、交易日）一列，記錄狀態（有資料／當日無成交）、
-列數、來源、來源檔的 SHA-256、所在物件（日檔或月檔）的鍵與版本、對應的 `run_id` 與時間。它有三個用途：完成度核對、Serve 決定
-要讀哪些檔、重抓時判斷是否已是同一份資料。
+**PostgreSQL 的索引表**（`intraday_partition`）：每個（dataset、標的、交易日）一列，只有有資料的日子才有列；
+當日無成交不建立索引，沿用既有的 no_data 證據。記錄列數、來源、FinLab 原始檔與暫存檔各自的 SHA-256、抓取時間、
+所在物件（日檔或月檔）的鍵與版本、對應的 `run_id`。它有三個用途：完成度核對、Serve 決定要讀哪些檔、重抓時判斷
+是否已是同一份資料。
 
 **並行**：日檔各自獨立，不同交易日可以同時寫入。同一檔標的同一個月的月底合併一次只允許一個 worker 執行，以
 PostgreSQL 的鎖序列化；合併前核對各日檔的版本與索引記錄的一致，不一致就停下來，不覆蓋。
 
 ### 交付契約：以物件參照交付
 
-新增一個 provider-neutral 契約（暫名 `intraday_partition.v1`），一個請求代表一檔標的的一個交易日：
+新增一個 provider-neutral 契約 `intraday_partition.v1`，一個請求代表一檔標的的一個交易日。欄位的現行說明在
+[`docs/architecture/ingress_contracts.md`](../architecture/ingress_contracts.md)：
 
-- 內容：dataset、標的與來源代號、交易日、資料種類（1 分 K 或逐筆）、列數、Raw R2 的物件參照與 SHA-256、
-  來源宣告（價格未還原、成交量單位、時區）。
-- 不在請求裡帶資料列。Backend 依參照讀取 Raw R2 的物件，核對 SHA-256、列數與欄位後才處理。
+- 內容：dataset、標的與來源代號、交易日、資料種類（1 分 K 或逐筆）、列數、暫存檔的物件參照、大小與 SHA-256、
+  FinLab 原始檔的參照與 SHA-256、來源宣告（價格未還原、成交量單位是張）。
+- 不在請求裡帶資料列。Backend 依參照讀取 Raw R2 的暫存檔，核對大小、SHA-256、列數與欄位後才處理。
+- 暫存檔的欄位由契約定義並隨契約發布，Fetcher 與 Backend 都以它為準。
+- 每個 dataset 宣告自己保存的資料種類；1 分 K 的 dataset 不接受逐筆的分區，反之亦然。
 - 「當日無成交」沿用現有的 no_data 回報，證據是 FinLab 清單回應的摘要。
 
 不沿用 `market_minute.v1` 的理由：它的分批快照、50 檔一批、成交筆數必須為空、要有成交金額，都與 FinLab 逐檔
@@ -158,8 +163,8 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 
 ### Fetcher
 
-- 取表的子程序新增一個操作：對一檔標的、一個交易日取清單並下載，回傳原始 Parquet 位元組與清單摘要。認證、
-  配額與版本檢查沿用 SDK 升級後的做法。
+- 取表的子程序新增一個操作：對一檔標的、一個交易日取清單並下載，把 FinLab 的欄位轉成契約定義的欄位，回傳
+  原始檔、轉換後的暫存檔與清單摘要。認證、配額與版本檢查沿用 SDK 升級後的做法。
 - Adapter 沿用現有的「逐成員取得」介面。失敗分類：
 
   | FinLab 的回應 | 處理 |
@@ -226,11 +231,11 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 | 資源 | 每日新增 | 一年 | 說明 |
 | --- | --- | --- | --- |
 | Canonical R2 | 1 分 K 約 40 MB、逐筆約 300 MB | 約 85 GB | 以 R2 的牌價計約每月 1–2 美元 |
-| Raw R2 | 同上 | 保存 90 天，穩定在約 30 GB | |
+| Raw R2 | 原始檔與暫存檔各一份，約為上列的兩倍 | 保存 90 天，穩定在約 60 GB | 以 R2 的牌價計每月不到 1 美元 |
 | RDS：索引表 | 約 4,600 列，約 1 MB | 約 0.3 GB | |
 | RDS：每筆交付的流程紀錄 | 約 4,600 筆交付，約 30 MB | 約 7–8 GB | 現有每筆交付在各流程表合計約 6.5 KB，其中 raw 的部分 30 天後刪除 |
 | Backend worker | 約 4,600 個工作，每個 1–2 秒，以讀寫 R2 為主 | — | 2 個並行約 40–80 分鐘；讀寫 Parquet 的套件讓每個 worker 多用約 100–150 MB |
-| Fetcher | 逐檔執行約每檔 3–4 秒；1 分 K 與逐筆合計每天約 4–5 小時 | — | 記憶體不需載入整張表，逐檔執行時不增加 |
+| Fetcher | 逐檔執行約每檔 3–4 秒；1 分 K 與逐筆合計每天約 4–5 小時 | — | 記憶體不需載入整張表，逐檔執行時不增加；每檔多上傳一個暫存檔，合計每天約多 12 分鐘（估算，未實測） |
 
 成立的前提（要寫進實作）：
 
@@ -273,10 +278,13 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 
 依序進行，每項一個 PR；涉及 Backend 與 Fetcher 的變更，Backend 先部署。
 
-1. Backend：Canonical R2 的讀寫元件、Raw R2 的唯讀元件與設定；基礎設施補上對應的 credential。
-2. Backend：`intraday_partition.v1` 契約、索引表的 migration、normalizer（驗證、轉換、寫日檔、索引與證據）與月底合併。
+1. Backend：Canonical R2 的讀寫元件、Raw R2 的唯讀元件與設定；基礎設施補上對應的 credential。（已完成，
+   staging 已驗證真實 R2 的讀寫）
+2. Backend，分兩個 PR：
+   1. `intraday_partition.v1` 契約、索引表的 migration 與資料模型。
+   2. Normalizer（驗證、寫日檔、索引與證據）與月底合併。
 3. Backend：provider catalog 放寬頻率、四條 dataset 與 feed、完成度核對改用索引表。
-4. Fetcher：盤中取得的子程序操作、adapter、Raw R2 的 Parquet 格式。
+4. Fetcher：盤中取得的子程序操作（含欄位轉換）、adapter、Raw R2 的 Parquet 格式。
 5. Backend：Serve 的 1 分 K（含彙總刻度）與逐筆查詢；Dashboard 的查詢頁視需要另開。
 6. Staging 驗收：先只開股票的 1 分 K，再開 ETF 與逐筆。
 7. Production 上線與文件整併。
@@ -294,6 +302,7 @@ Owner 於 2026-11-16 確認：
 | 60 分鐘行情 | 由 1 分 K 在查詢時彙總，不另外抓 `tw_price_60min` |
 | 1 分 K 回補 | 第 1 批只做每日更新，回補上線後再決定 |
 | 原始檔保存期 | 維持 Raw R2 的 90 天 |
+| 欄位轉換的位置 | 由 Fetcher 把 FinLab 的欄位轉成契約定義的欄位，原始檔與轉換後的檔都存 Raw R2；Backend 不解析 provider 專屬欄位 |
 
 ## 尚未確認
 
