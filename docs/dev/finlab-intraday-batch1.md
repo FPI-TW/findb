@@ -280,18 +280,40 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 
 ## 工作拆分
 
-依序進行，每項一個 PR；涉及 Backend 與 Fetcher 的變更，Backend 先部署。
+依序進行，每項一個 PR。
 
 1. Backend：Canonical R2 的讀寫元件、Raw R2 的唯讀元件與設定；基礎設施補上對應的 credential。（已完成，
    staging 已驗證真實 R2 的讀寫）
 2. Backend，分兩個 PR：
-   1. `intraday_partition.v1` 契約、索引表的 migration 與資料模型。（已實作）
-   2. Normalizer（驗證、寫日檔、索引與證據）與月底合併。（已實作）
-3. Backend：provider catalog 放寬頻率、四條 dataset 與 feed、完成度核對改用索引表。
-4. Fetcher：盤中取得的子程序操作（含欄位轉換）、adapter、Raw R2 的 Parquet 格式。
-5. Backend：Serve 的 1 分 K（含彙總刻度）與逐筆查詢；Dashboard 的查詢頁視需要另開。
-6. Staging 驗收：先只開股票的 1 分 K，再開 ETF 與逐筆。
-7. Production 上線與文件整併。
+   1. `intraday_partition.v1` 契約、索引表的 migration 與資料模型。（已完成）
+   2. Normalizer（驗證、寫日檔、索引與證據）與月底合併。（已完成）
+3. Backend 的準備，不改 catalog：catalog 與排程發布接受 `minute`／`tick` 頻率；Serve 的 dataset 檢查認得
+   盤中 dataset；plan part 對盤中分區核對幣別與 provider 代號；以整合測試確認 plan 成員由索引表經交付證據
+   計為有資料。
+4. Fetcher：盤中取得的子程序操作（含欄位轉換）、adapter、Raw R2 的 Parquet 格式、四條 dataset 的名單（沿用
+   台股日 K 的官方名單）。合併後不會被執行，直到下一項把 feed 加進 catalog。
+5. 切換，Backend 與 Fetcher 同一個 PR：catalog 加入四條 feed、seed 與 registry provisioning 的四個 dataset、
+   FinLab Source credential 範圍的 migration、排程的 dataset 對應，以及所有生成產物。限制見下一節。
+6. Backend：Serve 的 1 分 K（含彙總刻度）與逐筆查詢；Dashboard 的查詢頁視需要另開。
+7. Staging 驗收：先只開股票的 1 分 K，再開 ETF 與逐筆。
+8. Production 上線與文件整併。
+
+### 為什麼不能先把 feed 加進 catalog
+
+原訂第三項是「先在 catalog 加四條 feed」。盤點現有程式後確認不可行，四條 feed 必須與 Fetcher 的支援、
+憑證範圍一起切換：
+
+| 現有的檢查 | 只加 feed 的後果 |
+| --- | --- |
+| 排程啟動時，排程的 dataset 必須等於該 provider 的 Source 範圍（`scheduler_start.py`） | Source 範圍多了四條、排程的 dataset 沒有，FinLab 的排程無法啟動 |
+| 排程發布時，憑證的 dataset 必須等於該 provider 要抓取的 feed（`feed_schedule.py`） | 兩邊只要有一邊先變，FinLab 取不到排程（503），daily 停止 |
+| Fetcher 拒收含有它不支援的 feed 的整份排程（`execution_config.py`） | Backend 先發布新 feed，現行 Fetcher 的 FinLab daily 停止 |
+| Fetcher 啟動時，排程的 dataset 必須等於它安裝的 feed（`full_market_cli.py`） | Fetcher 先換新版，FinLab consumer 無法啟動 |
+| 部署不會擴大既有 Source credential 的 `allowed_datasets` | 要有 migration 一併處理，過去兩次範圍變更也是如此 |
+
+所以切換那一步的部署順序固定為：停止 FinLab 的 control → 部署 Backend → 部署 Fetcher → 重新啟動 control。
+Fetcher 的部署本來就要求 controls 停止。Staging 平時 controls 是停的，直接合併即可；production 要安排在
+沒有排程的時段。
 
 ## 已定事項
 

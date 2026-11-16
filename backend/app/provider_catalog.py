@@ -147,7 +147,8 @@ class FeedDefinition(CatalogModel):
     market: Literal["US", "HK", "TW"]
     calendar_market: Literal["US", "HK", "TW", "TAIFEX"]
     asset_class: Literal["equity", "etf", "future"]
-    frequency: Literal["daily"]
+    # Granularity of the delivered records: a daily row, a one-minute bar or a trade.
+    frequency: Literal["daily", "minute", "tick"]
     contract: ContractDefinition
     lifecycle: Literal["active", "draining", "retired"]
     capabilities: FeedCapabilities
@@ -161,6 +162,8 @@ class FeedDefinition(CatalogModel):
     @model_validator(mode="after")
     def coherent_capabilities(self) -> Self:
         caps = self.capabilities
+        if (self.contract.schema_id == "intraday_partition") != (self.frequency != "daily"):
+            raise ValueError("only intraday_partition feeds deliver minute or tick records")
         if caps.acquisition:
             if self.lifecycle != "active" or not caps.source:
                 raise ValueError("acquisition requires active Source capability")

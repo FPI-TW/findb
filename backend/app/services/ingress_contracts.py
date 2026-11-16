@@ -42,6 +42,12 @@ _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
 )
 
 
+# Registry and catalog frequency of a dataset that stores each kind of intraday record.
+INTRADAY_DATASET_FREQUENCY: Mapping[str, str] = MappingProxyType(
+    {"bar_1m": "minute", "tick": "tick"}
+)
+
+
 class UnsupportedIngressContractError(ValueError):
     """Raised when the requested schema id/version is not registered."""
 
