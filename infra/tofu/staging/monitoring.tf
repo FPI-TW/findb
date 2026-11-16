@@ -27,6 +27,7 @@ locals {
     [for unit in sort(keys(local.unit_config)) : "findb-staging-${unit}-status-check-failed"],
     [for alarm_key in sort(keys(local.rds_monitoring_alarms)) : "findb-staging-rds-${replace(alarm_key, "_", "-")}"],
     [for alarm_key in sort(keys(local.custom_monitoring_alarms)) : local.custom_monitoring_alarms[alarm_key].alarm_name],
+    [for unit in sort(keys(local.unit_config)) : "findb-staging-${unit}-cpu-utilization-high"],
   )
   operational_alarm_arns = [
     for alarm_name in local.operational_alarm_names :
@@ -41,6 +42,14 @@ locals {
   }
 
   rds_monitoring_alarms = {
+    cpu_utilization = {
+      metric_name         = "CPUUtilization"
+      comparison_operator = "GreaterThanOrEqualToThreshold"
+      threshold           = var.monitoring_rds_cpu_utilization_threshold_percent
+      statistic           = "Average"
+      unit                = "Percent"
+      description         = "fin-db averages at least 85 percent CPU for two consecutive five-minute periods."
+    }
     free_storage_space = {
       metric_name         = "FreeStorageSpace"
       comparison_operator = "LessThanOrEqualToThreshold"
@@ -415,6 +424,23 @@ locals {
         description         = "${scheduler_key} is running and its heartbeat is at least three minutes old."
       }
     },
+    # A stopped control publishes no freshness datum either, so the same
+    # missing-data policy keeps a normally stopped staging control quiet.
+    {
+      for scheduler_key in local.scheduler_keys : "scheduler_freshness_${scheduler_key}" => {
+        alarm_name          = "findb-staging-fetcher-${replace(scheduler_key, "_", "-")}-freshness-unhealthy"
+        metric_name         = "FeedFreshnessHealthy"
+        comparison_operator = "LessThanThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "fetcher"
+        resource            = scheduler_key
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "notBreaching"
+        description         = "${scheduler_key} is running and at least one of its feeds is partial, late, failed, or never received."
+      }
+    },
     {
       for unit in sort(keys(local.unit_config)) : "${unit}_deployment_failure" => {
         alarm_name          = "findb-staging-${unit}-deployment-failed"
@@ -712,7 +738,7 @@ resource "aws_cloudwatch_metric_alarm" "ec2_status_check_failed" {
   treat_missing_data        = local.monitoring_alarm_common.treat_missing_data
   actions_enabled           = true
   alarm_actions             = [aws_sns_topic.operational_alerts.arn]
-  ok_actions                = []
+  ok_actions                = [aws_sns_topic.operational_alerts.arn]
   insufficient_data_actions = []
 
   tags = merge(local.common_tags, { DeploymentUnit = each.key })
@@ -739,7 +765,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_native" {
   treat_missing_data        = local.monitoring_alarm_common.treat_missing_data
   actions_enabled           = true
   alarm_actions             = [aws_sns_topic.operational_alerts.arn]
-  ok_actions                = []
+  ok_actions                = [aws_sns_topic.operational_alerts.arn]
   insufficient_data_actions = []
 
   tags = merge(local.common_tags, { DeploymentUnit = "findb-rds" })
@@ -771,10 +797,39 @@ resource "aws_cloudwatch_metric_alarm" "custom" {
   treat_missing_data        = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : each.value.treat_missing_data
   actions_enabled           = !contains(local.retired_alarm_resources, each.value.resource)
   alarm_actions             = contains(local.retired_alarm_resources, each.value.resource) ? [] : [aws_sns_topic.operational_alerts.arn]
-  ok_actions                = []
+  ok_actions                = contains(local.retired_alarm_resources, each.value.resource) ? [] : [aws_sns_topic.operational_alerts.arn]
   insufficient_data_actions = []
 
   tags = merge(local.common_tags, { DeploymentUnit = each.value.deployment_unit }, contains(local.retired_alarm_resources, each.value.resource) ? { RuntimeStatus = "retired" } : {})
+}
+
+# Sustained host CPU saturation; three periods ride out a short burst on the
+# burstable staging instances.
+resource "aws_cloudwatch_metric_alarm" "ec2_cpu_utilization" {
+  for_each = local.unit_config
+
+  depends_on = [aws_sns_topic_policy.operational_alerts]
+
+  alarm_name          = "findb-staging-${each.key}-cpu-utilization-high"
+  alarm_description   = "${each.key} EC2 CPUUtilization averages at least 85 percent for three consecutive five-minute periods."
+  namespace           = "AWS/EC2"
+  metric_name         = "CPUUtilization"
+  dimensions          = { InstanceId = each.value.instance_id }
+  statistic           = "Average"
+  unit                = "Percent"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = var.monitoring_ec2_cpu_utilization_threshold_percent
+
+  period                    = local.monitoring_alarm_common.period
+  evaluation_periods        = 3
+  datapoints_to_alarm       = 3
+  treat_missing_data        = local.monitoring_alarm_common.treat_missing_data
+  actions_enabled           = true
+  alarm_actions             = [aws_sns_topic.operational_alerts.arn]
+  ok_actions                = [aws_sns_topic.operational_alerts.arn]
+  insufficient_data_actions = []
+
+  tags = merge(local.common_tags, { DeploymentUnit = each.key })
 }
 
 resource "aws_ssm_association" "staging_metric_publisher" {

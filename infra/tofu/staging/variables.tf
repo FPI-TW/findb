@@ -119,7 +119,7 @@ variable "monitoring_alarm_period_seconds" {
 }
 
 variable "monitoring_alarm_evaluation_periods" {
-  description = "Consecutive five-minute periods evaluated by every Phase 6 native alarm."
+  description = "Consecutive five-minute periods evaluated by every Phase 6 native alarm except EC2 CPU, which waits three."
   type        = number
   default     = 2
 
@@ -130,7 +130,7 @@ variable "monitoring_alarm_evaluation_periods" {
 }
 
 variable "monitoring_alarm_datapoints_to_alarm" {
-  description = "Breaching datapoints required within the evaluation window for every Phase 6 native alarm."
+  description = "Breaching datapoints required within the evaluation window for every Phase 6 native alarm except EC2 CPU, which requires three."
   type        = number
   default     = 2
 
@@ -159,6 +159,28 @@ variable "monitoring_ec2_status_check_failed_threshold" {
   validation {
     condition     = var.monitoring_ec2_status_check_failed_threshold == 1
     error_message = "monitoring_ec2_status_check_failed_threshold must remain one failed status check."
+  }
+}
+
+variable "monitoring_ec2_cpu_utilization_threshold_percent" {
+  description = "EC2 CPUUtilization average percent that opens an alarm after three periods."
+  type        = number
+  default     = 85
+
+  validation {
+    condition     = var.monitoring_ec2_cpu_utilization_threshold_percent == 85
+    error_message = "monitoring_ec2_cpu_utilization_threshold_percent must remain the reviewed 85 percent threshold."
+  }
+}
+
+variable "monitoring_rds_cpu_utilization_threshold_percent" {
+  description = "RDS CPUUtilization average percent that opens an alarm."
+  type        = number
+  default     = 85
+
+  validation {
+    condition     = var.monitoring_rds_cpu_utilization_threshold_percent == 85
+    error_message = "monitoring_rds_cpu_utilization_threshold_percent must remain the reviewed 85 percent threshold."
   }
 }
 

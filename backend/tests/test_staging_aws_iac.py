@@ -696,7 +696,7 @@ def test_fetcher_alarm_identities_derive_from_the_generated_inventory() -> None:
     )[0]
     assert "depends_on = [aws_ssm_association.metric_publisher]" in alarm
     assert (
-        'treat_missing_data  = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : "breaching"'
+        'treat_missing_data  = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : each.value.missing'
         in alarm
     )
     assert (
@@ -740,6 +740,11 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     assert "operational_alarm_names = concat(" in monitoring
     assert "[for unit in sort(keys(local.unit_config))" in monitoring
     assert "[for alarm_key in sort(keys(local.rds_monitoring_alarms))" in monitoring
+    # A separate alarm resource publishes only when its names join the exact list.
+    assert (
+        '[for unit in sort(keys(local.unit_config)) : "findb-staging-${unit}-cpu-utilization-high"]'
+        in monitoring
+    )
     assert "operational_alarm_arns = [" in monitoring
     assert '}:alarm:${alarm_name}"' in monitoring
     # KMS and the SNS Allow both require the exact list; the SNS deny guard
@@ -835,6 +840,14 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
     )[0]
     assert "depends_on = [aws_sns_topic_policy.operational_alerts]" in ec2_alarm
     assert "depends_on = [aws_sns_topic_policy.operational_alerts]" in rds_alarm
+    cpu_alarm = monitoring.split('resource "aws_cloudwatch_metric_alarm" "ec2_cpu_utilization"', 1)[
+        1
+    ].split('resource "aws_ssm_association" "staging_metric_publisher"', 1)[0]
+    assert "depends_on = [aws_sns_topic_policy.operational_alerts]" in cpu_alarm
+    assert 'alarm_name          = "findb-staging-${each.key}-cpu-utilization-high"' in cpu_alarm
+    assert "threshold           = var.monitoring_ec2_cpu_utilization_threshold_percent" in cpu_alarm
+    assert "evaluation_periods        = 3" in cpu_alarm
+    assert "datapoints_to_alarm       = 3" in cpu_alarm
     assert 'namespace           = "AWS/EC2"' in monitoring
     assert 'metric_name         = "StatusCheckFailed"' in monitoring
     assert "dimensions          = { InstanceId = each.value.instance_id }" in monitoring
@@ -843,24 +856,33 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "dimensions          = { DBInstanceIdentifier = var.findb_rds_instance_identifier }"
         in monitoring
     )
-    for metric in ("FreeStorageSpace", "DatabaseConnections", "ReadLatency", "WriteLatency"):
+    for metric in (
+        "CPUUtilization",
+        "FreeStorageSpace",
+        "DatabaseConnections",
+        "ReadLatency",
+        "WriteLatency",
+    ):
         assert f'metric_name         = "{metric}"' in monitoring
-    for setting in (
-        r"period\s+=\s+local\.monitoring_alarm_common\.period",
-        r"evaluation_periods\s+=\s+local\.monitoring_alarm_common\.evaluation_periods",
-        r"datapoints_to_alarm\s+=\s+local\.monitoring_alarm_common\.datapoints_to_alarm",
-        r"treat_missing_data\s+=\s+local\.monitoring_alarm_common\.treat_missing_data",
+    # The three native alarm resources share the period and missing-data policy;
+    # only the CPU alarm waits a third period.
+    for setting, count in (
+        (r"period\s+=\s+local\.monitoring_alarm_common\.period", 3),
+        (r"evaluation_periods\s+=\s+local\.monitoring_alarm_common\.evaluation_periods", 2),
+        (r"datapoints_to_alarm\s+=\s+local\.monitoring_alarm_common\.datapoints_to_alarm", 2),
+        (r"treat_missing_data\s+=\s+local\.monitoring_alarm_common\.treat_missing_data", 3),
+        (r"actions_enabled\s+=\s+true", 3),
+        (r"alarm_actions\s+=\s+\[aws_sns_topic\.operational_alerts\.arn\]", 3),
+        # Recovery notifies the same topic; no alarm keeps a silent OK transition.
+        (r"ok_actions\s+=\s+\[aws_sns_topic\.operational_alerts\.arn\]", 3),
+        (r"ok_actions\s+=\s+\[\]", 0),
+        (r"insufficient_data_actions\s+=\s+\[\]", 4),
     ):
-        assert len(re.findall(setting, monitoring)) == 2
-    for setting in (
-        r"actions_enabled\s+=\s+true",
-        r"alarm_actions\s+=\s+\[aws_sns_topic\.operational_alerts\.arn\]",
-        r"ok_actions\s+=\s+\[\]",
-        r"insufficient_data_actions\s+=\s+\[\]",
-    ):
-        assert len(re.findall(setting, monitoring)) == (
-            2 if "actions_enabled" in setting or "alarm_actions" in setting else 3
-        )
+        assert len(re.findall(setting, monitoring)) == count
+    assert (
+        "ok_actions                = contains(local.retired_alarm_resources, each.value.resource) "
+        "? [] : [aws_sns_topic.operational_alerts.arn]"
+    ) in monitoring
 
     assert 'resource "aws_cloudwatch_metric_alarm" "custom"' in monitoring
     assert 'namespace           = "FinDB/Staging"' in monitoring
@@ -873,6 +895,7 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         "CredentialUsageAggregateMismatches",
         "DLMPolicyHealthy",
         "EODDefaultPartitionRows",
+        "FeedFreshnessHealthy",
         "InodeUsedPercent",
         "InvalidCredentialEvents",
         "LineageOrphanRows",
@@ -905,6 +928,8 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         ("monitoring_alarm_datapoints_to_alarm", "2"),
         ("monitoring_alarm_treat_missing_data", '"missing"'),
         ("monitoring_ec2_status_check_failed_threshold", "1"),
+        ("monitoring_ec2_cpu_utilization_threshold_percent", "85"),
+        ("monitoring_rds_cpu_utilization_threshold_percent", "85"),
         ("monitoring_rds_free_storage_space_threshold_bytes", "5368709120"),
         ("monitoring_rds_database_connections_threshold", "80"),
         ("monitoring_rds_latency_threshold_seconds", "0.1"),
