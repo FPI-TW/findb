@@ -434,7 +434,7 @@ Fixture tests 與 live pipeline observations 分開；live 門檻是四個 provi
 Staging evidence 使用 backend unit-local `published_year` 驗證完整已發布官方年度日曆，輸出
 `target_calendar_evidence` v1 的 UTC 觀測時刻、revision metadata 與最多 16 日的日期／收盤窗口；
 collector 依 aware UTC 時鐘與 runtime 邊界選日（US 台北 08:15 trigger／lag 1，TW EOD／minute
-14:30，TAIFEX 18:00），再檢查官方收盤。US 09:00 是交付 deadline，不是改選舊日的邊界；
+14:30，TAIFEX 18:00），再檢查官方收盤。US 的交付 deadline（排程開始後 12 小時）不是改選舊日的邊界；
 minute 17:00 acquisition cutoff 後仍要求當日 proof。休市回退到官方前開市日，calendar 缺失、
 不完整、revision／timezone 不符或觀測時間差超過五分鐘時 fail closed，不從最新成功 run 推導日期。
 同 target 的 missing／blocked／failed 工作不能被舊 completed 遮蔽。每個 run 的 canonical

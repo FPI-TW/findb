@@ -31,8 +31,9 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   consumers 由明確 roles 定義，不能因沒有 acquisition 就自動刪除排空程序。
 - Contract 明列 current／accepted versions，並核對 `contracts/manifest.json` 與實際 artifact checksum。
   FactSet 新交付為 market_eod v2，accepted 為 v1／v2。
-- Schedule 定義交易所當地時間與 date lag；completion deadline 使用獨立 timezone／trade-date day offset。
-  Full daily 保留 US 次日台北 09:00、其餘當日台北 23:00。Bounded monitor 的 US 次日 09:15、
+- Schedule 定義交易所當地時間與 date lag；completion deadline 保留自己的 timezone／trade-date day offset 欄位，
+  但值必須是排程開始後 12 小時、與排程同時區（`COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`），catalog 載入時
+  檢查。Fetcher 的 `no_data` 最後一輪重試依這個期限排定。Bounded monitor 的 US 次日 09:15、
   TW equity 當日 17:00 另行保存；其它目前停用。Publication retry window 不代表 delivery SLA。
 - Backend 的 market→時區只由 `app.services.effective_calendar.MARKETS` 維護，包含 `TAIFEX` 這類
   calendar market；`market_timezone()` 對未知 market fail closed，不回落台北時間。Catalog feed 的

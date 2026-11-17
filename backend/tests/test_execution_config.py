@@ -161,24 +161,27 @@ def test_exchange_clock_dst_boundaries_and_year_rollover(clock, expected):
 
 def test_completion_and_bounded_deadlines_are_independent():
     view = feed_schedule_view("twelve_data", "us_equity_eod", datetime.now(timezone.utc))
+    # 12 hours after 17:00 New York: 18:00 Taipei in winter, 17:00 in summer.
     assert (
         deadline_at(view.completion_deadline, date(2026, 12, 31)).isoformat()
-        == "2027-01-01T01:00:00+00:00"
+        == "2027-01-01T10:00:00+00:00"
+    )
+    assert (
+        deadline_at(view.completion_deadline, date(2026, 7, 15)).isoformat()
+        == "2026-07-16T09:00:00+00:00"
     )
     assert (
         deadline_at(view.bounded_monitor.deadline, date(2026, 12, 31)).isoformat()
         == "2027-01-01T01:15:00+00:00"
     )
-    for provider, key in [
-        ("finlab", "tw_equity_eod"),
-        ("factset", "hk_equity_eod"),
-        ("taifex", "tw_futures_eod"),
+    for provider, key, expected in [
+        ("finlab", "tw_equity_eod", "2026-11-09T22:00:00+00:00"),
+        ("finlab", "tw_equity_bar_1m", "2026-11-09T22:30:00+00:00"),
+        ("factset", "hk_equity_eod", "2026-11-09T22:30:00+00:00"),
+        ("taifex", "tw_futures_eod", "2026-11-09T21:00:00+00:00"),
     ]:
         view = feed_schedule_view(provider, key, datetime.now(timezone.utc))
-        assert (
-            deadline_at(view.completion_deadline, date(2026, 11, 9)).isoformat()
-            == "2026-11-09T15:00:00+00:00"
-        )
+        assert deadline_at(view.completion_deadline, date(2026, 11, 9)).isoformat() == expected
     with pytest.raises(ValueError, match="timezone"):
         feed_schedule_view("finlab", "tw_equity_eod", datetime(2026, 11, 9))
     assert feed_schedule_view("shioaji", "tw_equity_minute", datetime.now(timezone.utc)) is None

@@ -551,8 +551,8 @@ missing、blocked、deadline 與 gap reason 分開呈現。Staging Full metrics 
 staging 原生告警不證明 production 範圍已上線；未執行 external capability 與實際 daily-plan coverage 驗證 前，不
 宣稱全市場健康或 production coverage 完成。
 
-每個交易日核對 Source plan summary 與 canonical lineage；TW／HK／TAIFEX 截止台北當日
-23:00，US 截止次日 09:00。晚到資料可供查詢但須保留遲到紀錄；停牌／無成交的 no_data
+每個交易日核對 Source plan summary 與 canonical lineage；每條 feed 都在排程開始後 12 小時截止
+（台北時間：TW／HK／TAIFEX 次日 05:00–06:30，US 次日 18:00）。晚到資料可供查詢但須保留遲到紀錄；停牌／無成交的 no_data
 必須有 durable official/provider evidence。Quota、entitlement、mapping、source error 形成
 blocked；空 response 與缺結果不能歸為 no_data。
 

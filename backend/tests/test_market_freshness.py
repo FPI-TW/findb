@@ -924,7 +924,8 @@ def test_serve_freshness_schema_has_a_closed_status_vocabulary():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("frozen_hour", [None, 14, 16])
+# Without a plan the catalog deadline applies: 12 hours after 18:00 Taipei, 22:00 UTC.
+@pytest.mark.parametrize("frozen_hour", [None, 21, 23])
 @pytest.mark.parametrize("summary_pending", [False, True])
 async def test_profile_freshness_deadline_without_summary_uses_frozen_plan_first(
     test_session, frozen_hour, summary_pending
@@ -956,16 +957,16 @@ async def test_profile_freshness_deadline_without_summary_uses_frozen_plan_first
         test_session,
         feed,
         "full_market",
-        datetime.combine(DAY, time(14, 30), timezone.utc),
+        datetime.combine(DAY, time(21, 30), timezone.utc),
         DAY.isoformat(),
     )
     after = await _profile_feed_freshness(
         test_session,
         feed,
         "full_market",
-        datetime.combine(DAY, time(15, 30), timezone.utc),
+        datetime.combine(DAY, time(22, 30), timezone.utc),
         DAY.isoformat(),
     )
     overdue = "never_received" if summary_pending or frozen_hour is None else "late"
-    assert before.status == (overdue if frozen_hour == 14 else "not_due")
-    assert after.status == ("not_due" if frozen_hour == 16 else overdue)
+    assert before.status == (overdue if frozen_hour == 21 else "not_due")
+    assert after.status == ("not_due" if frozen_hour == 23 else overdue)

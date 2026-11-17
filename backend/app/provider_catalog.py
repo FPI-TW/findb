@@ -18,6 +18,8 @@ Clock = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
 PositiveInt = Annotated[int, Field(gt=0)]
 DayOffset = Annotated[int, Field(ge=0, le=366)]
 ConsumerRole = Literal["full_market", "historical"]
+# Every acquiring feed is due this long after its scheduled start, in the schedule's timezone.
+COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE = 12
 
 
 class CatalogModel(BaseModel):
@@ -77,6 +79,17 @@ class AcquisitionSchedule(ZonedClock):
 
 class CompletionDeadline(ZonedClock):
     trade_date_day_offset: DayOffset
+
+
+def completion_deadline_for(schedule: AcquisitionSchedule) -> CompletionDeadline:
+    """The one deadline rule: a fixed wall-clock span after the scheduled start."""
+    hour, minute = map(int, schedule.local_time.split(":"))
+    days, hour = divmod(hour + COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE, 24)
+    return CompletionDeadline(
+        timezone=schedule.timezone,
+        local_time=f"{hour:02d}:{minute:02d}",
+        trade_date_day_offset=schedule.target_date_lag_days + days,
+    )
 
 
 class BoundedMonitor(CatalogModel):
@@ -169,6 +182,11 @@ class FeedDefinition(CatalogModel):
                 raise ValueError("acquisition requires active Source capability")
             if self.schedule is None or self.completion_deadline is None:
                 raise ValueError("acquiring feed requires schedule and completion deadline")
+            if self.completion_deadline != completion_deadline_for(self.schedule):
+                raise ValueError(
+                    "completion deadline must be "
+                    f"{COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE} hours after the scheduled start"
+                )
             if self.publication_retry_window_seconds is None:
                 raise ValueError("acquiring feed requires publication retry window")
         elif self.schedule is not None:

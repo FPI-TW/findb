@@ -113,12 +113,17 @@ Retryable round 必須先關閉 acquisition／acceptance、排空所有 accepted
 Daily feeds 與 historical adapters 在觀察到第一個 retryable provider／Source 錯誤、transport
 unknown 或 terminal polling timeout 後，即停止該輪的新 provider I/O 與新 prepared intent；不繼續後續
 member／sequence。原 bytes／accepted receipts 先 reconcile／terminal drain，再安全 tail retry。
-例外是 Twelve Data 的成員層級 `no_data`（HTTP 400 "No data is available"）：它不代表 provider 或帳號
-異常，回報 `source_error` 並保存診斷後繼續下一個 member，該 member 依原 attempt 上限重試，耗盡後為
+例外是成員層級的 `no_data`：Twelve Data 的 HTTP 400 "No data is available"（或單檔 404），以及 FinLab 盤中
+feed 某個代號還沒有分區。它不代表 provider 或帳號異常，回報 `source_error`（FinLab 盤中為 `empty_response`）
+並保存診斷後繼續下一個 member，該 member 依 `no_data` 的上限重試，耗盡後為
 `manual / no_data_exhausted`。部分標的的資料可能晚數小時才發布，所以 `no_data` 成員不設逐檔間隔，改由 plan 的
-重試輪控制：第 1 輪抓完全部成員，之後每輪處理當時所有仍為 `no_data` 的成員各一次（5 次含第一次抓取）。一輪
-在結算時若已沒有本輪尚未抓的成員，下一輪最早開始時間為結算時間加上 30、60、60、120 分鐘（依序）；因此同一成員
-兩次抓取至少相隔這些時間。輪號與下一輪時間保存在 Fetcher SQLite `full_no_data_round`，跨 queue attempt 與重啟；
+重試輪控制：第 1 輪抓完全部成員，之後每輪處理當時所有仍為 `no_data` 的成員各一次，共 6 次（含第一次抓取；
+其他失敗仍是 `FULL_WORK_MAX_ATTEMPTS` 的 5 次）。第 2–5 輪：一輪在結算時若已沒有本輪尚未抓的成員，下一輪
+最早開始時間為結算時間加上 30、60、60、120 分鐘（依序）；因此同一成員兩次抓取至少相隔這些時間。第 6 輪是
+最後一輪，不從上一輪起算，而是固定在 plan 凍結的 `deadline_at` 前 30 分鐘（截止時間是排程開始後 12 小時，
+所以是開始後 11 小時 30 分）；第 5 輪結算時若已超過這個時間，最後一輪立刻執行。Twelve Data 對當日沒有成交的
+代號要到開始後約 11 小時才補上零成交量的日線，最後一輪就是為了接到這批資料。
+輪號與下一輪時間保存在 Fetcher SQLite `full_no_data_round`，跨 queue attempt 與重啟；
 一輪被 Source 不可用、quota、breaker 或重啟中斷時，下一 attempt 只接續本輪尚未抓的成員，不重抓也不提早進入下一輪。
 沒有輪次紀錄的進行中 plan 從最少嘗試次數的 `no_data` 成員接續，並以該次數對應的間隔等待。
 結算一輪前，Fetcher 先讀取本輪剛交付、仍標為 normalizing 成員的 run 狀態（最多等 60 秒；結算本來就要等

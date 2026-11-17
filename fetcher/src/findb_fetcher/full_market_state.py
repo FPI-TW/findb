@@ -30,9 +30,14 @@ FULL_WORK_MAX_ATTEMPTS = 5
 # Also the acquired members that prove the date is open and the provider is serving it.
 FULL_WORK_NO_DATA_BREAKER = 20
 # A symbol's end-of-day row can publish hours later than the rest, so its retries span hours.
-# One wait after each completed retry round but the last; FULL_WORK_MAX_ATTEMPTS includes the
-# first fetch. A round ends once every no-data member has been fetched in it.
+# The wait after each completed round that leads to another regular round. A round ends once
+# every no-data member has been fetched in it.
 FULL_WORK_NO_DATA_RETRY_DELAYS = (1800, 3600, 3600, 7200)
+# No-data members get one final round after the regular ones, so one more fetch than other
+# failures. It waits for the plan's frozen deadline rather than for the previous round, which
+# catches rows published late in the day.
+FULL_WORK_NO_DATA_MAX_ATTEMPTS = FULL_WORK_MAX_ATTEMPTS + 1
+FULL_WORK_NO_DATA_FINAL_ROUND_LEAD_SECONDS = 1800
 FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS = 1800
 # Settled intents and past quota windows outlive every liability, login and cooldown read.
 ACCOUNT_LEDGER_RETENTION_SECONDS = 7 * 86400
@@ -944,6 +949,8 @@ class FullMarketState:
 
         Round 1 is the first fetch of every member; each later round fetches every member
         still without data once. An interrupted round resumes with its unfetched members.
+        Every round waits from the previous one except the final one, which waits for the
+        plan's deadline.
         """
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -964,13 +971,24 @@ class FullMarketState:
             ).fetchone()[0]
             if fetched is None:
                 return
-            delay = FULL_WORK_NO_DATA_RETRY_DELAYS[
-                min(fetched, len(FULL_WORK_NO_DATA_RETRY_DELAYS)) - 1
-            ]
+            if fetched <= len(FULL_WORK_NO_DATA_RETRY_DELAYS):
+                not_before = now + FULL_WORK_NO_DATA_RETRY_DELAYS[fetched - 1]
+            else:
+                # The final round: shortly before the deadline, or at once when that has passed.
+                body = db.execute(
+                    "SELECT body FROM full_plan WHERE plan_id=?", (plan_id,)
+                ).fetchone()
+                try:
+                    deadline = datetime.fromisoformat(json.loads(body[0])["deadline_at"])
+                    not_before = max(
+                        now, deadline.timestamp() - FULL_WORK_NO_DATA_FINAL_ROUND_LEAD_SECONDS
+                    )
+                except (TypeError, KeyError, ValueError):
+                    not_before = now + FULL_WORK_NO_DATA_RETRY_DELAYS[-1]
             db.execute(
                 "INSERT INTO full_no_data_round VALUES(?,?,?) ON CONFLICT(plan_id) "
                 "DO UPDATE SET round=excluded.round,not_before=excluded.not_before",
-                (plan_id, fetched + 1, now + delay),
+                (plan_id, fetched + 1, not_before),
             )
 
     def no_data_retry_at(self, plan_id: str) -> float | None:
@@ -1084,8 +1102,8 @@ class FullMarketState:
                 ),
             )
             db.execute(
-                "UPDATE full_work SET status='manual',reason=CASE WHEN reason='no_data' THEN 'no_data_exhausted' ELSE 'retry_exhausted' END WHERE key=? AND attempts>=? AND status IN ('pending','prepared') AND reason != 'normalizing'",
-                (key, FULL_WORK_MAX_ATTEMPTS),
+                "UPDATE full_work SET status='manual',reason=CASE WHEN reason='no_data' THEN 'no_data_exhausted' ELSE 'retry_exhausted' END WHERE key=? AND attempts>=CASE WHEN reason='no_data' THEN ? ELSE ? END AND status IN ('pending','prepared') AND reason != 'normalizing'",
+                (key, FULL_WORK_NO_DATA_MAX_ATTEMPTS, FULL_WORK_MAX_ATTEMPTS),
             )
             # A crash after terminal local progress must not lose the final
             # Source evaluation just because no prepared member remains.

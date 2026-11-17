@@ -22,7 +22,8 @@ async def test_five_expected_days_exclude_weekend_and_no_data_resets_streak(
 ):
     await setup(test_session, monkeypatch)
     days = [date(2026, 10, day) for day in (20, 21, 22, 23, 26)]
-    now = datetime(2026, 10, 26, 16, tzinfo=timezone.utc)
+    # Past the last day's deadline, 12 hours after the 18:30 Hong Kong start.
+    now = datetime(2026, 10, 26, 23, tzinfo=timezone.utc)
     monkeypatch.setattr("app.services.full_market.utc_now", lambda: now)
     monkeypatch.setattr("app.services.full_market_admission.utc_now", lambda: now)
     await _calendar(test_session, "HK", open_dates=days)

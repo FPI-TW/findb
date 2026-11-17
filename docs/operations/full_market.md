@@ -292,7 +292,7 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據。Plan 只缺這種成員時，daily work 以 `partial` 結束而不是 `failed`；plan 統計仍把它們算作 blocked（見 [provider_work](../architecture/provider_work.md)） |
 | `retry_exhausted` | 本地一般失敗額度（`FULL_WORK_MAX_ATTEMPTS`，5 次，所有 provider 一致）耗盡，不等於五次 native 請求 |
 | `no_data` | Twelve Data 回報該檔該日無資料，或單檔回 404（`not_found`，例如清單已列出但日線尚未提供的新代號），不停止其他成員；依額度重試，不算成功或 no_data。兩者以 Fetcher SQLite `full_work_diagnostic.category` 分辨，Admin API 與 Dashboard 都只顯示 `source_error` |
-| `no_data_exhausted` | `no_data` 額度耗盡（plan 重試輪每輪結算後依序等待 30、60、60、120 分鐘，進度見 Fetcher SQLite `full_no_data_round`），缺漏須另行回補；只影響該檔。Breaker 連續觸發 5 次且其間沒有資料才結束 plan，此時先查是否為未發布休市日 |
+| `no_data_exhausted` | `no_data` 額度耗盡（共 6 次：plan 重試輪每輪結算後依序等待 30、60、60、120 分鐘，最後一輪固定在截止時間前 30 分鐘，也就是開始後 11 小時 30 分；進度見 Fetcher SQLite `full_no_data_round`），缺漏須另行回補；只影響該檔。Breaker 連續觸發 5 次且其間沒有資料才結束 plan，此時先查是否為未發布休市日 |
 | `prepared/normalizing` | 應查 Backend run 與序列收據；可能已完成，不能據此宣稱 queue 卡住 |
 | `source_proven_no_trade` | 已完成。FinLab 當日四個價格全空、成交量為空或 0，視為當日沒有成交，附整張表 bundle 的 SHA-256 回報 `no_trade` 證據；TAIFEX 依報表的無成交列。<br>FinLab 價格全空但成交量大於 0 不算無成交，而是照常交付一列日 K（成員狀態為一般的已完成）：開、高、低、收都填該成員最近一個有值的收盤價（不限前一個交易日，除權息日也一樣），成交量照 FinLab 的值。這種成員每個交易日都有，成交股數多半不足一張。共用的五表 bundle raw 保留原始空值，並在 `close.previous` 記下所用的收盤價與其日期 |
 | `member_unavailable` | Provider 回應本身正常，但只有該成員不能使用。只擋下該檔，不重試、不重新下載共用表或報表、不結束這一輪；Backend 記為 blocked，細分原因看 `full_work_diagnostic.category` 的 `member:<code>`：<br>FinLab：部分價格欄位空值、價格全空且成交量大於 0 卻沒有任何較早的收盤價、OHLC 越界、成交量非整數（`source_error`），或表中還沒有這個代號，例如剛上市（`member:missing_symbol`，`empty_response`）。<br>Twelve Data：回應的幣別與凍結 release 成員不同（`member:identity_mismatch`，`source_error`）。<br>TAIFEX：該列沒有任何觀測值（`member:no_observation`，`source_error`）；plan 凍結的是同一交易日的 dated universe，而當日報表沒有該 contract／session（`member:missing_contract`，`empty_response`）。#307 之前以較舊 universe 凍結的 plan 缺 contract 時，可能是 universe 落後於轉倉，仍以一般 `source_error` 結束這一輪並重試 |
@@ -1040,7 +1040,7 @@ staging 的實際執行尚未驗收，進度見 [設計文件](../dev/finlab-int
   control 才會納入。
 - **名單**：沿用台股日 K 的官方名單（TWSE／TPEx），不查 FinLab 的目錄。FinLab 沒有盤中標的清單，而且會提供
   日 K 價格表還沒有的標的（例如新上市），所以每個已分類的成員都會嘗試。
-- **排程**：台北 18:30，完成期限為隔日 08:00。FinLab 的 control 顯示的是該 provider 最早的 feed 時間
+- **排程**：台北 18:30，完成期限為隔日 06:30（開始後 12 小時）。FinLab 的 control 顯示的是該 provider 最早的 feed 時間
   （18:00）。同一個交易日的工作依排程時間排入佇列，日 K 一定排在盤中之前；跨日補抓時仍是日期優先。
 - **Historical**：不支援，回補不在第 1 批範圍。
 
@@ -1489,8 +1489,10 @@ HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 只負責 US，HK �
 
 ### Catalog 排程與 frozen deadline
 
-新 plan deadline 與沒有 plan 的 missing-delivery 判定共用 Backend `feed_schedule` resolver：
-US 次日台北 09:00，其餘當日台北 23:00。既有 plan 以儲存的 `deadline_at` 判定，不因後續
+新 plan deadline 與沒有 plan 的 missing-delivery 判定共用 Backend `feed_schedule` resolver。
+所有 feed 同一條規則：排程開始後 12 小時，以排程的時區計算（catalog 載入時檢查，不符即失敗）。
+換算成台北時間：US 次日 18:00（美國夏令時間為 17:00）、TAIFEX 次日 05:00、FinLab 日線次日 06:00、
+FactSet 港股與 FinLab 盤中次日 06:30。既有 plan 以儲存的 `deadline_at` 判定，不因後續
 catalog 修改提早或延後告警。Bounded US 09:15 是另一政策，使用自己的 timezone／day offset。
 Dashboard 依 market 分組，逐 feed 顯示交易所當地觸發時間；slot 僅保留交付契約相容用途。
 DB 舊值修正與發布下限見 [PR5 遷移](deployment.md#provider-catalog-pr5-發布與遷移)。

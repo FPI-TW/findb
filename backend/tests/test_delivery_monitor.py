@@ -479,10 +479,11 @@ async def test_taifex_candidate_wait_past_deadline_uses_dedicated_alert_details(
     assert candidate.status == "candidate"
     saved = await test_session.get(UniverseRelease, candidate.release_id)
     assert saved is not None
-    saved.created_at = datetime(2026, 7, 21, 14, 0, tzinfo=timezone.utc)
+    saved.created_at = datetime(2026, 7, 21, 20, 0, tzinfo=timezone.utc)
     await test_session.commit()
 
-    evaluated_at = datetime(2026, 7, 21, 15, 1, tzinfo=timezone.utc)
+    # TAIFEX starts 17:00 Taipei and is due 12 hours later, 21:00 UTC.
+    evaluated_at = datetime(2026, 7, 21, 21, 1, tzinfo=timezone.utc)
     result = await scan_missing_deliveries(test_session, now=evaluated_at)
 
     assert result.created_or_refreshed == 1
@@ -499,18 +500,18 @@ async def test_taifex_candidate_wait_past_deadline_uses_dedicated_alert_details(
         "no_data": 0,
         "missing": None,
         "blocked": None,
-        "deadline_at": "2026-07-21T15:00:00+00:00",
-        "completion_deadline_at": "2026-07-21T15:00:00+00:00",
+        "deadline_at": "2026-07-21T21:00:00+00:00",
+        "completion_deadline_at": "2026-07-21T21:00:00+00:00",
         "wait_age_seconds": 60.0,
         "candidate_age_seconds": 3660.0,
         "candidate_count": 1,
         "candidate_release_ids": [str(candidate.release_id)],
-        "oldest_candidate_at": "2026-07-21T14:00:00+00:00",
+        "oldest_candidate_at": "2026-07-21T20:00:00+00:00",
         "latest_candidate": {
             "release_id": str(candidate.release_id),
             "change_count": saved.change_count,
             "change_ratio": float(saved.change_ratio),
-            "created_at": "2026-07-21T14:00:00+00:00",
+            "created_at": "2026-07-21T20:00:00+00:00",
         },
     }
 
