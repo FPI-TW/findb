@@ -1030,8 +1030,8 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 ### FinLab 盤中 feed
 
 四條盤中 feed 是 1 分 K 與逐筆成交，股票與 ETF 各一條，契約為 `intraday_partition.v1`：每個（標的、交易日）
-一筆交付，資料存 Canonical R2（見 [盤中儲存](../architecture/intraday_storage.md)）。目前只有程式與設定就緒，
-staging 的實際執行尚未驗收，進度見 [設計文件](../dev/finlab-intraday-batch1.md)。
+一筆交付，資料存 Canonical R2（見 [盤中儲存](../architecture/intraday_storage.md)）。Staging 已以 11/16、11/17
+兩個交易日實際執行四條 feed；production 尚未上線，進度見 [設計文件](../dev/finlab-intraday-batch1.md)。
 
 - **啟用**：四個 dataset 由 migration 建立，和其他 dataset 一樣是啟用狀態（系統沒有「啟用 dataset」的操作；
   未啟用的 dataset 會讓排程卡片顯示設定錯誤，交付也會被拒收）。部署不會開始抓取：dataset 沒有 baseline 就不會
@@ -1051,7 +1051,18 @@ FinLab 對單一成員的回答與結果：
 | 該日分區已發布 | `data`。FinLab 的原始檔與轉成契約欄位的檔都存 Raw R2，Worker 寫入日檔與索引後才計為有資料 |
 | 該日沒有成交（`no_trades`） | `no_data`，證據是 FinLab manifest 的該筆紀錄 |
 | FinLab 尚未驗證該交易日 | 沒有標的可取：整輪等待發布，不記在任何成員身上 |
-| 沒有該標的的分區 | 只影響該成員：回報 `blocked`（`empty_response`）並保留有限次重試，其他成員繼續 |
+| 沒有該標的的分區，同日日 K 無成交或只有零股 | `no_data`（`no_trade`），證據狀態為 `no_record`，佐證記在成員的結果歷史 |
+| 沒有該標的的分區，同日日 K 有整張成交或尚未有結果 | 只影響該成員：回報 `blocked`（`empty_response`）並保留有限次重試，其他成員繼續 |
+
+FinLab 對當天沒有整張成交的標的不產生分區，也不標示 `no_trades`；分區還在產生中時，回覆也一樣。兩者從
+FinLab 的回覆分不出來，所以由 Source 對照同一個 provider 同一天的日 K 判定：
+
+- 日 K 計劃中該成員為 `no_data`，或日 K 的成交量（股數）少於一張（1000 股），才接受為無成交。
+- 日 K 由其他來源寫入、有整張成交，或日 K 還沒有結果時拒絕（409，`no_data_not_corroborated`）。Fetcher 收到
+  這個拒絕就照舊回報 `blocked` 並在下一輪重試；日 K 之後有結果，下一輪會再判定一次。
+- 只看成交量能確定「沒有整張成交」，反過來不成立：只有零股但合計超過 1000 股的標的會留在 `blocked`，需要人工
+  確認。
+- FinLab 的 manifest 把該日列為休市時不適用，照舊回報 `blocked`，這是日曆不一致，要人工處理。
 
 ## 設定與啟動
 

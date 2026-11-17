@@ -216,6 +216,10 @@ TW 13:30 Taipei、TAIFEX regular 13:45 Taipei。TAIFEX after_hours 採歸屬交�
 
 `no_data` 限 `halted`／`no_trade`，必須有 credential-free HTTPS URL、SHA-256、observed_at、
 source_symbol、trade_date、source_status 與 bounded excerpt；futures 同時匹配 session。
+`source_status` 必須等於 reason，唯一例外是 `no_trade` 搭配 `no_record`（provider 沒有該成員當日的紀錄）：
+只限 `intraday_partition` dataset，且同一 provider 同日的日線計劃中該成員為 `no_data`，或該日日線成交量少於
+一張（TW 1000 股）時才接受，佐證寫入成員的 `outcome_history`；否則回 409
+`{"detail":{"code":"no_data_not_corroborated"}}`，成員維持原狀。
 最終 no_data 亦須通過上述交易日／session 收盤限制：伺服器與 evidence `observed_at`
 皆已到收盤，`observed_at` 不得超過伺服器時間五分鐘；收盤前仍可登錄非最終 blocked。
 缺權限、mapping gap、限流、下載錯誤、空 response 都不能視為 no_data；blocked 原因限

@@ -34,7 +34,11 @@ from findb_fetcher.config import app_environment
 from findb_fetcher.daily_runtime import window
 from findb_fetcher.execution_config import ExecutionSnapshot, resolve_execution_config
 from findb_fetcher.execution_metadata import acquisition_feeds, provider_platform_limits
-from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
+from findb_fetcher.full_market_client import (
+    NO_DATA_NOT_CORROBORATED,
+    FullMarketProtocolError,
+    FullMarketSourceClient,
+)
 from findb_fetcher.full_market_errors import (
     DatedUniversePendingError,
     MemberUnavailableError,
@@ -2353,13 +2357,20 @@ class FullMarketRuntime:
         with rpc_timing.timed("step provider_acquire"):
             result = self.adapter.acquire(member, context)
         if result.no_trade is not None:
-            self.source.outcome(
-                plan["plan_id"],
-                work_item_id=part["work_item_id"],
-                member_key=member["member_key"],
-                reason="no_trade",
-                evidence=result.no_trade,
-            )
+            try:
+                self.source.outcome(
+                    plan["plan_id"],
+                    work_item_id=part["work_item_id"],
+                    member_key=member["member_key"],
+                    reason="no_trade",
+                    evidence=result.no_trade,
+                )
+            except FullMarketProtocolError as exc:
+                # Only Source holds the corroboration; without it the provider's
+                # answer is the failure the adapter would have raised.
+                if result.unconfirmed is None or exc.code != NO_DATA_NOT_CORROBORATED:
+                    raise
+                raise result.unconfirmed from None
             return []
         request, stored = result.request, result.raw_object
         if request is None or stored is None:

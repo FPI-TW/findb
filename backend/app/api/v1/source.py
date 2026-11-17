@@ -130,7 +130,8 @@ def _full_market_source_scope(
 
 
 def _full_market_http_error(exc: FullMarketError) -> HTTPException:
-    if exc.code == "taifex_dated_universe_required":
+    # Codes a Fetcher acts on; every other refusal keeps its message.
+    if exc.code in {"taifex_dated_universe_required", "no_data_not_corroborated"}:
         return HTTPException(status_code=exc.status_code, detail={"code": exc.code})
     return HTTPException(status_code=exc.status_code, detail=str(exc))
 

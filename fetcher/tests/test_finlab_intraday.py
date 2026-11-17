@@ -286,11 +286,6 @@ def _refusals(tmp_path: Path) -> dict[str, tuple[dict[str, Any], str]]:
             {"manifest": {**not_ready, "available_through": "2026-11-12"}},
             "not_ready_calendar",
         ),
-        # The date is verified but this symbol has none: not built yet, or unknown.
-        "partition": (
-            {"manifest": {**not_ready, "missing_dates": ["2026-11-13"]}},
-            "not_ready_partition",
-        ),
         "closed day": (
             {"manifest": {"partitions": [], "closed_dates": ["2026-11-13"]}},
             "not_ready_partition",
@@ -325,10 +320,30 @@ def _refusals(tmp_path: Path) -> dict[str, tuple[dict[str, Any], str]]:
 
 
 @pytest.mark.parametrize(
+    "manifest",
+    [
+        {"code": "not_ready", "error": SECRET, "partitions": [], "missing_dates": ["2026-11-13"]},
+        {"partitions": [], "closed_dates": []},
+    ],
+    ids=["refused as missing", "not listed"],
+)
+def test_a_verified_day_without_a_partition_is_an_absent_answer(
+    tmp_path, monkeypatch, manifest
+) -> None:
+    # The date is verified but this symbol has none: no board-lot trade, still being
+    # built, or unknown. Only Source can tell, so the worker answers instead of failing.
+    _sdk(tmp_path, monkeypatch, {"manifest": manifest})
+
+    result = supervised_call("finlab.intraday", _payload(), timeout=30)
+
+    assert result == ("absent", {"date": "2026-11-13", "status": "absent"}, 0, b"", b"")
+    assert SECRET not in repr(result)
+
+
+@pytest.mark.parametrize(
     "case",
     [
         "calendar",
-        "partition",
         "closed day",
         "still building",
         "quota code",
@@ -753,6 +768,25 @@ def test_a_day_without_trades_is_reported_with_the_stored_manifest_entry(monkeyp
     assert result.raw_object.sha256 == hashlib.sha256(evidence).hexdigest()
 
 
+def test_a_day_without_a_partition_is_a_claim_only_source_can_accept(monkeypatch) -> None:
+    partition = IntradayPartition("absent", {"date": "2026-11-13", "status": "absent"})
+    adapter, _ = _adapter(monkeypatch, partition)
+    context, _ = _context()
+
+    result = adapter.acquire(MEMBER, context)
+
+    evidence = manifest_bytes(partition, dataset="tw_equity_bar_1m")
+    assert result.request is None
+    assert result.no_trade["source_status"] == "no_record"
+    assert result.no_trade["source_excerpt"] == evidence.decode()
+    assert result.raw_object.sha256 == hashlib.sha256(evidence).hexdigest()
+    # Refused, it is the member failure FinLab's missing partition always was.
+    assert isinstance(result.unconfirmed, FinLabIntradayNotReadyError)
+    assert result.unconfirmed.scope == "partition"
+    classified = adapter.classify(result.unconfirmed, "member")
+    assert (classified.kind, classified.no_data) == (FailureKind.MEMBER, True)
+
+
 @pytest.mark.parametrize(
     ("failure", "kind", "wait", "no_data"),
     [
@@ -914,3 +948,29 @@ def test_a_refresh_of_the_whole_finlab_scope_builds_daily_and_intraday_universes
         }
     )
     assert catalogue == [("2330", "7848", "6488")]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "code"),
+    [
+        (409, {"detail": {"code": "no_data_not_corroborated"}}, "no_data_not_corroborated"),
+        (409, {"detail": "No-data evidence does not match provider symbol/date/session"}, None),
+        (422, {"detail": {"code": "no_data_not_corroborated"}}, None),
+    ],
+)
+def test_only_an_exact_refusal_leaves_a_no_record_claim_retryable(status, body, code) -> None:
+    from findb_fetcher.config import FetcherConfig
+    from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
+
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(status, json=body))
+    ) as http:
+        source = FullMarketSourceClient(
+            FetcherConfig("https://source.example", "offline-key", max_attempts=1), client=http
+        )
+        with pytest.raises(FullMarketProtocolError) as refused:
+            source.outcome(
+                "plan", work_item_id="fp1:x", member_key="2330", reason="no_trade", evidence={}
+            )
+
+    assert refused.value.code == code
