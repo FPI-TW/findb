@@ -80,8 +80,27 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
     us = feeds["us_equity_eod"]
     assert us.schedule.timezone == "America/New_York"
     assert us.schedule.local_time == "17:00"
-    assert us.completion_deadline.local_time == "09:00"
-    assert us.completion_deadline.trade_date_day_offset == 1
+    # One rule for every acquiring feed: due 12 wall-clock hours after its scheduled start.
+    assert {
+        f.dataset_key: (
+            f.schedule.timezone,
+            f.schedule.local_time,
+            f.completion_deadline.timezone,
+            f.completion_deadline.local_time,
+            f.completion_deadline.trade_date_day_offset,
+        )
+        for f in catalog.feeds
+    } == {
+        "us_equity_eod": ("America/New_York", "17:00", "America/New_York", "05:00", 1),
+        "hk_equity_eod": ("Asia/Hong_Kong", "18:30", "Asia/Hong_Kong", "06:30", 1),
+        "tw_equity_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
+        "tw_etf_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
+        "tw_equity_bar_1m": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),
+        "tw_etf_bar_1m": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),
+        "tw_equity_tick": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),
+        "tw_etf_tick": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),
+        "tw_futures_eod": ("Asia/Taipei", "17:00", "Asia/Taipei", "05:00", 1),
+    }
     assert us.bounded_monitor.deadline.local_time == "09:15"
     assert us.publication_retry_window_seconds == 10800
     for provider in catalog.providers:
@@ -116,6 +135,9 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "historical_without_source",
         "missing_schedule",
         "missing_deadline",
+        "deadline_off_rule",
+        "deadline_other_timezone",
+        "deadline_same_day",
         "disabled_schedule",
         "unsupported_historical_execution",
         "bounded_without_deadline",
@@ -175,6 +197,12 @@ def test_invalid_metadata_fails_closed(declaration, fault):
         f["schedule"] = None
     elif fault == "missing_deadline":
         f["completion_deadline"] = None
+    elif fault == "deadline_off_rule":
+        f["completion_deadline"]["local_time"] = "09:00"
+    elif fault == "deadline_other_timezone":
+        f["completion_deadline"]["timezone"] = "Asia/Taipei"
+    elif fault == "deadline_same_day":
+        f["completion_deadline"]["trade_date_day_offset"] = 0
     elif fault == "disabled_schedule":
         f["capabilities"]["acquisition"] = False
     elif fault == "unsupported_historical_execution":
@@ -220,7 +248,7 @@ def test_semantic_order_is_deterministic(declaration):
 def test_time_changes_do_not_republish_fetcher_dashboard_or_inventory(declaration):
     previous = build_artifacts(ProviderCatalog.model_validate(declaration))
     declaration["feeds"][0]["schedule"]["local_time"] = "18:00"
-    declaration["feeds"][0]["completion_deadline"]["local_time"] = "10:00"
+    declaration["feeds"][0]["completion_deadline"]["local_time"] = "06:00"
     current = build_artifacts(ProviderCatalog.model_validate(declaration))
     assert {path for path in previous if current[path] != previous[path]} == {
         Path("backend/app/generated/provider_metadata.v1.json"),

@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import httpx
@@ -12,6 +13,8 @@ from findb_fetcher.full_market_state import (
     FULL_WORK_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_BREAKER,
     FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS,
+    FULL_WORK_NO_DATA_FINAL_ROUND_LEAD_SECONDS,
+    FULL_WORK_NO_DATA_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_RETRY_DELAYS,
     FullMarketState,
     QuotaBlockedError,
@@ -309,14 +312,18 @@ def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path, rep
         with runtime.state.connection() as db:
             db.execute(
                 "UPDATE full_work SET attempts=? WHERE member_key='ACA'",
-                (FULL_WORK_MAX_ATTEMPTS - 1,),
+                (FULL_WORK_NO_DATA_MAX_ATTEMPTS - 1,),
             )
         _skip_waits(runtime)
         with owned_unit_work(runtime.provider, tmp_path):
             assert runtime._deliver_plan(
                 plan, _members("AAPL", "AACI", "ACA", "MSFT", gaps={"AACI"}), runtime.feeds[0]
             )
-        assert _statuses(runtime)["ACA"] == ("manual", "no_data_exhausted", FULL_WORK_MAX_ATTEMPTS)
+        assert _statuses(runtime)["ACA"] == (
+            "manual",
+            "no_data_exhausted",
+            FULL_WORK_NO_DATA_MAX_ATTEMPTS,
+        )
         assert not runtime.state.has_blocking_manual("p")
         expected = reply.get("category", "not_found")
         assert {row["category"] for row in runtime.state.diagnostics("fp1:123:ACA")} == {expected}
@@ -448,21 +455,21 @@ def test_persistent_no_data_run_in_retry_rounds_never_starves_the_tail(tmp_path)
     source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
     owner = _SettleOwner()
     try:
-        for _ in range(FULL_WORK_MAX_ATTEMPTS):
+        for _ in range(FULL_WORK_NO_DATA_MAX_ATTEMPTS):
             with owned_unit_work(runtime.provider, tmp_path):
                 assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
             runtime._settle_queued_round(owner)
             _skip_waits(runtime)
-        assert acquired.count(no_data[-1]) == FULL_WORK_MAX_ATTEMPTS
-        assert len(acquired) == len(data) + len(no_data) * FULL_WORK_MAX_ATTEMPTS
+        assert acquired.count(no_data[-1]) == FULL_WORK_NO_DATA_MAX_ATTEMPTS
+        assert len(acquired) == len(data) + len(no_data) * FULL_WORK_NO_DATA_MAX_ATTEMPTS
         statuses = _statuses(runtime)
         assert all(
-            statuses[key] == ("manual", "no_data_exhausted", FULL_WORK_MAX_ATTEMPTS)
+            statuses[key] == ("manual", "no_data_exhausted", FULL_WORK_NO_DATA_MAX_ATTEMPTS)
             for key in no_data
         )
         assert not runtime.state.has_blocking_manual("p")
         # Only once nothing is left does the incomplete plan end for review.
-        assert owner.settled[:-1] == [("retry", None)] * (FULL_WORK_MAX_ATTEMPTS - 1)
+        assert owner.settled[:-1] == [("retry", None)] * (FULL_WORK_NO_DATA_MAX_ATTEMPTS - 1)
         assert owner.settled[-1] == ("failed", "MANUAL_INTERVENTION_REQUIRED")
     finally:
         runtime.close()
@@ -584,7 +591,9 @@ def test_no_data_retries_wait_longer_until_the_budget_is_spent(tmp_path):
     source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
     owner = _SettleOwner()
     assert FULL_WORK_NO_DATA_RETRY_DELAYS == (1800, 3600, 3600, 7200)
-    assert len(FULL_WORK_NO_DATA_RETRY_DELAYS) == FULL_WORK_MAX_ATTEMPTS - 1
+    # The first fetch, one round per delay, then the final round before the deadline.
+    assert len(FULL_WORK_NO_DATA_RETRY_DELAYS) == FULL_WORK_NO_DATA_MAX_ATTEMPTS - 2
+    assert FULL_WORK_NO_DATA_MAX_ATTEMPTS == FULL_WORK_MAX_ATTEMPTS + 1
     try:
         for attempt, delay in enumerate(FULL_WORK_NO_DATA_RETRY_DELAYS, start=1):
             with owned_unit_work(runtime.provider, tmp_path):
@@ -603,14 +612,75 @@ def test_no_data_retries_wait_longer_until_the_budget_is_spent(tmp_path):
             _skip_waits(runtime)
         with owned_unit_work(runtime.provider, tmp_path):
             runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
+        # Past the general budget a no-data member still has its final round.
+        assert _statuses(runtime)["AAPL"] == ("pending", "no_data", FULL_WORK_MAX_ATTEMPTS)
+        runtime._settle_queued_round(owner)
+        assert _round(runtime)[0] == FULL_WORK_NO_DATA_MAX_ATTEMPTS
+        _skip_waits(runtime)
+        with owned_unit_work(runtime.provider, tmp_path):
+            runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
         assert _statuses(runtime)["AAPL"] == (
             "manual",
             "no_data_exhausted",
-            FULL_WORK_MAX_ATTEMPTS,
+            FULL_WORK_NO_DATA_MAX_ATTEMPTS,
         )
-        assert calls == FULL_WORK_MAX_ATTEMPTS
+        assert calls == FULL_WORK_NO_DATA_MAX_ATTEMPTS
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize(
+    "deadline_in,expected_wait",
+    [
+        (7200, 7200 - FULL_WORK_NO_DATA_FINAL_ROUND_LEAD_SECONDS),
+        (FULL_WORK_NO_DATA_FINAL_ROUND_LEAD_SECONDS - 60, 0),
+        (-3600, 0),
+        # A plan recorded without a deadline keeps the longest configured wait.
+        (None, FULL_WORK_NO_DATA_RETRY_DELAYS[-1]),
+    ],
+    ids=["before_deadline", "inside_lead", "deadline_passed", "no_deadline"],
+)
+def test_final_no_data_round_is_anchored_to_the_plan_deadline(tmp_path, deadline_in, expected_wait):
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    now = time.time()
+    plan = _plan()
+    if deadline_in is not None:
+        plan["deadline_at"] = datetime.fromtimestamp(now + deadline_in, timezone.utc).isoformat()
+    state.record_plan(plan, "twelve_data")
+    with state.connection() as db:
+        db.execute(
+            "UPDATE full_work SET reason='no_data',attempts=?", (FULL_WORK_MAX_ATTEMPTS - 1,)
+        )
+        db.execute("INSERT INTO full_no_data_round VALUES('p',?,0)", (FULL_WORK_MAX_ATTEMPTS - 1,))
+    # The round before the final one still waits from its own settlement.
+    state.advance_no_data_round("p", now=now)
+    assert state.no_data_retry_at("p") == now + FULL_WORK_NO_DATA_RETRY_DELAYS[-1]
+    with state.connection() as db:
+        db.execute("UPDATE full_work SET attempts=?", (FULL_WORK_MAX_ATTEMPTS,))
+    state.advance_no_data_round("p", now=now)
+    assert state.no_data_retry_at("p") == pytest.approx(now + expected_wait, abs=1)
+
+
+def test_only_no_data_members_get_the_final_round(tmp_path):
+    state = FullMarketState(tmp_path / "state.sqlite3")
+    state.record_plan(_plan(), "twelve_data")
+    with state.connection() as db:
+        db.execute("UPDATE full_work SET attempts=?", (FULL_WORK_MAX_ATTEMPTS,))
+    state.finish("fp1:123:AAPL", status="pending", reason="no_data")
+    state.finish("fp1:123:MSFT", status="pending", reason="source_error")
+    with state.connection() as db:
+        rows = dict(db.execute("SELECT member_key,status||':'||reason FROM full_work"))
+    assert rows == {"AAPL": "pending:no_data", "MSFT": "manual:retry_exhausted"}
+    with state.connection() as db:
+        db.execute(
+            "UPDATE full_work SET attempts=? WHERE member_key='AAPL'",
+            (FULL_WORK_NO_DATA_MAX_ATTEMPTS,),
+        )
+    state.finish("fp1:123:AAPL", status="pending", reason="no_data")
+    with state.connection() as db:
+        assert db.execute("SELECT status,reason FROM full_work WHERE member_key='AAPL'").fetchone()[
+            :
+        ] == ("manual", "no_data_exhausted")
 
 
 def test_only_no_data_uses_the_long_retry_schedule(tmp_path):
@@ -649,7 +719,7 @@ def test_each_no_data_round_fetches_every_member_once_and_settles_once(tmp_path)
     source.evaluate = lambda plan_id: {**plan, "status": "incomplete"}
     owner = _SettleOwner()
     try:
-        for number in range(1, FULL_WORK_MAX_ATTEMPTS + 1):
+        for number in range(1, FULL_WORK_NO_DATA_MAX_ATTEMPTS + 1):
             acquired.clear()
             with owned_unit_work(runtime.provider, tmp_path):
                 assert runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
@@ -662,14 +732,16 @@ def test_each_no_data_round_fetches_every_member_once_and_settles_once(tmp_path)
             assert acquired == (keys if number == 1 else no_data)
             with runtime.state.connection() as db:
                 db.execute("UPDATE full_no_data_round SET not_before=0")
-        assert owner.settled[:-1] == [("retry", None)] * (FULL_WORK_MAX_ATTEMPTS - 1)
+        assert owner.settled[:-1] == [("retry", None)] * (FULL_WORK_NO_DATA_MAX_ATTEMPTS - 1)
         assert owner.settled[-1] == ("failed", "MANUAL_INTERVENTION_REQUIRED")
+        # This plan carries no deadline, so its final round keeps the longest wait.
         assert owner.delays[:-1] == [
-            pytest.approx(delay, abs=1) for delay in FULL_WORK_NO_DATA_RETRY_DELAYS
+            pytest.approx(delay, abs=1)
+            for delay in (*FULL_WORK_NO_DATA_RETRY_DELAYS, FULL_WORK_NO_DATA_RETRY_DELAYS[-1])
         ]
         statuses = _statuses(runtime)
         assert all(
-            statuses[key] == ("manual", "no_data_exhausted", FULL_WORK_MAX_ATTEMPTS)
+            statuses[key] == ("manual", "no_data_exhausted", FULL_WORK_NO_DATA_MAX_ATTEMPTS)
             for key in no_data
         )
     finally:

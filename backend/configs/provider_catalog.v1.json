@@ -130,8 +130,8 @@
         "target_date_lag_days": 0
       },
       "completion_deadline": {
-        "timezone": "Asia/Taipei",
-        "local_time": "09:00",
+        "timezone": "America/New_York",
+        "local_time": "05:00",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
@@ -212,9 +212,9 @@
         "target_date_lag_days": 0
       },
       "completion_deadline": {
-        "timezone": "Asia/Taipei",
-        "local_time": "23:00",
-        "trade_date_day_offset": 0
+        "timezone": "Asia/Hong_Kong",
+        "local_time": "06:30",
+        "trade_date_day_offset": 1
       },
       "bounded_monitor": {
         "enabled": false,
@@ -253,8 +253,8 @@
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "23:00",
-        "trade_date_day_offset": 0
+        "local_time": "06:00",
+        "trade_date_day_offset": 1
       },
       "bounded_monitor": {
         "enabled": true,
@@ -334,8 +334,8 @@
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "23:00",
-        "trade_date_day_offset": 0
+        "local_time": "06:00",
+        "trade_date_day_offset": 1
       },
       "bounded_monitor": {
         "enabled": false,
@@ -374,7 +374,7 @@
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "08:00",
+        "local_time": "06:30",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
@@ -414,7 +414,7 @@
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "08:00",
+        "local_time": "06:30",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
@@ -454,7 +454,7 @@
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "08:00",
+        "local_time": "06:30",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
@@ -494,7 +494,7 @@
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "08:00",
+        "local_time": "06:30",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
@@ -534,8 +534,8 @@
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "23:00",
-        "trade_date_day_offset": 0
+        "local_time": "05:00",
+        "trade_date_day_offset": 1
       },
       "bounded_monitor": {
         "enabled": false,

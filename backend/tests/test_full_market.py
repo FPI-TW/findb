@@ -1049,7 +1049,8 @@ async def test_full_scale_frozen_plan_and_pre_activation_boundary(test_session):
     assert plan.summary.expected == 12000 and len(plan.parts) == 240
     assert sum(len(part.member_keys) for part in plan.parts) == 12000
     assert plan.parts[0].member_keys[0] == "00001"
-    assert plan.deadline_at.hour == 15
+    # 12 hours after the 18:30 Hong Kong start.
+    assert (plan.deadline_at.hour, plan.deadline_at.minute) == (22, 30)
     repeated = await create_plan(
         test_session,
         DeliveryPlanCreateRequest(

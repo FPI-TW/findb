@@ -13,9 +13,9 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "23:00",
-        "timezone": "Asia/Taipei",
-        "trade_date_day_offset": 0
+        "local_time": "06:30",
+        "timezone": "Asia/Hong_Kong",
+        "trade_date_day_offset": 1
       },
       "contract": {
         "accepted_versions": [
@@ -54,7 +54,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "08:00",
+        "local_time": "06:30",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -98,9 +98,9 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "23:00",
+        "local_time": "06:00",
         "timezone": "Asia/Taipei",
-        "trade_date_day_offset": 0
+        "trade_date_day_offset": 1
       },
       "contract": {
         "accepted_versions": [
@@ -175,7 +175,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "08:00",
+        "local_time": "06:30",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -215,7 +215,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "08:00",
+        "local_time": "06:30",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -255,9 +255,9 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "23:00",
+        "local_time": "06:00",
         "timezone": "Asia/Taipei",
-        "trade_date_day_offset": 0
+        "trade_date_day_offset": 1
       },
       "contract": {
         "accepted_versions": [
@@ -295,7 +295,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "08:00",
+        "local_time": "06:30",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -335,9 +335,9 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "23:00",
+        "local_time": "05:00",
         "timezone": "Asia/Taipei",
-        "trade_date_day_offset": 0
+        "trade_date_day_offset": 1
       },
       "contract": {
         "accepted_versions": [
@@ -379,8 +379,8 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "09:00",
-        "timezone": "Asia/Taipei",
+        "local_time": "05:00",
+        "timezone": "America/New_York",
         "trade_date_day_offset": 1
       },
       "contract": {
@@ -567,5 +567,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "18a83fe56609592ff04e453e4cdb3b1c3ef23a30bf1ea87389bf3de05196426c"
+  "source_sha256": "d25465699341b480be24fe32f2efc418da034d70ae19c088a846e0d810701b0b"
 }
