@@ -285,7 +285,10 @@ class FinLabAdapter(ProviderAdapter):
             trade_date=day,
             layout=self._row_layout(context, record_kind),
         )
-        if partition.status == "no_trades":
+        if partition.status in {"no_trades", "absent"}:
+            # FinLab states no trades itself; an absent partition is only accepted as
+            # no trade once Source finds the same day's daily bar without a board lot.
+            absent = partition.status == "absent"
             evidence = manifest_bytes(partition, dataset=dataset)
             return AcquisitionResult.no_trade_evidence(
                 {
@@ -295,10 +298,11 @@ class FinLabAdapter(ProviderAdapter):
                     "source_symbol": provider_symbol,
                     "trade_date": day.isoformat(),
                     "session": member.get("session"),
-                    "source_status": "no_trade",
+                    "source_status": "no_record" if absent else "no_trade",
                     "source_excerpt": evidence.decode()[:500],
                 },
                 context.persist(evidence, provider_symbol),
+                unconfirmed=FinLabIntradayNotReadyError("partition") if absent else None,
             )
         # The provider's file is the evidence; the mapped rows are what is delivered.
         original = context.persist(partition.original, provider_symbol, payload_format="parquet")

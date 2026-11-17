@@ -10,6 +10,7 @@ import importlib.metadata
 import io
 from copy import deepcopy
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
@@ -21,7 +22,12 @@ import pytest
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.models.canonical import CalendarYearRevision, IntradayPartition
+from app.models.canonical import (
+    CalendarYearRevision,
+    Instrument,
+    IntradayPartition,
+    MarketDataEOD,
+)
 from app.models.raw import RawMarketPayload
 from app.models.registry import (
     DailyDeliveryMember,
@@ -34,6 +40,7 @@ from app.schemas.full_market import DeliveryPlanCreateRequest
 from app.services.full_market import create_plan, get_plan
 from app.services.normalize import intraday
 from app.services.source_clients import PROVIDER_DATASET_SCOPE, create_source_client
+from app.utils import utc_now
 from scripts.seed_data import DATASETS
 from tests.full_market_fixtures import historical_admission
 from tests.intraday_support import ACCOUNT, DAY, RAW_BUCKET, Stores, market_open
@@ -84,8 +91,20 @@ def finlab_bars(symbol: str) -> bytes:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("daily_volume", "absent_outcome"),
+    [
+        # No daily bar yet: the missing partition says nothing, so it stays retryable.
+        (None, ("blocked", "empty_response")),
+        # The daily bar shows a board lot traded: the partition must exist, keep trying.
+        (2000, ("blocked", "empty_response")),
+        # Odd lots only: FinLab has no partition because there was no board-lot trade.
+        (300, ("no_data", "no_trade")),
+    ],
+    ids=["no daily bar", "board lot traded", "odd lots only"],
+)
 async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
-    client, test_session, test_engine, monkeypatch, tmp_path
+    client, test_session, test_engine, monkeypatch, tmp_path, daily_volume, absent_outcome
 ):
     root = Path(__file__).resolve().parents[2]
     monkeypatch.syspath_prepend(str(root / "fetcher/src"))
@@ -173,6 +192,23 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
         "completion_window_seconds": 86400,
         "slot_id": "taiwan_market_window",
     }
+    if daily_volume is not None:
+        instrument = Instrument(asset_class="equity", market="TW", symbol="0003")
+        test_session.add(instrument)
+        await test_session.flush()
+        test_session.add(
+            MarketDataEOD(
+                instrument_id=instrument.instrument_id,
+                trade_date=DAY,
+                open=Decimal("10"),
+                high=Decimal("10"),
+                low=Decimal("10"),
+                close=Decimal("10"),
+                volume=daily_volume,
+                source="finlab",
+                asof_ts=utc_now(),
+            )
+        )
     await test_session.commit()
 
     config = FetcherConfig(
@@ -225,7 +261,7 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
         if answer == "no_trades":
             return "no_trades", entry, 0, b"", b""
         if answer == "absent":
-            raise provider_process.ProviderProcessError("worker refused", "not_ready_partition")
+            return "absent", {"date": payload["trade_date"], "status": "absent"}, 0, b"", b""
         original = finlab_bars(payload["provider_symbol"])
         rows = map_rows(
             original,
@@ -293,7 +329,12 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
 
     health = await asyncio.wait_for(asyncio.to_thread(run_daily), 25)
 
-    assert refused == []
+    corroborated = absent_outcome[0] == "no_data"
+    # Source refuses only the claim it cannot corroborate, and nothing else.
+    assert [(path.rsplit("/", 1)[-1], status) for path, status, _ in refused] == (
+        [] if corroborated else [("outcomes", 409)]
+    )
+    assert all('"no_data_not_corroborated"' in body for _, _, body in refused)
     assert sorted(call["provider_symbol"] for call in native) == ["0001", "0002", "0003"]
     assert {(call["record_kind"], call["trade_date"]) for call in native} == {
         ("bar_1m", DAY.isoformat())
@@ -303,19 +344,36 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
         await get_plan(test_session, plan.plan_id, provider="finlab", allowed_datasets=[DATASET])
     ).summary
     counts = (summary.expected, summary.data, summary.no_data, summary.missing, summary.blocked)
-    assert counts == (3, 1, 1, 0, 1)
+    assert counts == ((3, 1, 2, 0, 0) if corroborated else (3, 1, 1, 0, 1))
     members = {
         member.symbol: (member.outcome, member.outcome_reason)
         for member in await test_session.scalars(select(DailyDeliveryMember))
     }
     # A day without trades is settled by FinLab's own manifest entry. A symbol FinLab has
-    # no partition for is reported and kept for its bounded retries; the others went on.
+    # no partition for is no trade only when the daily bar agrees; otherwise it is reported
+    # and kept for its bounded retries. Either way the other members went on.
     assert members == {
         "0001": (None, None),
         "0002": ("no_data", "no_trade"),
-        "0003": ("blocked", "empty_response"),
+        "0003": absent_outcome,
     }
-    assert health["plans"][0]["counts"] == {"complete": 2, "pending": 1}
+    # Every member settled, the plan leaves the runtime's open plans.
+    assert [plan["counts"] for plan in health["plans"]] == (
+        [] if corroborated else [{"complete": 2, "pending": 1}]
+    )
+    absent = (
+        await test_session.scalars(
+            select(DailyDeliveryMember).where(DailyDeliveryMember.symbol == "0003")
+        )
+    ).one()
+    if corroborated:
+        assert absent.outcome_evidence["source_status"] == "no_record"
+        assert absent.outcome_history[-1]["corroboration"] == {
+            "dataset_key": "tw_equity_eod",
+            "board_lot_shares": 1000,
+            "basis": "odd_lots_only",
+            "volume_shares": 300,
+        }
 
     # The published day is one canonical object, indexed, with FinLab's values in the layout.
     partition = (await test_session.scalars(select(IntradayPartition))).one()

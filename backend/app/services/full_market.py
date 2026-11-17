@@ -66,6 +66,7 @@ from app.services.effective_calendar import (
     market_timezone,
 )
 from app.services.ingress_contracts import parse_dataset_contract_declaration
+from app.services.no_record_corroboration import NO_RECORD, corroborate_no_record
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
 
@@ -1354,6 +1355,7 @@ async def record_outcome(
         and member.member_key not in mappings
     ):
         raise FullMarketError("Mapping gaps cannot be classified as no_data", 422)
+    corroboration = None
     if body.outcome == "no_data" and body.evidence is not None:
         if (
             body.evidence.source_symbol != mappings.get(member.member_key, member.provider_symbol)
@@ -1375,6 +1377,16 @@ async def record_outcome(
             timestamp_field="observed_at",
             plan_id=plan.plan_id,
         )
+        if body.evidence.source_status == NO_RECORD:
+            corroboration = await corroborate_no_record(db, plan, member, dataset)
+            if corroboration is None:
+                # Left as reported before, the member keeps its retries until the daily
+                # bar settles or the provider publishes the record after all.
+                raise FullMarketError(
+                    "No-record evidence is not corroborated by the same day's daily bar",
+                    409,
+                    code="no_data_not_corroborated",
+                )
     evidence = body.evidence.model_dump(mode="json") if body.evidence else None
     if (
         member.outcome,
@@ -1390,6 +1402,7 @@ async def record_outcome(
             "outcome": body.outcome,
             "reason": body.reason,
             "evidence": evidence,
+            **({"corroboration": corroboration} if corroboration is not None else {}),
             "recorded_at": utc_now().isoformat(),
         },
     ]

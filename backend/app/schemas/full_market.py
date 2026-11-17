@@ -252,7 +252,12 @@ class DeliveryOutcomeRequest(FullMarketModel):
         if self.outcome == "no_data":
             if self.reason not in {"halted", "no_trade"} or self.evidence is None:
                 raise ValueError("no_data requires halted/no_trade and durable source evidence")
-            if self.evidence.source_status != self.reason:
+            # ``no_record``: the provider holds no record of the day; Source accepts it as
+            # no trade only when the same day's daily bar agrees.
+            if self.evidence.source_status != self.reason and (
+                self.reason,
+                self.evidence.source_status,
+            ) != ("no_trade", "no_record"):
                 raise ValueError("no_data evidence source_status must match reason")
         elif self.reason not in {"mapping_gap", "rate_limited", "source_error", "empty_response"}:
             raise ValueError("blocked requires a failure reason")

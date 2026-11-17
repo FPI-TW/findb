@@ -89,9 +89,14 @@ class FinLabIntradayNotReadyError(FinLabSdkError):
 
 @dataclass(frozen=True, slots=True)
 class IntradayPartition:
-    """What FinLab says about one symbol's trading day, with its files when it traded."""
+    """What FinLab says about one symbol's trading day, with its files when it traded.
 
-    status: Literal["ready", "no_trades"]
+    ``absent``: FinLab has verified the date but holds no partition for the symbol.
+    It does so for a day without a board-lot trade, and also while a partition is
+    still being built, so only Source can accept it as no trade.
+    """
+
+    status: Literal["ready", "no_trades", "absent"]
     # The manifest entry (or its absence) as bounded evidence; never a signed URL.
     manifest: Mapping[str, Any]
     row_count: int = 0
@@ -175,8 +180,9 @@ def native_intraday(
     """Worker-side manifest, download and mapping of one symbol's trading day.
 
     Returns ``(status, manifest entry, row count, provider file, mapped rows)``.
-    The answers that are not failures of the call itself travel as bounded codes:
-    ``not_ready_calendar`` and ``not_ready_partition``.
+    A verified date without a partition for the symbol is the ``absent`` answer; a
+    date FinLab has not verified, or a partition still being built, travel as the
+    bounded codes ``not_ready_calendar`` and ``not_ready_partition``.
     """
     # Chosen before the SDK imports Arrow; see ``native_get``.
     os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
@@ -189,12 +195,22 @@ def native_intraday(
     query = {"dataset": f"{family}:{provider_symbol}", "start": day, "end": day}
     authorize()
     _select_api_token(sdk, payload["token"])
+    absent = {"date": day, "status": "absent"}
     try:
-        manifest = _signed_request(seams, {**query, "mode": "manifest"})
+        try:
+            manifest = _signed_request(seams, {**query, "mode": "manifest"})
+        except FinLabNativeError as exc:
+            if exc.native_failure_code == "not_ready_partition":
+                return "absent", absent, 0, b"", b""
+            raise
         parts = [part for part in manifest.get("partitions", ()) if part.get("date") == day]
+        if not parts:
+            if day in (manifest.get("closed_dates") or ()):
+                # FinLab calls the day closed: a calendar disagreement, not a quiet symbol.
+                raise FinLabNativeError("not_ready_partition")
+            return "absent", absent, 0, b"", b""
         if len(parts) != 1:
-            # A verified date that FinLab lists as closed has no partition either.
-            raise FinLabNativeError("not_ready_partition")
+            raise FinLabNativeError("bad_response")
         part = parts[0]
         evidence = _manifest_evidence(part, manifest)
         if part.get("status") == "no_trades":

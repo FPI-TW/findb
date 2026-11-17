@@ -19,6 +19,8 @@ from findb_fetcher.execution_metadata import provider_ids
 from findb_fetcher.full_market_universe import canonical_bytes
 from findb_fetcher.source_recovery import source_retry_sleep, transient_source_status
 
+# Source refused a no-trade claim it could not corroborate; the member stays retryable.
+NO_DATA_NOT_CORROBORATED = "no_data_not_corroborated"
 # Only fixed protocol vocabulary may enter logs; response details can contain
 # private scope or credentials and must never be copied into an exception.
 PROVIDER_WORK_CONFLICT_CODES = frozenset(
@@ -210,6 +212,10 @@ class FullMarketSourceClient:
                                 "code": "taifex_dated_universe_required"
                             }:
                                 code = "taifex_dated_universe_required"
+                            elif isinstance(error, dict) and error.get("detail") == {
+                                "code": NO_DATA_NOT_CORROBORATED
+                            }:
+                                code = NO_DATA_NOT_CORROBORATED
                             elif isinstance(error, dict) and error.get("detail") == {
                                 "code": "PROVIDER_WORK_PREPARED_DRAINING"
                             }:

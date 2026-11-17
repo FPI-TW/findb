@@ -114,6 +114,8 @@ class AcquisitionResult:
     # The persisted native observation: the request's raw, or the no-trade evidence.
     raw_object: RawObject | None = None
     no_trade: dict[str, Any] | None = None
+    # A no-trade claim only Source can corroborate: if it refuses, this is the failure.
+    unconfirmed: BaseException | None = None
 
     @classmethod
     def data(cls, request: dict[str, Any], raw_object: RawObject) -> AcquisitionResult:
@@ -121,9 +123,13 @@ class AcquisitionResult:
 
     @classmethod
     def no_trade_evidence(
-        cls, evidence: dict[str, Any], raw_object: RawObject | None = None
+        cls,
+        evidence: dict[str, Any],
+        raw_object: RawObject | None = None,
+        *,
+        unconfirmed: BaseException | None = None,
     ) -> AcquisitionResult:
-        return cls(no_trade=evidence, raw_object=raw_object)
+        return cls(no_trade=evidence, raw_object=raw_object, unconfirmed=unconfirmed)
 
 
 @dataclass(frozen=True)
