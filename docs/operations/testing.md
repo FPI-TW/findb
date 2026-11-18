@@ -248,8 +248,16 @@ production drain／attestation／native 驗收與 rollback 均須另依部署 ru
 `latest` 的 TanStack 直接依賴，或把所有套件強制覆寫到同一版本。
 
 - TanStack Router／Start 與 Devtools 的 Solid 可能使用不同的 Seroval 範圍。
-  Solid 1.9.14 的 `~1.5.4` 不接受 Seroval 1.6.x；目前使用 Solid 1.9.17 搭配
-  Seroval／seroval-plugins 1.6.8，不以 override 繞過範圍。
+  Solid 1.9.14 的 `~1.5.4` 不接受 Seroval 1.6.x；目前使用 Solid 1.9.17（`~1.6.8`）搭配
+  Seroval／seroval-plugins 1.6.12，修復序列化輸出的 RegExp source 與 typed array
+  constructor 注入（[GHSA-9wx9-5pv9-3349](https://github.com/advisories/GHSA-9wx9-5pv9-3349)、
+  [GHSA-f86p-h4j2-7qgj](https://github.com/advisories/GHSA-f86p-h4j2-7qgj)）。`pnpm-workspace.yaml`
+  把 `<1.6.11` 覆寫到 1.6.12，只把版本推到所有依賴者都接受的範圍內（TanStack `^1.6.7`、
+  Solid `~1.6.8`），不以 override 繞過範圍；上游預設解析到修補版之後可移除。
+- `@tanstack/react-devtools`、`@tanstack/react-router-devtools` 與 `@tanstack/devtools-vite`
+  固定為 lockfile 既有的 0.10.13、1.167.2、0.8.5，不再寫 `latest`。寫 `latest` 時任何一次
+  lockfile 更新都會把它們解析到最新版；1.167.3 的 router devtools 要求 React Router
+  `^1.170.46`，與固定的 1.170.41 衝突。升級 devtools 時與 Router／Start 一起評估。
 - React Start 固定為 1.168.60、配套 React Router 固定為 1.170.41，讓
   start-server-core 使用 1.169.39，修復 server-function 回應的未登入反射型 XSS
   [CVE-2026-102989](https://github.com/advisories/GHSA-qx66-fv34-fjm8)。不要僅更新 Seroval
@@ -257,6 +265,9 @@ production drain／attestation／native 驗收與 rollback 均須另依部署 ru
 - Vitest 與 `@vitest/browser-playwright` 必須一起更新；其 browser、mocker、runner 等內部
   套件具有精確版本與 peer 限制。目前使用 4.1.12，修復 mock registration code injection
   與 Windows redirect allowlist bypass；Playwright 維持既有版本。
+- ESLint 使用 10.15.0，其 `@eslint/config-array` 改用 minimatch 11.0.9，修復 glob 展開的
+  DoS（[GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)）。minimatch 只在
+  lint 時使用，不在 Dashboard image 內。
 - Vite 最低版本為 8.1.6，修復內嵌 launch-editor、檔案 allowlist 與 custom middleware
   漏洞。Devtools 另有獨立的 launch-editor 依賴；`pnpm-workspace.yaml` 只覆寫
   `launch-editor@<2.14.2` 至 2.14.2，避免舊版仍留在依賴樹。上游已不再解析受影響版本後，
@@ -267,6 +278,11 @@ production drain／attestation／native 驗收與 rollback 均須另依部署 ru
   高於 activation scripts command injection 的修補下限 21.14.7。
 - Dashboard 未使用 `@tailwindcss/typography`，不安裝此套件；避免引入其精確鎖定的舊版
   selector parser。日後需要 typography 時，重新確認 parser 修補版與上游相容性。
+- Backend 的 pyarrow 使用 26.0.1（下限 23.0.1），與 Fetcher 經 FinLab SDK 鎖定的版本相同；
+  盤中資料列的 Arrow 型別字串由 Fetcher 產生、Backend 驗證，兩邊同版。
+  [GHSA-rgxp-2hwp-jwgg](https://github.com/advisories/GHSA-rgxp-2hwp-jwgg) 是 Arrow C++ 讀 IPC
+  檔時開啟 pre-buffering 的 use-after-free，Python binding 沒有開放此功能，Backend 也只讀 Parquet，
+  升級是為了解除告警並維持修補版。改版本後要重建 Backend image。
 - Backend 透過 FastAPI 引入 Starlette，更新時需驗證認證、middleware、Source payload
   限制、StaticFiles 與 Serve 查詢；不能只以 resolver 接受版本作為相容性證據。
 
@@ -276,7 +292,12 @@ production drain／attestation／native 驗收與 rollback 均須另依部署 ru
 輸出既存 TanStack virtual-module pre-transform 訊息，必須比較基準並檢查測試退出狀態。
 GitHub 告警需在修復整合至預設分支並重新掃描後確認關閉，本機通過不能代替遠端結果。
 
-本次修補對應 GitHub Dependabot #50–#63：certifi 兩項、virtualenv 四項、launch-editor
+2026-11-18 的修補對應 Dependabot #65–#67（seroval 兩項、minimatch）與 #72、#73（Backend
+pyarrow）。Fetcher 的 #68–#71（pyarrow 17.0.0、cryptography 48.0.1）只鎖在 Intel Mac 與
+macOS 10.15／11 的解析分支，是 FinLab SDK 自己的 marker；linux image 與 Apple Silicon 安裝的
+pyarrow 26.0.1、cryptography 50.0.2 都已修補，尚未處理。
+
+先前一次修補對應 GitHub Dependabot #50–#63：certifi 兩項、virtualenv 四項、launch-editor
 三項與 Vite 五項。另由 npm audit 發現並修復 Vitest mocker 的
 [GHSA-qxg6-89mg-rqv8](https://github.com/advisories/GHSA-qxg6-89mg-rqv8) 與
 [GHSA-xp26-3454-mjgp](https://github.com/advisories/GHSA-xp26-3454-mjgp)。
