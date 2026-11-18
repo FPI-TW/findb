@@ -44,6 +44,7 @@ from findb_fetcher.full_market_errors import (
     MemberUnavailableError,
     ProviderHTTPError,
     ReadinessBlockedError,
+    UniverseRefreshPendingError,
 )
 from findb_fetcher.full_market_errors import retryable_http_status as _retryable_http_status
 from findb_fetcher.full_market_state import (
@@ -102,6 +103,11 @@ OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS = 20 * 60
 OFFICIAL_SNAPSHOT_REUSE_SECONDS = 30 * 60
 # Settlement waits at most this long for just-accepted runs before scheduling.
 NORMALIZING_SETTLE_WAIT_SECONDS = 60
+# A failed universe refresh retries behind the day's daily works. Today's plan waits
+# this long past its scheduled time for today's release, looking again this often;
+# afterwards it freezes the latest release, as it always did.
+SAME_DAY_UNIVERSE_WAIT_SECONDS = 30 * 60
+SAME_DAY_UNIVERSE_RECHECK_SECONDS = 5 * 60
 NONTERMINAL_RUN_STATUSES = frozenset({"queued", "pending", "processing", "retrying"})
 
 
@@ -1189,6 +1195,14 @@ class FullMarketRuntime:
                         failure_code="DATED_UNIVERSE_PENDING",
                         retry_delay_seconds=exc.retry_after_seconds,
                     )
+                except UniverseRefreshPendingError as exc:
+                    self.pause()
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry",
+                        failure_code="DAILY_UNIVERSE_REFRESH_PENDING",
+                        retry_delay_seconds=exc.retry_after_seconds,
+                    )
                 except ProviderPublicationPendingError as exc:
                     self.pause()
                     self._settle_queued_round(
@@ -1530,11 +1544,13 @@ class FullMarketRuntime:
         if existing is not None:
             return existing
         try:
+            release = self._release_for_date(feed, day)
+            self._await_same_day_universe(feed, day, release)
             plan = self.source.plan(
                 dataset=feed["dataset_key"],
                 provider=self.provider,
                 trade_date=day.isoformat(),
-                release_id=self._release_for_date(feed, day)["release_id"],
+                release_id=release["release_id"],
             )
             return self._validate_plan_identity(plan, feed, day)
         except FullMarketProtocolError as exc:
@@ -1607,6 +1623,49 @@ class FullMarketRuntime:
         if result.get("status") != "published":
             raise DatedUniversePendingError("dated_universe_pending")
         return result
+
+    def _await_same_day_universe(
+        self, feed: dict[str, Any], day: date, release: dict[str, Any]
+    ) -> None:
+        """Hold today's plan until today's universe refresh publishes, within a bound.
+
+        The refresh is queued ahead of the day's daily works, but its retry after a
+        failure queues behind them; without this hold the plan would freeze the
+        previous day's list. Catch-up dates never wait: their refresh is long gone.
+        """
+        if not self.adapter.daily_waits_for_same_day_universe:
+            return
+        effective = release.get("effective_date")
+        if effective is None or date.fromisoformat(effective) >= day:
+            return
+        scheduled = datetime.combine(
+            day + timedelta(days=feed["target_date_lag_days"]),
+            clock_time.fromisoformat(feed["scheduled_time"]),
+            ZoneInfo(feed["source_timezone"]),
+        )
+        now = datetime.now(timezone.utc)
+        if not scheduled <= now < scheduled + timedelta(days=1):
+            return
+        remaining = (
+            scheduled + timedelta(seconds=SAME_DAY_UNIVERSE_WAIT_SECONDS) - now
+        ).total_seconds()
+        if remaining > 0:
+            raise UniverseRefreshPendingError(
+                retry_after_seconds=math.ceil(min(SAME_DAY_UNIVERSE_RECHECK_SECONDS, remaining))
+            )
+        print(
+            json.dumps(
+                {
+                    "universe_refresh_stale": {
+                        "dataset": feed["dataset_key"],
+                        "trade_date": day.isoformat(),
+                        "release_effective_date": effective,
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
 
     def _release_for_date(self, feed: dict[str, Any], day: date) -> dict[str, Any]:
         listed = self.source.universes(feed["dataset_key"], self.provider, as_of=day.isoformat())

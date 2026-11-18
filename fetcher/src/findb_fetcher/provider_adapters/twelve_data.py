@@ -63,6 +63,8 @@ class TwelveDataAdapter(ProviderAdapter):
     catalogue_datasets = tuple(CATALOGUE_COUNTRIES)
     # Existing journal identity of the country catalogue response; never rename.
     catalogue_journal = "twelve_catalogue"
+    # Nasdaq directories read at 17:00 New York carry that day's creation date.
+    daily_waits_for_same_day_universe = True
 
     # Members of one part fetched by one comma-separated request (one credit each).
     member_batch_limit = TWELVE_DATA_MAX_BATCH_SYMBOLS

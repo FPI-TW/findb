@@ -1270,8 +1270,14 @@ universe request 的未來日期檢查亦依 source timezone 判定。
   名單；已經在佇列裡的較早工作仍排在名單更新前面。
 - 只有 control 是 running 時才會排入。停止期間不更新；啟動時若已過到期時間，第一輪就先補一次，下一次回到排程時刻。
   已經排入的名單更新不受之後的停止影響，會照常完成。
-- 同一個排程時刻只有一筆名單更新（stable key 帶該時刻的 UTC 時間）。失敗時當天的 daily 使用上一份 release，
-  下一個排程時刻再試；因傳輸問題重試的那一筆會排到佇列尾端，當天的 daily 先跑。
+- 同一個排程時刻只有一筆名單更新（stable key 帶該時刻的 UTC 時間）。因傳輸問題重試的那一筆會排到佇列尾端，
+  排在當天的 daily 後面。
+- FinLab 與 Twelve Data 的名單在排程時刻取得，生效日就是當天的交易日。當天的 daily 建立 plan 時，若查到的最新名單
+  生效日早於交易日，表示當天的名單還沒發布：daily 不建立 plan，以 `DAILY_UNIVERSE_REFRESH_PENDING` 延後
+  5 分鐘（不扣重試次數）重新排隊，讓名單的重試先跑完。最多等到排程時刻後 30 分鐘；之後照舊用最新的名單建立
+  plan，並輸出一行 `{"universe_refresh_stale": {"dataset", "trade_date", "release_effective_date"}}`。
+  只等同一個 feed 的名單，股票名單失敗不影響 ETF 的 daily；補抓較早的日期不等。FactSet 的 HKEX 清單帶自己的日期，
+  不套用這條規則（#598）。
 - Fetcher 取不到排程時（例如手動執行 `--sync-universes` 的程序），完成後的下一次到期時間退回 24 小時後。
 - TAIFEX 不跑每日名單更新，不受這些規則影響。
 

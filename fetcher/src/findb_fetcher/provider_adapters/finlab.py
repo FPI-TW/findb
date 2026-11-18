@@ -123,6 +123,8 @@ class FinLabAdapter(ProviderAdapter):
     catalogue_datasets = None
     outage_retry_seconds = FINLAB_OUTAGE_RETRY_SECONDS
     outage_holds_plan = True
+    # Official lists observed at the scheduled time are effective on that Taipei date.
+    daily_waits_for_same_day_universe = True
 
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
