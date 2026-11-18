@@ -90,11 +90,6 @@ Production native 資料與實際 rollback 演練由
 
 ## Full-market external acceptance
 
-- [ ] TW 分 K 替代 provider 選型與缺口回補：停止抓取後到接手前不更新。Production 10/13～10/26
-  無分 K（原 daily work 取消）；10/27～10/30 為部分資料／failed，9/30 equity historical failed。
-  Full checkpoint 的 36 個未完成 Shioaji plans、原始 receipts 與 mapping／repair 證據需保留，
-  不能直接重新啟動 Shioaji 或將舊失敗改成成功。
-
 - [ ] 將 TAIFEX dated-universe 專用告警、Admin candidates／member-diff 唯讀入口與 Dashboard
   提示部署至 staging，配合已完成的 bounded rollover／semantic universe 流程驗證後再 promotion
   至 production；production 不得套用 staging 的候選或操作紀錄，並須以自身 candidate、audit 與

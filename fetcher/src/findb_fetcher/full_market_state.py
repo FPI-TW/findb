@@ -262,7 +262,7 @@ class FullMarketState:
         Recovery reads armed intents, liability reads unknown ones and quota reads
         current windows, so finalized/cancelled history and past windows count
         nowhere. Open debt is never pruned and usage is never refunded. Shioaji
-        history stays as evidence for its retirement tooling.
+        history stays: retired-provider purges never touch account state either.
         """
         now = self.clock()
         with self.connection() as db:
