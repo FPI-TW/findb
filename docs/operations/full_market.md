@@ -70,8 +70,9 @@ normalization terminal 與 SDK actual-start 計數；本機測試不替代 produ
 
 Shioaji 已退出 acquisition catalog、Source credential 管理與新回補 scopes。兩條 TW 分 K
 registry 保持 active，供 canonical／Serve 與 Admin 歷史查詢；work、attempt、prepared／receipt、
-repair、archive 與 frozen plans 不改寫。部署條件、資產保留與 rollback 下限見
-[Shioaji 退役](deployment.md#shioaji-退役的-rollback-下限)。替代 provider 上線前不再更新分 K。
+repair、archive 與 frozen plans 在 Backend 不改寫；Fetcher 本機副本依
+[退役 provider 的本機資料](data_maintenance.md#退役-provider-的本機資料)清除。部署條件、資產保留與 rollback 下限見
+[Shioaji 退役](deployment.md#shioaji-退役的-rollback-下限)。TW 分 K 改由 FinLab 盤中 feed 提供，舊 dataset 不再更新。
 舊每日窗口與輪替規則僅存在於歷史 frozen evidence，不能當成重新啟用 Shioaji 的依據。
 
 ### Scheduler scope 與有效抓取範圍

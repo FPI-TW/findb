@@ -1,7 +1,8 @@
 # Provider work FIFO
 
 現役四個 providers（Twelve Data、FinLab、TAIFEX、FactSet）只使用 provider-work-v1。
-Shioaji 已退役；下文相關 checkpoint／repair 說明僅供保留證據判讀，不授權新的抓取。
+Shioaji 已退役；下文相關 checkpoint／repair 說明僅供判讀 Backend 保留的證據，不授權新的抓取。
+Fetcher 本機的 Shioaji journal 與 checkpoint 列依[退役 provider 的本機資料](../operations/data_maintenance.md#退役-provider-的本機資料)清除。
 Full daily、historical、maintenance 與 retained-raw rerun 共用同 provider 的 FIFO、owner fence
 與 whole-work host lock。`PROVIDER_WORK_REQUIRED` 保留為部署相容性斷言：缺省為 `true`，
 Backend／Fetcher 接受一般布林 true 寫法（不分大小寫的 `true`、`1`、`yes`、`on`、`t`、`y`）；

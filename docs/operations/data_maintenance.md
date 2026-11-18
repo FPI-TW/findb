@@ -105,7 +105,7 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 
 - 只刪`completed_at`超過7天的`finalized`／`cancelled` intent與其usage樣本。
 - 只刪7天前、`blocked_until`已過的`full_quota` window；當日window與未到期cooldown保留。
-- `armed`／`unknown` intent一律保留，用量不退款；Shioaji帳號全部保留，待退役流程處理。
+- `armed`／`unknown` intent一律保留，用量不退款；Shioaji帳號全部保留。退役 provider 的本機清除（見下節）同樣不處理帳號。
 - 熱路徑以`acquisition_intent_status(account,status,completed_at)`查armed recovery與unknown liability。
 - Schema初始化（含既有大帳本補建index）以`temp_store=MEMORY`排序；consumer rootfs唯讀、`/tmp`
   僅16 MiB，排序溢出到`/tmp`會以`database or disk is full`讓每次受治理的抓取失敗。
@@ -141,6 +141,38 @@ Full worker 每日對自己的 provider 清理一次已結案工作的本機狀�
 - Journal 的清理連線設定 `secure_delete=OFF`。Image 內的 SQLite 預設會把釋放的每一頁覆寫為零，同一句刪除
   還會把這些頁的原內容暫存到 `/tmp`；單筆工作的官方名單快照約 20 MB，超過 consumer 的 16 MiB `/tmp`，清理會以
   `SQLITE_FULL` 失敗。關閉後釋放的頁不再重寫，不佔 `/tmp`，也不會把刪掉的內容再寫進 WAL 一次。
+- 退役 provider 沒有執行中的程序，Source credential 也已撤銷，上述清理不會處理它；改用下節的一次性清除。
+
+### 退役 provider 的本機資料
+
+Provider 退役後，它在 journal 與 Full checkpoint 的列只是 Fetcher 的副本：work、attempt、plan、receipt、
+repair、raw 與 canonical 都在 Backend。以兩個工具清除，不另外封存：
+
+- `backend/scripts/retired_provider_works.py --provider <provider>`：在 `findb-ingest` 內以唯讀交易列出該
+  provider 在本環境的所有 work ID 與排序後的 SHA-256。該 provider 仍在 catalog、有未退役的 control、
+  有非 terminal 的 work 或未 settled 的 attempt，或 owner 仍握有 attempt 時拒絕。
+- `findb-fetch-retired-purge --provider <provider> --works <上一步的 JSON> --journal <provider-work.sqlite3> --state <state.sqlite3>`：
+  預設 dry-run，逐表列出要刪的列數、位元組數與保留的列數，另列沒有 receipt 的本機 body 數（`unreceipted`，一併刪除）。
+  加 `--apply` 才刪除，`--vacuum` 再原地縮小檔案（inode、擁有者與權限不變）。Provider 仍在 image 的 metadata 內、
+  JSON 的 provider 或 SHA-256 不符、清單中的 work manifest 寫明其他 provider，或另一個連線正在寫入時拒絕。
+- 刪除範圍：journal 中清單 work 的 manifest、delivery、job、budget、cooldown、source error、回應與觀測，
+  該 provider 專屬的 `work_<provider>_*` 表整表清空；checkpoint 中該 provider 的 plan、work 與其 receipt、
+  diagnostic、empty outcome、member repair、reconcile、outage、no-data trip／round、schedule，以及
+  `full_refresh`、`full_cursor`、`full_date_prerequisite`、`checkpoint_retention` 的該 provider 列。
+  Account governor（quota、usage、intent、identity、capacity）一律不動。
+- 每個檔案在一個交易內刪除，提交前核對目標列為 0、其他列數不變，提交後執行 `integrity_check`。
+
+步驟（先 staging 再 production）：
+
+1. 在 Backend 執行 `retired_provider_works.py`，保存輸出的 JSON。
+2. Owner 停止該主機所有 Fetcher controls，確認沒有進行中的 historical 或 maintenance，再 `docker stop` 全部
+   consumers 並確認 exit 0。Controls 停止後 consumers 仍會寫入 journal 與 checkpoint，所以一定要停 container。
+3. 把兩個檔案連同 `-wal`／`-shm` 複製到 `/var/backups/findb-retired-purge/<env>-<UTC>/`（root 0700），
+   只供這次操作失敗時還原，驗證通過並重新啟動後刪除。
+4. 以 Fetcher image 起一次性 container（`--user 10001:10001`，掛載 journal 與 checkpoint 所在目錄），先 dry-run
+   核對數字，再 `--apply --vacuum`。VACUUM 的暫存檔寫在資料檔旁（`SQLITE_TMPDIR`），需要與檔案大小相當的可用磁碟。
+5. 刪除該 provider 舊的 runtime 目錄（例如 `/var/lib/findb-shioaji-fetcher/`），lock 檔不動。
+6. `check_full_market_checkpoint.sh` 通過、consumers `docker start` 後健康，Owner 重新啟動 controls，刪除第 3 步的備份。
 
 ## PostgreSQL 暫存副本保留
 
@@ -209,7 +241,7 @@ immutable idempotency與Source terminal驗證。Twelve Data historical與daily�
 實際成交價；回補可依較新的`fetched_at`覆寫同來源舊列，但不會把拆股調整價寫入canonical。
 本變更前以`adjust=splits`完成的回補列，若之後已有拆股，可能與實際成交價不同，須依原raw
 與拆股日期個別核對後重跑，不得整批覆寫。切換前已保存回應或prepared body但尚未完成的
-historical work會保留原bytes並以manual review結束，處理方式見[價格基準切換與舊回應快取](full_market.md#價格基準切換與舊回應快取)。Shioaji 舊 `tw_equity_minute` 與 `tw_etf_minute` 的 manifest／receipts 保留供查核，不再提供新回補。
+historical work會保留原bytes並以manual review結束，處理方式見[價格基準切換與舊回應快取](full_market.md#價格基準切換與舊回應快取)。Shioaji 舊 `tw_equity_minute` 與 `tw_etf_minute` 的 manifest／receipts 由 Backend 保留供查核，不再提供新回補；Fetcher 本機副本依[退役 provider 的本機資料](#退役-provider-的本機資料)清除。
 建立正式
 request前先使用`findb-fetch-backfill-plan --provider ... --dataset-key ... --start-date ...
 --end-date ...`（預設dry-run）保存日期、預估calls／rows及無效日期；只有核對計畫後才加
@@ -238,17 +270,17 @@ Daily API 失敗不阻擋 historical 啟動，但 Source claim／lease／acquisi
 Shioaji historical consumer 已移除，Backend 的新申請 capability 也已移除。即使 dataset 仍為
 active、保留 scheduler／Source scope，scopes API 也不再列出 `tw_equity_minute` 或 `tw_etf_minute`
 的 Shioaji 選項；有效日期的 preview 回報 `provider_dataset_unsupported`，新 request 回傳 HTTP 422。
-Dashboard 使用同一 scopes API，因此不需另維護退役選項清單。TW 分 K 回補待替代 provider 上線。
+Dashboard 使用同一 scopes API，因此不需另維護退役選項清單。TW 分 K 改由 FinLab 盤中 feed（`tw_equity_bar_1m`、
+`tw_etf_bar_1m`，2026-11-18 起）提供；舊 dataset 10/13–11/17 的缺口不回補。
 
-既有 requests／items、frozen manifest、prepared bytes、receipts、repair／ACK、canonical 分 K 與
-checkpoint 均保留；Admin 歷史列表／分頁、既有取消操作與 Serve 分 K 查詢維持原有權限與語意。
+Backend 的 requests／items、frozen manifest、prepared bytes、receipts、repair／ACK 與 canonical 分 K 均保留；
+Fetcher 本機的 journal 與 checkpoint 副本依[退役 provider 的本機資料](#退役-provider-的本機資料)清除。
+Admin 歷史列表／分頁、既有取消操作與 Serve 分 K 查詢維持原有權限與語意。
 相同 request key、scope 與仍在原日期視窗內的重送只回傳原 request，不重開 failed work 或新增工作。
 歷史 request 的台北日期與 31 天視窗仍用於原證據解讀及收尾，不代表恢復抓取能力。
 
-此階段僅關閉新回補申請並調整 cutover inventory，未撤銷 Source credentials、刪除 scheduler／catalog
-scope，亦未改寫既有 claim／交付收尾協定；無現行 Shioaji executor，不可將保留 API 當作重新啟用授權。
-任何舊 queued／running work 或未交付 prepared bytes 都須先人工盤點；不藉此次發布自動取消、重試或刪除。
-後續 scope／credential migration 與資源清理見 [backlog](../dev/backlog.md#full-market-external-acceptance)。
+關閉新回補申請時未改寫既有 claim／交付收尾協定；Source credentials 之後已撤銷（見
+[Shioaji 退役的 rollback 下限](deployment.md#shioaji-退役的-rollback-下限)）。無現行 Shioaji executor，不可將保留 API 當作重新啟用授權。
 
 現行 providers 的 Historical CLI 收到`SIGTERM`／`SIGINT`後立即停止新日期claim，完成當前日期的raw-first交付與
 terminal回報；idle時立即退出。部署停止期限為90秒，執行中的日期可能較久，應先等待request
