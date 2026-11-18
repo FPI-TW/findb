@@ -133,6 +133,17 @@ class FinLabAdapter(ProviderAdapter):
     def reset(self) -> None:
         self.bundles.clear()
 
+    def round_finished(self, dataset_key: str) -> None:
+        # Intraday partitions are no table fetch, so no reply reports the account's
+        # usage; one read per round shows what each round cost (#601).
+        if dataset_key not in INTRADAY_DATASETS:
+            return
+        try:
+            gateway = self.gateway(lambda size: None)
+        except Exception:
+            return
+        gateway.record_usage(dataset_key)
+
     def gateway(self, observe_response: Callable[[int], None]) -> FinLabSdkGateway:
         try:
             if importlib.metadata.version("finlab") != FINLAB_SDK_VERSION:
