@@ -183,3 +183,43 @@ def test_other_work_kinds_do_not_report_a_round(tmp_path):
         assert rounds == []
     finally:
         runtime.close()
+
+
+def _stopped(*args, **kwargs):
+    from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
+
+    raise ProviderWorkAcquisitionStopped("provider acquisition is stopped")
+
+
+def test_a_stopped_control_denies_the_read_without_ending_the_round(monkeypatch, capsys):
+    # The denial is a BaseException; it escaped before and crash-looped the consumer
+    # on staging, 2026-11-18, every time a stopped round settled.
+    monkeypatch.setattr(acquisition, "Acquisition", _stopped)
+
+    FinLabSdkGateway(api_token="offline-token").record_usage("tw_equity_bar_1m")
+
+    assert _logged(capsys) == [
+        {"finlab_quota_unavailable": {"dataset": "tw_equity_bar_1m", "code": "acquisition_stopped"}}
+    ]
+
+
+def test_a_stopped_round_still_settles_through_the_adapter(monkeypatch, capsys):
+    adapter = FinLabAdapter()
+    monkeypatch.setattr(adapter, "gateway", lambda observe: FinLabSdkGateway(api_token="offline"))
+    monkeypatch.setattr(acquisition, "Acquisition", _stopped)
+
+    adapter.round_finished("tw_equity_bar_1m")
+
+    assert _logged(capsys)[0]["finlab_quota_unavailable"]["code"] == "acquisition_stopped"
+
+
+def test_an_unprovable_ownership_boundary_is_not_swallowed(monkeypatch):
+    from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+    def blocked(*args, **kwargs):
+        raise ProviderWorkRecoveryBlockedError("ownership recovery required")
+
+    monkeypatch.setattr(acquisition, "Acquisition", blocked)
+
+    with pytest.raises(ProviderWorkRecoveryBlockedError):
+        FinLabSdkGateway(api_token="offline-token").record_usage("tw_equity_tick")

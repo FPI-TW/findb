@@ -26,7 +26,7 @@ from typing import Any, Protocol
 
 from findb_fetcher.finlab_credentials import effective_token, installed_token, sdk_credential_scope
 from findb_fetcher.full_market_state import QuotaBlockedError
-from findb_fetcher.provider_work import durable_response
+from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped, durable_response
 from findb_fetcher.raw_storage import RawPayloadStore, attach_raw_object
 
 FINLAB_SOURCE = "finlab"
@@ -351,6 +351,8 @@ class FinLabSdkGateway:
 
         Paths that fetch no table (intraday partitions) call this once per round.
         It never raises: a failed read is one bounded log line, not a failed round.
+        A round that ends because its control stopped is denied the read; that denial
+        crosses ``except Exception`` by design, so it is caught here by name.
         """
         from findb_fetcher.acquisition import Acquisition
         from findb_fetcher.provider_process import ProviderProcessError, supervised_call
@@ -370,6 +372,8 @@ class FinLabSdkGateway:
                 if usage is None:
                     raise FinLabNativeError("bad_response")
                 _record_usage(operation, dataset, usage)
+        except ProviderWorkAcquisitionStopped:
+            code = "acquisition_stopped"
         except Exception as exc:
             code = (
                 exc.code
@@ -378,14 +382,16 @@ class FinLabSdkGateway:
                 if isinstance(exc, QuotaBlockedError)
                 else failure_code(exc)
             )
-            print(
-                json.dumps(
-                    {"finlab_quota_unavailable": {"dataset": dataset, "code": code}},
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-                flush=True,
-            )
+        else:
+            return
+        print(
+            json.dumps(
+                {"finlab_quota_unavailable": {"dataset": dataset, "code": code}},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
 
 
 def native_usage(payload: dict[str, Any], authorize: Callable[[], None]) -> dict[str, float] | None:
