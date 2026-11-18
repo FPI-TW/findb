@@ -50,6 +50,11 @@ _MAX_SOURCE_REQUEST_BYTES = 1024 * 1024
 # One table fetch normally takes 3-10 seconds; the supervisor's default of 30
 # minutes would let five stuck tables hold the provider owner for hours.
 FINLAB_GET_TIMEOUT_SECONDS = 10 * 60
+# A usage read answers in under a second; it must never hold the owner for long.
+FINLAB_USAGE_TIMEOUT_SECONDS = 60
+# The table whose metadata reports the account's usage. Asked with a copy dated
+# now, FinLab answers without a download URL, so the read costs no quota.
+FINLAB_USAGE_PROBE_DATASET = "price:收盤價.recent"
 _FRAME_JSON_COLUMN_BATCH = 16
 # Latest dates kept as evidence when a table does not serve the target date yet.
 _NOT_READY_TAIL_DATES = 5
@@ -340,6 +345,75 @@ class FinLabSdkGateway:
         except Exception:
             # Never expose provider/credential context, including scope failures.
             raise FinLabOperationalError("FinLab acquisition failed", "acquisition") from None
+
+    def record_usage(self, dataset: str) -> None:
+        """Record the account's daily usage under ``dataset``, without downloading a table.
+
+        Paths that fetch no table (intraday partitions) call this once per round.
+        It never raises: a failed read is one bounded log line, not a failed round.
+        """
+        from findb_fetcher.acquisition import Acquisition
+        from findb_fetcher.provider_process import ProviderProcessError, supervised_call
+        from findb_fetcher.provider_worker import failure_code
+
+        try:
+            with (
+                sdk_credential_scope(),
+                Acquisition("finlab", credential=self._identity_credential) as operation,
+            ):
+                usage = supervised_call(
+                    "finlab.usage",
+                    {"token": self.api_token},
+                    checkpoint=operation.dispatch_checkpoint,
+                    timeout=FINLAB_USAGE_TIMEOUT_SECONDS,
+                )
+                if usage is None:
+                    raise FinLabNativeError("bad_response")
+                _record_usage(operation, dataset, usage)
+        except Exception as exc:
+            code = (
+                exc.code
+                if isinstance(exc, ProviderProcessError)
+                else "account_quota"
+                if isinstance(exc, QuotaBlockedError)
+                else failure_code(exc)
+            )
+            print(
+                json.dumps(
+                    {"finlab_quota_unavailable": {"dataset": dataset, "code": code}},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
+
+
+def native_usage(payload: dict[str, Any], authorize: Callable[[], None]) -> dict[str, float] | None:
+    """Worker-side read of the account's daily usage; no table is downloaded.
+
+    The metadata request names a copy dated now, so FinLab returns no download
+    URL, only the usage it reports with every reply. Staging read it six times
+    back to back on 2026-11-18 and the usage did not move.
+    """
+    from collections import OrderedDict
+
+    sdk = importlib.import_module("finlab")
+    data = importlib.import_module("finlab.data")
+    utils: Any = importlib.import_module("finlab.utils")
+    utils.check_version = lambda: None
+    seams = _sdk_seams(sdk, data)
+    usage = _observe_api_usage(seams.metadata)
+    authorize()
+    _select_api_token(sdk, payload["token"])
+    try:
+        seams.metadata.fetch_metadata_batch(
+            OrderedDict([(FINLAB_USAGE_PROBE_DATASET, datetime.now(timezone.utc))])
+        )
+    except seams.quota_error:
+        raise FinLabNativeError("quota") from None
+    except seams.auth_error:
+        raise FinLabNativeError("auth") from None
+    return usage or None
 
 
 def native_get(

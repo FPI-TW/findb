@@ -17,6 +17,7 @@ from typing import Any
 
 OPERATIONS = {
     "finlab.get": ("findb_fetcher.providers.finlab", "native_get"),
+    "finlab.usage": ("findb_fetcher.providers.finlab", "native_usage"),
     "finlab.intraday": ("findb_fetcher.providers.finlab_intraday", "native_intraday"),
     "factset.query": ("findb_fetcher.providers.factset", "native_query"),
 }

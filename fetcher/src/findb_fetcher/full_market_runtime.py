@@ -1388,6 +1388,8 @@ class FullMarketRuntime:
         retry_delay_seconds: int = 60,
     ) -> None:
         """Close acceptance, drain every accepted run, then settle this round."""
+        if owner.work["kind"] == "daily" and owner.work.get("dataset_key"):
+            self.adapter.round_finished(owner.work["dataset_key"])
         self.pause()
         owner.request("close")
         scheduling = None

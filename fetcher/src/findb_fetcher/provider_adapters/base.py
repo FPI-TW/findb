@@ -236,6 +236,9 @@ class ProviderAdapter:
     def reset(self) -> None:
         """Drop per-round native caches; called whenever ownership may change."""
 
+    def round_finished(self, dataset_key: str) -> None:
+        """A daily round of ``dataset_key`` is about to settle; the owner still holds it."""
+
     def close(self) -> None:
         """Release native clients."""
 
