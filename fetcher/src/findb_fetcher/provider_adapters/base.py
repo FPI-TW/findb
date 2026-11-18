@@ -209,6 +209,9 @@ class ProviderAdapter:
     provider: ClassVar[str] = ""
     # Daily rounds enqueue a universe refresh; dated-universe providers do not.
     scheduled_maintenance: ClassVar[bool] = True
+    # The scheduled refresh publishes a release effective on the trade date, so
+    # today's plan briefly waits for it rather than freezing the previous list.
+    daily_waits_for_same_day_universe: ClassVar[bool] = False
     # Source plan-conflict code asking for ``dated_universe`` before planning.
     dated_universe_code: ClassVar[str | None] = None
     # Journal prefix of a shared native response; once observed, a published

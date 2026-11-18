@@ -49,6 +49,14 @@ class DatedUniversePendingError(ReadinessBlockedError):
         self.retry_after_seconds = max(60, retry_after_seconds)
 
 
+class UniverseRefreshPendingError(ReadinessBlockedError):
+    """Today's universe refresh has not published yet; today's plan waits for it."""
+
+    def __init__(self, *, retry_after_seconds: int) -> None:
+        super().__init__("universe_refresh_pending")
+        self.retry_after_seconds = max(60, retry_after_seconds)
+
+
 def retryable_http_status(status: int | None) -> bool:
     """Shared retry classification for provider HTTP status codes."""
     return status is None or status in {408, 429} or status >= 500
