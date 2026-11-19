@@ -1,6 +1,6 @@
 # FMP（Financial Modeling Prep）provider 導入規劃
 
-> 狀態：規劃中。已定事項由 Owner 於 2026-11-19 確認；其餘列在「待決事項」，尚未開始實作。追蹤 issue：
+> 狀態：階段 1 盤點已完成（2026-11-19）；已定事項由 Owner 確認，其餘列在「待決事項」，尚未開始實作。追蹤 issue：
 > [#606](https://github.com/FPI-TW/findb/issues/606)。非交易日資料的共用設計與 FinLab 擴充
 > [#564](https://github.com/FPI-TW/findb/issues/564) 第 2 階段合併處理。
 > 完成後依 `docs/dev/` 的規則，把仍有效的內容整併到 `docs/` 的現行文件並刪除本檔。
@@ -17,6 +17,10 @@
 - **港股日線改由 FMP 作為正式來源。** FactSet 港股尚未在任何環境正式跑通，之後港股不再依賴 FactSet。
   FactSet 的其他資料需求不受影響。
 - 美債殖利率曲線（`/treasury-rates`）不做，改用 FRED。
+- **美股個股日線維持 Twelve Data。**
+- **還原價與 VWAP 都要存。** 還原價以調整因子表示，所有 provider 共用，設計見
+  [還原價：調整因子表設計](price-adjustment-factors.md)；VWAP 的格式見「待決事項」。
+- 不設原定交付日，目標是盡快上線。
 
 ## 需求依資料形狀分類
 
@@ -54,35 +58,69 @@
   依 dataset 的 `source_precedence` 整列取捨，不做欄位合併。
 - **Catalog 沒有每日呼叫上限。** `platform_limits` 只有 `requests_per_minute` 與 `max_response_bytes`，Fetcher 的
   `requests_per_day` 寫死為空值。
-- **FMP 的 API key 放在 `apikey` query param。** 現有 provider 都用 header；FMP 的 acquisition URL、
-  `CatalogueRequest.evidence_url`、raw evidence 與錯誤訊息都必須遮蔽 key。
+- **FMP 的 API key 可以用 `apikey` header 傳送**（已實測），和現有 provider 一樣不放進 URL；raw evidence 與錯誤
+  訊息仍須確認不含 key。
 
-## FMP 方案與端點（待實測）
+## 階段 1 盤點結果
 
-FMP 文件站擋自動抓取，以下來自公開資料，階段 1 須以正式 key 核對：
+2026-11-19 以正式 key 逐項試打需求表 31 項與指數日線，原始回應保存在不進版控的位置。
 
-- Ultimate 每分鐘 3,000 次呼叫；另有 30 日滾動頻寬上限（公開資料寫 150 GB，未經官方確認）。
-- Stable API 的 base 是 `https://financialmodelingprep.com/stable/`。
-- Bulk 端點（例如 `/eod-bulk?date=`、`/income-statement-bulk`、`/ratios-ttm-bulk`、`/profile-bulk`）每 10 秒最多
-  一次，profile 類 bulk 每 60 秒一次；bulk 資料每 6–8 小時更新。
-- 港股代號形如 `0700.HK`，指數形如 `^GSPC`，商品形如 `GCUSD`。
+### 權限與共通行為
+
+- **全部 HTTP 200，Ultimate 沒有遇到方案限制。** 包含 13F、逐字稿、`eod-bulk`、盤後成交、參議員交易。
+- 沒帶 key 回 HTTP 401；權限不足回 HTTP 402（10/21 以舊 key 遇過）。回應 header 沒有剩餘額度資訊。
+- **不存在的代號、未來日期、週末都回 HTTP 200 與 `[]`**，無法從回應區分「沒有這檔」「尚未發布」「休市」。
+
+### 日線價格語意
+
+- **`historical-price-eod/full` 是分割調整價。** NVDA 2024-06-07 在 `full` 是 120.89，實際成交是 1208.9。
+- **原始成交價要從 `historical-price-eod/non-split-adjusted` 取**；它的欄位叫 `adjOpen` 等，值卻是原始價。
+  `dividend-adjusted` 是分割加股息調整。三者的關係與因子驗證見
+  [還原價：調整因子表設計](price-adjustment-factors.md)。
+- **`vwap` 不是成交量加權均價。** 975 列中 965 列剛好等於 (open + high + low + close) ÷ 4，其餘是四捨五入差或
+  未收盤列。FMP 沒有提供真正的 VWAP。
+- **`change`／`changePercent` 是當日 close − open**，不是與前一日比較。
+- **未收盤的當日也會回一列。** 港股 10:24 查詢時，`0700.HK`、`^HSI`、`^HSCE` 都回了當天的盤中值，且
+  `0700.HK` 的成交量與前一日完全相同。抓取必須等收盤發布之後，並只接受目標日期的列。港股的發布時間尚未測量。
+- `unadjustedVolume` 不存在。
+- 歷史起點：`0700.HK` 從 2004-06-16（上市日），`^GSPC` 從 1927-12-30。
+- **`eod-bulk`**：一天一次呼叫，回 CSV。
+  - 11/18 為 3.7 MB、65,103 列，涵蓋全球市場，其中港股 2,304 列、指數 381 列。
+  - 欄位只有 `symbol,date,open,low,high,close,adjClose,volume`，沒有 vwap。
+  - 抽查值與單檔查詢一致；`close` 是否為分割調整價尚未驗證。
+
+### 其他端點
+
+| 項目 | 結果與限制 |
+| --- | --- |
+| 季度三大報表 | 美股、港股都有。港股 `filingDate` 等於期末日、`acceptedDate` 是 00:00，不是真實申報時間；報表幣別可能與交易幣別不同（0700.HK 為 CNY） |
+| TTM 比率與關鍵指標 | 有資料，但**回應沒有日期、期別、幣別**，只能當作抓取時的快照存。需求的 `dividendYieldPercentageTTM` 實際叫 `dividendYieldTTM`；每股淨利與每股淨值在 `ratios-ttm`，不在 `key-metrics-ttm` |
+| 評等共識、目標價 | 美股都有；**0700.HK 的目標價共識與摘要都是空的**，評等只有 2 家 |
+| 分析師預估、DCF、13F、逐字稿 | 都有。逐字稿欄位是 `year` 不是 `fiscalYear`；港股有逐字稿日期清單 |
+| 盤後最後成交 | 毫秒 epoch，只有最後一筆，屬於快照 |
+| 財報行事曆 | **單次最多 4,000 筆，超過會截斷且不報錯**，必須逐日查詢並以筆數小於 4,000 確認完整 |
+| 總經行事曆、新聞、流通股數 | 時間戳沒有時區，需確認 |
+| 分割、股息 | 單檔與行事曆都有；港股股息的日期常與還原價跳點差一個交易日 |
+| 內部人、參議員交易 | 都有；需求的 `capitalGainsOver200USD` 不存在 |
+| 個股新聞 | **0700.HK 沒有新聞** |
+| 清單 | `index-list` 428 筆；`etf-list` 16,896 筆，沒有類股分類，類股 ETF 需要自訂名單；`commodities-list` 40 筆，是連續近月，部分幣別為 `USX`（美分）；港股名單可用 `company-screener?exchange=HKSE`（約 2,606 檔） |
 
 ## 分階段
 
-### 階段 1：唯讀盤點
+### 階段 1：唯讀盤點（已完成）
 
-用正式 key 逐端點實測並記錄：
+結果見「階段 1 盤點結果」。尚未測量的項目併入階段 2 開工前確認：
 
-- 回應形狀與欄位型別、歷史起點、港股與指數覆蓋、bulk 可用性。
-- 每檔或每批的呼叫數、回應大小、30 日頻寬估算。
-- 各市場 EOD 的發布時間（決定排程與截止時間）。
-- 錯誤行為：不存在的代號、尚未發布、超出方案、429 與 `Retry-After`。
-
-腳本與原始結果放在不進版控的位置；結論寫回本檔。
+- 港股與美股 EOD 的發布時間，以及未收盤列在收盤後是否會被修正。
+- `eod-bulk` 的 `close` 是否為分割調整價（決定 bulk 能否取代逐檔查詢）。
+- 30 日頻寬上限與實際用量、429 與 `Retry-After` 行為。
 
 ### 階段 2：Provider 基礎與第 1 批交易日行情
 
 範圍：A 類的日線，包含港股個股、美股與港股指數、全球指數、類股 ETF、跨資產。盤後最後成交（17）另議。
+
+- 原始價取自 `non-split-adjusted`，不用 `full`；只接受目標日期且已發布的列。
+- 調整因子依 [還原價：調整因子表設計](price-adjustment-factors.md) 另行建立，不阻擋原始價上線。
 
 - **Backend**
   - `backend/configs/provider_catalog.v1.json` 新增 provider `fmp` 與 feeds；擴充 `FeedDefinition` enum（指數、
@@ -117,7 +155,8 @@ FMP 文件站擋自動抓取，以下來自公開資料，階段 1 須以正式 
 
 - 新增 `corporate_action` contract 與 normalizer、DQ 與 Serve 端點，涵蓋分割與股息。
 - 同一套 contract 也承接 backlog 的「匯入 Twelve Data splits／dividends」。
-- 調整價建議由 as-traded 價格加公司行動推導，不存 FMP 的 `adjClose`（待決）。
+- 調整因子以 `corporate_action_id` 連到事件；因子本身從 provider 還原價推導，見
+  [還原價：調整因子表設計](price-adjustment-factors.md)。
 
 ### 階段 4：非交易日資料的共用設計
 
@@ -135,10 +174,8 @@ FMP 文件站擋自動抓取，以下來自公開資料，階段 1 須以正式 
 
 ## 待決事項
 
-- 美股個股日線維持 Twelve Data，還是也改由 FMP 負責。
-- 調整價與 VWAP 是否入庫、存在哪裡。
+- VWAP 的格式。FMP 沒有真正的 VWAP，可選擇：由 1 分 K 計算、照存 FMP 的 OHLC 平均但改名、或不存。
 - 美股 515 檔與港股名單的來源，以及每個 dataset 的 bounded universe。
 - 指數、商品與跨資產的 instrument 模型：市場代碼、交易日曆、幣別。
 - 階段 5 的批次順序。
-- 交付日期重訂；需求表原定 2026-11-20。
 - 授權條款是否允許內部再提供給下游專案。
