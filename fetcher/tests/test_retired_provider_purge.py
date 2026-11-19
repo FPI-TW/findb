@@ -147,8 +147,9 @@ def test_dry_run_reports_every_table_and_writes_nothing(tmp_path, files):
     assert "after" not in journal_report
 
 
-def test_apply_removes_only_the_retired_provider_and_vacuum_shrinks(tmp_path, files):
+def test_apply_removes_only_the_retired_provider_and_vacuum_shrinks(tmp_path, files, monkeypatch):
     journal, state = files
+    monkeypatch.setenv("SQLITE_TMPDIR", str(tmp_path))
     before_journal, before_state = _rows(journal), _rows(state)
     sizes = (journal.stat().st_size, state.stat().st_size)
     inodes = (journal.stat().st_ino, state.stat().st_ino)
@@ -257,3 +258,21 @@ def test_the_command_reports_a_dry_run_without_content(tmp_path, files, capsys):
     out = capsys.readouterr().out
     assert json.loads(out)["apply"] is False
     assert "xxxx" not in out and str(uuid.UUID(RETIRED[0])) not in out
+
+
+@pytest.mark.parametrize("temporary", [None, "missing"])
+def test_vacuum_without_a_disk_temp_directory_is_refused_before_any_delete(
+    tmp_path, files, monkeypatch, temporary
+):
+    # SQLite chooses its temporary directory when the module loads; only the process
+    # environment reaches VACUUM, so the purge cannot fix it up itself.
+    journal, state = files
+    if temporary is None:
+        monkeypatch.delenv("SQLITE_TMPDIR", raising=False)
+    else:
+        monkeypatch.setenv("SQLITE_TMPDIR", str(tmp_path / temporary))
+    before = (_digest(journal), _digest(state))
+
+    with pytest.raises(PurgeError, match="SQLITE_TMPDIR"):
+        purge("shioaji", _works(tmp_path), journal=journal, state=state, apply=True, vacuum=True)
+    assert (_digest(journal), _digest(state)) == before
