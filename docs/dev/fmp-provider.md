@@ -27,7 +27,7 @@
 - **HKEX 每日報表同步規劃，先做配合 FMP 的部分**（每日核對與修正），列為「階段 2b」；VWAP 仍與台股之後一起做。
   - HKEX 為獨立 provider 與 dataset，以欄位層修正 FMP 港股列，開盤價保留 FMP 的值。
   - FMP 沒有的港股標的第一版只存在 HKEX 的表。
-  - 原始報表歸檔到 R2。
+  - 原始報表長期歸檔到 Canonical R2，本機已下載的報表一併歸檔。
 - **每日抓取用 `eod-bulk`**，目標日之後有分割生效的標的改以單檔 `non-split-adjusted` 補抓，見「每日抓取方式」。
 - 不設原定交付日，目標是盡快上線。
 
@@ -230,6 +230,8 @@
   - **沒有開盤價。**
 - **每個交易日香港時間 20:00 產生。** 2026-09-21 至 11-18 共 41 份報表的 `Last-Modified` 全部落在當天
   20:00；週末與當天 20:00 前回 404，假日回內容為「NO TRADING」的頁面。
+  假日頁是所有假日共用的通用頁面（ETag 相同、`Last-Modified` 為 2017 年），內容沒有日期；作為 no_data 證據時
+  要搭配請求的網址與交易所日曆。
 - **只保留約兩個月**：2026-09-21 以後可取，更早的回 404。上線後只能往回補到當時仍保留的日期。
 - 連續 HEAD 請求曾一律回 503；GET 與 `Range` 請求正常。
 - 解析：QUOTATIONS 段落，每檔兩行；幣別除 HKD 外還有 USD、CNY 等櫃台，納入範圍跟港股名單一致。
@@ -273,19 +275,39 @@ Owner 於 2026-11-19 確認以下做法。
 
 - 比照 TAIFEX：官方報表、沒有 credential、沿用 `image_key: twelve_data`。
 - 回應約 24 MB，超過現行 provider 的 `max_response_bytes`（16 MB），`hkex` 需設較高的上限。
-- Raw 層不存 24 MB 的 HTML：contract 只帶名單範圍內解析後的列，`source_raw_sha256` 記原始報表雜湊。
-- **原始報表歸檔到 R2**（Owner 於 2026-11-19 確認）：HKEX 兩個月後就刪除，歸檔後才能事後重新解析或擴大範圍
-  （例如權證與牛熊證）。
-  - 每天一份 gzip，約 3.5 MB，一年約 1 GB。
-  - 長期保存，不套用 raw 的 30 天 TTL；contract 以 `source_raw_ref` 指向歸檔物件，雜湊與 `source_raw_sha256` 一致。
-  - bucket、路徑與寫入時機（先歸檔再送 contract）在實作時定，參考盤中資料的 R2 做法
-    （[intraday storage](../architecture/intraday_storage.md)）。
+- **以 `Range: bytes=0-` 取原檔。** 一般 GET 時 HKEX 的 CDN 會在 `</body>` 前插入一段每次不同的
+  script（約 155 bytes），同一份報表每次下載的雜湊都不同。Range 請求回 206、穩定的 ETag，內容就是原檔；
+  去掉那段 script 的一般下載與原檔逐位元組相同。
+- 比照所有 provider，原檔先存 Raw R2，contract 帶 `source_raw_ref` 與 `source_raw_sha256`，資料列只帶名單範圍內
+  解析後的列。`raw.market_payload` 只存 contract，不存 24 MB 的 HTML。
+
+#### 原始報表歸檔
+
+Owner 於 2026-11-19 確認長期歸檔。HKEX 兩個月後就刪除報表，Raw R2 的 lifecycle 是 90 天，都不是長期保存；
+歸檔後才能事後重新解析或擴大範圍（例如權證與牛熊證）。
+
+- **可以放在 Canonical R2，但只能由 Worker 寫入。** 依
+  [服務邊界](../architecture/overview.md)，Fetcher 只持有同環境 Raw R2 的 publisher credential，不得取得
+  Canonical credential；Worker 持有 Raw reader 與 Canonical publisher。
+- 做法比照盤中資料（[intraday storage](../architecture/intraday_storage.md)）：HKEX normalizer 從 Raw R2 讀原檔、
+  核對 SHA-256，複製到 Canonical R2，再在同一個 transaction 寫官方表與歸檔索引。物件先寫、索引後寫，寫入帶
+  版本條件；重送相同雜湊時不重寫物件。
+- 物件以 gzip 存放，每份約 3.5 MB、一年約 1 GB；雜湊記原檔（未壓縮）的 SHA-256。
+- 索引記交易日、object key、ETag、原檔 SHA-256、HKEX 的 `Last-Modified` 與 ETag。假日頁也歸檔，作為 no_data
+  的證據。
+- 路徑暫定 `archive/v1/hkex_daily_quotation/year=<YYYY>/d<yymmdd>e.htm.gz`，實作時定案。
 - 只用 GET，控制請求頻率；20:00 前的 404 視為尚未發布。
 
 #### 歷史
 
 - 上線時能補到的最早日期是「上線日往前約兩個月」，更早的港股歷史維持 FMP 的值。
-- 本機已有 2026-09-21 至 11-18 的 41 份報表，可用於開發與驗收的 fixture，但不經 Source 寫入正式環境。
+- **本機已下載的報表一併歸檔**（Owner 於 2026-11-19 確認）：2026-09-21 至 11-18 的 41 個交易日，加上 10-01、
+  10-19 兩份假日頁。
+  - 這些副本是一般 GET 下載的。2026-11-19 逐份去掉 CDN 插入的 script，再與 Range 取得的 HKEX 原檔比對，
+    43 份全部逐位元組相同；整理後的歸檔候選與 SHA-256 清單保存在不進版控的位置。
+  - 匯入走同一條路徑：Fetcher 以一次性的本機檔匯入寫進 Raw R2、送 Source，由 Worker 歸檔並寫入官方表。
+    上線時 HKEX 仍保留的日期，也可以直接由 historical 重抓。
+  - 09-21 的報表約 11-21 起陸續被 HKEX 刪除，本機副本必須保存到匯入完成。
 - 每晚一天上線，就少一天可修正的官方資料；建議與階段 2 同批上線。
 
 ### 階段 3：公司行動
@@ -359,7 +381,7 @@ Owner 於 2026-11-19 決定：
 
 - 美股 515 檔的名單來源，以及每個 dataset 的 bounded universe。港股名單沿用現有的 HKEX `ListOfSecurities`
   （`fetcher/src/findb_fetcher/full_market_universe.py`），代號轉成 FMP 的 `XXXX.HK`。
-- 階段 2b：欄位層修正的來源紀錄欄位、歸檔的 bucket 與路徑。
+- 階段 2b：欄位層修正的來源紀錄欄位、歸檔路徑與索引表。
 - 指數、商品與跨資產的 instrument 模型：市場代碼、交易日曆、幣別。
 - 階段 5 的批次順序。
 - 授權條款是否允許內部再提供給下游專案。
