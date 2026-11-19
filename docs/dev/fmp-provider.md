@@ -235,6 +235,11 @@
 - **只保留約兩個月**：2026-09-21 以後可取，更早的回 404。上線後只能往回補到當時仍保留的日期。
 - 連續 HEAD 請求曾一律回 503；GET 與 `Range` 請求正常。
 - 解析：QUOTATIONS 段落，每檔兩行；幣別除 HKD 外還有 USD、CNY 等櫃台，納入範圍跟港股名單一致。
+- **主板報表不含 GEM。** GEM 另有報表 `https://www.hkex.com.hk/eng/stat/smstat/dayquot/GEM/e_G<yymmdd>.htm`，
+  約 110 KB，同樣在 20:00 產生、保留期間相同。港股名單（HKEX `ListOfSecurities`，2026-11-19）共 2,810 檔：
+  主板 2,475、GEM 306、未分類 29，所以每天要抓兩份報表。
+  - GEM 報表的段落與每檔兩行的格式和主板相同，同一個解析器可用；11-18 共 305 檔，其中 15 檔停牌。
+  - GEM 與 FMP 的比對尚未做。
 
 #### 與 FMP 的發布時間比較
 
@@ -298,12 +303,36 @@ Owner 於 2026-11-19 確認長期歸檔。HKEX 兩個月後就刪除報表，Raw
 - 路徑暫定 `archive/v1/hkex_daily_quotation/year=<YYYY>/d<yymmdd>e.htm.gz`，實作時定案。
 - 只用 GET，控制請求頻率；20:00 前的 404 視為尚未發布。
 
+#### 交付量與耗時
+
+依 2026-11-18 的報表與名單估算：
+
+| 項目 | 量 |
+| --- | --- |
+| Fetcher → Raw R2 | 每天 2 個物件（主板約 24 MB、GEM 約 0.1 MB），各上傳一次 |
+| Fetcher → Source | 比照現行做法每檔一個 request，約 1 KB；每天約 2,810 個，合計約 3 MB |
+| 若整天一個 request | 約 0.4 MB，在 `SOURCE_MAX_PAYLOAD_BYTES`（1 MB）與 `SOURCE_MAX_DATA_ITEMS`（5,000）之內 |
+| Fetcher 解析與雜湊 | 主板報表解析約 0.05 秒、SHA-256 約 0.01 秒 |
+| Worker 歸檔 | 每份報表讀 24 MB、gzip 約 2.3 秒、寫 3.3 MB |
+
+- **耗時主要在每檔的 Source 往返，不在資料量。** 現行每檔約 16 次 Source RPC，Twelve Data 每檔約 1.4 秒，其中約
+  0.25 秒是 provider HTTP 與 R2 PUT（見 [performance](../operations/performance.md)）。HKEX 一天只下載一次報表，
+  每檔約 1.0–1.1 秒，2,810 檔約 50 分鐘：20:05 開始，約 21:00 完成，距港股完成期限（隔天 06:30）仍很充裕。
+- FMP 港股也是每檔一個 request，量級相同。兩個 provider 各有自己的 consumer，可同時執行；Twelve Data 滿載時
+  Backend `server_ms` 很小、RDS CPU 約 9–12%，預期互相影響不大，上線後以 staging 實測確認。
+- **歸檔必須每份報表只做一次**，不能每檔各做一次；否則每天要讀 2,810 × 24 MB。以原檔 SHA-256 去重：第一個引用
+  該報表的成員觸發歸檔，之後的成員只核對索引。
+- 欄位層修正每檔多一次 `market_data_eod` 更新，在毫秒等級。
+- 改成整天一個 request 可以縮到數秒，但會改變現行「每檔各自結算、各自留證據」的完整性模型，影響所有
+  provider，不在本階段範圍。
+
 #### 歷史
 
 - 上線時能補到的最早日期是「上線日往前約兩個月」，更早的港股歷史維持 FMP 的值。
 - **本機已下載的報表一併歸檔**（Owner 於 2026-11-19 確認）：2026-09-21 至 11-18 的 41 個交易日，加上 10-01、
-  10-19 兩份假日頁。
-  - 這些副本是一般 GET 下載的。2026-11-19 逐份去掉 CDN 插入的 script，再與 Range 取得的 HKEX 原檔比對，
+  10-19 兩份假日頁；主板與 GEM 各 43 份。
+  - GEM 報表是 2026-11-19 以 Range 請求下載的，兩次下載雜湊相同，就是原檔。
+  - 主板副本是一般 GET 下載的。2026-11-19 逐份去掉 CDN 插入的 script，再與 Range 取得的 HKEX 原檔比對，
     43 份全部逐位元組相同；整理後的歸檔候選與 SHA-256 清單保存在不進版控的位置。
   - 匯入走同一條路徑：Fetcher 以一次性的本機檔匯入寫進 Raw R2、送 Source，由 Worker 歸檔並寫入官方表。
     上線時 HKEX 仍保留的日期，也可以直接由 historical 重抓。
