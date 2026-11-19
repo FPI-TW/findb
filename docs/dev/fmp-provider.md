@@ -25,6 +25,9 @@
 - **港股原始價先以 FMP 上線，加上 DQ；接上 HKEX 每日報表後每天核對，不一致以 HKEX 為準。** FMP 港股有價格精度、
   成交量與公司行動前後的系統性誤差，見「港股與 HKEX 官方值比對」。
 - **HKEX 每日報表同步規劃，先做配合 FMP 的部分**（每日核對與修正），列為「階段 2b」；VWAP 仍與台股之後一起做。
+  - HKEX 為獨立 provider 與 dataset，以欄位層修正 FMP 港股列，開盤價保留 FMP 的值。
+  - FMP 沒有的港股標的第一版只存在 HKEX 的表。
+  - 原始報表歸檔到 R2。
 - **每日抓取用 `eod-bulk`**，目標日之後有分割生效的標的改以單檔 `non-split-adjusted` 補抓，見「每日抓取方式」。
 - 不設原定交付日，目標是盡快上線。
 
@@ -235,7 +238,9 @@
 
 見「發布時間」。
 
-#### 合併方式（建議，待確認）
+#### 合併方式
+
+Owner 於 2026-11-19 確認以下做法。
 
 `market_data_eod` 一列只來自一個來源、依優先序整列取捨；HKEX 沒有開盤價，不能整列取代 FMP 的列，而且
 「每個 dataset 只能有一條 Source feed」。因此：
@@ -248,8 +253,8 @@
     再套用一次。
   - 被取代的 FMP 原值與差異記錄下來（`dq_issue` 或專用稽核表），列上註明哪些欄位來自 HKEX。具體欄位待定。
   - 差異超過門檻（例如收盤價不同且不是 0.005 的四捨五入、成交量差超過 1%）另開 warning，供監控 FMP 品質。
-- **HKEX 有、FMP 沒有的標的**（目前 285 檔、占成交金額 1.16%）：是否以開盤價為空的列寫入 `market_data_eod`，
-  待決。建議第一版只存在 HKEX 的表，不新增 `market_data_eod` 列。
+- **HKEX 有、FMP 沒有的標的**（目前 285 檔、占成交金額 1.16%）：第一版只存在 HKEX 的表，不在
+  `market_data_eod` 新增開盤價為空的列。
 - **HKEX 停牌、FMP 卻回成交量 0 的列**：以 HKEX 的狀態判定為無成交，處理方式與「港股 DQ」一致。
 
 #### Backend
@@ -269,7 +274,12 @@
 - 比照 TAIFEX：官方報表、沒有 credential、沿用 `image_key: twelve_data`。
 - 回應約 24 MB，超過現行 provider 的 `max_response_bytes`（16 MB），`hkex` 需設較高的上限。
 - Raw 層不存 24 MB 的 HTML：contract 只帶名單範圍內解析後的列，`source_raw_sha256` 記原始報表雜湊。
-  原始報表是否另外歸檔到 R2 待決；HKEX 兩個月後就刪除，歸檔後才能事後重新解析。
+- **原始報表歸檔到 R2**（Owner 於 2026-11-19 確認）：HKEX 兩個月後就刪除，歸檔後才能事後重新解析或擴大範圍
+  （例如權證與牛熊證）。
+  - 每天一份 gzip，約 3.5 MB，一年約 1 GB。
+  - 長期保存，不套用 raw 的 30 天 TTL；contract 以 `source_raw_ref` 指向歸檔物件，雜湊與 `source_raw_sha256` 一致。
+  - bucket、路徑與寫入時機（先歸檔再送 contract）在實作時定，參考盤中資料的 R2 做法
+    （[intraday storage](../architecture/intraday_storage.md)）。
 - 只用 GET，控制請求頻率；20:00 前的 404 視為尚未發布。
 
 #### 歷史
@@ -349,7 +359,7 @@ Owner 於 2026-11-19 決定：
 
 - 美股 515 檔的名單來源，以及每個 dataset 的 bounded universe。港股名單沿用現有的 HKEX `ListOfSecurities`
   （`fetcher/src/findb_fetcher/full_market_universe.py`），代號轉成 FMP 的 `XXXX.HK`。
-- 階段 2b：合併方式、HKEX 有而 FMP 沒有的標的是否寫入 `market_data_eod`、原始報表是否歸檔到 R2。
+- 階段 2b：欄位層修正的來源紀錄欄位、歸檔的 bucket 與路徑。
 - 指數、商品與跨資產的 instrument 模型：市場代碼、交易日曆、幣別。
 - 階段 5 的批次順序。
 - 授權條款是否允許內部再提供給下游專案。
