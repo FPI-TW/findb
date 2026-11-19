@@ -127,6 +127,9 @@ Production native 資料與實際 rollback 演練由
 
 ## FactSet 港股首次環境啟用
 
+> 2026-11-19 Owner 決定港股日線改由 FMP 作為正式來源，本節不再推進；切換與 FactSet 港股 feed 退役見
+> [FMP provider 導入規劃](fmp-provider.md)。
+
 實作契約與操作見 [FactSet 港股日行情](../operations/factset_hk.md)；staging ECR、IAM／KMS
 及獨立 Source／RDS credentials 已就緒；backend migration、FactSet Source registry、
 停止中的 scheduler seed、Fetcher host secret loader 與 Source 契約認證已核對。
