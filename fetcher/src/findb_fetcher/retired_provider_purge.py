@@ -291,6 +291,12 @@ def purge(
         raise PurgeError("provider is still packaged; only a retired provider can be purged")
     if vacuum and not apply:
         raise PurgeError("--vacuum needs --apply")
+    if vacuum:
+        # SQLite picks its temporary directory when the module loads, so only the
+        # process environment reaches VACUUM; the container's /tmp is 16 MiB.
+        temporary = os.environ.get("SQLITE_TMPDIR")
+        if not temporary or not os.path.isdir(temporary) or not os.access(temporary, os.W_OK):
+            raise PurgeError("--vacuum needs SQLITE_TMPDIR set to a writable directory on disk")
     work_ids = load_works(works, provider)
     # Both files are checked before either is changed.
     for path, kind in ((journal, "journal"), (state, "checkpoint")):
@@ -315,8 +321,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--vacuum", action="store_true", help="shrink both files after --apply")
     args = parser.parse_args(argv)
-    # VACUUM rewrites the whole file through a temporary copy; keep it beside the data.
-    os.environ.setdefault("SQLITE_TMPDIR", str(args.journal.parent))
     try:
         result = purge(
             args.provider,

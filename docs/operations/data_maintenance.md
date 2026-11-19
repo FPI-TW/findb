@@ -169,10 +169,24 @@ repair、raw 與 canonical 都在 Backend。以兩個工具清除，不另外封
    consumers 並確認 exit 0。Controls 停止後 consumers 仍會寫入 journal 與 checkpoint，所以一定要停 container。
 3. 把兩個檔案連同 `-wal`／`-shm` 複製到 `/var/backups/findb-retired-purge/<env>-<UTC>/`（root 0700），
    只供這次操作失敗時還原，驗證通過並重新啟動後刪除。
-4. 以 Fetcher image 起一次性 container（`--user 10001:10001`，掛載 journal 與 checkpoint 所在目錄），先 dry-run
-   核對數字，再 `--apply --vacuum`。VACUUM 的暫存檔寫在資料檔旁（`SQLITE_TMPDIR`），需要與檔案大小相當的可用磁碟。
+4. 以 Fetcher image 起一次性 container，先 dry-run 核對數字，再加上 `--apply --vacuum` 執行同一個指令：
+
+   ```bash
+   docker run --rm --network none --read-only --tmpfs /tmp:rw,size=16m --user 10001:10001 \
+     -e SQLITE_TMPDIR=/var/lib/findb-account/<env> \
+     -v /var/lib/findb-account/<env>:/var/lib/findb-account/<env> \
+     -v <checkpoint 目錄>:<checkpoint 目錄> -v <works.json 所在目錄>:/purge:ro \
+     --entrypoint /app/.venv/bin/findb-fetch-retired-purge <現役 FinLab image> \
+     --provider <provider> --works /purge/works.json \
+     --journal /var/lib/findb-account/<env>/provider-work.sqlite3 --state <checkpoint 目錄>/state.sqlite3
+   ```
+
+   Checkpoint 目錄：staging 是 `/var/lib/findb-full-market/staging`，production 是 `/var/lib/findb-full-market`。
+   `SQLITE_TMPDIR` 必須用 `-e` 從 process 環境帶入：SQLite 在模組載入時就決定暫存目錄，工具啟動後才設定不會生效，
+   VACUUM 會寫到 16 MiB 的 `/tmp` 而以 `database or disk is full` 失敗。沒有設定時 `--vacuum` 在刪除前就拒絕。
+   VACUUM 需要與檔案大小相當的可用磁碟。工具可以重複執行：已刪除的列不會再出現，只會核對後縮小檔案。
 5. 刪除該 provider 舊的 runtime 目錄（例如 `/var/lib/findb-shioaji-fetcher/`），lock 檔不動。
-6. `check_full_market_checkpoint.sh` 通過、consumers `docker start` 後健康，Owner 重新啟動 controls，刪除第 3 步的備份。
+6. 兩個檔案的 `PRAGMA integrity_check` 為 ok、consumers `docker start` 後健康，Owner 重新啟動 controls，刪除第 3 步的備份。
 
 ## PostgreSQL 暫存副本保留
 
