@@ -13,6 +13,8 @@
 - provider 修正因子時**只保留現值**，舊值留在 raw 層追溯。
 - `total` 基準**接受各 provider 自己的涵蓋範圍**，不在欄位層硬性統一，差異寫在本檔。
 - 台股第一版**只提供 `total` 基準**；`split` 基準等公司行動匯入後再補。
+- **因子由 Fetcher 推導，Backend 驗證後寫入。** 三家的換算方式都是 provider 專屬知識，放在 Fetcher；驗證方式見
+  「推導與驗證」。
 
 ## 為什麼存因子就夠
 
@@ -36,7 +38,7 @@
 | 精度 | 小數 5 位 | 調整價四捨五入，多為小數 2 位 | 完整浮點數 |
 | `total` 涵蓋 | 分割、股息；分拆（spin-off）放在分割基準 | 分割、股息；分拆未確認 | 分割、除權息（含配股）、減資 |
 | 因子能否由事件公式重現 | **不能**，所用價格不是除息前收盤 | 近期事件可以，長歷史不完全 | 事件表提供參考價，但以比值取得最精確 |
-| 已知問題 | `/dividends` 一次最多回 100 筆 | 港股還原價的跳點常比 `dividends` 清單早一個交易日；開高低的誤差是收盤的兩倍 | 合併因子無法分出分割部分 |
+| 已知問題 | `/dividends` 一次最多回 100 筆 | 港股還原價的跳點常比 `dividends` 清單早一個交易日；開高低的誤差是收盤的兩倍；港股有併股時「未調整」端點的價格或成交量可能錯誤；`eod-bulk` 是分割調整值 | 合併因子無法分出分割部分 |
 
 因此因子一律**從 provider 的還原價分段比值取得**（`derivation = provider_ratio`），事件清單只用來找候選日期與
 連結 `corporate_action`。
@@ -92,6 +94,16 @@
 Serve 的 `/eod` 新增參數 `adjust=none|split|total`，預設 `none`，回應標明所用基準。
 沒有因子的標的（指數、外匯、商品）一律回原始值。
 
+## 推導與驗證
+
+- **Fetcher** 依 provider 的換算方式從還原價分段比值推導因子，以 versioned contract 送到 Source。每個因子附
+  `evidence`：事件前後窗口的原始價與還原價序列、分段比值與離散度。完整回應保存在 raw 層。
+- **Backend** 在 normalizer 驗證後才寫入：
+  - 以 `evidence` 的窗口序列重算比值，必須與送來的因子相符。
+  - `evidence` 裡的原始價必須與 `market_data_eod` 同日的原始價一致，容差依 provider 精度。這一步擋下 FMP 港股
+    「未調整」端點回傳調整後價格的情形（例如 1657.HK 併股前回 550，實際是 55）。
+  - 有對應的分割事件時，因子必須與事件比例相符。
+
 ## 因子的取得與更新
 
 - **初次建立**：每檔抓整段歷史的原始價與還原價，依比值分段取因子。
@@ -112,10 +124,11 @@ Serve 的 `/eod` 新增參數 `adjust=none|split|total`，預設 `none`，回應
 | 因子沒有對應的 `corporate_action` | warning |
 | `effective_date` 與對應事件的 `ex_date` 不同（例如 FMP 港股常差一天） | warning |
 | 配息因子小於 0.5 或大於 1 | warning |
+| `evidence` 重算的比值與因子不符，或其原始價與 `market_data_eod` 不一致 | error |
+| 分割事件的比例與因子不符，或事件清單有分割、比值卻沒有對應跳動 | error |
 
 ## 尚未決定
 
-- 因子由 Fetcher 推導、以 contract 送到 Source，還是由 Backend 從送來的原始價與還原價序列推導。
-  - 建議由 Fetcher 推導：三家的換算方式都是 provider 專屬知識。
-  - Contract 帶因子與 `evidence`，原始價與還原價序列保存在 raw 層。
+- 港股分割類事件的 `volume_factor`：FMP 的港股成交量在併股時沒有調整（0381.HK），從成交量比值取得會錯。
+  建議分割類事件以 1 ÷ `price_factor` 設定，不從 provider 成交量推導。
 - 事件候選的每日來源，以及 Twelve Data `/splits` 每次 20 credits 的用量控制。

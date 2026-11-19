@@ -156,12 +156,14 @@ Pilot 退役後改由 Full daily 承接。證據見 [部署重試與 Pilot 恢�
 
 ## VWAP
 
-港股與台股的日 VWAP，Owner 於 2026-11-19 核准、之後一起做；實測與初步設計見
+港股與台股的日 VWAP，以及港股原始價的 HKEX 核對，Owner 於 2026-11-19 核准、之後一起做；實測與初步設計見
 [FMP provider 導入規劃](fmp-provider.md#vwap)。美股不做。
 
 - [ ] 港股：新增 HKEX 每日報表來源，取成交金額與成交股數。
   - 報表每個交易日香港時間 20:00 產生，只保留約兩個月。
   - 上線前的歷史無法回補。
+- [ ] 港股：每天以 HKEX 報表核對 FMP 的收盤價與成交量，不一致以 HKEX 為準。
+  - HKEX 報表沒有開盤價，不能整列取代 `market_data_eod`；修正方式與 DQ 一併定案。
 - [ ] 台股：由 FinLab `price:成交金額` 與 `price:成交股數` 計算。
 - [ ] 定案儲存表、contract、DQ 與 Serve 回傳欄位。
 
