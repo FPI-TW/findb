@@ -22,8 +22,9 @@
   [還原價：調整因子表設計](price-adjustment-factors.md)。
 - **VWAP 不由 FMP 取得，也不在本次範圍。** 港股改從 HKEX 取得，台股由 FinLab 成交金額計算，之後一起做；
   美股不做。實測與規劃見「VWAP」。
-- **港股原始價先以 FMP 上線，加上 DQ；之後接 HKEX 時每天核對，不一致以 HKEX 為準。** FMP 港股有價格精度、
-  成交量與公司行動前後的系統性誤差，見「港股與 HKEX 官方值比對」；HKEX 核對與 VWAP 一起做。
+- **港股原始價先以 FMP 上線，加上 DQ；接上 HKEX 每日報表後每天核對，不一致以 HKEX 為準。** FMP 港股有價格精度、
+  成交量與公司行動前後的系統性誤差，見「港股與 HKEX 官方值比對」。
+- **HKEX 每日報表同步規劃，先做配合 FMP 的部分**（每日核對與修正），列為「階段 2b」；VWAP 仍與台股之後一起做。
 - **每日抓取用 `eod-bulk`**，目標日之後有分割生效的標的改以單檔 `non-split-adjusted` 補抓，見「每日抓取方式」。
 - 不設原定交付日，目標是盡快上線。
 
@@ -125,6 +126,13 @@
    - 部分標的（例如 1628.HK、948.HK）期間內沒有登記分割，仍有成倍差異。
    - 美股的反分割（JOB 1:30）與正分割（NVDA）沒有這個問題。
 
+### 發布時間
+
+- **HKEX**：41 份報表的 `Last-Modified` 全部是當天香港時間 20:00，20:00 前回 404。
+- **FMP 港股**：收盤前就會回當天的列，值隨盤中變動；何時定案、是否與 HKEX 收盤一致，2026-11-19 實測中
+  （每 5 分鐘查一次單檔與 `eod-bulk`，到香港時間 21:30）。
+- 美股尚未測量。
+
 ### 其他端點
 
 | 項目 | 結果與限制 |
@@ -173,9 +181,7 @@
   與事件比例核對，比值不符時為 error 不寫入。窗口長度在實作時定。
 - 價格精度只到小數 2 位、冷門股成交量偏多，寫進 dataset 文件的已知限制，不在 DQ 擋下。
 - FMP 在無成交或停牌日仍回成交量為 0 的列，寫入前須與現行 `market_eod` 對無成交日的處理一致。
-- 之後接 HKEX 時，每天以 HKEX 報表核對收盤價與成交量，不一致以 HKEX 為準，見 [backlog](backlog.md#vwap)。
-  - `market_data_eod` 依來源優先序整列取捨，HKEX 報表沒有開盤價，不能整列取代；修正方式屆時再定。
-  - HKEX 只保留約兩個月，更早的歷史仍是 FMP 的值。
+- 接上 HKEX 後，每天以 HKEX 報表核對並修正收盤價、高低價與成交量，見「階段 2b」。
 
 - **Backend**
   - `backend/configs/provider_catalog.v1.json` 新增 provider `fmp` 與 feeds；擴充 `FeedDefinition` enum（指數、
@@ -205,6 +211,72 @@
 - **測試與驗收**：Fetcher per-provider 測試與共用矩陣（`test_provider_adapters.py`、golden fixtures、
   `execution_config.v1.json`）、`backend/tests/test_provider_catalog.py`、infra inventory 測試；
   Source → raw → queue → canonical → Serve 驗收；staging 只啟動 `fmp`，首日先設成單日再 start。
+
+### 階段 2b：HKEX 每日報表（配合 FMP 港股）
+
+範圍只到「每日核對與修正 FMP 港股原始價」；VWAP 的計算與 Serve 欄位仍列在 [backlog](backlog.md#vwap)。
+成交金額在這一階段就一併存下，之後 VWAP 不必重抓。
+
+#### 報表事實
+
+- 網址形如 `https://www.hkex.com.hk/eng/stat/smstat/dayquot/d<yymmdd>e.htm`，公開、不需帳號。
+  - 每個交易日一個檔，約 22–24 MB，gzip 後約 3.5 MB。
+  - 涵蓋全部港股：前收、最高、最低、收盤、買賣價、成交股數、成交金額；停牌以狀態文字標示
+    （11-18 有 362 檔為 `TRADING SUSPENDED`）。
+  - 11-18 共 16,914 列，其中 13,408 列是代號 10000 以上的權證與牛熊證；代號 1–9999 約 3,500 列。
+  - **沒有開盤價。**
+- **每個交易日香港時間 20:00 產生。** 2026-09-21 至 11-18 共 41 份報表的 `Last-Modified` 全部落在當天
+  20:00；週末與當天 20:00 前回 404，假日回內容為「NO TRADING」的頁面。
+- **只保留約兩個月**：2026-09-21 以後可取，更早的回 404。上線後只能往回補到當時仍保留的日期。
+- 連續 HEAD 請求曾一律回 503；GET 與 `Range` 請求正常。
+- 解析：QUOTATIONS 段落，每檔兩行；幣別除 HKD 外還有 USD、CNY 等櫃台，納入範圍跟港股名單一致。
+
+#### 與 FMP 的發布時間比較
+
+見「發布時間」。
+
+#### 合併方式（建議，待確認）
+
+`market_data_eod` 一列只來自一個來源、依優先序整列取捨；HKEX 沒有開盤價，不能整列取代 FMP 的列，而且
+「每個 dataset 只能有一條 Source feed」。因此：
+
+- HKEX 是獨立的 provider `hkex` 與 dataset（暫稱 `hk_equity_official_eod`），寫入自己的 canonical 表，以
+  `(instrument_id, trade_date)` 為鍵，存報表的全部數值欄位與交易狀態。
+- **欄位層修正**：同一交易日兩邊都有資料時，Backend 以 HKEX 的收盤、最高、最低、成交量、成交金額覆寫
+  `market_data_eod` 的港股列，開盤價保留 FMP 的值。
+  - 不論誰先寫入結果都相同：HKEX 寫入時修正既有的 FMP 列；FMP 重抓或補抓時，若同日已有 HKEX 值，寫入後
+    再套用一次。
+  - 被取代的 FMP 原值與差異記錄下來（`dq_issue` 或專用稽核表），列上註明哪些欄位來自 HKEX。具體欄位待定。
+  - 差異超過門檻（例如收盤價不同且不是 0.005 的四捨五入、成交量差超過 1%）另開 warning，供監控 FMP 品質。
+- **HKEX 有、FMP 沒有的標的**（目前 285 檔、占成交金額 1.16%）：是否以開盤價為空的列寫入 `market_data_eod`，
+  待決。建議第一版只存在 HKEX 的表，不新增 `market_data_eod` 列。
+- **HKEX 停牌、FMP 卻回成交量 0 的列**：以 HKEX 的狀態判定為無成交，處理方式與「港股 DQ」一致。
+
+#### Backend
+
+- Contract 可沿用 `market_eod` v2：`open` 可為空，已有 `turnover`；交易狀態等額外欄位若需要，改用新版本或
+  新 contract。
+- 新 canonical 表、normalizer、上述欄位層修正、DQ。DQ 至少包括：
+  - 成交金額 ÷ 成交股數必須落在當日最低與最高之間（同時驗證解析是否正確）。
+  - 收盤價落在最低與最高之間；成交股數為 0 時不得有成交金額。
+- Catalog 新增 provider `hkex` 與 feed；`calendar_market` 為 HK。
+  - 排程：香港時間 20:05 起，重試到當晚；完成期限沿用港股日線的隔天 06:30。
+  - 假日頁以「NO TRADING」作為 no_data 的 durable evidence。
+- Registry、control、Source credential 與 migration 的做法同階段 2。
+
+#### Fetcher
+
+- 比照 TAIFEX：官方報表、沒有 credential、沿用 `image_key: twelve_data`。
+- 回應約 24 MB，超過現行 provider 的 `max_response_bytes`（16 MB），`hkex` 需設較高的上限。
+- Raw 層不存 24 MB 的 HTML：contract 只帶名單範圍內解析後的列，`source_raw_sha256` 記原始報表雜湊。
+  原始報表是否另外歸檔到 R2 待決；HKEX 兩個月後就刪除，歸檔後才能事後重新解析。
+- 只用 GET，控制請求頻率；20:00 前的 404 視為尚未發布。
+
+#### 歷史
+
+- 上線時能補到的最早日期是「上線日往前約兩個月」，更早的港股歷史維持 FMP 的值。
+- 本機已有 2026-09-21 至 11-18 的 41 份報表，可用於開發與驗收的 fixture，但不經 Source 寫入正式環境。
+- 每晚一天上線，就少一天可修正的官方資料；建議與階段 2 同批上線。
 
 ### 階段 3：公司行動
 
@@ -254,15 +326,9 @@ Owner 於 2026-11-19 決定：
 - **FMP 與 HKEX 的日成交量不完全相同**：0700.HK 差 4,900 股，0131.HK 差 1,000 股。
   VWAP 必須用同一來源的成交金額與成交股數計算，不能拿 HKEX 的金額除以 FMP 的股數。
 
-### HKEX 每日報表
+### 港股
 
-- 網址形如 `https://www.hkex.com.hk/eng/stat/smstat/dayquot/d<yymmdd>e.htm`。
-  - 每個交易日一個檔，約 22–24 MB。
-  - 內容涵蓋全部港股的成交股數與成交金額。
-- **每個交易日香港時間 20:00 產生。** 11/02、11/13、11/16、11/17、11/18 的 `Last-Modified` 都是 20:00:03–20:00:04；
-  週末與當天 20:00 前都回 404。
-- **只保留約兩個月**：2026-09-21 以後可取，更早的回 404。無法回補歷史，上線後只能逐日累積。
-- 連續用 HEAD 請求曾一律回 503，改用 GET 則正常；實作需用 GET 並控制請求頻率。
+- 來源是 HKEX 每日報表，報表事實與取得方式見「階段 2b」；成交金額與成交股數在階段 2b 就會存下。
 
 ### 台股
 
@@ -270,8 +336,9 @@ Owner 於 2026-11-19 決定：
 
 ### 儲存（之後實作時再定案）
 
-`market_data_eod` 一列只來自一個來源、依優先序整列取捨，無法把 HKEX 的 VWAP 併進 FMP 的那一列。
-初步方向是另建一張以 `(instrument_id, trade_date)` 為鍵的小表，欄位包括：
+若階段 2b 採欄位層修正，港股的成交金額與成交量會同時來自 HKEX，`market_data_eod` 的 `turnover ÷ volume`
+即為 VWAP，可能不需要另建表；台股同理可把 FinLab 的成交金額寫入 `turnover`。
+否則另建一張以 `(instrument_id, trade_date)` 為鍵的小表，欄位包括：
 
 - `vwap`
 - `method`：例如 `turnover`
@@ -280,7 +347,9 @@ Owner 於 2026-11-19 決定：
 
 ## 待決事項
 
-- 美股 515 檔與港股名單的來源，以及每個 dataset 的 bounded universe。
+- 美股 515 檔的名單來源，以及每個 dataset 的 bounded universe。港股名單沿用現有的 HKEX `ListOfSecurities`
+  （`fetcher/src/findb_fetcher/full_market_universe.py`），代號轉成 FMP 的 `XXXX.HK`。
+- 階段 2b：合併方式、HKEX 有而 FMP 沒有的標的是否寫入 `market_data_eod`、原始報表是否歸檔到 R2。
 - 指數、商品與跨資產的 instrument 模型：市場代碼、交易日曆、幣別。
 - 階段 5 的批次順序。
 - 授權條款是否允許內部再提供給下游專案。
