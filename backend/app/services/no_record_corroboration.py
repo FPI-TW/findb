@@ -2,8 +2,10 @@
 
 FinLab publishes no intraday partition for a symbol-day without a board-lot trade,
 and also none while that partition is still being built; one answer cannot tell
-the two apart. The same provider's daily bar for that day can: the member either
-had no trade at all, or traded less than one board lot.
+the two apart. The same provider's daily bar for that day can: either the member
+had no trade at all, or the provider served no price for it, so its delivered
+bar carries the latest earlier close. A TW price comes only from board-lot trades;
+odd-lot trades add volume without a price, so volume cannot tell this apart.
 """
 
 from __future__ import annotations
@@ -24,8 +26,8 @@ from app.services.provider_metadata import acquisition_feeds
 
 # Evidence status of a claim that needs this corroboration; its reason is ``no_trade``.
 NO_RECORD = "no_record"
-# Shares in one board lot. Daily volume is in shares, so less than this is odd lots only.
-BOARD_LOT_SHARES = {"TW": 1000}
+# Markets where a daily price comes only from board-lot trades.
+BOARD_LOT_PRICED_MARKETS = frozenset({"TW"})
 
 
 def _daily_feed(dataset: DatasetRegistry, provider: str) -> FeedDefinition | None:
@@ -58,26 +60,38 @@ async def corroborate_no_record(
 ) -> dict[str, Any] | None:
     """How the daily bar shows the member traded no board lot that day, or ``None``."""
     feed = _daily_feed(dataset, plan.provider)
-    lot = BOARD_LOT_SHARES.get(feed.market) if feed is not None else None
-    if feed is None or lot is None:
+    if feed is None or feed.market not in BOARD_LOT_PRICED_MARKETS:
         return None
-    basis = {"dataset_key": feed.dataset_key, "board_lot_shares": lot}
-    # The canonical bar decides first: a member with a row traded, and only its volume
-    # can show that the trade was odd lots only.
-    row = await db.scalar(
-        select(MarketDataEOD)
-        .join(Instrument, Instrument.instrument_id == MarketDataEOD.instrument_id)
-        .where(
-            Instrument.market == feed.market,
-            Instrument.asset_class == feed.asset_class,
-            Instrument.symbol == member.symbol,
-            MarketDataEOD.trade_date == plan.trade_date,
+    basis = {"dataset_key": feed.dataset_key}
+    # The canonical bar decides first. A delivered bar whose open, high, low and close
+    # all equal the latest earlier close is one the provider served without a price:
+    # the price was carried, so no board lot traded that day.
+    rows = (
+        await db.scalars(
+            select(MarketDataEOD)
+            .join(Instrument, Instrument.instrument_id == MarketDataEOD.instrument_id)
+            .where(
+                Instrument.market == feed.market,
+                Instrument.asset_class == feed.asset_class,
+                Instrument.symbol == member.symbol,
+                MarketDataEOD.trade_date <= plan.trade_date,
+            )
+            .order_by(MarketDataEOD.trade_date.desc())
+            .limit(2)
         )
-    )
+    ).all()
+    row = rows[0] if rows and rows[0].trade_date == plan.trade_date else None
     if row is not None:
-        if row.source != plan.provider or row.volume is None or row.volume >= lot:
+        earlier = rows[1] if len(rows) == 2 else None
+        if (
+            row.source != plan.provider
+            or earlier is None
+            or row.close is None
+            or earlier.close is None
+            or not (row.open == row.high == row.low == row.close == earlier.close)
+        ):
             return None
-        return {**basis, "basis": "odd_lots_only", "volume_shares": row.volume}
+        return {**basis, "basis": "carried_close", "carried_from": earlier.trade_date.isoformat()}
     daily = await db.scalar(
         select(DailyDeliveryMember)
         .join(DailyDeliveryPlan, DailyDeliveryPlan.plan_id == DailyDeliveryMember.plan_id)
