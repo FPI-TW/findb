@@ -129,6 +129,8 @@ Serve 的 `/eod` 新增參數 `adjust=none|split|total`，預設 `none`，回應
 
 ## 尚未決定
 
+- 港股的因子來源：港股個股日線於 2026-11-20 改回 FactSet（見
+  [港股個股日線](hk-equity-factset-hkex.md)），FactSet 的調整行為尚未盤點；在那之前港股因子是否仍取自 FMP 待定。
 - 港股分割類事件的 `volume_factor`：FMP 的港股成交量在併股時沒有調整（0381.HK），從成交量比值取得會錯。
   建議分割類事件以 1 ÷ `price_factor` 設定，不從 provider 成交量推導。
 - 事件候選的每日來源，以及 Twelve Data `/splits` 每次 20 credits 的用量控制。
