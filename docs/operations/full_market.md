@@ -320,6 +320,27 @@ FinLab 抓表失敗時，`full_work_diagnostic.category` 記為 `finlab_sdk:<cod
 
 FactSet 的子程序也會回報同一套類別（沒有 `auth`、`quota` 的 API 判斷），但目前只有 FinLab 把它寫進 diagnostic 與 log。
 
+### FinLab 事後改值的偵測
+
+FinLab 日 K 每天取表時，表裡本來就有前幾個交易日的資料。Fetcher 拿前一個交易日現在的值，和當初交付的結果比對，
+每個 dataset 每天輸出一行 `{"finlab_revision_check": {...}}`。這只是偵測：不改交付規則，不多呼叫 FinLab，比對
+失敗也不影響當天的交付。
+
+| 欄位 | 意思 |
+| --- | --- |
+| `trade_date`、`previous_date` | 當天，與表中當天之前最新的交易日 |
+| `target_valued`、`previous_valued_now`、`target_to_previous` | 當天與前一交易日收盤價有值的檔數（今天的成員），以及兩者的比例；日後判斷是否需要完整度門檻用 |
+| `compared`、`previous_valued_delivered` | 比對的成員數，以及當初交付時有資料的檔數 |
+| `delivered_changed` | 當初交付的成員，開高低收或成交量現在不同（價格全空、以較早收盤價補值交付的成員只比成交量） |
+| `no_trade_now_valued` | 當初記為無成交的成員現在有值 |
+| `delivered_now_empty` | 當初交付的成員現在四個價格全空、成交量為空或 0 |
+| `delivered_now_missing` | 當初交付的成員現在不在表裡 |
+
+- 只輸出檔數與日期，不含任何價格或成交量。
+- 當初交付的結果取自 Fetcher 本機的 checkpoint，只保留到工作結束後 7 天。前一交易日的計劃不在本機時（例如從沒在這個環境跑過），比對欄位是 `null`，只剩檔數與比例。
+- 取表若是從 journal 重播（重試已取過的表），就沒有可比對的資料，那天不輸出這一行。
+- 後四個欄位任一大於 0 時，另外輸出一行 `{"finlab_revision_detected": {...}}`，內容相同，給 log 告警使用。CloudWatch 的告警規則尚未設定。
+
 FinLab daily 的抓表失敗是整個 cohort 共用的失敗，不記在任何成員身上（不回報 `source_error`、不扣成員的嘗試次數）：
 
 | 類別 | 處理 |

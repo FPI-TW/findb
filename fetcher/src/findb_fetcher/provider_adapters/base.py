@@ -95,6 +95,11 @@ class AcquisitionContext:
     # Provider symbols of this part that may share one native request, starting
     # with this member; evaluated only when the adapter really dispatches.
     batch_candidates: Callable[[], tuple[str, ...]] | None = None
+    # What this runtime delivered for another trade date of the dataset, from its
+    # own checkpoints: ``delivered(trade_date)`` maps member key to the delivered
+    # row, or to ``None`` for a source-proven no-trade member. ``None`` when that
+    # plan is not held locally.
+    delivered: Callable[[date], Mapping[str, Mapping[str, Any] | None] | None] | None = None
 
     @property
     def max_response_bytes(self) -> int:

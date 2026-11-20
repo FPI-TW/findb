@@ -166,6 +166,12 @@ class FinLabSdkGateway:
     # Full daily narrows a table to the listed symbols FinLab serves and isolates
     # the rest per member; the historical bundle keeps the strict whole-scope check.
     allow_missing_symbols: bool = False
+    # Per dataset fetched natively by this gateway: the latest trading date before the
+    # target and each listed symbol's value on it, as FinLab serves them now. Never
+    # journaled; a replayed table leaves no entry.
+    prior_rows: dict[str, tuple[str, dict[str, object]]] = dataclass_field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_identity_credential", self.api_token)
@@ -325,6 +331,12 @@ class FinLabSdkGateway:
                         )
                         if table.dates != (target_date.isoformat(),):
                             _log_target_not_ready(dataset.strip(), target_date, table)
+                        else:
+                            prior = _prior_row(
+                                frame, target_date=target_date, symbols=table.symbols
+                            )
+                            if prior is not None:
+                                self.prior_rows[dataset.strip()] = prior
                         return table
                     except FinLabSdkError as exc:
                         raise type(exc)(str(exc)) from None
@@ -1035,6 +1047,28 @@ def _table_from_dataframe(
         values=(row,),
         previous=tuple(previous),
     )
+
+
+def _prior_row(
+    frame: object, *, target_date: date, symbols: tuple[str, ...]
+) -> tuple[str, dict[str, object]] | None:
+    """The latest date before the target and each symbol's value on it, or ``None``.
+
+    Only an observation for comparison: a frame that cannot be read this way
+    leaves the target table it already produced untouched.
+    """
+    try:
+        index_values, dates, _ = _frame_axes(frame)
+        earlier = [(value, position) for position, value in enumerate(dates) if value < target_date]
+        if not earlier:
+            return None
+        day, position = max(earlier)
+        loc = getattr(frame, "loc")
+        return day.isoformat(), {
+            symbol: _snapshot_scalar(loc[index_values[position], symbol]) for symbol in symbols
+        }
+    except Exception:
+        return None
 
 
 def _log_target_not_ready(dataset: str, target_date: date, table: FinLabDatasetTable) -> None:
