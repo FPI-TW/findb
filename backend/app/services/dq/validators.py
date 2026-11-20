@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import CorporateAction, MarketDataEOD
 from app.services.normalize.types import EODLikeRecord, MarketMinuteRecord
+from app.services.ohlc_range import ohlc_range_severity
 
 
 @dataclass
@@ -376,7 +377,7 @@ class MarketEODV2DQValidator(DQValidator):
         if record.high is not None and values and record.high < max(values):
             return DQIssueRecord(
                 issue_type="OHLC_HIGH_CHECK",
-                severity="error",
+                severity=ohlc_range_severity(record.market, record.high, record.low),
                 description="High is below a provided open, low, or close",
                 trade_date=record.trade_date if isinstance(record.trade_date, datetime) else None,
                 raw_data=record.raw_data,
@@ -388,7 +389,7 @@ class MarketEODV2DQValidator(DQValidator):
         if record.low is not None and values and record.low > min(values):
             return DQIssueRecord(
                 issue_type="OHLC_LOW_CHECK",
-                severity="error",
+                severity=ohlc_range_severity(record.market, record.high, record.low),
                 description="Low is above a provided open, high, or close",
                 trade_date=record.trade_date if isinstance(record.trade_date, datetime) else None,
                 raw_data=record.raw_data,

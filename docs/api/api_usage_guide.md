@@ -327,6 +327,7 @@ EOD correction（`PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}`）在同
 先鎖定該筆行情，再合併修正欄位、執行阻擋性 DQ、寫入 audit 與 stats。同一行情的並行修正會依序執行；
 後到的修正以前一筆提交後的值重新驗證，合併後違反 OHLC 規則時回 422，不會把兩筆部分修正合成
 未經 DQ 的值。Normalizer upsert 取得同一個 row lock，因此與修正之間也是以整列為單位依序套用。
+港股修正後開盤或收盤落在最高、最低之外仍可寫入，最高低於最低則拒絕，與 ingest 的 DQ 規則相同。
 
 人工修正優先於之後的所有 ingest。修正會把該列的 `source_priority` 設為 Admin 專用值
 （int4 最小值，比任何 dataset `source_precedence` 都優先），`source` 與 `source_fetched_at`

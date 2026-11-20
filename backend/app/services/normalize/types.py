@@ -72,6 +72,7 @@ class EODLikeRecord(InstrumentResolvableRecord, Protocol):
     """Record shape used by EOD data-quality checks."""
 
     trade_date: datetime
+    market: Optional[str]
     open: Optional[Decimal]
     high: Optional[Decimal]
     low: Optional[Decimal]

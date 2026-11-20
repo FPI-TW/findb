@@ -91,6 +91,12 @@ v2 保留 v1 的欄位、必填性、非負／型別約束、日期、重複鍵�
 所有已提供的 `open/high/close`；其他欄位為 null 時仍檢查已有值。缺少 close、負數或結構錯誤
 仍在 Source 入口拒絕整批。
 
+港股（market `HK`）例外：開盤或收盤落在最高、最低之外時照常寫入，DQ 記 `warning`，不擋寫入；
+最高低於最低仍是 `error`。HKEX 非收市競價股票的收盤價是最後一分鐘按盤價的中位數，不一定是
+成交價；2026-09-21 至 11-18 的 HKEX 日報中，有成交的港股每天約 3.4% 收盤價落在當日最高、最低
+之外。FactSet 的開盤價也會高於當日最高。規則集中在 `backend/app/services/ohlc_range.py`，
+Admin EOD correction 使用同一規則。
+
 OHLC 衝突列保留原 raw 與 error DQ（含 symbol、trade_date、source_symbol），不建立商品、
 不寫入行情／最新價，也不建立該列的 actual-write evidence；有效列正常寫入。混合批次與全錯
 批次的 run 均為 `completed_with_errors`，可依原 v2 raw 重跑；這不是完整交付或 no_data 證明。
