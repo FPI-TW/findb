@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -79,23 +80,39 @@ async def _member(db, plan, symbol: str) -> DailyDeliveryMember:
     ).one()
 
 
-async def _daily_bar(db, symbol: str, volume: int, *, source: str = "finlab") -> None:
+CARRIED = ("10", "10", "10", "10")
+
+
+async def _daily_bar(
+    db,
+    symbol: str,
+    bar: tuple[str, str, str, str] = CARRIED,
+    *,
+    previous_close: str | None = "10",
+    volume: int = 1616,
+    source: str = "finlab",
+) -> None:
+    """The member's delivered daily bar of the day, after its bar of the previous day."""
     instrument = Instrument(asset_class="equity", market="TW", symbol=symbol)
     db.add(instrument)
     await db.flush()
-    db.add(
-        MarketDataEOD(
-            instrument_id=instrument.instrument_id,
-            trade_date=DAY,
-            open=Decimal("10"),
-            high=Decimal("10"),
-            low=Decimal("10"),
-            close=Decimal("10"),
-            volume=volume,
-            source=source,
-            asof_ts=utc_now(),
+    days = [(DAY, bar, volume, source)]
+    if previous_close is not None:
+        days.append((DAY - timedelta(days=1), (previous_close,) * 4, 5000, "finlab"))
+    for day, (open_, high, low, close), shares, origin in days:
+        db.add(
+            MarketDataEOD(
+                instrument_id=instrument.instrument_id,
+                trade_date=day,
+                open=Decimal(open_),
+                high=Decimal(high),
+                low=Decimal(low),
+                close=Decimal(close),
+                volume=shares,
+                source=origin,
+                asof_ts=utc_now(),
+            )
         )
-    )
     await db.commit()
 
 
@@ -129,7 +146,6 @@ async def test_a_daily_no_trade_corroborates_a_missing_intraday_record(
     # The corroborating daily outcome is kept with the claim it settled.
     assert member.outcome_history[-1]["corroboration"] == {
         "dataset_key": "tw_equity_eod",
-        "board_lot_shares": 1000,
         "basis": "daily_no_data",
         "plan_id": str(daily.plan_id),
         "reason": "no_trade",
@@ -142,12 +158,25 @@ async def test_a_daily_no_trade_corroborates_a_missing_intraday_record(
     [
         # The daily member is not settled yet: nothing is known about the day.
         None,
-        # A board lot traded, so FinLab's partition should exist.
-        {"volume": 1000},
-        # Odd lots only, but the bar is not FinLab's own.
-        {"volume": 300, "source": "twelve_data"},
+        # FinLab served a price: a board lot traded, so its partition should exist.
+        {"bar": ("10", "10.5", "9.9", "10.2")},
+        # One price all day, but a new one: a board-lot trade, not a carried close.
+        {"bar": ("10.3", "10.3", "10.3", "10.3")},
+        # Fewer than 1,000 shares no longer settle it: FinLab still priced the day.
+        {"bar": ("10.3", "10.3", "10.3", "10.3"), "volume": 300},
+        # Nothing earlier to have carried a close from.
+        {"previous_close": None},
+        # The carried shape, but the bar is not FinLab's own.
+        {"source": "twelve_data"},
     ],
-    ids=["daily pending", "board lot traded", "another provider's bar"],
+    ids=[
+        "daily pending",
+        "priced",
+        "flat at a new price",
+        "priced below one lot",
+        "no earlier bar",
+        "another provider's bar",
+    ],
 )
 async def test_a_missing_record_without_corroboration_is_refused_and_stays_retryable(
     owned_client: AsyncClient, test_session, daily
@@ -171,11 +200,13 @@ async def test_a_missing_record_without_corroboration_is_refused_and_stays_retry
 
 
 @pytest.mark.asyncio
-async def test_odd_lots_only_on_the_daily_bar_corroborate_a_missing_record(
+async def test_a_daily_bar_carrying_the_earlier_close_corroborates_a_missing_record(
     owned_client: AsyncClient, test_session
 ) -> None:
     intraday, _, headers = await _plans(test_session)
-    await _daily_bar(test_session, "0002", 999)
+    # FinLab served no price that day, only odd-lot volume above one lot; the bar
+    # was delivered with the previous close.
+    await _daily_bar(test_session, "0002", volume=1616)
 
     response = await owned_client.post(
         f"/api/v1/source/delivery-plans/{intraday.plan_id}/outcomes",
@@ -187,7 +218,11 @@ async def test_odd_lots_only_on_the_daily_bar_corroborate_a_missing_record(
     test_session.expire_all()
     member = await _member(test_session, intraday, "0002")
     assert member.outcome == "no_data"
-    assert member.outcome_history[-1]["corroboration"]["basis"] == "odd_lots_only"
+    assert member.outcome_history[-1]["corroboration"] == {
+        "dataset_key": "tw_equity_eod",
+        "basis": "carried_close",
+        "carried_from": (DAY - timedelta(days=1)).isoformat(),
+    }
 
 
 @pytest.mark.asyncio

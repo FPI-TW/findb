@@ -9,7 +9,7 @@ import asyncio
 import importlib.metadata
 import io
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -92,19 +92,20 @@ def finlab_bars(symbol: str) -> bytes:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("daily_volume", "absent_outcome"),
+    ("daily_bar", "absent_outcome"),
     [
         # No daily bar yet: the missing partition says nothing, so it stays retryable.
         (None, ("blocked", "empty_response")),
-        # The daily bar shows a board lot traded: the partition must exist, keep trying.
-        (2000, ("blocked", "empty_response")),
-        # Odd lots only: FinLab has no partition because there was no board-lot trade.
-        (300, ("no_data", "no_trade")),
+        # FinLab priced the day, so a board lot traded and the partition must exist.
+        (("10", "10.5", "9.9", "10.2"), ("blocked", "empty_response")),
+        # FinLab served no price and the bar carries the earlier close: no board-lot
+        # trade, so no partition, however many odd-lot shares traded.
+        (("10", "10", "10", "10"), ("no_data", "no_trade")),
     ],
-    ids=["no daily bar", "board lot traded", "odd lots only"],
+    ids=["no daily bar", "priced", "carried close"],
 )
 async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
-    client, test_session, test_engine, monkeypatch, tmp_path, daily_volume, absent_outcome
+    client, test_session, test_engine, monkeypatch, tmp_path, daily_bar, absent_outcome
 ):
     root = Path(__file__).resolve().parents[2]
     monkeypatch.syspath_prepend(str(root / "fetcher/src"))
@@ -192,23 +193,24 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
         "completion_window_seconds": 86400,
         "slot_id": "taiwan_market_window",
     }
-    if daily_volume is not None:
+    if daily_bar is not None:
         instrument = Instrument(asset_class="equity", market="TW", symbol="0003")
         test_session.add(instrument)
         await test_session.flush()
-        test_session.add(
-            MarketDataEOD(
-                instrument_id=instrument.instrument_id,
-                trade_date=DAY,
-                open=Decimal("10"),
-                high=Decimal("10"),
-                low=Decimal("10"),
-                close=Decimal("10"),
-                volume=daily_volume,
-                source="finlab",
-                asof_ts=utc_now(),
+        for day, bar in ((DAY - timedelta(days=1), ("10",) * 4), (DAY, daily_bar)):
+            test_session.add(
+                MarketDataEOD(
+                    instrument_id=instrument.instrument_id,
+                    trade_date=day,
+                    open=Decimal(bar[0]),
+                    high=Decimal(bar[1]),
+                    low=Decimal(bar[2]),
+                    close=Decimal(bar[3]),
+                    volume=1294,
+                    source="finlab",
+                    asof_ts=utc_now(),
+                )
             )
-        )
     await test_session.commit()
 
     config = FetcherConfig(
@@ -370,9 +372,8 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
         assert absent.outcome_evidence["source_status"] == "no_record"
         assert absent.outcome_history[-1]["corroboration"] == {
             "dataset_key": "tw_equity_eod",
-            "board_lot_shares": 1000,
-            "basis": "odd_lots_only",
-            "volume_shares": 300,
+            "basis": "carried_close",
+            "carried_from": (DAY - timedelta(days=1)).isoformat(),
         }
 
     # The published day is one canonical object, indexed, with FinLab's values in the layout.
