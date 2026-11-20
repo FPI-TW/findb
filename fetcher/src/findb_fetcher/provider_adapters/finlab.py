@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -90,12 +91,87 @@ _FINLAB_PERMANENT = {
 }
 
 
+# Revisions of an already delivered day; any of them is worth an alert.
+FINLAB_REVISION_KINDS = (
+    "no_trade_now_valued",
+    "delivered_changed",
+    "delivered_now_empty",
+    "delivered_now_missing",
+)
+
+
 def finlab_no_trade(values: Mapping[str, object]) -> bool:
     """FinLab leaves every price empty, with no positive volume, on a day without trades."""
     volume = values["volume"]
     return all(unobserved(values[field]) for field in FINLAB_PRICE_FIELDS) and (
         unobserved(volume) or volume == 0
     )
+
+
+def _same_number(served: object, delivered: object) -> bool:
+    if unobserved(served) or delivered is None:
+        return False
+    try:
+        return Decimal(str(served)) == Decimal(str(delivered))
+    except (InvalidOperation, ValueError):
+        return False
+
+
+def finlab_revision_check(
+    *,
+    prior: Mapping[str, Mapping[str, object]],
+    delivered: Mapping[str, Mapping[str, Any] | None] | None,
+    members: Mapping[str, str],
+    target_close: Mapping[str, object],
+) -> dict[str, Any]:
+    """Bounded counts of how FinLab now serves a day this runtime already delivered.
+
+    ``prior`` is each OHLCV field's row of that day as served now (provider symbol
+    to value); ``delivered`` is what was delivered then, by member key; ``members``
+    maps today's member keys to provider symbols. No value leaves this function.
+    """
+    symbols = [symbol for symbol in members.values() if symbol in prior["close"]]
+    previous_valued = sum(not unobserved(prior["close"][symbol]) for symbol in symbols)
+    target_valued = sum(not unobserved(value) for value in target_close.values())
+    result: dict[str, Any] = {
+        "target_valued": target_valued,
+        "previous_valued_now": previous_valued,
+        "target_to_previous": round(target_valued / previous_valued, 4)
+        if previous_valued
+        else None,
+        "compared": None,
+        "previous_valued_delivered": None,
+        **dict.fromkeys(FINLAB_REVISION_KINDS),
+    }
+    if delivered is None:
+        return result
+    counts = dict.fromkeys(("compared", "previous_valued_delivered", *FINLAB_REVISION_KINDS), 0)
+    for member_key, row in delivered.items():
+        symbol = members.get(member_key)
+        if symbol is None:
+            continue  # No longer listed: nothing to compare it with.
+        counts["compared"] += 1
+        counts["previous_valued_delivered"] += row is not None
+        if symbol not in prior["close"]:
+            counts["delivered_now_missing"] += row is not None
+            continue
+        values = {field: prior[field].get(symbol) for field in prior}
+        if row is None:
+            counts["no_trade_now_valued"] += not finlab_no_trade(values)
+        elif finlab_no_trade(values):
+            counts["delivered_now_empty"] += 1
+        else:
+            # A day delivered with every price carried from an earlier close keeps
+            # those prices empty; only its volume can change.
+            fields = (
+                ("volume",)
+                if all(unobserved(values[field]) for field in FINLAB_PRICE_FIELDS)
+                else (*FINLAB_PRICE_FIELDS, "volume")
+            )
+            counts["delivered_changed"] += not all(
+                _same_number(values[field], row.get(field)) for field in fields
+            )
+    return {**result, **counts}
 
 
 def _table_payload(table: FinLabDatasetTable) -> dict[str, Any]:
@@ -379,6 +455,58 @@ class FinLabAdapter(ProviderAdapter):
             self.layouts[key] = [dict(column) for column in columns]
         return self.layouts[key]
 
+    def _log_revision_check(
+        self,
+        gateway: FinLabSdkGateway,
+        config: FinLabDatasetConfig,
+        tables: Mapping[str, FinLabDatasetTable],
+        context: AcquisitionContext,
+    ) -> None:
+        """Compare the previous trading day, as served now, with what was delivered then.
+
+        Only a log: delivery never waits for it or depends on it, and it makes no
+        FinLab request of its own. A table replayed from the journal leaves nothing
+        to compare, so the check is skipped.
+        """
+        try:
+            rows = {
+                field: gateway.prior_rows.get(name) for field, name in config.field_datasets.items()
+            }
+            if any(row is None for row in rows.values()):
+                return
+            days = {row[0] for row in rows.values() if row is not None}
+            if len(days) != 1:
+                return
+            (previous_date,) = days
+            delivered = (
+                context.delivered(date.fromisoformat(previous_date))
+                if context.delivered is not None
+                else None
+            )
+            members = {
+                str(item.get("member_key") or item["symbol"]): str(item["provider_symbol"])
+                for item in context.cohort or ()
+                if item.get("mapping_status") == "mapped"
+            }
+            close = tables["close"]
+            result = finlab_revision_check(
+                prior={field: row[1] for field, row in rows.items() if row is not None},
+                delivered=delivered,
+                members=members,
+                target_close=dict(zip(close.symbols, close.values[0], strict=True)),
+            )
+        except Exception:
+            return
+        line = {
+            "dataset": context.dataset_key,
+            "trade_date": context.trade_date.isoformat(),
+            "previous_date": previous_date,
+            **result,
+        }
+        print(json.dumps({"finlab_revision_check": line}, separators=(",", ":")), flush=True)
+        if any(result[kind] for kind in FINLAB_REVISION_KINDS):
+            print(json.dumps({"finlab_revision_detected": line}, separators=(",", ":")), flush=True)
+
     def acquire(self, member: Mapping[str, Any], context: AcquisitionContext) -> AcquisitionResult:
         dataset, day = context.dataset_key, context.trade_date
         if dataset in INTRADAY_DATASETS:
@@ -411,6 +539,7 @@ class FinLabAdapter(ProviderAdapter):
                     symbols=tuple(item.source_symbol for item in config.symbols),
                 )
                 context.observe_response(len(table_bytes(tables[field])))
+            self._log_revision_check(gateway, config, tables, context)
             table_raw = canonical_bytes(
                 {field: _table_payload(table) for field, table in tables.items()}
             )

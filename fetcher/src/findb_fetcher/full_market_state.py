@@ -787,6 +787,40 @@ class FullMarketState:
             "last_batch": json.loads(batch[0]) if batch and batch[0] else None,
         }
 
+    def delivered_rows(
+        self, provider: str, dataset: str, trade_date: date
+    ) -> dict[str, dict[str, Any] | None] | None:
+        """Members a locally held plan settled: the delivered row, or ``None`` for no trade.
+
+        Members still pending, manual or without a body are left out; ``None`` when
+        no plan of that date is held (never planned here, or already pruned).
+        """
+        with self.connection() as db:
+            rows = db.execute(
+                "SELECT w.member_key,w.reason,w.body,w.body_sha256 FROM full_work w "
+                "JOIN full_plan p ON p.plan_id=w.plan_id "
+                "WHERE p.provider=? AND p.dataset=? AND p.trade_date=? AND w.status='complete'",
+                (provider, dataset, trade_date.isoformat()),
+            ).fetchall()
+            held = db.execute(
+                "SELECT 1 FROM full_plan WHERE provider=? AND dataset=? AND trade_date=? LIMIT 1",
+                (provider, dataset, trade_date.isoformat()),
+            ).fetchone()
+        if held is None:
+            return None
+        delivered: dict[str, dict[str, Any] | None] = {}
+        for row in rows:
+            if row["reason"] == "source_proven_no_trade":
+                delivered[row["member_key"]] = None
+                continue
+            if row["body"] is None or checksum(bytes(row["body"])) != row["body_sha256"]:
+                continue
+            requests = json.loads(bytes(row["body"]))
+            data = requests[0]["payload"]["data"] if requests else []
+            if len(data) == 1:
+                delivered[row["member_key"]] = dict(data[0])
+        return delivered
+
     def prepared(self, key: str) -> bytes | None:
         with self.connection() as db:
             row = db.execute(

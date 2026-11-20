@@ -2400,6 +2400,7 @@ class FullMarketRuntime:
             rate_limited=self._rate_limited,
             snapshot=self._snapshot,
             cohort=cohort,
+            delivered=lambda other: self.state.delivered_rows(self.provider, dataset, other),
         )
 
     @_governed
