@@ -1688,6 +1688,13 @@ class FullMarketRuntime:
         self.last_batch = {"processed": 0, "reason": "scanned", "plan_id": plan["plan_id"]}
         self._timing = {"plan_id": plan["plan_id"], "since": self._batch_started, "members": 0}
         rpc_timing.drain()
+        if not drain_only and plan.get("parts"):
+            try:
+                self.adapter.round_started(
+                    self._acquisition_context(plan, plan["parts"][0], release, feed)
+                )
+            except Exception:
+                pass  # An adapter's own check never decides the round.
         try:
             return self._deliver_members(
                 plan, release, feed, drain_only=drain_only, drain_keys=drain_keys
@@ -2401,6 +2408,9 @@ class FullMarketRuntime:
             snapshot=self._snapshot,
             cohort=cohort,
             delivered=lambda other: self.state.delivered_rows(self.provider, dataset, other),
+            earlier_plan_date=lambda: self.state.latest_plan_date_before(
+                self.provider, dataset, day
+            ),
         )
 
     @_governed

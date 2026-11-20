@@ -787,6 +787,14 @@ class FullMarketState:
             "last_batch": json.loads(batch[0]) if batch and batch[0] else None,
         }
 
+    def latest_plan_date_before(self, provider: str, dataset: str, trade_date: date) -> date | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT MAX(trade_date) FROM full_plan WHERE provider=? AND dataset=? AND trade_date<?",
+                (provider, dataset, trade_date.isoformat()),
+            ).fetchone()
+        return date.fromisoformat(row[0]) if row and row[0] else None
+
     def delivered_rows(
         self, provider: str, dataset: str, trade_date: date
     ) -> dict[str, dict[str, Any] | None] | None:

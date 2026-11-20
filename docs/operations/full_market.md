@@ -1086,6 +1086,22 @@ FinLab 的回覆分不出來，所以由 Source 對照同一個 provider 同一�
 - 已知的誤判風險：真的有整張成交、全天只有一個價格、又剛好等於前一日收盤的標的，如果它的分區在判定當下還沒產生，會被記為無成交。這種標的每天約 1–12 檔，但它們都有分區，兩天的實測中沒有遇到分區晚到。
 - FinLab 的 manifest 把該日列為休市時不適用，照舊回報 `blocked`，這是日曆不一致，要人工處理。
 
+**隔天回查**：無成交一旦記錄就不能修改，Fetcher 也不會再抓那個成員。為了發現「分區只是晚到、卻被記成無成交」，
+每條盤中 feed 每天第一輪開始時，會對前一個交易日記為無成交的成員（不論依據是 FinLab 的 `no_trades`、
+`daily_no_data` 或 `carried_close`）再問一次 FinLab 的 manifest：只問有沒有分區，不下載、不計配額，最多 100 檔。
+結果輸出一行 `{"finlab_no_trade_recheck": {...}}`：
+
+| 欄位 | 意思 |
+| --- | --- |
+| `trade_date` | 被回查的前一個交易日 |
+| `no_trade_members`、`checked` | 前一交易日記為無成交的檔數，與實際回查的檔數 |
+| `unanswered` | 分區還在產生中，或 FinLab 回查失敗（遇到失敗就停止當天的回查），沒有確定答案的檔數 |
+| `now_published`、`symbols` | 現在已經有分區的檔數，與前 20 個代號 |
+
+- `now_published` 大於 0 時另外輸出一行 `{"finlab_no_trade_partition_found": {...}}`，內容相同，給 log 告警使用（CloudWatch 告警規則尚未設定）。這些成員要人工回補。
+- 只輸出 log，不改任何已交付的結果；回查失敗或 control 停止時就不輸出，不影響這一輪。
+- 前一交易日的計劃取自 Fetcher 本機的 checkpoint（工作結束後保留 7 天），不在本機時不回查。
+
 ## 設定與啟動
 
 Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布 baseline 後才人工啟動；部署本身不
