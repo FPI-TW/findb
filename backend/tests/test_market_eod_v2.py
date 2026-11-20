@@ -1,6 +1,7 @@
 """v2 isolates relational OHLC failures without relaxing the ingress shape."""
 
 from copy import deepcopy
+from decimal import Decimal
 from itertools import product
 from uuid import UUID
 
@@ -8,12 +9,14 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.models.canonical import Instrument, InstrumentStats, MarketDataEOD
 from app.models.raw import RawMarketPayload
-from app.models.registry import DeliveryMemberEvidence, DQIssue, IngestionRun
+from app.models.registry import DatasetRegistry, DeliveryMemberEvidence, DQIssue, IngestionRun
 from app.schemas.ingress import MarketEODRow, MarketEODRowV2
 from app.services.ingress_contracts import get_contract_json_schema, validate_ingress_request
 from app.services.normalize.contracts import MarketEODV2ContractNormalizer
+from app.services.source_clients import create_source_client
 from tests.test_canonical_ingest_api import (
     _canonical_request,
     _dataset_config,
@@ -46,6 +49,35 @@ def test_v2_nullable_ohlc_dq_matches_v1_relational_validation(open_, high, low):
         assert all(issue.raw_data["source_symbol"] == "J3TRKQ-L" for issue in errors)
     else:
         assert not errors
+
+
+@pytest.mark.parametrize(
+    ("open_", "high", "low", "close", "severity"),
+    [
+        # HKEX's official close outside the traded range, as 00026 on 2026-11-20.
+        ("56.0", "56.0", "56.0", "56.6", "warning"),
+        ("0.525", "0.525", "0.525", "0.515", "warning"),
+        # FactSet's open above the high, as 02315 on 2026-11-20.
+        ("36.9", "35.4", "33.96", "34.46", "warning"),
+        # A high below the low is contradictory in every market.
+        ("1.0", "0.9", "1.1", "1.0", "error"),
+    ],
+)
+@pytest.mark.parametrize("market", ["HK", "TW"])
+def test_v2_hk_open_or_close_outside_range_is_a_warning(open_, high, low, close, severity, market):
+    config = _dataset_config()
+    config["defaults"]["market"] = market
+    normalizer = MarketEODV2ContractNormalizer(None, config)
+    row = {"symbol": "00026", "trade_date": "2026-11-20", "open": open_, "high": high}
+    row.update(low=low, close=close)
+    record = normalizer.map_fields({"data": [row]})[0]
+    issues = [
+        issue
+        for issue in normalizer.dq_validator.validate_eod(record)
+        if issue.issue_type in {"OHLC_HIGH_CHECK", "OHLC_LOW_CHECK"}
+    ]
+    assert issues
+    assert {issue.severity for issue in issues} == {severity if market == "HK" else "error"}
 
 
 @pytest.mark.parametrize(
@@ -182,3 +214,64 @@ async def test_v2_dq_preserves_raw_and_existing_prices_without_false_evidence(
         )
         == evidence
     )
+
+
+@pytest.mark.asyncio
+async def test_v2_hk_close_outside_range_is_written_with_warning_evidence(
+    owned_client, test_session, test_engine
+):
+    config = _dataset_config()
+    config["accepted_schema_versions"] = [1, 2]
+    config["defaults"].update(market="HK", currency="HKD")
+    config["allowed_sources"] = ["factset"]
+    test_session.add(
+        DatasetRegistry(
+            dataset_key="hk_equity_eod",
+            name="HK Equity EOD",
+            asset_class="equity",
+            market="HK",
+            frequency="daily",
+            is_active=True,
+            config=config,
+        )
+    )
+    _, api_key = await create_source_client(
+        test_session,
+        name="hk-source-client",
+        owner="tests",
+        source_name="factset",
+        allowed_datasets=["hk_equity_eod"],
+        rate_limit_requests=100,
+        rate_limit_window=60,
+        commit=False,
+    )
+    await test_session.commit()
+    source_headers = {get_settings().API_KEY_HEADER: api_key}
+    value = _canonical_request(idempotency_key="v2-hk-nominal-close")
+    value.update(dataset_key="hk_equity_eod", schema_version=2, source="factset")
+    row = value["payload"]["data"][0]
+    row.update(symbol="00026", source_symbol="JVJGQ4-L", currency="HKD", name=None)
+    row.update(open="56.0", high="56.0", low="56.0", close="56.6", volume=1601)
+    accepted = await owned_client.post("/api/v1/source/ingest", headers=source_headers, json=value)
+    assert accepted.status_code == 202, accepted.text
+    run_id = UUID(accepted.json()["run_id"])
+    await _execute_run(test_session, test_engine, run_id)
+
+    run = await test_session.get(IngestionRun, run_id)
+    assert (run.status, run.success_records, run.failed_records) == ("completed", 1, 0)
+    issues = list(
+        await test_session.scalars(
+            select(DQIssue).where(DQIssue.run_id == run_id, DQIssue.issue_type.like("OHLC_%"))
+        )
+    )
+    assert [(issue.issue_type, issue.severity) for issue in issues] == [
+        ("OHLC_HIGH_CHECK", "warning")
+    ]
+    written = await test_session.scalar(select(MarketDataEOD).where(MarketDataEOD.run_id == run_id))
+    assert (written.high, written.close) == (Decimal("56.0"), Decimal("56.6"))
+    evidence = set(
+        await test_session.scalars(
+            select(DeliveryMemberEvidence.member_key).where(DeliveryMemberEvidence.run_id == run_id)
+        )
+    )
+    assert evidence == {"00026"}

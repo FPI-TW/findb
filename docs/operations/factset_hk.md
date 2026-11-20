@@ -75,7 +75,9 @@ timeout 必須 terminate／kill／reap 後才能釋放 owner。
 
 ## 資料錯誤、結算與修補
 
-輸出 `market_eod.v2`：僅 OHLC 大小關係移至逐列 DQ，其餘入口限制保持。
+輸出 `market_eod.v2`：僅 OHLC 大小關係移至逐列 DQ，其餘入口限制保持。港股開盤或收盤落在
+最高、最低之外只記 warning 並照常寫入，最高低於最低仍擋下；原因見
+[`market_eod.v2`](../architecture/ingress_contracts.md#market_eodv2)。
 Native bytes 先持久保存，再逐一處理成員；結構錯誤與缺列保留 raw 證據並繼續其他成員。
 缺列是 missing，不是 no_data；目前來源沒有可用的每日停牌／無交易證據，adapter 不造 no_data。
 

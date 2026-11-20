@@ -27,11 +27,11 @@ from app.utils import utc_now, uuid7
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-async def _create_instrument(session: AsyncSession) -> Instrument:
+async def _create_instrument(session: AsyncSession, market: str = "US") -> Instrument:
     instrument = Instrument(
         instrument_id=uuid7(),
         asset_class="equity",
-        market="US",
+        market=market,
         symbol="AAPL",
         status="active",
         created_at=utc_now(),
@@ -546,6 +546,25 @@ class TestPatchEOD:
 
         await test_session.refresh(eod)
         assert eod.high == Decimal("155.00")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("high", "status"), [("152.00", 200), ("140.00", 400)])
+    async def test_patch_hk_eod_allows_close_outside_range_but_not_high_below_low(
+        self, client: AsyncClient, test_session: AsyncSession, admin_headers: dict, high, status
+    ):
+        instrument = await _create_instrument(test_session, market="HK")
+        eod = await _create_eod(test_session, instrument.instrument_id)
+        await test_session.commit()
+
+        response = await client.patch(
+            f"/api/v1/admin/eod/{instrument.instrument_id}/2025-01-02",
+            headers=admin_headers,
+            json={"correction_reason": "HKEX official high", "high": high},
+        )
+        assert response.status_code == status, response.text
+
+        await test_session.refresh(eod)
+        assert eod.high == Decimal(high if status == 200 else "155.00")
 
     @pytest.mark.asyncio
     async def test_patch_eod_creates_correction_audit_row(

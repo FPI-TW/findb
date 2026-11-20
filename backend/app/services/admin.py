@@ -15,11 +15,17 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.canonical import MANUAL_CORRECTION_PRIORITY, InstrumentStats, MarketDataEOD
+from app.models.canonical import (
+    MANUAL_CORRECTION_PRIORITY,
+    Instrument,
+    InstrumentStats,
+    MarketDataEOD,
+)
 from app.models.correction import CanonicalCorrection
 from app.models.raw import RawMarketPayload
 from app.models.registry import DQIssue, IngestionRun
 from app.schemas.admin import PatchEODRequest, ResolveDQIssueRequest
+from app.services.ohlc_range import ohlc_range_severity
 from app.utils import utc_now, uuid7
 
 
@@ -152,15 +158,16 @@ def _values_equal(a: Any, b: Any) -> bool:
     return a == b
 
 
-def _validate_blocking_dq_rules(eod: MarketDataEOD) -> None:
+def _validate_blocking_dq_rules(eod: MarketDataEOD, market: str | None) -> None:
     """Apply blocking EOD DQ rules after patch values are merged."""
     blocking_messages: list[str] = []
-    if eod.high is not None and eod.open is not None and eod.close is not None:
+    range_blocks = ohlc_range_severity(market, eod.high, eod.low) == "error"
+    if range_blocks and eod.high is not None and eod.open is not None and eod.close is not None:
         max_oc = max(eod.open, eod.close)
         if eod.high < max_oc:
             blocking_messages.append(f"High ({eod.high}) is less than max(open, close) ({max_oc})")
 
-    if eod.low is not None and eod.open is not None and eod.close is not None:
+    if range_blocks and eod.low is not None and eod.open is not None and eod.close is not None:
         min_oc = min(eod.open, eod.close)
         if eod.low > min_oc:
             blocking_messages.append(f"Low ({eod.low}) is greater than min(open, close) ({min_oc})")
@@ -209,6 +216,10 @@ async def patch_eod_record(
             f"EOD record not found for instrument {instrument_id} on {trade_date}"
         )
 
+    # Read before the patch is applied: a query would autoflush the unvalidated values.
+    market = await db.scalar(
+        select(Instrument.market).where(Instrument.instrument_id == instrument_id)
+    )
     changed_fields = patch.model_fields_set & _CORRECTABLE_EOD_FIELDS
     if not changed_fields:
         raise NoChangesError("No OHLCV fields provided in the patch request")
@@ -224,7 +235,7 @@ async def patch_eod_record(
             "No changes detected — submitted values are identical to current values"
         )
 
-    _validate_blocking_dq_rules(eod)
+    _validate_blocking_dq_rules(eod, market)
     # The corrected row now outranks every ingest; only another correction changes it.
     eod.source_priority = MANUAL_CORRECTION_PRIORITY
 

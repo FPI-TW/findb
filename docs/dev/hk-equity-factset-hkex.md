@@ -113,7 +113,9 @@
   batch 帶 `source_raw_ref`、`source_raw_sha256`、報表的 `Last-Modified` 與 ETag。
 - 新 canonical 表、歸檔索引表、normalizer、上述欄位層修正、DQ。DQ 至少包括：
   - 成交金額 ÷ 成交股數必須落在當日最低與最高之間（同時驗證解析是否正確）。
-  - 收盤價落在最低與最高之間；成交股數為 0 時不得有成交金額。
+  - 成交股數為 0 時不得有成交金額。
+  - 不檢查收盤價是否落在最低與最高之間：HKEX 的收盤價常不是成交價，每天約 3.4% 的有成交港股落在範圍外。
+    `market_data_eod` 的港股列同樣只記 warning（見 [`market_eod.v2`](../architecture/ingress_contracts.md#market_eodv2)）。
 - Catalog 新增 provider `hkex` 與 feed；`calendar_market` 為 HK。
   - 排程：香港時間 21:05 起（報表約 21:00 才能下載，見「發布時間」），404 視為尚未發布並重試到當晚。
   - 完成期限固定為排程加 12 小時（`backend/app/provider_catalog.py` 的 `COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`），
