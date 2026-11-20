@@ -7,6 +7,7 @@ import io
 import json
 import textwrap
 import traceback
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -548,6 +549,8 @@ def test_the_gateway_call_returns_the_partition_and_accounts_the_provider_bytes(
         "provider_symbol": "2330",
         "symbol": "2330",
         "trade_date": "2026-11-13",
+        # A delivery downloads the partition; only a recheck asks for the manifest alone.
+        "manifest_only": False,
     }
     assert b"provider file" not in repr(partition).encode()
 
@@ -974,3 +977,164 @@ def test_only_an_exact_refusal_leaves_a_no_record_claim_retryable(status, body, 
             )
 
     assert refused.value.code == code
+
+
+def test_a_manifest_only_question_never_downloads(tmp_path, monkeypatch) -> None:
+    raw = provider_file("bar_1m")
+    replies = _published(tmp_path, "bar_1m", raw)
+    # No download reply at all: asking for one would fail the call.
+    _sdk(tmp_path, monkeypatch, {"manifest": replies["manifest"]})
+
+    status, manifest, rows, original, mapped = supervised_call(
+        "finlab.intraday", _payload(manifest_only=True), timeout=30
+    )
+
+    assert (status, rows, original, mapped) == ("ready", 3, b"", b"")
+    assert manifest["sha256"] == hashlib.sha256(raw).hexdigest()
+
+
+EARLIER = date(2026, 11, 12)
+COHORT = [
+    {"member_key": symbol, "symbol": symbol, "provider_symbol": symbol, "mapping_status": "mapped"}
+    for symbol in ("2330", "1538", "1589", "6488")
+]
+# The previous trade date: 2330 delivered, the other three settled as no trade.
+DELIVERED = {"2330": {"close": "1000"}, "1538": None, "1589": None, "6488": None}
+
+
+def _recheck(
+    monkeypatch, answers, *, dataset="tw_equity_bar_1m", delivered=DELIVERED, earlier=EARLIER
+):
+    calls: list[dict[str, Any]] = []
+
+    def fetch(gateway, **arguments):
+        calls.append(arguments)
+        answer = answers[arguments["provider_symbol"]]
+        if isinstance(answer, BaseException):
+            raise answer
+        return IntradayPartition(answer, {"date": EARLIER.isoformat(), "status": answer})
+
+    monkeypatch.setattr(adapter_module, "fetch_partition", fetch)
+    adapter = FinLabAdapter()
+    adapter.gateway = lambda observe: object()  # type: ignore[method-assign]
+    context, _ = _context(dataset)
+    context = replace(
+        context,
+        cohort=COHORT,
+        delivered=lambda day: delivered if day == earlier else None,
+        earlier_plan_date=lambda: earlier,
+    )
+    return adapter, context, calls
+
+
+def _lines(capsys) -> dict[str, dict]:
+    return {
+        key: value
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("{")
+        for key, value in json.loads(line).items()
+    }
+
+
+def test_a_previous_no_trade_member_with_a_partition_now_raises_an_alert(
+    monkeypatch, capsys
+) -> None:
+    adapter, context, calls = _recheck(
+        monkeypatch, {"1538": "ready", "1589": "absent", "6488": "no_trades"}
+    )
+
+    adapter.round_started(context)
+
+    # Only the no-trade members of the previous date, by manifest only.
+    assert [(c["provider_symbol"], c["trade_date"], c["manifest_only"]) for c in calls] == [
+        ("1538", EARLIER, True),
+        ("1589", EARLIER, True),
+        ("6488", EARLIER, True),
+    ]
+    lines = _lines(capsys)
+    expected = {
+        "dataset": "tw_equity_bar_1m",
+        "trade_date": "2026-11-12",
+        "no_trade_members": 3,
+        "checked": 3,
+        "unanswered": 0,
+        "now_published": 1,
+        "symbols": ["1538"],
+    }
+    assert lines == {
+        "finlab_no_trade_recheck": expected,
+        "finlab_no_trade_partition_found": expected,
+    }
+
+
+def test_no_partition_since_then_is_only_reported(monkeypatch, capsys) -> None:
+    adapter, context, _ = _recheck(
+        monkeypatch, {"1538": "absent", "1589": "absent", "6488": "no_trades"}
+    )
+
+    adapter.round_started(context)
+
+    lines = _lines(capsys)
+    assert lines["finlab_no_trade_recheck"]["now_published"] == 0
+    assert "finlab_no_trade_partition_found" not in lines
+
+
+def test_a_feed_day_is_rechecked_once_and_only_for_intraday_feeds(monkeypatch, capsys) -> None:
+    adapter, context, calls = _recheck(
+        monkeypatch, dict.fromkeys(("1538", "1589", "6488"), "absent")
+    )
+
+    adapter.round_started(context)
+    adapter.round_started(context)  # A no-data retry round of the same day.
+    assert len(calls) == 3
+
+    daily, eod_context, eod_calls = _recheck(monkeypatch, {}, dataset="tw_equity_eod")
+    daily.round_started(eod_context)
+    assert eod_calls == []
+
+
+@pytest.mark.parametrize(
+    ("earlier", "delivered"),
+    [(None, DELIVERED), (EARLIER, None)],
+    ids=["no earlier plan", "earlier plan not held"],
+)
+def test_nothing_to_recheck_asks_nothing(monkeypatch, capsys, earlier, delivered) -> None:
+    adapter, context, calls = _recheck(monkeypatch, {}, delivered=delivered, earlier=earlier)
+    if earlier is None:
+        context = replace(context, earlier_plan_date=lambda: None)
+
+    adapter.round_started(context)
+
+    assert calls == [] and "finlab_no_trade_recheck" not in _lines(capsys)
+
+
+def test_a_failing_provider_stops_the_recheck_without_failing_the_round(
+    monkeypatch, capsys
+) -> None:
+    adapter, context, calls = _recheck(
+        monkeypatch,
+        {
+            "1538": FinLabIntradayNotReadyError("partition"),
+            "1589": FinLabOperationalError("x", "network"),
+            "6488": "ready",
+        },
+    )
+
+    adapter.round_started(context)
+
+    # Still being built counts as unanswered; a failing provider ends the questions.
+    assert [c["provider_symbol"] for c in calls] == ["1538", "1589"]
+    line = _lines(capsys)["finlab_no_trade_recheck"]
+    assert (line["unanswered"], line["now_published"]) == (3, 0)
+
+
+def test_a_stopped_control_ends_the_recheck_silently(monkeypatch, capsys) -> None:
+    from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
+
+    adapter, context, _ = _recheck(
+        monkeypatch, dict.fromkeys(("1538", "1589", "6488"), ProviderWorkAcquisitionStopped("x"))
+    )
+
+    adapter.round_started(context)  # Must not raise: the stop is a BaseException.
+
+    assert _lines(capsys) == {}

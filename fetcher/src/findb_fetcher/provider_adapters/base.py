@@ -100,6 +100,8 @@ class AcquisitionContext:
     # row, or to ``None`` for a source-proven no-trade member. ``None`` when that
     # plan is not held locally.
     delivered: Callable[[date], Mapping[str, Mapping[str, Any] | None] | None] | None = None
+    # The latest earlier trade date of the dataset with a locally held plan, if any.
+    earlier_plan_date: Callable[[], date | None] | None = None
 
     @property
     def max_response_bytes(self) -> int:
@@ -240,6 +242,12 @@ class ProviderAdapter:
 
     def reset(self) -> None:
         """Drop per-round native caches; called whenever ownership may change."""
+
+    def round_started(self, context: AcquisitionContext) -> None:
+        """A daily round of a frozen plan begins, before any member; the owner holds it.
+
+        Never part of the round's outcome: an adapter catches its own failures.
+        """
 
     def round_finished(self, dataset_key: str) -> None:
         """A daily round of ``dataset_key`` is about to settle; the owner still holds it."""

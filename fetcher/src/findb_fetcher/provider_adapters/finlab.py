@@ -38,6 +38,7 @@ from findb_fetcher.provider_adapters.base import (
     UniverseContext,
     UniverseSnapshot,
 )
+from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
 from findb_fetcher.providers.finlab import (
     FINLAB_FIELD_DATASETS,
     FINLAB_SDK_VERSION,
@@ -82,6 +83,9 @@ FINLAB_OUTAGE_RETRY_SECONDS = 4 * 3600
 FINLAB_OUTAGE_DELAY_SECONDS = 5 * 60
 # The daily quota does not come back within minutes.
 FINLAB_QUOTA_DELAY_SECONDS = 30 * 60
+# At most this many no-trade members of the previous trade date are asked about
+# again per intraday feed and day; each question is one manifest request.
+FINLAB_NO_TRADE_RECHECK_LIMIT = 100
 # Failure classes no retry can clear: the work ends at once. The value is the
 # maintenance work's failure code.
 _FINLAB_PERMANENT = {
@@ -205,9 +209,77 @@ class FinLabAdapter(ProviderAdapter):
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
         self.layouts: dict[tuple[Any, Any, str], list[dict[str, Any]]] = {}
+        # (dataset, trade date) whose previous day was rechecked by this process.
+        self.rechecked: set[tuple[str, date]] = set()
 
     def reset(self) -> None:
         self.bundles.clear()
+
+    def round_started(self, context: AcquisitionContext) -> None:
+        """Ask again about the previous trade date's no-trade members of an intraday feed.
+
+        A member accepted as no trade because FinLab held no partition could have had
+        one that was only late. A day later FinLab would have published it, so its
+        manifest is asked again: manifest only, nothing is downloaded or billed. The
+        answer is a log line; nothing delivered changes.
+        """
+        dataset = context.dataset_key
+        if dataset not in INTRADAY_DATASETS or (dataset, context.trade_date) in self.rechecked:
+            return
+        self.rechecked.add((dataset, context.trade_date))
+        try:
+            earlier = context.earlier_plan_date() if context.earlier_plan_date else None
+            delivered = context.delivered(earlier) if earlier and context.delivered else None
+            if earlier is None or delivered is None:
+                return
+            symbols = {
+                str(item.get("member_key") or item["symbol"]): str(item["provider_symbol"])
+                for item in context.cohort or ()
+                if item.get("mapping_status") == "mapped"
+            }
+            keys = sorted(key for key, row in delivered.items() if row is None and key in symbols)
+            gateway = self.gateway(context.observe_response)
+            published: list[str] = []
+            unanswered = 0
+            for position, key in enumerate(keys[:FINLAB_NO_TRADE_RECHECK_LIMIT]):
+                try:
+                    partition = fetch_partition(
+                        gateway,
+                        record_kind=INTRADAY_DATASETS[dataset][0],
+                        provider_symbol=symbols[key],
+                        symbol=key,
+                        trade_date=earlier,
+                        layout=(),
+                        manifest_only=True,
+                    )
+                except FinLabIntradayNotReadyError:
+                    unanswered += 1  # Listed but still being built: not a definite answer.
+                    continue
+                except FinLabSdkError:
+                    # The provider or the account is failing; stop asking for today.
+                    unanswered += len(keys[:FINLAB_NO_TRADE_RECHECK_LIMIT]) - position
+                    break
+                if partition.status == "ready":
+                    published.append(key)
+        except ProviderWorkAcquisitionStopped:
+            return  # The control stopped; this is no reason to hold the round.
+        except Exception:
+            return
+        line = {
+            "dataset": dataset,
+            "trade_date": earlier.isoformat(),
+            "no_trade_members": len(keys),
+            "checked": min(len(keys), FINLAB_NO_TRADE_RECHECK_LIMIT),
+            "unanswered": unanswered,
+            "now_published": len(published),
+            "symbols": published[:20],
+        }
+        print(json.dumps({"finlab_no_trade_recheck": line}, separators=(",", ":")), flush=True)
+        if published:
+            print(
+                json.dumps({"finlab_no_trade_partition_found": line}, separators=(",", ":")),
+                flush=True,
+            )
 
     def round_finished(self, dataset_key: str) -> None:
         # Intraday partitions are no table fetch, so no reply reports the account's

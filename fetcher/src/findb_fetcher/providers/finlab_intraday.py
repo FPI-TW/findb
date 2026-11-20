@@ -113,8 +113,13 @@ def fetch_partition(
     symbol: str,
     trade_date: date,
     layout: Sequence[Mapping[str, Any]],
+    manifest_only: bool = False,
 ) -> IntradayPartition:
-    """Fetch one partition through the supervised worker, governed like a table get."""
+    """Fetch one partition through the supervised worker, governed like a table get.
+
+    With ``manifest_only`` the worker only asks whether the partition exists: a
+    ready one comes back without its files, and nothing is downloaded or billed.
+    """
     family = FAMILIES.get(record_kind)
     if (
         family is None
@@ -145,6 +150,7 @@ def fetch_partition(
                         "symbol": symbol,
                         "trade_date": trade_date.isoformat(),
                         "layout": [dict(column) for column in layout],
+                        "manifest_only": manifest_only,
                     },
                     checkpoint=operation.dispatch_checkpoint,
                     timeout=FINLAB_INTRADAY_TIMEOUT_SECONDS,
@@ -217,6 +223,8 @@ def native_intraday(
             return "no_trades", evidence, 0, b"", b""
         if part.get("status") != "ready" or not _described(part):
             raise FinLabNativeError("not_ready_partition")
+        if payload.get("manifest_only"):
+            return "ready", evidence, int(part["rows"]), b"", b""
         signed = _signed_request(
             seams,
             {
