@@ -1725,6 +1725,11 @@ candidate deployment 才從退役前版本補做退役。正式 image 的 contai
    再依 accepted digest promotion 流程另行安排 production。由 Owner 恢復原先運行項目，
    不自動啟用 stopped controls。PR5 後 Backend rollback 下限是支援獨立 deadline timezone
    的版本；migration downgrade 明確拒絕，資料修復採 forward fix。
+6. `b3d5f7a9c1e2` 將 FactSet 港股排程由 18:30 改為 20:00（期限隔天 08:00），並取代
+   `e9f4a1c6b3d5` 成為 preflight 與 seed 使用的凍結 schedule inspection。它只接受港股 18:30 為已知舊值，
+   其餘 feeds 與 controls 須已是 `e9f4a1c6b3d5` 的目標值。Downgrade 只在港股仍是 20:00 時改回 18:30。
+   套用後若要 rollback 到更早的 Backend image，須先 `alembic downgrade a9c1e3f5b7d0`，否則舊 image 的
+   preflight 會把 20:00 判為 `unknown_difference` 而中止部署。
 
 ### Staging 驗收清單
 

@@ -33,7 +33,8 @@ release ID、members、parts 及 checksum 未變。單日重跑或本機 fixture
 自動 maintenance 由 running cycle 在 refresh due 時入列，controls stopped 時不保證每日刷新；
 需明確執行上述維護入口。既有發布差異門檻與人工例外規則維持。
 
-Daily 新 I/O 僅於香港時間 18:30（含）至 23:00（不含）進行；已準備好的交付仍須排空。
+Daily 排程為香港時間 20:00，與 HKEX 每日報表同一時段；FactSet 不另設抓取窗口，完成期限沿用全
+provider 共用的排程後 12 小時（隔天 08:00）。
 Daily plan 凍結完整 published cohort。`FACTSET_SKIP_NON_TRADING_DAYS=true` 是預設值；
 歷史回補略過休市日。缺少已發布日曆時沿用既有週一至週五規則。
 
@@ -115,17 +116,21 @@ normalization queue 尋找原因。
 `fetched_at`、列數與 settlement raw hash，並核對 operation budget、receipts 及 canonical
 寫入數。診斷輸出只需日期、計數、reason、hash 與識別碼，避免匯出完整原始 response。
 
-Daily work 在 immutable `work.created_at + completion_window_seconds` 截止前遇到
-`no_source_row` 時，只將該次空缺保存為 observation，不保存可 replay 的成功 snapshot；work
+**交易日是否已發布**：frozen listing 中至少 90%（`PUBLISHED_PERCENT`）有價格列，才視為該日已發布。
+FactSet 一次整批載入一個市場日，停牌的 listing 不會有列；港股每天約 120 個已對應 listing 停牌
+（約 4%）。若要求全部到齊，每天都要等滿重試期限。已發布的 snapshot 立即成為 authoritative，
+沒有列的成員記為 `missing`／`no_source_row`，daily work 結算為 `partial`。
+
+Daily work 在該交易日排程時刻（20:00）加 `completion_window_seconds` 的截止前，只要該日尚未發布，
+就只將該次結果保存為 observation，不保存可 replay 的成功 snapshot；work
 安全 close／drain 後排到 provider FIFO 尾端，最長 15 分鐘後重新查詢來源。這類等待不消耗
-local `FULL_WORK_MAX_ATTEMPTS`，但每次查詢及其 hash、計數與時間仍保留稽核。截止後仍缺列
-才保存 authoritative snapshot，將 local member 標示 `manual`／`missing`，並把 daily work
+local `FULL_WORK_MAX_ATTEMPTS`，但每次查詢及其 hash、計數與時間仍保留稽核。截止後仍未發布
+才保存 authoritative snapshot，將缺列的 local member 標示 `manual`／`missing`，並把 daily work
 結算為 terminal `partial`。Historical work 不使用 daily publication window，缺列仍直接結算
 `partial`，後續由新的歷史回補 work 取得新證據。
 
-Provider query 與 EOD cohort 兩層 durable response 都只會將涵蓋完整 frozen listing scope 的
-結果保存為 replay authority；任一層都不得把 `no_source_row` observation 升級成可 replay
-snapshot。後續 publication retry 因此一定重新進入來源查詢，而不是重播首次缺列結果。
+Provider query 與 EOD cohort 兩層 durable response 都只會將達到上述發布門檻的結果保存為
+replay authority；任一層都不得把未達門檻的 observation 升級成可 replay snapshot。後續 publication retry 因此一定重新進入來源查詢，而不是重播首次缺列結果。
 
 每次 daily publication retry 都會在任何新 FactSet query 前重新讀取目前 published calendar，但不改寫建立 work 時凍結的
 `planned` decision。若 frozen decision 之後的新 published revision 已將該日標為休市，work
@@ -136,16 +141,16 @@ snapshot。後續 publication retry 因此一定重新進入來源查詢，而�
 
 | 情境 | 現行處理 |
 | --- | --- |
-| Daily 來源成功回傳 `no_source_row`，且仍在 publication window | 保存 observation、不凍結空 snapshot；排至 FIFO 尾端，最長 15 分鐘後重新查詢，不消耗 local work attempt |
-| Daily `no_source_row` 超過 publication window；historical `no_source_row` | 保存 authoritative snapshot 與逐成員缺漏證據，結算 `partial` |
+| Daily 來源成功回傳，但有列的 listing 未達 90%，且仍在 publication window | 保存 observation、不凍結空 snapshot；排至 FIFO 尾端，最長 15 分鐘後重新查詢，不消耗 local work attempt |
+| Daily 已達 90% 時的其餘缺列；daily 超過 publication window 仍未達 90%；historical `no_source_row` | 保存 authoritative snapshot 與逐成員缺漏證據，結算 `partial` |
 | Retry 時 frozen decision 之後的新 published revision 已標示休市 | `CALENDAR_DECISION_REPAIR_REQUIRED` failed；不改寫 frozen decision，依人工休市更正流程處理 |
 | mapping gap、永久資料結構／DQ 問題 | 逐成員保留錯誤證據，結算 `partial`；不當成來源尚未發布 |
-| 暫時連線／MySQL unavailable、可重試 raw storage 或 Source 故障 | close／drain 後排至 provider FIFO 尾端，預設至少 60 秒，另遵守 cooldown 與抓取窗口 |
+| 暫時連線／MySQL unavailable、可重試 raw storage 或 Source 故障 | close／drain 後排至 provider FIFO 尾端，預設至少 60 秒，另遵守 cooldown |
 | 原始 snapshot、raw persistence、各成員 receipt 操作 | 各自最多 3 次總 attempts，跨 FIFO rounds 保留預算；未 dispatch 的合法等待可退還預留次數 |
 | Source HTTP transport／408／429／502／503／504 | 預設每次呼叫最多 3 次總 attempts，退避 1、2 秒；有合法 `Retry-After` 時依其等待，預設上限 30 秒。其餘 5xx 由外層處理 FIFO retry |
 
 成功操作的回應會存入 work journal，後續相同 work 使用原 snapshot、prepared bytes 與
-receipts。唯一例外是 publication window 內的 daily `no_source_row`：只存 observation，retry
+receipts。唯一例外是 publication window 內尚未發布的 daily 查詢：只存 observation，retry
 會取得較新的來源 snapshot。Source 已接受後的 normalization retry 是另一層，只重跑既有 raw，
 不重新查詢 FactSet。
 
@@ -156,6 +161,12 @@ MySQL `information_schema.tables.UPDATE_TIME` 僅為整表最後異動 metadata�
 [MySQL TABLES 說明](https://dev.mysql.com/doc/mysql-infoschema-excerpt/8.0/en/information-schema-tables-table.html)。
 缺少逐列時間、載入稽核或可用 binlog 時，只能以先前缺列與首次確認有資料的觀測建立時間
 區間；確切更新時刻需來源端同步工作紀錄佐證。
+
+FactSet 來源庫有 loader 稽核表可用：`fds_FDS_COMMAND_HISTORY` 記每次 FDSLoader 執行的起訖時間，
+`fds_FDS_FILE_HISTORY` 記每個檔案的 bundle（亞太價格為 `fgp_global_prices_ap_v1`）、載入時間
+（UTC）與列數。2026-11-15 至 11-20 的紀錄中，loader 每天於香港時間 19:00、19:30、20:00、20:30
+與 09:00 各執行一次；平日 20:30 那批亞太價格約 24,700 列，週末為 0。稽核表沒有 listing 或交易日，
+只能推得批次時間，港股列實際落在哪一批須以逐次觀測確認。
 
 ## Backend-first 切換
 

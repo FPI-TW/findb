@@ -184,8 +184,8 @@ TAIFEX 首次日期在 plan／manifest 尚不存在時的 latest official 或 da
 也先停止 I/O、安全 close／tail retry；predispatch quota 不耗 failure budget，not-published 仍保留原
 `DATED_UNIVERSE_PENDING`。永久 HTTP auth／scope 或明確格式拒絕 failed/manual；未知 child／fence
 保持 recovery blocked。dated universe 的 Admin publication／threshold exception 不因 retry 自動批准。
-FinLab daily target-not-ready 與 FactSet daily `no_source_row` 在 immutable
-`work.created_at + completion_window_seconds` 前屬 publication wait：安全 close／tail retry，最長
+FinLab daily target-not-ready 與 FactSet daily 尚未發布在該交易日排程時刻加
+`completion_window_seconds` 前屬 publication wait：安全 close／tail retry，最長
 15 分鐘後重新取得來源，並退還 local work attempt reservation。FactSet 此時只保存 observation，
 不保存可 replay 的空 snapshot；historical 及超過 deadline 的缺列仍依 terminal partial／manual
 處理。每次 retry 在任何新 provider I/O 前，以 owner fence 重新讀取目前 published calendar；若 frozen planned decision

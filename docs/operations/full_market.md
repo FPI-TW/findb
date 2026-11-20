@@ -229,8 +229,10 @@ Migration `91a4c7e2d630` 保留既有計畫及歷史項目，用升級當時有�
 ### 來源尚未發布的等待與休市判定
 
 FinLab daily 回傳 target-not-ready，或 FactSet daily 成功查詢但出現 `no_source_row` 時，以
-provider work 建立時間加上 feed 的 `publication_retry_window_seconds`（catalog 與 execution-config 的欄位名稱；
-Fetcher runtime 內部的 feed 欄位是 `completion_window_seconds`）作為 immutable publication deadline。
+該交易日的排程時刻（work 凍結的 feed 的 `scheduled_time`、`source_timezone` 與 `target_date_lag_days`）加上
+feed 的 `publication_retry_window_seconds`（catalog 與 execution-config 的欄位名稱；Fetcher runtime 內部的 feed
+欄位是 `completion_window_seconds`）作為 immutable publication deadline。不從 work 建立時間起算：停止後補抓的
+過去日期，排程窗口早已過去，缺列即為最終結果，不會再等一整個窗口。
 截止前安全 close／drain 並排到 provider FIFO 尾端，單次最長等待 15 分鐘；這種等待不消耗
 local `FULL_WORK_MAX_ATTEMPTS`。FactSet 只保存缺列 observation，不將空結果保存成可 replay 的
 authoritative snapshot，因此下輪會重新查詢。FinLab 與 FactSet 的其他永久格式、mapping、DQ、

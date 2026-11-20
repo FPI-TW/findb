@@ -1,11 +1,13 @@
 """Legacy planned daily work never acquires a date the published calendar now closes."""
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID
 
 import httpx
 import pytest
 
+from execution_config_support import scheduled_at
 from findb_fetcher import provider_work
 from findb_fetcher.full_market_runtime import CalendarDecisionRepairRequiredError
 from test_full_market import _member, _plan, _runtime
@@ -260,7 +262,8 @@ def test_factset_first_snapshot_checks_calendar_only_for_daily_work(
     owner = _owner(events, kind=kind, repair_required=repair_required)
     owner.freeze = lambda manifest: manifest
     owner.journal = WorkJournal(tmp_path / "provider-work.sqlite3", "work")
-    owner.work["created_at"] = "2026-10-01T00:00:00+00:00"
+    # The 2026-10-01 publication window closed long ago.
+    feed.update(scheduled_at(datetime(2026, 10, 1, tzinfo=timezone.utc), plan["trade_date"]))
 
     class Snapshot:
         def __init__(self, *args, **kwargs):

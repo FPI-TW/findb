@@ -23,3 +23,15 @@ def publication(provider="twelve_data", *, profile="full_market", environment=No
     for feed in body["feeds"]:
         feed.update(changes)
     return signed(body)
+
+
+def scheduled_at(when, trade_date):
+    """Feed clock fields whose publication window for ``trade_date`` opens at ``when`` (UTC)."""
+    from datetime import date, timezone
+
+    when = when.astimezone(timezone.utc)
+    return {
+        "source_timezone": "UTC",
+        "scheduled_time": when.time().isoformat(),
+        "target_date_lag_days": (when.date() - date.fromisoformat(str(trade_date))).days,
+    }

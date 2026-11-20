@@ -20,6 +20,8 @@ from findb_fetcher.provider_work import durable_response
 
 MAX_MEMBERS = 10000
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+# Percentage of frozen listings with rows at which a trade date counts as published.
+PUBLISHED_PERCENT = 90
 LISTING_ID = re.compile(r"^[A-Z0-9]{6}-L$")
 
 
@@ -114,14 +116,21 @@ def encode_native(rows: list[dict[str, Any]], *, scope: dict[str, Any]) -> bytes
 
 
 def price_scope_complete(native: object, listing_ids: tuple[str, ...]) -> bool:
-    """Return false only for a well-formed price snapshot missing requested listings."""
+    """Return false only for a well-formed price snapshot whose date is not yet published.
+
+    FactSet loads a market date in one batch and never writes rows for suspended
+    listings, so requiring every listing would wait out the whole window daily.
+    The date counts as published once PUBLISHED_PERCENT of the listings have rows;
+    the rest settle as missing.
+    """
     if not isinstance(native, dict):
         return True
     rows = native.get("rows")
     if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
         return True
-    observed = {row.get("fsym_id") for row in rows}
-    return set(listing_ids) <= observed
+    requested = set(listing_ids)
+    observed = len(requested & {row.get("fsym_id") for row in rows})
+    return observed * 100 >= len(requested) * PUBLISHED_PERCENT
 
 
 def _encoded_price_scope_complete(raw: bytes, arguments: dict[str, Any]) -> bool:

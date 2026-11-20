@@ -218,3 +218,22 @@ def test_catalogue_uses_bounded_official_ticker_index_and_current_association(
         with pytest.raises(factset.FactSetConfigError):
             gateway.catalogue(invalid)
     assert len(calls) == 1
+
+
+def test_trade_date_is_published_once_ninety_percent_of_listings_have_rows():
+    listings = tuple(f"AAAAA{i}-L" for i in range(10))
+
+    def native(present):
+        return {"rows": [{"fsym_id": value} for value in listings[:present]]}
+
+    # Suspended listings never get rows; they settle as missing, not pending.
+    assert factset.price_scope_complete(native(9), listings)
+    assert factset.price_scope_complete(native(10), listings)
+    assert not factset.price_scope_complete(native(8), listings)
+    assert not factset.price_scope_complete(native(0), listings)
+    # Rows outside the frozen scope never count towards publication.
+    outside = {"rows": [*native(8)["rows"], {"fsym_id": "ZZZZZZ-L"}]}
+    assert not factset.price_scope_complete(outside, listings)
+    # Malformed responses stay authoritative format failures.
+    assert factset.price_scope_complete({"rows": "x"}, listings)
+    assert factset.price_scope_complete([], listings)

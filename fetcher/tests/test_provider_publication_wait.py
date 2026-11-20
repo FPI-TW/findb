@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from execution_config_support import scheduled_at
 from findb_fetcher.provider_wait import (
     CalendarDecisionRepairRequiredError,
     ProviderPublicationPendingError,
@@ -103,12 +104,13 @@ def test_factset_publication_retry_checks_calendar_before_provider_io(tmp_path) 
         ]
     }
     runtime.state.record_plan(plan, "factset")
+    # The publication window is still open: it opened at the scheduled start, now.
+    feed.update(scheduled_at(datetime.now(timezone.utc), plan["trade_date"]))
     calendar_requests: list[str] = []
     work = {
         "work_id": "daily-work",
         "kind": "daily",
         "trade_date": plan["trade_date"],
-        "created_at": datetime.now(timezone.utc).isoformat(),
         "attempt_number": 2,
         "manifest": None,
     }

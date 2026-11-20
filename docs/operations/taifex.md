@@ -25,7 +25,7 @@ EOD，一般（regular）與盤後（after_hours）分開保存；價差與 cont
 
 ## 運作與判定
 
-- 日常工作在 max(日曆收盤, 17:00 台北) 後才可領取。新計畫須使用同日期 published universe；
+- 日常與歷史工作在 max(日曆收盤, feed 排程時刻 17:00 台北) 後才可領取；所有 provider 共用這條規則。新計畫須使用同日期 published universe；
   Source 回傳 `taifex_dated_universe_required` 時，Fetcher 先讀 latest JSON，日期不符再下載五份
   分商品 CSV，raw-first 存 R2 後提交 universe。latest JSON 回應非 200（例如 403）時，該日常
   工作直接判定失敗，不改用 CSV；這是現行預期行為。

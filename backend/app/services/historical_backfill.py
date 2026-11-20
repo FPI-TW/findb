@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -35,6 +35,7 @@ from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
 from app.schemas.ingress import MarketEODIngressRequest, MarketEODIngressRequestV2
 from app.services.effective_calendar import effective_days, execution_policy, market_timezone
+from app.services.feed_schedule import data_ready_at
 from app.services.provider_metadata import provider_catalog
 from app.utils import utc_now, uuid7
 
@@ -276,13 +277,12 @@ def _session_closed(item: HistoricalBackfillItem, now: datetime) -> bool:
     if not isinstance(snapshot, dict) or snapshot.get("trade_date") != item.trade_date.isoformat():
         raise HistoricalBackfillError("historical calendar snapshot is invalid")
     try:
-        zone = ZoneInfo(snapshot["timezone"])
-        close = time.fromisoformat(snapshot["regular_close"])
+        ready = data_ready_at(
+            item.request.provider, item.request.dataset_key, item.trade_date, snapshot
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise HistoricalBackfillError("historical calendar snapshot is invalid") from exc
-    if item.request.provider == "taifex":
-        close = max(close, time(17))
-    return now.astimezone(zone) >= datetime.combine(item.trade_date, close, zone)
+    return now >= ready
 
 
 async def create_request(
@@ -455,9 +455,6 @@ async def create_request(
             continue
         snapshot = item.calendar_snapshot
         assert snapshot is not None
-        close = time.fromisoformat(snapshot["regular_close"])
-        if provider == "taifex":
-            close = max(close, time(17))
         await enqueue(
             db,
             provider=provider,
@@ -466,7 +463,7 @@ async def create_request(
             dataset_key=dataset_key,
             trade_date=item.trade_date,
             scope={"item_id": str(item.item_id), "request_id": str(row.request_id)},
-            not_before=datetime.combine(item.trade_date, close, ZoneInfo(snapshot["timezone"])),
+            not_before=data_ready_at(provider, dataset_key, item.trade_date, snapshot),
         )
     return row, False
 

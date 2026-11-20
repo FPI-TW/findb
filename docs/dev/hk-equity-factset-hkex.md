@@ -107,7 +107,8 @@
 - Catalog 新增 provider `hkex` 與 feed；`calendar_market` 為 HK。
   - 排程：香港時間 20:05 起，404 視為尚未發布並重試到當晚。
   - 完成期限固定為排程加 12 小時（`backend/app/provider_catalog.py` 的 `COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`），
-    也就是隔天 08:05。FactSet 港股維持 18:30 排程、隔天 06:30 期限。
+    也就是隔天 08:05。FactSet 港股排程於 2026-11-20 改為 20:00、隔天 08:00 期限，與 HKEX 同一時段；
+    FactSet 原有的 18:30–23:00 專屬窗口已移除，沿用全 provider 的期限規則。
   - 假日頁以「NO TRADING」作為 no_data 的 durable evidence。
 - Registry、control、Source credential 與 migration 的做法比照現有 provider。新增 control 時要一併更新部署前
   執行的凍結 schedule inspection（`scripts/preflight_catalog_schedule.py`），否則會判為 `unknown_difference`、
@@ -168,5 +169,6 @@ Owner 於 2026-11-19 確認長期歸檔。HKEX 兩個月後就刪除報表，Raw
 ## 待決事項
 
 - 欄位層修正的來源紀錄欄位、歸檔路徑與索引表。
-- FactSet 港股每日資料的可取得時間，以及是否需要調整 18:30 排程。
+- FactSet 港股每日資料的可取得時間：loader 稽核顯示亞太價格約在香港時間 20:30 整批入庫，2026-11-20
+  起逐次觀測確認（見 [FactSet runbook](../operations/factset_hk.md#重試層級與來源更新時間)）。
 - 港股的調整因子來源（FactSet 或 FMP），見 [還原價：調整因子表設計](price-adjustment-factors.md)。
