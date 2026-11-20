@@ -11,9 +11,12 @@ Unknown differences abort before any update. Downgrade restores 18:30 only when 
 this revision's target.
 """
 
+import functools
+import importlib.util
 import json
 from copy import deepcopy
 from datetime import time
+from pathlib import Path
 
 import sqlalchemy as sa
 from alembic import op
@@ -24,53 +27,22 @@ branch_labels = None
 depends_on = None
 
 # dataset: provider, timezone, target clock, known old (timezone, clock, lag, source)
-# states, bounded monitor clock and day offset. The Asia/Taipei states are the
-# e9f4a1c6b3d5 old defaults, still accepted by seed and registry reconciliation.
-# Slot, enabled, actions are not projected.
+# states beyond e9f4a1c6b3d5, bounded monitor clock and day offset. Older shapes
+# (pre-e9f4a1c6b3d5 Taipei clocks, the TW bootstrap policy) are projected by that
+# revision's own frozen rules first. Slot, enabled, actions are not projected.
 FEEDS = {
-    "us_equity_eod": (
-        "twelve_data",
-        "America/New_York",
-        "17:00:00",
-        (("Asia/Taipei", "08:15:00", 1, "twelve_data"),),
-        "09:15:00",
-        1,
-    ),
+    "us_equity_eod": ("twelve_data", "America/New_York", "17:00:00", (), "09:15:00", 1),
     "hk_equity_eod": (
         "factset",
         "Asia/Hong_Kong",
         "20:00:00",
-        (
-            ("Asia/Taipei", "14:30:00", 0, "twelve_data"),
-            ("Asia/Hong_Kong", "18:30:00", 0, "factset"),
-        ),
+        (("Asia/Hong_Kong", "18:30:00", 0, "factset"),),
         None,
         0,
     ),
-    "tw_equity_eod": (
-        "finlab",
-        "Asia/Taipei",
-        "18:00:00",
-        (("Asia/Taipei", "14:30:00", 0, "finlab"),),
-        "17:00:00",
-        0,
-    ),
-    "tw_etf_eod": (
-        "finlab",
-        "Asia/Taipei",
-        "18:00:00",
-        (("Asia/Taipei", "14:30:00", 0, "finlab"),),
-        None,
-        0,
-    ),
-    "tw_futures_eod": (
-        "taifex",
-        "Asia/Taipei",
-        "17:00:00",
-        (("Asia/Taipei", "14:30:00", 0, "taifex"),),
-        None,
-        0,
-    ),
+    "tw_equity_eod": ("finlab", "Asia/Taipei", "18:00:00", (), "17:00:00", 0),
+    "tw_etf_eod": ("finlab", "Asia/Taipei", "18:00:00", (), None, 0),
+    "tw_futures_eod": ("taifex", "Asia/Taipei", "17:00:00", (), None, 0),
 }
 # provider: timezone, target clock, known old (timezone, clock) states.
 CONTROLS = {
@@ -87,12 +59,28 @@ CONTROLS = {
 _PREVIOUS = {"hk_equity_eod": "18:30:00", "factset": "18:30:00"}
 
 
+@functools.cache
+def _previous_revision():
+    """The frozen e9f4a1c6b3d5 rules, loaded by path like the deploy preflight."""
+    path = Path(__file__).with_name("e9f4a1c6b3d5_catalog_schedule_projection.py")
+    spec = importlib.util.spec_from_file_location("catalog_schedule_projection", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def project_config(key: str, config: dict, *, reverse: bool = False) -> tuple[str, dict]:
     provider, zone, clock, olds, deadline, offset = FEEDS[key]
     known_old = [(z, c, lag, [source]) for z, c, lag, source in olds]
+    original = config
     if reverse:
         known_old = [(zone, clock, 0, [provider])] if key in _PREVIOUS else []
         clock = _PREVIOUS.get(key, clock)
+    else:
+        status, projected = _previous_revision().project_config(key, config)
+        if status == "known_old_default":
+            config = projected
     result = deepcopy(config)
     try:
         expectation = result["delivery_expectation"]
@@ -100,10 +88,10 @@ def project_config(key: str, config: dict, *, reverse: bool = False) -> tuple[st
         fields = ("timezone", "local_time", "target_date_lag_days", "expected_sources")
         current = tuple(schedule.get(field) for field in fields)
         if type(schedule.get("target_date_lag_days")) is not int:
-            return "unknown_difference", config
+            return "unknown_difference", original
         target = (zone, clock, 0, [provider])
         if current not in [target, *known_old]:
-            return "unknown_difference", config
+            return "unknown_difference", original
         schedule.update(zip(fields, target, strict=True))
         monitor = expectation["missing_delivery"]
         current_deadline = tuple(
@@ -114,10 +102,10 @@ def project_config(key: str, config: dict, *, reverse: bool = False) -> tuple[st
             monitor.get("deadline_day_offset") is not None
             and type(monitor["deadline_day_offset"]) is not int
         ):
-            return "unknown_difference", config
+            return "unknown_difference", original
         target_deadline = (deadline, "Asia/Taipei", offset) if deadline else (None, None, None)
         if current_deadline not in ((deadline, None, None), target_deadline):
-            return "unknown_difference", config
+            return "unknown_difference", original
         if deadline:
             monitor.update(
                 deadline_local_time=deadline,
@@ -125,8 +113,8 @@ def project_config(key: str, config: dict, *, reverse: bool = False) -> tuple[st
                 deadline_day_offset=offset,
             )
     except (KeyError, TypeError, AttributeError):
-        return "unknown_difference", config
-    return ("already_compliant" if result == config else "known_old_default"), result
+        return "unknown_difference", original
+    return ("already_compliant" if result == original else "known_old_default"), result
 
 
 def inspect(

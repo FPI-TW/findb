@@ -111,6 +111,24 @@ async def test_unknown_schedule_difference_aborts_without_moving_hong_kong():
             assert await db.scalar(text("SELECT version_num FROM alembic_version")) == BEFORE
 
 
+@pytest.mark.asyncio
+async def test_pre_projection_upgrade_passes_preflight_and_reaches_head():
+    """The accepted upgrade base still carries the TW bootstrap policy and Taipei clocks."""
+    module = migration_module()
+    async with get_active_migration_database_factory().clone("3553ed95cfbf", "factset_hk_base") as (
+        url,
+        engine,
+    ):
+        await run_alembic(url, "d8e3f0b5a2c4")
+        async with engine.connect() as db:
+            report, _, _ = await db.run_sync(module.inspect)
+        assert not [row for row in report if row["status"] == "unknown_difference"]
+        await run_alembic(url, HEAD)
+        async with engine.connect() as db:
+            report, _, _ = await db.run_sync(module.inspect)
+        assert all(row["status"] == "already_compliant" for row in report)
+
+
 def test_frozen_inputs_match_the_live_catalog():
     from app.services.provider_metadata import acquisition_feeds
 
