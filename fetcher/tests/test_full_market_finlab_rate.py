@@ -12,6 +12,7 @@ from uuid import UUID
 import pytest
 
 import findb_fetcher.full_market_runtime as runtime_module
+from execution_config_support import scheduled_at
 from findb_fetcher.client import SourceAPIClient, delivered_snapshot
 from findb_fetcher.config import FetcherConfig
 from findb_fetcher.contracts import ContractRegistry
@@ -223,7 +224,6 @@ def test_finlab_target_not_ready_uses_bounded_nonconsuming_wait(
             "work_id": "daily-work",
             "kind": "daily",
             "trade_date": context.plan["trade_date"],
-            "created_at": (clock.now() + timedelta(seconds=created_offset)).isoformat(),
         },
         request=lambda action: {
             "work_id": "daily-work",
@@ -236,6 +236,10 @@ def test_finlab_target_not_ready_uses_bounded_nonconsuming_wait(
     )
     monkeypatch.setattr("findb_fetcher.provider_work.active", lambda: owner)
 
+    # The publication window opens at the scheduled start, offset from now.
+    runtime.feeds[0].update(
+        scheduled_at(clock.now() + timedelta(seconds=created_offset), context.plan["trade_date"])
+    )
     if expected_exception is None:
         assert not runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
     else:

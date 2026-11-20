@@ -177,7 +177,7 @@ def test_completion_and_bounded_deadlines_are_independent():
     for provider, key, expected in [
         ("finlab", "tw_equity_eod", "2026-11-09T22:00:00+00:00"),
         ("finlab", "tw_equity_bar_1m", "2026-11-09T22:30:00+00:00"),
-        ("factset", "hk_equity_eod", "2026-11-09T22:30:00+00:00"),
+        ("factset", "hk_equity_eod", "2026-11-10T00:00:00+00:00"),
         ("taifex", "tw_futures_eod", "2026-11-09T21:00:00+00:00"),
     ]:
         view = feed_schedule_view(provider, key, datetime.now(timezone.utc))
@@ -271,3 +271,31 @@ def test_catalog_trigger_boundary_and_dst(clock, expected):
     from app.services.feed_schedule import latest_due_date
 
     assert latest_due_date("us_equity_eod", datetime.fromisoformat(clock)).isoformat() == expected
+
+
+@pytest.mark.parametrize(
+    ("provider", "dataset", "calendar", "expected"),
+    [
+        # Later of the 16:00 close and the 20:00 FactSet start.
+        ("factset", "hk_equity_eod", ("16:00:00", "Asia/Hong_Kong"), "2026-11-20T12:00:00+00:00"),
+        # TAIFEX waits for its 17:00 start, not the 13:45 close.
+        ("taifex", "tw_futures_eod", ("13:45:00", "Asia/Taipei"), "2026-11-20T09:00:00+00:00"),
+        ("finlab", "tw_equity_eod", ("13:30:00", "Asia/Taipei"), "2026-11-20T10:00:00+00:00"),
+        (
+            "twelve_data",
+            "us_equity_eod",
+            ("16:00:00", "America/New_York"),
+            "2026-11-20T22:00:00+00:00",
+        ),
+        # A retained dataset without a catalog schedule is ready at the close.
+        ("finlab", "tw_equity_minute", ("13:30:00", "Asia/Taipei"), "2026-11-20T05:30:00+00:00"),
+    ],
+)
+def test_every_provider_waits_for_the_later_of_close_and_schedule(
+    provider, dataset, calendar, expected
+):
+    close, zone = calendar
+    ready = feed_schedule.data_ready_at(
+        provider, dataset, date(2026, 11, 20), {"regular_close": close, "timezone": zone}
+    )
+    assert ready.astimezone(timezone.utc).isoformat() == expected

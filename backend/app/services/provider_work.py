@@ -9,10 +9,9 @@ which can only be acquired after every inheriting provider subprocess has exited
 import hashlib
 import json
 from collections.abc import Sequence
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, TypedDict
 from uuid import UUID
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import Row, Select, exists, func, insert, literal, or_, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -90,12 +89,9 @@ async def daily_readiness(db: AsyncSession, *, provider: str, values: dict) -> d
     snapshot = (
         await effective_days(db, "TAIFEX" if provider == "taifex" else dataset.market, day, day)
     )[0]
-    closing = time.fromisoformat(snapshot["regular_close"])
-    if provider == "taifex":
-        closing = max(closing, time(17))
-    elif provider == "factset":
-        closing = max(closing, time(18, 30))
-    ready = datetime.combine(day, closing, ZoneInfo(snapshot["timezone"]))
+    from app.services.feed_schedule import data_ready_at
+
+    ready = data_ready_at(provider, dataset.dataset_key, day, snapshot)
     requested = values["not_before"]
     if requested is not None and requested.tzinfo is None:
         raise ProviderWorkError("not_before must be timezone-aware")
@@ -561,12 +557,6 @@ async def fence(
         raise ProviderWorkSuspendedError("provider account cooldown is pending")
     if acquisition and (attempt.state != "open" or work.state != "running" or attempt.drain_only):
         raise ProviderWorkError("provider work acquisition is closed")
-    if acquisition and work.provider == "factset" and work.kind == "daily":
-        from app.services.effective_calendar import market_timezone
-
-        local_time = utc_now().astimezone(market_timezone("HK")).time()
-        if not time(18, 30) <= local_time < time(23):
-            raise ProviderWorkSuspendedError("FactSet daily acquisition window is closed")
     if (
         acquisition
         and work.kind in {"historical", "daily", "maintenance"}

@@ -13,7 +13,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "06:30",
+        "local_time": "08:00",
         "timezone": "Asia/Hong_Kong",
         "trade_date_day_offset": 1
       },
@@ -36,7 +36,7 @@
       "provider": "factset",
       "publication_retry_window_seconds": 16200,
       "schedule": {
-        "local_time": "18:30",
+        "local_time": "20:00",
         "target_date_lag_days": 0,
         "timezone": "Asia/Hong_Kong"
       }
@@ -567,5 +567,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "d25465699341b480be24fe32f2efc418da034d70ae19c088a846e0d810701b0b"
+  "source_sha256": "a669d57c60a118bf795da5c1c2668adedde59fe1d0983e57f338f674397e1975"
 }

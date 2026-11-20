@@ -92,7 +92,7 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         for f in catalog.feeds
     } == {
         "us_equity_eod": ("America/New_York", "17:00", "America/New_York", "05:00", 1),
-        "hk_equity_eod": ("Asia/Hong_Kong", "18:30", "Asia/Hong_Kong", "06:30", 1),
+        "hk_equity_eod": ("Asia/Hong_Kong", "20:00", "Asia/Hong_Kong", "08:00", 1),
         "tw_equity_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
         "tw_etf_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
         "tw_equity_bar_1m": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),

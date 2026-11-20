@@ -358,16 +358,25 @@ class FullMarketRuntime:
         self.adapter.reset()
 
     def _publication_retry_delay(self, owner, feed: dict[str, Any]) -> int:
-        created_at = owner.work.get("created_at")
-        if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at)
-        if not isinstance(created_at, datetime) or created_at.tzinfo is None:
-            raise ReadinessBlockedError("provider work publication window is invalid")
+        """The window opens at the trade date's scheduled start, not when work was queued.
+
+        A date planned late (catch-up after a stop) is therefore not given a fresh
+        window: once its scheduled window has passed, a missing row is final.
+        """
+        try:
+            day = date.fromisoformat(owner.work["trade_date"])
+            opened = datetime.combine(
+                day + timedelta(days=feed["target_date_lag_days"]),
+                clock_time.fromisoformat(feed["scheduled_time"]),
+                ZoneInfo(feed["source_timezone"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise ReadinessBlockedError("provider work publication window is invalid") from None
         window = feed.get("completion_window_seconds")
         if type(window) is not int or window < 1:
             raise ReadinessBlockedError("provider publication completion window is invalid")
         remaining = math.ceil(
-            (created_at + timedelta(seconds=window) - datetime.now(timezone.utc)).total_seconds()
+            (opened + timedelta(seconds=window) - datetime.now(timezone.utc)).total_seconds()
         )
         if remaining <= 0:
             return 0

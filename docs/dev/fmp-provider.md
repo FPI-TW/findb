@@ -315,7 +315,7 @@ Owner 於 2026-11-20 決定：
     `full_market_fmp_v1` 與 Source credential scope。
   - 完成期限固定為排程加 12 小時（`backend/app/provider_catalog.py` 的
     `COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`），港股指數 20:00 開始即為隔天 08:00。
-  - 新增 control 與 feed 時，要一併提供新的凍結 schedule inspection（目前是 `e9f4a1c6b3d5`，由
+  - 新增 control 與 feed 時，要一併提供新的凍結 schedule inspection（目前是 `b3d5f7a9c1e2`，由
     `scripts/preflight_catalog_schedule.py` 在每次部署前執行），否則會判為 `unknown_difference`、中止部署。
 - **Fetcher**
   - `providers/fmp.py`：client、`from_env`、contract mapping；key 只放在 `apikey` header，錯誤訊息遮蔽。

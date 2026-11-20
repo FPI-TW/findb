@@ -8,6 +8,7 @@ from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
 from app.models.registry import DatasetRegistry, SchedulerControl, SchedulerDataset
 from app.services import historical_backfill as history
 from app.services.effective_calendar import PROVIDER_CALENDAR_SWITCHES
+from app.services.provider_metadata import acquisition_feed
 from app.utils import uuid7
 from tests.owned_history import claim_next_item
 
@@ -25,7 +26,7 @@ pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
     ],
 )
 @pytest.mark.parametrize("calendar_kind", ["default", "weekend", "early_close"])
-async def test_historical_acquisition_uses_frozen_close(
+async def test_historical_acquisition_waits_for_frozen_close_and_schedule(
     test_session,
     monkeypatch,
     environment,
@@ -41,6 +42,13 @@ async def test_historical_acquisition_uses_frozen_close(
     day = date(2026, 9, 5) if calendar_kind == "weekend" else date(2026, 9, 1)
     close = time(11) if calendar_kind == "early_close" else normal_close
     closed_at = datetime.combine(day, close, ZoneInfo(zone)).astimezone(timezone.utc)
+    # Every provider waits for the later of the frozen close and its scheduled start.
+    feed = acquisition_feed(provider, dataset)
+    assert feed is not None and feed.schedule is not None
+    scheduled_at = datetime.combine(
+        day, time.fromisoformat(feed.schedule.local_time), ZoneInfo(feed.schedule.timezone)
+    ).astimezone(timezone.utc)
+    ready_at = max(closed_at, scheduled_at)
     now = closed_at - timedelta(hours=8)
     monkeypatch.setattr(history, "utc_now", lambda: now)
     test_session.add(
@@ -105,7 +113,7 @@ async def test_historical_acquisition_uses_frozen_close(
 
     # An existing lease never authorizes a new provider call before the frozen close.
     request.status, item.status = "running", "running"
-    item.lease_token, item.lease_expires_at = uuid7(), closed_at + timedelta(hours=1)
+    item.lease_token, item.lease_expires_at = uuid7(), ready_at + timedelta(hours=1)
     allowed, *_ = await history.authorize_item(
         test_session,
         item.item_id,
@@ -119,12 +127,15 @@ async def test_historical_acquisition_uses_frozen_close(
     if published is not None:
         published.session_close = normal_close
     await test_session.flush()
-    now = closed_at - timedelta(microseconds=1)
-    assert (
-        await claim_next_item(test_session, provider=provider, allowed_datasets=[dataset], now=now)
-        is None
-    )
-    now = closed_at
+    for now in {closed_at, ready_at - timedelta(microseconds=1)}:
+        if now < ready_at:
+            assert (
+                await claim_next_item(
+                    test_session, provider=provider, allowed_datasets=[dataset], now=now
+                )
+                is None
+            )
+    now = ready_at
     claimed = await claim_next_item(
         test_session, provider=provider, allowed_datasets=[dataset], now=now
     )

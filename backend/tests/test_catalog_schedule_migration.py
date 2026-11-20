@@ -1,8 +1,10 @@
 """Frozen clock migration, unknown-difference atomicity and preserved evidence."""
 
+import importlib.util
 import json
 import subprocess
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -19,10 +21,22 @@ BEFORE = "d8e3f0b5a2c4"
 HEAD = "e9f4a1c6b3d5"
 
 
+def projection_module():
+    """The frozen e9f4a1c6b3d5 inputs; the preflight now uses a later revision."""
+    path = Path(__file__).resolve().parents[1] / (
+        "migrations/versions/e9f4a1c6b3d5_catalog_schedule_projection.py"
+    )
+    spec = importlib.util.spec_from_file_location("catalog_schedule_projection", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("unknown", [False, True])
 async def test_schedule_migration_is_atomic_and_preserves_frozen_work(unknown):
-    module = migration_module()
+    module = projection_module()
     async with get_active_migration_database_factory().clone("3553ed95cfbf", "catalog_clocks") as (
         url,
         engine,

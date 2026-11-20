@@ -148,12 +148,12 @@ Pilot 退役後改由 Full daily 承接。證據見 [部署重試與 Pilot 恢�
   plan 的成員凍結。既有 20 plans／42 members 的切換前後 fingerprints 已核對不變，不能
   代替尚未建立的 FactSet daily plan 驗收。證據要求見 [FactSet runbook](../operations/factset_hk.md)。
 - [ ] 驗證 staging FactSet 原生 prices SELECT，以及異常歷史樣本與全名單 Full daily 的真實
-  R2／Source／queue／canonical／Serve 流程，核對 partial／missing／DQ。Daily 須於
-  香港時間 18:30–23:00 抓取；本機原生快照重播或歷史回補不能替代 daily 環境驗收。
+  R2／Source／queue／canonical／Serve 流程，核對 partial／missing／DQ。Daily 排程為
+  香港時間 20:00；本機原生快照重播或歷史回補不能替代 daily 環境驗收。
   FactSet Full control 於 Pilot 退役切換後由 Owner 檢查再啟動。
 - [ ] Staging 驗收後，套用 production 的新增基礎設施與 secrets，再依既有 production promotion
   與 Owner control 流程啟用；維持目前上市
-  cohort 回補範圍、18:30–23:00 新 I/O 窗口、明確 partial／missing／DQ 證據，不自動 fallback。
+  cohort 回補範圍、20:00 排程與隔天 08:00 期限、明確 partial／missing／DQ 證據，不自動 fallback。
 
 ## VWAP
 

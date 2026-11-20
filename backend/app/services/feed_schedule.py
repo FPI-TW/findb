@@ -50,6 +50,26 @@ def next_scheduled_at(schedule: FeedSchedule, now: datetime) -> datetime:
     return candidate.astimezone(timezone.utc)
 
 
+def data_ready_at(provider: str, dataset_key: str, trade_date: date, calendar: dict) -> datetime:
+    """When a trade date may first be acquired: the later of its close and its scheduled start.
+
+    ``calendar`` is the frozen effective-calendar day (``regular_close``, ``timezone``).
+    Every provider follows the same rule; a dataset without a catalog schedule
+    (retired feeds kept for history) is ready at the close.
+    """
+    zone = ZoneInfo(calendar["timezone"])
+    ready = datetime.combine(trade_date, time.fromisoformat(calendar["regular_close"]), zone)
+    feed = acquisition_feed(provider, dataset_key)
+    if feed is not None and feed.schedule is not None:
+        scheduled = datetime.combine(
+            trade_date + timedelta(days=feed.schedule.target_date_lag_days),
+            time.fromisoformat(feed.schedule.local_time),
+            ZoneInfo(feed.schedule.timezone),
+        )
+        ready = max(ready, scheduled)
+    return ready
+
+
 def deadline_at(policy: CompletionDeadline, trade_date: date) -> datetime:
     return datetime.combine(
         trade_date + timedelta(days=policy.trade_date_day_offset),
