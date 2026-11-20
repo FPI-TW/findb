@@ -50,12 +50,6 @@ EVIDENCE = {"url": "https://www.taifex.com.tw/cht/3/futDailyMarketReport", "sha2
 
 async def _dataset(db, key="tw_futures_eod"):
     values = deepcopy(next(item for item in DATASETS if item["dataset_key"] == key))
-    if key == "hk_equity_eod":
-        values["config"]["hk_provider_cutover"] = {
-            "provider": "factset",
-            "previous_provider": "twelve_data",
-            "effective_date": (DAY - timedelta(days=1)).isoformat(),
-        }
     if key.endswith("minute"):
         # These fixtures reconstruct frozen pre-retirement minute evidence.
         values["config"]["allowed_sources"] = ["shioaji"]

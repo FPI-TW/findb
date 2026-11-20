@@ -232,15 +232,14 @@ async def test_monitor_only_emits_post_activation_real_exchange_gaps(test_sessio
 
 
 @pytest.mark.asyncio
-async def test_monitor_closes_retired_feed_gaps_without_hk_cutover(test_session):
+async def test_monitor_closes_retired_feed_gaps(test_session):
     from app.models.registry import MissingDeliveryAlert
     from app.services.delivery_monitor import _scan_full_market_feed
     from app.utils import utc_now, uuid7
 
     # Twelve Data HK still has registry scope and a running provider control, but
-    # the execution manifest assigns HK to FactSet and no cutover is applied yet.
+    # the execution manifest assigns HK to FactSet.
     dataset = await _dataset(test_session, "hk_equity_eod")
-    dataset.config = {k: v for k, v in dataset.config.items() if k != "hk_provider_cutover"}
     await seed_datasets(test_session)
     control = await test_session.get(SchedulerControl, "full_market_twelve_data_v1")
     control.desired_state = "running"
