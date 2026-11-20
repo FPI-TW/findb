@@ -25,6 +25,7 @@
 | 盤中資料（1 分 K、逐筆成交）在 Canonical R2 的物件、索引表、正規化規則與月底合併 | [architecture/intraday_storage.md](architecture/intraday_storage.md) |
 | FinLab 盤中資料導入的設計、已定事項與尚未完成的工作 | [dev/finlab-intraday-batch1.md](dev/finlab-intraday-batch1.md) |
 | FMP provider 的需求範圍、已定事項、分階段導入計畫與待決事項 | [dev/fmp-provider.md](dev/fmp-provider.md) |
+| 港股個股日線由 FactSet 供應、以 HKEX 官方值修正的設計與三方比對 | [dev/hk-equity-factset-hkex.md](dev/hk-equity-factset-hkex.md) |
 | 還原價的調整因子表、各 provider 的調整行為、計算方式與 DQ | [dev/price-adjustment-factors.md](dev/price-adjustment-factors.md) |
 | FactSet 港股 EOD、每日 HKEX 清單與現行名單回補 | [operations/factset_hk.md](operations/factset_hk.md) |
 | TAIFEX 期貨 EOD 官方來源行為、日曆維護與待發布／休市排查 | [operations/taifex.md](operations/taifex.md) |

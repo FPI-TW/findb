@@ -127,8 +127,9 @@ Production native 資料與實際 rollback 演練由
 
 ## FactSet 港股首次環境啟用
 
-> 2026-11-19 Owner 決定港股日線改由 FMP 作為正式來源，本節不再推進；切換與 FactSet 港股 feed 退役見
-> [FMP provider 導入規劃](fmp-provider.md)。
+> 2026-11-20 Owner 決定港股個股日線維持 FactSet 供應，並以 HKEX 官方值優先；本節繼續推進。設計與 HKEX 接入見
+> [港股個股日線：FactSet 供應、HKEX 官方值優先](hk-equity-factset-hkex.md)，追蹤 issue
+> [#610](https://github.com/FPI-TW/findb/issues/610)。
 
 實作契約與操作見 [FactSet 港股日行情](../operations/factset_hk.md)；staging ECR、IAM／KMS
 及獨立 Source／RDS credentials 已就緒；backend migration、FactSet Source registry、
@@ -159,8 +160,8 @@ Pilot 退役後改由 Full daily 承接。證據見 [部署重試與 Pilot 恢�
 港股與台股的日 VWAP，Owner 於 2026-11-19 核准、之後一起做；實測與初步設計見
 [FMP provider 導入規劃](fmp-provider.md#vwap)。美股不做。
 
-- [ ] 港股：由 HKEX 每日報表的成交金額 ÷ 成交股數計算。報表的接入與成交金額的保存在 FMP 規劃的階段 2b
-  完成，這裡只剩計算與 Serve。
+- [ ] 港股：由 HKEX 每日報表的成交金額 ÷ 成交股數計算。報表的接入與成交金額的保存在
+  [港股個股日線](hk-equity-factset-hkex.md#hkex-每日報表) 完成，這裡只剩計算與 Serve。
 - [ ] 台股：由 FinLab `price:成交金額` 與 `price:成交股數` 計算。
 - [ ] 定案儲存表、contract、DQ 與 Serve 回傳欄位。
 
