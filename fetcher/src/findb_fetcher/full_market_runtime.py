@@ -1000,8 +1000,6 @@ class FullMarketRuntime:
             if activation.get("enabled") is not True or not listed.get("published_release_id"):
                 continue
             first = date.fromisoformat(activation["activation_date"])
-            if activation.get("acquisition_start_date"):
-                first = max(first, date.fromisoformat(activation["acquisition_start_date"]))
             local = now.astimezone(ZoneInfo(feed["source_timezone"]))
             through = local.date() - timedelta(days=feed["target_date_lag_days"])
             if local.strftime("%H:%M") < feed["scheduled_time"]:

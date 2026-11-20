@@ -516,9 +516,7 @@ async def list_universes(
     as_of: date | None = None,
     profile: ExecutionProfile = "full_market",
 ) -> UniverseListResponse:
-    dataset = await _scope(
-        db, dataset_key=dataset_key, provider=provider, allowed_datasets=allowed_datasets
-    )
+    await _scope(db, dataset_key=dataset_key, provider=provider, allowed_datasets=allowed_datasets)
     filters = [UniverseRelease.dataset_key == dataset_key, UniverseRelease.provider == provider]
     if as_of is not None:
         filters.append(UniverseRelease.effective_date <= as_of)
@@ -542,11 +540,6 @@ async def list_universes(
             "enabled": projection["acquisition_allowed"]
             and dataset_key in projection["admitted_dataset_keys"],
             "activation_date": projection["first_start_dates"].get(dataset_key),
-            "acquisition_start_date": (dataset.config or {})
-            .get("hk_provider_cutover", {})
-            .get("effective_date")
-            if provider == "factset"
-            else None,
             **projection,
             "execution_policy": execution_policy(provider),
         },
@@ -718,10 +711,6 @@ async def create_plan(
         or not activation_value
     ):
         raise FullMarketError("Full-market acquisition is not admitted", 409)
-    from app.services.hk_provider_cutover import acquisition_allowed
-
-    if not acquisition_allowed(dataset, body.provider, trade_date=body.trade_date):
-        raise FullMarketError("Provider acquisition is outside its cutover dates", 409)
     activation_date = date.fromisoformat(activation_value)
     if body.trade_date < activation_date:
         raise FullMarketError("Pre-first-start delivery plans are forbidden", 409)

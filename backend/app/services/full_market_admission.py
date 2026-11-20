@@ -263,10 +263,6 @@ async def eligibility(
     for dataset in datasets:
         reasons: list[str] = []
         today = local_today(dataset)
-        from app.services.hk_provider_cutover import acquisition_allowed
-
-        if not acquisition_allowed(dataset, provider):
-            reasons.append("provider_acquisition_cutover")
         state = await db.get(
             FullMarketDatasetState,
             {"dataset_key": dataset.dataset_key, "execution_profile": profile},
@@ -487,17 +483,15 @@ async def account_authorization(
     blockers = []
     if not _valid_source_binding(client, provider):
         blockers.append("full_market_source_binding_invalid")
-    from app.services.hk_provider_cutover import acquisition_allowed
-
     authorized = []
     if client and not blockers:
-        for dataset in await db.scalars(
-            select(DatasetRegistry).where(
-                DatasetRegistry.dataset_key.in_(client.allowed_datasets or [])
+        authorized = list(
+            await db.scalars(
+                select(DatasetRegistry.dataset_key).where(
+                    DatasetRegistry.dataset_key.in_(client.allowed_datasets or [])
+                )
             )
-        ):
-            if acquisition_allowed(dataset, provider, maintenance=True):
-                authorized.append(dataset.dataset_key)
+        )
     return {
         "acquisition_allowed": not blockers and bool(authorized),
         "acquisition_blockers": blockers,

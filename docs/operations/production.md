@@ -444,8 +444,8 @@ Shioaji owner heartbeat 正常。前次結案的 22 筆 FinLab、12 筆 TD HK �
 
 Repository 已將 projection 改為在 SQL 排除 settled，僅選取必要 metadata；prepared 有無、
 未接受交付與 nonterminal receipt 由 SQL 計算布林摘要，最近批次與失敗代碼以同一查詢的
-相關子查詢取得。Historical eligibility 批次讀取 request／item，HK cutover 沿用正式 eligibility
-判定。一般 projection 為固定三次 SELECT；同時需要 historical／HK eligibility 時最多五次，
+相關子查詢取得。Historical eligibility 批次讀取 request／item。一般 projection 為固定三次 SELECT；
+同時需要 historical eligibility 時最多四次，
 不隨工作數或歷史輪次新增 SQL round trips。原工作、receipts、prepared bytes 與 budgets 不改寫。
 
 候選函式於 production host 的**獨立程序**、READ ONLY transaction 中量測，未替換 module、

@@ -371,11 +371,6 @@ async def _scan_full_market_feed(
 ) -> tuple[int, int]:
     from app.services.full_market_governance import feed_schedule, is_execution_feed
 
-    cutover = (
-        (dataset.config or {}).get("hk_provider_cutover")
-        if dataset.dataset_key == "hk_equity_eod"
-        else None
-    )
     if not is_execution_feed(dataset.dataset_key, source):
         # Fetcher never plans a pair outside the execution manifest, so its
         # gaps cannot close through delivery even while the provider scheduler
@@ -416,10 +411,6 @@ async def _scan_full_market_feed(
 
     zone, _ = feed_schedule(dataset.dataset_key)
     through = evaluated_at.astimezone(ZoneInfo(zone)).date()
-    if dataset.dataset_key == "hk_equity_eod" and source == "factset":
-        if not cutover:
-            return 0, 0
-        start_date = max(start_date, date.fromisoformat(cutover["effective_date"]))
     if through < start_date:
         return 0, 0
     dates = await acquisition_dates(

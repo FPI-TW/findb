@@ -96,10 +96,9 @@ Revision、Heartbeat、cycle 原始時間、poll 間隔、凍結範圍、feed re
 revision 有效，因此重新取得前不會把「已要求執行但尚未啟用」判為設定錯誤。重新取得後若同一
 revision 仍未啟用，才顯示設定錯誤。
 
-FactSet 的排程卡片、批次啟動跳過提示與確認視窗會區分兩項啟動阻擋：
-`full_market_baseline_missing` 顯示「尚無已發布的 FactSet HKEX baseline」，
-`provider_acquisition_cutover` 顯示「尚未提交 HK provider 切換」。操作順序見
-[FactSet 港股切換](factset_hk.md#backend-first-切換)。其他供應商仍使用一般 baseline 與來源切換限制訊息。
+FactSet 的排程卡片、批次啟動跳過提示與確認視窗把 `full_market_baseline_missing` 顯示為
+「尚無已發布的 FactSet HKEX baseline」；操作順序見 [FactSet 港股環境啟用](factset_hk.md#環境啟用)。
+其他供應商使用一般 baseline 訊息。
 
 ### 有效日曆與依設定略過
 

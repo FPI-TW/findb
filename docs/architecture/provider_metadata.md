@@ -38,8 +38,7 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
 - Backend 的 market→時區只由 `app.services.effective_calendar.MARKETS` 維護，包含 `TAIFEX` 這類
   calendar market；`market_timezone()` 對未知 market fail closed，不回落台北時間。Catalog feed 的
   `market`／`calendar_market` 都必須在其中，`schedule.timezone` 必須與之相同（`test_provider_catalog.py`）。
-  Full-market admission／acceptance、historical provider cutoff、FactSet 窗口、HK cutover 與 seed
-  delivery expectation 都引用這份對照。
+  Full-market admission／acceptance、historical provider cutoff 與 seed delivery expectation 都引用這份對照。
 - `delivery.slot_id` 只表示既有 contract 相容欄位與 Dashboard 區域分組，不能作為時鐘或新 acquisition
   權威。Seed 的 delivery expectation 與 `scheduler_control` 的 slot、時鐘、時區都由 catalog 投影
   （`seed_datasets` 會更新現役 control 的 slot），既有列由 migration `c3f6a9d1e2b7` 投影一次；
@@ -47,8 +46,7 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
 - Historical execution profiles 保留現行 local／staging／production 的靜態 universe reference 與 executor
   預設值，不包含觸發時間。這些是打包預設，不是 DB request、operator overrides 或即時授權。
 
-Catalog 不存 secrets、account digest／identity、usage、cooldown、Owner controls、HK cutover state 或
-published calendar。Adapter dispatch、SDK 行為、credential 正規化留在原模組。
+Catalog 不存 secrets、account digest／identity、usage、cooldown、Owner controls 或 published calendar。Adapter dispatch、SDK 行為、credential 正規化留在原模組。
 
 ## 生成與檢查
 
