@@ -18,6 +18,9 @@
 - **FMP 不承接港股個股日線**（Owner 於 2026-11-20 決定）。2026-11-19 曾決定港股改由 FMP 供應，三方比對後改回
   FactSet，並以 HKEX 官方值優先，見 [港股個股日線：FactSet 供應、HKEX 官方值優先](hk-equity-factset-hkex.md)。
 - **下一個優先是市場指數日線**（美股與港股），見「階段 2」。
+- **FMP 是市場指數的資料來源**（Owner 於 2026-11-20 確認），依據見「指數準確率」。
+- 第一批是已比對的 10 檔指數；依更新時間分組、每組一個 dataset；所有指數 feed 都必須有已發布的交易所日曆；VIX 依美股交易日曆、非交易日
+  沒有值；控制台依新功能調整。細節見「階段 2」。
 - 美債殖利率曲線（`/treasury-rates`）不做，改用 FRED。
 - **美股個股日線維持 Twelve Data。**
 - **還原價要存**，以調整因子表示，所有 provider 共用，設計見
@@ -171,6 +174,28 @@
     確認。冷門股偏多的情形同歷史比對（333 檔，占成交金額 0.09%）。
 - 美股尚未測量。
 
+### 指數準確率
+
+2026-11-20 以 2021-01-01 至 2026-11-19 的 10 檔指數（`^GSPC`、`^NDX`、`^DJI`、`^IXIC`、`^RUT`、`^VIX`、`^SOX`、
+`^NYA`、`^HSI`、`^HSCE`）比對 yfinance，並以官方值判定差異。`full` 與 `non-split-adjusted` 對指數完全相同。
+
+| 比對 | 結果 |
+| --- | --- |
+| 與 yfinance：開高低收全部相同的日期 | 97.0%（`^RUT`）至 100%（`^SOX`）；收盤價幾乎全部相同，每檔最多 4 天不同 |
+| 與 Cboe 官方 VIX（約 6 年） | 收盤 1,499／1,500 天相同；yfinance 1,476／1,479，另少 31 天 |
+| 與 HKEX 每日報表的恒指、國企收市（09-21 至 11-19，42 天） | 兩檔都 42／42 相同 |
+
+- 爭議日期上 FMP 比 yfinance 準，例如 VIX 2026-02-06 官方是 17.76，FMP 相同，yfinance 是 20.37。
+- 開盤、高低價有少量差異（`^DJI`、`^NYA` 開盤各約 30 天，`^RUT` 高低價各 21 天），沒有官方值可判定。指數的開盤
+  定義各家不一。
+- **FMP 在交易所休市日也回資料**，必須以交易所日曆濾掉：
+  - 港股休市日的值是假的：`^HSI` 7 天、`^HSCE` 21 天。例如 2024-10-01（國慶休市）FMP 給出 21289.60 → 22371.62 的
+    完整 OHLC；颱風停市日則重複前一天的收盤。
+  - VIX 在美國假日有值（Cboe 延長交易時段的計算值），`^RUT` 也有一列落在週六。
+- FMP 的港股指數只有 `^HSI`、`^HSCE`，**沒有恒生科技指數**。
+- 指數成交量各家定義不一（`^NDX` 兩邊幾乎全不同，港股指數 FMP 有 38–46 天是 0），不入庫。
+- 美股其他指數沒有取得官方值：FRED 從測試環境連線逾時，Stooq 要求瀏覽器驗證。
+
 ### 其他端點
 
 | 項目 | 結果與限制 |
@@ -198,25 +223,92 @@
 
 ### 階段 2：Provider 基礎與市場指數日線
 
-範圍：美股與港股的市場指數日線（例如 `^GSPC`、`^NDX`、`^DJI`、`^HSI`、`^HSCE`），Owner 於 2026-11-20 定為下一個
-優先。全球指數、類股 ETF、跨資產與盤後最後成交（17）在之後的批次。
+範圍：美股與港股的市場指數日線，Owner 於 2026-11-20 定為下一個優先。全球指數、類股 ETF、跨資產與盤後最後成交
+（17）在之後的批次。
 
-- 指數沒有分割，`eod-bulk` 的值就是原始值；11-18 的 bulk 有 381 列指數。指數的成交量是 0。
+**第一批是已完成準確率比對的 10 檔**（Owner 於 2026-11-20 確認）：
+
+| 市場 | FMP 代號 | 指數 |
+| --- | --- | --- |
+| 美股 | `^GSPC` | S&P 500 |
+| 美股 | `^NDX` | NASDAQ 100 |
+| 美股 | `^DJI` | 道瓊工業平均指數 |
+| 美股 | `^IXIC` | NASDAQ 綜合指數 |
+| 美股 | `^RUT` | Russell 2000 |
+| 美股 | `^VIX` | Cboe 波動率指數 |
+| 美股 | `^SOX` | 費城半導體指數 |
+| 美股 | `^NYA` | NYSE 綜合指數 |
+| 港股 | `^HSI` | 恒生指數 |
+| 港股 | `^HSCE` | 恒生中國企業指數 |
+
+FMP 的港股指數另外只有 `512.HK`（CES China HK Mainland Index）有資料，不在第一批；恒生科技、紅籌、綜合等恒生指數
+都查不到資料，`^XLHK` 在清單上但沒有資料。
+
+Owner 於 2026-11-20 決定：
+
+- **依更新時間分組，每組一個 dataset。** 一個 dataset 每天只有一份工作，沒有「每檔各自的可抓時間」；更新時間不同
+  的指數放在同一個 dataset，晚到的那檔會讓整份工作等待或失敗。分組依「發布時間」的實測決定，每組排在組內最晚
+  定案的時間之後。
+- **所有指數 feed 都必須有已發布的交易所日曆才執行。** 缺少日曆時不得以週一至週五的預設代替，而是停在可重試的
+  等待狀態並顯示原因。FMP 在休市日回的列一律不寫入。
+- **VIX 依美股交易日曆，非交易日沒有值。** VIX 由 S&P 500 選擇權計算；Cboe 在美國假日公布的延長交易時段計算值
+  不入庫。
+- **控制台依新功能調整**：一個 provider 底下有不同市場、時區與排程的 feed，必要時重構介面。
+
+其他已知事實：
+
+- 指數沒有分割，`eod-bulk` 的值就是原始值；11-18 的 bulk 有 381 列指數。
 - 只接受目標日期且已發布的列：FMP 收盤前就回當天的列，回應也不標示是否定案。
-- 港股指數只有 FMP 一個來源，沒有官方值可核對；11-19 在 17:40 定案，排在香港時間 20:00 抓取。
-- 美股指數的發布時間尚未測量，排程依實測決定。
+- 港股指數只有 FMP 一個來源，沒有每日官方值可自動核對；11-19 在香港時間 17:40 定案。
+- 美股指數的發布時間 2026-11-20 起實測中（每 5 分鐘查一次單檔、每 30 分鐘查一次 `eod-bulk`）。
 
 #### 每日抓取方式
 
-- 每個交易日收盤發布後呼叫一次 `eod-bulk`，取目標日的指數列；一次呼叫涵蓋全部指數。
+- 每個交易日收盤發布後呼叫一次 `eod-bulk`，取目標日的指數列；一次呼叫涵蓋全部指數，各組 dataset 共用。
 - 歷史回補逐檔呼叫 `historical-price-eod/full`（指數沒有分割，與 `non-split-adjusted` 相同），`^GSPC` 從 1927 年起。
 - 個股與 ETF 之後若改由 bulk 取得，目標日之後有分割生效的標的要改以單檔 `non-split-adjusted` 補抓。
+
+#### 與現行排程設計的相容性
+
+2026-11-20 核對程式碼：排程本來就以 feed 為單位。每條 feed 依自己的時區與時間排入當天工作
+（`fetcher/src/findb_fetcher/full_market_runtime.py` 的 `_queued_cycle`），Backend 依 dataset 的市場建立工作、
+凍結日曆並計算期限（`backend/app/services/feed_schedule.py`、`full_market.py`）。`scheduler_control` 的
+`scheduled_local_time`、`timezone` 與 `slot_id` 只用於顯示與篩選，不決定執行時間。同一個 provider 的工作依序執行，
+港股工作等待發布時不會擋住美股工作。
+
+一個 provider 底下有不同市場與時區的 feed，需要調整：
+
+- **歷史回補的「今天」以 provider 為單位**（`backend/app/services/historical_backfill.py` 的 `PROVIDER_TIMEZONES`），
+  多個時區時最後一條 feed 會蓋掉前面的；改為依 feed 取時區。兩條測試也明訂一個 provider 只能有一個時區與一個
+  時段（`backend/tests/test_provider_catalog.py`、`test_catalog_slot_migration.py`），要一併改。
+- **控制列的顯示時間與時段**：seed 以字串比大小挑「最早的 feed」（`backend/scripts/seed_data.py`），沒有考慮時區；
+  控制列只有一個 `slot_id`，Admin 依時段篩選時 FMP 只會出現在其中一個區域。依「控制台依新功能調整」的決定，
+  控制台改以 feed 為單位呈現時間、時區與時段。
+- **啟動資格以 provider 為單位**：任何一條 feed 沒就緒，整個 provider 都不能抓
+  （`backend/app/services/full_market_admission.py`）。指數 feed 少，第一版沿用；之後 feed 變多再評估改成依 feed。
+- `not_before` 依 dataset 的市場收盤時間計算（`backend/app/services/provider_work.py` 的 `daily_readiness`），
+  FMP 指數直接適用。
+- 之後若要加每日抓取窗口，必須以 feed 為單位，不能沿用 FactSet 那種 provider 層級的寫死窗口。
+
+#### 必須有交易所日曆
+
+目前沒有這個機制：缺少日曆時一律以市場的週末設定代替，`full_market_calendar_missing` 阻擋條件已於 #296 移除。
+要新增：
+
+- catalog 的 feed 加上「需要已發布日曆」的設定，指數 feed 全部開啟；必要時隨 execution config 發布給 Fetcher。
+- **建立當天工作時是權威檢查**（`backend/app/services/full_market.py` 的 `create_plan`）：日曆來源只是週末預設時拒絕，
+  且必須是可等待重試的拒絕；一般的 409 會被 Fetcher 當成永久的 `DAILY_SOURCE_REJECTED`。做法比照
+  `DatedUniversePendingError`。
+- 啟動資格（`full_market_admission.py` 的 `eligibility`）恢復以 feed 為單位的「缺少日曆」原因，控制台與監控
+  （`market_freshness`、`delivery_monitor`）顯示同一個原因。
+- production 目前的日曆：美股 2025–2028、港股只有 2026（`backend/scripts/seed_production_calendars.py`），2027 年起
+  港股指數要等日曆發布才會執行。
 
 #### 實作要點
 
 - **Backend**
-  - `backend/configs/provider_catalog.v1.json` 新增 provider `fmp` 與指數 feeds；擴充 `FeedDefinition` 的
-    `asset_class`（`index`），以 `backend/scripts/export_provider_catalog.py` 重產生 artifacts。
+  - `backend/configs/provider_catalog.v1.json` 新增 provider `fmp` 與各組指數 feeds；擴充 `FeedDefinition` 的
+    `asset_class`（`index`）與「需要已發布日曆」設定，以 `backend/scripts/export_provider_catalog.py` 重產生 artifacts。
   - Instrument 模型：指數的代號、市場、交易日曆與幣別，見「待決事項」。
   - `backend/app/config.py` 新增 `FMP_SKIP_NON_TRADING_DAYS`（`effective_calendar` 依 `calendar_switch_env` 讀取）。
   - `backend/scripts/seed_data.py` 的 `SUPPORTED_DATASETS` 與 dataset 定義；registry、scheduler dataset、control
@@ -308,9 +400,9 @@ Owner 於 2026-11-19 決定：
 
 ## 待決事項
 
-- 第一批指數的清單（美股、港股各哪些）。
+- 第一批 10 檔依實測發布時間的分組。
 - 指數、商品與跨資產的 instrument 模型：`asset_class`、市場代碼、交易日曆、幣別與代號格式（例如 `^HSI`）。
-- 美股指數的排程。
+- 各組指數的排程（依實測發布時間）。
 - 美股 515 檔的名單來源，以及每個 dataset 的 bounded universe。
 - 階段 5 的批次順序。
 - 授權條款是否允許內部再提供給下游專案。
