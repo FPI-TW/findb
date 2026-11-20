@@ -353,10 +353,6 @@ async def create_request(
         # Publication locks the same dataset; a request gets one immutable current
         # cohort, not different universe dates for its historical items.
         await db.refresh(dataset, with_for_update=True)
-        from app.services.hk_provider_cutover import acquisition_allowed
-
-        if not acquisition_allowed(dataset, provider):
-            raise HistoricalBackfillError("FactSet acquisition cutover is not effective")
         release = await db.scalar(
             select(UniverseRelease)
             .where(

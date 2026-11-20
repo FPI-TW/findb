@@ -341,7 +341,7 @@ Admin queue projection 在 SQL 先排除 settled attempts，僅讀取未結案�
 不將完整 prepared body、manifest、scope、owner token 或每輪 proof 載入監控程序；
 prepared／receipt 是否仍需排空由 SQL 計算布林摘要，最近 settled batch 與最近實際失敗保留原語意。
 一般列表固定三次 SELECT，需要 historical／HK eligibility 時最多五次；查詢次數不隨工作數增加。
-歷史 request／item 的 eligibility 批次查詢，daily window／controls、HK cutover、原 FIFO 順位、
+歷史 request／item 的 eligibility 批次查詢，daily window／controls、原 FIFO 順位、
 cooldown、drain-only、report continuation 與 recovery 顯示不改變。此為唯讀投影，不取得 provider
 lock、不結案或修改任何 work／attempt，不授予新 acquisition；正式執行仍由原 owner fence 判定。
 

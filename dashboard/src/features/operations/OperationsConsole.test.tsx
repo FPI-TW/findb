@@ -1494,8 +1494,7 @@ describe("Operations presentation", () => {
 
   it("explains FactSet HK start blockers in cards and bulk confirmation", () => {
     const schedulerKey = "full_market_factset_v1"
-    const reason =
-      "尚無已發布的 FactSet HKEX baseline；尚未提交 HK provider 切換"
+    const reason = "尚無已發布的 FactSet HKEX baseline"
     render(
       <QueryClientProvider client={new QueryClient()}>
         <SchedulerCards
@@ -1509,10 +1508,7 @@ describe("Operations presentation", () => {
                   provider: "factset",
                   desired_state: "stopped",
                   start_allowed: false,
-                  start_blockers: [
-                    "full_market_baseline_missing",
-                    "provider_acquisition_cutover",
-                  ],
+                  start_blockers: ["full_market_baseline_missing"],
                 }),
                 makeScheduler({
                   scheduler_key: "full_market_finlab_v1",

@@ -5,12 +5,11 @@ from datetime import date, datetime, timezone
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select
 
 from app.config import get_settings
 from app.models.registry import DatasetRegistry, HistoricalBackfillRequest
 from app.schemas.full_market import UniversePublishRequest
-from app.services import historical_backfill, hk_provider_cutover
+from app.services import historical_backfill
 from app.services.full_market import publish_universe, submit_universe
 from app.services.source_clients import create_source_client
 from scripts.seed_data import seed_datasets
@@ -26,7 +25,6 @@ async def setup(db, monkeypatch, members=None):
     monkeypatch.setattr("app.services.provider_work.utc_now", lambda: NOW)
     monkeypatch.setattr("app.services.full_market.utc_now", lambda: NOW)
     monkeypatch.setattr(historical_backfill, "utc_now", lambda: NOW)
-    monkeypatch.setattr(hk_provider_cutover, "utc_now", lambda: NOW)
     await seed_datasets(db)
     await attest_cutover(db)
     body = _universe("hk_equity_eod", 2, date(2026, 10, 20))
@@ -47,7 +45,6 @@ async def setup(db, monkeypatch, members=None):
         ),
         actor="test-owner",
     )
-    await hk_provider_cutover.apply_cutover(db, effective_date=NOW.date(), actor="test-owner")
     _, key = await create_source_client(
         db,
         name="FactSet",
@@ -289,114 +286,27 @@ async def test_request_cohort_stays_frozen_and_partial_day_continues(
     assert await _historical_repairs(test_session, plan, daily_members) == set()
 
 
-def _hk_dataset(cutover=None):
-    config = {} if cutover is None else {"hk_provider_cutover": cutover}
-    return DatasetRegistry(dataset_key="hk_equity_eod", config=config)
+def test_twelve_data_credentials_cannot_reach_hk():
+    """Twelve Data HK stays retired through its catalog scope, not a dataset gate."""
+    from app.services.source_clients import SourceProviderScopeError, normalize_provider_scope
 
-
-@pytest.mark.parametrize(
-    "cutover",
-    [
-        None,
-        {
-            "provider": "factset",
-            "previous_provider": "twelve_data",
-            "effective_date": "2026-10-20",
-        },
-        {
-            "provider": "factset",
-            "previous_provider": "twelve_data",
-            "effective_date": "2026-10-21",
-        },
-    ],
-)
-@pytest.mark.parametrize("maintenance", [False, True])
-def test_twelve_data_hk_is_retired_regardless_of_cutover(monkeypatch, cutover, maintenance):
-    monkeypatch.setattr(hk_provider_cutover, "utc_now", lambda: NOW)
-    assert not hk_provider_cutover.acquisition_allowed(
-        _hk_dataset(cutover), "twelve_data", maintenance=maintenance
-    )
-
-
-@pytest.mark.parametrize("cutover", [None, {"provider": "factset"}])
-def test_hk_gate_does_not_restrict_future_sources_to_factset(cutover):
-    assert hk_provider_cutover.acquisition_allowed(_hk_dataset(cutover), "future_hk_source")
-
-
-def test_factset_gate_still_requires_cutover_except_for_maintenance(monkeypatch):
-    monkeypatch.setattr(hk_provider_cutover, "utc_now", lambda: NOW)
-    assert not hk_provider_cutover.acquisition_allowed(_hk_dataset(), "factset")
-    assert hk_provider_cutover.acquisition_allowed(_hk_dataset(), "factset", maintenance=True)
-    future = {
-        "provider": "factset",
-        "previous_provider": "twelve_data",
-        "effective_date": "2026-10-21",
-    }
-    assert not hk_provider_cutover.acquisition_allowed(_hk_dataset(future), "factset")
+    with pytest.raises(SourceProviderScopeError):
+        normalize_provider_scope("twelve_data", ["hk_equity_eod"])
 
 
 @pytest.mark.asyncio
-async def test_cutover_is_explicit_and_keeps_v1_acceptance(test_session, monkeypatch):
+async def test_factset_acquires_without_a_provider_cutover_decision(test_session, monkeypatch):
     await setup(test_session, monkeypatch)
     dataset = await test_session.get(DatasetRegistry, "hk_equity_eod")
-    assert dataset.config["accepted_schema_versions"] == [1, 2]
+    assert "hk_provider_cutover" not in dataset.config
     assert dataset.config["allowed_sources"] == ["factset"]
-    assert not hk_provider_cutover.acquisition_allowed(dataset, "twelve_data")
-    assert hk_provider_cutover.acquisition_allowed(dataset, "factset")
-    assert not hk_provider_cutover.acquisition_allowed(
-        dataset, "factset", trade_date=date(2026, 10, 19)
+    request, _ = await historical_backfill.create_request(
+        test_session,
+        provider="factset",
+        dataset_key="hk_equity_eod",
+        start_date=date(2026, 10, 19),
+        end_date=date(2026, 10, 19),
+        request_key="factset-without-cutover",
+        created_by="owner",
     )
-    before = deepcopy(dataset.config)
-    await seed_datasets(test_session)
-    await test_session.refresh(dataset)
-    assert dataset.config["hk_provider_cutover"] == before["hk_provider_cutover"]
-    assert dataset.config["source_precedence"] == {"factset": -1, "twelve_data": 0}
-
-
-@pytest.mark.asyncio
-async def test_cutover_priority_reset_keeps_manual_corrections_pinned(test_session, monkeypatch):
-    from decimal import Decimal
-
-    from app.models.canonical import MANUAL_CORRECTION_PRIORITY, Instrument, MarketDataEOD
-    from app.utils import utc_now, uuid7
-
-    instrument = Instrument(
-        instrument_id=uuid7(),
-        asset_class="equity",
-        market="HK",
-        symbol="0005",
-        status="active",
-        created_at=NOW,
-        updated_at=NOW,
-    )
-    test_session.add(instrument)
-    await test_session.flush()
-    for trade_date, priority in (
-        (date(2026, 10, 15), 1000),
-        (date(2026, 10, 16), MANUAL_CORRECTION_PRIORITY),
-    ):
-        test_session.add(
-            MarketDataEOD(
-                instrument_id=instrument.instrument_id,
-                trade_date=trade_date,
-                close=Decimal("60"),
-                source="twelve_data",
-                source_priority=priority,
-                asof_ts=utc_now(),
-                created_at=utc_now(),
-                updated_at=utc_now(),
-            )
-        )
-    await test_session.flush()
-
-    await setup(test_session, monkeypatch)
-
-    rows = {
-        row.trade_date: row.source_priority
-        for row in await test_session.scalars(
-            select(MarketDataEOD)
-            .where(MarketDataEOD.instrument_id == instrument.instrument_id)
-            .execution_options(populate_existing=True)
-        )
-    }
-    assert rows == {date(2026, 10, 15): 0, date(2026, 10, 16): MANUAL_CORRECTION_PRIORITY}
+    assert request.universe_snapshot is not None

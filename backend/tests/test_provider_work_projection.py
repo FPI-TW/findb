@@ -257,7 +257,7 @@ async def test_historical_drain_classification_matches_acquisition_gate(
     await db.flush()
     with monitor_reads(db) as statements:
         rows = await queue.projection(db)
-    assert len(statements) <= 5
+    assert len(statements) <= 4
     indexed = {row["work_id"]: row for row in rows}
     for work, allowed in works:
         assert indexed[str(work.work_id)]["drain_only"] == (not allowed)

@@ -361,7 +361,6 @@ const SCHEDULER_BLOCKER_REASONS: Record<string, string> = {
   full_market_configuration_invalid:
     "全市場設定、readiness 或 scope 不符合啟動條件",
   full_market_baseline_missing: "缺少已發布的官方 baseline",
-  provider_acquisition_cutover: "供應商來源切換限制，目前不允許此供應商抓取",
   full_market_calendar_missing: "缺少完整已發布的交易所日曆",
   full_market_source_binding_invalid:
     "Source credential 的供應商或資料集綁定無效",
@@ -371,9 +370,6 @@ const SCHEDULER_BLOCKER_REASONS: Record<string, string> = {
 function schedulerBlockerReason(code: string, provider: string | undefined) {
   if (provider === "factset" && code === "full_market_baseline_missing") {
     return "尚無已發布的 FactSet HKEX baseline"
-  }
-  if (provider === "factset" && code === "provider_acquisition_cutover") {
-    return "尚未提交 HK provider 切換"
   }
   return SCHEDULER_BLOCKER_REASONS[code]
 }

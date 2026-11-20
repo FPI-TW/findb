@@ -756,18 +756,6 @@ async def acquisition_open(
         )
         if decision is not None and decision.kind == "skipped_calendar":
             return False
-    if work.kind != "rerun" and work.dataset_key == "hk_equity_eod":
-        from app.models.registry import DatasetRegistry
-        from app.services.hk_provider_cutover import acquisition_allowed
-
-        dataset = await db.get(DatasetRegistry, work.dataset_key)
-        if dataset is None or not acquisition_allowed(
-            dataset,
-            work.provider,
-            trade_date=work.trade_date if work.kind == "daily" else None,
-            maintenance=work.kind == "maintenance",
-        ):
-            return False
     if work.kind == "daily":
         if check_window and not daily_window(work.provider)["open"]:
             return False
@@ -1246,12 +1234,10 @@ async def _projection_acquisition_states(
     historical request per row. It grants no ownership or acquisition authority.
     """
     from app.models.registry import (
-        DatasetRegistry,
         HistoricalBackfillItem,
         HistoricalBackfillRequest,
     )
     from app.services.historical_backfill import expiry_cutoff
-    from app.services.hk_provider_cutover import acquisition_allowed
 
     relevant = [
         row for row in rows if not row.drain_only and (row.has_prepared or row.source_error_pending)
@@ -1282,21 +1268,9 @@ async def _projection_acquisition_states(
         if item_ids
         else {}
     )
-    hk_dataset = (
-        await db.get(DatasetRegistry, "hk_equity_eod")
-        if any(row.dataset_key == "hk_equity_eod" and row.kind != "rerun" for row in relevant)
-        else None
-    )
     result = {}
     for row in relevant:
         allowed = True
-        if row.kind != "rerun" and row.dataset_key == "hk_equity_eod":
-            allowed = hk_dataset is not None and acquisition_allowed(
-                hk_dataset,
-                row.provider,
-                trade_date=row.trade_date if row.kind == "daily" else None,
-                maintenance=row.kind == "maintenance",
-            )
         if row.kind == "daily":
             allowed = (
                 allowed

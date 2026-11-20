@@ -1,8 +1,8 @@
 # FactSet 港股日行情
 
-FactSet 負責切換後的新港股 EOD 抓取；Twelve Data 繼續負責美股。港股不自動 fallback。
-程式更新不等於環境已切換：正式抓取仍需要 provider-work enforcement、已發布的
-HKEX baseline、明確的 HK provider cutover，以及 Owner 啟動 Full control。
+FactSet 負責港股 EOD 抓取；Twelve Data 繼續負責美股。港股不自動 fallback。
+正式抓取需要 provider-work enforcement、已發布的 HKEX baseline，以及 Owner 啟動 Full control，
+與其他 provider 相同。HK provider cutover 閘門已於 2026-11 退役（#616），既有 cutover 紀錄只作歷史證據。
 
 ## 清單與歷史範圍
 
@@ -168,42 +168,25 @@ FactSet 來源庫有 loader 稽核表可用：`fds_FDS_COMMAND_HISTORY` 記每�
 與 09:00 各執行一次；平日 20:30 那批亞太價格約 24,700 列，週末為 0。稽核表沒有 listing 或交易日，
 只能推得批次時間，港股列實際落在哪一批須以逐次觀測確認。
 
-## Backend-first 切換
+## 環境啟用
 
-1. 更新 backend、執行 Alembic head 與 seed。HK registry 同時保留 v1、v2 和
-   `twelve_data`、`factset` acceptance，舊 prepared／raw rerun 按原 identity 路由。
-2. 安裝 FactSet image／credentials；所有新 controls 預設 stopped。Fetcher bundle v2
-   包含四個 images、五個 providers、十五個 Pilot／Full／Historical consumers。
-   舊 bundle v1 只供既有安裝辨識；新 release 與 promotion 必須包含 FactSet digest。
+1. 更新 backend、執行 Alembic head 與 seed。HK registry 同時保留 v1、v2 acceptance，舊
+   prepared／raw rerun 按原 identity 路由。Migration `c4e6a8b0d2f4` 將仍是 `["twelve_data"]` 的
+   `source_precedence` 改為 `{"factset": -1, "twelve_data": 0}`（staging 先前由 cutover 寫入的同一值）。
+2. 安裝 FactSet image／credentials；所有 controls 預設 stopped。
 3. 依 [provider-work 維運](../architecture/provider_work.md) 完成單 host／shared inode／所有 consumers
    停止及排空的 preflight attestation，再開啟 `PROVIDER_WORK_REQUIRED`。
 4. 使用 FactSet maintenance 同步 HKEX 清單，由 Admin 確認並發布第一份 baseline。
    之後沿用既有差異門檻與人工例外核准規則。
-5. 停止 Twelve Data 與 FactSet 的 Full controls，排空 active owner。以香港當日日期
-   執行 `uv --directory backend run python scripts/cutover_hk_factset.py --effective-date YYYY-MM-DD --actor OPERATOR`。
-   預設驗證後 rollback；加入 `--apply` 才提交。切換決定不可改寫或回溯日期。
-6. 切換 transaction 保留原 dataset first dates 與 plans，記錄 audit，設定 FactSet
-   priority -1、Twelve Data priority 0，並使舊 HK Twelve Data stored priority 一致，保留價格與 lineage。
-   FactSet 新 daily 日期從切換日開始；更早日期使用 historical request。
-7. 完成單日、異常歷史樣本、全市場 native acceptance 後，再由 Owner 啟動所需 control，
+5. 確認 `full_market_dataset_state.first_start_date`：Owner start 會從首日補抓到今天。更早日期以
+   historical request 回補。
+6. 完成單日、異常歷史樣本、全市場 native acceptance 後，再由 Owner 啟動 control，
    依既有 staging acceptance／production promotion 流程交付。
 
-不得在仍有 cohort、partial、v2 run 或切換紀錄時 downgrade 此 migration。Rollback 亦須保留
-支援 v2 acceptance、FactSet scopes 與五 provider inventory 的版本；不以刪除證據方式降版。
+不得在仍有 cohort、partial 或 v2 run 時 downgrade 支援 EOD v2 的 migration。Rollback 亦須保留
+支援 v2 acceptance、FactSet scopes 與現行 consumer inventory 的版本；不以刪除證據方式降版。
 
-### Cutover 與原生連線驗收證據
-
-切換前保存當前 accepted Backend／Fetcher bundle、Alembic revision、DB／checkpoint 備份、
-兩 provider 的 Full controls revisions、first dates、plans／members fingerprints，
-以及 shared lock identity。以 CAS 停止兩個 controls，等待 desired／observed stopped，
-核對兩 provider owner 已釋放及在途 prepared／receipts 已排空；心跳過期不代表 owner 已釋放。
-先執行 cutover script 的預設 dry-run，再以同一香港日期與具名 actor 執行 `--apply`，
-保存 decision／audit 與上述 fingerprints 的前後比對。跨香港午夜須重做日期核對。
-
-HK provider decision 不可改寫，應用 rollback 不代表把 HK 新抓取切回 Twelve Data。
-候選 rollback 版本須維持目前部署的 provider-work owner 到期證據契約，以及 EOD v2、
-cohort／partial、FactSet scopes 與現行 consumer inventory；accepted 身分、migration compatibility
-及停止／排空要求依 [部署維運](deployment.md) 核對，不只比較 image tag。
+### 原生連線驗收證據
 
 FactSet maintenance 成功可提供 staging 到 RDS 的 TLS／原生 catalogue SELECT 證據，須核對
 實際 image 的 CA／hostname 必驗、read-only transaction、timeout 及持久原生 response。
@@ -220,19 +203,18 @@ Twelve Data 不再擁有 HK 抓取路徑：Fetcher 已移除香港 country catal
 （凍結商品 `0001`，含 `exchange=HKEX`）均回 HTTP／provider code 400 `no_data_response`；
 官方將 XHKG 列為需授權或未支援市場，因此港股不再列為 Twelve Data 待解項目。
 
-方案沒有 HK 權限，此退役為永久決定：Source 的抓取閘門不論 HK cutover 是否已套用，一律拒絕
-`twelve_data` × `hk_equity_eod` 的新 plan、manifest、prepare 與 claim 取得權限；新交付與舊 raw
-rerun 也因不在 `allowed_sources` 而 fail closed。此閘門只封鎖這個組合，cutover 判斷也只適用
-FactSet；未來新增的 HK 來源依 provider scope、`allowed_sources` 與 execution manifest 治理，
-不受此處限制。
+方案沒有 HK 權限，此退役為永久決定。Twelve Data 的 catalog source scope 只有 `us_equity_eod`，
+Source credential 無法涵蓋 `hk_equity_eod`，新 plan、manifest、prepare 與 claim 因而 fail closed；
+新交付與舊 raw rerun 也因不在 `allowed_sources` 而拒絕。不另設依 provider 名稱的閘門；未來新增的
+HK 來源同樣依 provider scope、`allowed_sources` 與 execution manifest 治理。
 
 Migration 只處理 scope 與 open 告警，保留 raw、run、plan、work、universe release、canonical
 列及已撤銷 credential。若此組合仍有非 terminal work／run、未結算 attempt、未交付 prepared 或
 進行中的 historical request，migration 會中止，不代為結算。Downgrade 為 no-op。
 
 2026-11-02 以唯讀 transaction 核對，兩環境此組合的 accepted runs 與 raw 皆為 0，canonical 也沒有
-Twelve Data HK 列，關閉 rerun 沒有資料受影響。Staging 已套用 HK cutover；production 當時尚未
-套用，也沒有 FactSet release、work 或 HK canonical 資料，需另依前述切換程序上線。
+Twelve Data HK 列，關閉 rerun 沒有資料受影響。Staging 曾套用 HK cutover（2026-10-21）；production
+未套用，也沒有 FactSet work 或 HK canonical 資料。閘門退役後兩環境都依「環境啟用」上線。
 
 2026-10-30 06:10 UTC 以唯讀 transaction／SQLite `mode=ro` 核對兩環境，結案條件全部成立：
 
