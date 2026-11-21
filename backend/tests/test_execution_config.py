@@ -176,7 +176,7 @@ def test_completion_and_bounded_deadlines_are_independent():
     )
     for provider, key, expected in [
         ("finlab", "tw_equity_eod", "2026-11-09T22:00:00+00:00"),
-        ("finlab", "tw_equity_bar_1m", "2026-11-09T22:30:00+00:00"),
+        ("finlab", "tw_equity_bar_1m", "2026-11-09T23:15:00+00:00"),
         ("factset", "hk_equity_eod", "2026-11-10T00:00:00+00:00"),
         ("taifex", "tw_futures_eod", "2026-11-09T21:00:00+00:00"),
     ]:

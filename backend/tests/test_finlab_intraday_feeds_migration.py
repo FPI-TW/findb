@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from copy import deepcopy
 
 import pytest
 from sqlalchemy import text
@@ -89,7 +90,10 @@ async def test_intraday_feeds_are_staged_inactive_with_the_scopes_the_catalog_no
                     assert {k: row[k] for k in ("name", "asset_class", "market", "frequency")} == {
                         k: definition[k] for k in ("name", "asset_class", "market", "frequency")
                     }
-                    assert row["config"] == definition["config"]
+                    # Seed's config, at the start this revision staged (d7f9b1c3e5a8 moves it).
+                    expected = deepcopy(definition["config"])
+                    expected["delivery_expectation"]["schedule"]["local_time"] = "18:30:00"
+                    assert row["config"] == expected
             assert set(staged) == set(INTRADAY)
             assert set(
                 (

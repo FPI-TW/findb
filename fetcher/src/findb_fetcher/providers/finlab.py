@@ -20,9 +20,11 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import date, datetime, timezone
+from datetime import time as clock_time
 from decimal import Decimal, InvalidOperation
 from types import MappingProxyType
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 from findb_fetcher.finlab_credentials import effective_token, installed_token, sdk_credential_scope
 from findb_fetcher.full_market_state import QuotaBlockedError
@@ -58,6 +60,16 @@ FINLAB_USAGE_PROBE_DATASET = "price:收盤價.recent"
 _FRAME_JSON_COLUMN_BATCH = 16
 # Latest dates kept as evidence when a table does not serve the target date yet.
 _NOT_READY_TAIL_DATES = 5
+# FinLab updates the price tables at 15:32, 16:32, 18:32 and 21:32 Taipei, and its
+# catalog declares them final after the 18:32 run (``final_after``). An earlier
+# copy lacks the day's block-trade volume, so a table is taken for a trade date only
+# once its published revision is at or after that run. Every run re-dates the
+# revision, even one that changes nothing, so a quiet day still becomes final.
+FINLAB_TIMEZONE = ZoneInfo("Asia/Taipei")
+FINLAB_FINAL_AFTER = clock_time(18, 32)
+# When neither the 18:32 nor the 21:32 run has published by then, the table is
+# taken as it is (logged), before the daily publication window closes at 22:30.
+FINLAB_FINAL_FALLBACK = clock_time(22, 15)
 
 
 class FinLabError(RuntimeError):
@@ -332,6 +344,12 @@ class FinLabSdkGateway:
                         if table.dates != (target_date.isoformat(),):
                             _log_target_not_ready(dataset.strip(), target_date, table)
                         else:
+                            _require_final(
+                                dataset.strip(),
+                                target_date,
+                                _published_at(data, get, dataset.strip()),
+                                datetime.now(timezone.utc),
+                            )
                             prior = _prior_row(
                                 frame, target_date=target_date, symbols=table.symbols
                             )
@@ -1069,6 +1087,58 @@ def _prior_row(
         }
     except Exception:
         return None
+
+
+def _published_at(data: object, get: object, dataset: str) -> datetime | None:
+    """The published revision of the cached table the get just read, or ``None``.
+
+    The SDK dates its cache file at the revision it downloaded or confirmed. The
+    worker shares this file system, and the provider's host lock keeps every other
+    FinLab process from touching the cache between its get and this read.
+    """
+    for storage in _file_storages(data, get):
+        try:
+            published = storage.get_time_created(dataset)
+        except Exception:
+            continue
+        if isinstance(published, datetime) and published.tzinfo is not None:
+            return published
+    return None
+
+
+def finlab_final(target_date: date, published: datetime | None, now: datetime) -> str | None:
+    """Whether a table published at ``published`` is final for ``target_date``.
+
+    ``"published"`` once its revision is at or after the target date's 18:32 run,
+    ``"fallback"`` when that run never published and the fallback time has passed,
+    else ``None``: the table is not final yet.
+    """
+    final_after = datetime.combine(target_date, FINLAB_FINAL_AFTER, FINLAB_TIMEZONE)
+    if published is not None and published >= final_after:
+        return "published"
+    fallback = datetime.combine(target_date, FINLAB_FINAL_FALLBACK, FINLAB_TIMEZONE)
+    return "fallback" if now >= fallback else None
+
+
+def _require_final(
+    dataset: str, target_date: date, published: datetime | None, now: datetime
+) -> None:
+    """Refuse a table FinLab may still revise for the target date, as not ready."""
+    final = finlab_final(target_date, published, now)
+    if final == "published":
+        return
+    line = {
+        "dataset": dataset,
+        "target_date": target_date.isoformat(),
+        "published_at": None if published is None else published.isoformat(),
+    }
+    kind = "finlab_final_publication_missing" if final else "finlab_target_not_final"
+    print(
+        json.dumps({kind: line}, ensure_ascii=False, separators=(",", ":")),
+        flush=True,
+    )
+    if final is None:
+        raise FinLabTargetNotReadyError("FinLab has not published the final table yet")
 
 
 def _log_target_not_ready(dataset: str, target_date: date, table: FinLabDatasetTable) -> None:

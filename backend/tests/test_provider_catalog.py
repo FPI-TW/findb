@@ -95,14 +95,21 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "hk_equity_eod": ("Asia/Hong_Kong", "20:00", "Asia/Hong_Kong", "08:00", 1),
         "tw_equity_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
         "tw_etf_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
-        "tw_equity_bar_1m": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),
-        "tw_etf_bar_1m": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),
-        "tw_equity_tick": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),
-        "tw_etf_tick": ("Asia/Taipei", "18:30", "Asia/Taipei", "06:30", 1),
+        "tw_equity_bar_1m": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
+        "tw_etf_bar_1m": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
+        "tw_equity_tick": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
+        "tw_etf_tick": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
         "tw_futures_eod": ("Asia/Taipei", "17:00", "Asia/Taipei", "05:00", 1),
     }
     assert us.bounded_monitor.deadline.local_time == "09:15"
     assert us.publication_retry_window_seconds == 10800
+    # FinLab daily waits for the final price tables until 22:30: past the Fetcher's
+    # 22:15 fallback, which takes the table as it is when the 18:32 and 21:32 runs fail.
+    assert {
+        f.dataset_key: f.publication_retry_window_seconds
+        for f in catalog.feeds
+        if f.dataset_key in ("tw_equity_eod", "tw_etf_eod")
+    } == {"tw_equity_eod": 16200, "tw_etf_eod": 16200}
     for provider in catalog.providers:
         assert provider.calendar_switch_env in Settings.model_fields
 

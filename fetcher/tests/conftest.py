@@ -62,6 +62,7 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         "test_local_account_config.py",
         "test_finlab.py",
         "test_finlab_revision_check.py",
+        "test_finlab_final_publication.py",
         "test_finlab_file_cache.py",
         "test_finlab_dataframe_bytes.py",
         "test_finlab_native_identity.py",
