@@ -27,8 +27,9 @@
   [還原價：調整因子表設計](price-adjustment-factors.md)。
 - **VWAP 不由 FMP 取得，也不在本次範圍。** 港股改從 HKEX 取得，台股由 FinLab 成交金額計算，之後一起做；
   美股不做。實測與規劃見「VWAP」。
-- **港股指數排在香港時間 20:00 抓取**（Owner 於 2026-11-19 確認）。
-- **每日抓取用 `eod-bulk`**，目標日之後有分割生效的標的改以單檔 `non-split-adjusted` 補抓，見「每日抓取方式」。
+- **指數分兩組**（Owner 於 2026-11-21 定案）：港股組排在香港時間 20:00，美股組排在台北時間隔天 08:30。
+  見「分組與排程」。
+- **指數每日逐檔查詢**（Owner 於 2026-11-21 決定），不用 `eod-bulk`，見「每日抓取方式」。
 - 不設原定交付日，目標是盡快上線。
 
 ## 需求依資料形狀分類
@@ -221,7 +222,7 @@
 
 結果見「階段 1 盤點結果」。尚未測量的項目併入階段 2 開工前確認：
 
-- 美股指數的發布時間，以及未收盤列在收盤後是否會被修正（港股指數 11-19 在 17:40 定案）。
+- ~~美股指數的發布時間，以及未收盤列在收盤後是否會被修正~~：2026-11-20 實測完成，見「階段 2」的「發布時間實測」。
 - 30 日頻寬上限與實際用量、429 與 `Retry-After` 行為。
 
 ### 階段 2：Provider 基礎與市場指數日線
@@ -251,7 +252,7 @@ Owner 於 2026-11-20 決定：
 
 - **依更新時間分組，每組一個 dataset。** 一個 dataset 每天只有一份工作，沒有「每檔各自的可抓時間」；更新時間不同
   的指數放在同一個 dataset，晚到的那檔會讓整份工作等待或失敗。分組依「發布時間」的實測決定，每組排在組內最晚
-  定案的時間之後。
+  定案的時間之後；2026-11-21 定案，見「分組與排程」。
 - **所有指數 feed 都必須有已發布的交易所日曆才執行。** 缺少日曆時不得以週一至週五的預設代替，而是停在可重試的
   等待狀態並顯示原因。FMP 在休市日回的列一律不寫入。
 - **VIX 依美股交易日曆，非交易日沒有值。** VIX 由 S&P 500 選擇權計算；Cboe 在美國假日公布的延長交易時段計算值
@@ -260,15 +261,55 @@ Owner 於 2026-11-20 決定：
 
 其他已知事實：
 
-- 指數沒有分割，`eod-bulk` 的值就是原始值；11-18 的 bulk 有 381 列指數。
+- 指數沒有分割，`full` 與 `non-split-adjusted` 的值相同，就是原始值。
 - 只接受目標日期且已發布的列：FMP 收盤前就回當天的列，回應也不標示是否定案。
-- 港股指數只有 FMP 一個來源，沒有每日官方值可自動核對；11-19 在香港時間 17:40 定案。
-- 美股指數的發布時間 2026-11-20 起實測中（每 5 分鐘查一次單檔、每 30 分鐘查一次 `eod-bulk`）。
+- 港股指數只有 FMP 一個來源，沒有每日官方值可自動核對。
+
+#### 發布時間實測
+
+2026-11-19 21:23 至 11-20 23:00（紐約時間）每 5 分鐘以 `historical-price-eod/full` 查 10 檔，每 30 分鐘查一次
+`eod-bulk`。只觀測了一個美股交易日（11-20，星期五）。
+
+| 指數 | 最後一次變動 | 定案收盤 | 核對 |
+| --- | --- | ---: | --- |
+| `^HSCE` | 16:15 HKT | 7554.37 | HKEX 報表相同 |
+| `^HSI` | 17:38 HKT（11-19 為 17:40） | 22410.80 | HKEX 報表相同 |
+| `^DJI` | 16:10 ET | 48147.33 | yfinance 相同 |
+| `^VIX` | 16:31 ET | 35.89 | Cboe OHLC 全部相同 |
+| `^RUT` | 18:20 ET | 2581.79 | yfinance 相同 |
+| `^GSPC`、`^IXIC`、`^SOX`、`^NYA` | 18:25 ET | 6910.39 等 | yfinance 相同 |
+| `^NDX` | 19:01 ET | 25028.98 | yfinance 相同 |
+
+- 盤中就有當天的列，每 5–10 分鐘更新。
+- 美股 18:20–19:01 的變動是真的改收盤，不只是捨入：`^GSPC` 16:00 為 6901.86，18:25 改為 6910.39。之後到
+  23:00 ET 沒有再變。
+- **前一天的列在半夜被換掉。** 美股 11-19 的列在 11-20 00:03–04:17 ET 之間兩個版本來回切換，之後穩定在正確版本。
+  `^NYA` 錯的版本開盤 = 最高 = 前一天收盤、成交量 0；`^VIX` 開盤 = 最低 = 前一天收盤，Cboe 官方不是。
+- 港股 11-19 的 `^HSI` 隔天 11:20 HKT 被改：收盤 22841.62 → 22841.63、成交量從 0 補上；HKEX 官方是 22841.62。
+- `eod-bulk` 緊接著的第二次呼叫一律 429（70 次全部），單檔端點 2,980 次全部 200。
+
+#### 分組與排程
+
+Owner 於 2026-11-21 定案：
+
+| 組 | 指數 | 排程 | 完成期限 | 交易日曆 |
+| --- | --- | --- | --- | --- |
+| 港股（dataset 暫稱 `hk_index_eod`） | `^HSI`、`^HSCE` | 香港時間 20:00，`target_date_lag_days` 0 | 隔天 08:00 HKT | HK |
+| 美股（dataset 暫稱 `us_index_eod`） | 其餘 8 檔，含 `^VIX` | 台北時間 08:30，`target_date_lag_days` 1 | 同日 20:30（台北） | US |
+
+- 美股組以台北時間排程，抓的是前一個紐約交易日。台北 08:30 在美國冬令時間是 19:30 ET，夏令時間是 20:30 ET。
+  - 11-20（冬令時間）最晚的 `^NDX` 在 19:01 ET 定案，離排程約 30 分鐘。
+  - 前一天的列從 00:03 ET 起被換成錯的版本，台北 08:30 在這之前。
+- 星期六 08:30 抓星期五，星期一 08:30 的目標日是星期日，依美股日曆沒有工作。
+- 完成期限依現行規則為排程加 12 小時。
+- 定案後不再重抓覆寫：觀測到的隔天改值，一種是半夜出現錯的版本，另一種是改成和官方差 0.01。
 
 #### 每日抓取方式
 
-- 每個交易日收盤發布後呼叫一次 `eod-bulk`，取目標日的指數列；一次呼叫涵蓋全部指數，各組 dataset 共用。
-- 歷史回補逐檔呼叫 `historical-price-eod/full`（指數沒有分割，與 `non-split-adjusted` 相同），`^GSPC` 從 1927 年起。
+- **逐檔呼叫 `historical-price-eod/full`**（`from` 與 `to` 都是目標日），每組每天各一次、共 10 次。只接受日期等於
+  目標日的列；沒有該列時視為尚未發布，在重試窗口內重試。
+- 不用 `eod-bulk`：連續呼叫會 429，兩組各自呼叫等於同一份全市場資料抓兩次，而且回應是 CSV、需要新的 raw 格式。
+- 歷史回補同樣逐檔呼叫 `historical-price-eod/full`，`^GSPC` 從 1927 年起。
 - 個股與 ETF 之後若改由 bulk 取得，目標日之後有分割生效的標的要改以單檔 `non-split-adjusted` 補抓。
 
 #### 與現行排程設計的相容性
@@ -317,13 +358,14 @@ Owner 於 2026-11-20 決定：
   - `backend/scripts/seed_data.py` 的 `SUPPORTED_DATASETS` 與 dataset 定義；registry、scheduler dataset、control
     `full_market_fmp_v1` 與 Source credential scope。
   - 完成期限固定為排程加 12 小時（`backend/app/provider_catalog.py` 的
-    `COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`），港股指數 20:00 開始即為隔天 08:00。
+    `COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`）：港股組隔天 08:00 HKT，美股組台北時間 20:30。
+  - 美股組是第一條 `target_date_lag_days` 為 1 的 feed，`data_ready_at`、`latest_due_date` 與期限計算要補測試。
   - 新增 control 與 feed 時，要一併提供新的凍結 schedule inspection（目前是 `b3d5f7a9c1e2`，由
     `scripts/preflight_catalog_schedule.py` 在每次部署前執行），否則會判為 `unknown_difference`、中止部署。
 - **Fetcher**
   - `providers/fmp.py`：client、`from_env`、contract mapping；key 只放在 `apikey` header，錯誤訊息遮蔽。
-  - `provider_adapters/fmp.py`：`ProviderAdapter` 子類，登記到 `ADAPTERS`；一份 bulk 供當天所有成員共用一個
-    raw 物件。bulk 是 CSV，需要新的 raw 格式（例如 `csv_utf8`）。
+  - `provider_adapters/fmp.py`：`ProviderAdapter` 子類，登記到 `ADAPTERS`；每檔一次 JSON 請求、一個 raw 物件，
+    沿用現有的 json raw 格式。
   - 共用程式碼裡的 provider 清單：`execution_config._IMPLEMENTED_ADAPTERS`、`historical_backfill_cli.py` 的
     runner、`production_backfill_cli._scope`。
   - 沿用 `image_key: twelve_data`（同 TAIFEX），不新增 image、ECR 與 workflow。
@@ -403,9 +445,7 @@ Owner 於 2026-11-19 決定：
 
 ## 待決事項
 
-- 第一批 10 檔依實測發布時間的分組。
 - 指數、商品與跨資產的 instrument 模型：`asset_class`、市場代碼、交易日曆、幣別與代號格式（例如 `^HSI`）。
-- 各組指數的排程（依實測發布時間）。
 - 美股 515 檔的名單來源，以及每個 dataset 的 bounded universe。
 - 階段 5 的批次順序。
 - 授權條款是否允許內部再提供給下游專案。
