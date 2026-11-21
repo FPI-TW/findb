@@ -159,6 +159,9 @@ class HistoricalExecutionProfiles(CatalogModel):
 # to the release current at creation (the provider can only list today's
 # members); ``daily_report`` reads members from the date's own report.
 HistoricalCohort = Literal["dated_release", "current_release", "daily_report"]
+# Provider requests one historical date costs, for operator estimates: a fixed
+# count of shared reports/tables, or one request per frozen member.
+HistoricalRequests = PositiveInt | Literal["per_member"]
 # Where a trade date's universe comes from: ``refreshed`` lists are refreshed by
 # maintenance and a plan freezes the latest published release; a ``dated`` list
 # is built from the date's own provider observation and a plan needs that date's.
@@ -183,6 +186,7 @@ class FeedDefinition(CatalogModel):
     delivery: DeliveryCompatibility
     historical_execution: HistoricalExecutionProfiles | None
     historical_cohort: HistoricalCohort | None
+    historical_requests_per_date: HistoricalRequests | None
     universe_mode: UniverseMode
 
     @model_validator(mode="after")
@@ -210,6 +214,13 @@ class FeedDefinition(CatalogModel):
             raise ValueError("unsupported historical feed has execution parameters")
         if (self.historical_cohort is None) != (caps.historical == "unsupported"):
             raise ValueError("historical feeds, and only they, declare a historical cohort")
+        if (self.historical_requests_per_date is None) != (caps.historical == "unsupported"):
+            raise ValueError("historical feeds, and only they, declare requests per date")
+        if (
+            self.historical_requests_per_date == "per_member"
+            and self.historical_cohort != "dated_release"
+        ):
+            raise ValueError("per-member estimates need a dated_release member list")
         if self.historical_execution is not None and self.historical_cohort != "dated_release":
             # A Backend-owned cohort would make the planner ignore a packaged universe.
             raise ValueError("only dated_release feeds may package a historical universe")

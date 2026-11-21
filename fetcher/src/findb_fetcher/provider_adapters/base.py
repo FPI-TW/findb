@@ -220,8 +220,6 @@ class ProviderAdapter:
     # Journal prefix of a shared native response; once observed, a published
     # calendar closure repairs instead of reusing that response.
     shared_response_prefix: ClassVar[str | None] = None
-    # Bounded retry window of a ``wait="outage"`` failure; a success clears it.
-    outage_retry_seconds: ClassVar[int | None] = None
     # The outage is of one observation the whole cohort is read from: the plan waits
     # as a whole, and an exhausted window ends the work instead of charging the
     # members one at a time.

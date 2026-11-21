@@ -100,6 +100,7 @@ def _finlab_runtime(
         "dataset_key": dataset,
         "trade_date": "2026-10-01",
         "parts": [{"work_item_id": dataset, "member_keys": list(symbols)}],
+        "deadline_at": (clock.origin + timedelta(hours=12)).isoformat(),
     }
     runtime.state.record_plan(plan, "finlab")
     gateway = SimpleNamespace(calls=[], fail_at=None, failure="network")
@@ -457,8 +458,14 @@ def test_finlab_table_failure_holds_the_plan_without_charging_members(
         runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
     assert str(pending.value) == "finlab_quota" and pending.value.retry_after_seconds == 1800
 
-    # Past the outage window the work ends; members are still not charged one by one.
+    # The outage keeps retrying until the plan's completion deadline, not a fixed span.
     clock.elapsed += 4 * 3600
+    context.gateway.fail_at, context.gateway.failure = len(context.gateway.calls) + 1, "network"
+    with pytest.raises(ProviderOutagePendingError):
+        runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+
+    # At the deadline the work ends; members are still not charged one by one.
+    clock.elapsed = 12 * 3600
     context.gateway.fail_at, context.gateway.failure = len(context.gateway.calls) + 1, "network"
     with pytest.raises(ProviderWorkRejectedError) as rejected:
         runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])

@@ -909,12 +909,13 @@ class FullMarketState:
             )
 
     def defer_provider_outage(
-        self, key: str, *, now: float, delay_seconds: int, limit_seconds: float
+        self, key: str, *, now: float, delay_seconds: int, until: float
     ) -> bool:
         """Defer a shared-report outage without charging the member.
 
-        The plan's continuous outage starts at its first deferral; once it
-        reaches ``limit_seconds`` the caller must stop retrying the member.
+        The plan's continuous outage starts at its first deferral (kept for health);
+        once ``until`` (the plan's completion deadline) is reached the caller must
+        stop retrying the member.
         """
         with self.connection() as db:
             db.execute(
@@ -925,7 +926,7 @@ class FullMarketState:
                 "SELECT o.since FROM full_provider_outage o JOIN full_work w ON w.plan_id=o.plan_id WHERE w.key=?",
                 (key,),
             ).fetchone()
-        if row is None or now - float(row[0]) >= limit_seconds:
+        if row is None or now >= until:
             return False
         self.defer_wait(key, now=now, reason="provider_unavailable", delay_seconds=delay_seconds)
         return True

@@ -130,7 +130,8 @@ def test_actual_taifex_transport_authorization_wait_never_spends_operation_budge
         httpx.Client(transport=httpx.MockTransport(unavailable)) as http,
         HistoricalControlClient(config, provider="taifex", client=http) as control,
         acq.authorization_scope(
-            lambda: control.authorize(item), state_path=tmp_path / "account.sqlite3"
+            lambda: control.authorize(item, runner_retries=True),
+            state_path=tmp_path / "account.sqlite3",
         ),
     ):
         clock = [1000.0]

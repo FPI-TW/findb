@@ -45,8 +45,6 @@ from findb_fetcher.providers.taifex import (
 )
 from findb_fetcher.raw_storage import RawObject
 
-# A TAIFEX report outage stops charging members, but only for this long per plan.
-TAIFEX_OUTAGE_RETRY_SECONDS = 12 * 3600
 TAIFEX_PRODUCTS = ("TX", "MTX", "TMF", "TE", "TF")
 OBSERVATION_FIELDS = ("open", "high", "low", "close", "settlement_price", "open_interest")
 
@@ -69,7 +67,6 @@ def taifex_report_unavailable(exc: BaseException) -> bool:
 
 class TaifexAdapter(ProviderAdapter):
     provider = "taifex"
-    outage_retry_seconds = TAIFEX_OUTAGE_RETRY_SECONDS
 
     def __init__(self) -> None:
         self.reports: dict[str, tuple[bytes, list[dict[str, Any]], bool]] = {}

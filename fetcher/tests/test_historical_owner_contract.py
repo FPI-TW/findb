@@ -26,11 +26,11 @@ def harness(monkeypatch, **work):
     monkeypatch.setattr(
         provider_work, "active", lambda: pytest.fail("validated owner was discarded")
     )
-    item = SimpleNamespace(provider="finlab")
+    item = SimpleNamespace(provider="finlab", dataset_key="tw_equity_eod")
     control = SimpleNamespace(
         provider="finlab",
         claim=lambda: events.append("claim") or item,
-        authorize=lambda item: pytest.fail("fake runner should not dispatch"),
+        authorize=lambda item, **_: pytest.fail("fake runner should not dispatch"),
         complete=lambda item, run_id: events.append(("complete", run_id)),
         fail=lambda item, code: events.append(("fail", code)),
     )
@@ -147,3 +147,38 @@ def test_missing_owner_is_rejected_before_item_claim(monkeypatch):
     control = SimpleNamespace(provider="finlab", claim=lambda: pytest.fail("unowned claim"))
     with pytest.raises(provider_work.ProviderWorkRecoveryBlockedError):
         _run_once(control, SimpleNamespace())
+
+
+def test_installed_runners_declare_their_own_operation_retries():
+    from findb_fetcher.factset_historical import FactSetHistoricalRunner
+    from findb_fetcher.historical_backfill import runner_retries_operations
+    from findb_fetcher.historical_runtime import FinLabHistoricalRunner, TwelveDataHistoricalRunner
+    from findb_fetcher.taifex_historical import TaifexHistoricalRunner
+
+    assert runner_retries_operations(TaifexHistoricalRunner)
+    for runner in (TwelveDataHistoricalRunner, FinLabHistoricalRunner, FactSetHistoricalRunner):
+        assert not runner_retries_operations(runner)
+
+
+@pytest.mark.parametrize("retries", [False, True])
+def test_authorization_attempts_follow_the_runner(monkeypatch, retries):
+    from contextlib import contextmanager
+
+    from findb_fetcher import acquisition
+
+    _, control, _, events = harness(monkeypatch)
+    scopes, grants = [], []
+
+    @contextmanager
+    def scope(callback, *, dispatch_attempts=3, state_path=None):
+        scopes.append(dispatch_attempts)
+        grants.append(callback())
+        yield
+
+    monkeypatch.setattr(acquisition, "authorization_scope", scope)
+    control.authorize = lambda item, *, runner_retries=False: runner_retries
+    runner = SimpleNamespace(run=lambda item: RUN_ID, retries_operations=retries)
+
+    assert _run_once(control, runner)
+    assert scopes == [1 if retries else 3] and grants == [retries]
+    assert ("complete", RUN_ID) in events

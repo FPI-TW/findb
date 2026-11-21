@@ -5,7 +5,7 @@ import json
 import sqlite3
 import time
 from contextlib import closing
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs
 
 import httpx
@@ -269,6 +269,11 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                 with h.queue.claimed_work(source, h.provider, accepted_kinds=["daily"]) as owner:
                     assert owner
                     plan = source.evaluate(str(db_plan.plan_id))
+                    # The fixture's trade date is fixed in the past while the Fetcher
+                    # keeps real time; an outage retries until the plan's deadline.
+                    plan["deadline_at"] = (
+                        datetime.now(timezone.utc) + timedelta(hours=12)
+                    ).isoformat()
                     owner.freeze(
                         {
                             "mode": "canonical",

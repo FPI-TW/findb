@@ -196,6 +196,17 @@ def load_readiness(
     return value
 
 
+def _plan_deadline(plan: dict[str, Any]) -> float:
+    """The plan's frozen completion deadline; Source always sends one."""
+    try:
+        deadline = datetime.fromisoformat(plan["deadline_at"])
+    except (KeyError, TypeError, ValueError):
+        raise ReadinessBlockedError("Full-market plan deadline is invalid") from None
+    if deadline.tzinfo is None:
+        raise ReadinessBlockedError("Full-market plan deadline is invalid")
+    return deadline.timestamp()
+
+
 def _governed(method):
     @wraps(method)
     def run(self, *args, **kwargs):
@@ -1880,8 +1891,7 @@ class FullMarketRuntime:
                     )
                     no_data_streak = 0
                     self.state.clear_no_data_trips(plan["plan_id"])
-                    if self.adapter.outage_retry_seconds is not None:
-                        self.state.clear_provider_outage(plan["plan_id"])
+                    self.state.clear_provider_outage(plan["plan_id"])
                     if not requests:
                         self.state.finish(key, status="complete", reason="source_proven_no_trade")
                         continue
@@ -2112,13 +2122,13 @@ class FullMarketRuntime:
                 if failure.wait == "outage":
                     # One shared report serves every member: an outage keeps the
                     # member failure budget and ends this round for a later retry,
-                    # until the plan's outage exceeds its bounded retry window.
+                    # until the plan's frozen completion deadline, as for every provider.
                     delay = max(60, math.ceil(failure.retry_after))
                     deferred = self.state.defer_provider_outage(
                         key,
                         now=time.time(),
                         delay_seconds=delay,
-                        limit_seconds=self.adapter.outage_retry_seconds or 0,
+                        until=_plan_deadline(plan),
                     )
                     if self.adapter.outage_holds_plan:
                         # Every member is read from the observation that failed, so

@@ -78,8 +78,7 @@ INTRADAY_DATASETS: Mapping[str, tuple[str, str]] = {
 }
 FINLAB_PRICE_FIELDS = ("open", "high", "low", "close")
 # A table that cannot be fetched fails for every member alike. The plan retries it
-# as a whole for this long, then the work ends; no member is charged for it.
-FINLAB_OUTAGE_RETRY_SECONDS = 4 * 3600
+# as a whole after this delay until its completion deadline; no member is charged.
 FINLAB_OUTAGE_DELAY_SECONDS = 5 * 60
 # The daily quota does not come back within minutes.
 FINLAB_QUOTA_DELAY_SECONDS = 30 * 60
@@ -201,7 +200,6 @@ class FinLabAdapter(ProviderAdapter):
     shared_response_prefix = "finlab_dataset:"
     # Catalogue presence is an SDK observation inside ``build_universe``.
     catalogue_datasets = None
-    outage_retry_seconds = FINLAB_OUTAGE_RETRY_SECONDS
     outage_holds_plan = True
     # Official lists observed at the scheduled time are effective on that Taipei date.
     daily_waits_for_same_day_universe = True

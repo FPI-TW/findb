@@ -83,7 +83,7 @@ def test_generic_failure_reports_source_error_and_stops_before_next_member(
 
     runtime._acquire = acquire
     runtime._acquisition_allowed = lambda: True
-    plan = _plan()
+    plan = {**_plan(), "deadline_at": "2999-01-01T00:00:00+00:00"}
     runtime.state.record_plan(plan, provider)
     # A TAIFEX network failure is an exchange-report outage; the round still stops
     # but the member is neither charged nor reported.

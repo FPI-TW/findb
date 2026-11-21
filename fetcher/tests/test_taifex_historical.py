@@ -379,7 +379,9 @@ def test_live_authorization_transients_use_durable_single_dispatch_retries(tmp_p
         runtime = runner(
             tmp_path, lambda _: pytest.fail("unexpected provider request"), clock=clock
         )
-        result = runtime._operation(item(), {}, "fetch:TX", lambda: control.authorize(item()))
+        result = runtime._operation(
+            item(), {}, "fetch:TX", lambda: control.authorize(item(), runner_retries=True)
+        )
     assert result.provider == "taifex"
     assert calls == [NOW, NOW + delay]
 
@@ -408,7 +410,9 @@ def test_authorization_retry_after_survives_lease_reclaim(tmp_path):
             tmp_path, lambda _: pytest.fail("unexpected provider request"), clock=clock
         )
         with pytest.raises(HistoricalWorkDeferredError):
-            runtime._operation(item(), {}, "fetch:TX", lambda: control.authorize(item()))
+            runtime._operation(
+                item(), {}, "fetch:TX", lambda: control.authorize(item(), runner_retries=True)
+            )
         with sqlite3.connect(runtime.path) as db:
             state = json.loads(db.execute("SELECT body FROM work").fetchone()[0])
         assert state["operations"]["fetch:TX"] == {"attempts": 1, "next_at": NOW + 1000}
@@ -419,7 +423,9 @@ def test_authorization_retry_after_survives_lease_reclaim(tmp_path):
             lease_expires_at=datetime.fromtimestamp(NOW + 2000, timezone.utc),
         )
         with pytest.raises(HistoricalWorkDeferredError):
-            runtime._operation(renewed, state, "fetch:TX", lambda: control.authorize(renewed))
+            runtime._operation(
+                renewed, state, "fetch:TX", lambda: control.authorize(renewed, runner_retries=True)
+            )
         assert len(calls) == 2 and clock[0] == NOW + 1000
 
 

@@ -368,10 +368,10 @@ FinLab daily 的抓表失敗是整個 cohort 共用的失敗，不記在任何�
 | `quota` | 整個 plan 等 30 分鐘後重試，結算為 `retry`／`DAILY_PROVIDER_UNAVAILABLE` |
 | 其他（`network`、`timeout`、`killed`、表格無法通過驗證等） | 整個 plan 等 5 分鐘後重試，同上 |
 
-同一個 plan 的抓表失敗從第一次起算，持續超過 4 小時（`FINLAB_OUTAGE_RETRY_SECONDS`）仍未成功時，work 以
-`failed`／`DAILY_PROVIDER_OUTAGE_EXHAUSTED` 結束；任何一次抓表成功就重新計算。Work 結束後成員仍是 pending，
+抓表失敗會一直重試到 plan 凍結的完成期限（`deadline_at`，排程後 12 小時），到期仍未成功時，work 以
+`failed`／`DAILY_PROVIDER_OUTAGE_EXHAUSTED` 結束。所有 provider 的 outage 都用這個期限，不再有各自的固定時數。Work 結束後成員仍是 pending，
 缺漏以 historical 回補。「目標日期尚未發布」不屬於這裡，仍走上面的發布等待。Historical 的抓表失敗本來就以日期為單位重試
-（每個日期最多 5 次），沒有改變。TAIFEX 的報表 outage 維持原本的規則：延後當下那個成員、window 是 12 小時。
+（每個日期最多 5 次），沒有改變。TAIFEX 的報表 outage 同樣到完成期限為止，但只延後當下那個成員，不讓整個 plan 一起等待。
 
 診斷只讀取既有 checkpoint 與 Source API；不建立空替代檔、不呼叫 SDK。以環境既有的 Source
 credential、config 與 `FETCHER_ACCOUNT_STATE_PATH` 執行，明確指定 profile／state path：

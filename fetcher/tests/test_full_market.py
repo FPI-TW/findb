@@ -1077,7 +1077,9 @@ def test_taifex_acquire_prepares_provided_metrics_with_null_close(
     runtime.http.close()
 
 
-def _taifex_outage(tmp_path: Path, dated: Any) -> tuple[Any, Any, list[str], Any]:
+def _taifex_outage(
+    tmp_path: Path, dated: Any, *, deadline_in: float = 12
+) -> tuple[Any, Any, list[str], Any]:
     """Two members of one plan sharing an unavailable official report."""
     runtime, source, _ = _runtime(tmp_path, provider="taifex")
     stale = canonical_bytes([{**_taifex(month="202610", session="一般"), "Date": "20260930"}])
@@ -1106,6 +1108,7 @@ def _taifex_outage(tmp_path: Path, dated: Any) -> tuple[Any, Any, list[str], Any
     ]
     plan = {**_plan(), "dataset_key": "tw_futures_eod"}
     plan["parts"][0] = {"work_item_id": "fp1:" + "a" * 32, "member_keys": keys}
+    plan["deadline_at"] = (datetime.now(timezone.utc) + timedelta(hours=deadline_in)).isoformat()
     feed = {**runtime.feeds[0], "dataset_key": "tw_futures_eod", "slot_id": "taiwan_market_window"}
     runtime.state.record_plan(plan, runtime.provider)
 
@@ -1166,15 +1169,24 @@ def test_taifex_outage_honours_retry_after_and_clears_on_recovery(tmp_path: Path
     runtime.http.close()
 
 
-def test_taifex_outage_beyond_retry_window_hands_member_to_manual(tmp_path: Path) -> None:
-    from findb_fetcher.provider_adapters.taifex import TAIFEX_OUTAGE_RETRY_SECONDS
-
-    runtime, source, _, deliver = _taifex_outage(tmp_path, httpx.Response(503))
+def test_taifex_outage_retries_until_the_plan_deadline(tmp_path: Path) -> None:
+    # Older than any fixed window, but the frozen deadline is still ahead.
+    runtime, source, _, deliver = _taifex_outage(tmp_path, httpx.Response(503), deadline_in=1)
     with runtime.state.connection() as db:
-        db.execute(
-            "INSERT INTO full_provider_outage VALUES(?,?)",
-            ("p", time.time() - TAIFEX_OUTAGE_RETRY_SECONDS - 1),
-        )
+        db.execute("INSERT INTO full_provider_outage VALUES(?,?)", ("p", time.time() - 13 * 3600))
+
+    assert deliver() is False
+
+    assert source.outcomes == []
+    with runtime.state.connection() as db:
+        work = {tuple(row) for row in db.execute("SELECT status,reason FROM full_work")}
+    assert ("pending", "provider_unavailable") in work
+    assert not any(status == "manual" for status, _ in work)
+    runtime.http.close()
+
+
+def test_taifex_outage_past_the_plan_deadline_hands_member_to_manual(tmp_path: Path) -> None:
+    runtime, source, _, deliver = _taifex_outage(tmp_path, httpx.Response(503), deadline_in=-0.01)
 
     assert deliver() is False
 

@@ -374,7 +374,16 @@ def test_cohort_items_complete_with_member_evidence(monkeypatch):
 
     item = _item("twelve_data", "us_equity_eod", [_member("O", "USD")])
     assert _member_evidence(item)
-    assert not _member_evidence(SimpleNamespace(provider="twelve_data", universe_snapshot=None))
+    # A request created before Full release binding completes by its Source run.
+    legacy = SimpleNamespace(
+        provider="twelve_data", dataset_key="us_equity_eod", universe_snapshot=None
+    )
+    assert not _member_evidence(legacy)
+    # A report or current-release cohort always completes by its own evidence.
+    for provider, dataset in (("taifex", "tw_futures_eod"), ("factset", "hk_equity_eod")):
+        assert _member_evidence(
+            SimpleNamespace(provider=provider, dataset_key=dataset, universe_snapshot=None)
+        )
 
 
 class _RowAdapter:
