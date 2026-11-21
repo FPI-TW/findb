@@ -491,7 +491,8 @@ failure budget 不因 SELECT 被 stop／heartbeat／generation 拒絕而退款�
 terminate／kill／reap，再傳遞原 stop／recovery 邊界；無法證明停止仍保留 host FD。
 
 歷史 expiry 的 provider-local cutoff 由 claim、work authorize、account authorize 與
-new manifest／intent 共用；owner 持續 heartbeat 不會延長支援日期窗。授權只投影 owner expiry，
+new manifest／intent 共用，等於新 request 仍可包含的最早日期（當地今天往前 `上限天數 − 1` 天），
+所有 provider 相同；建立與 preview 也使用同一個 provider 當地日期；owner 持續 heartbeat 不會延長支援日期窗。授權只投影 owner expiry，
 不續寫 item lease 或改變 domain status。到期後 authenticated completion／failure 在 provider
 transaction 與 owner scope 驗證後套用原 expiry 決策，再排空原 prepared，保留 `BACKFILL_EXPIRED`。
 

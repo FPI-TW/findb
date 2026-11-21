@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.provider_catalog import ProviderCatalog, load_catalog
@@ -195,7 +196,9 @@ def test_invalid_metadata_fails_closed(declaration, fault):
     elif fault == "draining_acquisition":
         f["lifecycle"] = "draining"
     elif fault == "retired_source":
-        f.update(lifecycle="retired", schedule=None, historical_execution=None)
+        f.update(
+            lifecycle="retired", schedule=None, historical_execution=None, historical_cohort=None
+        )
         f["capabilities"].update(acquisition=False, historical="unsupported")
     elif fault == "historical_without_source":
         f.update(schedule=None)
@@ -214,6 +217,7 @@ def test_invalid_metadata_fails_closed(declaration, fault):
         f["capabilities"]["acquisition"] = False
     elif fault == "unsupported_historical_execution":
         f["capabilities"]["historical"] = "unsupported"
+        f["historical_cohort"] = None
     elif fault == "bounded_without_deadline":
         f["bounded_monitor"]["deadline"] = None
     with pytest.raises(ValueError):
@@ -286,7 +290,9 @@ def test_retirement_removes_new_options_without_reintroducing_consumers(declarat
     provider = declaration["providers"][0]
     provider["consumer_roles"] = []
     feed = declaration["feeds"][0]
-    feed.update(lifecycle="retired", schedule=None, historical_execution=None)
+    feed.update(
+        lifecycle="retired", schedule=None, historical_execution=None, historical_cohort=None
+    )
     feed["capabilities"].update(source=False, acquisition=False, historical="unsupported")
     feed["bounded_monitor"].update(enabled=False)
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
@@ -350,7 +356,9 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
         'example: ["example_eod"]'
         in artifacts[Path("dashboard/src/lib/generated/provider-catalog.ts")]
     )
-    feed.update(lifecycle="draining", schedule=None, historical_execution=None)
+    feed.update(
+        lifecycle="draining", schedule=None, historical_execution=None, historical_cohort=None
+    )
     feed["capabilities"].update(acquisition=False, historical="unsupported")
     # Draining is not an instruction to remove installed consumers or Source scope.
     drained = build_artifacts(ProviderCatalog.model_validate(declaration))
@@ -413,32 +421,50 @@ def test_backend_publication_is_consumable_by_independent_fetcher():
         assert all("slot_id" not in f for f in published["feeds"])
 
 
-def test_historical_adapter_semantic_sets_name_catalog_providers():
-    from app.services.historical_backfill import (
-        CAPABILITIES,
-        DAILY_REPORT_HISTORICAL_PROVIDERS,
-        MEMBER_COHORT_PROVIDERS,
-        PREVIEW_CALENDAR_PROVIDERS,
-    )
+def test_historical_cohorts_are_catalog_fields():
     from app.services.provider_metadata import provider_catalog
 
-    historical = {provider for provider, _ in CAPABILITIES}
-    # Adapter semantics stay hand-written; a renamed/retired provider must not linger.
-    assert DAILY_REPORT_HISTORICAL_PROVIDERS <= historical
-    assert PREVIEW_CALENDAR_PROVIDERS - {"shioaji"} <= historical
-    # Whole-market report providers use the Backend universe, never a packaged
-    # Fetcher universe descriptor (the planner would silently ignore one). Full
-    # release cohort providers only keep descriptors for requests created before them.
-    without_descriptor = {
-        feed.provider
+    cohorts = {
+        (feed.provider, feed.dataset_key): feed.historical_cohort
         for feed in provider_catalog().feeds
-        if feed.historical_execution is None and feed.capabilities.historical != "unsupported"
+        if feed.capabilities.historical != "unsupported"
     }
-    assert (
-        DAILY_REPORT_HISTORICAL_PROVIDERS
-        <= without_descriptor
-        <= DAILY_REPORT_HISTORICAL_PROVIDERS | MEMBER_COHORT_PROVIDERS
-    )
+    assert cohorts == {
+        ("factset", "hk_equity_eod"): "current_release",
+        ("finlab", "tw_equity_eod"): "dated_release",
+        ("finlab", "tw_etf_eod"): "dated_release",
+        ("taifex", "tw_futures_eod"): "daily_report",
+        ("twelve_data", "us_equity_eod"): "dated_release",
+    }
+
+
+def test_historical_cohort_rules(declaration):
+    feed = next(f for f in declaration["feeds"] if f["dataset_key"] == "tw_equity_bar_1m")
+    feed["historical_cohort"] = "dated_release"
+    with pytest.raises(ValidationError, match="declare a historical cohort"):
+        ProviderCatalog.model_validate(declaration)
+    feed["historical_cohort"] = None
+    taifex = next(f for f in declaration["feeds"] if f["provider"] == "taifex")
+    taifex["historical_cohort"] = None
+    with pytest.raises(ValidationError, match="declare a historical cohort"):
+        ProviderCatalog.model_validate(declaration)
+    # A Backend-owned cohort would make the planner ignore a packaged universe.
+    taifex["historical_cohort"] = "daily_report"
+    taifex["historical_execution"] = next(
+        f for f in declaration["feeds"] if f["provider"] == "twelve_data"
+    )["historical_execution"]
+    with pytest.raises(ValidationError, match="only dated_release feeds"):
+        ProviderCatalog.model_validate(declaration)
+
+
+def test_feeds_of_one_dataset_share_a_calendar_market(declaration):
+    feed = next(f for f in declaration["feeds"] if f["provider"] == "taifex")
+    duplicate = {**feed, "provider": "twelve_data", "calendar_market": "TW"}
+    duplicate["capabilities"] = {**feed["capabilities"], "historical": "unsupported"}
+    duplicate["historical_cohort"] = None
+    declaration["feeds"].append(duplicate)
+    with pytest.raises(ValidationError, match="share a calendar market"):
+        ProviderCatalog.model_validate(declaration)
 
 
 def _seed_with_catalog(monkeypatch, declaration):
@@ -473,7 +499,9 @@ def test_seed_requires_exactly_one_catalog_source_feed(monkeypatch, declaration,
         extra["provider"] = "finlab"
         feeds.append(extra)
     if fault == "source_disabled":
-        feeds[index].update(lifecycle="retired", schedule=None, historical_execution=None)
+        feeds[index].update(
+            lifecycle="retired", schedule=None, historical_execution=None, historical_cohort=None
+        )
         feeds[index]["capabilities"].update(
             source=False, acquisition=False, historical="unsupported"
         )

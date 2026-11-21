@@ -67,6 +67,7 @@ from app.services.effective_calendar import (
 )
 from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.no_record_corroboration import NO_RECORD, corroborate_no_record
+from app.services.provider_metadata import dataset_calendar_market
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
 
@@ -577,7 +578,7 @@ async def get_universe(
 
 
 def _calendar_market(dataset: DatasetRegistry) -> str:
-    return "TAIFEX" if dataset.dataset_key == "tw_futures_eod" else dataset.market
+    return dataset_calendar_market(dataset.dataset_key, dataset.market)
 
 
 def _exchange_timezone(dataset: DatasetRegistry) -> ZoneInfo:
@@ -1413,17 +1414,13 @@ async def validate_ingest_part(
     governance = (dataset.config or {}).get("full_market") or {}
     delivery = getattr(request, "delivery", None)
     work_item_id = getattr(delivery, "work_item_id", None)
-    from app.services.historical_backfill import MEMBER_COHORT_PROVIDERS
+    from app.services.historical_backfill import member_evidence_feed
 
     if (
         isinstance(work_item_id, str)
         and work_item_id.startswith("historical:")
-        and (
-            isinstance(request, MarketEODIngressRequestV2)
-            and request.source == "factset"
-            or isinstance(request, (MarketEODIngressRequest, MarketEODIngressRequestV2))
-            and request.source in MEMBER_COHORT_PROVIDERS
-        )
+        and isinstance(request, (MarketEODIngressRequest, MarketEODIngressRequestV2))
+        and member_evidence_feed(request.source, dataset.dataset_key)
     ):
         from app.services.historical_backfill import (
             HistoricalBackfillError,
@@ -1437,17 +1434,16 @@ async def validate_ingest_part(
         return None
     if (
         isinstance(request, FuturesEODIngressRequest)
-        and request.source == "taifex"
         and isinstance(work_item_id, str)
         and work_item_id.startswith("historical:")
     ):
         from app.services.historical_backfill import (
             HistoricalBackfillError,
-            validate_taifex_historical_delivery,
+            validate_futures_historical_delivery,
         )
 
         try:
-            await validate_taifex_historical_delivery(db, request)
+            await validate_futures_historical_delivery(db, request)
         except HistoricalBackfillError as exc:
             raise FullMarketError(str(exc), 409) from exc
         return None

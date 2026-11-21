@@ -452,6 +452,36 @@ async def test_closed_dates_are_skipped_and_cannot_be_claimed(test_session, monk
     )
 
 
+@pytest.mark.asyncio
+async def test_closed_dates_follow_the_daily_calendar_switch(test_session, monkeypatch):
+    from app.config import get_settings
+
+    await seed(test_session, monkeypatch)
+    monkeypatch.setattr(get_settings(), "TAIFEX_SKIP_NON_TRADING_DAYS", False)
+    _, reason, days = await historical_backfill.preview_request(
+        test_session,
+        provider="taifex",
+        dataset_key="tw_futures_eod",
+        start_date=date(2026, 9, 26),
+        end_date=date(2026, 9, 27),
+    )
+    assert reason is None and all(valid for _, valid, _ in days)
+    request, _ = await historical_backfill.create_request(
+        test_session,
+        provider="taifex",
+        dataset_key="tw_futures_eod",
+        start_date=date(2026, 9, 26),
+        end_date=date(2026, 9, 27),
+        request_key="taifex-closed-acquired",
+        created_by="operator",
+    )
+    assert request.status == "queued"
+    assert all(item.status == "pending" for item in request.items)
+    assert all(
+        item.calendar_snapshot["policy"]["skip_non_trading_days"] is False for item in request.items
+    )
+
+
 @pytest.fixture(autouse=True)
 def queue_clock(monkeypatch):
     from app.services import historical_backfill, provider_work

@@ -197,7 +197,7 @@ def test_production_keeps_one_year_eod_and_retained_shioaji_window(monkeypatch) 
     assert historical_backfill._max_backfill_days("shioaji") == 31
     assert historical_backfill.expiry_cutoff(
         "shioaji", datetime(2026, 8, 31, 16, 1, tzinfo=timezone.utc)
-    ) == date(2026, 8, 1)
+    ) == date(2026, 8, 2)
     assert historical_backfill._supports_backfill("twelve_data", "us_equity_eod") is True
     assert historical_backfill._supports_backfill("finlab", "tw_equity_eod") is True
     assert historical_backfill._supports_backfill("shioaji", "tw_equity_minute") is False
@@ -335,6 +335,57 @@ async def test_historical_backfill_rejects_out_of_window_and_is_idempotent(test_
     assert duplicate is False
     assert repeated_duplicate is True
     assert repeated.request_id == first.request_id
+
+
+@pytest.mark.asyncio
+async def test_creation_and_preview_use_the_provider_local_date(test_session, monkeypatch) -> None:
+    taipei_today = date(2026, 9, 2)
+    await _seed_scope(test_session, taipei_today)
+    await _seed_twelve_scope(test_session, date(2026, 9, 1))
+    # Taipei is already 2026-09-02 while UTC and New York are still 2026-09-01.
+    monkeypatch.setattr(
+        historical_backfill, "utc_now", lambda: datetime(2026, 9, 1, 17, tzinfo=timezone.utc)
+    )
+    _, reason, _ = await preview_request(
+        test_session,
+        provider="finlab",
+        dataset_key="tw_equity_eod",
+        start_date=taipei_today,
+        end_date=taipei_today,
+    )
+    assert reason is None
+    request, _ = await create_request(
+        test_session,
+        provider="finlab",
+        dataset_key="tw_equity_eod",
+        start_date=taipei_today,
+        end_date=taipei_today,
+        request_key="historic-taipei-today",
+        created_by="operator",
+    )
+    assert [item.trade_date for item in request.items] == [taipei_today]
+    # New York evening: UTC is already 2026-09-02, which is tomorrow for the US feed.
+    monkeypatch.setattr(
+        historical_backfill, "utc_now", lambda: datetime(2026, 9, 2, 1, tzinfo=timezone.utc)
+    )
+    _, reason, _ = await preview_request(
+        test_session,
+        provider="twelve_data",
+        dataset_key="us_equity_eod",
+        start_date=date(2026, 9, 2),
+        end_date=date(2026, 9, 2),
+    )
+    assert reason == "outside_latest_31_days"
+    with pytest.raises(HistoricalBackfillError, match="latest 31"):
+        await create_request(
+            test_session,
+            provider="twelve_data",
+            dataset_key="us_equity_eod",
+            start_date=date(2026, 9, 2),
+            end_date=date(2026, 9, 2),
+            request_key="historic-new-york-tomorrow",
+            created_by="operator",
+        )
 
 
 @pytest.mark.asyncio
@@ -830,9 +881,9 @@ async def test_claim_uses_finlab_market_date_at_utc_taipei_boundary(test_session
         today=taipei_today,
     )
     expired_item = expired_request.items[0]
-    expired_item.trade_date = taipei_today - timedelta(days=MAX_BACKFILL_DAYS + 1)
-    # Inclusive: FinLab's own target-date gate permits local-today minus 31 days.
-    valid_request.items[0].trade_date = taipei_today - timedelta(days=MAX_BACKFILL_DAYS)
+    expired_item.trade_date = taipei_today - timedelta(days=MAX_BACKFILL_DAYS)
+    # Inclusive: the oldest Taipei date a new request may still include.
+    valid_request.items[0].trade_date = taipei_today - timedelta(days=MAX_BACKFILL_DAYS - 1)
     valid_request.items[0].calendar_snapshot = {
         **valid_request.items[0].calendar_snapshot,
         "trade_date": valid_request.items[0].trade_date.isoformat(),
@@ -863,7 +914,7 @@ async def test_claim_uses_finlab_market_date_at_utc_taipei_boundary(test_session
     assert expired_item.failure_code == "BACKFILL_EXPIRED"
     assert claimed is not None
     assert claimed.request_id == valid_request.request_id
-    assert claimed.trade_date == taipei_today - timedelta(days=MAX_BACKFILL_DAYS)
+    assert claimed.trade_date == taipei_today - timedelta(days=MAX_BACKFILL_DAYS - 1)
 
 
 @pytest.mark.asyncio

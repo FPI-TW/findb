@@ -36,7 +36,12 @@ from app.schemas.historical_backfill import HistoricalResultEvidence
 from app.schemas.ingress import MarketEODIngressRequest, MarketEODIngressRequestV2
 from app.services.effective_calendar import effective_days, execution_policy, market_timezone
 from app.services.feed_schedule import data_ready_at
-from app.services.provider_metadata import provider_catalog
+from app.services.provider_metadata import (
+    catalog_feed,
+    dataset_calendar_market,
+    historical_cohort,
+    provider_catalog,
+)
 from app.utils import utc_now, uuid7
 
 # New-request admission only. Retired providers' requests, receipts and query
@@ -60,16 +65,6 @@ PROVIDER_TIMEZONES: dict[str, str] = {
 }
 
 
-# Adapter semantics, intentionally not catalog fields: these whole-market providers
-# read official/vendor daily reports. Closed dates have no report (always skipped)
-# and the provider-local current date is inside the cutoff window. Members must be
-# catalog historical providers (test_provider_catalog.py); changing them changes cutoffs.
-DAILY_REPORT_HISTORICAL_PROVIDERS = frozenset({"taifex", "factset"})
-# Preview applies the provider's calendar switch; FactSet preview leaves closed-day
-# decisions to its executor. Retired Shioaji stays for existing request previews.
-PREVIEW_CALENDAR_PROVIDERS = frozenset({"twelve_data", "finlab", "shioaji", "taifex"})
-
-
 def _max_backfill_days(provider: str | None = None) -> int:
     if provider == "shioaji":
         return STAGING_MAX_BACKFILL_DAYS
@@ -84,24 +79,10 @@ def _supports_backfill(provider: str, dataset_key: str) -> bool:
     return (provider, dataset_key) in CAPABILITIES
 
 
-def _historical_policy(provider: str) -> dict:
-    policy = execution_policy(provider)
-    if provider in DAILY_REPORT_HISTORICAL_PROVIDERS:
-        # Official daily reports do not exist for exchange-closed dates.
-        policy = {key: value for key, value in policy.items() if key != "sha256"}
-        policy["skip_non_trading_days"] = True
-        policy["sha256"] = hashlib.sha256(
-            json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-    return policy
-
-
 class HistoricalBackfillError(ValueError):
     pass
 
 
-# Providers whose historical dates acquire each frozen Full release member separately.
-MEMBER_COHORT_PROVIDERS = frozenset({"twelve_data", "finlab"})
 MAX_COHORT_MEMBERS = 10000
 _COHORT_FIELDS = (
     "member_key",
@@ -116,15 +97,38 @@ _COHORT_FIELDS = (
 )
 
 
+# Frozen request snapshot labels. ``current_hkex`` is the wire name of a
+# ``current_release`` cohort that the Fetcher executor checks.
+DATED_RELEASE_SNAPSHOT = "full_release"
+CURRENT_RELEASE_SNAPSHOT = "current_hkex"
+
+
 def member_cohort(request: HistoricalBackfillRequest) -> bool:
-    """A request whose dates are bound to Full universe releases (Twelve Data, FinLab)."""
+    """A request whose dates are each bound to the Full release that applied to them."""
     snapshot = request.universe_snapshot
-    return isinstance(snapshot, dict) and snapshot.get("cohort") == "full_release"
+    return isinstance(snapshot, dict) and snapshot.get("cohort") == DATED_RELEASE_SNAPSHOT
+
+
+def current_release_cohort(request: HistoricalBackfillRequest) -> bool:
+    """A request bound as a whole to the release current at its creation."""
+    snapshot = request.universe_snapshot
+    return isinstance(snapshot, dict) and snapshot.get("cohort") == CURRENT_RELEASE_SNAPSHOT
 
 
 def eod_cohort(request: HistoricalBackfillRequest) -> bool:
     """Requests completed by per-member EOD evidence instead of one Source run."""
-    return request.provider == "factset" or member_cohort(request)
+    return current_release_cohort(request) or member_cohort(request)
+
+
+def futures_report_feed(provider: str, dataset_key: str) -> bool:
+    """Feeds whose historical dates complete by a futures report's row evidence."""
+    feed = catalog_feed(provider, dataset_key)
+    return feed is not None and feed.contract.schema_id == "futures_eod"
+
+
+def member_evidence_feed(provider: str, dataset_key: str) -> bool:
+    """Feeds whose historical deliveries are validated against a frozen member cohort."""
+    return historical_cohort(provider, dataset_key) in {"dated_release", "current_release"}
 
 
 def _cohort_digest(members: list[dict]) -> str:
@@ -204,14 +208,14 @@ async def _bind_full_releases(
             "cohort_sha256": _cohort_digest(members),
             "member_count": len(members),
         }
-    return {"version": 2, "cohort": "full_release", "dates": bindings}
+    return {"version": 2, "cohort": DATED_RELEASE_SNAPSHOT, "dates": bindings}
 
 
 async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict | None:
-    """The item's immutable EOD cohort: FactSet's request cohort or its date's release."""
+    """The item's immutable EOD cohort: the request's current release or its date's release."""
     request = item.request
     snapshot = request.universe_snapshot
-    if request.provider == "factset":
+    if current_release_cohort(request):
         return snapshot
     if not member_cohort(request):
         return None
@@ -233,7 +237,7 @@ async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict 
         raise HistoricalBackfillError("historical frozen universe differs from its release")
     return {
         "version": 2,
-        "cohort": "full_release",
+        "cohort": DATED_RELEASE_SNAPSHOT,
         "trade_date": item.trade_date.isoformat(),
         "release_id": binding["release_id"],
         "effective_date": binding["effective_date"],
@@ -261,12 +265,22 @@ def _provider_current_date(provider: str, now: datetime) -> date:
     return now.astimezone(ZoneInfo(timezone_name)).date()
 
 
+def _request_today(provider: str) -> date:
+    """Creation and preview use the same provider-local date as claims and expiry.
+
+    An unknown provider has no timezone; its scope check rejects it afterwards.
+    """
+    now = utc_now()
+    return _provider_current_date(provider, now) if provider in PROVIDER_TIMEZONES else now.date()
+
+
 def expiry_cutoff(provider: str, now: datetime) -> date:
-    """One read-only provider-local boundary for claims and live acquisition."""
-    return _provider_current_date(provider, now) - timedelta(
-        days=_max_backfill_days(provider)
-        - (1 if provider in DAILY_REPORT_HISTORICAL_PROVIDERS else 0)
-    )
+    """One read-only provider-local boundary for claims and live acquisition.
+
+    It is the oldest date a new request may still include, so an item expires the
+    same day it would no longer be accepted.
+    """
+    return _provider_current_date(provider, now) - timedelta(days=_max_backfill_days(provider) - 1)
 
 
 def _session_closed(item: HistoricalBackfillItem, now: datetime) -> bool:
@@ -297,15 +311,12 @@ async def create_request(
     today: date | None = None,
 ) -> tuple[HistoricalBackfillRequest, bool]:
     provider = provider.lower()
-    if provider == "factset":
+    cohort = historical_cohort(provider, dataset_key)
+    if cohort == "current_release":
         from app.services.provider_work import lock_provider
 
         await lock_provider(db, provider)
-    today = today or (
-        _provider_current_date(provider, utc_now())
-        if provider in {"shioaji", "taifex", "factset"}
-        else utc_now().date()
-    )
+    today = today or _request_today(provider)
     max_days = _max_backfill_days(provider)
     if start_date < today - timedelta(days=max_days - 1) or end_date > today:
         raise HistoricalBackfillError(
@@ -349,7 +360,7 @@ async def create_request(
     if scope is None:
         raise HistoricalBackfillError("provider is not active for dataset")
     universe_snapshot = None
-    if provider == "factset":
+    if cohort == "current_release":
         # Publication locks the same dataset; a request gets one immutable current
         # cohort, not different universe dates for its historical items.
         await db.refresh(dataset, with_for_update=True)
@@ -365,7 +376,9 @@ async def create_request(
             .limit(1)
         )
         if release is None:
-            raise HistoricalBackfillError("FactSet requires a published current HKEX universe")
+            raise HistoricalBackfillError(
+                f"{provider} requires a published current universe for {dataset_key}"
+            )
         members = list(
             await db.scalars(
                 select(UniverseMember)
@@ -374,10 +387,10 @@ async def create_request(
             )
         )
         if not 1 <= len(members) <= 10000:
-            raise HistoricalBackfillError("FactSet current cohort is empty or exceeds its bound")
+            raise HistoricalBackfillError("current cohort is empty or exceeds its bound")
         universe_snapshot = {
             "version": 1,
-            "cohort": "current_hkex",
+            "cohort": CURRENT_RELEASE_SNAPSHOT,
             "release_id": str(release.release_id),
             "effective_date": release.effective_date.isoformat(),
             "member_sha256": release.member_sha256,
@@ -400,10 +413,11 @@ async def create_request(
             ],
         }
     calendar = await effective_days(
-        db, "TAIFEX" if provider == "taifex" else dataset.market, start_date, end_date
+        db, dataset_calendar_market(dataset_key, dataset.market), start_date, end_date
     )
-    policy = _historical_policy(provider)
-    if provider in MEMBER_COHORT_PROVIDERS:
+    # Historical dates follow the same calendar switch as the provider's daily plans.
+    policy = execution_policy(provider)
+    if cohort == "dated_release":
         # Every acquired date backfills its whole mapped Full release, never a static list.
         universe_snapshot = await _bind_full_releases(
             db,
@@ -538,11 +552,7 @@ async def preview_request(
 ) -> tuple[str | None, str | None, list[tuple[date, bool, str | None]]]:
     """Return a no-write operator preview; every selected day is explained."""
     provider = provider.lower()
-    today = today or (
-        _provider_current_date(provider, utc_now())
-        if provider in {"shioaji", "taifex"}
-        else utc_now().date()
-    )
+    today = today or _request_today(provider)
     dataset = await db.get(DatasetRegistry, dataset_key)
     market = dataset.market if dataset is not None else None
     max_days = _max_backfill_days(provider)
@@ -574,17 +584,14 @@ async def preview_request(
         {
             date.fromisoformat(day["trade_date"]): day["is_open"]
             for day in await effective_days(
-                db, "TAIFEX" if provider == "taifex" else market, start_date, end_date
+                db, dataset_calendar_market(dataset_key, market), start_date, end_date
             )
         }
         if market is not None
         else {}
     )
-    skip_non_trading = (
-        _historical_policy(provider)["skip_non_trading_days"]
-        if provider in PREVIEW_CALENDAR_PROVIDERS
-        else False
-    )
+    # The same switch creation applies; an out-of-scope preview marks no closed days.
+    skip_non_trading = scope_reason is None and execution_policy(provider)["skip_non_trading_days"]
     days: list[tuple[date, bool, str | None]] = []
     current = start_date
     while current <= end_date:
@@ -1041,7 +1048,7 @@ async def complete_item(
             or not cohort
             or {member.member_key for member in eod_evidence.members}
             != {member["member_key"] for member in cohort["members"]}
-            or eod_evidence.schema_version != _eod_schema_version(item.request)
+            or eod_evidence.schema_version != _contract_version(item.request)
             or (
                 # Only mapped members are frozen; no-data needs its durable raw observation.
                 member_cohort(item.request)
@@ -1058,8 +1065,8 @@ async def complete_item(
         ):
             raise HistoricalBackfillValidationError("EOD outcome differs from its member evidence")
         item.result_evidence = eod_evidence.model_dump(mode="json")
-    elif outcome == "completed" and provider == "taifex":
-        await _validate_taifex_completion(db, item, run_id, result_evidence, now)
+    elif outcome == "completed" and futures_report_feed(provider, item.request.dataset_key):
+        await _validate_futures_completion(db, item, run_id, result_evidence, now)
         item.result_evidence = result_evidence
     elif outcome == "completed":
         if run_id is None:
@@ -1084,7 +1091,7 @@ async def complete_item(
             for row in HistoricalResultEvidence.model_validate(result_evidence).rows
             if row.no_trade
         ]
-        if provider == "taifex" and result_evidence
+        if futures_report_feed(provider, item.request.dataset_key) and result_evidence
         else []
     )
     await queue.settle(
@@ -1147,7 +1154,7 @@ async def complete_item(
 async def validate_eod_historical_delivery(
     db: AsyncSession, request: MarketEODIngressRequest | MarketEODIngressRequestV2
 ) -> None:
-    """One frozen-cohort EOD delivery (FactSet, or a Full release cohort) of a leased date."""
+    """One frozen-cohort EOD delivery (current or dated release cohort) of a leased date."""
     from app.services.provider_work import fence, prepared_descriptors
 
     provider = request.source
@@ -1182,13 +1189,14 @@ async def validate_eod_historical_delivery(
     except HistoricalBackfillError as exc:
         raise HistoricalBackfillValidationError(str(exc)) from exc
     members = {row["symbol"]: row for row in snapshot.get("members", [])}
-    # FactSet always states the listing; Full release rows may leave it to the member.
-    strict_symbol = provider == "factset"
+    # A current-release cohort always states the listing; Full release rows may
+    # leave it to the member.
+    strict_symbol = current_release_cohort(item.request)
     if (
         work.kind != "historical"
         or work.stable_key != f"historical:{item.item_id}"
         or item.request.dataset_key != request.dataset_key
-        or request.schema_version != _eod_schema_version(item.request)
+        or request.schema_version != _contract_version(item.request)
         or (
             not retained
             and (
@@ -1220,15 +1228,11 @@ async def validate_eod_historical_delivery(
         raise HistoricalBackfillValidationError("historical delivery is outside its frozen cohort")
 
 
-def _eod_schema_version(request: HistoricalBackfillRequest) -> int:
-    """FactSet delivers EOD v2; Full release cohorts use their feed's current contract."""
-    if request.provider == "factset":
-        return 2
-    feed = next(
-        feed
-        for feed in provider_catalog().feeds
-        if feed.provider == request.provider and feed.dataset_key == request.dataset_key
-    )
+def _contract_version(request: HistoricalBackfillRequest) -> int:
+    """Every historical delivery uses its feed's current contract version."""
+    feed = catalog_feed(request.provider, request.dataset_key)
+    if feed is None:
+        raise HistoricalBackfillValidationError("historical feed is not in the catalog")
     return feed.contract.current_version
 
 
@@ -1252,7 +1256,7 @@ def _valid_completed_run(run: IngestionRun | None, item: HistoricalBackfillItem)
     )
 
 
-async def _validate_taifex_completion(
+async def _validate_futures_completion(
     db: AsyncSession,
     item: HistoricalBackfillItem,
     run_id: UUID | None,
@@ -1265,16 +1269,16 @@ async def _validate_taifex_completion(
     try:
         proof = HistoricalResultEvidence.model_validate(evidence)
     except ValidationError as exc:
-        raise HistoricalBackfillValidationError("TAIFEX completion evidence is invalid") from exc
+        raise HistoricalBackfillValidationError("futures completion evidence is invalid") from exc
     if (
         proof.item_id != item.item_id
         or proof.request_id != item.request_id
         or proof.trade_date != item.trade_date
-        or item.request.dataset_key != "tw_futures_eod"
+        or not futures_report_feed(item.request.provider, item.request.dataset_key)
         or proof.fetched_at > now + timedelta(minutes=5)
         or not _session_closed(item, proof.fetched_at)
     ):
-        raise HistoricalBackfillValidationError("TAIFEX evidence scope or clock differs")
+        raise HistoricalBackfillValidationError("futures evidence scope or clock differs")
     data_rows = [row for row in proof.rows if not row.no_trade]
     if not data_rows:
         if run_id is not None:
@@ -1289,7 +1293,7 @@ async def _validate_taifex_completion(
     expected_work_item = f"historical:{item.item_id}"
     if (
         run.schema_id != "futures_eod"
-        or run.schema_version != 1
+        or run.schema_version != _contract_version(item.request)
         or run.delivery_mode != "backfill"
         or run.coverage_start_date != item.trade_date
         or run.coverage_end_date != item.trade_date
@@ -1316,10 +1320,10 @@ async def _validate_taifex_completion(
     ).all()
     expected = {f"{row.product_code}|{row.contract_code}|{row.session}" for row in data_rows}
     if set(canonical) != expected:
-        raise HistoricalBackfillValidationError("TAIFEX canonical member proof is incomplete")
+        raise HistoricalBackfillValidationError("futures canonical member proof is incomplete")
 
 
-async def validate_taifex_historical_delivery(db: AsyncSession, request) -> None:
+async def validate_futures_historical_delivery(db: AsyncSession, request) -> None:
     """A leased historical item is the authority for this Source-only write path."""
     try:
         item_id = UUID(request.delivery.work_item_id.removeprefix("historical:"))
@@ -1339,7 +1343,7 @@ async def validate_taifex_historical_delivery(db: AsyncSession, request) -> None
         from app.models.provider_work import ProviderWork, ProviderWorkOwner
         from app.services.provider_work import environment, fence
 
-        owner = await db.get(ProviderWorkOwner, (environment(), "taifex"))
+        owner = await db.get(ProviderWorkOwner, (environment(), item.request.provider))
         if owner is not None:
             item.lease_expires_at = owner.expires_at
         identity = db.info.get("provider_work")
@@ -1367,14 +1371,14 @@ async def validate_taifex_historical_delivery(db: AsyncSession, request) -> None
             ):
                 await fence(
                     db,
-                    provider="taifex",
+                    provider=item.request.provider,
                     work_id=work.work_id,
                     generation=identity["generation"],
                     token=identity["token"],
                 )
                 cancelled_prepared = True
     if item is None or (
-        item.request.provider != "taifex"
+        not futures_report_feed(item.request.provider, item.request.dataset_key)
         or item.request.dataset_key != request.dataset_key
         or (
             not cancelled_prepared
@@ -1385,9 +1389,9 @@ async def validate_taifex_historical_delivery(db: AsyncSession, request) -> None
                 or item.lease_expires_at <= now
             )
         )
-        or request.source != "taifex"
+        or request.source != item.request.provider
         or request.schema_id != "futures_eod"
-        or request.schema_version != 1
+        or request.schema_version != _contract_version(item.request)
         or request.payload.batch.delivery_mode != "backfill"
         or request.payload.batch.data_date != item.trade_date
         or request.payload.batch.coverage_start_date != item.trade_date

@@ -219,6 +219,22 @@
           "title": "Frequency",
           "type": "string"
         },
+        "historical_cohort": {
+          "anyOf": [
+            {
+              "enum": [
+                "dated_release",
+                "current_release",
+                "daily_report"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Historical Cohort"
+        },
         "historical_execution": {
           "anyOf": [
             {
@@ -291,7 +307,8 @@
         "bounded_monitor",
         "publication_retry_window_seconds",
         "delivery",
-        "historical_execution"
+        "historical_execution",
+        "historical_cohort"
       ],
       "title": "FeedDefinition",
       "type": "object"

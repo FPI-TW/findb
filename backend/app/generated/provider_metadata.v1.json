@@ -30,6 +30,7 @@
         "slot_id": "asia_pacific_markets_window"
       },
       "frequency": "daily",
+      "historical_cohort": "current_release",
       "historical_execution": null,
       "lifecycle": "active",
       "market": "HK",
@@ -70,6 +71,7 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "minute",
+      "historical_cohort": null,
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
@@ -114,6 +116,7 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "daily",
+      "historical_cohort": "dated_release",
       "historical_execution": {
         "local": {
           "lease_seconds": 2400,
@@ -191,6 +194,7 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "tick",
+      "historical_cohort": null,
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
@@ -231,6 +235,7 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "minute",
+      "historical_cohort": null,
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
@@ -271,6 +276,7 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "daily",
+      "historical_cohort": "dated_release",
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
@@ -311,6 +317,7 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "tick",
+      "historical_cohort": null,
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
@@ -351,6 +358,7 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "daily",
+      "historical_cohort": "daily_report",
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
@@ -395,6 +403,7 @@
         "slot_id": "western_markets_window"
       },
       "frequency": "daily",
+      "historical_cohort": "dated_release",
       "historical_execution": {
         "local": {
           "lease_seconds": 2400,
@@ -567,5 +576,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "27695c307ac9cd32f8bd2da13f547cc613772f8747b3930ec197fb9f7cc98e38"
+  "source_sha256": "a26349d33f739d4475d3dc7dc9b88435f0fbf76b9ba0d5cbeecc5a2173bab0c6"
 }

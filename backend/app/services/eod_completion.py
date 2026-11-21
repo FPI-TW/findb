@@ -1,8 +1,8 @@
 """Validate per-member EOD completion using this work's permanent member evidence.
 
-FactSet freezes EOD v2. Twelve Data/FinLab historical Full release cohorts freeze
-their feed's v1 contract and may additionally prove a no-trade member by its raw
-observation, or report a member whose provider returned no series as missing.
+Every work freezes its feed's current EOD contract. Historical dated-release
+cohorts may additionally prove a no-trade member by its raw observation, or
+report a member whose provider returned no series as missing.
 """
 
 from uuid import UUID
@@ -15,10 +15,24 @@ from app.models.registry import DailyDeliveryMember, DeliveryMemberEvidence, DQI
 from app.schemas.eod_completion import EODCompletionEvidence
 
 
-def eod_contract_version(work: ProviderWork) -> int:
-    from app.services.historical_backfill import MEMBER_COHORT_PROVIDERS
+def eod_contract_version(work: ProviderWork) -> int | None:
+    """The feed's current market_eod version; None for any other feed's work."""
+    from app.services.provider_metadata import catalog_feed
 
-    return 1 if work.kind == "historical" and work.provider in MEMBER_COHORT_PROVIDERS else 2
+    feed = catalog_feed(work.provider, work.dataset_key)
+    if feed is None or feed.contract.schema_id != "market_eod":
+        return None
+    return feed.contract.current_version
+
+
+def dated_release_work(work: ProviderWork) -> bool:
+    """Historical work of a feed whose dates each freeze their own Full release."""
+    from app.services.provider_metadata import historical_cohort
+
+    return (
+        work.kind == "historical"
+        and historical_cohort(work.provider, work.dataset_key) == "dated_release"
+    )
 
 
 def _scoped_raw(work: ProviderWork, member) -> bool:
@@ -36,7 +50,7 @@ async def validate_eod_completion(
     """No run counts, pre-existing canonical prices, or caller data claims prove writes."""
     manifest = work.manifest or {}
     version = eod_contract_version(work)
-    cohort = version == 1
+    cohort = dated_release_work(work)
     if (
         work.kind not in {"daily", "historical"}
         or manifest.get("contract") != {"schema_id": "market_eod", "schema_version": version}

@@ -154,6 +154,13 @@ class HistoricalExecutionProfiles(CatalogModel):
     production: HistoricalExecution
 
 
+# How a historical date's members are frozen: ``dated_release`` binds each date to
+# the Full release that applied to it; ``current_release`` binds the whole request
+# to the release current at creation (the provider can only list today's
+# members); ``daily_report`` reads members from the date's own report.
+HistoricalCohort = Literal["dated_release", "current_release", "daily_report"]
+
+
 class FeedDefinition(CatalogModel):
     provider: Identifier
     dataset_key: Identifier
@@ -171,6 +178,7 @@ class FeedDefinition(CatalogModel):
     publication_retry_window_seconds: PositiveInt | None
     delivery: DeliveryCompatibility
     historical_execution: HistoricalExecutionProfiles | None
+    historical_cohort: HistoricalCohort | None
 
     @model_validator(mode="after")
     def coherent_capabilities(self) -> Self:
@@ -195,6 +203,11 @@ class FeedDefinition(CatalogModel):
             raise ValueError("historical work requires an active Source capability")
         if self.historical_execution is not None and caps.historical == "unsupported":
             raise ValueError("unsupported historical feed has execution parameters")
+        if (self.historical_cohort is None) != (caps.historical == "unsupported"):
+            raise ValueError("historical feeds, and only they, declare a historical cohort")
+        if self.historical_execution is not None and self.historical_cohort != "dated_release":
+            # A Backend-owned cohort would make the planner ignore a packaged universe.
+            raise ValueError("only dated_release feeds may package a historical universe")
         if self.lifecycle == "retired" and (caps.source or self.bounded_monitor.enabled):
             raise ValueError("retired feed cannot accept Source writes or monitor new deliveries")
         return self
@@ -225,7 +238,12 @@ class ProviderCatalog(CatalogModel):
             if len(values) != len(set(values)):
                 raise ValueError(f"duplicate {label}")
         pairs: set[tuple[str, str]] = set()
+        calendars: dict[str, str] = {}
         for feed in self.feeds:
+            if calendars.setdefault(feed.dataset_key, feed.calendar_market) != (
+                feed.calendar_market
+            ):
+                raise ValueError("feeds of one dataset must share a calendar market")
             pair = (feed.provider, feed.dataset_key)
             if pair in pairs:
                 raise ValueError("duplicate provider/dataset feed")

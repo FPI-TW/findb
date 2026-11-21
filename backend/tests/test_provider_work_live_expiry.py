@@ -42,9 +42,7 @@ async def test_active_historical_authorization_checks_exact_expiry_without_mutat
             "/api/v1/source/historical-backfills/claim", headers=work_headers
         )
         assert claimed.status_code == 200, claimed.text
-        first_expired_date = DAY + timedelta(
-            days=historical._max_backfill_days() + (h.provider != "taifex")
-        )
+        first_expired_date = DAY + timedelta(days=historical._max_backfill_days())
         boundary = datetime.combine(
             first_expired_date, time(), ZoneInfo(historical.PROVIDER_TIMEZONES[h.provider])
         ).astimezone(timezone.utc)

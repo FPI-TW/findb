@@ -28,7 +28,7 @@ from app.models.provider_work import (
 )
 from app.models.registry import IngestionRun, SchedulerControl
 from app.services.daily_runtime import daily_window
-from app.services.provider_metadata import provider_catalog
+from app.services.provider_metadata import dataset_calendar_market, provider_catalog
 from app.utils import ensure_utc, utc_now, uuid7
 
 HEARTBEAT_TTL = timedelta(minutes=2)
@@ -87,7 +87,9 @@ async def daily_readiness(db: AsyncSession, *, provider: str, values: dict) -> d
         raise ProviderWorkError("unknown provider work dataset")
     day = values["trade_date"]
     snapshot = (
-        await effective_days(db, "TAIFEX" if provider == "taifex" else dataset.market, day, day)
+        await effective_days(
+            db, dataset_calendar_market(dataset.dataset_key, dataset.market), day, day
+        )
     )[0]
     from app.services.feed_schedule import data_ready_at
 
@@ -606,13 +608,13 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
         raise ProviderWorkError("expected scope is already frozen")
     if "contract" in manifest:
         from app.models.registry import DatasetRegistry
-        from app.services.historical_backfill import MEMBER_COHORT_PROVIDERS
+        from app.services.eod_completion import eod_contract_version
         from app.services.ingress_contracts import parse_dataset_contract_declaration
 
         dataset = await db.get(DatasetRegistry, work.dataset_key)
         declaration = parse_dataset_contract_declaration(dataset.config) if dataset else None
-        # FactSet freezes EOD v2; a Full release historical cohort freezes its feed's v1.
-        version = 1 if work.kind == "historical" and work.provider in MEMBER_COHORT_PROVIDERS else 2
+        # Daily and historical EOD work freeze the feed's current contract version.
+        version = eod_contract_version(work)
         if (
             manifest["contract"] != {"schema_id": "market_eod", "schema_version": version}
             or work.kind not in {"daily", "historical"}
@@ -800,7 +802,7 @@ async def current_calendar_status(db: AsyncSession, work: ProviderWork) -> dict:
         raise ProviderWorkError("calendar status requires a frozen daily decision")
     current = await execution_snapshot(
         db,
-        "TAIFEX" if dataset.dataset_key == "tw_futures_eod" else dataset.market,
+        dataset_calendar_market(dataset.dataset_key, dataset.market),
         work.trade_date,
         work.provider,
     )

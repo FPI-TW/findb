@@ -37,6 +37,7 @@ from app.schemas.full_market_readiness import (
 )
 from app.services.calendar_management import complete_published_revision_ids
 from app.services.effective_calendar import market_timezone
+from app.services.provider_metadata import dataset_calendar_market
 from app.services.source_clients import PROVIDER_DATASET_SCOPE
 from app.utils import ensure_utc, utc_now, uuid7
 
@@ -52,7 +53,7 @@ def declaration_digest(value: dict) -> str:
 
 
 def market(dataset: DatasetRegistry) -> str:
-    return "TAIFEX" if dataset.dataset_key == "tw_futures_eod" else dataset.market
+    return dataset_calendar_market(dataset.dataset_key, dataset.market)
 
 
 def local_today(dataset: DatasetRegistry) -> date:

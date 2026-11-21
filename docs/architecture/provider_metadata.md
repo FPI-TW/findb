@@ -45,6 +45,14 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   `test_catalog_slot_migration.py` 強制 seed、frozen migration 與 catalog 一致。
 - Historical execution profiles 保留現行 local／staging／production 的靜態 universe reference 與 executor
   預設值，不包含觸發時間。這些是打包預設，不是 DB request、operator overrides 或即時授權。
+- `historical_cohort` 宣告 historical 日期如何凍結成員，historical feed 必填、其它 feed 為 null：
+  `dated_release`（每個日期綁定當天適用的 Full release；Twelve Data、FinLab）、`current_release`
+  （整個 request 綁定建立時的現行 release；FactSet 只能查當下名單）、`daily_report`（成員來自當天報表，
+  無凍結名單；TAIFEX）。只有 `dated_release` 可帶 `historical_execution` 的打包 universe。Backend 的
+  cohort 綁定、成員驗證與 EOD completion 依此欄位，不再依 provider 名稱；`current_release` 的 frozen
+  snapshot 仍寫 `cohort: current_hkex`，這是 Fetcher executor 檢查的既有 wire 值。
+- 同一 dataset 的 feeds 必須共用 `calendar_market`（loader 檢查）。Backend 以 dataset 查日曆市場時一律讀
+  catalog，沒有 catalog feed 的退役 Shioaji 分 K dataset 沿用自身 market。
 
 Catalog 不存 secrets、account digest／identity、usage、cooldown、Owner controls 或 published calendar。Adapter dispatch、SDK 行為、credential 正規化留在原模組。
 
@@ -99,13 +107,8 @@ Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。
 
 刻意保留手寫、且不放入 catalog 的項目：
 
-- **Adapter 語意集合**：`historical_backfill.DAILY_REPORT_HISTORICAL_PROVIDERS`（TAIFEX／FactSet
-  讀官方或 vendor 日報，休市日一律略過，cutoff 含 provider 當日）與 `PREVIEW_CALENDAR_PROVIDERS`
-  （FactSet preview 不套用 calendar switch；保留退役 Shioaji 舊 request preview）。這些是 executor
-  行為而非 provider 靜態能力，Catalog 的 `declared`／`executable` 沒有定義此語意；測試確認成員仍是
-  catalog historical providers，且 daily-report providers 沒有 Fetcher universe descriptor。
-  Fetcher `historical_backfill.py` 的 partial／manifest 結果判斷與 `production_backfill_cli` 的請求估算
-  單位同屬 adapter 行為，保留原處。
+- **Fetcher historical 結果判斷**：Fetcher `historical_backfill.py` 的 partial／manifest 結果判斷與
+  `production_backfill_cli` 的請求估算單位仍以 provider 名稱寫死（#617 後續處理）。
 - **Credential 正規化**：FinLab SDK token、FactSet `HOST:PORT:USER`（不含密碼，輪替保留帳務）為
   adapter identity；名稱須是 catalog 已發布的 credential 設定（測試約束）。多於一個設定名稱且未定義
   adapter 規則的 provider fail closed。
