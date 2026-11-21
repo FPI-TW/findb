@@ -11,6 +11,7 @@ from app.schemas.ingress import (
     INTRADAY_ROW_LAYOUTS,
     MINUTES_PER_DAY,
     CurrencyCode,
+    ExchangeDailyQuoteIngressRequest,
     FuturesEODIngressRequest,
     IngressRequest,
     IntradayPartitionIngressRequest,
@@ -28,6 +29,7 @@ ContractModel = (
     | type[MarketMinuteIngressRequest]
     | type[FuturesEODIngressRequest]
     | type[IntradayPartitionIngressRequest]
+    | type[ExchangeDailyQuoteIngressRequest]
 )
 PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 
@@ -38,6 +40,7 @@ _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
         ("market_minute", 1): MarketMinuteIngressRequest,
         ("futures_eod", 1): FuturesEODIngressRequest,
         ("intraday_partition", 1): IntradayPartitionIngressRequest,
+        ("exchange_daily_quote", 1): ExchangeDailyQuoteIngressRequest,
     }
 )
 
@@ -421,6 +424,46 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 },
             ]
         )
+    if schema_id == "exchange_daily_quote":
+        # Relations between published values are data-quality rules (see the row model).
+        quote_rules = ("row.ohlc.", "batch.sequence.", "payload.coverage.")
+        semantic_rules = [rule for rule in semantic_rules if not rule["id"].startswith(quote_rules)]
+        semantic_rules.extend(
+            [
+                {
+                    "id": "quote.single_trading_day",
+                    "scope": "payload",
+                    "description": "every row trade_date equals batch.data_date; coverage dates, when present, equal it too",
+                    "parameters": {
+                        "left": "data[*].trade_date",
+                        "operator": "equal",
+                        "right": "batch.data_date",
+                        "coverage": ["batch.coverage_start_date", "batch.coverage_end_date"],
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "quote.trading_status.matches_volume",
+                    "scope": "payload.data[*]",
+                    "description": "trading_status is traded exactly when volume is positive",
+                    "parameters": {"traded": "volume > 0", "no_trade": "volume = 0"},
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "quote.report.raw_object",
+                    "scope": "payload.batch",
+                    "description": "source_raw_ref names the gzip of the report; source_raw_sha256 and report.gzip_bytes describe the gzip, report.original_* the report as served",
+                    "parameters": {
+                        "encoding": "gzip",
+                        "enforcement_stage": "normalization",
+                    },
+                    "context_dependencies": [],
+                    "error_code": None,
+                },
+            ]
+        )
     if schema_id == "futures_eod":
         observation_fields = ["open", "high", "low", "close", "settlement_price", "open_interest"]
         schema["$defs"]["FuturesEODRow"]["anyOf"] = [
@@ -520,6 +563,14 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "payload.data[*].contract_code",
             "payload.data[*].contract_month",
             "payload.data[*].session",
+        ],
+        "exchange_daily_quote": [
+            "payload.data[*].symbol",
+            "payload.data[*].name",
+            "payload.data[*].currency",
+            "payload.batch.report.url",
+            "payload.batch.report.original_sha256",
+            "payload.batch.report.etag",
         ],
         "intraday_partition": [
             "payload.data[*].symbol",

@@ -97,6 +97,9 @@ TARGET_TABLES = (
     "public.daily_delivery_plan_summary",
     "public.daily_delivery_plan",
     "public.daily_execution_decision",
+    # Index only, like intraday_partition: archived reports stay in R2.
+    "public.exchange_daily_quote",
+    "public.exchange_report_archive",
     # Associations reference mutable baseline/calendar rows; clear the full FK graph.
     "public.full_market_admission",
     "public.full_market_admission_feed",
