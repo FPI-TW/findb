@@ -310,3 +310,31 @@ async def test_factset_acquires_without_a_provider_cutover_decision(test_session
         created_by="owner",
     )
     assert request.universe_snapshot is not None
+
+
+@pytest.mark.asyncio
+async def test_preview_marks_the_closed_days_creation_skips(test_session, monkeypatch):
+    await setup(test_session, monkeypatch)
+    # 2026-10-17/18 is a weekend: preview and creation apply the same calendar switch.
+    start, end = date(2026, 10, 16), date(2026, 10, 19)
+    _, reason, days = await historical_backfill.preview_request(
+        test_session,
+        provider="factset",
+        dataset_key="hk_equity_eod",
+        start_date=start,
+        end_date=end,
+    )
+    assert reason is None
+    request, _ = await historical_backfill.create_request(
+        test_session,
+        provider="factset",
+        dataset_key="hk_equity_eod",
+        start_date=start,
+        end_date=end,
+        request_key="factset-preview-closed",
+        created_by="owner",
+    )
+    skipped = {item.trade_date for item in request.items if item.status == "skipped_calendar"}
+    assert skipped == {date(2026, 10, 17), date(2026, 10, 18)}
+    assert {day for day, valid, why in days if not valid and why == "market_closed"} == skipped
+    assert all(valid for day, valid, _ in days if day not in skipped)

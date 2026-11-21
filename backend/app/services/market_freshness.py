@@ -456,14 +456,13 @@ async def _profile_feed_freshness(
 ) -> FreshnessFeed:
     from app.services.effective_calendar import acquisition_dates
     from app.services.feed_schedule import completion_deadline_at, latest_due_date
+    from app.services.provider_metadata import dataset_calendar_market
 
     through = latest_due_date(feed.dataset.dataset_key, evaluated_at)
     dates = (
         await acquisition_dates(
             db,
-            market="TAIFEX"
-            if feed.dataset.dataset_key == "tw_futures_eod"
-            else feed.dataset.market,
+            market=dataset_calendar_market(feed.dataset.dataset_key, feed.dataset.market),
             dataset_key=feed.dataset.dataset_key,
             provider=feed.source,
             profile=profile,

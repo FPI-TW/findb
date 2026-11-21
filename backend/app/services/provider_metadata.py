@@ -44,3 +44,31 @@ def acquisition_feed(provider: str, dataset_key: str) -> FeedDefinition | None:
         (f for f in acquisition_feeds() if (f.provider, f.dataset_key) == (provider, dataset_key)),
         None,
     )
+
+
+def catalog_feed(provider: str, dataset_key: str) -> FeedDefinition | None:
+    return next(
+        (
+            f
+            for f in provider_catalog().feeds
+            if (f.provider, f.dataset_key) == (provider, dataset_key)
+        ),
+        None,
+    )
+
+
+def historical_cohort(provider: str, dataset_key: str) -> str | None:
+    """How the feed's historical dates freeze their members; None when unsupported."""
+    feed = catalog_feed(provider, dataset_key)
+    return feed.historical_cohort if feed is not None else None
+
+
+def dataset_calendar_market(dataset_key: str, market: str) -> str:
+    """The dataset's catalog calendar market (shared by its feeds, the loader checks).
+
+    Datasets without a catalog feed (retired Shioaji minute bars) keep their market.
+    """
+    return next(
+        (f.calendar_market for f in provider_catalog().feeds if f.dataset_key == dataset_key),
+        market,
+    )

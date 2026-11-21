@@ -249,6 +249,9 @@ production/staging target混用都會fail closed。`source_sha256`是該次revie
 `dataset_key:symbol`）且結尾換行的摘要。
 
 Production EOD historical control plane允許最近366個calendar days；Shioaji 已停止新申請，既有 minute request 的 31 天視窗語意保留。
+日期視窗以 provider 日曆市場的當地今天計算（Twelve Data 為紐約、FinLab／TAIFEX 為台北、FactSet 為香港），
+建立、preview、claim 與過期判定共用同一個邊界。休市日是否略過，所有 provider 都跟 daily 使用同一個
+`*_SKIP_NON_TRADING_DAYS`；preview 與建立 request 套用相同規則。
 仍依published market calendar與 provider policy 建立
 open-day work items；舊 request 的 Twelve Data逐symbol、FinLab逐trade date保存lease/checkpoint並沿用raw-first、
 immutable idempotency與Source terminal驗證。Twelve Data historical與daily同樣以`adjust=none`抓取
@@ -318,7 +321,7 @@ claim 成功後須確認實際 item 與非空 lease token，再驗證 terminal s
 `taifex / tw_futures_eod` 支援 TX、MTX、TMF、TE、TF 全部官方實際月／週／F 契約與
 regular／after_hours；production 最近 366 個 calendar days，local／staging 最近 31 天。
 日期邊界採 Asia/Taipei；日曆使用 TAIFEX published revision，缺少日期採 weekday default，
-建立時凍結 snapshot；historical 已知休市日固定 skipped_calendar，避免把無報表誤報 no-data。當日必須已過 snapshot 收盤且至少 17:00 才能 claim／新抓取。
+建立時凍結 snapshot；`TAIFEX_SKIP_NON_TRADING_DAYS=true`（預設）時已知休市日為 skipped_calendar，避免把無報表誤報 no-data。當日必須已過 snapshot 收盤且至少 17:00 才能 claim／新抓取。
 年度 ZIP、多年建庫、價差及 continuous 不在此路徑。
 
 日常 Full runtime 持續依 first dates 與 frozen plans 補抓缺漏；指定歷史區間

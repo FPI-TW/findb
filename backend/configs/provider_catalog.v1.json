@@ -183,7 +183,8 @@
           "max_records_per_run": 1830,
           "universe_file": "twelve_data_nasdaq_100_2026_09_14.v2.json"
         }
-      }
+      },
+      "historical_cohort": "dated_release"
     },
     {
       "provider": "factset",
@@ -224,7 +225,8 @@
       "delivery": {
         "slot_id": "asia_pacific_markets_window"
       },
-      "historical_execution": null
+      "historical_execution": null,
+      "historical_cohort": "current_release"
     },
     {
       "provider": "finlab",
@@ -305,7 +307,8 @@
           "max_records_per_run": 50,
           "universe_file": "finlab_tw50_2026_09_21.v2.json"
         }
-      }
+      },
+      "historical_cohort": "dated_release"
     },
     {
       "provider": "finlab",
@@ -345,7 +348,8 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null
+      "historical_execution": null,
+      "historical_cohort": "dated_release"
     },
     {
       "provider": "finlab",
@@ -385,7 +389,8 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null
+      "historical_execution": null,
+      "historical_cohort": null
     },
     {
       "provider": "finlab",
@@ -425,7 +430,8 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null
+      "historical_execution": null,
+      "historical_cohort": null
     },
     {
       "provider": "finlab",
@@ -465,7 +471,8 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null
+      "historical_execution": null,
+      "historical_cohort": null
     },
     {
       "provider": "finlab",
@@ -505,7 +512,8 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null
+      "historical_execution": null,
+      "historical_cohort": null
     },
     {
       "provider": "taifex",
@@ -545,7 +553,8 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null
+      "historical_execution": null,
+      "historical_cohort": "daily_report"
     }
   ]
 }

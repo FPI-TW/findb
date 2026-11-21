@@ -36,7 +36,7 @@ release ID、members、parts 及 checksum 未變。單日重跑或本機 fixture
 Daily 排程為香港時間 20:00，與 HKEX 每日報表同一時段；FactSet 不另設抓取窗口，完成期限沿用全
 provider 共用的排程後 12 小時（隔天 08:00）。
 Daily plan 凍結完整 published cohort。`FACTSET_SKIP_NON_TRADING_DAYS=true` 是預設值；
-歷史回補略過休市日。缺少已發布日曆時沿用既有週一至週五規則。
+daily 與歷史回補（含 preview）都依這個開關略過休市日。缺少已發布日曆時沿用既有週一至週五規則。
 
 ## MySQL 與價格映射
 
