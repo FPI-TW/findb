@@ -16,6 +16,7 @@ import httpx
 
 from findb_fetcher.client import SourceAPIResponseError, permanent_source_failure
 from findb_fetcher.config import FetcherConfig
+from findb_fetcher.execution_metadata import historical_feed
 from findb_fetcher.full_market_client import FullMarketProtocolError, FullMarketSourceClient
 from findb_fetcher.provider_work import ProviderWorkAcquisitionStopped
 
@@ -66,6 +67,15 @@ class HistoricalRunResult:
 
 class HistoricalProviderRunner(Protocol):
     def run(self, item: HistoricalWorkItem) -> UUID | HistoricalRunResult: ...
+
+
+def runner_retries_operations(runner: object) -> bool:
+    """Whether the runner retries each provider operation itself within its lease.
+
+    Its Source authorization is then tried once per operation, and a temporary
+    refusal is handed back to the runner's own bounded retry.
+    """
+    return getattr(runner, "retries_operations", False) is True
 
 
 class HistoricalControlClient:
@@ -133,10 +143,8 @@ class HistoricalControlClient:
             body,
         )
 
-    def authorize(self, item: HistoricalWorkItem):
-        config = (
-            replace(self._config, max_attempts=1) if item.provider == "taifex" else self._config
-        )
+    def authorize(self, item: HistoricalWorkItem, *, runner_retries: bool = False):
+        config = replace(self._config, max_attempts=1) if runner_retries else self._config
         with FullMarketSourceClient(config, client=self._client) as source:
             try:
                 return source.authorization(
@@ -151,7 +159,7 @@ class HistoricalControlClient:
                     },
                 )
             except FullMarketProtocolError as exc:
-                if item.provider != "taifex" or not exc.retryable:
+                if not runner_retries or not exc.retryable:
                     raise
                 raise HistoricalControlError(
                     "historical authorization temporarily unavailable",
@@ -350,9 +358,10 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
                 return True
         from findb_fetcher.acquisition import authorization_scope
 
+        runner_retries = runner_retries_operations(runner)
         with authorization_scope(
-            lambda: control.authorize(item),
-            dispatch_attempts=1 if getattr(item, "provider", None) == "taifex" else 3,
+            lambda: control.authorize(item, runner_retries=runner_retries),
+            dispatch_attempts=1 if runner_retries else 3,
         ):
             run_id = runner.run(item)
         if not isinstance(run_id, (UUID, HistoricalRunResult)) or (
@@ -411,9 +420,14 @@ def _run_once(control: HistoricalControlClient, runner: HistoricalProviderRunner
 
 
 def _member_evidence(item: HistoricalWorkItem) -> bool:
-    """Items completed by per-member evidence rather than one Source run."""
+    """Items completed by per-member evidence rather than one Source run.
+
+    A dated-release feed's requests created before Full release binding carry no
+    frozen cohort and still complete by their Source run.
+    """
+    cohort = historical_feed(item.provider, item.dataset_key)["historical_cohort"]
     snapshot = getattr(item, "universe_snapshot", None)
-    return item.provider in {"taifex", "factset"} or (
+    return cohort in {"daily_report", "current_release"} or (
         isinstance(snapshot, dict) and snapshot.get("cohort") == "full_release"
     )
 

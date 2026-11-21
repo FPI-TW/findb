@@ -50,7 +50,11 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   （整個 request 綁定建立時的現行 release；FactSet 只能查當下名單）、`daily_report`（成員來自當天報表，
   無凍結名單；TAIFEX）。只有 `dated_release` 可帶 `historical_execution` 的打包 universe。Backend 的
   cohort 綁定、成員驗證與 EOD completion 依此欄位，不再依 provider 名稱；`current_release` 的 frozen
-  snapshot 仍寫 `cohort: current_hkex`，這是 Fetcher executor 檢查的既有 wire 值。
+  snapshot 仍寫 `cohort: current_hkex`，這是 Fetcher executor 檢查的既有 wire 值。Fetcher 以同一欄位判斷 historical
+  item 以成員證據或 Source run 完成，並決定 planner 是否接受 `--universe-file`（只有 `dated_release` 接受）。
+- `historical_requests_per_date` 是 planner 估算每個日期的 provider 請求數：固定次數（共用報表或表格，例如 TAIFEX
+  五個商品、FinLab 五張表、FactSet 一次查詢），或 `per_member`（每個成員一次；Twelve Data），historical feed 必填。
+  `per_member` 只能用在 `dated_release`，因為要有成員清單才能計數。
 - `universe_mode` 宣告交易日名單的來源：`refreshed` 由 maintenance 刷新清單，plan 凍結最新 published
   release；`dated` 由當天的 provider 觀測建立（TAIFEX 當天報表），plan 必須有該交易日的 release，
   否則 Source 以 `taifex_dated_universe_required` 回絕（既有 wire 值，Fetcher 收到後提交當天名單）。
@@ -113,8 +117,10 @@ Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。
 
 刻意保留手寫、且不放入 catalog 的項目：
 
-- **Fetcher historical 結果判斷**：Fetcher `historical_backfill.py` 的 partial／manifest 結果判斷與
-  `production_backfill_cli` 的請求估算單位仍以 provider 名稱寫死（#617 後續處理）。
+- **Universe 檔格式與 executor 重試**：`production_backfill_cli` 依 provider 選擇 reviewed universe 檔的解析器
+  （Twelve Data 與 FinLab 的檔案格式不同）；historical runner 以 `retries_operations` 宣告自己在 lease 內重試每個
+  操作（TAIFEX），此時 Source 授權每次只送一次、暫時拒絕交回 runner 重試，其它 runner 使用 Source client 的重試。
+  兩者都是 executor 實作，不是 feed 規則。
 - **Credential 正規化**：FinLab SDK token、FactSet `HOST:PORT:USER`（不含密碼，輪替保留帳務）為
   adapter identity；名稱須是 catalog 已發布的 credential 設定（測試約束）。多於一個設定名稱且未定義
   adapter 規則的 provider fail closed。

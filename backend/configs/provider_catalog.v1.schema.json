@@ -245,6 +245,22 @@
             }
           ]
         },
+        "historical_requests_per_date": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "const": "per_member",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Historical Requests Per Date"
+        },
         "lifecycle": {
           "enum": [
             "active",
@@ -317,6 +333,7 @@
         "delivery",
         "historical_execution",
         "historical_cohort",
+        "historical_requests_per_date",
         "universe_mode"
       ],
       "title": "FeedDefinition",

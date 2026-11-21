@@ -114,7 +114,6 @@ def test_registry_covers_every_published_provider_with_its_capabilities():
         }
         assert dated == ({"tw_futures_eod"} if provider == "taifex" else set())
         assert (type(adapter).dated_universe is not ProviderAdapter.dated_universe) is bool(dated)
-        assert (adapter.outage_retry_seconds is not None) is (provider in {"taifex", "finlab"})
         assert adapter.outage_holds_plan is (provider == "finlab")
         assert (adapter.shared_response_prefix is not None) is (provider == "finlab")
         assert adapter.catalogue_datasets == {

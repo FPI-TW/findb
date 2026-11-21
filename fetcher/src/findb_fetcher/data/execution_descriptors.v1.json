@@ -21,7 +21,9 @@
         "slot_id": "asia_pacific_markets_window"
       },
       "frequency": "daily",
+      "historical_cohort": "current_release",
       "historical_execution": null,
+      "historical_requests_per_date": 1,
       "lifecycle": "active",
       "market": "HK",
       "provider": "factset",
@@ -47,7 +49,9 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "minute",
+      "historical_cohort": null,
       "historical_execution": null,
+      "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -73,6 +77,7 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "daily",
+      "historical_cohort": "dated_release",
       "historical_execution": {
         "local": {
           "lease_seconds": 2400,
@@ -111,6 +116,7 @@
           "wait_timeout_seconds": 1800
         }
       },
+      "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -136,7 +142,9 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "tick",
+      "historical_cohort": null,
       "historical_execution": null,
+      "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -162,7 +170,9 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "minute",
+      "historical_cohort": null,
       "historical_execution": null,
+      "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -188,7 +198,9 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "daily",
+      "historical_cohort": "dated_release",
       "historical_execution": null,
+      "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -214,7 +226,9 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "tick",
+      "historical_cohort": null,
       "historical_execution": null,
+      "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -240,7 +254,9 @@
         "slot_id": "taiwan_market_window"
       },
       "frequency": "daily",
+      "historical_cohort": "daily_report",
       "historical_execution": null,
+      "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
       "provider": "taifex",
@@ -266,6 +282,7 @@
         "slot_id": "western_markets_window"
       },
       "frequency": "daily",
+      "historical_cohort": "dated_release",
       "historical_execution": {
         "local": {
           "lease_seconds": 2400,
@@ -304,13 +321,14 @@
           "wait_timeout_seconds": 1800
         }
       },
+      "historical_requests_per_date": "per_member",
       "lifecycle": "active",
       "market": "US",
       "provider": "twelve_data",
       "universe_mode": "refreshed"
     }
   ],
-  "projection_sha256": "dd2412b772b479e9530e65152d690f19508a8f05002e50e898f99e4e1ea1d8bf",
+  "projection_sha256": "1920464796fe877f0c6e4d5f6e8356e999da73d2afe231298a64a5a770a4d835",
   "providers": [
     {
       "credential_env_names": [

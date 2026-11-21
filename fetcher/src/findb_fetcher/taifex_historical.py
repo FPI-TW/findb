@@ -49,6 +49,9 @@ from findb_fetcher.raw_storage import (
 
 
 class TaifexHistoricalRunner:
+    # ``_operation`` retries every fetch and Source call within the lease boundary.
+    retries_operations = True
+
     def __init__(
         self,
         *,

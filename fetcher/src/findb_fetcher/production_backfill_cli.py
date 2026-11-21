@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
-from typing import Any, Never, Sequence
+from typing import Any, Callable, Never, Sequence
 
 import httpx
 
@@ -53,31 +53,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# Reviewed universe file formats, by the provider that publishes them.
+_UNIVERSE_LOADERS: dict[str, Callable[[Path], Any]] = {
+    "twelve_data": load_symbol_universe,
+    "finlab": load_finlab_universe,
+}
+
+
 def _scope(
     provider: str, dataset_key: str, universe_file: Path | None = None
 ) -> tuple[int, int | None]:
+    """Provider requests and rows per date, from the feed's catalog declaration."""
     if app_environment() != "production":
         raise BackfillCLIError("backfill planner requires production")
-    historical_feed(provider, dataset_key)
-    if provider in {"taifex", "factset"}:
+    feed = historical_feed(provider, dataset_key)
+    per_date = feed["historical_requests_per_date"]
+    if feed["historical_cohort"] != "dated_release":
+        # The date's report or the request's current release decides the members.
         if universe_file is not None:
             raise BackfillCLIError("This provider uses a Backend-owned historical universe")
-        return (1 if provider == "factset" else 5), None
-    if (
-        provider == "finlab"
-        and universe_file is None
-        and historical_feed(provider, dataset_key)["historical_execution"] is None
-    ):
-        # The Backend freezes this feed's Full release; five shared tables per date.
-        return 5, None
+        return per_date, None
+    if universe_file is None and feed["historical_execution"] is None:
+        # The Backend freezes each date's Full release; no packaged list to count.
+        if per_date == "per_member":
+            raise BackfillCLIError("Per-member estimate requires a reviewed universe file")
+        return per_date, None
     execution = historical_execution(provider, dataset_key, universe_file=universe_file)
-    if provider == "twelve_data":
-        symbols = len(load_symbol_universe(execution.universe_file).symbols)
-        return symbols, symbols
-    if provider == "finlab":
-        symbols = len(load_finlab_universe(execution.universe_file).symbols)
-        return 5, symbols
-    raise BackfillCLIError("requested production EOD provider is unsupported")
+    loader = _UNIVERSE_LOADERS.get(provider)
+    if loader is None:
+        raise BackfillCLIError("requested production EOD provider is unsupported")
+    symbols = len(loader(execution.universe_file).symbols)
+    return (symbols if per_date == "per_member" else per_date), symbols
 
 
 def _request(

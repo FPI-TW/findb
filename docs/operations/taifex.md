@@ -40,8 +40,8 @@ EOD，一般（regular）與盤後（after_hours）分開保存；價差與 cont
   no_trade，並附報表 SHA-256 與原列摘錄；成員在報表中缺列時記為 blocked，不記 no_data。
 - 交付時官方 408／429／5xx、網路中斷或報表尚未發布，屬於整份報表不可用：不扣成員失敗額度、
   不回報 source_error，成員至少延後 60 秒（429 依 `Retry-After`），結束本輪由一般 provider work
-  retry 重排。同一計畫自第一次故障起持續超過 12 小時仍未取得報表時，後續成員直接轉
-  `retry_exhausted` 並回報 source_error；任一成員成功取得報表即重設起算點。進行中的故障列於
+  retry 重排。到 plan 凍結的完成期限（`deadline_at`，排程後 12 小時，即隔日 05:00）仍未取得報表時，後續成員直接轉
+  `retry_exhausted` 並回報 source_error；所有 provider 的 outage 都用同一個期限。進行中的故障列於
   health 的 `provider_outages`（plan、交易日與起始時間）。403 等其他錯誤仍逐成員記
   source_error，連續 5 次後轉 `retry_exhausted` 人工處理。
   故障起始時間存於各 profile checkpoint 的 `full_provider_outage` table；Fetcher 啟動時以

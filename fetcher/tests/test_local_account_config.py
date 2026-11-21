@@ -171,7 +171,7 @@ def _probe(provider, mode):
             control = SimpleNamespace(
                 provider=provider,
                 claim=lambda: item,
-                authorize=lambda _item: SourceDouble().authorization(
+                authorize=lambda _item, **_kwargs: SourceDouble().authorization(
                     "GET", "full-market/authorization?consumer=historical"
                 ),
                 complete=lambda *_args: None,

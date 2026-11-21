@@ -32,6 +32,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
+      "historical_requests_per_date": 1,
       "lifecycle": "active",
       "market": "HK",
       "provider": "factset",
@@ -74,6 +75,7 @@
       "frequency": "minute",
       "historical_cohort": null,
       "historical_execution": null,
+      "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -157,6 +159,7 @@
           "wait_timeout_seconds": 1800
         }
       },
+      "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -199,6 +202,7 @@
       "frequency": "tick",
       "historical_cohort": null,
       "historical_execution": null,
+      "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -241,6 +245,7 @@
       "frequency": "minute",
       "historical_cohort": null,
       "historical_execution": null,
+      "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -283,6 +288,7 @@
       "frequency": "daily",
       "historical_cohort": "dated_release",
       "historical_execution": null,
+      "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -325,6 +331,7 @@
       "frequency": "tick",
       "historical_cohort": null,
       "historical_execution": null,
+      "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -367,6 +374,7 @@
       "frequency": "daily",
       "historical_cohort": "daily_report",
       "historical_execution": null,
+      "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
       "provider": "taifex",
@@ -450,6 +458,7 @@
           "wait_timeout_seconds": 1800
         }
       },
+      "historical_requests_per_date": "per_member",
       "lifecycle": "active",
       "market": "US",
       "provider": "twelve_data",
@@ -585,5 +594,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "b6e7869cdc7691cea6353b505a460145567b58d4c0ee31c72d8183bd6882d380"
+  "source_sha256": "7971b2ae6b6ab775d68a3847f86ee924ab2fb6668772e2263f30a0ed22d019ef"
 }

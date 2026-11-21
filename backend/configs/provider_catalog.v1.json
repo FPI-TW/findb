@@ -185,6 +185,7 @@
         }
       },
       "historical_cohort": "dated_release",
+      "historical_requests_per_date": "per_member",
       "universe_mode": "refreshed"
     },
     {
@@ -228,6 +229,7 @@
       },
       "historical_execution": null,
       "historical_cohort": "current_release",
+      "historical_requests_per_date": 1,
       "universe_mode": "refreshed"
     },
     {
@@ -311,6 +313,7 @@
         }
       },
       "historical_cohort": "dated_release",
+      "historical_requests_per_date": 5,
       "universe_mode": "refreshed"
     },
     {
@@ -353,6 +356,7 @@
       },
       "historical_execution": null,
       "historical_cohort": "dated_release",
+      "historical_requests_per_date": 5,
       "universe_mode": "refreshed"
     },
     {
@@ -395,6 +399,7 @@
       },
       "historical_execution": null,
       "historical_cohort": null,
+      "historical_requests_per_date": null,
       "universe_mode": "refreshed"
     },
     {
@@ -437,6 +442,7 @@
       },
       "historical_execution": null,
       "historical_cohort": null,
+      "historical_requests_per_date": null,
       "universe_mode": "refreshed"
     },
     {
@@ -479,6 +485,7 @@
       },
       "historical_execution": null,
       "historical_cohort": null,
+      "historical_requests_per_date": null,
       "universe_mode": "refreshed"
     },
     {
@@ -521,6 +528,7 @@
       },
       "historical_execution": null,
       "historical_cohort": null,
+      "historical_requests_per_date": null,
       "universe_mode": "refreshed"
     },
     {
@@ -563,6 +571,7 @@
       },
       "historical_execution": null,
       "historical_cohort": "daily_report",
+      "historical_requests_per_date": 5,
       "universe_mode": "dated"
     }
   ]

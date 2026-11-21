@@ -197,7 +197,11 @@ def test_invalid_metadata_fails_closed(declaration, fault):
         f["lifecycle"] = "draining"
     elif fault == "retired_source":
         f.update(
-            lifecycle="retired", schedule=None, historical_execution=None, historical_cohort=None
+            lifecycle="retired",
+            schedule=None,
+            historical_execution=None,
+            historical_cohort=None,
+            historical_requests_per_date=None,
         )
         f["capabilities"].update(acquisition=False, historical="unsupported")
     elif fault == "historical_without_source":
@@ -218,6 +222,7 @@ def test_invalid_metadata_fails_closed(declaration, fault):
     elif fault == "unsupported_historical_execution":
         f["capabilities"]["historical"] = "unsupported"
         f["historical_cohort"] = None
+        f["historical_requests_per_date"] = None
     elif fault == "bounded_without_deadline":
         f["bounded_monitor"]["deadline"] = None
     with pytest.raises(ValueError):
@@ -291,7 +296,11 @@ def test_retirement_removes_new_options_without_reintroducing_consumers(declarat
     provider["consumer_roles"] = []
     feed = declaration["feeds"][0]
     feed.update(
-        lifecycle="retired", schedule=None, historical_execution=None, historical_cohort=None
+        lifecycle="retired",
+        schedule=None,
+        historical_execution=None,
+        historical_cohort=None,
+        historical_requests_per_date=None,
     )
     feed["capabilities"].update(source=False, acquisition=False, historical="unsupported")
     feed["bounded_monitor"].update(enabled=False)
@@ -357,7 +366,11 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
         in artifacts[Path("dashboard/src/lib/generated/provider-catalog.ts")]
     )
     feed.update(
-        lifecycle="draining", schedule=None, historical_execution=None, historical_cohort=None
+        lifecycle="draining",
+        schedule=None,
+        historical_execution=None,
+        historical_cohort=None,
+        historical_requests_per_date=None,
     )
     feed["capabilities"].update(acquisition=False, historical="unsupported")
     # Draining is not an instruction to remove installed consumers or Source scope.
@@ -462,6 +475,7 @@ def test_feeds_of_one_dataset_share_a_calendar_market(declaration):
     duplicate = {**feed, "provider": "twelve_data", "calendar_market": "TW"}
     duplicate["capabilities"] = {**feed["capabilities"], "historical": "unsupported"}
     duplicate["historical_cohort"] = None
+    duplicate["historical_requests_per_date"] = None
     declaration["feeds"].append(duplicate)
     with pytest.raises(ValidationError, match="share a calendar market"):
         ProviderCatalog.model_validate(declaration)
@@ -500,7 +514,11 @@ def test_seed_requires_exactly_one_catalog_source_feed(monkeypatch, declaration,
         feeds.append(extra)
     if fault == "source_disabled":
         feeds[index].update(
-            lifecycle="retired", schedule=None, historical_execution=None, historical_cohort=None
+            lifecycle="retired",
+            schedule=None,
+            historical_execution=None,
+            historical_cohort=None,
+            historical_requests_per_date=None,
         )
         feeds[index]["capabilities"].update(
             source=False, acquisition=False, historical="unsupported"
@@ -529,3 +547,27 @@ def test_universe_modes_are_catalog_fields(monkeypatch, declaration):
     catalog = ProviderCatalog.model_validate(declaration)
     monkeypatch.setattr("app.services.provider_metadata.provider_catalog", lambda: catalog)
     assert ("twelve_data", "us_equity_eod") not in universe_refresh.refreshable_feeds()
+
+
+def test_historical_requests_per_date_rules(declaration):
+    from app.services.provider_metadata import provider_catalog
+
+    assert {
+        (feed.provider, feed.dataset_key): feed.historical_requests_per_date
+        for feed in provider_catalog().feeds
+        if feed.capabilities.historical != "unsupported"
+    } == {
+        ("factset", "hk_equity_eod"): 1,
+        ("finlab", "tw_equity_eod"): 5,
+        ("finlab", "tw_etf_eod"): 5,
+        ("taifex", "tw_futures_eod"): 5,
+        ("twelve_data", "us_equity_eod"): "per_member",
+    }
+    taifex = next(f for f in declaration["feeds"] if f["provider"] == "taifex")
+    taifex["historical_requests_per_date"] = None
+    with pytest.raises(ValidationError, match="declare requests per date"):
+        ProviderCatalog.model_validate(declaration)
+    # A per-member estimate needs a frozen member list to count.
+    taifex["historical_requests_per_date"] = "per_member"
+    with pytest.raises(ValidationError, match="dated_release member list"):
+        ProviderCatalog.model_validate(declaration)
