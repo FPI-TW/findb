@@ -44,6 +44,7 @@ from findb_fetcher.providers.twelve_data import (
     TwelveDataPayloadError,
     TwelveDataResponse,
     TwelveDataResponseError,
+    TwelveDataValueError,
 )
 from findb_fetcher.providers.twelve_data import (
     authorization_headers as td_authorization_headers,
@@ -165,17 +166,21 @@ class TwelveDataAdapter(ProviderAdapter):
             raw = response.raw_bytes
             context.observe_response(len(raw))
             stored = context.persist(raw, member["provider_symbol"])
-        request = td_request(
-            response,
-            dataset_key=context.dataset_key,
-            fetched_at=context.fetched_at,
-            requested_symbol=member["provider_symbol"],
-            canonical_symbol=member["symbol"],
-            allowed_instrument_types=tuple(TWELVE_DATA_EQUITY_TYPES),
-            after_trade_date=day - timedelta(days=1),
-            through_trade_date=day,
-            delivery=dict(context.delivery),
-        )
+        try:
+            request = td_request(
+                response,
+                dataset_key=context.dataset_key,
+                fetched_at=context.fetched_at,
+                requested_symbol=member["provider_symbol"],
+                canonical_symbol=member["symbol"],
+                allowed_instrument_types=tuple(TWELVE_DATA_EQUITY_TYPES),
+                after_trade_date=day - timedelta(days=1),
+                through_trade_date=day,
+                delivery=dict(context.delivery),
+            )
+        except TwelveDataValueError as exc:
+            # The series is well formed; only this member's values are unusable.
+            raise MemberUnavailableError(exc.code) from None
         if request["payload"]["data"][0]["currency"] != member["currency"]:
             # The served series is sound but belongs to another listing: this member only.
             raise MemberUnavailableError("identity_mismatch")
