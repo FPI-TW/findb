@@ -112,6 +112,14 @@ class TwelveDataPayloadError(TwelveDataError):
     """A successful provider response cannot be mapped safely."""
 
 
+class TwelveDataValueError(TwelveDataPayloadError):
+    """One symbol's daily values are unusable; ``code`` is a bounded, message-free class."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class TwelveDataNoNewDataError(TwelveDataError):
     """A valid provider response contains no rows after the durable checkpoint."""
 
@@ -614,9 +622,9 @@ def build_market_eod_request(
         low_value = _non_negative_decimal(value, "low", index)
         close_value = _non_negative_decimal(value, "close", index)
         if high_value < max(open_value, low_value, close_value):
-            raise TwelveDataPayloadError(f"values[{index}].high violates OHLC bounds")
+            raise TwelveDataValueError("ohlc_bounds", f"values[{index}].high violates OHLC bounds")
         if low_value > min(open_value, high_value, close_value):
-            raise TwelveDataPayloadError(f"values[{index}].low violates OHLC bounds")
+            raise TwelveDataValueError("ohlc_bounds", f"values[{index}].low violates OHLC bounds")
 
         row: dict[str, Any] = {
             "symbol": target_symbol,
@@ -631,7 +639,9 @@ def build_market_eod_request(
         volume = value.get("volume")
         if volume not in (None, ""):
             if not isinstance(volume, str) or _INTEGER_PATTERN.fullmatch(volume.strip()) is None:
-                raise TwelveDataPayloadError(f"values[{index}].volume must be an integer string")
+                raise TwelveDataValueError(
+                    "volume_not_integer", f"values[{index}].volume must be an integer string"
+                )
             row["volume"] = int(volume)
         dated_rows.append((trade_date, row))
 
@@ -787,13 +797,19 @@ def _daily_date(value: Mapping[str, Any], index: int) -> date:
 def _non_negative_decimal(value: Mapping[str, Any], key: str, index: int) -> Decimal:
     raw = value.get(key)
     if not isinstance(raw, str) or not raw.strip():
-        raise TwelveDataPayloadError(f"values[{index}].{key} must be a decimal string")
+        raise TwelveDataValueError("non_numeric", f"values[{index}].{key} must be a decimal string")
     try:
         parsed = Decimal(raw)
     except InvalidOperation as exc:
-        raise TwelveDataPayloadError(f"values[{index}].{key} must be numeric") from exc
-    if not parsed.is_finite() or parsed < 0:
-        raise TwelveDataPayloadError(f"values[{index}].{key} must be finite and non-negative")
+        raise TwelveDataValueError("non_numeric", f"values[{index}].{key} must be numeric") from exc
+    if not parsed.is_finite():
+        raise TwelveDataValueError(
+            "non_finite", f"values[{index}].{key} must be finite and non-negative"
+        )
+    if parsed < 0:
+        raise TwelveDataValueError(
+            "negative", f"values[{index}].{key} must be finite and non-negative"
+        )
     return parsed
 
 

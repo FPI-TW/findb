@@ -6,6 +6,7 @@ import json
 from datetime import timedelta
 
 import httpx
+import pytest
 
 from findb_fetcher.full_market_universe import canonical_bytes
 from test_provider_adapter_golden import (
@@ -84,6 +85,67 @@ def test_twelve_data_identity_mismatch_blocks_only_that_member(tmp_path, monkeyp
         "IBM": ("complete", None),
     }
     assert diagnostics == ["member:identity_mismatch"]
+    assert not runtime.state.has_blocking_manual(plan["plan_id"])
+    assert not runtime.state.pending_source_error_keys(plan["plan_id"])
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_twelve_data_ohlc_violation_blocks_only_that_member(tmp_path, monkeypatch, batched):
+    """A close above the high (LANV on 2026-11-20) once ended every round until the plan failed."""
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+    from findb_fetcher.providers.twelve_data import (
+        TwelveDataClient,
+        TwelveDataConfig,
+        TwelveDataResponse,
+    )
+
+    _clock(monkeypatch)
+    monkeypatch.setattr(TwelveDataConfig, "from_env", classmethod(lambda cls: cls(api_key="k")))
+    calls: list[tuple[str, ...]] = []
+
+    def payload(symbol):
+        # Above the 12.5 high.
+        return _twelve_payload(symbol, "13" if symbol == "BAD" else "11")
+
+    def fetch_daily(self, symbol, **kwargs):
+        calls.append((symbol,))
+        served = payload(symbol)
+        return TwelveDataResponse(served, raw_bytes=canonical_bytes(served))
+
+    def fetch_daily_batch(self, symbols, **kwargs):
+        calls.append(symbols)
+        served = {symbol: payload(symbol) for symbol in symbols}
+        return TwelveDataResponse(served, raw_bytes=canonical_bytes(served))
+
+    monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    monkeypatch.setattr(TwelveDataClient, "fetch_daily_batch", fetch_daily_batch)
+    if not batched:
+        monkeypatch.setattr(TwelveDataAdapter, "member_batch_limit", 0)
+    runtime, source, delivery, _ = _runtime(tmp_path, "twelve_data")
+    keys = ["BAD", "AAPL", "IBM"]
+    plan = _plan("us_equity_eod", keys)
+    runtime.state.record_plan(plan, "twelve_data")
+    try:
+        assert runtime._deliver_plan(
+            plan,
+            {"release_id": "r", "members": [_us(key) for key in keys]},
+            _feed("twelve_data", "us_equity_eod"),
+        )
+        rows, diagnostics = _rows(runtime, plan["plan_id"])
+    finally:
+        runtime.close()
+    assert calls == ([tuple(keys)] if batched else [(key,) for key in keys])
+    assert [json.loads(body)["payload"]["data"][0]["symbol"] for body in delivery.prepared] == [
+        "AAPL",
+        "IBM",
+    ]
+    assert [(o["member_key"], o["reason"]) for o in source.outcomes] == [("BAD", "source_error")]
+    assert rows == {
+        "BAD": ("manual", "member_unavailable"),
+        "AAPL": ("complete", None),
+        "IBM": ("complete", None),
+    }
+    assert diagnostics == ["member:ohlc_bounds"]
     assert not runtime.state.has_blocking_manual(plan["plan_id"])
     assert not runtime.state.pending_source_error_keys(plan["plan_id"])
 
