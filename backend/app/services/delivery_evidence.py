@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import (
+    ExchangeDailyQuote,
     FuturesContract,
     FuturesContractEOD,
     Instrument,
@@ -43,6 +44,16 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
         written = set(
             await db.scalars(
                 select(IntradayPartition.symbol).where(IntradayPartition.run_id == run.run_id)
+            )
+        )
+    elif run.schema_id == "exchange_daily_quote":
+        written = set(
+            await db.scalars(
+                select(Instrument.symbol)
+                .join(
+                    ExchangeDailyQuote, ExchangeDailyQuote.instrument_id == Instrument.instrument_id
+                )
+                .where(ExchangeDailyQuote.run_id == run.run_id)
             )
         )
     else:

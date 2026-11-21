@@ -60,11 +60,11 @@ Scheduler delivery可額外帶完整`delivery` object：`slot_id`、`scheduled_f
 | 欄位 | 規則 |
 | --- | --- |
 | `data_date` | 主要業務日期 |
-| `delivery_mode` | EOD使用`full_snapshot`、`incremental`或`backfill`；minute固定`sequenced_snapshot`；`intraday_partition`只接受`incremental`或`backfill` |
+| `delivery_mode` | EOD使用`full_snapshot`、`incremental`或`backfill`；minute固定`sequenced_snapshot`；`intraday_partition`與`exchange_daily_quote`只接受`incremental`或`backfill` |
 | `declared_record_count` | 必須等於`len(data)` |
 | `coverage_start_date/end_date` | 跨日期時成對提供，`data_date`等於coverage end |
-| `source_raw_ref` | 選填的credential-free provider raw reference；`intraday_partition`必填 |
-| `source_raw_sha256` | 選填的lowercase SHA-256；`intraday_partition`必填 |
+| `source_raw_ref` | 選填的credential-free provider raw reference；`intraday_partition`與`exchange_daily_quote`必填 |
+| `source_raw_sha256` | 選填的lowercase SHA-256；`intraday_partition`與`exchange_daily_quote`必填 |
 | `sequence/sequence_count` | 分批delivery時成對提供 |
 
 `full_snapshot`代表該資料日完整dataset universe；部分symbol使用`incremental`。
@@ -186,6 +186,50 @@ Batch 的 `source_raw_ref`／`source_raw_sha256` 必填，指向 provider 原始
 Arrow 型別、可否為空，依序排列）。Provider 欄位到這份配置的對應由 Fetcher 完成：時間一律是 UTC、
 `trade_date` 是交易所當地日期、`symbol` 是字串、價格未還原、成交量單位是張。當日沒有成交時不送
 request，沿用官方 no-data 證據。
+
+## `exchange_daily_quote.v1`
+
+交易所官方每日報表的逐檔行情，目前只對應 HKEX 的每日報表（主板與 GEM 各一份）。契約、官方表與
+normalizer 已發布，但目前沒有 dataset 接受它，送入的 request 會被拒絕。設計與啟用進度見
+[港股個股日線](../dev/hk-equity-factset-hkex.md)。
+
+Batch 的 `source_raw_ref`／`source_raw_sha256` 必填，指向 producer 存進 Raw R2 的報表 gzip；
+`batch.report` 描述報表本身：
+
+| 欄位 | 規則 |
+| --- | --- |
+| `board` | `main` 或 `gem` |
+| `url` | HKEX 每日報表網址（`https://www.hkex.com.hk/eng/stat/smstat/dayquot/…htm`） |
+| `original_sha256`、`original_bytes` | 交易所提供的報表原檔（未壓縮）的 SHA-256 與大小，上限 64 MiB |
+| `gzip_bytes` | Raw R2 中 gzip 的大小，上限 16 MiB；SHA-256 即 `source_raw_sha256` |
+| `last_modified`、`etag` | 交易所回應的 `Last-Modified`（須含時區）與 ETag |
+
+`data` 每列是報表上的一檔證券，所有 `trade_date` 必須等於 `batch.data_date`，同一 `symbol` 不可重複，
+不使用 `sequence`：
+
+| 欄位 | 規則 |
+| --- | --- |
+| `symbol` | 5 位數代號，保留前導零 |
+| `currency` | 必填，該櫃台的幣別 |
+| `trading_status` | `traded`（`volume` > 0）或 `no_trade`（`volume` = 0）；停牌或暫停交易的證券不送列 |
+| `previous_close`、`close`、`ask`、`bid`、`high`、`low` | 選填、不得為負；報表為 `-` 或 `N/A` 時為 null。沒有開盤價 |
+| `volume`、`turnover` | 必填、不得為負；成交股數與成交金額（報表幣別、整數元） |
+
+數值之間的關係是逐列 DQ，不在 Source 入口拒絕：
+
+- `QUOTE_HIGH_BELOW_LOW`、`QUOTE_TURNOVER_WITHOUT_VOLUME` 是 `error`，該列不寫入。
+- `QUOTE_AVERAGE_PRICE_OUTSIDE_RANGE`（成交金額 ÷ 成交股數落在最高、最低之外）只是 `warning`：
+  最高、最低不含碎股與特別買賣，2026-09-21 至 11-20 的報表中，有成交的主板列約 1.3%、GEM 約 3.3% 如此。
+- 收盤價不與最高、最低比較：非收市競價股票的收盤價是最後一分鐘按盤價的中位數。
+
+Normalizer 第一次遇到某份報表時，以 Worker 的 Raw reader 讀出 gzip，核對 `gzip_bytes`、解壓後的大小與
+`original_sha256`，再把 gzip 原封不動複製到 Canonical R2 的
+`archive/v1/<source>/daily_quotation/board=<board>/year=<YYYY>/<YYYYMMDD>/<source_raw_sha256>.htm.gz`，
+最後在同一個 transaction 寫入索引表 `exchange_report_archive` 與官方表 `exchange_daily_quote`。
+物件先寫、索引後寫：中途失敗留下的同內容物件會在重試時沿用；同一份報表（以 `original_sha256` 判定）
+之後的成員只核對索引，不再寫入。報表不符時整個 request 的列都以 `EXCHANGE_REPORT_REJECTED` 失敗、
+不寫入任何資料；R2 暫時故障則交給 queue 重試。同一檔同一日以 `source_fetched_at` 較新者為準，
+舊的抓取不覆蓋新的，記 `SOURCE_PRECEDENCE_REJECTED`。
 
 ## Frozen universe 與 daily plan protocol
 

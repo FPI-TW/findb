@@ -14,6 +14,12 @@
   - HKEX 為獨立的 provider `hkex` 與 dataset，以欄位層修正 FactSet 的港股列，開盤價保留 FactSet 的值。
   - FactSet 沒有的港股標的，第一版只存在 HKEX 的表。
   - 原始報表長期歸檔到 Canonical R2，本機已下載的報表一併歸檔。
+- 2026-11-21 Owner 確認三項實作決定：
+  - 欄位層修正記在兩處：`market_data_eod` 新增 `field_sources`（例如 `{"close":"hkex"}`），另有一張只增不改的
+    修正紀錄表，存每次修正前後的值與 run；差異超過門檻才另記 DQ warning。
+  - HKEX 報表上停牌或暫停交易的成員，記為 plan 的 `no_data`，證據是報表的 R2 位置、SHA-256 與原文那一行；
+    不寫入官方表。
+  - HKEX dataset 自己更新名單：下載 ListOfSecurities，篩選規則與 FactSet 相同，但不需要 FactSet 對應。
 - 範圍只到「每日核對與修正港股原始價」。VWAP 的計算與 Serve 欄位仍列在 [backlog](backlog.md#vwap)；成交金額在這一階段
   就一併存下，之後 VWAP 不必重抓。
 
@@ -70,6 +76,13 @@
 - **一般 GET 時 CDN 會在 `</body>` 前插入一段每次不同的 script**（約 155 bytes），同一份報表每次下載的雜湊都不同。
   `Range: bytes=0-` 回 206、穩定的 ETag，內容就是原檔；去掉那段 script 的一般下載與原檔逐位元組相同。
 - 解析：QUOTATIONS 段落，每檔兩行；幣別除 HKD 外還有 USD、CNY 等櫃台，納入範圍跟港股名單一致。
+  - 代號後緊接 `#` 表示「今天起停牌或暫停交易」，例如 `690#UNI-BIO GROUP HKD TRADING HALTED`；
+    狀態文字有 `TRADING SUSPENDED` 與 `TRADING HALTED`。
+  - 前收為 `N/A` 多半是新上市的股票、供股權或債券；第二行 `N/A - - -` 表示沒有收盤價。
+  - 有成交量卻沒有最高、最低（`-`）的列約佔有成交列的 1.3%，當天只有碎股成交。
+- **Range 請求偶爾也會被 CDN 插入 script**（2026-11-21 下載 11-20 報表時遇到）：該次 206 回應沒有
+  `Content-Length`，內容比 `Content-Range` 的總長多約 150 bytes。只有長度等於 `Content-Range` 總長的回應
+  才是原檔，不符就重抓。
 
 ### 發布時間
 
@@ -112,8 +125,9 @@
   `market_eod` v2 會寫進 `market_data_eod`，不會寫進 HKEX 自己的表。contract 帶交易狀態、前收、成交金額等欄位，
   batch 帶 `source_raw_ref`、`source_raw_sha256`、報表的 `Last-Modified` 與 ETag。
 - 新 canonical 表、歸檔索引表、normalizer、上述欄位層修正、DQ。DQ 至少包括：
-  - 成交金額 ÷ 成交股數必須落在當日最低與最高之間（同時驗證解析是否正確）。
-  - 成交股數為 0 時不得有成交金額。
+  - 成交股數為 0 時不得有成交金額；最高不得低於最低。兩者是 error。
+  - 成交金額 ÷ 成交股數落在最低與最高之外只記 warning：最高、最低不含碎股與特別買賣，09-21 至 11-20 有成交的
+    主板列約 1.3%、GEM 約 3.3% 落在範圍外，主板有 3 列偏離超過 100%（例如供股期間），所以無法用來驗證解析。
   - 不檢查收盤價是否落在最低與最高之間：HKEX 的收盤價常不是成交價，每天約 3.4% 的有成交港股落在範圍外。
     `market_data_eod` 的港股列同樣只記 warning（見 [`market_eod.v2`](../architecture/ingress_contracts.md#market_eodv2)）。
 - Catalog 新增 provider `hkex` 與 feed；`calendar_market` 為 HK。
@@ -153,7 +167,8 @@ Owner 於 2026-11-19 確認長期歸檔。HKEX 兩個月後就刪除報表，Raw
   `source_raw_ref` 的物件，HKEX 是第一個。
 - 每份約 3.5 MB、一年約 1 GB；索引記交易日、object key、ETag、原檔與 gzip 的 SHA-256、HKEX 的 `Last-Modified`
   與 ETag。假日頁也歸檔，作為 no_data 的證據。
-- 路徑暫定 `archive/v1/hkex_daily_quotation/year=<YYYY>/d<yymmdd>e.htm.gz`，實作時定案。
+- 路徑定為 `archive/v1/hkex/daily_quotation/board=<main|gem>/year=<YYYY>/<YYYYMMDD>/<gzip SHA-256>.htm.gz`：
+  以 gzip 內容命名，物件寫入後不再改變；HKEX 重新發布的報表是另一個物件與索引列。
 - **歸檔每份報表只做一次**：以 SHA-256 去重，第一個引用該報表的成員觸發歸檔，之後的成員只核對索引。
 
 ### 交付量與耗時
@@ -174,14 +189,28 @@ Owner 於 2026-11-19 確認長期歸檔。HKEX 兩個月後就刪除報表，Raw
 ### 歷史
 
 - 上線時能補到的最早日期是「上線日往前約兩個月」，更早的港股歷史維持 FactSet 的值。
-- **本機已下載的報表一併歸檔**（Owner 於 2026-11-19 確認）：2026-09-21 至 11-18 的 41 個交易日，加上 10-01、
-  10-19 兩份假日頁；主板與 GEM 各 43 份，已逐份核對為 HKEX 原檔，保存在不進版控的位置。
+- **本機已下載的報表一併歸檔**（Owner 於 2026-11-19 確認）：2026-09-21 至 11-20 的 43 個交易日，加上 10-01、
+  10-19 兩份假日頁；主板與 GEM 各 45 份，已逐份核對為 HKEX 原檔，保存在不進版控的位置。11-19、11-20 於
+  11-21 補入；上線前每個交易日都要照此補入。
   - 匯入走同一條路徑：Fetcher 以一次性的本機檔匯入寫進 Raw R2、送 Source，由 Worker 歸檔並寫入官方表。
   - 09-21 的報表約 11-21 起陸續被 HKEX 刪除，本機副本必須保存到匯入完成。
 
+## 實作進度
+
+| PR | 內容 | 狀態 |
+| --- | --- | --- |
+| 1 | contract `exchange_daily_quote.v1`、官方表 `exchange_daily_quote`、歸檔索引 `exchange_report_archive`、normalizer 與 Canonical R2 歸檔（見 [ingress contract](../architecture/ingress_contracts.md#exchange_daily_quotev1)）；尚無 dataset 接受 | 本 PR |
+| 2 | FactSet 港股列的欄位層修正：`field_sources`、修正紀錄表，寫入順序無關 | 未開始 |
+| 3 | Fetcher adapter：Range 抓取與 script 檢查、gzip 存 Raw R2、主板與 GEM 解析、名單、停牌 no_data 證據、假日頁、historical runner；journal 清理加入 `hkex` | 未開始 |
+| 4 | 啟用：catalog provider 與 feed、dataset `hk_equity_official_eod`、control、凍結排程檢查、Source credential、infra consumers 與 secrets；classify plan 支援官方表 | 未開始 |
+| 5 | 匯入本機報表、staging 驗收、文件整併 | 未開始 |
+
+每個 PR 合併後都能單獨部署：catalog 一旦列出 provider，部署就要求它的 Source credential 與兩個 consumers，
+所以 provider 與 dataset 到第 4 個 PR 才一起加入。
+
 ## 待決事項
 
-- 欄位層修正的來源紀錄欄位、歸檔路徑與索引表。
+- 欄位層修正紀錄表的欄位與 `field_sources` 的值域（第 2 個 PR 定案）。
 - FactSet 港股每日資料的可取得時間：loader 稽核顯示亞太價格約在香港時間 20:30 整批入庫，2026-11-20
   起逐次觀測確認（見 [FactSet runbook](../operations/factset_hk.md#重試層級與來源更新時間)）。
 - 港股的調整因子來源（FactSet 或 FMP），見 [還原價：調整因子表設計](price-adjustment-factors.md)。
