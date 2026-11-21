@@ -103,7 +103,7 @@ historical runner 可用自己的 context 呼叫同一個 `acquire`。
 | `catalogue_request`、`catalogue_rows`、`catalogue_evidence_dataset` | 選用（`catalogue_datasets`）：HTTP provider catalogue 的 request 與解析；runtime 以 adapter 宣告的 `catalogue_journal` 治理、journal 與重放 |
 | `acquire(member, AcquisitionContext) -> AcquisitionResult` | 抓取一個成員並映射成 contract request 與其 raw object，或回傳 no_trade evidence；不呼叫 Source |
 | `acquire_batch(members, BatchContext)`、`batch_status(evidence)` | 選用（`batch = True`）：一次原生查詢整個 cohort 再逐成員交付 |
-| `dated_universe(day, AcquisitionContext) -> DatedUniverse` | 選用（`dated_universe_code`）：Source 要求時以當日觀察建立 universe |
+| `dated_universe(day, AcquisitionContext) -> DatedUniverse` | 選用（catalog `universe_mode: dated` 的 feed 必須實作）：Source 要求時以當日觀察建立 universe；`dated` feed 不排 maintenance |
 | `classify(exc, phase) -> ProviderFailure` | 把 provider 例外分成 `member`、`round_retry`、`work_failed`、`quota_wait` 或 `passthrough` |
 | `diagnostic(exc)` | provider 例外的有界診斷欄位，不含 provider 原文 |
 | `reset()`、`close()` | 清除每輪原生快取（ownership 可能轉移時）、關閉 client |
@@ -152,7 +152,7 @@ Fetcher 端只新增模組與註冊，不修改 runtime 的分支或 `except`：
    Fetcher metadata；`execution_config._IMPLEMENTED_ADAPTERS` 加入 `(provider, dataset_key)`。
 2. `providers/<provider>.py` 放原生 client、bounded response 與 contract mapping（historical 共用）。
 3. `provider_adapters/<provider>.py` 繼承 `ProviderAdapter`：實作 `build_universe` 與 `acquire`（或
-   `batch = True` 加 `acquire_batch`）；需要時宣告 `dated_universe_code`、`shared_response_prefix`、
+   `batch = True` 加 `acquire_batch`）；catalog `universe_mode` 為 `dated` 時實作 `dated_universe`；需要時宣告 `shared_response_prefix`、
    `outage_retry_seconds`、`catalogue_datasets`。時區、slot、contract 版本一律從 context 取得。
 4. `classify(exc, phase)` 為該 provider 的每個例外在 `member`、`round`、`maintenance` 三個 phase
    回傳分類，其餘一律 `PASSTHROUGH`；`diagnostic` 只回傳有界欄位。

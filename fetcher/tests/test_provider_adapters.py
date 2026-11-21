@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from execution_config_support import publication
-from findb_fetcher.execution_metadata import acquisition_feeds
+from findb_fetcher.execution_metadata import acquisition_feeds, dated_universe
 from findb_fetcher.full_market_errors import (
     DatedUniversePendingError,
     MemberUnavailableError,
@@ -105,9 +105,15 @@ def test_registry_covers_every_published_provider_with_its_capabilities():
     for provider in FIXTURE:
         adapter = adapter_for(provider)
         assert adapter.provider == provider
-        assert adapter.scheduled_maintenance is (provider != "taifex")
         assert adapter.batch is (provider == "factset")
-        assert (adapter.dated_universe_code is not None) is (provider == "taifex")
+        # A catalog ``dated`` feed is planned from its adapter's dated universe.
+        dated = {
+            feed["dataset_key"]
+            for feed in acquisition_feeds(provider)
+            if dated_universe(provider, feed["dataset_key"])
+        }
+        assert dated == ({"tw_futures_eod"} if provider == "taifex" else set())
+        assert (type(adapter).dated_universe is not ProviderAdapter.dated_universe) is bool(dated)
         assert (adapter.outage_retry_seconds is not None) is (provider in {"taifex", "finlab"})
         assert adapter.outage_holds_plan is (provider == "finlab")
         assert (adapter.shared_response_prefix is not None) is (provider == "finlab")

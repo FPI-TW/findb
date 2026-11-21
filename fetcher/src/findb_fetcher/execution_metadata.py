@@ -157,6 +157,19 @@ def provider_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
         raise ExecutionMetadataError("Invalid installed execution metadata") from exc
 
 
+def dated_universe(provider: str, dataset_key: str) -> bool:
+    """Whether a plan needs a universe built from its trade date's own observation.
+
+    A ``refreshed`` feed's universe comes from scheduled maintenance instead.
+    """
+    feed = next(
+        (row for row in provider_feeds(provider) if row["dataset_key"] == dataset_key), None
+    )
+    if feed is None or feed.get("universe_mode") not in {"refreshed", "dated"}:
+        raise ExecutionMetadataError("Unknown feed universe mode")
+    return feed["universe_mode"] == "dated"
+
+
 def acquisition_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
     return tuple(
         row for row in provider_feeds(provider) if row["capabilities"]["acquisition"] is True

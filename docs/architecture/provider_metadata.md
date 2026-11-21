@@ -51,6 +51,12 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   無凍結名單；TAIFEX）。只有 `dated_release` 可帶 `historical_execution` 的打包 universe。Backend 的
   cohort 綁定、成員驗證與 EOD completion 依此欄位，不再依 provider 名稱；`current_release` 的 frozen
   snapshot 仍寫 `cohort: current_hkex`，這是 Fetcher executor 檢查的既有 wire 值。
+- `universe_mode` 宣告交易日名單的來源：`refreshed` 由 maintenance 刷新清單，plan 凍結最新 published
+  release；`dated` 由當天的 provider 觀測建立（TAIFEX 當天報表），plan 必須有該交易日的 release，
+  否則 Source 以 `taifex_dated_universe_required` 回絕（既有 wire 值，Fetcher 收到後提交當天名單）。
+  `dated` feed 不在 Owner 手動刷新清單、Fetcher 不為它排 maintenance，期貨換倉在有界的前進範圍內可超過
+  一般 2% 變動門檻自動發布，缺當天名單的告警附 `DATED_UNIVERSE_PENDING` 細節。Backend 與 Fetcher 都只讀這個
+  欄位；Fetcher 經 `execution_descriptors.v1.json` 取得，adapter 只提供 `dated_universe()` 實作。
 - 同一 dataset 的 feeds 必須共用 `calendar_market`（loader 檢查）。Backend 以 dataset 查日曆市場時一律讀
   catalog，沒有 catalog feed 的退役 Shioaji 分 K dataset 沿用自身 market。
 
@@ -101,7 +107,7 @@ Backend 未來新增欄位時把排程設定一起發布到 Fetcher image。
 | --- | --- | --- |
 | Backend | Source scope、credential specs、historical `CAPABILITIES`、calendar 設定名稱、Full-market feeds、cutover／owner-lock providers、readiness provider 型別、delivery plan `execution_policies` 的 provider 集合 | `provider_metadata.v1.json` |
 | Backend seed | Catalog feed 的 provider（`allowed_sources`、`source_precedence`、expected source）、market、asset class、frequency、calendar market、contract schema 與 current／accepted versions（含 FactSet HK v2） | `provider_metadata.v1.json` |
-| Fetcher | Full-market／historical／backfill planner／account governor CLI 的 provider choices、Source authorization 回應的 provider 檢查、平台 rate／response bounds、單一 credential 設定名稱、readiness evidence 的 response bound | `execution_descriptors.v1.json` |
+| Fetcher | Universe 模式、Full-market／historical／backfill planner／account governor CLI 的 provider choices、Source authorization 回應的 provider 檢查、平台 rate／response bounds、單一 credential 設定名稱、readiness evidence 的 response bound | `execution_descriptors.v1.json` |
 | Dashboard | Provider options 與 scope | `provider-catalog.ts` |
 | Infra | Consumer 名稱、provider↔image key、需驗證與拉取的 image 集合、installation inspector provider choices | `provider_inventory.v1.json` 與 guard 生成區塊 |
 

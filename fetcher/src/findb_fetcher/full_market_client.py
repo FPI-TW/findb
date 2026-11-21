@@ -21,6 +21,9 @@ from findb_fetcher.source_recovery import source_retry_sleep, transient_source_s
 
 # Source refused a no-trade claim it could not corroborate; the member stays retryable.
 NO_DATA_NOT_CORROBORATED = "no_data_not_corroborated"
+# Plan conflict answered by submitting the date's dated universe; the value predates
+# provider-neutral naming and is shared with deployed Backends.
+DATED_UNIVERSE_REQUIRED = "taifex_dated_universe_required"
 # Only fixed protocol vocabulary may enter logs; response details can contain
 # private scope or credentials and must never be copied into an exception.
 PROVIDER_WORK_CONFLICT_CODES = frozenset(
@@ -209,9 +212,9 @@ class FullMarketSourceClient:
                             except (ValueError, UnicodeError):
                                 error = None
                             if isinstance(error, dict) and error.get("detail") == {
-                                "code": "taifex_dated_universe_required"
+                                "code": DATED_UNIVERSE_REQUIRED
                             }:
-                                code = "taifex_dated_universe_required"
+                                code = DATED_UNIVERSE_REQUIRED
                             elif isinstance(error, dict) and error.get("detail") == {
                                 "code": NO_DATA_NOT_CORROBORATED
                             }:

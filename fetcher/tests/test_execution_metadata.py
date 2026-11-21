@@ -325,3 +325,22 @@ def test_account_governor_cli_rejects_unpublished_provider(monkeypatch, tmp_path
     with pytest.raises(SystemExit) as raised:
         account_governor.main()
     assert raised.value.code == 2
+
+
+def test_universe_mode_is_read_from_installed_descriptor(monkeypatch, tmp_path):
+    assert metadata.dated_universe("taifex", "tw_futures_eod") is True
+    assert metadata.dated_universe("twelve_data", "us_equity_eod") is False
+
+    def change(value):
+        feed = next(row for row in value["feeds"] if row["dataset_key"] == "us_equity_eod")
+        feed["universe_mode"] = "dated"
+        del next(row for row in value["feeds"] if row["dataset_key"] == "tw_etf_eod")[
+            "universe_mode"
+        ]
+
+    _changed_descriptor(monkeypatch, tmp_path, change)
+    assert metadata.dated_universe("twelve_data", "us_equity_eod") is True
+    with pytest.raises(metadata.ExecutionMetadataError, match="universe mode"):
+        metadata.dated_universe("finlab", "tw_etf_eod")
+    with pytest.raises(metadata.ExecutionMetadataError, match="universe mode"):
+        metadata.dated_universe("finlab", "us_equity_eod")

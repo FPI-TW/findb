@@ -59,6 +59,7 @@ from app.services.canonical_ingestion import (
 )
 from app.services.feed_schedule import execution_config
 from app.services.full_market import (
+    DATED_UNIVERSE_REQUIRED,
     FullMarketError,
     create_plan,
     get_plan,
@@ -131,7 +132,7 @@ def _full_market_source_scope(
 
 def _full_market_http_error(exc: FullMarketError) -> HTTPException:
     # Codes a Fetcher acts on; every other refusal keeps its message.
-    if exc.code in {"taifex_dated_universe_required", "no_data_not_corroborated"}:
+    if exc.code in {DATED_UNIVERSE_REQUIRED, "no_data_not_corroborated"}:
         return HTTPException(status_code=exc.status_code, detail={"code": exc.code})
     return HTTPException(status_code=exc.status_code, detail=str(exc))
 

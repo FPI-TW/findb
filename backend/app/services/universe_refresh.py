@@ -11,14 +11,13 @@ from app.api.deps import AdminPrincipal
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
 from app.models.registry import DatasetRegistry, UniverseRelease
 from app.services import provider_work
+from app.services.provider_metadata import universe_mode
 from app.services.source_clients import PROVIDER_DATASET_SCOPE
 from app.services.universe_queries import present_universe_release
 from app.utils import utc_now, uuid7
 
 # Only the Admin API writes this scope key; Source enqueue rejects it.
 MANUAL_REFRESH = "manual_refresh"
-# TAIFEX universes are dated per trade date from its daily report, not refreshed from a listing.
-_DATED_UNIVERSE_PROVIDERS = frozenset({"taifex"})
 
 
 class UniverseRefreshError(ValueError):
@@ -28,12 +27,15 @@ class UniverseRefreshError(ValueError):
 
 
 def refreshable_feeds() -> list[tuple[str, str]]:
-    """Provider and dataset pairs whose universe a maintenance work refreshes."""
+    """Provider and dataset pairs whose universe a maintenance work refreshes.
+
+    A ``dated`` universe is built per trade date from that date's own observation.
+    """
     return sorted(
         (provider, dataset_key)
         for provider, dataset_keys in PROVIDER_DATASET_SCOPE.items()
-        if provider not in _DATED_UNIVERSE_PROVIDERS
         for dataset_key in dataset_keys
+        if universe_mode(provider, dataset_key) == "refreshed"
     )
 
 
