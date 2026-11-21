@@ -169,6 +169,12 @@ for attempt in range(int(sys.argv[4])):
         "expected_observed": finlab._dataframe_response_bytes(table),
         "usage": usage,
     }
+    # The runtime reads the revision the worker's get dated its cache file at.
+    import importlib
+
+    data = importlib.import_module("finlab.data")
+    published = finlab._published_at(data, data.get, payload["dataset"])
+    result["published_at"] = None if published is None else published.isoformat()
 log = root / "requests.log"
 result["requests"] = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 cache = pathlib.Path.home() / "finlab_db"
@@ -243,6 +249,8 @@ def test_a_full_download_becomes_one_reviewed_target_row(tmp_path, account) -> N
     assert posts[0]["items"] == ["price#收盤價.feather"]
     assert "pypi.org" not in {request["host"] for request in result["requests"]}
     assert "price#收盤價.feather" in result["cache"]
+    # Without a revision index the signing service's time_created dates the cache.
+    assert result["published_at"] == "2026-11-13T13:49:04+00:00"
 
 
 def test_a_cached_table_is_updated_instead_of_downloaded_again(tmp_path) -> None:

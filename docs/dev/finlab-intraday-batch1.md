@@ -204,7 +204,7 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 - Provider catalog 放寬 feed 的頻率，新增四條 feed：股票與 ETF 各一條 1 分 K、各一條逐筆。
 - 完成度：成員「有資料」的依據改為索引表有該（標的、交易日）的列，不沿用分批快照的判定。
   `expected = data + no_data + missing + blocked` 的定義不變。
-- 排程時刻：台北 18:30，完成期限隔日 06:30（所有 feed 都是開始後 12 小時）。2026-11-16 實測 1 分 K 與逐筆約 17:00 發布；排在日 K（18:00）
+- 排程時刻：台北 19:15，完成期限隔日 07:15（所有 feed 都是開始後 12 小時；原本 18:30，日 K 改成等 FinLab 最終版後延後）。2026-11-16 實測 1 分 K 與逐筆約 17:00 發布；排在日 K（18:00）
   之後，因為一個 provider 的工作由同一個 consumer 依序執行，四條盤中 feed 合計要數小時，不能排在日 K 前面。
   同一個交易日的工作依排程時間排入佇列。
 - 新的 dataset 另起名稱（暫名 `tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick`），不沿用

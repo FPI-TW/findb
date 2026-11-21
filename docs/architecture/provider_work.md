@@ -407,6 +407,8 @@ FinLab 缺少 target 時先保存有界的負向觀測，再回報 target-not-re
 reviewed symbols 數量，不保存任何儲存格的值、DataFrame attrs、SDK config 或任意物件字串（整張歷史表約 940 萬格，
 逐格轉存一次要 48 秒、57 MB）。同一 work、同一 response key 的觀測內容與上一筆相同時不重複寫入；每次輪詢另輸出一行
 `{"finlab_target_not_ready": {"dataset", "target_date", "latest": [[日期, 有值數量], …]}}`，可用來看來源發布的進度。
+表已有 target 但發布時間早於該日 18:32（FinLab 的最終版時間）時同樣回報 target-not-ready，不保存負向觀測，
+輸出一行 `{"finlab_target_not_final": {"dataset", "target_date", "published_at"}}`（見 `docs/operations/full_market.md`）。
 負向觀測不授權 replay，重啟後可依原 budget 重抓，valid legacy table 仍可沿用；已有 prepared bytes 不改寫。
 Shioaji invalid/date payload 保持既有永久 `KBARS_PAYLOAD` 規則，
 七向量皆空則獨立分類 `empty_response / unknown`，daily 每 work／symbol／date 最多三次原生觀測、

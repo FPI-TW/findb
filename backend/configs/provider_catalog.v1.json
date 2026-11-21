@@ -264,7 +264,7 @@
           "trade_date_day_offset": 0
         }
       },
-      "publication_retry_window_seconds": 14400,
+      "publication_retry_window_seconds": 16200,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -341,7 +341,7 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 14400,
+      "publication_retry_window_seconds": 16200,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -369,12 +369,12 @@
       },
       "schedule": {
         "timezone": "Asia/Taipei",
-        "local_time": "18:30",
+        "local_time": "19:15",
         "target_date_lag_days": 0
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "06:30",
+        "local_time": "07:15",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
@@ -409,12 +409,12 @@
       },
       "schedule": {
         "timezone": "Asia/Taipei",
-        "local_time": "18:30",
+        "local_time": "19:15",
         "target_date_lag_days": 0
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "06:30",
+        "local_time": "07:15",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
@@ -449,12 +449,12 @@
       },
       "schedule": {
         "timezone": "Asia/Taipei",
-        "local_time": "18:30",
+        "local_time": "19:15",
         "target_date_lag_days": 0
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "06:30",
+        "local_time": "07:15",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
@@ -489,12 +489,12 @@
       },
       "schedule": {
         "timezone": "Asia/Taipei",
-        "local_time": "18:30",
+        "local_time": "19:15",
         "target_date_lag_days": 0
       },
       "completion_deadline": {
         "timezone": "Asia/Taipei",
-        "local_time": "06:30",
+        "local_time": "07:15",
         "trade_date_day_offset": 1
       },
       "bounded_monitor": {
