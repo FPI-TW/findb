@@ -1,6 +1,12 @@
 {
   "contracts": [
     {
+      "path": "exchange_daily_quote/v1.schema.json",
+      "schema_id": "exchange_daily_quote",
+      "schema_version": 1,
+      "sha256": "1c018ff2768293199a77ad2ee2fbf3e17da205084dd1321b67edd8ab025e82e6"
+    },
+    {
       "path": "futures_eod/v1.schema.json",
       "schema_id": "futures_eod",
       "schema_version": 1,

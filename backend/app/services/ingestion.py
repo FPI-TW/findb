@@ -45,6 +45,7 @@ from app.services.ingress_contracts import (
 )
 from app.services.normalize import (
     BaseNormalizer,
+    ExchangeDailyQuoteNormalizer,
     FuturesEODContractNormalizer,
     IntradayPartitionContractNormalizer,
     MarketEODContractNormalizer,
@@ -72,6 +73,7 @@ CONTRACT_NORMALIZER_MAP: dict[tuple[str, int], NormalizerFactory] = {
     ("market_minute", 1): MarketMinuteContractNormalizer,
     ("futures_eod", 1): FuturesEODContractNormalizer,
     ("intraday_partition", 1): IntradayPartitionContractNormalizer,
+    ("exchange_daily_quote", 1): ExchangeDailyQuoteNormalizer,
 }
 
 

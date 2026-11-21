@@ -632,6 +632,107 @@ class IntradayPartitionPayload(BaseModel):
         return self
 
 
+# An exchange report the producer stored gzip-compressed; FinDB keeps it as evidence.
+EXCHANGE_REPORT_MAX_BYTES = 64 * 1024 * 1024
+EXCHANGE_REPORT_GZIP_MAX_BYTES = 16 * 1024 * 1024
+EXCHANGE_SYMBOL_PATTERN = r"^[0-9]{5}$"
+
+
+class ExchangeReportEvidence(BaseModel):
+    """The exchange's own report the rows were read from, as the exchange served it."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    # The HKEX daily quotation covers the Main Board; GEM has a report of its own.
+    board: Literal["main", "gem"]
+    url: str = Field(
+        max_length=200,
+        pattern=r"^https://www\.hkex\.com\.hk/eng/stat/smstat/dayquot/[A-Za-z0-9_/]+\.htm$",
+    )
+    original_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_bytes: int = Field(ge=1, le=EXCHANGE_REPORT_MAX_BYTES)
+    gzip_bytes: int = Field(ge=1, le=EXCHANGE_REPORT_GZIP_MAX_BYTES)
+    last_modified: datetime
+    etag: str = Field(min_length=1, max_length=100)
+
+    @field_validator("last_modified")
+    @classmethod
+    def require_utc_aware_last_modified(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("last_modified must include a timezone")
+        return value.astimezone(timezone.utc)
+
+
+class ExchangeDailyQuoteRow(_IngressRow):
+    """One listed security's line in the exchange's daily quotation, as published.
+
+    Relations between the values are data-quality rules, not shape: the exchange's
+    close is not always a traded price, and odd-lot trades sit outside high/low.
+    """
+
+    symbol: str = Field(pattern=EXCHANGE_SYMBOL_PATTERN)
+    trade_date: date
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    currency: CurrencyCode
+    trading_status: Literal["traded", "no_trade"]
+    previous_close: Optional[NonNegativeDecimal] = None
+    close: Optional[NonNegativeDecimal] = None
+    ask: Optional[NonNegativeDecimal] = None
+    bid: Optional[NonNegativeDecimal] = None
+    high: Optional[NonNegativeDecimal] = None
+    low: Optional[NonNegativeDecimal] = None
+    volume: NonNegativeInt
+    turnover: NonNegativeDecimal
+
+    @model_validator(mode="after")
+    def status_matches_volume(self) -> "ExchangeDailyQuoteRow":
+        if (self.trading_status == "traded") != (self.volume > 0):
+            raise ValueError("trading_status is traded exactly when volume is positive")
+        return self
+
+
+class ExchangeDailyQuoteBatch(IngressBatch):
+    """A by-reference delivery: the gzip-compressed report is mandatory evidence."""
+
+    delivery_mode: Literal["incremental", "backfill"]  # type: ignore[assignment]
+    source_raw_ref: str = Field(max_length=2048, pattern=RAW_OBJECT_REF_PATTERN)
+    source_raw_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    report: ExchangeReportEvidence
+    sequence: None = None
+    sequence_count: None = None
+
+
+class ExchangeDailyQuotePayload(BaseModel):
+    """Payload body for ``exchange_daily_quote.v1``: rows of one report and trading day."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch: ExchangeDailyQuoteBatch
+    data: list[ExchangeDailyQuoteRow] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_single_report_day(self) -> "ExchangeDailyQuotePayload":
+        ensure_data_items_count_within_limit(len(self.data))
+        if self.batch.declared_record_count != len(self.data):
+            raise PydanticCustomError(
+                "declared_record_count_mismatch",
+                "declared_record_count must equal the number of data rows",
+            )
+        if any(row.trade_date != self.batch.data_date for row in self.data):
+            raise ValueError("every row trade_date must equal batch data_date")
+        if self.batch.coverage_start_date not in (None, self.batch.data_date) or (
+            self.batch.coverage_end_date not in (None, self.batch.data_date)
+        ):
+            raise ValueError("report coverage must be the single batch data_date")
+        if len({row.symbol for row in self.data}) != len(self.data):
+            raise PydanticCustomError(
+                "duplicate_delivery_key",
+                "duplicate (symbol, trade_date) rows are not allowed",
+            )
+        ensure_payload_size_within_limit(self.model_dump(mode="json"))
+        return self
+
+
 class _IngressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -717,6 +818,14 @@ class IntradayPartitionIngressRequest(_IngressRequest):
     payload: IntradayPartitionPayload
 
 
+class ExchangeDailyQuoteIngressRequest(_IngressRequest):
+    """Complete ``exchange_daily_quote.v1`` request."""
+
+    schema_id: Literal["exchange_daily_quote"]
+    schema_version: Literal[1]
+    payload: ExchangeDailyQuotePayload
+
+
 def minute_sequence_key_digest(
     *, dataset_key: str, data_date: date, snapshot_id: str, sequence: int
 ) -> str:
@@ -742,5 +851,6 @@ IngressRequestV1 = (
     | MarketMinuteIngressRequest
     | FuturesEODIngressRequest
     | IntradayPartitionIngressRequest
+    | ExchangeDailyQuoteIngressRequest
 )
 IngressRequest = IngressRequestV1 | MarketEODIngressRequestV2

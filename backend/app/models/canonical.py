@@ -555,6 +555,115 @@ class IntradayPartition(Base):
     )
 
 
+class ExchangeReportArchive(Base):
+    """One exchange report kept for good in the canonical bucket.
+
+    An exchange deletes its daily reports after about two months, and raw objects
+    expire sooner, so the report a quote was read from is copied here once, as the
+    gzip the producer stored.  The object key names the gzip's own content, so a
+    stored object never changes; a report already archived is not stored again,
+    and a republished report is a new row and object.
+    """
+
+    __tablename__ = "exchange_report_archive"
+    __table_args__ = (
+        UniqueConstraint("gzip_sha256", name="uq_exchange_report_archive_gzip"),
+        UniqueConstraint("object_key", name="uq_exchange_report_archive_key"),
+        CheckConstraint(
+            "gzip_sha256 ~ '^[0-9a-f]{64}$' AND original_sha256 ~ '^[0-9a-f]{64}$'",
+            name="exchange_report_archive_sha256",
+        ),
+        CheckConstraint(
+            "gzip_bytes >= 1 AND original_bytes >= 1",
+            name="exchange_report_archive_bytes_positive",
+        ),
+        CheckConstraint(
+            "object_key <> '' AND object_etag <> ''",
+            name="exchange_report_archive_object_present",
+        ),
+        Index("idx_exchange_report_archive_date", "source", "trade_date", "board"),
+        Index("idx_exchange_report_archive_original", "original_sha256"),
+    )
+
+    archive_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    board: Mapped[str] = mapped_column(String(10), nullable=False)
+    # Exchange-local trading date the report covers.
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    gzip_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    gzip_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    original_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_url: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_last_modified: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_etag: Mapped[str] = mapped_column(String(100), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    object_etag: Mapped[str] = mapped_column(String(100), nullable=False)
+    # The delivery that first referenced the report.
+    run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ExchangeDailyQuote(Base):
+    """A listed security's line in the exchange's official daily quotation.
+
+    The exchange publishes no open price.  ``close`` is the exchange's closing
+    price, which need not be a traded price; ``volume`` is in shares and
+    ``turnover`` in the quote currency.  A suspended security has no row.
+    """
+
+    __tablename__ = "exchange_daily_quote"
+    __table_args__ = (
+        CheckConstraint(
+            "trading_status IN ('traded', 'no_trade')",
+            name="exchange_daily_quote_trading_status",
+        ),
+        CheckConstraint("board IN ('main', 'gem')", name="exchange_daily_quote_board"),
+        CheckConstraint(
+            "volume >= 0 AND turnover >= 0", name="exchange_daily_quote_volume_turnover"
+        ),
+        Index("idx_exchange_daily_quote_date", "trade_date"),
+    )
+
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    trade_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    board: Mapped[str] = mapped_column(String(10), nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False)
+    trading_status: Mapped[str] = mapped_column(String(10), nullable=False)
+    previous_close: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    close: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    ask: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    bid: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    high: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    low: Mapped[Optional[Decimal]] = mapped_column(NUMERIC(20, 8), nullable=True)
+    volume: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    turnover: Mapped[Decimal] = mapped_column(NUMERIC(24, 4), nullable=False)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    archive_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("exchange_report_archive.archive_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class CorporateAction(Base):
     """
     Corporate actions such as splits and dividends.
