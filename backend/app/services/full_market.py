@@ -67,12 +67,15 @@ from app.services.effective_calendar import (
 )
 from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.no_record_corroboration import NO_RECORD, corroborate_no_record
-from app.services.provider_metadata import dataset_calendar_market
+from app.services.provider_metadata import dataset_calendar_market, universe_mode
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
 
 # Relative so large official lists can absorb routine listing churn between publications.
 UNIVERSE_AUTO_PUBLISH_MAX_CHANGE_RATIO = Decimal("0.02")
+# Plan conflict a Fetcher answers by submitting the date's dated universe. The
+# value predates provider-neutral naming and stays for deployed Fetchers.
+DATED_UNIVERSE_REQUIRED = "taifex_dated_universe_required"
 
 
 class FullMarketError(ValueError):
@@ -396,10 +399,11 @@ async def submit_universe(
     ratio = Decimal(change_count) / Decimal(
         len(previous_members) if previous_members else len(current_members)
     )
-    taifex_roll = bool(
+    # A dated futures list replaces expiring contracts every roll; a bounded,
+    # forward-only roll publishes even above the generic change threshold.
+    dated_roll = bool(
         prior is not None
-        and dataset.dataset_key == "tw_futures_eod"
-        and body.provider == "taifex"
+        and universe_mode(body.provider, dataset.dataset_key) == "dated"
         and _taifex_dated_roll_is_safe(
             previous_members,
             current_members,
@@ -408,7 +412,7 @@ async def submit_universe(
     )
     status = (
         "published"
-        if prior is not None and (taifex_roll or ratio <= UNIVERSE_AUTO_PUBLISH_MAX_CHANGE_RATIO)
+        if prior is not None and (dated_roll or ratio <= UNIVERSE_AUTO_PUBLISH_MAX_CHANGE_RATIO)
         else "candidate"
     )
     now = utc_now()
@@ -429,15 +433,13 @@ async def submit_universe(
         published_at=now if status == "published" else None,
         published_by=(
             "policy:taifex_dated_roll"
-            if taifex_roll
+            if dated_roll
             else "policy"
             if status == "published"
             else None
         ),
         approval_note=(
-            "Validated bounded forward-only TAIFEX dated contract rollover."
-            if taifex_roll
-            else None
+            "Validated bounded forward-only TAIFEX dated contract rollover." if dated_roll else None
         ),
         created_at=now,
     )
@@ -776,10 +778,13 @@ async def create_plan(
         db.add(decision)
         await db.commit()
         return _skip_response(decision)
-    if body.provider == "taifex" and release.effective_date != body.trade_date:
+    if (
+        universe_mode(body.provider, body.dataset_key) == "dated"
+        and release.effective_date != body.trade_date
+    ):
         raise FullMarketError(
-            "TAIFEX new plan requires a universe for the exact trade date",
-            code="taifex_dated_universe_required",
+            "A dated-universe plan requires a universe for the exact trade date",
+            code=DATED_UNIVERSE_REQUIRED,
         )
     members = list(
         (

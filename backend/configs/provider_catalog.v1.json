@@ -184,7 +184,8 @@
           "universe_file": "twelve_data_nasdaq_100_2026_09_14.v2.json"
         }
       },
-      "historical_cohort": "dated_release"
+      "historical_cohort": "dated_release",
+      "universe_mode": "refreshed"
     },
     {
       "provider": "factset",
@@ -226,7 +227,8 @@
         "slot_id": "asia_pacific_markets_window"
       },
       "historical_execution": null,
-      "historical_cohort": "current_release"
+      "historical_cohort": "current_release",
+      "universe_mode": "refreshed"
     },
     {
       "provider": "finlab",
@@ -308,7 +310,8 @@
           "universe_file": "finlab_tw50_2026_09_21.v2.json"
         }
       },
-      "historical_cohort": "dated_release"
+      "historical_cohort": "dated_release",
+      "universe_mode": "refreshed"
     },
     {
       "provider": "finlab",
@@ -349,7 +352,8 @@
         "slot_id": "taiwan_market_window"
       },
       "historical_execution": null,
-      "historical_cohort": "dated_release"
+      "historical_cohort": "dated_release",
+      "universe_mode": "refreshed"
     },
     {
       "provider": "finlab",
@@ -390,7 +394,8 @@
         "slot_id": "taiwan_market_window"
       },
       "historical_execution": null,
-      "historical_cohort": null
+      "historical_cohort": null,
+      "universe_mode": "refreshed"
     },
     {
       "provider": "finlab",
@@ -431,7 +436,8 @@
         "slot_id": "taiwan_market_window"
       },
       "historical_execution": null,
-      "historical_cohort": null
+      "historical_cohort": null,
+      "universe_mode": "refreshed"
     },
     {
       "provider": "finlab",
@@ -472,7 +478,8 @@
         "slot_id": "taiwan_market_window"
       },
       "historical_execution": null,
-      "historical_cohort": null
+      "historical_cohort": null,
+      "universe_mode": "refreshed"
     },
     {
       "provider": "finlab",
@@ -513,7 +520,8 @@
         "slot_id": "taiwan_market_window"
       },
       "historical_execution": null,
-      "historical_cohort": null
+      "historical_cohort": null,
+      "universe_mode": "refreshed"
     },
     {
       "provider": "taifex",
@@ -554,7 +562,8 @@
         "slot_id": "taiwan_market_window"
       },
       "historical_execution": null,
-      "historical_cohort": "daily_report"
+      "historical_cohort": "daily_report",
+      "universe_mode": "dated"
     }
   ]
 }

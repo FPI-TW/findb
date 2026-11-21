@@ -24,7 +24,8 @@
       "historical_execution": null,
       "lifecycle": "active",
       "market": "HK",
-      "provider": "factset"
+      "provider": "factset",
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "equity",
@@ -49,7 +50,8 @@
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
-      "provider": "finlab"
+      "provider": "finlab",
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "equity",
@@ -111,7 +113,8 @@
       },
       "lifecycle": "active",
       "market": "TW",
-      "provider": "finlab"
+      "provider": "finlab",
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "equity",
@@ -136,7 +139,8 @@
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
-      "provider": "finlab"
+      "provider": "finlab",
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "etf",
@@ -161,7 +165,8 @@
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
-      "provider": "finlab"
+      "provider": "finlab",
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "etf",
@@ -186,7 +191,8 @@
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
-      "provider": "finlab"
+      "provider": "finlab",
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "etf",
@@ -211,7 +217,8 @@
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
-      "provider": "finlab"
+      "provider": "finlab",
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "future",
@@ -236,7 +243,8 @@
       "historical_execution": null,
       "lifecycle": "active",
       "market": "TW",
-      "provider": "taifex"
+      "provider": "taifex",
+      "universe_mode": "dated"
     },
     {
       "asset_class": "equity",
@@ -298,10 +306,11 @@
       },
       "lifecycle": "active",
       "market": "US",
-      "provider": "twelve_data"
+      "provider": "twelve_data",
+      "universe_mode": "refreshed"
     }
   ],
-  "projection_sha256": "87c33e3899e18ea9740abd14b1daa0d9c22b92fac2a9de51a3317061504f4702",
+  "projection_sha256": "dd2412b772b479e9530e65152d690f19508a8f05002e50e898f99e4e1ea1d8bf",
   "providers": [
     {
       "credential_env_names": [

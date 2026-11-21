@@ -33,8 +33,13 @@ from findb_fetcher.client import (
 from findb_fetcher.config import app_environment
 from findb_fetcher.daily_runtime import window
 from findb_fetcher.execution_config import ExecutionSnapshot, resolve_execution_config
-from findb_fetcher.execution_metadata import acquisition_feeds, provider_platform_limits
+from findb_fetcher.execution_metadata import (
+    acquisition_feeds,
+    dated_universe,
+    provider_platform_limits,
+)
 from findb_fetcher.full_market_client import (
+    DATED_UNIVERSE_REQUIRED,
     NO_DATA_NOT_CORROBORATED,
     FullMarketProtocolError,
     FullMarketSourceClient,
@@ -1019,26 +1024,28 @@ class FullMarketRuntime:
             if pending_feed:
                 due.append((date.fromisoformat(plan["trade_date"]), pending_feed))
         slots = refresh_slots(planning_feeds, now)
-        if (
-            admitted
-            and slots
-            and self.adapter.scheduled_maintenance
-            and self.state.refresh_due(self.provider, now.timestamp())
-        ):
+        # A dated universe is built per trade date at planning; only refreshed
+        # lists are maintained ahead of the round's dates.
+        refreshed = [
+            feed
+            for feed in planning_feeds
+            if feed["dataset_key"] in admitted
+            and not dated_universe(self.provider, feed["dataset_key"])
+        ]
+        if refreshed and slots and self.state.refresh_due(self.provider, now.timestamp()):
             # Enqueued ahead of this round's dates: their plans freeze the list
             # observed at their own scheduled time. One work per scheduled time,
             # so a failed refresh is tried again at the next one.
             slot = slots[0].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-            for feed in planning_feeds:
-                if feed["dataset_key"] in admitted:
-                    self._enqueue(
-                        {
-                            "stable_key": f"maintenance:{feed['dataset_key']}:{slot}",
-                            "kind": "maintenance",
-                            "dataset_key": feed["dataset_key"],
-                            "scope": {"dataset_key": feed["dataset_key"]},
-                        }
-                    )
+            for feed in refreshed:
+                self._enqueue(
+                    {
+                        "stable_key": f"maintenance:{feed['dataset_key']}:{slot}",
+                        "kind": "maintenance",
+                        "dataset_key": feed["dataset_key"],
+                        "scope": {"dataset_key": feed["dataset_key"]},
+                    }
+                )
         # One owner works a provider's queue in order: within a date, a feed scheduled
         # earlier is never queued behind a later one that happens to sort first.
         for day, feed in sorted(
@@ -1568,7 +1575,9 @@ class FullMarketRuntime:
                 existing = self._existing_plan(feed, day)
                 if existing is not None:
                     return existing
-                if exc.code is not None and exc.code == self.adapter.dated_universe_code:
+                if exc.code == DATED_UNIVERSE_REQUIRED and dated_universe(
+                    self.provider, feed["dataset_key"]
+                ):
                     dataset = feed["dataset_key"]
                     if not self.state.date_prerequisite_due(self.provider, dataset, day):
                         raise DatedUniversePendingError(

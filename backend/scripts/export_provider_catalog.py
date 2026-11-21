@@ -78,6 +78,7 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
                     "capabilities",
                     "delivery",
                     "historical_execution",
+                    "universe_mode",
                 )
             }
             for feed in data["feeds"]

@@ -69,9 +69,6 @@ def taifex_report_unavailable(exc: BaseException) -> bool:
 
 class TaifexAdapter(ProviderAdapter):
     provider = "taifex"
-    # Each date's universe is the report itself; there is no catalogue refresh.
-    scheduled_maintenance = False
-    dated_universe_code = "taifex_dated_universe_required"
     outage_retry_seconds = TAIFEX_OUTAGE_RETRY_SECONDS
 
     def __init__(self) -> None:

@@ -290,6 +290,14 @@
               "type": "null"
             }
           ]
+        },
+        "universe_mode": {
+          "enum": [
+            "refreshed",
+            "dated"
+          ],
+          "title": "Universe Mode",
+          "type": "string"
         }
       },
       "required": [
@@ -308,7 +316,8 @@
         "publication_retry_window_seconds",
         "delivery",
         "historical_execution",
-        "historical_cohort"
+        "historical_cohort",
+        "universe_mode"
       ],
       "title": "FeedDefinition",
       "type": "object"

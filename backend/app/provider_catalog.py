@@ -159,6 +159,10 @@ class HistoricalExecutionProfiles(CatalogModel):
 # to the release current at creation (the provider can only list today's
 # members); ``daily_report`` reads members from the date's own report.
 HistoricalCohort = Literal["dated_release", "current_release", "daily_report"]
+# Where a trade date's universe comes from: ``refreshed`` lists are refreshed by
+# maintenance and a plan freezes the latest published release; a ``dated`` list
+# is built from the date's own provider observation and a plan needs that date's.
+UniverseMode = Literal["refreshed", "dated"]
 
 
 class FeedDefinition(CatalogModel):
@@ -179,6 +183,7 @@ class FeedDefinition(CatalogModel):
     delivery: DeliveryCompatibility
     historical_execution: HistoricalExecutionProfiles | None
     historical_cohort: HistoricalCohort | None
+    universe_mode: UniverseMode
 
     @model_validator(mode="after")
     def coherent_capabilities(self) -> Self:

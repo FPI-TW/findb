@@ -509,3 +509,23 @@ def test_seed_requires_exactly_one_catalog_source_feed(monkeypatch, declaration,
     seed = _seed_with_catalog(monkeypatch, declaration)
     with pytest.raises(ValueError, match="exactly one catalog Source feed"):
         seed._staged_eod_dataset("tw_futures_eod", "台灣期貨契約日K", currency="TWD")
+
+
+def test_universe_modes_are_catalog_fields(monkeypatch, declaration):
+    from app.services import universe_refresh
+    from app.services.provider_metadata import provider_catalog
+
+    dated = {
+        (feed.provider, feed.dataset_key)
+        for feed in provider_catalog().feeds
+        if feed.universe_mode == "dated"
+    }
+    assert dated == {("taifex", "tw_futures_eod")}
+    assert ("taifex", "tw_futures_eod") not in universe_refresh.refreshable_feeds()
+    assert ("twelve_data", "us_equity_eod") in universe_refresh.refreshable_feeds()
+    # Declaring a feed dated removes its Owner refresh without a provider list.
+    feed = next(f for f in declaration["feeds"] if f["dataset_key"] == "us_equity_eod")
+    feed["universe_mode"] = "dated"
+    catalog = ProviderCatalog.model_validate(declaration)
+    monkeypatch.setattr("app.services.provider_metadata.provider_catalog", lambda: catalog)
+    assert ("twelve_data", "us_equity_eod") not in universe_refresh.refreshable_feeds()

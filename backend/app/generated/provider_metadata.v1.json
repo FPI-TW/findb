@@ -40,7 +40,8 @@
         "local_time": "20:00",
         "target_date_lag_days": 0,
         "timezone": "Asia/Hong_Kong"
-      }
+      },
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "equity",
@@ -81,7 +82,8 @@
         "local_time": "19:15",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
-      }
+      },
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "equity",
@@ -163,7 +165,8 @@
         "local_time": "18:00",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
-      }
+      },
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "equity",
@@ -204,7 +207,8 @@
         "local_time": "19:15",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
-      }
+      },
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "etf",
@@ -245,7 +249,8 @@
         "local_time": "19:15",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
-      }
+      },
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "etf",
@@ -286,7 +291,8 @@
         "local_time": "18:00",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
-      }
+      },
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "etf",
@@ -327,7 +333,8 @@
         "local_time": "19:15",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
-      }
+      },
+      "universe_mode": "refreshed"
     },
     {
       "asset_class": "future",
@@ -368,7 +375,8 @@
         "local_time": "17:00",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
-      }
+      },
+      "universe_mode": "dated"
     },
     {
       "asset_class": "equity",
@@ -450,7 +458,8 @@
         "local_time": "17:00",
         "target_date_lag_days": 0,
         "timezone": "America/New_York"
-      }
+      },
+      "universe_mode": "refreshed"
     }
   ],
   "providers": [
@@ -576,5 +585,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "a26349d33f739d4475d3dc7dc9b88435f0fbf76b9ba0d5cbeecc5a2173bab0c6"
+  "source_sha256": "b6e7869cdc7691cea6353b505a460145567b58d4c0ee31c72d8183bd6882d380"
 }

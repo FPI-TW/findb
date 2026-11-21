@@ -37,6 +37,7 @@ from app.services.delivery_policy import (
 from app.services.feed_scope import lock_feed_scope
 from app.services.full_market import _calendar_market, _deadline, reconcile_plan
 from app.services.ingress_contracts import DatasetContractDeclaration
+from app.services.provider_metadata import universe_mode
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import ensure_utc, utc_now, uuid7
 
@@ -77,7 +78,7 @@ async def _dated_universe_wait_details(
     deadline: datetime,
     evaluated_at: datetime,
 ) -> dict[str, Any] | None:
-    if dataset_key != "tw_futures_eod" or source != "taifex":
+    if universe_mode(source, dataset_key) != "dated":
         return None
     exact_published = await db.scalar(
         select(UniverseRelease.release_id).where(

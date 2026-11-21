@@ -63,6 +63,12 @@ def historical_cohort(provider: str, dataset_key: str) -> str | None:
     return feed.historical_cohort if feed is not None else None
 
 
+def universe_mode(provider: str, dataset_key: str) -> str | None:
+    """``dated`` when a plan needs a universe built for its exact trade date."""
+    feed = catalog_feed(provider, dataset_key)
+    return feed.universe_mode if feed is not None else None
+
+
 def dataset_calendar_market(dataset_key: str, market: str) -> str:
     """The dataset's catalog calendar market (shared by its feeds, the loader checks).
 
