@@ -25,6 +25,11 @@ from app.models.canonical import (
 from app.models.registry import DQIssue, IngestionRun
 from app.services.delivery_monitor import resolve_missing_delivery_for_run
 from app.services.dq.validators import DQIssueRecord, DQValidator
+from app.services.normalize.exchange_overlay import (
+    EXCHANGE_QUOTE_MARKETS,
+    apply_exchange_quote,
+    lock_quote_date,
+)
 from app.services.normalize.types import InstrumentResolvableRecord, MappedRecord
 from app.utils import utc_now, uuid7
 from app.utils.datetime_utils import ensure_utc, parse_datetime
@@ -375,6 +380,7 @@ class BaseNormalizer(ABC):
             source=record.source,
             source_priority=source_priority,
             source_fetched_at=source_fetched_at,
+            field_sources=None,
             asof_ts=utc_now(),
             run_id=run_id,
             created_at=utc_now(),
@@ -396,6 +402,9 @@ class BaseNormalizer(ABC):
                 "source": stmt.excluded.source,
                 "source_priority": stmt.excluded.source_priority,
                 "source_fetched_at": stmt.excluded.source_fetched_at,
+                # Every value is the incoming source's again; an exchange
+                # quote re-applies its fields after this write.
+                "field_sources": stmt.excluded.field_sources,
                 "asof_ts": stmt.excluded.asof_ts,
                 "run_id": stmt.excluded.run_id,
                 "updated_at": stmt.excluded.updated_at,
@@ -418,6 +427,24 @@ class BaseNormalizer(ABC):
         self._instrument_cache.clear()
         self._identifier_cache.clear()
         return applied
+
+    async def correct_from_exchange_quote(
+        self, instrument_id: UUID, trade_date: date, run_id: UUID
+    ) -> list[DQIssueRecord]:
+        """Apply the stored exchange quote to the EOD row; return its difference warnings.
+
+        The caller holds ``lock_quote_date`` for the date since before its own write.
+        """
+        overlay = await apply_exchange_quote(
+            self.db, instrument_id=instrument_id, trade_date=trade_date, run_id=run_id
+        )
+        if overlay is None:
+            return []
+        if overlay.close is not None:
+            await self.update_instrument_stats(
+                instrument_id, trade_date, latest_price=overlay.close
+            )
+        return overlay.issues
 
     async def update_instrument_stats(
         self,
@@ -817,11 +844,28 @@ class BaseNormalizer(ABC):
                         result.dq_issues.append(issue)
 
                     # Upsert EOD data
-                    applied = await self.upsert_eod(instrument.instrument_id, record, run_id)
+                    instrument_id = instrument.instrument_id
+                    quoted_market = instrument.market in EXCHANGE_QUOTE_MARKETS
+                    trade_day = (
+                        record.trade_date.date()
+                        if isinstance(record.trade_date, datetime)
+                        else record.trade_date
+                    )
+                    if quoted_market:
+                        await lock_quote_date(
+                            self.db, instrument.market, trade_day, exclusive=False
+                        )
+                    applied = await self.upsert_eod(instrument_id, record, run_id)
                     if applied:
                         result.success_records += 1
                     else:
                         result.precedence_rejected_records += 1
+                    if applied and quoted_market:
+                        for issue in await self.correct_from_exchange_quote(
+                            instrument_id, trade_day, run_id
+                        ):
+                            await self.record_dq_issue(issue, run_id, instrument_id)
+                            result.dq_issues.append(issue)
 
                 except (EODPartitionUnavailableError, SQLAlchemyError):
                     raise

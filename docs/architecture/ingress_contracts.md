@@ -231,6 +231,27 @@ Normalizer 第一次遇到某份報表時，以 Worker 的 Raw reader 讀出 gzi
 不寫入任何資料；R2 暫時故障則交給 queue 重試。同一檔同一日以 `source_fetched_at` 較新者為準，
 舊的抓取不覆蓋新的，記 `SOURCE_PRECEDENCE_REJECTED`。
 
+### 修正 `market_data_eod` 的港股列
+
+港股（`backend/app/services/normalize/exchange_overlay.py` 的 `EXCHANGE_QUOTE_MARKETS`）同一檔同一日
+兩邊都有資料時，以官方表的收盤、最高、最低、成交量、成交金額逐欄覆寫 `market_data_eod` 的列：
+
+- 開盤價保留 provider 的值；官方表為 null 的欄位（沒有整手成交的日子沒有最高、最低）也保留 provider 的值。
+- 該列的 `source`、`source_priority`、`run_id` 不變，provider 的投遞證據與優先序判斷照舊。
+- 寫入順序不影響結果：官方表寫入時修正既有的列；provider 寫入或重抓後，若同日已有官方值就立刻再套用。
+  兩邊都先取得同一交易日的 advisory lock 再寫入自己的表，provider 之間共用、官方表獨占，直到 commit；
+  後寫入的一方一定讀得到先寫入的一方已 commit 的資料。
+- 人工修正過的列（`source_priority` 為 Admin 專用值）一律不動。
+- `market_data_eod.field_sources` 記錄值不是來自 `source` 的欄位，例如 `{"close": "hkex"}`；
+  Admin 修正的欄位記為 `"manual"`；provider 重寫整列時清為 null，再由官方值重新套用。
+- provider 留空的欄位直接補上官方值，只記在 `field_sources`（FactSet 港股列一律沒有成交金額）。
+- provider 有送、但值被官方值取代時，在只增不改的 `eod_field_correction` 記一列：被取代的 provider、
+  只含被取代欄位的 `before`／`after`（去掉尾端零的十進位字串）、官方報表的 `archive_id` 與套用修正的 run。
+- 被取代的收盤價不同，或成交量差異超過官方成交量的 1%，另在套用修正的 run 記
+  `EOD_EXCHANGE_QUOTE_DIFFERENCE` warning，供監控 provider 的品質。
+- 以 staging 2026-11-20 的 2,596 列 FactSet 港股列與當日主板、GEM 報表重播：收盤、最高、最低、
+  成交量全部一致，兩種寫入順序結果相同，沒有修正紀錄也沒有 warning。
+
 ## Frozen universe 與 daily plan protocol
 
 Control protocol v1 定義在 `backend/app/schemas/full_market.py`，與 ingest JSON Schema

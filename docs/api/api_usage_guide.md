@@ -331,8 +331,8 @@ EOD correction（`PATCH /api/v1/admin/eod/{instrument_id}/{trade_date}`）在同
 
 人工修正優先於之後的所有 ingest。修正會把該列的 `source_priority` 設為 Admin 專用值
 （int4 最小值，比任何 dataset `source_precedence` 都優先），`source` 與 `source_fetched_at`
-保持原值。之後的 rerun、同 provider 較新的 fetch，或優先度更高的 provider 都不會再覆寫這一列。
-要再改這一列，只能送出新的修正。
+保持原值，修正的欄位在 `field_sources` 記為 `"manual"`。之後的 rerun、同 provider 較新的 fetch、
+優先度更高的 provider，或交易所官方行情的欄位層修正都不會再覆寫這一列。要再改這一列，只能送出新的修正。
 
 Instrument cache的coverage與Serve instrument契約一致，包含`eod`、`minute`及可空的`futures`；
 既有只含前兩者的cache仍可讀取，下一次Admin替換或更新時會正規化為`futures: null`。

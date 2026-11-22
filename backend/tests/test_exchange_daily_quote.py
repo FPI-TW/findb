@@ -85,16 +85,15 @@ def payload(rows: list[dict], report: bytes = REPORT, *, day: date = DAY, **repo
     }
 
 
-@pytest.fixture
-def stores(monkeypatch) -> Stores:
+def stub_stores(monkeypatch) -> Stores:
+    """Point the normalizer's Raw reader and Canonical publisher at in-memory buckets."""
     stores = Stores()
     monkeypatch.setattr(exchange_quote, "raw_reader", lambda: stores.raw)
     monkeypatch.setattr(exchange_quote, "canonical_publisher", lambda: stores.canonical)
     return stores
 
 
-@pytest.fixture
-async def dataset(test_session) -> None:
+async def seed_dataset(test_session) -> None:
     test_session.add(
         DatasetRegistry(
             dataset_key=DATASET,
@@ -109,6 +108,16 @@ async def dataset(test_session) -> None:
     await test_session.commit()
 
 
+@pytest.fixture
+def stores(monkeypatch) -> Stores:
+    return stub_stores(monkeypatch)
+
+
+@pytest.fixture
+async def dataset(test_session) -> None:
+    await seed_dataset(test_session)
+
+
 async def deliver(
     test_session,
     stores: Stores,
@@ -118,6 +127,7 @@ async def deliver(
     fetched_at: datetime = FETCHED,
     stage: bool = True,
     day: date = DAY,
+    commit: bool = True,
     **report_values,
 ):
     """Stage the gzip like the producer, then normalize one delivery citing it."""
@@ -140,7 +150,7 @@ async def deliver(
         test_session,
         {**dataset_config(), "_ingest_source": "hkex", "_ingest_fetched_at": fetched_at},
     )
-    result = await normalizer.process(value, run_id)
+    result = await normalizer.process(value, run_id, commit=commit)
     return run_id, result
 
 
