@@ -26,7 +26,7 @@ from app.models.provider_work import (
     ProviderWorkPrepared,
     ProviderWorkReceipt,
 )
-from app.models.registry import IngestionRun, SchedulerControl
+from app.models.registry import AdminAuditEvent, IngestionRun, SchedulerControl
 from app.services.daily_runtime import daily_window
 from app.services.provider_metadata import dataset_calendar_market, provider_catalog
 from app.utils import ensure_utc, utc_now, uuid7
@@ -233,6 +233,77 @@ async def lock_provider(db: AsyncSession, provider: str) -> ProviderWorkOwner:
     return owner
 
 
+def _lock_device(identity: str | None) -> str | None:
+    """The shared mount's device in ``environment:device:inode``, else None."""
+    parts = (identity or "").split(":")
+    if len(parts) != 3 or parts[0] != environment() or not all(p.isdigit() for p in parts[1:]):
+        return None
+    return parts[1]
+
+
+async def _register_first_host_lock(
+    db: AsyncSession, owner: ProviderWorkOwner, host_lock_identity: str
+) -> bool:
+    """Bind a never-used provider's lock to the mount its environment's cutover proved.
+
+    The Owner cutover proves the shared host mount and drains legacy work; a provider
+    added to the catalog afterwards has no legacy state, so its first claim may bind
+    its own lock file on that same device. Anything already used, any provider the
+    catalog does not run, or any doubt about the device stays behind the cutover.
+    """
+    if (
+        owner.provider not in CUTOVER_PROVIDERS
+        or owner.attempt_id is not None
+        or owner.recovery_reason is not None
+        or owner.generation != 0
+    ):
+        return False
+    device = _lock_device(host_lock_identity)
+    attested = (
+        await db.scalars(
+            select(ProviderWorkOwner.host_lock_identity).where(
+                ProviderWorkOwner.environment == owner.environment,
+                ProviderWorkOwner.provider != owner.provider,
+                ProviderWorkOwner.host_lock_identity.is_not(None),
+            )
+        )
+    ).all()
+    # Every attested lock shares one device; the new lock must be on it too.
+    if device is None or not attested or {_lock_device(i) for i in attested} != {device}:
+        return False
+    # Work that ever ran, or legacy work imported before the cutover, needs the
+    # cutover's drain proof. Queued work an Owner start enqueued before the first
+    # consumer arrived is neither.
+    used = await db.scalar(
+        select(
+            exists().where(
+                ProviderWork.environment == owner.environment,
+                ProviderWork.provider == owner.provider,
+                or_(ProviderWork.state != "queued", ProviderWork.scope.has_key("legacy_id")),
+            )
+        )
+    )
+    if used:
+        return False
+    if any(i == host_lock_identity for i in attested):
+        # Each provider has its own lock file; reusing another's would merge queues.
+        return False
+    owner.host_lock_identity = host_lock_identity
+    db.add(
+        AdminAuditEvent(
+            actor_type="source_client",
+            actor_id=str(db.info.get("source_client_id") or owner.provider)[:100],
+            actor_display_name="Source provider work",
+            action="register_host_lock",
+            resource_type="provider_work",
+            resource_id=f"{owner.environment}:{owner.provider}",
+            details={"provider": owner.provider, "host_lock_identity": host_lock_identity},
+        )
+    )
+    await db.flush()
+    return True
+
+
 async def _existing_work(db: AsyncSession, provider: str, stable_key: str) -> ProviderWork | None:
     return await db.scalar(
         select(ProviderWork).where(
@@ -357,7 +428,11 @@ async def claim(
 ) -> tuple[ProviderWork, ProviderWorkAttempt, ProviderWorkOwner] | None:
     now = now or utc_now()
     owner = await lock_provider(db, provider)
-    if require_cutover and owner.host_lock_identity is None:
+    if (
+        require_cutover
+        and owner.host_lock_identity is None
+        and not await _register_first_host_lock(db, owner, host_lock_identity)
+    ):
         raise ProviderWorkError("provider work requires verified cutover preflight")
     if owner.host_lock_identity and owner.host_lock_identity != host_lock_identity:
         raise ProviderWorkError("provider shared host lock inode differs")

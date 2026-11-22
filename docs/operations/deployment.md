@@ -951,6 +951,10 @@ Catalog 加入第五個 provider `hkex`（feed `hk_equity_official_eod`，契約
   3. FinDB 部署完成後，以 `reconcile_fetcher_credentials.py` 登記 hash
      （名稱 `fetcher-hkex`、範圍 `hk_equity_official_eod`）。
   4. 繼續 Fetcher 部署；完成後再完整 `tofu apply`，建立 HKEX consumers 的告警。
+
+  HKEX consumer 第一次 claim 時，Backend 會自動登記它的 host lock（規則見
+  [provider work 架構](../architecture/provider_work.md)），不需要重做 provider-work cutover；所以 Backend
+  必須先部署到含這條規則的版本。之後新增的 provider 也一樣。
   Production 的 FinDB 與 Fetcher CD 都是手動觸發，依同樣順序執行。
 - 上線後 control 仍為 stopped：先 universe refresh 發布第一份 baseline，再由 Owner start。
 

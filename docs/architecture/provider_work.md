@@ -363,7 +363,16 @@ prepare／prepared、close、settle 與 execute-rerun；historical claim 只是�
 caller scope 內已結案的工作與 `completed_at`，供 Fetcher 清理本機狀態
 （[已結案工作的本機保留](../operations/data_maintenance.md#已結案工作的本機保留)）。
 Source queue claim 須已有 Owner cutover 保存的相同 shared inode identity，
-單獨改 flag 無法開始 claim。所有 ingest／historical claim 缺少 work protocol 一律 fail closed。
+單獨改 flag 無法開始 claim。Cutover 之後才加入 catalog 的 provider 沒有 legacy 狀態，第一次 claim
+直接登記自己的 identity，不必重做 cutover，條件全部成立才登記：
+- 該 provider 是 catalog 有 consumer 的 provider，owner 尚無 host lock，`generation` 為 0，也沒有
+  attempt 或 recovery 原因。
+- 同環境已有其他 provider 完成 cutover，且它們的 identity 都在同一個裝置；新 identity 必須是
+  `環境:裝置:inode`、在同一個裝置，而且不和其他 provider 的鎖檔相同。
+- 該 provider 沒有跑過的 work（只有 `queued`），也沒有 cutover 前匯入的 legacy work。
+
+登記寫一筆 `register_host_lock` audit，之後與 attested provider 一樣比對 identity；任一條件不成立
+仍回 `provider work requires verified cutover preflight`。以後新增 provider 都依此規則，不需要額外步驟。所有 ingest／historical claim 缺少 work protocol 一律 fail closed。
 Source `/provider-work/{work_id}/authorize` 在既有 provider transaction lock 下回傳原 work ID、provider、
 generation／token、UTC-aware checked_at 與目前 owner expires_at；此 projection 不續約 owner。
 Fetcher 嚴格驗證身份及時間欄位，缺少或 malformed 的證據 fail closed；heartbeat 仍以既有流程續約，
