@@ -1017,3 +1017,20 @@ def test_backend_execution_policy_uses_independent_boolean_switches(target, prov
             loader.load_consumer(catalog, "compose", fetch, deployment_target=target)
     else:
         assert loader.load_consumer(catalog, "compose", fetch, deployment_target=target) == switches
+
+
+def test_a_shared_secret_allows_the_same_keys_for_every_consumer() -> None:
+    """One secret's payload is read by each consumer: any key it may hold is allowed by all.
+
+    The loader rejects a payload key a consumer does not declare (secret_schema_invalid),
+    so a consumer that narrows a shared secret fails to start on the real payload.
+    """
+    for unit in ("findb", "fetcher"):
+        declared: dict[str, dict[str, set[str]]] = {}
+        for consumer, spec in _catalog(unit)["consumers"].items():
+            for secret in spec["secrets"]:
+                keys = {*secret.get("required_keys", []), *secret.get("optional_keys", [])}
+                declared.setdefault(secret["name"], {})[consumer] = keys
+        for name, by_consumer in declared.items():
+            allowed = {frozenset(keys) for keys in by_consumer.values()}
+            assert len(allowed) == 1, (unit, name, by_consumer)

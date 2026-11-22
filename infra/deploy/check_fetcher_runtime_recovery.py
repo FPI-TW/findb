@@ -228,7 +228,8 @@ def main() -> int:
             flush=True,
         )
         return 1
-    runtime_count = len(EXPECTED_RUNTIMES)
+    # The consumers actually recovered: a host awaiting a newer provider has fewer.
+    runtime_count = len(snapshot)
     stable_seconds = args.stable_seconds
     if not snapshot:
         runtime_count = 0
