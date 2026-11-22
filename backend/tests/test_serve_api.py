@@ -289,6 +289,59 @@ async def test_a_wrongly_declared_active_intraday_dataset_still_fails_closed(
     assert_error(response, 503, "SERVE_CONFIGURATION_INVALID")
 
 
+def exchange_quote_dataset() -> DatasetRegistry:
+    value = dataset(
+        "hk_equity_official_eod", market="HK", asset_class="equity", schema_id="market_eod"
+    )
+    value.config.update(
+        schema_id="exchange_daily_quote", accepted_schema_versions=[1], current_schema_version=1
+    )
+    return value
+
+
+@pytest.mark.asyncio
+async def test_an_active_exchange_quote_dataset_leaves_the_provider_rows_served(
+    client: AsyncClient, test_session
+):
+    """Its quotes reach Serve as corrections of the HK EOD rows, never as a scope."""
+    instrument_id = uuid7()
+    test_session.add_all(
+        [
+            dataset("hk_equity_eod", market="HK", asset_class="equity", schema_id="market_eod"),
+            exchange_quote_dataset(),
+            instrument(instrument_id, "00700", market="HK"),
+            eod(instrument_id, date(2026, 11, 20), "344"),
+        ]
+    )
+    await test_session.commit()
+
+    catalog = await client.get("/api/v1/serve/datasets")
+    assert catalog.status_code == 200, catalog.text
+    assert {row["dataset_key"] for row in catalog.json()["data"]} == {"hk_equity_eod"}
+    response = await client.get("/api/v1/serve/eod", params={"instrument_id": str(instrument_id)})
+    assert response.status_code == 200, response.text
+    assert len(response.json()["data"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["frequency", "version", "scope"])
+async def test_a_wrongly_declared_exchange_quote_dataset_still_fails_closed(
+    client: AsyncClient, test_session, fault
+):
+    value = exchange_quote_dataset()
+    if fault == "frequency":
+        value.frequency = "minute"
+    elif fault == "version":
+        value.config.update(accepted_schema_versions=[1, 2])
+    else:
+        value.market = "TW"
+        value.config["defaults"]["market"] = "TW"
+    test_session.add(value)
+    await test_session.commit()
+
+    assert_error(await client.get("/api/v1/serve/datasets"), 503, "SERVE_CONFIGURATION_INVALID")
+
+
 @pytest.mark.asyncio
 async def test_internally_consistent_unsupported_active_scope_fails_closed(
     client: AsyncClient, test_session

@@ -159,10 +159,16 @@ def test_empty_first_bootstrap_does_not_wait_for_installed_runtimes():
 def test_runtime_parser_requires_exact_accepted_inventory():
     parsed = recovery._parse_runtime_rows(docker_rows())
 
-    assert len(parsed) == 8
+    assert len(parsed) == 10
     assert all(row[-1] for row in parsed)
     with pytest.raises(ValueError, match="inventory is incomplete"):
         recovery._parse_runtime_rows(docker_rows()[:-1])
+    # Before the HKEX release a host has none of its consumers, never one of them.
+    without = [row for row in docker_rows() if not row["Name"].endswith("-hkex")]
+    assert len(recovery._parse_runtime_rows(without)) == 8
+    partial = [row for row in docker_rows() if row["Name"] != "/findb-historical-hkex"]
+    with pytest.raises(ValueError, match="inventory is incomplete"):
+        recovery._parse_runtime_rows(partial)
     unhealthy = recovery._parse_runtime_rows(
         docker_rows(unhealthy_name="findb-full-market-twelve-data")
     )

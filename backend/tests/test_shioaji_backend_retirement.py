@@ -33,7 +33,7 @@ def _proof():
         "checked_at": utc_now().isoformat(),
         "host_lock_identities": {
             provider: f"{queue.environment()}:1:{index}"
-            for index, provider in enumerate(("factset", "finlab", "taifex", "twelve_data"), 1)
+            for index, provider in enumerate(queue.CUTOVER_PROVIDERS, 1)
         },
     }
 

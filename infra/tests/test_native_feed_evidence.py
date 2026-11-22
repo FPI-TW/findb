@@ -29,10 +29,7 @@ def complete_evidence():
     )
     for feed in catalog["feeds"]:
         provider, dataset = feed["provider"], feed["dataset_key"]
-        if not feed["capabilities"]["acquisition"]:
-            continue
-        # The Backend export does not sample intraday feeds yet; see ``assess``.
-        if feed["contract"]["schema_id"] == "intraday_partition":
+        if not module.sampled_feed(feed):
             continue
         plan = {
             "plan_id": dataset,

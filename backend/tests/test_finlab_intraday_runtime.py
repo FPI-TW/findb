@@ -131,7 +131,9 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
     from tests.test_provider_work import attest_cutover
 
     inodes = {}
-    for provider in ("factset", "finlab", "taifex", "twelve_data"):
+    from app.services.provider_work import CUTOVER_PROVIDERS
+
+    for provider in CUTOVER_PROVIDERS:
         with coordinator.host_lock(provider) as (_, inode):
             inodes[provider] = inode
     await attest_cutover(test_session, inodes)

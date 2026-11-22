@@ -78,11 +78,12 @@ async def export(spec):
     trade_date = date.fromisoformat(spec["trade_date"])
     from app.services.provider_metadata import acquisition_feeds
 
-    # Intraday feeds store objects, not table rows; this sampler does not cover them yet.
+    # Intraday feeds store objects, not table rows; an exchange's quotes are served
+    # only as corrections of the provider's EOD rows. This sampler covers neither yet.
     catalog = [
         feed.model_dump()
         for feed in acquisition_feeds()
-        if feed.contract.schema_id != "intraday_partition"
+        if feed.contract.schema_id not in {"intraday_partition", "exchange_daily_quote"}
     ]
     feeds = []
     async with async_session_maker() as db:

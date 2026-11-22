@@ -83,6 +83,8 @@ SUPPORTED_ACTIVE_SCOPES = frozenset(
 
 
 INTRADAY_ACTIVE_SCOPES = frozenset({("TW", "equity"), ("TW", "etf")})
+# Exchange quotes reach Serve as field corrections of the provider's EOD rows.
+EXCHANGE_QUOTE_ACTIVE_SCOPES = frozenset({("HK", "equity")})
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,18 @@ async def active_dataset_scopes(db: AsyncSession) -> tuple[ActiveDatasetScope, .
                     != INTRADAY_DATASET_FREQUENCY[cast(str, declaration.defaults.record_kind)]
                 ):
                     raise ValueError("active intraday dataset declaration is invalid")
+                continue
+            if schema_id == "exchange_daily_quote":
+                # The official table is not a read model of its own; its values are
+                # served through the market_data_eod rows they correct.
+                if (
+                    set(declaration.accepted_schema_versions) != {1}
+                    or declaration.defaults.market != market
+                    or declaration.defaults.asset_class != asset_class
+                    or (market, asset_class) not in EXCHANGE_QUOTE_ACTIVE_SCOPES
+                    or frequency != "daily"
+                ):
+                    raise ValueError("active exchange quote dataset declaration is invalid")
                 continue
             if not set(declaration.accepted_schema_versions) <= SUPPORTED_SERVE_VERSIONS.get(
                 schema_id, frozenset()

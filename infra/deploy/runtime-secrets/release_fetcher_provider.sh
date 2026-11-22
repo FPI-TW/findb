@@ -95,6 +95,13 @@ case "$provider" in
     provider_key=""
     provider_env=(--env TAIFEX_BASE_URL --env TAIFEX_TIMEOUT_SECONDS --env TAIFEX_MAX_RESPONSE_BYTES)
     ;;
+  hkex)
+    marker_identity="hkex"
+    image_repository_suffix="twelve-data"
+    source_key="${FETCHER_HKEX_SOURCE_CLIENT_KEY:-}"
+    provider_key=""
+    provider_env=()
+    ;;
   twelve-data)
     marker_identity="twelve"
     image_repository_suffix="twelve-data"
@@ -144,7 +151,8 @@ require_value() {
 
 require_value source_api_url "${FETCHER_SOURCE_API_URL:-}"
 require_value source_client_key "$source_key"
-if [ "$provider" != taifex ]; then
+# Public exchange reports need no provider credential, only a Source key.
+if [ "$provider" != taifex ] && [ "$provider" != hkex ]; then
   require_value provider_credential "$provider_key"
 fi
 require_value r2_account "${CLOUDFLARE_R2_ACCOUNT_ID:-}"
@@ -187,7 +195,7 @@ runtime_env_args=(
   --env FETCHER_MAX_RETRY_AFTER_SECONDS
   --env FETCHER_STATE_PATH
   --env FETCHER_HISTORICAL_STATE_DIR
-  "${provider_env[@]}"
+  ${provider_env[@]+"${provider_env[@]}"}
 )
 sudo mkdir -p "$state_dir"
 sudo chown 10001:10001 "$state_dir"

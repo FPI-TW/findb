@@ -119,6 +119,24 @@ class _CohortRunner:
             self._members = None
 
 
+class HkexHistoricalRunner(_CohortRunner):
+    """Every HKEX request freezes the release current at its creation; members serve it."""
+
+    provider = "hkex"
+
+    @classmethod
+    def from_env(cls) -> "HkexHistoricalRunner":
+        return cls()
+
+    def run(self, item: HistoricalWorkItem) -> UUID | HistoricalRunResult:
+        require_owner(item.provider)
+        if item.provider != "hkex":
+            raise HistoricalRuntimeError("provider mismatch")
+        if self._members is None:
+            self._members = MemberHistoricalRunner.from_env(self.provider)
+        return self._members.run(item)
+
+
 class TwelveDataHistoricalRunner(_CohortRunner):
     provider = "twelve_data"
 

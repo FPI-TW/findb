@@ -38,7 +38,12 @@ def test_seed_and_frozen_migration_use_catalog_slots():
             continue
         schedule = definition["config"]["delivery_expectation"]["schedule"]
         assert schedule["slot_id"] == feed.delivery.slot_id, definition["dataset_key"]
-        assert module.CONTROL_SLOTS[f"full_market_{feed.provider}_v1"] == feed.delivery.slot_id
+        # HKEX's control is installed by d8e0f2a4c6b9 with its catalog slot.
+        control = f"full_market_{feed.provider}_v1"
+        if control in module.CONTROL_SLOTS:
+            assert module.CONTROL_SLOTS[control] == feed.delivery.slot_id
+        else:
+            assert feed.provider == "hkex"
         # A feed added after the frozen migration is created by seed with its catalog slot.
         if feed.dataset_key in module.DATASET_SLOTS:
             assert module.DATASET_SLOTS[feed.dataset_key] == feed.delivery.slot_id
@@ -48,6 +53,7 @@ def test_seed_and_frozen_migration_use_catalog_slots():
         "tw_etf_bar_1m",
         "tw_equity_tick",
         "tw_etf_tick",
+        "hk_equity_official_eod",
     }
 
 

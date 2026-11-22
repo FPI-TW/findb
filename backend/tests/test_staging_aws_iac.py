@@ -557,13 +557,14 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             moves,
         )
     )
-    # TAIFEX Source and FactSet metadata are newly created resources. The original
-    # state addresses keep their existing moves; it has no legacy address.
+    # TAIFEX Source, FactSet and HKEX Source metadata are newly created resources. The
+    # original state addresses keep their existing moves; they have no legacy address.
     assert moved_pairs == {
         (secret_id, secret_id)
         for secret_id in (catalog_secret_ids | retained_secret_ids | {"fetcher/api/calendar-serve"})
         - {
             "fetcher/api/source/taifex",
+            "fetcher/api/source/hkex",
             "fetcher/api/source/factset",
             "fetcher/provider/factset",
             "fetcher/runtime/configuration",

@@ -631,7 +631,7 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 ## Runtime 與持久化狀態
 
-每次 Fetcher bundle v5 部署固定安裝八個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
+每次 Fetcher bundle v6 部署固定安裝十個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
 與一個 `findb-historical-<suffix>`。Daily 使用 `findb-fetch-runtime --execution-profile full_market`、
 catalog 的 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝拓撲不隨設定改變。
 
@@ -928,6 +928,30 @@ Host preflight 依已驗證 immutable installed source 的 historical-taifex-v1 
 舊版 11 consumers 可進行升級；新版必須具備 12 consumers，缺少新 worker 即拒絕。
 Native 驗收應先以 staging 短區間及 production 一年邊界樣本驗證 raw、run／outbox、DQ、
 canonical／Serve，再於維護窗口啟用正式回補；本機自動測試不代表雲端 native 驗收已完成。
+
+## HKEX provider 加入與 rollback 下限
+
+Catalog 加入第五個 provider `hkex`（feed `hk_equity_official_eod`，契約 `exchange_daily_quote.v1`，
+香港時間 21:05），與 TAIFEX 相同：公開報表、沒有 provider credential、使用 Twelve Data image、獨立 Source key
+（`findb/<environment>/fetcher/api/source/hkex` 的 `FETCHER_HKEX_SOURCE_CLIENT_KEY`），historical 目錄
+`/var/lib/findb-hkex-fetcher/historical`。
+
+- Backend migration `d8e0f2a4c6b9` 建立 dataset、stopped control `full_market_hkex_v1` 與 scheduler 範圍，並
+  取代 `b3d5f7a9c1e2` 成為部署前 schedule inspection；其他列沿用 `b3d5f7a9c1e2` 的凍結規則。已啟動過 control
+  或已有使用紀錄時拒絕 downgrade。Migration 後回退到舊 Backend image 會被舊 inspection 判為
+  `unknown_difference`，必須先 downgrade。
+- Fetcher bundle v6（marker `# hkex-consumers-v1:`）安裝十個 consumers。Host preflight 接受已安裝 v5 或 v6：
+  v5 主機可以沒有 HKEX 的兩個 consumers（本版安裝），但不能只有其中一個；v6 主機必須十個齊全。
+  Recovery gate 同樣容許 HKEX 的兩個 consumers 整組缺席。CD 只接受部署 v6 bundle。
+- **部署順序**：Fetcher consumer 啟動就以 Source key 呼叫 Source，未登記的 key 回 401（不屬於暫時性錯誤），
+  consumer 會結束、部署失敗。Backend 必須先認得 `hkex` 才能登記 hash，所以：
+  1. 合併前：`tofu apply -target` 建立 HKEX Source key 的 secret metadata 與 instance role 的讀取權限，
+     再寫入 key 的值。
+  2. 合併後先暫停 Fetcher 部署；FinDB 部署完成後，以 `reconcile_fetcher_credentials.py` 登記 hash
+     （名稱 `fetcher-hkex`、範圍 `hk_equity_official_eod`）。
+  3. 繼續 Fetcher 部署；完成後再完整 `tofu apply`，建立 HKEX consumers 的告警。
+  Production 的 FinDB 與 Fetcher CD 都是手動觸發，依同樣順序執行。
+- 上線後 control 仍為 stopped：先 universe refresh 發布第一份 baseline，再由 Owner start。
 
 ## 清單外標的計數
 

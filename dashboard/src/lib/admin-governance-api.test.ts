@@ -46,6 +46,7 @@ describe("admin governance wire contracts", () => {
     expect(SOURCE_PROVIDERS).toEqual([
       "factset",
       "finlab",
+      "hkex",
       "taifex",
       "twelve_data",
     ])
@@ -61,6 +62,7 @@ describe("admin governance wire contracts", () => {
       ],
       taifex: ["tw_futures_eod"],
       factset: ["hk_equity_eod"],
+      hkex: ["hk_equity_official_eod"],
     })
   })
 

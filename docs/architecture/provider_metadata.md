@@ -1,7 +1,8 @@
 # Provider metadata
 
-`backend/configs/provider_catalog.v1.json` 定義四個 providers／九條 feeds：
-Twelve Data US EOD、FactSet HK EOD、FinLab TW equity／ETF EOD、TAIFEX futures EOD，以及 FinLab 的四條盤中 feed
+`backend/configs/provider_catalog.v1.json` 定義五個 providers／十條 feeds：
+Twelve Data US EOD、FactSet HK EOD、HKEX 官方每日行情（`hk_equity_official_eod`，契約 `exchange_daily_quote.v1`）、
+FinLab TW equity／ETF EOD、TAIFEX futures EOD，以及 FinLab 的四條盤中 feed
 （`tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick`，契約 `intraday_partition.v1`）。
 只有盤中 feed 的頻率不是 `daily`：1 分 K 為 `minute`，逐筆為 `tick`。
 Shioaji 已完成退役，不列入這份 catalog；Twelve Data 不提供 HK。
@@ -93,7 +94,7 @@ uv --directory backend run python scripts/export_provider_catalog.py --check
 | `fetcher/configs/bootstrap.{environment}.v1.json` | 程序版本、環境身分、polling；無 feed、觸發時間或 deadline |
 | `fetcher/src/findb_fetcher/data/execution_descriptors.v1.json` | Fetcher 非排程 metadata，隨 Python package／image 打包 |
 | `dashboard/src/lib/generated/provider-catalog.ts` | Typed provider constants 與 scope |
-| `infra/deploy/generated/provider_inventory.v1.json` | 三 images、四 providers、八 consumers 的明確 inventory |
+| `infra/deploy/generated/provider_inventory.v1.json` | 三 images、五 providers、十 consumers 的明確 inventory（HKEX 與 TAIFEX 共用 Twelve Data image） |
 
 資料產物包含 schema version 與 SHA-256；Backend 保存 canonical source digest，其它消費端保存
 各自正向欄位投影的 digest。來源物件與集合排序不改變輸出；只改 Backend 時間不改非排程 Fetcher

@@ -351,6 +351,50 @@
       "unlisted_symbols": "none"
     },
     {
+      "asset_class": "equity",
+      "bounded_monitor": {
+        "deadline": null,
+        "enabled": false
+      },
+      "calendar_market": "HK",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "09:05",
+        "timezone": "Asia/Hong_Kong",
+        "trade_date_day_offset": 1
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "exchange_daily_quote"
+      },
+      "dataset_key": "hk_equity_official_eod",
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": "current_release",
+      "historical_execution": null,
+      "historical_requests_per_date": 2,
+      "lifecycle": "active",
+      "market": "HK",
+      "provider": "hkex",
+      "publication_retry_window_seconds": 14400,
+      "schedule": {
+        "local_time": "21:05",
+        "target_date_lag_days": 0,
+        "timezone": "Asia/Hong_Kong"
+      },
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
       "asset_class": "future",
       "bounded_monitor": {
         "deadline": null,
@@ -535,6 +579,29 @@
       }
     },
     {
+      "calendar_switch_env": "HKEX_SKIP_NON_TRADING_DAYS",
+      "consumer_roles": [
+        "full_market",
+        "historical"
+      ],
+      "container_suffix": "hkex",
+      "credential_env_names": [],
+      "display_name": "HKEX",
+      "image_key": "twelve_data",
+      "platform_limits": {
+        "max_response_bytes": 33554432,
+        "requests_per_minute": null
+      },
+      "provider": "hkex",
+      "source_credential": {
+        "description": "HKEX daily quotation Fetcher Source client",
+        "hash_env": "FETCHER_HKEX_SOURCE_CLIENT_KEY_HASH",
+        "name": "fetcher-hkex",
+        "rate_limit_requests": 2400,
+        "rate_limit_window_seconds": 60
+      }
+    },
+    {
       "calendar_switch_env": "TAIFEX_SKIP_NON_TRADING_DAYS",
       "consumer_roles": [
         "full_market",
@@ -596,6 +663,9 @@
       "tw_etf_eod",
       "tw_etf_tick"
     ],
+    "hkex": [
+      "hk_equity_official_eod"
+    ],
     "taifex": [
       "tw_futures_eod"
     ],
@@ -603,5 +673,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "f7721bf70ca23fdb42d3a24feff5fbabccb925ae92f8c341aa68e2c6e6a09d50"
+  "source_sha256": "b86766ed619a4f9cd4c2231b496b973903ccdc7b52acfbf22b91346ab8e15c91"
 }

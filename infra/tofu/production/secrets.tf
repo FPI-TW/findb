@@ -70,6 +70,9 @@ locals {
     "fetcher/api/source/taifex" = {
       unit = "fetcher", consumer = "taifex"
     }
+    "fetcher/api/source/hkex" = {
+      unit = "fetcher", consumer = "hkex"
+    }
   }
   active_runtime_secret_arns_by_unit = {
     for unit in keys(local.units) : unit => [

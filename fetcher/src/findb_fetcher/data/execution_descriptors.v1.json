@@ -242,6 +242,35 @@
       "unlisted_symbols": "none"
     },
     {
+      "asset_class": "equity",
+      "calendar_market": "HK",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "exchange_daily_quote"
+      },
+      "dataset_key": "hk_equity_official_eod",
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": "current_release",
+      "historical_execution": null,
+      "historical_requests_per_date": 2,
+      "lifecycle": "active",
+      "market": "HK",
+      "provider": "hkex",
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
       "asset_class": "future",
       "calendar_market": "TAIFEX",
       "capabilities": {
@@ -337,7 +366,7 @@
       "unlisted_symbols": "none"
     }
   ],
-  "projection_sha256": "9416e7a6792f850582a23f0bb5fea721f117de04f511bbec3a5c272d2880ebd3",
+  "projection_sha256": "98cc6609dbb6205e036c3aab6704400cbf10d8ef33ec6d3e73ad031065e5c957",
   "providers": [
     {
       "credential_env_names": [
@@ -361,6 +390,14 @@
         "requests_per_minute": null
       },
       "provider": "finlab"
+    },
+    {
+      "credential_env_names": [],
+      "platform_limits": {
+        "max_response_bytes": 33554432,
+        "requests_per_minute": null
+      },
+      "provider": "hkex"
     },
     {
       "credential_env_names": [],

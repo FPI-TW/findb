@@ -23,14 +23,16 @@ ENVIRONMENT_BY_NAMESPACE = {DEFAULT_NAMESPACE: "staging", "FinDB/Production": "p
 # backend/scripts/export_provider_catalog.py; never edit it by hand. OpenTofu
 # derives the matching alarm identities from the same generated inventory.
 # BEGIN GENERATED PROVIDER INVENTORY
-PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+PROVIDERS = ("factset", "finlab", "hkex", "taifex", "twelve_data")
 CONSUMERS = (
     ("findb-full-market-factset", "factset", "full_market", "factset"),
     ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
     ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "factset"),
     ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
     ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
 )
@@ -60,6 +62,7 @@ FULL_MARKET_STATE_DIRS = {
 HISTORICAL_STATE_DIRS = {
     "factset": "/var/lib/findb-factset-fetcher/historical",
     "finlab": "/var/lib/findb-finlab-fetcher/historical",
+    "hkex": "/var/lib/findb-hkex-fetcher/historical",
     "taifex": "/var/lib/findb-taifex-fetcher/historical",
     "twelve_data": "/var/lib/findb-fetcher/historical",
 }
@@ -402,7 +405,8 @@ WITH active_feed(dataset_key, source) AS (
         ('tw_equity_eod', 'finlab'),
         ('tw_etf_eod', 'finlab'),
         ('tw_futures_eod', 'taifex'),
-        ('hk_equity_eod', 'factset')
+        ('hk_equity_eod', 'factset'),
+        ('hk_equity_official_eod', 'hkex')
 )
 SELECT
     (

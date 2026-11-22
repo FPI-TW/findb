@@ -29,7 +29,7 @@ def test_provider_stop_timeout_covers_bounded_factset_query_and_reap():
     assert "docker stop --time 30" not in helper
 
 
-@pytest.mark.parametrize("bundle_version", [3, 4, 5])
+@pytest.mark.parametrize("bundle_version", [3, 4, 5, 6])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 def test_production_container_arguments_bind_full_and_historical_inspection(
     tmp_path, monkeypatch, provider, bundle_version
@@ -717,7 +717,7 @@ def test_actual_helper_recovery_traps_gracefully_retire_or_preserve_runtime(
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, 6, "5", True])
+@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, 6, 7, "6", True])
 def test_workflow_bundle_gate_accepts_supported_versions_only(tmp_path, target, version):
     workflow = (REPO_ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
     start = workflow.index("        # Older bundles recreate")
@@ -732,6 +732,6 @@ def test_workflow_bundle_gate_accepts_supported_versions_only(tmp_path, target, 
         capture_output=True,
         text=True,
     )
-    assert (result.returncode == 0) == (type(version) is int and version == 5)
+    assert (result.returncode == 0) == (type(version) is int and version == 6)
     if result.returncode:
         assert "Fetcher rollback 下限" in result.stderr

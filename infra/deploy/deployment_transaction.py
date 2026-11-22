@@ -24,7 +24,7 @@ from pathlib import Path
 
 from deployment_receipt import validate as validate_receipt
 
-PROVIDERS = ("twelve-data", "finlab", "taifex", "factset")
+PROVIDERS = ("twelve-data", "finlab", "taifex", "factset", "hkex")
 FETCHER_NAMES = tuple(
     f"findb-{profile}-{provider}"
     for provider in PROVIDERS

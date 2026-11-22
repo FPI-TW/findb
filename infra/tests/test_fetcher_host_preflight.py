@@ -129,7 +129,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.manifest = {
             "schema_version": 3,
             "runtime_profile": "unified",
-            "fetcher_bundle_version": 5,
+            "fetcher_bundle_version": 6,
             "deployment_target": "production",
             "unit": "fetcher",
             "commit_sha": "b" * 40,
@@ -154,20 +154,20 @@ class FetcherHostPreflightTests(unittest.TestCase):
         }
         self.write_manifest()
         self.rows = []
-        for provider in ("twelve_data", "finlab", "taifex", "factset"):
+        for provider in ("twelve_data", "finlab", "taifex", "factset", "hkex"):
             self.rows.append(
                 self.row(
                     f"findb-full-market-{provider.replace('_', '-')}",
-                    "twelve_data" if provider == "taifex" else provider,
+                    "twelve_data" if provider in {"taifex", "hkex"} else provider,
                     self.runtime_args("full_market", provider),
                 )
             )
 
-        for provider in ("twelve_data", "finlab", "taifex", "factset"):
+        for provider in ("twelve_data", "finlab", "taifex", "factset", "hkex"):
             self.rows.append(
                 self.row(
                     "findb-historical-" + provider.replace("_", "-"),
-                    "twelve_data" if provider == "taifex" else provider,
+                    "twelve_data" if provider in {"taifex", "hkex"} else provider,
                     [
                         "findb-fetch-historical-backfill",
                         "--provider",
@@ -260,8 +260,40 @@ class FetcherHostPreflightTests(unittest.TestCase):
         return result
 
     def test_complete_unified_installation_is_drained(self):
+        self.assertEqual(len(self.rows), 10)
+        self.assertEqual(self.check(), "drained")
+
+    def install_version_five(self):
+        """Hosts awaiting the HKEX release run bundle v5, without HKEX's consumers."""
+        self.manifest["fetcher_bundle_version"] = 5
+        self.rows = [row for row in self.rows if not row["Name"].endswith("-hkex")]
+        path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+        path.write_text(path.read_text().replace("# hkex-consumers-v1:", "# previous-consumers:"))
+        with release.SourceBundleReader(self.root) as source:
+            self.manifest["deployment_source_bundle_sha256"] = (
+                source.deployment_source_bundle_sha256("fetcher", 3, 5)
+            )
+        self.write_manifest()
+
+    def test_a_version_five_host_awaits_the_hkex_consumers(self):
+        self.install_version_five()
         self.assertEqual(len(self.rows), 8)
         self.assertEqual(self.check(), "drained")
+
+    def test_a_partial_set_of_hkex_consumers_is_rejected(self):
+        hkex = [row for row in self.rows if row["Name"].endswith("-hkex")]
+        self.install_version_five()
+        # A v5 host holds either none of a newer provider's consumers or all of them.
+        self.rows.append(hkex[0])
+        with self.assertRaisesRegex(ValueError, "unknown consumer"):
+            self.check()
+        self.rows.append(hkex[1])
+        self.assertEqual(self.check(), "drained")
+
+    def test_a_version_six_host_requires_the_hkex_consumers(self):
+        self.rows = [row for row in self.rows if row["Name"] != "/findb-historical-hkex"]
+        with self.assertRaisesRegex(ValueError, "unknown consumer"):
+            self.check()
 
     def test_restarting_runtime_reports_only_trusted_consumer_identity(self):
         self.rows[0]["State"].update(
@@ -281,6 +313,8 @@ class FetcherHostPreflightTests(unittest.TestCase):
         """Hosts awaiting this release still run the Shioaji consumers of version 2."""
         image = REGISTRY + "/findb/production/fetcher/shioaji@sha256:" + "c" * 64
         self.manifest["fetcher_bundle_version"] = 2
+        # Bundle v6 first installs HKEX's consumers.
+        self.rows = [row for row in self.rows if not row["Name"].endswith("-hkex")]
         self.manifest["images"]["shioaji"] = image
         for profile in ("pilot", "full_market"):
             prefix = profile.replace("_", "-")
@@ -319,6 +353,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
             path.read_text()
             .replace("# shioaji-retired-v1:", "# previous-providers:")
             .replace("# pilot-retired-v1:", "# previous-profiles:")
+            .replace("# hkex-consumers-v1:", "# previous-consumers:")
         )
         with release.SourceBundleReader(self.root) as source:
             self.manifest["deployment_source_bundle_sha256"] = (
@@ -472,7 +507,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                         self.check()
 
     def test_drained_requires_exact_bundle_format_identity(self):
-        for version in (None, False, True, 0, 6, "1", 1.0):
+        for version in (None, False, True, 0, 7, "1", 1.0):
             with self.subTest(version=version):
                 self.manifest["fetcher_bundle_version"] = version
                 if version is None:
@@ -480,7 +515,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 self.write_manifest()
                 with self.assertRaisesRegex(ValueError, "format identity invalid"):
                     self.check()
-        self.manifest["fetcher_bundle_version"] = 5
+        self.manifest["fetcher_bundle_version"] = 6
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 

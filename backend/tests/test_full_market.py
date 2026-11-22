@@ -93,9 +93,12 @@ async def _calendar(db, market="TAIFEX", open_dates=None):
 
 def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
     futures = key == "tw_futures_eod"
+    hong_kong = key.startswith("hk_equity")
     provider = (
         "taifex"
         if futures
+        else "hkex"
+        if key == "hk_equity_official_eod"
         else "factset"
         if key == "hk_equity_eod"
         else "twelve_data"
@@ -123,20 +126,12 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
         if futures
         else [
             {
-                "symbol": f"{i + 1:05d}" if key == "hk_equity_eod" else f"{i + 1:04d}",
-                "provider_symbol": f"{i + 1:05d}" if key == "hk_equity_eod" else f"{i + 1:04d}",
-                "exchange": "XHKG"
-                if key == "hk_equity_eod"
-                else "NASDAQ"
-                if key == "us_equity_eod"
-                else "TWSE",
-                "currency": "HKD"
-                if key == "hk_equity_eod"
-                else "USD"
-                if key == "us_equity_eod"
-                else "TWD",
+                "symbol": f"{i + 1:05d}" if hong_kong else f"{i + 1:04d}",
+                "provider_symbol": f"{i + 1:05d}" if hong_kong else f"{i + 1:04d}",
+                "exchange": "XHKG" if hong_kong else "NASDAQ" if key == "us_equity_eod" else "TWSE",
+                "currency": "HKD" if hong_kong else "USD" if key == "us_equity_eod" else "TWD",
                 "asset_class": "etf" if key in {"tw_etf_eod", "tw_etf_minute"} else "equity",
-                **({"classification": "hk_main_ordinary"} if key == "hk_equity_eod" else {}),
+                **({"classification": "hk_main_ordinary"} if hong_kong else {}),
             }
             for i in range(count)
         ]

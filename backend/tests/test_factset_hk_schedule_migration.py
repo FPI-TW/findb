@@ -22,6 +22,13 @@ async def _previous_clock(engine, *, drift: bool = False) -> None:
     """Seed the live catalog, then put Hong Kong back on the deployed 18:30 start."""
     async with AsyncSession(engine, expire_on_commit=False) as db:
         await seed_datasets(db)
+        # This revision predates the HKEX feed (d8e0f2a4c6b9), which it cannot judge.
+        for statement in (
+            "DELETE FROM scheduler_dataset WHERE scheduler_key = 'full_market_hkex_v1'",
+            "DELETE FROM scheduler_control WHERE scheduler_key = 'full_market_hkex_v1'",
+            "DELETE FROM dataset_registry WHERE dataset_key = 'hk_equity_official_eod'",
+        ):
+            await db.execute(text(statement))
         dataset = await db.get(DatasetRegistry, "hk_equity_eod")
         config = deepcopy(dataset.config)
         config["operator_note"] = "retain"

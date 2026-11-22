@@ -29,10 +29,7 @@ async def attest_cutover(db, identities=None):
             "inventory_sha256": "a" * 64,
             "checked_at": queue.utc_now().isoformat(),
             "host_lock_identities": identities
-            or {
-                provider: "local:1:22"
-                for provider in ("factset", "finlab", "taifex", "twelve_data")
-            },
+            or {provider: "local:1:22" for provider in queue.CUTOVER_PROVIDERS},
         },
     )
     await db.commit()
