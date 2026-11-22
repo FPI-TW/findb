@@ -53,6 +53,7 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
     assert {(f.provider, f.dataset_key) for f in catalog.feeds} == {
         ("twelve_data", "us_equity_eod"),
         ("factset", "hk_equity_eod"),
+        ("hkex", "hk_equity_official_eod"),
         ("finlab", "tw_equity_eod"),
         ("finlab", "tw_etf_eod"),
         ("finlab", "tw_equity_bar_1m"),
@@ -94,6 +95,8 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
     } == {
         "us_equity_eod": ("America/New_York", "17:00", "America/New_York", "05:00", 1),
         "hk_equity_eod": ("Asia/Hong_Kong", "20:00", "Asia/Hong_Kong", "08:00", 1),
+        # HKEX's report is downloadable around 21:00.
+        "hk_equity_official_eod": ("Asia/Hong_Kong", "21:05", "Asia/Hong_Kong", "09:05", 1),
         "tw_equity_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
         "tw_etf_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
         "tw_equity_bar_1m": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
@@ -340,14 +343,18 @@ def test_inventory_preserves_image_sharing_and_all_roles(declaration):
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
     assert inventory["images"] == ["factset", "finlab", "twelve_data"]
-    assert len(inventory["consumers"]) == 8
-    assert {c["name"] for c in inventory["consumers"] if c["provider"] == "taifex"} == {
-        "findb-full-market-taifex",
-        "findb-historical-taifex",
-    }
-    assert all(
-        c["image_key"] == "twelve_data" for c in inventory["consumers"] if c["provider"] == "taifex"
-    )
+    assert len(inventory["consumers"]) == 10
+    # Both public exchange providers run on the Twelve Data image.
+    for provider in ("taifex", "hkex"):
+        assert {c["name"] for c in inventory["consumers"] if c["provider"] == provider} == {
+            f"findb-full-market-{provider}",
+            f"findb-historical-{provider}",
+        }
+        assert all(
+            c["image_key"] == "twelve_data"
+            for c in inventory["consumers"]
+            if c["provider"] == provider
+        )
 
 
 def test_new_feed_and_drain_derive_consumer_views(declaration):
@@ -360,7 +367,7 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
     declaration["feeds"].append(feed)
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
-    assert len(inventory["consumers"]) == 10
+    assert len(inventory["consumers"]) == 12
     assert (
         'example: ["example_eod"]'
         in artifacts[Path("dashboard/src/lib/generated/provider-catalog.ts")]
@@ -444,6 +451,7 @@ def test_historical_cohorts_are_catalog_fields():
     }
     assert cohorts == {
         ("factset", "hk_equity_eod"): "current_release",
+        ("hkex", "hk_equity_official_eod"): "current_release",
         ("finlab", "tw_equity_eod"): "dated_release",
         ("finlab", "tw_etf_eod"): "dated_release",
         ("taifex", "tw_futures_eod"): "daily_report",
@@ -558,6 +566,8 @@ def test_historical_requests_per_date_rules(declaration):
         if feed.capabilities.historical != "unsupported"
     } == {
         ("factset", "hk_equity_eod"): 1,
+        # The Main Board and GEM reports.
+        ("hkex", "hk_equity_official_eod"): 2,
         ("finlab", "tw_equity_eod"): 5,
         ("finlab", "tw_etf_eod"): 5,
         ("taifex", "tw_futures_eod"): 5,

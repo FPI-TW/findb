@@ -13,19 +13,35 @@ from collections.abc import Callable
 from pathlib import Path
 
 # BEGIN GENERATED PROVIDER INVENTORY
-PROVIDERS = ("factset", "finlab", "taifex", "twelve_data")
+PROVIDERS = ("factset", "finlab", "hkex", "taifex", "twelve_data")
 CONSUMERS = (
     ("findb-full-market-factset", "factset", "full_market", "factset"),
     ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
     ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "factset"),
     ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
     ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
+
+# Consumers of providers a newer bundle first installs: before that release they
+# are absent as a whole, after it they recover like every other consumer.
+NEWER_RUNTIMES = frozenset(row[0] for row in CONSUMERS if row[1] in {"hkex"})
+
+
+def _installed_runtimes(present: set[str]) -> tuple[str, ...]:
+    """The consumers this host must recover: all of them, or all but a newer provider's."""
+    if present & NEWER_RUNTIMES and not NEWER_RUNTIMES <= present:
+        raise ValueError("installed runtime inventory is incomplete")
+    return tuple(
+        name for name in EXPECTED_RUNTIMES if name in present or name not in NEWER_RUNTIMES
+    )
+
 
 RuntimeSnapshot = tuple[tuple[str, str, str, int, str, bool], ...]
 
@@ -65,7 +81,7 @@ def committed_runtime(row, base=Path("/opt/fetcher")):
 
 
 def _parse_runtime_rows(rows: object) -> RuntimeSnapshot:
-    if not isinstance(rows, list) or len(rows) != len(EXPECTED_RUNTIMES):
+    if not isinstance(rows, list):
         raise ValueError("runtime inventory is incomplete")
     by_name: dict[str, dict] = {}
     for row in rows:
@@ -75,11 +91,14 @@ def _parse_runtime_rows(rows: object) -> RuntimeSnapshot:
         if name in by_name:
             raise ValueError("runtime inventory contains duplicate names")
         by_name[name] = row
-    if set(by_name) != set(EXPECTED_RUNTIMES):
+    expected = _installed_runtimes(set(by_name))
+    if len(rows) != len(expected):
+        raise ValueError("runtime inventory is incomplete")
+    if set(by_name) != set(expected):
         raise ValueError("runtime inventory identity differs")
 
     snapshot = []
-    for name in EXPECTED_RUNTIMES:
+    for name in expected:
         row = by_name[name]
         config, state = row.get("Config"), row.get("State")
         if not isinstance(config, dict) or not isinstance(state, dict):
@@ -132,10 +151,11 @@ def read_runtime_snapshot() -> RuntimeSnapshot:
         if current.exists() or current.is_symlink():
             raise ValueError("installed runtime inventory is missing")
         return ()
-    if present != set(EXPECTED_RUNTIMES):
+    expected = _installed_runtimes(present)
+    if present != set(expected):
         raise ValueError("installed runtime inventory is incomplete")
     result = subprocess.run(
-        ["docker", "inspect", *EXPECTED_RUNTIMES],
+        ["docker", "inspect", *expected],
         check=True,
         capture_output=True,
         text=True,

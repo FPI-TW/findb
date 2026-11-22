@@ -114,6 +114,12 @@ locals {
       consumer      = "taifex"
       status        = "active"
     }
+    "fetcher/api/source/hkex" = {
+      unit          = "fetcher"
+      relative_name = "api/source/hkex"
+      consumer      = "hkex"
+      status        = "active"
+    }
     "fetcher/provider/twelve-data" = {
       unit          = "fetcher"
       relative_name = "provider/twelve-data"

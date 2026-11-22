@@ -201,9 +201,7 @@ async def test_imported_daily_prepared_receipt_replays_under_original_work_witho
                 "checked_at": utc_now().isoformat(),
                 "host_lock_identities": {
                     provider: f"{get_settings().APP_ENVIRONMENT}:1:{index}"
-                    for index, provider in enumerate(
-                        ("factset", "finlab", "taifex", "twelve_data"), 1
-                    )
+                    for index, provider in enumerate(queue.CUTOVER_PROVIDERS, 1)
                 },
             }
             await queue.apply_cutover(db, proof)

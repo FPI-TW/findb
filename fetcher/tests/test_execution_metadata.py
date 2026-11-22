@@ -163,7 +163,7 @@ def test_whole_market_historical_bootstrap_does_not_load_daily_config(
         runner.source.__exit__(None, None, None)
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "factset", "taifex"])
+@pytest.mark.parametrize("provider", metadata.provider_ids())
 def test_deployment_historical_check_works_without_schedule_files(monkeypatch, provider):
     from findb_fetcher import full_market_cli, historical_backfill_cli, schedule
 
@@ -296,7 +296,7 @@ def test_cli_provider_choices_follow_installed_descriptor(monkeypatch, tmp_path)
     assert "taifex" not in metadata.provider_ids()
     # FinLab keeps daily adapter metadata but offers no historical choice.
     assert "finlab" in metadata.provider_ids()
-    assert metadata.historical_provider_ids() == ("factset", "twelve_data")
+    assert metadata.historical_provider_ids() == ("factset", "hkex", "twelve_data")
     for provider in ("taifex", "finlab"):
         with pytest.raises(SystemExit) as raised:
             historical_backfill_cli.main(["--provider", provider, "--check"])

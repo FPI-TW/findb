@@ -10,6 +10,11 @@ from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "infra/deploy/ssm_command_marker_gate.sh"
+INVENTORY_PROVIDERS = tuple(
+    json.loads((ROOT / "infra/deploy/generated/provider_inventory.v1.json").read_text())[
+        "providers"
+    ]
+)
 
 
 def run_wait(
@@ -128,7 +133,7 @@ def test_scheduler_block_surfaces_only_safe_profile_and_provider(tmp_path, profi
 
 
 @pytest.mark.parametrize("profile", ["full_market", "historical"])
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
+@pytest.mark.parametrize("provider", INVENTORY_PROVIDERS)
 def test_host_preflight_block_surfaces_identity_without_raw_output(tmp_path, profile, provider):
     diagnostic = (
         "fetcher_host_blocked reason=runtime_not_eligible "

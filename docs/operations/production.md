@@ -846,7 +846,7 @@ Origin certificate secret固定使用單行 base64 欄位
 
 ## 共用 credentials 與初始化
 
-四個 active provider Source scopes 在 staging／production 相同，只有 credentials values 不同：
+五個 active provider Source scopes 在 staging／production 相同，只有 credentials values 不同：
 
 | Source | Dataset allowlist |
 | --- | --- |
@@ -854,6 +854,7 @@ Origin certificate secret固定使用單行 base64 欄位
 | `finlab` | `tw_equity_eod`、`tw_etf_eod`、`tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick` |
 | `taifex` | `tw_futures_eod` |
 | `factset` | `hk_equity_eod` |
+| `hkex` | `hk_equity_official_eod` |
 
 `reconcile_fetcher_credentials.py --runtime-profile unified` 只校準 allowlist／hash 並留下 audit，
 不啟動 scheduler。四把 Source keys 相互隔離；現行execution manifest的HK feed使用FactSet，

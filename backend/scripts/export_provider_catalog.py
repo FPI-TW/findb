@@ -169,6 +169,7 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
     block += ")\nEXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)\n"
     block += "# END GENERATED PROVIDER INVENTORY"
     for path in (
+        Path("infra/deploy/deployment_transaction.py"),
         Path("infra/deploy/check_fetcher_host.py"),
         Path("infra/deploy/check_fetcher_runtime_recovery.py"),
         Path("infra/deploy/inspect_full_market_installation.py"),

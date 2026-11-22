@@ -23,7 +23,8 @@ async def owned_headers(db, body: dict, headers: dict) -> dict:
         day = date.fromisoformat(body["payload"]["batch"]["data_date"])
     except (KeyError, TypeError, ValueError):
         return headers
-    if provider not in {"finlab", "twelve_data", "shioaji", "taifex", "factset"}:
+    # Every catalog provider, and Shioaji for the retained pre-retirement fixtures.
+    if provider not in {*queue.CUTOVER_PROVIDERS, *queue.RETIRED_CUTOVER_PROVIDERS}:
         return headers
     if await db.get(DatasetRegistry, dataset) is None:
         return headers

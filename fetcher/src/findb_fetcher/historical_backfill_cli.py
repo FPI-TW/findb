@@ -18,7 +18,11 @@ from findb_fetcher.historical_backfill import (
     HistoricalProviderRunner,
     run_once,
 )
-from findb_fetcher.historical_runtime import FinLabHistoricalRunner, TwelveDataHistoricalRunner
+from findb_fetcher.historical_runtime import (
+    FinLabHistoricalRunner,
+    HkexHistoricalRunner,
+    TwelveDataHistoricalRunner,
+)
 from findb_fetcher.scheduler_control import scheduler_stop_event
 from findb_fetcher.source_recovery import SourceWaitStoppedError, retry_source
 from findb_fetcher.taifex_historical import TaifexHistoricalRunner
@@ -51,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
                 "finlab": FinLabHistoricalRunner.from_env,
                 "taifex": TaifexHistoricalRunner.from_env,
                 "factset": FactSetHistoricalRunner.from_env,
+                "hkex": HkexHistoricalRunner.from_env,
             }[args.provider](),
         )
         with HistoricalControlClient(FetcherConfig.from_env(), provider=args.provider) as control:

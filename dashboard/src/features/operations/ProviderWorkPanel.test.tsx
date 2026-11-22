@@ -9,6 +9,7 @@ import {
 import { afterEach, expect, it, vi } from "vitest"
 import { ProviderWorkPanel } from "./ProviderWorkPanel"
 import { providerWorkSchema } from "../../lib/admin-api"
+import { SOURCE_PROVIDERS } from "../../lib/generated/provider-catalog"
 
 const mocks = vi.hoisted(() => ({ query: vi.fn() }))
 vi.mock("./delivery.queries", () => ({ useDeliveryResource: mocks.query }))
@@ -124,7 +125,7 @@ it("isolates provider lists and preserves selection and FIFO order on refresh", 
   mocks.query.mockReturnValue(queryResult)
   const { rerender } = render(<ProviderWorkPanel />)
   const tabs = screen.getByRole("tablist", { name: "供應商工作佇列分頁" })
-  expect(within(tabs).getAllByRole("tab")).toHaveLength(4)
+  expect(within(tabs).getAllByRole("tab")).toHaveLength(SOURCE_PROVIDERS.length)
   expect(screen.getByRole("tab", { name: "twelve_data (1)" })).toHaveAttribute(
     "aria-selected",
     "true"

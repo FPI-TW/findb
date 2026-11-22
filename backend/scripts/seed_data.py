@@ -34,6 +34,7 @@ SUPPORTED_DATASETS = (
     "tw_equity_minute",
     "tw_etf_minute",
     "hk_equity_eod",
+    "hk_equity_official_eod",
     "tw_etf_eod",
     "tw_futures_eod",
     "tw_equity_bar_1m",
@@ -393,6 +394,43 @@ def _staged_eod_dataset(dataset_key: str, name: str, *, currency: str | None) ->
     )
 
 
+def _staged_quote_dataset(dataset_key: str, name: str) -> dict[str, Any]:
+    """An exchange's own daily quotation: delivered member by member, only inside a plan.
+
+    The rows correct the provider's EOD rows field by field, so the market and
+    asset class must be the provider feed's; each row states its own currency.
+    """
+    feed = _catalog_feed(dataset_key)
+    assert feed.schedule is not None
+    expectation = _eod_delivery_expectation(
+        mode="incremental",
+        market=feed.calendar_market,
+        source=feed.provider,
+        minimum_count=0,
+        slot_id=feed.delivery.slot_id,
+        local_time=time.fromisoformat(feed.schedule.local_time).isoformat(),
+    )
+    expectation["schedule"]["enabled"] = False
+    expectation["missing_delivery"] = {"action": "disabled", "expected_sources": []}
+    config = _catalog_contract_config(dataset_key, currency=None, delivery_expectation=expectation)
+    config["full_market"] = {
+        "enabled": False,
+        "required": True,
+        "activation_date": None,
+        "calendar_market": feed.calendar_market,
+    }
+    config["source_precedence"] = [feed.provider]
+    return _catalog_dataset(
+        dataset_key,
+        name=name,
+        description=(
+            f"Staged {feed.provider} {feed.contract.schema_id}.v1 exchange daily quotation; "
+            "corrects provider EOD close, high, low, volume and turnover"
+        ),
+        config=config,
+    )
+
+
 def _staged_intraday_dataset(dataset_key: str, name: str) -> dict[str, Any]:
     """One FinLab intraday dataset: delivered per symbol-day, only inside a daily plan.
 
@@ -450,6 +488,7 @@ DATASETS.extend(
         _staged_eod_dataset("hk_equity_eod", "港股日K", currency=None),
         _staged_eod_dataset("tw_etf_eod", "台灣 ETF 日K", currency="TWD"),
         _staged_eod_dataset("tw_futures_eod", "台灣期貨契約日K", currency="TWD"),
+        _staged_quote_dataset("hk_equity_official_eod", "港股交易所每日行情"),
     ]
 )
 
@@ -600,7 +639,12 @@ async def seed_datasets(session: AsyncSession) -> None:
         existing.asset_class = dataset["asset_class"]
         existing.market = dataset["market"]
         existing.frequency = dataset["frequency"]
-        if dataset["dataset_key"] not in {"hk_equity_eod", "tw_etf_eod", "tw_futures_eod"}:
+        if dataset["dataset_key"] not in {
+            "hk_equity_eod",
+            "hk_equity_official_eod",
+            "tw_etf_eod",
+            "tw_futures_eod",
+        }:
             existing.is_active = dataset["is_active"]
         existing.config = _merge_operator_config(
             dataset["dataset_key"],

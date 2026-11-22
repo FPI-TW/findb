@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from findb_fetcher.execution_metadata import provider_ids
 from findb_fetcher.full_market_universe import canonical_bytes
 from findb_fetcher.raw_storage import R2RawPayloadStore, RawStorageConfig
 
@@ -56,7 +57,7 @@ def export(spec: dict[str, Any]) -> dict[str, Any]:
     if (
         environment not in ("staging", "production")
         or profile != "full_market"
-        or provider not in ("twelve_data", "finlab", "taifex", "factset")
+        or provider not in provider_ids()
         or environment != os.environ["APP_ENVIRONMENT"]
         or profile != os.environ["FETCHER_CONSUMER_PROFILE"]
     ):

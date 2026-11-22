@@ -29,7 +29,7 @@ def test_provider_stop_timeout_covers_bounded_factset_query_and_reap():
     assert "docker stop --time 30" not in helper
 
 
-@pytest.mark.parametrize("bundle_version", [3, 4, 5])
+@pytest.mark.parametrize("bundle_version", [3, 4, 5, 6])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 def test_production_container_arguments_bind_full_and_historical_inspection(
     tmp_path, monkeypatch, provider, bundle_version
@@ -716,9 +716,24 @@ def test_actual_helper_recovery_traps_gracefully_retire_or_preserve_runtime(
         assert (state / victim).exists()
 
 
+def _current_bundle_version() -> int:
+    spec = importlib.util.spec_from_file_location(
+        "repairs_release_manifest", REPO_ROOT / "infra/deploy/release_manifest.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.FETCHER_BUNDLE_VERSION
+
+
+CURRENT_BUNDLE = _current_bundle_version()
+
+
 @pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, 6, "5", True])
+@pytest.mark.parametrize(
+    "version", [None, *range(1, CURRENT_BUNDLE + 2), str(CURRENT_BUNDLE), True]
+)
 def test_workflow_bundle_gate_accepts_supported_versions_only(tmp_path, target, version):
+    """The workflow deploys exactly the bundle version this tree builds."""
     workflow = (REPO_ROOT / ".github/workflows/fetcher-deploy.yml").read_text()
     start = workflow.index("        # Older bundles recreate")
     end = workflow.index('        twelve_data="', start)
@@ -732,6 +747,6 @@ def test_workflow_bundle_gate_accepts_supported_versions_only(tmp_path, target, 
         capture_output=True,
         text=True,
     )
-    assert (result.returncode == 0) == (type(version) is int and version == 5)
+    assert (result.returncode == 0) == (type(version) is int and version == CURRENT_BUNDLE)
     if result.returncode:
         assert "Fetcher rollback 下限" in result.stderr

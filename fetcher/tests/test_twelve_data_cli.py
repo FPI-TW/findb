@@ -7,6 +7,7 @@ import pytest
 
 from findb_fetcher import provider_work
 from findb_fetcher.config import ConfigError, require_provider_work_protocol
+from findb_fetcher.execution_metadata import provider_ids
 from findb_fetcher.provider_process import provider_environment
 
 
@@ -42,7 +43,7 @@ def test_retired_entrypoints_never_touch_existing_state(
     assert list(tmp_path.iterdir()) == [state]
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
+@pytest.mark.parametrize("provider", provider_ids())
 @pytest.mark.parametrize("setting", [None, "True", "1", "yes"])
 def test_owner_is_required_for_every_provider(provider, setting, monkeypatch):
     if setting is None:
@@ -113,7 +114,7 @@ def test_absent_setting_propagates_required_protocol_to_children(monkeypatch):
     assert provider_environment()["PROVIDER_WORK_REQUIRED"] == "true"
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
+@pytest.mark.parametrize("provider", provider_ids())
 @pytest.mark.parametrize("drain", [False, True])
 def test_daily_cycle_and_drain_only_dispatch_queue(provider, drain, monkeypatch):
     from findb_fetcher.full_market_runtime import FullMarketRuntime

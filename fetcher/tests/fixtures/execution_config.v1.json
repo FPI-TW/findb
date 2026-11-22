@@ -218,6 +218,43 @@
       }
     ]
   },
+  "hkex": {
+    "schema_version": 1,
+    "environment": "local",
+    "execution_profile": "full_market",
+    "provider": "hkex",
+    "feeds": [
+      {
+        "provider": "hkex",
+        "dataset_key": "hk_equity_official_eod",
+        "market": "HK",
+        "calendar_market": "HK",
+        "asset_class": "equity",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "exchange_daily_quote",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "21:05",
+        "source_timezone": "Asia/Hong_Kong",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Hong_Kong",
+          "local_time": "09:05",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      }
+    ],
+    "schedule_digest": "88afda6fc1820b8a8b72e87f6ccd8d963740e6909c8a135f46bd194fb01ec522"
+  },
   "taifex": {
     "schema_version": 1,
     "environment": "local",

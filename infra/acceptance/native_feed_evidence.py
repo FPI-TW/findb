@@ -14,6 +14,26 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 
 
+# The Backend export samples table-backed rows of a feed's own read model; intraday
+# objects and exchange quotes (served as corrections of provider rows) have none yet.
+UNSAMPLED_SCHEMAS = frozenset({"intraday_partition", "exchange_daily_quote"})
+
+
+def sampled_feed(feed: dict[str, Any]) -> bool:
+    """Whether native evidence covers this catalog feed."""
+    return bool(feed["capabilities"]["acquisition"]) and (
+        feed["contract"]["schema_id"] not in UNSAMPLED_SCHEMAS
+    )
+
+
+def sampled_providers() -> tuple[str, ...]:
+    """Providers with at least one sampled feed, in catalog order: one probe each."""
+    catalog = json.loads(
+        (ROOT / "fetcher/src/findb_fetcher/data/execution_descriptors.v1.json").read_text()
+    )
+    return tuple(dict.fromkeys(f["provider"] for f in catalog["feeds"] if sampled_feed(f)))
+
+
 def assess(backend: dict[str, Any], fetchers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     scope = {key: backend[key] for key in ("environment", "execution_profile", "trade_date")}
     if scope["environment"] not in ("staging", "production") or scope["execution_profile"] != (
@@ -23,12 +43,7 @@ def assess(backend: dict[str, Any], fetchers: dict[str, dict[str, Any]]) -> dict
     catalog = json.loads(
         (ROOT / "fetcher/src/findb_fetcher/data/execution_descriptors.v1.json").read_text()
     )
-    expected = {
-        (f["provider"], f["dataset_key"])
-        for f in catalog["feeds"]
-        # The Backend export does not sample intraday feeds yet.
-        if f["capabilities"]["acquisition"] and f["contract"]["schema_id"] != "intraday_partition"
-    }
+    expected = {(f["provider"], f["dataset_key"]) for f in catalog["feeds"] if sampled_feed(f)}
     rows = backend["feeds"]
     actual = [(f["provider"], f["dataset_key"]) for f in rows]
     if len(rows) != len(expected) or set(actual) != expected:

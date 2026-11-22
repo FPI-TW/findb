@@ -24,12 +24,24 @@ from pathlib import Path
 
 from deployment_receipt import validate as validate_receipt
 
-PROVIDERS = ("twelve-data", "finlab", "taifex", "factset")
-FETCHER_NAMES = tuple(
-    f"findb-{profile}-{provider}"
-    for provider in PROVIDERS
-    for profile in ("full-market", "historical")
+# BEGIN GENERATED PROVIDER INVENTORY
+PROVIDERS = ("factset", "finlab", "hkex", "taifex", "twelve_data")
+CONSUMERS = (
+    ("findb-full-market-factset", "factset", "full_market", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
+    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
+    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
 )
+EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
+# END GENERATED PROVIDER INVENTORY
+# Every consumer the catalog installs; a new provider needs no edit here.
+FETCHER_NAMES = EXPECTED_RUNTIMES
 FINDB_NAMES = tuple(
     f"findb-{service}"
     for service in ("nginx", "dashboard", "serve", "ingest", "dispatcher", "worker", "raw-cleanup")

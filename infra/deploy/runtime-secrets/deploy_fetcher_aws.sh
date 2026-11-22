@@ -177,6 +177,7 @@ provider_host_layout() {
     finlab) printf '%s %s' /var/lib/findb-finlab-fetcher/historical /var/lib/findb-finlab-fetcher/cache ;;
     taifex) printf '%s %s' /var/lib/findb-taifex-fetcher/historical - ;;
     factset) printf '%s %s' /var/lib/findb-factset-fetcher/historical - ;;
+    hkex) printf '%s %s' /var/lib/findb-hkex-fetcher/historical - ;;
     *) return 1 ;;
   esac
 }
@@ -936,6 +937,7 @@ export FETCHER_CONSUMER_PROFILE=historical
 # backend-schedules-v1: clocks are published by Source; bootstrap contains no schedules.
 # shioaji-retired-v1: accepted installations require four providers and no Shioaji consumer.
 # pilot-retired-v1: accepted installations require four providers and eight consumers.
+# hkex-consumers-v1: accepted installations require the HKEX consumers (five providers, ten consumers).
 for provider in "${providers[@]}"; do
   image="$(provider_image "$provider")"
   layout="$(provider_host_layout "$provider")"

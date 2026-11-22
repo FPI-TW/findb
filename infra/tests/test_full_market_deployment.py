@@ -62,7 +62,9 @@ class FullMarketDeploymentTests(unittest.TestCase):
             "release_tag": f"{unit}-v1.0.0" if target == "production" else "",
         }
         if unit == "fetcher":
-            manifest.update(runtime_profile="unified", fetcher_bundle_version=5)
+            manifest.update(
+                runtime_profile="unified", fetcher_bundle_version=release.FETCHER_BUNDLE_VERSION
+            )
         if target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": f"{unit}/accepted/{'a' * 40}/{'b' * 64}.tar",
@@ -165,7 +167,7 @@ class FullMarketDeploymentTests(unittest.TestCase):
             ):
                 with self.subTest(target=target, profile=profile):
                     manifest = self.manifest(target)
-                    manifest["fetcher_bundle_version"] = 5
+                    manifest["fetcher_bundle_version"] = release.FETCHER_BUNDLE_VERSION
                     manifest["runtime_profile"] = profile
                     with release.SourceBundleReader(ROOT) as sources:
                         contracts = sources.load_selected_contract_manifest(

@@ -14,7 +14,6 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
-from findb_fetcher import execution_metadata as metadata
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_errors import MemberUnavailableError
 from findb_fetcher.full_market_universe import HKEX_URL, official_snapshot_dataset
@@ -46,29 +45,6 @@ HOLIDAY = b"""<html><body><span id="Title3">Daily Quotations</span>
 <pre> Hong Kong Public Holiday, NO TRADING.
 
 </pre></body></html>"""
-
-
-@pytest.fixture(autouse=True)
-def hkex_descriptor(monkeypatch, tmp_path):
-    """The catalog lists hkex only once it is activated; publish its limits here."""
-    value = json.loads(metadata.METADATA_PATH.read_text())
-    value["providers"].append(
-        {
-            "provider": "hkex",
-            "credential_env_names": [],
-            "platform_limits": {
-                "max_response_bytes": 64 * 1024 * 1024,
-                "requests_per_minute": None,
-            },
-        }
-    )
-    value.pop("projection_sha256")
-    value["projection_sha256"] = hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    target = tmp_path / "metadata.json"
-    target.write_text(json.dumps(value))
-    monkeypatch.setattr(metadata, "METADATA_PATH", target)
 
 
 def _quote(code: str, name: str, first: tuple[str, ...], second: tuple[str, ...], mark=" "):

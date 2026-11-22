@@ -19,15 +19,18 @@ from script_env import script_env
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
 REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
+# The installed consumers come from the generated inventory, as in the deploy script.
+INVENTORY = json.loads((ROOT / "infra/deploy/generated/provider_inventory.v1.json").read_text())
 PROVIDERS = tuple(
     (
-        f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}",
-        "twelve-data" if provider == "taifex" else provider.replace("_", "-"),
-        provider,
-        profile,
+        consumer["name"],
+        consumer["image_key"].replace("_", "-"),
+        consumer["provider"],
+        consumer["role"],
     )
-    for profile in ("full_market", "historical")
-    for provider in ("twelve_data", "finlab", "taifex", "factset")
+    for role in ("full_market", "historical")
+    for consumer in INVENTORY["consumers"]
+    if consumer["role"] == role
 )
 RETIRED = ("findb-pilot-shioaji", "findb-full-market-shioaji", "findb-historical-shioaji")
 # How a consumer started by the transaction can be found ended during activation.
@@ -591,6 +594,7 @@ HOST_LAYOUT = {
     "finlab": ("/var/lib/findb-finlab-fetcher/historical", "/var/lib/findb-finlab-fetcher/cache"),
     "taifex": ("/var/lib/findb-taifex-fetcher/historical", "-"),
     "factset": ("/var/lib/findb-factset-fetcher/historical", "-"),
+    "hkex": ("/var/lib/findb-hkex-fetcher/historical", "-"),
 }
 
 
@@ -726,7 +730,7 @@ def test_shared_activation_observation_keeps_all_originals_until_healthy():
     wrappers = [entry for entry in state["log"] if entry[0] == "sudo" and "--consumer" in entry]
     assert sum(entry[entry.index("--consumer") + 1] == "images" for entry in wrappers) == 1
     providers = [entry for entry in wrappers if entry[entry.index("--consumer") + 1] != "images"]
-    assert len(providers) == 8
+    assert len(providers) == len(PROVIDERS)
     assert all("--docker-login" not in entry for entry in providers)
     last_observation = max(i for i, entry in enumerate(state["log"]) if entry[0] == "sleep")
     first_retirement = next(
