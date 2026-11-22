@@ -244,10 +244,13 @@ Normalizer 第一次遇到某份報表時，以 Worker 的 Raw reader 讀出 gzi
 - 人工修正過的列（`source_priority` 為 Admin 專用值）一律不動。
 - `market_data_eod.field_sources` 記錄值不是來自 `source` 的欄位，例如 `{"close": "hkex"}`；
   Admin 修正的欄位記為 `"manual"`；provider 重寫整列時清為 null，再由官方值重新套用。
-- 值有改變時，在只增不改的 `eod_field_correction` 記一列：被取代的 provider、只含改變欄位的
-  `before`／`after`（去掉尾端零的十進位字串）、官方報表的 `archive_id` 與套用修正的 run。
-- 收盤價不同，或成交量差異超過官方成交量的 1%，另在套用修正的 run 記 `EOD_EXCHANGE_QUOTE_DIFFERENCE`
-  warning，供監控 provider 的品質。
+- provider 留空的欄位直接補上官方值，只記在 `field_sources`（FactSet 港股列一律沒有成交金額）。
+- provider 有送、但值被官方值取代時，在只增不改的 `eod_field_correction` 記一列：被取代的 provider、
+  只含被取代欄位的 `before`／`after`（去掉尾端零的十進位字串）、官方報表的 `archive_id` 與套用修正的 run。
+- 被取代的收盤價不同，或成交量差異超過官方成交量的 1%，另在套用修正的 run 記
+  `EOD_EXCHANGE_QUOTE_DIFFERENCE` warning，供監控 provider 的品質。
+- 以 staging 2026-11-20 的 2,596 列 FactSet 港股列與當日主板、GEM 報表重播：收盤、最高、最低、
+  成交量全部一致，兩種寫入順序結果相同，沒有修正紀錄也沒有 warning。
 
 ## Frozen universe 與 daily plan protocol
 

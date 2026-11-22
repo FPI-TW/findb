@@ -60,9 +60,7 @@ def _differs(current: Any, quoted: Any) -> bool:
     return current is None or Decimal(current) != Decimal(quoted)
 
 
-def _volume_differs(current: int | None, quoted: int) -> bool:
-    if current is None:
-        return True
+def _volume_differs(current: int, quoted: int) -> bool:
     return Decimal(abs(current - quoted)) > VOLUME_DIFFERENCE_RATIO * Decimal(quoted)
 
 
@@ -79,7 +77,9 @@ async def apply_exchange_quote(
 
     A field the quote leaves empty (no high/low on a day without a board-lot
     trade) keeps the provider's value.  A manually corrected row is never
-    touched.  Every replaced value is recorded; a different close, or a volume
+    touched.  A value the provider left empty is filled and only marked in
+    ``field_sources`` (FactSet sends no turnover at all).  A value the provider
+    did send and the quote replaces is recorded; a different close, or a volume
     more than 1% off, is also a DQ warning on the applying run.
     """
     quote = await db.get(ExchangeDailyQuote, (instrument_id, trade_date), populate_existing=True)
@@ -104,10 +104,11 @@ async def apply_exchange_quote(
     sources = {**(row.field_sources or {}), **dict.fromkeys(quoted, quote.source)}
     if not changed and sources == (row.field_sources or {}):
         return None
-    before = {field: _text(getattr(row, field)) for field in changed}
-    after = {field: _text(value) for field, value in changed.items()}
-    reported = "close" in changed or (
-        "volume" in changed and _volume_differs(row.volume, quote.volume)
+    replaced = [field for field in changed if getattr(row, field) is not None]
+    before = {field: _text(getattr(row, field)) for field in replaced}
+    after = {field: _text(changed[field]) for field in replaced}
+    reported = "close" in replaced or (
+        row.volume is not None and _volume_differs(row.volume, quote.volume)
     )
     replaced_source = row.source
     for field, value in changed.items():
@@ -115,7 +116,7 @@ async def apply_exchange_quote(
     row.field_sources = sources
     row.updated_at = utc_now()
     issues: list[DQIssueRecord] = []
-    if changed:
+    if replaced:
         db.add(
             EODFieldCorrection(
                 correction_id=uuid7(),
@@ -137,7 +138,7 @@ async def apply_exchange_quote(
                     severity="warning",
                     description=(
                         f"{replaced_source} differs from the {quote.source} quote: "
-                        + ", ".join(sorted(changed))
+                        + ", ".join(sorted(replaced))
                     ),
                     trade_date=datetime.combine(trade_date, time.min, timezone.utc),
                     raw_data={

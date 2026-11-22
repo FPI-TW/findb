@@ -66,7 +66,8 @@ def provider_row(**values) -> dict:
         "low": "339.60",
         "close": "343.80",
         "volume": 41094469,
-        "turnover": "14089992865",
+        # FactSet's HK rows carry no turnover.
+        "turnover": None,
         **values,
     }
 
@@ -218,6 +219,28 @@ async def test_matching_values_only_record_their_source(test_session, stores, pr
     # A repeated quote with nothing new to say leaves the row alone.
     await deliver(test_session, stores, fetched_at=FETCHED + timedelta(minutes=5))
     assert (await _row(test_session)).updated_at == updated
+
+
+@pytest.mark.asyncio
+async def test_a_value_the_provider_left_empty_is_filled_without_a_correction(
+    test_session, stores, provider_dataset
+):
+    # A no-trade day for which FactSet sent neither volume nor turnover.
+    await write_provider(
+        test_session, provider_row(close="344.00", high=None, low=None, volume=None)
+    )
+
+    quote_run, _ = await deliver(
+        test_session,
+        stores,
+        [quote(trading_status="no_trade", high=None, low=None, volume=0, turnover="0")],
+    )
+
+    row = await _row(test_session)
+    assert (row.volume, row.turnover) == (0, Decimal("0"))
+    assert row.field_sources == dict.fromkeys(("close", "volume", "turnover"), "hkex")
+    assert await _corrections(test_session) == []
+    assert await _differences(test_session, quote_run) == []
 
 
 @pytest.mark.asyncio
