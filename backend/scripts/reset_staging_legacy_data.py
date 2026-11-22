@@ -97,6 +97,7 @@ TARGET_TABLES = (
     "public.daily_delivery_plan_summary",
     "public.daily_delivery_plan",
     "public.daily_execution_decision",
+    "public.eod_field_correction",
     # Index only, like intraday_partition: archived reports stay in R2.
     "public.exchange_daily_quote",
     "public.exchange_report_archive",

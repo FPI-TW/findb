@@ -113,7 +113,9 @@
   `market_data_eod` 的港股列，開盤價保留 FactSet 的值。
   - 不論誰先寫入結果都相同：HKEX 寫入時修正既有的 FactSet 列；FactSet 重抓或補抓時，若同日已有 HKEX 值，寫入後
     再套用一次。
-  - 被取代的 FactSet 原值與差異記錄下來（`dq_issue` 或專用稽核表），列上註明哪些欄位來自 HKEX。具體欄位待定。
+  - 被取代的 FactSet 原值記在只增不改的 `eod_field_correction`，列上的 `field_sources` 註明哪些欄位來自
+    HKEX；HKEX 為 null 的欄位保留 FactSet 的值，人工修正過的列不動。規則見
+    [ingress contract](../architecture/ingress_contracts.md#修正-market_data_eod-的港股列)。
   - 差異超過門檻（收盤價不同，或成交量差超過 1%）另開 warning，供監控 FactSet 品質；依三方比對，預期每月只有
     個位數。
 - **HKEX 有、FactSet 沒有的標的**：第一版只存在 HKEX 的表，不在 `market_data_eod` 新增開盤價為空的列。
@@ -199,10 +201,10 @@ Owner 於 2026-11-19 確認長期歸檔。HKEX 兩個月後就刪除報表，Raw
 
 | PR | 內容 | 狀態 |
 | --- | --- | --- |
-| 1 | contract `exchange_daily_quote.v1`、官方表 `exchange_daily_quote`、歸檔索引 `exchange_report_archive`、normalizer 與 Canonical R2 歸檔（見 [ingress contract](../architecture/ingress_contracts.md#exchange_daily_quotev1)）；尚無 dataset 接受 | 本 PR |
-| 2 | FactSet 港股列的欄位層修正：`field_sources`、修正紀錄表，寫入順序無關 | 未開始 |
+| 1 | contract `exchange_daily_quote.v1`、官方表 `exchange_daily_quote`、歸檔索引 `exchange_report_archive`、normalizer 與 Canonical R2 歸檔（見 [ingress contract](../architecture/ingress_contracts.md#exchange_daily_quotev1)）；尚無 dataset 接受 | 已合併（#622） |
+| 2 | FactSet 港股列的欄位層修正：`market_data_eod.field_sources`、修正紀錄表 `eod_field_correction`、同交易日 advisory lock 讓寫入順序無關、差異 DQ warning | 本 PR |
 | 3 | Fetcher adapter：Range 抓取與 script 檢查、gzip 存 Raw R2、主板與 GEM 解析、名單、停牌 no_data 證據、假日頁、historical runner；journal 清理加入 `hkex` | 未開始 |
-| 4 | 啟用：catalog provider 與 feed、dataset `hk_equity_official_eod`、control、凍結排程檢查、Source credential、infra consumers 與 secrets；classify plan 支援官方表 | 未開始 |
+| 4 | 啟用：catalog provider 與 feed、dataset `hk_equity_official_eod`（defaults 須為 `market` HK、`asset_class` equity，才會與 FactSet 寫到同一個 instrument）、control、凍結排程檢查、Source credential、infra consumers 與 secrets；classify plan 支援官方表 | 未開始 |
 | 5 | 匯入本機報表、staging 驗收、文件整併 | 未開始 |
 
 每個 PR 合併後都能單獨部署：catalog 一旦列出 provider，部署就要求它的 Source credential 與兩個 consumers，
@@ -210,7 +212,6 @@ Owner 於 2026-11-19 確認長期歸檔。HKEX 兩個月後就刪除報表，Raw
 
 ## 待決事項
 
-- 欄位層修正紀錄表的欄位與 `field_sources` 的值域（第 2 個 PR 定案）。
 - FactSet 港股每日資料的可取得時間：loader 稽核顯示亞太價格約在香港時間 20:30 整批入庫，2026-11-20
   起逐次觀測確認（見 [FactSet runbook](../operations/factset_hk.md#重試層級與來源更新時間)）。
 - 港股的調整因子來源（FactSet 或 FMP），見 [還原價：調整因子表設計](price-adjustment-factors.md)。

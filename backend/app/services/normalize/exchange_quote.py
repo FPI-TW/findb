@@ -16,10 +16,12 @@ from app.services.dq.validators import DQIssueRecord
 from app.services.exchange_reports import ReportRejectedError, archive_report
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
 from app.services.normalize.contracts import _contract_context
+from app.services.normalize.exchange_overlay import EXCHANGE_QUOTE_MARKETS, lock_quote_date
 from app.services.normalize.intraday import canonical_publisher, raw_reader
 from app.services.object_storage import ObjectIntegrityError, ObjectNotFoundError
 from app.utils import utc_now
 from app.utils.datetime_utils import ensure_utc
+from app.vocabulary import normalize_market
 
 
 def _day(row: ExchangeDailyQuoteRow) -> datetime:
@@ -156,6 +158,11 @@ class ExchangeDailyQuoteNormalizer(BaseNormalizer):
             await self._reject_all(result, run.run_id, "raw_object", {"reason": str(exc)})
             return
         fetched_at = ensure_utc(self.dataset_config["_ingest_fetched_at"])
+        market = normalize_market(_contract_context(self.dataset_config)[0])
+        corrects = market in EXCHANGE_QUOTE_MARKETS
+        if corrects:
+            # Every row is of the batch's data date (quote.single_trading_day).
+            await lock_quote_date(self.db, market, payload.batch.data_date, exclusive=True)
         for row, raw in zip(payload.data, raw_payload["data"], strict=True):
             issues = quote_issues(row, raw)
             if any(issue.severity == "error" for issue in issues):
@@ -167,6 +174,12 @@ class ExchangeDailyQuoteNormalizer(BaseNormalizer):
             instrument_id, applied = await self._store_row(
                 row, archive=archive, run=run, source=source, fetched_at=fetched_at
             )
+            if applied and corrects:
+                issues.extend(
+                    await self.correct_from_exchange_quote(
+                        instrument_id, row.trade_date, run.run_id
+                    )
+                )
             for issue in issues:
                 await self.record_dq_issue(issue, run.run_id, instrument_id)
                 result.dq_issues.append(issue)

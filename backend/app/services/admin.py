@@ -238,6 +238,7 @@ async def patch_eod_record(
     _validate_blocking_dq_rules(eod, market)
     # The corrected row now outranks every ingest; only another correction changes it.
     eod.source_priority = MANUAL_CORRECTION_PRIORITY
+    eod.field_sources = {**(eod.field_sources or {}), **dict.fromkeys(changed_fields, "manual")}
 
     after = _snapshot(eod, changed_fields)
 

@@ -356,6 +356,10 @@ class MarketDataEOD(Base):
     source_fetched_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Fields whose value is not ``source``'s, e.g. ``{"close": "hkex"}`` after an
+    # exchange quote corrected it or ``"manual"`` after an Admin correction.
+    # Null when every value is the row source's own.
+    field_sources: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     asof_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     run_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -662,6 +666,46 @@ class ExchangeDailyQuote(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+
+
+class EODFieldCorrection(Base):
+    """One change an exchange quote made to a ``market_data_eod`` row.
+
+    Append-only: a row is written whenever a quote replaces a value the row's
+    own source wrote, by whichever run applied it.  ``before`` and ``after``
+    hold only the changed fields, as decimal strings.
+    """
+
+    __tablename__ = "eod_field_correction"
+    __table_args__ = (
+        Index("idx_eod_field_correction_slot", "instrument_id", "trade_date"),
+        Index("idx_eod_field_correction_run", "run_id"),
+    )
+
+    correction_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
+    )
+    instrument_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("instruments.instrument_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    trade_date: Mapped[date] = mapped_column(Date, nullable=False)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    replaced_source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    before: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    after: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    archive_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("exchange_report_archive.archive_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class CorporateAction(Base):
