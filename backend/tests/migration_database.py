@@ -109,8 +109,49 @@ FORWARD_COLUMN_GROUPS = (
             ("historical_backfill_item", "unlisted_symbols", "jsonb"),
         ),
     ),
+    # Old schemas have no supplement table for a key to reference; plans keep null.
+    ("a4c6e8f0b2d3", (("daily_delivery_plan", "supplement_id", "uuid"),)),
 )
 FORWARD_COLUMN_SHIM = "migration-test forward column shim"
+# Tables later revisions add that current services read, as comment-marked shims.
+FORWARD_TABLES = (
+    (
+        "a4c6e8f0b2d3",
+        "universe_supplement",
+        "(supplement_id uuid PRIMARY KEY, dataset_key varchar(50) NOT NULL,"
+        " provider varchar(50) NOT NULL, effective_date date NOT NULL,"
+        " observed_at timestamptz NOT NULL, member_sha256 varchar(64) NOT NULL,"
+        " member_count integer NOT NULL, members jsonb NOT NULL,"
+        " created_at timestamptz NOT NULL)",
+    ),
+)
+
+
+async def _forward_table_shims(database_url: str, *, add: bool, revision: str) -> None:
+    """Drop one revision's shim tables, or add them where an older schema lacks them."""
+
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            for applied, table, columns in FORWARD_TABLES:
+                if applied != revision:
+                    continue
+                comment = await connection.scalar(
+                    text("SELECT obj_description(to_regclass(:table), 'pg_class')"),
+                    {"table": table},
+                )
+                exists = await connection.scalar(
+                    text("SELECT to_regclass(:table) IS NOT NULL"), {"table": table}
+                )
+                if add and not exists:
+                    await connection.execute(text(f"CREATE TABLE {table} {columns}"))
+                    await connection.execute(
+                        text(f"COMMENT ON TABLE {table} IS '{FORWARD_COLUMN_SHIM}'")
+                    )
+                elif not add and comment == FORWARD_COLUMN_SHIM:
+                    await connection.execute(text(f"DROP TABLE {table}"))
+    finally:
+        await engine.dispose()
 
 
 @functools.cache
@@ -182,6 +223,7 @@ async def run_alembic(
     for applied, columns in FORWARD_COLUMN_GROUPS:
         if not forward_columns or (command == "upgrade" and revision in _revisions_with(applied)):
             await _forward_column_shims(database_url, add=False, columns=columns)
+            await _forward_table_shims(database_url, add=False, revision=applied)
     environment = os.environ.copy()
     environment["DATABASE_URL"] = database_url
     await asyncio.to_thread(
@@ -195,7 +237,8 @@ async def run_alembic(
     )
     await add_retired_column_defaults(database_url)
     if forward_columns:
-        for _, columns in FORWARD_COLUMN_GROUPS:
+        for applied, columns in FORWARD_COLUMN_GROUPS:
+            await _forward_table_shims(database_url, add=True, revision=applied)
             await _forward_column_shims(database_url, add=True, columns=columns)
 
 

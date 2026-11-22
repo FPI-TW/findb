@@ -234,7 +234,7 @@ async def refresh_part_summary(
     # Unlisted writes are not members of any part; recount them for the whole plan.
     unlisted = (
         {"unlisted_data_count": len(await plan_unlisted(db, plan))}
-        if delivers_unlisted(plan.provider, plan.dataset_key)
+        if plan.supplement_id is not None or delivers_unlisted(plan.provider, plan.dataset_key)
         else {}
     )
     now = utc_now()

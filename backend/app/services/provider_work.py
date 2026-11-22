@@ -663,6 +663,18 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
                 or set(keys) != expected
             ):
                 raise ProviderWorkError("daily manifest differs from frozen plan scope")
+            if "supplementary" in manifest:
+                from app.services.universe_supplement import plan_supplement
+
+                frozen_supplement = {
+                    symbol: row["provider_symbol"]
+                    for symbol, row in (await plan_supplement(db, plan)).items()
+                    if symbol not in expected
+                }
+                if {
+                    row.get("key"): row.get("source_symbol") for row in manifest["supplementary"]
+                } != frozen_supplement:
+                    raise ProviderWorkError("daily manifest differs from the frozen supplement")
             if "contract" in manifest:
                 frozen = {
                     member.member_key: member

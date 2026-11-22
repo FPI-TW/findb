@@ -534,3 +534,46 @@ async def test_later_release_member_is_requested_and_recorded_but_never_expected
         HistoricalBackfillItem, UUID(item["item_id"]), populate_existing=True
     )
     assert (stored.status, stored.unlisted_symbols) == ("partial", ["0005"])
+
+
+@pytest.mark.asyncio
+async def test_a_dates_catalogue_supplement_is_requested_beside_its_cohort(
+    test_session, monkeypatch
+):
+    from app.schemas.full_market import UniverseMemberInput
+
+    _, body, _ = await setup(test_session, monkeypatch, "twelve_data")
+    observed = deepcopy(body)
+    observed.supplementary = [
+        UniverseMemberInput(
+            symbol="CAT1",
+            provider_symbol="CAT1",
+            exchange="XNAS",
+            currency="USD",
+            asset_class="equity",
+            classification="ordinary",
+        )
+    ]
+    await submit_universe(test_session, observed, allowed_datasets=["us_equity_eod"])
+    await test_session.commit()
+    request, _ = await historical_backfill.create_request(
+        test_session,
+        provider="twelve_data",
+        dataset_key="us_equity_eod",
+        start_date=FIRST,
+        end_date=FIRST,
+        request_key="catalogue-supplement",
+        created_by="owner",
+    )
+    binding = request.universe_snapshot["dates"][FIRST.isoformat()]
+    assert binding["catalogue_supplement_id"] and binding["supplement_count"] == 1
+    item = await test_session.scalar(
+        select(HistoricalBackfillItem).where(
+            HistoricalBackfillItem.request_id == request.request_id
+        )
+    )
+    await test_session.refresh(item, ["request"])
+    cohort = await historical_backfill.frozen_cohort(test_session, item)
+    assert [row["member_key"] for row in cohort["supplementary"]] == ["CAT1"]
+    assert cohort["supplementary"][0]["mapping_status"] == "mapped"
+    assert "CAT1" not in {row["member_key"] for row in cohort["members"]}
