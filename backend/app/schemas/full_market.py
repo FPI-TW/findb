@@ -189,6 +189,9 @@ class DeliverySummaryResponse(FullMarketModel):
     deadline_at: datetime
     is_late: bool
     gaps: list[dict]
+    # Served symbols outside the frozen list that the plan wrote; never in expected.
+    unlisted_data: int = 0
+    unlisted: list[str] = Field(default_factory=list)
 
 
 class DeliveryPlanResponse(FullMarketModel):

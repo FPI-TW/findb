@@ -1,5 +1,6 @@
 """Twelve Data/FinLab historical dates freeze their Full release cohort (#409, #433)."""
 
+import json
 from copy import deepcopy
 from datetime import date, datetime, timezone
 from uuid import UUID
@@ -286,14 +287,41 @@ async def test_member_evidence_completes_and_repairs_the_full_plan(
         json={"generation": owner["generation"], "token": owner["token"], "manifest": manifest},
     )
     assert frozen.status_code == 200, frozen.text
-    # Members outside the frozen cohort never reach raw persistence.
-    outside = _body(item, members[0], FIRST.isoformat(), symbol="0003")
+    # FinLab serves the whole market: a served symbol outside the frozen cohort (here
+    # the release's mapping gap) is written as unlisted, in the dataset's currency only.
+    gap = {"member_key": "0003", "symbol": "0003", "provider_symbol": "0003"}
+    outside = _body(item, gap, FIRST.isoformat())
+    foreign = deepcopy(outside)
+    foreign["payload"]["data"][0]["currency"] = "USD"
     rejected = await client.post(
         "/api/v1/source/ingest",
-        headers={**work_headers, "X-FinDB-Work-Member": outside["idempotency_key"]},
-        json=outside,
+        headers={**work_headers, "X-FinDB-Work-Member": foreign["idempotency_key"]},
+        json=foreign,
     )
     assert rejected.status_code == 409, rejected.text
+    for stage in ("intent", "confirm"):
+        prepared = await client.post(
+            f"/api/v1/source/provider-work/{owner['work_id']}/prepare",
+            headers=headers,
+            json={
+                "generation": owner["generation"],
+                "token": owner["token"],
+                "body": json.dumps(outside),
+                "stage": stage,
+            },
+        )
+        assert prepared.status_code == 200, prepared.text
+    unlisted = await client.post(
+        "/api/v1/source/ingest",
+        headers={
+            **work_headers,
+            "X-FinDB-Work-Member": outside["idempotency_key"],
+            "Content-Type": "application/json",
+        },
+        content=json.dumps(outside),
+    )
+    assert unlisted.status_code == 202, unlisted.text
+    await _execute_run(test_session, test_engine, UUID(unlisted.json()["run_id"]))
     delivered = _body(item, members[0], FIRST.isoformat())
     accepted = await client.post(
         "/api/v1/source/ingest",
@@ -352,6 +380,10 @@ async def test_member_evidence_completes_and_repairs_the_full_plan(
     assert replay.status_code == 200, replay.text
     loaded = await test_session.get(HistoricalBackfillRequest, request_id, populate_existing=True)
     assert loaded.status == status
+    stored = await test_session.get(
+        HistoricalBackfillItem, UUID(item["item_id"]), populate_existing=True
+    )
+    assert stored.unlisted_symbols == ["0003"]
     # The historical write resolves the Full plan's gap; the gap member stays blocked.
     await refresh_plan_summary(test_session, plan_id)
     summary = await test_session.get(DailyDeliveryPlanSummary, plan_id, populate_existing=True)

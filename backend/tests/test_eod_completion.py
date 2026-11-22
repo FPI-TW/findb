@@ -165,3 +165,60 @@ async def test_partial_keeps_owner_until_all_receipts_are_terminal(test_session)
         await queue.settle(test_session, **identity(claimed), outcome="partial", proof={})
     owner = await test_session.get(ProviderWorkOwner, (queue.environment(), "factset"))
     assert owner.attempt_id == claimed[1].attempt_id
+
+
+@pytest.mark.asyncio
+async def test_unlisted_writes_settle_only_where_the_feed_delivers_them(test_session):
+    """A member-scoped feed's extra write is a scope breach; FinLab's is recorded apart."""
+    work = await scope(test_session)
+    accepted = await run(test_session, status="completed", success_records=2, failed_records=0)
+    for key in ("00700", "00005", "09999"):
+        test_session.add(DeliveryMemberEvidence(run_id=accepted.run_id, member_key=key))
+    await test_session.flush()
+    evidence = proof(("00700", "data"), ("00005", "data"), ("00001", "mapping_gap"))
+    with pytest.raises(ValueError, match="exceeds the frozen scope"):
+        await validate_eod_completion(test_session, work, [accepted], evidence, outcome="partial")
+
+    test_session.add(
+        DatasetRegistry(dataset_key="tw_equity_eod", name="TW", market="TW", asset_class="equity")
+    )
+    await test_session.flush()
+    finlab = ProviderWork(
+        environment=queue.environment(),
+        provider="finlab",
+        dataset_key="tw_equity_eod",
+        kind="historical",
+        stable_key="finlab",
+        trade_date=DAY,
+        manifest={
+            "contract": {"schema_id": "market_eod", "schema_version": 1},
+            "members": [{"key": "2330", "mapping_status": "mapped"}],
+        },
+    )
+    test_session.add(finlab)
+    written = await run(
+        test_session,
+        dataset_key="tw_equity_eod",
+        source="finlab",
+        schema_version=1,
+        status="completed",
+        success_records=2,
+        failed_records=0,
+    )
+    for key in ("2330", "7799"):
+        test_session.add(DeliveryMemberEvidence(run_id=written.run_id, member_key=key))
+    await test_session.flush()
+    result = await validate_eod_completion(
+        test_session,
+        finlab,
+        [written],
+        EODCompletionEvidence(
+            version=2,
+            schema_id="market_eod",
+            schema_version=1,
+            trade_date=DAY,
+            members=[{"member_key": "2330", "outcome": "data"}],
+        ),
+        outcome="completed",
+    )
+    assert result["data"] == ["2330"] and result["unlisted"] == ["7799"]

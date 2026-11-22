@@ -86,41 +86,55 @@ async def add_retired_column_defaults(database_url: str) -> None:
         await engine.dispose()
 
 
-# Nullable columns added by b4d6f8a1c3e5 that current services write (the ORM
-# renders unset nullable columns as NULL).  An older schema gets them as
-# comment-marked shims so current services can seed it; shims are dropped right
-# before an upgrade that applies b4d6f8a1c3e5, so it still adds the real columns.
-FORWARD_COLUMN_REVISION = "b4d6f8a1c3e5"
-FORWARD_COLUMNS = (
-    ("daily_delivery_part", "data_count", "integer"),
-    ("daily_delivery_part", "no_data_count", "integer"),
-    ("daily_delivery_part", "missing_count", "integer"),
-    ("daily_delivery_part", "blocked_count", "integer"),
-    ("daily_delivery_part", "mapping_gap_count", "integer"),
-    ("daily_delivery_plan_summary", "parts_synced_at", "timestamptz"),
+# Columns added by later revisions that current services write (the ORM renders
+# unset nullable columns as NULL).  An older schema gets them as comment-marked
+# shims so current services can seed it; each revision's shims are dropped right
+# before an upgrade that applies it, so it still adds the real columns.
+FORWARD_COLUMN_GROUPS = (
+    (
+        "b4d6f8a1c3e5",
+        (
+            ("daily_delivery_part", "data_count", "integer"),
+            ("daily_delivery_part", "no_data_count", "integer"),
+            ("daily_delivery_part", "missing_count", "integer"),
+            ("daily_delivery_part", "blocked_count", "integer"),
+            ("daily_delivery_part", "mapping_gap_count", "integer"),
+            ("daily_delivery_plan_summary", "parts_synced_at", "timestamptz"),
+        ),
+    ),
+    (
+        "f3a5c7e9b1d2",
+        (
+            ("daily_delivery_plan_summary", "unlisted_data_count", "integer DEFAULT 0"),
+            ("historical_backfill_item", "unlisted_symbols", "jsonb"),
+        ),
+    ),
 )
 FORWARD_COLUMN_SHIM = "migration-test forward column shim"
 
 
 @functools.cache
-def _revisions_with_forward_columns() -> frozenset[str]:
+def _revisions_with(revision: str) -> frozenset[str]:
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(Config(str(BACKEND_ROOT / "alembic.ini")))
+    # ``iterate_revisions`` stops above its lower bound; the revision itself applies too.
     return frozenset(
-        {"head", "heads"}
-        | {rev.revision for rev in script.iterate_revisions("heads", FORWARD_COLUMN_REVISION)}
+        {"head", "heads", revision}
+        | {rev.revision for rev in script.iterate_revisions("heads", revision)}
     )
 
 
-async def _forward_column_shims(database_url: str, *, add: bool) -> None:
+async def _forward_column_shims(
+    database_url: str, *, add: bool, columns: tuple[tuple[str, str, str], ...]
+) -> None:
     """Drop the shims, or add them where an older schema lacks the columns."""
 
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
-            for table, column, sql_type in FORWARD_COLUMNS:
+            for table, column, sql_type in columns:
                 comment = await connection.scalar(
                     text(
                         "SELECT coalesce(col_description(c.attrelid, c.attnum), '') "
@@ -161,14 +175,13 @@ async def run_alembic(
     services can seed it; this never changes a schema at or after d7a2c4e6f8b1,
     where the columns have defaults or no longer exist.  Unless
     ``forward_columns`` is false (which also removes existing shims), a schema
-    before b4d6f8a1c3e5 gets the forward-column shims; seeded shim values
-    survive runs that stay before it.
+    before a revision in ``FORWARD_COLUMN_GROUPS`` gets that revision's
+    forward-column shims; seeded shim values survive runs that stay before it.
     """
 
-    if not forward_columns or (
-        command == "upgrade" and revision in _revisions_with_forward_columns()
-    ):
-        await _forward_column_shims(database_url, add=False)
+    for applied, columns in FORWARD_COLUMN_GROUPS:
+        if not forward_columns or (command == "upgrade" and revision in _revisions_with(applied)):
+            await _forward_column_shims(database_url, add=False, columns=columns)
     environment = os.environ.copy()
     environment["DATABASE_URL"] = database_url
     await asyncio.to_thread(
@@ -182,7 +195,8 @@ async def run_alembic(
     )
     await add_retired_column_defaults(database_url)
     if forward_columns:
-        await _forward_column_shims(database_url, add=True)
+        for _, columns in FORWARD_COLUMN_GROUPS:
+            await _forward_column_shims(database_url, add=True, columns=columns)
 
 
 class MigrationDatabaseFactory:

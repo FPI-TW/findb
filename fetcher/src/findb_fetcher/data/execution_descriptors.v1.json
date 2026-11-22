@@ -27,7 +27,8 @@
       "lifecycle": "active",
       "market": "HK",
       "provider": "factset",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "equity",
@@ -55,7 +56,8 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "equity",
@@ -120,7 +122,8 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "deliver"
     },
     {
       "asset_class": "equity",
@@ -148,7 +151,8 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "etf",
@@ -176,7 +180,8 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "etf",
@@ -204,7 +209,8 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "deliver"
     },
     {
       "asset_class": "etf",
@@ -232,7 +238,8 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "future",
@@ -260,7 +267,8 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "taifex",
-      "universe_mode": "dated"
+      "universe_mode": "dated",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "equity",
@@ -325,10 +333,11 @@
       "lifecycle": "active",
       "market": "US",
       "provider": "twelve_data",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     }
   ],
-  "projection_sha256": "1920464796fe877f0c6e4d5f6e8356e999da73d2afe231298a64a5a770a4d835",
+  "projection_sha256": "9416e7a6792f850582a23f0bb5fea721f117de04f511bbec3a5c272d2880ebd3",
   "providers": [
     {
       "credential_env_names": [

@@ -833,6 +833,19 @@ async def current_calendar_status(db: AsyncSession, work: ProviderWork) -> dict:
     }
 
 
+async def _unlisted_scope(db: AsyncSession, work: ProviderWork, symbols: set[str]) -> bool:
+    """Daily and historical EOD work may also write served symbols outside its list."""
+    from app.services.unlisted_symbols import unlisted_allowed
+
+    return (
+        work.kind in {"daily", "historical"}
+        and "contract" in (work.manifest or {})
+        and await unlisted_allowed(
+            db, provider=work.provider, dataset_key=work.dataset_key, symbols=symbols
+        )
+    )
+
+
 async def register_prepared(
     db: AsyncSession, *, body: str, stage: str, job_key: str | None, **identity
 ) -> None:
@@ -858,7 +871,7 @@ async def register_prepared(
         or request.dataset_key != work.dataset_key
         or request.payload.batch.data_date != work.trade_date
         or not members
-        or not members <= expected
+        or not (members <= expected or await _unlisted_scope(db, work, members - expected))
     ):
         raise ProviderWorkError("prepared delivery is outside frozen expected scope")
     descriptor = {
@@ -949,7 +962,10 @@ async def associate_receipt(
     member = members.get(identity["member_key"])
     canonical_mode = (work.manifest or {}).get("mode") == "canonical"
     if canonical_mode:
-        if not canonical_members or not canonical_members <= set(members):
+        if not canonical_members or not (
+            canonical_members <= set(members)
+            or await _unlisted_scope(db, work, canonical_members - set(members))
+        ):
             raise ProviderWorkError("delivery is outside frozen canonical scope")
     elif member is None or (
         member.get("payload_sha256") and member["payload_sha256"] != payload_sha256

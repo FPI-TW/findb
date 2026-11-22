@@ -186,7 +186,8 @@
       },
       "historical_cohort": "dated_release",
       "historical_requests_per_date": "per_member",
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "provider": "factset",
@@ -230,7 +231,8 @@
       "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 1,
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "provider": "finlab",
@@ -314,7 +316,8 @@
       },
       "historical_cohort": "dated_release",
       "historical_requests_per_date": 5,
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "deliver"
     },
     {
       "provider": "finlab",
@@ -357,7 +360,8 @@
       "historical_execution": null,
       "historical_cohort": "dated_release",
       "historical_requests_per_date": 5,
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "deliver"
     },
     {
       "provider": "finlab",
@@ -400,7 +404,8 @@
       "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "provider": "finlab",
@@ -443,7 +448,8 @@
       "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "provider": "finlab",
@@ -486,7 +492,8 @@
       "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "provider": "finlab",
@@ -529,7 +536,8 @@
       "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "provider": "taifex",
@@ -572,7 +580,8 @@
       "historical_execution": null,
       "historical_cohort": "daily_report",
       "historical_requests_per_date": 5,
-      "universe_mode": "dated"
+      "universe_mode": "dated",
+      "unlisted_symbols": "none"
     }
   ]
 }

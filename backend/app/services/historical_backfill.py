@@ -39,6 +39,7 @@ from app.services.feed_schedule import data_ready_at
 from app.services.provider_metadata import (
     catalog_feed,
     dataset_calendar_market,
+    delivers_unlisted,
     historical_cohort,
     provider_catalog,
 )
@@ -1122,6 +1123,12 @@ async def complete_item(
         },
         failure_code=failure_code,
     )
+    if eod_evidence is not None and delivers_unlisted(provider, item.request.dataset_key):
+        from app.services.unlisted_symbols import work_unlisted
+
+        item.unlisted_symbols = await work_unlisted(
+            db, identity["work_id"], {member.member_key for member in eod_evidence.members}
+        )
     item.status, item.completed_at, item.run_id = outcome, now, run_id
     item.lease_token, item.lease_expires_at = None, None
     item.failure_code = failure_code if outcome == "failed" else None
@@ -1189,6 +1196,28 @@ async def validate_eod_historical_delivery(
     except HistoricalBackfillError as exc:
         raise HistoricalBackfillValidationError(str(exc)) from exc
     members = {row["symbol"]: row for row in snapshot.get("members", [])}
+    unlisted = {row.symbol for row in request.payload.data} - set(members)
+    if unlisted:
+        from app.services.ingress_contracts import parse_dataset_contract_declaration
+        from app.services.unlisted_symbols import unlisted_allowed
+
+        dataset = await db.get(DatasetRegistry, request.dataset_key)
+        declaration = parse_dataset_contract_declaration(dataset.config) if dataset else None
+        # Served rows outside the cohort are written in the dataset's own currency.
+        if (
+            declaration is None
+            or any(
+                row.symbol in unlisted
+                and (row.currency or declaration.defaults.currency) != declaration.defaults.currency
+                for row in request.payload.data
+            )
+            or not await unlisted_allowed(
+                db, provider=provider, dataset_key=request.dataset_key, symbols=unlisted
+            )
+        ):
+            raise HistoricalBackfillValidationError(
+                "historical delivery is outside its frozen cohort"
+            )
     # A current-release cohort always states the listing; Full release rows may
     # leave it to the member.
     strict_symbol = current_release_cohort(item.request)
@@ -1214,15 +1243,15 @@ async def validate_eod_historical_delivery(
         or request.delivery.target_data_date != item.trade_date
         or request.fetched_at > now + timedelta(minutes=5)
         or not _session_closed(item, request.fetched_at)
+        or any(row.trade_date != item.trade_date for row in request.payload.data)
         or any(
-            row.trade_date != item.trade_date
-            or row.symbol not in members
-            or members[row.symbol]["mapping_status"] != "mapped"
+            members[row.symbol]["mapping_status"] != "mapped"
             or (strict_symbol or row.source_symbol is not None)
             and row.source_symbol != members[row.symbol]["provider_symbol"]
             or (strict_symbol or row.currency is not None)
             and row.currency != members[row.symbol]["currency"]
             for row in request.payload.data
+            if row.symbol in members
         )
     ):
         raise HistoricalBackfillValidationError("historical delivery is outside its frozen cohort")
