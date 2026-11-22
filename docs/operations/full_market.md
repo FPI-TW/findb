@@ -157,6 +157,16 @@ plan 的 summary 讀取另列出 `unlisted`（代碼，上限與缺口明細相�
 同 plan 其他 part 的成員、幣別不是 dataset 預設幣別，以及同 provider 另一個資產類別（例如 ETF）最新
 published 名單上的代碼，避免以錯的資產類別建立 instrument。回補也一樣：清單外寫入不影響成員的完成
 判定，完成時記在該日期的 `unlisted_symbols`。其他 feed 對清單外的列維持 409。
+
+FinLab Fetcher 讀五張價格表時保留全部欄位（raw 也是完整的表），清單外的代碼用 FinLab 自己的資料分類：
+`tw_etf_nav_daily:淨值` 有該欄的是 ETF；`company_basic_info` 中 `市場別` 為 `sii`／`otc`（興櫃 `rotc`
+不算）且 `產業類別` 不是 `存託憑證` 的是股票。每個 dataset 只送自己資產類別的代碼，其他（特別股、ETN、
+REIT、TDR、興櫃）不寫入，Fetcher log `finlab_unlisted` 記數量；當天沒有成交的代碼也不送。公司資料只有
+現在的公司，回補過去日期時已下市的股票分類不到，所以不會寫入。兩張分類表每個日期各讀一次（2026-11-22
+production 實測合計約 0.6 MB 配額）。Daily 在同一輪已有五張表時，於成員之後送出清單外的列，每個代碼在
+同一個 work 只送一次，Source 拒絕某個代碼時記下拒絕並繼續其他代碼，不影響成員結果與 settle；回補在成員與
+補查成員之後送出。官方名單上但公司名單沒有的普通股（`classification_gap`），只要 FinLab 目錄有該代碼就是
+mapped，不再列為 mapping gap。
 Summary 另回傳 `mapping_gap`：blocked 中屬於 mapping gap 的成員數。`is_late` 只看抓取進度，
 也就是超過 deadline 時，扣除 mapping gap 後仍有 missing 或 blocked；mapping gap 照樣計入 blocked
 與缺漏告警，不會因此被隱藏。

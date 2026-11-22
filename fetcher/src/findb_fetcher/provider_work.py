@@ -550,6 +550,9 @@ def durable_response(
                 }
             elif is_dataclass(value) and not isinstance(value, type):
                 data = asdict(value)
+                if kind == "FinLabDatasetTable" and not data.get("unlisted"):
+                    # Reviewed-only tables keep the bytes they were journaled with.
+                    data.pop("unlisted", None)
             else:
                 data = value
 
@@ -600,6 +603,7 @@ def durable_response(
                     # Rows saved before these fields existed carry neither.
                     tuple(tuple(item) for item in data.get("previous", ())),
                     tuple(data.get("observed", ())),
+                    tuple(data.get("unlisted", ())),
                 )
             elif kind in {"dict", "list", "tuple"}:
                 result = tuple(data) if kind == "tuple" else data

@@ -340,6 +340,8 @@ def test_finlab_member_acquisition_is_byte_identical(tmp_path, monkeypatch, data
             requested.append((name, str(target_date), tuple(symbols)))
             return _finlab_table(served, prices[names[name]])
 
+        fetch_market_dataset = fetch_dataset
+
     monkeypatch.setattr(FinLabSdkGateway, "from_env", classmethod(lambda cls, **kwargs: Gateway()))
     runtime, source, delivery, s3 = _runtime(tmp_path, "finlab")
     feed = _feed("finlab", dataset)

@@ -52,6 +52,16 @@ _MAX_SOURCE_REQUEST_BYTES = 1024 * 1024
 # One table fetch normally takes 3-10 seconds; the supervisor's default of 30
 # minutes would let five stuck tables hold the provider owner for hours.
 FINLAB_GET_TIMEOUT_SECONDS = 10 * 60
+# Rows of each unlisted column the worker returns: enough to carry an earlier close.
+UNLISTED_HISTORY_ROWS = 60
+# FinLab's own security data that classifies a symbol outside the frozen lists.
+# Companies listed on TWSE (sii) or TPEx (otc) are equities, except depositary
+# receipts; the emerging board (rotc) is no listed market. A symbol with an ETF
+# NAV series is an ETF. Anything else (preferred shares, ETNs, REITs) is neither.
+FINLAB_COMPANY_DATASET = "company_basic_info"
+FINLAB_ETF_NAV_DATASET = "tw_etf_nav_daily:淨值"
+FINLAB_LISTED_MARKETS = frozenset({"sii", "otc"})
+FINLAB_DEPOSITARY_RECEIPT_INDUSTRY = "存託憑證"
 # A usage read answers in under a second; it must never hold the owner for long.
 FINLAB_USAGE_TIMEOUT_SECONDS = 60
 # The table whose metadata reports the account's usage. Asked with a copy dated
@@ -133,6 +143,8 @@ class FinLabDatasetTable:
     # A table without the target date only: per kept date, how many reviewed
     # symbols have a value. ``symbols`` and ``values`` then stay empty.
     observed: tuple[int, ...] = ()
+    # Served symbols outside the reviewed list, appended after them in ``symbols``.
+    unlisted: tuple[str, ...] = ()
 
 
 def unobserved(value: object) -> bool:
@@ -224,6 +236,90 @@ class FinLabSdkGateway:
             )
         return table
 
+    def fetch_market_dataset(
+        self,
+        dataset: str,
+        *,
+        target_date: date,
+        symbols: Sequence[str],
+    ) -> FinLabDatasetTable:
+        """``fetch_dataset`` plus every other symbol the table serves on the date.
+
+        The list only measures gaps: a whole-market table's other columns are
+        provider data too, appended after the reviewed symbols as ``unlisted``.
+        """
+        if not isinstance(target_date, date) or isinstance(target_date, datetime):
+            raise FinLabConfigError("FinLab target_date must be a date")
+        table = self._fetch_market(dataset, target_date=target_date, symbols=symbols)
+        if table.dates != (target_date.isoformat(),):
+            raise FinLabTargetNotReadyError(
+                "FinLab dataset does not contain exactly one target date"
+            )
+        return table
+
+    def fetch_security_types(self) -> dict[str, tuple[str, ...]]:
+        """Symbols FinLab's own security data classifies as listed equities and ETFs."""
+        return {
+            "equity": tuple(self._security_table(FINLAB_COMPANY_DATASET)),
+            "etf": tuple(self._security_table(FINLAB_ETF_NAV_DATASET)),
+        }
+
+    @durable_response("finlab_security_table", ("dataset",))
+    def _security_table(self, dataset: str) -> tuple[str, ...]:
+        if dataset not in {FINLAB_COMPANY_DATASET, FINLAB_ETF_NAV_DATASET}:
+            raise FinLabConfigError("FinLab security dataset is not reviewed")
+        from findb_fetcher.acquisition import Acquisition
+
+        try:
+            with (
+                sdk_credential_scope(),
+                Acquisition("finlab", credential=self._identity_credential) as operation,
+            ):
+                try:
+                    if self._sdk is None:
+                        from findb_fetcher.provider_process import supervised_call
+
+                        symbols, observed, usage = supervised_call(
+                            "finlab.security_table",
+                            {"token": self.api_token, "dataset": dataset},
+                            checkpoint=operation.dispatch_checkpoint,
+                            timeout=FINLAB_GET_TIMEOUT_SECONDS,
+                        )
+                    else:
+                        operation.dispatch_checkpoint()
+                        getattr(self._sdk, "login")(self.api_token)
+                        frame = getattr(self._sdk, "data").get(dataset)
+                        symbols = security_symbols(dataset, frame)
+                        observed, usage = _dataframe_response_bytes(frame), None
+                except QuotaBlockedError:
+                    raise
+                except Exception as exc:
+                    from findb_fetcher.provider_process import ProviderProcessError
+                    from findb_fetcher.provider_worker import failure_code
+
+                    code = exc.code if isinstance(exc, ProviderProcessError) else failure_code(exc)
+                    _log_sdk_failure(dataset, code)
+                    raise FinLabOperationalError(
+                        "FinLab SDK dataset retrieval failed", code
+                    ) from None
+                if usage is not None:
+                    _record_usage(operation, dataset, usage)
+            if self.on_response_bytes is not None and observed is not None:
+                self.on_response_bytes(observed)
+        except QuotaBlockedError as exc:
+            if exc.quota_wait and not exc.dispatched:
+                raise
+            raise FinLabOperationalError("FinLab acquisition failed", "account_quota") from None
+        except FinLabSdkError:
+            raise
+        except Exception:
+            raise FinLabOperationalError("FinLab acquisition failed", "acquisition") from None
+        if not symbols or any(
+            not isinstance(symbol, str) or _SYMBOL.fullmatch(symbol) is None for symbol in symbols
+        ):
+            raise FinLabSdkError("FinLab security dataset failed validation")
+        return tuple(sorted(set(symbols)))
+
     def fetch_catalogue(self, *, symbols: Sequence[str]) -> FinLabDatasetTable:
         """Observe column presence, without claiming any trading-date data exists."""
         return self._fetch("price:收盤價", target_date=None, symbols=symbols)
@@ -237,6 +333,27 @@ class FinLabSdkGateway:
     )
     def _fetch(
         self, dataset: str, *, target_date: date | None, symbols: Sequence[str]
+    ) -> FinLabDatasetTable:
+        return self._get(dataset, target_date=target_date, symbols=symbols, unlisted=False)
+
+    # A separate journal name keeps every existing reviewed-only replay key unchanged.
+    @durable_response(
+        "finlab_market_dataset",
+        ("dataset", "target_date", "symbols"),
+        target_valid=lambda table, args: table.dates == (args["target_date"].isoformat(),),
+    )
+    def _fetch_market(
+        self, dataset: str, *, target_date: date, symbols: Sequence[str]
+    ) -> FinLabDatasetTable:
+        return self._get(dataset, target_date=target_date, symbols=symbols, unlisted=True)
+
+    def _get(
+        self,
+        dataset: str,
+        *,
+        target_date: date | None,
+        symbols: Sequence[str],
+        unlisted: bool,
     ) -> FinLabDatasetTable:
         if not isinstance(dataset, str) or not dataset.strip():
             raise FinLabConfigError("FinLab dataset name must be a non-empty string")
@@ -289,6 +406,7 @@ class FinLabSdkGateway:
                                         "dataset": dataset.strip(),
                                         "symbols": reviewed_symbols,
                                         "account": account,
+                                        "unlisted": unlisted,
                                     },
                                     checkpoint=operation.dispatch_checkpoint,
                                     timeout=FINLAB_GET_TIMEOUT_SECONDS,
@@ -341,6 +459,13 @@ class FinLabSdkGateway:
                             allow_missing_symbols=self.allow_missing_symbols,
                             carry_previous=dataset.strip() == FINLAB_FIELD_DATASETS["close"],
                         )
+                        if unlisted and table.dates == (target_date.isoformat(),):
+                            table = _with_unlisted(
+                                frame,
+                                table,
+                                target_date=target_date,
+                                carry_previous=dataset.strip() == FINLAB_FIELD_DATASETS["close"],
+                            )
                         if table.dates != (target_date.isoformat(),):
                             _log_target_not_ready(dataset.strip(), target_date, table)
                         else:
@@ -351,7 +476,9 @@ class FinLabSdkGateway:
                                 datetime.now(timezone.utc),
                             )
                             prior = _prior_row(
-                                frame, target_date=target_date, symbols=table.symbols
+                                frame,
+                                target_date=target_date,
+                                symbols=table.symbols[: len(table.symbols) - len(table.unlisted)],
                             )
                             if prior is not None:
                                 self.prior_rows[dataset.strip()] = prior
@@ -452,6 +579,54 @@ def native_usage(payload: dict[str, Any], authorize: Callable[[], None]) -> dict
     return usage or None
 
 
+def security_symbols(dataset: str, frame: Any) -> tuple[str, ...]:
+    """The listed equities or ETFs one reviewed FinLab security dataset names."""
+    try:
+        if dataset == FINLAB_ETF_NAV_DATASET:
+            return tuple(str(column).strip() for column in frame.columns)
+        rows = zip(frame["stock_id"], frame["市場別"], frame["產業類別"], strict=True)
+        return tuple(
+            str(symbol).strip()
+            for symbol, market, industry in rows
+            if str(market).strip() in FINLAB_LISTED_MARKETS
+            and str(industry).strip() != FINLAB_DEPOSITARY_RECEIPT_INDUSTRY
+        )
+    except Exception:
+        raise FinLabSdkError("FinLab security dataset cannot be read") from None
+
+
+def native_security_table(
+    payload: dict[str, Any], authorize: Callable[[], None]
+) -> tuple[tuple[str, ...], int, dict[str, float] | None]:
+    """Worker-side get of one reviewed security dataset, reduced to its symbols."""
+    if payload["dataset"] not in {FINLAB_COMPANY_DATASET, FINLAB_ETF_NAV_DATASET}:
+        raise FinLabNativeError("bad_response")
+    sdk = importlib.import_module("finlab")
+    data = importlib.import_module("finlab.data")
+    utils: Any = importlib.import_module("finlab.utils")
+    utils.check_version = lambda: None
+    seams = _sdk_seams(sdk, data)
+    _disable_frame_cache(_file_storages(data, data.get))
+    usage = _observe_api_usage(seams.metadata)
+    authorize()
+    _select_api_token(sdk, payload["token"])
+    try:
+        with seams.download_usage() as receipts:
+            frame = data.get(payload["dataset"])
+    except seams.quota_error:
+        raise FinLabNativeError("quota") from None
+    except seams.auth_error:
+        raise FinLabNativeError("auth") from None
+    billed = _billed_bytes(receipts)
+    if usage and billed is not None:
+        usage["billed_bytes"] = billed
+    return (
+        security_symbols(payload["dataset"], frame),
+        _dataframe_response_bytes(frame),
+        usage or None,
+    )
+
+
 def native_get(
     payload: dict[str, Any], authorize: Callable[[], None]
 ) -> tuple[object, int | None, dict[str, float] | None]:
@@ -489,7 +664,11 @@ def native_get(
     if usage and billed is not None:
         usage["billed_bytes"] = billed
     observed = _dataframe_response_bytes(frame) if payload["account"] else None
-    return _reviewed_columns(frame, payload["symbols"]), observed, usage or None
+    return (
+        _reviewed_columns(frame, payload["symbols"], unlisted=bool(payload.get("unlisted"))),
+        observed,
+        usage or None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -642,7 +821,8 @@ def _record_usage(operation: Any, dataset: str, usage: Mapping[str, float]) -> N
     )
 
 
-def _reviewed_columns(frame: Any, symbols: Sequence[str]) -> object:
+def _reviewed_columns(frame: Any, symbols: Sequence[str], *, unlisted: bool = False) -> object:
+    """The reviewed columns whole, plus (``unlisted``) the other columns' latest rows."""
     try:
         _frame_axes(frame)
         keep = frame.columns.isin(symbols)
@@ -650,7 +830,46 @@ def _reviewed_columns(frame: Any, symbols: Sequence[str]) -> object:
         # Not a valid pandas frame: return it whole so the parent raises the
         # same typed validation failure as the in-process path.
         return frame
-    return frame.loc[:, keep]
+    if not unlisted:
+        return frame.loc[:, keep]
+    import pandas
+
+    # Earlier rows of an unlisted column are left empty; only a recent close is carried.
+    return pandas.concat(
+        [frame.loc[:, keep], frame.iloc[-UNLISTED_HISTORY_ROWS:].loc[:, ~keep]], axis=1
+    )
+
+
+def _with_unlisted(
+    frame: object, table: FinLabDatasetTable, *, target_date: date, carry_previous: bool
+) -> FinLabDatasetTable:
+    """Append the frame's other symbol columns, read exactly as reviewed ones are."""
+    _, _, columns = _frame_axes(frame)
+    reviewed = set(table.symbols)
+    extras = tuple(
+        sorted(
+            {
+                str(column)
+                for column in columns
+                if str(column) not in reviewed and _SYMBOL.fullmatch(str(column))
+            }
+        )
+    )
+    if not extras:
+        return table
+    served = _table_from_dataframe(
+        frame,
+        target_date=target_date,
+        reviewed_symbols=extras,
+        carry_previous=carry_previous,
+    )
+    return FinLabDatasetTable(
+        dates=table.dates,
+        symbols=(*table.symbols, *served.symbols),
+        values=((*table.values[0], *served.values[0]),),
+        previous=(*table.previous, *served.previous),
+        unlisted=served.symbols,
+    )
 
 
 def _file_storages(data: object, get: object) -> tuple[Any, ...]:

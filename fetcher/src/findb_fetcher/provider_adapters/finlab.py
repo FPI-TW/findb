@@ -206,12 +206,15 @@ class FinLabAdapter(ProviderAdapter):
 
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
+        # FinLab's own equity and ETF symbol sets, read once per adapter round.
+        self.security_types: dict[str, tuple[str, ...]] | None = None
         self.layouts: dict[tuple[Any, Any, str], list[dict[str, Any]]] = {}
         # (dataset, trade date) whose previous day was rechecked by this process.
         self.rechecked: set[tuple[str, date]] = set()
 
     def reset(self) -> None:
         self.bundles.clear()
+        self.security_types = None
 
     def round_started(self, context: AcquisitionContext) -> None:
         """Ask again about the previous trade date's no-trade members of an intraday feed.
@@ -367,11 +370,10 @@ class FinLabAdapter(ProviderAdapter):
             context.snapshot_objects[url] = context.persist(detached, dataset, "provider_catalogue")
             catalogue_snapshots[dataset] = {url: detached}
             for member in members:
+                # The list measures gaps, never withholds data: an official member
+                # FinLab serves is mapped even when its company listing is missing.
                 member["mapping_status"] = (
-                    "mapped"
-                    if member["classification"] != "classification_gap"
-                    and member["provider_symbol"] in table.symbols
-                    else "gap"
+                    "mapped" if member["provider_symbol"] in table.symbols else "gap"
                 )
         groups = {
             dataset: UniverseSnapshot(
@@ -578,9 +580,67 @@ class FinLabAdapter(ProviderAdapter):
             print(json.dumps({"finlab_revision_detected": line}, separators=(",", ":")), flush=True)
 
     def acquire(self, member: Mapping[str, Any], context: AcquisitionContext) -> AcquisitionResult:
-        dataset, day = context.dataset_key, context.trade_date
-        if dataset in INTRADAY_DATASETS:
+        if context.dataset_key in INTRADAY_DATASETS:
             return self._acquire_intraday(member, context)
+        return self._member_result(member, context, *self._bundle(context))
+
+    def unlisted_requests(self, context: AcquisitionContext) -> list[tuple[str, AcquisitionResult]]:
+        """Served rows of symbols outside the frozen list that belong to this dataset.
+
+        The list only measures gaps. A symbol FinLab's tables serve on the date is
+        delivered when FinLab's own security data classifies it as this dataset's
+        asset class; other classes (preferred shares, ETNs, REITs, depositary
+        receipts) belong to no dataset and are left out, as are no-trade rows.
+        """
+        from findb_fetcher.execution_metadata import delivers_unlisted
+
+        if context.dataset_key in INTRADAY_DATASETS or not delivers_unlisted(
+            "finlab", context.dataset_key
+        ):
+            return []
+        bundle = self._bundle(context)
+        tables = bundle[1]
+        listed = {str(item["provider_symbol"]) for item in context.cohort or ()}
+        served = set.intersection(*(set(table.unlisted) for table in tables.values())) - listed
+        if not served:
+            return []
+        if self.security_types is None:
+            self.security_types = self.gateway(context.observe_response).fetch_security_types()
+        kind = context.feed["asset_class"]
+        other = "etf" if kind == "equity" else "equity"
+        classified = set(self.security_types[kind]) - set(self.security_types[other])
+        results = []
+        for symbol in sorted(served & classified):
+            member = {"member_key": symbol, "symbol": symbol, "provider_symbol": symbol}
+            try:
+                result = self._member_result(member, context, *bundle)
+            except MemberUnavailableError:
+                continue
+            if result.request is not None:
+                results.append((symbol, result))
+        skipped = len(served) - len(results)
+        print(
+            json.dumps(
+                {
+                    "finlab_unlisted": {
+                        "dataset": context.dataset_key,
+                        "trade_date": context.trade_date.isoformat(),
+                        "served": len(served),
+                        "delivered": len(results),
+                        "skipped": skipped,
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return results
+
+    def _bundle(self, context: AcquisitionContext) -> Any:
+        """The date's five shared tables, downloaded once per adapter round."""
+        from findb_fetcher.execution_metadata import delivers_unlisted
+
+        dataset, day = context.dataset_key, context.trade_date
         cache_key = (dataset, day)
         if cache_key not in self.bundles:
             if context.cohort is None:
@@ -601,9 +661,15 @@ class FinLabAdapter(ProviderAdapter):
                 production_scope=True,
             )
             gateway = self.gateway(context.observe_response)
+            # A feed that delivers unlisted symbols keeps every served column.
+            fetch = (
+                gateway.fetch_market_dataset
+                if delivers_unlisted("finlab", dataset)
+                else gateway.fetch_dataset
+            )
             tables = {}
             for field, name in config.field_datasets.items():
-                tables[field] = gateway.fetch_dataset(
+                tables[field] = fetch(
                     name,
                     target_date=day,
                     symbols=tuple(item.source_symbol for item in config.symbols),
@@ -618,7 +684,18 @@ class FinLabAdapter(ProviderAdapter):
                 raise ReadinessBlockedError("SDK derived bundle exceeds aggregate bound")
             table_stored = context.persist(table_raw, "dataset_bundle")
             self.bundles[cache_key] = (config, tables, table_raw, table_stored)
-        full_config, tables, raw, stored = self.bundles[cache_key]
+        return self.bundles[cache_key]
+
+    def _member_result(
+        self,
+        member: Mapping[str, Any],
+        context: AcquisitionContext,
+        full_config: Any,
+        tables: dict[str, Any],
+        raw: bytes,
+        stored: Any,
+    ) -> AcquisitionResult:
+        dataset, day = context.dataset_key, context.trade_date
         provider_symbol = member["provider_symbol"]
         if any(provider_symbol not in table.symbols for table in tables.values()):
             raise MemberUnavailableError("missing_symbol")

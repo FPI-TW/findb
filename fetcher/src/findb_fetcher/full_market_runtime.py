@@ -245,7 +245,11 @@ def _governed(method):
                 else self.execution_profile
             )
             plan = kwargs.get("plan") or (
-                args[1] if method.__name__ == "_acquire" and len(args) > 1 else None
+                args[1]
+                if method.__name__ == "_acquire" and len(args) > 1
+                else args[0]
+                if method.__name__ == "_unlisted_requests" and args
+                else None
             )
             try:
                 grant = self.source.authorization(
@@ -1723,9 +1727,12 @@ class FullMarketRuntime:
             except Exception:
                 pass  # An adapter's own check never decides the round.
         try:
-            return self._deliver_members(
+            delivered = self._deliver_members(
                 plan, release, feed, drain_only=drain_only, drain_keys=drain_keys
             )
+            if not drain_only and drain_keys is None:
+                self._deliver_unlisted(plan, release, feed)
+            return delivered
         finally:
             if self.daily_policy:
                 self.last_batch["elapsed_seconds"] = round(
@@ -1733,6 +1740,97 @@ class FullMarketRuntime:
                 )
                 self.state.schedule_save(plan["plan_id"], batch=self.last_batch)
             self._log_delivery_timing(final=True)
+
+    def _deliver_unlisted(
+        self, plan: dict[str, Any], release: dict[str, Any], feed: dict[str, Any]
+    ) -> None:
+        """Deliver served symbols outside the frozen list from the round's shared tables.
+
+        The list only measures gaps. This runs only once the round already holds the
+        date's tables, so it never downloads them for unlisted rows alone, and the
+        members never wait on it. Each delivery is journaled once per work.
+        """
+        from findb_fetcher.execution_metadata import delivers_unlisted
+        from findb_fetcher.provider_work import require_owner
+
+        day = date.fromisoformat(plan["trade_date"])
+        if (
+            not plan.get("parts")
+            or not delivers_unlisted(self.provider, plan["dataset_key"])
+            or self.adapter.pending_shared_fetch(plan["dataset_key"], day)
+        ):
+            return
+        owner = require_owner(self.provider)
+        journal = getattr(owner, "journal", None)
+        done = "full:unlisted:done"
+        if journal is None or journal.response(done) is not None:
+            return
+        try:
+            if not self._acquisition_allowed():
+                return
+            results = self._unlisted_requests(plan, plan["parts"][0], release, feed)
+            for symbol, request in results:
+                key = "full:unlisted:receipt:" + symbol
+                if journal.response(key) is not None:
+                    continue
+                try:
+                    owner.reserve(request)
+                    immutable = self.delivery.prepare(request)
+                    receipt = self.delivery.deliver(immutable)
+                except (SourceAPIResponseError, FullMarketProtocolError) as exc:
+                    status = getattr(exc, "status_code", None)
+                    if (
+                        getattr(exc, "code", None) == "PROVIDER_WORK_FENCE"
+                        or status is None
+                        or status >= 500
+                        or status in {408, 429}
+                    ):
+                        raise
+                    # Source refuses this symbol (for example another class's list);
+                    # the refusal is the outcome, and the other symbols continue.
+                    journal.response(key, canonical_bytes({"refused": status}))
+                    continue
+                journal.response(key, canonical_bytes({"run_id": str(receipt.run_id)}))
+        except Exception as exc:
+            from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+            if isinstance(exc, ProviderWorkRecoveryBlockedError) or (
+                getattr(exc, "code", None) == "PROVIDER_WORK_FENCE"
+            ):
+                raise
+            # A later round retries; the members' outcomes never wait on unlisted rows.
+            self._record_diagnostic("unlisted:" + plan["plan_id"], exc)
+            return
+        journal.response(done, b"{}")
+
+    @_governed
+    def _unlisted_requests(
+        self,
+        plan: dict[str, Any],
+        part: dict[str, Any],
+        release: dict[str, Any],
+        feed: dict[str, Any],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        context = self._acquisition_context(plan, part, release, feed)
+        requests = []
+        for symbol, result in self.adapter.unlisted_requests(context):
+            request, stored = result.request, result.raw_object
+            if request is None or stored is None:
+                raise ReadinessBlockedError("provider acquisition produced no request")
+            identity = checksum(
+                canonical_bytes(
+                    {
+                        "plan": plan["plan_id"],
+                        "unlisted": symbol,
+                        "rows": request["payload"]["data"],
+                    }
+                )
+            )
+            request["request_key"] = f"full:{identity}"
+            request["idempotency_key"] = f"full:{identity}"
+            attach_raw_object(request, stored)
+            requests.append((symbol, request))
+        return requests
 
     def _log_delivery_timing(self, *, final: bool = False) -> None:
         """Log ``{route template or step: [count, total_ms]}`` once a minute and at the end.

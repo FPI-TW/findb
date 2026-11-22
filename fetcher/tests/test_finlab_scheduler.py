@@ -70,6 +70,8 @@ class Gateway:
             )
         ]
 
+    fetch_market_dataset = fetch_dataset
+
 
 class RawStore:
     def __init__(self, events: list[str], failure: Exception | None = None) -> None:

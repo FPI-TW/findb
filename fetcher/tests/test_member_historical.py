@@ -279,6 +279,8 @@ def test_finlab_downloads_five_tables_once_and_isolates_members(
             fetched.append(name)
             return _finlab_table(served, prices[names[name]])
 
+        fetch_market_dataset = fetch_dataset
+
     monkeypatch.setattr(FinLabSdkGateway, "from_env", classmethod(lambda cls, **kw: Gateway()))
     members = [
         {**_member(symbol, "TWD"), "exchange": "XTAI", "asset_class": asset_class}
@@ -324,6 +326,8 @@ def test_finlab_unpublished_date_retries_the_date_within_one_shared_budget(monke
         def fetch_dataset(self, name, *, target_date, symbols):
             attempts.append(name)
             raise FinLabTargetNotReadyError("not yet")
+
+        fetch_market_dataset = fetch_dataset
 
     monkeypatch.setattr(FinLabSdkGateway, "from_env", classmethod(lambda cls, **kw: Gateway()))
     members = [{**_member(s, "TWD"), "exchange": "XTAI"} for s in ("1101", "2330")]
@@ -406,6 +410,9 @@ class _RowAdapter:
             },
             stored,
         )
+
+    def unlisted_requests(self, context: Any) -> list:
+        return []
 
     def member_outcome(self, exc: BaseException) -> None:
         return None
@@ -557,3 +564,67 @@ def test_later_release_members_are_requested_but_never_expected(monkeypatch, tmp
     assert result.status == "completed"
     assert result.result_evidence["members"] == [{"member_key": "O", "outcome": "data"}]
     assert [body["payload"]["data"][0]["symbol"] for body in delivery.prepared] == ["O", "LATE"]
+
+
+@pytest.mark.parametrize(
+    ("dataset", "asset_class", "unlisted"),
+    [("tw_equity_eod", "equity", "7799"), ("tw_etf_eod", "etf", "00999")],
+)
+def test_finlab_date_delivers_served_unlisted_rows_of_its_own_class(
+    monkeypatch, tmp_path, dataset, asset_class, unlisted
+):
+    from findb_fetcher.providers.finlab import (
+        FINLAB_SDK_VERSION,
+        FinLabDatasetTable,
+        FinLabSdkGateway,
+    )
+
+    real = importlib.metadata.version
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda name: FINLAB_SDK_VERSION if name == "finlab" else real(name),
+    )
+    member = "2330" if asset_class == "equity" else "0050"
+    served = (member, "7799", "00999", "2881A")
+
+    class Gateway:
+        def fetch_dataset(self, name, *, target_date, symbols):
+            raise AssertionError("a delivering feed reads the whole market")
+
+        def fetch_market_dataset(self, name, *, target_date, symbols):
+            assert tuple(symbols) == (member,)
+            value = "1000" if name == "price:成交股數" else "10"
+            return FinLabDatasetTable(
+                dates=(target_date.isoformat(),),
+                symbols=served,
+                values=(tuple(value for _ in served),),
+                unlisted=served[1:],
+            )
+
+        def fetch_security_types(self):
+            # 2881A (a preferred share) is in neither set and is never delivered.
+            return {"equity": ("2330", "7799"), "etf": ("0050", "00999")}
+
+    monkeypatch.setattr(FinLabSdkGateway, "from_env", classmethod(lambda cls, **kw: Gateway()))
+    item = _item(
+        "finlab",
+        dataset,
+        [{**_member(member, "TWD"), "exchange": "XTAI", "asset_class": asset_class}],
+    )
+    delivery = _Delivery()
+    runner, _, _ = _runner(monkeypatch, tmp_path, "finlab", item, delivery)
+    try:
+        result = runner.run(item)
+        # A replay of the date delivers nothing again.
+        runner.run(item)
+    finally:
+        runner.close()
+    assert result.status == "completed"
+    assert result.result_evidence["members"] == [{"member_key": member, "outcome": "data"}]
+    assert [body["payload"]["data"][0]["symbol"] for body in delivery.prepared] == [
+        member,
+        unlisted,
+    ]
+    assert delivery.job_keys[-1] == "historical-unlisted:" + unlisted
+    assert delivery.prepared[-1]["payload"]["batch"]["delivery_mode"] == "backfill"

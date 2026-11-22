@@ -194,6 +194,8 @@ class MemberHistoricalRunner:
                         outcomes[oldest] = self._confirm(owner, oldest, accepted.pop(oldest))
                     self._timing["members"] += 1
                     self._log_timing()
+                # Served symbols outside every frozen list, once the cohort is done.
+                accepted.update(self._unlisted(owner, item, feed, cohort))
             finally:
                 # Native tables never outlive the owned date.
                 self.adapter.reset()
@@ -211,6 +213,64 @@ class MemberHistoricalRunner:
             "members": [outcomes[member["member_key"]] for member in members],
         }
         return HistoricalRunResult(None, evidence, completion_status(evidence))
+
+    def _unlisted(
+        self, owner, item: HistoricalWorkItem, feed: dict, cohort: list[dict]
+    ) -> dict[str, _Accepted]:
+        """Deliver the date's served rows outside its lists; never member evidence."""
+        done = _JOURNAL + "unlisted:done"
+        if owner.journal.response(done) is not None:
+            return {}
+        try:
+            owner.journal.reserve_attempt(_JOURNAL + "unlisted", MEMBER_ATTEMPTS)
+        except ValueError:
+            # Transient failures are exhausted; the members never wait on unlisted rows.
+            owner.journal.response(done, b"{}")
+            return {}
+        dispatch_before = owner.dispatch_observations
+        try:
+            with rpc_timing.timed("step unlisted_acquire"):
+                results = self.adapter.unlisted_requests(self._context(item, feed, cohort, []))
+        except (ProviderWorkAcquisitionStopped, ProviderWorkSourceUnavailableError):
+            if owner.dispatch_observations == dispatch_before:
+                owner.journal.release_wait_attempt(_JOURNAL + "unlisted")
+            raise
+        except QuotaBlockedError as exc:
+            if exc.quota_wait and not exc.dispatched:
+                if owner.dispatch_observations == dispatch_before:
+                    owner.journal.release_wait_attempt(_JOURNAL + "unlisted")
+            raise HistoricalWorkDeferredError("historical provider quota wait") from None
+        except Exception:
+            raise HistoricalWorkDeferredError("historical provider retry") from None
+        accepted: dict[str, _Accepted] = {}
+        day = item.trade_date.isoformat()
+        for symbol, result in results:
+            key = "unlisted:" + symbol
+            if owner.journal.response(_JOURNAL + "outcome:" + key) is not None:
+                continue
+            request, stored = result.request, result.raw_object
+            assert request is not None and stored is not None
+            request["payload"]["batch"].update(
+                data_date=day,
+                delivery_mode="backfill",
+                coverage_start_date=day,
+                coverage_end_date=day,
+            )
+            identity = checksum(
+                canonical_bytes(
+                    {
+                        "item": str(item.item_id),
+                        "unlisted": symbol,
+                        "rows": request["payload"]["data"],
+                    }
+                )
+            )
+            request["request_key"] = f"historical:{identity}"
+            request["idempotency_key"] = f"historical:{identity}"
+            attach_raw_object(request, stored)
+            accepted[key] = self._deliver(owner, key, "historical-unlisted:" + symbol, request)
+        owner.journal.response(_JOURNAL + "unlisted:done", b"{}")
+        return accepted
 
     def _log_timing(self, *, final: bool = False) -> None:
         """Log ``{route template or step: [count, total_ms]}`` once a minute and at the end.

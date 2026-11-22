@@ -233,6 +233,8 @@ class _Gateway:
             (target_date.isoformat(),), tuple(symbols), (tuple(values[field] for _ in symbols),)
         )
 
+    fetch_market_dataset = fetch_dataset
+
 
 def _context(delivered, tmp_path: Path) -> Any:
     from findb_fetcher.provider_adapters.base import AcquisitionContext

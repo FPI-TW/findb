@@ -10,7 +10,7 @@
     "dashboard"
   ],
   "scripts": {
-    "setup": "pnpm install --frozen-lockfile && uv --directory backend sync --frozen && uv --directory fetcher sync --frozen && pnpm setup:browsers && pnpm setup:hooks",
+    "setup": "pnpm install --frozen-lockfile && uv --directory backend sync --frozen && uv --directory fetcher sync --frozen --extra finlab && pnpm setup:browsers && pnpm setup:hooks",
     "setup:browsers": "pnpm --filter dashboard exec playwright install chromium",
     "setup:hooks": "uv --directory backend run pre-commit install --hook-type pre-commit --hook-type pre-push",
     "dev": "pnpm dev:dashboard",

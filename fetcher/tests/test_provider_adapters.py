@@ -269,6 +269,8 @@ def test_finlab_acquire_reports_no_trade_as_result_without_source(monkeypatch):
             ]
             return FinLabDatasetTable((DAY.isoformat(),), ("1101",), ((values[field],),))
 
+        fetch_market_dataset = fetch_dataset
+
     feed = _feed("finlab", "tw_etf_eod")
     member = {
         "member_key": "1101",
