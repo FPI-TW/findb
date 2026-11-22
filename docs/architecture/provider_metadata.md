@@ -61,6 +61,11 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   `dated` feed 不在 Owner 手動刷新清單、Fetcher 不為它排 maintenance，期貨換倉在有界的前進範圍內可超過
   一般 2% 變動門檻自動發布，缺當天名單的告警附 `DATED_UNIVERSE_PENDING` 細節。Backend 與 Fetcher 都只讀這個
   欄位；Fetcher 經 `execution_descriptors.v1.json` 取得，adapter 只提供 `dated_universe()` 實作。
+- `unlisted_symbols` 宣告 Fetcher 是否也送出 provider 有提供、但不在凍結清單上的標的：`deliver` 或 `none`。
+  清單只用來確認缺漏，不阻擋有資料的標的（#629）；只有回應涵蓋全市場的 provider 才看得到清單外的標的，
+  所以只有 `refreshed` 的 `market_eod` feed 可以設 `deliver`（目前是 FinLab 台股與 ETF 日 K）。`dated`
+  名單本身就是當天報表，逐筆請求的 provider 不會收到清單外的列，盤中 partition 也沒有列層級的代碼，
+  這些都是 `none`，Source 對清單外的列照樣回 409。
 - 同一 dataset 的 feeds 必須共用 `calendar_market`（loader 檢查）。Backend 以 dataset 查日曆市場時一律讀
   catalog，沒有 catalog feed 的退役 Shioaji 分 K dataset 沿用自身 market。
 

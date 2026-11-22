@@ -929,6 +929,14 @@ Host preflight 依已驗證 immutable installed source 的 historical-taifex-v1 
 Native 驗收應先以 staging 短區間及 production 一年邊界樣本驗證 raw、run／outbox、DQ、
 canonical／Serve，再於維護窗口啟用正式回補；本機自動測試不代表雲端 native 驗收已完成。
 
+## 清單外標的計數
+
+Migration `f3a5c7e9b1d2` 為 `daily_delivery_plan_summary` 新增 `unlisted_data_count`（預設 0），為
+`historical_backfill_item` 新增 nullable JSONB `unlisted_symbols`，記錄 provider 有提供、但不在凍結清單上而
+寫入的標的（#629）。兩欄都是新增，舊版 Backend 忽略它們；已有任何清單外寫入後 downgrade 會拒絕，rollback
+採 forward fix。Fetcher 的 `execution_descriptors.v1.json` 同時多了 `unlisted_symbols`，Fetcher 只驗證自己
+image 內的檔案，Backend 與 Fetcher 可分開部署。FinLab Fetcher 要到它實際送出清單外的列以後才會有這類寫入。
+
 ## Provider work 切換
 
 目前 Fetcher 包含 Shioaji checkpoint schema v10：已知 v9 以單一 SQLite transaction

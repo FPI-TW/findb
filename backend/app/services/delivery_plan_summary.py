@@ -114,11 +114,14 @@ async def refresh_plan_summary(db: AsyncSession, plan_id: UUID) -> None:
             .exists(),
         )
     )
+    from app.services.unlisted_symbols import plan_unlisted
+
     now = utc_now()
     values = {
         "plan_id": plan_id,
         "expected_count": len(states),
         **totals,
+        "unlisted_data_count": len(await plan_unlisted(db, plan)),
         "latest_run_id": latest.run_id if latest else None,
         "latest_run_created_at": latest.created_at if latest else None,
         "last_fetched_at": fetched,
@@ -225,6 +228,15 @@ async def refresh_part_summary(
     await db.execute(
         update(DailyDeliveryPart).where(DailyDeliveryPart.part_id == part_id).values(**counts)
     )
+    from app.services.provider_metadata import delivers_unlisted
+    from app.services.unlisted_symbols import plan_unlisted
+
+    # Unlisted writes are not members of any part; recount them for the whole plan.
+    unlisted = (
+        {"unlisted_data_count": len(await plan_unlisted(db, plan))}
+        if delivers_unlisted(plan.provider, plan.dataset_key)
+        else {}
+    )
     now = utc_now()
     await db.execute(
         update(DailyDeliveryPlanSummary)
@@ -235,6 +247,7 @@ async def refresh_part_summary(
                 for key, value in delta.items()
                 if value
             },
+            **unlisted,
             updated_at=now,
             parts_synced_at=now,
         )
@@ -307,6 +320,7 @@ async def stored_summary_response(
         mapping_gap=mapping_gap,
         now=now,
         gaps=[],
+        unlisted_data=stored.unlisted_data_count,
     )
 
 

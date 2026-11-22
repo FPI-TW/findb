@@ -81,6 +81,7 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
                     "historical_cohort",
                     "historical_requests_per_date",
                     "universe_mode",
+                    "unlisted_symbols",
                 )
             }
             for feed in data["feeds"]

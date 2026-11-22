@@ -566,6 +566,12 @@ export function HistoricalBackfillsPanel({
                             {item.failure_message
                               ? ` · ${item.failure_message}`
                               : ""}
+                            {item.unlisted_symbols?.length ? (
+                              <span className="block break-all">
+                                清單外有資料 {item.unlisted_symbols.length} 檔：
+                                {item.unlisted_symbols.join("、")}
+                              </span>
+                            ) : null}
                           </li>
                         ))}
                       </ul>

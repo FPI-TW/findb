@@ -42,7 +42,8 @@
         "target_date_lag_days": 0,
         "timezone": "Asia/Hong_Kong"
       },
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "equity",
@@ -85,7 +86,8 @@
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "equity",
@@ -169,7 +171,8 @@
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "deliver"
     },
     {
       "asset_class": "equity",
@@ -212,7 +215,8 @@
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "etf",
@@ -255,7 +259,8 @@
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "etf",
@@ -298,7 +303,8 @@
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "deliver"
     },
     {
       "asset_class": "etf",
@@ -341,7 +347,8 @@
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "future",
@@ -384,7 +391,8 @@
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
-      "universe_mode": "dated"
+      "universe_mode": "dated",
+      "unlisted_symbols": "none"
     },
     {
       "asset_class": "equity",
@@ -468,7 +476,8 @@
         "target_date_lag_days": 0,
         "timezone": "America/New_York"
       },
-      "universe_mode": "refreshed"
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     }
   ],
   "providers": [
@@ -594,5 +603,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "7971b2ae6b6ab775d68a3847f86ee924ab2fb6668772e2263f30a0ed22d019ef"
+  "source_sha256": "f7721bf70ca23fdb42d3a24feff5fbabccb925ae92f8c341aa68e2c6e6a09d50"
 }

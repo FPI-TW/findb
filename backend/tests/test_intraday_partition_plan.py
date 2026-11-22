@@ -235,6 +235,8 @@ def test_the_catalog_and_the_published_schedule_accept_intraday_frequencies() ->
                 "dataset_key": DATASET,
                 "frequency": frequency,
                 "contract": intraday_contract,
+                # Partitions carry no row symbols, so no intraday feed delivers unlisted ones.
+                "unlisted_symbols": "none",
             },
             strict=False,
         )

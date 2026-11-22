@@ -166,6 +166,10 @@ HistoricalRequests = PositiveInt | Literal["per_member"]
 # maintenance and a plan freezes the latest published release; a ``dated`` list
 # is built from the date's own provider observation and a plan needs that date's.
 UniverseMode = Literal["refreshed", "dated"]
+# Whether the Fetcher also delivers rows the provider served for symbols outside
+# the frozen list. Only a provider response covering the whole market can serve
+# them; ``none`` keeps every delivered row inside the frozen members.
+UnlistedSymbols = Literal["deliver", "none"]
 
 
 class FeedDefinition(CatalogModel):
@@ -188,6 +192,7 @@ class FeedDefinition(CatalogModel):
     historical_cohort: HistoricalCohort | None
     historical_requests_per_date: HistoricalRequests | None
     universe_mode: UniverseMode
+    unlisted_symbols: UnlistedSymbols
 
     @model_validator(mode="after")
     def coherent_capabilities(self) -> Self:
@@ -224,6 +229,11 @@ class FeedDefinition(CatalogModel):
         if self.historical_execution is not None and self.historical_cohort != "dated_release":
             # A Backend-owned cohort would make the planner ignore a packaged universe.
             raise ValueError("only dated_release feeds may package a historical universe")
+        if self.unlisted_symbols == "deliver" and (
+            self.contract.schema_id != "market_eod" or self.universe_mode != "refreshed"
+        ):
+            # A dated universe is the date's own report, so nothing it served is unlisted.
+            raise ValueError("only refreshed market_eod feeds deliver unlisted symbols")
         if self.lifecycle == "retired" and (caps.source or self.bounded_monitor.enabled):
             raise ValueError("retired feed cannot accept Source writes or monitor new deliveries")
         return self

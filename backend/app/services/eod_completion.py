@@ -79,8 +79,15 @@ async def validate_eod_completion(
             )
         )
     )
-    if not written <= set(expected):
-        raise ValueError("EOD write evidence exceeds the frozen scope")
+    unlisted = written - set(expected)
+    if unlisted:
+        from app.services.provider_metadata import delivers_unlisted
+
+        # Admission already bound each served symbol as unlisted; a list published
+        # since then must not strand writes that were valid when accepted.
+        if not delivers_unlisted(work.provider, work.dataset_key):
+            raise ValueError("EOD write evidence exceeds the frozen scope")
+    written -= unlisted
     issues = list(
         await db.scalars(
             select(DQIssue).where(
@@ -154,4 +161,6 @@ async def validate_eod_completion(
         "data": sorted(written),
         "no_data": sorted(no_data - written),
         "gaps": sorted(gaps),
+        # Served symbols written outside the frozen list; never part of expected.
+        "unlisted": sorted(unlisted),
     }

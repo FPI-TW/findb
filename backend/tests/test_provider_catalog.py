@@ -571,3 +571,23 @@ def test_historical_requests_per_date_rules(declaration):
     taifex["historical_requests_per_date"] = "per_member"
     with pytest.raises(ValidationError, match="dated_release member list"):
         ProviderCatalog.model_validate(declaration)
+
+
+def test_only_refreshed_market_eod_feeds_deliver_unlisted_symbols(declaration):
+    from app.services.provider_metadata import delivers_unlisted, provider_catalog
+
+    assert {
+        (feed.provider, feed.dataset_key)
+        for feed in provider_catalog().feeds
+        if feed.unlisted_symbols == "deliver"
+    } == {("finlab", "tw_equity_eod"), ("finlab", "tw_etf_eod")}
+    assert delivers_unlisted("finlab", "tw_etf_eod")
+    assert not delivers_unlisted("twelve_data", "us_equity_eod")
+    assert not delivers_unlisted("finlab", "unknown_dataset")
+    # A dated universe is the date's own report; a partition feed has no row symbols.
+    for dataset_key in ("tw_futures_eod", "tw_equity_bar_1m"):
+        changed = deepcopy(declaration)
+        feed = next(f for f in changed["feeds"] if f["dataset_key"] == dataset_key)
+        feed["unlisted_symbols"] = "deliver"
+        with pytest.raises(ValidationError, match="only refreshed market_eod"):
+            ProviderCatalog.model_validate(changed)

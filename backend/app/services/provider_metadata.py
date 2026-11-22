@@ -69,6 +69,12 @@ def universe_mode(provider: str, dataset_key: str) -> str | None:
     return feed.universe_mode if feed is not None else None
 
 
+def delivers_unlisted(provider: str, dataset_key: str) -> bool:
+    """Whether the feed's Fetcher delivers served rows of symbols outside the list."""
+    feed = catalog_feed(provider, dataset_key)
+    return feed is not None and feed.unlisted_symbols == "deliver"
+
+
 def dataset_calendar_market(dataset_key: str, market: str) -> str:
     """The dataset's catalog calendar market (shared by its feeds, the loader checks).
 

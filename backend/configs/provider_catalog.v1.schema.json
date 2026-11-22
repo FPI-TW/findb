@@ -314,6 +314,14 @@
           ],
           "title": "Universe Mode",
           "type": "string"
+        },
+        "unlisted_symbols": {
+          "enum": [
+            "deliver",
+            "none"
+          ],
+          "title": "Unlisted Symbols",
+          "type": "string"
         }
       },
       "required": [
@@ -334,7 +342,8 @@
         "historical_execution",
         "historical_cohort",
         "historical_requests_per_date",
-        "universe_mode"
+        "universe_mode",
+        "unlisted_symbols"
       ],
       "title": "FeedDefinition",
       "type": "object"

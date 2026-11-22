@@ -160,6 +160,31 @@ describe("full market plans", () => {
     ).toBeInTheDocument()
     expect(mocks.loadDeliveryPlanSummary).not.toHaveBeenCalled()
   })
+  it("lists served symbols outside the frozen list apart from expected", async () => {
+    const summary = {
+      ...plan.summary,
+      data: 4,
+      missing: 0,
+      blocked: 0,
+      unlisted_data: 2,
+    }
+    mocks.loadDeliveryPlans.mockResolvedValue({
+      data: [{ ...plan, status: "complete", summary }],
+      pagination,
+    })
+    mocks.loadDeliveryPlanSummary.mockResolvedValue({
+      ...summary,
+      unlisted: ["7799", "7800"],
+    })
+    renderPanel()
+    expect(
+      await screen.findByRole("columnheader", { name: "清單外有資料" })
+    ).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole("button", { name: "展開詳細資料" }))
+    expect(await screen.findByText("7799、7800")).toBeInTheDocument()
+    expect(screen.getByText(/清單外有資料：已列出 2／共 2/)).toBeInTheDocument()
+    expect(screen.getByText("此計畫沒有待處理缺口。")).toBeInTheDocument()
+  })
   it("retains expanded rows and prior results after refetch failure, then recovers", async () => {
     const { client } = renderPanel()
     fireEvent.click(await screen.findByRole("button", { name: "展開詳細資料" }))

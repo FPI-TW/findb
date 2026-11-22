@@ -77,11 +77,15 @@ const columns: ColumnDef<DeliveryPlan, unknown>[] = [
       ["no_data", "正常無資料"],
       ["missing", "缺漏"],
       ["blocked", "受阻"],
+      ["unlisted_data", "清單外有資料"],
     ] as const
   ).map(([key, header]): ColumnDef<DeliveryPlan, unknown> => ({
     id: key,
     header,
-    meta: { width: key === "no_data" ? 110 : 80, align: "right" },
+    meta: {
+      width: key === "no_data" || key === "unlisted_data" ? 110 : 80,
+      align: "right",
+    },
     cell: ({ row }) => (
       <span className="font-mono tabular-nums">
         {row.original.summary[key]}
@@ -94,6 +98,8 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
   const loadSummary = useServerFn(loadDeliveryPlanSummary)
   const scope = useProtectedQueryScope()
   const total = plan.summary.missing + plan.summary.blocked
+  const unlistedTotal = plan.summary.unlisted_data ?? 0
+  const hasDetails = total > 0 || unlistedTotal > 0
   // The list carries counts only; the members behind them load once the row is open.
   const queryKey = [
     "operations",
@@ -101,14 +107,15 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
     scope,
     plan.plan_id,
   ] as const
-  useRegisterOperationsQuery(queryKey, total > 0)
+  useRegisterOperationsQuery(queryKey, hasDetails)
   const details = useQuery({
     ...manualQueryOptions,
     queryKey,
     queryFn: () => loadSummary({ data: { planId: plan.plan_id } }),
-    enabled: total > 0,
+    enabled: hasDetails,
   })
   const gaps = details.data?.gaps
+  const unlisted = details.data?.unlisted
   return (
     <div className="space-y-3">
       <p className="break-all text-xs">
@@ -116,26 +123,27 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
       </p>
       <p className="text-xs text-muted">
         預期 = 有資料 + 正常無資料 + 缺漏 +
-        受阻。正常無資料須有持久化證據，不代表失敗。
+        受阻。正常無資料須有持久化證據，不代表失敗。清單外有資料是供應商有提供、
+        但不在凍結清單上的標的，已寫入資料，不計入預期。
       </p>
       {total === 0 ? (
         <p className="text-sm text-muted">此計畫沒有待處理缺口。</p>
       ) : (
-        <>
-          <p className="text-sm font-medium">
-            待處理缺口：
-            {gaps ? `已列出 ${gaps.length}／` : ""}總缺口 {total}
-            （明細上限 1,000 筆）
-          </p>
-          <QueryStatus
-            hasData={details.data !== undefined}
-            pending={details.isFetching}
-            error={details.error}
-            updatedAt={details.dataUpdatedAt}
-            onRetry={() => void details.refetch({ cancelRefetch: false })}
-            label="缺口明細"
-          />
-        </>
+        <p className="text-sm font-medium">
+          待處理缺口：
+          {gaps ? `已列出 ${gaps.length}／` : ""}總缺口 {total}
+          （明細上限 1,000 筆）
+        </p>
+      )}
+      {hasDetails && (
+        <QueryStatus
+          hasData={details.data !== undefined}
+          pending={details.isFetching}
+          error={details.error}
+          updatedAt={details.dataUpdatedAt}
+          onRetry={() => void details.refetch({ cancelRefetch: false })}
+          label={total > 0 ? "缺口明細" : "清單外明細"}
+        />
       )}
       {gaps?.length ? (
         <ul className="max-h-64 space-y-1 overflow-auto text-xs">
@@ -160,6 +168,20 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
           ))}
         </ul>
       ) : null}
+      {unlistedTotal > 0 && (
+        <div className="space-y-1">
+          <p className="text-sm font-medium">
+            清單外有資料：
+            {unlisted ? `已列出 ${unlisted.length}／` : ""}共 {unlistedTotal}{" "}
+            檔（明細上限 1,000 筆）
+          </p>
+          {unlisted?.length ? (
+            <p className="max-h-32 overflow-auto break-all font-mono text-xs">
+              {unlisted.join("、")}
+            </p>
+          ) : null}
+        </div>
+      )}
     </div>
   )
 }

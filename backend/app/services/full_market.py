@@ -67,7 +67,11 @@ from app.services.effective_calendar import (
 )
 from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.no_record_corroboration import NO_RECORD, corroborate_no_record
-from app.services.provider_metadata import dataset_calendar_market, universe_mode
+from app.services.provider_metadata import (
+    dataset_calendar_market,
+    delivers_unlisted,
+    universe_mode,
+)
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import utc_now, uuid7
 
@@ -1071,6 +1075,7 @@ def summarize_states(
     plan: DailyDeliveryPlan,
     states: list[MemberState],
     *,
+    unlisted: list[str] | None = None,
     now: datetime | None = None,
     gap_limit: int | None = 1000,
 ) -> DeliverySummaryResponse:
@@ -1096,6 +1101,8 @@ def summarize_states(
         mapping_gap=unmapped,
         now=now,
         gaps=gaps,
+        unlisted_data=len(unlisted or []),
+        unlisted=(unlisted or [])[:gap_limit] if gap_limit is not None else unlisted or [],
     )
 
 
@@ -1110,6 +1117,8 @@ def summary_response(
     mapping_gap: int,
     now: datetime | None = None,
     gaps: list[dict],
+    unlisted_data: int = 0,
+    unlisted: list[str] | None = None,
 ) -> DeliverySummaryResponse:
     evaluated_at = now or utc_now()
     return DeliverySummaryResponse(
@@ -1125,6 +1134,8 @@ def summary_response(
         # it stays blocked (and alerting) without making the plan late.
         is_late=evaluated_at > plan.deadline_at and missing + blocked - mapping_gap > 0,
         gaps=gaps,
+        unlisted_data=unlisted_data,
+        unlisted=unlisted or [],
     )
 
 
@@ -1135,7 +1146,15 @@ async def reconcile_plan(
     now: datetime | None = None,
     gap_limit: int | None = 1000,
 ) -> DeliverySummaryResponse:
-    return summarize_states(plan, await classify_plan(db, plan), now=now, gap_limit=gap_limit)
+    from app.services.unlisted_symbols import plan_unlisted
+
+    return summarize_states(
+        plan,
+        await classify_plan(db, plan),
+        unlisted=await plan_unlisted(db, plan),
+        now=now,
+        gap_limit=gap_limit,
+    )
 
 
 async def _historical_repairs(
@@ -1510,8 +1529,24 @@ async def validate_ingest_part(
         }
     else:
         actual = {row.symbol for row in request.payload.data}
-    if not actual <= expected:
-        raise FullMarketError("Payload contains members outside the declared plan part", 409)
+    unlisted = actual - expected
+    if unlisted:
+        from app.services.unlisted_symbols import unlisted_allowed
+
+        # Served rows outside the list are written, never counted toward expected;
+        # another part's member stays bound to its own part.
+        planned = set(
+            await db.scalars(
+                select(DailyDeliveryMember.member_key).where(
+                    DailyDeliveryMember.plan_id == plan.plan_id,
+                    DailyDeliveryMember.member_key.in_(sorted(unlisted)),
+                )
+            )
+        )
+        if planned or not await unlisted_allowed(
+            db, provider=plan.provider, dataset_key=plan.dataset_key, symbols=unlisted
+        ):
+            raise FullMarketError("Payload contains members outside the declared plan part", 409)
     declaration = parse_dataset_contract_declaration(dataset.config)
     assert declaration is not None
     from app.services.shioaji_repair import effective_mappings
@@ -1523,8 +1558,21 @@ async def validate_ingest_part(
             if isinstance(row, FuturesEODRow)
             else row.symbol
         )
-        frozen = universe[key]
-        if frozen.mapping_status != "mapped" and key not in mappings:
+        frozen = universe.get(key)
+        if frozen is None:
+            # Unlisted rows carry the dataset's own currency; no list states another.
+            if (
+                isinstance(row, MarketEODRow)
+                and (row.currency or declaration.defaults.currency) != declaration.defaults.currency
+            ):
+                raise FullMarketError("Unlisted payload currency differs from the dataset", 409)
+            continue
+        # A whole-market provider's served row proves the gap member has data.
+        if (
+            frozen.mapping_status != "mapped"
+            and key not in mappings
+            and not delivers_unlisted(plan.provider, plan.dataset_key)
+        ):
             raise FullMarketError("Mapping-gap members cannot be submitted as data", 409)
         if isinstance(row, (MarketEODRow, MarketMinuteRow, IntradayPartitionRow)):
             effective_currency = (

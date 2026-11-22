@@ -150,6 +150,13 @@ inode 復原；不得藉重新啟動 daemon、等待 TTL 或刪除相容 scope �
 舊 Pilot 留下的 runs 已脫離 plan（`delivery_part_id` 為 NULL），不計入任何 plan。
 Minute 必須有完整 sequenced snapshot；DQ error、空批次、quota failure 不得算成功或 no_data。
 No_data 必須有 durable provider evidence。
+清單只用來確認缺漏，不阻擋有資料的標的（#629）。Catalog `unlisted_symbols: deliver` 的 feed（FinLab
+台股與 ETF 日 K）可以送出不在凍結清單上的標的，也可以送出清單上 mapping gap 成員的資料；兩者都照常寫入
+canonical 並留下寫入證據。清單外的標的不計入 `expected`，summary 另回傳 `unlisted_data`（數量），單一
+plan 的 summary 讀取另列出 `unlisted`（代碼，上限與缺口明細相同）。Backend 仍擋下三種清單外的列：
+同 plan 其他 part 的成員、幣別不是 dataset 預設幣別，以及同 provider 另一個資產類別（例如 ETF）最新
+published 名單上的代碼，避免以錯的資產類別建立 instrument。回補也一樣：清單外寫入不影響成員的完成
+判定，完成時記在該日期的 `unlisted_symbols`。其他 feed 對清單外的列維持 409。
 Summary 另回傳 `mapping_gap`：blocked 中屬於 mapping gap 的成員數。`is_late` 只看抓取進度，
 也就是超過 deadline 時，扣除 mapping gap 後仍有 missing 或 blocked；mapping gap 照樣計入 blocked
 與缺漏告警，不會因此被隱藏。

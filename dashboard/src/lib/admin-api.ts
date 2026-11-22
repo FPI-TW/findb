@@ -41,6 +41,9 @@ export const deliveryPlanSummarySchema = z.object({
       reason: z.string().nullable().optional(),
     })
   ),
+  // Served symbols outside the frozen list that the plan wrote; never in `expected`.
+  unlisted_data: z.number().int().nonnegative().default(0),
+  unlisted: z.array(z.string()).default([]),
 })
 export type DeliveryPlanSummary = z.infer<typeof deliveryPlanSummarySchema>
 
@@ -508,6 +511,7 @@ export const historicalBackfillSchema = z.object({
       run_id: z.uuid().nullable(),
       failure_code: z.string().nullable(),
       failure_message: z.string().nullable(),
+      unlisted_symbols: z.array(z.string()).nullable().default(null),
     })
   ),
 })

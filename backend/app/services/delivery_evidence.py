@@ -58,6 +58,10 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
         )
     else:
         return
+    from app.services.provider_metadata import delivers_unlisted
+
+    # Admission already bound every row to this part or to no plan member at all;
+    # a feed that delivers unlisted symbols records those writes too.
     expected = (
         set(
             await db.scalars(
@@ -66,7 +70,7 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
                 )
             )
         )
-        if run.delivery_part_id
+        if run.delivery_part_id and not delivers_unlisted(run.source or "", run.dataset_key)
         else written
     )
     values = [
