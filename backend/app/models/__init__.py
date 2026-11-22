@@ -74,6 +74,7 @@ from app.models.registry import (
     TWMinuteUniverseRelease,
     UniverseMember,
     UniverseRelease,
+    UniverseSupplement,
 )
 from app.models.shioaji_repair import ShioajiMemberRepair, ShioajiRepairAck
 
@@ -112,6 +113,7 @@ __all__ = [
     "RollRule",
     "DatasetRegistry",
     "UniverseRelease",
+    "UniverseSupplement",
     "UniverseMember",
     "DailyDeliveryPlan",
     "DailyDeliveryPlanSummary",

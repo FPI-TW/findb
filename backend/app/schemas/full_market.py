@@ -129,6 +129,8 @@ class UniverseSubmitRequest(FullMarketModel):
     source_timezone: str = Field(min_length=1, max_length=64)
     evidence: list[EvidenceReference] = Field(min_length=1, max_length=20)
     members: list[UniverseMemberInput] = Field(min_length=1, max_length=30000)
+    # Provider catalogue symbols outside the list: requested, never expected.
+    supplementary: list[UniverseMemberInput] = Field(default_factory=list, max_length=10000)
 
     @field_validator("observed_at")
     @classmethod
@@ -205,6 +207,8 @@ class DeliveryPlanResponse(FullMarketModel):
     status: Literal["complete", "incomplete"]
     parts: list[DeliveryPartResponse]
     summary: DeliverySummaryResponse
+    # Catalogue symbols outside the list, frozen with the plan; requested, never expected.
+    supplementary: list[dict] = Field(default_factory=list)
 
 
 class CalendarSkipResponse(FullMarketModel):

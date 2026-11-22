@@ -207,6 +207,12 @@ def _plan_deadline(plan: dict[str, Any]) -> float:
     return deadline.timestamp()
 
 
+def _plan_supplement(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The plan's frozen catalogue symbols that are not themselves plan members."""
+    members = {key for part in plan.get("parts", ()) for key in part["member_keys"]}
+    return [row for row in plan.get("supplementary") or () if row["symbol"] not in members]
+
+
 def _governed(method):
     @wraps(method)
     def run(self, *args, **kwargs):
@@ -246,7 +252,7 @@ def _governed(method):
             )
             plan = kwargs.get("plan") or (
                 args[1]
-                if method.__name__ == "_acquire" and len(args) > 1
+                if method.__name__ in {"_acquire", "_supplement_request"} and len(args) > 1
                 else args[0]
                 if method.__name__ == "_unlisted_requests" and args
                 else None
@@ -713,6 +719,7 @@ class FullMarketRuntime:
                 source_timezone=zones[dataset].key,
                 snapshots=evidence,
                 members=members,
+                supplementary=universe.supplementary,
             )
             result.append(self.source.submit(body))
         return result
@@ -1136,6 +1143,7 @@ class FullMarketRuntime:
                             if self.adapter.batch:
                                 self._deliver_batch_plan(owner, plan, release, feed)
                             else:
+                                supplement = _plan_supplement(plan)
                                 owner.freeze(
                                     {
                                         "mode": "canonical",
@@ -1145,6 +1153,20 @@ class FullMarketRuntime:
                                             for part in plan["parts"]
                                             for key in part["member_keys"]
                                         ],
+                                        # Catalogue symbols outside the list; never expected.
+                                        **(
+                                            {
+                                                "supplementary": [
+                                                    {
+                                                        "key": row["symbol"],
+                                                        "source_symbol": row["provider_symbol"],
+                                                    }
+                                                    for row in supplement
+                                                ]
+                                            }
+                                            if supplement
+                                            else {}
+                                        ),
                                     }
                                 )
                                 self._deliver_plan(
@@ -1732,6 +1754,7 @@ class FullMarketRuntime:
             )
             if not drain_only and drain_keys is None:
                 self._deliver_unlisted(plan, release, feed)
+                self._deliver_supplement(plan, release, feed)
             return delivered
         finally:
             if self.daily_policy:
@@ -1802,6 +1825,105 @@ class FullMarketRuntime:
             self._record_diagnostic("unlisted:" + plan["plan_id"], exc)
             return
         journal.response(done, b"{}")
+
+    def _deliver_supplement(
+        self, plan: dict[str, Any], release: dict[str, Any], feed: dict[str, Any]
+    ) -> None:
+        """Request the plan's catalogue symbols outside the list once its members are done.
+
+        The list measures gaps: a served row is written as unlisted data, and a
+        symbol the provider has nothing for is no gap. Each symbol is requested once
+        per work; members never wait on it and its failures never fail the round.
+        """
+        from findb_fetcher.provider_work import require_owner
+
+        supplement = _plan_supplement(plan)
+        if not supplement or not plan.get("parts"):
+            return
+        with self.state.connection() as db:
+            if db.execute(
+                "SELECT 1 FROM full_work WHERE plan_id=? AND status NOT IN ('complete','manual') LIMIT 1",
+                (plan["plan_id"],),
+            ).fetchone():
+                return
+        owner = require_owner(self.provider)
+        journal = getattr(owner, "journal", None)
+        done = "full:supplement:done"
+        if journal is None or journal.response(done) is not None:
+            return
+        part = plan["parts"][0]
+        for row in supplement:
+            key = "full:supplement:" + row["symbol"]
+            if journal.response(key) is not None:
+                continue
+            member = {**row, "member_key": row["symbol"], "mapping_status": "mapped"}
+            try:
+                if not self._acquisition_allowed():
+                    return
+                request = self._supplement_request(member, plan, part, release, feed)
+                if request is None:
+                    journal.response(key, canonical_bytes({"outcome": "no_data"}))
+                    continue
+                owner.reserve(request)
+                receipt = self.delivery.deliver(self.delivery.prepare(request))
+            except MemberUnavailableError:
+                journal.response(key, canonical_bytes({"outcome": "unavailable"}))
+                continue
+            except (SourceAPIResponseError, FullMarketProtocolError) as exc:
+                status = getattr(exc, "status_code", None)
+                if (
+                    getattr(exc, "code", None) == "PROVIDER_WORK_FENCE"
+                    or status is None
+                    or status >= 500
+                    or status in {408, 429}
+                ):
+                    self._record_diagnostic("supplement:" + plan["plan_id"], exc)
+                    return
+                journal.response(key, canonical_bytes({"refused": status}))
+                continue
+            except Exception as exc:
+                from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError
+
+                if isinstance(exc, ProviderWorkRecoveryBlockedError):
+                    raise
+                if self.adapter.classify(exc, "member").kind is FailureKind.MEMBER:
+                    # The provider has no series for the symbol; nothing to deliver.
+                    journal.response(key, canonical_bytes({"outcome": "no_data"}))
+                    continue
+                # Rate limits and outages end the step; members already settled it.
+                self._record_diagnostic("supplement:" + plan["plan_id"], exc)
+                return
+            journal.response(key, canonical_bytes({"run_id": str(receipt.run_id)}))
+        journal.response(done, b"{}")
+
+    @_governed
+    def _supplement_request(
+        self,
+        member: dict[str, Any],
+        plan: dict[str, Any],
+        part: dict[str, Any],
+        release: dict[str, Any],
+        feed: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        context = self._acquisition_context(plan, part, release, feed)
+        with rpc_timing.timed("step supplement_acquire"):
+            result = self.adapter.acquire(member, context)
+        if result.no_trade is not None or result.request is None or result.raw_object is None:
+            return None
+        request = result.request
+        identity = checksum(
+            canonical_bytes(
+                {
+                    "plan": plan["plan_id"],
+                    "supplement": member["symbol"],
+                    "rows": request["payload"]["data"],
+                }
+            )
+        )
+        request["request_key"] = f"full:{identity}"
+        request["idempotency_key"] = f"full:{identity}"
+        attach_raw_object(request, result.raw_object)
+        return request
 
     @_governed
     def _unlisted_requests(

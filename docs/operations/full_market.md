@@ -167,6 +167,17 @@ production 實測合計約 0.6 MB 配額）。Daily 在同一輪已有五張表�
 同一個 work 只送一次，Source 拒絕某個代碼時記下拒絕並繼續其他代碼，不影響成員結果與 settle；回補在成員與
 補查成員之後送出。官方名單上但公司名單沒有的普通股（`classification_gap`），只要 FinLab 目錄有該代碼就是
 mapped，不再列為 mapping gap。
+
+逐筆請求的 Twelve Data 只會回答被問到的代碼，所以美股名單刷新時另外記一份**目錄補查**（`universe_supplement`）：
+`/stocks` 目錄中交易所掛牌（NYSE、Nasdaq、NYSE American、IEX、Arca、Cboe，不含 OTC）的股票型別（Common Stock、REIT、
+ADR、DR），扣掉官方名單已有的代碼，再依官方名單同樣的名稱規則與代碼樣式排除權證（`.WT`、Nasdaq 第五碼 W）、
+Unit（`.U`、U）、權利（`.R`、R）、特別股（`.PR`、`代碼-字母`、Nasdaq 第五碼 M／N／O／P）與測試代碼。補查與 release
+分開保存，目錄變動不會產生新 release，也不影響 release digest 與變動門檻。Plan 建立時凍結交易日當天或之前最新的
+一份（`daily_delivery_plan.supplement_id`），Source 的 plan 回應附在 `supplementary`；Fetcher 在 daily manifest 帶上
+同一份（Source 核對），全部成員都有結果後逐一請求，有資料就寫入並計入 `unlisted_data`，沒有資料、Source 拒絕或
+暫時錯誤都只記在該 work 的 journal，不算缺漏、不影響成員結果與 settle。2026-11-22 的 production 目錄依上述規則約
+628 個代碼，每日請求約增加 11%。回補每個日期也凍結該日 plan 的補查（沒有 plan 時為當天以前最新的一份），與之後
+release 的成員一起當補查成員。
 Summary 另回傳 `mapping_gap`：blocked 中屬於 mapping gap 的成員數。`is_late` 只看抓取進度，
 也就是超過 deadline 時，扣除 mapping gap 後仍有 missing 或 blocked；mapping gap 照樣計入 blocked
 與缺漏告警，不會因此被隱藏。
@@ -1201,7 +1212,8 @@ Twelve Data `us_equity_eod`、FinLab `tw_equity_eod` 與 `tw_etf_eod` 的 histor
 version 3）：這些 release 中已對上、上市日不晚於該日（沒有上市日也算）、但不在該日 cohort 的成員是**補查**成員，
 同一代碼以最新 release 的身分為準。補查成員也會抓取並做同樣的身分檢查，有資料就寫入並記在該日期的
 `unlisted_symbols`，沒有資料不算缺漏；`expected` 與成員證據仍只算該日的 cohort。只有 FinLab 清單有上市日，
-Twelve Data 與 FactSet 無法判斷後來的成員當天是否已存在，因此一律補查而不列入 expected。Claim 時以凍結的
+Twelve Data 與 FactSet 無法判斷後來的成員當天是否已存在，因此一律補查而不列入 expected。該日的目錄補查
+（`catalogue_supplement_id`）也一起凍結，同一代碼以 release 成員的身分為準。Claim 時以凍結的
 release ID 重算補查成員並核對 digest；manifest 的 `supplementary` 必須與它相同。Version 2 的舊 request 沒有補查成員。
 
 Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類型、幣別身分檢查；FinLab 每個日期只下載

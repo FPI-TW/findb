@@ -490,6 +490,88 @@ def scope_us_members(
     return result
 
 
+# Security name words the official US directories already exclude.
+_US_EXCLUDED_NAME_WORDS = (
+    "preferred",
+    "preference",
+    " pfd",
+    "warrant",
+    " rights",
+    " units",
+    " notes",
+    " debenture",
+    "depositary share representing",
+    " closed-end",
+    " etn",
+)
+# Catalogue symbols of warrants, units, rights and preferred shares, whatever type they carry.
+# Share classes use a dot (BRK.B); a dash names a preferred series (C-R, KREF-A).
+_CATALOGUE_EXCLUDED_SUFFIX = re.compile(
+    r"\.(?:WT|WS|W|U|UN|R|RT|PR)(?:\.[A-Z]+)?$|\.PR|-[A-Z]{1,2}$"
+)
+# Nasdaq fifth letters: W warrant, U unit, R right, M/N/O/P preferred.
+_NASDAQ_EXCLUDED_FIFTH = frozenset("WURMNOP")
+# Exchange test issues (Nasdaq Z?ZZT and the NYSE/Cboe *TEST tickers).
+_TEST_SYMBOL = re.compile(r"^Z[A-Z]ZZT$|TEST")
+# Listed venues of the US equity scope; OTC markets are outside it.
+_US_LISTED_EXCHANGES = frozenset({"NASDAQ", "NYSE", "IEX", "CBOE"})
+
+
+def catalogue_supplement(
+    catalogue: Iterable[Mapping[str, Any]], members: Iterable[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Listed US equities the catalogue serves that no official member names.
+
+    The official list measures gaps; these are requested too and never expected.
+    The catalogue's types are noisy, so warrants, units, rights, preferred shares
+    and test issues are dropped by name and symbol as the official lists drop them.
+    """
+    listed = {
+        value
+        for member in members
+        for value in (member["symbol"], member.get("provider_symbol"))
+        if value
+    }
+    found: dict[str, dict[str, Any]] = {}
+    for row in sorted(
+        catalogue,
+        # One row per symbol; a venue other than IEX names the primary listing.
+        key=lambda row: (str(row.get("symbol", "")), str(row.get("mic_code", "")) == "IEXG"),
+    ):
+        symbol = str(row.get("symbol", ""))
+        name = " " + str(row.get("name", "")).lower()
+        mic = canonical_twelve_data_mic(str(row.get("mic_code", "")))
+        if (
+            symbol in found
+            or symbol in listed
+            or row.get("type") not in TWELVE_DATA_EQUITY_TYPES
+            or str(row.get("exchange", "")) not in _US_LISTED_EXCHANGES
+            or row.get("currency") != "USD"
+            or not re.fullmatch(r"[A-Za-z0-9.:-]{1,50}", symbol)
+            or _CATALOGUE_EXCLUDED_SUFFIX.search(symbol)
+            or _TEST_SYMBOL.search(symbol)
+            or mic == "XNAS"
+            and len(symbol) == 5
+            and symbol[-1] in _NASDAQ_EXCLUDED_FIFTH
+            or any(word in name for word in _US_EXCLUDED_NAME_WORDS)
+            or _NASDAQ_TRAILING_RIGHT_OR_UNIT.search(name)
+            and "depositar" not in name
+        ):
+            continue
+        found[symbol] = {
+            **_member(
+                symbol,
+                mic,
+                "USD",
+                "equity",
+                "adr" if "Depositary" in str(row["type"]) else "ordinary",
+            ),
+            "provider_symbol": symbol,
+            "mapping_status": "mapped",
+        }
+    return [found[symbol] for symbol in sorted(found)]
+
+
 def map_catalogue(
     members: Iterable[dict[str, Any]],
     catalogue: Iterable[Mapping[str, Any]],
@@ -540,6 +622,7 @@ def universe_request(
     source_timezone: str,
     snapshots: Mapping[str, bytes],
     members: list[dict[str, Any]],
+    supplementary: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
         zone = ZoneInfo(source_timezone)
@@ -566,4 +649,11 @@ def universe_request(
             {"url": url, "sha256": checksum(raw)} for url, raw in sorted(snapshots.items())
         ],
         "members": ordered,
+        # Catalogue symbols outside the list: requested, never expected. Left out when
+        # empty, so every other provider's submission keeps its bytes.
+        **(
+            {"supplementary": sorted(supplementary, key=lambda member: member["symbol"])}
+            if supplementary
+            else {}
+        ),
     }

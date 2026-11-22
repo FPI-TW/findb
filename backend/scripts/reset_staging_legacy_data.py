@@ -106,6 +106,7 @@ TARGET_TABLES = (
     "public.universe_member_listing",
     "public.universe_member",
     "public.universe_release",
+    "public.universe_supplement",
     "public.futures_contract_eod",
     "public.etf_details",
     "public.futures_continuous_eod",

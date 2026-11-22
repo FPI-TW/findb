@@ -937,6 +937,13 @@ Migration `f3a5c7e9b1d2` 為 `daily_delivery_plan_summary` 新增 `unlisted_data
 採 forward fix。Fetcher 的 `execution_descriptors.v1.json` 同時多了 `unlisted_symbols`，Fetcher 只驗證自己
 image 內的檔案，Backend 與 Fetcher 可分開部署。FinLab Fetcher 要到它實際送出清單外的列以後才會有這類寫入。
 
+## 目錄補查
+
+Migration `a4c6e8f0b2d3` 新增 `universe_supplement` 與 `daily_delivery_plan.supplement_id`（nullable），保存 Twelve Data
+目錄中官方名單沒有的掛牌股票（#629）。兩者都是新增，舊版 Backend 忽略；舊版 Fetcher 不送 `supplementary`，也不在
+manifest 帶補查，plan 照常凍結但不會請求。已有任何補查後 downgrade 會拒絕，rollback 採 forward fix。先部署 Backend，
+再部署 Fetcher；新版 Fetcher 下一次美股名單刷新才會送出第一份補查。
+
 ## Provider work 切換
 
 目前 Fetcher 包含 Shioaji checkpoint schema v10：已知 v9 以單一 SQLite transaction

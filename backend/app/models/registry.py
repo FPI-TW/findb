@@ -257,6 +257,41 @@ class UniverseMemberListing(Base):
     listed_date: Mapped[date] = mapped_column(Date, nullable=False)
 
 
+class UniverseSupplement(Base):
+    """Provider catalogue symbols outside the official list, observed with one refresh.
+
+    The list measures gaps; these symbols are requested too, and a served row is
+    written as unlisted data, never counted toward expected. Kept apart from
+    releases so a catalogue change never creates a release or moves its digest.
+    """
+
+    __tablename__ = "universe_supplement"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_key",
+            "provider",
+            "effective_date",
+            "member_sha256",
+            name="uq_universe_supplement_observation",
+        ),
+    )
+
+    supplement_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
+    )
+    dataset_key: Mapped[str] = mapped_column(
+        String(50), ForeignKey("dataset_registry.dataset_key"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    member_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Member-shaped rows: symbol, provider_symbol, exchange, currency, asset_class, classification.
+    members: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class DailyDeliveryPlan(Base):
     """A frozen expected member set for one provider, dataset, and exchange date."""
 
@@ -281,6 +316,12 @@ class DailyDeliveryPlan(Base):
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     release_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("universe_release.release_id"), nullable=False
+    )
+    # The catalogue supplement frozen with the plan; its served rows are unlisted data.
+    supplement_id: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("universe_supplement.supplement_id"),
+        nullable=True,
     )
     execution_profile: Mapped[str] = mapped_column(
         String(20), nullable=False, default="full_market", server_default="full_market"

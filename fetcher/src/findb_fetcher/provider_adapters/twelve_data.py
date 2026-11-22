@@ -18,6 +18,7 @@ from findb_fetcher.full_market_errors import (
 from findb_fetcher.full_market_universe import (
     NASDAQ_URLS,
     TWELVE_DATA_EQUITY_TYPES,
+    catalogue_supplement,
     map_catalogue,
     nasdaq_effective_date,
     nasdaq_security_names,
@@ -235,17 +236,20 @@ class TwelveDataAdapter(ProviderAdapter):
             names = nasdaq_security_names(snapshots[NASDAQ_URLS[0]]) | nasdaq_security_names(
                 snapshots[NASDAQ_URLS[1]], other=True
             )
+            members = map_catalogue(
+                scope_us_members(us, catalogue, official_names=names),
+                catalogue,
+                us_official_names=names,
+            )
             groups["us_equity_eod"] = UniverseSnapshot(
                 next(iter(us_dates)),
-                map_catalogue(
-                    scope_us_members(us, catalogue, official_names=names),
-                    catalogue,
-                    us_official_names=names,
-                ),
+                members,
                 {
                     **{url: snapshots[url] for url in NASDAQ_URLS},
                     **context.catalogue_evidence("us_equity_eod"),
                 },
+                # The list measures gaps; the catalogue's other listed equities are requested.
+                catalogue_supplement(catalogue, members),
             )
         return groups
 

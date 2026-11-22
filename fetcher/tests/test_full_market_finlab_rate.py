@@ -802,3 +802,47 @@ def test_a_refused_unlisted_symbol_is_recorded_and_the_round_continues(
     # The refusal is that symbol's outcome; the step still finishes for this work.
     assert json.loads(journal.response("full:unlisted:receipt:7799")) == {"refused": 409}
     assert journal.response("full:unlisted:done") is not None
+
+
+def test_daily_requests_the_plans_supplement_once_after_its_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from findb_fetcher.provider_adapters.base import AcquisitionResult, MemberUnavailableError
+
+    runtime, context, delivered = _unlisted_round(tmp_path, monkeypatch, lambda request: None)
+    context.plan["supplementary"] = [
+        {"symbol": symbol, "provider_symbol": symbol, "currency": "TWD", "exchange": "XTAI"}
+        for symbol in ("LATE", "GONE", "QUIET", "2330")  # 2330 is a member: never re-asked
+    ]
+    original = runtime.adapter.acquire
+    asked: list[str] = []
+
+    def acquire(member: dict, acquisition: Any) -> Any:
+        if member["symbol"] not in {"LATE", "GONE", "QUIET"}:
+            return original(member, acquisition)
+        asked.append(member["symbol"])
+        if member["symbol"] == "GONE":
+            raise MemberUnavailableError("missing_symbol")
+        result = original({**member, "symbol": "7799", "provider_symbol": "7799"}, acquisition)
+        if member["symbol"] == "QUIET":
+            return AcquisitionResult.no_trade_evidence({"source_status": "no_trade"}, None)
+        result.request["payload"]["data"][0]["symbol"] = "LATE"
+        return result
+
+    monkeypatch.setattr(runtime.adapter, "acquire", acquire)
+    runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    assert asked == ["LATE", "GONE", "QUIET"]
+    # Members, then the unlisted equity, then the one supplement symbol with data.
+    assert [request["payload"]["data"][0]["symbol"] for request in delivered] == [
+        "2330",
+        "2317",
+        "7799",
+        "LATE",
+    ]
+    from findb_fetcher import provider_work
+
+    journal = provider_work.require_owner("finlab").journal
+    assert json.loads(journal.response("full:supplement:GONE")) == {"outcome": "unavailable"}
+    assert json.loads(journal.response("full:supplement:QUIET")) == {"outcome": "no_data"}
+    runtime._deliver_supplement(context.plan, context.release, runtime.feeds[0])
+    assert asked == ["LATE", "GONE", "QUIET"] and len(delivered) == 4

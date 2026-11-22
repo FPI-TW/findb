@@ -60,19 +60,22 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
         return
     from app.services.provider_metadata import delivers_unlisted
 
-    # Admission already bound every row to this part or to no plan member at all;
-    # a feed that delivers unlisted symbols records those writes too.
-    expected = (
-        set(
+    # Admission already bound every row to this part, to the plan's frozen
+    # supplement or to no plan member at all; unlisted writes are recorded too.
+    expected = written
+    if run.delivery_part_id and not delivers_unlisted(run.source or "", run.dataset_key):
+        from app.models.registry import DailyDeliveryPart, DailyDeliveryPlan
+        from app.services.universe_supplement import plan_supplement
+
+        part = await db.get(DailyDeliveryPart, run.delivery_part_id)
+        plan = await db.get(DailyDeliveryPlan, part.plan_id) if part else None
+        expected = set(
             await db.scalars(
                 select(DailyDeliveryMember.member_key).where(
                     DailyDeliveryMember.part_id == run.delivery_part_id
                 )
             )
-        )
-        if run.delivery_part_id and not delivers_unlisted(run.source or "", run.dataset_key)
-        else written
-    )
+        ) | (set(await plan_supplement(db, plan)) if plan else set())
     values = [
         {"run_id": run.run_id, "member_key": key, "created_at": utc_now()}
         for key in sorted(written & expected)

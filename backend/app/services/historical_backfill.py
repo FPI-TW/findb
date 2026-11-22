@@ -30,6 +30,7 @@ from app.models.registry import (
     UniverseMember,
     UniverseMemberListing,
     UniverseRelease,
+    UniverseSupplement,
 )
 from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
@@ -42,6 +43,7 @@ from app.services.provider_metadata import (
     historical_cohort,
     provider_catalog,
 )
+from app.services.universe_supplement import latest_supplement
 from app.utils import utc_now, uuid7
 
 # New-request admission only. Retired providers' requests, receipts and query
@@ -178,7 +180,11 @@ async def _later_releases(db: AsyncSession, release: UniverseRelease) -> list[Un
 
 
 async def _supplement(
-    db: AsyncSession, release_ids: list[UUID], trade_date: date, listed: set[str]
+    db: AsyncSession,
+    release_ids: list[UUID],
+    trade_date: date,
+    listed: set[str],
+    catalogue_id: UUID | None = None,
 ) -> list[dict]:
     """Mapped members of later releases not in the date's own cohort, in member order.
 
@@ -187,6 +193,17 @@ async def _supplement(
     expected. The newest release states each member's identity.
     """
     found: dict[str, dict] = {}
+    if catalogue_id is not None:
+        catalogue = await db.get(UniverseSupplement, catalogue_id)
+        # Catalogue symbols the list lacked; a later release's member identity wins.
+        for row in catalogue.members if catalogue else ():
+            if row["symbol"] not in listed:
+                found[row["symbol"]] = {
+                    **dict.fromkeys(_COHORT_FIELDS),
+                    **{key: value for key, value in row.items() if key in _COHORT_FIELDS},
+                    "member_key": row["symbol"],
+                    "mapping_status": "mapped",
+                }
     for release_id in release_ids:
         for member in await _release_cohort(db, release_id, trade_date):
             if member["member_key"] not in listed:
@@ -231,7 +248,16 @@ async def _bind_full_releases(
             raise HistoricalBackfillError(f"no published universe applies to {day.isoformat()}")
         members = await _release_cohort(db, release.release_id, day)
         later = [later.release_id for later in await _later_releases(db, release)]
-        supplement = await _supplement(db, later, day, {member["member_key"] for member in members})
+        # The catalogue supplement the date's plan froze, else the latest observed by then.
+        catalogue = (
+            await db.get(UniverseSupplement, plan.supplement_id)
+            if plan is not None and plan.supplement_id is not None
+            else await latest_supplement(db, dataset_key=dataset_key, provider=provider, day=day)
+        )
+        catalogue_id = catalogue.supplement_id if catalogue else None
+        supplement = await _supplement(
+            db, later, day, {member["member_key"] for member in members}, catalogue_id
+        )
         if not 1 <= len(members) or len(members) + len(supplement) > MAX_COHORT_MEMBERS:
             raise HistoricalBackfillError(
                 f"universe for {day.isoformat()} has no mapped members or exceeds its bound"
@@ -245,6 +271,7 @@ async def _bind_full_releases(
             "member_count": len(members),
             # Later releases frozen at creation; their extra members are requested too.
             "supplement_release_ids": [str(release_id) for release_id in later],
+            "catalogue_supplement_id": str(catalogue_id) if catalogue_id else None,
             "supplement_sha256": _cohort_digest(supplement),
             "supplement_count": len(supplement),
         }
@@ -270,11 +297,13 @@ async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict 
         else []
     )
     # Version 2 requests froze no later releases, so they request no supplement.
+    catalogue_id = binding.get("catalogue_supplement_id")
     supplement = await _supplement(
         db,
         [UUID(value) for value in binding.get("supplement_release_ids", [])],
         item.trade_date,
         {member["member_key"] for member in members},
+        UUID(catalogue_id) if catalogue_id else None,
     )
     if (
         release is None

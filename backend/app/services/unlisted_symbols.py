@@ -80,7 +80,9 @@ async def unlisted_allowed(
 
 async def plan_unlisted(db: AsyncSession, plan: DailyDeliveryPlan) -> list[str]:
     """Symbols outside the plan's members that the plan's terminal runs wrote."""
-    if not delivers_unlisted(plan.provider, plan.dataset_key):
+    if getattr(plan, "supplement_id", None) is None and not delivers_unlisted(
+        plan.provider, plan.dataset_key
+    ):
         return []
     evidence = DeliveryMemberEvidence
     return list(

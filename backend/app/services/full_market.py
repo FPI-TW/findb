@@ -330,6 +330,13 @@ async def submit_universe(
         member["exchange"].upper() not in {"TAIFEX", "XTAF"} for member in members
     ):
         raise FullMarketError("Futures members require TAIFEX/XTAF exchange", 422)
+    from app.services.universe_supplement import UniverseSupplementError, store_supplement
+
+    try:
+        # A catalogue change alone never creates a release; it is its own observation.
+        await store_supplement(db, body, dataset)
+    except UniverseSupplementError as exc:
+        raise FullMarketError(str(exc), 422) from exc
     digest = _digest(members)
     semantic_digest = _semantic_member_digest(members)
     existing = (
@@ -352,7 +359,7 @@ async def submit_universe(
         # The same list may already wait as a candidate from an earlier refresh.
         if existing.status == "candidate" and manual_refresh is not None:
             await _approve_manual_refresh(db, existing, manual_refresh)
-            await db.commit()
+        await db.commit()
         return _release_response(existing)
     prior = (
         await db.execute(
@@ -819,12 +826,18 @@ async def create_plan(
         )
     )
     members = listed
+    from app.services.universe_supplement import latest_supplement
+
+    supplement = await latest_supplement(
+        db, dataset_key=body.dataset_key, provider=body.provider, day=body.trade_date
+    )
     plan = DailyDeliveryPlan(
         plan_id=uuid7(),
         dataset_key=body.dataset_key,
         provider=body.provider,
         trade_date=body.trade_date,
         release_id=release.release_id,
+        supplement_id=supplement.supplement_id if supplement else None,
         execution_profile=body.execution_profile,
         activation_cutoff=activation_date,
         deadline_at=_deadline(dataset, body.trade_date),
@@ -1311,6 +1324,9 @@ async def plan_response(db: AsyncSession, plan: DailyDeliveryPlan) -> DeliveryPl
     for member in members:
         by_part[member.part_id].append(member.member_key)
     summary = await reconcile_plan(db, plan)
+    from app.services.universe_supplement import plan_supplement
+
+    supplementary = [row for _, row in sorted((await plan_supplement(db, plan)).items())]
     return DeliveryPlanResponse(
         plan_id=plan.plan_id,
         execution_profile=execution_profile(plan.execution_profile),
@@ -1330,6 +1346,7 @@ async def plan_response(db: AsyncSession, plan: DailyDeliveryPlan) -> DeliveryPl
             for part in parts
         ],
         summary=summary,
+        supplementary=supplementary,
     )
 
 
@@ -1530,7 +1547,11 @@ async def validate_ingest_part(
     else:
         actual = {row.symbol for row in request.payload.data}
     unlisted = actual - expected
-    if unlisted:
+    from app.services.universe_supplement import plan_supplement
+
+    supplement = await plan_supplement(db, plan) if unlisted else {}
+    if unlisted - set(supplement):
+        unlisted = unlisted - set(supplement)
         from app.services.unlisted_symbols import unlisted_allowed
 
         # Served rows outside the list are written, never counted toward expected;
@@ -1559,6 +1580,17 @@ async def validate_ingest_part(
             else row.symbol
         )
         frozen = universe.get(key)
+        if frozen is None and key in supplement:
+            # A requested catalogue symbol keeps the identity its supplement froze.
+            row_symbol = getattr(row, "source_symbol", None)
+            if (
+                not isinstance(row, MarketEODRow)
+                or (row.currency or declaration.defaults.currency) != supplement[key]["currency"]
+                or row_symbol is not None
+                and row_symbol != supplement[key]["provider_symbol"]
+            ):
+                raise FullMarketError("Payload differs from the frozen supplement", 409)
+            continue
         if frozen is None:
             # Unlisted rows carry the dataset's own currency; no list states another.
             if (
