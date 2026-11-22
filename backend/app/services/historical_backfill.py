@@ -35,7 +35,11 @@ from app.models.registry import (
 )
 from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
-from app.schemas.ingress import MarketEODIngressRequest, MarketEODIngressRequestV2
+from app.schemas.ingress import (
+    ExchangeDailyQuoteIngressRequest,
+    MarketEODIngressRequest,
+    MarketEODIngressRequestV2,
+)
 from app.services.effective_calendar import effective_days, execution_policy, market_timezone
 from app.services.feed_schedule import data_ready_at
 from app.services.provider_metadata import (
@@ -1183,14 +1187,16 @@ async def complete_item(
             or {member.member_key for member in eod_evidence.members}
             != {member["member_key"] for member in cohort["members"]}
             or eod_evidence.schema_version != _contract_version(item.request)
+            or eod_evidence.schema_id != _contract_schema(item.request)
+            # A no-data member always cites its durable raw observation.
+            or any(
+                member.outcome == "no_data" and member.raw is None
+                for member in eod_evidence.members
+            )
+            # A dated release freezes only mapped members.
             or (
-                # Only mapped members are frozen; no-data needs its durable raw observation.
                 member_cohort(item.request)
-                and any(
-                    member.outcome == "mapping_gap"
-                    or (member.outcome == "no_data" and member.raw is None)
-                    for member in eod_evidence.members
-                )
+                and any(member.outcome == "mapping_gap" for member in eod_evidence.members)
             )
         ):
             raise HistoricalBackfillValidationError("EOD evidence differs from the frozen request")
@@ -1296,7 +1302,8 @@ async def complete_item(
 
 
 async def validate_eod_historical_delivery(
-    db: AsyncSession, request: MarketEODIngressRequest | MarketEODIngressRequestV2
+    db: AsyncSession,
+    request: MarketEODIngressRequest | MarketEODIngressRequestV2 | ExchangeDailyQuoteIngressRequest,
 ) -> None:
     """One frozen-cohort EOD delivery (current or dated release cohort) of a leased date."""
     from app.services.provider_work import fence, prepared_descriptors
@@ -1387,8 +1394,8 @@ async def validate_eod_historical_delivery(
         or any(row.trade_date != item.trade_date for row in request.payload.data)
         or any(
             members[row.symbol]["mapping_status"] != "mapped"
-            or (strict_symbol or row.source_symbol is not None)
-            and row.source_symbol != members[row.symbol]["provider_symbol"]
+            or (strict_symbol or _source_symbol(row) is not None)
+            and _source_symbol(row) != members[row.symbol]["provider_symbol"]
             or (strict_symbol or row.currency is not None)
             and row.currency != members[row.symbol]["currency"]
             for row in request.payload.data
@@ -1396,6 +1403,18 @@ async def validate_eod_historical_delivery(
         )
     ):
         raise HistoricalBackfillValidationError("historical delivery is outside its frozen cohort")
+
+
+def _source_symbol(row) -> str | None:
+    """The provider's own symbol; an exchange's quote is keyed by the listed code itself."""
+    return getattr(row, "source_symbol", row.symbol)
+
+
+def _contract_schema(request: HistoricalBackfillRequest) -> str:
+    feed = catalog_feed(request.provider, request.dataset_key)
+    if feed is None:
+        raise HistoricalBackfillValidationError("historical feed is not in the catalog")
+    return feed.contract.schema_id
 
 
 def _contract_version(request: HistoricalBackfillRequest) -> int:

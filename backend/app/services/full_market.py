@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile, execution_profile, scheduler_key
 from app.models.canonical import (
+    ExchangeDailyQuote,
     FuturesContract,
     FuturesContractEOD,
     Instrument,
@@ -50,6 +51,8 @@ from app.schemas.full_market import (
     UniverseSubmitRequest,
 )
 from app.schemas.ingress import (
+    ExchangeDailyQuoteIngressRequest,
+    ExchangeDailyQuoteRow,
     FuturesEODIngressRequest,
     FuturesEODRow,
     IngressRequest,
@@ -65,9 +68,11 @@ from app.services.effective_calendar import (
     execution_snapshot,
     market_timezone,
 )
+from app.services.eod_completion import MEMBER_EOD_SCHEMAS
 from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.no_record_corroboration import NO_RECORD, corroborate_no_record
 from app.services.provider_metadata import (
+    catalog_feed,
     dataset_calendar_market,
     delivers_unlisted,
     universe_mode,
@@ -1023,15 +1028,22 @@ async def classify_plan(
             if (part_id, snapshot_id, daily_update_id) in complete_groups
         }
     else:
+        # An exchange's quotes live in their own table; provider EOD in market_data_eod.
+        table: type[MarketDataEOD] | type[ExchangeDailyQuote] = (
+            ExchangeDailyQuote
+            if (feed := catalog_feed(plan.provider, plan.dataset_key)) is not None
+            and feed.contract.schema_id == "exchange_daily_quote"
+            else MarketDataEOD
+        )
         eod = (
             select(
                 Instrument.symbol,
                 IngestionRun.delivery_part_id,
             )
-            .join(MarketDataEOD, MarketDataEOD.instrument_id == Instrument.instrument_id)
-            .join(IngestionRun, IngestionRun.run_id == MarketDataEOD.run_id)
+            .join(table, table.instrument_id == Instrument.instrument_id)
+            .join(IngestionRun, IngestionRun.run_id == table.run_id)
             .where(
-                MarketDataEOD.trade_date == plan.trade_date,
+                table.trade_date == plan.trade_date,
                 IngestionRun.delivery_part_id.in_(part_ids),
                 IngestionRun.status.in_(("completed", "completed_with_errors")),
             )
@@ -1199,7 +1211,7 @@ async def _historical_repairs(
             IngestionRun.source == plan.provider,
             IngestionRun.dataset_key == plan.dataset_key,
             IngestionRun.batch_data_date == plan.trade_date,
-            IngestionRun.schema_id == "market_eod",
+            IngestionRun.schema_id.in_(MEMBER_EOD_SCHEMAS),
             IngestionRun.status.in_(("completed", "completed_with_errors")),
             ProviderWork.kind == "historical",
             ProviderWork.environment == get_settings().APP_ENVIRONMENT,
@@ -1460,7 +1472,10 @@ async def validate_ingest_part(
     if (
         isinstance(work_item_id, str)
         and work_item_id.startswith("historical:")
-        and isinstance(request, (MarketEODIngressRequest, MarketEODIngressRequestV2))
+        and isinstance(
+            request,
+            (MarketEODIngressRequest, MarketEODIngressRequestV2, ExchangeDailyQuoteIngressRequest),
+        )
         and member_evidence_feed(request.source, dataset.dataset_key)
     ):
         from app.services.historical_backfill import (
@@ -1620,6 +1635,9 @@ async def validate_ingest_part(
                 key, frozen.provider_symbol
             ):
                 raise FullMarketError("Payload provider symbol differs from frozen universe", 409)
+        if isinstance(row, ExchangeDailyQuoteRow) and row.currency != frozen.currency:
+            # The exchange's listed code is the member; its counter is the currency.
+            raise FullMarketError("Payload currency differs from frozen universe", 409)
     if any(row.trade_date != plan.trade_date for row in request.payload.data):
         raise FullMarketError("Payload row trade date differs from frozen plan", 409)
     return part.part_id

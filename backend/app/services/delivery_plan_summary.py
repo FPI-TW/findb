@@ -20,6 +20,7 @@ from app.models.registry import (
     IngestionRun,
 )
 from app.schemas.full_market import DeliverySummaryResponse
+from app.services.eod_completion import MEMBER_EOD_SCHEMAS
 from app.utils import utc_now
 
 logger = logging.getLogger(__name__)
@@ -501,7 +502,7 @@ async def refresh_summaries_for_run(db: AsyncSession, run: IngestionRun) -> None
         return
     if (
         run.batch_data_date is None
-        or run.schema_id != "market_eod"
+        or run.schema_id not in MEMBER_EOD_SCHEMAS
         or run.status not in ("completed", "completed_with_errors")
     ):
         return
