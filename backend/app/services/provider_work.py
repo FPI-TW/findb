@@ -846,9 +846,16 @@ async def _unlisted_scope(db: AsyncSession, work: ProviderWork, symbols: set[str
     """Daily and historical EOD work may also write served symbols outside its list."""
     from app.services.unlisted_symbols import unlisted_allowed
 
+    manifest = work.manifest or {}
+    # EOD work freezes its contract; a canonical daily plan manifest names its plan.
     return (
         work.kind in {"daily", "historical"}
-        and "contract" in (work.manifest or {})
+        and (
+            "contract" in manifest
+            or work.kind == "daily"
+            and manifest.get("mode") == "canonical"
+            and bool(manifest.get("plan_id"))
+        )
         and (
             symbols <= supplementary_keys(work)
             or await unlisted_allowed(
@@ -1154,12 +1161,16 @@ async def settle(
                     range(1, sequence_count + 1)
                 ):
                     complete_runs.update(run.run_id for run in group)
-            completed = set(
-                await db.scalars(
-                    select(DeliveryMemberEvidence.member_key).where(
-                        DeliveryMemberEvidence.run_id.in_(complete_runs)
+            # Unlisted writes are evidence too, but only frozen members settle the scope.
+            completed = (
+                set(
+                    await db.scalars(
+                        select(DeliveryMemberEvidence.member_key).where(
+                            DeliveryMemberEvidence.run_id.in_(complete_runs)
+                        )
                     )
                 )
+                & expected
             )
         no_data = set(proof.get("no_data", []))
         if work.kind == "daily" and (work.manifest or {}).get("calendar_skip"):

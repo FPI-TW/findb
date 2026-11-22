@@ -215,6 +215,8 @@ def test_finlab_historical_runtime_uses_raw_first_prepared_terminal_delivery(
             assert target_date == target and symbols == ("2330", "2317")
             return tables[dataset]
 
+        fetch_market_dataset = fetch_dataset
+
     monkeypatch.setattr(runtime.FinLabSdkGateway, "from_env", lambda: Gateway())
 
     run_id = runtime.FinLabHistoricalRunner().run(_item("finlab", "tw_equity_eod", "TW", target))

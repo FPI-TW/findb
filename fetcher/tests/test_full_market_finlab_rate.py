@@ -133,7 +133,7 @@ def _finlab_runtime(
             values=(tuple(value for _ in symbols),),
         )
 
-    gateway.fetch_dataset = fetch_dataset
+    gateway.fetch_dataset = gateway.fetch_market_dataset = fetch_dataset
     runtime.adapter.gateway = lambda *_: gateway
     return runtime, source, raw, clock, SimpleNamespace(gateway=gateway, plan=plan, release=release)
 
@@ -621,7 +621,7 @@ def test_finlab_member_failures_stay_member_scoped(
                 previous=earlier_close if name == "price:收盤價" else (),
             )
 
-    context.gateway.fetch_dataset = fetch_dataset
+    context.gateway.fetch_dataset = context.gateway.fetch_market_dataset = fetch_dataset
     delivered: list[Any] = []
     runtime.delivery = SimpleNamespace(
         prepare=lambda request: SimpleNamespace(body=canonical_bytes(request), request=request),
@@ -700,3 +700,105 @@ def test_finlab_member_failures_stay_member_scoped(
     ]
     assert not runtime.state.has_blocking_manual(context.plan["plan_id"])
     runtime.http.close()
+
+
+def _unlisted_round(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deliver: Any) -> Any:
+    """A tw_equity_eod round whose five tables also serve symbols outside the list."""
+    from findb_fetcher import acquisition, provider_work
+
+    runtime, _, _, _, context = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
+    nan = float("nan")
+    rows = {
+        "2330": 10,
+        "2317": 20,
+        # Unlisted: a listed equity, an ETF, a preferred share and a quiet equity.
+        "7799": 30,
+        "0050": 40,
+        "2881A": 50,
+        "9999": nan,
+    }
+    listed = ("2330", "2317")
+
+    def fetch_market_dataset(name: str, *, target_date: date, symbols: tuple[str, ...]) -> Any:
+        assert symbols == listed
+        with acquisition.Acquisition("finlab") as operation:
+            operation.start()
+            context.gateway.calls.append(name)
+            volume = name == "price:成交股數"
+            return FinLabDatasetTable(
+                dates=(target_date.isoformat(),),
+                symbols=tuple(rows),
+                values=(tuple(nan if v != v else (1000 if volume else v) for v in rows.values()),),
+                unlisted=tuple(symbol for symbol in rows if symbol not in listed),
+            )
+
+    context.gateway.fetch_dataset = context.gateway.fetch_market_dataset = fetch_market_dataset
+    context.gateway.fetch_security_types = lambda: {
+        "equity": ("2317", "2330", "7799", "9999"),
+        "etf": ("0050",),
+    }
+    owner = SimpleNamespace(
+        provider="finlab",
+        dispatch_observations=0,
+        journal=WorkJournal(tmp_path / "work.sqlite3", "daily:unlisted"),
+        work={"kind": "daily", "state": "open"},
+        restore=lambda **kwargs: [],
+        authorize=lambda: None,
+        reserve=lambda request, **kwargs: None,
+        request=lambda action: {"work_id": None, "trade_date": None, "repair_required": False},
+        _check_local_fence=lambda: None,
+    )
+    monkeypatch.setattr(provider_work, "require_owner", lambda provider: owner)
+    delivered: list[Any] = []
+
+    def deliver_body(body: Any) -> Any:
+        deliver(body.request)
+        delivered.append(body.request)
+        return SimpleNamespace(run_id=UUID(int=len(delivered)))
+
+    runtime.delivery = SimpleNamespace(
+        prepare=lambda request: SimpleNamespace(body=canonical_bytes(request), request=request),
+        deliver=deliver_body,
+        get_run_status=lambda *args, **kwargs: SimpleNamespace(
+            status="completed", failed_records=0, total_records=1, success_records=1
+        ),
+    )
+    return runtime, context, delivered
+
+
+def test_finlab_daily_delivers_served_unlisted_equities_after_the_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, context, delivered = _unlisted_round(tmp_path, monkeypatch, lambda request: None)
+    runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    symbols = [request["payload"]["data"][0]["symbol"] for request in delivered]
+    # Members first; then only the unlisted listed equity that traded. The ETF
+    # belongs to tw_etf_eod, the preferred share to no dataset, 9999 had no trade.
+    assert symbols == ["2330", "2317", "7799"]
+    unlisted = delivered[-1]
+    assert unlisted["delivery"]["work_item_id"] == context.plan["parts"][0]["work_item_id"]
+    assert len({request["idempotency_key"] for request in delivered}) == 3
+    assert len(context.gateway.calls) == 5
+    # A later round of the same work never delivers them again or refetches tables.
+    runtime._deliver_unlisted(context.plan, context.release, runtime.feeds[0])
+    assert len(delivered) == 3
+
+
+def test_a_refused_unlisted_symbol_is_recorded_and_the_round_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from findb_fetcher.client import SourceAPIResponseError
+
+    def deliver(request: dict) -> None:
+        if request["payload"]["data"][0]["symbol"] == "7799":
+            raise SourceAPIResponseError(409, "FULL_MARKET_PLAN_INVALID")
+
+    runtime, context, delivered = _unlisted_round(tmp_path, monkeypatch, deliver)
+    runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    assert [request["payload"]["data"][0]["symbol"] for request in delivered] == ["2330", "2317"]
+    from findb_fetcher import provider_work
+
+    journal = provider_work.require_owner("finlab").journal
+    # The refusal is that symbol's outcome; the step still finishes for this work.
+    assert json.loads(journal.response("full:unlisted:receipt:7799")) == {"refused": 409}
+    assert journal.response("full:unlisted:done") is not None

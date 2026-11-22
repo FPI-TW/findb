@@ -170,6 +170,14 @@ def dated_universe(provider: str, dataset_key: str) -> bool:
     return feed["universe_mode"] == "dated"
 
 
+def delivers_unlisted(provider: str, dataset_key: str) -> bool:
+    """Whether the feed also delivers served symbols outside its frozen list."""
+    feed = next(
+        (row for row in provider_feeds(provider) if row["dataset_key"] == dataset_key), None
+    )
+    return feed is not None and feed.get("unlisted_symbols") == "deliver"
+
+
 def acquisition_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]:
     return tuple(
         row for row in provider_feeds(provider) if row["capabilities"]["acquisition"] is True

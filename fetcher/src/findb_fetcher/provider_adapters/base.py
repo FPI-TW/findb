@@ -298,3 +298,10 @@ class ProviderAdapter:
     def pending_shared_fetch(self, dataset_key: str, trade_date: date) -> bool:
         """True when the next ``acquire`` fetches a native response every member shares."""
         return False
+
+    def unlisted_requests(self, context: AcquisitionContext) -> list[tuple[str, AcquisitionResult]]:
+        """Served rows of symbols outside the frozen list, as ``(symbol, result)``.
+
+        Only a whole-market response serves them; member-scoped providers have none.
+        """
+        return []
