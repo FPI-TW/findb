@@ -22,6 +22,8 @@ import tarfile
 from pathlib import Path
 from typing import Any
 
+# The Fetcher bundle format this tree builds; each version binds a topology marker.
+FETCHER_BUNDLE_VERSION = 6
 REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TRANSACTION_BUNDLE_FILES = (
@@ -203,7 +205,10 @@ class SourceBundleReader:
         return frozenset(self._snapshot)
 
     def deployment_source_bundle_sha256(
-        self, unit: str, schema_version: int = 3, fetcher_bundle_version: int = 6
+        self,
+        unit: str,
+        schema_version: int = 3,
+        fetcher_bundle_version: int = FETCHER_BUNDLE_VERSION,
     ) -> str:
         records = [
             {
@@ -236,10 +241,11 @@ class SourceBundleReader:
 
 
 def bundle_paths(
-    unit: str, schema_version: int = 3, fetcher_bundle_version: int = 6
+    unit: str, schema_version: int = 3, fetcher_bundle_version: int = FETCHER_BUNDLE_VERSION
 ) -> tuple[str, ...]:
     if unit == "fetcher" and (
-        type(fetcher_bundle_version) is not int or fetcher_bundle_version not in {1, 2, 3, 4, 5, 6}
+        type(fetcher_bundle_version) is not int
+        or fetcher_bundle_version not in set(range(1, FETCHER_BUNDLE_VERSION + 1))
     ):
         raise ManifestError("fetcher_bundle_version invalid")
     try:
@@ -261,7 +267,7 @@ def bundle_source_paths(
     unit: str,
     contract_manifest: ContractManifest,
     schema_version: int = 3,
-    fetcher_bundle_version: int = 6,
+    fetcher_bundle_version: int = FETCHER_BUNDLE_VERSION,
 ) -> tuple[str, ...]:
     """Return the complete allowlist captured in a deployable unit bundle.
 
@@ -577,7 +583,8 @@ def validate_manifest(
         if (
             manifest.get("unit") != "fetcher"
             or type(manifest.get("fetcher_bundle_version")) is not int
-            or manifest.get("fetcher_bundle_version") not in {1, 2, 3, 4, 5, 6}
+            or manifest.get("fetcher_bundle_version")
+            not in set(range(1, FETCHER_BUNDLE_VERSION + 1))
         ):
             raise ManifestError("fetcher_bundle_version invalid")
     if schema_version == 4:
@@ -674,7 +681,7 @@ def validate_manifest(
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise ManifestError("created_by_run_id must be a numeric, nonempty string")
     if source_bundle is not None and bundle_digest != source_bundle.deployment_source_bundle_sha256(
-        unit, schema_version, manifest.get("fetcher_bundle_version", 6)
+        unit, schema_version, manifest.get("fetcher_bundle_version", FETCHER_BUNDLE_VERSION)
     ):
         raise ManifestError("deployment source bundle checksum mismatch")
     if source_bundle is not None and unit == "fetcher":
@@ -779,7 +786,7 @@ def build_bundle(repo_root: Path, manifest_path: Path, unit: str) -> bytes:
                     unit,
                     contract_manifest,
                     manifest["schema_version"],
-                    manifest.get("fetcher_bundle_version", 6),
+                    manifest.get("fetcher_bundle_version", FETCHER_BUNDLE_VERSION),
                 )
             )
         )
@@ -859,7 +866,9 @@ def validate_bundle_bytes(
             raise ManifestError("bundle unit does not match expected unit")
         expected_paths = set(
             bundle_paths(
-                unit, manifest["schema_version"], manifest.get("fetcher_bundle_version", 6)
+                unit,
+                manifest["schema_version"],
+                manifest.get("fetcher_bundle_version", FETCHER_BUNDLE_VERSION),
             )
         )
         # The contract manifest identifies the schema members expected in the archive.
@@ -878,7 +887,7 @@ def validate_bundle_bytes(
                 unit,
                 contract_manifest,
                 manifest["schema_version"],
-                manifest.get("fetcher_bundle_version", 6),
+                manifest.get("fetcher_bundle_version", FETCHER_BUNDLE_VERSION),
             )
         )
         if set(names) != ({BUNDLE_MANIFEST_PATH} | expected_paths):
@@ -898,7 +907,9 @@ def validate_bundle_bytes(
             {"path": path, "sha256": hashlib.sha256(contents[path]).hexdigest()}
             for path in sorted(
                 bundle_paths(
-                    unit, manifest["schema_version"], manifest.get("fetcher_bundle_version", 6)
+                    unit,
+                    manifest["schema_version"],
+                    manifest.get("fetcher_bundle_version", FETCHER_BUNDLE_VERSION),
                 )
             )
         ]
@@ -1248,7 +1259,7 @@ def generate(args: argparse.Namespace) -> None:
         if args.unit == "fetcher":
             manifest["runtime_profile"] = "unified"
         if args.unit == "fetcher":
-            manifest["fetcher_bundle_version"] = 6
+            manifest["fetcher_bundle_version"] = FETCHER_BUNDLE_VERSION
         if args.deployment_target == "production":
             manifest["promotion_source"] = {
                 "accepted_bundle_key": args.promotion_source_bundle_key,

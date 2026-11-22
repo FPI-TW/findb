@@ -9,11 +9,12 @@ from pathlib import Path
 import pytest
 
 from findb_fetcher import provider_work
+from findb_fetcher.execution_metadata import provider_ids
 
 CONFIG = Path(__file__).resolve().parents[1] / "configs/bootstrap.local.v1.json"
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
+@pytest.mark.parametrize("provider", provider_ids())
 @pytest.mark.parametrize("profile", ["full_market"])
 def test_checkpoint_bootstrap_preserves_live_owner_and_shared_inode(
     tmp_path, monkeypatch, provider, profile

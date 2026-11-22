@@ -39,7 +39,8 @@ def test_shared_feed_catalog_matches_source_scope_and_supported_contracts(target
     )
     specs = source_specs_for_profile("unified", target)
     declarations = {item["dataset_key"]: item["config"] for item in DATASETS}
-    assert len(catalog["feeds"]) == 10
+    # Every catalog feed's provider holds a Source credential spec.
+    assert {feed["provider"] for feed in catalog["feeds"]} == {spec.source_name for spec in specs}
     for spec in specs:
         acquisition = {
             feed["dataset_key"] for feed in catalog["feeds"] if feed["provider"] == spec.source_name

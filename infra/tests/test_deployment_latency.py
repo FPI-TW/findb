@@ -13,6 +13,12 @@ from script_env import script_env
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / "infra/deploy/runtime-secrets"
+INVENTORY_PROVIDERS = tuple(
+    provider.replace("_", "-")
+    for provider in json.loads(
+        (ROOT / "infra/deploy/generated/provider_inventory.v1.json").read_text()
+    )["providers"]
+)
 
 
 def loader():
@@ -209,7 +215,7 @@ def test_initial_batch_inventory_validates_every_runtime_and_fails_closed(tmp_pa
         }
         for provider in ("twelve-data", "finlab")
     ]
-    for provider in ("twelve-data", "finlab", "taifex", "factset"):
+    for provider in INVENTORY_PROVIDERS:
         for profile in ("full-market", "historical"):
             command = (
                 ["findb-fetch-historical-backfill"]

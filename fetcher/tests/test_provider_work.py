@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from findb_fetcher import provider_work as queue
+from findb_fetcher.execution_metadata import provider_ids
 from findb_fetcher.provider_process import ProviderProcessError, supervised_call
 from findb_fetcher.providers.finlab import FinLabDatasetTable
 from findb_fetcher.providers.twelve_data import TwelveDataResponse
@@ -112,7 +113,7 @@ def test_enforced_daily_quota_waits_do_not_publish_failure_or_consume_retry_budg
         runtime.close()
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
+@pytest.mark.parametrize("provider", provider_ids())
 def test_orphan_provider_descendant_keeps_whole_work_lock_after_owner_exit(tmp_path, provider):
     release_read, release_write = os.pipe()
     child_script = "import os,sys; os.read(int(sys.argv[1]),1)"

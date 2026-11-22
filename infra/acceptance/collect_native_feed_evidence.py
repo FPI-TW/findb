@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from collect_staging_feed_evidence import REPO_ROOT, _aws_json, _ssm_probe
-from native_feed_evidence import assess
+from native_feed_evidence import assess, sampled_providers
 
 
 def fetcher_spec(backend: dict[str, Any], provider: str) -> dict[str, Any]:
@@ -89,7 +89,7 @@ def main() -> int:
         environment={"FINDB_NATIVE_EVIDENCE_SPEC": json.dumps(spec)},
     )
     fetchers = {}
-    for provider in ("twelve_data", "finlab", "taifex", "factset"):
+    for provider in sampled_providers():
         fetchers[provider] = _ssm_probe(
             region=target["region"],
             instance_id=args.fetcher_instance_id,

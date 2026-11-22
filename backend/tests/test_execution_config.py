@@ -219,7 +219,7 @@ async def test_admin_feed_projection_uses_same_resolver(client, admin_headers, t
     response = await client.get("/api/v1/admin/schedulers", headers=admin_headers)
     assert response.status_code == 200
     rows = response.json()["data"]
-    for provider in ("finlab", "factset", "twelve_data", "taifex"):
+    for provider in (row.provider for row in provider_metadata.provider_catalog().providers):
         row = next(r for r in rows if r["scheduler_key"] == f"full_market_{provider}_v1")
         expected = execution_config(provider, row["dataset_keys"], "full_market")
         assert [

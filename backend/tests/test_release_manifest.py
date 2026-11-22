@@ -52,7 +52,12 @@ def _manifest(unit: str = "findb") -> dict[str, object]:
         "deployment_source_bundle_sha256": "d" * 64,
         "created_by_run_id": "123456",
         **(
-            {"fetcher_bundle_version": 6, "runtime_profile": "unified"} if unit == "fetcher" else {}
+            {
+                "fetcher_bundle_version": release_manifest.FETCHER_BUNDLE_VERSION,
+                "runtime_profile": "unified",
+            }
+            if unit == "fetcher"
+            else {}
         ),
     }
 
@@ -88,7 +93,7 @@ def test_pre_unification_manifest_is_below_rollback_floor(unit, version):
         release_manifest.validate_manifest(manifest, CONTRACT_DATA)
 
 
-@pytest.mark.parametrize("value", [False, 0, 7, "1"])
+@pytest.mark.parametrize("value", [False, 0, release_manifest.FETCHER_BUNDLE_VERSION + 1, "1"])
 def test_fetcher_bundle_version_rejects_unknown_or_malformed_format(value) -> None:
     manifest = _manifest("fetcher")
     manifest["fetcher_bundle_version"] = value
@@ -1614,7 +1619,9 @@ def test_validate_rejects_a_different_selected_contract_manifest(tmp_path: Path)
     )
 
 
-@pytest.mark.parametrize("version", [None, True, "5", {}, 0, 7])
+@pytest.mark.parametrize(
+    "version", [None, True, "5", {}, 0, release_manifest.FETCHER_BUNDLE_VERSION + 1]
+)
 def test_bundle_allowlist_rejects_untrusted_format_before_selecting_files(version):
     with pytest.raises(release_manifest.ManifestError, match="fetcher_bundle_version"):
         release_manifest.bundle_paths("fetcher", 4, version)

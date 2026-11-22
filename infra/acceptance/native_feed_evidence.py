@@ -26,6 +26,14 @@ def sampled_feed(feed: dict[str, Any]) -> bool:
     )
 
 
+def sampled_providers() -> tuple[str, ...]:
+    """Providers with at least one sampled feed, in catalog order: one probe each."""
+    catalog = json.loads(
+        (ROOT / "fetcher/src/findb_fetcher/data/execution_descriptors.v1.json").read_text()
+    )
+    return tuple(dict.fromkeys(f["provider"] for f in catalog["feeds"] if sampled_feed(f)))
+
+
 def assess(backend: dict[str, Any], fetchers: dict[str, dict[str, Any]]) -> dict[str, Any]:
     scope = {key: backend[key] for key in ("environment", "execution_profile", "trade_date")}
     if scope["environment"] not in ("staging", "production") or scope["execution_profile"] != (

@@ -129,7 +129,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.manifest = {
             "schema_version": 3,
             "runtime_profile": "unified",
-            "fetcher_bundle_version": 6,
+            "fetcher_bundle_version": release.FETCHER_BUNDLE_VERSION,
             "deployment_target": "production",
             "unit": "fetcher",
             "commit_sha": "b" * 40,
@@ -154,28 +154,14 @@ class FetcherHostPreflightTests(unittest.TestCase):
         }
         self.write_manifest()
         self.rows = []
-        for provider in ("twelve_data", "finlab", "taifex", "factset", "hkex"):
-            self.rows.append(
-                self.row(
-                    f"findb-full-market-{provider.replace('_', '-')}",
-                    "twelve_data" if provider in {"taifex", "hkex"} else provider,
-                    self.runtime_args("full_market", provider),
-                )
+        # The installed consumers of the current catalog, as the guard expects them.
+        for name, provider, profile, image_key in host.CONSUMERS:
+            args = (
+                ["findb-fetch-historical-backfill", "--provider", provider, "--run-forever"]
+                if profile == "historical"
+                else self.runtime_args(profile, provider)
             )
-
-        for provider in ("twelve_data", "finlab", "taifex", "factset", "hkex"):
-            self.rows.append(
-                self.row(
-                    "findb-historical-" + provider.replace("_", "-"),
-                    "twelve_data" if provider in {"taifex", "hkex"} else provider,
-                    [
-                        "findb-fetch-historical-backfill",
-                        "--provider",
-                        provider,
-                        "--run-forever",
-                    ],
-                )
-            )
+            self.rows.append(self.row(name, image_key, args))
 
     @staticmethod
     def runtime_args(profile, provider):
@@ -260,7 +246,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
         return result
 
     def test_complete_unified_installation_is_drained(self):
-        self.assertEqual(len(self.rows), 10)
+        self.assertEqual(len(self.rows), len(host.CONSUMERS))
         self.assertEqual(self.check(), "drained")
 
     def install_version_five(self):
@@ -305,7 +291,8 @@ class FetcherHostPreflightTests(unittest.TestCase):
             self.check()
         self.assertEqual(
             output.getvalue(),
-            "fetcher_host_blocked reason=runtime_not_eligible execution_profile=full_market provider=twelve_data\n",
+            "fetcher_host_blocked reason=runtime_not_eligible "
+            f"execution_profile={host.CONSUMERS[0][2]} provider={host.CONSUMERS[0][1]}\n",
         )
         self.assertNotIn("secret", output.getvalue())
 
@@ -507,7 +494,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                         self.check()
 
     def test_drained_requires_exact_bundle_format_identity(self):
-        for version in (None, False, True, 0, 7, "1", 1.0):
+        for version in (None, False, True, 0, release.FETCHER_BUNDLE_VERSION + 1, "1", 1.0):
             with self.subTest(version=version):
                 self.manifest["fetcher_bundle_version"] = version
                 if version is None:
@@ -515,7 +502,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 self.write_manifest()
                 with self.assertRaisesRegex(ValueError, "format identity invalid"):
                     self.check()
-        self.manifest["fetcher_bundle_version"] = 6
+        self.manifest["fetcher_bundle_version"] = release.FETCHER_BUNDLE_VERSION
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 
@@ -635,7 +622,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
 
     def test_same_image_cannot_substitute_a_different_provider(self):
         self.assertEqual(self.check(), "drained")
-        self.rows[-1]["Config"]["Cmd"][-2] = "twelve_data"
+        # TAIFEX runs on the Twelve Data image; that image must not pass as Twelve Data.
+        taifex = next(row for row in self.rows if row["Name"] == "/findb-full-market-taifex")
+        taifex["Config"]["Cmd"][-2] = "twelve_data"
         with self.assertRaises(ValueError):
             self.check()
 

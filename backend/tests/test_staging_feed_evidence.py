@@ -21,9 +21,11 @@ from types import ModuleType
 
 import pytest
 
+from app.services.provider_metadata import provider_catalog
 from tests.script_env import script_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+CATALOG_PROVIDERS = tuple(row.provider for row in provider_catalog().providers)
 
 
 def _load(name: str, path: Path) -> ModuleType:
@@ -493,7 +495,7 @@ def test_probe_command_preserves_environment_as_literal_data(local_ssm, tmp_path
     assert state["commands"][0]["nonce"] == nonce
 
 
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex", "factset"])
+@pytest.mark.parametrize("provider", CATALOG_PROVIDERS)
 def test_ssm_transport_accepts_only_generated_full_market_containers(provider) -> None:
     collector = _load(
         "full_market_transport", REPO_ROOT / "infra/acceptance/collect_staging_feed_evidence.py"

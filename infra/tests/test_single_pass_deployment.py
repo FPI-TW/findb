@@ -191,7 +191,7 @@ def test_finalize_never_restarts_or_recreates_healthy_consumers(host):
     tx.finalize_locked(journal)
     assert tx.load()["phase"] == "committed"
     assert (tx.base / "current").readlink() == tx.root
-    assert len(state["rows"]) == 10
+    assert len(state["rows"]) == len(transaction.FETCHER_NAMES)
     assert all(r["HostConfig"]["RestartPolicy"]["Name"] == "unless-stopped" for r in state["rows"])
     assert not any(
         c[0:2] in (("docker", "start"), ("docker", "run"), ("docker", "stop"))
@@ -316,7 +316,7 @@ def test_new_manifest_bundles_protocol_tools_and_preserves_v3():
     m.update(
         account_id="439622209937",
         registry=manifest_tool.REGISTRY,
-        fetcher_bundle_version=6,
+        fetcher_bundle_version=manifest_tool.FETCHER_BUNDLE_VERSION,
         created_by_run_id="12",
         contract_versions=list(contracts.versions),
         contract_manifest_sha256=contracts.canonical_sha256,
@@ -577,7 +577,8 @@ def test_a_killed_or_undrained_provisional_consumer_still_requires_recovery(host
 
 
 def test_transaction_owns_only_full_market_and_historical_consumers():
-    assert len(transaction.FETCHER_NAMES) == 10
+    # Two consumers per catalog provider.
+    assert len(transaction.FETCHER_NAMES) == 2 * len(transaction.PROVIDERS)
     assert not any("pilot" in name for name in transaction.FETCHER_NAMES)
     assert {name.split("-")[1] for name in transaction.FETCHER_NAMES} == {"full", "historical"}
     # The retired flag is never journaled or replayed into an older release.

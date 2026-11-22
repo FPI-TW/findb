@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.registry import APIKey, SourceClient
+from app.services.provider_metadata import provider_catalog
 from scripts.reconcile_fetcher_credentials import (
     SOURCE_SPECS,
     FetcherCredentialError,
@@ -41,9 +42,9 @@ async def test_fetcher_credentials_are_created_and_idempotent(
     )
     assert not (await test_session.scalars(select(APIKey))).all()
 
-    assert [row.action for row in created] == ["created"] * 5
-    assert [row.action for row in unchanged] == ["unchanged"] * 5
-    assert len(source_rows) == 5
+    assert [row.action for row in created] == ["created"] * len(SOURCE_SPECS)
+    assert [row.action for row in unchanged] == ["unchanged"] * len(SOURCE_SPECS)
+    assert len(source_rows) == len(SOURCE_SPECS)
     by_name = {row.name: row for row in source_rows}
     for spec in SOURCE_SPECS:
         assert by_name[spec.name].source_name == spec.source_name
@@ -92,15 +93,14 @@ async def test_unified_credentials_cover_every_feed_without_profile_branch(test_
     results = await reconcile_fetcher_credentials_in_session(
         test_session, _hashes(), deployment_target=target
     )
-    assert len(results) == 5
+    # One credential per catalog provider, scoped to exactly its feeds.
+    assert len(results) == len(SOURCE_SPECS)
     rows = (await test_session.scalars(select(SourceClient))).all()
-    assert sum(len(row.allowed_datasets) for row in rows) == 10
+    assert sum(len(row.allowed_datasets) for row in rows) == sum(
+        len(spec.allowed_datasets) for spec in SOURCE_SPECS
+    )
     assert {row.source_name for row in rows} == {
-        "twelve_data",
-        "finlab",
-        "taifex",
-        "factset",
-        "hkex",
+        provider.provider for provider in provider_catalog().providers
     }
     assert all(row.rate_limit_requests == 2400 for row in rows)
     with pytest.raises(FetcherCredentialError):
