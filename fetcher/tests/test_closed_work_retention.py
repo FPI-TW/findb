@@ -82,7 +82,9 @@ def _keys(path: Path, table: str) -> set[str]:
 
 
 @pytest.mark.parametrize(
-    ("provider", "responses_retired"), [("twelve_data", True), ("finlab", False)]
+    ("provider", "responses_retired"),
+    # Each HKEX report body is the gzip it persisted to Raw R2.
+    [("twelve_data", True), ("hkex", True), ("finlab", False)],
 )
 def test_journal_retires_only_week_old_closed_and_receipted_works(
     tmp_path: Path, provider: str, responses_retired: bool

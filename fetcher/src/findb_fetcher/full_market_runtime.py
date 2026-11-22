@@ -579,7 +579,10 @@ class FullMarketRuntime:
             # report resolver handles fallback/retry without fabricating evidence.
             if url in EMPTY_OFFICIAL_SNAPSHOT_URLS and not body:
                 return body
-            stored = self._persist(body, official_snapshot_dataset(url), "official_universe")
+            dataset = official_snapshot_dataset(
+                url, [feed["dataset_key"] for feed in self.installed_feeds]
+            )
+            stored = self._persist(body, dataset, "official_universe")
             self.snapshot_objects[url] = stored
             self._recent_snapshots[url] = (time.monotonic(), body, stored)
             return body
@@ -2704,7 +2707,7 @@ class FullMarketRuntime:
                     plan["plan_id"],
                     work_item_id=part["work_item_id"],
                     member_key=member["member_key"],
-                    reason="no_trade",
+                    reason=result.no_data_reason,
                     evidence=result.no_trade,
                 )
             except FullMarketProtocolError as exc:

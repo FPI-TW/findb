@@ -1217,6 +1217,26 @@ def test_taifex_rejected_latest_report_remains_member_source_error(tmp_path: Pat
     assert [outcome["reason"] for outcome in source.outcomes] == ["source_error"]
 
 
+def test_a_halted_member_is_reported_as_halted_no_data(tmp_path: Path, monkeypatch) -> None:
+    from findb_fetcher.provider_adapters.base import AcquisitionResult
+
+    runtime, source, _ = _runtime(tmp_path, provider="taifex")
+    evidence = {
+        "source_status": "halted",
+        "source_excerpt": "36 FE HLDGS INTL HKD TRADING SUSPENDED",
+    }
+    monkeypatch.setattr(
+        runtime.adapter,
+        "acquire",
+        lambda member, context: AcquisitionResult.no_trade_evidence(evidence, reason="halted"),
+    )
+    plan = {**_plan(), "dataset_key": "tw_futures_eod"}
+
+    assert runtime._acquire(_member(), plan, plan["parts"][0], {}, runtime.feeds[0]) == []
+    assert [(o["reason"], o["evidence"]) for o in source.outcomes] == [("halted", evidence)]
+    runtime.http.close()
+
+
 @pytest.mark.parametrize("volume", ["0", "NULL"])
 def test_taifex_all_missing_metrics_require_explicit_zero_volume_for_no_trade(
     tmp_path: Path, volume: str

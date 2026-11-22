@@ -8,7 +8,7 @@ import io
 import json
 import re
 import zipfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from datetime import date, datetime
 from html.parser import HTMLParser
 from typing import Any
@@ -87,12 +87,16 @@ class UniverseSnapshotError(ValueError):
     """An official snapshot cannot be classified without losing evidence."""
 
 
-def official_snapshot_dataset(url: str) -> str:
-    """The dataset whose raw scope stores one official snapshot URL."""
+def official_snapshot_dataset(url: str, datasets: Collection[str] = ()) -> str:
+    """The dataset whose raw scope stores one official snapshot URL.
+
+    The HKEX list serves FactSet's HK feed and the exchange's own; the runtime's
+    installed ``datasets`` say which provider observed it.
+    """
     if url in NASDAQ_URLS:
         return "us_equity_eod"
     if url == HKEX_URL:
-        return "hk_equity_eod"
+        return "hk_equity_official_eod" if "hk_equity_official_eod" in datasets else "hk_equity_eod"
     if url == TAIFEX_URL:
         return "tw_futures_eod"
     return "tw_etf_eod" if url in TW_ISIN_ETF_URLS else "tw_equity_eod"
