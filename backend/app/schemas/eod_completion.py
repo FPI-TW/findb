@@ -15,8 +15,9 @@ class EODRawEvidence(BaseModel):
 
     @model_validator(mode="after")
     def content_addressed(self) -> "EODRawEvidence":
-        if any(value in self.ref for value in ("?", "#", "@", "%", "\\", "/../")) or not (
-            self.ref.endswith(f"/{self.sha256}.json")
+        # JSON provider responses, or an exchange report kept gzip compressed.
+        if any(value in self.ref for value in ("?", "#", "@", "%", "\\", "/../")) or not any(
+            self.ref.endswith(f"/{self.sha256}.{extension}") for extension in ("json", "htm.gz")
         ):
             raise ValueError("EOD evidence must identify immutable raw content")
         return self
@@ -35,7 +36,7 @@ class EODCompletionEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: Literal[2]
-    schema_id: Literal["market_eod"]
+    schema_id: Literal["market_eod", "exchange_daily_quote"]
     # FactSet delivers EOD v2; Full release cohorts deliver their feed contract (v1).
     schema_version: Literal[1, 2]
     trade_date: date

@@ -1,8 +1,9 @@
 """Validate per-member EOD completion using this work's permanent member evidence.
 
-Every work freezes its feed's current EOD contract. Historical dated-release
-cohorts may additionally prove a no-trade member by its raw observation, or
-report a member whose provider returned no series as missing.
+Every work freezes its feed's current per-member EOD contract: a provider's
+``market_eod`` or an exchange's ``exchange_daily_quote``. Historical cohorts
+(dated or current release) may additionally prove a no-trade member by its raw
+observation, or report a member whose provider returned no series as missing.
 """
 
 from uuid import UUID
@@ -14,25 +15,37 @@ from app.models.provider_work import ProviderWork
 from app.models.registry import DailyDeliveryMember, DeliveryMemberEvidence, DQIssue, IngestionRun
 from app.schemas.eod_completion import EODCompletionEvidence
 
+# Contracts whose rows are one member's day each, settled member by member.
+MEMBER_EOD_SCHEMAS = frozenset({"market_eod", "exchange_daily_quote"})
+# Row-level DQ errors: the member's row was unusable, the delivery itself sound.
+ROW_DQ_ERRORS = frozenset(
+    {
+        "OHLC_HIGH_CHECK",
+        "OHLC_LOW_CHECK",
+        "DUPLICATE_KEY",
+        "DELISTED_NO_TRADE_DATE",
+        "DELISTED_NO_DATE",
+        "DELISTED_AFTER_DATE",
+        "QUOTE_HIGH_BELOW_LOW",
+        "QUOTE_TURNOVER_WITHOUT_VOLUME",
+    }
+)
 
-def eod_contract_version(work: ProviderWork) -> int | None:
-    """The feed's current market_eod version; None for any other feed's work."""
+
+def eod_contract(work: ProviderWork) -> dict | None:
+    """The feed's current per-member EOD contract as frozen; None for other feeds."""
     from app.services.provider_metadata import catalog_feed
 
     feed = catalog_feed(work.provider, work.dataset_key)
-    if feed is None or feed.contract.schema_id != "market_eod":
+    if feed is None or feed.contract.schema_id not in MEMBER_EOD_SCHEMAS:
         return None
-    return feed.contract.current_version
+    return {"schema_id": feed.contract.schema_id, "schema_version": feed.contract.current_version}
 
 
-def dated_release_work(work: ProviderWork) -> bool:
-    """Historical work of a feed whose dates each freeze their own Full release."""
+def _historical_cohort(work: ProviderWork) -> str | None:
     from app.services.provider_metadata import historical_cohort
 
-    return (
-        work.kind == "historical"
-        and historical_cohort(work.provider, work.dataset_key) == "dated_release"
-    )
+    return historical_cohort(work.provider, work.dataset_key) if work.kind == "historical" else None
 
 
 def _scoped_raw(work: ProviderWork, member) -> bool:
@@ -75,19 +88,24 @@ async def validate_eod_completion(
 ) -> dict:
     """No run counts, pre-existing canonical prices, or caller data claims prove writes."""
     manifest = work.manifest or {}
-    version = eod_contract_version(work)
-    cohort = dated_release_work(work)
+    contract = eod_contract(work)
+    # A release cohort (dated or current) may prove no-trade by its scoped raw;
+    # only a dated one may report a member the provider served no series for.
+    cohort = _historical_cohort(work) in {"dated_release", "current_release"}
+    dated = _historical_cohort(work) == "dated_release"
     if (
         work.kind not in {"daily", "historical"}
-        or manifest.get("contract") != {"schema_id": "market_eod", "schema_version": version}
-        or evidence.schema_version != version
+        or contract is None
+        or manifest.get("contract") != contract
+        or evidence.schema_id != contract["schema_id"]
+        or evidence.schema_version != contract["schema_version"]
         or evidence.trade_date != work.trade_date
         or any(
             run.source != work.provider
             or run.dataset_key != work.dataset_key
             or run.batch_data_date != work.trade_date
-            or run.schema_id != "market_eod"
-            or run.schema_version != version
+            or run.schema_id != contract["schema_id"]
+            or run.schema_version != contract["schema_version"]
             for run in runs
         )
     ):
@@ -133,18 +151,7 @@ async def validate_eod_completion(
             )
         )
     )
-    if any(
-        issue.issue_type
-        not in {
-            "OHLC_HIGH_CHECK",
-            "OHLC_LOW_CHECK",
-            "DUPLICATE_KEY",
-            "DELISTED_NO_TRADE_DATE",
-            "DELISTED_NO_DATE",
-            "DELISTED_AFTER_DATE",
-        }
-        for issue in issues
-    ):
+    if any(issue.issue_type not in ROW_DQ_ERRORS for issue in issues):
         raise ValueError("non-data normalization failures cannot settle partial")
     invalid = {
         str((issue.raw_data or {}).get("symbol", "")).strip().upper()
@@ -180,7 +187,7 @@ async def validate_eod_completion(
             gaps.add(key)
         elif member.outcome == "invalid" and key in invalid:
             gaps.add(key)
-        elif cohort and member.outcome == "missing" and member.raw is None:
+        elif dated and member.outcome == "missing" and member.raw is None:
             # The provider served no series for the member; it stays a Full plan gap.
             gaps.add(key)
         elif _scoped_raw(work, member) and (

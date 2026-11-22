@@ -608,19 +608,20 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
         raise ProviderWorkError("expected scope is already frozen")
     if "contract" in manifest:
         from app.models.registry import DatasetRegistry
-        from app.services.eod_completion import eod_contract_version
+        from app.services.eod_completion import eod_contract
         from app.services.ingress_contracts import parse_dataset_contract_declaration
 
         dataset = await db.get(DatasetRegistry, work.dataset_key)
         declaration = parse_dataset_contract_declaration(dataset.config) if dataset else None
         # Daily and historical EOD work freeze the feed's current contract version.
-        version = eod_contract_version(work)
+        contract = eod_contract(work)
         if (
-            manifest["contract"] != {"schema_id": "market_eod", "schema_version": version}
+            contract is None
+            or manifest["contract"] != contract
             or work.kind not in {"daily", "historical"}
             or declaration is None
-            or declaration.schema_id != "market_eod"
-            or version not in declaration.accepted_schema_versions
+            or declaration.schema_id != contract["schema_id"]
+            or contract["schema_version"] not in declaration.accepted_schema_versions
             or work.provider not in declaration.provider_scope()
         ):
             raise ProviderWorkError("frozen EOD v2 contract is outside the dataset scope")
@@ -1119,12 +1120,10 @@ async def settle(
         )
     ):
         outcome, failure_code = "failed", "NORMALIZATION_FAILED"
-    from app.services.eod_completion import eod_contract_version
+    from app.services.eod_completion import eod_contract
 
-    eod_v2 = (work.manifest or {}).get("contract") == {
-        "schema_id": "market_eod",
-        "schema_version": eod_contract_version(work),
-    }
+    frozen_contract = (work.manifest or {}).get("contract")
+    eod_v2 = frozen_contract is not None and frozen_contract == eod_contract(work)
     if (
         outcome == "partial"
         and work.kind == "daily"

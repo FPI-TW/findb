@@ -709,3 +709,45 @@ def test_listed_partnerships_and_royalty_trusts_deliver_as_equities(monkeypatch,
         runner.close()
     assert result.result_evidence["members"] == [{"member_key": "EPD", "outcome": "data"}]
     assert [body["payload"]["data"][0]["symbol"] for body in delivery.prepared] == ["EPD"]
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "accepted"),
+    [
+        # One release current at the request's creation serves each of its dates.
+        ({"cohort": "current_hkex", "trade_date": None}, True),
+        # A dated release serves only the date it was frozen for.
+        ({"cohort": "full_release", "trade_date": "2026-10-14"}, False),
+        ({"cohort": "unknown"}, False),
+    ],
+)
+def test_a_current_release_cohort_serves_every_date_of_its_request(
+    monkeypatch, tmp_path, snapshot, accepted
+):
+    from findb_fetcher.providers.twelve_data import (
+        TwelveDataClient,
+        TwelveDataConfig,
+        TwelveDataResponse,
+    )
+
+    monkeypatch.setattr(TwelveDataConfig, "from_env", classmethod(lambda cls: cls(api_key="k")))
+
+    def fetch_daily(self, symbol, *, start_date, end_date, **kwargs):
+        payload = _twelve(symbol, "USD")
+        return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
+
+    monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    item = _item("twelve_data", "us_equity_eod", [_member("O", "USD")])
+    frozen = {**item.universe_snapshot, **snapshot}
+    item = replace(item, universe_snapshot={k: v for k, v in frozen.items() if v is not None})
+    runner, owner, _ = _runner(monkeypatch, tmp_path, "twelve_data", item)
+    try:
+        if not accepted:
+            with pytest.raises(ValueError, match="cohort or owner"):
+                runner.run(item)
+            return
+        result = runner.run(item)
+    finally:
+        runner.close()
+    assert result.status == "completed"
+    assert owner.frozen[0]["universe_release_id"] == item.universe_snapshot["release_id"]

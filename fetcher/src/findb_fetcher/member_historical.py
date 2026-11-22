@@ -59,6 +59,8 @@ from findb_fetcher.raw_storage import (
 )
 
 FULL_RELEASE_COHORT = "full_release"
+# One release, current when the request was made, frozen for every date of it.
+CURRENT_RELEASE_COHORT = "current_hkex"
 # Native acquisitions per member, and per shared date table, before giving up.
 MEMBER_ATTEMPTS = 5
 # One timing line per interval during a long date, in the Full daily format.
@@ -82,6 +84,12 @@ def full_release_cohort(item: HistoricalWorkItem) -> bool:
     """The item froze its date's Full release; otherwise the legacy executor runs."""
     snapshot = item.universe_snapshot
     return isinstance(snapshot, dict) and snapshot.get("cohort") == FULL_RELEASE_COHORT
+
+
+def current_release_cohort(item: HistoricalWorkItem) -> bool:
+    """The request froze the release current at its creation for all its dates."""
+    snapshot = item.universe_snapshot
+    return isinstance(snapshot, dict) and snapshot.get("cohort") == CURRENT_RELEASE_COHORT
 
 
 class MemberHistoricalRunner:
@@ -130,9 +138,12 @@ class MemberHistoricalRunner:
             owner is None
             or item.provider != self.provider
             or owner.work["stable_key"] != f"historical:{item.item_id}"
-            or not full_release_cohort(item)
             or not isinstance(snapshot, dict)
-            or snapshot.get("trade_date") != item.trade_date.isoformat()
+            or not (
+                full_release_cohort(item)
+                and snapshot.get("trade_date") == item.trade_date.isoformat()
+                or current_release_cohort(item)
+            )
             or not snapshot.get("members")
         ):
             raise ValueError("historical Full release cohort or owner is unavailable")
