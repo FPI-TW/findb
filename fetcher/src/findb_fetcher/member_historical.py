@@ -139,6 +139,10 @@ class MemberHistoricalRunner:
         feed = historical_feed(item.provider, item.dataset_key)
         contract = feed["contract"]
         members = sorted(snapshot["members"], key=lambda member: member["member_key"])
+        # Later lists' members the date's list lacks: requested, never expected.
+        supplementary = sorted(
+            snapshot.get("supplementary") or [], key=lambda member: member["member_key"]
+        )
         owner.freeze(
             {
                 "mode": "canonical",
@@ -155,8 +159,22 @@ class MemberHistoricalRunner:
                     }
                     for member in members
                 ],
+                **(
+                    {
+                        "supplementary": [
+                            {
+                                "key": member["member_key"],
+                                "source_symbol": member["provider_symbol"],
+                            }
+                            for member in supplementary
+                        ]
+                    }
+                    if supplementary
+                    else {}
+                ),
             }
         )
+        cohort = [*members, *supplementary]
         # The shared native observation (FinLab bundle) a member failure may cite.
         self._shared_raw = None
         self._timing = {"item_id": str(item.item_id), "since": time.monotonic(), "members": 0}
@@ -165,8 +183,8 @@ class MemberHistoricalRunner:
         accepted: dict[str, _Accepted] = {}
         try:
             try:
-                for member in members:
-                    step = self._member(owner, item, feed, member, members)
+                for member in cohort:
+                    step = self._member(owner, item, feed, member, cohort)
                     if isinstance(step, _Accepted):
                         accepted[member["member_key"]] = step
                     else:

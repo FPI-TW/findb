@@ -518,3 +518,42 @@ def test_a_run_still_queued_after_the_deadline_defers_and_keeps_read_outcomes(
     saved = owner.journal.response("member-historical:outcome:1101")
     assert json.loads(saved) == {"member_key": "1101", "outcome": "data"}
     assert owner.journal.response("member-historical:outcome:1102") is None
+
+
+def test_later_release_members_are_requested_but_never_expected(monkeypatch, tmp_path):
+    from findb_fetcher.providers.twelve_data import (
+        TwelveDataClient,
+        TwelveDataConfig,
+        TwelveDataResponse,
+        TwelveDataResponseError,
+    )
+
+    monkeypatch.setattr(TwelveDataConfig, "from_env", classmethod(lambda cls: cls(api_key="k")))
+    calls: list[str] = []
+
+    def fetch_daily(self, symbol, *, start_date, end_date, **kwargs):
+        calls.append(symbol)
+        if symbol == "LATE404":
+            raise TwelveDataResponseError("absent", status_code=404, dispatched=True)
+        payload = _twelve(symbol)
+        return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
+
+    monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    item = _item("twelve_data", "us_equity_eod", [_member("O", "USD")])
+    assert item.universe_snapshot is not None
+    item.universe_snapshot["supplementary"] = [_member("LATE", "USD"), _member("LATE404", "USD")]
+    delivery = _Delivery()
+    runner, owner, _ = _runner(monkeypatch, tmp_path, "twelve_data", item, delivery)
+    try:
+        result = runner.run(item)
+    finally:
+        runner.close()
+    assert calls == ["O", "LATE", "LATE404"]
+    # The frozen manifest names the supplement; the evidence covers members only.
+    assert owner.frozen[0]["supplementary"] == [
+        {"key": "LATE", "source_symbol": "LATE"},
+        {"key": "LATE404", "source_symbol": "LATE404"},
+    ]
+    assert result.status == "completed"
+    assert result.result_evidence["members"] == [{"member_key": "O", "outcome": "data"}]
+    assert [body["payload"]["data"][0]["symbol"] for body in delivery.prepared] == ["O", "LATE"]

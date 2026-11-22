@@ -130,7 +130,9 @@ async def test_each_date_freezes_its_plan_release_or_latest_published(
     _, body, release = await setup(test_session, monkeypatch, provider)
     plan = await _plan(test_session, provider, release.release_id, FIRST, body.members[:3])
     changed = deepcopy(body)
-    changed.members = changed.members[1:]
+    # A later list adds 0005 without a listing date: the first date's list missed it.
+    late = changed.members[0].model_copy(update={"symbol": "0005", "provider_symbol": "0005"})
+    changed.members = [*changed.members[1:], late]
     changed.effective_date = date(2026, 10, 16)
     newer = await _publish(test_session, changed, first=False)
     request, _ = await historical_backfill.create_request(
@@ -143,12 +145,15 @@ async def test_each_date_freezes_its_plan_release_or_latest_published(
         created_by="owner",
     )
     snapshot = request.universe_snapshot
-    assert snapshot["version"] == 2 and snapshot["cohort"] == "full_release"
+    assert snapshot["version"] == 3 and snapshot["cohort"] == "full_release"
     first, second = snapshot["dates"][FIRST.isoformat()], snapshot["dates"][SECOND.isoformat()]
     # The plan's release wins for its date; otherwise the latest published by then.
     assert (first["release_id"], first["plan_id"]) == (str(release.release_id), str(plan.plan_id))
     assert (second["release_id"], second["plan_id"]) == (str(newer.release_id), None)
-    assert (first["member_count"], second["member_count"]) == (2, 2)
+    assert (first["member_count"], second["member_count"]) == (2, 3)
+    # Only the first date has a later release; the gap and the later listing stay out.
+    assert first["supplement_release_ids"] == [str(newer.release_id)]
+    assert (first["supplement_count"], second["supplement_count"]) == (1, 0)
     items = {
         item.trade_date: item
         for item in await test_session.scalars(
@@ -163,11 +168,14 @@ async def test_each_date_freezes_its_plan_release_or_latest_published(
     # Mapped members listed by the date only; the gap and the later listing are out.
     assert [m["member_key"] for m in cohort["members"]] == [m.symbol for m in body.members[:2]]
     assert cohort["release_id"] == str(release.release_id)
+    assert [m["member_key"] for m in cohort["supplementary"]] == ["0005"]
     later = await historical_backfill.frozen_cohort(test_session, items[SECOND])
     assert [m["member_key"] for m in later["members"]] == [
         body.members[1].symbol,
         body.members[3].symbol,
+        "0005",
     ]
+    assert later["supplementary"] == []
 
 
 @pytest.mark.asyncio
@@ -431,3 +439,98 @@ async def test_requests_created_before_cohorts_keep_single_run_completion(
         json={"status": "completed", "lease_token": owner["token"]},
     )
     assert response.status_code == 422 and "Source run" in response.text
+
+
+def _us(body: dict) -> dict:
+    value = deepcopy(body)
+    value.update(dataset_key="us_equity_eod", source="twelve_data")
+    value["delivery"]["slot_id"] = "western_markets_window"
+    value["payload"]["data"][0]["currency"] = "USD"
+    return value
+
+
+@pytest.mark.asyncio
+async def test_later_release_member_is_requested_and_recorded_but_never_expected(
+    client, test_session, test_engine, monkeypatch
+):
+    """Twelve Data delivers no unlisted rows, yet a later list's member is requested."""
+    headers, body, release = await setup(test_session, monkeypatch, "twelve_data")
+    changed = deepcopy(body)
+    late = changed.members[0].model_copy(update={"symbol": "0005", "provider_symbol": "0005"})
+    changed.members = [*changed.members, late]
+    changed.effective_date = SECOND
+    await _publish(test_session, changed, first=False)
+    request, _ = await historical_backfill.create_request(
+        test_session,
+        provider="twelve_data",
+        dataset_key="us_equity_eod",
+        start_date=FIRST,
+        end_date=FIRST,
+        request_key="twelve-data-supplement",
+        created_by="owner",
+    )
+    request_id = request.request_id
+    await test_session.commit()
+    owner, work_headers, item = await _claim(client, headers)
+    snapshot = item["universe_snapshot"]
+    assert [m["member_key"] for m in snapshot["members"]] == ["0001", "0002"]
+    assert [m["member_key"] for m in snapshot["supplementary"]] == ["0005"]
+    manifest = {
+        "mode": "canonical",
+        "contract": {"schema_id": "market_eod", "schema_version": 1},
+        "universe_release_id": snapshot["release_id"],
+        "members": [
+            {
+                "key": m["member_key"],
+                "source_symbol": m["provider_symbol"],
+                "mapping_status": m["mapping_status"],
+            }
+            for m in snapshot["members"]
+        ],
+    }
+    fence = {"generation": owner["generation"], "token": owner["token"]}
+    path = f"/api/v1/source/provider-work/{owner['work_id']}/manifest"
+    # The manifest must carry exactly the frozen supplement.
+    missing = await client.post(path, headers=headers, json={**fence, "manifest": manifest})
+    assert missing.status_code == 409, missing.text
+    manifest["supplementary"] = [{"key": "0005", "source_symbol": "0005"}]
+    frozen = await client.post(path, headers=headers, json={**fence, "manifest": manifest})
+    assert frozen.status_code == 200, frozen.text
+
+    def post(value):
+        return client.post(
+            "/api/v1/source/ingest",
+            headers={**work_headers, "X-FinDB-Work-Member": value["idempotency_key"]},
+            json=value,
+        )
+
+    members = {m["member_key"]: m for m in (*snapshot["members"], *snapshot["supplementary"])}
+    # A member-scoped feed still refuses a symbol in no frozen list.
+    stray = {"member_key": "0009", "symbol": "0009", "provider_symbol": "0009"}
+    assert (await post(_us(_body(item, stray, FIRST.isoformat())))).status_code == 409
+    for key in ("0001", "0005"):
+        accepted = await post(_us(_body(item, members[key], FIRST.isoformat())))
+        assert accepted.status_code == 202, accepted.text
+        await _execute_run(test_session, test_engine, UUID(accepted.json()["run_id"]))
+    evidence = {
+        "version": 2,
+        "schema_id": "market_eod",
+        "schema_version": 1,
+        "trade_date": FIRST.isoformat(),
+        "item_id": item["item_id"],
+        "request_id": str(request_id),
+        "members": [
+            {"member_key": "0001", "outcome": "data"},
+            {"member_key": "0002", "outcome": "missing"},
+        ],
+    }
+    complete = await client.post(
+        f"/api/v1/source/historical-backfills/{item['item_id']}/complete",
+        headers=work_headers,
+        json={"status": "partial", "lease_token": owner["token"], "result_evidence": evidence},
+    )
+    assert complete.status_code == 200, complete.text
+    stored = await test_session.get(
+        HistoricalBackfillItem, UUID(item["item_id"]), populate_existing=True
+    )
+    assert (stored.status, stored.unlisted_symbols) == ("partial", ["0005"])

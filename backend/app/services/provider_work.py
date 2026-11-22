@@ -703,7 +703,11 @@ async def freeze_manifest(db: AsyncSession, *, manifest: dict, **identity) -> No
             row["key"]: (row.get("mapping_status"), row.get("source_symbol"))
             for row in manifest["members"]
         }
-        if observed_rows != expected_rows:
+        if observed_rows != expected_rows or {
+            row.get("key"): row.get("source_symbol") for row in manifest.get("supplementary", [])
+        } != {
+            row["member_key"]: row["provider_symbol"] for row in snapshot.get("supplementary", [])
+        }:
             raise ProviderWorkError("EOD historical manifest differs from the frozen cohort")
     work.manifest = manifest
 
@@ -833,6 +837,11 @@ async def current_calendar_status(db: AsyncSession, work: ProviderWork) -> dict:
     }
 
 
+def supplementary_keys(work: ProviderWork) -> set[str]:
+    """Later-release members a historical date requests without expecting them."""
+    return {row["key"] for row in (work.manifest or {}).get("supplementary", [])}
+
+
 async def _unlisted_scope(db: AsyncSession, work: ProviderWork, symbols: set[str]) -> bool:
     """Daily and historical EOD work may also write served symbols outside its list."""
     from app.services.unlisted_symbols import unlisted_allowed
@@ -840,8 +849,14 @@ async def _unlisted_scope(db: AsyncSession, work: ProviderWork, symbols: set[str
     return (
         work.kind in {"daily", "historical"}
         and "contract" in (work.manifest or {})
-        and await unlisted_allowed(
-            db, provider=work.provider, dataset_key=work.dataset_key, symbols=symbols
+        and (
+            symbols <= supplementary_keys(work)
+            or await unlisted_allowed(
+                db,
+                provider=work.provider,
+                dataset_key=work.dataset_key,
+                symbols=symbols - supplementary_keys(work),
+            )
         )
     )
 
