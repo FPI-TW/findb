@@ -59,8 +59,17 @@ EMPTY_OFFICIAL_SNAPSHOT_URLS = frozenset({TAIFEX_URL})
 MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 # ISO 10383 links these Nasdaq listing segments to operating MIC XNAS.
 NASDAQ_LISTING_SEGMENTS = frozenset({"XNCM", "XNGS", "XNMS"})
+# Listed partnerships and royalty trusts trade as common units; the official lists
+# name them common stock, so their provider types are equities too.
 TWELVE_DATA_EQUITY_TYPES = frozenset(
-    {"Common Stock", "REIT", "American Depositary Receipt", "Depositary Receipt"}
+    {
+        "Common Stock",
+        "REIT",
+        "American Depositary Receipt",
+        "Depositary Receipt",
+        "Limited Partnership",
+        "Trust",
+    }
 )
 # Explicitly outside the US equity scope; any other unmappable listing stays an expected gap.
 TWELVE_DATA_OUT_OF_SCOPE_TYPES = frozenset(

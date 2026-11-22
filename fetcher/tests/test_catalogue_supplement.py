@@ -33,6 +33,8 @@ def test_only_listed_equities_off_the_list_and_outside_excluded_forms_are_kept()
         _row("ATEST", "XNYS"),  # NYSE test issue
         _row("FUNDX", name="Big Closed-End Fund"),  # excluded by name
         _row("NOTE", name="Acme 5% Notes due 2030"),
+        _row("MLP", "XNYS", "Limited Partnership", "Midstream Partners L.P."),
+        _row("ROYL", "XNYS", "Trust", "Basin Royalty Trust"),
         _row("DUAL", "IEXG", exchange="IEX"),
         _row("DUAL", "XNYS"),  # the primary venue wins over IEX
     ]
@@ -41,6 +43,8 @@ def test_only_listed_equities_off_the_list_and_outside_excluded_forms_are_kept()
         ("ADRX", "XNYS", "adr"),
         ("BRK.C", "XNYS", "ordinary"),
         ("DUAL", "XNYS", "ordinary"),
+        ("MLP", "XNYS", "ordinary"),
         ("NEWC", "XNAS", "ordinary"),
+        ("ROYL", "XNYS", "ordinary"),
     ]
     assert all(row["mapping_status"] == "mapped" and row["currency"] == "USD" for row in kept)
