@@ -155,6 +155,29 @@
   - `raw.market_payload` 只存 contract，不存 HTML。
   - Fetcher 的 durable response journal 也只存壓縮後的內容。
 - 每檔一個 request，與現行做法相同。
+- 實作（第 3 個 PR，`fetcher/src/findb_fetcher/providers/hkex.py`、`provider_adapters/hkex.py`）：
+  - 只收「206、`Content-Range` 從 0 開始且總長等於內容長度」的回應，否則同一輪內最多重抓 3 次；
+    伺服器忽略 Range 回 200 時也重抓，因為無法證明沒有被插入 script。404 視為尚未發布
+    （`wait="publication"`）；408／429／5xx、連線錯誤與持續被改寫的回應是全 plan 共用的 outage；
+    超過回應上限、其他 4xx 與格式錯誤讓當天 work 失敗。
+  - 解析器很嚴格：每檔兩行的行情、一行的停牌或暫停交易、空行以外的任何一行都讓整份報表被拒絕，
+    並核對報表標頭的 `DATE:` 等於請求的交易日。本機 2026-09-21 至 11-20 的 90 份報表（主板與 GEM
+    各 45 份）共 725,970 列行情、18,053 列停牌或暫停交易、4 份假日頁，全部解析成功、沒有未知格式；
+    Python `gzip`（level 9、`mtime=0`）的壓縮結果與本機歸檔逐位元組相同。
+  - 每份報表只抓一次、只存一個 Raw R2 物件（`daily_quotation_<board>`、格式 `html_gzip`、
+    `application/gzip`，不設 Content-Encoding），所有成員共用。GEM 成員先查 GEM 報表。
+  - 成員結果：報表有列就送 `data`（無成交送 `no_trade` 列）；停牌或暫停交易回報 no_data、reason
+    `halted`，證據是報表網址、Raw R2 物件的 SHA-256 與該行原文；假日頁回報 no_data、reason
+    `no_trade`；名單有、兩份報表都沒有的成員是 `missing`。為此 `AcquisitionResult` 加了
+    `no_data_reason`，runtime 不再固定送 `no_trade`。
+  - 名單：`ListOfSecurities` 的代號就是報表的代號，成員一律 `mapped`；HKEX runtime 把名單快照存在
+    自己的 dataset 底下（`official_snapshot_dataset` 依 runtime 安裝的 feed 決定）。
+  - `hkex` 加入 journal 清理的 `_R2_BACKED_RESPONSES`：journal 存的就是上傳 Raw R2 的 gzip。
+  - 設定 `HKEX_REPORT_ARCHIVE_DIR` 時改讀本機歸檔（`reports/`、`gem_reports/` 與兩份 manifest），
+    並以 manifest 的 SHA-256 核對原檔，供第 5 個 PR 匯入 HKEX 已刪除的日期；historical 沿用通用的
+    `MemberHistoricalRunner`，它直接呼叫 adapter 的 `acquire`。
+  - adapter 尚未註冊到 `ADAPTERS`、CLI 與 `_IMPLEMENTED_ADAPTERS`：Fetcher 的抓取要讀 catalog 的
+    平台上限，catalog 沒有 `hkex` 時一律拒絕，所以測試暫時注入一份 `hkex` 的 provider 描述。
 
 ### 原始報表歸檔
 
@@ -203,8 +226,8 @@ Owner 於 2026-11-19 確認長期歸檔。HKEX 兩個月後就刪除報表，Raw
 | --- | --- | --- |
 | 1 | contract `exchange_daily_quote.v1`、官方表 `exchange_daily_quote`、歸檔索引 `exchange_report_archive`、normalizer 與 Canonical R2 歸檔（見 [ingress contract](../architecture/ingress_contracts.md#exchange_daily_quotev1)）；尚無 dataset 接受 | 已合併（#622） |
 | 2 | FactSet 港股列的欄位層修正：`market_data_eod.field_sources`、修正紀錄表 `eod_field_correction`、同交易日 advisory lock 讓寫入順序無關、差異 DQ warning | 本 PR |
-| 3 | Fetcher adapter：Range 抓取與 script 檢查、gzip 存 Raw R2、主板與 GEM 解析、名單、停牌 no_data 證據、假日頁、historical runner；journal 清理加入 `hkex` | 未開始 |
-| 4 | 啟用：catalog provider 與 feed、dataset `hk_equity_official_eod`（defaults 須為 `market` HK、`asset_class` equity，才會與 FactSet 寫到同一個 instrument）、control、凍結排程檢查、Source credential、infra consumers 與 secrets；classify plan 支援官方表 | 未開始 |
+| 3 | Fetcher adapter：Range 抓取與 script 檢查、gzip 存 Raw R2、主板與 GEM 解析、名單、停牌 no_data 證據、假日頁、本機歸檔讀取；journal 清理加入 `hkex`（見上方「Fetcher」的實作） | 本 PR |
+| 4 | 啟用：catalog provider 與 feed、dataset `hk_equity_official_eod`（defaults 須為 `market` HK、`asset_class` equity，才會與 FactSet 寫到同一個 instrument）、control、凍結排程檢查、Source credential、infra consumers 與 secrets；classify plan 支援官方表。另外：`max_response_bytes` 至少 32 MiB（主板報表約 26 MB，Fetcher 上限 64 MiB）、slot 用 `asia_pacific_markets_window`（contract 的 `delivery.slot_id` 是列舉）、註冊 `ADAPTERS`／`_IMPLEMENTED_ADAPTERS`／historical runner，並移除測試注入的 provider 描述 | 未開始 |
 | 5 | 匯入本機報表、staging 驗收、文件整併 | 未開始 |
 
 每個 PR 合併後都能單獨部署：catalog 一旦列出 provider，部署就要求它的 Source credential 與兩個 consumers，

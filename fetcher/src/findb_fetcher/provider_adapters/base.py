@@ -123,6 +123,9 @@ class AcquisitionResult:
     no_trade: dict[str, Any] | None = None
     # A no-trade claim only Source can corroborate: if it refuses, this is the failure.
     unconfirmed: BaseException | None = None
+    # The Source no-data reason, equal to the evidence's ``source_status``:
+    # ``no_trade``, or ``halted`` for a suspended or halted security.
+    no_data_reason: str = "no_trade"
 
     @classmethod
     def data(cls, request: dict[str, Any], raw_object: RawObject) -> AcquisitionResult:
@@ -135,8 +138,14 @@ class AcquisitionResult:
         raw_object: RawObject | None = None,
         *,
         unconfirmed: BaseException | None = None,
+        reason: Literal["no_trade", "halted"] = "no_trade",
     ) -> AcquisitionResult:
-        return cls(no_trade=evidence, raw_object=raw_object, unconfirmed=unconfirmed)
+        return cls(
+            no_trade=evidence,
+            raw_object=raw_object,
+            unconfirmed=unconfirmed,
+            no_data_reason=reason,
+        )
 
 
 @dataclass(frozen=True)

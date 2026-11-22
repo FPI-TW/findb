@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import io
 from copy import deepcopy
@@ -107,6 +108,25 @@ def test_r2_store_labels_cp950_csv_without_changing_exact_bytes() -> None:
     assert client.calls[0]["Body"] == raw
     assert client.calls[0]["ContentType"] == "text/csv; charset=big5"
     assert client.calls[0]["Key"].endswith(".csv")
+    assert stored.sha256 == hashlib.sha256(raw).hexdigest()
+
+
+def test_r2_store_keeps_a_gzip_report_as_an_object_not_a_content_encoding() -> None:
+    raw = gzip.compress(b"<html><pre>DAILY QUOTATIONS</pre></html>", mtime=0)
+    client = FakeR2()
+
+    stored = R2RawPayloadStore(_config(), client=client).persist(
+        raw,
+        dataset_key="hk_equity_official_eod",
+        source_symbol="daily_quotation_main",
+        provider="hkex",
+        payload_format="html_gzip",
+    )
+
+    assert client.calls[0]["Body"] == raw
+    assert client.calls[0]["ContentType"] == "application/gzip"
+    assert "ContentEncoding" not in client.calls[0]
+    assert client.calls[0]["Key"].endswith(f"/{hashlib.sha256(raw).hexdigest()}.htm.gz")
     assert stored.sha256 == hashlib.sha256(raw).hexdigest()
 
 

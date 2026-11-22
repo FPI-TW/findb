@@ -83,6 +83,7 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         "test_full_market_idle.py",
         "test_execution_profile_parity.py",
         "test_historical_backfill.py",
+        "test_hkex.py",
     }
     if request.path.name not in modules:
         yield
