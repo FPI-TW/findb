@@ -169,6 +169,12 @@ async def test_each_date_freezes_its_plan_release_or_latest_published(
     assert [m["member_key"] for m in cohort["members"]] == [m.symbol for m in body.members[:2]]
     assert cohort["release_id"] == str(release.release_id)
     assert [m["member_key"] for m in cohort["supplementary"]] == ["0005"]
+    # The verified cohort is cached per date; callers get copies, never the cache.
+    cohort["members"].clear()
+    cohort["supplementary"][0]["provider_symbol"] = "CHANGED"
+    again = await historical_backfill.frozen_cohort(test_session, items[FIRST])
+    assert [m["member_key"] for m in again["members"]] == [m.symbol for m in body.members[:2]]
+    assert again["supplementary"][0]["provider_symbol"] == "0005"
     later = await historical_backfill.frozen_cohort(test_session, items[SECOND])
     assert [m["member_key"] for m in later["members"]] == [
         body.members[1].symbol,

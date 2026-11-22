@@ -207,6 +207,20 @@ def _plan_deadline(plan: dict[str, Any]) -> float:
     return deadline.timestamp()
 
 
+_REFUSED = "full:refused:"
+
+
+def _record_refused(journal: Any, idempotency_key: str) -> None:
+    """Remember a prepared body Source refused, so settlement never redelivers it."""
+    journal.response(_REFUSED + idempotency_key, b"{}")
+
+
+def _refused_keys(journal: Any) -> set[str]:
+    if journal is None:
+        return set()
+    return {key.removeprefix(_REFUSED) for key in journal.response_keys(_REFUSED)}
+
+
 def _plan_supplement(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The plan's frozen catalogue symbols that are not themselves plan members."""
     members = {key for part in plan.get("parts", ()) for key in part["member_keys"]}
@@ -1472,7 +1486,10 @@ class FullMarketRuntime:
                     for row in manual_bodies
                     for request in json.loads(row["body"])
                 }
-                owner.drain_prepared(pending_only=True, skip=manual_keys)
+                # Refused unlisted or supplement rows are outcomes, never redelivered.
+                owner.drain_prepared(
+                    pending_only=True, skip=manual_keys | _refused_keys(owner.journal)
+                )
                 progress = self.state.plan_progress(plan_id)
                 scheduling = {
                     **(progress["last_batch"] or {}),
@@ -1812,6 +1829,7 @@ class FullMarketRuntime:
                     # Source refuses this symbol (for example another class's list);
                     # the refusal is the outcome, and the other symbols continue.
                     journal.response(key, canonical_bytes({"refused": status}))
+                    _record_refused(journal, request["idempotency_key"])
                     continue
                 journal.response(key, canonical_bytes({"run_id": str(receipt.run_id)}))
         except Exception as exc:
@@ -1841,8 +1859,11 @@ class FullMarketRuntime:
         if not supplement or not plan.get("parts"):
             return
         with self.state.connection() as db:
+            # A delivered member may still be normalizing; only a member left to
+            # acquire holds the supplement back, so it runs before this round settles.
             if db.execute(
-                "SELECT 1 FROM full_work WHERE plan_id=? AND status NOT IN ('complete','manual') LIMIT 1",
+                "SELECT 1 FROM full_work WHERE plan_id=? AND status NOT IN "
+                "('complete','manual','prepared') LIMIT 1",
                 (plan["plan_id"],),
             ).fetchone():
                 return
@@ -1857,6 +1878,7 @@ class FullMarketRuntime:
             if journal.response(key) is not None:
                 continue
             member = {**row, "member_key": row["symbol"], "mapping_status": "mapped"}
+            request = None
             try:
                 if not self._acquisition_allowed():
                     return
@@ -1880,6 +1902,8 @@ class FullMarketRuntime:
                     self._record_diagnostic("supplement:" + plan["plan_id"], exc)
                     return
                 journal.response(key, canonical_bytes({"refused": status}))
+                if request is not None:
+                    _record_refused(journal, request["idempotency_key"])
                 continue
             except Exception as exc:
                 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError

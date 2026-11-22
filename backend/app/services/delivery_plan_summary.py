@@ -231,10 +231,13 @@ async def refresh_part_summary(
     from app.services.provider_metadata import delivers_unlisted
     from app.services.unlisted_symbols import plan_unlisted
 
-    # Unlisted writes are not members of any part; recount them for the whole plan.
+    # Unlisted writes are not members of any part; recount them for the whole plan,
+    # but only when this part's run wrote one. Outcomes and historical repairs never do.
     unlisted = (
         {"unlisted_data_count": len(await plan_unlisted(db, plan))}
-        if plan.supplement_id is not None or delivers_unlisted(plan.provider, plan.dataset_key)
+        if (plan.supplement_id is not None or delivers_unlisted(plan.provider, plan.dataset_key))
+        and run is not None
+        and await _wrote_unlisted(db, plan_id, run.run_id)
         else {}
     )
     now = utc_now()
@@ -277,6 +280,23 @@ async def refresh_part_summary(
         (locked - started) * 1000,
         (reconciled - locked) * 1000,
         (finished - started) * 1000,
+    )
+
+
+async def _wrote_unlisted(db: AsyncSession, plan_id: UUID, run_id: UUID) -> bool:
+    """Whether the run's write evidence names a symbol outside the plan's members."""
+    return bool(
+        await db.scalar(
+            select(
+                exists().where(
+                    DeliveryMemberEvidence.run_id == run_id,
+                    ~exists().where(
+                        DailyDeliveryMember.plan_id == plan_id,
+                        DailyDeliveryMember.member_key == DeliveryMemberEvidence.member_key,
+                    ),
+                )
+            )
+        )
     )
 
 

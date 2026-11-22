@@ -183,8 +183,18 @@ class MemberHistoricalRunner:
         accepted: dict[str, _Accepted] = {}
         try:
             try:
+                expected = {member["member_key"] for member in members}
                 for member in cohort:
-                    step = self._member(owner, item, feed, member, cohort)
+                    try:
+                        step = self._member(owner, item, feed, member, cohort)
+                    except SourceAPIResponseError as exc:
+                        # Source refuses a requested supplement row; members never wait on it.
+                        if member["member_key"] in expected or not _refusal(exc):
+                            raise
+                        step = {"member_key": member["member_key"], "outcome": "refused"}
+                        owner.journal.response(
+                            _JOURNAL + "outcome:" + member["member_key"], canonical_bytes(step)
+                        )
                     if isinstance(step, _Accepted):
                         accepted[member["member_key"]] = step
                     else:
@@ -268,7 +278,15 @@ class MemberHistoricalRunner:
             request["request_key"] = f"historical:{identity}"
             request["idempotency_key"] = f"historical:{identity}"
             attach_raw_object(request, stored)
-            accepted[key] = self._deliver(owner, key, "historical-unlisted:" + symbol, request)
+            try:
+                accepted[key] = self._deliver(owner, key, "historical-unlisted:" + symbol, request)
+            except SourceAPIResponseError as exc:
+                if not _refusal(exc):
+                    raise
+                # The refusal is this symbol's outcome; the other unlisted rows continue.
+                owner.journal.response(
+                    _JOURNAL + "outcome:" + key, canonical_bytes({"refused": exc.status_code})
+                )
         owner.journal.response(_JOURNAL + "unlisted:done", b"{}")
         return accepted
 
@@ -512,6 +530,15 @@ class MemberHistoricalRunner:
             raise ValueError("historical member normalization did not produce a row outcome")
         owner.journal.response(_JOURNAL + "outcome:" + key, canonical_bytes(outcome))
         return outcome
+
+
+def _refusal(exc: SourceAPIResponseError) -> bool:
+    """A definite Source refusal of one body, never an owner fence or a transient answer."""
+    return (
+        exc.code != "PROVIDER_WORK_FENCE"
+        and exc.status_code < 500
+        and exc.status_code not in {408, 429}
+    )
 
 
 def _recorded(persisted: list[RawObject], stored: RawObject) -> RawObject:

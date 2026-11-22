@@ -3,6 +3,7 @@
 from datetime import date, datetime, timezone
 
 import pytest
+from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkReceipt
 from app.models.registry import DatasetRegistry, DeliveryMemberEvidence, DQIssue, IngestionRun
@@ -222,3 +223,105 @@ async def test_unlisted_writes_settle_only_where_the_feed_delivers_them(test_ses
         outcome="completed",
     )
     assert result["data"] == ["2330"] and result["unlisted"] == ["7799"]
+
+
+async def _outside_run(db, work, key, members, **changes):
+    """A run whose prepared body names only ``members`` (unlisted or supplement rows)."""
+    from app.models.provider_work import ProviderWorkAttempt
+
+    attempt = await db.scalar(
+        select(ProviderWorkAttempt).where(ProviderWorkAttempt.work_id == work.work_id)
+    )
+    if attempt is None:
+        attempt = ProviderWorkAttempt(work_id=work.work_id, state="closed", generation=1)
+        db.add(attempt)
+        await db.flush()
+    value = await run(
+        db,
+        **{
+            "dataset_key": "tw_equity_eod",
+            "source": "finlab",
+            "schema_version": 1,
+            "total_records": 1,
+            "success_records": 0,
+            "failed_records": 1,
+            **changes,
+        },
+    )
+    await queue.store_prepared(
+        db,
+        work.work_id,
+        key,
+        {
+            "body": "{}",
+            "body_sha256": "a" * 64,
+            "payload_sha256": "b" * 64,
+            "canonical_members": members,
+            "job_key": None,
+            "confirmed": True,
+        },
+    )
+    db.add(
+        ProviderWorkReceipt(
+            run_id=value.run_id,
+            work_id=work.work_id,
+            attempt_id=attempt.attempt_id,
+            member_key=key,
+            payload_sha256="b" * 64,
+        )
+    )
+    await db.flush()
+    return value
+
+
+@pytest.mark.asyncio
+async def test_a_failed_unlisted_run_never_decides_the_members(test_session):
+    test_session.add(
+        DatasetRegistry(dataset_key="tw_equity_eod", name="TW", market="TW", asset_class="equity")
+    )
+    await test_session.flush()
+    work = ProviderWork(
+        environment=queue.environment(),
+        provider="finlab",
+        dataset_key="tw_equity_eod",
+        kind="historical",
+        stable_key="outside",
+        trade_date=DAY,
+        manifest={
+            "contract": {"schema_id": "market_eod", "schema_version": 1},
+            "members": [{"key": "2330", "mapping_status": "mapped"}],
+        },
+    )
+    test_session.add(work)
+    await test_session.flush()
+    member = await _outside_run(
+        test_session,
+        work,
+        "member",
+        ["2330"],
+        status="completed",
+        success_records=1,
+        failed_records=0,
+    )
+    test_session.add(DeliveryMemberEvidence(run_id=member.run_id, member_key="2330"))
+    failed = await _outside_run(test_session, work, "unlisted", ["7799"], status="failed")
+    test_session.add(DQIssue(run_id=failed.run_id, severity="error", issue_type="processing_error"))
+    await test_session.flush()
+    evidence = EODCompletionEvidence(
+        version=2,
+        schema_id="market_eod",
+        schema_version=1,
+        trade_date=DAY,
+        members=[{"member_key": "2330", "outcome": "data"}],
+    )
+    result = await validate_eod_completion(
+        test_session, work, [member, failed], evidence, outcome="completed"
+    )
+    assert result["data"] == ["2330"] and result["unlisted"] == []
+    # The same failure on a member's own run still refuses the completion.
+    test_session.add(DQIssue(run_id=member.run_id, severity="error", issue_type="processing_error"))
+    await test_session.flush()
+    with pytest.raises(ValueError, match="non-data"):
+        await validate_eod_completion(
+            test_session, work, [member, failed], evidence, outcome="completed"
+        )

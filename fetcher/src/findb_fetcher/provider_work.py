@@ -371,6 +371,18 @@ class WorkJournal:
                 return raw
         return None
 
+    def response_keys(self, prefix: str) -> list[str]:
+        """This work's journaled response keys that start with ``prefix``."""
+        with self.connection() as db:
+            return [
+                row[0]
+                for row in db.execute(
+                    "SELECT response_key FROM work_response WHERE work_key=? "
+                    "AND substr(response_key, 1, ?) = ? ORDER BY response_key",
+                    (self.key, len(prefix), prefix),
+                )
+            ]
+
     def pre_basis_raw_sha256(self, name: str) -> dict[str, tuple[str, bytes]]:
         """Map raw SHA-256 to the pre-basis response that carried those native bytes.
 

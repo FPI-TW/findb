@@ -11,7 +11,7 @@ import json
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
-from datetime import date, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -206,15 +206,16 @@ class FinLabAdapter(ProviderAdapter):
 
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
-        # FinLab's own equity and ETF symbol sets, read once per adapter round.
+        # FinLab's own equity and ETF symbol sets, read once a day: they describe
+        # today's listings, so every backfilled date of a day shares them.
         self.security_types: dict[str, tuple[str, ...]] | None = None
+        self.security_types_day: date | None = None
         self.layouts: dict[tuple[Any, Any, str], list[dict[str, Any]]] = {}
         # (dataset, trade date) whose previous day was rechecked by this process.
         self.rechecked: set[tuple[str, date]] = set()
 
     def reset(self) -> None:
         self.bundles.clear()
-        self.security_types = None
 
     def round_started(self, context: AcquisitionContext) -> None:
         """Ask again about the previous trade date's no-trade members of an intraday feed.
@@ -604,8 +605,10 @@ class FinLabAdapter(ProviderAdapter):
         served = set.intersection(*(set(table.unlisted) for table in tables.values())) - listed
         if not served:
             return []
-        if self.security_types is None:
+        today = datetime.now(timezone.utc).date()
+        if self.security_types is None or self.security_types_day != today:
             self.security_types = self.gateway(context.observe_response).fetch_security_types()
+            self.security_types_day = today
         kind = context.feed["asset_class"]
         other = "etf" if kind == "equity" else "equity"
         classified = set(self.security_types[kind]) - set(self.security_types[other])

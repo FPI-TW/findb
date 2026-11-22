@@ -9,13 +9,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from typing import Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import literal, select, tuple_
+from sqlalchemy import literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -204,11 +205,41 @@ async def _supplement(
                     "member_key": row["symbol"],
                     "mapping_status": "mapped",
                 }
-    for release_id in release_ids:
-        for member in await _release_cohort(db, release_id, trade_date):
-            if member["member_key"] not in listed:
-                found[member["member_key"]] = member
+    if release_ids:
+        # One query returns only the difference: each mapped member already listed by
+        # the date that the cohort lacks, from the newest release naming it.
+        later = await db.scalars(
+            select(UniverseMember)
+            .join(UniverseRelease, UniverseRelease.release_id == UniverseMember.release_id)
+            .outerjoin(
+                UniverseMemberListing,
+                UniverseMemberListing.member_id == UniverseMember.member_id,
+            )
+            .where(
+                UniverseMember.release_id.in_(release_ids),
+                UniverseMember.mapping_status == "mapped",
+                or_(
+                    UniverseMemberListing.listed_date.is_(None),
+                    UniverseMemberListing.listed_date <= trade_date,
+                ),
+                *([UniverseMember.member_key.not_in(sorted(listed))] if listed else []),
+            )
+            .order_by(
+                UniverseMember.member_key,
+                UniverseRelease.effective_date.desc(),
+                UniverseRelease.created_at.desc(),
+            )
+            .distinct(UniverseMember.member_key)
+        )
+        for member in later:
+            found[member.member_key] = {field: getattr(member, field) for field in _COHORT_FIELDS}
     return [found[key] for key in sorted(found)]
+
+
+# Releases and catalogue supplements are immutable, so a date's verified cohort is
+# the same for every delivery of that date; each process keeps the latest few.
+_COHORT_CACHE: "OrderedDict[tuple, tuple[list[dict], list[dict]]]" = OrderedDict()
+_COHORT_CACHE_SIZE = 8
 
 
 async def _bind_full_releases(
@@ -290,6 +321,20 @@ async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict 
     binding = snapshot["dates"].get(item.trade_date.isoformat())
     if not isinstance(binding, dict):
         raise HistoricalBackfillError("historical date has no frozen universe")
+    catalogue_id = binding.get("catalogue_supplement_id")
+    cache_key = (
+        item.trade_date,
+        binding["release_id"],
+        binding["member_sha256"],
+        binding["cohort_sha256"],
+        tuple(binding.get("supplement_release_ids", [])),
+        catalogue_id,
+        binding.get("supplement_sha256"),
+    )
+    cached = _COHORT_CACHE.get(cache_key)
+    if cached is not None:
+        _COHORT_CACHE.move_to_end(cache_key)
+        return _cohort_snapshot(item, binding, *cached)
     release = await db.get(UniverseRelease, UUID(binding["release_id"]))
     members = (
         await _release_cohort(db, release.release_id, item.trade_date)
@@ -297,7 +342,6 @@ async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict 
         else []
     )
     # Version 2 requests froze no later releases, so they request no supplement.
-    catalogue_id = binding.get("catalogue_supplement_id")
     supplement = await _supplement(
         db,
         [UUID(value) for value in binding.get("supplement_release_ids", [])],
@@ -313,6 +357,15 @@ async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict 
         and _cohort_digest(supplement) != binding["supplement_sha256"]
     ):
         raise HistoricalBackfillError("historical frozen universe differs from its release")
+    _COHORT_CACHE[cache_key] = (members, supplement)
+    while len(_COHORT_CACHE) > _COHORT_CACHE_SIZE:
+        _COHORT_CACHE.popitem(last=False)
+    return _cohort_snapshot(item, binding, members, supplement)
+
+
+def _cohort_snapshot(
+    item: HistoricalBackfillItem, binding: dict, members: list[dict], supplement: list[dict]
+) -> dict:
     return {
         "version": 2,
         "cohort": DATED_RELEASE_SNAPSHOT,
@@ -321,9 +374,10 @@ async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict 
         "effective_date": binding["effective_date"],
         "member_sha256": binding["member_sha256"],
         "plan_id": binding["plan_id"],
-        "members": members,
+        # Copies: a caller never changes what later deliveries of the date verify.
+        "members": [dict(member) for member in members],
         # Requested, never counted toward expected: data is recorded as unlisted.
-        "supplementary": supplement,
+        "supplementary": [dict(member) for member in supplement],
     }
 
 

@@ -628,3 +628,58 @@ def test_finlab_date_delivers_served_unlisted_rows_of_its_own_class(
     ]
     assert delivery.job_keys[-1] == "historical-unlisted:" + unlisted
     assert delivery.prepared[-1]["payload"]["batch"]["delivery_mode"] == "backfill"
+
+
+def test_a_refused_unlisted_row_never_fails_its_date(monkeypatch, tmp_path):
+    from findb_fetcher.client import SourceAPIResponseError
+    from findb_fetcher.providers.finlab import (
+        FINLAB_SDK_VERSION,
+        FinLabDatasetTable,
+        FinLabSdkGateway,
+    )
+
+    real = importlib.metadata.version
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda name: FINLAB_SDK_VERSION if name == "finlab" else real(name),
+    )
+    served = ("2330", "7799")
+
+    class Gateway:
+        def fetch_market_dataset(self, name, *, target_date, symbols):
+            value = "1000" if name == "price:成交股數" else "10"
+            return FinLabDatasetTable(
+                dates=(target_date.isoformat(),),
+                symbols=served,
+                values=((value, value),),
+                unlisted=("7799",),
+            )
+
+        fetch_dataset = fetch_market_dataset
+
+        def fetch_security_types(self):
+            return {"equity": served, "etf": ()}
+
+    class Refusing(_Delivery):
+        def deliver(self, request: dict) -> Any:
+            if request["payload"]["data"][0]["symbol"] == "7799":
+                # Another asset class's list names it, for example.
+                raise SourceAPIResponseError(409, "FULL_MARKET_PLAN_INVALID")
+            return super().deliver(request)
+
+    monkeypatch.setattr(FinLabSdkGateway, "from_env", classmethod(lambda cls, **kw: Gateway()))
+    item = _item(
+        "finlab",
+        "tw_equity_eod",
+        [{**_member("2330", "TWD"), "exchange": "XTAI", "asset_class": "equity"}],
+    )
+    runner, owner, _ = _runner(monkeypatch, tmp_path, "finlab", item, Refusing())
+    try:
+        result = runner.run(item)
+    finally:
+        runner.close()
+    assert result.status == "completed"
+    assert json.loads(owner.journal.response("member-historical:outcome:unlisted:7799")) == {
+        "refused": 409
+    }

@@ -196,7 +196,9 @@ def test_failed_member_does_not_terminate_pending_siblings_and_settlement_drains
     settlements = []
     owner = SimpleNamespace(
         work={"kind": "daily", "manifest": {"members": []}},
-        journal=SimpleNamespace(manifest=lambda: {"plan_id": plan["plan_id"]}),
+        journal=SimpleNamespace(
+            manifest=lambda: {"plan_id": plan["plan_id"]}, response_keys=lambda prefix: []
+        ),
         request=lambda *args, **kwargs: events.append(args[0]),
         drain_prepared=lambda **kwargs: events.append("drain"),
         prepared_keys=lambda: [],

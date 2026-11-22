@@ -39,6 +39,32 @@ def _scoped_raw(work: ProviderWork, member) -> bool:
     return member.raw is not None and f"/{work.provider}/{work.dataset_key}/" in member.raw.ref
 
 
+async def _outside_runs(
+    db: AsyncSession, work: ProviderWork, runs: list[IngestionRun], expected: set[str]
+) -> set[UUID]:
+    """Runs whose prepared body names no frozen member: unlisted or supplement rows."""
+    from app.models.provider_work import ProviderWorkReceipt
+    from app.services.provider_work import prepared_descriptors
+
+    if not runs:
+        return set()
+    rows = await db.execute(
+        select(ProviderWorkReceipt.run_id, ProviderWorkReceipt.member_key).where(
+            ProviderWorkReceipt.work_id == work.work_id,
+            ProviderWorkReceipt.run_id.in_([run.run_id for run in runs]),
+        )
+    )
+    keys: dict[UUID, str] = {run_id: key for run_id, key in rows}
+    descriptors = await prepared_descriptors(db, work.work_id)
+    return {
+        run_id
+        for run_id, key in keys.items()
+        if (descriptor := descriptors.get(key)) is not None
+        and descriptor.get("canonical_members")
+        and not set(descriptor["canonical_members"]) & expected
+    }
+
+
 async def validate_eod_completion(
     db: AsyncSession,
     work: ProviderWork,
@@ -62,7 +88,6 @@ async def validate_eod_completion(
             or run.batch_data_date != work.trade_date
             or run.schema_id != "market_eod"
             or run.schema_version != version
-            or run.status not in {"completed", "completed_with_errors"}
             for run in runs
         )
     ):
@@ -70,6 +95,14 @@ async def validate_eod_completion(
             "partial completion is restricted to terminal EOD v2 daily/historical work"
         )
     expected = {row["key"]: row for row in manifest.get("members", [])}
+    # A run carrying only unlisted or supplement rows never decides the members:
+    # it may fail or raise any DQ error, and its writes are still recorded.
+    outside = await _outside_runs(db, work, runs, set(expected))
+    member_runs = [run for run in runs if run.run_id not in outside]
+    if any(run.status not in {"completed", "completed_with_errors"} for run in member_runs):
+        raise ValueError(
+            "partial completion is restricted to terminal EOD v2 daily/historical work"
+        )
     if not expected or {row.member_key for row in evidence.members} != set(expected):
         raise ValueError("EOD completion must account for every frozen member exactly once")
     written = set(
@@ -95,7 +128,8 @@ async def validate_eod_completion(
     issues = list(
         await db.scalars(
             select(DQIssue).where(
-                DQIssue.run_id.in_([run.run_id for run in runs]), DQIssue.severity == "error"
+                DQIssue.run_id.in_([run.run_id for run in member_runs]),
+                DQIssue.severity == "error",
             )
         )
     )

@@ -407,6 +407,11 @@ class FinLabSdkGateway:
                                         "symbols": reviewed_symbols,
                                         "account": account,
                                         "unlisted": unlisted,
+                                        # Unlisted rows are cut at the target date,
+                                        # so an old backfilled date keeps its own rows.
+                                        "target_date": target_date.isoformat()
+                                        if target_date is not None
+                                        else None,
                                     },
                                     checkpoint=operation.dispatch_checkpoint,
                                     timeout=FINLAB_GET_TIMEOUT_SECONDS,
@@ -665,7 +670,12 @@ def native_get(
         usage["billed_bytes"] = billed
     observed = _dataframe_response_bytes(frame) if payload["account"] else None
     return (
-        _reviewed_columns(frame, payload["symbols"], unlisted=bool(payload.get("unlisted"))),
+        _reviewed_columns(
+            frame,
+            payload["symbols"],
+            unlisted=bool(payload.get("unlisted")),
+            until=payload.get("target_date"),
+        ),
         observed,
         usage or None,
     )
@@ -821,8 +831,14 @@ def _record_usage(operation: Any, dataset: str, usage: Mapping[str, float]) -> N
     )
 
 
-def _reviewed_columns(frame: Any, symbols: Sequence[str], *, unlisted: bool = False) -> object:
-    """The reviewed columns whole, plus (``unlisted``) the other columns' latest rows."""
+def _reviewed_columns(
+    frame: Any, symbols: Sequence[str], *, unlisted: bool = False, until: str | None = None
+) -> object:
+    """The reviewed columns whole, plus (``unlisted``) the other columns' recent rows.
+
+    The recent rows end at ``until`` (the target date) when given, so a backfill of
+    an old date reads that date and the closes just before it, not today's.
+    """
     try:
         _frame_axes(frame)
         keep = frame.columns.isin(symbols)
@@ -834,9 +850,12 @@ def _reviewed_columns(frame: Any, symbols: Sequence[str], *, unlisted: bool = Fa
         return frame.loc[:, keep]
     import pandas
 
+    recent = frame
+    if until is not None:
+        recent = frame.loc[pandas.to_datetime(frame.index) <= pandas.Timestamp(until)]
     # Earlier rows of an unlisted column are left empty; only a recent close is carried.
     return pandas.concat(
-        [frame.loc[:, keep], frame.iloc[-UNLISTED_HISTORY_ROWS:].loc[:, ~keep]], axis=1
+        [frame.loc[:, keep], recent.iloc[-UNLISTED_HISTORY_ROWS:].loc[:, ~keep]], axis=1
     )
 
 

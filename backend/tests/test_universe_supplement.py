@@ -189,3 +189,61 @@ async def test_a_daily_manifest_carries_exactly_the_plans_supplement(test_sessio
     # Its symbols may be prepared although no list names them.
     assert await queue._unlisted_scope(test_session, work, {"LATE"})
     assert not await queue._unlisted_scope(test_session, work, {"STRAY"})
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_supplement_is_the_newest_and_an_empty_one_is_kept(test_session):
+    from datetime import timedelta
+
+    from app.services.universe_supplement import latest_supplement
+
+    await _activated_plan(test_session, "us_equity_eod", count=2)
+    for index, symbols in enumerate((("A1",), ("B1",), ("A1",), ())):
+        body = _universe("us_equity_eod", 2)
+        body.observed_at = body.observed_at + timedelta(minutes=index)
+        body.supplementary = [_late(symbol) for symbol in symbols]
+        await submit_universe(test_session, body, allowed_datasets=["us_equity_eod"])
+        latest = await latest_supplement(
+            test_session, dataset_key="us_equity_eod", provider="twelve_data", day=DAY
+        )
+        # The same day's list A -> B -> A ends on A again; an empty one is recorded.
+        assert [row["symbol"] for row in latest.members] == list(symbols)
+
+
+@pytest.mark.asyncio
+async def test_a_supplement_symbol_that_is_another_parts_member_stays_refused(
+    owned_client, test_session
+):
+    from app.models.registry import DailyDeliveryMember, DailyDeliveryPart
+    from app.utils import uuid7
+
+    _, plan = await _plan_with_supplement(test_session, "LATE")
+    # A stale supplement names a symbol another part of the plan holds as a member.
+    other = DailyDeliveryPart(
+        part_id=uuid7(),
+        plan_id=plan.plan_id,
+        part_number=2,
+        work_item_id="fp1:" + uuid7().hex,
+        member_sha256="a" * 64,
+        expected_count=1,
+    )
+    test_session.add(other)
+    await test_session.flush()
+    test_session.add(
+        DailyDeliveryMember(
+            member_id=uuid7(),
+            plan_id=plan.plan_id,
+            part_id=other.part_id,
+            member_key="LATE",
+            symbol="LATE",
+            provider_symbol="LATE",
+            mapping_status="mapped",
+        )
+    )
+    await test_session.commit()
+    headers = await _source_headers(test_session, "twelve_data", ["us_equity_eod"])
+    request = _eod(plan, "LATE", idempotency_key="supplement-other-part")
+    request["payload"]["data"][0]["currency"] = "USD"
+    request["delivery"]["slot_id"] = "western_markets_window"
+    response = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
+    assert response.status_code == 409 and "outside the declared plan part" in response.text
