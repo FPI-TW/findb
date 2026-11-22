@@ -1187,6 +1187,13 @@ Twelve Data `us_equity_eod`、FinLab `tw_equity_eod` 與 `tw_etf_eod` 的 histor
 不只 plan 的缺漏成員。Request 只保存每個日期的 release ID、release digest 與 cohort digest，claim 時
 從不可變 release 重讀並核對；任何日期沒有可用 release 或沒有 mapped 成員時拒絕建立。
 
+清單可能晚發布，所以每個日期另外凍結建立當下、在該 release 之後發布的同 feed release（#629，snapshot
+version 3）：這些 release 中已對上、上市日不晚於該日（沒有上市日也算）、但不在該日 cohort 的成員是**補查**成員，
+同一代碼以最新 release 的身分為準。補查成員也會抓取並做同樣的身分檢查，有資料就寫入並記在該日期的
+`unlisted_symbols`，沒有資料不算缺漏；`expected` 與成員證據仍只算該日的 cohort。只有 FinLab 清單有上市日，
+Twelve Data 與 FactSet 無法判斷後來的成員當天是否已存在，因此一律補查而不列入 expected。Claim 時以凍結的
+release ID 重算補查成員並核對 digest；manifest 的 `supplementary` 必須與它相同。Version 2 的舊 request 沒有補查成員。
+
 Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類型、幣別身分檢查；FinLab 每個日期只下載
 一次五張欄位表），每成員一個 `market_eod` v1 `backfill` request，`work_item_id=historical:<item>`：
 

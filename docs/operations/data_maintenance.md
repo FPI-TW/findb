@@ -229,8 +229,8 @@ planner 改讀 image 隨附的 `execution_descriptors.v1.json`，不讀 daily sc
 FinLab `tw_etf_eod` historical 已開放（`executable`，沒有靜態 universe descriptor）。PR4 已移除 image／build／release 的舊排程檔；daily 改讀 Backend 快照，historical 不依賴該 API。
 
 Twelve Data 與 FinLab 新建的 historical request 不再使用靜態清單：每個日期凍結該日 Full plan 的 release
-（沒有 plan 時為該日以前最新 published release）中已上市的 mapped 成員，Fetcher 以 Full daily adapter
-逐成員抓取，結果可為 `partial` 並附逐成員 evidence；規則見
+（沒有 plan 時為該日以前最新 published release）中已上市的 mapped 成員，另外補查之後才發布的清單多出的成員
+（有資料就記為清單外，不列入 expected），Fetcher 以 Full daily adapter 逐成員抓取，結果可為 `partial` 並附逐成員 evidence；規則見
 [以 historical 回補 Full 缺漏](full_market.md#以-historical-回補-full-缺漏twelve-datafinlab)。以下靜態 reviewed
 artifact 只供本變更前建立、尚未排空的 request 與 planner 估算使用：
 

@@ -15,7 +15,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import literal, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -39,7 +39,6 @@ from app.services.feed_schedule import data_ready_at
 from app.services.provider_metadata import (
     catalog_feed,
     dataset_calendar_market,
-    delivers_unlisted,
     historical_cohort,
     provider_catalog,
 )
@@ -161,6 +160,40 @@ async def _release_cohort(db: AsyncSession, release_id: UUID, trade_date: date) 
     ]
 
 
+async def _later_releases(db: AsyncSession, release: UniverseRelease) -> list[UniverseRelease]:
+    """Releases of the same feed published after ``release``, oldest first."""
+    return list(
+        await db.scalars(
+            select(UniverseRelease)
+            .where(
+                UniverseRelease.dataset_key == release.dataset_key,
+                UniverseRelease.provider == release.provider,
+                UniverseRelease.status == "published",
+                tuple_(UniverseRelease.effective_date, UniverseRelease.created_at)
+                > tuple_(literal(release.effective_date), literal(release.created_at)),
+            )
+            .order_by(UniverseRelease.effective_date, UniverseRelease.created_at)
+        )
+    )
+
+
+async def _supplement(
+    db: AsyncSession, release_ids: list[UUID], trade_date: date, listed: set[str]
+) -> list[dict]:
+    """Mapped members of later releases not in the date's own cohort, in member order.
+
+    A later list may name a symbol its date's list missed (a late publication); only
+    FinLab's lists know listing dates, so these are requested without counting toward
+    expected. The newest release states each member's identity.
+    """
+    found: dict[str, dict] = {}
+    for release_id in release_ids:
+        for member in await _release_cohort(db, release_id, trade_date):
+            if member["member_key"] not in listed:
+                found[member["member_key"]] = member
+    return [found[key] for key in sorted(found)]
+
+
 async def _bind_full_releases(
     db: AsyncSession, *, provider: str, dataset_key: str, days: list[date]
 ) -> dict:
@@ -197,7 +230,9 @@ async def _bind_full_releases(
         if release is None:
             raise HistoricalBackfillError(f"no published universe applies to {day.isoformat()}")
         members = await _release_cohort(db, release.release_id, day)
-        if not 1 <= len(members) <= MAX_COHORT_MEMBERS:
+        later = [later.release_id for later in await _later_releases(db, release)]
+        supplement = await _supplement(db, later, day, {member["member_key"] for member in members})
+        if not 1 <= len(members) or len(members) + len(supplement) > MAX_COHORT_MEMBERS:
             raise HistoricalBackfillError(
                 f"universe for {day.isoformat()} has no mapped members or exceeds its bound"
             )
@@ -208,8 +243,12 @@ async def _bind_full_releases(
             "plan_id": str(plan.plan_id) if plan is not None else None,
             "cohort_sha256": _cohort_digest(members),
             "member_count": len(members),
+            # Later releases frozen at creation; their extra members are requested too.
+            "supplement_release_ids": [str(release_id) for release_id in later],
+            "supplement_sha256": _cohort_digest(supplement),
+            "supplement_count": len(supplement),
         }
-    return {"version": 2, "cohort": DATED_RELEASE_SNAPSHOT, "dates": bindings}
+    return {"version": 3, "cohort": DATED_RELEASE_SNAPSHOT, "dates": bindings}
 
 
 async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict | None:
@@ -230,10 +269,19 @@ async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict 
         if release is not None
         else []
     )
+    # Version 2 requests froze no later releases, so they request no supplement.
+    supplement = await _supplement(
+        db,
+        [UUID(value) for value in binding.get("supplement_release_ids", [])],
+        item.trade_date,
+        {member["member_key"] for member in members},
+    )
     if (
         release is None
         or release.member_sha256 != binding["member_sha256"]
         or _cohort_digest(members) != binding["cohort_sha256"]
+        or "supplement_sha256" in binding
+        and _cohort_digest(supplement) != binding["supplement_sha256"]
     ):
         raise HistoricalBackfillError("historical frozen universe differs from its release")
     return {
@@ -245,6 +293,8 @@ async def frozen_cohort(db: AsyncSession, item: HistoricalBackfillItem) -> dict 
         "member_sha256": binding["member_sha256"],
         "plan_id": binding["plan_id"],
         "members": members,
+        # Requested, never counted toward expected: data is recorded as unlisted.
+        "supplementary": supplement,
     }
 
 
@@ -1123,11 +1173,15 @@ async def complete_item(
         },
         failure_code=failure_code,
     )
-    if eod_evidence is not None and delivers_unlisted(provider, item.request.dataset_key):
+    if eod_evidence is not None:
         from app.services.unlisted_symbols import work_unlisted
 
-        item.unlisted_symbols = await work_unlisted(
-            db, identity["work_id"], {member.member_key for member in eod_evidence.members}
+        # Writes outside the date's own cohort: supplementary members or unlisted rows.
+        item.unlisted_symbols = (
+            await work_unlisted(
+                db, identity["work_id"], {member.member_key for member in eod_evidence.members}
+            )
+            or None
         )
     item.status, item.completed_at, item.run_id = outcome, now, run_id
     item.lease_token, item.lease_expires_at = None, None
@@ -1195,7 +1249,11 @@ async def validate_eod_historical_delivery(
         snapshot = await frozen_cohort(db, item) or {}
     except HistoricalBackfillError as exc:
         raise HistoricalBackfillValidationError(str(exc)) from exc
-    members = {row["symbol"]: row for row in snapshot.get("members", [])}
+    # Supplementary members are identity-checked like members; only expected differs.
+    members = {
+        row["symbol"]: row
+        for row in (*snapshot.get("members", []), *snapshot.get("supplementary", []))
+    }
     unlisted = {row.symbol for row in request.payload.data} - set(members)
     if unlisted:
         from app.services.ingress_contracts import parse_dataset_contract_declaration

@@ -82,10 +82,14 @@ async def validate_eod_completion(
     unlisted = written - set(expected)
     if unlisted:
         from app.services.provider_metadata import delivers_unlisted
+        from app.services.provider_work import supplementary_keys
 
-        # Admission already bound each served symbol as unlisted; a list published
-        # since then must not strand writes that were valid when accepted.
-        if not delivers_unlisted(work.provider, work.dataset_key):
+        # Admission already bound each served symbol as unlisted or as a requested
+        # later-release member; a list published since then must not strand them.
+        if not (
+            unlisted <= supplementary_keys(work)
+            or delivers_unlisted(work.provider, work.dataset_key)
+        ):
             raise ValueError("EOD write evidence exceeds the frozen scope")
     written -= unlisted
     issues = list(
