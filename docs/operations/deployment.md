@@ -945,11 +945,12 @@ Catalog 加入第五個 provider `hkex`（feed `hk_equity_official_eod`，契約
   Recovery gate 同樣容許 HKEX 的兩個 consumers 整組缺席。CD 只接受部署 v6 bundle。
 - **部署順序**：Fetcher consumer 啟動就以 Source key 呼叫 Source，未登記的 key 回 401（不屬於暫時性錯誤），
   consumer 會結束、部署失敗。Backend 必須先認得 `hkex` 才能登記 hash，所以：
-  1. 合併前：`tofu apply -target` 建立 HKEX Source key 的 secret metadata 與 instance role 的讀取權限，
-     再寫入 key 的值。
-  2. 合併後先暫停 Fetcher 部署；FinDB 部署完成後，以 `reconcile_fetcher_credentials.py` 登記 hash
+  1. 合併並暫停 Fetcher 部署。
+  2. 從 main 以 `tofu apply -target` 建立 HKEX Source key 的 secret metadata 與 instance role 的讀取權限
+     （saved plan 必須在 commit 進入 main 後建立），再寫入 key 的值。
+  3. FinDB 部署完成後，以 `reconcile_fetcher_credentials.py` 登記 hash
      （名稱 `fetcher-hkex`、範圍 `hk_equity_official_eod`）。
-  3. 繼續 Fetcher 部署；完成後再完整 `tofu apply`，建立 HKEX consumers 的告警。
+  4. 繼續 Fetcher 部署；完成後再完整 `tofu apply`，建立 HKEX consumers 的告警。
   Production 的 FinDB 與 Fetcher CD 都是手動觸發，依同樣順序執行。
 - 上線後 control 仍為 stopped：先 universe refresh 發布第一份 baseline，再由 Owner start。
 
