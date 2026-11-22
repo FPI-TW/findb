@@ -1,8 +1,8 @@
 """FinLab whole-market tables keep their unlisted columns; FinLab data classifies them."""
 
 from datetime import date
-from typing import Any
 
+import pandas
 import pytest
 
 from findb_fetcher.providers import finlab
@@ -16,9 +16,7 @@ from findb_fetcher.providers.finlab import (
 DAY = date(2026, 10, 1)
 
 
-def _frame(rows: int = 80) -> Any:
-    # Only the FinLab image installs pandas; the classification rule needs none.
-    pandas = pytest.importorskip("pandas")
+def _frame(rows: int = 80) -> pandas.DataFrame:
     index = pandas.date_range(end=pandas.Timestamp(DAY), periods=rows, freq="D")
     return pandas.DataFrame(
         {
@@ -54,16 +52,8 @@ def test_unlisted_columns_are_appended_and_read_like_reviewed_ones():
     assert _with_unlisted(frame[["2330"]], table, target_date=DAY, carry_previous=False) is table
 
 
-class _Columns(dict):
-    """The two frame reads ``security_symbols`` makes, without pandas."""
-
-    @property
-    def columns(self) -> list[str]:
-        return list(self)
-
-
 def test_company_and_etf_nav_data_classify_listed_equities_and_etfs():
-    company = _Columns(
+    company = pandas.DataFrame(
         {
             "stock_id": ["2330", "9105", "7799", "1234"],
             "市場別": ["sii", "sii", "otc", "rotc"],
@@ -72,7 +62,7 @@ def test_company_and_etf_nav_data_classify_listed_equities_and_etfs():
     )
     # Depositary receipts and the emerging board are no listed equity.
     assert security_symbols(finlab.FINLAB_COMPANY_DATASET, company) == ("2330", "7799")
-    nav = _Columns({"0050": [1.0], "00999B": [2.0]})
+    nav = pandas.DataFrame({"0050": [1.0], "00999B": [2.0]})
     assert security_symbols(finlab.FINLAB_ETF_NAV_DATASET, nav) == ("0050", "00999B")
     with pytest.raises(finlab.FinLabSdkError):
         security_symbols(finlab.FINLAB_COMPANY_DATASET, nav)
