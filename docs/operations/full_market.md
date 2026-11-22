@@ -173,7 +173,7 @@ mapped，不再列為 mapping gap。
 
 逐筆請求的 Twelve Data 只會回答被問到的代碼，所以美股名單刷新時另外記一份**目錄補查**（`universe_supplement`）：
 `/stocks` 目錄中交易所掛牌（NYSE、Nasdaq、NYSE American、IEX、Arca、Cboe，不含 OTC）的股票型別（Common Stock、REIT、
-ADR、DR），扣掉官方名單已有的代碼，再依官方名單同樣的名稱規則與代碼樣式排除權證（`.WT`、Nasdaq 第五碼 W）、
+ADR、DR、Limited Partnership、Trust），扣掉官方名單已有的代碼，再依官方名單同樣的名稱規則與代碼樣式排除權證（`.WT`、Nasdaq 第五碼 W）、
 Unit（`.U`、U）、權利（`.R`、R）、特別股（`.PR`、`代碼-字母`、Nasdaq 第五碼 M／N／O／P）與測試代碼。補查與 release
 分開保存，目錄變動不會產生新 release，也不影響 release digest 與變動門檻。Plan 建立時凍結交易日當天或之前最新的
 一份（`daily_delivery_plan.supplement_id`），Source 的 plan 回應附在 `supplementary`；Fetcher 在 daily manifest 帶上
@@ -895,12 +895,15 @@ Twelve Data 的 catalogue 以 Nasdaq MIC 規則比對：`XNCM`、`XNGS`、`XNMS`
 目錄的交易所常落後於實際轉板，因此不要求一致：同交易所優先；沒有時，其他交易所只有一筆同幣別
 商品且公司名稱相符才 mapped。同代號在其他交易所可能是無關的公司，名稱不符維持 mapping gap。
 成員保留官方交易所；日資料回應僅核對幣別與 frozen universe 相符，原始回應不改寫。
-美股 universe 只含普通股、REIT 與 ADR：目錄 `type` 為 `Common Stock`、`REIT`、
-`American Depositary Receipt`、`Depositary Receipt` 才可 mapped，官方名稱未標明股類的成員由此
+美股 universe 只含普通股、REIT、ADR，以及以普通單位交易的上市合夥與礦權信託：目錄 `type` 為
+`Common Stock`、`REIT`、`American Depositary Receipt`、`Depositary Receipt`、`Limited Partnership`、`Trust`
+才可 mapped（2026-11-22 起，#629；官方名單本來就把 EPD、SPH、SBR 等列為普通股，當時有 12 檔因型別而成為
+mapping gap，抽查 Twelve Data 日線的型別、交易所與價格皆正確），官方名稱未標明股類的成員由此
 `type` 決定分類。範圍外不列入 expected：名稱為 right、unit、warrant、特別股或債券類的官方成員，
 目錄 `type` 為 `Preferred Stock`、`Warrant`、`Right`、`Unit`、`Exchange-Traded Note` 的成員，
 以及名稱標示 fund、closed-end、trust 或 beneficial interest 且不在 Twelve Data 美股目錄的封閉式
-基金與信託。其餘無法對應的成員（目錄無此商品、公司名稱不符、合夥與信託類型）維持 mapping gap。
+基金與信託。其餘無法對應的成員（目錄無此商品、公司名稱不符）維持 mapping gap；同代號在 OTC 或目錄
+留著的舊公司不會用代號直接請求，避免把另一家公司的資料寫成官方成員的資料。
 Twelve Data universe refresh 只抓取 Source 當次授權的美國 country catalogue，不下載全球
 `/stocks` 目錄，也不再抓取香港 catalogue 或 HKEX 名單（港股屬 FactSet）。每個市場各自經過
 dataset-bound fresh authorization 與 account governor；回應大小上限維持不變，Raw 與 evidence URL

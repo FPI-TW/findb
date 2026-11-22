@@ -683,3 +683,29 @@ def test_a_refused_unlisted_row_never_fails_its_date(monkeypatch, tmp_path):
     assert json.loads(owner.journal.response("member-historical:outcome:unlisted:7799")) == {
         "refused": 409
     }
+
+
+@pytest.mark.parametrize("kind", ["Limited Partnership", "Trust"])
+def test_listed_partnerships_and_royalty_trusts_deliver_as_equities(monkeypatch, tmp_path, kind):
+    from findb_fetcher.providers.twelve_data import (
+        TwelveDataClient,
+        TwelveDataConfig,
+        TwelveDataResponse,
+    )
+
+    monkeypatch.setattr(TwelveDataConfig, "from_env", classmethod(lambda cls: cls(api_key="k")))
+
+    def fetch_daily(self, symbol, *, start_date, end_date, **kwargs):
+        payload = _twelve(symbol, kind=kind)
+        return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
+
+    monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    item = _item("twelve_data", "us_equity_eod", [_member("EPD", "USD")])
+    delivery = _Delivery()
+    runner, _, _ = _runner(monkeypatch, tmp_path, "twelve_data", item, delivery)
+    try:
+        result = runner.run(item)
+    finally:
+        runner.close()
+    assert result.result_evidence["members"] == [{"member_key": "EPD", "outcome": "data"}]
+    assert [body["payload"]["data"][0]["symbol"] for body in delivery.prepared] == ["EPD"]

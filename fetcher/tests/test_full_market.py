@@ -151,6 +151,7 @@ def test_catalogue_type_maps_reits_and_settles_unclassified_names() -> None:
         _us_row("ASML", "Depositary Receipt"),
         _us_row("TSM", "American Depositary Receipt"),
         _us_row("LP", "Limited Partnership"),
+        _us_row("ROYAL", "Trust"),
         _us_row("MOVED", "Common Stock", mic="XNAS"),
     ]
     members = [
@@ -159,6 +160,7 @@ def test_catalogue_type_maps_reits_and_settles_unclassified_names() -> None:
         _us_member("ASML", "classification_gap"),
         _us_member("TSM", "classification_gap"),
         _us_member("LP", "classification_gap"),
+        _us_member("ROYAL"),
         _us_member("MOVED"),
         _us_member("ABSENT", "classification_gap"),
     ]
@@ -170,7 +172,9 @@ def test_catalogue_type_maps_reits_and_settles_unclassified_names() -> None:
         "PLAIN": ("mapped", "ordinary"),
         "ASML": ("mapped", "adr"),
         "TSM": ("mapped", "adr"),
-        "LP": ("gap", "classification_gap"),
+        # Listed partnerships and royalty trusts trade as common units.
+        "LP": ("mapped", "ordinary"),
+        "ROYAL": ("mapped", "ordinary"),
         "MOVED": ("gap", "ordinary"),
         "ABSENT": ("gap", "classification_gap"),
     }
