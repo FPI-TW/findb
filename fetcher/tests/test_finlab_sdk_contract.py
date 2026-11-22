@@ -1,7 +1,7 @@
 """The exec'd worker against the installed, pinned FinLab SDK.
 
-Ordinary CI does not install the optional SDK and skips this module; the other
-FinLab tests model the SDK with fakes. Here the real SDK runs with its HTTP
+Fetcher CI and ``pnpm setup`` install the FinLab extra, so this module runs; only an
+environment without it skips. The other FinLab tests model the SDK with fakes. Here the real SDK runs with its HTTP
 transport replaced inside the worker and every socket refused, so nothing
 leaves the machine. Each scenario runs in its own interpreter with a private
 home directory: the SDK keeps process-global state and a cache below ``~``.
