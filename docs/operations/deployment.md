@@ -937,6 +937,9 @@ Migration `f3a5c7e9b1d2` 為 `daily_delivery_plan_summary` 新增 `unlisted_data
 採 forward fix。Fetcher 的 `execution_descriptors.v1.json` 同時多了 `unlisted_symbols`，Fetcher 只驗證自己
 image 內的檔案，Backend 與 Fetcher 可分開部署。FinLab Fetcher 要到它實際送出清單外的列以後才會有這類寫入。
 
+Backend 新版建立的回補 request（snapshot version 3）會帶補查成員；舊版 Fetcher 凍結 manifest 時不帶
+`supplementary`，Source 會拒絕。部署 #631 之後的版本時先 Backend、再 Fetcher，兩者都更新前不要建立新的回補。
+
 ## 目錄補查
 
 Migration `a4c6e8f0b2d3` 新增 `universe_supplement` 與 `daily_delivery_plan.supplement_id`（nullable），保存 Twelve Data

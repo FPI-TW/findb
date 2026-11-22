@@ -76,6 +76,44 @@ async def test_unlisted_write_evidence_never_breaks_a_completed_daily_settlement
     await test_session.flush()
     await refresh_plan_summary(test_session, plan.plan_id)
 
+    # Source refused an unlisted body after its intent: it stays prepared, no receipt.
+    await queue.store_prepared(
+        test_session,
+        work.work_id,
+        "full:refused-7800",
+        {
+            "body": "{}",
+            "body_sha256": "c" * 64,
+            "payload_sha256": "d" * 64,
+            "canonical_members": ["7800"],
+            "job_key": None,
+            "confirmed": True,
+        },
+    )
+    await test_session.flush()
+
     await queue.settle(test_session, outcome="completed", proof={}, **identity)
 
     assert work.state == "completed"
+
+
+@pytest.mark.asyncio
+async def test_a_members_unaccepted_body_still_drains_before_settlement(test_session):
+    dataset, _, plan = await _activated_plan(test_session, "tw_equity_eod", count=1)
+    work, identity = await _owned_closed_work(test_session, _work(plan))
+    await queue.store_prepared(
+        test_session,
+        work.work_id,
+        "full:0001",
+        {
+            "body": "{}",
+            "body_sha256": "c" * 64,
+            "payload_sha256": "d" * 64,
+            "canonical_members": ["0001"],
+            "job_key": None,
+            "confirmed": True,
+        },
+    )
+    await test_session.flush()
+    with pytest.raises(queue.ProviderWorkPreparedDrainingError):
+        await queue.settle(test_session, outcome="completed", proof={}, **identity)

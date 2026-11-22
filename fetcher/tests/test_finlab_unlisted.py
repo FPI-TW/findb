@@ -39,6 +39,16 @@ def test_worker_returns_reviewed_history_and_recent_unlisted_rows():
     assert narrowed["7799"].notna().sum() == finlab.UNLISTED_HISTORY_ROWS
 
 
+def test_an_old_target_date_keeps_the_unlisted_rows_ending_on_it():
+    frame = _frame(200)
+    old_day = frame.index[50]
+    narrowed = _reviewed_columns(frame, ["2330"], unlisted=True, until=old_day.date().isoformat())
+    kept = narrowed["7799"].dropna()
+    # The rows end on the target date, not today: an old backfill still reads its day.
+    assert kept.index.max() == old_day
+    assert len(kept) == min(finlab.UNLISTED_HISTORY_ROWS, 51)
+
+
 def test_unlisted_columns_are_appended_and_read_like_reviewed_ones():
     frame = _frame()
     table = _table_from_dataframe(

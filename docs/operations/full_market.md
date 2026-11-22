@@ -156,14 +156,17 @@ canonical 並留下寫入證據。清單外的標的不計入 `expected`，summa
 plan 的 summary 讀取另列出 `unlisted`（代碼，上限與缺口明細相同）。Backend 仍擋下三種清單外的列：
 同 plan 其他 part 的成員、幣別不是 dataset 預設幣別，以及同 provider 另一個資產類別（例如 ETF）最新
 published 名單上的代碼，避免以錯的資產類別建立 instrument。回補也一樣：清單外寫入不影響成員的完成
-判定，完成時記在該日期的 `unlisted_symbols`。其他 feed 對清單外的列維持 409。
+判定，完成時記在該日期的 `unlisted_symbols`。其他 feed 對清單外的列維持 409。完成判定時，prepare 登記的成員
+裡沒有任何凍結成員的 run（清單外或補查列）失敗或出現任何 DQ error，都不影響成員；Source 在 prepare 之後拒絕
+這類 body 時，settle 也不等它交付。成員自己的 run 與 body 維持原本的規則。
 
 FinLab Fetcher 讀五張價格表時保留全部欄位（raw 也是完整的表），清單外的代碼用 FinLab 自己的資料分類：
 `tw_etf_nav_daily:淨值` 有該欄的是 ETF；`company_basic_info` 中 `市場別` 為 `sii`／`otc`（興櫃 `rotc`
 不算）且 `產業類別` 不是 `存託憑證` 的是股票。每個 dataset 只送自己資產類別的代碼，其他（特別股、ETN、
 REIT、TDR、興櫃）不寫入，Fetcher log `finlab_unlisted` 記數量；當天沒有成交的代碼也不送。公司資料只有
-現在的公司，回補過去日期時已下市的股票分類不到，所以不會寫入。兩張分類表每個日期各讀一次（2026-11-22
-production 實測合計約 0.6 MB 配額）。Daily 在同一輪已有五張表時，於成員之後送出清單外的列，每個代碼在
+現在的公司，回補過去日期時已下市的股票分類不到，所以不會寫入。兩張分類表同一個程序每天讀一次，回補的各個
+日期共用（2026-11-22 production 實測合計約 0.6 MB 配額）。SDK 子程序回傳清單外欄位時，取到目標日為止最近 60
+列（足以帶出較早的收盤價），所以回補舊日期也讀得到當天的值。Daily 在同一輪已有五張表時，於成員之後送出清單外的列，每個代碼在
 同一個 work 只送一次，Source 拒絕某個代碼時記下拒絕並繼續其他代碼，不影響成員結果與 settle；回補在成員與
 補查成員之後送出。官方名單上但公司名單沒有的普通股（`classification_gap`），只要 FinLab 目錄有該代碼就是
 mapped，不再列為 mapping gap。
@@ -174,8 +177,10 @@ ADR、DR），扣掉官方名單已有的代碼，再依官方名單同樣的名
 Unit（`.U`、U）、權利（`.R`、R）、特別股（`.PR`、`代碼-字母`、Nasdaq 第五碼 M／N／O／P）與測試代碼。補查與 release
 分開保存，目錄變動不會產生新 release，也不影響 release digest 與變動門檻。Plan 建立時凍結交易日當天或之前最新的
 一份（`daily_delivery_plan.supplement_id`），Source 的 plan 回應附在 `supplementary`；Fetcher 在 daily manifest 帶上
-同一份（Source 核對），全部成員都有結果後逐一請求，有資料就寫入並計入 `unlisted_data`，沒有資料、Source 拒絕或
-暫時錯誤都只記在該 work 的 journal，不算缺漏、不影響成員結果與 settle。2026-11-22 的 production 目錄依上述規則約
+同一份（Source 核對），在沒有成員還要抓取時（已送出、仍在 normalization 的成員不算）、同一輪 settle 之前逐一
+請求，有資料就寫入並計入 `unlisted_data`，沒有資料、Source 拒絕或暫時錯誤都只記在該 work 的 journal，不算缺漏、
+不影響成員結果與 settle。目錄變成空的也會記下一份空補查，之後的 plan 就不再請求；同一天重複出現的內容以最後
+一次觀測為準。2026-11-22 的 production 目錄依上述規則約
 628 個代碼，每日請求約增加 11%。回補每個日期也凍結該日 plan 的補查（沒有 plan 時為當天以前最新的一份），與之後
 release 的成員一起當補查成員。
 Summary 另回傳 `mapping_gap`：blocked 中屬於 mapping gap 的成員數。`is_late` 只看抓取進度，

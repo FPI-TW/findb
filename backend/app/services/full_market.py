@@ -1549,22 +1549,26 @@ async def validate_ingest_part(
     unlisted = actual - expected
     from app.services.universe_supplement import plan_supplement
 
-    supplement = await plan_supplement(db, plan) if unlisted else {}
+    supplement: dict[str, dict] = {}
+    if unlisted:
+        # Another part's member stays bound to its own part, even when a stale
+        # supplement also names it.
+        if await db.scalar(
+            select(DailyDeliveryMember.member_key)
+            .where(
+                DailyDeliveryMember.plan_id == plan.plan_id,
+                DailyDeliveryMember.member_key.in_(sorted(unlisted)),
+            )
+            .limit(1)
+        ):
+            raise FullMarketError("Payload contains members outside the declared plan part", 409)
+        supplement = await plan_supplement(db, plan)
     if unlisted - set(supplement):
         unlisted = unlisted - set(supplement)
         from app.services.unlisted_symbols import unlisted_allowed
 
-        # Served rows outside the list are written, never counted toward expected;
-        # another part's member stays bound to its own part.
-        planned = set(
-            await db.scalars(
-                select(DailyDeliveryMember.member_key).where(
-                    DailyDeliveryMember.plan_id == plan.plan_id,
-                    DailyDeliveryMember.member_key.in_(sorted(unlisted)),
-                )
-            )
-        )
-        if planned or not await unlisted_allowed(
+        # Served rows outside the list are written, never counted toward expected.
+        if not await unlisted_allowed(
             db, provider=plan.provider, dataset_key=plan.dataset_key, symbols=unlisted
         ):
             raise FullMarketError("Payload contains members outside the declared plan part", 409)

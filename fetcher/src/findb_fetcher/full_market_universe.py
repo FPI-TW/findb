@@ -649,11 +649,11 @@ def universe_request(
             {"url": url, "sha256": checksum(raw)} for url, raw in sorted(snapshots.items())
         ],
         "members": ordered,
-        # Catalogue symbols outside the list: requested, never expected. Left out when
-        # empty, so every other provider's submission keeps its bytes.
+        # Catalogue symbols outside the list: requested, never expected. An empty list
+        # records that none remain; a provider that keeps none submits the same bytes.
         **(
             {"supplementary": sorted(supplementary, key=lambda member: member["symbol"])}
-            if supplementary
+            if supplementary is not None
             else {}
         ),
     }

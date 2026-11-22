@@ -846,3 +846,49 @@ def test_daily_requests_the_plans_supplement_once_after_its_members(
     assert json.loads(journal.response("full:supplement:QUIET")) == {"outcome": "no_data"}
     runtime._deliver_supplement(context.plan, context.release, runtime.feeds[0])
     assert asked == ["LATE", "GONE", "QUIET"] and len(delivered) == 4
+
+
+def test_the_supplement_runs_while_delivered_members_still_normalize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member left normalizing has nothing more to acquire; it never holds the step back."""
+    runtime, context, delivered = _unlisted_round(tmp_path, monkeypatch, lambda request: None)
+    runtime.delivery.get_run_status = lambda *args, **kwargs: SimpleNamespace(
+        status="queued", failed_records=0, total_records=1, success_records=0
+    )
+    context.plan["supplementary"] = [
+        {"symbol": "LATE", "provider_symbol": "LATE", "currency": "TWD", "exchange": "XTAI"}
+    ]
+    original = runtime.adapter.acquire
+
+    def acquire(member: dict, acquisition: Any) -> Any:
+        if member["symbol"] != "LATE":
+            return original(member, acquisition)
+        result = original({**member, "symbol": "7799", "provider_symbol": "7799"}, acquisition)
+        result.request["payload"]["data"][0]["symbol"] = "LATE"
+        return result
+
+    monkeypatch.setattr(runtime.adapter, "acquire", acquire)
+    runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    with runtime.state.connection() as db:
+        statuses = {row[0] for row in db.execute("SELECT status FROM full_work")}
+    assert statuses == {"prepared"}
+    assert [request["payload"]["data"][0]["symbol"] for request in delivered][-1] == "LATE"
+
+
+def test_a_refused_unlisted_body_is_never_drained_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from findb_fetcher.client import SourceAPIResponseError
+
+    def deliver(request: dict) -> None:
+        if request["payload"]["data"][0]["symbol"] == "7799":
+            raise SourceAPIResponseError(409, "FULL_MARKET_PLAN_INVALID")
+
+    runtime, context, delivered = _unlisted_round(tmp_path, monkeypatch, deliver)
+    runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    from findb_fetcher import provider_work
+
+    journal = provider_work.require_owner("finlab").journal
+    refused = runtime_module._refused_keys(journal)
+    assert len(refused) == 1 and not refused & {r["idempotency_key"] for r in delivered}

@@ -37,7 +37,7 @@ def _rows(body: UniverseSubmitRequest) -> list[dict]:
     return sorted(
         (
             {field: getattr(member, field) for field in SUPPLEMENT_FIELDS}
-            for member in body.supplementary
+            for member in body.supplementary or ()
         ),
         key=lambda row: row["symbol"],
     )
@@ -46,8 +46,12 @@ def _rows(body: UniverseSubmitRequest) -> list[dict]:
 async def store_supplement(
     db: AsyncSession, body: UniverseSubmitRequest, dataset: DatasetRegistry
 ) -> None:
-    """Keep one observation per distinct supplement and effective date."""
-    if not body.supplementary:
+    """Keep one observation per distinct supplement and effective date.
+
+    An empty supplement is kept too: plans then stop requesting earlier symbols. The
+    same supplement observed again on its date becomes the newest observation.
+    """
+    if body.supplementary is None:
         return
     rows = _rows(body)
     listed = {member.symbol for member in body.members}
@@ -81,7 +85,10 @@ async def store_supplement(
             members=rows,
             created_at=utc_now(),
         )
-        .on_conflict_do_nothing(constraint="uq_universe_supplement_observation")
+        .on_conflict_do_update(
+            constraint="uq_universe_supplement_observation",
+            set_={"observed_at": body.observed_at},
+        )
     )
 
 
@@ -96,7 +103,7 @@ async def latest_supplement(
             UniverseSupplement.provider == provider,
             UniverseSupplement.effective_date <= day,
         )
-        .order_by(UniverseSupplement.effective_date.desc(), UniverseSupplement.created_at.desc())
+        .order_by(UniverseSupplement.effective_date.desc(), UniverseSupplement.observed_at.desc())
         .limit(1)
     )
 

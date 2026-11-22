@@ -11,7 +11,7 @@ runner can call the same ``acquire`` with its own context.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Any, ClassVar, Literal
@@ -172,7 +172,8 @@ class UniverseSnapshot:
     # Official URL -> exact observed bytes; the runtime persists and submits them.
     evidence: dict[str, bytes]
     # Catalogue symbols outside the list: requested with each plan, never expected.
-    supplementary: list[dict[str, Any]] = field(default_factory=list)
+    # ``None`` for a provider that keeps none; an empty list records that none remain.
+    supplementary: list[dict[str, Any]] | None = None
 
 
 @dataclass(frozen=True)

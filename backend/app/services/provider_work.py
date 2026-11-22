@@ -1083,6 +1083,17 @@ async def settle(
     ).all()
     prepared = set(await prepared_keys(db, work.work_id))
     pending = prepared - {receipt.member_key for receipt, _ in receipts}
+    if pending and work.kind in {"daily", "historical"}:
+        # Source may refuse an unlisted or supplement row after its intent; that
+        # refusal is its outcome, never a delivery the members wait for.
+        members = {row["key"] for row in (work.manifest or {}).get("members", [])}
+        descriptors = await prepared_descriptors(db, work.work_id)
+        pending = {
+            key
+            for key in pending
+            if not (descriptor := descriptors.get(key, {})).get("canonical_members")
+            or set(descriptor["canonical_members"]) & members
+        }
     if pending and outcome != "retry":
         manual = (
             outcome == "failed"
