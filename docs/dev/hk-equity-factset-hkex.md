@@ -121,6 +121,7 @@
   - 被取代的 FactSet 原值記在只增不改的 `eod_field_correction`，列上的 `field_sources` 註明哪些欄位來自
     HKEX；HKEX 為 null 的欄位保留 FactSet 的值，人工修正過的列不動。規則見
     [ingress contract](../architecture/ingress_contracts.md#修正-market_data_eod-的港股列)。
+    Serve 的 `/eod` 原樣回傳 `field_sources`，`source` 仍是 `factset`（#659）。
   - 差異超過門檻（收盤價不同，或成交量差超過 1%）另開 warning，供監控 FactSet 品質；依三方比對，預期每月只有
     個位數。
 - **HKEX 有、FactSet 沒有的標的**：第一版只存在 HKEX 的表，不在 `market_data_eod` 新增開盤價為空的列。

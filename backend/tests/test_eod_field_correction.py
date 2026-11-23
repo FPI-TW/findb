@@ -319,3 +319,51 @@ async def test_a_provider_write_waits_for_an_uncommitted_quote(
     assert _values(row) == {"open": Decimal("350.00"), **QUOTED}
     (correction,) = await _corrections(test_session)
     assert correction.run_id == provider_run
+
+
+async def _served(client, instrument_id: UUID) -> dict:
+    response = await client.get("/api/v1/serve/eod", params={"instrument_id": str(instrument_id)})
+    assert response.status_code == 200, response.text
+    (served,) = response.json()["data"]
+    return served
+
+
+@pytest.mark.asyncio
+async def test_serve_names_the_fields_the_exchange_quote_replaced(
+    client, test_session, stores, provider_dataset
+):
+    await write_provider(test_session)
+    row = await _row(test_session)
+    served = await _served(client, row.instrument_id)
+    assert (served["source"], served["field_sources"]) == ("factset", None)
+
+    await deliver(test_session, stores)
+
+    served = await _served(client, row.instrument_id)
+    # The row stays FactSet's; only the replaced values are attributed to HKEX.
+    assert served["source"] == "factset"
+    assert served["field_sources"] == dict.fromkeys(QUOTED, "hkex")
+    assert (Decimal(served["open"]), Decimal(served["close"]), served["currency"]) == (
+        Decimal("350.00"),
+        QUOTED["close"],
+        "HKD",
+    )
+
+
+@pytest.mark.asyncio
+async def test_serve_names_a_manually_corrected_field(
+    client, test_session, stores, provider_dataset
+):
+    await write_provider(test_session)
+    row = await _row(test_session)
+    await patch_eod_record(
+        test_session,
+        row.instrument_id,
+        DAY,
+        PatchEODRequest(close=Decimal("343.90"), correction_reason="checked by hand"),
+        "admin-key",
+    )
+
+    served = await _served(client, row.instrument_id)
+    assert (served["source"], served["field_sources"]) == ("factset", {"close": "manual"})
+    assert Decimal(served["close"]) == Decimal("343.90")
