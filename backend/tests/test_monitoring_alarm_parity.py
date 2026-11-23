@@ -257,3 +257,24 @@ def test_every_alarm_notifies_on_recovery_in_both_environments() -> None:
                 f"[{topic}]",
                 f"contains(local.retired_alarm_resources, each.value.resource) ? [] : [{topic}]",
             }, f"{root.name} {name} does not notify on recovery"
+
+
+def test_staging_alarms_do_not_notify_while_production_alarms_do() -> None:
+    staging = _read(STAGING_ROOT / "monitoring.tf")
+    # Staging runs one provider at a time for tests; by Owner decision no staging
+    # alarm notifies, through one switch every alarm resource reads.
+    assert re.search(r"(?m)^\s*alarm_notifications_enabled = false$", staging)
+    for name, block in _alarm_resources(staging).items():
+        assert _attribute(block, "actions_enabled").startswith(
+            "local.alarm_notifications_enabled"
+        ), f"staging {name} does not read the notification switch"
+
+    production = _read(PRODUCTION_ROOT / "monitoring.tf")
+    assert "alarm_notifications_enabled" not in production
+    for name, block in _alarm_resources(production).items():
+        # An undeclared actions_enabled is the provider default, true.
+        declared = re.search(r"(?m)^\s*actions_enabled\s+=\s+(.+)$", block)
+        assert declared is None or declared.group(1) in {
+            "true",
+            "!contains(local.retired_alarm_resources, each.value.resource)",
+        }, f"production {name} does not notify"

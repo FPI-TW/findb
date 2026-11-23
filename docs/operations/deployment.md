@@ -853,7 +853,7 @@ Admin 沒有刪除使用者的 API，帳號列建立後會永久留在使用者�
 - 密碼只在執行驗收的程式記憶體內產生與使用，不得印出、寫入檔案或貼到 issue。
 - 每次啟用、reset、改密碼與停用都會寫入 admin audit（`update`、`reset_password`、`change_password`），在 issue 記錄用途與時間即可，不需更新本表。
 - 2026-11-12 已用 `verify-498-33387c` 在 staging 實測過上述流程。
-- 除非要測試告警，驗收時不要送出無效 API key：那會觸發 `findb-staging-invalid-credential-events` 告警並寄出 SNS 通知。
+- 除非要測試告警，驗收時不要送出無效 API key：那會讓 `findb-staging-invalid-credential-events` 告警進入 ALARM（staging 告警不寄通知，但狀態會蓋過真正的問題）。
 - 需要 operator 或 owner 權限的驗收，先用同一個 `PATCH` 暫時調整 `role`，結束後改回 viewer 再停用。
 
 ## 日曆政策設定切換

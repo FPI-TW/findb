@@ -1,4 +1,10 @@
 locals {
+  # Staging controls are normally stopped and run one provider at a time for
+  # tests, so by Owner decision (2026-11-23) no staging alarm notifies. Alarms
+  # still evaluate and keep their topic actions; set this to true and apply to
+  # restore notifications.
+  alarm_notifications_enabled = false
+
   operational_alert_topic_name = "findb-staging-operational-alerts"
   operational_alert_topic_arn  = "arn:${data.aws_partition.current.partition}:sns:${var.aws_region}:${data.aws_caller_identity.current.account_id}:${local.operational_alert_topic_name}"
 
@@ -736,7 +742,7 @@ resource "aws_cloudwatch_metric_alarm" "ec2_status_check_failed" {
   evaluation_periods        = local.monitoring_alarm_common.evaluation_periods
   datapoints_to_alarm       = local.monitoring_alarm_common.datapoints_to_alarm
   treat_missing_data        = local.monitoring_alarm_common.treat_missing_data
-  actions_enabled           = true
+  actions_enabled           = local.alarm_notifications_enabled
   alarm_actions             = [aws_sns_topic.operational_alerts.arn]
   ok_actions                = [aws_sns_topic.operational_alerts.arn]
   insufficient_data_actions = []
@@ -763,7 +769,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_native" {
   evaluation_periods        = local.monitoring_alarm_common.evaluation_periods
   datapoints_to_alarm       = local.monitoring_alarm_common.datapoints_to_alarm
   treat_missing_data        = local.monitoring_alarm_common.treat_missing_data
-  actions_enabled           = true
+  actions_enabled           = local.alarm_notifications_enabled
   alarm_actions             = [aws_sns_topic.operational_alerts.arn]
   ok_actions                = [aws_sns_topic.operational_alerts.arn]
   insufficient_data_actions = []
@@ -795,7 +801,7 @@ resource "aws_cloudwatch_metric_alarm" "custom" {
   evaluation_periods        = each.value.evaluation_periods
   datapoints_to_alarm       = each.value.datapoints_to_alarm
   treat_missing_data        = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching" : each.value.treat_missing_data
-  actions_enabled           = !contains(local.retired_alarm_resources, each.value.resource)
+  actions_enabled           = local.alarm_notifications_enabled && !contains(local.retired_alarm_resources, each.value.resource)
   alarm_actions             = contains(local.retired_alarm_resources, each.value.resource) ? [] : [aws_sns_topic.operational_alerts.arn]
   ok_actions                = contains(local.retired_alarm_resources, each.value.resource) ? [] : [aws_sns_topic.operational_alerts.arn]
   insufficient_data_actions = []
@@ -824,7 +830,7 @@ resource "aws_cloudwatch_metric_alarm" "ec2_cpu_utilization" {
   evaluation_periods        = 3
   datapoints_to_alarm       = 3
   treat_missing_data        = local.monitoring_alarm_common.treat_missing_data
-  actions_enabled           = true
+  actions_enabled           = local.alarm_notifications_enabled
   alarm_actions             = [aws_sns_topic.operational_alerts.arn]
   ok_actions                = [aws_sns_topic.operational_alerts.arn]
   insufficient_data_actions = []
