@@ -88,7 +88,15 @@ class SourceAPIDeadlineExceeded(TimeoutError):  # noqa: N818 - public CLI contra
 
 
 class SourceAPITransportError(ConnectionError):
-    """Source API transport retries were exhausted."""
+    """Source API transport retries were exhausted.
+
+    ``path`` is the Source API path that failed (no host, query or body), so a
+    caller can tell a Source outage from a provider one.
+    """
+
+    def __init__(self, message: str, *, path: str | None = None) -> None:
+        super().__init__(message)
+        self.path = path
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,7 +365,7 @@ class SourceAPIClient:
             except httpx.TransportError:
                 if attempt == self._config.max_attempts:
                     raise SourceAPITransportError(
-                        "Source API transport retries exhausted"
+                        "Source API transport retries exhausted", path=path
                     ) from None
                 self._sleep_with_deadline(
                     self._backoff_seconds(attempt), deadline=deadline, monotonic=monotonic
@@ -374,7 +382,7 @@ class SourceAPIClient:
             except httpx.TransportError:
                 if attempt == self._config.max_attempts:
                     raise SourceAPITransportError(
-                        "Source API transport retries exhausted"
+                        "Source API transport retries exhausted", path=path
                     ) from None
                 self._sleep_with_deadline(
                     self._backoff_seconds(attempt),
@@ -405,7 +413,9 @@ class SourceAPIClient:
                 if response.status_code == 408:
                     # A proxy/request timeout cannot prove the original delivery
                     # was rejected before acceptance. Reconcile its immutable identity.
-                    raise SourceAPITransportError("Source API request timeout retries exhausted")
+                    raise SourceAPITransportError(
+                        "Source API request timeout retries exhausted", path=path
+                    )
                 raise SourceAPIResponseError(
                     response.status_code,
                     _safe_error_code(body),

@@ -150,6 +150,11 @@ def test_completed_refresh_is_next_due_at_the_scheduled_time(tmp_path, monkeypat
         assert settled == ["completed"]
         assert not runtime.state.refresh_due("finlab", _at(due).timestamp() - 1)
         assert runtime.state.refresh_due("finlab", _at(due).timestamp())
+        # Today's daily stops waiting once its feed's refresh completed (#598).
+        assert runtime.state.universe_refreshed_at("finlab", "tw_equity_eod") == (
+            _at(completed).timestamp()
+        )
+        assert runtime.state.universe_refreshed_at("finlab", "tw_etf_eod") is None
     finally:
         runtime.http.close()
 

@@ -15,7 +15,7 @@ from datetime import time as clock_time
 from functools import wraps
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -140,6 +140,40 @@ def refresh_slots(
         latest = passed if latest is None or passed > latest else latest
         upcoming = following if upcoming is None or following < upcoming else upcoming
     return None if latest is None or upcoming is None else (latest, upcoming)
+
+
+_SECRET_QUERY_KEYS = frozenset(
+    {"apikey", "api_key", "key", "token", "secret", "password", "signature"}
+)
+
+
+def _redacted_url(value: str | None) -> str | None:
+    """The address without credentials, fragment or secret-looking query values.
+
+    Official pages share one path and differ by query (TWSE ISIN ``strMode``),
+    so the remaining query is kept to tell them apart.
+    """
+    if not value:
+        return None
+    parts = urlsplit(value)
+    host = parts.hostname or ""
+    port = f":{parts.port}" if parts.port else ""
+    origin = f"{parts.scheme}://{host}{port}" if parts.scheme and host else ""
+    query = urlencode(
+        [
+            (key, "<redacted>" if key.lower() in _SECRET_QUERY_KEYS else item)
+            for key, item in parse_qsl(parts.query, keep_blank_values=True)
+        ]
+    )
+    return (origin + parts.path + (f"?{query}" if query else ""))[:300] or None
+
+
+def _transport_url(exc: httpx.TransportError) -> str | None:
+    try:
+        return _redacted_url(str(exc.request.url))
+    except RuntimeError:
+        # httpx raises when the error carries no request.
+        return None
 
 
 def load_readiness(
@@ -855,6 +889,7 @@ class FullMarketRuntime:
             )
             return [{"status": "manual", "reason": "MAINTENANCE_RETRY_EXHAUSTED"}]
         retryable, code = False, "MAINTENANCE_FORMAT_OR_SCOPE"
+        detail: dict[str, Any] = {}
         dispatch_before = owner.dispatch_observations
         try:
             results = self.sync_universes(dataset_keys=[work["dataset_key"]])
@@ -882,8 +917,13 @@ class FullMarketRuntime:
             )
             retryable = _retryable_http_status(status)
             code = "MAINTENANCE_HTTP_" + str(status or "UNKNOWN")
-        except (httpx.TransportError, SourceAPITransportError):
-            retryable, code = True, "MAINTENANCE_TRANSPORT"
+        except httpx.TransportError as exc:
+            # An official site or the provider's API; the Source client wraps its own.
+            retryable, code = True, "MAINTENANCE_PROVIDER_TRANSPORT"
+            detail = {"transport": {"origin": "provider", "url": _transport_url(exc)}}
+        except SourceAPITransportError as exc:
+            retryable, code = True, "MAINTENANCE_SOURCE_TRANSPORT"
+            detail = {"transport": {"origin": "source", "url": _redacted_url(exc.path)}}
         except FullMarketProtocolError as exc:
             if exc.code == "PROVIDER_WORK_FENCE":
                 raise ProviderWorkRecoveryBlockedError("maintenance owner fence differs") from exc
@@ -921,6 +961,9 @@ class FullMarketRuntime:
             # The manifest is already durable; closed-round replay uses it.
             owner.settle("completed", proof={"no_data": ["universe_refresh"]})
             now = datetime.now(timezone.utc)
+            self.state.record_universe_refreshed(
+                self.provider, work["dataset_key"], now=now.timestamp()
+            )
             self.state.refresh(
                 self.provider,
                 now=now.timestamp(),
@@ -929,7 +972,7 @@ class FullMarketRuntime:
             )
             return results
         self._settle_queued_round(
-            owner, outcome="retry" if retryable else "failed", failure_code=code
+            owner, outcome="retry" if retryable else "failed", failure_code=code, diagnostic=detail
         )
         return [{"status": "queued" if retryable else "manual", "reason": code}]
 
@@ -1454,8 +1497,12 @@ class FullMarketRuntime:
         outcome: str | None = None,
         failure_code: str | None = None,
         retry_delay_seconds: int = 60,
+        diagnostic: dict[str, Any] | None = None,
     ) -> None:
-        """Close acceptance, drain every accepted run, then settle this round."""
+        """Close acceptance, drain every accepted run, then settle this round.
+
+        ``diagnostic`` adds fields to the settlement's proof.
+        """
         if owner.work["kind"] == "daily" and owner.work.get("dataset_key"):
             self.adapter.round_finished(owner.work["dataset_key"])
         self.pause()
@@ -1569,6 +1616,7 @@ class FullMarketRuntime:
                     }
                 if desired == "retry" and pending_errors:
                     proof["pending_source_errors"] = pending_errors
+                proof.update(diagnostic or {})
                 owner.settle(
                     desired,
                     delay=retry_delay_seconds,
@@ -1707,6 +1755,8 @@ class FullMarketRuntime:
         The refresh is queued ahead of the day's daily works, but its retry after a
         failure queues behind them; without this hold the plan would freeze the
         previous day's list. Catch-up dates never wait: their refresh is long gone.
+        Nor does a date whose refresh already completed since the scheduled time:
+        the list is then as current as its source publishes it.
         """
         if not self.adapter.daily_waits_for_same_day_universe:
             return
@@ -1720,6 +1770,11 @@ class FullMarketRuntime:
         )
         now = datetime.now(timezone.utc)
         if not scheduled <= now < scheduled + timedelta(days=1):
+            return
+        refreshed_at = self.state.universe_refreshed_at(self.provider, feed["dataset_key"])
+        if refreshed_at is not None and refreshed_at >= scheduled.timestamp():
+            # Today's refresh finished and the source still dates its list earlier,
+            # as on a weekend or holiday: waiting cannot bring a newer one.
             return
         remaining = (
             scheduled + timedelta(seconds=SAME_DAY_UNIVERSE_WAIT_SECONDS) - now

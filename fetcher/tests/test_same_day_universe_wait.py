@@ -127,6 +127,96 @@ def test_past_the_bound_the_latest_release_is_frozen_and_logged(tmp_path, monkey
         runtime.close()
 
 
+def test_a_refresh_completed_since_the_scheduled_time_ends_the_wait(tmp_path, monkeypatch):
+    """A weekend or holiday list keeps the last trading day's date: waiting cannot help.
+
+    Production 2026-11-22 (Sunday): the 17:00 refresh completed with the Nasdaq file
+    of Friday, and the daily waited the whole bound before settling the closed date.
+    """
+    runtime, feed, created = _setup(
+        tmp_path,
+        monkeypatch,
+        at=SCHEDULED + timedelta(minutes=1),
+        effective=DAY - timedelta(days=2),
+    )
+    runtime.state.record_universe_refreshed(
+        runtime.provider, feed["dataset_key"], now=(SCHEDULED + timedelta(seconds=11)).timestamp()
+    )
+    try:
+        assert runtime._plan_for_date(feed, DAY)["release_id"] == "latest"
+        assert len(created) == 1
+    finally:
+        runtime.close()
+
+
+def test_only_this_feeds_refresh_since_the_scheduled_time_ends_the_wait(tmp_path, monkeypatch):
+    runtime, feed, created = _setup(
+        tmp_path,
+        monkeypatch,
+        at=SCHEDULED + timedelta(minutes=1),
+        effective=DAY - timedelta(days=1),
+    )
+    # Yesterday's refresh of this feed, and today's of another, leave today's pending.
+    runtime.state.record_universe_refreshed(
+        runtime.provider, feed["dataset_key"], now=(SCHEDULED - timedelta(days=1)).timestamp()
+    )
+    runtime.state.record_universe_refreshed(
+        runtime.provider, "other_dataset", now=SCHEDULED.timestamp()
+    )
+    try:
+        with pytest.raises(UniverseRefreshPendingError):
+            runtime._plan_for_date(feed, DAY)
+        assert created == []
+    finally:
+        runtime.close()
+
+
+def test_a_refresh_time_never_moves_back(tmp_path, monkeypatch):
+    runtime, feed, _ = _setup(tmp_path, monkeypatch, at=SCHEDULED, effective=DAY)
+    try:
+        for at in (SCHEDULED, SCHEDULED - timedelta(hours=1)):
+            runtime.state.record_universe_refreshed(
+                runtime.provider, feed["dataset_key"], now=at.timestamp()
+            )
+        assert runtime.state.universe_refreshed_at(runtime.provider, feed["dataset_key"]) == (
+            SCHEDULED.timestamp()
+        )
+    finally:
+        runtime.close()
+
+
+def test_a_failed_refresh_settles_with_its_diagnostic_in_the_proof(tmp_path, monkeypatch):
+    runtime, feed, _ = _setup(tmp_path, monkeypatch, at=SCHEDULED, effective=DAY)
+    settled = []
+    owner = SimpleNamespace(
+        work={"kind": "maintenance", "dataset_key": feed["dataset_key"], "state": "open"},
+        request=lambda *args, **kwargs: None,
+        journal=SimpleNamespace(manifest=lambda: None),
+        settle=lambda outcome, **kwargs: settled.append((outcome, kwargs)),
+    )
+    runtime.pause = lambda: None
+    transport = {"transport": {"origin": "source", "url": "/api/v1/source/universes"}}
+    try:
+        runtime._settle_queued_round(
+            owner,
+            outcome="retry",
+            failure_code="MAINTENANCE_SOURCE_TRANSPORT",
+            diagnostic=transport,
+        )
+        assert settled == [
+            (
+                "retry",
+                {
+                    "delay": 60,
+                    "failure_code": "MAINTENANCE_SOURCE_TRANSPORT",
+                    "proof": transport,
+                },
+            )
+        ]
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     "at",
     [

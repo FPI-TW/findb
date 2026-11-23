@@ -54,6 +54,7 @@ _CHECKPOINT_PROVIDER_TABLES = (
     "full_refresh",
     "full_cursor",
     "full_date_prerequisite",
+    "full_universe_refreshed",
     "checkpoint_retention",
 )
 _WRITER_TIMEOUT_SECONDS = 5

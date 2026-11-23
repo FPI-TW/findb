@@ -120,6 +120,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS full_work_diagnostic (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, provider TEXT NOT NULL, category TEXT NOT NULL, http_status INTEGER, provider_code INTEGER, dispatched INTEGER, observed_at REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS full_work_diagnostic_key ON full_work_diagnostic(key,id);
                 CREATE TABLE IF NOT EXISTS full_refresh (provider TEXT PRIMARY KEY, next_at REAL NOT NULL, result BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS full_universe_refreshed (provider TEXT NOT NULL, dataset TEXT NOT NULL, refreshed_at REAL NOT NULL, PRIMARY KEY(provider,dataset));
                 CREATE TABLE IF NOT EXISTS full_date_prerequisite (provider TEXT NOT NULL, dataset TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, next_at REAL NOT NULL, PRIMARY KEY(provider,dataset,trade_date));
                 CREATE TABLE IF NOT EXISTS full_provider_outage (plan_id TEXT PRIMARY KEY, since REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS full_no_data_trip (plan_id TEXT PRIMARY KEY, trips INTEGER NOT NULL);
@@ -1223,6 +1224,23 @@ class FullMarketState:
                     "UPDATE full_work SET status='complete',lease_until=0 WHERE plan_id=?",
                     (plan["plan_id"],),
                 )
+
+    def record_universe_refreshed(self, provider: str, dataset: str, *, now: float) -> None:
+        """A feed's universe refresh completed: its list is as current as the source."""
+        with self.connection() as db:
+            db.execute(
+                "INSERT INTO full_universe_refreshed VALUES(?,?,?) ON CONFLICT(provider,dataset) "
+                "DO UPDATE SET refreshed_at=MAX(refreshed_at,excluded.refreshed_at)",
+                (provider, dataset, now),
+            )
+
+    def universe_refreshed_at(self, provider: str, dataset: str) -> float | None:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT refreshed_at FROM full_universe_refreshed WHERE provider=? AND dataset=?",
+                (provider, dataset),
+            ).fetchone()
+        return None if row is None else row["refreshed_at"]
 
     def refresh_due(self, provider: str, now: float) -> bool:
         with self.connection() as db:
