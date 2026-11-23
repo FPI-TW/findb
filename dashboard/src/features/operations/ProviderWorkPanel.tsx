@@ -1,7 +1,12 @@
+import type { ColumnDef } from "@tanstack/react-table"
 import { useState } from "react"
+import type { z } from "zod"
+
+import { DataTable } from "../../components/data-table"
 import { OperationsTabs } from "../../components/OperationsTabs"
 import { SOURCE_PROVIDERS } from "../../lib/admin-governance-api"
 import { QueryStatus } from "../../components/AsyncState"
+import type { providerWorkSchema } from "../../lib/admin-api"
 import { useDeliveryResource } from "./delivery.queries"
 
 const waitLabels: Record<string, string> = {
@@ -14,6 +19,104 @@ const waitLabels: Record<string, string> = {
   acquisition_window_closed: "每日抓取窗口外",
   batch_yield: "等待下一批輪替",
 }
+
+type ProviderWork = z.infer<typeof providerWorkSchema>["data"][number]
+
+const providerWorkColumns: ColumnDef<ProviderWork, unknown>[] = [
+  {
+    id: "scope",
+    header: "供應商 / 資料集",
+    meta: { minWidth: 160 },
+    cell: ({ row }) => (
+      <span className="font-medium">
+        {row.original.provider}
+        <span className="block text-muted">{row.original.dataset_key}</span>
+      </span>
+    ),
+  },
+  {
+    id: "source",
+    header: "來源 / 日期",
+    meta: { minWidth: 130 },
+    cell: ({ row }) => (
+      <>
+        {row.original.execution_profile ?? row.original.kind}
+        <div className="text-muted">{row.original.trade_date ?? "維護"}</div>
+      </>
+    ),
+  },
+  {
+    id: "state",
+    header: "狀態 / 順位",
+    meta: { minWidth: 140 },
+    cell: ({ row }) => {
+      const work = row.original
+      return (
+        <>
+          {work.active ? "執行中 · " : ""}
+          {work.state}
+          {work.drain_only && (
+            <div className="font-medium text-ink">僅排空原交付</div>
+          )}
+          <div className="text-muted">
+            {work.position === null ? "—" : `第 ${work.position} 位`}
+          </div>
+        </>
+      )
+    },
+  },
+  {
+    accessorKey: "wait_reason",
+    header: "等待原因",
+    meta: { minWidth: 200, wrap: true },
+    cell: context => {
+      const reason = context.getValue<string | null>()
+      return reason ? (waitLabels[reason] ?? reason) : "—"
+    },
+  },
+  {
+    id: "attempts",
+    header: "執行次數 / 最早時間",
+    meta: { minWidth: 260, wrap: true },
+    cell: ({ row }) => {
+      const work = row.original
+      return (
+        <>
+          {/* Queue attempts, not no-data retry rounds: a stop,
+              Source error or batch yield also starts one. */}
+          第 {work.attempt_number} 次執行
+          <div className="text-muted">{work.not_before}</div>
+          {work.last_batch?.processed !== undefined && (
+            <div>
+              最近批次：{work.last_batch.processed} 個成員 ·{" "}
+              {work.last_batch.elapsed_seconds ?? 0} 秒
+            </div>
+          )}
+          {work.last_batch?.counts && (
+            <div className="text-muted">
+              完成 {work.last_batch.counts.complete ?? 0} · 待處理{" "}
+              {(work.last_batch.counts.pending ?? 0) +
+                (work.last_batch.counts.prepared ?? 0)}{" "}
+              · 人工處理 {work.last_batch.counts.manual ?? 0}
+            </div>
+          )}
+          {work.daily_runtime_window?.next_open_at && (
+            <div>下次開窗：{work.daily_runtime_window.next_open_at}</div>
+          )}
+          {work.last_failure_code && (
+            <div>最近實際失敗：{work.last_failure_code}</div>
+          )}
+        </>
+      )
+    },
+  },
+  {
+    accessorKey: "heartbeat_at",
+    header: "心跳",
+    meta: { minWidth: 180 },
+    cell: context => context.getValue<string | null>() ?? "—",
+  },
+]
 
 export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
   const [selectedProvider, setSelectedProvider] =
@@ -79,93 +182,14 @@ export function ProviderWorkPanel({ active = true }: { active?: boolean }) {
                   此供應商目前沒有等待或執行中的工作。
                 </p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table
-                    aria-label={`${provider} 工作佇列`}
-                    className="w-full text-left text-xs"
-                  >
-                    <thead>
-                      <tr className="border-b border-line text-muted">
-                        <th className="p-2">供應商 / 資料集</th>
-                        <th className="p-2">來源 / 日期</th>
-                        <th className="p-2">狀態 / 順位</th>
-                        <th className="p-2">等待原因</th>
-                        <th className="p-2">執行次數 / 最早時間</th>
-                        <th className="p-2">心跳</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {workItems.map(work => (
-                        <tr
-                          key={work.work_id}
-                          className="border-b border-line last:border-0"
-                        >
-                          <td className="p-2 font-medium">
-                            {work.provider}
-                            <div className="text-muted">{work.dataset_key}</div>
-                          </td>
-                          <td className="p-2">
-                            {work.execution_profile ?? work.kind}
-                            <div className="text-muted">
-                              {work.trade_date ?? "維護"}
-                            </div>
-                          </td>
-                          <td className="p-2">
-                            {work.active ? "執行中 · " : ""}
-                            {work.state}
-                            {work.drain_only && (
-                              <div className="font-medium text-ink">
-                                僅排空原交付
-                              </div>
-                            )}
-                            <div className="text-muted">
-                              {work.position === null
-                                ? "—"
-                                : `第 ${work.position} 位`}
-                            </div>
-                          </td>
-                          <td className="p-2">
-                            {work.wait_reason
-                              ? (waitLabels[work.wait_reason] ??
-                                work.wait_reason)
-                              : "—"}
-                          </td>
-                          <td className="p-2">
-                            {/* Queue attempts, not no-data retry rounds: a stop,
-                                Source error or batch yield also starts one. */}
-                            第 {work.attempt_number} 次執行
-                            <div className="text-muted">{work.not_before}</div>
-                            {work.last_batch?.processed !== undefined && (
-                              <div>
-                                最近批次：{work.last_batch.processed} 個成員 ·{" "}
-                                {work.last_batch.elapsed_seconds ?? 0} 秒
-                              </div>
-                            )}
-                            {work.last_batch?.counts && (
-                              <div className="text-muted">
-                                完成 {work.last_batch.counts.complete ?? 0} ·
-                                待處理{" "}
-                                {(work.last_batch.counts.pending ?? 0) +
-                                  (work.last_batch.counts.prepared ?? 0)}{" "}
-                                · 人工處理 {work.last_batch.counts.manual ?? 0}
-                              </div>
-                            )}
-                            {work.daily_runtime_window?.next_open_at && (
-                              <div>
-                                下次開窗：
-                                {work.daily_runtime_window.next_open_at}
-                              </div>
-                            )}
-                            {work.last_failure_code && (
-                              <div>最近實際失敗：{work.last_failure_code}</div>
-                            )}
-                          </td>
-                          <td className="p-2">{work.heartbeat_at ?? "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                <DataTable
+                  ariaLabel={`${provider} 工作佇列`}
+                  columns={providerWorkColumns}
+                  data={workItems}
+                  getRowId={work => work.work_id}
+                  refreshingState={null}
+                  fillAvailableWidth
+                />
               )
             }}
           </OperationsTabs>

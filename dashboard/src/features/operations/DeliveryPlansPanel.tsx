@@ -15,6 +15,13 @@ import { Badge } from "../../components/ui/badge"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
+import {
   loadDeliveryPlans,
   loadDeliveryPlanDatasets,
   loadDeliveryPlanSummary,
@@ -258,24 +265,35 @@ export function DeliveryPlansPanel({
       <div className="mb-2 grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <Label htmlFor="plan-dataset">資料集</Label>
-          <select
-            id="plan-dataset"
-            className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-accent/20"
-            value={search.dataset}
+          <Select
+            value={search.dataset || "all"}
             disabled={datasets.isPending}
-            onChange={event =>
-              updateSearch({ ...search, dataset: event.target.value, pp: 1 })
+            onValueChange={value =>
+              updateSearch({
+                ...search,
+                dataset: value === "all" ? "" : value,
+                pp: 1,
+              })
             }
           >
-            <option value="">
-              {datasets.isPending ? "正在載入資料集…" : "全部資料集"}
-            </option>
-            {options.map(key => (
-              <option key={key} value={key}>
-                {key}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger id="plan-dataset" size="sm">
+              {/* Explicit text keeps the URL filter visible in server HTML. */}
+              <SelectValue>
+                {search.dataset ||
+                  (datasets.isPending ? "正在載入資料集…" : "全部資料集")}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">
+                {datasets.isPending ? "正在載入資料集…" : "全部資料集"}
+              </SelectItem>
+              {options.map(key => (
+                <SelectItem key={key} value={key}>
+                  {key}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="space-y-1">
           <Label htmlFor="plan-date">交易日</Label>

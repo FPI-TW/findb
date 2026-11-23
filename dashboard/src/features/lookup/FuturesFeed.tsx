@@ -1,16 +1,72 @@
 import { useQuery } from "@tanstack/react-query"
+import type { ColumnDef } from "@tanstack/react-table"
 import { useState } from "react"
 
+import { DataTable } from "../../components/data-table"
 import { Alert, AlertDescription } from "../../components/ui/alert"
 import { Button } from "../../components/ui/button"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
 import { Skeleton } from "../../components/ui/skeleton"
 import { loadFuturesEod } from "./data"
-import type { FuturesEodFilters } from "./types"
+import type { FuturesEodFilters, FuturesEodRow } from "./types"
 
 const sessionLabel = { regular: "日盤", after_hours: "夜盤" } as const
 const display = (value: string | number | null) => value ?? "—"
+
+const monoCell = (value: string | number | null) => (
+  <span className="font-mono">{display(value)}</span>
+)
+
+const futuresColumns: ColumnDef<FuturesEodRow, unknown>[] = [
+  {
+    accessorKey: "product_code",
+    header: "商品",
+    cell: context => monoCell(context.getValue<string>()),
+  },
+  {
+    accessorKey: "contract_code",
+    header: "合約",
+    cell: context => monoCell(context.getValue<string>()),
+  },
+  {
+    accessorKey: "contract_month",
+    header: "契約月份",
+    cell: context => monoCell(context.getValue<string>()),
+  },
+  { accessorKey: "trade_date", header: "交易日" },
+  {
+    accessorKey: "session",
+    header: "時段",
+    cell: context => {
+      const session = context.getValue<FuturesEodRow["session"]>()
+      return sessionLabel[session] ?? session
+    },
+  },
+  ...(
+    [
+      ["open", "開"],
+      ["high", "高"],
+      ["low", "低"],
+      ["close", "收"],
+      ["volume", "成交量"],
+      ["settlement_price", "結算價"],
+      ["open_interest", "未平倉量"],
+    ] as const
+  ).map(([key, header]): ColumnDef<FuturesEodRow, unknown> => ({
+    accessorKey: key,
+    header,
+    meta: { align: "right" },
+    cell: context => display(context.getValue<string | number | null>()),
+  })),
+]
 
 export function FuturesFeed({ productCode }: { productCode: string }) {
   const [filters, setFilters] = useState<FuturesEodFilters>({
@@ -51,20 +107,25 @@ export function FuturesFeed({ productCode }: { productCode: string }) {
         </div>
         <div className="space-y-1">
           <Label htmlFor="future-session">交易時段</Label>
-          <select
-            id="future-session"
-            className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm"
-            value={filters.session}
-            onChange={event =>
+          <Select
+            value={filters.session || "all"}
+            onValueChange={value =>
               update({
-                session: event.target.value as FuturesEodFilters["session"],
+                session: (value === "all"
+                  ? ""
+                  : value) as FuturesEodFilters["session"],
               })
             }
           >
-            <option value="">全部時段</option>
-            <option value="regular">日盤</option>
-            <option value="after_hours">夜盤</option>
-          </select>
+            <SelectTrigger id="future-session" size="sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部時段</SelectItem>
+              <SelectItem value="regular">日盤</SelectItem>
+              <SelectItem value="after_hours">夜盤</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className="space-y-1">
           <Label htmlFor="future-start">起始交易日</Label>
@@ -112,65 +173,17 @@ export function FuturesFeed({ productCode }: { productCode: string }) {
               正在更新期貨行情…
             </p>
           )}
-          <div className="overflow-x-auto rounded-lg border border-line">
-            <table className="w-full min-w-[900px] text-left text-xs">
-              <caption className="sr-only">
-                {productCode} 各合約分時段每日行情
-              </caption>
-              <thead className="bg-surface-soft">
-                <tr>
-                  {[
-                    "商品",
-                    "合約",
-                    "契約月份",
-                    "交易日",
-                    "時段",
-                    "開",
-                    "高",
-                    "低",
-                    "收",
-                    "成交量",
-                    "結算價",
-                    "未平倉量",
-                  ].map(label => (
-                    <th key={label} className="px-2 py-2 font-semibold">
-                      {label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {query.data.data.map(row => (
-                  <tr
-                    key={`${row.contract_id}-${row.trade_date}-${row.session}`}
-                    className="border-t border-line"
-                  >
-                    <td className="px-2 py-2 font-mono">{row.product_code}</td>
-                    <td className="px-2 py-2 font-mono">{row.contract_code}</td>
-                    <td className="px-2 py-2 font-mono">
-                      {row.contract_month}
-                    </td>
-                    <td className="px-2 py-2">{row.trade_date}</td>
-                    <td className="px-2 py-2">
-                      {sessionLabel[row.session] ?? row.session}
-                    </td>
-                    <td className="px-2 py-2">{display(row.open)}</td>
-                    <td className="px-2 py-2">{display(row.high)}</td>
-                    <td className="px-2 py-2">{display(row.low)}</td>
-                    <td className="px-2 py-2">{display(row.close)}</td>
-                    <td className="px-2 py-2">{display(row.volume)}</td>
-                    <td className="px-2 py-2">
-                      {display(row.settlement_price)}
-                    </td>
-                    <td className="px-2 py-2">{display(row.open_interest)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {query.data.data.length === 0 && (
-            <p className="text-sm text-muted">此條件沒有期貨行情。</p>
-          )}
+          <DataTable
+            caption={`${productCode} 各合約分時段每日行情`}
+            columns={futuresColumns}
+            data={query.data.data}
+            getRowId={row =>
+              `${row.contract_id}-${row.trade_date}-${row.session}`
+            }
+            refreshingState={null}
+            emptyState="此條件沒有期貨行情。"
+            fillAvailableWidth
+          />
           <div className="flex items-center justify-end gap-2">
             <Button
               type="button"

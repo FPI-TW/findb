@@ -21,6 +21,13 @@ import {
 } from "../../components/ui/card"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
 import { toast } from "../../components/ui/toast"
 import type { AdminRole, AdminUser } from "../../lib/admin-governance-api"
 import {
@@ -198,19 +205,24 @@ export function UsersPage() {
             updateMutation.variables?.data.userId === user.user_id &&
             "role" in updateMutation.variables.data
           return (
-            <select
-              aria-label={`${user.username} 的角色`}
-              className="h-9 rounded-lg border border-line bg-surface px-2 text-sm"
+            <Select
               value={user.role}
               disabled={rolePending}
-              onChange={event =>
-                void changeRole(user, event.target.value as AdminRole)
-              }
+              onValueChange={value => void changeRole(user, value as AdminRole)}
             >
-              <option value="owner">Owner</option>
-              <option value="operator">Operator</option>
-              <option value="viewer">Viewer</option>
-            </select>
+              <SelectTrigger
+                aria-label={`${user.username} 的角色`}
+                size="sm"
+                className="w-32"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="owner">Owner</SelectItem>
+                <SelectItem value="operator">Operator</SelectItem>
+                <SelectItem value="viewer">Viewer</SelectItem>
+              </SelectContent>
+            </Select>
           )
         },
       },
@@ -351,16 +363,19 @@ export function UsersPage() {
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="new-role">角色</Label>
-              <select
-                id="new-role"
-                className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+              <Select
                 value={role}
-                onChange={event => setRole(event.target.value as AdminRole)}
+                onValueChange={value => setRole(value as AdminRole)}
               >
-                <option value="owner">Owner</option>
-                <option value="operator">Operator</option>
-                <option value="viewer">Viewer</option>
-              </select>
+                <SelectTrigger id="new-role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="owner">Owner</SelectItem>
+                  <SelectItem value="operator">Operator</SelectItem>
+                  <SelectItem value="viewer">Viewer</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="new-password">指定密碼（留空自動產生）</Label>

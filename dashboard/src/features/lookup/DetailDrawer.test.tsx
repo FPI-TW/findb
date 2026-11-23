@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock("./data", () => mocks)
 
+import { chooseSelectOption } from "../../test-utils/select"
 import { DetailDrawer } from "./DetailDrawer"
 import type { Instrument } from "./types"
 
@@ -145,9 +146,7 @@ describe("DetailDrawer", () => {
     expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(4)
     expect(mocks.loadEod).not.toHaveBeenCalled()
     expect(mocks.loadMinute).not.toHaveBeenCalled()
-    fireEvent.change(screen.getByLabelText("交易時段"), {
-      target: { value: "after_hours" },
-    })
+    chooseSelectOption(screen.getByLabelText("交易時段"), "夜盤")
     await waitFor(() =>
       expect(mocks.loadFuturesEod).toHaveBeenLastCalledWith(
         expect.objectContaining({ productCode: "TX", session: "after_hours" }),

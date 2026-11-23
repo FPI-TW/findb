@@ -22,6 +22,11 @@ vi.mock("@tanstack/react-start", async importOriginal => ({
   useServerFn: (fn: unknown) => fn,
 }))
 vi.mock("../../lib/admin.functions", () => mocks)
+import {
+  chooseSelectOption,
+  closeSelect,
+  openSelect,
+} from "../../test-utils/select"
 import { DeliveryPlansPanel } from "./DeliveryPlansPanel"
 
 const plan = {
@@ -98,7 +103,9 @@ describe("full market plans", () => {
     expect(
       screen.queryByText("所選條件尚無交付計畫；不代表已完成或已有資料缺漏。")
     ).not.toBeInTheDocument()
-    await screen.findByRole("option", { name: "old_dataset" })
+    await waitFor(() => expect(screen.getByLabelText("資料集")).toBeEnabled())
+    expect(openSelect(screen.getByLabelText("資料集"))).toContain("old_dataset")
+    closeSelect()
     await act(async () => resolve({ data: [plan], pagination }))
     expect(await screen.findByText("已逾時")).toBeInTheDocument()
     expect(
@@ -245,9 +252,7 @@ describe("full market plans", () => {
       })
     )
     mocks.loadDeliveryPlans.mockReturnValue(new Promise(() => {}))
-    fireEvent.change(screen.getByLabelText("資料集"), {
-      target: { value: "old_dataset" },
-    })
+    chooseSelectOption(screen.getByLabelText("資料集"), "old_dataset")
     await waitFor(() =>
       expect(mocks.loadDeliveryPlans).toHaveBeenCalledWith({
         data: {

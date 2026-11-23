@@ -29,6 +29,7 @@ vi.mock("@tanstack/react-start", () => ({
 }))
 vi.mock("../../lib/calendar.functions", () => mocks)
 
+import { chooseSelectOption } from "../../test-utils/select"
 import { CalendarManagementPage } from "./CalendarManagementPage"
 import type { CalendarSearch } from "./calendar.search"
 
@@ -127,9 +128,7 @@ describe("CalendarManagementPage", () => {
     expect(screen.getByText("2026-01-02")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "編輯 2026-01-02" })).toBeNull()
 
-    fireEvent.change(screen.getByLabelText("月份篩選"), {
-      target: { value: "01" },
-    })
+    chooseSelectOption(screen.getByLabelText("月份篩選"), "1 月")
     expect(updateSearch).toHaveBeenCalledWith({ ...search, month: "01" })
   })
 

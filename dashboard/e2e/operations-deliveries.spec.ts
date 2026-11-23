@@ -134,9 +134,8 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
   )
   await page.getByRole("button", { name: "交付計畫分頁下一頁" }).click()
   await expect(page).toHaveURL(/pp=2/)
-  await page
-    .getByRole("combobox", { name: "資料集", exact: true })
-    .selectOption("old_dataset")
+  await page.locator("#plan-dataset").click()
+  await page.getByRole("option", { name: "old_dataset", exact: true }).click()
   await expect(page).toHaveURL(/dataset=old_dataset/)
   await expect(
     page.getByRole("table", { name: "交付計畫", exact: true })
@@ -145,9 +144,7 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
     page,
     () => page.reload({ waitUntil: "commit" }),
     async () => {
-      await expect(
-        page.getByRole("combobox", { name: "資料集", exact: true })
-      ).toHaveValue("old_dataset")
+      await expect(page.locator("#plan-dataset")).toHaveText("old_dataset")
       await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
         "aria-selected",
         "true"
@@ -167,9 +164,7 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
   await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
   await page.getByLabel("回補結束日期").fill("2026-10-08")
   await page.getByRole("tab", { name: "交付計畫" }).click()
-  await expect(
-    page.getByRole("combobox", { name: "資料集", exact: true })
-  ).toHaveValue("old_dataset")
+  await expect(page.locator("#plan-dataset")).toHaveText("old_dataset")
   await page.goBack()
   await expect(page.getByRole("tab", { name: "歷史回補" })).toHaveAttribute(
     "aria-selected",
@@ -344,8 +339,8 @@ for (const role of ["operator", "owner"]) {
         name: "帶入 tw_equity_eod 2026-10-07 回補參數",
       })
       .click()
-    await expect(page.locator("#backfill-provider")).toHaveValue("finlab")
-    await expect(page.locator("#backfill-dataset")).toHaveValue("tw_equity_eod")
+    await expect(page.locator("#backfill-provider")).toHaveText("finlab")
+    await expect(page.locator("#backfill-dataset")).toHaveText("tw_equity_eod")
     await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
     await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
     const create = page.getByRole("button", { name: "建立回補", exact: true })
@@ -386,8 +381,8 @@ for (const role of ["operator", "owner"]) {
     await expect
       .poll(() => reads(request, backfillsPath))
       .toBeGreaterThan(count)
-    await expect(page.locator("#backfill-provider")).toHaveValue("finlab")
-    await expect(page.locator("#backfill-dataset")).toHaveValue("tw_equity_eod")
+    await expect(page.locator("#backfill-provider")).toHaveText("finlab")
+    await expect(page.locator("#backfill-dataset")).toHaveText("tw_equity_eod")
     await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
     await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
     await expect(preview).toBeVisible()
@@ -395,11 +390,17 @@ for (const role of ["operator", "owner"]) {
     await expect(create).toBeEnabled()
     await create.click()
     await expect(
-      page.locator("details").filter({ hasText: "finlab/tw_equity_eod" })
+      page
+        .getByRole("table", { name: "回補請求紀錄" })
+        .getByRole("row")
+        .filter({ hasText: "finlab/tw_equity_eod" })
     ).toContainText("2026-10-07 – 2026-10-07")
     await page.getByRole("button", { name: "重新整理", exact: true }).click()
     await expect(
-      page.locator("details").filter({ hasText: "finlab/tw_equity_eod" })
+      page
+        .getByRole("table", { name: "回補請求紀錄" })
+        .getByRole("row")
+        .filter({ hasText: "finlab/tw_equity_eod" })
     ).toHaveCount(1)
     const state = await (await request.get(`${backend}/fixture/state`)).json()
     expect(state.previews).toEqual([
@@ -501,7 +502,7 @@ for (const expiry of ["local", "upstream"] as const) {
       page.getByRole("button", { name: "驗證交易日", exact: true })
     ).toBeEnabled()
     await expect(
-      page.locator("#historical-provider-scopes option")
+      page.locator('select[name="provider"] option[value]:not([value=""])')
     ).toHaveCount(1)
     await page.waitForLoadState("networkidle")
     await request.post(`${backend}/fixture/session`, {
@@ -514,7 +515,7 @@ for (const expiry of ["local", "upstream"] as const) {
     await expect(page).toHaveURL(/\/login/)
     await expect(page.locator("#backfill-provider")).toHaveCount(0)
     await expect(
-      page.locator("#historical-provider-scopes option")
+      page.locator('select[name="provider"] option[value]:not([value=""])')
     ).toHaveCount(0)
     await expect(
       page.getByRole("button", { name: "建立回補", exact: true })
@@ -534,9 +535,11 @@ test("retired profile deep links show daily plans without profile tabs or pilot 
   const plans = page.getByRole("table", { name: "交付計畫", exact: true })
   await expect(plans).toContainText("tw_futures_eod")
   await expect(plans).not.toContainText("pilot_dataset")
-  await expect(
-    page.getByRole("combobox", { name: "資料集", exact: true })
-  ).not.toContainText("pilot_dataset")
+  await page.locator("#plan-dataset").click()
+  const datasetOptions = page.getByRole("listbox")
+  await expect(datasetOptions).toContainText("全部資料集")
+  await expect(datasetOptions).not.toContainText("pilot_dataset")
+  await page.keyboard.press("Escape")
   await expect(
     page.getByRole("tab", { name: "Pilot", exact: true })
   ).toHaveCount(0)
