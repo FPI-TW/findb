@@ -22,7 +22,6 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal, cast
 from uuid import UUID
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,7 +40,7 @@ from app.schemas.serve import (
     IntradayUnitsResponse,
 )
 from app.services.object_storage import ObjectStorageConfigError, ObjectStorageError
-from app.services.serve import serve_error
+from app.services.serve_errors import serve_error
 from app.services.serve_intraday import SESSIONS, _instrument, _resolve, canonical_reader
 from app.utils import utc_now
 
@@ -96,7 +95,7 @@ async def _charge(
         select(APIKey.intraday_download_daily_limit).where(APIKey.key_id == key_id)
     )
     if limit is None:  # pragma: no cover - the dependency authenticated this key
-        raise HTTPException(status_code=403, detail="Invalid API key")
+        raise serve_error(401, "API_KEY_INVALID", "API key is not valid")
     used = None
     if count <= limit:
         now = utc_now()
@@ -123,15 +122,13 @@ async def _charge(
             )
         )
         tomorrow = usage_date + timedelta(days=1)
-        raise HTTPException(
-            status_code=429,
-            detail={
-                "code": "DOWNLOAD_QUOTA_EXCEEDED",
-                "message": (
-                    f"This manifest needs {count} objects; the key has "
-                    f"{max(0, limit - int(current or 0))} of {limit} left for {usage_date}"
-                ),
-            },
+        raise serve_error(
+            429,
+            "DOWNLOAD_QUOTA_EXCEEDED",
+            (
+                f"This manifest needs {count} objects; the key has "
+                f"{max(0, limit - int(current or 0))} of {limit} left for {usage_date}"
+            ),
             headers={"Retry-After": str(_seconds_until(tomorrow))},
         )
     await db.commit()
@@ -182,12 +179,8 @@ async def intraday_download_manifest(
         reader = canonical_reader()
         urls = {key: reader.presign_get(key, expires_in=ttl) for key in objects}
     except (ObjectStorageConfigError, ObjectStorageError):
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "INTRADAY_STORAGE_UNAVAILABLE",
-                "message": "Intraday storage is not available",
-            },
+        raise serve_error(
+            503, "INTRADAY_STORAGE_UNAVAILABLE", "Intraday storage is not available"
         ) from None
     issued_at = utc_now()
     quota = await _charge(db, key_id, len(objects), issued_at.date())

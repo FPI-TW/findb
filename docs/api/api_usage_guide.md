@@ -27,7 +27,7 @@ Authorization: Bearer <admin-session>
 | API | 認證與權限 |
 | --- | --- |
 | Source | 必須使用DB-backed Source client key，受`source_name`、datasets與rate limit限制 |
-| Serve | 由`SERVE_REQUIRE_AUTH`控制；即使開放仍保持唯讀 |
+| Serve | 由`SERVE_REQUIRE_AUTH`控制；有帶 key 時一律驗證並套用該 key 的限制；即使開放仍保持唯讀 |
 | Admin | 永遠需要具名session、DB-backed machine key或break-glass recovery key |
 
 Rate limit 與 security event 依 client IP 分桶。Admin 登入有兩層限制，window 都是
@@ -250,14 +250,41 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   `GET /serve/market-freshness`。
 
 成功回應使用`{success, data}` typed envelope。Instrument list使用page pagination，EOD／minute
-使用opaque cursor且不做total count。已知商品不屬active資料域時回
-`DATASET_NOT_AVAILABLE`；找不到商品、日期範圍與cursor錯誤分別使用
-`INSTRUMENT_NOT_FOUND`、`INVALID_DATE_RANGE`、`INVALID_CURSOR`。Catalog若遇到未知或矛盾的
-active registry config會fail closed，不回傳provider、scheduler或credential資訊。
+使用opaque cursor且不做total count。Catalog若遇到未知或矛盾的active registry config會fail closed，
+不回傳provider、scheduler或credential資訊。
+
+### Serve 錯誤格式
+
+`/api/v1/serve/*` 的所有錯誤（含參數驗證、認證、限流與不存在的路徑）都是同一個格式，client 依 `code`
+分類，不要解析 `message`：
+
+```json
+{"detail": {"code": "INVALID_PARAMETER", "message": "Invalid parameter: start_date",
+            "details": {"errors": [{"location": "query", "param": "start_date", "reason": "..."}]}}}
+```
+
+`details` 只在有額外資訊時出現。Source 與 Admin 維持各自的格式。
+
+| Status | `code` | 意義與處理 |
+| --- | --- | --- |
+| 400 | `PAGE_SIZE_EXCEEDS_KEY_LIMIT` | `page_size` 超過 key 的上限；`details.limit` 是上限，不會自動縮小 |
+| 401 | `API_KEY_REQUIRED` | 需要 key 卻沒有帶 `X-API-Key` |
+| 401 | `API_KEY_INVALID` | key 不存在、已撤銷、已過期，或不是 Serve key |
+| 403 | `SCOPE_REQUIRED` | key 缺少 `details.scope`（`serve` 或 `intraday_download`） |
+| 404 | `INSTRUMENT_NOT_FOUND`、`NOT_FOUND` | 找不到商品；`NOT_FOUND` 是路徑不存在 |
+| 422 | `INVALID_PARAMETER` | 參數格式或值不合法；`details.errors` 逐一列出參數與原因 |
+| 422 | `QUERY_SCOPE_REQUIRED`、`INVALID_SYMBOLS`、`INVALID_DATE_RANGE`、`INVALID_CURSOR` | 查詢組合、代號、日期範圍或 cursor 不合法 |
+| 422 | `DATASET_NOT_AVAILABLE` | 商品或市場存在，但不屬於 active 資料域 |
+| 429 | `RATE_LIMITED` | 超過 key 的限流；依 `Retry-After`（同 `details.retry_after_seconds`）重試；`details.bucket` 為 `serve` 或 `intraday` |
+| 429 | `DOWNLOAD_QUOTA_EXCEEDED` | 下載清單的每日額度用完，`Retry-After` 為到下一個 UTC 日的秒數 |
+| 503 | `SERVE_CONFIGURATION_INVALID`、`INTRADAY_READS_BUSY`、`INTRADAY_DATA_CHANGING`、`INTRADAY_STORAGE_UNAVAILABLE` | 暫時無法服務，可稍後重試 |
+
+只要請求帶了 key，即使 `SERVE_REQUIRE_AUTH=false` 也會驗證，並套用該 key 的 page-size 與限流；
+無效的 key 一律回 401 `API_KEY_INVALID`。
 
 Serve key的`page_size_limit`只套用於分頁路由，並以路由實際預設值檢查：instrument list為50，
 EOD、minute、futures EOD與calendar為100，盤中 bars 與 ticks 為1000。未分頁的datasets、單筆instrument、published calendar year
-與market freshness不套用page-size限制；超過限制時回傳400，不自動縮小page size。
+與market freshness不套用page-size限制。
 
 ### 盤中資料
 
@@ -288,7 +315,7 @@ FinLab 的台股與 ETF 1 分 K、逐筆成交存在 Canonical R2 的 Parquet �
 （FinLab 自己的 60 分行情會保留量為 0 的列）。
 
 **限流與保護**：盤中端點與其他 Serve 端點分開計算，使用同一把 key 的 `rate_limit_requests`／`rate_limit_window`，
-超過時回 429 並帶 `Retry-After`。每個 Serve process 同時讀 R2 的數量有上限
+超過時回 429 `RATE_LIMITED`（`details.bucket` 為 `intraday`）並帶 `Retry-After`。每個 Serve process 同時讀 R2 的數量有上限
 （`INTRADAY_SERVE_MAX_CONCURRENT_READS`，預設 4），等待超過 `INTRADAY_SERVE_READ_WAIT_SECONDS`（預設 2 秒）
 回 503 `INTRADAY_READS_BUSY`；最近讀過的交易日保留在記憶體（`INTRADAY_SERVE_CACHE_BYTES`，預設 64 MiB），
 以物件版本為鍵，物件被取代後不會讀到舊值。
@@ -454,7 +481,7 @@ Serve consumer；同一請求不得同時帶Bearer session與`X-API-Key`。完�
 | --- | --- | --- |
 | Cloudflare | JSON 含 `"cloudflare_error": true`、`"error_code": 1010`、`"error_name": "browser_signature_banned"` | 依 User-Agent 封鎖。目前只有 Python 標準庫 `urllib` 的預設 UA（`Python-urllib/3.x`）會被擋；`requests`、`httpx`、`aiohttp` 與 curl 的預設 UA 都可以通過。用 `urllib` 時請自訂 `User-Agent`，例如 `my-app/1.0`。請求沒有到達 FinDB，不會留下 security event，也不會計入 rate limit。 |
 | nginx | `{"detail":"Source API client IP not allowlisted"}` | 只出現在 `/api/v1/source/*`：來源 IP 不在 Source allowlist 中。 |
-| FinDB | JSON `detail`，例如 `Invalid API key`、`Invalid admin credential`、`Insufficient admin role`、`Password change required`，或 `Source ... scope denied` | credential 無效、權限不足，或 scope 不符。 |
+| FinDB | JSON `detail`，例如 `Invalid admin credential`、`Insufficient admin role`、`Password change required`、`Source ... scope denied`；Serve 為 `{"code": "SCOPE_REQUIRED", ...}` | credential 無效、權限不足，或 scope 不符。Serve 的無效 key 回 401，見 [Serve 錯誤格式](#serve-錯誤格式)。 |
 
 上表的 Cloudflare 行為是 2026-11-12 在 staging 與 production 實測的結果，兩個環境相同。Cloudflare 的 security 設定不在 repo 的 IaC 內，調整後須重新實測並更新本表。
 

@@ -710,7 +710,7 @@ async def test_calendar_year_route_requires_db_backed_serve_key_when_auth_option
     path = "/api/v1/serve/calendar/years/TW/2026"
 
     assert (await client.get(path)).status_code == 401
-    assert (await client.get(path, headers={settings.API_KEY_HEADER: "invalid"})).status_code == 403
+    assert (await client.get(path, headers={settings.API_KEY_HEADER: "invalid"})).status_code == 401
     assert (await client.get(path, headers=wrong_scope_headers)).status_code == 403
-    assert (await client.get(path, headers=wrong_kind_headers)).status_code == 403
+    assert (await client.get(path, headers=wrong_kind_headers)).status_code == 401
     assert (await client.get(path, headers=valid_headers)).status_code == 200

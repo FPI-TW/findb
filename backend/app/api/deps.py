@@ -17,8 +17,9 @@ from app.config import get_settings
 from app.dependencies import get_db
 from app.models.registry import APIKey
 from app.services.admin_identity import find_active_session
-from app.services.api_keys import find_active_api_key, has_active_admin_keys, has_active_api_keys
+from app.services.api_keys import find_active_api_key, has_active_admin_keys
 from app.services.security_events import record_invalid_credential
+from app.services.serve_errors import serve_error
 from app.services.source_clients import find_active_source_client
 
 settings = get_settings()
@@ -170,19 +171,25 @@ def _enforce_serve_rate_limit(key: APIKey, client_ip: str, *, intraday_cost: int
     window_seconds = max(1, int(key.rate_limit_window))
     bucket_key = f"{key.key_id}:{client_ip}"
     if intraday_cost:
-        if not _serve_intraday_rate_limiter.hit(
+        allowed = _serve_intraday_rate_limiter.hit(
             bucket_key, limit=limit, window=window_seconds, cost=intraday_cost
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Rate limit exceeded",
-                headers={"Retry-After": str(window_seconds)},
-            )
-        return
-    if not _serve_rate_limiter.hit(bucket_key, limit=limit, window=window_seconds):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded",
+        )
+        bucket = "intraday"
+    else:
+        allowed = _serve_rate_limiter.hit(bucket_key, limit=limit, window=window_seconds)
+        bucket = "serve"
+    if not allowed:
+        raise serve_error(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "RATE_LIMITED",
+            f"Rate limit of {limit} requests per {window_seconds} seconds exceeded",
+            details={
+                "bucket": bucket,
+                "limit": limit,
+                "window_seconds": window_seconds,
+                "retry_after_seconds": window_seconds,
+            },
+            headers={"Retry-After": str(window_seconds)},
         )
 
 
@@ -369,16 +376,14 @@ def _enforce_serve_api_key_policy(
     extra_scope: str | None = None,
 ) -> None:
     scopes = key.scopes or []
-    if "serve" not in scopes:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="API key does not allow Serve API access",
-        )
-    if extra_scope is not None and extra_scope not in scopes:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"API key does not have the {extra_scope} scope",
-        )
+    for scope in ("serve", extra_scope):
+        if scope is not None and scope not in scopes:
+            raise serve_error(
+                status.HTTP_403_FORBIDDEN,
+                "SCOPE_REQUIRED",
+                f"API key does not have the {scope} scope",
+                details={"scope": scope},
+            )
 
     if default_page_size is not None:
         page_size = request.query_params.get("page_size")
@@ -391,9 +396,11 @@ def _enforce_serve_api_key_policy(
             requested_page_size = default_page_size
 
         if requested_page_size > key.page_size_limit:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"page_size exceeds API key limit of {key.page_size_limit}",
+            raise serve_error(
+                status.HTTP_400_BAD_REQUEST,
+                "PAGE_SIZE_EXCEEDS_KEY_LIMIT",
+                f"page_size exceeds API key limit of {key.page_size_limit}",
+                details={"limit": key.page_size_limit, "requested": requested_page_size},
             )
     else:
         requested_page_size = 0
@@ -416,24 +423,19 @@ async def _authenticate_serve_api_key(
     intraday_cost: Callable[[int], int] | None = None,
     extra_scope: str | None = None,
 ) -> str | None:
-    if not required and not settings.SERVE_REQUIRE_AUTH:
-        return None
-
     if not api_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing API key",
+        if not required and not settings.SERVE_REQUIRE_AUTH:
+            return None
+        raise serve_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "API_KEY_REQUIRED",
+            f"This endpoint needs a Serve API key in the {settings.API_KEY_HEADER} header",
         )
 
+    # A key that is sent is always checked, even where Serve auth is optional, so
+    # its page-size and rate limits apply the same way everywhere.
     db_key = await find_active_api_key(db, api_key)
-    if db_key is not None:
-        if db_key.kind != "serve":
-            record_invalid_credential(
-                "serve",
-                endpoint=request.url.path,
-                client_ip=_extract_client_ip(request),
-            )
-            raise HTTPException(status_code=403, detail="Invalid API key")
+    if db_key is not None and db_key.kind == "serve":
         _enforce_serve_api_key_policy(
             request,
             db_key,
@@ -449,12 +451,11 @@ async def _authenticate_serve_api_key(
         endpoint=request.url.path,
         client_ip=_extract_client_ip(request),
     )
-    if not required and not await has_active_api_keys(db):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication required but no API keys configured",
-        )
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key")
+    raise serve_error(
+        status.HTTP_401_UNAUTHORIZED,
+        "API_KEY_INVALID",
+        "API key is unknown, revoked, expired or not a Serve key",
+    )
 
 
 async def verify_serve_api_key(

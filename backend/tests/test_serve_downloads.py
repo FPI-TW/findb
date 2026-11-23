@@ -204,7 +204,8 @@ async def test_only_keys_with_the_download_scope_get_a_manifest(
     _, plain = await download_key(test_session, scopes=("serve",))
     refused = await manifest(client, plain, tw)
     assert refused.status_code == 403
-    assert "intraday_download" in refused.json()["detail"]
+    assert refused.json()["detail"]["code"] == "SCOPE_REQUIRED"
+    assert refused.json()["detail"]["details"] == {"scope": "intraday_download"}
 
 
 @pytest.mark.asyncio

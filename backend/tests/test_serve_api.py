@@ -915,15 +915,18 @@ async def test_serve_routes_require_key_when_auth_enabled(
 
 
 @pytest.mark.asyncio
-async def test_serve_api_reports_server_misconfiguration(client: AsyncClient, monkeypatch):
+@pytest.mark.parametrize("require_auth", [True, False])
+async def test_serve_rejects_an_invalid_key_even_when_auth_is_optional(
+    client: AsyncClient, monkeypatch, require_auth
+):
     settings = get_settings()
-    monkeypatch.setattr(settings, "SERVE_REQUIRE_AUTH", True)
+    monkeypatch.setattr(settings, "SERVE_REQUIRE_AUTH", require_auth)
     response = await client.get(
         "/api/v1/serve/instruments",
         headers={settings.API_KEY_HEADER: "anything"},
     )
-    assert response.status_code == 500
-    assert "no API keys configured" in response.json()["detail"]
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "API_KEY_INVALID"
 
 
 @pytest.mark.asyncio
@@ -956,7 +959,8 @@ async def test_serve_page_size_limit_uses_each_route_effective_default(
     ):
         response = await client.get(path, headers=headers)
         assert response.status_code == 400
-        assert response.json()["detail"] == "page_size exceeds API key limit of 50"
+        assert response.json()["detail"]["code"] == "PAGE_SIZE_EXCEEDS_KEY_LIMIT"
+        assert response.json()["detail"]["details"]["limit"] == 50
         allowed = await client.get(
             f"{path}{'&' if '?' in path else '?'}page_size=50", headers=headers
         )

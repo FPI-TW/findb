@@ -59,6 +59,7 @@ from app.services.ingress_contracts import (
     INTRADAY_DATASET_FREQUENCY,
     DatasetContractDeclaration,
 )
+from app.services.serve_errors import serve_error
 
 LookupColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
 DataKind = Literal["eod", "minute", "futures_eod"]
@@ -98,10 +99,6 @@ class ActiveDatasetScope:
     frequency: Literal["daily", "minute"]
     data_kind: DataKind
     interval: Literal["1d", "1m"]
-
-
-def serve_error(status_code: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
 def configuration_error() -> HTTPException:
@@ -427,11 +424,11 @@ async def list_calendar(
     start_date = start_date or date(year, 1, 1)
     end_date = end_date or date(year, 12, 31)
     if (end_date - start_date).days > 3660:
-        raise HTTPException(status_code=422, detail="calendar range exceeds 3661 dates")
+        raise serve_error(422, "INVALID_DATE_RANGE", "Calendar range may cover at most 3661 dates")
     try:
         days = await effective_days(db, market, start_date, end_date)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise serve_error(422, "INVALID_PARAMETER", str(exc)) from exc
     selected = [day for day in days if is_open is None or day["is_open"] == is_open]
     total_records = len(selected)
     return CalendarListResponse(
