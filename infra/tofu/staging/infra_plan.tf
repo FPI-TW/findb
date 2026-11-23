@@ -9,6 +9,10 @@ locals {
   # One more exact log group ARN exceeds the same limit. Tag refresh is bounded
   # to this stack's staging log-group prefix, the scope its logs KMS key admits.
   infra_plan_log_group_arn  = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${var.ssm_log_group_prefix}/*"
+  # Exact ARNs for every runtime secret exceed the same limit once a provider is
+  # added. Metadata refresh (never the secret value) is bounded to this stack's
+  # staging secret-name prefix instead.
+  infra_plan_secret_arn     = "arn:${data.aws_partition.current.partition}:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:findb/staging/*"
   infra_plan_dlm_policy_arn = "arn:${data.aws_partition.current.partition}:dlm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:policy/*"
   infra_plan_dlm_role_arn   = "arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:role/findb-staging-dlm-root-volume-backup"
 }
@@ -214,7 +218,7 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
   }
 
   statement {
-    sid    = "ReadExactSecretMetadata"
+    sid    = "ReadStagingSecretMetadata"
     effect = "Allow"
 
     actions = [
@@ -223,10 +227,7 @@ data "aws_iam_policy_document" "infra_plan_permissions" {
       "secretsmanager:ListTagsForResource",
     ]
 
-    resources = concat(
-      [for secret in aws_secretsmanager_secret.active_runtime : secret.arn],
-      [aws_secretsmanager_secret.retired_calendar.arn],
-    )
+    resources = [local.infra_plan_secret_arn]
   }
 
   statement {

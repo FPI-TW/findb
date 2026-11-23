@@ -243,13 +243,17 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         ':log-group:${var.ssm_log_group_prefix}/*"'
         in plan.split("infra_plan_log_group_arn", 1)[1].split("\n", 1)[0]
     )
-    assert 'sid    = "ReadExactSecretMetadata"' in permissions
-    metadata = permissions.split('sid    = "ReadExactSecretMetadata"', 1)[1].split(
+    # Exact ARNs for every runtime secret exceed the same limit; metadata refresh
+    # is bounded to the staging secret-name prefix and never reads a value.
+    assert 'sid    = "ReadStagingSecretMetadata"' in permissions
+    metadata = permissions.split('sid    = "ReadStagingSecretMetadata"', 1)[1].split(
         "statement {", 1
     )[0]
-    assert "resources = concat(" in metadata
-    assert "[for secret in aws_secretsmanager_secret.active_runtime : secret.arn]" in metadata
-    assert "[aws_secretsmanager_secret.retired_calendar.arn]" in metadata
+    assert "resources = [local.infra_plan_secret_arn]" in metadata
+    assert (
+        ':secret:findb/staging/*"' in plan.split("infra_plan_secret_arn ", 1)[1].split("\n", 1)[0]
+    )
+    assert "secretsmanager:GetSecretValue" not in metadata
     assert "secretsmanager:GetResourcePolicy" in permissions
     assert 'sid       = "ReadExactStateObject"' in permissions
     assert 'sid    = "ListExactStatePrefix"' in permissions

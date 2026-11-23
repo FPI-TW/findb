@@ -388,9 +388,15 @@ its backend is fully pinned and its tracked tfvars already holds the real values
    `findb-staging-*` alarm ARN prefix. This bounded prefix is intentional: listing
    every custom alarm ARN for both metadata and tag refresh exceeds IAM's
    aggregate inline role-policy size limit. Log-group tag refresh is bounded the
-   same way, to the `/findb/staging/` log-group prefix: the policy has well under
-   100 bytes of headroom, so one more exact ARN no longer fits. Check the size of
+   same way, to the `/findb/staging/` log-group prefix, and secret metadata refresh
+   to the `findb/staging/*` secret-name prefix: with exact secret ARNs the policy
+   reached the limit when the HKEX source secret was added. Check the size of
    `staging-infra-plan-read-only` before adding any statement or resource to it.
+   When a developer explicitly allows it, a bounded `-target` apply from the
+   reviewed pull-request head may run before merge, for example to repair the
+   plan role so the required CI plan can pass; follow
+   [infra/tofu/README.md](../../infra/tofu/README.md) and still apply the full
+   fresh plan from `main` after merge.
 4. Apply only that reviewed fresh plan. Confirm both associations succeed,
    wait for two five-minute datapoints, verify every non-sparse alarm settles
    to `OK`, and retain the apply and association records. A breaching or

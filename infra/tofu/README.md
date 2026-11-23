@@ -222,15 +222,22 @@ Environment secrets for this identity.
 
 The first creation of the plan role requires a separately authorized operator
 apply because a role cannot bootstrap its own OIDC credentials. A pull-request
-plan never authorizes an apply. When the active runtime-secret catalog expands,
-an existing secret may need refresh before OpenTofu can plan the corresponding
-`ReadExactSecretMetadata` policy update. A separately authorized operator must
-first converge the deployed plan role's metadata-only coverage to the reviewed
-exact secret ARNs; the plan role cannot bootstrap its own permissions. Preserve
-the existing metadata actions, trust, and other statements without adding secret
-value access, runtime-secret KMS decrypt, wildcards, or apply authority. Rerun
-the refresh-enabled CI plan only after that bounded repair; access failures and
-the default zero-delete guard must continue to fail closed.
+plan never authorizes an apply. Secret metadata refresh (`ReadStagingSecretMetadata`)
+is bounded to the `findb/staging/*` secret-name prefix rather than exact ARNs:
+the role's inline policy reached IAM's 10,240-byte aggregate limit when the HKEX
+source secret was added (2026-11-23), and the prefix lets a new runtime secret
+refresh without first repairing the plan role. The prefix grants only
+`DescribeSecret`, `GetResourcePolicy` and `ListTagsForResource`; never add
+secret value access, runtime-secret KMS decrypt, or apply authority. Any other
+change that the deployed plan role cannot refresh still needs a bounded operator
+repair before the CI plan can pass; access failures and the default zero-delete
+guard must continue to fail closed.
+
+When a developer explicitly allows it, an operator may apply such a bounded
+repair before merge with `-target` from the reviewed pull-request head, so the
+refresh-enabled CI plan can pass. Review that targeted plan for exactly the
+intended addresses, record the developer's approval, and after merge create the
+full fresh plan from protected `main` and apply it as usual.
 
 For the two transitional metadata resources,
 the destructive retirement runbook is stricter: after the reviewed retirement
