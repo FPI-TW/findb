@@ -1,11 +1,16 @@
-"""Typed response contracts for the canonical read-only Serve API."""
+"""Typed response contracts for the canonical read-only Serve API.
+
+Every field carries an English description: clients generate LLM tool
+definitions from the published OpenAPI document, so the schema text is the
+documentation an agent reads.
+"""
 
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import PaginationInfo
 from app.services.slot_identity import CanonicalSlotId
@@ -28,291 +33,439 @@ InstrumentSort = Literal[
     "futures_latest_date",
 ]
 
+INSTRUMENT_ID = "FinDB instrument UUID; use it with the data endpoints."
+MARKET = "Market code, e.g. `TW`, `US`, `HK`."
+SYMBOL = "Exchange symbol in FinDB form, e.g. `2330` (TW), `AAPL` (US), `00700` (HK)."
+TRADE_DATE = "Exchange-local trading date (YYYY-MM-DD)."
+SOURCE = "Provider the row's values came from, e.g. `finlab`, `twelve_data`, `factset`."
+SOURCE_FETCHED_AT = "UTC time the provider data was fetched."
+ASOF_TS = "UTC time the provider says the values are as of."
+CREATED_AT = "UTC time FinDB first stored this row."
+UPDATED_AT = "UTC time FinDB last changed this row."
+UNADJUSTED_PRICE = "price as traded, not adjusted for splits or dividends"
+
+
+class ServeErrorDetail(BaseModel):
+    code: str = Field(
+        description=(
+            "Stable machine-readable error code; branch on this, not on `message`. "
+            "Examples: `INVALID_PARAMETER`, `INSTRUMENT_NOT_FOUND`, `DATASET_NOT_AVAILABLE`, "
+            "`API_KEY_REQUIRED`, `API_KEY_INVALID`, `SCOPE_REQUIRED`, "
+            "`PAGE_SIZE_EXCEEDS_KEY_LIMIT`, `RATE_LIMITED`."
+        )
+    )
+    message: str = Field(description="Human-readable explanation of the error.")
+    details: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Extra context when available, e.g. `errors` (one entry per invalid parameter "
+            "with `location`, `param` and `reason`), `limit`, `scope`, or "
+            "`retry_after_seconds`."
+        ),
+    )
+
+
+class ServeErrorResponse(BaseModel):
+    """Body of every Serve error response."""
+
+    detail: ServeErrorDetail = Field(description="The error.")
+
 
 class EODCoverageResponse(BaseModel):
-    first_date: date
-    latest_date: date
-    latest_close: Decimal | None = None
+    first_date: date = Field(description="First trade date stored.")
+    latest_date: date = Field(description="Latest trade date stored.")
+    latest_close: Decimal | None = Field(
+        default=None, description="Close on `latest_date`; null for futures products."
+    )
 
 
 class MinuteCoverageResponse(BaseModel):
-    first_bar_at: datetime
-    latest_bar_at: datetime
-    latest_close: Decimal
+    first_bar_at: datetime = Field(description="UTC start of the first stored legacy minute bar.")
+    latest_bar_at: datetime = Field(description="UTC start of the latest stored legacy minute bar.")
+    latest_close: Decimal = Field(description="Close of the latest legacy minute bar.")
 
 
 class IntradayCoverageResponse(BaseModel):
     """Exchange-local trade dates of the first and latest stored day."""
 
-    first_date: date
-    latest_date: date
+    first_date: date = Field(description="First exchange-local trade date stored.")
+    latest_date: date = Field(description="Latest exchange-local trade date stored.")
 
 
 class InstrumentCoverageResponse(BaseModel):
-    eod: EODCoverageResponse | None = None
-    minute: MinuteCoverageResponse | None = None
-    futures: EODCoverageResponse | None = None
-    intraday_bars: IntradayCoverageResponse | None = None
-    intraday_ticks: IntradayCoverageResponse | None = None
+    """Which data each endpoint holds for the instrument; null means none."""
+
+    eod: EODCoverageResponse | None = Field(
+        default=None, description="Daily bars served by `list_eod`."
+    )
+    minute: MinuteCoverageResponse | None = Field(
+        default=None,
+        description="Legacy one-minute bars served by `list_minute_bars` (history only).",
+    )
+    futures: EODCoverageResponse | None = Field(
+        default=None, description="Futures contract quotes served by `list_futures_eod`."
+    )
+    intraday_bars: IntradayCoverageResponse | None = Field(
+        default=None, description="Intraday bars served by `list_intraday_bars`."
+    )
+    intraday_ticks: IntradayCoverageResponse | None = Field(
+        default=None, description="Trade ticks served by `list_intraday_ticks`."
+    )
 
 
 class InstrumentResponse(BaseModel):
-    instrument_id: UUID
-    asset_class: str
-    market: str
-    symbol: str
-    name: str | None = None
-    currency: str | None = None
-    timezone: str | None = None
-    status: str
-    listed_date: date | None = None
-    delisted_date: date | None = None
-    coverage: InstrumentCoverageResponse
+    instrument_id: UUID = Field(description=INSTRUMENT_ID)
+    asset_class: str = Field(description="Asset class, e.g. `equity`, `etf`, `index`, `future`.")
+    market: str = Field(description=MARKET)
+    symbol: str = Field(description=SYMBOL + " For TW futures this is the product code, e.g. `TX`.")
+    name: str | None = Field(default=None, description="Instrument name as the provider gives it.")
+    currency: str | None = Field(default=None, description="ISO 4217 quote currency.")
+    timezone: str | None = Field(default=None, description="IANA timezone; often null.")
+    status: str = Field(description="Listing status, e.g. `active`.")
+    listed_date: date | None = Field(default=None, description="Listing date; often null.")
+    delisted_date: date | None = Field(default=None, description="Delisting date; often null.")
+    coverage: InstrumentCoverageResponse = Field(
+        description="Stored date range per data type; use it to pick an endpoint and dates."
+    )
 
 
 class InstrumentFacetsResponse(BaseModel):
-    markets: list[str]
-    asset_classes: list[str]
-    statuses: list[str]
+    markets: list[str] = Field(description="Markets present in the active catalog.")
+    asset_classes: list[str] = Field(description="Asset classes present in the active catalog.")
+    statuses: list[str] = Field(description="Instrument statuses present in the active catalog.")
 
 
 class InstrumentListResponse(BaseModel):
-    success: Literal[True] = True
-    data: list[InstrumentResponse]
-    pagination: PaginationInfo
-    facets: InstrumentFacetsResponse
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[InstrumentResponse] = Field(description="Instruments on this page.")
+    pagination: PaginationInfo = Field(description="Page-number pagination with totals.")
+    facets: InstrumentFacetsResponse = Field(
+        description="Filter values available across the whole catalog."
+    )
 
 
 class InstrumentDetailResponse(BaseModel):
-    success: Literal[True] = True
-    data: InstrumentResponse
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: InstrumentResponse = Field(description="The instrument.")
 
 
 class DatasetCoverageResponse(BaseModel):
-    coverage_start_date: date | None = None
-    coverage_end_date: date | None = None
-    instrument_count: int
+    coverage_start_date: date | None = Field(
+        default=None, description="Earliest trade date stored; null when empty."
+    )
+    coverage_end_date: date | None = Field(
+        default=None, description="Latest trade date stored; null when empty."
+    )
+    instrument_count: int = Field(description="Number of instruments with stored data.")
 
 
 class DatasetResponse(BaseModel):
-    dataset_key: str
-    display_name: str
-    market: str
-    asset_class: str
-    frequency: Literal["daily", "minute", "tick"]
-    data_kind: Literal["eod", "minute", "futures_eod", "intraday_bars", "intraday_ticks"]
-    interval: Literal["1d", "1m", "tick"]
-    availability: Literal["available", "configured_empty"]
-    coverage: DatasetCoverageResponse
+    dataset_key: str = Field(description="Stable dataset identifier, e.g. `tw_equity_eod`.")
+    display_name: str = Field(description="Short human-readable name.")
+    market: str = Field(description=MARKET)
+    asset_class: str = Field(description="Asset class, e.g. `equity`, `etf`, `index`, `future`.")
+    frequency: Literal["daily", "minute", "tick"] = Field(description="Sampling frequency.")
+    data_kind: Literal["eod", "minute", "futures_eod", "intraday_bars", "intraday_ticks"] = Field(
+        description=(
+            "Which endpoint serves the data: `eod` -> `list_eod`, `minute` -> "
+            "`list_minute_bars`, `futures_eod` -> `list_futures_eod`, `intraday_bars` -> "
+            "`list_intraday_bars`, `intraday_ticks` -> `list_intraday_ticks`."
+        )
+    )
+    interval: Literal["1d", "1m", "tick"] = Field(description="Native bar interval.")
+    availability: Literal["available", "configured_empty"] = Field(
+        description="`configured_empty` means the dataset is active but holds no rows yet."
+    )
+    coverage: DatasetCoverageResponse = Field(description="Stored date range and size.")
 
 
 class DatasetListResponse(BaseModel):
-    success: Literal[True] = True
-    data: list[DatasetResponse]
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[DatasetResponse] = Field(description="Every active dataset.")
 
 
 class CursorPaginationInfo(BaseModel):
-    page_size: int
-    next_cursor: str | None = None
+    page_size: int = Field(description="Maximum rows requested for this page.")
+    next_cursor: str | None = Field(
+        default=None,
+        description=(
+            "Opaque cursor for the next page; pass it back unchanged with the same other "
+            "parameters. Null when there are no more rows. A page may hold fewer rows than "
+            "`page_size` and still have a next page."
+        ),
+    )
 
 
 class EODResponse(BaseModel):
-    instrument_id: UUID
-    symbol: str
-    name: str | None = None
-    market: str
-    currency: str | None = None
-    trade_date: date
-    open: Decimal | None = None
-    high: Decimal | None = None
-    low: Decimal | None = None
-    close: Decimal | None = None
-    volume: int | None = None
-    total_ticks: int | None = None
-    turnover: Decimal | None = None
-    source: str | None = None
-    # Fields whose value is not ``source``'s: ``{"close": "hkex"}`` after the
-    # exchange's official quote replaced it, ``"manual"`` after an Admin
-    # correction.  Null when every value is the row source's own.
-    field_sources: dict[str, str] | None = None
-    source_fetched_at: datetime | None = None
-    asof_ts: datetime
-    created_at: datetime
-    updated_at: datetime
+    instrument_id: UUID = Field(description=INSTRUMENT_ID)
+    symbol: str = Field(description=SYMBOL)
+    name: str | None = Field(default=None, description="Instrument name.")
+    market: str = Field(description=MARKET)
+    currency: str | None = Field(
+        default=None, description="ISO 4217 currency of prices and turnover."
+    )
+    trade_date: date = Field(description=TRADE_DATE)
+    open: Decimal | None = Field(default=None, description=f"Opening {UNADJUSTED_PRICE}.")
+    high: Decimal | None = Field(default=None, description=f"Highest {UNADJUSTED_PRICE}.")
+    low: Decimal | None = Field(default=None, description=f"Lowest {UNADJUSTED_PRICE}.")
+    close: Decimal | None = Field(
+        default=None,
+        description=(
+            f"Closing {UNADJUSTED_PRICE}. HK closes are the exchange's official close and can "
+            "lie outside high/low."
+        ),
+    )
+    volume: int | None = Field(
+        default=None,
+        description=(
+            "Shares traded for equities and ETFs. For indices it is the provider's figure "
+            "and not comparable across indices."
+        ),
+    )
+    total_ticks: int | None = Field(
+        default=None, description="Number of trades, when the provider reports it."
+    )
+    turnover: Decimal | None = Field(
+        default=None, description="Traded value in `currency`, when the provider reports it."
+    )
+    source: str | None = Field(default=None, description=SOURCE)
+    field_sources: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Fields whose value did not come from `source`, mapped to where it came from: "
+            '`{"close": "hkex"}` after the exchange\'s official quote replaced it, `"manual"` '
+            "after an operator correction. Null when every value is `source`'s own."
+        ),
+    )
+    source_fetched_at: datetime | None = Field(default=None, description=SOURCE_FETCHED_AT)
+    asof_ts: datetime = Field(description=ASOF_TS)
+    created_at: datetime = Field(description=CREATED_AT)
+    updated_at: datetime = Field(description=UPDATED_AT)
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class EODListResponse(BaseModel):
-    success: Literal[True] = True
-    data: list[EODResponse]
-    pagination: CursorPaginationInfo
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[EODResponse] = Field(
+        description="Daily bars, newest trade date first, then by instrument_id."
+    )
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
 
 
 class FuturesEODResponse(BaseModel):
-    contract_id: UUID
-    instrument_id: UUID
-    product_code: str
-    contract_code: str
-    contract_month: str | None
-    trade_date: date
-    session: Literal["regular", "after_hours"]
-    open: Decimal | None = None
-    high: Decimal | None = None
-    low: Decimal | None = None
-    close: Decimal | None = None
-    volume: int | None = None
-    settlement_price: Decimal | None = None
-    open_interest: int | None = None
-    source: str | None = None
-    source_fetched_at: datetime | None = None
-    asof_ts: datetime
-    created_at: datetime
-    updated_at: datetime
+    contract_id: UUID = Field(description="FinDB UUID of the expiry contract.")
+    instrument_id: UUID = Field(description="FinDB UUID of the futures product.")
+    product_code: str = Field(description="TAIFEX product: `TX`, `MTX`, `TMF`, `TE` or `TF`.")
+    contract_code: str = Field(
+        description="`<product_code>:<contract_month>`, e.g. `TX:202612` or `TX:202612W2`."
+    )
+    contract_month: str | None = Field(
+        default=None,
+        description=(
+            "TAIFEX expiry identifier: `YYYYMM` for monthly, `YYYYMMW1`-`W5` for weekly and "
+            "`YYYYMMF1`-`F5` for Friday-weekly contracts."
+        ),
+    )
+    trade_date: date = Field(
+        description=(
+            "TAIFEX trade date. An `after_hours` session runs from the previous afternoon to "
+            "05:00 Taipei and belongs to this date."
+        )
+    )
+    session: Literal["regular", "after_hours"] = Field(description="Trading session.")
+    open: Decimal | None = Field(default=None, description="Opening price; null if none.")
+    high: Decimal | None = Field(default=None, description="Highest price; null if none.")
+    low: Decimal | None = Field(default=None, description="Lowest price; null if none.")
+    close: Decimal | None = Field(default=None, description="Last price; null if no trade.")
+    volume: int | None = Field(default=None, description="Contracts traded; 0 means no trade.")
+    settlement_price: Decimal | None = Field(
+        default=None, description="Daily settlement price; null when not published."
+    )
+    open_interest: int | None = Field(
+        default=None, description="Open contracts at session end; null when not published."
+    )
+    source: str | None = Field(default=None, description=SOURCE)
+    source_fetched_at: datetime | None = Field(default=None, description=SOURCE_FETCHED_AT)
+    asof_ts: datetime = Field(description=ASOF_TS)
+    created_at: datetime = Field(description=CREATED_AT)
+    updated_at: datetime = Field(description=UPDATED_AT)
 
 
 class FuturesEODListResponse(BaseModel):
-    success: Literal[True] = True
-    data: list[FuturesEODResponse]
-    pagination: CursorPaginationInfo
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[FuturesEODResponse] = Field(description="Contract quotes, newest trade date first.")
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
 
 
 class MinuteResponse(BaseModel):
-    instrument_id: UUID
-    symbol: str
-    name: str | None = None
-    market: str
-    trade_date: date
-    bar_start_time: datetime
-    bar_end_time: datetime
-    signal_time: datetime
-    market_timezone: str
-    open: Decimal
-    high: Decimal
-    low: Decimal
-    close: Decimal
-    volume: int | None = None
-    turnover: Decimal | None = None
-    trade_count: int | None = None
-    price_adjustment: str
-    source: str
-    source_fetched_at: datetime
-    asof_ts: datetime
-    created_at: datetime
-    updated_at: datetime
+    instrument_id: UUID = Field(description=INSTRUMENT_ID)
+    symbol: str = Field(description=SYMBOL)
+    name: str | None = Field(default=None, description="Instrument name.")
+    market: str = Field(description=MARKET)
+    trade_date: date = Field(description="Taiwan local trading date.")
+    bar_start_time: datetime = Field(description="UTC start of the minute.")
+    bar_end_time: datetime = Field(description="UTC end of the minute.")
+    signal_time: datetime = Field(description="UTC time the bar is final; equals bar_end_time.")
+    market_timezone: str = Field(description="Always `Asia/Taipei`.")
+    open: Decimal = Field(description=f"Opening {UNADJUSTED_PRICE}.")
+    high: Decimal = Field(description=f"Highest {UNADJUSTED_PRICE}.")
+    low: Decimal = Field(description=f"Lowest {UNADJUSTED_PRICE}.")
+    close: Decimal = Field(description=f"Closing {UNADJUSTED_PRICE}.")
+    volume: int | None = Field(default=None, description="Shares traded in the minute.")
+    turnover: Decimal | None = Field(default=None, description="Traded value in TWD.")
+    trade_count: int | None = Field(default=None, description="Always null for this dataset.")
+    price_adjustment: str = Field(description="Always `none`.")
+    source: str = Field(description=SOURCE)
+    source_fetched_at: datetime = Field(description=SOURCE_FETCHED_AT)
+    asof_ts: datetime = Field(description=ASOF_TS)
+    created_at: datetime = Field(description=CREATED_AT)
+    updated_at: datetime = Field(description=UPDATED_AT)
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class ResolvedDateRangeResponse(BaseModel):
-    start_date: date | None = None
-    end_date: date | None = None
-    anchor: Literal["explicit", "latest_available"]
+    start_date: date | None = Field(
+        default=None, description="First trade date the query covers (inclusive)."
+    )
+    end_date: date | None = Field(
+        default=None, description="Last trade date the query covers (inclusive)."
+    )
+    anchor: Literal["explicit", "latest_available"] = Field(
+        description=(
+            "`explicit` when the caller gave the dates; `latest_available` when FinDB chose "
+            "them from the latest stored data."
+        )
+    )
 
 
 class MinuteListResponse(BaseModel):
-    success: Literal[True] = True
-    data: list[MinuteResponse]
-    pagination: CursorPaginationInfo
-    range: ResolvedDateRangeResponse
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[MinuteResponse] = Field(description="Minute bars, newest first.")
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
+    range: ResolvedDateRangeResponse = Field(description="Dates the query actually covers.")
 
 
 IntradayInterval = Literal["1m", "5m", "15m", "30m", "60m"]
 
 
 class IntradayInstrumentResponse(BaseModel):
-    instrument_id: UUID
-    symbol: str
-    name: str | None = None
-    market: str
-    asset_class: str
-    currency: str | None = None
+    instrument_id: UUID = Field(description=INSTRUMENT_ID)
+    symbol: str = Field(description=SYMBOL)
+    name: str | None = Field(default=None, description="Instrument name.")
+    market: str = Field(description=MARKET)
+    asset_class: str = Field(description="Asset class, e.g. `equity` or `etf`.")
+    currency: str | None = Field(default=None, description="ISO 4217 quote currency.")
 
 
 class IntradayUnitsResponse(BaseModel):
     """How to read the rows; volumes are lots, unlike the share-based EOD."""
 
-    volume: Literal["lot"] = "lot"
-    price_adjustment: Literal["none"] = "none"
-    instants: Literal["UTC"] = "UTC"
-    trade_date: Literal["exchange_local"] = "exchange_local"
-    market_timezone: str
+    volume: Literal["lot"] = Field(
+        default="lot",
+        description="Volumes are lots (board lots of 1,000 shares), not shares.",
+    )
+    price_adjustment: Literal["none"] = Field(
+        default="none", description="Prices are as traded, not adjusted."
+    )
+    instants: Literal["UTC"] = Field(default="UTC", description="Timestamps are UTC.")
+    trade_date: Literal["exchange_local"] = Field(
+        default="exchange_local", description="`trade_date` is the exchange-local date."
+    )
+    market_timezone: str = Field(description="IANA timezone of the exchange.")
 
 
 class IntradayBarResponse(BaseModel):
-    trade_date: date
-    bar_start_time: datetime
-    bar_end_time: datetime
-    session: str
-    open: Decimal
-    high: Decimal
-    low: Decimal
-    close: Decimal
-    volume: int
-    trade_count: int | None = None
-    vwap: Decimal | None = None
-    source: str
-    source_fetched_at: datetime
+    trade_date: date = Field(description=TRADE_DATE)
+    bar_start_time: datetime = Field(description="UTC start of the bar.")
+    bar_end_time: datetime = Field(
+        description="UTC end of the bar; aggregated bars are labelled by their end time."
+    )
+    session: str = Field(description="Trading session of the bar, e.g. `regular`.")
+    open: Decimal = Field(description=f"Opening {UNADJUSTED_PRICE}.")
+    high: Decimal = Field(description=f"Highest {UNADJUSTED_PRICE}.")
+    low: Decimal = Field(description=f"Lowest {UNADJUSTED_PRICE}.")
+    close: Decimal = Field(description=f"Closing {UNADJUSTED_PRICE}.")
+    volume: int = Field(description="Lots traded in the bar.")
+    trade_count: int | None = Field(
+        default=None, description="Trades in the bar; null if any minute lacks it."
+    )
+    vwap: Decimal | None = Field(
+        default=None, description="Volume-weighted average price; null if any minute lacks it."
+    )
+    source: str = Field(description=SOURCE)
+    source_fetched_at: datetime = Field(description=SOURCE_FETCHED_AT)
 
 
 class IntradayBarListResponse(BaseModel):
-    success: Literal[True] = True
-    instrument: IntradayInstrumentResponse
-    dataset_key: str
-    interval: IntradayInterval
-    units: IntradayUnitsResponse
-    data: list[IntradayBarResponse]
-    pagination: CursorPaginationInfo
-    range: ResolvedDateRangeResponse
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    instrument: IntradayInstrumentResponse = Field(description="The instrument queried.")
+    dataset_key: str = Field(description="Dataset the rows come from.")
+    interval: IntradayInterval = Field(description="Bar interval of the rows.")
+    units: IntradayUnitsResponse = Field(description="How to read volumes, prices and times.")
+    data: list[IntradayBarResponse] = Field(
+        description="Bars, oldest first; minutes without trades have no bar."
+    )
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
+    range: ResolvedDateRangeResponse = Field(description="Dates the query actually covers.")
 
 
 class IntradayTickResponse(BaseModel):
-    trade_date: date
-    trade_time: datetime
-    sequence: int
-    session: str
-    price: Decimal
-    volume: int
-    tick_type: int | None = None
-    bid_price: Decimal | None = None
-    bid_volume: int | None = None
-    ask_price: Decimal | None = None
-    ask_volume: int | None = None
-    source: str
-    source_fetched_at: datetime
+    trade_date: date = Field(description=TRADE_DATE)
+    trade_time: datetime = Field(description="UTC time of the trade.")
+    sequence: int = Field(description="Order of the trade within the day.")
+    session: str = Field(description="Trading session, e.g. `regular`.")
+    price: Decimal = Field(description=f"Trade {UNADJUSTED_PRICE}.")
+    volume: int = Field(description="Lots traded.")
+    tick_type: int | None = Field(
+        default=None, description="Provider's trade-side flag, when given."
+    )
+    bid_price: Decimal | None = Field(default=None, description="Best bid at the trade.")
+    bid_volume: int | None = Field(default=None, description="Lots at the best bid.")
+    ask_price: Decimal | None = Field(default=None, description="Best ask at the trade.")
+    ask_volume: int | None = Field(default=None, description="Lots at the best ask.")
+    source: str = Field(description=SOURCE)
+    source_fetched_at: datetime = Field(description=SOURCE_FETCHED_AT)
 
 
 class IntradayTickListResponse(BaseModel):
-    success: Literal[True] = True
-    instrument: IntradayInstrumentResponse
-    dataset_key: str
-    units: IntradayUnitsResponse
-    trade_date: date | None = None
-    anchor: Literal["explicit", "latest_available"]
-    data: list[IntradayTickResponse]
-    pagination: CursorPaginationInfo
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    instrument: IntradayInstrumentResponse = Field(description="The instrument queried.")
+    dataset_key: str = Field(description="Dataset the rows come from.")
+    units: IntradayUnitsResponse = Field(description="How to read volumes, prices and times.")
+    trade_date: date | None = Field(
+        default=None, description="Trade date queried; null when nothing is stored."
+    )
+    anchor: Literal["explicit", "latest_available"] = Field(
+        description="`latest_available` when FinDB picked the latest stored trade date."
+    )
+    data: list[IntradayTickResponse] = Field(description="Ticks in trade order.")
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
 
 
 class IntradayDownloadColumn(BaseModel):
-    name: str
-    type: str
-    nullable: bool
-    description: str
+    name: str = Field(description="Parquet column name.")
+    type: str = Field(description="Parquet column type.")
+    nullable: bool = Field(description="Whether the column can be null.")
+    description: str = Field(description="What the column holds.")
 
 
 class IntradayDownloadLayout(BaseModel):
     """The columns every object in the manifest holds, as the contract publishes them."""
 
-    schema_id: Literal["intraday_partition"] = "intraday_partition"
-    schema_version: int
-    record_kind: Literal["bar_1m", "tick"]
-    format: Literal["parquet"] = "parquet"
-    columns: list[IntradayDownloadColumn]
+    schema_id: Literal["intraday_partition"] = Field(
+        default="intraday_partition", description="Contract the objects follow."
+    )
+    schema_version: int = Field(description="Contract version.")
+    record_kind: Literal["bar_1m", "tick"] = Field(description="Row type in the objects.")
+    format: Literal["parquet"] = Field(default="parquet", description="File format.")
+    columns: list[IntradayDownloadColumn] = Field(description="Columns of every object.")
 
 
 class IntradayDownloadDay(BaseModel):
-    trade_date: date
-    row_count: int
+    trade_date: date = Field(description="Trade date to take from the object.")
+    row_count: int = Field(description="Rows that date must have.")
 
 
 class IntradayDownloadObject(BaseModel):
@@ -322,85 +475,122 @@ class IntradayDownloadObject(BaseModel):
     those rows are superseded and that day is listed under its day object.
     """
 
-    url: str
-    object_layout: Literal["day", "month"]
-    object_etag: str
-    trade_dates: list[IntradayDownloadDay]
+    url: str = Field(description="Presigned HTTPS URL; valid until `expires_at`.")
+    object_layout: Literal["day", "month"] = Field(
+        description="Whether the object holds one day or a merged month."
+    )
+    object_etag: str = Field(
+        description="Expected ETag; a different ETag means the object was replaced."
+    )
+    trade_dates: list[IntradayDownloadDay] = Field(
+        description="The only trade dates to read from this object."
+    )
 
 
 class IntradayDownloadQuota(BaseModel):
-    usage_date: date
-    daily_limit: int
-    used: int
-    remaining: int
+    usage_date: date = Field(description="UTC date the quota applies to.")
+    daily_limit: int = Field(description="Objects the key may receive per UTC day.")
+    used: int = Field(description="Objects issued today, this manifest included.")
+    remaining: int = Field(description="Objects left today.")
 
 
 class IntradayDownloadManifestResponse(BaseModel):
-    success: Literal[True] = True
-    instrument: IntradayInstrumentResponse
-    dataset_key: str
-    month: str
-    units: IntradayUnitsResponse
-    layout: IntradayDownloadLayout
-    expires_at: datetime
-    objects: list[IntradayDownloadObject]
-    quota: IntradayDownloadQuota
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    instrument: IntradayInstrumentResponse = Field(description="The instrument queried.")
+    dataset_key: str = Field(description="Dataset the objects belong to.")
+    month: str = Field(description="Month covered, `YYYY-MM`.")
+    units: IntradayUnitsResponse = Field(description="How to read volumes, prices and times.")
+    layout: IntradayDownloadLayout = Field(description="Columns of the objects.")
+    expires_at: datetime = Field(description="UTC time the URLs stop working.")
+    objects: list[IntradayDownloadObject] = Field(description="Objects to download.")
+    quota: IntradayDownloadQuota = Field(description="The key's daily download quota.")
 
 
 class CalendarResponse(BaseModel):
-    market: str
-    trade_date: date
-    is_open: bool
-    session_open: str | None = None
-    session_close: str | None = None
-    holiday_name: str | None = None
-    day_status: Literal["open", "closed", "settlement_only"] = "open"
-    description: str | None = None
-    calendar_source: Literal["published", "weekday_default"] = "published"
-    calendar_revision: int | None = None
+    market: str = Field(description="Calendar market code, e.g. `TW`, `US`, `HK`, `TAIFEX`.")
+    trade_date: date = Field(description="Exchange-local date.")
+    is_open: bool = Field(description="Whether the market trades on this date.")
+    session_open: str | None = Field(
+        default=None, description="Exchange-local opening time `HH:MM:SS`; null when closed."
+    )
+    session_close: str | None = Field(
+        default=None, description="Exchange-local closing time `HH:MM:SS`; null when closed."
+    )
+    holiday_name: str | None = Field(default=None, description="Holiday name when closed.")
+    day_status: Literal["open", "closed", "settlement_only"] = Field(
+        default="open",
+        description="`settlement_only` means no trading but settlement still happens.",
+    )
+    description: str | None = Field(default=None, description="Operator note for the date.")
+    calendar_source: Literal["published", "weekday_default"] = Field(
+        default="published",
+        description=(
+            "`published` when an official calendar covers the date; `weekday_default` when "
+            "FinDB assumed weekdays open and weekends closed."
+        ),
+    )
+    calendar_revision: int | None = Field(
+        default=None, description="Revision of the published calendar; null when defaulted."
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class CalendarListResponse(BaseModel):
-    success: Literal[True] = True
-    data: list[CalendarResponse]
-    pagination: PaginationInfo
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[CalendarResponse] = Field(description="Calendar dates, oldest first.")
+    pagination: PaginationInfo = Field(description="Page-number pagination with totals.")
 
 
 class PublishedCalendarYearResponse(BaseModel):
-    market: str
-    year: int
-    revision: int | None
-    status: Literal["published", "defaulted", "mixed"]
-    coverage_complete: Literal[True]
-    timezone: str
-    expected_days: int
-    actual_days: int
-    days: list[CalendarResponse]
+    market: str = Field(description="Calendar market code.")
+    year: int = Field(description="Calendar year.")
+    revision: int | None = Field(description="Published revision; null when fully defaulted.")
+    status: Literal["published", "defaulted", "mixed"] = Field(
+        description="Whether the days come from a published calendar, weekday defaults, or both."
+    )
+    coverage_complete: Literal[True] = Field(description="Always true: every date is listed.")
+    timezone: str = Field(description="IANA timezone of the market.")
+    expected_days: int = Field(description="Days in the year.")
+    actual_days: int = Field(description="Days listed.")
+    days: list[CalendarResponse] = Field(description="Every date of the year, oldest first.")
 
 
 class PublishedCalendarYearEnvelope(BaseModel):
-    success: Literal[True] = True
-    data: PublishedCalendarYearResponse
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: PublishedCalendarYearResponse = Field(description="The calendar year.")
 
 
 class MarketFreshnessSummaryResponse(BaseModel):
-    market: str
-    slot_id: CanonicalSlotId
-    scheduled_local_time: time
-    timezone: str
-    status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"]
-    expected_data_date: date | None = None
-    coverage_data_date: date | None = None
-    last_successful_update_at: datetime | None = None
-    last_complete_at: datetime | None = None
-    next_scheduled_at: datetime
-    feed_count: int
-    fresh_feed_count: int
-    late_feed_count: int
+    market: str = Field(description=MARKET)
+    slot_id: CanonicalSlotId = Field(description="Daily update window the market belongs to.")
+    scheduled_local_time: time = Field(description="Local time the update is scheduled.")
+    timezone: str = Field(description="IANA timezone of `scheduled_local_time`.")
+    status: Literal["not_due", "fresh", "partial", "late", "failed", "never_received"] = Field(
+        description=(
+            "`fresh`: the expected date is complete; `partial`: only part arrived; `late`: "
+            "past due; `failed`: the update failed; `not_due`: nothing is expected yet; "
+            "`never_received`: no data has ever arrived."
+        )
+    )
+    expected_data_date: date | None = Field(
+        default=None, description="Trade date that should be available by now."
+    )
+    coverage_data_date: date | None = Field(
+        default=None, description="Latest trade date fully available."
+    )
+    last_successful_update_at: datetime | None = Field(
+        default=None, description="UTC time of the last successful update."
+    )
+    last_complete_at: datetime | None = Field(
+        default=None, description="UTC time the market last became complete."
+    )
+    next_scheduled_at: datetime = Field(description="UTC time of the next scheduled update.")
+    feed_count: int = Field(description="Feeds that update this market.")
+    fresh_feed_count: int = Field(description="Feeds that are fresh.")
+    late_feed_count: int = Field(description="Feeds that are late, partial or never received.")
 
 
 class MarketFreshnessSummaryListResponse(BaseModel):
-    success: Literal[True] = True
-    data: list[MarketFreshnessSummaryResponse]
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[MarketFreshnessSummaryResponse] = Field(description="One entry per market.")
