@@ -338,13 +338,12 @@ def _universe_context(server: _FMP, observed_at: datetime = FETCHED) -> Universe
         refresh_limits=lambda: None,
         pace=lambda: None,
         http=httpx.Client(transport=httpx.MockTransport(server)),
+        target_date_lags={"hk_index_eod": 0, "us_index_eod": 1},
     )
 
 
-FEEDS = [
-    {"dataset_key": "hk_index_eod", "target_date_lag_days": 0},
-    {"dataset_key": "us_index_eod", "target_date_lag_days": 1},
-]
+# Packaged descriptors carry no schedule: the lag comes only from Source.
+FEEDS = [{"dataset_key": "hk_index_eod"}, {"dataset_key": "us_index_eod"}]
 
 
 def test_the_universe_is_the_fixed_groups_as_fmp_lists_them() -> None:
@@ -383,6 +382,39 @@ def test_the_refresh_needs_the_governed_client() -> None:
         FMPAdapter().build_universe(FEEDS, context)
     with pytest.raises(ReadinessBlockedError, match="no index list"):
         FMPAdapter().build_universe([{"dataset_key": "tw_index_eod"}], _universe_context(_FMP()))
+
+
+@pytest.mark.parametrize(
+    "lags", [None, {"hk_index_eod": 0}, {"hk_index_eod": 0, "us_index_eod": -1}]
+)
+def test_the_effective_date_needs_the_published_lag(lags) -> None:
+    server = _FMP(index_list=[_json(_listing())])
+    context = replace(_universe_context(server), target_date_lags=lags)
+    with pytest.raises(ReadinessBlockedError, match="published target date lag"):
+        FMPAdapter().build_universe(FEEDS, context)
+
+
+def test_a_runtime_refresh_dates_new_york_members_by_the_published_lag(tmp_path, monkeypatch):
+    """The whole refresh path: Source publishes 08:30 Taipei with lag 1 for New York."""
+    from test_provider_universe_golden import FIXED, _refresh
+
+    listing = json.dumps(_listing()).encode()
+    result = _refresh(
+        tmp_path,
+        monkeypatch,
+        "fmp",
+        {"https://financialmodelingprep.com/stable/index-list": listing},
+        ["hk_index_eod", "us_index_eod"],
+    )
+    bodies = {body["dataset_key"]: body for body in map(json.loads, result["submitted"])}
+    # 01:30 UTC is 09:30 in both Hong Kong and Taipei on 2026-10-02.
+    assert FIXED.isoformat() == "2026-10-02T01:30:00+00:00"
+    assert bodies["hk_index_eod"]["effective_date"] == "2026-10-02"
+    assert bodies["us_index_eod"]["effective_date"] == "2026-10-01"
+    assert bodies["us_index_eod"]["source_timezone"] == "Asia/Taipei"
+    assert {m["symbol"] for m in bodies["us_index_eod"]["members"]} == set(
+        INDEX_UNIVERSES["us_index_eod"]
+    )
 
 
 def test_a_restarted_attempt_replays_only_a_response_with_the_target_row(tmp_path) -> None:

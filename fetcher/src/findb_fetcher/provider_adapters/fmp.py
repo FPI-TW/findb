@@ -121,9 +121,13 @@ class FMPAdapter(ProviderAdapter):
                         "mapping_status": "mapped",
                     }
                 )
-            # The list is effective for the market date the feed's next run fetches.
+            # The list is effective for the market date the feed's next run fetches;
+            # only Source publishes the lag (packaged descriptors carry no schedule).
+            lag = (context.target_date_lags or {}).get(dataset)
+            if type(lag) is not int or lag < 0:
+                raise ReadinessBlockedError("FMP universe needs the published target date lag")
             local = context.observed_at.astimezone(context.zones[dataset]).date()
-            effective = local - timedelta(days=int(feed.get("target_date_lag_days", 0)))
+            effective = local - timedelta(days=lag)
             groups[dataset] = UniverseSnapshot(effective, members, {evidence_url: raw})
         return groups
 

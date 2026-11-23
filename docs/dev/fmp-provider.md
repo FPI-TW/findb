@@ -426,7 +426,8 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
     - 兩組的指數清單寫在 adapter（`INDEX_UNIVERSES`）。名單刷新讀 FMP 的 `/stable/index-list`（帶金鑰，經
       `UniverseContext.http` 走 runtime 的 governed client），每個指數都要在清單上、幣別相符，否則中止刷新、
       保留上一份名單；這份清單就是名單的 evidence。名單生效日為排程時區當天減 `target_date_lag_days`，
-      美股組因此是前一個紐約日。
+      美股組因此是前一個紐約日。lag 只由 Source 的排程快照提供（`UniverseContext.target_date_lags`），拿不到就中止刷新；
+      staging 第一次刷新時 adapter 還讀 image 內的 descriptors（沒有排程欄位），美股名單生效日因此是台北當天，已修正。
     - 沒有目標日的列：每日工作視為尚未發布（`wait=publication`，在發布重試窗口內重試）；歷史回補記為
       `missing`／`no_source_row`，並引用 FMP 回的空回應。
     - 方案不涵蓋的指數（HTTP 402／403）只影響該檔；429 進入帳號冷卻；其他錯誤結束本輪、稍後重試。

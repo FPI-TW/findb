@@ -113,7 +113,8 @@ packaged catalog 的 contract（schema id 與 current version，不寫死在 ada
 以及 `persist`、`observe_response`、`rate_limited`、`snapshot` 四個 runtime callable；共用一張表的
 provider（FinLab）另取得凍結 cohort。`UniverseContext` 提供 Source 授權的 dataset 範圍、單一觀察時間、
 Source 發布的 feed 時區，以及 governed snapshot／catalogue、persist、byte accounting、limits 重讀與
-SDK pacing callable，另有 runtime 的 governed HTTP client（`http`），供需要帳號金鑰讀名單的 provider（FMP 指數清單）使用。官方 snapshot URL 對應的 raw dataset 由 `full_market_universe.official_snapshot_dataset`
+SDK pacing callable，另有 runtime 的 governed HTTP client（`http`），供需要帳號金鑰讀名單的 provider（FMP 指數清單）使用，以及 Source 發布的
+`target_date_lags`（image 內的 descriptors 不含排程；FMP 美股組以此把名單生效日定為前一個紐約日）。官方 snapshot URL 對應的 raw dataset 由 `full_market_universe.official_snapshot_dataset`
 決定。
 
 Runtime 主流程不判斷 provider 名稱；`load_readiness` 的 FinLab response 上限屬 provider metadata 邊界

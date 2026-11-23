@@ -732,6 +732,14 @@ class FullMarketRuntime:
         if not feeds:
             return []
         zones = self._universe_zones(feeds)
+        published = self.refresh_snapshot
+        if published is None:
+            raise ReadinessBlockedError("Source universe schedule unavailable")
+        lags = {
+            feed["dataset_key"]: feed["target_date_lag_days"]
+            for feed in published.feeds
+            if feed["dataset_key"] in zones
+        }
         now = datetime.now(timezone.utc)
         groups = self.adapter.build_universe(
             feeds,
@@ -748,6 +756,7 @@ class FullMarketRuntime:
                 refresh_limits=self._ensure_proof,
                 pace=self._pace_after_call,
                 http=self.http,
+                target_date_lags=lags,
             ),
         )
         result = []

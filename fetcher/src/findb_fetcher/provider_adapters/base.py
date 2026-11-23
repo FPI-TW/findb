@@ -210,6 +210,9 @@ class UniverseContext:
     pace: Callable[[], None]
     # The runtime's governed HTTP client, for a provider list read with the account key.
     http: httpx.Client | None = None
+    # Source-published ``target_date_lag_days`` by dataset, beside ``zones``: a feed
+    # scheduled the next morning lists members for the previous market date.
+    target_date_lags: Mapping[str, int] | None = None
 
 
 @dataclass(frozen=True)
