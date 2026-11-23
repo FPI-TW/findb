@@ -72,6 +72,7 @@ from app.services.eod_completion import MEMBER_EOD_SCHEMAS
 from app.services.ingress_contracts import parse_dataset_contract_declaration
 from app.services.no_record_corroboration import NO_RECORD, corroborate_no_record
 from app.services.provider_metadata import (
+    calendar_required,
     catalog_feed,
     dataset_calendar_market,
     delivers_unlisted,
@@ -85,6 +86,8 @@ UNIVERSE_AUTO_PUBLISH_MAX_CHANGE_RATIO = Decimal("0.02")
 # Plan conflict a Fetcher answers by submitting the date's dated universe. The
 # value predates provider-neutral naming and stays for deployed Fetchers.
 DATED_UNIVERSE_REQUIRED = "taifex_dated_universe_required"
+# Plan conflict a Fetcher waits out: the feed's date has no published exchange calendar.
+CALENDAR_UNPUBLISHED = "CALENDAR_UNPUBLISHED"
 
 
 class FullMarketError(ValueError):
@@ -752,6 +755,15 @@ async def create_plan(
     snapshot = await execution_snapshot(
         db, _calendar_market(dataset), body.trade_date, body.provider
     )
+    # Before any decision is frozen: a weekday default must not become a permanent skip.
+    if (
+        calendar_required(body.provider, body.dataset_key)
+        and snapshot["calendar_source"] != "published"
+    ):
+        raise FullMarketError(
+            "The feed requires a published exchange calendar for the date",
+            code=CALENDAR_UNPUBLISHED,
+        )
     await _require_closed_acceptance_day(
         db, dataset, body.trade_date, now=utc_now(), snapshot=snapshot
     )

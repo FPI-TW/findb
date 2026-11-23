@@ -7,6 +7,7 @@
         "enabled": false
       },
       "calendar_market": "HK",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "executable",
@@ -52,6 +53,7 @@
         "enabled": false
       },
       "calendar_market": "TW",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "unsupported",
@@ -100,6 +102,7 @@
         "enabled": true
       },
       "calendar_market": "TW",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "declared",
@@ -181,6 +184,7 @@
         "enabled": false
       },
       "calendar_market": "TW",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "unsupported",
@@ -225,6 +229,7 @@
         "enabled": false
       },
       "calendar_market": "TW",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "unsupported",
@@ -269,6 +274,7 @@
         "enabled": false
       },
       "calendar_market": "TW",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "executable",
@@ -313,6 +319,7 @@
         "enabled": false
       },
       "calendar_market": "TW",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "unsupported",
@@ -357,6 +364,7 @@
         "enabled": false
       },
       "calendar_market": "HK",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "executable",
@@ -401,6 +409,7 @@
         "enabled": false
       },
       "calendar_market": "TAIFEX",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "executable",
@@ -449,6 +458,7 @@
         "enabled": true
       },
       "calendar_market": "US",
+      "calendar_required": false,
       "capabilities": {
         "acquisition": true,
         "historical": "declared",
@@ -673,5 +683,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "b86766ed619a4f9cd4c2231b496b973903ccdc7b52acfbf22b91346ab8e15c91"
+  "source_sha256": "89aef425a3c71e020c9dc98dca4ad454f1869626b1f8277303f0746e930cc4ad"
 }

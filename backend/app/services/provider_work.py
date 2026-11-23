@@ -863,17 +863,19 @@ async def acquisition_open(
             item_id = UUID(work.scope.get("item_id", work.scope.get("legacy_id")))
         except (ValueError, TypeError):
             return False
-        return bool(
-            await db.scalar(
-                select(HistoricalBackfillItem.item_id)
+        live = (
+            await db.execute(
+                select(HistoricalBackfillRequest.dataset_key, HistoricalBackfillItem.trade_date)
                 .join(HistoricalBackfillRequest)
                 .where(
                     HistoricalBackfillItem.item_id == item_id,
                     HistoricalBackfillItem.status.in_(("pending", "running")),
                     HistoricalBackfillRequest.status.in_(("queued", "running")),
-                    HistoricalBackfillItem.trade_date >= expiry_cutoff(work.provider, utc_now()),
                 )
             )
+        ).first()
+        return live is not None and live.trade_date >= expiry_cutoff(
+            work.provider, live.dataset_key, utc_now()
         )
     return True
 
@@ -1393,10 +1395,14 @@ async def _projection_acquisition_states(
                 pass
     historical_dates = (
         {
-            row.item_id: row.trade_date
+            row.item_id: (row.dataset_key, row.trade_date)
             for row in (
                 await db.execute(
-                    select(HistoricalBackfillItem.item_id, HistoricalBackfillItem.trade_date)
+                    select(
+                        HistoricalBackfillItem.item_id,
+                        HistoricalBackfillRequest.dataset_key,
+                        HistoricalBackfillItem.trade_date,
+                    )
                     .join(HistoricalBackfillRequest)
                     .where(
                         HistoricalBackfillItem.item_id.in_(item_ids.values()),
@@ -1419,11 +1425,11 @@ async def _projection_acquisition_states(
                 and controls.get(f"{row.execution_profile}_{row.provider}_v1") == "running"
             )
         elif row.kind == "historical":
-            trade_date = historical_dates.get(item_ids.get(row.work_id))
+            item = historical_dates.get(item_ids.get(row.work_id))
             allowed = (
                 allowed
-                and trade_date is not None
-                and trade_date >= expiry_cutoff(row.provider, now)
+                and item is not None
+                and item[1] >= expiry_cutoff(row.provider, item[0], now)
             )
         result[row.work_id] = allowed
     return result

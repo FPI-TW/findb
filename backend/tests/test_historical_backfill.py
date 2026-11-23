@@ -196,7 +196,7 @@ def test_production_keeps_one_year_eod_and_retained_shioaji_window(monkeypatch) 
     assert historical_backfill._max_backfill_days() == 366
     assert historical_backfill._max_backfill_days("shioaji") == 31
     assert historical_backfill.expiry_cutoff(
-        "shioaji", datetime(2026, 8, 31, 16, 1, tzinfo=timezone.utc)
+        "shioaji", "tw_equity_minute", datetime(2026, 8, 31, 16, 1, tzinfo=timezone.utc)
     ) == date(2026, 8, 2)
     assert historical_backfill._supports_backfill("twelve_data", "us_equity_eod") is True
     assert historical_backfill._supports_backfill("finlab", "tw_equity_eod") is True

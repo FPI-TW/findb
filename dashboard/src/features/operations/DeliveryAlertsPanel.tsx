@@ -44,6 +44,8 @@ const columns: ColumnDef<MissingDelivery, unknown>[] = [
             ? `（${row.original.details.candidate_count}）`
             : ""}
         </span>
+      ) : row.original.details?.code === "CALENDAR_UNPUBLISHED" ? (
+        <span>交易所日曆尚未發布</span>
       ) : (
         <span className="font-mono text-xs">
           {row.original.details?.code ?? "DELIVERY_MISSING"}
@@ -99,6 +101,8 @@ export function DeliveryAlertsPanel({
               cell: ({ row }) =>
                 row.original.details?.code === "DATED_UNIVERSE_PENDING" ? (
                   <span className="text-xs text-muted">請先審核候選</span>
+                ) : row.original.details?.code === "CALENDAR_UNPUBLISHED" ? (
+                  <span className="text-xs text-muted">請先發布日曆</span>
                 ) : (
                   <Button
                     variant="outline"

@@ -383,8 +383,8 @@ async def test_enforced_source_receipts_rerun_queue_and_legacy_fail_closed(
     await test_session.flush()
     # This fixed July contract exercises acceptance/rerun, within its original window.
     monkeypatch.setattr(
-        "app.services.historical_backfill._provider_current_date",
-        lambda provider, now: date(2026, 7, 22),
+        "app.services.historical_backfill._feed_current_date",
+        lambda provider, dataset_key, now: date(2026, 7, 22),
     )
     history, _ = await create_request(
         test_session,

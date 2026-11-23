@@ -40,7 +40,7 @@ def _proof():
 
 async def _retained_history(db, dataset_key="tw_equity_minute", status="failed"):
     """Persist a pre-retirement request directly; never reopen runtime capability."""
-    day = history._provider_current_date("shioaji", utc_now()) - timedelta(days=1)
+    day = history._feed_current_date("shioaji", dataset_key, utc_now()) - timedelta(days=1)
     if await db.get(DatasetRegistry, dataset_key) is None:
         db.add(
             DatasetRegistry(

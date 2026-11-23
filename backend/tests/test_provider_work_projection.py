@@ -228,7 +228,7 @@ async def test_historical_drain_classification_matches_acquisition_gate(
         work, attempt = await seed_work(
             db, provider, kind="historical", prepared={"kept": {"body": "original"}}
         )
-        day = expiry_cutoff(provider, utc_now()) - timedelta(days=int(expired))
+        day = expiry_cutoff(provider, work.dataset_key, utc_now()) - timedelta(days=int(expired))
         request = HistoricalBackfillRequest(
             request_key=str(uuid7()),
             provider=provider,

@@ -67,6 +67,10 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   所以只有 `refreshed` 的 `market_eod` feed 可以設 `deliver`（目前是 FinLab 台股與 ETF 日 K）。`dated`
   名單本身就是當天報表，逐筆請求的 provider 不會收到清單外的列，盤中 partition 也沒有列層級的代碼，
   這些都是 `none`，Source 對清單外的列照樣回 409。
+- `calendar_required` 宣告 feed 的日期是否只能用已發布的交易所日曆。`true` 時缺日曆的日期不以 weekday
+  預設代替，而是以 `CALENDAR_UNPUBLISHED` 等待重試，歷史回補也拒絕含未發布日期的範圍，見
+  [Full market 維運](../operations/full_market.md)。目前所有 feed 都是 `false`，FMP 指數 feed 會設為 `true`。
+  只有 Backend 讀這個欄位；Fetcher 只依 Source 回的錯誤碼等待，不在 execution descriptors 裡。
 - 同一 dataset 的 feeds 必須共用 `calendar_market`（loader 檢查）。Backend 以 dataset 查日曆市場時一律讀
   catalog，沒有 catalog feed 的退役 Shioaji 分 K dataset 沿用自身 market。
 

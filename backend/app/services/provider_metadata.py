@@ -75,6 +75,12 @@ def delivers_unlisted(provider: str, dataset_key: str) -> bool:
     return feed is not None and feed.unlisted_symbols == "deliver"
 
 
+def calendar_required(provider: str, dataset_key: str) -> bool:
+    """Whether the feed's dates wait for a published exchange calendar."""
+    feed = catalog_feed(provider, dataset_key)
+    return feed is not None and feed.calendar_required
+
+
 def dataset_calendar_market(dataset_key: str, market: str) -> str:
     """The dataset's catalog calendar market (shared by its feeds, the loader checks).
 

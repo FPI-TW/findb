@@ -185,6 +185,10 @@
           "title": "Calendar Market",
           "type": "string"
         },
+        "calendar_required": {
+          "title": "Calendar Required",
+          "type": "boolean"
+        },
         "capabilities": {
           "$ref": "#/$defs/FeedCapabilities"
         },
@@ -343,7 +347,8 @@
         "historical_cohort",
         "historical_requests_per_date",
         "universe_mode",
-        "unlisted_symbols"
+        "unlisted_symbols",
+        "calendar_required"
       ],
       "title": "FeedDefinition",
       "type": "object"

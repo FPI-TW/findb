@@ -43,6 +43,7 @@ from app.schemas.ingress import (
 from app.services.effective_calendar import effective_days, execution_policy, market_timezone
 from app.services.feed_schedule import data_ready_at
 from app.services.provider_metadata import (
+    calendar_required,
     catalog_feed,
     dataset_calendar_market,
     historical_cohort,
@@ -62,14 +63,14 @@ STAGING_MAX_BACKFILL_DAYS = 31
 PRODUCTION_MAX_BACKFILL_DAYS = 366
 # Compatibility for existing staging callers; production uses the target-aware helper.
 MAX_BACKFILL_DAYS = STAGING_MAX_BACKFILL_DAYS
-# Provider cutoffs follow their feeds' calendar markets, matching the Fetcher clock.
-PROVIDER_TIMEZONES: dict[str, str] = {
-    provider: market_timezone(market).key
-    for provider, market in {
-        "shioaji": "TW",  # Retired; existing TW minute requests stay readable.
-        **{feed.provider: feed.calendar_market for feed in provider_catalog().feeds},
-    }.items()
+# Cutoffs follow each feed's calendar market, matching the Fetcher clock; one
+# provider's feeds may sit in different markets.
+FEED_TIMEZONES: dict[tuple[str, str], str] = {
+    (feed.provider, feed.dataset_key): market_timezone(feed.calendar_market).key
+    for feed in provider_catalog().feeds
 }
+# Retired providers without catalog feeds; existing TW minute requests stay readable.
+RETIRED_PROVIDER_TIMEZONES = {"shioaji": market_timezone("TW").key}
 
 
 def _max_backfill_days(provider: str | None = None) -> int:
@@ -393,32 +394,46 @@ class HistoricalBackfillValidationError(HistoricalBackfillError):
     pass
 
 
-def _provider_current_date(provider: str, now: datetime) -> date:
-    """Return the provider's market date for the same cutoff as its Fetcher."""
-    timezone_name = PROVIDER_TIMEZONES.get(provider)
+def _feed_timezone(provider: str, dataset_key: str) -> str | None:
+    return FEED_TIMEZONES.get((provider, dataset_key)) or RETIRED_PROVIDER_TIMEZONES.get(provider)
+
+
+def _feed_current_date(provider: str, dataset_key: str, now: datetime) -> date:
+    """Return the feed's market date for the same cutoff as its Fetcher."""
+    timezone_name = _feed_timezone(provider, dataset_key)
     if timezone_name is None:
-        raise HistoricalBackfillError("provider timezone is not configured")
+        raise HistoricalBackfillError("feed timezone is not configured")
     if now.tzinfo is None:
         raise HistoricalBackfillError("historical claim clock must be timezone-aware")
     return now.astimezone(ZoneInfo(timezone_name)).date()
 
 
-def _request_today(provider: str) -> date:
-    """Creation and preview use the same provider-local date as claims and expiry.
+def _request_today(provider: str, dataset_key: str) -> date:
+    """Creation and preview use the same feed-local date as claims and expiry.
 
-    An unknown provider has no timezone; its scope check rejects it afterwards.
+    An unknown feed has no timezone; its scope check rejects it afterwards.
     """
     now = utc_now()
-    return _provider_current_date(provider, now) if provider in PROVIDER_TIMEZONES else now.date()
+    if _feed_timezone(provider, dataset_key) is None:
+        return now.date()
+    return _feed_current_date(provider, dataset_key, now)
 
 
-def expiry_cutoff(provider: str, now: datetime) -> date:
-    """One read-only provider-local boundary for claims and live acquisition.
+def expiry_cutoff(provider: str, dataset_key: str, now: datetime) -> date:
+    """One read-only feed-local boundary for claims and live acquisition.
 
     It is the oldest date a new request may still include, so an item expires the
     same day it would no longer be accepted.
     """
-    return _provider_current_date(provider, now) - timedelta(days=_max_backfill_days(provider) - 1)
+    return _feed_current_date(provider, dataset_key, now) - timedelta(
+        days=_max_backfill_days(provider) - 1
+    )
+
+
+def _latest_expiry_cutoff(provider: str, now: datetime) -> date:
+    """The latest cutoff across the provider's feeds: a superset filter for expiry."""
+    keys = [dataset for owner, dataset in FEED_TIMEZONES if owner == provider] or [""]
+    return max(expiry_cutoff(provider, dataset, now) for dataset in keys)
 
 
 def _session_closed(item: HistoricalBackfillItem, now: datetime) -> bool:
@@ -454,7 +469,7 @@ async def create_request(
         from app.services.provider_work import lock_provider
 
         await lock_provider(db, provider)
-    today = today or _request_today(provider)
+    today = today or _request_today(provider, dataset_key)
     max_days = _max_backfill_days(provider)
     if start_date < today - timedelta(days=max_days - 1) or end_date > today:
         raise HistoricalBackfillError(
@@ -553,6 +568,12 @@ async def create_request(
     calendar = await effective_days(
         db, dataset_calendar_market(dataset_key, dataset.market), start_date, end_date
     )
+    unpublished = [day["trade_date"] for day in calendar if day["calendar_source"] != "published"]
+    if unpublished and calendar_required(provider, dataset_key):
+        raise HistoricalBackfillError(
+            "published exchange calendar required for "
+            f"{unpublished[0]}..{unpublished[-1]} ({len(unpublished)} days)"
+        )
     # Historical dates follow the same calendar switch as the provider's daily plans.
     policy = execution_policy(provider)
     if cohort == "dated_release":
@@ -690,7 +711,7 @@ async def preview_request(
 ) -> tuple[str | None, str | None, list[tuple[date, bool, str | None]]]:
     """Return a no-write operator preview; every selected day is explained."""
     provider = provider.lower()
-    today = today or _request_today(provider)
+    today = today or _request_today(provider, dataset_key)
     dataset = await db.get(DatasetRegistry, dataset_key)
     market = dataset.market if dataset is not None else None
     max_days = _max_backfill_days(provider)
@@ -720,7 +741,7 @@ async def preview_request(
         return market, scope_reason, []
     calendar_rows = (
         {
-            date.fromisoformat(day["trade_date"]): day["is_open"]
+            date.fromisoformat(day["trade_date"]): day
             for day in await effective_days(
                 db, dataset_calendar_market(dataset_key, market), start_date, end_date
             )
@@ -728,6 +749,13 @@ async def preview_request(
         if market is not None
         else {}
     )
+    # Creation refuses the whole range, so the preview does too.
+    if (
+        scope_reason is None
+        and calendar_required(provider, dataset_key)
+        and any(day["calendar_source"] != "published" for day in calendar_rows.values())
+    ):
+        scope_reason = "calendar_unpublished"
     # The same switch creation applies; an out-of-scope preview marks no closed days.
     skip_non_trading = scope_reason is None and execution_policy(provider)["skip_non_trading_days"]
     days: list[tuple[date, bool, str | None]] = []
@@ -735,7 +763,7 @@ async def preview_request(
     while current <= end_date:
         if scope_reason is not None:
             days.append((current, False, scope_reason))
-        elif skip_non_trading and not calendar_rows[current]:
+        elif skip_non_trading and not calendar_rows[current]["is_open"]:
             days.append((current, False, "market_closed"))
         else:
             days.append((current, True, None))
@@ -815,7 +843,8 @@ async def cancel_request(
 
 async def expire_requests(db: AsyncSession, *, provider: str, now: datetime) -> None:
     """Apply the original window under the provider lock, preserving retained drains."""
-    expiry_date = expiry_cutoff(provider, now)
+    # Rows past the latest feed cutoff are a superset; each is checked against its own feed.
+    expiry_date = _latest_expiry_cutoff(provider, now)
     expired = (
         (
             await db.execute(
@@ -847,6 +876,8 @@ async def expire_requests(db: AsyncSession, *, provider: str, now: datetime) -> 
             "queued",
             "running",
         }:
+            continue
+        if item.trade_date >= expiry_cutoff(provider, item.request.dataset_key, now):
             continue
         item.status, item.completed_at = "failed", now
         item.failure_code, item.failure_message = "BACKFILL_EXPIRED", "historical date expired"
@@ -1008,7 +1039,7 @@ async def authorize_item(
         and attempt.state == "open"
         and request.status in {"queued", "running"}
         and item.status == "running"
-        and item.trade_date >= expiry_cutoff(provider, checked_at)
+        and item.trade_date >= expiry_cutoff(provider, request.dataset_key, checked_at)
         and _session_closed(item, checked_at)
     )
     if allowed and owner:
