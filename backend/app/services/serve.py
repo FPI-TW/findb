@@ -22,6 +22,7 @@ from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlalchemy.sql import ColumnElement
 
 from app.models.canonical import (
+    ExchangeDailyQuote,
     FuturesContract,
     FuturesContractEOD,
     Instrument,
@@ -45,6 +46,10 @@ from app.schemas.serve import (
     EODListResponse,
     EODResponse,
     EODUnitsResponse,
+    ExchangeQuoteListResponse,
+    ExchangeQuoteResponse,
+    FuturesContractListResponse,
+    FuturesContractResponse,
     FuturesEODListResponse,
     FuturesEODResponse,
     FuturesUnitsResponse,
@@ -117,6 +122,15 @@ def configuration_error() -> HTTPException:
 
 
 @dataclass(frozen=True)
+class ExchangeQuoteScope:
+    """An active dataset of an exchange's official daily quotation report."""
+
+    dataset_key: str
+    market: str
+    asset_class: str
+
+
+@dataclass(frozen=True)
 class IntradayDatasetScope:
     """An active dataset whose rows are canonical intraday objects."""
 
@@ -135,9 +149,17 @@ async def active_intraday_datasets(db: AsyncSession) -> tuple[IntradayDatasetSco
     return (await _active_registry_scopes(db))[1]
 
 
+async def active_exchange_quote_datasets(db: AsyncSession) -> tuple[ExchangeQuoteScope, ...]:
+    return (await _active_registry_scopes(db))[2]
+
+
 async def _active_registry_scopes(
     db: AsyncSession,
-) -> tuple[tuple[ActiveDatasetScope, ...], tuple[IntradayDatasetScope, ...]]:
+) -> tuple[
+    tuple[ActiveDatasetScope, ...],
+    tuple[IntradayDatasetScope, ...],
+    tuple[ExchangeQuoteScope, ...],
+]:
     """Every active dataset's read model; any inconsistent declaration fails closed."""
     rows = (
         await db.execute(
@@ -148,6 +170,7 @@ async def _active_registry_scopes(
     ).scalars()
     scopes: list[ActiveDatasetScope] = []
     intraday: list[IntradayDatasetScope] = []
+    quotes: list[ExchangeQuoteScope] = []
     seen: set[tuple[str, str, str]] = set()
     for row in rows:
         try:
@@ -198,6 +221,9 @@ async def _active_registry_scopes(
                     or frequency != "daily"
                 ):
                     raise ValueError("active exchange quote dataset declaration is invalid")
+                if any((item.market, item.asset_class) == (market, asset_class) for item in quotes):
+                    raise ValueError("duplicate active exchange quote scope")
+                quotes.append(ExchangeQuoteScope(row.dataset_key, market, asset_class))
                 continue
             if not set(declaration.accepted_schema_versions) <= SUPPORTED_SERVE_VERSIONS.get(
                 schema_id, frozenset()
@@ -236,7 +262,7 @@ async def _active_registry_scopes(
             )
         except (AttributeError, TypeError, ValueError):
             raise configuration_error() from None
-    return tuple(scopes), tuple(intraday)
+    return tuple(scopes), tuple(intraday), tuple(quotes)
 
 
 def _pairs(
@@ -349,7 +375,7 @@ def _instrument_response(
 async def list_datasets(db: AsyncSession) -> DatasetListResponse:
     from app.services.serve_intraday import intraday_dataset_coverage
 
-    scopes, intraday_scopes = await _active_registry_scopes(db)
+    scopes, intraday_scopes, quote_scopes = await _active_registry_scopes(db)
     items: list[DatasetResponse] = []
     for intraday_scope in intraday_scopes:
         first, latest, symbols = await intraday_dataset_coverage(db, intraday_scope.dataset_key)
@@ -420,6 +446,42 @@ async def list_datasets(db: AsyncSession) -> DatasetListResponse:
                     if scope.data_kind == "futures_eod"
                     else "share"
                 ),
+                availability="available" if instrument_count else "configured_empty",
+                coverage=DatasetCoverageResponse(
+                    coverage_start_date=first_date,
+                    coverage_end_date=latest_date,
+                    instrument_count=int(instrument_count or 0),
+                ),
+            )
+        )
+    for quote_scope in quote_scopes:
+        first_date, latest_date, instrument_count = (
+            await db.execute(
+                select(
+                    func.min(ExchangeDailyQuote.trade_date),
+                    func.max(ExchangeDailyQuote.trade_date),
+                    func.count(func.distinct(ExchangeDailyQuote.instrument_id)),
+                )
+                .join(Instrument, ExchangeDailyQuote.instrument_id == Instrument.instrument_id)
+                .where(
+                    Instrument.market == quote_scope.market,
+                    Instrument.asset_class == quote_scope.asset_class,
+                )
+            )
+        ).one()
+        items.append(
+            DatasetResponse(
+                dataset_key=quote_scope.dataset_key,
+                display_name=(
+                    f"{quote_scope.market} {quote_scope.asset_class.upper()} exchange daily quotes"
+                ),
+                market=quote_scope.market,
+                asset_class=quote_scope.asset_class,
+                frequency="daily",
+                data_kind="exchange_quotes",
+                interval="1d",
+                operation_id=DATASET_OPERATIONS["exchange_quotes"],
+                volume_unit="share",
                 availability="available" if instrument_count else "configured_empty",
                 coverage=DatasetCoverageResponse(
                     coverage_start_date=first_date,
@@ -786,6 +848,7 @@ DATASET_OPERATIONS = {
     "futures_eod": "list_futures_eod",
     "intraday_bars": "list_intraday_bars",
     "intraday_ticks": "list_intraday_ticks",
+    "exchange_quotes": "list_exchange_quotes",
 }
 
 
@@ -856,12 +919,14 @@ async def _match_selectors(
     return matches
 
 
-def _require_matched(matches: list[_SelectorMatch]) -> list[Instrument]:
+def _require_matched(
+    matches: list[_SelectorMatch], data_label: str = "EOD data"
+) -> list[Instrument]:
     """Fail the request on the first kind of unmatched selector, naming every such input."""
     for reason, status, code, message in (
         ("not_found", 404, "INSTRUMENT_NOT_FOUND", "No instrument matches"),
         ("ambiguous", 422, "AMBIGUOUS_INSTRUMENT", "Several instruments match"),
-        ("not_available", 422, "DATASET_NOT_AVAILABLE", "EOD data is not available for"),
+        ("not_available", 422, "DATASET_NOT_AVAILABLE", f"{data_label} is not available for"),
     ):
         failed = [match for match in matches if match.reason == reason]
         if failed:
@@ -1312,7 +1377,7 @@ async def list_futures_eod(
         raise serve_error(422, "DATASET_NOT_AVAILABLE", "Futures EOD data is not active")
     if product_code is not None:
         product_code = product_code.strip().upper()
-    if product_code is not None and product_code not in {"TX", "MTX", "TMF", "TE", "TF"}:
+    if product_code is not None and product_code not in FUTURES_PRODUCTS:
         raise serve_error(422, "INVALID_PRODUCT", "Unsupported futures product")
     if session is not None and session not in {"regular", "after_hours"}:
         raise serve_error(422, "INVALID_SESSION", "Unsupported futures session")
@@ -1418,6 +1483,240 @@ async def list_futures_eod(
                 updated_at=quote.updated_at,
             )
             for quote, contract, instrument in rows
+        ],
+        pagination=CursorPaginationInfo(page_size=page_size, next_cursor=next_cursor),
+    )
+
+
+FUTURES_PRODUCTS = frozenset({"TX", "MTX", "TMF", "TE", "TF"})
+
+
+def _contract_type(
+    contract_month: str | None,
+) -> Literal["monthly", "weekly", "friday_weekly"] | None:
+    if contract_month is None:
+        return None
+    if re.fullmatch(r"\d{6}", contract_month):
+        return "monthly"
+    if re.fullmatch(r"\d{6}W[1-5]", contract_month):
+        return "weekly"
+    if re.fullmatch(r"\d{6}F[1-5]", contract_month):
+        return "friday_weekly"
+    return None
+
+
+async def list_futures_contracts(
+    db: AsyncSession,
+    *,
+    product_code: str | None,
+    active_on: date | None,
+    cursor: str | None,
+    page_size: int,
+) -> FuturesContractListResponse:
+    """Expiry contracts with the trade dates FinDB holds quotes for."""
+    scopes = await active_dataset_scopes(db)
+    if ("TW", "future") not in _pairs(scopes, "futures_eod"):
+        raise serve_error(422, "DATASET_NOT_AVAILABLE", "Futures EOD data is not active")
+    if product_code is not None:
+        product_code = product_code.strip().upper()
+        if product_code not in FUTURES_PRODUCTS:
+            raise serve_error(422, "INVALID_PRODUCT", "Unsupported futures product")
+    filters = {"product_code": product_code, "active_on": _date_text(active_on)}
+    last_date: date | None = None
+    last_code: str | None = None
+    if cursor is not None:
+        payload = _decode_cursor(cursor)
+        if (
+            set(payload) != {"v", "kind", "filters", "last_date", "last_code"}
+            or payload.get("v") != 1
+            or payload.get("kind") != "futures_contracts"
+            or payload.get("filters") != filters
+            or not isinstance(payload.get("last_code"), str)
+        ):
+            raise serve_error(422, "INVALID_CURSOR", "Cursor does not match this query")
+        try:
+            last_date = date.fromisoformat(payload["last_date"])
+        except (TypeError, ValueError):
+            raise serve_error(422, "INVALID_CURSOR", "Cursor is invalid") from None
+        last_code = payload["last_code"]
+    quoted = (
+        select(
+            FuturesContractEOD.contract_id.label("contract_id"),
+            func.min(FuturesContractEOD.trade_date).label("first_trade_date"),
+            func.max(FuturesContractEOD.trade_date).label("last_trade_date"),
+        )
+        .group_by(FuturesContractEOD.contract_id)
+        .subquery()
+    )
+    stmt = (
+        select(FuturesContract, Instrument, quoted.c.first_trade_date, quoted.c.last_trade_date)
+        .join(quoted, quoted.c.contract_id == FuturesContract.contract_id)
+        .join(Instrument, Instrument.instrument_id == FuturesContract.instrument_id)
+        .where(Instrument.market == "TW", Instrument.asset_class == "future")
+    )
+    if product_code is not None:
+        stmt = stmt.where(Instrument.symbol == product_code)
+    if active_on is not None:
+        stmt = stmt.where(
+            quoted.c.first_trade_date <= active_on, quoted.c.last_trade_date >= active_on
+        )
+    if last_date is not None and last_code is not None:
+        stmt = stmt.where(
+            or_(
+                quoted.c.last_trade_date < last_date,
+                and_(
+                    quoted.c.last_trade_date == last_date,
+                    FuturesContract.contract_code > last_code,
+                ),
+            )
+        )
+    rows = (
+        await db.execute(
+            stmt.order_by(
+                quoted.c.last_trade_date.desc(), FuturesContract.contract_code.asc()
+            ).limit(page_size + 1)
+        )
+    ).all()
+    next_cursor = None
+    if len(rows) > page_size:
+        last_contract, _, _, last_trade = rows[page_size - 1]
+        next_cursor = _encode_cursor(
+            {
+                "v": 1,
+                "kind": "futures_contracts",
+                "filters": filters,
+                "last_date": last_trade.isoformat(),
+                "last_code": last_contract.contract_code,
+            }
+        )
+        rows = rows[:page_size]
+    return FuturesContractListResponse(
+        data=[
+            FuturesContractResponse(
+                contract_id=contract.contract_id,
+                instrument_id=instrument.instrument_id,
+                product_code=instrument.symbol,
+                contract_code=contract.contract_code,
+                contract_month=contract.contract_month,
+                contract_type=_contract_type(contract.contract_month),
+                expiry_date=contract.expiry_date,
+                first_trade_date=first_trade,
+                last_trade_date=last_trade,
+            )
+            for contract, instrument, first_trade, last_trade in rows
+        ],
+        pagination=CursorPaginationInfo(page_size=page_size, next_cursor=next_cursor),
+    )
+
+
+async def list_exchange_quotes(
+    db: AsyncSession,
+    *,
+    instruments_raw: str,
+    start_date: date | None,
+    end_date: date | None,
+    order: SortDirection,
+    cursor: str | None,
+    page_size: int,
+) -> ExchangeQuoteListResponse:
+    """Rows of the exchange's official daily report for the requested instruments."""
+    _validate_dates(start_date, end_date)
+    pairs = {
+        (scope.market, scope.asset_class) for scope in await active_exchange_quote_datasets(db)
+    }
+    if not pairs:
+        raise serve_error(422, "DATASET_NOT_AVAILABLE", "Exchange quotes are not active")
+    selectors = parse_selectors(instruments_raw, param="instruments", allow_uuid=True)
+    matched = _require_matched(await _match_selectors(db, selectors, pairs), "Exchange quotes")
+    instrument_ids = sorted({instrument.instrument_id for instrument in matched})
+    scope = {
+        "instrument_ids": [str(value) for value in instrument_ids],
+        "start_date": _date_text(start_date),
+        "end_date": _date_text(end_date),
+        "order": order,
+    }
+    last_date: date | None = None
+    last_id: UUID | None = None
+    if cursor:
+        payload = _decode_cursor(cursor)
+        if (
+            set(payload) != {"v", "kind", "scope", "last_date", "last_id"}
+            or payload.get("v") != 1
+            or payload.get("kind") != "exchange_quotes"
+            or payload.get("scope") != scope
+        ):
+            raise serve_error(422, "INVALID_CURSOR", "Cursor does not match this query")
+        try:
+            last_date = date.fromisoformat(payload["last_date"])
+            last_id = UUID(payload["last_id"])
+        except (TypeError, ValueError):
+            raise serve_error(422, "INVALID_CURSOR", "Cursor is invalid") from None
+    query = (
+        select(ExchangeDailyQuote, Instrument)
+        .join(Instrument, ExchangeDailyQuote.instrument_id == Instrument.instrument_id)
+        .where(ExchangeDailyQuote.instrument_id.in_(instrument_ids))
+    )
+    if start_date:
+        query = query.where(ExchangeDailyQuote.trade_date >= start_date)
+    if end_date:
+        query = query.where(ExchangeDailyQuote.trade_date <= end_date)
+    ascending = order == "asc"
+    if last_date and last_id:
+        query = query.where(
+            or_(
+                ExchangeDailyQuote.trade_date > last_date
+                if ascending
+                else ExchangeDailyQuote.trade_date < last_date,
+                and_(
+                    ExchangeDailyQuote.trade_date == last_date,
+                    ExchangeDailyQuote.instrument_id > last_id,
+                ),
+            )
+        )
+    date_order = (
+        ExchangeDailyQuote.trade_date.asc() if ascending else ExchangeDailyQuote.trade_date.desc()
+    )
+    rows = (
+        await db.execute(
+            query.order_by(date_order, ExchangeDailyQuote.instrument_id.asc()).limit(page_size + 1)
+        )
+    ).all()
+    next_cursor = None
+    if len(rows) > page_size:
+        last_quote = rows[page_size - 1][0]
+        next_cursor = _encode_cursor(
+            {
+                "v": 1,
+                "kind": "exchange_quotes",
+                "scope": scope,
+                "last_date": last_quote.trade_date.isoformat(),
+                "last_id": str(last_quote.instrument_id),
+            }
+        )
+        rows = rows[:page_size]
+    return ExchangeQuoteListResponse(
+        data=[
+            ExchangeQuoteResponse(
+                instrument_id=quote.instrument_id,
+                symbol=instrument.symbol,
+                name=instrument.name,
+                market=instrument.market,
+                trade_date=quote.trade_date,
+                board=quote.board,
+                currency=quote.currency,
+                trading_status=cast(Literal["traded", "no_trade"], quote.trading_status),
+                previous_close=quote.previous_close,
+                close=quote.close,
+                high=quote.high,
+                low=quote.low,
+                bid=quote.bid,
+                ask=quote.ask,
+                volume=quote.volume,
+                turnover=quote.turnover,
+                source=quote.source,
+                source_fetched_at=quote.source_fetched_at,
+            )
+            for quote, instrument in rows
         ],
         pagination=CursorPaginationInfo(page_size=page_size, next_cursor=next_cursor),
     )

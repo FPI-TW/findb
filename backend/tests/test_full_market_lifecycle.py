@@ -138,6 +138,71 @@ async def test_futures_serve_cursor_filters_and_product_coverage(client, test_se
 
 
 @pytest.mark.asyncio
+async def test_futures_contract_list_shows_quoted_dates_and_filters_by_day(client, test_session):
+    dataset, _, plan = await _activated_plan(test_session)
+    run = IngestionRun(
+        dataset_key=dataset.dataset_key, source="taifex", delivery_part_id=plan.parts[0].part_id
+    )
+    test_session.add(run)
+    await test_session.flush()
+    normalizer = FuturesEODContractNormalizer(
+        test_session, {**dataset.config, "_ingest_source": "taifex"}
+    )
+    earlier = DAY - timedelta(days=1)
+    await normalizer.process(
+        {
+            "data": [
+                _quote(trade_date=earlier),
+                _quote(),
+                _quote("202609"),
+                _quote("202607W4", trade_date=earlier),
+            ]
+        },
+        run.run_id,
+    )
+
+    response = await client.get("/api/v1/serve/futures/contracts", params={"product_code": "tx"})
+    assert response.status_code == 200, response.text
+    rows = response.json()["data"]
+    assert [
+        (
+            row["contract_code"],
+            row["contract_type"],
+            row["first_trade_date"],
+            row["last_trade_date"],
+        )
+        for row in rows
+    ] == [
+        ("TX:202608", "monthly", earlier.isoformat(), DAY.isoformat()),
+        ("TX:202609", "monthly", DAY.isoformat(), DAY.isoformat()),
+        ("TX:202607W4", "weekly", earlier.isoformat(), earlier.isoformat()),
+    ]
+    assert all(row["expiry_date"] is None for row in rows)
+
+    on_day = await client.get(
+        "/api/v1/serve/futures/contracts", params={"active_on": DAY.isoformat()}
+    )
+    assert [row["contract_code"] for row in on_day.json()["data"]] == ["TX:202608", "TX:202609"]
+
+    paged: list[str] = []
+    params: dict[str, str | int] = {"page_size": 1}
+    while True:
+        page = await client.get("/api/v1/serve/futures/contracts", params=params)
+        paged.extend(row["contract_code"] for row in page.json()["data"])
+        if not (cursor := page.json()["pagination"]["next_cursor"]):
+            break
+        params["cursor"] = cursor
+    assert paged == [row["contract_code"] for row in rows]
+    mismatched = await client.get(
+        "/api/v1/serve/futures/contracts",
+        params={"product_code": "MTX", "cursor": params["cursor"]},
+    )
+    assert mismatched.status_code == 422
+    unsupported = await client.get("/api/v1/serve/futures/contracts?product_code=XX")
+    assert unsupported.json()["detail"]["code"] == "INVALID_PRODUCT"
+
+
+@pytest.mark.asyncio
 async def test_minute_available_before_closed_group_but_plan_remains_missing(test_session):
     dataset, _, plan = await _activated_plan(test_session, "tw_equity_minute", count=1)
     await test_session.execute(

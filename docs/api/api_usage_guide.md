@@ -257,6 +257,15 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   `product_code` 不分大小寫，`order` 同 `/eod`，回應的 `units` 說明成交量與未平倉都以口計；
   OHLC（包含 close）、volume、`settlement_price`／`open_interest` 缺漏時回傳 null；
   零成交但來源仍提供 settlement／OI 的紀錄可查詢，明確的 0 保留，不補造價格或 continuous series。
+- `GET /serve/futures/contracts`：TAIFEX 各到期合約與 FinDB 有報價的第一個、最後一個交易日
+  （`first_trade_date`／`last_trade_date`），依最後報價日新到舊。`active_on` 只列該交易日落在兩者之間的
+  合約（例如找當天的近月合約），`contract_type` 由 `contract_month` 判斷（`monthly`、`weekly`、
+  `friday_weekly`）。`expiry_date` 尚未寫入，目前一律 null。
+- `GET /serve/exchange-quotes?instruments=HK:700`：交易所官方每日報表的列，目前只有 HKEX 港股。含前收、
+  官方收盤、最高、最低、收盤買賣價、`board`（`main`／`gem`）與 `trading_status`（`traded`／`no_trade`，
+  停牌不在報表內所以沒有列），不含開盤價。官方收盤、最高、最低與成交量已覆寫進 `/eod`，這個端點用於前收、
+  買賣價與交易狀態。參數與分頁同 `/eod` 的 `instruments`、日期、`order`、cursor；不屬於報表範圍的商品回
+  `DATASET_NOT_AVAILABLE`。`/serve/datasets` 也列出這條 dataset（`data_kind=exchange_quotes`）。
 - `GET /serve/intraday/bars`、`GET /serve/intraday/ticks`：盤中 1 分 K 與逐筆成交，見下方
   [盤中資料](#盤中資料)。
 - `GET /serve/intraday/downloads`：研究用的 Parquet 下載清單，見 [盤中資料的大量下載](#盤中資料的大量下載)。
