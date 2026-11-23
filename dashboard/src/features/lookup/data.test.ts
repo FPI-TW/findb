@@ -98,7 +98,7 @@ describe("lookup API client", () => {
     await loadEod("instrument/id")
     await loadMinute("instrument/id")
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      "http://localhost:8080/api/v1/serve/eod?instrument_id=instrument%2Fid&page_size=10",
+      "http://localhost:8080/api/v1/serve/eod?instruments=instrument%2Fid&page_size=10",
       "http://localhost:8080/api/v1/serve/minute?instrument_id=instrument%2Fid&page_size=10",
     ])
     for (const [, init] of fetchMock.mock.calls) {

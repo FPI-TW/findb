@@ -230,7 +230,8 @@ coverage 與 feed counts 只計入 enabled 範圍，歷史 fetched／completed �
 
 Serve只讀canonical tables，且只公開active registry可解析的EOD／minute／futures scopes。現行路由為：
 
-- `GET /serve/datasets`：provider-free active catalog與coverage。
+- `GET /serve/datasets`：provider-free active catalog與coverage；每筆附 `operation_id`（查這份資料要用的
+  operation，如 `list_eod`）與 `volume_unit`（`share`、`lot`、`contract` 或 `provider_defined`）。
 - `GET /serve/instruments`、`GET /serve/instruments/{instrument_id}`：商品、facets與分離的
   `coverage.eod`／`coverage.minute`／`coverage.futures`。有 `q` 且沒指定 `sort_by` 時依相關度排序：
   代號完全相符、代號開頭相符、名稱開頭相符、其他，同級內代號短的在前（`2330` 排在 `23301` 前）。
@@ -238,14 +239,22 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   沒寫市場的值用 `market` 參數。代號不分大小寫，港股純數字代號補成 5 位（`700` → `00700`）。
   每個輸入各回一筆 `status`：`resolved`、`ambiguous`（同代號有多種資產類別，從 `matches` 選）、
   `not_found`、`not_available`（商品存在但不在 active 資料域），查不到不會讓整個請求失敗。
-- `GET /serve/eod`：必須指定`instrument_id`，或`market`加最多50個可選symbols；使用
-  opaque cursor且固定最新優先。每列的 `currency` 是商品的報價幣別；`source` 是整列的來源，
+- `GET /serve/eod`：二擇一指定 `instruments`（最多 50 個，每個是 UUID 或 `MARKET:SYMBOL`，可跨市場，
+  代號比照 resolve 的正規化）或 `market`（整個市場）。同一個 `MARKET:SYMBOL` 對到多種資產類別時回 422
+  `AMBIGUOUS_INSTRUMENT`，`details.matches` 列出候選 id；查不到回 404，`details.inputs` 列出是哪幾個。
+  `order=desc`（預設，最新優先）或 `asc`；cursor 綁定 `instruments`／`market`、日期與 `order`。
+  回應的 `units` 說明價格未還原、日期是交易所當地日期，以及各資產類別的成交量單位（股票與 ETF 是股，
+  指數是 provider 自己的數字）。每列的 `currency` 是商品的報價幣別；`source` 是整列的來源，
   `field_sources` 列出值不是 `source` 提供的欄位，例如港股以 HKEX 官方值覆寫後為
   `{"close": "hkex", "volume": "hkex", ...}`、Admin 修正後為 `{"close": "manual"}`；所有欄位都是
   `source` 自己的值時為 null。
+- `GET /serve/eod/latest?instruments=TW:2330,US:AAPL`：每檔在 `as_of_date`（預設最新）當天或之前的最後一根
+  日 K，附前一根的日期與收盤、`change` 與 `change_percent`（小數 4 位）。答不出的輸入列在 `missing`，
+  原因是 `not_found`、`ambiguous`（附 `matches`）、`not_available` 或 `no_data`，不會讓整個請求失敗。
 - `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
   最新canonical minute日期向前一個曆月，resolved range會固定在cursor內。
 - `GET /serve/futures/eod`：實際到期合約與 `regular`／`after_hours` session，使用 opaque cursor；
+  `product_code` 不分大小寫，`order` 同 `/eod`，回應的 `units` 說明成交量與未平倉都以口計；
   OHLC（包含 close）、volume、`settlement_price`／`open_interest` 缺漏時回傳 null；
   零成交但來源仍提供 settlement／OI 的紀錄可查詢，明確的 0 保留，不補造價格或 continuous series。
 - `GET /serve/intraday/bars`、`GET /serve/intraday/ticks`：盤中 1 分 K 與逐筆成交，見下方
@@ -279,6 +288,7 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 | 404 | `INSTRUMENT_NOT_FOUND`、`NOT_FOUND` | 找不到商品；`NOT_FOUND` 是路徑不存在 |
 | 422 | `INVALID_PARAMETER` | 參數格式或值不合法；`details.errors` 逐一列出參數與原因 |
 | 422 | `QUERY_SCOPE_REQUIRED`、`INVALID_SYMBOLS`、`INVALID_DATE_RANGE`、`INVALID_CURSOR` | 查詢組合、代號、日期範圍或 cursor 不合法 |
+| 422 | `AMBIGUOUS_INSTRUMENT` | `MARKET:SYMBOL` 對到多種資產類別；改用 `details.matches` 裡的 `instrument_id` |
 | 422 | `DATASET_NOT_AVAILABLE` | 商品或市場存在，但不屬於 active 資料域 |
 | 429 | `RATE_LIMITED` | 超過 key 的限流；依 `Retry-After`（同 `details.retry_after_seconds`）重試；`details.bucket` 為 `serve` 或 `intraday` |
 | 429 | `DOWNLOAD_QUOTA_EXCEEDED` | 下載清單的每日額度用完，`Retry-After` 為到下一個 UTC 日的秒數 |
@@ -298,7 +308,8 @@ Serve role 只掛 Serve 路由，所以該文件只含 Serve：
 - 錯誤回應都列出可能的 `code`，body 一律是 `ServeErrorResponse`。
 
 建議的呼叫流程是 `list_datasets`（有哪些資料）→ `resolve_instruments`（已知市場與代號）或
-`list_instruments`（搜尋）取得 `instrument_id` 與 `coverage` → 資料端點。由 OpenAPI 轉 tool 的作法與 LLM 供應商無關：
+`list_instruments`（搜尋）取得 `instrument_id` 與 `coverage` → 資料端點。只要最新收盤時直接用
+`get_latest_eod`，它接受 `MARKET:SYMBOL`，一次呼叫就能回答「這幾檔最新收盤多少、漲跌多少」。由 OpenAPI 轉 tool 的作法與 LLM 供應商無關：
 
 - tool 名稱用 `operationId`，說明用 `summary` 加 `description`。
 - 參數用 query parameters 組成 JSON Schema object，`required` 照 OpenAPI。
@@ -309,11 +320,11 @@ Serve role 只掛 Serve 路由，所以該文件只含 Serve：
 ```json
 {
   "name": "list_eod",
-  "description": "Daily OHLCV bars. Daily bars for equities, ETFs and indices. Give exactly one scope: ...",
+  "description": "Daily OHLCV bars. Daily bars for equities, ETFs and indices. Give exactly one scope: `instruments` ...",
   "input_schema": {
     "type": "object",
     "properties": {
-      "instrument_id": {"type": "string", "format": "uuid", "description": "One instrument's FinDB UUID. Do not combine with `market`."},
+      "instruments": {"type": "string", "description": "Comma-separated instruments, at most 50, each a FinDB UUID or `MARKET:SYMBOL`. Do not combine with `market`."},
       "start_date": {"type": "string", "format": "date", "description": "First exchange-local trade date to include (YYYY-MM-DD)."},
       "end_date": {"type": "string", "format": "date", "description": "Last exchange-local trade date to include (YYYY-MM-DD)."},
       "page_size": {"type": "integer", "minimum": 1, "maximum": 1000}

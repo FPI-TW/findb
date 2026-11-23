@@ -195,7 +195,7 @@ async def test_eod_v2_opt_in_preserves_canonical_reads_and_unrelated_scopes(
     for instrument_id in (hk_id, us_id):
         response = await client.get(
             "/api/v1/serve/eod",
-            params={"instrument_id": str(instrument_id)},
+            params={"instruments": str(instrument_id)},
         )
         assert response.status_code == 200, response.text
         assert len(response.json()["data"]) == 1
@@ -277,7 +277,7 @@ async def test_active_intraday_datasets_do_not_take_the_table_backed_reads_down(
         ("tw_equity_eod", "daily", "eod", "1d"),
         ("tw_etf_tick", "tick", "intraday_ticks", "tick"),
     ]
-    response = await client.get("/api/v1/serve/eod", params={"instrument_id": str(instrument_id)})
+    response = await client.get("/api/v1/serve/eod", params={"instruments": str(instrument_id)})
     assert response.status_code == 200, response.text
     assert len(response.json()["data"]) == 1
 
@@ -334,7 +334,7 @@ async def test_an_active_exchange_quote_dataset_leaves_the_provider_rows_served(
     catalog = await client.get("/api/v1/serve/datasets")
     assert catalog.status_code == 200, catalog.text
     assert {row["dataset_key"] for row in catalog.json()["data"]} == {"hk_equity_eod"}
-    response = await client.get("/api/v1/serve/eod", params={"instrument_id": str(instrument_id)})
+    response = await client.get("/api/v1/serve/eod", params={"instruments": str(instrument_id)})
     assert response.status_code == 200, response.text
     assert len(response.json()["data"]) == 1
 
@@ -614,11 +614,11 @@ async def test_eod_requires_scope_and_distinguishes_unsupported_from_empty(
 
     assert_error(await client.get("/api/v1/serve/eod"), 422, "QUERY_SCOPE_REQUIRED")
     assert_error(
-        await client.get(f"/api/v1/serve/eod?instrument_id={etf_id}"),
+        await client.get(f"/api/v1/serve/eod?instruments={etf_id}"),
         422,
         "DATASET_NOT_AVAILABLE",
     )
-    empty = await client.get(f"/api/v1/serve/eod?instrument_id={equity_id}")
+    empty = await client.get(f"/api/v1/serve/eod?instruments={equity_id}")
     assert empty.status_code == 200
     assert empty.json()["data"] == []
 
@@ -636,22 +636,22 @@ async def test_eod_cursor_is_stable_and_rejects_scope_changes(client: AsyncClien
     )
     await test_session.commit()
 
-    first = await client.get(f"/api/v1/serve/eod?instrument_id={instrument_id}&page_size=1")
+    first = await client.get(f"/api/v1/serve/eod?instruments={instrument_id}&page_size=1")
     assert first.json()["data"][0]["trade_date"] == "2026-09-18"
     cursor = first.json()["pagination"]["next_cursor"]
     second = await client.get(
-        f"/api/v1/serve/eod?instrument_id={instrument_id}&page_size=1&cursor={cursor}"
+        f"/api/v1/serve/eod?instruments={instrument_id}&page_size=1&cursor={cursor}"
     )
     assert second.json()["data"][0]["trade_date"] == "2026-09-17"
     assert_error(
         await client.get(
-            f"/api/v1/serve/eod?instrument_id={instrument_id}&start_date=2026-09-18&cursor={cursor}"
+            f"/api/v1/serve/eod?instruments={instrument_id}&start_date=2026-09-18&cursor={cursor}"
         ),
         422,
         "INVALID_CURSOR",
     )
     assert_error(
-        await client.get(f"/api/v1/serve/eod?instrument_id={instrument_id}&cursor=%%%"),
+        await client.get(f"/api/v1/serve/eod?instruments={instrument_id}&cursor=%%%"),
         422,
         "INVALID_CURSOR",
     )
@@ -675,7 +675,7 @@ async def test_eod_rows_carry_currency_and_name_no_other_field_source(
     )
     await test_session.commit()
 
-    response = await client.get(f"/api/v1/serve/eod?instrument_id={instrument_id}")
+    response = await client.get(f"/api/v1/serve/eod?instruments={instrument_id}")
     assert response.status_code == 200, response.text
     assert [
         (row["trade_date"], row["currency"], row["source"], row["field_sources"])
@@ -708,23 +708,22 @@ async def test_eod_market_symbol_validation_is_atomic(client: AsyncClient, test_
     assert_error(await client.get("/api/v1/serve/eod?market="), 422, "QUERY_SCOPE_REQUIRED")
     assert_error(await client.get("/api/v1/serve/eod?market=%20%20"), 422, "QUERY_SCOPE_REQUIRED")
 
-    assert_error(
-        await client.get("/api/v1/serve/eod?market=US&symbols=AAPL,MISSING"),
-        404,
-        "INSTRUMENT_NOT_FOUND",
-    )
+    missing = await client.get("/api/v1/serve/eod?instruments=US:AAPL,US:MISSING")
+    assert_error(missing, 404, "INSTRUMENT_NOT_FOUND")
+    assert missing.json()["detail"]["details"] == {"inputs": ["US:MISSING"]}
     assert_error(
         await client.get(
-            "/api/v1/serve/eod?market=US&symbols=" + ",".join(f"S{i}" for i in range(51))
+            "/api/v1/serve/eod?instruments=" + ",".join(f"US:S{i}" for i in range(51))
         ),
         422,
         "INVALID_SYMBOLS",
     )
     assert_error(
-        await client.get(f"/api/v1/serve/eod?instrument_id={instrument_id}&symbols=AAPL"),
+        await client.get(f"/api/v1/serve/eod?instruments={instrument_id}&market=US"),
         422,
-        "INVALID_SYMBOLS",
+        "QUERY_SCOPE_REQUIRED",
     )
+    assert_error(await client.get("/api/v1/serve/eod?instruments=AAPL"), 422, "INVALID_SYMBOLS")
 
 
 @pytest.mark.asyncio
@@ -865,7 +864,10 @@ SERVE_ROUTE_URLS = {
     "/api/v1/serve/instruments/{instrument_id}": (
         "/api/v1/serve/instruments/11111111-1111-1111-1111-111111111111"
     ),
-    "/api/v1/serve/eod": "/api/v1/serve/eod?instrument_id=11111111-1111-1111-1111-111111111111",
+    "/api/v1/serve/eod": "/api/v1/serve/eod?instruments=11111111-1111-1111-1111-111111111111",
+    "/api/v1/serve/eod/latest": (
+        "/api/v1/serve/eod/latest?instruments=11111111-1111-1111-1111-111111111111"
+    ),
     "/api/v1/serve/minute": (
         "/api/v1/serve/minute?instrument_id=11111111-1111-1111-1111-111111111111"
     ),

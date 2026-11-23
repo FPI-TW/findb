@@ -99,7 +99,7 @@ function readData<T>(payload: unknown): T[] {
 export async function loadEod(id: string, signal?: AbortSignal) {
   return readData<EodRow>(
     await fetchJson(
-      `/api/v1/serve/eod?instrument_id=${encodeURIComponent(id)}&page_size=10`,
+      `/api/v1/serve/eod?instruments=${encodeURIComponent(id)}&page_size=10`,
       signal
     )
   )
