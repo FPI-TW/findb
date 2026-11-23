@@ -231,10 +231,12 @@ start 前執行；ingest 啟動不調整 controls，production 可先只啟動 i
 
 ## 有效日曆與每日政策
 
-Backend 是政策權威。`runtime/configuration` 使用四個獨立開關：
+Backend 是政策權威。`runtime/configuration` 每個 provider 一個獨立開關：
 `TWELVE_DATA_SKIP_NON_TRADING_DAYS`、`FINLAB_SKIP_NON_TRADING_DAYS`、
-`TAIFEX_SKIP_NON_TRADING_DAYS`、`FACTSET_SKIP_NON_TRADING_DAYS`。
-每個開關皆為 `true`／`false` 字串，四個 provider 預設皆為 `true`，兩環境欄位相同，經部署生效。
+`TAIFEX_SKIP_NON_TRADING_DAYS`、`FACTSET_SKIP_NON_TRADING_DAYS`、`HKEX_SKIP_NON_TRADING_DAYS`、
+`FMP_SKIP_NON_TRADING_DAYS`（FMP 尚未加入 catalog，先備妥設定）。
+每個開關皆為 `true`／`false` 字串，預設皆為 `true`，兩環境欄位相同，經部署生效；
+`FACTSET`、`HKEX` 與 `FMP` 的開關在 runtime configuration 中可省略。
 Fetcher 透過 Source 取得政策與每日決策，不保存另一份日曆或政策設定。預設略過非交易日；
 明確設為 false 才在週末／休市照常執行。排程時間、交易所時區、Owner controls、平台配額、429 與既有重試規則仍有效。
 不設連續十筆失敗中斷規則。
@@ -1128,7 +1130,7 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
   日 K 價格表還沒有的標的（例如新上市），所以每個已分類的成員都會嘗試。
 - **排程**：台北 19:15，完成期限為隔日 07:15（開始後 12 小時）。日 K 要等 FinLab 約 18:50 的最終版，等待時的重試排到
   佇列尾端，所以盤中排在最終版之後，日 K 才不會被插隊（見「FinLab 日 K 只取最終版」）。FinLab 的 control 顯示的是該 provider 最早的 feed 時間
-  （18:00）。同一個交易日的工作依排程時間排入佇列，日 K 一定排在盤中之前；跨日補抓時仍是日期優先。
+  （18:00）；feeds 的時區不同時，以同一天換算成 UTC 的時刻比較。同一個交易日的工作依排程時間排入佇列，日 K 一定排在盤中之前；跨日補抓時仍是日期優先。
 - **Historical**：不支援，回補不在第 1 批範圍。
 
 FinLab 對單一成員的回答與結果：

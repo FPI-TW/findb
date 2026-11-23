@@ -156,6 +156,10 @@ compact separators、ASCII escape 編碼再做 SHA-256；排序後的 feed 陣�
 
 每條 feed 提供 identity、contract、`scheduled_time`、`source_timezone`、`target_date_lag_days`、
 `publication_retry_window_seconds`、獨立 `completion_deadline` 及 `bounded_monitor`。
+`source_timezone` 可以和交易所時區不同：目標日期是排程時區當天往前 `target_date_lag_days` 天的交易所日期，
+收盤、日曆與休市判斷仍依交易所時區，完成期限依排程時區與 lag 計算（例如台北 08:30 抓前一個紐約交易日，
+期限為台北當天 20:30）。`asset_class` 可為 `equity`、`etf`、`future` 或 `index`；指數名單成員的代號沿用
+provider 的寫法，只有 `index` 可以用 `^` 開頭（例如 `^GSPC`）。
 不包含 slot；發布窗口不是 deadline。此 endpoint 不檢查 running、universe readiness、
 quota 或 historical lease，也不建立 plan／work；取得設定不代表取得 acquisition authorization。
 

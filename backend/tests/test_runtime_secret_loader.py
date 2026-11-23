@@ -984,12 +984,13 @@ def test_cli_does_not_echo_invalid_consumer_input(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("provider", ["TWELVE_DATA", "FINLAB", "TAIFEX", "FACTSET"])
+@pytest.mark.parametrize("provider", ["TWELVE_DATA", "FINLAB", "TAIFEX", "FACTSET", "HKEX", "FMP"])
 @pytest.mark.parametrize("value", ["false", "true", "yes", "1", "{}"])
 def test_backend_execution_policy_uses_independent_boolean_switches(target, provider, value):
     loader = _loader()
     keys = [
-        name + "_SKIP_NON_TRADING_DAYS" for name in ("TWELVE_DATA", "FINLAB", "TAIFEX", "FACTSET")
+        name + "_SKIP_NON_TRADING_DAYS"
+        for name in ("TWELVE_DATA", "FINLAB", "TAIFEX", "FACTSET", "HKEX", "FMP")
     ]
     catalog = {
         "schema_version": 2,
