@@ -182,6 +182,11 @@ def _contract_config(
     }
 
 
+def _contract_label(feed: FeedDefinition) -> str:
+    """The contract a staged feed's description names: its current catalog version."""
+    return f"{feed.contract.schema_id}.v{feed.contract.current_version}"
+
+
 def _catalog_feed(dataset_key: str) -> FeedDefinition:
     """Return the dataset's only Source feed; its identity is catalog-owned.
 
@@ -392,7 +397,7 @@ def _staged_eod_dataset(dataset_key: str, name: str, *, currency: str | None) ->
     return _catalog_dataset(
         dataset_key,
         name=name,
-        description=f"Staged {provider} {feed.contract.schema_id}.v1 full-market daily feed",
+        description=f"Staged {provider} {_contract_label(feed)} full-market daily feed",
         config=config,
     )
 
@@ -427,7 +432,7 @@ def _staged_quote_dataset(dataset_key: str, name: str) -> dict[str, Any]:
         dataset_key,
         name=name,
         description=(
-            f"Staged {feed.provider} {feed.contract.schema_id}.v1 exchange daily quotation; "
+            f"Staged {feed.provider} {_contract_label(feed)} exchange daily quotation; "
             "corrects provider EOD close, high, low, volume and turnover"
         ),
         config=config,
@@ -467,7 +472,7 @@ def _staged_intraday_dataset(dataset_key: str, name: str) -> dict[str, Any]:
         dataset_key,
         name=name,
         description=(
-            f"Staged {feed.provider} {feed.contract.schema_id}.v1 intraday feed; "
+            f"Staged {feed.provider} {_contract_label(feed)} intraday feed; "
             "rows are canonical objects, volume in lots"
         ),
         config=config,

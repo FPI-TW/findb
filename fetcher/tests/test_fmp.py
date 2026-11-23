@@ -171,6 +171,17 @@ def test_http_failures_keep_only_a_bounded_category(status, category) -> None:
     assert limited == (["x"] if status == 429 else [])
 
 
+def test_fmp_timeout_applies_on_the_shared_runtime_client(monkeypatch) -> None:
+    monkeypatch.setenv("FMP_TIMEOUT_SECONDS", "7")
+    server = _FMP(full=[_json([_row()])])
+    # The runtime passes its own client, configured with a different timeout.
+    shared = httpx.Client(transport=httpx.MockTransport(server), timeout=30)
+    FMPClient(FMPConfig.from_env(), client=shared).index_daily("^GSPC", FRIDAY)
+    assert server.requests[0].extensions["timeout"] == dict.fromkeys(
+        ("connect", "read", "write", "pool"), 7.0
+    )
+
+
 def test_a_response_above_the_bound_is_refused() -> None:
     server = _FMP(full=[_json([_row()] * 50)])
     client = FMPClient(

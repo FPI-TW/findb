@@ -685,7 +685,9 @@ class MarketFreshnessResponse(BaseModel):
     scheduler_key: str
     provider: str
     dataset_keys: list[str] = Field(default_factory=list)
+    # The control's own slot; ``slot_ids`` lists every slot of its feeds.
     slot_id: CanonicalSlotId
+    slot_ids: list[CanonicalSlotId] = Field(default_factory=list)
     scheduled_local_time: time
     timezone: str
     desired_state: Literal["running", "stopped"]

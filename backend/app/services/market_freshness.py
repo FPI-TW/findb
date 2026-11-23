@@ -87,6 +87,7 @@ class MarketFreshness:
     scheduler_key: str
     provider: str
     dataset_keys: tuple[str, ...]
+    # The control's own slot; ``slot_ids`` lists every slot of its feeds.
     slot_id: str
     scheduled_local_time: time
     timezone: str
@@ -117,6 +118,7 @@ class MarketFreshness:
     active_dataset_keys: tuple[str, ...]
     pending_feeds: tuple[PendingFeed, ...]
     markets: tuple[str, ...] = ()
+    slot_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -924,9 +926,7 @@ async def _build_scheduler_freshness(
         )
     )
     card_errors = tuple(dict.fromkeys(configuration_errors))
-    market = (
-        markets[0] if markets and len(set(markets)) == 1 else (markets[0] if markets else "UNKNOWN")
-    )
+    market = markets[0] if markets else "UNKNOWN"
     return MarketFreshness(
         market=market,
         markets=tuple(sorted(set(markets))),
@@ -934,6 +934,7 @@ async def _build_scheduler_freshness(
         provider=definition.provider,
         dataset_keys=definition.dataset_keys,
         slot_id=definition.slot_id,
+        slot_ids=tuple(sorted(_feed_slots(definition))),
         scheduled_local_time=definition.scheduled_local_time,
         timezone=definition.timezone,
         desired_state=definition.desired_state,
