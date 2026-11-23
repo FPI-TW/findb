@@ -36,7 +36,7 @@ function SelectValue(
 }
 
 const selectTriggerVariants = cva(
-  "flex w-full min-w-0 items-center justify-between gap-2 border border-line bg-surface text-left whitespace-nowrap text-ink shadow-sm transition-[color,box-shadow] outline-none focus-visible:border-accent focus-visible:ring-3 focus-visible:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-danger aria-invalid:ring-danger/20 data-[placeholder]:text-muted [&>span]:truncate",
+  "flex w-full min-w-0 items-center justify-between gap-2 border border-line-strong bg-surface text-left whitespace-nowrap text-ink shadow-sm transition-[color,box-shadow] outline-none focus-visible:border-accent focus-visible:ring-3 focus-visible:ring-accent/15 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-danger aria-invalid:ring-danger/20 data-[placeholder]:text-muted [&>span]:truncate",
   {
     variants: {
       size: {
@@ -132,7 +132,7 @@ function SelectItem({
     <SelectPrimitive.Item
       data-slot="select-item"
       className={cn(
-        "relative flex w-full cursor-default items-center gap-2 rounded-md py-1.5 pr-8 pl-2 text-sm outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent-soft data-[highlighted]:text-accent-ink",
+        "relative flex w-full cursor-default items-center gap-2 rounded-md py-1.5 pr-8 pl-2 text-sm outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent-soft data-[highlighted]:text-accent",
         className
       )}
       {...props}

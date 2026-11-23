@@ -1131,8 +1131,9 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 ### FinLab 盤中 feed
 
 四條盤中 feed 是 1 分 K 與逐筆成交，股票與 ETF 各一條，契約為 `intraday_partition.v1`：每個（標的、交易日）
-一筆交付，資料存 Canonical R2（見 [盤中儲存](../architecture/intraday_storage.md)）。Staging 已以 11/16、11/17
-兩個交易日實際執行四條 feed；production 尚未上線，進度見 [設計文件](../dev/finlab-intraday-batch1.md)。
+一筆交付，資料存 Canonical R2（見 [盤中儲存](../architecture/intraday_storage.md)）。Staging 於 11/16、11/17
+兩個交易日先行驗收；production 自 2026-11-18 起每日執行四條 feed，Serve 查詢見
+[API 使用說明](../api/api_usage_guide.md#盤中資料)。剩餘工作見 [設計文件](../dev/finlab-intraday-batch1.md)。
 
 - **啟用**：四個 dataset 由 migration 建立，和其他 dataset 一樣是啟用狀態（系統沒有「啟用 dataset」的操作；
   未啟用的 dataset 會讓排程卡片顯示設定錯誤，交付也會被拒收）。部署不會開始抓取：dataset 沒有 baseline 就不會
@@ -1250,7 +1251,9 @@ Twelve Data 與 FactSet 無法判斷後來的成員當天是否已存在，因�
 release ID 重算補查成員並核對 digest；manifest 的 `supplementary` 必須與它相同。Version 2 的舊 request 沒有補查成員。
 
 Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類型、幣別身分檢查；FinLab 每個日期只下載
-一次五張欄位表），每成員一個 `market_eod` v1 `backfill` request，`work_item_id=historical:<item>`：
+一次五張欄位表；Twelve Data 與 daily 相同，把該日期接下來還要抓的成員以逗號合成一次 `/time_series`，最多 50 個、
+每 symbol 1 credit，已有結果或 receipt 的成員不加入，一批只存一份 raw，該批成員的單檔失敗引用這份 raw），
+每成員一個 `market_eod` v1 `backfill` request，`work_item_id=historical:<item>`：
 
 | 情況 | 成員結果 | 日期 |
 | --- | --- | --- |
@@ -1261,7 +1264,7 @@ Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類�
 | FinLab OHLC 等單檔值不合法、Twelve Data 幣別不符或 mapper 拒絕、Source DQ 拒絕 | `invalid`（`row_structure_invalid`），附 raw | 繼續 |
 | 限流、provider 暫時錯誤、FinLab 尚未發布該日期 | — | 整日稍後重試；已完成成員不重抓 |
 
-成員送出後不逐檔等待 normalization：已接受的 run 先不讀取結果，繼續抓取與交付後面的成員，同時最多保留 16 筆
+成員送出後不逐檔等待 normalization（FactSet daily 與 historical 也一樣）：已接受的 run 先不讀取結果，繼續抓取與交付後面的成員，同時最多保留 16 筆
 未讀取的 run，超過時才讀取最早的一筆；全部成員送出後再讀完剩下的。讀取時 run 仍在佇列才等待（0.25、0.5、1、2 秒
 遞增），單筆最長 30 秒，逾時則整日稍後重試，已讀取的成員結果保留。交付期間每 60 秒與結束時輸出與 daily 相同格式的
 `delivery_timing`，以 `item_id` 標示，另含 `step normalization_wait`。
@@ -1644,8 +1647,19 @@ HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 只負責 US，HK �
 
 新 plan deadline 與沒有 plan 的 missing-delivery 判定共用 Backend `feed_schedule` resolver。
 所有 feed 同一條規則：排程開始後 12 小時，以排程的時區計算（catalog 載入時檢查，不符即失敗）。
-換算成台北時間：US 次日 18:00（美國夏令時間為 17:00）、TAIFEX 次日 05:00、FinLab 日線次日 06:00、
-FinLab 盤中次日 07:15、FactSet 港股與 FMP 港股指數次日 08:00、HKEX 次日 09:05、FMP 美股指數次日 20:30。既有 plan 以儲存的 `deadline_at` 判定，不因後續
+換算成台北時間（皆為交易日的次日）：
+
+| Feed | 排程 | 完成期限（台北） |
+| --- | --- | --- |
+| TAIFEX `tw_futures_eod` | 台北 17:00 | 05:00 |
+| FinLab `tw_equity_eod`、`tw_etf_eod` | 台北 18:00 | 06:00 |
+| FinLab 四條盤中 | 台北 19:15 | 07:15 |
+| FactSet `hk_equity_eod`、FMP `hk_index_eod` | 香港 20:00 | 08:00 |
+| HKEX `hk_equity_official_eod` | 香港 21:05 | 09:05 |
+| Twelve Data `us_equity_eod` | 紐約 17:00 | 18:00（美國夏令時間 17:00） |
+| FMP `us_index_eod` | 台北 08:30（抓前一個紐約交易日） | 20:30 |
+
+既有 plan 以儲存的 `deadline_at` 判定，不因後續
 catalog 修改提早或延後告警。Bounded US 09:15 是另一政策，使用自己的 timezone／day offset。
 Dashboard 依 market 分組，逐 feed 顯示交易所當地觸發時間；slot 僅保留交付契約相容用途。
 DB 舊值修正與發布下限見 [PR5 遷移](deployment.md#provider-catalog-pr5-發布與遷移)。

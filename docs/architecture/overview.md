@@ -40,7 +40,10 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 | --- | --- | --- |
 | `twelve_data` | `us_equity_eod` | `market_eod.v1` |
 | `factset` | `hk_equity_eod` | `market_eod.v2` |
+| `hkex` | `hk_equity_official_eod` | `exchange_daily_quote.v1` |
+| `fmp` | `hk_index_eod`、`us_index_eod` | `market_eod.v2` |
 | `finlab` | `tw_equity_eod`、`tw_etf_eod` | `market_eod.v1` |
+| `finlab` | `tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick` | `intraday_partition.v1` |
 | `taifex` | `tw_futures_eod` | `futures_eod.v1` |
 
 Daily 只有 Full market 一種 execution profile（Pilot 已退役），使用單一 CLI、provider adapter、

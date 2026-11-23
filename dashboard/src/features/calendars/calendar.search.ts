@@ -2,13 +2,16 @@ import { z } from "zod"
 
 const currentYear = new Date().getUTCFullYear()
 
+export const MIN_CALENDAR_YEAR = 1900
+export const MAX_CALENDAR_YEAR = 2200
+
 export const calendarSearchSchema = z.object({
   market: z.string().trim().max(10).catch("").default(""),
   year: z.coerce
     .number()
     .int()
-    .min(1900)
-    .max(2200)
+    .min(MIN_CALENDAR_YEAR)
+    .max(MAX_CALENDAR_YEAR)
     .catch(currentYear)
     .default(currentYear),
   month: z

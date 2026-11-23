@@ -169,8 +169,8 @@ reference、run／job 與 canonical lineage。
 清單替換原 plan，或把缺資料補為零。某 part 成功不阻擋其 canonical 查詢，但全日需
 `data + no_data = expected` 且 missing／blocked 均為零才 complete。
 
-每條 feed 的 deadline 都是排程開始後 12 小時（US 為次日台北 18:00，TW、HK 與 TAIFEX 為次日台北
-05:00–06:30）；Source 202、provider fetch
+每條 feed 的 deadline 都是排程開始後 12 小時（逐 feed 的台北時間見
+[Catalog 排程與 frozen deadline](full_market.md#catalog-排程與-frozen-deadline)）；Source 202、provider fetch
 成功、container running 都不能取代 canonical completion。API 權限、mapping、平台 quota 或資料驗證
 失敗仍保留缺口；不以 readiness、expiry 或 capacity proof 阻擋新抓取，也不縮小 universe。
 

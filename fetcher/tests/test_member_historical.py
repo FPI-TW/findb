@@ -165,6 +165,127 @@ def _twelve(symbol: str, currency: str = "USD", kind: str = "REIT") -> dict:
     }
 
 
+def _single_requests(monkeypatch) -> None:
+    """One provider request per member, the path a batch-less adapter takes."""
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+
+    monkeypatch.setattr(TwelveDataAdapter, "member_batch_limit", 0)
+
+
+_TD_NO_DATA = {
+    "code": 400,
+    "message": "No data is available on the specified dates.",
+    "status": "error",
+}
+
+
+def _batched_twelve(monkeypatch, *, fail_first: set[tuple[str, ...]] = frozenset()):
+    """Serve comma-separated requests; a single-symbol request fails the test."""
+    from findb_fetcher.providers.twelve_data import (
+        TwelveDataClient,
+        TwelveDataConfig,
+        TwelveDataResponse,
+        TwelveDataResponseError,
+    )
+
+    monkeypatch.setattr(TwelveDataConfig, "from_env", classmethod(lambda cls: cls(api_key="k")))
+    batches: list[tuple[str, ...]] = []
+    pending = set(fail_first)
+
+    def fetch_daily_batch(self, symbols, *, start_date, end_date, **kwargs):
+        assert start_date == end_date == DAY
+        batches.append(symbols)
+        if symbols in pending:
+            pending.discard(symbols)
+            raise TwelveDataResponseError("limited", status_code=429, dispatched=True)
+        payload = {
+            symbol: _TD_NO_DATA
+            if symbol == "NODATA"
+            else _twelve(symbol, "HKD" if symbol == "BADCCY" else "USD")
+            for symbol in symbols
+        }
+        return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
+
+    monkeypatch.setattr(TwelveDataClient, "fetch_daily_batch", fetch_daily_batch)
+    monkeypatch.setattr(
+        TwelveDataClient, "fetch_daily", lambda *args, **kwargs: pytest.fail("one batch per run")
+    )
+    return batches
+
+
+def test_twelve_data_date_shares_batches_and_each_member_delivers_alone(monkeypatch, tmp_path):
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+
+    batches = _batched_twelve(monkeypatch)
+    monkeypatch.setattr(TwelveDataAdapter, "member_batch_limit", 3)
+    keys = ["BADCCY", "DONE", "IBM", "NODATA", "O", "Z"]
+    item = _item("twelve_data", "us_equity_eod", [_member(key, "USD") for key in keys])
+    delivery = _Delivery()
+    runner, owner, s3 = _runner(monkeypatch, tmp_path, "twelve_data", item, delivery)
+    # A member already settled by an earlier claim never joins (or spends credits in) a batch.
+    owner.journal.response(
+        "member-historical:outcome:DONE", canonical_bytes({"member_key": "DONE", "outcome": "data"})
+    )
+    try:
+        result = runner.run(item)
+    finally:
+        runner.close()
+    assert batches == [("BADCCY", "IBM", "NODATA"), ("O", "Z")]
+    # One raw object per batch is the lineage of every member it served.
+    assert len(s3.puts) == 2
+    assert [body["payload"]["data"][0]["symbol"] for body in delivery.prepared] == [
+        "IBM",
+        "O",
+        "Z",
+    ]
+    raw = {
+        body["payload"]["data"][0]["symbol"]: body["payload"]["batch"] for body in delivery.prepared
+    }
+    assert raw["IBM"]["source_raw_sha256"] != raw["O"]["source_raw_sha256"]
+    assert raw["O"]["source_raw_sha256"] == raw["Z"]["source_raw_sha256"]
+    evidence = {row["member_key"]: row for row in result.result_evidence["members"]}
+    assert {key: row["outcome"] for key, row in evidence.items()} == {
+        "BADCCY": "invalid",
+        "DONE": "data",
+        "IBM": "data",
+        "NODATA": "missing",
+        "O": "data",
+        "Z": "data",
+    }
+    # A member-scoped failure, the symbol's own no-data answer included, cites the
+    # shared batch response it was read from.
+    assert evidence["BADCCY"]["raw"]["sha256"] == raw["IBM"]["source_raw_sha256"]
+    assert evidence["NODATA"]["raw"] == evidence["BADCCY"]["raw"]
+    assert result.status == "partial"
+
+
+def test_a_retried_date_batches_only_the_members_it_still_acquires(monkeypatch, tmp_path):
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+
+    batches = _batched_twelve(monkeypatch, fail_first={("D", "E")})
+    monkeypatch.setattr(TwelveDataAdapter, "member_batch_limit", 3)
+    keys = ["A", "B", "C", "D", "E"]
+    item = _item("twelve_data", "us_equity_eod", [_member(key, "USD") for key in keys])
+    delivery = _Delivery()
+    runner, owner, _ = _runner(monkeypatch, tmp_path, "twelve_data", item, delivery)
+    # Source keeps each prepared body, so a reclaimed date restores instead of refetching.
+    owner.restore = lambda *, job_key=None, **kwargs: [
+        canonical_bytes(body).decode()
+        for body, key in zip(delivery.prepared, delivery.job_keys)
+        if key == job_key
+    ]
+    try:
+        with pytest.raises(HistoricalWorkDeferredError):
+            runner.run(item)
+        result = runner.run(item)
+    finally:
+        runner.close()
+    assert batches == [("A", "B", "C"), ("D", "E"), ("D", "E")]
+    # Restored members are prepared again from their kept bodies, never refetched.
+    assert list(dict.fromkeys(b["payload"]["data"][0]["symbol"] for b in delivery.prepared)) == keys
+    assert result.status == "completed"
+
+
 def test_twelve_data_member_failures_stay_member_scoped_and_replay(monkeypatch, tmp_path):
     from findb_fetcher.providers.twelve_data import (
         TwelveDataClient,
@@ -189,6 +310,7 @@ def test_twelve_data_member_failures_stay_member_scoped_and_replay(monkeypatch, 
         return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
 
     monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    _single_requests(monkeypatch)
     members = [
         _member("O", "USD"),
         _member("NODATA", "USD"),
@@ -546,6 +668,7 @@ def test_later_release_members_are_requested_but_never_expected(monkeypatch, tmp
         return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
 
     monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    _single_requests(monkeypatch)
     item = _item("twelve_data", "us_equity_eod", [_member("O", "USD")])
     assert item.universe_snapshot is not None
     item.universe_snapshot["supplementary"] = [_member("LATE", "USD"), _member("LATE404", "USD")]

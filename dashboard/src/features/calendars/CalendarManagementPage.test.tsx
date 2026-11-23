@@ -132,6 +132,66 @@ describe("CalendarManagementPage", () => {
     expect(updateSearch).toHaveBeenCalledWith({ ...search, month: "01" })
   })
 
+  it("applies the market and year together only when 查詢 is submitted", async () => {
+    mocks.loadCalendarMarkets.mockResolvedValue([
+      {
+        market: "TW",
+        display_name: "台灣",
+        timezone: "Asia/Taipei",
+        weekend_days: [5, 6],
+        active: true,
+        default_session_open: "09:00",
+        default_session_close: "13:30",
+      },
+      {
+        market: "HK",
+        display_name: "香港",
+        timezone: "Asia/Hong_Kong",
+        weekend_days: [5, 6],
+        active: true,
+        default_session_open: "09:30",
+        default_session_close: "16:00",
+      },
+    ])
+    const { updateSearch } = renderPage()
+    await screen.findByRole("table", { name: "全年交易日曆" })
+    const submit = screen.getByRole("button", { name: "查詢" })
+    expect(submit).toBeDisabled()
+
+    chooseSelectOption(screen.getByLabelText("市場"), "香港（HK）")
+    const year = screen.getByLabelText("年度")
+    // Each keystroke of a year is only a draft: nothing loads until 查詢.
+    for (const value of ["2", "20", "202", "2025"]) {
+      fireEvent.change(year, { target: { value } })
+    }
+    expect(updateSearch).not.toHaveBeenCalled()
+    expect(mocks.loadCalendarYear).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(submit)
+    expect(updateSearch).toHaveBeenCalledTimes(1)
+    expect(updateSearch).toHaveBeenCalledWith({
+      ...search,
+      market: "HK",
+      year: 2025,
+    })
+  })
+
+  it("refuses an out-of-range year and submits a valid one with Enter", async () => {
+    const { updateSearch } = renderPage()
+    await screen.findByRole("table", { name: "全年交易日曆" })
+    const year = screen.getByLabelText("年度")
+
+    fireEvent.change(year, { target: { value: "1899" } })
+    expect(screen.getByRole("button", { name: "查詢" })).toBeDisabled()
+    expect(year).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByText("年度需為 1900–2200 的四位數")).toBeInTheDocument()
+
+    fireEvent.change(year, { target: { value: "2027" } })
+    expect(year).toHaveAttribute("aria-invalid", "false")
+    fireEvent.submit(screen.getByRole("form", { name: "選擇市場與年度" }))
+    expect(updateSearch).toHaveBeenCalledWith({ ...search, year: 2027 })
+  })
+
   it("pins an explicit edit action for permitted roles", async () => {
     renderPage("operator")
 
