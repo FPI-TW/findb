@@ -1,10 +1,15 @@
-"""Thin HTTP routes for canonical read-only Serve queries."""
+"""Thin HTTP routes for canonical read-only Serve queries.
+
+Each route publishes a stable ``operation_id`` and English descriptions: clients
+generate LLM tool definitions from this OpenAPI document, so the operation id
+becomes the tool name and the descriptions become what the agent reads.
+"""
 
 from datetime import date, time
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -32,6 +37,7 @@ from app.schemas.serve import (
     MinuteListResponse,
     PublishedCalendarYearEnvelope,
     PublishedCalendarYearResponse,
+    ServeErrorResponse,
     SortDirection,
 )
 from app.services import serve as serve_queries
@@ -44,8 +50,113 @@ from app.services.slot_identity import CanonicalSlotId
 
 router = APIRouter()
 
+ResponseMap = dict[int | str, dict[str, Any]]
 
-@router.get("/datasets", response_model=DatasetListResponse)
+
+def _errors(
+    extra: dict[int, str] | None = None, *, paginated: bool = False, key_required: bool = False
+) -> ResponseMap:
+    """Document the coded errors a route can return; every body is ``ServeErrorResponse``."""
+    descriptions: dict[int, str] = {
+        401: (
+            "`API_KEY_REQUIRED`: send a Serve API key in the `X-API-Key` header"
+            + ("." if key_required else " (required when the deployment enforces Serve auth).")
+            + " `API_KEY_INVALID`: the key is unknown, revoked, expired or not a Serve key."
+        ),
+        403: "`SCOPE_REQUIRED`: the key lacks the scope named in `details.scope`.",
+        422: (
+            "`INVALID_PARAMETER`: a parameter is malformed or out of range; `details.errors` "
+            "lists each one."
+        ),
+        429: (
+            "`RATE_LIMITED`: the key's request allowance is used up; retry after the "
+            "`Retry-After` header (seconds)."
+        ),
+    }
+    if paginated:
+        descriptions[400] = (
+            "`PAGE_SIZE_EXCEEDS_KEY_LIMIT`: `page_size` is above the key's limit "
+            "(`details.limit`); retry with a smaller `page_size`."
+        )
+    for status, text in (extra or {}).items():
+        descriptions[status] = f"{descriptions[status]} {text}" if status in descriptions else text
+    return {
+        status: {"model": ServeErrorResponse, "description": text}
+        for status, text in sorted(descriptions.items())
+    }
+
+
+INSTRUMENT_NOT_FOUND = "`INSTRUMENT_NOT_FOUND`: no instrument has this id."
+DATASET_NOT_AVAILABLE = (
+    "`DATASET_NOT_AVAILABLE`: the instrument or market exists but has no data of this kind."
+)
+INVALID_DATE_RANGE = "`INVALID_DATE_RANGE`: dates are reversed or the range is too long."
+INVALID_CURSOR = "`INVALID_CURSOR`: the cursor is malformed or was issued for other parameters."
+INTRADAY_UNAVAILABLE = (
+    "`INTRADAY_READS_BUSY`, `INTRADAY_DATA_CHANGING` or `INTRADAY_STORAGE_UNAVAILABLE`: "
+    "temporary; retry later (honour `Retry-After` when present)."
+)
+CONFIGURATION_INVALID = (
+    "`SERVE_CONFIGURATION_INVALID`: the dataset catalog is misconfigured; retry later."
+)
+CALENDAR_MARKETS = "`TW`, `US`, `HK`, `CN` or `TAIFEX`"
+
+InstrumentIdQuery = Annotated[
+    UUID,
+    Query(
+        description=(
+            "FinDB instrument UUID. Find it with `list_instruments` (search by symbol or name)."
+        ),
+        examples=["0190a5c8-3f1e-7c2a-9b4d-5e6f7a8b9c0d"],
+    ),
+]
+StartDateQuery = Annotated[
+    date | None,
+    Query(
+        description="First exchange-local trade date to include (YYYY-MM-DD).",
+        examples=["2026-11-02"],
+    ),
+]
+EndDateQuery = Annotated[
+    date | None,
+    Query(
+        description="Last exchange-local trade date to include (YYYY-MM-DD).",
+        examples=["2026-11-20"],
+    ),
+]
+CursorQuery = Annotated[
+    str | None,
+    Query(
+        description=(
+            "Opaque `pagination.next_cursor` from the previous page. Omit for the first page; "
+            "keep every other parameter unchanged while paging."
+        )
+    ),
+]
+
+
+def _page_size(default: int, maximum: int) -> Any:
+    return Query(
+        ge=1,
+        le=maximum,
+        description=(
+            f"Rows per page, 1-{maximum} (default {default}). The API key may set a lower limit."
+        ),
+    )
+
+
+@router.get(
+    "/datasets",
+    response_model=DatasetListResponse,
+    operation_id="list_datasets",
+    summary="List the datasets FinDB serves",
+    description=(
+        "Returns every active dataset with its market, asset class, frequency, the endpoint "
+        "that serves it (`data_kind`) and the stored date range. Call this first to learn "
+        "which markets and data types exist."
+    ),
+    responses=_errors({503: CONFIGURATION_INVALID}),
+)
 async def get_datasets(
     _: str | None = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
@@ -53,18 +164,54 @@ async def get_datasets(
     return await serve_queries.list_datasets(db)
 
 
-@router.get("/instruments", response_model=InstrumentListResponse)
+@router.get(
+    "/instruments",
+    response_model=InstrumentListResponse,
+    operation_id="list_instruments",
+    summary="Search instruments",
+    description=(
+        "Searches the instruments FinDB holds data for. `q` matches part of the symbol, name "
+        "or instrument id, so `2330` also matches `23301`; check `market` and `symbol` of the "
+        "results. Each result's `coverage` shows the stored date range per endpoint. Uses "
+        "page-number pagination with totals."
+    ),
+    responses=_errors({503: CONFIGURATION_INVALID}, paginated=True),
+)
 async def get_instruments(
-    q: Annotated[str | None, Query(max_length=200)] = None,
-    market: str | None = None,
-    asset_class: str | None = None,
-    status_filter: Annotated[str | None, Query(alias="status")] = None,
-    has_eod: bool | None = None,
-    has_minute: bool | None = None,
-    sort_by: InstrumentSort = "market",
-    sort_dir: SortDirection = "asc",
-    page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+    q: Annotated[
+        str | None,
+        Query(
+            max_length=200,
+            description="Text to find in the symbol, name or instrument id (case-insensitive).",
+            examples=["2330", "Apple"],
+        ),
+    ] = None,
+    market: Annotated[
+        str | None, Query(description="Only this market, e.g. `TW`, `US`, `HK`.", examples=["TW"])
+    ] = None,
+    asset_class: Annotated[
+        str | None,
+        Query(
+            description="Only this asset class, e.g. `equity`, `etf`, `index`, `future`.",
+            examples=["equity"],
+        ),
+    ] = None,
+    status_filter: Annotated[
+        str | None,
+        Query(alias="status", description="Only this listing status, e.g. `active`."),
+    ] = None,
+    has_eod: Annotated[
+        bool | None,
+        Query(description="true: only instruments with daily bars; false: only those without."),
+    ] = None,
+    has_minute: Annotated[
+        bool | None,
+        Query(description="true: only instruments with legacy minute bars; false: without."),
+    ] = None,
+    sort_by: Annotated[InstrumentSort, Query(description="Sort field.")] = "market",
+    sort_dir: Annotated[SortDirection, Query(description="Sort direction.")] = "asc",
+    page: Annotated[int, Query(ge=1, description="Page number, starting at 1.")] = 1,
+    page_size: Annotated[int, _page_size(50, 100)] = 50,
     _: str | None = Depends(verify_paginated_serve_api_key(50)),
     db: AsyncSession = Depends(get_db),
 ) -> InstrumentListResponse:
@@ -83,24 +230,68 @@ async def get_instruments(
     )
 
 
-@router.get("/instruments/{instrument_id}", response_model=InstrumentDetailResponse)
+@router.get(
+    "/instruments/{instrument_id}",
+    response_model=InstrumentDetailResponse,
+    operation_id="get_instrument",
+    summary="Get one instrument",
+    description="Returns one instrument and the stored date range of each kind of data it has.",
+    responses=_errors({404: INSTRUMENT_NOT_FOUND, 503: CONFIGURATION_INVALID}),
+)
 async def get_instrument(
-    instrument_id: UUID,
+    instrument_id: Annotated[UUID, Path(description="FinDB instrument UUID.")],
     _: str | None = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> InstrumentDetailResponse:
     return await serve_queries.get_instrument(db, instrument_id)
 
 
-@router.get("/eod", response_model=EODListResponse)
+@router.get(
+    "/eod",
+    response_model=EODListResponse,
+    operation_id="list_eod",
+    summary="Daily OHLCV bars",
+    description=(
+        "Daily bars for equities, ETFs and indices. Give exactly one scope: `instrument_id` "
+        "for one instrument, or `market` for a whole market, optionally narrowed with "
+        "`symbols`. Rows come newest trade date first. Prices are as traded (not adjusted for "
+        "splits or dividends); equity volume is in shares. Dates are exchange-local and "
+        "inclusive; without dates every stored date is returned, so give a range and follow "
+        "`pagination.next_cursor` until it is null."
+    ),
+    responses=_errors(
+        {
+            404: f"{INSTRUMENT_NOT_FOUND} Also returned when a symbol in `symbols` is unknown.",
+            422: (
+                "`QUERY_SCOPE_REQUIRED`: give `instrument_id` or `market`, not both. "
+                "`INVALID_SYMBOLS`: `symbols` needs `market` and 1-50 values. "
+                f"{DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}"
+            ),
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
 async def get_eod(
-    instrument_id: UUID | None = None,
-    market: str | None = None,
-    symbols: str | None = None,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    cursor: str | None = None,
-    page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
+    instrument_id: Annotated[
+        UUID | None,
+        Query(description="One instrument's FinDB UUID. Do not combine with `market`."),
+    ] = None,
+    market: Annotated[
+        str | None,
+        Query(description="Every instrument of this market, e.g. `TW`.", examples=["TW"]),
+    ] = None,
+    symbols: Annotated[
+        str | None,
+        Query(
+            description="Comma-separated symbols within `market`, at most 50.",
+            examples=["2330,2317,0050"],
+        ),
+    ] = None,
+    start_date: StartDateQuery = None,
+    end_date: EndDateQuery = None,
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
     _: str | None = Depends(verify_paginated_serve_api_key(100)),
     db: AsyncSession = Depends(get_db),
 ) -> EODListResponse:
@@ -116,13 +307,33 @@ async def get_eod(
     )
 
 
-@router.get("/minute", response_model=MinuteListResponse)
+@router.get(
+    "/minute",
+    response_model=MinuteListResponse,
+    operation_id="list_minute_bars",
+    summary="Legacy one-minute bars (history only)",
+    description=(
+        "Historical TW one-minute bars from a retired provider; this dataset no longer "
+        "updates. For current intraday data use `list_intraday_bars`. One instrument per "
+        "call, newest first. `start_date` and `end_date` go together and may span at most "
+        "five years; without them the month before the latest stored date is returned (see "
+        "`range`). Volume is in shares."
+    ),
+    responses=_errors(
+        {
+            404: INSTRUMENT_NOT_FOUND,
+            422: f"{DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}",
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
 async def get_minute(
-    instrument_id: UUID,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    cursor: str | None = None,
-    page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
+    instrument_id: InstrumentIdQuery,
+    start_date: StartDateQuery = None,
+    end_date: EndDateQuery = None,
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
     _: str | None = Depends(verify_paginated_serve_api_key(100)),
     db: AsyncSession = Depends(get_db),
 ) -> MinuteListResponse:
@@ -136,14 +347,36 @@ async def get_minute(
     )
 
 
-@router.get("/intraday/bars", response_model=IntradayBarListResponse)
+@router.get(
+    "/intraday/bars",
+    response_model=IntradayBarListResponse,
+    operation_id="list_intraday_bars",
+    summary="Intraday bars (1m to 60m)",
+    description=(
+        "Intraday bars of one TW equity or ETF, oldest first. `interval` aggregates the "
+        "one-minute bars into 5m, 15m, 30m or 60m bars labelled by their end time; minutes "
+        "without trades have no bar. `start_date` and `end_date` go together: at most 31 "
+        "calendar days for `1m`, 366 for the others. Without them the latest stored trade date "
+        "is returned (see `range`). Volume is in lots of 1,000 shares, not shares; see `units`. "
+        "Always needs an API key; follow `pagination.next_cursor` until it is null."
+    ),
+    responses=_errors(
+        {
+            404: INSTRUMENT_NOT_FOUND,
+            422: f"{DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}",
+            503: INTRADAY_UNAVAILABLE,
+        },
+        paginated=True,
+        key_required=True,
+    ),
+)
 async def get_intraday_bars(
-    instrument_id: UUID,
-    interval: IntradayInterval = "1m",
-    start_date: date | None = None,
-    end_date: date | None = None,
-    cursor: str | None = None,
-    page_size: Annotated[int, Query(ge=1, le=1000)] = 1000,
+    instrument_id: InstrumentIdQuery,
+    interval: Annotated[IntradayInterval, Query(description="Bar interval.")] = "1m",
+    start_date: StartDateQuery = None,
+    end_date: EndDateQuery = None,
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(1000, 1000)] = 1000,
     _: str = Depends(require_intraday_serve_api_key(1000, cost=lambda page_size: 1)),
     db: AsyncSession = Depends(get_db),
 ) -> IntradayBarListResponse:
@@ -158,14 +391,44 @@ async def get_intraday_bars(
     )
 
 
-@router.get("/intraday/ticks", response_model=IntradayTickListResponse)
+@router.get(
+    "/intraday/ticks",
+    response_model=IntradayTickListResponse,
+    operation_id="list_intraday_ticks",
+    summary="Trade ticks of one day",
+    description=(
+        "Every trade of one TW equity or ETF on one trade date, in trade order. Without "
+        "`trade_date` the latest stored date is used (`anchor`). `start_time` and `end_time` "
+        "narrow the day by exchange-local time. Volume is in lots of 1,000 shares. Always "
+        "needs an API key; each started 1,000 rows of `page_size` counts as one request "
+        "against the rate limit."
+    ),
+    responses=_errors(
+        {
+            404: INSTRUMENT_NOT_FOUND,
+            422: f"{DATASET_NOT_AVAILABLE} {INVALID_CURSOR}",
+            503: INTRADAY_UNAVAILABLE,
+        },
+        paginated=True,
+        key_required=True,
+    ),
+)
 async def get_intraday_ticks(
-    instrument_id: UUID,
-    trade_date: date | None = None,
-    start_time: time | None = None,
-    end_time: time | None = None,
-    cursor: str | None = None,
-    page_size: Annotated[int, Query(ge=1, le=5000)] = 1000,
+    instrument_id: InstrumentIdQuery,
+    trade_date: Annotated[
+        date | None,
+        Query(description="Exchange-local trade date (YYYY-MM-DD); default: latest stored."),
+    ] = None,
+    start_time: Annotated[
+        time | None,
+        Query(description="Earliest exchange-local time to include, `HH:MM[:SS]`, no timezone."),
+    ] = None,
+    end_time: Annotated[
+        time | None,
+        Query(description="Latest exchange-local time to include, `HH:MM[:SS]`, no timezone."),
+    ] = None,
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(1000, 5000)] = 1000,
     # A tick page counts one unit per started thousand rows.
     _: str = Depends(
         require_intraday_serve_api_key(1000, cost=lambda page_size: -(-page_size // 1000))
@@ -183,11 +446,45 @@ async def get_intraday_ticks(
     )
 
 
-@router.get("/intraday/downloads", response_model=IntradayDownloadManifestResponse)
+@router.get(
+    "/intraday/downloads",
+    response_model=IntradayDownloadManifestResponse,
+    operation_id="get_intraday_download_manifest",
+    summary="Parquet download links for one instrument-month",
+    description=(
+        "For bulk research: presigned URLs of the Parquet objects holding one instrument's "
+        "intraday bars or ticks for one month, valid until `expires_at`. Read only the trade "
+        "dates listed under each object. Needs a key with the `intraday_download` scope; each "
+        "object counts against the key's daily quota. Not useful inside a conversation: use "
+        "`list_intraday_bars` or `list_intraday_ticks` instead."
+    ),
+    responses=_errors(
+        {
+            404: INSTRUMENT_NOT_FOUND,
+            422: DATASET_NOT_AVAILABLE,
+            429: (
+                "`DOWNLOAD_QUOTA_EXCEEDED`: today's object quota is used up; `Retry-After` is "
+                "the seconds until the next UTC day."
+            ),
+            503: INTRADAY_UNAVAILABLE,
+        },
+        key_required=True,
+    ),
+)
 async def get_intraday_download_manifest(
-    instrument_id: UUID,
-    month: Annotated[str, Query(min_length=7, max_length=7, description="YYYY-MM")],
-    kind: Literal["bars", "ticks"] = "bars",
+    instrument_id: InstrumentIdQuery,
+    month: Annotated[
+        str,
+        Query(
+            min_length=7,
+            max_length=7,
+            description="Month to download, `YYYY-MM`.",
+            examples=["2026-11"],
+        ),
+    ],
+    kind: Annotated[
+        Literal["bars", "ticks"], Query(description="`bars` for 1m bars, `ticks` for trades.")
+    ] = "bars",
     key_id: str = Depends(
         require_intraday_serve_api_key(None, cost=lambda page_size: 1, scope=DOWNLOAD_SCOPE)
     ),
@@ -198,15 +495,44 @@ async def get_intraday_download_manifest(
     )
 
 
-@router.get("/futures/eod", response_model=FuturesEODListResponse)
+@router.get(
+    "/futures/eod",
+    response_model=FuturesEODListResponse,
+    operation_id="list_futures_eod",
+    summary="TAIFEX futures daily quotes per contract",
+    description=(
+        "Daily quotes of individual TAIFEX futures contracts (each expiry separately; no "
+        "continuous series), with `regular` and `after_hours` sessions as separate rows. "
+        "Rows come newest trade date first. Missing prices, settlement or open interest are "
+        "null; a 0 volume means no trades. Follow `pagination.next_cursor` until it is null."
+    ),
+    responses=_errors(
+        {
+            422: (
+                "`INVALID_PRODUCT`, `INVALID_SESSION` or `INVALID_CONTRACT`: unsupported value. "
+                f"{DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}"
+            ),
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
 async def get_futures_eod(
-    product_code: str | None = None,
-    contract_code: str | None = None,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    session: str | None = None,
-    cursor: str | None = None,
-    page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
+    product_code: Annotated[
+        str | None,
+        Query(description="TAIFEX product: `TX`, `MTX`, `TMF`, `TE` or `TF`.", examples=["TX"]),
+    ] = None,
+    contract_code: Annotated[
+        str | None,
+        Query(description="One contract, `<product>:<contract_month>`.", examples=["TX:202612"]),
+    ] = None,
+    start_date: StartDateQuery = None,
+    end_date: EndDateQuery = None,
+    session: Annotated[
+        str | None, Query(description="Only `regular` or only `after_hours` rows.")
+    ] = None,
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
     _: str | None = Depends(verify_paginated_serve_api_key(100)),
     db: AsyncSession = Depends(get_db),
 ) -> FuturesEODListResponse:
@@ -222,10 +548,20 @@ async def get_futures_eod(
     )
 
 
-@router.get("/calendar/years/{market}/{year}", response_model=PublishedCalendarYearEnvelope)
+@router.get(
+    "/calendar/years/{market}/{year}",
+    response_model=PublishedCalendarYearEnvelope,
+    operation_id="get_calendar_year",
+    summary="Trading calendar of one whole year",
+    description=(
+        "Every date of one calendar year for one market, with open/closed status and session "
+        "times. Always needs an API key. For a date range use `list_calendar_days`."
+    ),
+    responses=_errors({422: "Also for an unsupported market or year."}, key_required=True),
+)
 async def get_published_calendar_year(
-    market: str,
-    year: int,
+    market: Annotated[str, Path(description=f"Calendar market: {CALENDAR_MARKETS}.")],
+    year: Annotated[int, Path(description="Calendar year, e.g. 2026.")],
     _: str = Depends(require_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> PublishedCalendarYearEnvelope:
@@ -243,14 +579,36 @@ async def get_published_calendar_year(
     )
 
 
-@router.get("/calendar", response_model=CalendarListResponse)
+@router.get(
+    "/calendar",
+    response_model=CalendarListResponse,
+    operation_id="list_calendar_days",
+    summary="Trading calendar for a date range",
+    description=(
+        "Dates of one market's trading calendar, oldest first; filter with `is_open=true` "
+        "to get trading days only. Without dates the current year is returned; a range may "
+        "cover at most 3661 dates. Uses page-number pagination with totals."
+    ),
+    responses=_errors(
+        {422: f"Also for an unsupported market. {INVALID_DATE_RANGE}"}, paginated=True
+    ),
+)
 async def get_calendar(
-    market: str,
-    start_date: date | None = None,
-    end_date: date | None = None,
-    is_open: bool | None = None,
-    page: Annotated[int, Query(ge=1)] = 1,
-    page_size: Annotated[int, Query(ge=1, le=1000)] = 100,
+    market: Annotated[
+        str, Query(description=f"Calendar market: {CALENDAR_MARKETS}.", examples=["TW"])
+    ],
+    start_date: Annotated[
+        date | None, Query(description="First date to include (YYYY-MM-DD).")
+    ] = None,
+    end_date: Annotated[
+        date | None, Query(description="Last date to include (YYYY-MM-DD).")
+    ] = None,
+    is_open: Annotated[
+        bool | None,
+        Query(description="true: trading days only; false: closed days only."),
+    ] = None,
+    page: Annotated[int, Query(ge=1, description="Page number, starting at 1.")] = 1,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
     _: str | None = Depends(verify_paginated_serve_api_key(100)),
     db: AsyncSession = Depends(get_db),
 ) -> CalendarListResponse:
@@ -265,9 +623,23 @@ async def get_calendar(
     )
 
 
-@router.get("/market-freshness", response_model=MarketFreshnessSummaryListResponse)
+@router.get(
+    "/market-freshness",
+    response_model=MarketFreshnessSummaryListResponse,
+    operation_id="list_market_freshness",
+    summary="How up to date each market's data is",
+    description=(
+        "For each market: the trade date that should be available by now, the latest date "
+        "that is fully available, and whether today's update is fresh, partial or late. Use "
+        "it to tell a user whether the latest close is already in FinDB."
+    ),
+    responses=_errors(),
+)
 async def get_market_freshness(
-    market: Annotated[str | None, Query(min_length=1, max_length=10)] = None,
+    market: Annotated[
+        str | None,
+        Query(min_length=1, max_length=10, description="Only this market, e.g. `TW`."),
+    ] = None,
     _: str | None = Depends(verify_serve_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> MarketFreshnessSummaryListResponse:

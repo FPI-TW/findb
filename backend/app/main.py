@@ -30,8 +30,25 @@ settings = get_settings()
 APP_ROLE = settings.APP_ROLE.lower().strip()
 SOURCE_UNIVERSE_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
 
+SERVE_API_DESCRIPTION = (
+    "Read-only market data: instruments, daily bars, intraday bars and ticks, TAIFEX futures "
+    "quotes, trading calendars and data freshness.\n\n"
+    "**Auth**: send a Serve API key in the `X-API-Key` header. Keys are issued on request; "
+    "each key has its own rate limit and maximum `page_size`.\n\n"
+    "**Suggested flow**: `list_datasets` to see what exists, `list_instruments` to find an "
+    "instrument's `instrument_id`, then the data endpoint named by its `coverage`.\n\n"
+    "**Conventions**: trade dates are exchange-local and date ranges are inclusive; "
+    "timestamps are UTC; prices are as traded (not adjusted). Daily volume is in shares, "
+    "intraday volume in lots of 1,000 shares. Prices and other decimals are JSON strings "
+    '(e.g. `"1300.00000000"`) so no precision is lost. List endpoints page with an opaque '
+    "`pagination.next_cursor` (or `page` where totals are returned); a null cursor means no "
+    "more rows.\n\n"
+    '**Errors**: every error body is `{"detail": {"code", "message", "details"}}`; '
+    "branch on `code`. On `429` wait for `Retry-After` seconds."
+)
+
 OPENAPI_TAGS = [
-    {"name": "Serve API", "description": "唯讀市場資料查詢端點。"},
+    {"name": "Serve API", "description": SERVE_API_DESCRIPTION},
     {"name": "Source API", "description": "需認證的資料寫入與匯入端點。"},
     {"name": "Admin API", "description": "需認證的系統管理端點。"},
 ]
@@ -87,7 +104,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="金融資料庫 - 正規化與查詢服務層",
+    description=(
+        "FinDB financial market data. The Serve API is the read-only query surface; see the "
+        "Serve API tag for auth, conventions and error codes."
+    ),
     openapi_tags=OPENAPI_TAGS,
     lifespan=lifespan,
 )

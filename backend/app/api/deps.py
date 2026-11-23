@@ -25,7 +25,11 @@ from app.services.source_clients import find_active_source_client
 settings = get_settings()
 
 # API Key header security
-api_key_header = APIKeyHeader(name=settings.API_KEY_HEADER, auto_error=False)
+api_key_header = APIKeyHeader(
+    name=settings.API_KEY_HEADER,
+    auto_error=False,
+    description="API key issued by FinDB; Serve keys need the `serve` scope.",
+)
 bearer_scheme = HTTPBearer(auto_error=False)
 
 

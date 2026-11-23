@@ -17,11 +17,13 @@ class PaginationParams(BaseModel):
 class PaginationInfo(BaseModel):
     """分頁中繼資料。"""
 
-    page: int
-    page_size: int
-    total_records: Optional[int]
-    total_pages: Optional[int]
-    next_cursor: Optional[str] = None
+    page: int = Field(description="Current page number, starting at 1.")
+    page_size: int = Field(description="Maximum rows per page.")
+    total_records: Optional[int] = Field(description="Rows matching the query on all pages.")
+    total_pages: Optional[int] = Field(description="Number of pages at this page_size.")
+    next_cursor: Optional[str] = Field(
+        default=None, description="Unused by page-number pagination; always null."
+    )
 
 
 class PaginatedResponse(BaseModel, Generic[T]):

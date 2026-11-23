@@ -282,6 +282,44 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 只要請求帶了 key，即使 `SERVE_REQUIRE_AUTH=false` 也會驗證，並套用該 key 的 page-size 與限流；
 無效的 key 一律回 401 `API_KEY_INVALID`。
 
+### 給 agent 串接
+
+其他產品的 LLM agent 以 function calling 呼叫 Serve 時，直接由部署環境的 `/openapi.json` 產生 tool。
+Serve role 只掛 Serve 路由，所以該文件只含 Serve：
+
+- 每個 operation 有固定的 `operationId`（如 `list_eod`、`list_instruments`），用來當 tool 名稱；路徑改了也不變。
+- `summary` 與 `description` 是給模型看的英文說明，寫明何時用、必填組合、日期語意、上限與分頁方式；
+  每個參數與回應欄位都有說明（單位、幣別、時區、null 的意思）。
+- 錯誤回應都列出可能的 `code`，body 一律是 `ServeErrorResponse`。
+
+建議的呼叫流程是 `list_datasets`（有哪些資料）→ `list_instruments`（找 `instrument_id`，看 `coverage`）→
+資料端點。由 OpenAPI 轉 tool 的作法與 LLM 供應商無關：
+
+- tool 名稱用 `operationId`，說明用 `summary` 加 `description`。
+- 參數用 query parameters 組成 JSON Schema object，`required` 照 OpenAPI。
+- 執行時以 GET 帶 query 參數與 `X-API-Key`，key 留在呼叫端的後端，不放進 prompt。
+- 錯誤把 `detail` 原樣回給模型，讓它依 `code` 修正參數。429 由呼叫端依 `Retry-After` 等待。
+- 有 `next_cursor` 的端點，建議在 tool 層限制最多讀幾頁，避免一次塞爆 context。
+
+```json
+{
+  "name": "list_eod",
+  "description": "Daily OHLCV bars. Daily bars for equities, ETFs and indices. Give exactly one scope: ...",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "instrument_id": {"type": "string", "format": "uuid", "description": "One instrument's FinDB UUID. Do not combine with `market`."},
+      "start_date": {"type": "string", "format": "date", "description": "First exchange-local trade date to include (YYYY-MM-DD)."},
+      "end_date": {"type": "string", "format": "date", "description": "Last exchange-local trade date to include (YYYY-MM-DD)."},
+      "page_size": {"type": "integer", "minimum": 1, "maximum": 1000}
+    }
+  }
+}
+```
+
+價格等 decimal 在 JSON 是字串（如 `"1300.00000000"`），日線成交量是股、盤中是張。
+`backend/tests/test_serve_openapi.py` 會檢查每個 Serve operation、參數與回應欄位都有說明，新增端點沒寫說明會失敗。
+
 Serve key的`page_size_limit`只套用於分頁路由，並以路由實際預設值檢查：instrument list為50，
 EOD、minute、futures EOD與calendar為100，盤中 bars 與 ticks 為1000。未分頁的datasets、單筆instrument、published calendar year
 與market freshness不套用page-size限制。
