@@ -232,7 +232,12 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 
 - `GET /serve/datasets`：provider-free active catalog與coverage。
 - `GET /serve/instruments`、`GET /serve/instruments/{instrument_id}`：商品、facets與分離的
-  `coverage.eod`／`coverage.minute`／`coverage.futures`。
+  `coverage.eod`／`coverage.minute`／`coverage.futures`。有 `q` 且沒指定 `sort_by` 時依相關度排序：
+  代號完全相符、代號開頭相符、名稱開頭相符、其他，同級內代號短的在前（`2330` 排在 `23301` 前）。
+- `GET /serve/instruments/resolve?symbols=TW:2330,US:AAPL,HK:700`：以「市場:代號」精確查商品，最多 50 個；
+  沒寫市場的值用 `market` 參數。代號不分大小寫，港股純數字代號補成 5 位（`700` → `00700`）。
+  每個輸入各回一筆 `status`：`resolved`、`ambiguous`（同代號有多種資產類別，從 `matches` 選）、
+  `not_found`、`not_available`（商品存在但不在 active 資料域），查不到不會讓整個請求失敗。
 - `GET /serve/eod`：必須指定`instrument_id`，或`market`加最多50個可選symbols；使用
   opaque cursor且固定最新優先。每列的 `currency` 是商品的報價幣別；`source` 是整列的來源，
   `field_sources` 列出值不是 `source` 提供的欄位，例如港股以 HKEX 官方值覆寫後為
@@ -292,8 +297,8 @@ Serve role 只掛 Serve 路由，所以該文件只含 Serve：
   每個參數與回應欄位都有說明（單位、幣別、時區、null 的意思）。
 - 錯誤回應都列出可能的 `code`，body 一律是 `ServeErrorResponse`。
 
-建議的呼叫流程是 `list_datasets`（有哪些資料）→ `list_instruments`（找 `instrument_id`，看 `coverage`）→
-資料端點。由 OpenAPI 轉 tool 的作法與 LLM 供應商無關：
+建議的呼叫流程是 `list_datasets`（有哪些資料）→ `resolve_instruments`（已知市場與代號）或
+`list_instruments`（搜尋）取得 `instrument_id` 與 `coverage` → 資料端點。由 OpenAPI 轉 tool 的作法與 LLM 供應商無關：
 
 - tool 名稱用 `operationId`，說明用 `summary` 加 `description`。
 - 參數用 query parameters 組成 JSON Schema object，`required` 照 OpenAPI。

@@ -14,7 +14,7 @@ from typing import Any, Literal, cast
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import String, and_, case, func, literal_column, or_, select
+from sqlalchemy import String, and_, case, func, literal_column, or_, select, tuple_
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
@@ -46,6 +46,8 @@ from app.schemas.serve import (
     InstrumentDetailResponse,
     InstrumentFacetsResponse,
     InstrumentListResponse,
+    InstrumentResolution,
+    InstrumentResolveResponse,
     InstrumentResponse,
     InstrumentSort,
     IntradayCoverageResponse,
@@ -60,6 +62,7 @@ from app.services.ingress_contracts import (
     DatasetContractDeclaration,
 )
 from app.services.serve_errors import serve_error
+from app.services.serve_selectors import parse_selectors
 
 LookupColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
 DataKind = Literal["eod", "minute", "futures_eod"]
@@ -265,9 +268,12 @@ def _normalized_db_text(column: LookupColumn) -> ColumnElement[str]:
     return func.normalize(sql_cast(column, String), literal_column("NFKC"))
 
 
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _literal_like_pattern(value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
+    return f"%{_escape_like(value)}%"
 
 
 def _instrument_response(
@@ -453,7 +459,7 @@ async def list_instruments(
     status: str | None,
     has_eod: bool | None,
     has_minute: bool | None,
-    sort_by: InstrumentSort,
+    sort_by: InstrumentSort | None,
     sort_dir: SortDirection,
     page: int,
     page_size: int,
@@ -549,10 +555,16 @@ async def list_instruments(
             else_=None,
         ),
     }
-    primary = sort_columns[sort_by].desc() if sort_dir == "desc" else sort_columns[sort_by].asc()
+    if sort_by is None:
+        sort_by = "relevance" if normalized_q else "market"
+    if sort_by == "relevance" and normalized_q:
+        order = [*_relevance_order(normalized_q), Instrument.market.asc(), Instrument.symbol.asc()]
+    else:
+        column = sort_columns["market" if sort_by == "relevance" else sort_by]
+        order = [(column.desc() if sort_dir == "desc" else column.asc()).nulls_last()]
     rows = (
         await db.execute(
-            query.order_by(primary.nulls_last(), Instrument.instrument_id.asc())
+            query.order_by(*order, Instrument.instrument_id.asc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -574,6 +586,83 @@ async def list_instruments(
         ),
         facets=facets,
     )
+
+
+def _relevance_order(normalized_q: str) -> list[ColumnElement[Any]]:
+    """Exact symbol, then symbol prefix, then name prefix, then any other match.
+
+    Shorter symbols come first within a rank, so ``2330`` precedes ``23301``.
+    """
+    needle = normalized_q.upper()
+    symbol = func.upper(_normalized_db_text(Instrument.symbol))
+    name = func.upper(_normalized_db_text(Instrument.name))
+    prefix = f"{_escape_like(needle)}%"
+    rank = case(
+        (symbol == needle, 0),
+        (symbol.like(prefix, escape="\\"), 1),
+        (name.like(prefix, escape="\\"), 2),
+        else_=3,
+    )
+    return [rank.asc(), func.length(Instrument.symbol).asc()]
+
+
+async def resolve_instruments(
+    db: AsyncSession, *, symbols_raw: str, market: str | None
+) -> InstrumentResolveResponse:
+    """Look up each ``MARKET:SYMBOL`` exactly; a miss never fails the whole request."""
+    selectors = parse_selectors(symbols_raw, param="symbols", default_market=market)
+    scopes = await active_dataset_scopes(db)
+    all_pairs = _pairs(scopes)
+    wanted = {(selector.market, selector.symbol) for selector in selectors}
+    rows = (
+        await db.execute(
+            select(Instrument, InstrumentStats)
+            .outerjoin(InstrumentStats, InstrumentStats.instrument_id == Instrument.instrument_id)
+            .where(
+                tuple_(Instrument.market, Instrument.symbol).in_(sorted(wanted)),
+            )
+            .order_by(Instrument.asset_class.asc(), Instrument.instrument_id.asc())
+        )
+    ).all()
+    served = [
+        (instrument, stats)
+        for instrument, stats in rows
+        if (instrument.market, instrument.asset_class) in all_pairs
+    ]
+    intraday = await _intraday_coverage(db, [instrument for instrument, _ in served])
+    eod_pairs = _pairs(scopes, "eod")
+    minute_pairs = _pairs(scopes, "minute")
+    futures_pairs = _pairs(scopes, "futures_eod")
+    known = {(instrument.market, instrument.symbol) for instrument, _ in rows}
+    results: list[InstrumentResolution] = []
+    for selector in selectors:
+        key = (selector.market, selector.symbol)
+        matches = [
+            _instrument_response(
+                instrument, stats, eod_pairs, minute_pairs, futures_pairs, intraday
+            )
+            for instrument, stats in served
+            if (instrument.market, instrument.symbol) == key
+        ]
+        status: Literal["resolved", "ambiguous", "not_found", "not_available"]
+        if len(matches) == 1:
+            status = "resolved"
+        elif matches:
+            status = "ambiguous"
+        elif key in known:
+            status = "not_available"
+        else:
+            status = "not_found"
+        results.append(
+            InstrumentResolution(
+                input=selector.input,
+                market=cast(str, selector.market),
+                symbol=cast(str, selector.symbol),
+                status=status,
+                matches=matches,
+            )
+        )
+    return InstrumentResolveResponse(data=results)
 
 
 async def _instrument_facets(

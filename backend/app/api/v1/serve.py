@@ -27,6 +27,7 @@ from app.schemas.serve import (
     FuturesEODListResponse,
     InstrumentDetailResponse,
     InstrumentListResponse,
+    InstrumentResolveResponse,
     InstrumentSort,
     IntradayBarListResponse,
     IntradayDownloadManifestResponse,
@@ -171,9 +172,10 @@ async def get_datasets(
     summary="Search instruments",
     description=(
         "Searches the instruments FinDB holds data for. `q` matches part of the symbol, name "
-        "or instrument id, so `2330` also matches `23301`; check `market` and `symbol` of the "
-        "results. Each result's `coverage` shows the stored date range per endpoint. Uses "
-        "page-number pagination with totals."
+        "or instrument id; results are ranked so an exact symbol comes first. When you already "
+        "know the market and symbol, use `resolve_instruments` instead. Each result's "
+        "`coverage` shows the stored date range per endpoint. Uses page-number pagination with "
+        "totals."
     ),
     responses=_errors({503: CONFIGURATION_INVALID}, paginated=True),
 )
@@ -208,7 +210,15 @@ async def get_instruments(
         bool | None,
         Query(description="true: only instruments with legacy minute bars; false: without."),
     ] = None,
-    sort_by: Annotated[InstrumentSort, Query(description="Sort field.")] = "market",
+    sort_by: Annotated[
+        InstrumentSort | None,
+        Query(
+            description=(
+                "Sort field. Default: `relevance` when `q` is given (exact symbol, then symbol "
+                "prefix, then name prefix, shorter symbols first), otherwise `market`."
+            )
+        ),
+    ] = None,
     sort_dir: Annotated[SortDirection, Query(description="Sort direction.")] = "asc",
     page: Annotated[int, Query(ge=1, description="Page number, starting at 1.")] = 1,
     page_size: Annotated[int, _page_size(50, 100)] = 50,
@@ -228,6 +238,49 @@ async def get_instruments(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/instruments/resolve",
+    response_model=InstrumentResolveResponse,
+    operation_id="resolve_instruments",
+    summary="Find instruments by exact market and symbol",
+    description=(
+        "Turns up to 50 `MARKET:SYMBOL` values (e.g. `TW:2330,US:AAPL,HK:700`) into FinDB "
+        "instruments in one call, with each one's `instrument_id` and stored date ranges. "
+        "Matching is exact after normalization: case-insensitive, and HK numeric codes are "
+        "zero-padded to five digits. Each input gets its own `status`, so unknown symbols do "
+        "not fail the request. Use this before the data endpoints whenever the symbol is known."
+    ),
+    responses=_errors(
+        {
+            422: (
+                "`INVALID_SYMBOLS`: `symbols` is empty, has more than 50 values, or a value "
+                "lacks a market."
+            ),
+            503: CONFIGURATION_INVALID,
+        }
+    ),
+)
+async def resolve_instruments(
+    symbols: Annotated[
+        str,
+        Query(
+            description=(
+                "Comma-separated `MARKET:SYMBOL` values, at most 50. A value without `MARKET:` "
+                "uses `market`."
+            ),
+            examples=["TW:2330,US:AAPL,HK:700"],
+        ),
+    ],
+    market: Annotated[
+        str | None,
+        Query(description="Market for values given without `MARKET:`, e.g. `TW`."),
+    ] = None,
+    _: str | None = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> InstrumentResolveResponse:
+    return await serve_queries.resolve_instruments(db, symbols_raw=symbols, market=market)
 
 
 @router.get(

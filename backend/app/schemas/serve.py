@@ -17,6 +17,7 @@ from app.services.slot_identity import CanonicalSlotId
 
 SortDirection = Literal["asc", "desc"]
 InstrumentSort = Literal[
+    "relevance",
     "market",
     "symbol",
     "name",
@@ -141,6 +142,31 @@ class InstrumentListResponse(BaseModel):
     pagination: PaginationInfo = Field(description="Page-number pagination with totals.")
     facets: InstrumentFacetsResponse = Field(
         description="Filter values available across the whole catalog."
+    )
+
+
+class InstrumentResolution(BaseModel):
+    input: str = Field(description="The value as the caller sent it.")
+    market: str = Field(description="Market the value was looked up in.")
+    symbol: str = Field(
+        description="Symbol as FinDB stores it, e.g. `00700` for an input of `HK:700`."
+    )
+    status: Literal["resolved", "ambiguous", "not_found", "not_available"] = Field(
+        description=(
+            "`resolved`: exactly one match. `ambiguous`: several asset classes share the "
+            "symbol; pick one `instrument_id` from `matches`. `not_found`: FinDB has no such "
+            "instrument. `not_available`: the instrument exists but FinDB serves no data for it."
+        )
+    )
+    matches: list[InstrumentResponse] = Field(
+        description="Matching instruments with their coverage; empty unless resolved or ambiguous."
+    )
+
+
+class InstrumentResolveResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[InstrumentResolution] = Field(
+        description="One entry per distinct input, in request order."
     )
 
 
