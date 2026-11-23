@@ -208,6 +208,8 @@ class UniverseContext:
     # Re-read platform limits, and pace the account after a completed SDK call.
     refresh_limits: Callable[[], None]
     pace: Callable[[], None]
+    # The runtime's governed HTTP client, for a provider list read with the account key.
+    http: httpx.Client | None = None
 
 
 @dataclass(frozen=True)

@@ -381,8 +381,8 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
 | PR | 內容 | 狀態 |
 | --- | --- | --- |
 | 1 | `calendar_required`、缺日曆時等待重試、歷史回補時區改依 feed | 已合併（#646） |
-| 2 | Backend 準備：`asset_class` 加 `index`、名單成員可用 `^` 開頭的指數代號、`FMP_SKIP_NON_TRADING_DAYS`、seed 依 UTC 時刻挑最早的 feed、跨時區與 lag 1 的排程測試、`backfill_world_names.py` 改用 FMP 代號 | 本 PR |
-| 3 | Fetcher：FMP client 與 adapter、historical runner（尚不登記到 `ADAPTERS`） | 未開始 |
+| 2 | Backend 準備：`asset_class` 加 `index`、名單成員可用 `^` 開頭的指數代號、`FMP_SKIP_NON_TRADING_DAYS`、seed 依 UTC 時刻挑最早的 feed、跨時區與 lag 1 的排程測試、`backfill_world_names.py` 改用 FMP 代號 | 已合併（#648） |
+| 3 | Fetcher：FMP client 與 adapter、名單刷新、歷史回補經通用的 member runner（尚不登記到 `ADAPTERS`） | 本 PR |
 | 4 | 啟用：catalog 的 `fmp` 與兩條 feed、migration（dataset、stopped control、Source credential、凍結 schedule inspection）、infra、端到端驗收測試 | 未開始 |
 | 5 | Dashboard：依 feed 顯示時間、時區與時段，未部署的 provider 不可 start | 未開始 |
 | 6 | staging 驗收：只啟動 `fmp`，首日先設成單日 | 未開始 |
@@ -404,15 +404,31 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
     （PR 2）。
   - 新增 control 與 feed 時，要一併提供新的凍結 schedule inspection（目前是 `b3d5f7a9c1e2`，由
     `scripts/preflight_catalog_schedule.py` 在每次部署前執行），否則會判為 `unknown_difference`、中止部署。
-- **Fetcher**
+- **Fetcher**（PR 3 已完成以下兩項，登記到 `ADAPTERS` 留到啟用的 PR）
   - `providers/fmp.py`：client、`from_env`、contract mapping；key 只放在 `apikey` header，錯誤訊息遮蔽。
-  - `provider_adapters/fmp.py`：`ProviderAdapter` 子類，登記到 `ADAPTERS`；每檔一次 JSON 請求、一個 raw 物件，
-    沿用現有的 json raw 格式。
+    - 每檔每天一次 `historical-price-eod/full`（`from` = `to` = 目標日），journal 只在回應已有目標日那一列時才重播，
+      所以「尚未發布」的空回應不會被重用。
+    - 開高低收四個值都必須有、為正且有限；高低順序交給 Backend DQ 判斷。
+    - **不送成交量**（`volume` 一律為空）。指數本身沒有成交量，FMP 的值也不是同一種數列。2021-01 至 2026-11
+      的比對結果如下：
+      - `^RUT`、`^NYA` 約九成交易日與 `^GSPC` 的值完全相同，yfinance 也一樣；
+      - `^SOX`、`^VIX` 一律為 0；
+      - `^NDX` 約是 yfinance 的 1/6，`^HSCE` 約是 1000 倍。
+  - `provider_adapters/fmp.py`：`ProviderAdapter` 子類；每檔一次 JSON 請求、一個 raw 物件，沿用 json raw 格式。
+    - 兩組的指數清單寫在 adapter（`INDEX_UNIVERSES`）。名單刷新讀 FMP 的 `/stable/index-list`（帶金鑰，經
+      `UniverseContext.http` 走 runtime 的 governed client），每個指數都要在清單上、幣別相符，否則中止刷新、
+      保留上一份名單；這份清單就是名單的 evidence。名單生效日為排程時區當天減 `target_date_lag_days`，
+      美股組因此是前一個紐約日。
+    - 沒有目標日的列：每日工作視為尚未發布（`wait=publication`，在發布重試窗口內重試）；歷史回補記為
+      `missing`／`no_source_row`，並引用 FMP 回的空回應。
+    - 方案不涵蓋的指數（HTTP 402／403）只影響該檔；429 進入帳號冷卻；其他錯誤結束本輪、稍後重試。
+    - 歷史回補沿用通用的 `MemberHistoricalRunner`，以「建立時的名單」（`current_release`）服務整個請求的
+      每一天；runner 類別與 CLI 登記留到啟用的 PR。
+    - raw 物件的 `source-symbol` metadata 接受開頭的 `^`（物件鍵只含代號的雜湊）；journal 的回應與 Raw R2
+      相同，加入 `_R2_BACKED_RESPONSES` 隨 closed work 清理。
   - 共用程式碼裡的 provider 清單：`execution_config._IMPLEMENTED_ADAPTERS`、`historical_backfill_cli.py` 的
     runner、`production_backfill_cli._scope`。
   - 沿用 `image_key: twelve_data`（同 TAIFEX），不新增 image、ECR 與 workflow。
-  - Fetcher 的名單與 raw 物件代號格式目前不允許 `^`（`full_market_universe.py`、`raw_storage.py`），要一併放寬或
-    在 raw 物件鍵改用不含 `^` 的寫法。
 - **Infra**：`release_fetcher_provider.sh`、`deploy_fetcher_aws.sh`、`fetcher.json` secrets bundle、
   `infra/tofu/{staging,production}/secrets.tf`、`deployment_transaction.py`、`fetcher-ci.yml` 的 provider 迴圈。
 - **測試與驗收**：Fetcher per-provider 測試與共用矩陣（`test_provider_adapters.py`、golden fixtures、

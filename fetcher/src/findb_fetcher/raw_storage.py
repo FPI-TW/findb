@@ -24,7 +24,8 @@ _ACCOUNT_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _BUCKET_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 _DATASET_PATTERN = re.compile(r"^[a-z0-9_]{1,50}$")
 _PROVIDER_PATTERN = re.compile(r"^[a-z0-9_]{1,50}$")
-_SYMBOL_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
+# A leading caret is an index symbol as its provider spells it, e.g. ``^GSPC``.
+_SYMBOL_PATTERN = re.compile(r"^\^?[A-Za-z0-9_.:-]{1,100}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _MAX_OBJECT_BYTES_HARD = 16 * 1024 * 1024
 _MAX_REF_LENGTH = 2048

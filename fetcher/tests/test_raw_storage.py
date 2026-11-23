@@ -130,6 +130,20 @@ def test_r2_store_keeps_a_gzip_report_as_an_object_not_a_content_encoding() -> N
     assert stored.sha256 == hashlib.sha256(raw).hexdigest()
 
 
+@pytest.mark.parametrize(("symbol", "accepted"), [("^GSPC", True), ("GS^PC", False), ("^", False)])
+def test_r2_store_accepts_only_a_leading_index_caret(symbol: str, accepted: bool) -> None:
+    client = FakeR2()
+    store = R2RawPayloadStore(_config(), client=client)
+    if not accepted:
+        with pytest.raises(RawStorageUploadError, match="source_symbol is not safe"):
+            store.persist(RAW_BYTES, dataset_key="us_index_eod", source_symbol=symbol)
+        return
+    store.persist(RAW_BYTES, dataset_key="us_index_eod", source_symbol=symbol, provider="fmp")
+    # The key carries a digest of the symbol; only the metadata spells it.
+    assert "^" not in client.calls[0]["Key"]
+    assert client.calls[0]["Metadata"]["source-symbol"] == symbol
+
+
 def test_r2_store_rejects_unknown_payload_format() -> None:
     with pytest.raises(RawStorageUploadError, match="format is unsupported"):
         R2RawPayloadStore(_config(), client=FakeR2()).persist(
