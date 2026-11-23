@@ -747,6 +747,7 @@ class FullMarketRuntime:
                 snapshot_objects=self.snapshot_objects,
                 refresh_limits=self._ensure_proof,
                 pace=self._pace_after_call,
+                http=self.http,
             ),
         )
         result = []
