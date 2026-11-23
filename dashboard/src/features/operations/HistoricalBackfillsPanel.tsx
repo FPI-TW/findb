@@ -69,7 +69,7 @@ function BackfillStepHeader({
           status === "complete"
             ? "inline-flex size-7 shrink-0 items-center justify-center rounded-full border border-accent/20 bg-accent-soft text-xs font-bold text-accent"
             : status === "active"
-              ? "inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-bold text-white"
+              ? "inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-bold text-accent-ink"
               : "inline-flex size-7 shrink-0 items-center justify-center rounded-full border border-line bg-surface-soft text-xs font-bold text-muted"
         }
         aria-hidden="true"

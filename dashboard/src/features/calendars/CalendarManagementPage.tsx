@@ -68,7 +68,11 @@ import {
   publishCalendarYear,
   rollbackCalendarYear,
 } from "../../lib/calendar.functions"
-import type { CalendarSearch } from "./calendar.search"
+import {
+  type CalendarSearch,
+  MAX_CALENDAR_YEAR,
+  MIN_CALENDAR_YEAR,
+} from "./calendar.search"
 
 type Tab = "year" | "manual" | "json" | "csv" | "history"
 const TABS: { id: Tab; label: string }[] = [
@@ -202,12 +206,29 @@ export function CalendarManagementPage({
     })
   }
 
-  function selectMarket(nextMarket: string) {
-    updateSearch({ ...search, market: nextMarket })
-  }
+  // Market and year are chosen first and applied together with 查詢, so a
+  // half-typed year never loads a calendar of its own.
+  const [draftMarket, setDraftMarket] = useState(market)
+  const [draftYear, setDraftYear] = useState(String(year))
+  useEffect(() => {
+    setDraftMarket(market)
+  }, [market])
+  useEffect(() => {
+    setDraftYear(String(year))
+  }, [year])
+  const parsedYear = /^\d{4}$/.test(draftYear) ? Number(draftYear) : null
+  const draftYearValid =
+    parsedYear !== null &&
+    parsedYear >= MIN_CALENDAR_YEAR &&
+    parsedYear <= MAX_CALENDAR_YEAR
+  const draftChanged = draftMarket !== market || parsedYear !== year
+  const canApplySelection =
+    !initialLoading && draftMarket !== "" && draftYearValid && draftChanged
 
-  function selectYear(nextYear: number) {
-    updateSearch({ ...search, year: nextYear })
+  function applySelection(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!canApplySelection || parsedYear === null) return
+    updateSearch({ ...search, market: draftMarket, year: parsedYear })
   }
 
   const canEdit = role === "owner" || role === "operator"
@@ -230,12 +251,16 @@ export function CalendarManagementPage({
       </header>
 
       <Card className="gap-4 p-4">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <form
+          className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-start"
+          aria-label="選擇市場與年度"
+          onSubmit={applySelection}
+        >
           <div className="grid gap-1.5">
             <Label htmlFor="calendar-market">市場</Label>
             <Select
-              value={market}
-              onValueChange={selectMarket}
+              value={draftMarket}
+              onValueChange={setDraftMarket}
               disabled={initialLoading}
             >
               <SelectTrigger id="calendar-market">
@@ -255,14 +280,30 @@ export function CalendarManagementPage({
             <Input
               id="calendar-year"
               type="number"
-              min="1900"
-              max="2200"
-              value={year}
-              onChange={event => selectYear(Number(event.target.value))}
+              min={MIN_CALENDAR_YEAR}
+              max={MAX_CALENDAR_YEAR}
+              value={draftYear}
+              onChange={event => setDraftYear(event.target.value)}
               disabled={initialLoading}
+              aria-invalid={!draftYearValid}
+              aria-describedby={
+                draftYearValid ? undefined : "calendar-year-error"
+              }
             />
+            {!draftYearValid && (
+              <span id="calendar-year-error" className="text-sm text-danger">
+                年度需為 {MIN_CALENDAR_YEAR}–{MAX_CALENDAR_YEAR} 的四位數
+              </span>
+            )}
           </div>
-        </div>
+          <Button
+            type="submit"
+            className="sm:mt-6"
+            disabled={!canApplySelection}
+          >
+            查詢
+          </Button>
+        </form>
         {calendar && (
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <Badge

@@ -72,7 +72,7 @@ export default function LandingPage() {
             <Card className="h-full gap-0 overflow-hidden rounded-xl border-t-2 border-t-accent shadow-sm">
               <CardHeader className="min-h-48 border-b border-line bg-surface py-5">
                 <div className="mb-3 flex items-center justify-between gap-3">
-                  <span className="inline-flex size-10 items-center justify-center rounded-lg bg-accent text-white">
+                  <span className="inline-flex size-10 items-center justify-center rounded-lg bg-accent text-accent-ink">
                     <Search aria-hidden="true" />
                   </span>
                   <Badge variant="outline">Serve / Read only</Badge>

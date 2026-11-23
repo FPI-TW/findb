@@ -109,6 +109,8 @@ tanstackIntent:
 - 頁面元件的條件式 class 必須直接列出完整 class 名稱；只有共用 UI 元件內的 shadcn/CVA variants 可以集中管理 class 組合。
 - `src/styles.css` 僅保留 Tailwind import、全域 design tokens、字型、頁面基礎樣式，以及 utilities 難以清楚表達的跨元件規則。
 - 沿用 CSS variables 作為明暗主題的 design tokens，再由 Tailwind utilities 引用；不得在元件內複製 light/dark 色碼。
+- 實心色塊上的文字一律用對應的 ink token（`bg-accent` 配 `text-accent-ink`、`bg-danger` 配 `text-danger-ink`），不得用 `text-white`：深色主題的 accent／danger 是淺色，白字會看不清。
+- 區塊分三層：頁面 `bg-page`、卡片 `bg-surface`、卡片內層 `bg-surface-soft`；裝飾框線用 `border-line`，輸入框、下拉選單與外框按鈕用 `border-line-strong`。調整 token 時，文字對其使用的底色須維持至少 4.5:1，控制項框線至少 3:1。
 - 所有非同步資料頁面必須有明確的初次 loading UI（建議 skeleton 並搭配 `role="status"` / `aria-live`）；第一次請求完成前，不得顯示錯誤占位或「無資料」狀態。
 - 後續重新整理可保留既有資料並顯示局部 pending 狀態，避免畫面閃爍。
 

@@ -24,7 +24,7 @@ export default function Header({ environment }: { environment: string }) {
           </Link>
           <span
             aria-label={`當前環境：${environment}`}
-            className="inline-flex min-h-8 items-center rounded-full bg-accent px-3 font-mono text-xs font-black tracking-wider text-white shadow-sm ring-2 ring-accent/25"
+            className="inline-flex min-h-8 items-center rounded-full bg-accent px-3 font-mono text-xs font-black tracking-wider text-accent-ink shadow-sm ring-2 ring-accent/25"
           >
             {environment}
           </span>

@@ -9,9 +9,9 @@ const alertVariants = cva(
     variants: {
       variant: {
         default: "border-line bg-surface text-ink",
-        destructive: "border-danger/30 bg-danger-soft text-danger",
-        warning: "border-warning/30 bg-warning/10 text-warning",
-        success: "border-accent/30 bg-accent-soft text-accent",
+        destructive: "border-danger/40 bg-danger-soft text-danger",
+        warning: "border-warning/40 bg-warning-soft text-warning",
+        success: "border-accent/40 bg-accent-soft text-accent",
         subtle: "border-line bg-surface-soft text-muted",
       },
     },
