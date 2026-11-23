@@ -1374,12 +1374,21 @@ universe request 的未來日期檢查亦依 source timezone 判定。
   已經排入的名單更新不受之後的停止影響，會照常完成。
 - 同一個排程時刻只有一筆名單更新（stable key 帶該時刻的 UTC 時間）。因傳輸問題重試的那一筆會排到佇列尾端，
   排在當天的 daily 後面。
+- 傳輸失敗分兩種：官方網站或 provider API 是 `MAINTENANCE_PROVIDER_TRANSPORT`，Source API 是
+  `MAINTENANCE_SOURCE_TRANSPORT`。attempt 的 proof 帶 `{"transport": {"origin": "provider"|"source", "url"}}`，
+  `url` 只留 scheme、host、path 與 query，不留帳密與 fragment，`apikey`、`token` 等 query 值記為
+  `<redacted>`（官方頁面同一路徑靠 query 區分）；錯誤沒有帶 request 時 `url` 為 null。Source governance
+  的傳輸失敗本來就是 `MAINTENANCE_SOURCE_UNKNOWN`。
 - FinLab 與 Twelve Data 的名單在排程時刻取得，生效日就是當天的交易日。當天的 daily 建立 plan 時，若查到的最新名單
   生效日早於交易日，表示當天的名單還沒發布：daily 不建立 plan，以 `DAILY_UNIVERSE_REFRESH_PENDING` 延後
   5 分鐘（不扣重試次數）重新排隊，讓名單的重試先跑完。最多等到排程時刻後 30 分鐘；之後照舊用最新的名單建立
   plan，並輸出一行 `{"universe_refresh_stale": {"dataset", "trade_date", "release_effective_date"}}`。
   只等同一個 feed 的名單，股票名單失敗不影響 ETF 的 daily；補抓較早的日期不等。FactSet 的 HKEX 清單帶自己的日期，
   不套用這條規則（#598）。
+- 這個 feed 的名單更新若在排程時刻之後已經完成，daily 就不等：來源本身的日期仍是較早的那天，例如週末與美國假日
+  Twelve Data 讀到的 Nasdaq 檔案是上一個交易日，或名單變動超過門檻而成為 candidate，再等也不會出現新名單。
+  完成時間記在 Fetcher state 的 `full_universe_refreshed`（每個 provider 與 dataset 一列）。2026-11-22（週日）
+  production 曾因此等滿 30 分鐘、多 6 筆 attempt，才以休市結算。
 - Fetcher 取不到排程時（例如手動執行 `--sync-universes` 的程序），完成後的下一次到期時間退回 24 小時後。
 - TAIFEX 不跑每日名單更新，不受這些規則影響。
 
@@ -1394,7 +1403,7 @@ universe request 的未來日期檢查亦依 source timezone 判定。
   maintenance work 以 `MAINTENANCE_FORMAT_OR_SCOPE` 結束，不發布，daily 繼續使用上一份 release，下一次 refresh
   重新下載。完整但筆數異常減少的回應由 Backend 的 2% 變更門檻擋下。
 - 單一官方名單的下載總時限是 20 分鐘（`OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS`）。HTTP client 的 30 秒 timeout 只限制
-  每次讀取的等待，對方持續慢速回應時原本沒有上限；超過總時限視為傳輸逾時，依 `MAINTENANCE_TRANSPORT` 重試。
+  每次讀取的等待，對方持續慢速回應時原本沒有上限；超過總時限視為傳輸逾時，依 `MAINTENANCE_PROVIDER_TRANSPORT` 重試。
 - 同一個 Fetcher 程序裡，maintenance work 在 30 分鐘內下載過的同一個網址，下一筆 maintenance work 直接沿用
   （內容與 R2 物件都沿用，不再送出請求）；每筆 work 仍各自在 journal 保存一份以供重播。股票與 ETF 的
   universe refresh 讀的網址不同，所以只有同一個 dataset 在 30 分鐘內再次 refresh 時才會沿用。Daily 與 historical

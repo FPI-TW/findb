@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from execution_config_support import publication
+from findb_fetcher.client import SourceAPITransportError
 from findb_fetcher.execution_metadata import acquisition_feeds, dated_universe
 from findb_fetcher.full_market_errors import (
     DatedUniversePendingError,
@@ -444,6 +445,56 @@ def test_maintenance_failure_codes_come_from_adapter_classes(tmp_path, provider,
         else:
             runtime._run_queued_maintenance(owner)
             assert settled == [expected]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("exc", "code", "transport"),
+    [
+        (
+            httpx.ConnectError(
+                "down",
+                request=httpx.Request(
+                    "GET", "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4&token=t"
+                ),
+            ),
+            "MAINTENANCE_PROVIDER_TRANSPORT",
+            {
+                "origin": "provider",
+                "url": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4&token=%3Credacted%3E",
+            },
+        ),
+        (httpx.ReadTimeout("slow"), "MAINTENANCE_PROVIDER_TRANSPORT", {"origin": "provider", "url": None}),
+        (
+            SourceAPITransportError("offline", path="/api/v1/source/universes?x=1"),
+            "MAINTENANCE_SOURCE_TRANSPORT",
+            {"origin": "source", "url": "/api/v1/source/universes?x=1"},
+        ),
+    ],
+)  # fmt: skip
+def test_maintenance_transport_failures_name_their_side_and_address(tmp_path, exc, code, transport):
+    """#598: an official site or provider is told apart from Source, with the address."""
+    from findb_fetcher import provider_work as queue
+
+    runtime = _round_runtime(tmp_path, "finlab")
+    owner = SimpleNamespace(
+        work={"state": "open", "dataset_key": runtime.installed_feeds[0]["dataset_key"]},
+        journal=queue.WorkJournal(tmp_path / "work.sqlite3", "original"),
+        dispatch_observations=0,
+    )
+    settled = []
+    runtime._settle_queued_round = lambda *args, **kwargs: settled.append(kwargs)
+
+    def sync(**kwargs):
+        raise exc
+
+    runtime.sync_universes = sync
+    try:
+        assert runtime._run_queued_maintenance(owner) == [{"status": "queued", "reason": code}]
+        assert settled == [
+            {"outcome": "retry", "failure_code": code, "diagnostic": {"transport": transport}}
+        ]
     finally:
         runtime.close()
 

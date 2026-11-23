@@ -158,7 +158,7 @@ repair、raw 與 canonical 都在 Backend。以兩個工具清除，不另外封
 - 刪除範圍：journal 中清單 work 的 manifest、delivery、job、budget、cooldown、source error、回應與觀測，
   該 provider 專屬的 `work_<provider>_*` 表整表清空；checkpoint 中該 provider 的 plan、work 與其 receipt、
   diagnostic、empty outcome、member repair、reconcile、outage、no-data trip／round、schedule，以及
-  `full_refresh`、`full_cursor`、`full_date_prerequisite`、`checkpoint_retention` 的該 provider 列。
+  `full_refresh`、`full_cursor`、`full_date_prerequisite`、`full_universe_refreshed`、`checkpoint_retention` 的該 provider 列。
   Account governor（quota、usage、intent、identity、capacity）一律不動。
 - 每個檔案在一個交易內刪除，提交前核對目標列為 0、其他列數不變，提交後執行 `integrity_check`。
 
