@@ -219,7 +219,8 @@ publish／rollback，draft 不影響抓取。Source 依 Backend 各 provider 的
 `monitor_kind`（`bounded`／`full_market`）、`activation_state`（bounded 為 null；
 全市場為 `not_activated`／`activated`／`deactivated`）、`active_dataset_keys`、
 `pending_feeds[{dataset_key, blockers}]`、`markets`（control 涵蓋的所有市場，排序後的清單；`market` 仍是第一條
-feed 的市場）。`slot_id` 篩選依 control 底下各 feed 的 slot，一個 control 可出現在多個 slot。
+feed 的市場）、`slot_ids`（control 底下各 feed 的 slot，排序後的清單；`slot_id` 仍是 control 自己的 slot）。
+`slot_id` 篩選依 `slot_ids`，一個 control 可出現在多個 slot，回傳的 `slot_id` 不一定等於篩選值。
 `include_feeds=false` 仍保留待啟用前提。
 Feed 明細新增 `runtime_eligible` 與 `activation_blockers`；全市場 aggregate freshness、
 coverage 與 feed counts 只計入 enabled 範圍，歷史 fetched／completed 與 Feed 明細仍可查詢。

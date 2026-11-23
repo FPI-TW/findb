@@ -20,6 +20,7 @@ async def test_a_control_appears_under_each_slot_and_market_of_its_feeds(test_se
     }
     # The control's own slot is its earliest feed's; filtering reads every feed's.
     assert fmp.slot_id == "western_markets_window"
+    assert fmp.slot_ids == ("asia_pacific_markets_window", "western_markets_window")
     for slot in ("western_markets_window", "asia_pacific_markets_window"):
         assert "full_market_fmp_v1" in _keys(
             await list_market_freshness(test_session, slot_id=slot)
@@ -36,6 +37,7 @@ async def test_a_control_appears_under_each_slot_and_market_of_its_feeds(test_se
         row for row in await list_market_freshness(test_session) if row.provider == "finlab"
     ]
     assert finlab.markets == ("TW",)
+    assert finlab.slot_ids == (finlab.slot_id,)
 
 
 async def test_admin_freshness_lists_every_market_of_a_control(client, admin_headers, test_session):
@@ -45,3 +47,10 @@ async def test_admin_freshness_lists_every_market_of_a_control(client, admin_hea
     rows = {row["scheduler_key"]: row for row in response.json()["data"]}
     assert rows["full_market_fmp_v1"]["markets"] == ["HK", "US"]
     assert rows["full_market_twelve_data_v1"]["markets"] == ["US"]
+    assert rows["full_market_fmp_v1"]["slot_ids"] == [
+        "asia_pacific_markets_window",
+        "western_markets_window",
+    ]
+    assert rows["full_market_twelve_data_v1"]["slot_ids"] == [
+        rows["full_market_twelve_data_v1"]["slot_id"]
+    ]

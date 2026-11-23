@@ -1272,6 +1272,7 @@ async def list_market_freshness_endpoint(
             "dataset_keys": list(row.dataset_keys),
             "markets": list(row.markets),
             "slot_id": row.slot_id,
+            "slot_ids": list(row.slot_ids),
             "scheduled_local_time": row.scheduled_local_time,
             "timezone": row.timezone,
             "desired_state": row.desired_state,

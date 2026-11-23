@@ -523,6 +523,19 @@ def test_seed_identity_follows_one_catalog_edit(monkeypatch, declaration):
     assert dataset["config"]["allowed_sources"] == ["factset"]
     assert dataset["config"]["source_precedence"] == ["factset"]
     assert dataset["config"]["full_market"]["calendar_market"] == "HK"
+    assert dataset["description"] == "Staged factset market_eod.v1 full-market daily feed"
+
+
+def test_staged_descriptions_name_the_current_contract_version():
+    from scripts.seed_data import DATASETS, provider_catalog
+
+    contracts = {feed.dataset_key: feed.contract for feed in provider_catalog().feeds}
+    staged = [item for item in DATASETS if item["description"].startswith("Staged ")]
+    assert {item["dataset_key"] for item in staged} >= {"hk_equity_eod", "us_index_eod"}
+    for item in staged:
+        contract = contracts[item["dataset_key"]]
+        label = f" {contract.schema_id}.v{contract.current_version} "
+        assert label in item["description"], item["dataset_key"]
 
 
 @pytest.mark.parametrize("fault", ["second_provider", "source_disabled"])

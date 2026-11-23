@@ -344,6 +344,8 @@ class FMPClient:
                     params=params,
                     headers=authorization_headers(self._config.api_key),
                     extensions=extensions,
+                    # The runtime's governed client is shared; FMP keeps its own timeout.
+                    timeout=self._config.timeout_seconds,
                 ) as response,
             ):
                 status_code = response.status_code
