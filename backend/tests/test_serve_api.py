@@ -639,6 +639,35 @@ async def test_eod_cursor_is_stable_and_rejects_scope_changes(client: AsyncClien
     )
 
 
+@pytest.mark.asyncio
+async def test_eod_rows_carry_currency_and_name_no_other_field_source(
+    client: AsyncClient, test_session
+):
+    """``field_sources`` is null unless a value is not the row source's own."""
+    instrument_id = uuid7()
+    stored_empty = eod(instrument_id, date(2026, 9, 17), "249")
+    stored_empty.field_sources = {}
+    test_session.add_all(
+        [
+            dataset("us_equity_eod", market="US", asset_class="equity", schema_id="market_eod"),
+            instrument(instrument_id, "AAPL", market="US"),
+            eod(instrument_id, date(2026, 9, 18), "250"),
+            stored_empty,
+        ]
+    )
+    await test_session.commit()
+
+    response = await client.get(f"/api/v1/serve/eod?instrument_id={instrument_id}")
+    assert response.status_code == 200, response.text
+    assert [
+        (row["trade_date"], row["currency"], row["source"], row["field_sources"])
+        for row in response.json()["data"]
+    ] == [
+        ("2026-09-18", "USD", "secret_provider", None),
+        ("2026-09-17", "USD", "secret_provider", None),
+    ]
+
+
 def test_cursor_decoder_rejects_non_urlsafe_base64_alphabet() -> None:
     with pytest.raises(HTTPException) as exc_info:
         serve_service._decode_cursor("abc+def")

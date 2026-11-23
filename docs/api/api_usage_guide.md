@@ -234,7 +234,10 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 - `GET /serve/instruments`、`GET /serve/instruments/{instrument_id}`：商品、facets與分離的
   `coverage.eod`／`coverage.minute`／`coverage.futures`。
 - `GET /serve/eod`：必須指定`instrument_id`，或`market`加最多50個可選symbols；使用
-  opaque cursor且固定最新優先。
+  opaque cursor且固定最新優先。每列的 `currency` 是商品的報價幣別；`source` 是整列的來源，
+  `field_sources` 列出值不是 `source` 提供的欄位，例如港股以 HKEX 官方值覆寫後為
+  `{"close": "hkex", "volume": "hkex", ...}`、Admin 修正後為 `{"close": "manual"}`；所有欄位都是
+  `source` 自己的值時為 null。
 - `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
   最新canonical minute日期向前一個曆月，resolved range會固定在cursor內。
 - `GET /serve/futures/eod`：實際到期合約與 `regular`／`after_hours` session，使用 opaque cursor；

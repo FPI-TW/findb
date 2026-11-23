@@ -112,6 +112,7 @@ class EODResponse(BaseModel):
     symbol: str
     name: str | None = None
     market: str
+    currency: str | None = None
     trade_date: date
     open: Decimal | None = None
     high: Decimal | None = None
@@ -121,6 +122,10 @@ class EODResponse(BaseModel):
     total_ticks: int | None = None
     turnover: Decimal | None = None
     source: str | None = None
+    # Fields whose value is not ``source``'s: ``{"close": "hkex"}`` after the
+    # exchange's official quote replaced it, ``"manual"`` after an Admin
+    # correction.  Null when every value is the row source's own.
+    field_sources: dict[str, str] | None = None
     source_fetched_at: datetime | None = None
     asof_ts: datetime
     created_at: datetime
