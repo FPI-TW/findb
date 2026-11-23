@@ -22,8 +22,7 @@ Staging／production 已採用 [統一部署契約](../operations/deployment.md)
   休市結清工具目前只接受 Shioaji，需依各 provider 的交付／帳務盤點推廣後，才能對上述
   工作結清及處理對應告警。
 
-- 11/01 唯讀查核的其他後續：FactSet daily 每成員同步等待 normalization（每 2 秒輪詢、
-  最多 30 秒）限制吞吐；同一份有效快取被 mapper 確定拒絕時仍會用滿一般失敗額度，需依
+- 11/01 唯讀查核的其他後續：同一份有效快取被 mapper 確定拒絕時仍會用滿一般失敗額度，需依
   永久錯誤分類提早轉 manual；TAIFEX 健康輸出仍計入 Backend 已 cancelled 的 10/13～10/27
   本地 plan（944 個 manual）。另待 Owner 決定 FinLab（change ratio 1.003）與 TAIFEX（0.397）
   待審 universe candidate，以及 production FactSet 港股啟用時程。

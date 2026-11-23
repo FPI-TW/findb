@@ -1,9 +1,13 @@
-"""One frozen current cohort, one native query and per-member EOD-v2 delivery."""
+"""One frozen current cohort, one native query and per-member EOD-v2 delivery.
+
+Each delivered member's run is read back behind the next deliveries, within a
+bounded window of unread runs, so normalization overlaps delivery instead of
+holding every member until its own run is terminal.
+"""
 
 from __future__ import annotations
 
 import json
-import time
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 from uuid import UUID
@@ -29,6 +33,7 @@ from findb_fetcher.providers.factset import (
     price_scope_complete,
 )
 from findb_fetcher.raw_storage import RawObject, RawStorageUploadError, attach_raw_object
+from findb_fetcher.run_confirmation import UNCONFIRMED_WINDOW, terminal_run
 
 
 class FactSetEOD:
@@ -157,24 +162,23 @@ class FactSetEOD:
             stored = RawObject(**self._saved("raw", persist))
             for row in native["rows"]:
                 indexed.setdefault(row.get("fsym_id", ""), []).append(row)
-        outcomes = []
+        results: dict[str, dict[str, Any]] = {}
+        accepted: dict[str, tuple[Any, UUID]] = {}
         for member in members:
             key = member["member_key"]
             if member["mapping_status"] != "mapped":
-                outcomes.append({"member_key": key, "outcome": "mapping_gap"})
+                results[key] = {"member_key": key, "outcome": "mapping_gap"}
                 continue
             assert stored is not None and snapshot is not None
             evidence = {"ref": stored.ref, "sha256": stored.sha256}
             selected = indexed.get(member["provider_symbol"], [])
             if not selected:
-                outcomes.append(
-                    {
-                        "member_key": key,
-                        "outcome": "missing",
-                        "raw": evidence,
-                        "reason": "no_source_row",
-                    }
-                )
+                results[key] = {
+                    "member_key": key,
+                    "outcome": "missing",
+                    "raw": evidence,
+                    "reason": "no_source_row",
+                }
                 continue
             try:
                 if len(selected) != 1:
@@ -188,14 +192,12 @@ class FactSetEOD:
                 if row["currency"] != member["currency"]:
                     raise FactSetRowError("FACTSET_CURRENCY_DIFFERS")
             except FactSetRowError:
-                outcomes.append(
-                    {
-                        "member_key": key,
-                        "outcome": "invalid",
-                        "raw": evidence,
-                        "reason": "row_structure_invalid",
-                    }
-                )
+                results[key] = {
+                    "member_key": key,
+                    "outcome": "invalid",
+                    "raw": evidence,
+                    "reason": "row_structure_invalid",
+                }
                 continue
             job_key = "factset:" + key
             restored = owner.restore(job_key=job_key)
@@ -246,48 +248,39 @@ class FactSetEOD:
             )
             if self.on_receipt:
                 self.on_receipt(key, request, receipt["run_id"])
-            deadline = time.monotonic() + 30
-            while True:
-                try:
-                    terminal = self.delivery.get_run_status(
-                        UUID(receipt["run_id"]), expected=prepared
-                    )
-                except (SourceAPITransportError, httpx.TransportError):
-                    raise HistoricalWorkDeferredError("Source status unavailable") from None
-                except SourceAPIResponseError as exc:
-                    if exc.status_code >= 500 or exc.status_code in {408, 429}:
-                        raise HistoricalWorkDeferredError("Source status unavailable") from None
-                    raise
-                if terminal.status not in {"queued", "pending", "processing", "retrying"}:
-                    break
-                if time.monotonic() >= deadline or owner.failed.is_set():
-                    # Settlement drains accepted runs before releasing ownership.
-                    raise HistoricalWorkDeferredError("EOD normalization pending")
-                time.sleep(2)
-            if terminal.total_records != 1:
-                raise ValueError("FactSet terminal row count differs")
-            if (
-                terminal.status == "completed"
-                and terminal.success_records == 1
-                and terminal.failed_records == 0
-            ):
-                outcome = "data"
-            elif (
-                terminal.status == "completed_with_errors"
-                and terminal.failed_records == 1
-                and terminal.success_records == 0
-            ):
-                outcome = "invalid"
-            else:
-                raise ValueError("FactSet normalization did not produce a row outcome")
-            outcomes.append({"member_key": key, "outcome": outcome})
+            accepted[key] = (prepared, UUID(receipt["run_id"]))
+            while len(accepted) > UNCONFIRMED_WINDOW:
+                oldest = next(iter(accepted))
+                results[oldest] = _confirmed(owner, self.delivery, oldest, *accepted.pop(oldest))
+        for key, (prepared, run_id) in accepted.items():
+            results[key] = _confirmed(owner, self.delivery, key, prepared, run_id)
         return {
             "version": 2,
             "schema_id": "market_eod",
             "schema_version": 2,
             "trade_date": day.isoformat(),
-            "members": outcomes,
+            "members": [results[member["member_key"]] for member in members],
         }
+
+
+def _confirmed(owner, delivery, key: str, prepared: Any, run_id: UUID) -> dict[str, Any]:
+    """One accepted member's row outcome, read once its run is terminal."""
+    terminal = terminal_run(delivery, run_id, prepared, failed=owner.failed)
+    if terminal.total_records != 1:
+        raise ValueError("FactSet terminal row count differs")
+    if (
+        terminal.status == "completed"
+        and terminal.success_records == 1
+        and terminal.failed_records == 0
+    ):
+        return {"member_key": key, "outcome": "data"}
+    if (
+        terminal.status == "completed_with_errors"
+        and terminal.failed_records == 1
+        and terminal.success_records == 0
+    ):
+        return {"member_key": key, "outcome": "invalid"}
+    raise ValueError("FactSet normalization did not produce a row outcome")
 
 
 def completion_status(evidence: dict) -> str:

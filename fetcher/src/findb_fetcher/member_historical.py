@@ -57,6 +57,7 @@ from findb_fetcher.raw_storage import (
     RawStorageConfig,
     attach_raw_object,
 )
+from findb_fetcher.run_confirmation import UNCONFIRMED_WINDOW, terminal_run
 
 FULL_RELEASE_COHORT = "full_release"
 # One release, current when the request was made, frozen for every date of it.
@@ -65,10 +66,6 @@ CURRENT_RELEASE_COHORT = "current_hkex"
 MEMBER_ATTEMPTS = 5
 # One timing line per interval during a long date, in the Full daily format.
 TIMING_INTERVAL_SECONDS = 60
-# Accepted runs left unread while later members are acquired and delivered.
-UNCONFIRMED_WINDOW = 16
-# An accepted run still queued is polled again after these delays, the last one repeating.
-_CONFIRM_DELAYS = (0.25, 0.5, 1.0, 2.0)
 _JOURNAL = "member-historical:"
 
 
@@ -508,25 +505,9 @@ class MemberHistoricalRunner:
 
     def _confirm(self, owner, key: str, accepted: _Accepted) -> dict[str, Any]:
         """Read one accepted run's row outcome, waiting only while it is still queued."""
-        deadline = time.monotonic() + 30
-        polls = 0
-        while True:
-            try:
-                terminal = self.delivery.get_run_status(accepted.run_id, expected=accepted.prepared)
-            except (SourceAPITransportError, httpx.TransportError):
-                raise HistoricalWorkDeferredError("Source status unavailable") from None
-            except SourceAPIResponseError as exc:
-                if exc.status_code >= 500 or exc.status_code in {408, 429}:
-                    raise HistoricalWorkDeferredError("Source status unavailable") from None
-                raise
-            if terminal.status not in {"queued", "pending", "processing", "retrying"}:
-                break
-            if time.monotonic() >= deadline or owner.failed.is_set():
-                # Settlement drains accepted runs before releasing ownership.
-                raise HistoricalWorkDeferredError("EOD normalization pending")
-            with rpc_timing.timed("step normalization_wait"):
-                time.sleep(_CONFIRM_DELAYS[min(polls, len(_CONFIRM_DELAYS) - 1)])
-            polls += 1
+        terminal = terminal_run(
+            self.delivery, accepted.run_id, accepted.prepared, failed=owner.failed
+        )
         if terminal.total_records != 1:
             raise ValueError("historical member terminal row count differs")
         if (

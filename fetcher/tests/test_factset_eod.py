@@ -6,6 +6,7 @@ from datetime import date
 from types import SimpleNamespace
 from uuid import UUID
 
+import httpx
 import pytest
 
 from findb_fetcher.factset_eod import FactSetEOD, completion_status
@@ -258,3 +259,86 @@ def test_preparation_suspension_preserves_native_snapshot_for_retry(tmp_path, mo
     runner.delivery.prepare = prepare
     assert completion_status(runner.run(**arguments)) == "partial"
     assert len(queries) == 1 and len(deliveries) == 2
+
+
+def _traced(runner, events):
+    delivery = runner.delivery
+    deliver, status = delivery.deliver, delivery.get_run_status
+
+    def traced_deliver(request):
+        events.append(("deliver", request["payload"]["data"][0]["symbol"]))
+        return deliver(request)
+
+    def traced_status(run_id, *, expected):
+        events.append(("status", expected["payload"]["data"][0]["symbol"]))
+        return status(run_id, expected=expected)
+
+    delivery.deliver, delivery.get_run_status = traced_deliver, traced_status
+
+
+@pytest.mark.parametrize(
+    ("window", "order"),
+    [
+        # Every run read back right away: the old one-member-at-a-time order.
+        (0, ["deliver:00001", "status:00001", "deliver:00002", "status:00002"]),
+        # Runs are read behind later deliveries, never more than the window unread.
+        (1, ["deliver:00001", "deliver:00002", "status:00001", "status:00002"]),
+    ],
+)
+def test_runs_are_read_back_behind_later_deliveries(tmp_path, monkeypatch, window, order):
+    runner, arguments, *_ = harness(tmp_path, monkeypatch)
+    monkeypatch.setattr("findb_fetcher.factset_eod.UNCONFIRMED_WINDOW", window)
+    events: list[tuple[str, str]] = []
+    _traced(runner, events)
+    result = runner.run(**arguments)
+    assert [f"{kind}:{symbol}" for kind, symbol in events] == order
+    # Evidence keeps member order whatever the read-back order was.
+    assert [r["member_key"] for r in result["members"]] == [f"{i:05}" for i in range(1, 6)]
+    assert [r["outcome"] for r in result["members"]] == [
+        "data",
+        "invalid",
+        "invalid",
+        "missing",
+        "mapping_gap",
+    ]
+
+
+def test_a_queued_run_is_polled_with_short_growing_delays(tmp_path, monkeypatch):
+    runner, arguments, *_ = harness(tmp_path, monkeypatch)
+    sleeps: list[float] = []
+    monkeypatch.setattr("time.sleep", sleeps.append)
+    status = runner.delivery.get_run_status
+    queued = {"00001": 5}
+
+    def get_run_status(run_id, *, expected):
+        symbol = expected["payload"]["data"][0]["symbol"]
+        if queued.get(symbol):
+            queued[symbol] -= 1
+            return SimpleNamespace(status="queued")
+        return status(run_id, expected=expected)
+
+    runner.delivery.get_run_status = get_run_status
+    result = runner.run(**arguments)
+    assert sleeps == [0.25, 0.5, 1.0, 2.0, 2.0]
+    assert result["members"][0] == {"member_key": "00001", "outcome": "data"}
+
+
+def test_unread_runs_replay_their_receipts_after_a_status_outage(tmp_path, monkeypatch):
+    runner, arguments, owner, gateway, raw, queries, deliveries = harness(tmp_path, monkeypatch)
+    status = runner.delivery.get_run_status
+    outage = {"left": 1}
+
+    def get_run_status(run_id, *, expected):
+        if outage["left"]:
+            outage["left"] -= 1
+            raise httpx.ConnectError("source down")
+        return status(run_id, expected=expected)
+
+    runner.delivery.get_run_status = get_run_status
+    with pytest.raises(HistoricalWorkDeferredError, match="status unavailable"):
+        runner.run(**arguments)
+    # Both members were delivered before the first read; the retry only reads them back.
+    assert len(deliveries) == 2
+    result = runner.run(**arguments)
+    assert len(queries) == 1 and len(deliveries) == 2
+    assert [r["outcome"] for r in result["members"]][:2] == ["data", "invalid"]
