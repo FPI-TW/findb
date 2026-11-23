@@ -431,6 +431,8 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
     - 沒有目標日的列：每日工作視為尚未發布（`wait=publication`，在發布重試窗口內重試）；歷史回補記為
       `missing`／`no_source_row`，並引用 FMP 回的空回應。
     - 方案不涵蓋的指數（HTTP 402／403）只影響該檔；429 進入帳號冷卻；其他錯誤結束本輪、稍後重試。
+    - 名單刷新與每日規劃只能結算為重試或失敗：429 與格式錯的清單結算為重試（429 的冷卻已由 governor 記錄），
+      不會丟出例外讓整輪停住。
     - 歷史回補沿用通用的 `MemberHistoricalRunner`，以「建立時的名單」（`current_release`）服務整個請求的
       每一天；runner 類別與 CLI 登記留到啟用的 PR。
     - raw 物件的 `source-symbol` metadata 接受開頭的 `^`（物件鍵只含代號的雜湊）；journal 的回應與 Raw R2

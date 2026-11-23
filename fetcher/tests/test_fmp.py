@@ -282,6 +282,12 @@ def test_an_unpublished_or_invalid_row_still_cites_what_fmp_served() -> None:
          FailureKind.ROUND_RETRY, None),
         (FMPResponseError("x", category="auth_failed", status_code=401), "maintenance",
          FailureKind.WORK_FAILED, None),
+        # Only a member waits for quota; maintenance and rounds settle a retry.
+        (FMPResponseError("x", category="rate_limited", status_code=429), "maintenance",
+         FailureKind.ROUND_RETRY, None),
+        (FMPResponseError("x", category="rate_limited", status_code=429), "round",
+         FailureKind.ROUND_RETRY, None),
+        (FMPPayloadError("x"), "maintenance", FailureKind.ROUND_RETRY, None),
         (FMPResponseError("x", category="transport"), "round", FailureKind.ROUND_RETRY, None),
         (FMPResponseError("x", category="response_too_large"), "round",
          FailureKind.WORK_FAILED, None),

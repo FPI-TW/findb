@@ -44,6 +44,7 @@ from findb_fetcher.providers.finlab import (
     FinLabTargetNotReadyError,
     FinLabValueError,
 )
+from findb_fetcher.providers.fmp import FMPPayloadError, FMPResponseError
 from findb_fetcher.providers.taifex import TaifexOperationalError
 from findb_fetcher.providers.twelve_data import TwelveDataResponseError
 from findb_fetcher.raw_storage import RawObject
@@ -419,6 +420,9 @@ def test_daily_round_failure_codes_come_from_adapter_classes(
         ("finlab", FinLabConfigError("x"), ("failed", "MAINTENANCE_FINLAB_CONFIG")),
         ("taifex", TaifexOperationalError("x", status_code=503), None),
         ("finlab", ProviderHTTPError("listing", 404), ("failed", "MAINTENANCE_HTTP_404")),
+        ("fmp", FMPResponseError("x", category="rate_limited", status_code=429), ("retry", "MAINTENANCE_HTTP_429")),
+        ("fmp", FMPResponseError("x", category="auth_failed", status_code=401), ("failed", "MAINTENANCE_HTTP_401")),
+        ("fmp", FMPPayloadError("FMP index list repeats a symbol"), ("retry", "fmp_payload_invalid")),
     ],
 )  # fmt: skip
 def test_maintenance_failure_codes_come_from_adapter_classes(tmp_path, provider, exc, expected):
