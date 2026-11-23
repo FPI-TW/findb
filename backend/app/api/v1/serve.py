@@ -1,6 +1,6 @@
 """Thin HTTP routes for canonical read-only Serve queries."""
 
-from datetime import date
+from datetime import date, time
 from typing import Annotated, cast
 from uuid import UUID
 
@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
+    require_intraday_serve_api_key,
     require_serve_api_key,
     verify_paginated_serve_api_key,
     verify_serve_api_key,
@@ -22,6 +23,9 @@ from app.schemas.serve import (
     InstrumentDetailResponse,
     InstrumentListResponse,
     InstrumentSort,
+    IntradayBarListResponse,
+    IntradayInterval,
+    IntradayTickListResponse,
     MarketFreshnessSummaryListResponse,
     MarketFreshnessSummaryResponse,
     MinuteListResponse,
@@ -30,6 +34,7 @@ from app.schemas.serve import (
     SortDirection,
 )
 from app.services import serve as serve_queries
+from app.services import serve_intraday
 from app.services.effective_calendar import published_calendar_year
 from app.services.market_freshness import list_market_freshness
 from app.services.slot_identity import CanonicalSlotId
@@ -123,6 +128,53 @@ async def get_minute(
         instrument_id=instrument_id,
         start_date=start_date,
         end_date=end_date,
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+@router.get("/intraday/bars", response_model=IntradayBarListResponse)
+async def get_intraday_bars(
+    instrument_id: UUID,
+    interval: IntradayInterval = "1m",
+    start_date: date | None = None,
+    end_date: date | None = None,
+    cursor: str | None = None,
+    page_size: Annotated[int, Query(ge=1, le=1000)] = 1000,
+    _: str = Depends(require_intraday_serve_api_key(1000, cost=lambda page_size: 1)),
+    db: AsyncSession = Depends(get_db),
+) -> IntradayBarListResponse:
+    return await serve_intraday.list_intraday_bars(
+        db,
+        instrument_id=instrument_id,
+        interval=interval,
+        start_date=start_date,
+        end_date=end_date,
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+@router.get("/intraday/ticks", response_model=IntradayTickListResponse)
+async def get_intraday_ticks(
+    instrument_id: UUID,
+    trade_date: date | None = None,
+    start_time: time | None = None,
+    end_time: time | None = None,
+    cursor: str | None = None,
+    page_size: Annotated[int, Query(ge=1, le=5000)] = 1000,
+    # A tick page counts one unit per started thousand rows.
+    _: str = Depends(
+        require_intraday_serve_api_key(1000, cost=lambda page_size: -(-page_size // 1000))
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> IntradayTickListResponse:
+    return await serve_intraday.list_intraday_ticks(
+        db,
+        instrument_id=instrument_id,
+        trade_date=trade_date,
+        start_time=start_time,
+        end_time=end_time,
         cursor=cursor,
         page_size=page_size,
     )

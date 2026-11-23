@@ -199,6 +199,38 @@ def test_the_serve_role_can_only_read() -> None:
     assert not hasattr(reader, "write") and not hasattr(reader, "delete")
 
 
+def test_a_range_read_returns_only_bytes_of_the_named_version() -> None:
+    r2 = FakeR2()
+    key = "intraday/v1/x/symbol=2330/year=2026/month=11/part.parquet"
+    publisher = storage.CanonicalPublisher(CANONICAL, client=r2)
+    etag = publisher.write(key, b"0123456789", content_type="x", expected_etag=None)
+    reader = storage.CanonicalReader(CANONICAL, client=r2)
+
+    assert reader.read_range(key, etag=etag, byte_range="bytes=2-4", max_bytes=8) == (b"234", 10)
+    # A suffix longer than the object returns all of it.
+    assert reader.read_range(key, etag=etag, byte_range="bytes=-64", max_bytes=64) == (
+        b"0123456789",
+        10,
+    )
+    with pytest.raises(storage.ObjectIntegrityError):
+        reader.read_range(key, etag=etag, byte_range="bytes=-64", max_bytes=4)
+    # Once the object is replaced, the old version's ranges are refused, not mixed in.
+    publisher.write(key, b"replaced!!", content_type="x", expected_etag=etag)
+    with pytest.raises(storage.ObjectChangedError):
+        reader.read_range(key, etag=etag, byte_range="bytes=0-1", max_bytes=8)
+    with pytest.raises(storage.ObjectNotFoundError):
+        reader.read_range(key + "x", etag=etag, byte_range="bytes=0-1", max_bytes=8)
+
+
+@pytest.mark.parametrize("byte_range", ["", "bytes=0-", "bytes=-0", "bytes=1-2,4-5", "0-1"])
+def test_only_bounded_single_ranges_are_requested(byte_range) -> None:
+    r2 = FakeR2()
+    reader = storage.CanonicalReader(CANONICAL, client=r2)
+    with pytest.raises(storage.ObjectStorageError):
+        reader.read_range("intraday/v1/x", etag='"v"', byte_range=byte_range, max_bytes=8)
+    assert r2.calls == []
+
+
 def test_the_access_check_reports_every_step_and_leaves_nothing_behind() -> None:
     from scripts.check_r2_access import canonical_cycle, passed, write_refused
 
