@@ -679,7 +679,9 @@ class PendingMarketFeedResponse(BaseModel):
 
 class MarketFreshnessResponse(BaseModel):
     execution_profile: ExecutionProfile = "full_market"
+    # The first feed's market; ``markets`` lists every market the control covers.
     market: str
+    markets: list[str] = Field(default_factory=list)
     scheduler_key: str
     provider: str
     dataset_keys: list[str] = Field(default_factory=list)

@@ -17,7 +17,8 @@ capability 與 active provider 型別接到生成 metadata，並新增唯讀 exe
 發布新版 Backend 後使用新值，不提供環境排程 override。
 
 Fetcher daily 每輪規劃前讀取 Source execution-config，image 僅保存非排程 execution descriptors 與
-bootstrap。Dashboard 依 market 分組，逐 feed 顯示時間與時區，不顯示 Slot。DB schedule 是 catalog
+bootstrap。Dashboard 依 market 分組，逐 feed 顯示市場、時間、時區、抓當日或前幾日的資料與下次執行時間，不顯示 Slot；
+一個 control 的 feeds 涵蓋多個市場時（FMP 指數），卡片只出現一次，放在合併的市場分組（例如 `HK / US`）。DB schedule 是 catalog
 投影；新 plan 與無 plan 的監控使用 catalog deadline，已有 plan 使用 frozen `deadline_at`。
 Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排程檔。
 兩環境排程 DB／API／UI 的核對見 [PR5 兩環境整合驗收](../operations/deployment.md#pr5-兩環境整合驗收)。

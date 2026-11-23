@@ -44,7 +44,8 @@ import {
   FeedDetails,
   formatAge,
   formatDate,
-  formatScheduledTime,
+  describeFeedSchedule,
+  marketGroup,
   PageIntro,
   Panel,
   DateWithRelative,
@@ -106,6 +107,11 @@ function cardMarkets(card: IngestionCard): string[] {
   return [
     ...new Set(values.length ? values : [card.freshness?.market ?? "其他"]),
   ]
+}
+
+/** Each control is shown once, under all of its markets together (FMP: "HK / US"). */
+export function cardMarketGroup(card: IngestionCard): string {
+  return marketGroup(cardMarkets(card))
 }
 
 function controlFromFreshness(summary: MarketFreshness): SchedulerCardControl {
@@ -1056,9 +1062,8 @@ function IngestionCardView({
         {control.feed_schedules?.length ? (
           control.feed_schedules.map(feed => (
             <p key={feed.dataset_key} className="mt-1 mb-0 text-xs text-muted">
-              {feed.dataset_key} · 每日{" "}
-              {formatScheduledTime(feed.scheduled_time)} ·{" "}
-              {feed.source_timezone}
+              {feed.dataset_key} · {describeFeedSchedule(feed)} · 下次{" "}
+              <DateWithRelative value={feed.next_scheduled_at} />
             </p>
           ))
         ) : (
@@ -1366,15 +1371,13 @@ export function IngestionOverviewPanel({
               <EmptyState>目前沒有已註冊的資料抓取排程。</EmptyState>
             ) : (
               <div className="grid gap-3">
-                {[...new Set(states.flatMap(({ card }) => cardMarkets(card)))]
+                {[...new Set(states.map(({ card }) => cardMarketGroup(card)))]
                   .sort()
                   .map(market => (
                     <section key={market} className="grid gap-3">
                       <h3 className="font-bold">{market}</h3>
                       {states
-                        .filter(({ card }) =>
-                          cardMarkets(card).includes(market)
-                        )
+                        .filter(({ card }) => cardMarketGroup(card) === market)
                         .map(state => (
                           <IngestionCardView
                             state={state}
@@ -1415,7 +1418,9 @@ export function MarketFreshnessPanel({
   refreshError: string
 }) {
   const summaries = result?.ok ? result.data.data : []
-  const grouped = [...new Set(summaries.map(summary => summary.market))].sort()
+  const groupOf = (summary: (typeof summaries)[number]) =>
+    marketGroup(summary.markets.length ? summary.markets : [summary.market])
+  const grouped = [...new Set(summaries.map(groupOf))].sort()
   return (
     <Panel
       eyebrow="Market freshness"
@@ -1441,11 +1446,11 @@ export function MarketFreshnessPanel({
               <h3 className="mb-2 font-bold">{market}</h3>
               <div className="grid gap-2 xl:grid-cols-2">
                 {summaries
-                  .filter(summary => summary.market === market)
+                  .filter(summary => groupOf(summary) === market)
                   .map(summary => (
                     <Card key={summary.scheduler_key}>
                       <div className="flex items-start justify-between gap-2">
-                        <strong className="text-lg">{summary.market}</strong>
+                        <strong className="text-lg">{groupOf(summary)}</strong>
                         <Badge variant={freshnessVariant(summary.status)}>
                           {STATUS_LABELS[summary.status]}
                         </Badge>

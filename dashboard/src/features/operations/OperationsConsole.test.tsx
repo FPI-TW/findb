@@ -518,14 +518,15 @@ describe("Operations presentation", () => {
       key: string,
       market: string,
       clock: string,
-      zone: string
+      zone: string,
+      lag = 0
     ) => ({
       provider: market === "US" ? "twelve_data" : "finlab",
       dataset_key: key,
       market,
       scheduled_time: clock,
       source_timezone: zone,
-      target_date_lag_days: 0,
+      target_date_lag_days: lag,
       next_scheduled_at: timestamp,
       completion_deadline: {
         timezone: "Asia/Taipei",
@@ -551,6 +552,16 @@ describe("Operations presentation", () => {
             feed("us_equity_eod", "US", "17:00", "America/New_York"),
           ],
         }),
+        // One control over two markets, each feed on its own clock (FMP indices).
+        makeScheduler({
+          scheduler_key: "full_market_fmp_v1",
+          provider: "fmp",
+          dataset_keys: ["hk_index_eod", "us_index_eod"],
+          feed_schedules: [
+            feed("hk_index_eod", "HK", "20:00", "Asia/Hong_Kong"),
+            feed("us_index_eod", "US", "08:30", "Asia/Taipei", 1),
+          ],
+        }),
       ])
     )
     render(
@@ -563,10 +574,23 @@ describe("Operations presentation", () => {
     ).toBeInTheDocument()
     expect(screen.getByRole("heading", { name: "US" })).toBeInTheDocument()
     expect(
-      screen.getByText(/us_equity_eod · 每日 17:00 · America\/New_York/)
+      screen.getByText(
+        /us_equity_eod · US · 每日 17:00（America\/New_York）· 抓當日 US 資料/
+      )
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/tw_etf_eod · 每日 18:00 · Asia\/Taipei/)
+      screen.getByText(/tw_etf_eod · TW · 每日 18:00（Asia\/Taipei）/)
+    ).toBeInTheDocument()
+    // A control over two markets is shown once, under both together.
+    expect(screen.getByRole("heading", { name: "HK / US" })).toBeInTheDocument()
+    expect(screen.getAllByText("full_market_fmp_v1")).toHaveLength(1)
+    expect(
+      screen.getByText(
+        /us_index_eod · US · 每日 08:30（Asia\/Taipei）· 抓前 1 日的 US 資料/
+      )
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/hk_index_eod · HK · 每日 20:00（Asia\/Hong_Kong）/)
     ).toBeInTheDocument()
     expect(
       screen.queryByText(/Slot|taiwan_market_window|western_markets_window/)
