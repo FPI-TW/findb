@@ -24,6 +24,7 @@
 | 查看待分流的全專案風險與孤兒盤點 | [dev/project-risk-review.md](dev/project-risk-review.md) |
 | 盤中資料（1 分 K、逐筆成交）在 Canonical R2 的物件、索引表、正規化規則與月底合併 | [architecture/intraday_storage.md](architecture/intraday_storage.md) |
 | FinLab 盤中資料導入的設計、已定事項與尚未完成的工作 | [dev/finlab-intraday-batch1.md](dev/finlab-intraday-batch1.md) |
+| 同一 provider 多條執行線、Fetcher 並行與回補效率的擴充設計 | [dev/provider-throughput-scaling.md](dev/provider-throughput-scaling.md) |
 | FMP provider 的需求範圍、已定事項、分階段導入計畫與待決事項 | [dev/fmp-provider.md](dev/fmp-provider.md) |
 | 港股個股日線由 FactSet 供應、以 HKEX 官方值修正的設計與三方比對 | [dev/hk-equity-factset-hkex.md](dev/hk-equity-factset-hkex.md) |
 | 還原價的調整因子表、各 provider 的調整行為、計算方式與 DQ | [dev/price-adjustment-factors.md](dev/price-adjustment-factors.md) |
