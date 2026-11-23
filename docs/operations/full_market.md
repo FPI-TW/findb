@@ -247,6 +247,19 @@ TW／US／HK／CN／TAIFEX 使用固定市場時區及正常收盤時間，publi
 查詢不寫 DB、不自動發布；API 保留 `calendar_source=published|weekday_default` 與可空 revision。
 缺日曆可預設，DB／認證／通訊故障則正常報錯。部署與 Owner start 不 seed 或檢查 calendar completeness。
 
+過往年份已於 2026-11-23 經 Admin API（json preview → apply → publish，每個市場年度一份 full_year revision）發布，
+兩環境相同：TW 1990–2026、TAIFEX 1998–2026、US 1953–2026（production 另有 2027–2028）、HK 1987–2026。依據：
+
+- TW：證交所 FMTQIK 的實際成交日，含 2001 年前的星期六與補班日。`settlement_only` 只用於有官方休市日 CSV 的
+  2023 年以後，更早年份春節前無交易的日子記為 closed。
+- TAIFEX：期交所臺股期貨（TX）一般時段每日行情；1998-07-21 上市前的日期記為休市。
+- US：NYSE 日曆（`pandas_market_calendars`），含特殊停市與提早收盤，以 FMP `^GSPC` 交叉核對。1952 年以前
+  NYSE 星期六也有交易，但指數資料沒有星期六，因此不發布 1953 年以前。
+- HK：XHKG（`exchange_calendars`），以 FMP 與 Yahoo `^HSI` 交叉核對。1999 年以前的佛誕依實際行情記為開市；
+  1991-02-14、1993-10-01、1997-02-06 記為休市（Owner 確認）。FMP 在港股休市與颱風停市日會回重複前一日的值，
+  不能單獨用來判斷開休市。
+- 舊年份的 TW、TAIFEX、HK 沒有填交易時段，effective calendar 顯示目前的市場預設時間，只影響顯示。
+
 catalog 設 `calendar_required: true` 的 feed 例外，日期只用 published revision，不用 weekday 預設：
 - 建立 plan 時，該日沒有 published revision 就以 409 `{"code": "CALENDAR_UNPUBLISHED"}` 回絕，不凍結
   決策，所以週末也不會先被凍結成 `skipped_calendar`。
@@ -1648,13 +1661,14 @@ FMP（例如 `^GSPC`）。設計與實測見 [FMP 導入規劃](../dev/fmp-provi
 
 - 兩條 feed 共用一個 control `full_market_fmp_v1`，控制列顯示最早的 feed（台北 08:30）。
 - **必須有已發布的交易所日曆**（`calendar_required`）：缺日曆的日期以 `CALENDAR_UNPUBLISHED` 等待重試，
-  不以週一至週五代替；同一天另一條 feed 照常規劃。production 的港股日曆目前只有 2026 年。
+  不以週一至週五代替；同一天另一條 feed 照常規劃。兩環境的港股日曆涵蓋 1987–2026 年，2027 年起要先發布該年日曆。
 - **名單**固定，由 Fetcher 以 FMP 的指數清單核對每檔都在、幣別相符後發布；任一檔不符就保留上一份名單。
 - **每日抓取**：每檔指數呼叫一次 `historical-price-eod/full`。回應沒有目標日那一列時視為尚未發布，在發布
   重試窗口（4 小時）內重試；FMP 沒有「定案」標記，所以排程放在實測的定案時間之後，且不重抓覆寫。
 - **成交量**照 FMP 原值寫入，0 就是 0。FMP 的指數成交量不是一致的數列（例如 `^RUT`、`^NYA` 多數日子與
   `^GSPC` 相同，`^HSCE` 2024-10-08 起單位改為千股），使用前請看導入規劃的說明。
-- **歷史回補**以建立請求時的名單服務每一天（`current_release`），每天的請求數為港股 2、美股 8；本輪不執行，
-  要先匯入更早年份的交易所日曆。
+- **歷史回補**以建立請求時的名單服務每一天（`current_release`），每天的請求數為港股 2、美股 8；本輪不執行。
+  交易所日曆已補到 HK 1987、US 1953 年起（見「有效日曆與每日政策」），回補範圍仍受 production 最近 366 天、
+  staging 31 天的限制。
 - staging 驗收：只啟動 `fmp`，兩個 dataset 的首日都先設成單一日期，確認 Source → raw → queue → canonical →
   Serve 與 `expected = data + no_data + missing + blocked`，完成後停止 control。
