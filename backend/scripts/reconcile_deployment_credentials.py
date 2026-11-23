@@ -18,6 +18,7 @@ from sqlalchemy import select, text
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import load_only
 
 from app.models.registry import APIKey
 from app.services.api_keys import hash_api_key
@@ -117,6 +118,29 @@ def legacy_names_for_spec(spec: CredentialSpec, deployment_target: str) -> tuple
     return ()
 
 
+# The api_key columns reconciliation reads or writes.  The deploy runs it with
+# ``--check-only`` from the candidate image before ``alembic upgrade``, so it
+# must not touch a column a newer migration adds (see
+# test_check_only_works_against_the_schema_before_head).
+_RECONCILED_COLUMNS = (
+    APIKey.key_id,
+    APIKey.key_hash,
+    APIKey.fingerprint,
+    APIKey.kind,
+    APIKey.name,
+    APIKey.owner,
+    APIKey.description,
+    APIKey.role,
+    APIKey.tier,
+    APIKey.scopes,
+    APIKey.rate_limit_requests,
+    APIKey.rate_limit_window,
+    APIKey.page_size_limit,
+    APIKey.revoked_at,
+    APIKey.expires_at,
+)
+
+
 def _is_active(row: APIKey, now: datetime) -> bool:
     return row.revoked_at is None and (row.expires_at is None or row.expires_at > now)
 
@@ -156,6 +180,9 @@ async def reconcile_machine_credential(
         (
             await db.execute(
                 select(APIKey)
+                # Only columns every supported earlier schema has: the check-only
+                # pass runs the candidate image before its migrations.
+                .options(load_only(*_RECONCILED_COLUMNS))
                 .where((APIKey.name == spec.name) | (APIKey.key_hash == key_hash))
                 .with_for_update()
             )
