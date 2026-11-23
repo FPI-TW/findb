@@ -243,13 +243,17 @@ def test_infra_plan_role_is_pr_only_and_state_scoped() -> None:
         ':log-group:${var.ssm_log_group_prefix}/*"'
         in plan.split("infra_plan_log_group_arn", 1)[1].split("\n", 1)[0]
     )
-    assert 'sid    = "ReadExactSecretMetadata"' in permissions
-    metadata = permissions.split('sid    = "ReadExactSecretMetadata"', 1)[1].split(
+    # Exact ARNs for every runtime secret exceed the same limit; metadata refresh
+    # is bounded to the staging secret-name prefix and never reads a value.
+    assert 'sid    = "ReadStagingSecretMetadata"' in permissions
+    metadata = permissions.split('sid    = "ReadStagingSecretMetadata"', 1)[1].split(
         "statement {", 1
     )[0]
-    assert "resources = concat(" in metadata
-    assert "[for secret in aws_secretsmanager_secret.active_runtime : secret.arn]" in metadata
-    assert "[aws_secretsmanager_secret.retired_calendar.arn]" in metadata
+    assert "resources = [local.infra_plan_secret_arn]" in metadata
+    assert (
+        ':secret:findb/staging/*"' in plan.split("infra_plan_secret_arn ", 1)[1].split("\n", 1)[0]
+    )
+    assert "secretsmanager:GetSecretValue" not in metadata
     assert "secretsmanager:GetResourcePolicy" in permissions
     assert 'sid       = "ReadExactStateObject"' in permissions
     assert 'sid    = "ListExactStatePrefix"' in permissions
@@ -690,7 +694,10 @@ def test_fetcher_alarm_identities_derive_from_the_generated_inventory() -> None:
         'treat_missing_data        = contains(local.retired_alarm_resources, each.value.resource) ? "notBreaching"'
         in custom
     )
-    assert "actions_enabled           = !contains(local.retired_alarm_resources" in custom
+    assert (
+        "actions_enabled           = local.alarm_notifications_enabled && "
+        "!contains(local.retired_alarm_resources" in custom
+    )
 
     production = _read(TOFU_ROOT / "production" / "monitoring.tf")
     alarm = production.split('resource "aws_cloudwatch_metric_alarm" "custom" {', 1)[1].split(
@@ -873,7 +880,9 @@ def test_phase6_native_monitoring_is_private_encrypted_and_bounded() -> None:
         (r"evaluation_periods\s+=\s+local\.monitoring_alarm_common\.evaluation_periods", 2),
         (r"datapoints_to_alarm\s+=\s+local\.monitoring_alarm_common\.datapoints_to_alarm", 2),
         (r"treat_missing_data\s+=\s+local\.monitoring_alarm_common\.treat_missing_data", 3),
-        (r"actions_enabled\s+=\s+true", 3),
+        # Staging notifications are disabled by one switch; no alarm hardcodes them on.
+        (r"actions_enabled\s+=\s+true", 0),
+        (r"actions_enabled\s+=\s+local\.alarm_notifications_enabled\n", 3),
         (r"alarm_actions\s+=\s+\[aws_sns_topic\.operational_alerts\.arn\]", 3),
         # Recovery notifies the same topic; no alarm keeps a silent OK transition.
         (r"ok_actions\s+=\s+\[aws_sns_topic\.operational_alerts\.arn\]", 3),

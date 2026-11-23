@@ -76,6 +76,7 @@ Fetcher 包含 contract validation、安全 delivery client、四個 provider ad
 - Node.js 22+
 - pnpm 11
 - Docker
+- OpenTofu 1.12（`pnpm check` 會跑 `tofu fmt -check`）
 
 安裝dependency與Git hooks：
 

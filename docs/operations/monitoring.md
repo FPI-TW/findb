@@ -13,6 +13,8 @@ the five-minute metric and two-period alarm contract. This does not install an
 external agent, persist credentials, or add inbound network access. The existing
 EC2 and RDS resources remain references only: this stack must not import, create,
 replace, or otherwise manage EC2, RDS, VPC, security groups, or volumes.
+Since 2026-11-23 no staging alarm sends notifications; see
+[Environment parity](#environment-parity).
 
 The tracked configuration remains an **IaC declaration, not evidence by
 itself**. A merged configuration, a successful `tofu validate`, or a
@@ -169,16 +171,25 @@ staging values; production differs only in these reviewed ways:
 | Missing scheduler heartbeat or freshness datum | Not breaching | Breaching | Staging controls are normally stopped; a stopped production control must be visible |
 | RDS `FreeStorageSpace` threshold | `<= 5 GiB` | `<= 10 GiB` | 20 GiB allocated on staging, 100 GiB on production |
 | Alarm names and retired identities | `findb-staging-*` | `findb-production-*` | The zero-delete plan policy forbids renaming an existing alarm |
+| Notifications | Disabled (`alarm_notifications_enabled = false`) | Enabled | Staging controls are normally stopped and run one provider at a time for tests |
 
-Every active alarm notifies the operational topic on both the `ALARM` and the `OK`
-transition. Retired identities keep no actions.
+Every active production alarm notifies the operational topic on both the `ALARM` and
+the `OK` transition. Retired identities keep no actions.
+
+Staging alarms keep the same rules, states and topic actions, but by Owner decision
+(2026-11-23) no staging alarm notifies: every alarm resource sets
+`actions_enabled` from the single `alarm_notifications_enabled` local in
+`infra/tofu/staging/monitoring.tf`. Check staging alarm states in the console or with
+`aws cloudwatch describe-alarms`. To restore notifications, set the local to `true`
+and apply through the reviewed plan below; the topic and the confirmed email
+subscription stay in place, so no reconfirmation is needed.
 
 ### Native alarms
 
 The nine native alarms use an explicit 300-second period, two evaluation periods and
 two datapoints to alarm (three of each for EC2 CPU, so a short burst on a burstable
-instance does not alarm), `treat_missing_data = "missing"`, enabled actions, the same
-SNS action for `ALARM` and `OK`, and an empty INSUFFICIENT_DATA action list. A missing
+instance does not alarm), `treat_missing_data = "missing"`, actions from the notification switch (disabled on
+staging), the same SNS action for `ALARM` and `OK`, and an empty INSUFFICIENT_DATA action list. A missing
 native metric therefore remains visible as `INSUFFICIENT_DATA`; it is not
 silently treated as healthy or breaching.
 
@@ -377,9 +388,15 @@ its backend is fully pinned and its tracked tfvars already holds the real values
    `findb-staging-*` alarm ARN prefix. This bounded prefix is intentional: listing
    every custom alarm ARN for both metadata and tag refresh exceeds IAM's
    aggregate inline role-policy size limit. Log-group tag refresh is bounded the
-   same way, to the `/findb/staging/` log-group prefix: the policy has well under
-   100 bytes of headroom, so one more exact ARN no longer fits. Check the size of
+   same way, to the `/findb/staging/` log-group prefix, and secret metadata refresh
+   to the `findb/staging/*` secret-name prefix: with exact secret ARNs the policy
+   reached the limit when the HKEX source secret was added. Check the size of
    `staging-infra-plan-read-only` before adding any statement or resource to it.
+   When a developer explicitly allows it, a bounded `-target` apply from the
+   reviewed pull-request head may run before merge, for example to repair the
+   plan role so the required CI plan can pass; follow
+   [infra/tofu/README.md](../../infra/tofu/README.md) and still apply the full
+   fresh plan from `main` after merge.
 4. Apply only that reviewed fresh plan. Confirm both associations succeed,
    wait for two five-minute datapoints, verify every non-sparse alarm settles
    to `OK`, and retain the apply and association records. A breaching or
@@ -414,6 +431,11 @@ brief notification gap:
    message IDs, and operator) in the change record.
 
 ## Confirm and exercise notification delivery
+
+Staging notifications are disabled (see Environment parity). While they are,
+`set-alarm-state` still changes the alarm state but sends no email; set
+`alarm_notifications_enabled = true` and apply before a delivery test, then set it
+back to `false` and apply again.
 
 After an SNS email subscription is created, its status is `PendingConfirmation`
 until the inbox owner selects Amazon SNS's confirmation link. Do not treat the

@@ -1,6 +1,7 @@
 # 測試與 PostgreSQL 隔離
 
-`pnpm check`／`make check` 執行全 repo 的 format、lint 與 type checks，不包含測試。
+`pnpm check`／`make check` 執行全 repo 的 format、lint 與 type checks（含 `pnpm check:tofu` 的
+`tofu fmt -check -recursive infra/tofu`），不包含測試。
 `pnpm test`／`make test` 執行 contracts、Backend、Fetcher、Infra 與 Dashboard 測試；
 只驗證 Backend 可用 `pnpm test:backend`／`make test-backend`，runner 會先確保 DB container 啟動。
 Pre-commit 與 pre-push 皆只執行 check，不執行測試；不得使用 `--no-verify`。
