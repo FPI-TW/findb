@@ -48,6 +48,7 @@ from app.schemas.serve import (
     InstrumentListResponse,
     InstrumentResponse,
     InstrumentSort,
+    IntradayCoverageResponse,
     MinuteCoverageResponse,
     MinuteListResponse,
     MinuteResponse,
@@ -107,7 +108,29 @@ def configuration_error() -> HTTPException:
     return serve_error(503, "SERVE_CONFIGURATION_INVALID", "Serve dataset configuration is invalid")
 
 
+@dataclass(frozen=True)
+class IntradayDatasetScope:
+    """An active dataset whose rows are canonical intraday objects."""
+
+    dataset_key: str
+    market: str
+    asset_class: str
+    frequency: Literal["minute", "tick"]
+    record_kind: Literal["bar_1m", "tick"]
+
+
 async def active_dataset_scopes(db: AsyncSession) -> tuple[ActiveDatasetScope, ...]:
+    return (await _active_registry_scopes(db))[0]
+
+
+async def active_intraday_datasets(db: AsyncSession) -> tuple[IntradayDatasetScope, ...]:
+    return (await _active_registry_scopes(db))[1]
+
+
+async def _active_registry_scopes(
+    db: AsyncSession,
+) -> tuple[tuple[ActiveDatasetScope, ...], tuple[IntradayDatasetScope, ...]]:
+    """Every active dataset's read model; any inconsistent declaration fails closed."""
     rows = (
         await db.execute(
             select(DatasetRegistry)
@@ -116,6 +139,7 @@ async def active_dataset_scopes(db: AsyncSession) -> tuple[ActiveDatasetScope, .
         )
     ).scalars()
     scopes: list[ActiveDatasetScope] = []
+    intraday: list[IntradayDatasetScope] = []
     seen: set[tuple[str, str, str]] = set()
     for row in rows:
         try:
@@ -139,6 +163,21 @@ async def active_dataset_scopes(db: AsyncSession) -> tuple[ActiveDatasetScope, .
                     != INTRADAY_DATASET_FREQUENCY[cast(str, declaration.defaults.record_kind)]
                 ):
                     raise ValueError("active intraday dataset declaration is invalid")
+                if (market, asset_class, frequency) in {
+                    (item.market, item.asset_class, item.frequency) for item in intraday
+                }:
+                    raise ValueError("duplicate active intraday scope")
+                intraday.append(
+                    IntradayDatasetScope(
+                        dataset_key=row.dataset_key,
+                        market=market,
+                        asset_class=asset_class,
+                        frequency=cast(Literal["minute", "tick"], frequency),
+                        record_kind=cast(
+                            Literal["bar_1m", "tick"], declaration.defaults.record_kind
+                        ),
+                    )
+                )
                 continue
             if schema_id == "exchange_daily_quote":
                 # The official table is not a read model of its own; its values are
@@ -189,7 +228,7 @@ async def active_dataset_scopes(db: AsyncSession) -> tuple[ActiveDatasetScope, .
             )
         except (AttributeError, TypeError, ValueError):
             raise configuration_error() from None
-    return tuple(scopes)
+    return tuple(scopes), tuple(intraday)
 
 
 def _pairs(
@@ -240,6 +279,7 @@ def _instrument_response(
     eod_pairs: set[tuple[str, str]],
     minute_pairs: set[tuple[str, str]],
     futures_pairs: set[tuple[str, str]],
+    intraday: dict[tuple[UUID, str], IntradayCoverageResponse] | None = None,
 ) -> InstrumentResponse:
     pair = (instrument.market, instrument.asset_class)
     eod = None
@@ -285,13 +325,44 @@ def _instrument_response(
         status=instrument.status,
         listed_date=instrument.listed_date,
         delisted_date=instrument.delisted_date,
-        coverage=InstrumentCoverageResponse(eod=eod, minute=minute, futures=futures),
+        coverage=InstrumentCoverageResponse(
+            eod=eod,
+            minute=minute,
+            futures=futures,
+            intraday_bars=(intraday or {}).get((instrument.instrument_id, "bar_1m")),
+            intraday_ticks=(intraday or {}).get((instrument.instrument_id, "tick")),
+        ),
     )
 
 
 async def list_datasets(db: AsyncSession) -> DatasetListResponse:
-    scopes = await active_dataset_scopes(db)
+    from app.services.serve_intraday import intraday_dataset_coverage
+
+    scopes, intraday_scopes = await _active_registry_scopes(db)
     items: list[DatasetResponse] = []
+    for intraday_scope in intraday_scopes:
+        first, latest, symbols = await intraday_dataset_coverage(db, intraday_scope.dataset_key)
+        bars = intraday_scope.record_kind == "bar_1m"
+        items.append(
+            DatasetResponse(
+                dataset_key=intraday_scope.dataset_key,
+                display_name=(
+                    f"{intraday_scope.market} {intraday_scope.asset_class.upper()} "
+                    + ("1m bars" if bars else "ticks")
+                ),
+                market=intraday_scope.market,
+                asset_class=intraday_scope.asset_class,
+                frequency=intraday_scope.frequency,
+                data_kind="intraday_bars" if bars else "intraday_ticks",
+                interval="1m" if bars else "tick",
+                availability="available" if symbols else "configured_empty",
+                coverage=DatasetCoverageResponse(
+                    coverage_start_date=first,
+                    coverage_end_date=latest,
+                    instrument_count=symbols,
+                ),
+            )
+        )
     for scope in scopes:
         table: Any
         if scope.data_kind == "eod":
@@ -336,7 +407,7 @@ async def list_datasets(db: AsyncSession) -> DatasetListResponse:
                 ),
             )
         )
-    return DatasetListResponse(data=items)
+    return DatasetListResponse(data=sorted(items, key=lambda item: item.dataset_key))
 
 
 async def list_calendar(
@@ -490,9 +561,12 @@ async def list_instruments(
         )
     ).all()
     facets = await _instrument_facets(db, all_pairs)
+    intraday = await _intraday_coverage(db, [instrument for instrument, _ in rows])
     return InstrumentListResponse(
         data=[
-            _instrument_response(instrument, stats, eod_pairs, minute_pairs, futures_pairs)
+            _instrument_response(
+                instrument, stats, eod_pairs, minute_pairs, futures_pairs, intraday
+            )
             for instrument, stats in rows
         ],
         pagination=PaginationInfo(
@@ -549,8 +623,19 @@ async def get_instrument(db: AsyncSession, instrument_id: UUID) -> InstrumentDet
             _pairs(scopes, "eod"),
             _pairs(scopes, "minute"),
             _pairs(scopes, "futures_eod"),
+            await _intraday_coverage(db, [instrument]),
         )
     )
+
+
+async def _intraday_coverage(
+    db: AsyncSession, instruments: list[Instrument]
+) -> dict[tuple[UUID, str], IntradayCoverageResponse]:
+    from app.services.serve_intraday import intraday_instrument_coverage
+
+    scopes = await active_intraday_datasets(db)
+    coverage = await intraday_instrument_coverage(db, scopes, instruments)
+    return {(instrument_id, kind): value for (instrument_id, kind), value in coverage.items()}
 
 
 def _encode_cursor(payload: dict[str, Any]) -> str:

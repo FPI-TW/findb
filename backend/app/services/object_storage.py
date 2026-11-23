@@ -27,6 +27,8 @@ _CANONICAL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._=/-]{0,1023}$")
 _MAX_REF_LENGTH = 2048
 _NOT_FOUND = frozenset({"404", "NoSuchKey", "NotFound"})
 _PRECONDITION = frozenset({"409", "412", "PreconditionFailed", "ConditionalRequestConflict"})
+_BYTE_RANGE = re.compile(r"^bytes=(?:-[1-9][0-9]{0,11}|[0-9]{1,12}-[0-9]{1,12})$")
+_CONTENT_RANGE = re.compile(r"^bytes (?P<start>[0-9]+)-(?P<end>[0-9]+)/(?P<size>[0-9]+)$")
 
 
 class ObjectStorageError(RuntimeError):
@@ -239,6 +241,43 @@ class CanonicalReader:
     def read(self, key: str, *, max_bytes: int) -> StoredObject:
         _require_canonical_key(key)
         return _read(self._client, self._access.bucket, key, max_bytes=max_bytes)
+
+    def read_range(
+        self, key: str, *, etag: str, byte_range: str, max_bytes: int
+    ) -> tuple[bytes, int]:
+        """Read part of version ``etag`` of ``key``; return the bytes and the object's size.
+
+        ``byte_range`` is an HTTP range such as ``bytes=-65536`` (the last bytes,
+        or the whole object when it is smaller) or ``bytes=100-199``.  A newer
+        version raises ``ObjectChangedError`` instead of returning other bytes,
+        so several ranges of one read always come from the same version.
+        """
+        _require_canonical_key(key)
+        if not etag or _BYTE_RANGE.fullmatch(byte_range) is None:
+            raise ObjectStorageError("canonical range read is not bounded")
+        try:
+            response = self._client.get_object(
+                Bucket=self._access.bucket, Key=key, Range=byte_range, IfMatch=etag
+            )
+            length = response.get("ContentLength")
+            if type(length) is not int or not 0 <= length <= max_bytes:
+                raise ObjectIntegrityError("object range is outside the accepted bound")
+            body = response["Body"].read(length + 1)
+        except ClientError as exc:
+            code = _error_code(exc)
+            if code in _NOT_FOUND:
+                raise ObjectNotFoundError("object does not exist") from None
+            if code in _PRECONDITION:
+                raise ObjectChangedError("canonical object changed since it was indexed") from None
+            raise ObjectStorageError("object storage read failed") from None
+        except BotoCoreError:
+            raise ObjectStorageError("object storage read failed") from None
+        if not isinstance(body, bytes) or len(body) != length:
+            raise ObjectIntegrityError("object range does not match the stored length")
+        match = _CONTENT_RANGE.fullmatch(str(response.get("ContentRange") or ""))
+        if match is None or int(match["end"]) - int(match["start"]) + 1 != length:
+            raise ObjectIntegrityError("object store did not report the range it returned")
+        return body, int(match["size"])
 
     def version(self, key: str) -> str | None:
         """Return the stored version of ``key`` without its bytes, or ``None`` when absent."""

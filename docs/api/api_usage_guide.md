@@ -243,6 +243,8 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 - `GET /serve/futures/eod`：實際到期合約與 `regular`／`after_hours` session，使用 opaque cursor；
   OHLC（包含 close）、volume、`settlement_price`／`open_interest` 缺漏時回傳 null；
   零成交但來源仍提供 settlement／OI 的紀錄可查詢，明確的 0 保留，不補造價格或 continuous series。
+- `GET /serve/intraday/bars`、`GET /serve/intraday/ticks`：盤中 1 分 K 與逐筆成交，見下方
+  [盤中資料](#盤中資料)。
 - `GET /serve/calendar`、`GET /serve/calendar/years/{market}/{year}`與
   `GET /serve/market-freshness`。
 
@@ -253,8 +255,50 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
 active registry config會fail closed，不回傳provider、scheduler或credential資訊。
 
 Serve key的`page_size_limit`只套用於分頁路由，並以路由實際預設值檢查：instrument list為50，
-EOD、minute、futures EOD與calendar為100。未分頁的datasets、單筆instrument、published calendar year
+EOD、minute、futures EOD與calendar為100，盤中 bars 與 ticks 為1000。未分頁的datasets、單筆instrument、published calendar year
 與market freshness不套用page-size限制；超過限制時回傳400，不自動縮小page size。
+
+### 盤中資料
+
+FinLab 的台股與 ETF 1 分 K、逐筆成交存在 Canonical R2 的 Parquet 物件（見
+[盤中資料的儲存](../architecture/intraday_storage.md)）。與 `/serve/minute`（Shioaji 時期的歷史，成交量以股計）
+是不同的端點，不合併。
+
+- **一次只查一檔**：必須指定 `instrument_id`，不提供跨標的查詢。
+- **一律需要 Serve API key**，不受 `SERVE_REQUIRE_AUTH` 影響；`page_size` 仍受 key 的 `page_size_limit` 限制。
+  Key 的 `page_size_limit` 最多可設 5000（逐筆單頁的上限），預設 1000，所以逐筆單頁超過 1000 列要另外調高。
+- **單位**：每個回應帶 `units`。成交量是**張**（與以股計的日 K 不同）、價格未還原、時間是 UTC，
+  `trade_date` 是交易所當地日期（`market_timezone`）。每列附該日的 `source` 與 `source_fetched_at`。
+- **順序**：依時間由舊到新；以 `pagination.next_cursor` 是否為 null 判斷是否還有資料。一頁可能少於
+  `page_size`（一頁最多讀 40 個物件），仍要跟著 cursor 讀完。cursor 綁定查詢條件，條件不同時回 `INVALID_CURSOR`。
+
+| | `/serve/intraday/bars` | `/serve/intraday/ticks` |
+| --- | --- | --- |
+| 參數 | `instrument_id`、`interval`（`1m`、`5m`、`15m`、`30m`、`60m`，預設 `1m`）、`start_date`／`end_date`（成對）、`cursor`、`page_size` | `instrument_id`、`trade_date`、可選的 `start_time`／`end_time`（交易所當地時間，含端點）、`cursor`、`page_size` |
+| 範圍上限 | `1m`：31 個日曆日；其他刻度：366 個日曆日 | 一個交易日 |
+| 省略日期 | 該標的最新一個有資料的交易日（`range.anchor = latest_available`） | 同左（`anchor = latest_available`） |
+| `page_size` | 1–1000，預設 1000 | 1–5000，預設 1000 |
+| 限流權重 | 每次 1 | 每 1,000 列 1（`page_size` 2,500 計 3） |
+
+**彙總刻度**照 FinLab 的定義，由 1 分 K 在查詢時計算：以 09:00 起算，每個區間以結束時間標示，
+跨過收盤的最後一個區間標為 13:33（例如 60 分為 10:00、11:00、12:00、13:00、13:33）。開＝第一根開、
+高／低＝極值、收＝最後一根收、`volume` 加總；`trade_count` 在每根都有值時加總，否則為 null；
+`vwap` 以成交量加權，任一根沒有 `vwap` 時為 null。只有有成交的分鐘才有 1 分 K，所以沒有成交的區間不產生列
+（FinLab 自己的 60 分行情會保留量為 0 的列）。
+
+**限流與保護**：盤中端點與其他 Serve 端點分開計算，使用同一把 key 的 `rate_limit_requests`／`rate_limit_window`，
+超過時回 429 並帶 `Retry-After`。每個 Serve process 同時讀 R2 的數量有上限
+（`INTRADAY_SERVE_MAX_CONCURRENT_READS`，預設 4），等待超過 `INTRADAY_SERVE_READ_WAIT_SECONDS`（預設 2 秒）
+回 503 `INTRADAY_READS_BUSY`；最近讀過的交易日保留在記憶體（`INTRADAY_SERVE_CACHE_BYTES`，預設 64 MiB），
+以物件版本為鍵，物件被取代後不會讀到舊值。
+
+**一致性**：只讀索引表 `intraday_partition` 指派的物件版本，月檔只讀該日的 row group，不列舉 bucket。
+物件在讀取時已被月底合併或重新發布取代，會重查索引一次；仍不一致時回 503 `INTRADAY_DATA_CHANGING`，
+不回傳半天的資料。R2 無法使用時回 503 `INTRADAY_STORAGE_UNAVAILABLE`。
+
+`/serve/datasets` 列出四條盤中 dataset（`data_kind` 為 `intraday_bars`／`intraday_ticks`，`interval` 為
+`1m`／`tick`），coverage 取自索引表。商品的 `coverage.intraday_bars`／`coverage.intraday_ticks` 是最早與最新
+有資料的交易日。
 
 `/serve/lookup/*`、`/serve/eod/{instrument_id}`、corporate actions、macro與bonds已移除；期貨使用獨立 `/serve/futures/eod`。
 Canonical tables仍保留，但沒有active feed的資料域不構成公開Serve contract。

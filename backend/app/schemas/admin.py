@@ -741,12 +741,21 @@ class InstrumentCacheMinuteCoverage(BaseModel):
     latest_close: Optional[Decimal] = None
 
 
+class InstrumentCacheDateCoverage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    first_date: date
+    latest_date: date
+
+
 class InstrumentCacheCoverage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     eod: Optional[InstrumentCacheEODCoverage] = None
     minute: Optional[InstrumentCacheMinuteCoverage] = None
     futures: Optional[InstrumentCacheEODCoverage] = None
+    intraday_bars: Optional[InstrumentCacheDateCoverage] = None
+    intraday_ticks: Optional[InstrumentCacheDateCoverage] = None
 
 
 class InstrumentCacheItem(BaseModel):
@@ -819,13 +828,17 @@ class CacheTriggerResponse(BaseModel):
 # ── API Keys ──────────────────────────────────────────────────────────────────
 
 
+MAX_SERVE_PAGE_SIZE = 5000
+
+
 class APIKeyCreateRequest(BaseModel):
     owner: str = Field(..., min_length=1, max_length=100)
     tier: str = Field(default="standard", min_length=1, max_length=30)
     scopes: list[str] = Field(default_factory=lambda: ["serve"])
     rate_limit_requests: int = Field(default=100, ge=1)
     rate_limit_window: int = Field(default=60, ge=1)
-    page_size_limit: int = Field(default=1000, ge=1, le=1000)
+    # Up to the largest page any Serve route accepts (intraday ticks: 5000).
+    page_size_limit: int = Field(default=1000, ge=1, le=MAX_SERVE_PAGE_SIZE)
     name: Optional[str] = Field(default=None, max_length=100)
     description: Optional[str] = None
     expires_at: Optional[datetime] = None
@@ -1020,7 +1033,8 @@ class CredentialCreateRequest(BaseModel):
     scopes: Optional[list[str]] = None
     rate_limit_requests: int = Field(default=100, ge=1)
     rate_limit_window: int = Field(default=60, ge=1)
-    page_size_limit: int = Field(default=1000, ge=1, le=1000)
+    # Up to the largest page any Serve route accepts (intraday ticks: 5000).
+    page_size_limit: int = Field(default=1000, ge=1, le=MAX_SERVE_PAGE_SIZE)
 
     @field_validator("expires_at")
     @classmethod

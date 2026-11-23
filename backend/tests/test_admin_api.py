@@ -167,6 +167,24 @@ def _write_instrument_cache(path: Path, payload: dict) -> None:
 
 class TestAPIKeyAdmin:
     @pytest.mark.asyncio
+    async def test_a_serve_key_may_allow_the_largest_serve_page(
+        self,
+        client: AsyncClient,
+        admin_headers: dict,
+    ):
+        """Intraday tick pages reach 5000 rows; no Serve route accepts more."""
+        body = {"owner": "research", "scopes": ["serve"]}
+        accepted = await client.post(
+            "/api/v1/admin/api-keys", headers=admin_headers, json={**body, "page_size_limit": 5000}
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["data"]["page_size_limit"] == 5000
+        refused = await client.post(
+            "/api/v1/admin/api-keys", headers=admin_headers, json={**body, "page_size_limit": 5001}
+        )
+        assert refused.status_code == 422
+
+    @pytest.mark.asyncio
     async def test_api_key_lifecycle_controls_serve_access(
         self,
         client: AsyncClient,

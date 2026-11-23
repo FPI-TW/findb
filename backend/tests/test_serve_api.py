@@ -111,6 +111,15 @@ def minute(instrument_id: UUID, start: datetime, close: str) -> MarketDataMinute
     )
 
 
+NO_COVERAGE = {
+    "eod": None,
+    "minute": None,
+    "futures": None,
+    "intraday_bars": None,
+    "intraday_ticks": None,
+}
+
+
 def assert_error(response, status: int, code: str) -> None:
     assert response.status_code == status
     assert response.json()["detail"]["code"] == code
@@ -260,7 +269,14 @@ async def test_active_intraday_datasets_do_not_take_the_table_backed_reads_down(
 
     catalog = await client.get("/api/v1/serve/datasets")
     assert catalog.status_code == 200, catalog.text
-    assert {row["dataset_key"] for row in catalog.json()["data"]} == {"tw_equity_eod"}
+    assert [
+        (row["dataset_key"], row["frequency"], row["data_kind"], row["interval"])
+        for row in catalog.json()["data"]
+    ] == [
+        ("tw_equity_bar_1m", "minute", "intraday_bars", "1m"),
+        ("tw_equity_eod", "daily", "eod", "1d"),
+        ("tw_etf_tick", "tick", "intraday_ticks", "tick"),
+    ]
     response = await client.get("/api/v1/serve/eod", params={"instrument_id": str(instrument_id)})
     assert response.status_code == 200, response.text
     assert len(response.json()["data"]) == 1
@@ -443,6 +459,8 @@ async def test_instruments_search_facets_sort_pagination_and_domain_coverage(
         "eod": None,
         "minute": None,
         "futures": None,
+        "intraday_bars": None,
+        "intraday_ticks": None,
     }
 
     minute_sorted = await client.get(
@@ -575,8 +593,8 @@ async def test_all_coverage_sorts_mask_inactive_partial_and_missing_stats(
     by_symbol = {item["symbol"]: item["coverage"] for item in payload}
     assert by_symbol["TW_ETF"]["eod"] is None
     assert by_symbol["US_EQ"]["minute"] is None
-    assert by_symbol["PART"] == {"eod": None, "minute": None, "futures": None}
-    assert by_symbol["EMPTY"] == {"eod": None, "minute": None, "futures": None}
+    assert by_symbol["PART"] == NO_COVERAGE
+    assert by_symbol["EMPTY"] == NO_COVERAGE
 
 
 @pytest.mark.asyncio
@@ -851,6 +869,12 @@ SERVE_ROUTE_URLS = {
         "/api/v1/serve/minute?instrument_id=11111111-1111-1111-1111-111111111111"
     ),
     "/api/v1/serve/futures/eod": "/api/v1/serve/futures/eod",
+    "/api/v1/serve/intraday/bars": (
+        "/api/v1/serve/intraday/bars?instrument_id=11111111-1111-1111-1111-111111111111"
+    ),
+    "/api/v1/serve/intraday/ticks": (
+        "/api/v1/serve/intraday/ticks?instrument_id=11111111-1111-1111-1111-111111111111"
+    ),
     "/api/v1/serve/calendar": "/api/v1/serve/calendar?market=TW",
     "/api/v1/serve/calendar/years/{market}/{year}": "/api/v1/serve/calendar/years/TW/2026",
     "/api/v1/serve/market-freshness": "/api/v1/serve/market-freshness",

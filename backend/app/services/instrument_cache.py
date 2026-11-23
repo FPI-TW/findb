@@ -181,10 +181,11 @@ def _normalize_instrument_item(item: Any) -> dict[str, Any]:
 
 def _normalize_coverage(value: Any) -> dict[str, Any]:
     required = {"eod", "minute"}
-    allowed = required | {"futures"}
+    allowed = required | {"futures", *_INTRADAY_DOMAINS}
     if not isinstance(value, dict) or not required.issubset(value) or not set(value) <= allowed:
         raise InstrumentCacheValidationError(
-            "Instrument coverage must contain eod and minute, with optional futures"
+            "Instrument coverage must contain eod and minute, with optional futures, "
+            "intraday_bars and intraday_ticks"
         )
     return {
         "eod": _normalize_coverage_domain(
@@ -202,7 +203,27 @@ def _normalize_coverage(value: Any) -> dict[str, Any]:
             ("first_date", "latest_date", "latest_close"),
             "futures",
         ),
+        **{
+            domain: _normalize_date_coverage(value.get(domain), domain)
+            for domain in _INTRADAY_DOMAINS
+        },
     }
+
+
+_INTRADAY_DOMAINS = ("intraday_bars", "intraday_ticks")
+
+
+def _normalize_date_coverage(value: Any, domain: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    fields = ("first_date", "latest_date")
+    if not isinstance(value, dict) or set(value) != set(fields):
+        raise InstrumentCacheValidationError(
+            f"Instrument {domain} coverage must contain {', '.join(fields)}"
+        )
+    if not all(isinstance(value[field], str) for field in fields):
+        raise InstrumentCacheValidationError(f"Instrument {domain} coverage dates must be strings")
+    return {field: value[field] for field in fields}
 
 
 def _normalize_coverage_domain(

@@ -41,10 +41,19 @@ class MinuteCoverageResponse(BaseModel):
     latest_close: Decimal
 
 
+class IntradayCoverageResponse(BaseModel):
+    """Exchange-local trade dates of the first and latest stored day."""
+
+    first_date: date
+    latest_date: date
+
+
 class InstrumentCoverageResponse(BaseModel):
     eod: EODCoverageResponse | None = None
     minute: MinuteCoverageResponse | None = None
     futures: EODCoverageResponse | None = None
+    intraday_bars: IntradayCoverageResponse | None = None
+    intraday_ticks: IntradayCoverageResponse | None = None
 
 
 class InstrumentResponse(BaseModel):
@@ -90,9 +99,9 @@ class DatasetResponse(BaseModel):
     display_name: str
     market: str
     asset_class: str
-    frequency: Literal["daily", "minute"]
-    data_kind: Literal["eod", "minute", "futures_eod"]
-    interval: Literal["1d", "1m"]
+    frequency: Literal["daily", "minute", "tick"]
+    data_kind: Literal["eod", "minute", "futures_eod", "intraday_bars", "intraday_ticks"]
+    interval: Literal["1d", "1m", "tick"]
     availability: Literal["available", "configured_empty"]
     coverage: DatasetCoverageResponse
 
@@ -206,6 +215,82 @@ class MinuteListResponse(BaseModel):
     data: list[MinuteResponse]
     pagination: CursorPaginationInfo
     range: ResolvedDateRangeResponse
+
+
+IntradayInterval = Literal["1m", "5m", "15m", "30m", "60m"]
+
+
+class IntradayInstrumentResponse(BaseModel):
+    instrument_id: UUID
+    symbol: str
+    name: str | None = None
+    market: str
+    asset_class: str
+    currency: str | None = None
+
+
+class IntradayUnitsResponse(BaseModel):
+    """How to read the rows; volumes are lots, unlike the share-based EOD."""
+
+    volume: Literal["lot"] = "lot"
+    price_adjustment: Literal["none"] = "none"
+    instants: Literal["UTC"] = "UTC"
+    trade_date: Literal["exchange_local"] = "exchange_local"
+    market_timezone: str
+
+
+class IntradayBarResponse(BaseModel):
+    trade_date: date
+    bar_start_time: datetime
+    bar_end_time: datetime
+    session: str
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: int
+    trade_count: int | None = None
+    vwap: Decimal | None = None
+    source: str
+    source_fetched_at: datetime
+
+
+class IntradayBarListResponse(BaseModel):
+    success: Literal[True] = True
+    instrument: IntradayInstrumentResponse
+    dataset_key: str
+    interval: IntradayInterval
+    units: IntradayUnitsResponse
+    data: list[IntradayBarResponse]
+    pagination: CursorPaginationInfo
+    range: ResolvedDateRangeResponse
+
+
+class IntradayTickResponse(BaseModel):
+    trade_date: date
+    trade_time: datetime
+    sequence: int
+    session: str
+    price: Decimal
+    volume: int
+    tick_type: int | None = None
+    bid_price: Decimal | None = None
+    bid_volume: int | None = None
+    ask_price: Decimal | None = None
+    ask_volume: int | None = None
+    source: str
+    source_fetched_at: datetime
+
+
+class IntradayTickListResponse(BaseModel):
+    success: Literal[True] = True
+    instrument: IntradayInstrumentResponse
+    dataset_key: str
+    units: IntradayUnitsResponse
+    trade_date: date | None = None
+    anchor: Literal["explicit", "latest_available"]
+    data: list[IntradayTickResponse]
+    pagination: CursorPaginationInfo
 
 
 class CalendarResponse(BaseModel):

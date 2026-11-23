@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     INTRADAY_MERGE_INTERVAL_SECONDS: int = 900
     INTRADAY_MERGE_GRACE_DAYS: int = 3
     INTRADAY_MERGE_BATCH_SIZE: int = 100
+    # Serve reads of canonical intraday objects, per process: concurrent reads,
+    # how long a query waits for a free read before answering 503, and the bytes
+    # of recently read days kept in memory.
+    INTRADAY_SERVE_MAX_CONCURRENT_READS: int = 4
+    INTRADAY_SERVE_READ_WAIT_SECONDS: float = 2.0
+    INTRADAY_SERVE_CACHE_BYTES: int = 64 * 1024 * 1024
 
     # Durable normalization queue
     CELERY_BROKER_URL: str = "amqp://findb:findb@localhost:5672/%2Ffindb"

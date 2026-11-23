@@ -39,8 +39,26 @@ class FakeR2:
         body = self.objects.get((arguments["Bucket"], arguments["Key"]))
         if body is None:
             raise client_error("NoSuchKey", 404)
+        if "IfMatch" in arguments and self._etag(body) != arguments["IfMatch"]:
+            raise client_error("PreconditionFailed", 412)
+        etag = self._etag(body)
+        if "Range" in arguments:
+            first, _, last = arguments["Range"].removeprefix("bytes=").partition("-")
+            if not first:
+                start, end = max(0, len(body) - int(last)), len(body) - 1
+            else:
+                start, end = int(first), min(int(last), len(body) - 1)
+            if start > end:
+                raise client_error("InvalidRange", 416)
+            part = body[start : end + 1]
+            return {
+                "ContentLength": len(part),
+                "ContentRange": f"bytes {start}-{end}/{len(body)}",
+                "Body": io.BytesIO(part),
+                "ETag": etag,
+            }
         length = len(body) if self.declared_length is None else self.declared_length
-        return {"ContentLength": length, "Body": io.BytesIO(body), "ETag": self._etag(body)}
+        return {"ContentLength": length, "Body": io.BytesIO(body), "ETag": etag}
 
     def head_object(self, **arguments):
         self.calls.append(("head", arguments))

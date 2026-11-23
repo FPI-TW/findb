@@ -220,7 +220,7 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
 - 先查索引表決定要讀哪些檔；沒有索引的日期不讀檔。
 - 單次查詢有列數與日期範圍上限，避免一次讀出整月的逐筆。
 
-既有的 `/minute` 不變，仍只讀 PostgreSQL 的舊資料。兩者要不要合併成一個查詢，見待決定事項。
+既有的 `/minute` 不變，仍只讀 PostgreSQL 的舊資料；2026-11-23 Owner 決定另開端點、不合併（#658）。
 
 ### 60 分鐘行情
 
@@ -314,7 +314,8 @@ publisher 與 Serve reader 兩組 credential 則是原本就規劃好、這次�
    （已完成：以真實的 Fetcher 執行迴圈對真實的 Source 與 Worker 的整合測試，確認排程規劃、抓取、交付、寫入
    與計劃計數整條路徑。第一版把四個 dataset 建成未啟用，但系統沒有啟用 dataset 的操作，已由後續的 migration
    改為啟用，改以 baseline 作為逐條開放的關卡。）
-6. Backend：Serve 的 1 分 K（含彙總刻度）與逐筆查詢；Dashboard 的查詢頁視需要另開。
+6. Backend：Serve 的 1 分 K（含彙總刻度）與逐筆查詢（#658，已完成；現行規則見
+   [API 使用說明](../api/api_usage_guide.md#盤中資料)）；Dashboard 的查詢頁是否開放盤中資料待決定。
 7. Staging 驗收：先只開股票的 1 分 K，再開 ETF 與逐筆。（11/16、11/17 兩個交易日已跑完四條 feed，結果見
    下一節；沒有分區的成員改由同日日 K 佐證判定為無成交，見 [營運文件](../operations/full_market.md#finlab-盤中-feed)）
 8. Production 上線與文件整併。

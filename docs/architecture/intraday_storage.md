@@ -4,8 +4,8 @@
 PostgreSQL 只有索引表 `intraday_partition`。交付契約見
 [`intraday_partition.v1`](ingress_contracts.md#intraday_partitionv1)。
 
-目前只有儲存與正規化；還沒有 dataset、feed、Fetcher 抓取與 Serve 查詢（進度見
-[設計文件](../dev/finlab-intraday-batch1.md)）。
+Serve 以 `/serve/intraday/bars`、`/serve/intraday/ticks` 查詢，規則見
+[API 使用說明](../api/api_usage_guide.md#盤中資料)。
 
 ## 物件
 

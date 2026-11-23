@@ -45,9 +45,12 @@ class SlidingWindowLimiter:
         self._buckets: OrderedDict[str, tuple[float, deque[float]]] = OrderedDict()
         self._calls = 0
 
-    def hit(self, key: str, *, limit: int, window: float, now: float | None = None) -> bool:
-        """Record one attempt and return False when ``key`` already used ``limit``."""
+    def hit(
+        self, key: str, *, limit: int, window: float, now: float | None = None, cost: int = 1
+    ) -> bool:
+        """Record an attempt costing ``cost`` units; False when it would exceed ``limit``."""
         now = time() if now is None else now
+        cost = max(1, cost)
         with self._lock:
             self._calls += 1
             if self._calls % self.SWEEP_EVERY == 0:
@@ -55,9 +58,9 @@ class SlidingWindowLimiter:
             _, bucket = self._buckets.pop(key, (window, deque()))
             while bucket and bucket[0] <= now - window:
                 bucket.popleft()
-            allowed = len(bucket) < limit
+            allowed = len(bucket) + cost <= limit
             if allowed:
-                bucket.append(now)
+                bucket.extend([now] * cost)
             if bucket:
                 self._buckets[key] = (window, bucket)
             while len(self._buckets) > max(1, self._max_keys()):
@@ -85,6 +88,9 @@ def _max_tracked_keys() -> int:
 
 _source_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
 _serve_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
+# Intraday reads are counted apart from the rest of Serve, so heavy bar and tick
+# paging cannot use up a key's allowance for EOD and catalog queries.
+_serve_intraday_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
 _admin_login_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
 _admin_login_ip_rate_limiter = SlidingWindowLimiter(_max_tracked_keys)
 
@@ -159,10 +165,20 @@ def _enforce_source_rate_limit(
         )
 
 
-def _enforce_serve_rate_limit(key: APIKey, client_ip: str) -> None:
+def _enforce_serve_rate_limit(key: APIKey, client_ip: str, *, intraday_cost: int = 0) -> None:
     limit = max(1, int(key.rate_limit_requests))
     window_seconds = max(1, int(key.rate_limit_window))
     bucket_key = f"{key.key_id}:{client_ip}"
+    if intraday_cost:
+        if not _serve_intraday_rate_limiter.hit(
+            bucket_key, limit=limit, window=window_seconds, cost=intraday_cost
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Rate limit exceeded",
+                headers={"Retry-After": str(window_seconds)},
+            )
+        return
     if not _serve_rate_limiter.hit(bucket_key, limit=limit, window=window_seconds):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -174,6 +190,7 @@ def reset_source_rate_limit_state() -> None:
     for limiter in (
         _source_rate_limiter,
         _serve_rate_limiter,
+        _serve_intraday_rate_limiter,
         _admin_login_rate_limiter,
         _admin_login_ip_rate_limiter,
     ):
@@ -348,6 +365,7 @@ def _enforce_serve_api_key_policy(
     key: APIKey,
     *,
     default_page_size: int | None = None,
+    intraday_cost: Callable[[int], int] | None = None,
 ) -> None:
     scopes = key.scopes or []
     if "serve" not in scopes:
@@ -371,9 +389,15 @@ def _enforce_serve_api_key_policy(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"page_size exceeds API key limit of {key.page_size_limit}",
             )
+    else:
+        requested_page_size = 0
 
     client_ip = _extract_client_ip(request) or "unknown"
-    _enforce_serve_rate_limit(key, client_ip)
+    _enforce_serve_rate_limit(
+        key,
+        client_ip,
+        intraday_cost=intraday_cost(max(1, requested_page_size)) if intraday_cost else 0,
+    )
 
 
 async def _authenticate_serve_api_key(
@@ -383,6 +407,7 @@ async def _authenticate_serve_api_key(
     *,
     required: bool,
     default_page_size: int | None = None,
+    intraday_cost: Callable[[int], int] | None = None,
 ) -> str | None:
     if not required and not settings.SERVE_REQUIRE_AUTH:
         return None
@@ -406,6 +431,7 @@ async def _authenticate_serve_api_key(
             request,
             db_key,
             default_page_size=default_page_size,
+            intraday_cost=intraday_cost,
         )
         request.state.credential_ref = ("serve", db_key.key_id)
         return str(db_key.key_id)
@@ -452,6 +478,32 @@ def verify_paginated_serve_api_key(default_page_size: int):
             required=False,
             default_page_size=default_page_size,
         )
+
+    return dependency
+
+
+def require_intraday_serve_api_key(default_page_size: int, cost: Callable[[int], int]):
+    """Require a Serve key for intraday reads, counted at ``cost(page_size)`` units.
+
+    Intraday queries always need a key, whatever ``SERVE_REQUIRE_AUTH`` says, and
+    draw on an allowance of their own.
+    """
+
+    async def dependency(
+        request: Request,
+        api_key: str = Security(api_key_header),
+        db: AsyncSession = Depends(get_db),
+    ) -> str:
+        credential = await _authenticate_serve_api_key(
+            request,
+            api_key,
+            db,
+            required=True,
+            default_page_size=default_page_size,
+            intraday_cost=cost,
+        )
+        assert credential is not None
+        return credential
 
     return dependency
 
