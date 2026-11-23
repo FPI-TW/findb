@@ -1,4 +1,4 @@
-"""An active owner cannot bypass the provider-local historical expiry boundary."""
+"""An active owner cannot bypass the feed-local historical expiry boundary."""
 
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -44,7 +44,7 @@ async def test_active_historical_authorization_checks_exact_expiry_without_mutat
         assert claimed.status_code == 200, claimed.text
         first_expired_date = DAY + timedelta(days=historical._max_backfill_days())
         boundary = datetime.combine(
-            first_expired_date, time(), ZoneInfo(historical.PROVIDER_TIMEZONES[h.provider])
+            first_expired_date, time(), ZoneInfo(historical._feed_timezone(h.provider, h.dataset))
         ).astimezone(timezone.utc)
         current = [boundary - timedelta(microseconds=1)]
         monkeypatch.setattr(queue, "utc_now", lambda: current[0])

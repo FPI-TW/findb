@@ -37,7 +37,7 @@ from app.services.delivery_policy import (
 from app.services.feed_scope import lock_feed_scope
 from app.services.full_market import _calendar_market, _deadline, reconcile_plan
 from app.services.ingress_contracts import DatasetContractDeclaration
-from app.services.provider_metadata import universe_mode
+from app.services.provider_metadata import calendar_required, universe_mode
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
 from app.utils import ensure_utc, utc_now, uuid7
 
@@ -66,6 +66,31 @@ def _bounded_diagnostic(dataset_key: str, source: str, reason: str) -> dict[str,
         "dataset_key": dataset_key[:50],
         "source": source[:50],
         "reason": reason[:80],
+    }
+
+
+async def _calendar_wait_details(
+    db: AsyncSession,
+    *,
+    dataset: DatasetRegistry,
+    source: str,
+    trade_date: date,
+    deadline: datetime,
+) -> dict[str, Any] | None:
+    """Why a calendar-required feed has no plan: the date's calendar is unpublished."""
+    from app.services.effective_calendar import effective_days
+
+    if not calendar_required(source, dataset.dataset_key):
+        return None
+    market = _calendar_market(dataset)
+    day = (await effective_days(db, market, trade_date, trade_date))[0]
+    if day["calendar_source"] == "published":
+        return None
+    return {
+        "code": "CALENDAR_UNPUBLISHED",
+        "severity": "error",
+        "calendar_market": market,
+        "completion_deadline_at": deadline.isoformat(),
     }
 
 
@@ -503,6 +528,15 @@ async def _scan_full_market_feed(
             "deadline_at": deadline.isoformat(),
         }
         if plan is None:
+            calendar_wait = await _calendar_wait_details(
+                db,
+                dataset=dataset,
+                source=source,
+                trade_date=trade_date,
+                deadline=deadline,
+            )
+            if calendar_wait is not None:
+                details.update(calendar_wait)
             dated_wait = await _dated_universe_wait_details(
                 db,
                 dataset_key=dataset.dataset_key,

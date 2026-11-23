@@ -24,6 +24,8 @@ NO_DATA_NOT_CORROBORATED = "no_data_not_corroborated"
 # Plan conflict answered by submitting the date's dated universe; the value predates
 # provider-neutral naming and is shared with deployed Backends.
 DATED_UNIVERSE_REQUIRED = "taifex_dated_universe_required"
+# Plan conflict for a calendar-required feed whose date has no published calendar.
+CALENDAR_UNPUBLISHED = "CALENDAR_UNPUBLISHED"
 # Only fixed protocol vocabulary may enter logs; response details can contain
 # private scope or credentials and must never be copied into an exception.
 PROVIDER_WORK_CONFLICT_CODES = frozenset(
@@ -219,6 +221,10 @@ class FullMarketSourceClient:
                                 "code": NO_DATA_NOT_CORROBORATED
                             }:
                                 code = NO_DATA_NOT_CORROBORATED
+                            elif isinstance(error, dict) and error.get("detail") == {
+                                "code": CALENDAR_UNPUBLISHED
+                            }:
+                                code = CALENDAR_UNPUBLISHED
                             elif isinstance(error, dict) and error.get("detail") == {
                                 "code": "PROVIDER_WORK_PREPARED_DRAINING"
                             }:

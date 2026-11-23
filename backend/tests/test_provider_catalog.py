@@ -24,21 +24,18 @@ def declaration():
 
 def test_feed_markets_match_backend_timezone_authority(declaration):
     from app.services.effective_calendar import MARKETS, market_timezone
-    from app.services.historical_backfill import PROVIDER_TIMEZONES
+    from app.services.historical_backfill import FEED_TIMEZONES, RETIRED_PROVIDER_TIMEZONES
 
-    provider_zones: dict[str, set[str]] = {}
+    feed_zones: dict[tuple[str, str], str] = {}
     for feed in ProviderCatalog.model_validate(declaration).feeds:
         zone = market_timezone(feed.calendar_market).key
         assert MARKETS[feed.market][0] == zone, feed.dataset_key
         if feed.schedule is not None:
             assert feed.schedule.timezone == zone, feed.dataset_key
-        provider_zones.setdefault(feed.provider, set()).add(zone)
-    # Historical cutoffs are provider-keyed, so one provider must stay in one timezone.
-    assert all(len(zones) == 1 for zones in provider_zones.values())
-    assert {provider: zones.pop() for provider, zones in provider_zones.items()} == {
-        provider: zone for provider, zone in PROVIDER_TIMEZONES.items() if provider != "shioaji"
-    }
-    assert PROVIDER_TIMEZONES["shioaji"] == "Asia/Taipei"
+        feed_zones[(feed.provider, feed.dataset_key)] = zone
+    # Historical cutoffs are feed-keyed, so one provider's feeds may use different markets.
+    assert feed_zones == FEED_TIMEZONES
+    assert RETIRED_PROVIDER_TIMEZONES == {"shioaji": "Asia/Taipei"}
 
 
 def test_unknown_market_timezone_fails_closed():

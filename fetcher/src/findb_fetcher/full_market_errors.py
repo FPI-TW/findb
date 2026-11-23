@@ -49,6 +49,14 @@ class DatedUniversePendingError(ReadinessBlockedError):
         self.retry_after_seconds = max(60, retry_after_seconds)
 
 
+class CalendarUnpublishedPendingError(ReadinessBlockedError):
+    """The date has no published exchange calendar yet; the feed waits rather than guess."""
+
+    def __init__(self, *, retry_after_seconds: int = 3600) -> None:
+        super().__init__("calendar_unpublished")
+        self.retry_after_seconds = max(60, retry_after_seconds)
+
+
 class UniverseRefreshPendingError(ReadinessBlockedError):
     """Today's universe refresh has not published yet; today's plan waits for it."""
 

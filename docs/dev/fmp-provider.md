@@ -322,9 +322,9 @@ Owner 於 2026-11-21 定案：
 
 一個 provider 底下有不同市場與時區的 feed，需要調整：
 
-- **歷史回補的「今天」以 provider 為單位**（`backend/app/services/historical_backfill.py` 的 `PROVIDER_TIMEZONES`），
-  多個時區時最後一條 feed 會蓋掉前面的；改為依 feed 取時區。兩條測試也明訂一個 provider 只能有一個時區與一個
-  時段（`backend/tests/test_provider_catalog.py`、`test_catalog_slot_migration.py`），要一併改。
+- ~~歷史回補的「今天」以 provider 為單位~~：PR 1 已改為依 feed 的 calendar market 計算
+  （`historical_backfill.py` 的 `FEED_TIMEZONES`）。`test_catalog_slot_migration.py` 仍要求一個 control 只有一個
+  時段，隨 PR 2 的 FMP control 一起調整。
 - **控制列的顯示時間與時段**：seed 以字串比大小挑「最早的 feed」（`backend/scripts/seed_data.py`），沒有考慮時區；
   控制列只有一個 `slot_id`，Admin 依時段篩選時 FMP 只會出現在其中一個區域。依「控制台依新功能調整」的決定，
   控制台改以 feed 為單位呈現時間、時區與時段。
@@ -336,15 +336,15 @@ Owner 於 2026-11-21 定案：
 
 #### 必須有交易所日曆
 
-目前沒有這個機制：缺少日曆時一律以市場的週末設定代替，`full_market_calendar_missing` 阻擋條件已於 #296 移除。
-要新增：
+**機制已完成**（PR 1）：catalog 的 feed 欄位 `calendar_required`，行為見
+[Full market 維運](../operations/full_market.md)。指數 feed 在 PR 2 設為 `true`。
 
-- catalog 的 feed 加上「需要已發布日曆」的設定，指數 feed 全部開啟；必要時隨 execution config 發布給 Fetcher。
-- **建立當天工作時是權威檢查**（`backend/app/services/full_market.py` 的 `create_plan`）：日曆來源只是週末預設時拒絕，
-  且必須是可等待重試的拒絕；一般的 409 會被 Fetcher 當成永久的 `DAILY_SOURCE_REJECTED`。做法比照
-  `DatedUniversePendingError`。
-- 啟動資格（`full_market_admission.py` 的 `eligibility`）恢復以 feed 為單位的「缺少日曆」原因，控制台與監控
-  （`market_freshness`、`delivery_monitor`）顯示同一個原因。
+- 建立 plan 時檢查（`create_plan`），在凍結決策之前；以 409 `CALENDAR_UNPUBLISHED` 回絕，Fetcher 收到後
+  改為等待重試（`DAILY_CALENDAR_UNPUBLISHED`），不會變成永久的 `DAILY_SOURCE_REJECTED`。
+- 同一天其他 feed 照常規劃：Fetcher 規劃同日 sibling 時跳過等待日曆的那條，港股日曆缺少不會卡住美股。
+- 不做成啟動資格的阻擋條件：那是以 provider 為單位，一條 feed 缺日曆會讓整個 provider 都不能抓。
+  缺日曆改由工作的 failure code 與缺漏告警的 `CALENDAR_UNPUBLISHED` 細節顯示。
+- 歷史回補同樣檢查，範圍內有未發布的日期就整個拒絕。
 - production 目前的日曆：美股 2025–2028、港股只有 2026（`backend/scripts/seed_production_calendars.py`），2027 年起
   港股指數要等日曆發布才會執行。
 

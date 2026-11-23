@@ -35,6 +35,7 @@ const backfillScopeReasonLabels: Record<string, string> = {
   dataset_inactive: "資料集尚未啟用",
   provider_dataset_unsupported: "供應商不支援此資料集的歷史回補",
   provider_scope_inactive: "供應商與資料集的回補範圍尚未啟用",
+  calendar_unpublished: "範圍內有日期還沒有已發布的交易所日曆",
 }
 
 function formatBackfillScopeReason(reason: string | null) {

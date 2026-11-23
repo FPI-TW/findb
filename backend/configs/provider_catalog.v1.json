@@ -210,7 +210,8 @@
       "historical_cohort": "dated_release",
       "historical_requests_per_date": "per_member",
       "universe_mode": "refreshed",
-      "unlisted_symbols": "none"
+      "unlisted_symbols": "none",
+      "calendar_required": false
     },
     {
       "provider": "factset",
@@ -255,7 +256,8 @@
       "historical_cohort": "current_release",
       "historical_requests_per_date": 1,
       "universe_mode": "refreshed",
-      "unlisted_symbols": "none"
+      "unlisted_symbols": "none",
+      "calendar_required": false
     },
     {
       "provider": "finlab",
@@ -340,7 +342,8 @@
       "historical_cohort": "dated_release",
       "historical_requests_per_date": 5,
       "universe_mode": "refreshed",
-      "unlisted_symbols": "deliver"
+      "unlisted_symbols": "deliver",
+      "calendar_required": false
     },
     {
       "provider": "finlab",
@@ -384,7 +387,8 @@
       "historical_cohort": "dated_release",
       "historical_requests_per_date": 5,
       "universe_mode": "refreshed",
-      "unlisted_symbols": "deliver"
+      "unlisted_symbols": "deliver",
+      "calendar_required": false
     },
     {
       "provider": "finlab",
@@ -428,7 +432,8 @@
       "historical_cohort": null,
       "historical_requests_per_date": null,
       "universe_mode": "refreshed",
-      "unlisted_symbols": "none"
+      "unlisted_symbols": "none",
+      "calendar_required": false
     },
     {
       "provider": "finlab",
@@ -472,7 +477,8 @@
       "historical_cohort": null,
       "historical_requests_per_date": null,
       "universe_mode": "refreshed",
-      "unlisted_symbols": "none"
+      "unlisted_symbols": "none",
+      "calendar_required": false
     },
     {
       "provider": "finlab",
@@ -516,7 +522,8 @@
       "historical_cohort": null,
       "historical_requests_per_date": null,
       "universe_mode": "refreshed",
-      "unlisted_symbols": "none"
+      "unlisted_symbols": "none",
+      "calendar_required": false
     },
     {
       "provider": "finlab",
@@ -560,7 +567,8 @@
       "historical_cohort": null,
       "historical_requests_per_date": null,
       "universe_mode": "refreshed",
-      "unlisted_symbols": "none"
+      "unlisted_symbols": "none",
+      "calendar_required": false
     },
     {
       "provider": "taifex",
@@ -604,7 +612,8 @@
       "historical_cohort": "daily_report",
       "historical_requests_per_date": 5,
       "universe_mode": "dated",
-      "unlisted_symbols": "none"
+      "unlisted_symbols": "none",
+      "calendar_required": false
     },
     {
       "provider": "hkex",
@@ -648,7 +657,8 @@
       "historical_cohort": "current_release",
       "historical_requests_per_date": 2,
       "universe_mode": "refreshed",
-      "unlisted_symbols": "none"
+      "unlisted_symbols": "none",
+      "calendar_required": false
     }
   ]
 }

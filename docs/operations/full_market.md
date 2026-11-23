@@ -245,6 +245,15 @@ TW／US／HK／CN／TAIFEX 使用固定市場時區及正常收盤時間，publi
 查詢不寫 DB、不自動發布；API 保留 `calendar_source=published|weekday_default` 與可空 revision。
 缺日曆可預設，DB／認證／通訊故障則正常報錯。部署與 Owner start 不 seed 或檢查 calendar completeness。
 
+catalog 設 `calendar_required: true` 的 feed 例外，日期只用 published revision，不用 weekday 預設：
+- 建立 plan 時，該日沒有 published revision 就以 409 `{"code": "CALENDAR_UNPUBLISHED"}` 回絕，不凍結
+  決策，所以週末也不會先被凍結成 `skipped_calendar`。
+- Fetcher 把該日工作改成 `retry`，failure code 為 `DAILY_CALENDAR_UNPUBLISHED`，一小時後再試；同一天其他
+  市場的 feed 照常規劃。發布日曆後下一次重試就會建立 plan。
+- 過了完成期限仍沒有 plan 時，缺漏告警的細節是 `CALENDAR_UNPUBLISHED` 與 `calendar_market`。
+- 歷史回補：範圍內有任何一天沒有 published revision，預覽回 `calendar_unpublished`，建立時整個範圍被拒絕。
+- 歷史回補的「今天」與到期日依 feed 的 calendar market 計算，同一 provider 的 feed 可以在不同市場。
+
 `daily_execution_decision` 以 provider／dataset／日期／profile 唯一識別，原子保存 planned 或 skipped_calendar，
 凍結當日 calendar／session bounds／policy hash。既有 plan、成員、first dates、prepared bodies 不因後續更新改變。
 `skipped_calendar` 是最終決策，政策變更不重開；可另建受當時政策約束的人工回補。

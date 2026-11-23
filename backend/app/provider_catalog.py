@@ -193,6 +193,8 @@ class FeedDefinition(CatalogModel):
     historical_requests_per_date: HistoricalRequests | None
     universe_mode: UniverseMode
     unlisted_symbols: UnlistedSymbols
+    # A weekday default never stands in for a missing exchange calendar: the date waits.
+    calendar_required: bool
 
     @model_validator(mode="after")
     def coherent_capabilities(self) -> Self:

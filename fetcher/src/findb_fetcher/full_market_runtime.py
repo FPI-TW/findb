@@ -39,12 +39,14 @@ from findb_fetcher.execution_metadata import (
     provider_platform_limits,
 )
 from findb_fetcher.full_market_client import (
+    CALENDAR_UNPUBLISHED,
     DATED_UNIVERSE_REQUIRED,
     NO_DATA_NOT_CORROBORATED,
     FullMarketProtocolError,
     FullMarketSourceClient,
 )
 from findb_fetcher.full_market_errors import (
+    CalendarUnpublishedPendingError,
     DatedUniversePendingError,
     MemberUnavailableError,
     ProviderHTTPError,
@@ -1136,18 +1138,7 @@ class FullMarketRuntime:
                             raise ValueError("daily frozen feed differs from work dataset")
                         day = date.fromisoformat(work["trade_date"])
                         if self.daily_policy and admitted and not work.get("drain_only"):
-                            # Freeze all same-date admitted siblings before any SDK
-                            # dispatch, even though only this work owns acquisition.
-                            siblings = {
-                                sibling["dataset_key"]: sibling
-                                for due_day, sibling in due
-                                if due_day == day and sibling["dataset_key"] in admitted
-                            }
-                            for sibling in siblings.values():
-                                sibling_plan = self._plan_for_date(sibling, day)
-                                self.state.clear_date(self.provider, sibling["dataset_key"], day)
-                                if sibling_plan["status"] != "skipped_calendar":
-                                    self.state.record_plan(sibling_plan, self.provider)
+                            self._freeze_same_date_siblings(due, day, admitted)
                         plan = self._plan_for_date(feed, day)
                         if plan["status"] == "skipped_calendar":
                             owner.freeze(
@@ -1254,6 +1245,14 @@ class FullMarketRuntime:
                 except (HistoricalWorkDeferredError, ProviderWorkAcquisitionStopped):
                     self._settle_queued_round(
                         owner, outcome="retry", failure_code="DAILY_ACQUISITION_DEFERRED"
+                    )
+                except CalendarUnpublishedPendingError as exc:
+                    self.pause()
+                    self._settle_queued_round(
+                        owner,
+                        outcome="retry",
+                        failure_code="DAILY_CALENDAR_UNPUBLISHED",
+                        retry_delay_seconds=exc.retry_after_seconds,
                     )
                 except DatedUniversePendingError as exc:
                     self.pause()
@@ -1612,6 +1611,28 @@ class FullMarketRuntime:
             raise ReadinessBlockedError("Source frozen plan identity invalid")
         return plan
 
+    def _freeze_same_date_siblings(
+        self, due: list[tuple[date, dict[str, Any]]], day: date, admitted: list[str]
+    ) -> None:
+        """Freeze all same-date admitted siblings before any SDK dispatch.
+
+        Only the claimed work owns acquisition. A sibling whose market calendar is
+        unpublished is left to wait in its own work instead of holding this one.
+        """
+        siblings = {
+            sibling["dataset_key"]: sibling
+            for due_day, sibling in due
+            if due_day == day and sibling["dataset_key"] in admitted
+        }
+        for sibling in siblings.values():
+            try:
+                sibling_plan = self._plan_for_date(sibling, day)
+            except CalendarUnpublishedPendingError:
+                continue
+            self.state.clear_date(self.provider, sibling["dataset_key"], day)
+            if sibling_plan["status"] != "skipped_calendar":
+                self.state.record_plan(sibling_plan, self.provider)
+
     def _plan_for_date(self, feed: dict[str, Any], day: date) -> dict[str, Any]:
         existing = self._existing_plan(feed, day)
         if existing is not None:
@@ -1632,6 +1653,8 @@ class FullMarketRuntime:
                 existing = self._existing_plan(feed, day)
                 if existing is not None:
                     return existing
+                if exc.code == CALENDAR_UNPUBLISHED:
+                    raise CalendarUnpublishedPendingError() from None
                 if exc.code == DATED_UNIVERSE_REQUIRED and dated_universe(
                     self.provider, feed["dataset_key"]
                 ):
