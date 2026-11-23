@@ -313,9 +313,9 @@ Owner 於 2026-11-23 決定：
   `FeedDefinition` 的 `asset_class`。
 - 市場與交易日曆：美股組 `US`，港股組 `HK`；幣別 `USD`、`HKD`。
 - **代號沿用 FMP 原樣**，例如 `^GSPC`、`^HSI`。
-- 既有資料可能已有舊代號的指數 instrument：`backend/scripts/backfill_world_names.py` 的 `INDEX_NAMES` 用的是
-  `SPX`、`INDU`、`CCMP`、`RTY` 等代號。新代號會建立新的 instrument，不會覆蓋舊的。實作 migration 前，要先唯讀查
-  production 有哪些 `asset_class = 'index'` 的 instrument 與日線，再決定舊 instrument 怎麼處理。
+- 2026-11-23 唯讀查 production：沒有 `asset_class = 'index'` 的 instrument，也沒有指數 dataset，不會和舊資料衝突。
+  `backend/scripts/backfill_world_names.py` 的 `INDEX_NAMES` 仍用 `SPX`、`INDU` 等舊代號，改為 FMP 代號，或移除指數
+  名稱改由 FMP 提供。
 
 #### 歷史回補
 
@@ -467,7 +467,6 @@ Owner 於 2026-11-19 決定：
 ## 待決事項
 
 - 商品與跨資產的 instrument 模型：`asset_class`、市場代碼、交易日曆、幣別與代號格式。指數已定案，見「指數的資料模型」。
-- 既有舊代號指數 instrument（`SPX` 等）的處理方式，待唯讀查 production 後決定。
 - 指數歷史回補的起始年份，以及要先匯入哪些年份的交易所日曆。
 - 美股 515 檔的名單來源，以及每個 dataset 的 bounded universe。
 - 階段 5 的批次順序。
