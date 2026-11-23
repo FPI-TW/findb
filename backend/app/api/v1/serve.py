@@ -4,7 +4,7 @@ from datetime import date, time
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -39,6 +39,7 @@ from app.services import serve_downloads, serve_intraday
 from app.services.effective_calendar import published_calendar_year
 from app.services.market_freshness import list_market_freshness
 from app.services.serve_downloads import DOWNLOAD_SCOPE
+from app.services.serve_errors import serve_error
 from app.services.slot_identity import CanonicalSlotId
 
 router = APIRouter()
@@ -231,7 +232,7 @@ async def get_published_calendar_year(
     try:
         year_data = await published_calendar_year(db, market, year)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise serve_error(422, "INVALID_PARAMETER", str(exc)) from exc
     return PublishedCalendarYearEnvelope(
         data=PublishedCalendarYearResponse(
             **{

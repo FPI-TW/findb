@@ -32,20 +32,6 @@ async def find_active_api_key(db: AsyncSession, api_key: str) -> APIKey | None:
     return row
 
 
-async def has_active_api_keys(db: AsyncSession) -> bool:
-    now = utc_now()
-    result = await db.execute(
-        select(APIKey.key_id)
-        .where(
-            APIKey.kind == "serve",
-            APIKey.revoked_at.is_(None),
-            (APIKey.expires_at.is_(None) | (APIKey.expires_at > now)),
-        )
-        .limit(1)
-    )
-    return result.scalar_one_or_none() is not None
-
-
 async def has_active_admin_keys(db: AsyncSession) -> bool:
     now = utc_now()
     result = await db.execute(

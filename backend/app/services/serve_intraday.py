@@ -52,8 +52,8 @@ from app.services.serve import (
     _decode_cursor,
     _encode_cursor,
     active_intraday_datasets,
-    serve_error,
 )
+from app.services.serve_errors import serve_error
 
 RecordKind = Literal["bar_1m", "tick"]
 T = TypeVar("T")
@@ -144,9 +144,7 @@ def _read_with_slot(work: Callable[[], T]) -> T:
 
 def _unavailable(code: str, message: str, retry_after: int | None = None) -> HTTPException:
     headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
-    return HTTPException(
-        status_code=503, detail={"code": code, "message": message}, headers=headers
-    )
+    return serve_error(503, code, message, headers=headers)
 
 
 async def _indexed_days(

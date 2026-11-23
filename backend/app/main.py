@@ -9,15 +9,22 @@ from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import admin, serve, source
 from app.config import get_settings
 from app.models.base import async_session_maker, init_db
 from app.services.credential_usage import flush_usage, periodic_flush, record_usage
+from app.services.serve_errors import fallback_code
 
 settings = get_settings()
 APP_ROLE = settings.APP_ROLE.lower().strip()
@@ -97,6 +104,56 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+SERVE_PREFIX = f"{settings.API_V1_PREFIX}/serve"
+
+
+def _is_serve_request(request: Request) -> bool:
+    return request.url.path == SERVE_PREFIX or request.url.path.startswith(f"{SERVE_PREFIX}/")
+
+
+@app.exception_handler(RequestValidationError)
+async def serve_validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Serve reports bad parameters with a code; Source and Admin keep FastAPI's list."""
+    if not _is_serve_request(request):
+        return await request_validation_exception_handler(request, exc)
+    errors = [
+        {
+            "location": str(error["loc"][0]) if error.get("loc") else "request",
+            "param": ".".join(str(part) for part in error.get("loc", ())[1:]) or None,
+            "reason": error.get("msg", "invalid value"),
+        }
+        for error in exc.errors()
+    ]
+    names = sorted({error["param"] for error in errors if error["param"]})
+    message = f"Invalid parameter: {', '.join(names)}" if names else "Invalid request"
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": {
+                "code": "INVALID_PARAMETER",
+                "message": message,
+                "details": {"errors": errors},
+            }
+        },
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def serve_http_error_handler(request: Request, exc: StarletteHTTPException):
+    """Give Serve errors raised without a code (e.g. an unknown path) a code of their own."""
+    if _is_serve_request(request) and not isinstance(exc.detail, dict):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": {"code": fallback_code(exc.status_code), "message": str(exc.detail)}
+            },
+            headers=getattr(exc, "headers", None),
+        )
+    return await http_exception_handler(request, exc)
 
 
 @app.middleware("http")
