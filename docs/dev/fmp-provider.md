@@ -294,15 +294,36 @@ Owner 於 2026-11-21 定案：
 
 | 組 | 指數 | 排程 | 完成期限 | 交易日曆 |
 | --- | --- | --- | --- | --- |
-| 港股（dataset 暫稱 `hk_index_eod`） | `^HSI`、`^HSCE` | 香港時間 20:00，`target_date_lag_days` 0 | 隔天 08:00 HKT | HK |
-| 美股（dataset 暫稱 `us_index_eod`） | 其餘 8 檔，含 `^VIX` | 台北時間 08:30，`target_date_lag_days` 1 | 同日 20:30（台北） | US |
+| 港股（dataset `hk_index_eod`） | `^HSI`、`^HSCE` | 香港時間 20:00，`target_date_lag_days` 0 | 隔天 08:00 HKT | HK |
+| 美股（dataset `us_index_eod`） | 其餘 8 檔，含 `^VIX` | 台北時間 08:30，`target_date_lag_days` 1 | 同日 20:30（台北） | US |
 
+- dataset 名稱 `hk_index_eod`、`us_index_eod` 由 Owner 於 2026-11-23 確認。
 - 美股組以台北時間排程，抓的是前一個紐約交易日。台北 08:30 在美國冬令時間是 19:30 ET，夏令時間是 20:30 ET。
   - 11-20（冬令時間）最晚的 `^NDX` 在 19:01 ET 定案，離排程約 30 分鐘。
   - 前一天的列從 00:03 ET 起被換成錯的版本，台北 08:30 在這之前。
 - 星期六 08:30 抓星期五，星期一 08:30 的目標日是星期日，依美股日曆沒有工作。
 - 完成期限依現行規則為排程加 12 小時。
 - 定案後不再重抓覆寫：觀測到的隔天改值，一種是半夜出現錯的版本，另一種是改成和官方差 0.01。
+
+#### 指數的資料模型
+
+Owner 於 2026-11-23 決定：
+
+- `asset_class` 為 `index`。Canonical 的詞彙表（`backend/app/vocabulary.py`）已有 `index`，只需擴充 catalog
+  `FeedDefinition` 的 `asset_class`。
+- 市場與交易日曆：美股組 `US`，港股組 `HK`；幣別 `USD`、`HKD`。
+- **代號沿用 FMP 原樣**，例如 `^GSPC`、`^HSI`。
+- 既有資料可能已有舊代號的指數 instrument：`backend/scripts/backfill_world_names.py` 的 `INDEX_NAMES` 用的是
+  `SPX`、`INDU`、`CCMP`、`RTY` 等代號。新代號會建立新的 instrument，不會覆蓋舊的。實作 migration 前，要先唯讀查
+  production 有哪些 `asset_class = 'index'` 的 instrument 與日線，再決定舊 instrument 怎麼處理。
+
+#### 歷史回補
+
+Owner 於 2026-11-23 決定：**回補功能本次要做完整，但先不執行。** 等補齊交易所日曆後，下一輪再跑。
+
+- catalog 的 `historical` 設為 `executable`，Fetcher 的 historical runner、回補 CLI 與「依 feed 取時區」都在本次完成並測試。
+- 本次上線只啟動每日更新，不送出回補請求。
+- 「必須有已發布日曆」同樣適用於回補：production 的日曆目前只有美股 2025–2028、港股 2026，更早的日期要先匯入日曆。
 
 #### 每日抓取方式
 
@@ -353,7 +374,7 @@ Owner 於 2026-11-21 定案：
 - **Backend**
   - `backend/configs/provider_catalog.v1.json` 新增 provider `fmp` 與各組指數 feeds；擴充 `FeedDefinition` 的
     `asset_class`（`index`）與「需要已發布日曆」設定，以 `backend/scripts/export_provider_catalog.py` 重產生 artifacts。
-  - Instrument 模型：指數的代號、市場、交易日曆與幣別，見「待決事項」。
+  - Instrument 模型：`asset_class` 為 `index`、代號沿用 FMP，見「指數的資料模型」。
   - `backend/app/config.py` 新增 `FMP_SKIP_NON_TRADING_DAYS`（`effective_calendar` 依 `calendar_switch_env` 讀取）。
   - `backend/scripts/seed_data.py` 的 `SUPPORTED_DATASETS` 與 dataset 定義；registry、scheduler dataset、control
     `full_market_fmp_v1` 與 Source credential scope。
@@ -445,7 +466,9 @@ Owner 於 2026-11-19 決定：
 
 ## 待決事項
 
-- 指數、商品與跨資產的 instrument 模型：`asset_class`、市場代碼、交易日曆、幣別與代號格式（例如 `^HSI`）。
+- 商品與跨資產的 instrument 模型：`asset_class`、市場代碼、交易日曆、幣別與代號格式。指數已定案，見「指數的資料模型」。
+- 既有舊代號指數 instrument（`SPX` 等）的處理方式，待唯讀查 production 後決定。
+- 指數歷史回補的起始年份，以及要先匯入哪些年份的交易所日曆。
 - 美股 515 檔的名單來源，以及每個 dataset 的 bounded universe。
 - 階段 5 的批次順序。
 - 授權條款是否允許內部再提供給下游專案。
