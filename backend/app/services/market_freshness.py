@@ -38,6 +38,7 @@ from app.services.feed_schedule import feed_schedule_view
 from app.services.full_market_governance import (
     full_market_configuration as _full_market_configuration,
 )
+from app.services.provider_metadata import acquisition_feed
 from app.services.scheduler_control import (
     list_scheduler_controls,
     scheduler_dataset_keys,
@@ -81,6 +82,7 @@ class PendingFeed:
 
 @dataclass(frozen=True)
 class MarketFreshness:
+    # The first feed's market; ``markets`` lists every market a control covers.
     market: str
     scheduler_key: str
     provider: str
@@ -114,6 +116,7 @@ class MarketFreshness:
     activation_state: Literal["not_activated", "activated", "deactivated"] | None
     active_dataset_keys: tuple[str, ...]
     pending_feeds: tuple[PendingFeed, ...]
+    markets: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -926,6 +929,7 @@ async def _build_scheduler_freshness(
     )
     return MarketFreshness(
         market=market,
+        markets=tuple(sorted(set(markets))),
         scheduler_key=definition.scheduler_key,
         provider=definition.provider,
         dataset_keys=definition.dataset_keys,
@@ -984,6 +988,16 @@ async def _build_scheduler_freshness(
     )
 
 
+def _feed_slots(definition: _SchedulerDefinition) -> set[str]:
+    """Slots of a control's feeds; one control may group feeds of different slots."""
+    slots: set[str] = {
+        feed.delivery.slot_id
+        for key in definition.dataset_keys
+        if (feed := acquisition_feed(definition.provider, key)) is not None
+    }
+    return slots or {definition.slot_id}
+
+
 async def list_market_freshness(
     db: AsyncSession,
     *,
@@ -1018,7 +1032,7 @@ async def list_market_freshness(
     for definition in definitions:
         if profile is not None and not unified_scheduler(definition.scheduler_key):
             continue
-        if validated_slot_filter and definition.slot_id != validated_slot_filter:
+        if validated_slot_filter and validated_slot_filter not in _feed_slots(definition):
             continue
         mapped_markets = {
             datasets[key].market.upper() for key in definition.dataset_keys if key in datasets

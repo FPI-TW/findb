@@ -351,8 +351,11 @@ Owner 於 2026-11-23 決定：**回補功能本次要做完整，但先不執行
 - ~~排程時區必須等於交易所時區~~：PR 2 核對 Backend 與 Fetcher 的排程計算（`data_ready_at`、`latest_due_date`、
   期限、`next_scheduled_at`、Fetcher 規劃日期與發布窗口）都依 feed 自己的時區與 lag，移除這條測試限制，並以
   台北 08:30、lag 1 的指數 feed 補測試（`backend/tests/test_cross_timezone_schedule.py`）。
-- **控制列的時段**：控制列只有一個 `slot_id`，Admin 依時段篩選時 FMP 只會出現在其中一個區域。依「控制台依新功能
-  調整」的決定，控制台改以 feed 為單位呈現時間、時區與時段。
+- ~~控制列的時段~~（PR 5）：Admin 的 `slot_id` 篩選改依各 feed 的 slot，FMP 在兩個 slot 都會出現；
+  market-freshness 新增 `markets`。控制台每條 feed 顯示市場、時間、時區、抓當日或前幾日與下次執行時間，
+  多市場的 control 只顯示一張卡（`HK / US`）；slot 依原決定不顯示。
+  - 「未部署的 provider 不可 start」不做：每個 catalog provider 都有 consumers；Backend 先於 Fetcher 部署時
+    若先 start，Fetcher 部署前檢查要求 controls 停止，不會在沒有 consumer 時抓取。
 - **啟動資格以 provider 為單位**：任何一條 feed 沒就緒，整個 provider 都不能抓
   （`backend/app/services/full_market_admission.py`）。指數 feed 少，第一版沿用；之後 feed 變多再評估改成依 feed。
 - `not_before` 依 dataset 的市場收盤時間計算（`backend/app/services/provider_work.py` 的 `daily_readiness`），
@@ -383,8 +386,8 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
 | 1 | `calendar_required`、缺日曆時等待重試、歷史回補時區改依 feed | 已合併（#646） |
 | 2 | Backend 準備：`asset_class` 加 `index`、名單成員可用 `^` 開頭的指數代號、`FMP_SKIP_NON_TRADING_DAYS`、seed 依 UTC 時刻挑最早的 feed、跨時區與 lag 1 的排程測試、`backfill_world_names.py` 改用 FMP 代號 | 已合併（#648） |
 | 3 | Fetcher：FMP client 與 adapter、名單刷新、歷史回補經通用的 member runner（尚不登記到 `ADAPTERS`） | 已合併（#649） |
-| 4 | 啟用：catalog 的 `fmp` 與兩條 feed、migration `e5a7c9b1d3f2`（dataset、stopped control、凍結 schedule inspection）、Serve 的指數 scope、Fetcher 登記、infra（bundle v7、secrets、部署腳本）、端到端驗收測試 | 本 PR |
-| 5 | Dashboard：依 feed 顯示時間、時區與時段，未部署的 provider 不可 start | 未開始 |
+| 4 | 啟用：catalog 的 `fmp` 與兩條 feed、migration `e5a7c9b1d3f2`（dataset、stopped control、凍結 schedule inspection）、Serve 的指數 scope、Fetcher 登記、infra（bundle v7、secrets、部署腳本）、端到端驗收測試 | 已合併（#650），staging 已部署 |
+| 5 | Dashboard 與 Admin：逐 feed 顯示市場、時間、時區與抓取日期，多市場 control 一張卡；slot 篩選依 feed | 本 PR |
 | 6 | staging 驗收：只啟動 `fmp`，首日先設成單日 | 未開始 |
 
 #### 實作要點

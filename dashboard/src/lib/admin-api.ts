@@ -257,6 +257,8 @@ export const marketFreshnessSchema = z.object({
   data: z.array(
     z.object({
       market: z.string(),
+      // Every market the control covers; older Backends send only ``market``.
+      markets: z.array(z.string()).default([]),
       execution_profile: executionProfileSchema.optional(),
       scheduler_key: z.string().trim().min(1).max(200),
       provider: z.string().trim().min(1).max(100),

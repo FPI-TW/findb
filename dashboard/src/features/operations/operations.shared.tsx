@@ -104,6 +104,26 @@ export function formatScheduledTime(value: string) {
   return `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`
 }
 
+/** One feed's own clock: market, local start, timezone and which date it fetches. */
+export function describeFeedSchedule(feed: {
+  market: string
+  scheduled_time: string
+  source_timezone: string
+  target_date_lag_days: number
+}) {
+  const target =
+    feed.target_date_lag_days > 0
+      ? `抓前 ${feed.target_date_lag_days} 日的 ${feed.market} 資料`
+      : `抓當日 ${feed.market} 資料`
+  return `${feed.market} · 每日 ${formatScheduledTime(feed.scheduled_time)}（${feed.source_timezone}）· ${target}`
+}
+
+/** A control's market group: one heading even when its feeds span markets. */
+export function marketGroup(markets: readonly string[]) {
+  const unique = [...new Set(markets)].sort()
+  return unique.length ? unique.join(" / ") : "其他"
+}
+
 export function getVisiblePages(currentPage: number, totalPages: number) {
   if (totalPages <= 7) {
     return Array.from({ length: totalPages }, (_, index) => index + 1)
@@ -508,8 +528,8 @@ export function FeedDetails({ feeds }: { feeds: MarketFreshness["feeds"] }) {
             </p>
             {feed.schedule && (
               <p className="mt-1 mb-0 text-muted">
-                每日 {feed.schedule.scheduled_time} ·{" "}
-                {feed.schedule.source_timezone}
+                {describeFeedSchedule(feed.schedule)} · 下次{" "}
+                <DateWithRelative value={feed.schedule.next_scheduled_at} />
               </p>
             )}
             <p className="mt-1 mb-0 text-muted">
