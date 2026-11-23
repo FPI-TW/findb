@@ -262,20 +262,26 @@ def contract_row(native: dict[str, Any], *, symbol: str, currency: str) -> dict[
     it covers, so a missing one is a malformed row, not a partial bar. Their order
     is left to Backend DQ, the one authority on bar consistency.
 
-    Volume is not delivered. An index has no traded volume of its own, and FMP's
-    figure is not one series: ``^RUT`` and ``^NYA`` repeat ``^GSPC``'s on nine days
-    in ten, ``^SOX`` and ``^VIX`` are always zero, ``^NDX`` is a sixth of other
-    vendors', and ``^HSCE`` switched from shares to thousands of shares on
-    2024-10-08 without saying so (2021-2026 comparison).
+    Volume is FMP's figure unchanged, zero included: no other source serves index
+    volume. It is not one consistent series (``^RUT`` and ``^NYA`` mostly repeat
+    ``^GSPC``'s; ``^HSCE`` counts thousands of shares since 2024-10-08), which
+    ``docs/dev/fmp-provider.md`` records for readers of the data.
     """
     levels = {name: _level(native.get(name)) for name in ("open", "high", "low", "close")}
+    volume = native.get("volume")
+    if isinstance(volume, float) and volume.is_integer():
+        volume = int(volume)
+    if volume is not None and (
+        isinstance(volume, bool) or not isinstance(volume, int) or not 0 <= volume <= 2**63 - 1
+    ):
+        raise FMPRowError("FMP_VOLUME_INVALID")
     return {
         "symbol": symbol,
         "source_symbol": native["symbol"],
         "trade_date": native["date"],
         "currency": currency,
         **{name: str(number) for name, number in levels.items()},
-        "volume": None,
+        "volume": volume,
     }
 
 

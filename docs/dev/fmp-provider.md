@@ -409,14 +409,14 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
     - 每檔每天一次 `historical-price-eod/full`（`from` = `to` = 目標日），journal 只在回應已有目標日那一列時才重播，
       所以「尚未發布」的空回應不會被重用。
     - 開高低收四個值都必須有、為正且有限；高低順序交給 Backend DQ 判斷。
-    - **不送成交量**（`volume` 一律為空）。指數本身沒有成交量，FMP 的值也不是同一種數列。2021-01 至 2026-11
-      的比對結果如下：
+    - **成交量照 FMP 原值送出，0 就存 0**（Owner 於 2026-11-23 決定：沒有其他來源可以取代）。指數本身沒有
+      成交量，FMP 的值也不是一致的數列，使用時要注意（2021-01 至 2026-11 比對）：
       - `^RUT`、`^NYA` 約九成交易日與 `^GSPC` 的值完全相同，yfinance 也一樣；
       - `^SOX`、`^VIX` 一律為 0；
-      - `^NDX` 約是 yfinance 的 1/6。
+      - `^NDX` 約是 yfinance 的 1/6；
       - `^HSCE` 依數量級是成交股數，不是成交金額。2024-10-08 起，FMP 沒有標示就把單位從「股」改成「千股」：
         2024-10-07 是 4,488,874,200，10-08 是 10,624,600（同日 `^HSI` 為 11,257,900,000）。
-        換單位之後和 yfinance 相同，之前是 yfinance 的 1000 倍。
+        換單位之後和 yfinance 相同，之前是 yfinance 的 1000 倍。每日抓取與回補都存原值，不換算。
   - `provider_adapters/fmp.py`：`ProviderAdapter` 子類；每檔一次 JSON 請求、一個 raw 物件，沿用 json raw 格式。
     - 兩組的指數清單寫在 adapter（`INDEX_UNIVERSES`）。名單刷新讀 FMP 的 `/stable/index-list`（帶金鑰，經
       `UniverseContext.http` 走 runtime 的 governed client），每個指數都要在清單上、幣別相符，否則中止刷新、

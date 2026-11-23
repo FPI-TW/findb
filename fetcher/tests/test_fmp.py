@@ -224,7 +224,7 @@ def test_only_the_target_dated_row_of_the_symbol_counts() -> None:
             target_row(malformed, symbol="^GSPC", day=FRIDAY)
 
 
-def test_index_levels_map_to_market_eod_without_a_volume() -> None:
+def test_index_levels_and_volume_map_to_market_eod_unchanged() -> None:
     row = contract_row(_row(), symbol="^GSPC", currency="USD")
     assert row == {
         "symbol": "^GSPC",
@@ -235,9 +235,14 @@ def test_index_levels_map_to_market_eod_without_a_volume() -> None:
         "high": "6552.57",
         "low": "6521.92",
         "close": "6538.76",
-        # FMP's index volume is no reliable series; it is never delivered.
-        "volume": None,
+        "volume": 2_889_474_867,
     }
+    # FMP's zero is kept as zero: no other source serves index volume.
+    assert contract_row(_row(volume=0), symbol="^VIX", currency="USD")["volume"] == 0
+    assert contract_row(_row(volume=12.0), symbol="^GSPC", currency="USD")["volume"] == 12
+    native = _row()
+    del native["volume"]
+    assert contract_row(native, symbol="^GSPC", currency="USD")["volume"] is None
     for changes in (
         {"close": None},
         {"open": 0},
@@ -245,6 +250,9 @@ def test_index_levels_map_to_market_eod_without_a_volume() -> None:
         {"low": True},
         {"close": 1e13},
         {"open": [1]},
+        {"volume": -1},
+        {"volume": 1.5},
+        {"volume": "100"},
     ):
         with pytest.raises(FMPRowError):
             contract_row(_row(**changes), symbol="^GSPC", currency="USD")
