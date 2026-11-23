@@ -1090,6 +1090,42 @@ async def list_eod(
     )
 
 
+async def _open_days_between_bars(
+    db: AsyncSession,
+    matches: list[_SelectorMatch],
+    recent_rows: dict[UUID, list[MarketDataEOD]],
+) -> dict[str, set[date] | None]:
+    """Open dates of each market spanning its instruments' last two bars; None without a calendar."""
+    from app.services.effective_calendar import effective_days
+
+    spans: dict[str, tuple[date, date]] = {}
+    for match in matches:
+        if match.instrument is None:
+            continue
+        dates = [row.trade_date for row in recent_rows.get(match.instrument.instrument_id, [])]
+        if len(dates) < 2:
+            continue
+        low, high = spans.get(match.instrument.market, (min(dates), max(dates)))
+        spans[match.instrument.market] = (min(low, *dates), max(high, *dates))
+    open_days: dict[str, set[date] | None] = {}
+    for market, (start, end) in spans.items():
+        try:
+            days = await effective_days(db, market, start, end)
+        except ValueError:
+            open_days[market] = None
+            continue
+        open_days[market] = {
+            date.fromisoformat(day["trade_date"]) for day in days if day["is_open"]
+        }
+    return open_days
+
+
+def _sessions_between(open_days: set[date] | None, previous: date, latest: date) -> int | None:
+    if open_days is None:
+        return None
+    return sum(1 for day in open_days if previous < day < latest)
+
+
 def _change_percent(change: Decimal, previous: Decimal) -> Decimal | None:
     if previous == 0:
         return None
@@ -1127,6 +1163,7 @@ async def latest_eod(
             .all()
         ):
             recent_rows.setdefault(row.instrument_id, []).append(row)
+    open_days = await _open_days_between_bars(db, matches, recent_rows)
     data: list[EODLatestQuote] = []
     missing: list[EODLatestMissing] = []
     for match in matches:
@@ -1151,9 +1188,20 @@ async def latest_eod(
             continue
         latest = bars[0]
         previous = bars[1] if len(bars) > 1 else None
+        missing_sessions = (
+            _sessions_between(
+                open_days.get(match.instrument.market), previous.trade_date, latest.trade_date
+            )
+            if previous is not None
+            else None
+        )
+        # A change across skipped sessions is not the day's move, so it is not reported.
         change = (
             latest.close - previous.close
-            if previous is not None and latest.close is not None and previous.close is not None
+            if previous is not None
+            and missing_sessions == 0
+            and latest.close is not None
+            and previous.close is not None
             else None
         )
         data.append(
@@ -1169,6 +1217,7 @@ async def latest_eod(
                 turnover=latest.turnover,
                 previous_trade_date=previous.trade_date if previous else None,
                 previous_close=previous.close if previous else None,
+                missing_sessions=missing_sessions,
                 change=change,
                 change_percent=(
                     _change_percent(change, cast(Decimal, previous.close))

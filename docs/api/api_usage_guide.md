@@ -249,7 +249,9 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   `{"close": "hkex", "volume": "hkex", ...}`、Admin 修正後為 `{"close": "manual"}`；所有欄位都是
   `source` 自己的值時為 null。
 - `GET /serve/eod/latest?instruments=TW:2330,US:AAPL`：每檔在 `as_of_date`（預設最新）當天或之前的最後一根
-  日 K，附前一根的日期與收盤、`change` 與 `change_percent`（小數 4 位）。答不出的輸入列在 `missing`，
+  日 K，附前一根的日期與收盤、`change` 與 `change_percent`（小數 4 位）。`missing_sessions` 是兩根之間
+  該市場交易日曆上的開市日數；不是 0（缺資料或停牌）時 `change` 與 `change_percent` 為 null，避免把跨多日的
+  差距當成當天漲跌；`previous_close` 仍照常回傳。答不出的輸入列在 `missing`，
   原因是 `not_found`、`ambiguous`（附 `matches`）、`not_available` 或 `no_data`，不會讓整個請求失敗。
 - `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
   最新canonical minute日期向前一個曆月，resolved range會固定在cursor內。
