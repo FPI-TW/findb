@@ -1263,7 +1263,7 @@ Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類�
 | FinLab OHLC 等單檔值不合法、Twelve Data 幣別不符或 mapper 拒絕、Source DQ 拒絕 | `invalid`（`row_structure_invalid`），附 raw | 繼續 |
 | 限流、provider 暫時錯誤、FinLab 尚未發布該日期 | — | 整日稍後重試；已完成成員不重抓 |
 
-成員送出後不逐檔等待 normalization：已接受的 run 先不讀取結果，繼續抓取與交付後面的成員，同時最多保留 16 筆
+成員送出後不逐檔等待 normalization（FactSet daily 與 historical 也一樣）：已接受的 run 先不讀取結果，繼續抓取與交付後面的成員，同時最多保留 16 筆
 未讀取的 run，超過時才讀取最早的一筆；全部成員送出後再讀完剩下的。讀取時 run 仍在佇列才等待（0.25、0.5、1、2 秒
 遞增），單筆最長 30 秒，逾時則整日稍後重試，已讀取的成員結果保留。交付期間每 60 秒與結束時輸出與 daily 相同格式的
 `delivery_timing`，以 `item_id` 標示，另含 `step normalization_wait`。

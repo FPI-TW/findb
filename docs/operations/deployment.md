@@ -655,8 +655,8 @@ acquiring work 完成。Idle daemon 仍顯示 running 是正常狀態；helper �
 Provider container 收到 TERM 後有 90 秒完成當前 bounded operation 與回收隔離 child；此上限涵蓋
 FactSet 最長 60 秒查詢、額外 20 秒 supervisor deadline 與 process-group reap 緩衝。超過時 Docker 才送 KILL，
 helper 會將非零 exit 視為 `graceful_stop` 失敗並觸發交易回復，不會接受或啟用候選版本。
-這 90 秒不是完整 historical 日期的排空預算；例如 FactSet 會逐成員交付並等待 normalization，
-整日 frozen cohort 可能需要數小時。停止 Full controls 不會停止 historical，也不代表
+這 90 秒不是完整 historical 日期的排空預算；例如 FactSet 整日 frozen cohort 逐成員交付，最多保留 16 筆
+尚未讀取結果的 run，排空可能需要數十分鐘以上。停止 Full controls 不會停止 historical，也不代表
 provider owner 已釋放。部署前須另確認 historical／maintenance work 已結算、所有已接受 runs
 均為 terminal、provider owner 無 active attempt；不能只看八個容器 running／健康就重試。
 若因 historical 未排空而停止失敗，先確認 transaction aborted、原 container IDs／current 已恢復，
