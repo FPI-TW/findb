@@ -28,10 +28,10 @@ from app.config import get_settings
 from app.models.canonical import Instrument, IntradayPartition
 from app.schemas.serve import (
     CursorPaginationInfo,
+    InstrumentSummaryResponse,
     IntradayBarListResponse,
     IntradayBarResponse,
     IntradayCoverageResponse,
-    IntradayInstrumentResponse,
     IntradayInterval,
     IntradayTickListResponse,
     IntradayTickResponse,
@@ -253,8 +253,8 @@ async def _latest_date(db: AsyncSession, dataset_key: str, symbol: str) -> date 
     )
 
 
-def _instrument(instrument: Instrument) -> IntradayInstrumentResponse:
-    return IntradayInstrumentResponse(
+def _instrument(instrument: Instrument) -> InstrumentSummaryResponse:
+    return InstrumentSummaryResponse(
         instrument_id=instrument.instrument_id,
         symbol=instrument.symbol,
         name=instrument.name,

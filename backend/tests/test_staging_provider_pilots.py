@@ -317,7 +317,7 @@ async def test_actual_market_pipeline_serve_provenance(
     served = await owned_client.get(
         "/api/v1/serve/minute" if is_minute else "/api/v1/serve/eod",
         params={
-            "instrument_id": sample["sample_instrument_id"],
+            ("instrument_id" if is_minute else "instruments"): sample["sample_instrument_id"],
             "start_date": sample["sample_trade_date"],
             "end_date": sample["sample_trade_date"],
             "page_size": 1000 if is_minute else 1,

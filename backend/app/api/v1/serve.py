@@ -23,6 +23,7 @@ from app.schemas.serve import (
     CalendarListResponse,
     CalendarResponse,
     DatasetListResponse,
+    EODLatestResponse,
     EODListResponse,
     FuturesEODListResponse,
     InstrumentDetailResponse,
@@ -299,26 +300,44 @@ async def get_instrument(
     return await serve_queries.get_instrument(db, instrument_id)
 
 
+InstrumentsQuery = Annotated[
+    str,
+    Query(
+        description=(
+            "Comma-separated instruments, at most 50, each a FinDB UUID or `MARKET:SYMBOL` "
+            "(markets may differ). Symbols are matched like `resolve_instruments`."
+        ),
+        examples=["TW:2330,US:AAPL,HK:700"],
+    ),
+]
+ORDER_DESCRIPTION = "`desc` (default): newest trade date first; `asc`: oldest first."
+SELECTOR_ERRORS = (
+    "`AMBIGUOUS_INSTRUMENT`: a `MARKET:SYMBOL` matches several asset classes; "
+    "`details.matches` lists the candidate ids to use instead. `INVALID_SYMBOLS`: a value is "
+    "neither a UUID nor `MARKET:SYMBOL`, or there are more than 50."
+)
+
+
 @router.get(
     "/eod",
     response_model=EODListResponse,
     operation_id="list_eod",
     summary="Daily OHLCV bars",
     description=(
-        "Daily bars for equities, ETFs and indices. Give exactly one scope: `instrument_id` "
-        "for one instrument, or `market` for a whole market, optionally narrowed with "
-        "`symbols`. Rows come newest trade date first. Prices are as traded (not adjusted for "
-        "splits or dividends); equity volume is in shares. Dates are exchange-local and "
-        "inclusive; without dates every stored date is returned, so give a range and follow "
-        "`pagination.next_cursor` until it is null."
+        "Daily bars for equities, ETFs and indices. Give exactly one scope: `instruments` (up "
+        "to 50, may mix markets) or `market` for every instrument of one market. Rows are "
+        "ordered by trade date (`order`), then instrument. Prices are as traded (not adjusted "
+        "for splits or dividends); `units` gives the volume unit per asset class. Dates are "
+        "exchange-local and inclusive; without dates every stored date is returned, so give a "
+        "range and follow `pagination.next_cursor` until it is null. For just the latest bar, "
+        "use `get_latest_eod`."
     ),
     responses=_errors(
         {
-            404: f"{INSTRUMENT_NOT_FOUND} Also returned when a symbol in `symbols` is unknown.",
+            404: f"{INSTRUMENT_NOT_FOUND} `details.inputs` lists the unknown values.",
             422: (
-                "`QUERY_SCOPE_REQUIRED`: give `instrument_id` or `market`, not both. "
-                "`INVALID_SYMBOLS`: `symbols` needs `market` and 1-50 values. "
-                f"{DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}"
+                "`QUERY_SCOPE_REQUIRED`: give `instruments` or `market`, not both. "
+                f"{SELECTOR_ERRORS} {DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}"
             ),
             503: CONFIGURATION_INVALID,
         },
@@ -326,23 +345,23 @@ async def get_instrument(
     ),
 )
 async def get_eod(
-    instrument_id: Annotated[
-        UUID | None,
-        Query(description="One instrument's FinDB UUID. Do not combine with `market`."),
+    instruments: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Comma-separated instruments, at most 50, each a FinDB UUID or `MARKET:SYMBOL`. "
+                "Do not combine with `market`."
+            ),
+            examples=["TW:2330,US:AAPL"],
+        ),
     ] = None,
     market: Annotated[
         str | None,
         Query(description="Every instrument of this market, e.g. `TW`.", examples=["TW"]),
     ] = None,
-    symbols: Annotated[
-        str | None,
-        Query(
-            description="Comma-separated symbols within `market`, at most 50.",
-            examples=["2330,2317,0050"],
-        ),
-    ] = None,
     start_date: StartDateQuery = None,
     end_date: EndDateQuery = None,
+    order: Annotated[SortDirection, Query(description=ORDER_DESCRIPTION)] = "desc",
     cursor: CursorQuery = None,
     page_size: Annotated[int, _page_size(100, 1000)] = 100,
     _: str | None = Depends(verify_paginated_serve_api_key(100)),
@@ -350,14 +369,46 @@ async def get_eod(
 ) -> EODListResponse:
     return await serve_queries.list_eod(
         db,
-        instrument_id=instrument_id,
+        instruments_raw=instruments,
         market=market,
-        symbols_raw=symbols,
         start_date=start_date,
         end_date=end_date,
+        order=order,
         cursor=cursor,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/eod/latest",
+    response_model=EODLatestResponse,
+    operation_id="get_latest_eod",
+    summary="Latest daily close of several instruments",
+    description=(
+        "For up to 50 instruments (may mix markets), the latest stored daily bar on or before "
+        "`as_of_date`, with the previous bar's close and the change in price and percent. "
+        "Inputs that cannot be answered are listed in `missing` with a reason instead of "
+        "failing the request. Check `trade_date`: a market's latest bar may be from an earlier "
+        "day than today (see `list_market_freshness`)."
+    ),
+    responses=_errors({422: "`INVALID_SYMBOLS`: a value is malformed or there are more than 50."}),
+)
+async def get_latest_eod(
+    instruments: InstrumentsQuery,
+    as_of_date: Annotated[
+        date | None,
+        Query(
+            description=(
+                "Latest exchange-local trade date to consider (YYYY-MM-DD); default: the latest "
+                "stored. On a holiday the bar before it is returned."
+            ),
+            examples=["2026-11-20"],
+        ),
+    ] = None,
+    _: str | None = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> EODLatestResponse:
+    return await serve_queries.latest_eod(db, instruments_raw=instruments, as_of_date=as_of_date)
 
 
 @router.get(
@@ -556,7 +607,7 @@ async def get_intraday_download_manifest(
     description=(
         "Daily quotes of individual TAIFEX futures contracts (each expiry separately; no "
         "continuous series), with `regular` and `after_hours` sessions as separate rows. "
-        "Rows come newest trade date first. Missing prices, settlement or open interest are "
+        "Rows are ordered by trade date (`order`). Missing prices, settlement or open interest are "
         "null; a 0 volume means no trades. Follow `pagination.next_cursor` until it is null."
     ),
     responses=_errors(
@@ -573,7 +624,10 @@ async def get_intraday_download_manifest(
 async def get_futures_eod(
     product_code: Annotated[
         str | None,
-        Query(description="TAIFEX product: `TX`, `MTX`, `TMF`, `TE` or `TF`.", examples=["TX"]),
+        Query(
+            description="TAIFEX product, case-insensitive: `TX`, `MTX`, `TMF`, `TE` or `TF`.",
+            examples=["TX"],
+        ),
     ] = None,
     contract_code: Annotated[
         str | None,
@@ -584,6 +638,7 @@ async def get_futures_eod(
     session: Annotated[
         str | None, Query(description="Only `regular` or only `after_hours` rows.")
     ] = None,
+    order: Annotated[SortDirection, Query(description=ORDER_DESCRIPTION)] = "desc",
     cursor: CursorQuery = None,
     page_size: Annotated[int, _page_size(100, 1000)] = 100,
     _: str | None = Depends(verify_paginated_serve_api_key(100)),
@@ -596,6 +651,7 @@ async def get_futures_eod(
         start_date=start_date,
         end_date=end_date,
         session=session,
+        order=order,
         cursor=cursor,
         page_size=page_size,
     )

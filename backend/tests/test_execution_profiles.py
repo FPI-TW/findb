@@ -200,7 +200,9 @@ async def test_shared_five_feed_source_queue_canonical_serve(
             )
             endpoint = "/api/v1/serve/minute" if key.endswith("minute") else "/api/v1/serve/eod"
             params = {
-                "instrument_id": str(instrument.instrument_id),
+                ("instrument_id" if key.endswith("minute") else "instruments"): str(
+                    instrument.instrument_id
+                ),
                 "start_date": DAY.isoformat(),
                 "end_date": DAY.isoformat(),
             }

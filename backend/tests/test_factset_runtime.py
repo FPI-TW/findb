@@ -170,12 +170,10 @@ async def test_factset_fenced_runner_partial_continues_and_serve_only_has_valid_
         assert all(work.state == "partial" for work in works)
         owner = await test_session.get(ProviderWorkOwner, ("local", "factset"))
         assert owner.attempt_id is None
-        response = await client.get(
-            "/api/v1/serve/eod", params={"market": "HK", "symbols": "00001"}
-        )
+        response = await client.get("/api/v1/serve/eod", params={"instruments": "HK:00001"})
         assert response.status_code == 200, response.text
         assert len(response.json()["data"]) == 2
-        invalid = await client.get("/api/v1/serve/eod", params={"market": "HK", "symbols": "00002"})
+        invalid = await client.get("/api/v1/serve/eod", params={"instruments": "HK:00002"})
         assert invalid.status_code == 404  # Rejected rows never create the instrument.
     finally:
         h.release_process_lock()

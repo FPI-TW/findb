@@ -106,6 +106,27 @@ async def test_futures_serve_cursor_filters_and_product_coverage(client, test_se
         seen.extend(response.json()["data"])
         cursor = response.json()["pagination"]["next_cursor"]
     assert len(seen) == 3 and len({(row["contract_code"], row["session"]) for row in seen}) == 3
+    ascending = []
+    params: dict[str, str | int] = {"product_code": "tx", "page_size": 1, "order": "asc"}
+    while True:
+        response = await client.get("/api/v1/serve/futures/eod", params=params)
+        assert response.status_code == 200, response.text
+        assert response.json()["units"]["volume"] == "contract"
+        ascending.extend(response.json()["data"])
+        if not (cursor := response.json()["pagination"]["next_cursor"]):
+            break
+        params["cursor"] = cursor
+    assert ascending == list(reversed(seen))
+    flipped = await client.get(
+        "/api/v1/serve/futures/eod",
+        params={"product_code": "TX", "page_size": 1, "order": "asc", "cursor": params["cursor"]},
+    )
+    assert flipped.status_code == 200
+    reversed_order = await client.get(
+        "/api/v1/serve/futures/eod",
+        params={"product_code": "TX", "page_size": 1, "cursor": params["cursor"]},
+    )
+    assert reversed_order.status_code == 422
     first = await client.get("/api/v1/serve/futures/eod?page_size=1")
     wrong = await client.get(
         "/api/v1/serve/futures/eod",

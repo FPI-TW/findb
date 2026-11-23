@@ -322,7 +322,7 @@ async def test_a_provider_write_waits_for_an_uncommitted_quote(
 
 
 async def _served(client, instrument_id: UUID) -> dict:
-    response = await client.get("/api/v1/serve/eod", params={"instrument_id": str(instrument_id)})
+    response = await client.get("/api/v1/serve/eod", params={"instruments": str(instrument_id)})
     assert response.status_code == 200, response.text
     (served,) = response.json()["data"]
     return served

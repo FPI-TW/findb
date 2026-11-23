@@ -10,14 +10,15 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal, cast
 from uuid import UUID
 
 from fastapi import HTTPException
-from sqlalchemy import String, and_, case, func, literal_column, or_, select, tuple_
+from sqlalchemy import String, and_, case, func, literal_column, or_, select, true, tuple_
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm import InstrumentedAttribute, aliased
 from sqlalchemy.sql import ColumnElement
 
 from app.models.canonical import (
@@ -38,10 +39,15 @@ from app.schemas.serve import (
     DatasetListResponse,
     DatasetResponse,
     EODCoverageResponse,
+    EODLatestMissing,
+    EODLatestQuote,
+    EODLatestResponse,
     EODListResponse,
     EODResponse,
+    EODUnitsResponse,
     FuturesEODListResponse,
     FuturesEODResponse,
+    FuturesUnitsResponse,
     InstrumentCoverageResponse,
     InstrumentDetailResponse,
     InstrumentFacetsResponse,
@@ -50,19 +56,21 @@ from app.schemas.serve import (
     InstrumentResolveResponse,
     InstrumentResponse,
     InstrumentSort,
+    InstrumentSummaryResponse,
     IntradayCoverageResponse,
     MinuteCoverageResponse,
     MinuteListResponse,
     MinuteResponse,
     ResolvedDateRangeResponse,
     SortDirection,
+    VolumeUnit,
 )
 from app.services.ingress_contracts import (
     INTRADAY_DATASET_FREQUENCY,
     DatasetContractDeclaration,
 )
 from app.services.serve_errors import serve_error
-from app.services.serve_selectors import parse_selectors
+from app.services.serve_selectors import InstrumentSelector, parse_selectors
 
 LookupColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
 DataKind = Literal["eod", "minute", "futures_eod"]
@@ -358,6 +366,8 @@ async def list_datasets(db: AsyncSession) -> DatasetListResponse:
                 frequency=intraday_scope.frequency,
                 data_kind="intraday_bars" if bars else "intraday_ticks",
                 interval="1m" if bars else "tick",
+                operation_id=DATASET_OPERATIONS["intraday_bars" if bars else "intraday_ticks"],
+                volume_unit="lot",
                 availability="available" if symbols else "configured_empty",
                 coverage=DatasetCoverageResponse(
                     coverage_start_date=first,
@@ -402,6 +412,14 @@ async def list_datasets(db: AsyncSession) -> DatasetListResponse:
                 frequency=scope.frequency,
                 data_kind=scope.data_kind,
                 interval=scope.interval,
+                operation_id=DATASET_OPERATIONS[scope.data_kind],
+                volume_unit=(
+                    eod_volume_unit(scope.asset_class)
+                    if scope.data_kind == "eod"
+                    else "contract"
+                    if scope.data_kind == "futures_eod"
+                    else "share"
+                ),
                 availability="available" if instrument_count else "configured_empty",
                 coverage=DatasetCoverageResponse(
                     coverage_start_date=first_date,
@@ -760,124 +778,163 @@ def _validate_dates(start_date: date | None, end_date: date | None) -> None:
         raise serve_error(422, "INVALID_DATE_RANGE", "start_date must not be after end_date")
 
 
-def _eod_scope_payload(
-    *,
-    instrument_id: UUID | None,
-    market: str | None,
-    symbols: tuple[str, ...],
-    start_date: date | None,
-    end_date: date | None,
-) -> dict[str, Any]:
-    return {
-        "instrument_id": str(instrument_id) if instrument_id else None,
-        "market": market,
-        "symbols": list(symbols),
-        "start_date": _date_text(start_date),
-        "end_date": _date_text(end_date),
-    }
+# Volume unit of each asset class in canonical daily bars.
+EOD_VOLUME_UNITS: dict[str, VolumeUnit] = {"equity": "share", "etf": "share"}
+DATASET_OPERATIONS = {
+    "eod": "list_eod",
+    "minute": "list_minute_bars",
+    "futures_eod": "list_futures_eod",
+    "intraday_bars": "list_intraday_bars",
+    "intraday_ticks": "list_intraday_ticks",
+}
+
+
+def eod_volume_unit(asset_class: str) -> VolumeUnit:
+    return EOD_VOLUME_UNITS.get(asset_class, "provider_defined")
+
+
+def _eod_units(eod_pairs: set[tuple[str, str]]) -> EODUnitsResponse:
+    return EODUnitsResponse(
+        volume_by_asset_class={
+            asset_class: eod_volume_unit(asset_class)
+            for asset_class in sorted({asset_class for _, asset_class in eod_pairs})
+        }
+    )
+
+
+@dataclass(frozen=True)
+class _SelectorMatch:
+    selector: InstrumentSelector
+    instrument: Instrument | None
+    reason: Literal["not_found", "ambiguous", "not_available"] | None
+    candidates: tuple[Instrument, ...] = ()
+
+
+async def _match_selectors(
+    db: AsyncSession, selectors: list[InstrumentSelector], pairs: set[tuple[str, str]]
+) -> list[_SelectorMatch]:
+    """Match each selector to the one served instrument it names, or say why not."""
+    ids = [selector.instrument_id for selector in selectors if selector.instrument_id]
+    keys = sorted({(selector.market, selector.symbol) for selector in selectors if selector.market})
+    conditions: list[ColumnElement[bool]] = []
+    if ids:
+        conditions.append(Instrument.instrument_id.in_(ids))
+    if keys:
+        conditions.append(tuple_(Instrument.market, Instrument.symbol).in_(keys))
+    rows = (
+        (
+            await db.execute(
+                select(Instrument)
+                .where(or_(*conditions))
+                .order_by(Instrument.asset_class.asc(), Instrument.instrument_id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    matches: list[_SelectorMatch] = []
+    for selector in selectors:
+        candidates = [
+            row
+            for row in rows
+            if (
+                row.instrument_id == selector.instrument_id
+                if selector.instrument_id
+                else (row.market, row.symbol) == (selector.market, selector.symbol)
+            )
+        ]
+        served = tuple(row for row in candidates if (row.market, row.asset_class) in pairs)
+        if len(served) == 1:
+            matches.append(_SelectorMatch(selector, served[0], None))
+        elif served:
+            matches.append(_SelectorMatch(selector, None, "ambiguous", served))
+        else:
+            reason: Literal["not_found", "not_available"] = (
+                "not_available" if candidates else "not_found"
+            )
+            matches.append(_SelectorMatch(selector, None, reason))
+    return matches
+
+
+def _require_matched(matches: list[_SelectorMatch]) -> list[Instrument]:
+    """Fail the request on the first kind of unmatched selector, naming every such input."""
+    for reason, status, code, message in (
+        ("not_found", 404, "INSTRUMENT_NOT_FOUND", "No instrument matches"),
+        ("ambiguous", 422, "AMBIGUOUS_INSTRUMENT", "Several instruments match"),
+        ("not_available", 422, "DATASET_NOT_AVAILABLE", "EOD data is not available for"),
+    ):
+        failed = [match for match in matches if match.reason == reason]
+        if failed:
+            details: dict[str, Any] = {"inputs": [match.selector.input for match in failed]}
+            if reason == "ambiguous":
+                details["matches"] = {
+                    match.selector.input: [
+                        {"instrument_id": str(row.instrument_id), "asset_class": row.asset_class}
+                        for row in match.candidates
+                    ]
+                    for match in failed
+                }
+            raise serve_error(
+                status, code, f"{message}: {', '.join(details['inputs'])}", details=details
+            )
+    return [match.instrument for match in matches if match.instrument is not None]
+
+
+def _instrument_summary(instrument: Instrument) -> InstrumentSummaryResponse:
+    return InstrumentSummaryResponse(
+        instrument_id=instrument.instrument_id,
+        symbol=instrument.symbol,
+        name=instrument.name,
+        market=instrument.market,
+        asset_class=instrument.asset_class,
+        currency=instrument.currency,
+    )
 
 
 async def list_eod(
     db: AsyncSession,
     *,
-    instrument_id: UUID | None,
+    instruments_raw: str | None,
     market: str | None,
-    symbols_raw: str | None,
     start_date: date | None,
     end_date: date | None,
+    order: SortDirection,
     cursor: str | None,
     page_size: int,
 ) -> EODListResponse:
     _validate_dates(start_date, end_date)
     normalized_market_value = _normalize(market)
     normalized_market = normalized_market_value.upper() if normalized_market_value else None
-    if (instrument_id is None) == (normalized_market is None):
+    if (instruments_raw is None) == (normalized_market is None):
         raise serve_error(
-            422, "QUERY_SCOPE_REQUIRED", "Provide instrument_id or market, but not both"
+            422, "QUERY_SCOPE_REQUIRED", "Provide instruments or market, but not both"
         )
-    if instrument_id is not None and symbols_raw is not None:
-        raise serve_error(422, "INVALID_SYMBOLS", "symbols may only be used with market scope")
     scopes = await active_dataset_scopes(db)
     eod_pairs = _pairs(scopes, "eod")
-    symbols: tuple[str, ...] = ()
     instrument_ids: list[UUID] | None = None
-    if instrument_id is not None:
-        instrument = await db.get(Instrument, instrument_id)
-        if instrument is None:
-            raise serve_error(404, "INSTRUMENT_NOT_FOUND", "Instrument not found")
-        if (instrument.market, instrument.asset_class) not in eod_pairs:
-            raise serve_error(
-                422, "DATASET_NOT_AVAILABLE", "EOD data is not available for this instrument"
-            )
-        instrument_ids = [instrument_id]
+    if instruments_raw is not None:
+        selectors = parse_selectors(instruments_raw, param="instruments", allow_uuid=True)
+        matched = _require_matched(await _match_selectors(db, selectors, eod_pairs))
+        instrument_ids = sorted({instrument.instrument_id for instrument in matched})
     else:
-        if normalized_market is None:
-            raise serve_error(422, "QUERY_SCOPE_REQUIRED", "A non-empty market is required")
-        market_pairs = {pair for pair in eod_pairs if pair[0] == normalized_market}
-        if not market_pairs:
+        if not any(pair[0] == normalized_market for pair in eod_pairs):
             raise serve_error(
                 422, "DATASET_NOT_AVAILABLE", "EOD data is not available for this market"
             )
-        if symbols_raw is not None:
-            raw_tokens = symbols_raw.split(",")
-            if len(raw_tokens) > 50 or any(not token.strip() for token in raw_tokens):
-                raise serve_error(
-                    422, "INVALID_SYMBOLS", "symbols must contain 1 to 50 non-empty values"
-                )
-            normalized_tokens = [
-                unicodedata.normalize("NFKC", token).strip().upper() for token in raw_tokens
-            ]
-            if any(not token for token in normalized_tokens):
-                raise serve_error(422, "INVALID_SYMBOLS", "symbols contain an invalid value")
-            symbols = tuple(sorted(set(normalized_tokens)))
-            matches = (
-                (
-                    await db.execute(
-                        select(Instrument).where(
-                            Instrument.market == normalized_market,
-                            Instrument.symbol.in_(symbols),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            by_symbol: dict[str, list[Instrument]] = {symbol: [] for symbol in symbols}
-            for match in matches:
-                by_symbol[match.symbol].append(match)
-            if any(not by_symbol[symbol] for symbol in symbols):
-                raise serve_error(
-                    404, "INSTRUMENT_NOT_FOUND", "One or more instruments were not found"
-                )
-            if any(
-                not any((item.market, item.asset_class) in eod_pairs for item in by_symbol[symbol])
-                for symbol in symbols
-            ):
-                raise serve_error(
-                    422,
-                    "DATASET_NOT_AVAILABLE",
-                    "EOD data is not available for one or more instruments",
-                )
-            instrument_ids = [
-                item.instrument_id
-                for symbol in symbols
-                for item in by_symbol[symbol]
-                if (item.market, item.asset_class) in eod_pairs
-            ]
-    scope = _eod_scope_payload(
-        instrument_id=instrument_id,
-        market=normalized_market,
-        symbols=symbols,
-        start_date=start_date,
-        end_date=end_date,
-    )
+    scope = {
+        "instrument_ids": [str(value) for value in instrument_ids] if instrument_ids else None,
+        "market": normalized_market,
+        "start_date": _date_text(start_date),
+        "end_date": _date_text(end_date),
+        "order": order,
+    }
     last_date: date | None = None
     last_id: UUID | None = None
     if cursor:
         payload = _decode_cursor(cursor)
         if (
             set(payload) != {"v", "kind", "scope", "last"}
-            or payload.get("v") != 1
+            or payload.get("v") != 2
             or payload.get("kind") != "eod"
             or payload.get("scope") != scope
         ):
@@ -896,7 +953,6 @@ async def list_eod(
     if instrument_ids is not None:
         query = query.where(MarketDataEOD.instrument_id.in_(instrument_ids))
     else:
-        assert normalized_market is not None
         query = query.where(
             Instrument.market == normalized_market,
             _instrument_scope_filter({pair for pair in eod_pairs if pair[0] == normalized_market}),
@@ -905,18 +961,23 @@ async def list_eod(
         query = query.where(MarketDataEOD.trade_date >= start_date)
     if end_date:
         query = query.where(MarketDataEOD.trade_date <= end_date)
+    ascending = order == "asc"
     if last_date and last_id:
+        past_date = (
+            MarketDataEOD.trade_date > last_date
+            if ascending
+            else MarketDataEOD.trade_date < last_date
+        )
         query = query.where(
             or_(
-                MarketDataEOD.trade_date < last_date,
+                past_date,
                 and_(MarketDataEOD.trade_date == last_date, MarketDataEOD.instrument_id > last_id),
             )
         )
+    date_order = MarketDataEOD.trade_date.asc() if ascending else MarketDataEOD.trade_date.desc()
     rows = (
         await db.execute(
-            query.order_by(
-                MarketDataEOD.trade_date.desc(), MarketDataEOD.instrument_id.asc()
-            ).limit(page_size + 1)
+            query.order_by(date_order, MarketDataEOD.instrument_id.asc()).limit(page_size + 1)
         )
     ).all()
     next_cursor = None
@@ -924,7 +985,7 @@ async def list_eod(
         last_eod = rows[page_size - 1][0]
         next_cursor = _encode_cursor(
             {
-                "v": 1,
+                "v": 2,
                 "kind": "eod",
                 "scope": scope,
                 "last": {
@@ -935,6 +996,7 @@ async def list_eod(
         )
         rows = rows[:page_size]
     return EODListResponse(
+        units=_eod_units(eod_pairs),
         data=[
             EODResponse(
                 instrument_id=eod.instrument_id,
@@ -960,6 +1022,100 @@ async def list_eod(
             for eod, instrument in rows
         ],
         pagination=CursorPaginationInfo(page_size=page_size, next_cursor=next_cursor),
+    )
+
+
+def _change_percent(change: Decimal, previous: Decimal) -> Decimal | None:
+    if previous == 0:
+        return None
+    return (change / previous * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+
+async def latest_eod(
+    db: AsyncSession, *, instruments_raw: str, as_of_date: date | None
+) -> EODLatestResponse:
+    """Latest daily bar of each instrument with the change from the bar before it."""
+    scopes = await active_dataset_scopes(db)
+    eod_pairs = _pairs(scopes, "eod")
+    selectors = parse_selectors(instruments_raw, param="instruments", allow_uuid=True)
+    matches = await _match_selectors(db, selectors, eod_pairs)
+    ids = sorted(
+        {match.instrument.instrument_id for match in matches if match.instrument is not None}
+    )
+    recent_rows: dict[UUID, list[MarketDataEOD]] = {}
+    if ids:
+        wanted = (
+            select(Instrument.instrument_id.label("wanted_id"))
+            .where(Instrument.instrument_id.in_(ids))
+            .subquery()
+        )
+        recent_query = select(MarketDataEOD).where(
+            MarketDataEOD.instrument_id == wanted.c.wanted_id
+        )
+        if as_of_date is not None:
+            recent_query = recent_query.where(MarketDataEOD.trade_date <= as_of_date)
+        recent = recent_query.order_by(MarketDataEOD.trade_date.desc()).limit(2).lateral("recent")
+        recent_eod = aliased(MarketDataEOD, recent)
+        for row in (
+            (await db.execute(select(recent_eod).select_from(wanted).join(recent, true())))
+            .scalars()
+            .all()
+        ):
+            recent_rows.setdefault(row.instrument_id, []).append(row)
+    data: list[EODLatestQuote] = []
+    missing: list[EODLatestMissing] = []
+    for match in matches:
+        if match.instrument is None:
+            missing.append(
+                EODLatestMissing(
+                    input=match.selector.input,
+                    reason=cast(Literal["not_found", "ambiguous", "not_available"], match.reason),
+                    matches=[_instrument_summary(row) for row in match.candidates],
+                )
+            )
+            continue
+        bars = sorted(
+            recent_rows.get(match.instrument.instrument_id, []),
+            key=lambda row: row.trade_date,
+            reverse=True,
+        )
+        if not bars:
+            missing.append(
+                EODLatestMissing(input=match.selector.input, reason="no_data", matches=[])
+            )
+            continue
+        latest = bars[0]
+        previous = bars[1] if len(bars) > 1 else None
+        change = (
+            latest.close - previous.close
+            if previous is not None and latest.close is not None and previous.close is not None
+            else None
+        )
+        data.append(
+            EODLatestQuote(
+                input=match.selector.input,
+                instrument=_instrument_summary(match.instrument),
+                trade_date=latest.trade_date,
+                open=latest.open,
+                high=latest.high,
+                low=latest.low,
+                close=latest.close,
+                volume=latest.volume,
+                turnover=latest.turnover,
+                previous_trade_date=previous.trade_date if previous else None,
+                previous_close=previous.close if previous else None,
+                change=change,
+                change_percent=(
+                    _change_percent(change, cast(Decimal, previous.close))
+                    if change is not None and previous is not None
+                    else None
+                ),
+                source=latest.source,
+                field_sources=latest.field_sources or None,
+            )
+        )
+    return EODLatestResponse(
+        as_of_date=as_of_date, units=_eod_units(eod_pairs), data=data, missing=missing
     )
 
 
@@ -1146,6 +1302,7 @@ async def list_futures_eod(
     start_date: date | None,
     end_date: date | None,
     session: str | None,
+    order: SortDirection,
     cursor: str | None,
     page_size: int,
 ) -> FuturesEODListResponse:
@@ -1153,6 +1310,8 @@ async def list_futures_eod(
     scopes = await active_dataset_scopes(db)
     if ("TW", "future") not in _pairs(scopes, "futures_eod"):
         raise serve_error(422, "DATASET_NOT_AVAILABLE", "Futures EOD data is not active")
+    if product_code is not None:
+        product_code = product_code.strip().upper()
     if product_code is not None and product_code not in {"TX", "MTX", "TMF", "TE", "TF"}:
         raise serve_error(422, "INVALID_PRODUCT", "Unsupported futures product")
     if session is not None and session not in {"regular", "after_hours"}:
@@ -1166,6 +1325,7 @@ async def list_futures_eod(
         "start_date": _date_text(start_date),
         "end_date": _date_text(end_date),
         "session": session,
+        "order": order,
     }
     last_date: date | None = None
     last_id: UUID | None = None
@@ -1199,20 +1359,27 @@ async def list_futures_eod(
         stmt = stmt.where(FuturesContractEOD.trade_date <= end_date)
     if session is not None:
         stmt = stmt.where(FuturesContractEOD.session == session)
+    ascending = order == "asc"
     if last_date is not None and last_id is not None:
         stmt = stmt.where(
             or_(
-                FuturesContractEOD.trade_date < last_date,
-                and_(FuturesContractEOD.trade_date == last_date, FuturesContractEOD.id < last_id),
+                FuturesContractEOD.trade_date > last_date
+                if ascending
+                else FuturesContractEOD.trade_date < last_date,
+                and_(
+                    FuturesContractEOD.trade_date == last_date,
+                    FuturesContractEOD.id > last_id
+                    if ascending
+                    else FuturesContractEOD.id < last_id,
+                ),
             )
         )
-    rows = (
-        await db.execute(
-            stmt.order_by(FuturesContractEOD.trade_date.desc(), FuturesContractEOD.id.desc()).limit(
-                page_size + 1
-            )
-        )
-    ).all()
+    ordering = (
+        (FuturesContractEOD.trade_date.asc(), FuturesContractEOD.id.asc())
+        if ascending
+        else (FuturesContractEOD.trade_date.desc(), FuturesContractEOD.id.desc())
+    )
+    rows = (await db.execute(stmt.order_by(*ordering).limit(page_size + 1))).all()
     next_cursor = None
     if len(rows) > page_size:
         last = rows[page_size - 1][0]
@@ -1227,6 +1394,7 @@ async def list_futures_eod(
         )
         rows = rows[:page_size]
     return FuturesEODListResponse(
+        units=FuturesUnitsResponse(),
         data=[
             FuturesEODResponse(
                 contract_id=contract.contract_id,

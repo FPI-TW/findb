@@ -72,6 +72,7 @@ def test_serve_operations_have_stable_ids_summaries_and_descriptions(spec):
         "get_instrument",
         "resolve_instruments",
         "list_eod",
+        "get_latest_eod",
         "list_minute_bars",
         "list_intraday_bars",
         "list_intraday_ticks",

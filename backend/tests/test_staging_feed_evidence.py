@@ -613,3 +613,35 @@ def test_collector_rechecks_provenance_and_current_queue_generation(mutation) ->
     proof = collector._valid_serve_proof(feed, "taifex", record["trade_date"], {"run"})
     queue = collector._valid_queue_receipts(run)
     assert (proof and queue) is (mutation is None)
+
+
+@pytest.mark.parametrize(
+    ("schema", "parameter"),
+    [("market_eod", "instruments"), ("market_minute", "instrument_id")],
+)
+def test_serve_probe_names_the_instrument_the_way_each_endpoint_expects(
+    monkeypatch, schema, parameter
+):
+    exporter = _load(
+        "probe_parameter", REPO_ROOT / "backend/scripts/export_staging_feed_evidence.py"
+    )
+    record = _sample_record(schema)
+    sample = {
+        "sample_instrument_id": record["instrument_id"],
+        "sample_trade_date": record["trade_date"],
+        "sample_run_id": "run",
+        "sample_record": record,
+    }
+    urls: list[str] = []
+
+    class Response(BytesIO):
+        status = 200
+
+    def urlopen(request, timeout):
+        urls.append(request.full_url)
+        return Response(json.dumps({"success": True, "data": [record]}).encode())
+
+    monkeypatch.setenv("FINDB_STATIC_CACHE_SERVE_API_KEY", "fixture-key")
+    monkeypatch.setattr(exporter, "urlopen", urlopen)
+    exporter._serve_probe(schema, sample)
+    assert f"{parameter}={record['instrument_id']}" in urls[0]

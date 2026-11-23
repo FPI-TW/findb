@@ -266,7 +266,10 @@ def _serve_probe(schema_id: str, run: dict[str, Any] | None) -> dict[str, Any]:
     ]
     query = parse.urlencode(
         {
-            "instrument_id": run["sample_instrument_id"],
+            # /eod names instruments through its multi-instrument parameter.
+            ("instruments" if schema_id == "market_eod" else "instrument_id"): run[
+                "sample_instrument_id"
+            ],
             "start_date": run["sample_trade_date"],
             "end_date": run["sample_trade_date"],
             "page_size": 1000 if schema_id == "market_minute" else 1,
