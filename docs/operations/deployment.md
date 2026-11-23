@@ -990,6 +990,14 @@ provider credential：
 - 上線後 control 仍為 stopped：先 universe refresh 發布兩份第一個 baseline（名單是固定的 10 檔指數，
   以 FMP 指數清單核對），再把首日設成單一日期，由 Owner start。歷史回補本輪不執行。
 
+## Staged dataset 描述修正
+
+Migration `44a94f0f8481` 只改 `dataset_registry.description` 的顯示文字：`hk_equity_eod` 由
+`Staged twelve_data market_eod.v1 ...` 改為 `Staged factset market_eod.v2 ...`，`hk_index_eod`、`us_index_eod`
+由 `market_eod.v1` 改為 `v2`。描述仍是 migration 或 seed 寫入的原值才會更新，其他文字保留。部署前 schedule
+inspection 仍是 `e5a7c9b1d3f2`。Downgrade 保留修正後的描述（沒有 runtime 讀取它），但與所有 migration 相同，
+回退到舊 Backend image 前必須先 downgrade 到 `e5a7c9b1d3f2`。
+
 ## 清單外標的計數
 
 Migration `f3a5c7e9b1d2` 為 `daily_delivery_plan_summary` 新增 `unlisted_data_count`（預設 0），為
