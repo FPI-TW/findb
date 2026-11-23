@@ -804,6 +804,11 @@ application role 不具 superuser／CREATEDB／CREATEROLE，授予 public／raw 
 
 Deployment credential reconciliation 以 SHA-256 建立 queue-health Admin viewer、lookup Serve、static-cache Serve
 固定 identity，輪替保留 audit；preflight check-only transaction rollback，migration／初始化階段才 commit。
+Preflight check-only 由**候選版本的 image 在它自己的 migration 之前**執行，DB 仍是上一版的 schema；
+reconciliation 只讀寫 `api_key` 在舊 schema 也有的欄位（`_RECONCILED_COLUMNS`），`APIKey` 不以
+`RETURNING` 讀回 server default。新增 `api_key` 欄位時只用 server default，且
+`test_deployment_credentials_before_migration.py` 會以 head 前一版的 schema 驗證。2026-11-23 #664 新增
+`intraday_download_daily_limit` 時漏了這點，staging 在 check-only 失敗後自動回滾到上一版。
 Fetcher Source credential bridge 只跨 unit 傳送 hashes，不授予 instance role 跨 unit讀取 secrets。
 四個 active provider 的 Source scopes 必須涵蓋 catalog 中各自的 feeds。統一 runtime 不再需要 Fetcher Serve calendar key。
 

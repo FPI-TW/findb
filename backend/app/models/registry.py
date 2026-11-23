@@ -1562,6 +1562,10 @@ class APIKey(Base):
             name="api_key_intraday_download_daily_limit_nonnegative",
         ),
     )
+    # Never read server defaults back with RETURNING: the candidate release's
+    # deploy credential check inserts keys before its migrations have run, so an
+    # insert must not name a column the previous schema lacks.
+    __mapper_args__ = {"eager_defaults": False}
 
     key_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1579,9 +1583,12 @@ class APIKey(Base):
     rate_limit_window: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     page_size_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
     # Object URLs the key may be given per UTC day by the intraday download
-    # manifest; the key also needs the ``intraday_download`` scope.
+    # manifest; the key also needs the ``intraday_download`` scope.  Only the
+    # database supplies the default: an insert that does not name the column
+    # omits it, so the deploy credential check of a candidate release still
+    # works against the schema before this column's migration.
     intraday_download_daily_limit: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=5000, server_default="5000"
+        Integer, nullable=False, server_default="5000"
     )
     usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
