@@ -8,7 +8,7 @@ locals {
   infra_plan_operational_alarm_arn = "arn:${data.aws_partition.current.partition}:cloudwatch:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alarm:findb-staging-*"
   # One more exact log group ARN exceeds the same limit. Tag refresh is bounded
   # to this stack's staging log-group prefix, the scope its logs KMS key admits.
-  infra_plan_log_group_arn  = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${var.ssm_log_group_prefix}/*"
+  infra_plan_log_group_arn = "arn:${data.aws_partition.current.partition}:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${var.ssm_log_group_prefix}/*"
   # Exact ARNs for every runtime secret exceed the same limit once a provider is
   # added. Metadata refresh (never the secret value) is bounded to this stack's
   # staging secret-name prefix instead.
