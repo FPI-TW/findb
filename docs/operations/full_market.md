@@ -1189,7 +1189,8 @@ Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布
 start controls。Production 執行 Full daily；staging 平時保持停止，Owner 只在測試改動時一次啟動一個 provider，
 驗收後即停止。Twelve Data 的 staging 與 production 共用同一帳號（來源無法發多組 API key），兩環境 governor
 各自計算、沒有跨環境預算，staging 抓取會直接消耗 production 的 credits／分鐘配額。每個 consumer
-逐檔串行，2026-11 實測每檔約 2.3 秒（約 26 檔／分鐘），兩環境合計遠低於帳號 1597 credits／分鐘上限，
+逐檔串行，#504 之後 production 首輪約 140 檔／分鐘（見 [Performance](performance.md)），兩環境合計仍遠低於帳號
+1597 credits／分鐘上限，
 因此 staging 一次啟動一個 provider 驗收時不需事先協調 production 配額（#449）。若之後提高單一
 consumer 的並行度或速率，須重新評估，必要時改以兩環境 allocation 切分配額。Daily 只抓當日，
 回補天數由管理者建立回補時決定；完整範圍回補在 production 執行。Staging fetcher 主機記憶體小（見

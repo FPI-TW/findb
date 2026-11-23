@@ -144,6 +144,38 @@ def test_all_products_raw_first_and_source_batch_recovers_without_acquisition(tm
     assert len(raw.raw) == 6
 
 
+def test_a_queued_run_is_read_again_with_short_growing_delays(tmp_path):
+    def handler(request):
+        from urllib.parse import parse_qs
+
+        return httpx.Response(
+            200, content=report(parse_qs(request.content.decode())["commodity_id"][0])
+        )
+
+    class Queued(Source):
+        def __init__(self, polls):
+            super().__init__()
+            self.polls = polls
+
+        def get_run_status(self, run, **kwargs):
+            terminal = super().get_run_status(run, **kwargs)
+            if self.polls:
+                self.polls -= 1
+                return SimpleNamespace(**{**vars(terminal), "status": "queued"})
+            return terminal
+
+    clock = [NOW]
+    sleeps = []
+    runtime = runner(tmp_path, handler, source=Queued(8), clock=clock)
+    runtime.sleep = lambda seconds: (
+        sleeps.append(seconds),
+        clock.__setitem__(0, clock[0] + seconds),
+    )
+    assert runtime.run(item()).run_id == UUID(int=10)
+    # A date that settles within seconds is not held for a fixed 15 s; a slow one is read every 15 s.
+    assert sleeps == [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 15.0, 15.0]
+
+
 def test_explicit_no_data_day_has_durable_manifest_without_source_run(tmp_path):
     def handler(request):
         from urllib.parse import parse_qs
