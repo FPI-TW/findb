@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     TAIFEX_SKIP_NON_TRADING_DAYS: bool = True
     FACTSET_SKIP_NON_TRADING_DAYS: bool = True
     HKEX_SKIP_NON_TRADING_DAYS: bool = True
+    FMP_SKIP_NON_TRADING_DAYS: bool = True
 
     @field_validator(
         "TWELVE_DATA_SKIP_NON_TRADING_DAYS",
@@ -49,6 +50,7 @@ class Settings(BaseSettings):
         "TAIFEX_SKIP_NON_TRADING_DAYS",
         "FACTSET_SKIP_NON_TRADING_DAYS",
         "HKEX_SKIP_NON_TRADING_DAYS",
+        "FMP_SKIP_NON_TRADING_DAYS",
         mode="before",
     )
     @classmethod

@@ -185,6 +185,7 @@ def load_consumer(
         "TAIFEX_SKIP_NON_TRADING_DAYS",
         "FACTSET_SKIP_NON_TRADING_DAYS",
         "HKEX_SKIP_NON_TRADING_DAYS",
+        "FMP_SKIP_NON_TRADING_DAYS",
     ):
         if key in loaded and loaded[key] not in {"true", "false"}:
             raise LoaderError("provider_execution_policy_invalid")

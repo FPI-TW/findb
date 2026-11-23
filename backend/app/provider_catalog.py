@@ -177,7 +177,7 @@ class FeedDefinition(CatalogModel):
     dataset_key: Identifier
     market: Literal["US", "HK", "TW"]
     calendar_market: Literal["US", "HK", "TW", "TAIFEX"]
-    asset_class: Literal["equity", "etf", "future"]
+    asset_class: Literal["equity", "etf", "future", "index"]
     # Granularity of the delivered records: a daily row, a one-minute bar or a trade.
     frequency: Literal["daily", "minute", "tick"]
     contract: ContractDefinition

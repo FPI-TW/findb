@@ -314,8 +314,8 @@ Owner 於 2026-11-23 決定：
 - 市場與交易日曆：美股組 `US`，港股組 `HK`；幣別 `USD`、`HKD`。
 - **代號沿用 FMP 原樣**，例如 `^GSPC`、`^HSI`。
 - 2026-11-23 唯讀查 production：沒有 `asset_class = 'index'` 的 instrument，也沒有指數 dataset，不會和舊資料衝突。
-  `backend/scripts/backfill_world_names.py` 的 `INDEX_NAMES` 仍用 `SPX`、`INDU` 等舊代號，改為 FMP 代號，或移除指數
-  名稱改由 FMP 提供。
+  `backend/scripts/backfill_world_names.py` 的 `INDEX_NAMES` 第一批 10 檔已改用 FMP 代號（PR 2，新增 `^NYA`）；
+  其他指數維持原代號，等之後導入時再對應。
 
 #### 歷史回補
 
@@ -345,10 +345,14 @@ Owner 於 2026-11-23 決定：**回補功能本次要做完整，但先不執行
 
 - ~~歷史回補的「今天」以 provider 為單位~~：PR 1 已改為依 feed 的 calendar market 計算
   （`historical_backfill.py` 的 `FEED_TIMEZONES`）。`test_catalog_slot_migration.py` 仍要求一個 control 只有一個
-  時段，隨 PR 2 的 FMP control 一起調整。
-- **控制列的顯示時間與時段**：seed 以字串比大小挑「最早的 feed」（`backend/scripts/seed_data.py`），沒有考慮時區；
-  控制列只有一個 `slot_id`，Admin 依時段篩選時 FMP 只會出現在其中一個區域。依「控制台依新功能調整」的決定，
-  控制台改以 feed 為單位呈現時間、時區與時段。
+  時段，隨啟用 FMP 的 PR 一起調整。
+- ~~seed 以字串比大小挑「最早的 feed」~~：PR 2 改為把各 feed 的排程換算成同一天的 UTC 時刻比較
+  （`backend/scripts/seed_data.py` 的 `earliest_feed`），FMP 的 control 會顯示台北 08:30。
+- ~~排程時區必須等於交易所時區~~：PR 2 核對 Backend 與 Fetcher 的排程計算（`data_ready_at`、`latest_due_date`、
+  期限、`next_scheduled_at`、Fetcher 規劃日期與發布窗口）都依 feed 自己的時區與 lag，移除這條測試限制，並以
+  台北 08:30、lag 1 的指數 feed 補測試（`backend/tests/test_cross_timezone_schedule.py`）。
+- **控制列的時段**：控制列只有一個 `slot_id`，Admin 依時段篩選時 FMP 只會出現在其中一個區域。依「控制台依新功能
+  調整」的決定，控制台改以 feed 為單位呈現時間、時區與時段。
 - **啟動資格以 provider 為單位**：任何一條 feed 沒就緒，整個 provider 都不能抓
   （`backend/app/services/full_market_admission.py`）。指數 feed 少，第一版沿用；之後 feed 變多再評估改成依 feed。
 - `not_before` 依 dataset 的市場收盤時間計算（`backend/app/services/provider_work.py` 的 `daily_readiness`），
@@ -358,7 +362,7 @@ Owner 於 2026-11-23 決定：**回補功能本次要做完整，但先不執行
 #### 必須有交易所日曆
 
 **機制已完成**（PR 1）：catalog 的 feed 欄位 `calendar_required`，行為見
-[Full market 維運](../operations/full_market.md)。指數 feed 在 PR 2 設為 `true`。
+[Full market 維運](../operations/full_market.md)。指數 feed 在啟用 FMP 的 PR 設為 `true`。
 
 - 建立 plan 時檢查（`create_plan`），在凍結決策之前；以 409 `CALENDAR_UNPUBLISHED` 回絕，Fetcher 收到後
   改為等待重試（`DAILY_CALENDAR_UNPUBLISHED`），不會變成永久的 `DAILY_SOURCE_REJECTED`。
@@ -369,18 +373,35 @@ Owner 於 2026-11-23 決定：**回補功能本次要做完整，但先不執行
 - production 目前的日曆：美股 2025–2028、港股只有 2026（`backend/scripts/seed_production_calendars.py`），2027 年起
   港股指數要等日曆發布才會執行。
 
+#### PR 切分
+
+比照 HKEX：先做不登記 provider 的準備，最後一個 PR 才把 `fmp` 加進 catalog。catalog 一加入 provider，
+Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存在，所以 catalog、migration 與 infra 必須同時上。
+
+| PR | 內容 | 狀態 |
+| --- | --- | --- |
+| 1 | `calendar_required`、缺日曆時等待重試、歷史回補時區改依 feed | 已合併（#646） |
+| 2 | Backend 準備：`asset_class` 加 `index`、名單成員可用 `^` 開頭的指數代號、`FMP_SKIP_NON_TRADING_DAYS`、seed 依 UTC 時刻挑最早的 feed、跨時區與 lag 1 的排程測試、`backfill_world_names.py` 改用 FMP 代號 | 本 PR |
+| 3 | Fetcher：FMP client 與 adapter、historical runner（尚不登記到 `ADAPTERS`） | 未開始 |
+| 4 | 啟用：catalog 的 `fmp` 與兩條 feed、migration（dataset、stopped control、Source credential、凍結 schedule inspection）、infra、端到端驗收測試 | 未開始 |
+| 5 | Dashboard：依 feed 顯示時間、時區與時段，未部署的 provider 不可 start | 未開始 |
+| 6 | staging 驗收：只啟動 `fmp`，首日先設成單日 | 未開始 |
+
 #### 實作要點
 
 - **Backend**
   - `backend/configs/provider_catalog.v1.json` 新增 provider `fmp` 與各組指數 feeds；擴充 `FeedDefinition` 的
-    `asset_class`（`index`）與「需要已發布日曆」設定，以 `backend/scripts/export_provider_catalog.py` 重產生 artifacts。
-  - Instrument 模型：`asset_class` 為 `index`、代號沿用 FMP，見「指數的資料模型」。
-  - `backend/app/config.py` 新增 `FMP_SKIP_NON_TRADING_DAYS`（`effective_calendar` 依 `calendar_switch_env` 讀取）。
+    `asset_class`（`index`，PR 2 已加）與「需要已發布日曆」設定，以 `backend/scripts/export_provider_catalog.py`
+    重產生 artifacts。
+  - Instrument 模型：`asset_class` 為 `index`、代號沿用 FMP，見「指數的資料模型」。名單成員只有 `index` 可以用 `^`
+    開頭（PR 2）；market_eod contract 與 instruments 對代號沒有格式限制，normalizer 會轉成大寫。
+  - ~~`backend/app/config.py` 新增 `FMP_SKIP_NON_TRADING_DAYS`~~（PR 2 已加，runtime configuration 中可省略）。
   - `backend/scripts/seed_data.py` 的 `SUPPORTED_DATASETS` 與 dataset 定義；registry、scheduler dataset、control
     `full_market_fmp_v1` 與 Source credential scope。
   - 完成期限固定為排程加 12 小時（`backend/app/provider_catalog.py` 的
     `COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`）：港股組隔天 08:00 HKT，美股組台北時間 20:30。
-  - 美股組是第一條 `target_date_lag_days` 為 1 的 feed，`data_ready_at`、`latest_due_date` 與期限計算要補測試。
+  - ~~美股組是第一條 `target_date_lag_days` 為 1 的 feed，`data_ready_at`、`latest_due_date` 與期限計算要補測試~~
+    （PR 2）。
   - 新增 control 與 feed 時，要一併提供新的凍結 schedule inspection（目前是 `b3d5f7a9c1e2`，由
     `scripts/preflight_catalog_schedule.py` 在每次部署前執行），否則會判為 `unknown_difference`、中止部署。
 - **Fetcher**
@@ -390,6 +411,8 @@ Owner 於 2026-11-23 決定：**回補功能本次要做完整，但先不執行
   - 共用程式碼裡的 provider 清單：`execution_config._IMPLEMENTED_ADAPTERS`、`historical_backfill_cli.py` 的
     runner、`production_backfill_cli._scope`。
   - 沿用 `image_key: twelve_data`（同 TAIFEX），不新增 image、ECR 與 workflow。
+  - Fetcher 的名單與 raw 物件代號格式目前不允許 `^`（`full_market_universe.py`、`raw_storage.py`），要一併放寬或
+    在 raw 物件鍵改用不含 `^` 的寫法。
 - **Infra**：`release_fetcher_provider.sh`、`deploy_fetcher_aws.sh`、`fetcher.json` secrets bundle、
   `infra/tofu/{staging,production}/secrets.tf`、`deployment_transaction.py`、`fetcher-ci.yml` 的 provider 迴圈。
 - **測試與驗收**：Fetcher per-provider 測試與共用矩陣（`test_provider_adapters.py`、golden fixtures、

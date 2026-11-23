@@ -70,11 +70,12 @@ class EvidenceReference(FullMarketModel):
 
 
 class UniverseMemberInput(FullMarketModel):
-    symbol: str = Field(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9._:-]+$")
+    # A leading caret marks an index symbol as the provider spells it, e.g. ``^GSPC``.
+    symbol: str = Field(min_length=1, max_length=50, pattern=r"^\^?[A-Za-z0-9._:-]+$")
     provider_symbol: str = Field(min_length=1, max_length=100)
     exchange: str = Field(min_length=2, max_length=30)
     currency: str = Field(min_length=3, max_length=10, pattern=r"^[A-Z0-9]+$")
-    asset_class: Literal["equity", "etf", "future"]
+    asset_class: Literal["equity", "etf", "future", "index"]
     classification: str | None = Field(default=None, max_length=100)
     contract_code: str | None = Field(default=None, max_length=50)
     product_code: Literal["TX", "MTX", "TMF", "TE", "TF"] | None = None
@@ -91,6 +92,8 @@ class UniverseMemberInput(FullMarketModel):
 
     @model_validator(mode="after")
     def validate_futures_identity(self) -> "UniverseMemberInput":
+        if self.symbol.startswith("^") and self.asset_class != "index":
+            raise ValueError("only index symbols may start with a caret")
         if self.asset_class == "future":
             if (
                 not self.product_code

@@ -97,16 +97,18 @@ FX_NAMES: dict[str, str] = {
 }
 
 # (market, symbol) -> name. Currency is derived from the market in
-# ``run_indices`` (US→USD, HK→HKD, CN→CNY, TW→TWD).
+# ``run_indices`` (US→USD, HK→HKD, CN→CNY, TW→TWD). Indices FinDB ingests keep
+# the provider's symbol, e.g. FMP's ``^GSPC``.
 INDEX_NAMES: dict[tuple[str, str], str] = {
     # --- US ---
-    ("US", "SPX"): "S&P 500 指數",
-    ("US", "NDX"): "NASDAQ 100 指數",
-    ("US", "INDU"): "道瓊工業平均指數",
-    ("US", "CCMP"): "NASDAQ 綜合指數",
-    ("US", "RTY"): "羅素 2000 指數",
-    ("US", "SOX"): "費城半導體指數",
-    ("US", "VIX"): "CBOE 波動率指數",
+    ("US", "^GSPC"): "S&P 500 指數",
+    ("US", "^NDX"): "NASDAQ 100 指數",
+    ("US", "^DJI"): "道瓊工業平均指數",
+    ("US", "^IXIC"): "NASDAQ 綜合指數",
+    ("US", "^RUT"): "羅素 2000 指數",
+    ("US", "^SOX"): "費城半導體指數",
+    ("US", "^VIX"): "CBOE 波動率指數",
+    ("US", "^NYA"): "NYSE 綜合指數",
     ("US", "S5COND"): "S&P 500 非必需消費品行業指數",
     ("US", "S5CONS"): "S&P 500 必需消費品行業指數",
     ("US", "S5ENRS"): "S&P 500 能源行業指數",
@@ -121,8 +123,8 @@ INDEX_NAMES: dict[tuple[str, str], str] = {
     # BM7T is intentionally omitted — meaning is ambiguous in our datasource;
     # leaving it unmatched so the operator can fill it in manually.
     # --- HK ---
-    ("HK", "HSI"): "恒生指數",
-    ("HK", "HSCEI"): "恒生中國企業指數",
+    ("HK", "^HSI"): "恒生指數",
+    ("HK", "^HSCE"): "恒生中國企業指數",
     ("HK", "HSTECH"): "恒生科技指數",
     ("HK", "HSMSI"): "恒生中小型股指數",
     ("HK", "VHSI"): "恒生波幅指數",

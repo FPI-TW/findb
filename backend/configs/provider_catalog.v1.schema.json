@@ -167,7 +167,8 @@
           "enum": [
             "equity",
             "etf",
-            "future"
+            "future",
+            "index"
           ],
           "title": "Asset Class",
           "type": "string"

@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from copy import deepcopy
-from datetime import time
+from datetime import date, datetime, time, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
@@ -605,6 +606,26 @@ def _merge_operator_config(
     return _project_schedule(dataset_key, merged)
 
 
+# Clocks of different timezones are ordered as instants on one fixed local day;
+# feeds sharing a timezone keep their wall-clock order, wherever seed runs.
+_CLOCK_REFERENCE_DATE = date(2026, 1, 15)
+
+
+def earliest_feed(feeds: list[FeedDefinition]) -> FeedDefinition:
+    """The feed whose scheduled start comes first, ties broken by dataset."""
+
+    def start(feed: FeedDefinition) -> tuple[datetime, str]:
+        assert feed.schedule is not None
+        local = datetime.combine(
+            _CLOCK_REFERENCE_DATE,
+            time.fromisoformat(feed.schedule.local_time),
+            ZoneInfo(feed.schedule.timezone),
+        )
+        return local.astimezone(timezone.utc), feed.dataset_key
+
+    return min(feeds, key=start)
+
+
 async def seed_datasets(session: AsyncSession) -> None:
     """Upsert bounded feeds and inactive new full-market declarations."""
     logger.info("Seeding supported datasets: %s", ", ".join(SUPPORTED_DATASETS))
@@ -656,7 +677,7 @@ async def seed_datasets(session: AsyncSession) -> None:
     for provider in sorted({feed.provider for feed in acquisition_feeds()}):
         feeds = [feed for feed in acquisition_feeds() if feed.provider == provider]
         # The control shows when the provider's day starts: its earliest feed.
-        feed = min(feeds, key=lambda item: item.schedule.local_time if item.schedule else "")
+        feed = earliest_feed(feeds)
         assert feed.schedule is not None
         datasets = [item.dataset_key for item in feeds]
         slot = feed.delivery.slot_id

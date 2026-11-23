@@ -141,3 +141,18 @@ def test_listing_date_must_be_a_date():
             asset_class="equity",
             listed_date="2026/11/03",
         )
+
+
+def test_only_index_members_may_use_a_caret_symbol():
+    member = {
+        "symbol": "^GSPC",
+        "provider_symbol": "^GSPC",
+        "exchange": "SNP",
+        "currency": "USD",
+    }
+    assert UniverseMemberInput(**member, asset_class="index").symbol == "^GSPC"
+    with pytest.raises(ValidationError, match="only index symbols"):
+        UniverseMemberInput(**member, asset_class="equity")
+    # The caret only leads; it is not part of the symbol alphabet.
+    with pytest.raises(ValidationError):
+        UniverseMemberInput(**{**member, "symbol": "GS^PC"}, asset_class="index")

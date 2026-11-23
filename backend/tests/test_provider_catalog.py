@@ -30,8 +30,7 @@ def test_feed_markets_match_backend_timezone_authority(declaration):
     for feed in ProviderCatalog.model_validate(declaration).feeds:
         zone = market_timezone(feed.calendar_market).key
         assert MARKETS[feed.market][0] == zone, feed.dataset_key
-        if feed.schedule is not None:
-            assert feed.schedule.timezone == zone, feed.dataset_key
+        # A schedule may run in another timezone; dates, closes and cutoffs stay the market's.
         feed_zones[(feed.provider, feed.dataset_key)] = zone
     # Historical cutoffs are feed-keyed, so one provider's feeds may use different markets.
     assert feed_zones == FEED_TIMEZONES
