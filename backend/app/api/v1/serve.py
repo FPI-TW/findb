@@ -25,6 +25,8 @@ from app.schemas.serve import (
     DatasetListResponse,
     EODLatestResponse,
     EODListResponse,
+    ExchangeQuoteListResponse,
+    FuturesContractListResponse,
     FuturesEODListResponse,
     InstrumentDetailResponse,
     InstrumentListResponse,
@@ -651,6 +653,100 @@ async def get_futures_eod(
         start_date=start_date,
         end_date=end_date,
         session=session,
+        order=order,
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+@router.get(
+    "/futures/contracts",
+    response_model=FuturesContractListResponse,
+    operation_id="list_futures_contracts",
+    summary="TAIFEX futures contracts and their quoted dates",
+    description=(
+        "Lists TAIFEX expiry contracts with the first and latest trade date FinDB holds quotes "
+        "for, most recently quoted first. Use `active_on` to find the contracts that traded on "
+        "a date (e.g. today's near-month contract), then pass `contract_code` to "
+        "`list_futures_eod`. Expiry dates are not recorded yet."
+    ),
+    responses=_errors(
+        {
+            422: (
+                "`INVALID_PRODUCT`: unsupported product code. "
+                f"{DATASET_NOT_AVAILABLE} {INVALID_CURSOR}"
+            ),
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
+async def get_futures_contracts(
+    product_code: Annotated[
+        str | None,
+        Query(
+            description="TAIFEX product, case-insensitive: `TX`, `MTX`, `TMF`, `TE` or `TF`.",
+            examples=["TX"],
+        ),
+    ] = None,
+    active_on: Annotated[
+        date | None,
+        Query(
+            description=(
+                "Only contracts quoted on or around this TAIFEX trade date: first quoted on or "
+                "before it and last quoted on or after it."
+            ),
+            examples=["2026-11-20"],
+        ),
+    ] = None,
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
+    db: AsyncSession = Depends(get_db),
+) -> FuturesContractListResponse:
+    return await serve_queries.list_futures_contracts(
+        db, product_code=product_code, active_on=active_on, cursor=cursor, page_size=page_size
+    )
+
+
+@router.get(
+    "/exchange-quotes",
+    response_model=ExchangeQuoteListResponse,
+    operation_id="list_exchange_quotes",
+    summary="Exchange official daily quotation report rows (HKEX)",
+    description=(
+        "Rows of the exchange's official daily quotation report for up to 50 instruments: "
+        "previous close, official close, high, low, closing bid and ask, board and whether "
+        "the security traded. Currently HK equities from HKEX. `list_eod` already carries the "
+        "official close, high, low and volume for these instruments; use this for the "
+        "previous close, bid/ask or trading status. Suspended securities have no row."
+    ),
+    responses=_errors(
+        {
+            404: f"{INSTRUMENT_NOT_FOUND} `details.inputs` lists the unknown values.",
+            422: (
+                f"{SELECTOR_ERRORS} {DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}"
+            ),
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
+async def get_exchange_quotes(
+    instruments: InstrumentsQuery,
+    start_date: StartDateQuery = None,
+    end_date: EndDateQuery = None,
+    order: Annotated[SortDirection, Query(description=ORDER_DESCRIPTION)] = "desc",
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
+    db: AsyncSession = Depends(get_db),
+) -> ExchangeQuoteListResponse:
+    return await serve_queries.list_exchange_quotes(
+        db,
+        instruments_raw=instruments,
+        start_date=start_date,
+        end_date=end_date,
         order=order,
         cursor=cursor,
         page_size=page_size,

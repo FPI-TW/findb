@@ -78,6 +78,8 @@ def test_serve_operations_have_stable_ids_summaries_and_descriptions(spec):
         "list_intraday_ticks",
         "get_intraday_download_manifest",
         "list_futures_eod",
+        "list_futures_contracts",
+        "list_exchange_quotes",
         "get_calendar_year",
         "list_calendar_days",
         "list_market_freshness",

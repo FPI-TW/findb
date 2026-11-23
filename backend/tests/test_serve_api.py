@@ -319,7 +319,7 @@ def exchange_quote_dataset() -> DatasetRegistry:
 async def test_an_active_exchange_quote_dataset_leaves_the_provider_rows_served(
     client: AsyncClient, test_session
 ):
-    """Its quotes reach Serve as corrections of the HK EOD rows, never as a scope."""
+    """Its quotes correct the HK EOD rows and are listed as a dataset of their own."""
     instrument_id = uuid7()
     test_session.add_all(
         [
@@ -333,7 +333,10 @@ async def test_an_active_exchange_quote_dataset_leaves_the_provider_rows_served(
 
     catalog = await client.get("/api/v1/serve/datasets")
     assert catalog.status_code == 200, catalog.text
-    assert {row["dataset_key"] for row in catalog.json()["data"]} == {"hk_equity_eod"}
+    assert {row["dataset_key"] for row in catalog.json()["data"]} == {
+        "hk_equity_eod",
+        "hk_equity_official_eod",
+    }
     response = await client.get("/api/v1/serve/eod", params={"instruments": str(instrument_id)})
     assert response.status_code == 200, response.text
     assert len(response.json()["data"]) == 1
@@ -872,6 +875,8 @@ SERVE_ROUTE_URLS = {
         "/api/v1/serve/minute?instrument_id=11111111-1111-1111-1111-111111111111"
     ),
     "/api/v1/serve/futures/eod": "/api/v1/serve/futures/eod",
+    "/api/v1/serve/futures/contracts": "/api/v1/serve/futures/contracts",
+    "/api/v1/serve/exchange-quotes": "/api/v1/serve/exchange-quotes?instruments=HK:700",
     "/api/v1/serve/intraday/bars": (
         "/api/v1/serve/intraday/bars?instrument_id=11111111-1111-1111-1111-111111111111"
     ),

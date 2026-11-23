@@ -197,11 +197,13 @@ class DatasetResponse(BaseModel):
     market: str = Field(description=MARKET)
     asset_class: str = Field(description="Asset class, e.g. `equity`, `etf`, `index`, `future`.")
     frequency: Literal["daily", "minute", "tick"] = Field(description="Sampling frequency.")
-    data_kind: Literal["eod", "minute", "futures_eod", "intraday_bars", "intraday_ticks"] = Field(
+    data_kind: Literal[
+        "eod", "minute", "futures_eod", "intraday_bars", "intraday_ticks", "exchange_quotes"
+    ] = Field(
         description=(
-            "Which endpoint serves the data: `eod` -> `list_eod`, `minute` -> "
-            "`list_minute_bars`, `futures_eod` -> `list_futures_eod`, `intraday_bars` -> "
-            "`list_intraday_bars`, `intraday_ticks` -> `list_intraday_ticks`."
+            "Kind of data; `operation_id` names the endpoint that serves it. "
+            "`exchange_quotes` is the exchange's official daily report (HKEX), whose values "
+            "also correct the `eod` rows."
         )
     )
     interval: Literal["1d", "1m", "tick"] = Field(description="Native bar interval.")
@@ -431,6 +433,82 @@ class FuturesEODListResponse(BaseModel):
     units: FuturesUnitsResponse = Field(description="How to read prices, dates and volumes.")
     data: list[FuturesEODResponse] = Field(
         description="Contract quotes ordered by trade date (see `order`)."
+    )
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
+
+
+class FuturesContractResponse(BaseModel):
+    contract_id: UUID = Field(description="FinDB UUID of the expiry contract.")
+    instrument_id: UUID = Field(description="FinDB UUID of the futures product.")
+    product_code: str = Field(description="TAIFEX product, e.g. `TX`.")
+    contract_code: str = Field(
+        description="`<product_code>:<contract_month>`; pass it to `list_futures_eod`."
+    )
+    contract_month: str | None = Field(
+        default=None, description="TAIFEX expiry identifier, e.g. `202612` or `202612W2`."
+    )
+    contract_type: Literal["monthly", "weekly", "friday_weekly"] | None = Field(
+        default=None,
+        description="From `contract_month`: plain `YYYYMM`, a `W` suffix or an `F` suffix.",
+    )
+    expiry_date: date | None = Field(
+        default=None, description="Expiry date; not yet recorded by FinDB, so currently null."
+    )
+    first_trade_date: date = Field(description="First trade date FinDB holds a quote for.")
+    last_trade_date: date = Field(
+        description=(
+            "Latest trade date FinDB holds a quote for; for a live contract this is the latest "
+            "stored trading day."
+        )
+    )
+
+
+class FuturesContractListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[FuturesContractResponse] = Field(
+        description="Contracts, most recently quoted first, then by contract code."
+    )
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
+
+
+class ExchangeQuoteResponse(BaseModel):
+    instrument_id: UUID = Field(description=INSTRUMENT_ID)
+    symbol: str = Field(description=SYMBOL)
+    name: str | None = Field(default=None, description="Instrument name.")
+    market: str = Field(description=MARKET)
+    trade_date: date = Field(description=TRADE_DATE)
+    board: str = Field(description="Exchange board, e.g. HKEX `main` or `gem`.")
+    currency: str = Field(description="ISO 4217 currency of the trading counter.")
+    trading_status: Literal["traded", "no_trade"] = Field(
+        description=(
+            "`traded` when volume is positive, `no_trade` when it is 0. Suspended securities "
+            "are not in the report, so they have no row."
+        )
+    )
+    previous_close: Decimal | None = Field(
+        default=None, description="Previous close as the exchange reports it."
+    )
+    close: Decimal | None = Field(
+        default=None,
+        description=(
+            "Official close. Without a closing auction it is the median of last-minute "
+            "nominal prices, not necessarily a trade, and can lie outside high/low."
+        ),
+    )
+    high: Decimal | None = Field(default=None, description="Highest price; excludes odd lots.")
+    low: Decimal | None = Field(default=None, description="Lowest price; excludes odd lots.")
+    bid: Decimal | None = Field(default=None, description="Best bid at the close.")
+    ask: Decimal | None = Field(default=None, description="Best ask at the close.")
+    volume: int = Field(description="Shares traded.")
+    turnover: Decimal = Field(description="Traded value in `currency`.")
+    source: str = Field(description="Exchange the report came from, e.g. `hkex`.")
+    source_fetched_at: datetime = Field(description=SOURCE_FETCHED_AT)
+
+
+class ExchangeQuoteListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[ExchangeQuoteResponse] = Field(
+        description="Report rows ordered by trade date (see `order`), then by instrument."
     )
     pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
 
