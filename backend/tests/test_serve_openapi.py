@@ -70,6 +70,7 @@ def test_serve_operations_have_stable_ids_summaries_and_descriptions(spec):
         "list_datasets",
         "list_instruments",
         "get_instrument",
+        "resolve_instruments",
         "list_eod",
         "list_minute_bars",
         "list_intraday_bars",

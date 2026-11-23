@@ -861,6 +861,7 @@ async def test_minute_no_data_has_empty_resolved_range(client: AsyncClient, test
 SERVE_ROUTE_URLS = {
     "/api/v1/serve/datasets": "/api/v1/serve/datasets",
     "/api/v1/serve/instruments": "/api/v1/serve/instruments",
+    "/api/v1/serve/instruments/resolve": "/api/v1/serve/instruments/resolve?symbols=TW:2330",
     "/api/v1/serve/instruments/{instrument_id}": (
         "/api/v1/serve/instruments/11111111-1111-1111-1111-111111111111"
     ),
