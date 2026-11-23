@@ -332,12 +332,25 @@ class EODLatestQuote(BaseModel):
     previous_close: Decimal | None = Field(
         default=None, description="Close on `previous_trade_date`."
     )
+    missing_sessions: int | None = Field(
+        default=None,
+        description=(
+            "Open days of the market calendar strictly between `previous_trade_date` and "
+            "`trade_date`. 0 means the previous bar is the prior session. Greater than 0 means "
+            "bars are missing or the instrument was suspended; `change` and `change_percent` are "
+            "then null because they would not be the latest session's move. Null when there is "
+            "no previous bar or the market has no calendar."
+        ),
+    )
     change: Decimal | None = Field(
-        default=None, description="`close - previous_close`; null when either is missing."
+        default=None,
+        description=(
+            "`close - previous_close`; null when either is missing or `missing_sessions` is not 0."
+        ),
     )
     change_percent: Decimal | None = Field(
         default=None,
-        description="`change / previous_close * 100`, 4 decimals; null when not computable.",
+        description="`change / previous_close * 100`, 4 decimals; null whenever `change` is null.",
     )
     source: str | None = Field(default=None, description=SOURCE)
     field_sources: dict[str, str] | None = Field(

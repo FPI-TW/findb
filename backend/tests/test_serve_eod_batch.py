@@ -6,6 +6,8 @@ from uuid import UUID
 import pytest
 from httpx import AsyncClient
 
+from app.models.canonical import CalendarRevisionDay, CalendarYearRevision
+from app.utils import uuid7
 from tests.test_serve_api import assert_error, dataset, eod, instrument
 
 TSMC = UUID("11111111-1111-1111-1111-111111111111")
@@ -129,9 +131,11 @@ async def test_latest_eod_reports_change_and_lists_what_it_cannot_answer(client:
     assert quotes["TW:2330"]["previous_close"] == "1010.00000000"
     assert quotes["TW:2330"]["change"] == "-4.50000000"
     assert quotes["TW:2330"]["change_percent"] == "-0.4455"
+    assert quotes["TW:2330"]["missing_sessions"] == 0
     assert quotes["US:AAPL"]["change_percent"] == "-5.0000"
     assert quotes["HK:700"]["instrument"]["symbol"] == "00700"
     assert quotes["HK:700"]["previous_close"] is None and quotes["HK:700"]["change"] is None
+    assert quotes["HK:700"]["missing_sessions"] is None
     assert {item["input"]: item["reason"] for item in payload["missing"]} == {
         "TW:SAME": "ambiguous",
         "TW:EMPTY": "no_data",
@@ -158,6 +162,74 @@ async def test_latest_eod_as_of_a_date_takes_the_bar_on_or_before_it(client: Asy
     assert before_any.json()["missing"] == [
         {"input": "TW:2330", "reason": "no_data", "matches": []}
     ]
+
+
+@pytest.mark.asyncio
+async def test_latest_eod_reports_no_change_across_skipped_sessions(
+    client: AsyncClient, test_session
+):
+    # TW publishes Tuesday as a holiday; US and HK fall back to weekday defaults.
+    revision = CalendarYearRevision(
+        id=uuid7(),
+        market="TW",
+        year=2026,
+        revision=1,
+        status="published",
+        timezone="Asia/Taipei",
+        expected_days=365,
+        actual_days=1,
+        source_kind="test",
+    )
+    test_session.add_all(
+        [
+            dataset("tw_equity_eod", market="TW", asset_class="equity", schema_id="market_eod"),
+            dataset("us_equity_eod", market="US", asset_class="equity", schema_id="market_eod"),
+            dataset("hk_equity_eod", market="HK", asset_class="equity", schema_id="market_eod"),
+            instrument(TSMC, "2330"),
+            instrument(AAPL, "AAPL", market="US"),
+            instrument(TENCENT, "00700", market="HK"),
+            revision,
+            eod(TSMC, MON, "1000"),
+            eod(TSMC, WED, "1020"),
+            eod(AAPL, date(2026, 11, 13), "200"),
+            eod(AAPL, MON, "210"),
+            eod(TENCENT, date(2026, 11, 6), "419.8"),
+            eod(TENCENT, date(2026, 11, 20), "344"),
+        ]
+    )
+    await test_session.flush()
+    test_session.add(
+        CalendarRevisionDay(
+            id=uuid7(),
+            calendar_revision_id=revision.id,
+            trade_date=TUE,
+            is_open=False,
+            day_status="closed",
+            source_kind="test",
+        )
+    )
+    await test_session.commit()
+
+    response = await client.get(
+        "/api/v1/serve/eod/latest", params={"instruments": "TW:2330,US:AAPL,HK:700"}
+    )
+
+    assert response.status_code == 200, response.text
+    quotes = {item["input"]: item for item in response.json()["data"]}
+    # The holiday and the weekend are not skipped sessions.
+    assert (quotes["TW:2330"]["missing_sessions"], quotes["TW:2330"]["change"]) == (
+        0,
+        "20.00000000",
+    )
+    assert (quotes["US:AAPL"]["missing_sessions"], quotes["US:AAPL"]["change_percent"]) == (
+        0,
+        "5.0000",
+    )
+    tencent = quotes["HK:700"]
+    assert tencent["previous_trade_date"] == "2026-11-06"
+    assert tencent["previous_close"] == "419.80000000"
+    assert tencent["missing_sessions"] == 9
+    assert tencent["change"] is None and tencent["change_percent"] is None
 
 
 @pytest.mark.asyncio

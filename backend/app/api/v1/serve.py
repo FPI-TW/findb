@@ -389,6 +389,8 @@ async def get_eod(
     description=(
         "For up to 50 instruments (may mix markets), the latest stored daily bar on or before "
         "`as_of_date`, with the previous bar's close and the change in price and percent. "
+        "The change is reported only when the previous bar is the prior session of the market "
+        "calendar (`missing_sessions` is 0). "
         "Inputs that cannot be answered are listed in `missing` with a reason instead of "
         "failing the request. Check `trade_date`: a market's latest bar may be from an earlier "
         "day than today (see `list_market_freshness`)."
