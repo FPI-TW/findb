@@ -189,8 +189,8 @@ request，沿用官方 no-data 證據。
 
 ## `exchange_daily_quote.v1`
 
-交易所官方每日報表的逐檔行情，目前只對應 HKEX 的每日報表（主板與 GEM 各一份）。契約、官方表與
-normalizer 已發布，但目前沒有 dataset 接受它，送入的 request 會被拒絕。設計與啟用進度見
+交易所官方每日報表的逐檔行情，目前只對應 HKEX 的每日報表（主板與 GEM 各一份），由 dataset
+`hk_equity_official_eod`（provider `hkex`）接受；兩環境已於 2026-11-23 上線。設計見
 [港股個股日線](../dev/hk-equity-factset-hkex.md)。
 
 Batch 的 `source_raw_ref`／`source_raw_sha256` 必填，指向 producer 存進 Raw R2 的報表 gzip；

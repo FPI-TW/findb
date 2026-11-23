@@ -574,7 +574,7 @@ staging 原生告警不證明 production 範圍已上線；未執行 external ca
 宣稱全市場健康或 production coverage 完成。
 
 每個交易日核對 Source plan summary 與 canonical lineage；每條 feed 都在排程開始後 12 小時截止
-（台北時間：TW／HK／TAIFEX 次日 05:00–06:30，US 次日 18:00）。晚到資料可供查詢但須保留遲到紀錄；停牌／無成交的 no_data
+（換算台北時間為次日 05:00 至 20:30，逐 feed 見 [Catalog 排程與 frozen deadline](full_market.md#catalog-排程與-frozen-deadline)）。晚到資料可供查詢但須保留遲到紀錄；停牌／無成交的 no_data
 必須有 durable official/provider evidence。Quota、entitlement、mapping、source error 形成
 blocked；空 response 與缺結果不能歸為 no_data。
 
