@@ -416,6 +416,19 @@ DAYS = (date(2026, 7, 20), date(2026, 7, 21), date(2026, 7, 22))
 MONTH_KEY = "intraday/v1/tw_equity_bar_1m/symbol=2330/year=2026/month=07/part.parquet"
 
 
+def _row_group_dates(stores: Stores, key: str) -> list[tuple[date, date]]:
+    """(min, max) trade date of each row group of a stored object."""
+    metadata = pq.ParquetFile(io.BytesIO(stores.canonical_objects()[key])).metadata
+    column = metadata.schema.names.index("trade_date")
+    return [
+        (stats.min, stats.max)
+        for stats in (
+            metadata.row_group(index).column(column).statistics
+            for index in range(metadata.num_row_groups)
+        )
+    ]
+
+
 async def _three_days(test_session, stores) -> None:
     for day in DAYS:
         await deliver(test_session, stores, bars(day=day), day=day)
@@ -438,6 +451,15 @@ async def test_a_finished_month_is_merged_into_one_object(test_session, stores, 
     assert {row.object_etag for row in july} == {stores.canonical.version(MONTH_KEY)}
     stored = stores.rows(MONTH_KEY)
     assert [item["trade_date"] for item in stored] == [day for day in DAYS for _ in range(3)]
+    # One row group per trade date, so a reader can take a single day of the month.
+    assert _row_group_dates(stores, MONTH_KEY) == [(day, day) for day in DAYS]
+    assert all(
+        store.day_row_groups(
+            pq.ParquetFile(io.BytesIO(stores.canonical_objects()[MONTH_KEY])).metadata, day
+        )
+        == [index]
+        for index, day in enumerate(DAYS)
+    )
     # The day objects are gone; the other month and symbol were not touched.
     assert sorted(stores.canonical_objects()) == sorted(
         [
@@ -485,6 +507,7 @@ async def test_a_day_republished_after_the_merge_is_read_and_merged_from_its_new
     await _merge(test_session, stores)
 
     assert len(stores.rows(MONTH_KEY)) == 7
+    assert _row_group_dates(stores, MONTH_KEY) == [(day, day) for day in DAYS]
     july = [
         row for row in await _index(test_session) if row.symbol == "2330" and row.trade_date in DAYS
     ]
@@ -658,3 +681,43 @@ def test_the_merge_loop_survives_a_failed_pass_and_can_be_switched_off(monkeypat
     monkeypatch.setattr(worker, "_thread", None)
     worker.start_intraday_merge()
     assert worker._thread is None
+
+
+def test_rows_given_out_of_order_are_stored_by_day_then_row_key() -> None:
+    later, earlier = date(2026, 7, 22), date(2026, 7, 21)
+    table = pa.concat_tables(
+        [
+            store.row_schema("tick").empty_table(),
+            ticks(day=later, sequences=(1, 0)).cast(store.row_schema("tick")),
+            ticks(day=earlier, sequences=(2, 0, 1)).cast(store.row_schema("tick")),
+        ]
+    )
+
+    body = store.encode_rows(table)
+
+    stored = pq.read_table(io.BytesIO(body))
+    assert [(row["trade_date"], row["sequence"]) for row in stored.to_pylist()] == [
+        (earlier, 0),
+        (earlier, 1),
+        (earlier, 2),
+        (later, 0),
+        (later, 1),
+    ]
+    metadata = pq.ParquetFile(io.BytesIO(body)).metadata
+    assert metadata.num_row_groups == 2
+    assert store.day_row_groups(metadata, later) == [1]
+    assert store.day_row_groups(metadata, date(2026, 7, 23)) == []
+    assert store.encode_rows(table) == body
+
+
+def test_an_object_written_as_one_row_group_is_still_read_for_every_day() -> None:
+    """Objects from before days had their own row groups are read whole, never missed."""
+    table = pa.concat_tables(
+        [bars(day=day).cast(store.row_schema("bar_1m")) for day in (DAY, DAY + timedelta(days=1))]
+    )
+    sink = io.BytesIO()
+    pq.write_table(table, sink)
+    metadata = pq.ParquetFile(io.BytesIO(sink.getvalue())).metadata
+    assert metadata.num_row_groups == 1
+    assert store.day_row_groups(metadata, DAY) == [0]
+    assert store.day_row_groups(metadata, DAY + timedelta(days=1)) == [0]

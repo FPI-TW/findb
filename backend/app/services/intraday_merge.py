@@ -33,8 +33,9 @@ MonthUnit = tuple[str, str, int, int]
 def merge_boundary(now: datetime, grace_days: int) -> date:
     """First day of the earliest month that is not yet merged.
 
-    A month is merged once it ended more than ``grace_days`` ago on the
-    exchange calendar, leaving time for late republication of its last days.
+    A month is merged once it ended more than ``grace_days`` calendar days ago
+    in the exchange's time zone (not trading days), leaving time for late
+    republication of its last days.
     """
     return (now.astimezone(EXCHANGE_TIMEZONE).date() - timedelta(days=grace_days)).replace(day=1)
 

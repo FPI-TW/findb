@@ -207,17 +207,49 @@ def read_rows(
 
 
 def encode_rows(table: pa.Table) -> bytes:
-    """Serialize rows the same way every time, so an identical day is identical bytes."""
+    """Serialize rows the same way every time, so an identical day is identical bytes.
+
+    Each trade date gets its own row groups and no row group holds two dates, so
+    a reader can fetch one day of a month object by the ``trade_date`` statistics
+    instead of the whole month.
+    """
+    key = _ROW_KEY["bar_1m"] if _ROW_KEY["bar_1m"] in table.column_names else _ROW_KEY["tick"]
+    table = table.sort_by([("trade_date", "ascending"), (key, "ascending")])
     sink = io.BytesIO()
-    pq.write_table(
-        table,
+    with pq.ParquetWriter(
         sink,
+        table.schema,
         compression="zstd",
         use_dictionary=True,
         write_statistics=True,
         data_page_version="2.0",
-    )
+    ) as writer:
+        if table.num_rows == 0:
+            writer.write_table(table)
+        for trade_date in pc.unique(table["trade_date"]):
+            day = table.filter(pc.equal(table["trade_date"], trade_date))
+            writer.write_table(day, row_group_size=day.num_rows)
     return sink.getvalue()
+
+
+def day_row_groups(metadata: pq.FileMetaData, trade_date: date) -> list[int]:
+    """Row groups of a stored object that may hold ``trade_date``.
+
+    Uses the ``trade_date`` statistics; a row group without them is always
+    included, so an object written before days had their own row groups is
+    still read correctly, only less selectively.
+    """
+    column = metadata.schema.names.index("trade_date")
+    selected: list[int] = []
+    for index in range(metadata.num_row_groups):
+        statistics = metadata.row_group(index).column(column).statistics
+        if (
+            statistics is None
+            or not statistics.has_min_max
+            or statistics.min <= trade_date <= statistics.max
+        ):
+            selected.append(index)
+    return selected
 
 
 def _put(publisher: CanonicalPublisher, key: str, body: bytes, expected_etag: str | None) -> str:

@@ -93,7 +93,8 @@ class Settings(BaseSettings):
     CLOUDFLARE_R2_CANONICAL_READER_SESSION_TOKEN: str = ""
 
     # Intraday day objects are merged into month objects by the Worker in idle time.
-    # A month is merged once it ended more than the grace days ago (exchange calendar);
+    # A month is merged once it ended more than the grace days ago (calendar days in
+    # the exchange time zone, not trading days);
     # an interval of 0 disables the merge loop.
     INTRADAY_MERGE_INTERVAL_SECONDS: int = 900
     INTRADAY_MERGE_GRACE_DAYS: int = 3
