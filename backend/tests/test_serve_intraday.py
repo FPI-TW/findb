@@ -55,11 +55,10 @@ async def key(test_session) -> dict[str, str]:
     return {get_settings().API_KEY_HEADER: plaintext}
 
 
-@pytest.fixture
-async def tw(test_session):
+async def intraday_instrument(session):
     """2330 with active EOD, bar and tick datasets."""
     instrument_id = uuid7()
-    test_session.add_all(
+    session.add_all(
         [
             dataset("tw_equity_eod", market="TW", asset_class="equity", schema_id="market_eod"),
             intraday_dataset(BARS, "bar_1m"),
@@ -67,8 +66,13 @@ async def tw(test_session):
             instrument(instrument_id, "2330", name="TSMC"),
         ]
     )
-    await test_session.commit()
+    await session.commit()
     return instrument_id
+
+
+@pytest.fixture
+async def tw(test_session):
+    return await intraday_instrument(test_session)
 
 
 async def stored_day(

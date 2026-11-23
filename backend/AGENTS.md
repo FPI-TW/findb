@@ -20,7 +20,7 @@ Admin負責已認證的營運、修正與治理操作。
 ### 規則
 
 - Handler保持薄層，business logic放在services；contract validation留在ingress schema／service。
-- Source是ingest／rerun write path；Serve永遠唯讀；Admin correction／maintenance必須通過
+- Source是ingest／rerun write path；Serve永遠唯讀（唯一例外：盤中下載清單在`intraday_download_usage`扣每日額度）；Admin correction／maintenance必須通過
   Admin認證。
 - 使用dependency-injected `AsyncSession`，不得在handler建立ad hoc engine。
 - 回應使用`app/schemas/source.py`、`serve.py`及`admin.py`的typed schemas，不直接回傳raw

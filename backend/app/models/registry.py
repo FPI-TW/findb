@@ -1557,6 +1557,10 @@ class APIKey(Base):
             "role IS NULL OR role IN ('owner', 'operator', 'viewer')",
             name="api_key_role_valid",
         ),
+        CheckConstraint(
+            "intraday_download_daily_limit >= 0",
+            name="api_key_intraday_download_daily_limit_nonnegative",
+        ),
     )
 
     key_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
@@ -1574,6 +1578,11 @@ class APIKey(Base):
     rate_limit_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     rate_limit_window: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     page_size_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=1000)
+    # Object URLs the key may be given per UTC day by the intraday download
+    # manifest; the key also needs the ``intraday_download`` scope.
+    intraday_download_daily_limit: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5000, server_default="5000"
+    )
     usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1657,6 +1666,32 @@ class CredentialUsageRollup(Base):
     last_endpoint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class IntradayDownloadUsage(Base):
+    """Object URLs one Serve key was given on one UTC day.
+
+    The only table the Serve role writes: the intraday download manifest
+    charges it atomically, within the key's daily limit, before issuing URLs.
+    """
+
+    __tablename__ = "intraday_download_usage"
+    __table_args__ = (
+        CheckConstraint(
+            "object_count >= 0", name="intraday_download_usage_object_count_nonnegative"
+        ),
+    )
+
+    key_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("api_key.key_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    usage_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    object_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AdminAuditEvent(Base):

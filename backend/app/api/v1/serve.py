@@ -1,7 +1,7 @@
 """Thin HTTP routes for canonical read-only Serve queries."""
 
 from datetime import date, time
-from typing import Annotated, cast
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -24,6 +24,7 @@ from app.schemas.serve import (
     InstrumentListResponse,
     InstrumentSort,
     IntradayBarListResponse,
+    IntradayDownloadManifestResponse,
     IntradayInterval,
     IntradayTickListResponse,
     MarketFreshnessSummaryListResponse,
@@ -34,9 +35,10 @@ from app.schemas.serve import (
     SortDirection,
 )
 from app.services import serve as serve_queries
-from app.services import serve_intraday
+from app.services import serve_downloads, serve_intraday
 from app.services.effective_calendar import published_calendar_year
 from app.services.market_freshness import list_market_freshness
+from app.services.serve_downloads import DOWNLOAD_SCOPE
 from app.services.slot_identity import CanonicalSlotId
 
 router = APIRouter()
@@ -177,6 +179,21 @@ async def get_intraday_ticks(
         end_time=end_time,
         cursor=cursor,
         page_size=page_size,
+    )
+
+
+@router.get("/intraday/downloads", response_model=IntradayDownloadManifestResponse)
+async def get_intraday_download_manifest(
+    instrument_id: UUID,
+    month: Annotated[str, Query(min_length=7, max_length=7, description="YYYY-MM")],
+    kind: Literal["bars", "ticks"] = "bars",
+    key_id: str = Depends(
+        require_intraday_serve_api_key(None, cost=lambda page_size: 1, scope=DOWNLOAD_SCOPE)
+    ),
+    db: AsyncSession = Depends(get_db),
+) -> IntradayDownloadManifestResponse:
+    return await serve_downloads.intraday_download_manifest(
+        db, key_id=UUID(key_id), instrument_id=instrument_id, kind=kind, month=month
     )
 
 

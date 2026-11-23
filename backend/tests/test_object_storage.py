@@ -222,6 +222,31 @@ def test_a_range_read_returns_only_bytes_of_the_named_version() -> None:
         reader.read_range(key + "x", etag=etag, byte_range="bytes=0-1", max_bytes=8)
 
 
+def test_a_presigned_url_names_one_key_and_a_bounded_lifetime() -> None:
+    r2 = FakeR2()
+    reader = storage.CanonicalReader(CANONICAL, client=r2)
+
+    url = reader.presign_get("intraday/v1/x", expires_in=900)
+
+    assert url.startswith("https://")
+    assert r2.calls == [
+        (
+            "presign",
+            {
+                "operation": "get_object",
+                "Bucket": "findb-test-canonical",
+                "Key": "intraday/v1/x",
+                "ExpiresIn": 900,
+            },
+        )
+    ]
+    for lifetime in (0, 3601):
+        with pytest.raises(storage.ObjectStorageError):
+            reader.presign_get("intraday/v1/x", expires_in=lifetime)
+    with pytest.raises(storage.ObjectStorageError):
+        reader.presign_get("../x", expires_in=900)
+
+
 @pytest.mark.parametrize("byte_range", ["", "bytes=0-", "bytes=-0", "bytes=1-2,4-5", "0-1"])
 def test_only_bounded_single_ranges_are_requested(byte_range) -> None:
     r2 = FakeR2()

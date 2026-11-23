@@ -105,6 +105,8 @@ class Settings(BaseSettings):
     INTRADAY_SERVE_MAX_CONCURRENT_READS: int = 4
     INTRADAY_SERVE_READ_WAIT_SECONDS: float = 2.0
     INTRADAY_SERVE_CACHE_BYTES: int = 64 * 1024 * 1024
+    # Lifetime of the presigned object URLs in an intraday download manifest.
+    INTRADAY_DOWNLOAD_URL_TTL_SECONDS: int = 900
 
     # Durable normalization queue
     CELERY_BROKER_URL: str = "amqp://findb:findb@localhost:5672/%2Ffindb"

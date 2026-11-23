@@ -121,6 +121,8 @@ TARGET_TABLES = (
     "public.instruments",
     # Index only: the canonical objects it names live in R2 and are not removed here.
     "public.intraday_partition",
+    # Per-key daily download counters; the keys themselves are protected.
+    "public.intraday_download_usage",
     "public.macro_observation",
     "public.macro_series",
     "public.market_data_eod",

@@ -28,6 +28,8 @@ _MAX_REF_LENGTH = 2048
 _NOT_FOUND = frozenset({"404", "NoSuchKey", "NotFound"})
 _PRECONDITION = frozenset({"409", "412", "PreconditionFailed", "ConditionalRequestConflict"})
 _BYTE_RANGE = re.compile(r"^bytes=(?:-[1-9][0-9]{0,11}|[0-9]{1,12}-[0-9]{1,12})$")
+# Presigned URLs live at most an hour.
+_MAX_PRESIGN_SECONDS = 3600
 _CONTENT_RANGE = re.compile(r"^bytes (?P<start>[0-9]+)-(?P<end>[0-9]+)/(?P<size>[0-9]+)$")
 
 
@@ -278,6 +280,28 @@ class CanonicalReader:
         if match is None or int(match["end"]) - int(match["start"]) + 1 != length:
             raise ObjectIntegrityError("object store did not report the range it returned")
         return body, int(match["size"])
+
+    def presign_get(self, key: str, *, expires_in: int) -> str:
+        """A URL that lets its holder GET ``key`` for ``expires_in`` seconds, and nothing else.
+
+        Signed locally with this role's credential; no request is made.  The URL
+        names the key, not a version: a holder compares the response ``ETag``
+        with the version it was told about.
+        """
+        _require_canonical_key(key)
+        if type(expires_in) is not int or not 1 <= expires_in <= _MAX_PRESIGN_SECONDS:
+            raise ObjectStorageError("presigned URL lifetime is out of bounds")
+        try:
+            url = self._client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self._access.bucket, "Key": key},
+                ExpiresIn=expires_in,
+            )
+        except (BotoCoreError, ClientError):
+            raise ObjectStorageError("presigned URL could not be created") from None
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise ObjectStorageError("presigned URL could not be created")
+        return url
 
     def version(self, key: str) -> str | None:
         """Return the stored version of ``key`` without its bytes, or ``None`` when absent."""

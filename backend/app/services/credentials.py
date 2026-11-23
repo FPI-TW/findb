@@ -69,6 +69,7 @@ def present_api_key(row: APIKey) -> CredentialResponse:
             "rate_limit_requests": row.rate_limit_requests,
             "rate_limit_window": row.rate_limit_window,
             "page_size_limit": row.page_size_limit,
+            "intraday_download_daily_limit": row.intraday_download_daily_limit,
         },
         created_at=row.created_at,
         expires_at=row.expires_at,

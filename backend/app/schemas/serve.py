@@ -293,6 +293,60 @@ class IntradayTickListResponse(BaseModel):
     pagination: CursorPaginationInfo
 
 
+class IntradayDownloadColumn(BaseModel):
+    name: str
+    type: str
+    nullable: bool
+    description: str
+
+
+class IntradayDownloadLayout(BaseModel):
+    """The columns every object in the manifest holds, as the contract publishes them."""
+
+    schema_id: Literal["intraday_partition"] = "intraday_partition"
+    schema_version: int
+    record_kind: Literal["bar_1m", "tick"]
+    format: Literal["parquet"] = "parquet"
+    columns: list[IntradayDownloadColumn]
+
+
+class IntradayDownloadDay(BaseModel):
+    trade_date: date
+    row_count: int
+
+
+class IntradayDownloadObject(BaseModel):
+    """One object to fetch, and the only trade dates to take from it.
+
+    A month object can still hold rows of a day republished after the merge;
+    those rows are superseded and that day is listed under its day object.
+    """
+
+    url: str
+    object_layout: Literal["day", "month"]
+    object_etag: str
+    trade_dates: list[IntradayDownloadDay]
+
+
+class IntradayDownloadQuota(BaseModel):
+    usage_date: date
+    daily_limit: int
+    used: int
+    remaining: int
+
+
+class IntradayDownloadManifestResponse(BaseModel):
+    success: Literal[True] = True
+    instrument: IntradayInstrumentResponse
+    dataset_key: str
+    month: str
+    units: IntradayUnitsResponse
+    layout: IntradayDownloadLayout
+    expires_at: datetime
+    objects: list[IntradayDownloadObject]
+    quota: IntradayDownloadQuota
+
+
 class CalendarResponse(BaseModel):
     market: str
     trade_date: date

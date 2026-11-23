@@ -366,12 +366,18 @@ def _enforce_serve_api_key_policy(
     *,
     default_page_size: int | None = None,
     intraday_cost: Callable[[int], int] | None = None,
+    extra_scope: str | None = None,
 ) -> None:
     scopes = key.scopes or []
     if "serve" not in scopes:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="API key does not allow Serve API access",
+        )
+    if extra_scope is not None and extra_scope not in scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"API key does not have the {extra_scope} scope",
         )
 
     if default_page_size is not None:
@@ -408,6 +414,7 @@ async def _authenticate_serve_api_key(
     required: bool,
     default_page_size: int | None = None,
     intraday_cost: Callable[[int], int] | None = None,
+    extra_scope: str | None = None,
 ) -> str | None:
     if not required and not settings.SERVE_REQUIRE_AUTH:
         return None
@@ -432,6 +439,7 @@ async def _authenticate_serve_api_key(
             db_key,
             default_page_size=default_page_size,
             intraday_cost=intraday_cost,
+            extra_scope=extra_scope,
         )
         request.state.credential_ref = ("serve", db_key.key_id)
         return str(db_key.key_id)
@@ -482,11 +490,17 @@ def verify_paginated_serve_api_key(default_page_size: int):
     return dependency
 
 
-def require_intraday_serve_api_key(default_page_size: int, cost: Callable[[int], int]):
+def require_intraday_serve_api_key(
+    default_page_size: int | None,
+    cost: Callable[[int], int],
+    *,
+    scope: str | None = None,
+):
     """Require a Serve key for intraday reads, counted at ``cost(page_size)`` units.
 
     Intraday queries always need a key, whatever ``SERVE_REQUIRE_AUTH`` says, and
-    draw on an allowance of their own.
+    draw on an allowance of their own.  ``scope`` is a further scope the key
+    must hold besides ``serve``.
     """
 
     async def dependency(
@@ -501,6 +515,7 @@ def require_intraday_serve_api_key(default_page_size: int, cost: Callable[[int],
             required=True,
             default_page_size=default_page_size,
             intraday_cost=cost,
+            extra_scope=scope,
         )
         assert credential is not None
         return credential

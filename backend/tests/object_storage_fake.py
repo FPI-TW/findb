@@ -60,6 +60,12 @@ class FakeR2:
         length = len(body) if self.declared_length is None else self.declared_length
         return {"ContentLength": length, "Body": io.BytesIO(body), "ETag": etag}
 
+    def generate_presigned_url(self, operation, Params, ExpiresIn):  # noqa: N803 - boto3 names
+        self.calls.append(("presign", {"operation": operation, **Params, "ExpiresIn": ExpiresIn}))
+        if self.failure is not None:
+            raise self.failure
+        return f"https://r2.test/{Params['Bucket']}/{Params['Key']}?expires={ExpiresIn}&sig=test"
+
     def head_object(self, **arguments):
         self.calls.append(("head", arguments))
         if self.failure is not None:
