@@ -168,8 +168,8 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
   `provider_acquire` 816→38 毫秒，R2 PUT 約每 50 檔一次（每檔 231→6 毫秒）；每檔 authorization
   4.03→2.07、poll 3.03→2.04、work authorize 3.01→1.04 次，Source RPC 約 14.5→10.3 次。牆鐘未改善
   （每檔 1,575→1,821 毫秒、32.6 runs／分鐘）：同時段 Source RPC 往返普遍慢 2–10 倍（poll 平均
-  35→333 毫秒），Backend ingest `server_ms` p50 64 毫秒不變、兩台 host 負載低、Fetcher 只用一條持久
-  連線，每檔牆鐘約 1.75 秒都在 Source RPC。以前一輪 RPC 延遲推估每檔約 0.74 秒（推估，未實測）。
+  35→333 毫秒），Backend ingest `server_ms` p50 64 毫秒不變、兩台 host 負載低、Fetcher 一次只有一個
+  Source 請求在途（control、full-market 與 ingest 各一個 httpx 連線池），每檔牆鐘約 1.75 秒都在 Source RPC。以前一輪 RPC 延遲推估每檔約 0.74 秒（推估，未實測）。
   Summary 一致，deferral／errors／drift 0。
 - **nginx 請求計時**：HTTPS server 的 access log 使用 `findb_timing` 格式，在 image 預設欄位後加上
   `rt=$request_time`（nginx 收到請求至回應送完）、`urt=$upstream_response_time`、`uct=$upstream_connect_time`
@@ -193,6 +193,37 @@ deferrals、R2 PUT、provider credits 與錯誤，並分前／中／後段比較
 停止／恢復、partial no-data、crash replay、prepared drain、DQ 與
 `expected = data + no_data + missing + blocked` 必須維持。上表為 P1 前的基線，改善幅度需以
 部署後的代表性完整輪次驗證。
+
+## 2026-11-24 各 feed 瓶頸與 Backend 上限
+
+2026-11-24 只讀程式碼與既有量測（本文件、[Full market](full_market.md)、盤中驗收紀錄）整理，沒有新量測。
+「推估」是依程式路徑與已量到的單筆耗時推算，尚未實測，不能當作容量承諾。
+
+| Feed | 一天的耗時（實測） | 主要成本 |
+| --- | --- | --- |
+| FinLab 盤中 4 條 | 依序約 6.5 小時，每檔 4.7–5.4 秒 | 每檔新開 SDK 子行程、三次不重用連線的 HTTPS、2 次 R2 PUT、約 10 次 Source RPC |
+| FinLab 日 K（股票） | 約 10.6 分鐘，0.33 秒／檔 | 逐檔 Source 往返；股票與 ETF 各自載入同樣 5 張整表（每張 3–10 秒） |
+| Twelve Data `us_equity_eod` | 首輪約 37 分鐘，約 140 檔／分鐘 | 逐檔 Source 往返（約 10 次 RPC） |
+| HKEX 官方行情 | 約 50 分鐘，每檔約 1 秒 | 逐檔 Source 往返 |
+| TAIFEX、FMP | 量小 | 交易所或來源的發布時間 |
+
+FinLab 日 K 的整表共用沒有做：子行程只回傳該 dataset 名單內各欄的完整歷史（加上名單外欄位的最近幾列），
+股票與 ETF 的結果不同；要共用必須讓整表跨 pipe 留在父行程，或改用長駐 SDK worker，每天只省約 15–50 秒。
+併入 provider 吞吐擴充設計（`docs/dev/provider-throughput-scaling.md`）的長駐 worker 一起評估。
+
+Fetcher 每個 consumer 單執行緒逐成員串行，同一 provider 的所有 dataset、daily 與 historical 共用一個 owner。
+Fetcher 並行之後，Backend 依序會碰到的上限（推估，以單一 provider、單一 dataset 計）：
+
+| 限制 | 推估上限 | 位置 |
+| --- | --- | --- |
+| Source client rate limit 2,400／60 秒（daily 與 historical 共用一把 key） | 約 233 檔／分鐘（每檔約 10 RPC） | catalog `rate_limit_requests`、`app/api/deps.py` |
+| EOD dataset advisory lock，worker 2 個 prefork slot | 約 200 runs／分鐘 | `app/services/normalization_queue.py` |
+| Provider advisory lock（work authorize、prepare、ingest 都在鎖內） | 約 550–650 檔／分鐘 | `app/services/provider_work.py` |
+| 盤中 dataset lock，鎖內含 2 次 R2 往返 | 每個 dataset 約 30–60 筆／分鐘 | `app/services/normalize/intraday.py` |
+| Ingest 只有 1 個 uvicorn worker，DB pool 3+5 | 並行請求超過 8 個時排隊 | `docker-compose.prod.yml` |
+
+已確認沒有問題：dispatcher（1 秒 poll、每批 100）、nginx（無限流）、plan summary（P1／P5 增量）、盤中月檔
+（只在月底合併，不是每檔重寫）、RabbitMQ。
 
 ## 2026-09-15 baseline
 

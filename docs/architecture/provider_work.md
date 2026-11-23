@@ -103,7 +103,8 @@ normalization 與 completion proof 共用整個 owner，不能以一次 Source `
 acquisition 先記 intent，delivery prepare 再 confirm；ingest 送出前不再重送 confirm，因為 Source 對重複
 stage 只做 fence 檢查，ingest 本身也以同一 fence 驗證並在 fence 不符時回 `PROVIDER_WORK_FENCE`。略過的
 stage 仍做本機 fence 檢查；stage 失敗不記為已確認，下次照常重送。每個 body 都已有 run 的成員重訪時只
-GET run status，不重新 prepare，也不占 daily `max_members`（`max_seconds` 照常計時）。
+GET run status，不重新 prepare，也不占 daily `max_members`（`max_seconds` 照常計時）。部署中的 runtime
+不設定 daily batch policy，`max_members`／`max_seconds` 只在測試或日後設定時生效。
 同一輪成員迴圈中，acquisition gate（停止、暫停或窗口外）一旦回報不可抓取即視為本輪已關閉：之後沒有
 本機 prepared body 的成員不再 restore probe 或重查 gate；本機已 prepared 的成員照常交付或查狀態，Source
 保留而本機沒有的 bytes 保持 pending，由下次執行中的 attempt restore。Drain-only 輪仍逐檔 restore。
@@ -134,7 +135,7 @@ accepted runs 結束），已完成者記為 complete，下一次 attempt 因此
 FinLab 的抓表失敗是例外：五張表由整個 cohort 共用，失敗時整個 plan 一起等待（`DAILY_PROVIDER_UNAVAILABLE`，
 依失敗類別等 5 或 30 分鐘），不依逐檔 `next_at`，也不記在任何成員身上；規則見
 [Full market runbook](../operations/full_market.md)。
-美股第一輪約 3.5 小時，之後 4 個重試輪通常各只需數分鐘，work 約在隔日 06:50 UTC 結算。
+美股第一輪約 37 分鐘（#504 之後的 production 實測，見 [Performance](../operations/performance.md)），之後 4 個重試輪通常各只需數分鐘，work 約在隔日 06:50 UTC 結算。
 重試不增加呼叫次數，晚到的列多半是成交量 0、價格不變的占位資料，仍照常寫入。只剩等待重試輪
 的成員時，下一 attempt 排到下一輪最早時間；若有其他原因的成員更早到期，則依最早時間排程，不空轉。同一輪連續
 20 個 `no_data` 且其間沒有取得資料時視為系統性問題（例如未發布日曆的休市日），停止該輪，並讓所有待抓成員一起

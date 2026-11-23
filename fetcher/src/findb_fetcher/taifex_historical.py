@@ -47,6 +47,9 @@ from findb_fetcher.raw_storage import (
     attach_raw_object,
 )
 
+# A queued date's run is read again after these delays, the last one repeating.
+TERMINAL_POLL_DELAYS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 15.0)
+
 
 class TaifexHistoricalRunner:
     # ``_operation`` retries every fetch and Source call within the lease boundary.
@@ -403,6 +406,7 @@ class TaifexHistoricalRunner:
                 state["receipt"] = str(receipt.run_id)
                 self._save(item, state)
             run_id = UUID(state["receipt"])
+            polls = 0
             while True:
                 terminal = self._operation(
                     item,
@@ -412,7 +416,9 @@ class TaifexHistoricalRunner:
                 )
                 self._save(item, state)
                 if terminal.status in {"queued", "pending", "processing", "retrying"}:
-                    self.sleep(15)
+                    # Most dates settle within seconds; a slow queue is read every 15 s.
+                    self.sleep(TERMINAL_POLL_DELAYS[min(polls, len(TERMINAL_POLL_DELAYS) - 1)])
+                    polls += 1
                     continue
                 if (
                     terminal.status != "completed"

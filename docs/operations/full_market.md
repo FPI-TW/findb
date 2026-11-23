@@ -1188,7 +1188,8 @@ Backend 先 migration、registry 初始化及 Source scope 校準。Owner 發布
 start controls。Production 執行 Full daily；staging 平時保持停止，Owner 只在測試改動時一次啟動一個 provider，
 驗收後即停止。Twelve Data 的 staging 與 production 共用同一帳號（來源無法發多組 API key），兩環境 governor
 各自計算、沒有跨環境預算，staging 抓取會直接消耗 production 的 credits／分鐘配額。每個 consumer
-逐檔串行，2026-11 實測每檔約 2.3 秒（約 26 檔／分鐘），兩環境合計遠低於帳號 1597 credits／分鐘上限，
+逐檔串行，#504 之後 production 首輪約 140 檔／分鐘（見 [Performance](performance.md)），兩環境合計仍遠低於帳號
+1597 credits／分鐘上限，
 因此 staging 一次啟動一個 provider 驗收時不需事先協調 production 配額（#449）。若之後提高單一
 consumer 的並行度或速率，須重新評估，必要時改以兩環境 allocation 切分配額。Daily 只抓當日，
 回補天數由管理者建立回補時決定；完整範圍回補在 production 執行。Staging fetcher 主機記憶體小（見
@@ -1644,7 +1645,7 @@ HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 只負責 US，HK �
 新 plan deadline 與沒有 plan 的 missing-delivery 判定共用 Backend `feed_schedule` resolver。
 所有 feed 同一條規則：排程開始後 12 小時，以排程的時區計算（catalog 載入時檢查，不符即失敗）。
 換算成台北時間：US 次日 18:00（美國夏令時間為 17:00）、TAIFEX 次日 05:00、FinLab 日線次日 06:00、
-FactSet 港股與 FinLab 盤中次日 06:30。既有 plan 以儲存的 `deadline_at` 判定，不因後續
+FinLab 盤中次日 07:15、FactSet 港股與 FMP 港股指數次日 08:00、HKEX 次日 09:05、FMP 美股指數次日 20:30。既有 plan 以儲存的 `deadline_at` 判定，不因後續
 catalog 修改提早或延後告警。Bounded US 09:15 是另一政策，使用自己的 timezone／day offset。
 Dashboard 依 market 分組，逐 feed 顯示交易所當地觸發時間；slot 僅保留交付契約相容用途。
 DB 舊值修正與發布下限見 [PR5 遷移](deployment.md#provider-catalog-pr5-發布與遷移)。
