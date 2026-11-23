@@ -17,6 +17,9 @@ intraday/v1/<dataset_key>/symbol=<代號>/year=<YYYY>/month=<MM>/part.parquet   
 - 欄位就是契約發布的 `x-findb-row-layouts`：時間是 UTC，`trade_date` 是交易所當地日期，`symbol` 是字串，
   價格未還原，成交量單位是張（與以股為單位的日 K、舊分 K 不同）。
 - 日檔內依時間（1 分 K）或當日序號（逐筆）排序；月檔依交易日再依同樣的順序。
+- 每個交易日自成 row group，一個 row group 不會含兩個交易日，並寫入 `trade_date` 統計。讀取月檔的某一天時，
+  依統計只讀該日的 row group，不必讀整個月檔；沒有統計的 row group 一律讀取，所以舊格式的物件仍可正確讀取。
+  單日列數超過 Parquet 的 row group 上限時，該日會分成多個 row group，仍只含該日。
 - 同一版 Worker 對相同的資料列產生相同的位元組，重試不會寫出內容不同的物件。
 
 ## 索引表
@@ -58,7 +61,7 @@ no-data 證據，不建立索引。
 
 ## 月底合併
 
-月份結束超過 `INTRADAY_MERGE_GRACE_DAYS`（預設 3 天，依交易所日曆）後，Worker 把該標的該月的日檔合併成
+月份結束超過 `INTRADAY_MERGE_GRACE_DAYS`（預設 3 天，以交易所時區計的日曆天，不是交易日；例如 11 月在台北時間 12/4 00:00 起合併）後，Worker 把該標的該月的日檔合併成
 月檔，更新索引，再刪除日檔。合併後某一天若重新發布，那一天會再有一個日檔，下一輪再併入月檔。
 
 - 由 Worker 主行程每 `INTRADAY_MERGE_INTERVAL_SECONDS`（預設 900 秒，設為 0 停用）執行一輪，每輪最多
