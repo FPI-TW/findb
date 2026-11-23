@@ -118,9 +118,11 @@ def test_registry_covers_every_published_provider_with_its_capabilities():
         # One shared observation serves the whole cohort: FinLab's tables, HKEX's reports.
         assert adapter.outage_holds_plan is (provider in {"finlab", "hkex"})
         assert (adapter.shared_response_prefix is not None) is (provider in {"finlab", "hkex"})
+        # ``None``: the provider's list is read inside ``build_universe`` (FMP with its key).
         assert adapter.catalogue_datasets == {
             "twelve_data": ("us_equity_eod",),
             "finlab": None,
+            "fmp": None,
         }.get(provider, ())
     retired = adapter_for("shioaji")
     assert type(retired) is ProviderAdapter and retired.classify(RuntimeError(), "member") == (

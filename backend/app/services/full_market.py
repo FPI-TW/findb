@@ -330,8 +330,12 @@ async def submit_universe(
     members = _expanded_members(body)
     if any(member["asset_class"] != dataset.asset_class for member in members):
         raise FullMarketError("Universe asset class differs from dataset", 422)
-    if dataset.market == "HK" and any(
-        member["exchange"].upper() not in {"HKEX", "SEHK", "XHKG"} for member in members
+    # Listed securities name their exchange; an index is not listed, and keeps the
+    # venue its provider names (FMP lists the Hang Seng indices under ``HKSE``).
+    if (
+        dataset.market == "HK"
+        and dataset.asset_class != "index"
+        and any(member["exchange"].upper() not in {"HKEX", "SEHK", "XHKG"} for member in members)
     ):
         raise FullMarketError("HK members require HKEX/SEHK/XHKG exchange", 422)
     if dataset.dataset_key == "tw_futures_eod" and any(

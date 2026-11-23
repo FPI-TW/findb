@@ -102,6 +102,13 @@ case "$provider" in
     provider_key=""
     provider_env=()
     ;;
+  fmp)
+    marker_identity="fmp"
+    image_repository_suffix="twelve-data"
+    source_key="${FETCHER_FMP_SOURCE_CLIENT_KEY:-}"
+    provider_key="${FMP_API_KEY:-}"
+    provider_env=(--env FMP_API_KEY)
+    ;;
   twelve-data)
     marker_identity="twelve"
     image_repository_suffix="twelve-data"

@@ -38,12 +38,13 @@ def test_seed_and_frozen_migration_use_catalog_slots():
             continue
         schedule = definition["config"]["delivery_expectation"]["schedule"]
         assert schedule["slot_id"] == feed.delivery.slot_id, definition["dataset_key"]
-        # HKEX's control is installed by d8e0f2a4c6b9 with its catalog slot.
+        # Controls installed later (HKEX by d8e0f2a4c6b9, FMP by e5a7c9b1d3f2) are
+        # checked below: one control may group feeds of different slots.
         control = f"full_market_{feed.provider}_v1"
         if control in module.CONTROL_SLOTS:
             assert module.CONTROL_SLOTS[control] == feed.delivery.slot_id
         else:
-            assert feed.provider == "hkex"
+            assert feed.provider in {"hkex", "fmp"}
         # A feed added after the frozen migration is created by seed with its catalog slot.
         if feed.dataset_key in module.DATASET_SLOTS:
             assert module.DATASET_SLOTS[feed.dataset_key] == feed.delivery.slot_id
@@ -54,7 +55,33 @@ def test_seed_and_frozen_migration_use_catalog_slots():
         "tw_equity_tick",
         "tw_etf_tick",
         "hk_equity_official_eod",
+        "hk_index_eod",
+        "us_index_eod",
     }
+
+
+def test_a_control_shows_the_slot_of_its_earliest_feed():
+    import importlib.util as util
+
+    from scripts.seed_data import earliest_feed
+
+    path = (
+        Path(__file__).resolve().parents[1] / "migrations/versions/e5a7c9b1d3f2_fmp_index_feeds.py"
+    )
+    spec = util.spec_from_file_location("fmp_index_feeds", path)
+    assert spec is not None and spec.loader is not None
+    fmp = util.module_from_spec(spec)
+    spec.loader.exec_module(fmp)
+    feeds = [feed for feed in acquisition_feeds() if feed.provider == "fmp"]
+    # Hong Kong and New York indices sit in different slots; the control takes 08:30 Taipei's.
+    assert {feed.delivery.slot_id for feed in feeds} == {
+        "asia_pacific_markets_window",
+        "western_markets_window",
+    }
+    first = earliest_feed(feeds)
+    assert first.dataset_key == "us_index_eod"
+    assert fmp.CONTROL_SLOT == first.delivery.slot_id
+    assert fmp.NEW_CONTROLS["fmp"][:2] == ("Asia/Taipei", "08:30:00")
 
 
 @pytest.mark.asyncio

@@ -13,15 +13,17 @@ import subprocess
 from pathlib import Path
 
 # BEGIN GENERATED PROVIDER INVENTORY
-PROVIDERS = ("factset", "finlab", "hkex", "taifex", "twelve_data")
+PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
 CONSUMERS = (
     ("findb-full-market-factset", "factset", "full_market", "factset"),
     ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-fmp", "fmp", "full_market", "twelve_data"),
     ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
     ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "factset"),
     ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-fmp", "fmp", "historical", "twelve_data"),
     ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
     ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
@@ -31,7 +33,7 @@ EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 
 # Providers whose consumers a bundle version first installs. A host still on an
 # older bundle has none of them yet; this release installs them.
-PROVIDER_SINCE_BUNDLE = {"hkex": 6}
+PROVIDER_SINCE_BUNDLE = {"hkex": 6, "fmp": 7}
 
 
 def require_root_directory(path):
@@ -62,7 +64,7 @@ def installed_manifest(base, validator, target, registry):
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
         if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
             "fetcher_bundle_version"
-        ] not in {5, 6}:
+        ] not in {5, 6, 7}:
             # Bundle v5 (Pilot retirement) is the rollback floor on every host.
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
@@ -186,13 +188,17 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     residue = [names.pop(name) for name in PILOT_RESIDUE if name in names]
     require_no_pilot_residue(residue)
     version = manifest["fetcher_bundle_version"]
-    # Every consumer the installed bundle installed is required; a newer provider's
+    # Every consumer the installed bundle installed is required; each newer provider's
     # are installed by this release, and may only already exist as a whole.
     required = {row[0] for row in CONSUMERS if version >= PROVIDER_SINCE_BUNDLE.get(row[1], 0)}
-    newer = set(EXPECTED_RUNTIMES) - required
+    newer = [
+        {row[0] for row in CONSUMERS if row[1] == provider}
+        for provider, since in PROVIDER_SINCE_BUNDLE.items()
+        if version < since
+    ]
     if (
         not required <= set(names) <= set(EXPECTED_RUNTIMES)
-        or (names.keys() & newer and not newer <= set(names))
+        or any(names.keys() & group and not group <= set(names) for group in newer)
         or len(names) + len(residue) != len(rows)
     ):
         print("fetcher_host_eligibility=failed reason=consumer_inventory_mismatch")

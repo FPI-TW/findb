@@ -13,15 +13,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 # BEGIN GENERATED PROVIDER INVENTORY
-PROVIDERS = ("factset", "finlab", "hkex", "taifex", "twelve_data")
+PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
 CONSUMERS = (
     ("findb-full-market-factset", "factset", "full_market", "factset"),
     ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-fmp", "fmp", "full_market", "twelve_data"),
     ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
     ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "factset"),
     ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-fmp", "fmp", "historical", "twelve_data"),
     ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
     ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
@@ -29,18 +31,24 @@ CONSUMERS = (
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
 
-# Consumers of providers a newer bundle first installs: before that release they
-# are absent as a whole, after it they recover like every other consumer.
-NEWER_RUNTIMES = frozenset(row[0] for row in CONSUMERS if row[1] in {"hkex"})
+# Consumers of providers a newer bundle first installs, by provider: before that
+# release a provider's are absent as a whole, after it they recover like every other.
+NEWER_PROVIDERS = ("hkex", "fmp")
+NEWER_RUNTIMES = {
+    provider: frozenset(row[0] for row in CONSUMERS if row[1] == provider)
+    for provider in NEWER_PROVIDERS
+}
 
 
 def _installed_runtimes(present: set[str]) -> tuple[str, ...]:
-    """The consumers this host must recover: all of them, or all but a newer provider's."""
-    if present & NEWER_RUNTIMES and not NEWER_RUNTIMES <= present:
-        raise ValueError("installed runtime inventory is incomplete")
-    return tuple(
-        name for name in EXPECTED_RUNTIMES if name in present or name not in NEWER_RUNTIMES
-    )
+    """The consumers this host must recover: all, less newer providers not installed yet."""
+    absent: set[str] = set()
+    for group in NEWER_RUNTIMES.values():
+        if present & group and not group <= present:
+            raise ValueError("installed runtime inventory is incomplete")
+        if not present & group:
+            absent |= group
+    return tuple(name for name in EXPECTED_RUNTIMES if name not in absent)
 
 
 RuntimeSnapshot = tuple[tuple[str, str, str, int, str, bool], ...]

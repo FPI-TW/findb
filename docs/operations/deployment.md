@@ -470,7 +470,7 @@ SSM gate 同時讀取 stdout 與 stderr，只轉印完全符合此文法的行�
 最多 8 行，並以 `遠端部署失敗原因` annotation 顯示；不符文法的 Docker 或 provider 文字一律不輸出。
 Host eligibility 拒絕某個已知 consumer 時，trusted guard 另輸出受限的
 `fetcher_host_blocked reason=runtime_not_eligible execution_profile=pilot provider=twelve_data`。
-SSM gate 只接受合法的 `pilot|full_market|historical` 與五個 provider，於 Actions 提示檢查
+SSM gate 只接受合法的 `pilot|full_market|historical` 與六個 provider，於 Actions 提示檢查
 既有 consumer、保持 control 停止並安全復原原 owner。重啟循環、非零 exit、identity 或
 argv 不符仍拒絕部署；診斷不直接輸出 Docker Error、environment 或原始 stdout／stderr。
 Daemon container 為 running 且 idle 不等同 scheduler control 仍允許抓取，不能以 Docker running 直接阻擋部署。
@@ -631,7 +631,7 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 ## Runtime 與持久化狀態
 
-每次 Fetcher bundle v6 部署固定安裝十個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
+每次 Fetcher bundle v7 部署固定安裝十二個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
 與一個 `findb-historical-<suffix>`。Daily 使用 `findb-fetch-runtime --execution-profile full_market`、
 catalog 的 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝拓撲不隨設定改變。
 
@@ -957,6 +957,38 @@ Catalog 加入第五個 provider `hkex`（feed `hk_equity_official_eod`，契約
   必須先部署到含這條規則的版本。之後新增的 provider 也一樣。
   Production 的 FinDB 與 Fetcher CD 都是手動觸發，依同樣順序執行。
 - 上線後 control 仍為 stopped：先 universe refresh 發布第一份 baseline，再由 Owner start。
+
+## FMP provider 加入與 rollback 下限
+
+Catalog 加入第六個 provider `fmp` 與兩條市場指數 feed：`hk_index_eod`（香港時間 20:00）與 `us_index_eod`
+（台北時間 08:30，抓前一個紐約交易日），契約 `market_eod.v2`、`asset_class` 為 `index`、必須有已發布的交易所日曆。
+使用 Twelve Data image，historical 目錄 `/var/lib/findb-fmp-fetcher/historical`。與 HKEX 不同，FMP 需要
+provider credential：
+
+- Source key：`findb/<environment>/fetcher/api/source/fmp` 的 `FETCHER_FMP_SOURCE_CLIENT_KEY`。
+- Provider key：`findb/<environment>/fetcher/provider/fmp` 的 `FMP_API_KEY`（兩環境共用同一個 FMP 帳號）。
+
+變更內容：
+
+- Backend migration `e5a7c9b1d3f2` 建立兩個 dataset、一個 stopped control `full_market_fmp_v1`（顯示最早的
+  feed：台北 08:30，`western_markets_window`）與 scheduler 範圍，並取代 `d8e0f2a4c6b9` 成為部署前 schedule
+  inspection；其他列沿用 `d8e0f2a4c6b9` 的凍結規則。已啟動過 control 或已有使用紀錄時拒絕 downgrade。
+  Migration 後回退到舊 Backend image 會被舊 inspection 判為 `unknown_difference`，必須先 downgrade。
+- Serve 的 active scope 加入 `market_eod` 的 `US`／`HK` `index`；舊 Backend image 遇到 active 的指數 dataset
+  會回 `SERVE_CONFIGURATION_INVALID`，這也是 migration 後不可直接回退 image 的原因之一。
+- Fetcher bundle v7（marker `# fmp-consumers-v1:`）安裝十二個 consumers。Host preflight 接受已安裝 v5、v6 或 v7，
+  每個較新的 provider 各自判斷：v6 主機可以沒有 FMP 的兩個 consumers，v5 主機可以 HKEX 與 FMP 都沒有，
+  但同一個 provider 不能只有其中一個；v7 主機必須十二個齊全。Recovery gate 同樣逐個 provider 判斷。
+  CD 只接受部署 v7 bundle。
+- **部署順序**與 HKEX 相同：
+  1. 合併並暫停 Fetcher 部署。
+  2. 從 main 以 `tofu apply -target` 建立 FMP 的兩個 secret（Source key 與 provider key）的 metadata 與
+     instance role 的讀取權限（saved plan 必須在 commit 進入 main 後建立），再寫入兩個值。
+  3. FinDB 部署完成後，以 `reconcile_fetcher_credentials.py` 登記 Source key 的 hash
+     （名稱 `fetcher-fmp`、範圍 `hk_index_eod`、`us_index_eod`）。
+  4. 繼續 Fetcher 部署；完成後再完整 `tofu apply`，建立 FMP consumers 的告警。
+- 上線後 control 仍為 stopped：先 universe refresh 發布兩份第一個 baseline（名單是固定的 10 檔指數，
+  以 FMP 指數清單核對），再把首日設成單一日期，由 Owner start。歷史回補本輪不執行。
 
 ## 清單外標的計數
 

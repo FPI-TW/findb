@@ -13,8 +13,7 @@ from app.config import get_settings
 
 def migration_module():
     path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations/versions/d8e0f2a4c6b9_hkex_official_eod_feed.py"
+        Path(__file__).resolve().parents[1] / "migrations/versions/e5a7c9b1d3f2_fmp_index_feeds.py"
     )
     spec = importlib.util.spec_from_file_location("catalog_schedule_migration", path)
     assert spec is not None and spec.loader is not None
@@ -34,7 +33,7 @@ async def main() -> int:
                 print(json.dumps({"status": "empty_bootstrap"}))
                 return 0
             report, _, _ = await connection.run_sync(migration_module().inspect)
-            print(json.dumps({"revision": "d8e0f2a4c6b9", "rows": report}, sort_keys=True))
+            print(json.dumps({"revision": "e5a7c9b1d3f2", "rows": report}, sort_keys=True))
             return int(any(row["status"] == "unknown_difference" for row in report))
     finally:
         await engine.dispose()

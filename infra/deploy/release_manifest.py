@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 # The Fetcher bundle format this tree builds; each version binds a topology marker.
-FETCHER_BUNDLE_VERSION = 6
+FETCHER_BUNDLE_VERSION = 7
 REGISTRY = "439622209937.dkr.ecr.ap-southeast-1.amazonaws.com"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 TRANSACTION_BUNDLE_FILES = (
@@ -693,6 +693,7 @@ def validate_manifest(
             or (b"# backend-schedules-v1:" in deployment) != (version >= 4)
             or (b"# pilot-retired-v1:" in deployment) != (version >= 5)
             or (b"# hkex-consumers-v1:" in deployment) != (version >= 6)
+            or (b"# fmp-consumers-v1:" in deployment) != (version >= 7)
         ):
             raise ManifestError("fetcher bundle version differs from deployment topology")
 

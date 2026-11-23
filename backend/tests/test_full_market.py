@@ -94,9 +94,12 @@ async def _calendar(db, market="TAIFEX", open_dates=None):
 def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
     futures = key == "tw_futures_eod"
     hong_kong = key.startswith("hk_equity")
+    index = key.endswith("_index_eod")
     provider = (
         "taifex"
         if futures
+        else "fmp"
+        if index
         else "hkex"
         if key == "hk_equity_official_eod"
         else "factset"
@@ -124,6 +127,18 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
             for i in range(count)
         ]
         if futures
+        else [
+            # FMP's own index symbols, which only an index member may spell with a caret.
+            {
+                "symbol": f"^IDX{i + 1}",
+                "provider_symbol": f"^IDX{i + 1}",
+                "exchange": "HKSE" if key.startswith("hk_") else "SNP",
+                "currency": "HKD" if key.startswith("hk_") else "USD",
+                "asset_class": "index",
+            }
+            for i in range(count)
+        ]
+        if index
         else [
             {
                 "symbol": f"{i + 1:05d}" if hong_kong else f"{i + 1:04d}",

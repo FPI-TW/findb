@@ -18,13 +18,21 @@ from findb_fetcher.provider_adapters.base import (
 )
 from findb_fetcher.provider_adapters.factset import FactSetAdapter
 from findb_fetcher.provider_adapters.finlab import FinLabAdapter
+from findb_fetcher.provider_adapters.fmp import FMPAdapter
 from findb_fetcher.provider_adapters.hkex import HkexAdapter
 from findb_fetcher.provider_adapters.taifex import TaifexAdapter
 from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
 
 ADAPTERS: dict[str, type[ProviderAdapter]] = {
     adapter.provider: adapter
-    for adapter in (TwelveDataAdapter, FinLabAdapter, TaifexAdapter, FactSetAdapter, HkexAdapter)
+    for adapter in (
+        TwelveDataAdapter,
+        FinLabAdapter,
+        TaifexAdapter,
+        FactSetAdapter,
+        HkexAdapter,
+        FMPAdapter,
+    )
 }
 
 
@@ -48,6 +56,7 @@ __all__ = [
     "DatedUniverse",
     "FactSetAdapter",
     "FailureKind",
+    "FMPAdapter",
     "FinLabAdapter",
     "HkexAdapter",
     "Phase",

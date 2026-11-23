@@ -382,8 +382,8 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
 | --- | --- | --- |
 | 1 | `calendar_required`、缺日曆時等待重試、歷史回補時區改依 feed | 已合併（#646） |
 | 2 | Backend 準備：`asset_class` 加 `index`、名單成員可用 `^` 開頭的指數代號、`FMP_SKIP_NON_TRADING_DAYS`、seed 依 UTC 時刻挑最早的 feed、跨時區與 lag 1 的排程測試、`backfill_world_names.py` 改用 FMP 代號 | 已合併（#648） |
-| 3 | Fetcher：FMP client 與 adapter、名單刷新、歷史回補經通用的 member runner（尚不登記到 `ADAPTERS`） | 本 PR |
-| 4 | 啟用：catalog 的 `fmp` 與兩條 feed、migration（dataset、stopped control、Source credential、凍結 schedule inspection）、infra、端到端驗收測試 | 未開始 |
+| 3 | Fetcher：FMP client 與 adapter、名單刷新、歷史回補經通用的 member runner（尚不登記到 `ADAPTERS`） | 已合併（#649） |
+| 4 | 啟用：catalog 的 `fmp` 與兩條 feed、migration `e5a7c9b1d3f2`（dataset、stopped control、凍結 schedule inspection）、Serve 的指數 scope、Fetcher 登記、infra（bundle v7、secrets、部署腳本）、端到端驗收測試 | 本 PR |
 | 5 | Dashboard：依 feed 顯示時間、時區與時段，未部署的 provider 不可 start | 未開始 |
 | 6 | staging 驗收：只啟動 `fmp`，首日先設成單日 | 未開始 |
 

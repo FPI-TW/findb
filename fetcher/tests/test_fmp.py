@@ -90,25 +90,6 @@ def _key(monkeypatch):
     monkeypatch.setenv("FMP_API_KEY", KEY)
 
 
-@pytest.fixture(autouse=True)
-def _installed_fmp(monkeypatch):
-    """The provider row the catalog will publish; FMP is not in the packaged catalog yet."""
-    from findb_fetcher import execution_metadata
-
-    installed = execution_metadata._installed_metadata
-
-    def with_fmp() -> dict[str, Any]:
-        value = installed()
-        row = {
-            "provider": "fmp",
-            "credential_env_names": ["FMP_API_KEY"],
-            "platform_limits": {"requests_per_minute": 300, "max_response_bytes": 16 * 1024 * 1024},
-        }
-        return {**value, "providers": [*value["providers"], row]}
-
-    monkeypatch.setattr(execution_metadata, "_installed_metadata", with_fmp)
-
-
 def _context(server: _FMP, **changes: Any) -> tuple[AcquisitionContext, _Raw, list]:
     raw, observed = _Raw(), []
     values: dict[str, Any] = {

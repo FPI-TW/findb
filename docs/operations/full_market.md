@@ -234,7 +234,7 @@ start 前執行；ingest 啟動不調整 controls，production 可先只啟動 i
 Backend 是政策權威。`runtime/configuration` 每個 provider 一個獨立開關：
 `TWELVE_DATA_SKIP_NON_TRADING_DAYS`、`FINLAB_SKIP_NON_TRADING_DAYS`、
 `TAIFEX_SKIP_NON_TRADING_DAYS`、`FACTSET_SKIP_NON_TRADING_DAYS`、`HKEX_SKIP_NON_TRADING_DAYS`、
-`FMP_SKIP_NON_TRADING_DAYS`（FMP 尚未加入 catalog，先備妥設定）。
+`FMP_SKIP_NON_TRADING_DAYS`。
 每個開關皆為 `true`／`false` 字串，預設皆為 `true`，兩環境欄位相同，經部署生效；
 `FACTSET`、`HKEX` 與 `FMP` 的開關在 runtime configuration 中可省略。
 Fetcher 透過 Source 取得政策與每日決策，不保存另一份日曆或政策設定。預設略過非交易日；
@@ -1635,3 +1635,26 @@ FactSet 港股與 FinLab 盤中次日 06:30。既有 plan 以儲存的 `deadline
 catalog 修改提早或延後告警。Bounded US 09:15 是另一政策，使用自己的 timezone／day offset。
 Dashboard 依 market 分組，逐 feed 顯示交易所當地觸發時間；slot 僅保留交付契約相容用途。
 DB 舊值修正與發布下限見 [PR5 遷移](deployment.md#provider-catalog-pr5-發布與遷移)。
+
+## FMP 市場指數
+
+FMP 提供 10 檔市場指數的日線，依發布時間分兩條 feed，各一個 dataset，`asset_class` 為 `index`，代號沿用
+FMP（例如 `^GSPC`）。設計與實測見 [FMP 導入規劃](../dev/fmp-provider.md)。
+
+| Dataset | 指數 | 排程 | 完成期限 | 交易日曆 |
+| --- | --- | --- | --- | --- |
+| `hk_index_eod` | `^HSI`、`^HSCE` | 香港時間 20:00，當天 | 隔天 08:00 HKT | HK |
+| `us_index_eod` | `^GSPC`、`^NDX`、`^DJI`、`^IXIC`、`^RUT`、`^VIX`、`^SOX`、`^NYA` | 台北時間 08:30，前一個紐約日 | 同日 20:30（台北） | US |
+
+- 兩條 feed 共用一個 control `full_market_fmp_v1`，控制列顯示最早的 feed（台北 08:30）。
+- **必須有已發布的交易所日曆**（`calendar_required`）：缺日曆的日期以 `CALENDAR_UNPUBLISHED` 等待重試，
+  不以週一至週五代替；同一天另一條 feed 照常規劃。production 的港股日曆目前只有 2026 年。
+- **名單**固定，由 Fetcher 以 FMP 的指數清單核對每檔都在、幣別相符後發布；任一檔不符就保留上一份名單。
+- **每日抓取**：每檔指數呼叫一次 `historical-price-eod/full`。回應沒有目標日那一列時視為尚未發布，在發布
+  重試窗口（4 小時）內重試；FMP 沒有「定案」標記，所以排程放在實測的定案時間之後，且不重抓覆寫。
+- **成交量**照 FMP 原值寫入，0 就是 0。FMP 的指數成交量不是一致的數列（例如 `^RUT`、`^NYA` 多數日子與
+  `^GSPC` 相同，`^HSCE` 2024-10-08 起單位改為千股），使用前請看導入規劃的說明。
+- **歷史回補**以建立請求時的名單服務每一天（`current_release`），每天的請求數為港股 2、美股 8；本輪不執行，
+  要先匯入更早年份的交易所日曆。
+- staging 驗收：只啟動 `fmp`，兩個 dataset 的首日都先設成單一日期，確認 Source → raw → queue → canonical →
+  Serve 與 `expected = data + no_data + missing + blocked`，完成後停止 control。

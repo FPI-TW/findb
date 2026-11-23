@@ -124,6 +124,31 @@
         "requests_per_minute": null,
         "max_response_bytes": 33554432
       }
+    },
+    {
+      "provider": "fmp",
+      "display_name": "FMP",
+      "container_suffix": "fmp",
+      "image_key": "twelve_data",
+      "consumer_roles": [
+        "full_market",
+        "historical"
+      ],
+      "calendar_switch_env": "FMP_SKIP_NON_TRADING_DAYS",
+      "credential_env_names": [
+        "FMP_API_KEY"
+      ],
+      "source_credential": {
+        "hash_env": "FETCHER_FMP_SOURCE_CLIENT_KEY_HASH",
+        "name": "fetcher-fmp",
+        "description": "FMP market index daily Fetcher Source client",
+        "rate_limit_requests": 2400,
+        "rate_limit_window_seconds": 60
+      },
+      "platform_limits": {
+        "requests_per_minute": 300,
+        "max_response_bytes": 16777216
+      }
     }
   ],
   "feeds": [
@@ -659,6 +684,96 @@
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": false
+    },
+    {
+      "provider": "fmp",
+      "dataset_key": "hk_index_eod",
+      "market": "HK",
+      "calendar_market": "HK",
+      "asset_class": "index",
+      "frequency": "daily",
+      "contract": {
+        "schema_id": "market_eod",
+        "current_version": 2,
+        "accepted_versions": [
+          2
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "executable"
+      },
+      "schedule": {
+        "timezone": "Asia/Hong_Kong",
+        "local_time": "20:00",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Hong_Kong",
+        "local_time": "08:00",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "publication_retry_window_seconds": 14400,
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "historical_execution": null,
+      "historical_cohort": "current_release",
+      "historical_requests_per_date": 2,
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none",
+      "calendar_required": true
+    },
+    {
+      "provider": "fmp",
+      "dataset_key": "us_index_eod",
+      "market": "US",
+      "calendar_market": "US",
+      "asset_class": "index",
+      "frequency": "daily",
+      "contract": {
+        "schema_id": "market_eod",
+        "current_version": 2,
+        "accepted_versions": [
+          2
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "executable"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "08:30",
+        "target_date_lag_days": 1
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "20:30",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "publication_retry_window_seconds": 14400,
+      "delivery": {
+        "slot_id": "western_markets_window"
+      },
+      "historical_execution": null,
+      "historical_cohort": "current_release",
+      "historical_requests_per_date": 8,
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none",
+      "calendar_required": true
     }
   ]
 }

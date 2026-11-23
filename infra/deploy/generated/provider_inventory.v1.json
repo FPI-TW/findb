@@ -14,6 +14,12 @@
     },
     {
       "image_key": "twelve_data",
+      "name": "findb-full-market-fmp",
+      "provider": "fmp",
+      "role": "full_market"
+    },
+    {
+      "image_key": "twelve_data",
       "name": "findb-full-market-hkex",
       "provider": "hkex",
       "role": "full_market"
@@ -44,6 +50,12 @@
     },
     {
       "image_key": "twelve_data",
+      "name": "findb-historical-fmp",
+      "provider": "fmp",
+      "role": "historical"
+    },
+    {
+      "image_key": "twelve_data",
       "name": "findb-historical-hkex",
       "provider": "hkex",
       "role": "historical"
@@ -66,10 +78,11 @@
     "finlab",
     "twelve_data"
   ],
-  "projection_sha256": "2866117679b41798d1d60fa390f635038cca0f70d3877adf078a5cd72681d6be",
+  "projection_sha256": "abde0b91e8806b652199498457b33003bdf586a729a73f3eec4725b95e596bd6",
   "providers": [
     "factset",
     "finlab",
+    "fmp",
     "hkex",
     "taifex",
     "twelve_data"

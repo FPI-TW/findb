@@ -20,6 +20,7 @@ from findb_fetcher.historical_backfill import (
 )
 from findb_fetcher.historical_runtime import (
     FinLabHistoricalRunner,
+    FmpHistoricalRunner,
     HkexHistoricalRunner,
     TwelveDataHistoricalRunner,
 )
@@ -56,6 +57,7 @@ def main(argv: list[str] | None = None) -> int:
                 "taifex": TaifexHistoricalRunner.from_env,
                 "factset": FactSetHistoricalRunner.from_env,
                 "hkex": HkexHistoricalRunner.from_env,
+                "fmp": FmpHistoricalRunner.from_env,
             }[args.provider](),
         )
         with HistoricalControlClient(FetcherConfig.from_env(), provider=args.provider) as control:

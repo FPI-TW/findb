@@ -57,6 +57,8 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         ("finlab", "tw_equity_tick"),
         ("finlab", "tw_etf_tick"),
         ("taifex", "tw_futures_eod"),
+        ("fmp", "hk_index_eod"),
+        ("fmp", "us_index_eod"),
     }
     # Intraday feeds deliver minute bars or ticks by reference; nothing else is non-daily.
     assert {
@@ -100,6 +102,18 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "tw_equity_tick": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
         "tw_etf_tick": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
         "tw_futures_eod": ("Asia/Taipei", "17:00", "Asia/Taipei", "05:00", 1),
+        # Index groups by publication time; New York's is fetched the next Taipei morning.
+        "hk_index_eod": ("Asia/Hong_Kong", "20:00", "Asia/Hong_Kong", "08:00", 1),
+        "us_index_eod": ("Asia/Taipei", "08:30", "Asia/Taipei", "20:30", 1),
+    }
+    assert feeds["us_index_eod"].schedule.target_date_lag_days == 1
+    assert {f.dataset_key for f in catalog.feeds if f.asset_class == "index"} == {
+        "hk_index_eod",
+        "us_index_eod",
+    }
+    assert {f.dataset_key for f in catalog.feeds if f.calendar_required} == {
+        "hk_index_eod",
+        "us_index_eod",
     }
     assert us.bounded_monitor.deadline.local_time == "09:15"
     assert us.publication_retry_window_seconds == 10800
@@ -339,9 +353,9 @@ def test_inventory_preserves_image_sharing_and_all_roles(declaration):
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
     assert inventory["images"] == ["factset", "finlab", "twelve_data"]
-    assert len(inventory["consumers"]) == 10
-    # Both public exchange providers run on the Twelve Data image.
-    for provider in ("taifex", "hkex"):
+    assert len(inventory["consumers"]) == 12
+    # The public exchange providers and FMP run on the Twelve Data image.
+    for provider in ("taifex", "hkex", "fmp"):
         assert {c["name"] for c in inventory["consumers"] if c["provider"] == provider} == {
             f"findb-full-market-{provider}",
             f"findb-historical-{provider}",
@@ -363,7 +377,7 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
     declaration["feeds"].append(feed)
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
-    assert len(inventory["consumers"]) == 12
+    assert len(inventory["consumers"]) == 14
     assert (
         'example: ["example_eod"]'
         in artifacts[Path("dashboard/src/lib/generated/provider-catalog.ts")]
@@ -448,6 +462,9 @@ def test_historical_cohorts_are_catalog_fields():
     assert cohorts == {
         ("factset", "hk_equity_eod"): "current_release",
         ("hkex", "hk_equity_official_eod"): "current_release",
+        # The index lists are fixed: one list serves every date of a request.
+        ("fmp", "hk_index_eod"): "current_release",
+        ("fmp", "us_index_eod"): "current_release",
         ("finlab", "tw_equity_eod"): "dated_release",
         ("finlab", "tw_etf_eod"): "dated_release",
         ("taifex", "tw_futures_eod"): "daily_report",
@@ -564,6 +581,9 @@ def test_historical_requests_per_date_rules(declaration):
         ("factset", "hk_equity_eod"): 1,
         # The Main Board and GEM reports.
         ("hkex", "hk_equity_official_eod"): 2,
+        # One request per index.
+        ("fmp", "hk_index_eod"): 2,
+        ("fmp", "us_index_eod"): 8,
         ("finlab", "tw_equity_eod"): 5,
         ("finlab", "tw_etf_eod"): 5,
         ("taifex", "tw_futures_eod"): 5,

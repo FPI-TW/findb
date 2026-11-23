@@ -595,6 +595,7 @@ HOST_LAYOUT = {
     "taifex": ("/var/lib/findb-taifex-fetcher/historical", "-"),
     "factset": ("/var/lib/findb-factset-fetcher/historical", "-"),
     "hkex": ("/var/lib/findb-hkex-fetcher/historical", "-"),
+    "fmp": ("/var/lib/findb-fmp-fetcher/historical", "-"),
 }
 
 
