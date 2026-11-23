@@ -245,6 +245,7 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   零成交但來源仍提供 settlement／OI 的紀錄可查詢，明確的 0 保留，不補造價格或 continuous series。
 - `GET /serve/intraday/bars`、`GET /serve/intraday/ticks`：盤中 1 分 K 與逐筆成交，見下方
   [盤中資料](#盤中資料)。
+- `GET /serve/intraday/downloads`：研究用的 Parquet 下載清單，見 [盤中資料的大量下載](#盤中資料的大量下載)。
 - `GET /serve/calendar`、`GET /serve/calendar/years/{market}/{year}`與
   `GET /serve/market-freshness`。
 
@@ -299,6 +300,48 @@ FinLab 的台股與 ETF 1 分 K、逐筆成交存在 Canonical R2 的 Parquet �
 `/serve/datasets` 列出四條盤中 dataset（`data_kind` 為 `intraday_bars`／`intraday_ticks`，`interval` 為
 `1m`／`tick`），coverage 取自索引表。商品的 `coverage.intraday_bars`／`coverage.intraday_ticks` 是最早與最新
 有資料的交易日。
+
+### 盤中資料的大量下載
+
+研究用途（多年、全市場、整月逐筆）不經 JSON 分頁，改為直接下載 Canonical R2 的 Parquet 物件。
+`GET /serve/intraday/downloads?instrument_id=<uuid>&kind=bars|ticks&month=YYYY-MM` 回傳一檔標的一個月的
+下載清單：
+
+- `layout`：物件的欄位（契約 `intraday_partition` v1 的 `x-findb-row-layouts`），`units` 與查詢端點相同。
+- `objects`：每個物件一個預簽網址（`url`，有效到 `expires_at`，預設 15 分鐘，
+  `INTRADAY_DOWNLOAD_URL_TTL_SECONDS`）、`object_layout`（`day`／`month`）、`object_etag`，以及**只能從這個物件取的
+  交易日**與每日列數（`trade_dates`）。
+- `quota`：這把 key 今天（UTC）的上限、已用與剩餘。
+
+**一定要依 `trade_dates` 過濾。** 某一天在月底合併後又重新發布時，那天改由新的日檔提供，但月檔要到下一輪
+合併才清掉舊列；清單會把那天列在日檔下，月檔的 `trade_dates` 不含那天。只取清單列出的日期，每天的列數
+應等於 `row_count`：
+
+```python
+import io, urllib.request
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
+
+tables = []
+for item in manifest["objects"]:
+    with urllib.request.urlopen(item["url"]) as response:
+        if response.headers["ETag"] != item["object_etag"]:
+            raise RuntimeError("object was replaced; request a new manifest")
+        table = pq.read_table(io.BytesIO(response.read()))
+    for day in item["trade_dates"]:
+        rows = table.filter(pc.equal(table["trade_date"], pc.strptime(day["trade_date"], "%Y-%m-%d", "s").cast("date32")))
+        assert rows.num_rows == day["row_count"]
+        tables.append(rows)
+```
+
+- 下載時物件已被取代（`ETag` 與 `object_etag` 不同），或日檔已在合併後刪除（404），重新取一份清單即可。
+- 需要 key 同時有 `serve` 與 `intraday_download` 兩個 scope；Dashboard 查詢頁經 nginx 帶入的 key 沒有後者。
+- **每日額度**：清單裡每個物件計 1，以 key 的 `intraday_download_daily_limit`（預設 5000，建立 key 時設定、
+  rotate 時沿用）為每個 UTC 日的上限。剩餘額度不足以涵蓋整份清單時回 429 `DOWNLOAD_QUOTA_EXCEEDED`，
+  `Retry-After` 為到下一個 UTC 日的秒數，不會只給部分網址。用量在發出網址前原子扣減，多個 Serve process
+  同時請求也不會超過上限。
+- 這是 Serve 唯一會寫入的地方：只寫 `intraday_download_usage` 的每日計數，不寫任何行情資料。每次發出清單會
+  記錄 log（key、dataset、代號、月份、物件數、用量）。
 
 `/serve/lookup/*`、`/serve/eod/{instrument_id}`、corporate actions、macro與bonds已移除；期貨使用獨立 `/serve/futures/eod`。
 Canonical tables仍保留，但沒有active feed的資料域不構成公開Serve contract。

@@ -12,7 +12,7 @@ FinDB 是一個 monorepo，包含以 FastAPI 建置的金融資料後端，以�
 - Source API：`backend/app/api/v1/source.py`，負責驗證、冪等去重，並在同一 transaction 寫入 raw、run、normalization job 與 outbox。
 - Durable queue：dispatcher 將 outbox 發布到 RabbitMQ，Celery worker 執行 normalization；RabbitMQ 可重建，PostgreSQL 是 durable truth。
 - Normalize layer：`backend/app/services/normalize/`，把 contract/raw payload 映射到 canonical models，執行 DQ 檢查並 upsert canonical layer。
-- Serve API：`backend/app/api/v1/serve.py`，只讀取 canonical layer，必須保持唯讀。
+- Serve API：`backend/app/api/v1/serve.py`，只讀取 canonical layer，必須保持唯讀；唯一例外是盤中下載清單在 `intraday_download_usage` 記錄每把 key 的每日用量（見 `docs/api/api_usage_guide.md`）。
 
 ## 專案結構
 
@@ -116,7 +116,7 @@ findb/
 
 ## 專案反模式
 
-- 在 Serve endpoints 加入寫入行為。
+- 在 Serve endpoints 加入寫入行為（`intraday_download_usage` 的下載額度記帳是唯一例外，不得擴及其他表）。
 - 使用 naive datetime 或非 UTC timestamp。
 - 未經明確需求使用 UUIDv4 作為 primary identifier。
 - ingestion 寫入前跳過 dataset existence/registry checks。

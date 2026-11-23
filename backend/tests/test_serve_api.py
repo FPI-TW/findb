@@ -875,6 +875,10 @@ SERVE_ROUTE_URLS = {
     "/api/v1/serve/intraday/ticks": (
         "/api/v1/serve/intraday/ticks?instrument_id=11111111-1111-1111-1111-111111111111"
     ),
+    "/api/v1/serve/intraday/downloads": (
+        "/api/v1/serve/intraday/downloads?instrument_id=11111111-1111-1111-1111-111111111111"
+        "&month=2026-07"
+    ),
     "/api/v1/serve/calendar": "/api/v1/serve/calendar?market=TW",
     "/api/v1/serve/calendar/years/{market}/{year}": "/api/v1/serve/calendar/years/TW/2026",
     "/api/v1/serve/market-freshness": "/api/v1/serve/market-freshness",
@@ -903,7 +907,11 @@ async def test_serve_routes_require_key_when_auth_enabled(
     )
     assert (await client.get(url)).status_code == 401
     authorized = await client.get(url, headers={settings.API_KEY_HEADER: key})
-    assert authorized.status_code not in {401, 403, 500}
+    if url.startswith("/api/v1/serve/intraday/downloads"):
+        # Downloads also need their own scope, which a plain Serve key lacks.
+        assert authorized.status_code == 403
+    else:
+        assert authorized.status_code not in {401, 403, 500}
 
 
 @pytest.mark.asyncio

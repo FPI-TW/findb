@@ -168,7 +168,7 @@ Pilot 退役後改由 Full daily 承接。證據見 [部署重試與 Pilot 恢�
 ## 不變約束
 
 - 新資料來源只走provider-neutral Source contract；不恢復legacy direct routes。
-- Serve不寫DB；canonical read model不代表active provider feed。
+- Serve不寫DB（唯一例外：盤中下載清單的`intraday_download_usage`每日額度記帳）；canonical read model不代表active provider feed。
 - Schema只經Alembic改變；Fetcher不連FinDB DB、不import backend runtime。
 - Contract升級採backend-first expand/migrate/contract。
 - 新增資料域前，先核准provider entitlement、bounded universe、versioned contract、registry、

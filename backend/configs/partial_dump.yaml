@@ -42,7 +42,7 @@ selection:
 table_discovery:
   enabled: true
   include_schemas: [public]
-  exclude_tables: [api_key]
+  exclude_tables: [api_key, intraday_download_usage]
   require_pk_for_upsert: true
 
 tables: []

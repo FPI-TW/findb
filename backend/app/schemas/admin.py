@@ -839,6 +839,8 @@ class APIKeyCreateRequest(BaseModel):
     rate_limit_window: int = Field(default=60, ge=1)
     # Up to the largest page any Serve route accepts (intraday ticks: 5000).
     page_size_limit: int = Field(default=1000, ge=1, le=MAX_SERVE_PAGE_SIZE)
+    # Intraday download object URLs per UTC day; needs the intraday_download scope.
+    intraday_download_daily_limit: int = Field(default=5000, ge=0, le=1_000_000)
     name: Optional[str] = Field(default=None, max_length=100)
     description: Optional[str] = None
     expires_at: Optional[datetime] = None
@@ -867,6 +869,7 @@ class APIKeyResponse(BaseModel):
     rate_limit_requests: int
     rate_limit_window: int
     page_size_limit: int
+    intraday_download_daily_limit: int
     usage_count: int
     created_at: datetime
     last_used_at: Optional[datetime] = None
@@ -1035,6 +1038,8 @@ class CredentialCreateRequest(BaseModel):
     rate_limit_window: int = Field(default=60, ge=1)
     # Up to the largest page any Serve route accepts (intraday ticks: 5000).
     page_size_limit: int = Field(default=1000, ge=1, le=MAX_SERVE_PAGE_SIZE)
+    # Intraday download object URLs per UTC day; needs the intraday_download scope.
+    intraday_download_daily_limit: int = Field(default=5000, ge=0, le=1_000_000)
 
     @field_validator("expires_at")
     @classmethod
