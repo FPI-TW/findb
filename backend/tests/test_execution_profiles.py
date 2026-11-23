@@ -60,6 +60,8 @@ async def test_default_and_explicit_plan_reads_return_the_daily_plan(
         "tw_equity_eod",
         "tw_etf_eod",
         "tw_futures_eod",
+        "hk_index_eod",
+        "us_index_eod",
     ],
 )
 async def test_shared_five_feed_source_queue_canonical_serve(
@@ -121,6 +123,9 @@ async def test_shared_five_feed_source_queue_canonical_serve(
             ]
         else:
             request["schema_id"] = "market_eod"
+            if key.endswith("_index_eod"):
+                # Index datasets accept only market_eod v2.
+                request["schema_version"] = 2
             rows = [
                 {
                     "symbol": member,

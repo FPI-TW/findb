@@ -12,15 +12,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # BEGIN GENERATED PROVIDER INVENTORY
-PROVIDERS = ("factset", "finlab", "hkex", "taifex", "twelve_data")
+PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
 CONSUMERS = (
     ("findb-full-market-factset", "factset", "full_market", "factset"),
     ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
+    ("findb-full-market-fmp", "fmp", "full_market", "twelve_data"),
     ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
     ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "factset"),
     ("findb-historical-finlab", "finlab", "historical", "finlab"),
+    ("findb-historical-fmp", "fmp", "historical", "twelve_data"),
     ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
     ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),

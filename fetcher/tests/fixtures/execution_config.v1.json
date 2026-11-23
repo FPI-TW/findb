@@ -218,6 +218,71 @@
       }
     ]
   },
+  "fmp": {
+    "schema_version": 1,
+    "environment": "local",
+    "execution_profile": "full_market",
+    "provider": "fmp",
+    "schedule_digest": "e9e730405c3d172133529682db66ed6e3327a5e09808846e43a5f979d37b6c50",
+    "feeds": [
+      {
+        "provider": "fmp",
+        "dataset_key": "hk_index_eod",
+        "market": "HK",
+        "calendar_market": "HK",
+        "asset_class": "index",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "market_eod",
+          "current_version": 2,
+          "accepted_versions": [
+            2
+          ]
+        },
+        "scheduled_time": "20:00",
+        "source_timezone": "Asia/Hong_Kong",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Hong_Kong",
+          "local_time": "08:00",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "fmp",
+        "dataset_key": "us_index_eod",
+        "market": "US",
+        "calendar_market": "US",
+        "asset_class": "index",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "market_eod",
+          "current_version": 2,
+          "accepted_versions": [
+            2
+          ]
+        },
+        "scheduled_time": "08:30",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 1,
+        "publication_retry_window_seconds": 14400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "20:30",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      }
+    ]
+  },
   "hkex": {
     "schema_version": 1,
     "environment": "local",

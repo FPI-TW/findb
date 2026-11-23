@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import Self
 from uuid import UUID
 
 from findb_fetcher.client import SourceAPIClient
@@ -119,22 +120,30 @@ class _CohortRunner:
             self._members = None
 
 
-class HkexHistoricalRunner(_CohortRunner):
-    """Every HKEX request freezes the release current at its creation; members serve it."""
-
-    provider = "hkex"
+class _CurrentReleaseRunner(_CohortRunner):
+    """Every request freezes the release current at its creation; members serve it."""
 
     @classmethod
-    def from_env(cls) -> "HkexHistoricalRunner":
+    def from_env(cls) -> Self:
         return cls()
 
     def run(self, item: HistoricalWorkItem) -> UUID | HistoricalRunResult:
         require_owner(item.provider)
-        if item.provider != "hkex":
+        if item.provider != self.provider:
             raise HistoricalRuntimeError("provider mismatch")
         if self._members is None:
             self._members = MemberHistoricalRunner.from_env(self.provider)
         return self._members.run(item)
+
+
+class HkexHistoricalRunner(_CurrentReleaseRunner):
+    provider = "hkex"
+
+
+class FmpHistoricalRunner(_CurrentReleaseRunner):
+    """One request per index and date, through the same adapter as Full daily."""
+
+    provider = "fmp"
 
 
 class TwelveDataHistoricalRunner(_CohortRunner):

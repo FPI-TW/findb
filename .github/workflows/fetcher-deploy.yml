@@ -234,9 +234,9 @@ jobs:
         if [ "$TARGET" = production ]; then
           [ "$(jq -r .promotion_source.staging_registry "$RUNNER_TEMP/release-manifest.json")" = "$STAGING_ECR_REGISTRY" ]
         fi
-        # Older bundles recreate retired Shioaji (v1/v2) or Pilot (v3/v4) consumers, or lack HKEX's (v5); see the deployment rollback floor.
-        if ! jq -e '.fetcher_bundle_version == 6' "$RUNNER_TEMP/release-manifest.json" >/dev/null; then
-          echo "::error title=Fetcher rollback 下限::只接受 bundle v6；v1／v2 含已退役的 Shioaji consumers，v3／v4 含已退役的 Pilot consumers，v5 沒有 HKEX consumers，未知版本亦不可部署。" >&2
+        # Older bundles recreate retired Shioaji (v1/v2) or Pilot (v3/v4) consumers, or lack HKEX's (v5) or FMP's (v6); see the deployment rollback floor.
+        if ! jq -e '.fetcher_bundle_version == 7' "$RUNNER_TEMP/release-manifest.json" >/dev/null; then
+          echo "::error title=Fetcher rollback 下限::只接受 bundle v7；v1／v2 含已退役的 Shioaji consumers，v3／v4 含已退役的 Pilot consumers，v5 沒有 HKEX consumers，v6 沒有 FMP consumers，未知版本亦不可部署。" >&2
           exit 1
         fi
         twelve_data="$(jq -r .images.twelve_data "$RUNNER_TEMP/release-manifest.json")"

@@ -36,6 +36,8 @@ SUPPORTED_DATASETS = (
     "tw_etf_minute",
     "hk_equity_eod",
     "hk_equity_official_eod",
+    "hk_index_eod",
+    "us_index_eod",
     "tw_etf_eod",
     "tw_futures_eod",
     "tw_equity_bar_1m",
@@ -490,6 +492,9 @@ DATASETS.extend(
         _staged_eod_dataset("tw_etf_eod", "台灣 ETF 日K", currency="TWD"),
         _staged_eod_dataset("tw_futures_eod", "台灣期貨契約日K", currency="TWD"),
         _staged_quote_dataset("hk_equity_official_eod", "港股交易所每日行情"),
+        # Market indices: one dataset per publication-time group (FMP).
+        _staged_eod_dataset("hk_index_eod", "港股指數日K", currency="HKD"),
+        _staged_eod_dataset("us_index_eod", "美股指數日K", currency="USD"),
     ]
 )
 
@@ -663,6 +668,8 @@ async def seed_datasets(session: AsyncSession) -> None:
         if dataset["dataset_key"] not in {
             "hk_equity_eod",
             "hk_equity_official_eod",
+            "hk_index_eod",
+            "us_index_eod",
             "tw_etf_eod",
             "tw_futures_eod",
         }:

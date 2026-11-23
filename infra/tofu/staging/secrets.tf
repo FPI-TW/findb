@@ -120,6 +120,18 @@ locals {
       consumer      = "hkex"
       status        = "active"
     }
+    "fetcher/api/source/fmp" = {
+      unit          = "fetcher"
+      relative_name = "api/source/fmp"
+      consumer      = "fmp"
+      status        = "active"
+    }
+    "fetcher/provider/fmp" = {
+      unit          = "fetcher"
+      relative_name = "provider/fmp"
+      consumer      = "fmp"
+      status        = "active"
+    }
     "fetcher/provider/twelve-data" = {
       unit          = "fetcher"
       relative_name = "provider/twelve-data"

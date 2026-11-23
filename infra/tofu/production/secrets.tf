@@ -73,6 +73,12 @@ locals {
     "fetcher/api/source/hkex" = {
       unit = "fetcher", consumer = "hkex"
     }
+    "fetcher/api/source/fmp" = {
+      unit = "fetcher", consumer = "fmp"
+    }
+    "fetcher/provider/fmp" = {
+      unit = "fetcher", consumer = "fmp"
+    }
   }
   active_runtime_secret_arns_by_unit = {
     for unit in keys(local.units) : unit => [

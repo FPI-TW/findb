@@ -175,6 +175,7 @@ Fetcher 端只新增模組與註冊，不修改 runtime 的分支或 `except`：
 | `FETCHER_ACCOUNT_STATE_PATH` | 本機新抓取是 | 全 providers／daily／maintenance／historical 共用 durable account governor；本機範本從 `fetcher/` 使用 `.state/account/governor.sqlite3` |
 | `FINLAB_API_TOKEN` | FinLab 是 | FinLab headless SDK token |
 | `TWELVE_DATA_API_KEY` | Twelve Data 是 | Twelve Data runtime secret |
+| `FMP_API_KEY` | FMP 是 | FMP runtime secret；只放在 `apikey` header |
 | `CLOUDFLARE_R2_ACCOUNT_ID` | delivery/scheduler 是 | Cloudflare account ID |
 | `CLOUDFLARE_R2_RAW_BUCKET` | delivery/scheduler 是 | Fetcher-owned private raw bucket |
 | `CLOUDFLARE_R2_RAW_ACCESS_KEY_ID` | delivery/scheduler 是 | Raw bucket R2 access key |

@@ -358,6 +358,96 @@
       "unlisted_symbols": "none"
     },
     {
+      "asset_class": "index",
+      "bounded_monitor": {
+        "deadline": null,
+        "enabled": false
+      },
+      "calendar_market": "HK",
+      "calendar_required": true,
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "08:00",
+        "timezone": "Asia/Hong_Kong",
+        "trade_date_day_offset": 1
+      },
+      "contract": {
+        "accepted_versions": [
+          2
+        ],
+        "current_version": 2,
+        "schema_id": "market_eod"
+      },
+      "dataset_key": "hk_index_eod",
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": "current_release",
+      "historical_execution": null,
+      "historical_requests_per_date": 2,
+      "lifecycle": "active",
+      "market": "HK",
+      "provider": "fmp",
+      "publication_retry_window_seconds": 14400,
+      "schedule": {
+        "local_time": "20:00",
+        "target_date_lag_days": 0,
+        "timezone": "Asia/Hong_Kong"
+      },
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
+      "asset_class": "index",
+      "bounded_monitor": {
+        "deadline": null,
+        "enabled": false
+      },
+      "calendar_market": "US",
+      "calendar_required": true,
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "20:30",
+        "timezone": "Asia/Taipei",
+        "trade_date_day_offset": 1
+      },
+      "contract": {
+        "accepted_versions": [
+          2
+        ],
+        "current_version": 2,
+        "schema_id": "market_eod"
+      },
+      "dataset_key": "us_index_eod",
+      "delivery": {
+        "slot_id": "western_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": "current_release",
+      "historical_execution": null,
+      "historical_requests_per_date": 8,
+      "lifecycle": "active",
+      "market": "US",
+      "provider": "fmp",
+      "publication_retry_window_seconds": 14400,
+      "schedule": {
+        "local_time": "08:30",
+        "target_date_lag_days": 1,
+        "timezone": "Asia/Taipei"
+      },
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
       "asset_class": "equity",
       "bounded_monitor": {
         "deadline": null,
@@ -589,6 +679,31 @@
       }
     },
     {
+      "calendar_switch_env": "FMP_SKIP_NON_TRADING_DAYS",
+      "consumer_roles": [
+        "full_market",
+        "historical"
+      ],
+      "container_suffix": "fmp",
+      "credential_env_names": [
+        "FMP_API_KEY"
+      ],
+      "display_name": "FMP",
+      "image_key": "twelve_data",
+      "platform_limits": {
+        "max_response_bytes": 16777216,
+        "requests_per_minute": 300
+      },
+      "provider": "fmp",
+      "source_credential": {
+        "description": "FMP market index daily Fetcher Source client",
+        "hash_env": "FETCHER_FMP_SOURCE_CLIENT_KEY_HASH",
+        "name": "fetcher-fmp",
+        "rate_limit_requests": 2400,
+        "rate_limit_window_seconds": 60
+      }
+    },
+    {
       "calendar_switch_env": "HKEX_SKIP_NON_TRADING_DAYS",
       "consumer_roles": [
         "full_market",
@@ -673,6 +788,10 @@
       "tw_etf_eod",
       "tw_etf_tick"
     ],
+    "fmp": [
+      "hk_index_eod",
+      "us_index_eod"
+    ],
     "hkex": [
       "hk_equity_official_eod"
     ],
@@ -683,5 +802,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "89aef425a3c71e020c9dc98dca4ad454f1869626b1f8277303f0746e930cc4ad"
+  "source_sha256": "e59d690f38fc8a6b3377b435bfb033a560e7c6a535976e488478f8c15b45e12b"
 }

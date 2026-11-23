@@ -249,37 +249,58 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.assertEqual(len(self.rows), len(host.CONSUMERS))
         self.assertEqual(self.check(), "drained")
 
-    def install_version_five(self):
-        """Hosts awaiting the HKEX release run bundle v5, without HKEX's consumers."""
-        self.manifest["fetcher_bundle_version"] = 5
-        self.rows = [row for row in self.rows if not row["Name"].endswith("-hkex")]
+    # Providers a bundle version first installs, with the topology marker it adds.
+    NEWER = {"hkex": ("# hkex-consumers-v1:", 6), "fmp": ("# fmp-consumers-v1:", 7)}
+
+    def install_version(self, version):
+        """Hosts awaiting a release run its predecessor, without the newer consumers."""
+        self.manifest["fetcher_bundle_version"] = version
+        newer = [p for p, (_, since) in self.NEWER.items() if since > version]
+        self.rows = [
+            row for row in self.rows if not any(row["Name"].endswith("-" + p) for p in newer)
+        ]
         path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-        path.write_text(path.read_text().replace("# hkex-consumers-v1:", "# previous-consumers:"))
+        text = path.read_text()
+        for provider in newer:
+            text = text.replace(self.NEWER[provider][0], "# previous-consumers:")
+        path.write_text(text)
         with release.SourceBundleReader(self.root) as source:
             self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher", 3, 5)
+                source.deployment_source_bundle_sha256("fetcher", 3, version)
             )
         self.write_manifest()
 
-    def test_a_version_five_host_awaits_the_hkex_consumers(self):
-        self.install_version_five()
+    def test_a_version_five_host_awaits_the_hkex_and_fmp_consumers(self):
+        self.install_version(5)
         self.assertEqual(len(self.rows), 8)
         self.assertEqual(self.check(), "drained")
 
-    def test_a_partial_set_of_hkex_consumers_is_rejected(self):
-        hkex = [row for row in self.rows if row["Name"].endswith("-hkex")]
-        self.install_version_five()
-        # A v5 host holds either none of a newer provider's consumers or all of them.
-        self.rows.append(hkex[0])
-        with self.assertRaisesRegex(ValueError, "unknown consumer"):
-            self.check()
-        self.rows.append(hkex[1])
+    def test_a_version_six_host_awaits_the_fmp_consumers(self):
+        self.install_version(6)
+        self.assertEqual(len(self.rows), 10)
         self.assertEqual(self.check(), "drained")
 
-    def test_a_version_six_host_requires_the_hkex_consumers(self):
-        self.rows = [row for row in self.rows if row["Name"] != "/findb-historical-hkex"]
-        with self.assertRaisesRegex(ValueError, "unknown consumer"):
-            self.check()
+    def test_a_partial_set_of_newer_consumers_is_rejected(self):
+        for provider, version in (("hkex", 5), ("fmp", 6)):
+            with self.subTest(provider=provider):
+                self.setUp()
+                rows = [row for row in self.rows if row["Name"].endswith("-" + provider)]
+                self.install_version(version)
+                # An older host holds either none of a newer provider's consumers or all.
+                self.rows.append(rows[0])
+                with self.assertRaisesRegex(ValueError, "unknown consumer"):
+                    self.check()
+                self.rows.append(rows[1])
+                self.assertEqual(self.check(), "drained")
+
+    def test_the_current_version_requires_every_consumer(self):
+        for name in ("/findb-historical-hkex", "/findb-full-market-fmp"):
+            with self.subTest(name=name):
+                rows = self.rows
+                self.rows = [row for row in rows if row["Name"] != name]
+                with self.assertRaisesRegex(ValueError, "unknown consumer"):
+                    self.check()
+                self.rows = rows
 
     def test_restarting_runtime_reports_only_trusted_consumer_identity(self):
         self.rows[0]["State"].update(
@@ -300,8 +321,12 @@ class FetcherHostPreflightTests(unittest.TestCase):
         """Hosts awaiting this release still run the Shioaji consumers of version 2."""
         image = REGISTRY + "/findb/production/fetcher/shioaji@sha256:" + "c" * 64
         self.manifest["fetcher_bundle_version"] = 2
-        # Bundle v6 first installs HKEX's consumers.
-        self.rows = [row for row in self.rows if not row["Name"].endswith("-hkex")]
+        # Bundle v6 first installs HKEX's consumers, v7 FMP's.
+        self.rows = [
+            row
+            for row in self.rows
+            if not row["Name"].endswith("-hkex") and not row["Name"].endswith("-fmp")
+        ]
         self.manifest["images"]["shioaji"] = image
         for profile in ("pilot", "full_market"):
             prefix = profile.replace("_", "-")
@@ -341,6 +366,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
             .replace("# shioaji-retired-v1:", "# previous-providers:")
             .replace("# pilot-retired-v1:", "# previous-profiles:")
             .replace("# hkex-consumers-v1:", "# previous-consumers:")
+            .replace("# fmp-consumers-v1:", "# previous-consumers:")
         )
         with release.SourceBundleReader(self.root) as source:
             self.manifest["deployment_source_bundle_sha256"] = (
