@@ -177,19 +177,23 @@ class FMPAdapter(ProviderAdapter):
             return ProviderFailure(
                 FailureKind.ROUND_RETRY, wait="publication", code="fmp_row_not_published"
             )
-        if isinstance(exc, FMPPayloadError) and phase == "member":
+        if isinstance(exc, FMPPayloadError):
+            # A malformed index list is retried like a malformed daily row; the
+            # work's attempt budget bounds how often.
             return ProviderFailure(FailureKind.ROUND_RETRY, code="fmp_payload_invalid")
         if not isinstance(exc, FMPResponseError):
             return PASSTHROUGH
-        if exc.category == "rate_limited":
-            return ProviderFailure(
-                FailureKind.QUOTA_WAIT, reason="rate_limited", retry_after=exc.retry_after
-            )
         if phase == "member":
+            if exc.category == "rate_limited":
+                return ProviderFailure(
+                    FailureKind.QUOTA_WAIT, reason="rate_limited", retry_after=exc.retry_after
+                )
             if exc.category == "plan_restricted":
                 # The plan does not cover this index; the others are unaffected.
                 return ProviderFailure(FailureKind.MEMBER, code=exc.category)
             return ProviderFailure(FailureKind.ROUND_RETRY, code=exc.category)
+        # Maintenance and daily planning settle only a retry or a failure, so a 429
+        # retries the round; the governor has already recorded its cooldown.
         if exc.status_code is None:
             retryable = exc.category in RETRYABLE_CATEGORIES
             return ProviderFailure(
