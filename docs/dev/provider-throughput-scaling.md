@@ -110,6 +110,43 @@ daily、historical 與名單更新共用一條 FIFO 和一個 owner。#504 已�
 - ingest 的 uvicorn worker 數與 DB pool（目前 1 個 worker、3+5），避免持鎖等待佔滿連線池。
 - 先建立主機與 RDS 的量測方法：同時跑 2–3 條 lane 時的 CPU、DB 連線、`server_ms`、`queue_wait_ms`。
 
+## 新增 worker 的選項與風險評估
+
+現在替同一 provider 多開 consumer 不會變快：Fetcher 的 `host_lock(provider)` 是非阻塞鎖，拿不到的 consumer
+只會閒置；Backend 每個 provider 也只有一條 FIFO、一個 owner。不同 provider 之間本來就並行（12 個 consumer），
+卡住的是同一 provider 底下有很多 dataset，FinLab 正是如此。
+
+### 選項
+
+| 做法 | 要改的地方 | 效益 | 風險 |
+| --- | --- | --- | --- |
+| A. 多條執行線（本文件的方向） | Backend owner／FIFO 依 lane（migration）、Fetcher host lock、consumer 拓撲 | FinLab 表格 daily 與盤中各一條，daily 不再被盤中擋住 | 中：改動大但語意清楚 |
+| B. 把 FinLab 拆成兩個 provider 名稱 | catalog、credential、governor | 表面上改動較小 | 高：provider 名稱寫進 canonical 的 `source`、source precedence 與 credential scope，等於改資料身分。不採用 |
+| C. 只把 normalization worker 從 2 調到 3–4 | `docker-compose.prod.yml` 的 `--concurrency` | 只在多個 dataset 同時 normalize 時有用；目前 worker 跟得上，幾乎沒有效益 | 低：多佔 DB 連線與 CPU |
+
+做法 A 的效益（推估）：帳號鎖不改時 provider 呼叫仍一次一個，但兩條 lane 可以錯開，一條交付給 Source 時另一條在
+抓取。交付佔每檔時間的一大半，FinLab 盤中約可從 6.5 小時降到 3.5–4 小時，daily 的完成時間不再受盤中影響。
+
+### 做法 A 的風險
+
+| 風險 | 說明 | 緩解 |
+| --- | --- | --- |
+| Provider 帳號限制 | FinLab 並行限制未知；FinLab 與 Twelve Data 帳號 staging 與 production 共用 | 帳號鎖先維持一次一個請求，對 provider 的請求頻率不變；確認 FinLab 限制後再放寬 |
+| Source rate limit | 同一把 key 2,400／60 秒，兩條 lane 一起跑會先撞到；429 帶 `Retry-After: 60`，整條 lane 會停住 | 依實際每檔 RPC 數調高 `rate_limit_requests`，或 historical 改用另一把 key |
+| Backend provider lock | 不改的話所有 lane 在 Backend 仍排成一列，約 550–650 檔／分鐘 | 同一次改為 lane 層級的鎖 |
+| FinDB 主機與 RDS | 主機 2 vCPU 同時跑 ingest、worker、serve；RDS `db.t4g.medium` 有 CPU credit，額度用完會降速；Serve 延遲可能一起變差 | 先在 staging 量兩條 lane 同時跑時的 CPU、DB 連線數與 Serve 延遲 |
+| Fetcher 主機記憶體 | `t3.medium` 4 GiB、容器沒有記憶體上限；FinLab 日 K 整表載入子行程峰值約 940 MiB，與盤中同時跑可能用到 swap | 量測峰值；必要時讓兩條 lane 避開同時載入整表，或換機型 |
+| 共用的本機 SQLite | governor、journal、Full 狀態由多個 consumer 共用，寫入者變多會互等鎖；consumer 的 `/tmp` 只有 16 MiB（#572） | 量測 busy wait；大量刪除與排序維持不使用 `/tmp` |
+| 正確性 | 每條 lane 的 prepared／receipt、crash replay、stop 掃描、daily 結算都要維持；`expected = data + no_data + missing + blocked` 不能錯 | 依本文件驗收矩陣；staging 一次只啟動一個 provider |
+| 部署 | 需要 migration 與 rollback 下限，Backend 先、Fetcher 後；consumer 變多，告警與 host lock 登記要跟著加（#642） | 分 PR 上線，每一步先在 staging 驗收 |
+
+### 建議
+
+1. 最小的一步：FinLab 拆成表格 daily 與盤中兩條 lane。帳號鎖不動；同一次調高 Source rate limit、Backend 鎖改為
+   lane 層級；在 staging 量 FinDB 主機、RDS 與 Fetcher 記憶體。
+2. 數字可接受後，再考慮更多 lane 與縮小帳號鎖範圍。
+3. 做法 C 等量測顯示 normalization 跟不上時再調。
+
 ## 待 Owner 決定
 
 1. **授權類 RPC 合併或快取**：先前決定暫不做。每檔約 5 次（control poll、full-market authorization、
