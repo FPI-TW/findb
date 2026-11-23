@@ -1249,7 +1249,9 @@ Twelve Data 與 FactSet 無法判斷後來的成員當天是否已存在，因�
 release ID 重算補查成員並核對 digest；manifest 的 `supplementary` 必須與它相同。Version 2 的舊 request 沒有補查成員。
 
 Fetcher 逐成員使用 Full daily 的 adapter（`provider_symbol`、商品類型、幣別身分檢查；FinLab 每個日期只下載
-一次五張欄位表），每成員一個 `market_eod` v1 `backfill` request，`work_item_id=historical:<item>`：
+一次五張欄位表；Twelve Data 與 daily 相同，把該日期接下來還要抓的成員以逗號合成一次 `/time_series`，最多 50 個、
+每 symbol 1 credit，已有結果或 receipt 的成員不加入，一批只存一份 raw，該批成員的單檔失敗引用這份 raw），
+每成員一個 `market_eod` v1 `backfill` request，`work_item_id=historical:<item>`：
 
 | 情況 | 成員結果 | 日期 |
 | --- | --- | --- |

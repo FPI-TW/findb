@@ -2,8 +2,9 @@
 
 Twelve Data and FinLab historical items whose request froze each date's Full
 release use the same provider adapters as Full daily: the same provider
-symbols, instrument types, identity checks and (for FinLab) one five-table
-download per date. A deterministic one-member failure becomes that member's
+symbols, instrument types, identity checks, one five-table download per date
+for FinLab and, for Twelve Data, one comma-separated request for up to 50
+members still to acquire. A deterministic one-member failure becomes that member's
 evidence; only shared or transient failures retry the date. Each member's
 prepared body, receipt and outcome are journaled under the fenced owner, so a
 reclaimed date replays them without acquiring or delivering again.
@@ -18,7 +19,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -112,6 +113,9 @@ class MemberHistoricalRunner:
         self.adapter = adapter or adapter_for(provider)
         self.limits = limits or platform_limits(provider)
         self._shared_raw: RawObject | None = None
+        # Provider symbol -> the shared batch response it was served from (Twelve Data).
+        self._batch_raw: dict[str, RawObject] = {}
+        self._batch_symbols: tuple[str, ...] = ()
         self._timing: dict[str, Any] = {"item_id": None, "since": 0.0, "members": 0}
 
     @classmethod
@@ -188,6 +192,7 @@ class MemberHistoricalRunner:
         cohort = [*members, *supplementary]
         # The shared native observation (FinLab bundle) a member failure may cite.
         self._shared_raw = None
+        self._batch_raw, self._batch_symbols = {}, ()
         self._timing = {"item_id": str(item.item_id), "since": time.monotonic(), "members": 0}
         rpc_timing.drain()
         outcomes: dict[str, dict[str, Any]] = {}
@@ -359,14 +364,51 @@ class MemberHistoricalRunner:
             contract=feed["contract"],
             limits=self.limits,
             http=self.http,
-            persist=lambda raw, symbol, **kwargs: _recorded(
-                persisted, self._persist(raw, item.dataset_key, symbol, **kwargs)
+            persist=lambda raw, symbol, **kwargs: self._recorded_batch(
+                symbol, _recorded(persisted, self._persist(raw, item.dataset_key, symbol, **kwargs))
             ),
             observe_response=observe,
             rate_limited=lambda: None,
             snapshot=snapshot,
             cohort=cohort,
         )
+
+    def _recorded_batch(self, symbol: str, stored: RawObject) -> RawObject:
+        # A shared batch response is the lineage of every symbol it was requested for.
+        if symbol == "batch":
+            self._batch_raw.update(dict.fromkeys(self._batch_symbols, stored))
+        return stored
+
+    def _batch_candidates(
+        self, owner, member: dict, cohort: list[dict]
+    ) -> Callable[[], tuple[str, ...]] | None:
+        """Later cohort members this date still acquires, for one shared provider request.
+
+        Mirrors Full daily: only members without a journaled outcome or receipt qualify,
+        so a replayed date never fetches a delivered member again.
+        """
+        limit = getattr(self.adapter, "member_batch_limit", 0)
+        if limit < 2:
+            return None
+
+        def candidates() -> tuple[str, ...]:
+            keys = [row["member_key"] for row in cohort]
+            symbols = [member["provider_symbol"]]
+            for other in cohort[keys.index(member["member_key"]) + 1 :]:
+                key = other["member_key"]
+                if (
+                    other.get("mapping_status", "mapped") != "mapped"
+                    or owner.journal.response(_JOURNAL + "outcome:" + key) is not None
+                    or owner.journal.response(_JOURNAL + "receipt:" + key) is not None
+                ):
+                    continue
+                symbols.append(other["provider_symbol"])
+                if len(symbols) == limit:
+                    break
+            self._batch_symbols = tuple(dict.fromkeys(symbols))
+            return self._batch_symbols
+
+        return candidates
 
     def _persist(
         self, raw: bytes, dataset: str, symbol: str, *, payload_format: RawPayloadFormat = "json"
@@ -433,10 +475,12 @@ class MemberHistoricalRunner:
         persisted: list[RawObject] = []
         try:
             try:
+                context = self._context(item, feed, cohort, persisted)
+                candidates = self._batch_candidates(owner, member, cohort)
+                if candidates is not None:
+                    context = replace(context, batch_candidates=candidates)
                 with rpc_timing.timed("step provider_acquire"):
-                    result = self.adapter.acquire(
-                        member, self._context(item, feed, cohort, persisted)
-                    )
+                    result = self.adapter.acquire(member, context)
             finally:
                 if shared and persisted:
                     self._shared_raw = persisted[0]
@@ -453,8 +497,13 @@ class MemberHistoricalRunner:
             deterministic = self.adapter.member_outcome(exc)
             if deterministic is not None:
                 outcome, reason = deterministic
-                # Cite the member's own raw response, else the shared table it was read from.
-                raw = persisted[-1] if persisted else self._shared_raw
+                # Cite the member's own raw response, else the shared batch or table
+                # it was read from.
+                raw = (
+                    persisted[-1]
+                    if persisted
+                    else self._batch_raw.get(member["provider_symbol"], self._shared_raw)
+                )
                 return {
                     "member_key": key,
                     "outcome": outcome,
