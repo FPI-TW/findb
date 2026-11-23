@@ -21,12 +21,21 @@ import {
 } from "../../components/ui/card"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
 import { Skeleton } from "../../components/ui/skeleton"
 import { toast } from "../../components/ui/toast"
 import type {
   AdminRole,
   Credential,
   CredentialFilters,
+  CredentialKind,
+  CredentialStatus,
   CredentialsOverview,
   CreateCredential,
   SourceProvider,
@@ -53,6 +62,19 @@ import {
 import { SecretDialog } from "./SecretDialog"
 
 const EMPTY_FILTERS: CredentialFilters = { kind: "", status: "", owner: "" }
+
+const credentialKindLabels: Record<CredentialKind, string> = {
+  source: "Source",
+  serve: "Serve",
+  admin: "Admin",
+}
+
+const credentialStatusLabels: Record<CredentialStatus, string> = {
+  active: "Active",
+  expiring: "Expiring",
+  expired: "Expired",
+  revoked: "Revoked",
+}
 
 type CredentialTarget = { kind: Credential["kind"]; id: string }
 
@@ -456,18 +478,23 @@ export function CredentialsPage({
             >
               <div className="grid gap-1.5">
                 <Label htmlFor="credential-kind">類型</Label>
-                <select
-                  id="credential-kind"
-                  className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+                <Select
                   value={kind}
-                  onChange={event =>
-                    setKind(event.target.value as "source" | "serve" | "admin")
+                  onValueChange={value =>
+                    setKind(value as "source" | "serve" | "admin")
                   }
                 >
-                  <option value="source">Source</option>
-                  <option value="serve">Serve</option>
-                  {role === "owner" && <option value="admin">Admin</option>}
-                </select>
+                  <SelectTrigger id="credential-kind">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="source">Source</SelectItem>
+                    <SelectItem value="serve">Serve</SelectItem>
+                    {role === "owner" && (
+                      <SelectItem value="admin">Admin</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="credential-name">名稱</Label>
@@ -491,14 +518,10 @@ export function CredentialsPage({
                 <>
                   <div className="grid gap-1.5">
                     <Label htmlFor="credential-source">Source name</Label>
-                    <select
-                      id="credential-source"
-                      className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+                    <Select
                       value={sourceName}
-                      onChange={event => {
-                        const nextSource = sourceProviderSchema.parse(
-                          event.target.value
-                        )
+                      onValueChange={value => {
+                        const nextSource = sourceProviderSchema.parse(value)
                         setSourceName(nextSource)
                         setAllowedDatasets([
                           ...SOURCE_PROVIDER_DATASETS[nextSource],
@@ -506,12 +529,17 @@ export function CredentialsPage({
                       }}
                       required
                     >
-                      {SOURCE_PROVIDERS.map(provider => (
-                        <option key={provider} value={provider}>
-                          {provider}
-                        </option>
-                      ))}
-                    </select>
+                      <SelectTrigger id="credential-source">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SOURCE_PROVIDERS.map(provider => (
+                          <SelectItem key={provider} value={provider}>
+                            {provider}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <fieldset className="grid gap-2 rounded-lg border border-line p-3 md:col-span-2 xl:col-span-3">
                     <legend className="px-1 text-sm font-medium">
@@ -564,18 +592,21 @@ export function CredentialsPage({
               {kind === "admin" && (
                 <div className="grid gap-1.5">
                   <Label htmlFor="credential-role">角色</Label>
-                  <select
-                    id="credential-role"
-                    className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+                  <Select
                     value={credentialRole}
-                    onChange={event =>
-                      setCredentialRole(event.target.value as AdminRole)
+                    onValueChange={value =>
+                      setCredentialRole(value as AdminRole)
                     }
                   >
-                    <option value="owner">Owner</option>
-                    <option value="operator">Operator</option>
-                    <option value="viewer">Viewer</option>
-                  </select>
+                    <SelectTrigger id="credential-role">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="owner">Owner</SelectItem>
+                      <SelectItem value="operator">Operator</SelectItem>
+                      <SelectItem value="viewer">Viewer</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               )}
               <div className="grid gap-1.5">
@@ -633,45 +664,55 @@ export function CredentialsPage({
               }
             }}
           >
-            <select
-              aria-label="Credential 類型"
-              className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
-              value={draftFilters.kind}
-              onChange={event =>
+            <Select
+              value={draftFilters.kind || "all"}
+              onValueChange={value =>
                 setDraftFilters({
                   ...draftFilters,
                   kind:
-                    event.target.value === ""
-                      ? ""
-                      : credentialKindSchema.parse(event.target.value),
+                    value === "all" ? "" : credentialKindSchema.parse(value),
                 })
               }
             >
-              <option value="">所有類型</option>
-              <option value="source">Source</option>
-              <option value="serve">Serve</option>
-              <option value="admin">Admin</option>
-            </select>
-            <select
-              aria-label="Credential 狀態"
-              className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
-              value={draftFilters.status}
-              onChange={event =>
+              <SelectTrigger aria-label="Credential 類型">
+                <SelectValue>
+                  {draftFilters.kind
+                    ? credentialKindLabels[draftFilters.kind]
+                    : "所有類型"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">所有類型</SelectItem>
+                <SelectItem value="source">Source</SelectItem>
+                <SelectItem value="serve">Serve</SelectItem>
+                <SelectItem value="admin">Admin</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select
+              value={draftFilters.status || "all"}
+              onValueChange={value =>
                 setDraftFilters({
                   ...draftFilters,
                   status:
-                    event.target.value === ""
-                      ? ""
-                      : credentialStatusSchema.parse(event.target.value),
+                    value === "all" ? "" : credentialStatusSchema.parse(value),
                 })
               }
             >
-              <option value="">所有狀態</option>
-              <option value="active">Active</option>
-              <option value="expiring">Expiring</option>
-              <option value="expired">Expired</option>
-              <option value="revoked">Revoked</option>
-            </select>
+              <SelectTrigger aria-label="Credential 狀態">
+                <SelectValue>
+                  {draftFilters.status
+                    ? credentialStatusLabels[draftFilters.status]
+                    : "所有狀態"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">所有狀態</SelectItem>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="expiring">Expiring</SelectItem>
+                <SelectItem value="expired">Expired</SelectItem>
+                <SelectItem value="revoked">Revoked</SelectItem>
+              </SelectContent>
+            </Select>
             <Input
               aria-label="Credential owner"
               placeholder="Owner"

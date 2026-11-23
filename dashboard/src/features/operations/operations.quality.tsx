@@ -10,6 +10,13 @@ import { DataTable } from "../../components/data-table"
 import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
 import { Label } from "../../components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
 import type { DQIssue } from "../../lib/admin-api"
 import {
   formatDate,
@@ -277,17 +284,20 @@ export function QualityPage({
           >
             <div className="grid w-full gap-1.5 sm:w-36">
               <Label htmlFor="quality-page-size">每頁筆數</Label>
-              <select
-                id="quality-page-size"
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-accent/20"
-                value={pageSizeDraft}
-                onChange={event => setPageSizeDraft(Number(event.target.value))}
+              <Select
+                value={String(pageSizeDraft)}
+                onValueChange={value => setPageSizeDraft(Number(value))}
                 disabled={state.initialLoading}
               >
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
+                <SelectTrigger id="quality-page-size" size="sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="25">25</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <Button type="submit" disabled={state.initialLoading}>
               查詢

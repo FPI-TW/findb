@@ -18,6 +18,13 @@ import {
 } from "../../components/ui/card"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
 import type { RawPayload, RawPayloadListItem } from "../../lib/admin-api"
 import { isDashboardAuthenticationError } from "../../lib/auth-errors"
 import {
@@ -242,22 +249,25 @@ export function RawPayloadsPage({
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="page-size">每頁筆數</Label>
-              <select
-                id="page-size"
-                className="h-9 w-full rounded-lg border border-line bg-surface px-3 text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-accent/20"
-                value={draft.ps}
-                onChange={event =>
+              <Select
+                value={String(draft.ps)}
+                onValueChange={value =>
                   setDraft({
                     ...draft,
-                    ps: Number(event.target.value) as RawPayloadsSearch["ps"],
+                    ps: Number(value) as RawPayloadsSearch["ps"],
                   })
                 }
                 disabled={state.initialLoading}
               >
-                <option value={25}>25</option>
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-              </select>
+                <SelectTrigger id="page-size" size="sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="25">25</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
             <Button
               className="col-span-2 xl:col-span-1"

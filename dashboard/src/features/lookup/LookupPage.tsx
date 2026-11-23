@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query"
 import {
-  ChevronDown,
   Clipboard,
   Database,
   Download,
@@ -30,6 +29,13 @@ import {
 } from "../../components/ui/card"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
 import { Skeleton } from "../../components/ui/skeleton"
 import { LOOKUP_COLUMNS, LOOKUP_STORAGE_KEY, PAGE_SIZES } from "./config"
 import { loadAllLookupItems, loadLookupPage } from "./data"
@@ -101,26 +107,19 @@ function SelectField({
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
-      <div className="relative">
-        <select
-          id={id}
-          className="h-9 w-full appearance-none rounded-lg border border-line bg-surface px-3 pr-8 text-sm outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
-          value={value}
-          onChange={event => onChange(event.target.value)}
-        >
-          <option value="ALL">全部</option>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger id={id} size="sm">
+          <SelectValue>{value === "ALL" ? "全部" : value}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="ALL">全部</SelectItem>
           {options.map(option => (
-            <option key={option} value={option}>
+            <SelectItem key={option} value={option}>
               {option}
-            </option>
+            </SelectItem>
           ))}
-        </select>
-        <ChevronDown
-          className="pointer-events-none absolute top-2.5 right-2.5 text-muted"
-          size={15}
-          aria-hidden
-        />
-      </div>
+        </SelectContent>
+      </Select>
     </div>
   )
 }

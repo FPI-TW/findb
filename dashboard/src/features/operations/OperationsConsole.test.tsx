@@ -8,6 +8,7 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { useState, type ReactNode } from "react"
@@ -24,6 +25,7 @@ import type {
   SchedulerMutationResponse,
   SchedulersResponse,
 } from "../../lib/admin-api"
+import { chooseSelectOption } from "../../test-utils/select"
 import { deliveriesSearchSchema } from "./operations.search"
 import { marketFreshnessSchema } from "../../lib/admin-api"
 import type { AdminRole } from "../../lib/admin-governance-api"
@@ -184,10 +186,37 @@ function deliveriesResponse(missingDeliveries: MissingDelivery[] = []): Extract<
             market: "TW",
             executable: true,
           },
+          {
+            provider: "finlab",
+            dataset_key: "tw_equity_eod",
+            market: "TW",
+            executable: true,
+          },
+          {
+            provider: "finlab",
+            dataset_key: "tw_etf_eod",
+            market: "TW",
+            executable: true,
+          },
         ],
       },
     },
   }
+}
+
+async function waitForBackfillScopes() {
+  await waitFor(() =>
+    expect(screen.getByRole("combobox", { name: "供應商" })).toBeEnabled()
+  )
+}
+
+function chooseBackfillOption(label: string, option: string) {
+  chooseSelectOption(screen.getByRole("combobox", { name: label }), option)
+}
+
+function chooseBackfillScope(provider: string, dataset: string) {
+  chooseBackfillOption("供應商", provider)
+  chooseBackfillOption("資料集", dataset)
 }
 
 function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
@@ -1754,15 +1783,8 @@ describe("Operations presentation", () => {
         />
       </QueryClientProvider>
     )
-    await waitFor(() =>
-      expect(screen.getByPlaceholderText("provider")).toBeInTheDocument()
-    )
-    fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "taifex" },
-    })
-    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_futures_eod" },
-    })
+    await waitForBackfillScopes()
+    chooseBackfillScope("taifex", "tw_futures_eod")
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-30" },
     })
@@ -1780,6 +1802,134 @@ describe("Operations presentation", () => {
     ).toBeInTheDocument()
     fireEvent.click(screen.getByRole("checkbox"))
     expect(screen.getByRole("button", { name: "建立回補" })).not.toBeDisabled()
+  })
+
+  it("lists only the selected provider's datasets in the backfill scope", async () => {
+    mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({ tab: "backfills" })}
+        />
+      </QueryClientProvider>
+    )
+    await waitForBackfillScopes()
+    const dataset = screen.getByRole("combobox", { name: "資料集" })
+    expect(dataset).toBeDisabled()
+    expect(dataset).toHaveTextContent("請先選擇供應商")
+
+    chooseBackfillOption("供應商", "finlab")
+    fireEvent.keyDown(dataset, { key: "Enter" })
+    expect(
+      screen.getAllByRole("option").map(option => option.textContent)
+    ).toEqual(["tw_equity_eod", "tw_etf_eod"])
+    fireEvent.click(screen.getByRole("option", { name: "tw_etf_eod" }))
+    expect(dataset).toHaveTextContent("tw_etf_eod")
+
+    // A provider with a single dataset selects it; the other provider's dataset is gone.
+    chooseBackfillOption("供應商", "taifex")
+    expect(dataset).toHaveTextContent("tw_futures_eod")
+    fireEvent.keyDown(dataset, { key: "Enter" })
+    expect(
+      screen.getAllByRole("option").map(option => option.textContent)
+    ).toEqual(["tw_futures_eod"])
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" })
+
+    // Reopening the provider menu still lists every provider, not just the selected one.
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "供應商" }), {
+      key: "Enter",
+    })
+    expect(
+      screen.getAllByRole("option").map(option => option.textContent)
+    ).toEqual(["finlab", "taifex"])
+  })
+
+  it("lists backfill requests in a table with expandable date items", async () => {
+    const response = deliveriesResponse()
+    response.backfills.data = {
+      data: [
+        {
+          request_id: "019565d2-f838-7c91-85c1-72d4d7bbbeb1",
+          request_key: "request-key-1",
+          provider: "finlab",
+          dataset_key: "tw_equity_eod",
+          market: "TW",
+          start_date: "2026-08-28",
+          end_date: "2026-08-29",
+          status: "running",
+          created_by: "operator",
+          cancelled_by: null,
+          cancelled_at: null,
+          started_at: timestamp,
+          completed_at: null,
+          failure_code: null,
+          failure_message: null,
+          created_at: timestamp,
+          updated_at: timestamp,
+          items: [
+            {
+              item_id: "019565d2-f838-7c91-85c1-72d4d7bbbeb2",
+              trade_date: "2026-08-28",
+              status: "partial",
+              run_id: "019565d2-f838-7c91-85c1-72d4d7bbbeb3",
+              failure_code: null,
+              failure_message: null,
+              unlisted_symbols: ["9999"],
+            },
+            {
+              item_id: "019565d2-f838-7c91-85c1-72d4d7bbbeb4",
+              trade_date: "2026-08-29",
+              status: "queued",
+              run_id: null,
+              failure_code: null,
+              failure_message: null,
+              unlisted_symbols: null,
+            },
+          ],
+        },
+      ],
+      pagination: { page: 1, page_size: 25, total_records: 1, total_pages: 1 },
+    }
+    mocks.loadDashboard.mockResolvedValue(response)
+    mocks.cancelHistoricalBackfill.mockResolvedValue({})
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({ tab: "backfills" })}
+        />
+      </QueryClientProvider>
+    )
+    const table = await screen.findByRole("table", { name: "回補請求紀錄" })
+    await within(table).findByText("finlab/tw_equity_eod")
+    const row = within(table)
+      .getAllByRole("row")
+      .find(candidate =>
+        candidate.textContent?.includes("finlab/tw_equity_eod")
+      )
+    expect(row).toBeDefined()
+    expect(row).toHaveTextContent("2026-08-28 – 2026-08-29")
+    expect(row).toHaveTextContent("執行中")
+    expect(row).toHaveTextContent("0/2 完成")
+    expect(row).toHaveTextContent("1 日仍有缺漏")
+
+    fireEvent.click(within(row!).getByRole("button", { name: "展開詳細資料" }))
+    const items = screen.getByRole("table", { name: "回補日期項目" })
+    expect(items).toHaveTextContent("部分完成，保留缺漏")
+    expect(items).toHaveTextContent("019565d2-f838-7c91-85c1-72d4d7bbbeb3")
+    expect(items).toHaveTextContent("1 檔：9999")
+
+    fireEvent.click(
+      within(row!).getByRole("button", {
+        name: "取消 finlab/tw_equity_eod 2026-08-28 – 2026-08-29 回補",
+      })
+    )
+    await waitFor(() =>
+      expect(mocks.cancelHistoricalBackfill).toHaveBeenCalledWith({
+        data: { requestId: "019565d2-f838-7c91-85c1-72d4d7bbbeb1" },
+      })
+    )
   })
 
   it("allows an all-skipped request without pretending it acquired data", async () => {
@@ -1802,13 +1952,8 @@ describe("Operations presentation", () => {
         />
       </QueryClientProvider>
     )
-    await screen.findByPlaceholderText("provider")
-    fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "taifex" },
-    })
-    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_futures_eod" },
-    })
+    await waitForBackfillScopes()
+    chooseBackfillScope("taifex", "tw_futures_eod")
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-31" },
     })
@@ -1847,13 +1992,8 @@ describe("Operations presentation", () => {
         />
       </QueryClientProvider>
     )
-    await screen.findByPlaceholderText("provider")
-    fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "taifex" },
-    })
-    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_futures_eod" },
-    })
+    await waitForBackfillScopes()
+    chooseBackfillScope("taifex", "tw_futures_eod")
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-30" },
     })
@@ -1890,13 +2030,8 @@ describe("Operations presentation", () => {
         />
       </QueryClientProvider>
     )
-    await screen.findByPlaceholderText("provider")
-    fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "taifex" },
-    })
-    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_futures_eod" },
-    })
+    await waitForBackfillScopes()
+    chooseBackfillScope("taifex", "tw_futures_eod")
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-31" },
     })
@@ -1935,13 +2070,8 @@ describe("Operations presentation", () => {
         />
       </QueryClientProvider>
     )
-    await screen.findByPlaceholderText("provider")
-    fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "taifex" },
-    })
-    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_futures_eod" },
-    })
+    await waitForBackfillScopes()
+    chooseBackfillScope("taifex", "tw_futures_eod")
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-07-01" },
     })
@@ -2114,13 +2244,8 @@ describe("Operations presentation", () => {
         />
       </QueryClientProvider>
     )
-    await screen.findByPlaceholderText("provider")
-    fireEvent.change(screen.getByPlaceholderText("provider"), {
-      target: { value: "taifex" },
-    })
-    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_futures_eod" },
-    })
+    await waitForBackfillScopes()
+    chooseBackfillScope("taifex", "tw_futures_eod")
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-30" },
     })
@@ -2208,7 +2333,12 @@ describe("Operations presentation", () => {
       "aria-selected",
       "true"
     )
-    expect(screen.getByPlaceholderText("provider")).toHaveValue("taifex")
+    expect(screen.getByRole("combobox", { name: "供應商" })).toHaveTextContent(
+      "taifex"
+    )
+    expect(screen.getByRole("combobox", { name: "資料集" })).toHaveTextContent(
+      "tw_futures_eod"
+    )
     expect(screen.getByLabelText("回補起始日期")).toHaveValue("2026-08-31")
     fireEvent.change(screen.getByLabelText("回補結束日期"), {
       target: { value: "2026-09-01" },
@@ -2250,11 +2380,8 @@ describe("Operations presentation", () => {
     )
 
     fireEvent.click(screen.getByRole("tab", { name: "歷史回補" }))
-    const provider = await screen.findByPlaceholderText("provider")
-    fireEvent.change(provider, { target: { value: "finlab" } })
-    fireEvent.change(screen.getByPlaceholderText("dataset_key"), {
-      target: { value: "tw_equity_eod" },
-    })
+    await waitForBackfillScopes()
+    chooseBackfillScope("finlab", "tw_equity_eod")
     fireEvent.change(screen.getByLabelText("回補起始日期"), {
       target: { value: "2026-08-29" },
     })

@@ -1,14 +1,22 @@
-import type { PaginationState } from "@tanstack/react-table"
+import type { ColumnDef, PaginationState } from "@tanstack/react-table"
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock3 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
 
-import { DataTablePagination } from "../../components/data-table"
+import { DataTable } from "../../components/data-table"
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert"
+import { Badge } from "../../components/ui/badge"
 import { Button } from "../../components/ui/button"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
 import type { HistoricalBackfill, MissingDelivery } from "../../lib/admin-api"
 import type { AdminRole } from "../../lib/admin-governance-api"
 import {
@@ -16,7 +24,7 @@ import {
   createHistoricalBackfill,
   previewHistoricalBackfill,
 } from "../../lib/admin.functions"
-import { Panel, LoadingState } from "./operations.shared"
+import { formatDate, Panel } from "./operations.shared"
 import {
   deliveriesSearchSchema,
   type DeliveriesPageSearch,
@@ -78,6 +86,178 @@ function BackfillStepHeader({
   )
 }
 
+type BackfillItem = HistoricalBackfill["items"][number]
+
+const backfillStatusLabels: Record<HistoricalBackfill["status"], string> = {
+  queued: "排隊中",
+  running: "執行中",
+  completed: "已完成",
+  partial: "部分完成",
+  failed: "失敗",
+  cancelled: "已取消",
+}
+
+function BackfillStatusBadge({
+  status,
+}: {
+  status: HistoricalBackfill["status"]
+}) {
+  return (
+    <Badge
+      variant={
+        status === "failed"
+          ? "destructive"
+          : status === "partial"
+            ? "warning"
+            : status === "completed"
+              ? "secondary"
+              : "outline"
+      }
+    >
+      {backfillStatusLabels[status]}
+    </Badge>
+  )
+}
+
+function backfillItemStatusLabel(status: string) {
+  if (status === "skipped_calendar") return "依設定略過"
+  if (status === "partial") return "部分完成，保留缺漏"
+  return status
+}
+
+const backfillItemColumns: ColumnDef<BackfillItem, unknown>[] = [
+  { accessorKey: "trade_date", header: "交易日", meta: { width: 120 } },
+  {
+    accessorKey: "status",
+    header: "狀態",
+    meta: { minWidth: 150 },
+    cell: context => backfillItemStatusLabel(context.getValue<string>()),
+  },
+  {
+    accessorKey: "run_id",
+    header: "Run ID",
+    meta: { minWidth: 300 },
+    cell: context => (
+      <span className="font-mono">{context.getValue<string>() ?? "—"}</span>
+    ),
+  },
+  {
+    id: "failure",
+    header: "失敗原因",
+    meta: { minWidth: 220, wrap: true },
+    cell: ({ row }) =>
+      row.original.failure_code || row.original.failure_message ? (
+        <span className="text-danger">
+          {[row.original.failure_code, row.original.failure_message]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+      ) : (
+        "—"
+      ),
+  },
+  {
+    id: "unlisted",
+    header: "清單外有資料",
+    meta: { minWidth: 220, wrap: true },
+    cell: ({ row }) =>
+      row.original.unlisted_symbols?.length ? (
+        <span className="break-all">
+          {row.original.unlisted_symbols.length} 檔：
+          {row.original.unlisted_symbols.join("、")}
+        </span>
+      ) : (
+        "—"
+      ),
+  },
+]
+
+function BackfillItemsTable({ items }: { items: BackfillItem[] }) {
+  return (
+    <DataTable
+      ariaLabel="回補日期項目"
+      columns={backfillItemColumns}
+      data={items}
+      getRowId={item => item.item_id}
+      refreshingState={null}
+      emptyState="此請求沒有日期項目。"
+      fillAvailableWidth
+      viewportClassName="max-h-80"
+    />
+  )
+}
+
+const baseBackfillColumns: ColumnDef<HistoricalBackfill, unknown>[] = [
+  {
+    id: "scope",
+    header: "供應商／資料集",
+    meta: { minWidth: 200, pin: "left" },
+    cell: ({ row }) => (
+      <span className="font-mono">
+        {row.original.provider}/{row.original.dataset_key}
+      </span>
+    ),
+  },
+  {
+    id: "range",
+    header: "日期範圍",
+    meta: { minWidth: 210 },
+    cell: ({ row }) => `${row.original.start_date} – ${row.original.end_date}`,
+  },
+  {
+    accessorKey: "status",
+    header: "狀態",
+    meta: { width: 100 },
+    cell: context => (
+      <BackfillStatusBadge
+        status={context.getValue<HistoricalBackfill["status"]>()}
+      />
+    ),
+  },
+  {
+    id: "progress",
+    header: "進度",
+    meta: { minWidth: 160 },
+    cell: ({ row }) => {
+      const items = row.original.items
+      const completed = items.filter(item => item.status === "completed")
+      const partial = items.filter(item => item.status === "partial")
+      return (
+        <span>
+          {completed.length}/{items.length} 完成
+          {partial.length > 0 && (
+            <span className="ml-2 text-muted">{partial.length} 日仍有缺漏</span>
+          )}
+        </span>
+      )
+    },
+  },
+  {
+    accessorKey: "failure_code",
+    header: "失敗代碼",
+    meta: { minWidth: 140 },
+    cell: context =>
+      context.getValue<string | null>() ? (
+        <span className="font-mono text-danger">
+          {context.getValue<string>()}
+        </span>
+      ) : (
+        "—"
+      ),
+  },
+  {
+    accessorKey: "created_at",
+    header: "建立時間",
+    meta: { minWidth: 170 },
+    cell: context => formatDate(context.getValue<string>()),
+  },
+  {
+    accessorKey: "created_by",
+    header: "建立者",
+    meta: { minWidth: 120 },
+  },
+]
+
 export function HistoricalBackfillsPanel({
   search = deliveriesSearchSchema.parse({}),
   updateSearch = () => undefined,
@@ -132,6 +312,41 @@ export function HistoricalBackfillsPanel({
     queryClient.invalidateQueries({
       queryKey: ["operations", "delivery-resource"],
     })
+  const backfillColumns = useMemo<ColumnDef<HistoricalBackfill, unknown>[]>(
+    () => [
+      ...baseBackfillColumns,
+      {
+        id: "actions",
+        header: "操作",
+        meta: { width: 90, align: "right" },
+        cell: ({ row }) =>
+          row.original.status === "queued" ||
+          row.original.status === "running" ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label={`取消 ${row.original.provider}/${row.original.dataset_key} ${row.original.start_date} – ${row.original.end_date} 回補`}
+              onClick={() =>
+                void cancel({ data: { requestId: row.original.request_id } })
+                  .then(() =>
+                    queryClient.invalidateQueries({
+                      queryKey: ["operations", "delivery-resource"],
+                    })
+                  )
+                  .catch(error => {
+                    if (!reportError(error))
+                      setActionError("取消回補請求失敗。")
+                  })
+              }
+            >
+              取消
+            </Button>
+          ) : null,
+      },
+    ],
+    [cancel, queryClient, reportError]
+  )
   const openDays = previewResult?.days.filter(day => day.valid) ?? []
   const closedDays =
     previewResult?.days.filter(day => day.reason === "market_closed") ?? []
@@ -139,6 +354,24 @@ export function HistoricalBackfillsPanel({
     previewResult?.scope_valid && previewResult.days.length > 0
   )
   const draftComplete = Object.values(backfillDraft).every(Boolean)
+  const datasetsForProvider = (provider: string) =>
+    scopes
+      .filter(scope => scope.provider === provider)
+      .map(scope => scope.dataset_key)
+  // A prefilled alert may name a scope the list does not contain yet; keep the
+  // selected value as an option so the trigger and form value stay visible.
+  const withSelected = (options: string[], selected: string) =>
+    [...new Set(selected ? [...options, selected] : options)].sort()
+  const providerOptions = withSelected(
+    scopes.map(scope => scope.provider),
+    backfillDraft.provider
+  )
+  const datasetOptions = backfillDraft.provider
+    ? withSelected(
+        datasetsForProvider(backfillDraft.provider),
+        backfillDraft.dataset
+      )
+    : []
 
   useEffect(() => {
     if (!active || !backfillPagination) return
@@ -179,6 +412,20 @@ export function HistoricalBackfillsPanel({
     invalidatePreview()
     setActionError("")
   }
+  const selectBackfillProvider = (provider: string) => {
+    const datasets = datasetsForProvider(provider)
+    setBackfillDraft(current => ({
+      ...current,
+      provider,
+      dataset: datasets.includes(current.dataset)
+        ? current.dataset
+        : datasets.length === 1
+          ? (datasets[0] ?? "")
+          : "",
+    }))
+    invalidatePreview()
+    setActionError("")
+  }
   return (
     <>
       <QueryStatus
@@ -214,12 +461,11 @@ export function HistoricalBackfillsPanel({
                 setActionError("請先確認同一 provider 會依日期順序執行。")
                 return
               }
-              const form = new FormData(event.currentTarget)
               const currentKey = [
-                form.get("provider"),
-                form.get("dataset"),
-                form.get("start"),
-                form.get("end"),
+                backfillDraft.provider,
+                backfillDraft.dataset,
+                backfillDraft.start,
+                backfillDraft.end,
               ].join(":")
               if (
                 !previewResult ||
@@ -233,10 +479,10 @@ export function HistoricalBackfillsPanel({
               setActionError("")
               void create({
                 data: {
-                  provider: String(form.get("provider") || ""),
-                  datasetKey: String(form.get("dataset") || ""),
-                  startDate: String(form.get("start") || ""),
-                  endDate: String(form.get("end") || ""),
+                  provider: backfillDraft.provider,
+                  datasetKey: backfillDraft.dataset,
+                  startDate: backfillDraft.start,
+                  endDate: backfillDraft.end,
                   requestKey: crypto.randomUUID(),
                 },
               })
@@ -266,52 +512,60 @@ export function HistoricalBackfillsPanel({
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="grid gap-1.5">
                   <Label htmlFor="backfill-provider">供應商</Label>
-                  <Input
+                  <Select
                     required
-                    id="backfill-provider"
                     name="provider"
-                    placeholder="provider"
-                    list="historical-provider-scopes"
                     value={backfillDraft.provider}
-                    onChange={event =>
-                      updateBackfillDraft("provider", event.target.value)
-                    }
-                  />
+                    disabled={providerOptions.length === 0}
+                    onValueChange={selectBackfillProvider}
+                  >
+                    <SelectTrigger id="backfill-provider">
+                      <SelectValue
+                        placeholder={
+                          scopesQuery.isPending
+                            ? "正在載入供應商…"
+                            : "選擇供應商"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {providerOptions.map(provider => (
+                        <SelectItem key={provider} value={provider}>
+                          {provider}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="grid gap-1.5">
                   <Label htmlFor="backfill-dataset">資料集</Label>
-                  <Input
+                  <Select
                     required
-                    id="backfill-dataset"
                     name="dataset"
-                    placeholder="dataset_key"
-                    list="historical-dataset-scopes"
                     value={backfillDraft.dataset}
-                    onChange={event =>
-                      updateBackfillDraft("dataset", event.target.value)
+                    disabled={datasetOptions.length === 0}
+                    onValueChange={value =>
+                      updateBackfillDraft("dataset", value)
                     }
-                  />
+                  >
+                    <SelectTrigger id="backfill-dataset">
+                      <SelectValue
+                        placeholder={
+                          backfillDraft.provider
+                            ? "選擇資料集"
+                            : "請先選擇供應商"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {datasetOptions.map(dataset => (
+                        <SelectItem key={dataset} value={dataset}>
+                          {dataset}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <datalist id="historical-provider-scopes">
-                  {scopes.map(scope => (
-                    <option
-                      key={`${scope.provider}:${scope.dataset_key}`}
-                      value={scope.provider}
-                    >
-                      {scope.provider}／{scope.dataset_key}（{scope.market}）
-                    </option>
-                  ))}
-                </datalist>
-                <datalist id="historical-dataset-scopes">
-                  {scopes.map(scope => (
-                    <option
-                      key={`${scope.dataset_key}:${scope.provider}`}
-                      value={scope.dataset_key}
-                    >
-                      {scope.provider}／{scope.market}
-                    </option>
-                  ))}
-                </datalist>
                 <div className="grid gap-1.5">
                   <Label htmlFor="backfill-start">起始日期</Label>
                   <Input
@@ -362,15 +616,12 @@ export function HistoricalBackfillsPanel({
                   variant="outline"
                   disabled={!draftComplete || previewing}
                   aria-busy={previewing}
-                  onClick={event => {
-                    const form = event.currentTarget.form
-                    if (!form) return
-                    const data = new FormData(form)
+                  onClick={() => {
                     const input = {
-                      provider: String(data.get("provider") || ""),
-                      datasetKey: String(data.get("dataset") || ""),
-                      startDate: String(data.get("start") || ""),
-                      endDate: String(data.get("end") || ""),
+                      provider: backfillDraft.provider,
+                      datasetKey: backfillDraft.dataset,
+                      startDate: backfillDraft.start,
+                      endDate: backfillDraft.end,
                     }
                     const key = [
                       input.provider,
@@ -509,123 +760,37 @@ export function HistoricalBackfillsPanel({
               追蹤已建立請求的日期、執行狀態與 run ID。
             </p>
           </div>
-          {state.initialLoading && <LoadingState label="正在載入回補紀錄" />}
-          {backfillRows ? (
-            <>
-              {backfillRows.length > 0 ? (
-                <div className="space-y-2">
-                  {backfillRows.map((row: HistoricalBackfill) => (
-                    <details
-                      key={row.request_id}
-                      className="rounded border p-2 text-sm"
-                    >
-                      <summary className="flex cursor-pointer flex-wrap items-center gap-2">
-                        <span className="font-mono">
-                          {row.provider}/{row.dataset_key}
-                        </span>
-                        <span>
-                          {row.start_date} – {row.end_date}
-                        </span>
-                        <span className="rounded bg-surface-soft px-2">
-                          {row.status === "partial" ? "部分完成" : row.status}
-                        </span>
-                        <span className="text-muted">
-                          {
-                            row.items.filter(
-                              item => item.status === "completed"
-                            ).length
-                          }
-                          /{row.items.length} 完成
-                        </span>
-                        {row.items.some(item => item.status === "partial") && (
-                          <span className="text-muted">
-                            {
-                              row.items.filter(
-                                item => item.status === "partial"
-                              ).length
-                            }{" "}
-                            日仍有缺漏
-                          </span>
-                        )}
-                        {row.failure_code && (
-                          <span className="text-destructive">
-                            {row.failure_code}
-                          </span>
-                        )}
-                      </summary>
-                      <ul className="mt-2 space-y-1 border-t pt-2 font-mono text-xs text-muted">
-                        {row.items.map(item => (
-                          <li key={item.item_id}>
-                            {item.trade_date} ·{" "}
-                            {item.status === "skipped_calendar"
-                              ? "依設定略過"
-                              : item.status === "partial"
-                                ? "部分完成，保留缺漏"
-                                : item.status}{" "}
-                            · run: {item.run_id ?? "—"}
-                            {item.failure_code ? ` · ${item.failure_code}` : ""}
-                            {item.failure_message
-                              ? ` · ${item.failure_message}`
-                              : ""}
-                            {item.unlisted_symbols?.length ? (
-                              <span className="block break-all">
-                                清單外有資料 {item.unlisted_symbols.length} 檔：
-                                {item.unlisted_symbols.join("、")}
-                              </span>
-                            ) : null}
-                          </li>
-                        ))}
-                      </ul>
-                      {(row.status === "queued" ||
-                        row.status === "running") && (
-                        <button
-                          className="ml-auto text-destructive underline"
-                          onClick={() =>
-                            void cancel({ data: { requestId: row.request_id } })
-                              .then(refresh)
-                              .catch(error => {
-                                if (!reportError(error))
-                                  setActionError("取消回補請求失敗。")
-                              })
-                          }
-                        >
-                          取消
-                        </button>
-                      )}
-                    </details>
-                  ))}
-                </div>
-              ) : (
-                <p className="m-0 rounded-lg border border-dashed border-line p-4 text-sm text-muted">
-                  尚無歷史回補請求。
-                </p>
-              )}
-              {backfillPagination && (
-                <DataTablePagination
-                  pageCount={Math.max(backfillPagination.total_pages, 1)}
-                  pageIndex={historicalPagination.pageIndex}
-                  pageSize={historicalPagination.pageSize}
-                  ariaLabel="歷史回補請求分頁"
-                  pageSizeOptions={[25, 50, 100]}
-                  rowCount={backfillPagination.total_records}
-                  onPageSizeChange={pageSize => {
-                    if (pageSize !== search.bps) {
-                      updateSearch({
-                        ...search,
-                        bp: 1,
-                        bps: pageSize as DeliveriesPageSearch["bps"],
-                      })
-                    }
-                  }}
-                  onPageChange={pageIndex => {
-                    if (pageIndex !== historicalPagination.pageIndex) {
-                      updateSearch({ ...search, bp: pageIndex + 1 })
-                    }
-                  }}
-                />
-              )}
-            </>
-          ) : null}
+          <DataTable
+            ariaLabel="回補請求紀錄"
+            columns={backfillColumns}
+            data={backfillRows ?? []}
+            getRowId={row => row.request_id}
+            isLoading={state.initialLoading}
+            isRefreshing={state.pending && !state.initialLoading}
+            refreshingState={null}
+            error={query.data === undefined ? query.error : undefined}
+            errorState={null}
+            emptyState="尚無歷史回補請求。"
+            renderExpandedRow={({ original }) => (
+              <BackfillItemsTable items={original.items} />
+            )}
+            fillAvailableWidth
+            manualPagination
+            pagination={historicalPagination}
+            pageCount={Math.max(backfillPagination?.total_pages ?? 1, 1)}
+            rowCount={backfillPagination?.total_records ?? 0}
+            pageSizeOptions={[25, 50, 100]}
+            paginationAriaLabel="歷史回補請求分頁"
+            onPaginationChange={next => {
+              const value =
+                typeof next === "function" ? next(historicalPagination) : next
+              updateSearch({
+                ...search,
+                bp: value.pageSize === search.bps ? value.pageIndex + 1 : 1,
+                bps: value.pageSize as DeliveriesPageSearch["bps"],
+              })
+            }}
+          />
         </Panel>
       )}
     </>

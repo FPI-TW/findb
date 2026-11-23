@@ -6,6 +6,13 @@ import {
 } from "lucide-react"
 
 import { Button } from "../ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select"
 import { cn } from "#/lib/utils"
 import type { DataTablePaginationProps } from "./types"
 
@@ -62,21 +69,28 @@ export function DataTablePagination({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <label className="flex items-center gap-2">
-          <span>每頁</span>
-          <select
-            aria-label={controlLabel("每頁筆數")}
-            className="h-8 rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none focus-visible:ring-3 focus-visible:ring-accent/20"
-            value={pageSize}
-            onChange={event => onPageSizeChange(Number(event.target.value))}
+        <div className="flex items-center gap-2">
+          <span aria-hidden="true">每頁</span>
+          <Select
+            value={String(pageSize)}
+            onValueChange={value => onPageSizeChange(Number(value))}
           >
-            {normalizedPageSizeOptions.map(option => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
+            <SelectTrigger
+              aria-label={controlLabel("每頁筆數")}
+              size="xs"
+              className="w-auto"
+            >
+              <SelectValue>{pageSize}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {normalizedPageSizeOptions.map(option => (
+                <SelectItem key={option} value={String(option)}>
+                  {option}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
         <div
           className="flex items-center gap-1"

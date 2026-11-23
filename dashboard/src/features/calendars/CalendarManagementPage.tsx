@@ -36,6 +36,13 @@ import {
 } from "../../components/ui/card"
 import { Input } from "../../components/ui/input"
 import { Label } from "../../components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select"
 import { Skeleton } from "../../components/ui/skeleton"
 import { toast } from "../../components/ui/toast"
 import type { AdminRole } from "../../lib/admin-governance-api"
@@ -226,19 +233,22 @@ export function CalendarManagementPage({
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="grid gap-1.5">
             <Label htmlFor="calendar-market">市場</Label>
-            <select
-              id="calendar-market"
-              className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+            <Select
               value={market}
-              onChange={event => selectMarket(event.target.value)}
+              onValueChange={selectMarket}
               disabled={initialLoading}
             >
-              {markets.map(item => (
-                <option key={item.market} value={item.market}>
-                  {item.display_name}（{item.market}）
-                </option>
-              ))}
-            </select>
+              <SelectTrigger id="calendar-market">
+                <SelectValue placeholder="選擇市場" />
+              </SelectTrigger>
+              <SelectContent>
+                {markets.map(item => (
+                  <SelectItem key={item.market} value={item.market}>
+                    {item.display_name}（{item.market}）
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="calendar-year">年度</Label>
@@ -588,43 +598,59 @@ function YearView({
       </CardHeader>
       <CardContent className="px-0">
         <div className="mb-4 grid gap-2 sm:grid-cols-3">
-          <select
-            aria-label="月份篩選"
-            className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
-            value={search.month}
-            onChange={event =>
+          <Select
+            value={search.month || "all"}
+            onValueChange={value =>
               updateSearch({
                 ...search,
-                month: event.target.value as CalendarSearch["month"],
+                month: (value === "all"
+                  ? ""
+                  : value) as CalendarSearch["month"],
               })
             }
           >
-            <option value="">全部月份</option>
-            {Array.from({ length: 12 }).map((_, index) => {
-              const value = String(index + 1).padStart(2, "0")
-              return (
-                <option key={value} value={value}>
-                  {index + 1} 月
-                </option>
-              )
-            })}
-          </select>
-          <select
-            aria-label="狀態篩選"
-            className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
-            value={search.status}
-            onChange={event =>
+            <SelectTrigger aria-label="月份篩選">
+              <SelectValue>
+                {search.month ? `${Number(search.month)} 月` : "全部月份"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部月份</SelectItem>
+              {Array.from({ length: 12 }).map((_, index) => {
+                const value = String(index + 1).padStart(2, "0")
+                return (
+                  <SelectItem key={value} value={value}>
+                    {index + 1} 月
+                  </SelectItem>
+                )
+              })}
+            </SelectContent>
+          </Select>
+          <Select
+            value={search.status || "all"}
+            onValueChange={value =>
               updateSearch({
                 ...search,
-                status: event.target.value as CalendarSearch["status"],
+                status: (value === "all"
+                  ? ""
+                  : value) as CalendarSearch["status"],
               })
             }
           >
-            <option value="">全部狀態</option>
-            <option value="open">開市</option>
-            <option value="closed">休市</option>
-            <option value="settlement_only">僅結算</option>
-          </select>
+            <SelectTrigger aria-label="狀態篩選">
+              <SelectValue>
+                {search.status
+                  ? calendarStatusLabel(search.status)
+                  : "全部狀態"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部狀態</SelectItem>
+              <SelectItem value="open">開市</SelectItem>
+              <SelectItem value="closed">休市</SelectItem>
+              <SelectItem value="settlement_only">僅結算</SelectItem>
+            </SelectContent>
+          </Select>
           <Input
             aria-label="搜尋日期或說明"
             placeholder="搜尋日期、名稱或說明"
@@ -790,16 +816,19 @@ function EditDayDialog({
       )}
       <div className="grid gap-1.5">
         <Label htmlFor={`day-status-${day.date}`}>狀態</Label>
-        <select
-          id={`day-status-${day.date}`}
-          className="h-10 rounded-lg border border-line bg-surface px-3 text-sm"
+        <Select
           value={status}
-          onChange={event => setStatus(event.target.value as CalendarDayStatus)}
+          onValueChange={value => setStatus(value as CalendarDayStatus)}
         >
-          <option value="open">開市</option>
-          <option value="closed">休市</option>
-          <option value="settlement_only">僅結算</option>
-        </select>
+          <SelectTrigger id={`day-status-${day.date}`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="open">開市</SelectItem>
+            <SelectItem value="closed">休市</SelectItem>
+            <SelectItem value="settlement_only">僅結算</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <div className="grid gap-1.5">
         <Label htmlFor={`day-name-${day.date}`}>名稱</Label>

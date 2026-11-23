@@ -33,6 +33,11 @@ vi.mock("@tanstack/react-start", () => ({
 
 vi.mock("../../lib/admin-governance.functions", () => mocks)
 
+import {
+  chooseSelectOption,
+  closeSelect,
+  openSelect,
+} from "../../test-utils/select"
 import { CredentialsPage } from "./CredentialsPage"
 import { UsersPage } from "./UsersPage"
 
@@ -120,12 +125,8 @@ describe("governance pages", () => {
     )
 
     await screen.findByText("lookup")
-    fireEvent.change(screen.getByLabelText("Credential 類型"), {
-      target: { value: "serve" },
-    })
-    fireEvent.change(screen.getByLabelText("Credential 狀態"), {
-      target: { value: "active" },
-    })
+    chooseSelectOption(screen.getByLabelText("Credential 類型"), "Serve")
+    chooseSelectOption(screen.getByLabelText("Credential 狀態"), "Active")
     fireEvent.change(screen.getByLabelText("Credential owner"), {
       target: { value: "  web  " },
     })
@@ -153,8 +154,12 @@ describe("governance pages", () => {
       </QueryClientProvider>
     )
     await waitFor(() => {
-      expect(screen.getByLabelText("Credential 類型")).toHaveValue("admin")
-      expect(screen.getByLabelText("Credential 狀態")).toHaveValue("revoked")
+      expect(screen.getByLabelText("Credential 類型")).toHaveTextContent(
+        "Admin"
+      )
+      expect(screen.getByLabelText("Credential 狀態")).toHaveTextContent(
+        "Revoked"
+      )
       expect(screen.getByLabelText("Credential owner")).toHaveValue("platform")
     })
   })
@@ -191,9 +196,7 @@ describe("governance pages", () => {
     fireEvent.change(screen.getByLabelText("Owner"), {
       target: { value: "data-platform" },
     })
-    fireEvent.change(screen.getByLabelText("Source name"), {
-      target: { value: "twelve_data" },
-    })
+    chooseSelectOption(screen.getByLabelText("Source name"), "twelve_data")
     fireEvent.click(screen.getByRole("button", { name: "簽發" }))
 
     expect(await screen.findByText("findb_src_one_time")).toBeInTheDocument()
@@ -218,21 +221,18 @@ describe("governance pages", () => {
     expect(screen.getByText("us_equity_eod")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
 
-    fireEvent.change(screen.getByLabelText("Source name"), {
-      target: { value: "finlab" },
-    })
+    chooseSelectOption(screen.getByLabelText("Source name"), "finlab")
     expect(screen.queryByText("us_equity_eod")).not.toBeInTheDocument()
     expect(screen.getByText("tw_equity_eod")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
 
     // Retired provider: Shioaji must not be offered for new credentials.
-    expect(
-      screen.queryByRole("option", { name: "shioaji" })
-    ).not.toBeInTheDocument()
+    const sourceOptions = openSelect(screen.getByLabelText("Source name"))
+    expect(sourceOptions).toContain("taifex")
+    expect(sourceOptions).not.toContain("shioaji")
+    closeSelect()
     expect(screen.getByText("tw_etf_eod")).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText("Source name"), {
-      target: { value: "taifex" },
-    })
+    chooseSelectOption(screen.getByLabelText("Source name"), "taifex")
     expect(screen.getByText("tw_futures_eod")).toBeInTheDocument()
     expect(screen.queryByText("tw_equity_minute")).not.toBeInTheDocument()
   })
@@ -267,9 +267,7 @@ describe("governance pages", () => {
     fireEvent.change(screen.getByLabelText("Owner"), {
       target: { value: "data-platform" },
     })
-    fireEvent.change(screen.getByLabelText("Source name"), {
-      target: { value: "finlab" },
-    })
+    chooseSelectOption(screen.getByLabelText("Source name"), "finlab")
     expect(screen.getByRole("button", { name: "簽發" })).toBeEnabled()
     fireEvent.click(screen.getByRole("button", { name: "簽發" }))
 
@@ -413,9 +411,7 @@ describe("governance pages", () => {
     )
 
     await screen.findByText("Primary Owner")
-    fireEvent.change(screen.getByLabelText("owner 的角色"), {
-      target: { value: "viewer" },
-    })
+    chooseSelectOption(screen.getByLabelText("owner 的角色"), "Viewer")
 
     expect(await screen.findByRole("alert")).toHaveTextContent("角色更新失敗")
     expect(screen.getByRole("alert")).toHaveTextContent("角色不可變更。")
