@@ -264,8 +264,9 @@ def contract_row(native: dict[str, Any], *, symbol: str, currency: str) -> dict[
 
     Volume is not delivered. An index has no traded volume of its own, and FMP's
     figure is not one series: ``^RUT`` and ``^NYA`` repeat ``^GSPC``'s on nine days
-    in ten, ``^SOX`` and ``^VIX`` are always zero, and ``^NDX`` and ``^HSCE`` differ
-    from other vendors by a factor of six and a thousand (2021-2026 comparison).
+    in ten, ``^SOX`` and ``^VIX`` are always zero, ``^NDX`` is a sixth of other
+    vendors', and ``^HSCE`` switched from shares to thousands of shares on
+    2024-10-08 without saying so (2021-2026 comparison).
     """
     levels = {name: _level(native.get(name)) for name in ("open", "high", "low", "close")}
     return {

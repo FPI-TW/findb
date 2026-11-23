@@ -413,7 +413,10 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
       的比對結果如下：
       - `^RUT`、`^NYA` 約九成交易日與 `^GSPC` 的值完全相同，yfinance 也一樣；
       - `^SOX`、`^VIX` 一律為 0；
-      - `^NDX` 約是 yfinance 的 1/6，`^HSCE` 約是 1000 倍。
+      - `^NDX` 約是 yfinance 的 1/6。
+      - `^HSCE` 依數量級是成交股數，不是成交金額。2024-10-08 起，FMP 沒有標示就把單位從「股」改成「千股」：
+        2024-10-07 是 4,488,874,200，10-08 是 10,624,600（同日 `^HSI` 為 11,257,900,000）。
+        換單位之後和 yfinance 相同，之前是 yfinance 的 1000 倍。
   - `provider_adapters/fmp.py`：`ProviderAdapter` 子類；每檔一次 JSON 請求、一個 raw 物件，沿用 json raw 格式。
     - 兩組的指數清單寫在 adapter（`INDEX_UNIVERSES`）。名單刷新讀 FMP 的 `/stable/index-list`（帶金鑰，經
       `UniverseContext.http` 走 runtime 的 governed client），每個指數都要在清單上、幣別相符，否則中止刷新、
