@@ -1329,21 +1329,29 @@ async def complete_item(
         )
         request.completed_at = now
     await db.flush()
-    if eod_evidence is not None:
-        from app.services.delivery_plan_summary import refresh_summaries_for_historical_no_data
+    from app.services.delivery_plan_summary import refresh_summaries_for_historical_members
 
+    proven: set[str] = set()
+    if eod_evidence is not None:
         # Written members already refreshed with their runs; no-data proof has no run.
-        await refresh_summaries_for_historical_no_data(
-            db,
-            provider=provider,
-            dataset_key=item.request.dataset_key,
-            trade_date=item.trade_date,
-            member_keys={
-                member.member_key
-                for member in eod_evidence.members
-                if member.outcome == "no_data" and member.raw is not None
-            },
-        )
+        proven = {
+            member.member_key
+            for member in eod_evidence.members
+            if member.outcome == "no_data" and member.raw is not None
+        }
+    elif outcome == "completed" and futures_report_feed(provider, item.request.dataset_key):
+        # A futures run's writes count only once this item completes.
+        proven = {
+            f"{row.product_code}|{row.contract_code}|{row.session}"
+            for row in HistoricalResultEvidence.model_validate(result_evidence).rows
+        }
+    await refresh_summaries_for_historical_members(
+        db,
+        provider=provider,
+        dataset_key=item.request.dataset_key,
+        trade_date=item.trade_date,
+        member_keys=proven,
+    )
     return item
 
 
