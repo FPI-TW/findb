@@ -478,7 +478,7 @@ async def _scan_full_market_feed(
     start_date = date.fromisoformat(start_value)
     from zoneinfo import ZoneInfo
 
-    from app.services.effective_calendar import acquisition_dates
+    from app.services.effective_calendar import acquisition_dates, unwritten_closed_plans
 
     zone, _ = feed_schedule(dataset.dataset_key)
     through = evaluated_at.astimezone(ZoneInfo(zone)).date()
@@ -507,6 +507,40 @@ async def _scan_full_market_feed(
     )
     by_date = {plan.trade_date: plan for plan in plans}
     created = 0
+    retired_resolved = 0
+    for retired_date, retired in (
+        await unwritten_closed_plans(
+            db,
+            market=_calendar_market(dataset),
+            dataset_key=dataset.dataset_key,
+            provider=source,
+            profile=profile,
+            start=start_date,
+            end=through,
+        )
+    ).items():
+        # A plan frozen on a day the published calendar now closes, never written.
+        closed = await db.execute(
+            update(MissingDeliveryAlert)
+            .where(
+                MissingDeliveryAlert.dataset_key == dataset.dataset_key,
+                MissingDeliveryAlert.source == source,
+                MissingDeliveryAlert.execution_profile == profile,
+                MissingDeliveryAlert.status == "open",
+                MissingDeliveryAlert.expected_data_date == retired_date,
+            )
+            .values(
+                status="resolved",
+                resolved_at=evaluated_at,
+                details={
+                    "code": "SKIPPED_CALENDAR",
+                    "reason": "closed_day_unwritten_plan",
+                    **retired,
+                },
+            )
+            .returning(MissingDeliveryAlert.alert_id)
+        )
+        retired_resolved += len(closed.scalars().all())
     policy_resolved = await db.execute(
         update(MissingDeliveryAlert)
         .where(
@@ -525,7 +559,7 @@ async def _scan_full_market_feed(
         )
         .returning(MissingDeliveryAlert.alert_id)
     )
-    resolved = len(policy_resolved.scalars().all())
+    resolved = retired_resolved + len(policy_resolved.scalars().all())
     long_gap_feed = source == "factset" and schema_id == "market_eod"
     gap_streaks: dict[str, int] = {}
     unplanned_streak = 0

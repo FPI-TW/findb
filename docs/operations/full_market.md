@@ -311,6 +311,14 @@ local member checkpoint（既有 no-trade 等證據保留），不授權、不�
 查詢本身失敗時同樣在 claim 前停止，不扣額度。這保護舊 `planned` 決策在略過政策啟用後的休市日，
 不會用滿一般失敗額度；frozen decision 仍只經下節人工流程更正。
 
+監控與 freshness 判斷應有資料的日期（`acquisition_dates`）時，`planned` 的 frozen decision 若同時符合下列條件，
+該日不算應有資料（#478 A 類）：已發布的日曆（`calendar_source = published`）現在標示休市，而且這個 plan 從沒有寫入，
+也就是沒有任何 run、摘要的 data 與 no_data 都是 0。早期版本在日曆發布前為週末與假日建了 plan，整批成員記成
+`blocked / source_error`，從沒有交付；production 有 21 筆（台股、ETF、期貨各 6 筆：10/17、10/18、10/23 颱風、
+10/24–10/26；美股 3 筆：10/17、10/18、10/24）。告警以 `SKIPPED_CALENDAR` 關閉，`reason = closed_day_unwritten_plan`，
+details 記下 `plan_id` 與日曆的 `calendar_revision_id`。Frozen decision、plan、成員與 work 都不改寫。休市日卻有寫入時
+仍算應有資料，告警留著，表示日曆或資料需要核對。
+
 到 publication deadline 後，FinLab target-not-ready 成為 terminal manual；FactSet
 `no_source_row` 保存 authoritative snapshot 並以 terminal `partial` 結算。Provider work 的等待、
 截止時間、failure code 與每次 observation 都須留在原 work 證據中；重啟、
