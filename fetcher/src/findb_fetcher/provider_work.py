@@ -41,8 +41,13 @@ CLOSED_WORK_RETENTION_SECONDS = 7 * 86400
 CLOSED_WORK_PRUNE_INTERVAL_SECONDS = 86400
 # A failed pass keeps what it already retired and is tried again this soon.
 CLOSED_WORK_PRUNE_RETRY_SECONDS = 3600
-# Every provider on the host writes the same journal; retention waits for them.
-CLOSED_WORK_PRUNE_BUSY_SECONDS = 30
+# Every consumer on the host (all providers, daily and historical) writes the same
+# journal, so a writer waits for the others as long as the Full checkpoint state does.
+JOURNAL_BUSY_SECONDS = 30
+CLOSED_WORK_PRUNE_BUSY_SECONDS = JOURNAL_BUSY_SECONDS
+# Retention deletes in short transactions so a large work never holds the journal's
+# write lock long enough to time out another consumer's write.
+CLOSED_WORK_PRUNE_DELETE_BATCH = 64
 CLOSED_LOOKUP_BATCH = 500
 # Replay state that only an open work reads.
 _JOURNAL_REPLAY_TABLES = (
@@ -243,7 +248,7 @@ class WorkJournal:
 
     @contextmanager
     def connection(self):
-        db = sqlite3.connect(self.path)
+        db = sqlite3.connect(self.path, timeout=JOURNAL_BUSY_SECONDS)
         try:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
@@ -1044,6 +1049,24 @@ def closed_work_times(
     return closed
 
 
+def _delete_in_batches(
+    db: sqlite3.Connection, table: str, condition: str, params: tuple[Any, ...]
+) -> int:
+    """Delete matching rows, at most one batch per write transaction."""
+    deleted = 0
+    while True:
+        with db:
+            db.execute("BEGIN IMMEDIATE")
+            count = db.execute(
+                f"DELETE FROM {table} WHERE rowid IN "
+                f"(SELECT rowid FROM {table} WHERE {condition} LIMIT ?)",
+                (*params, CLOSED_WORK_PRUNE_DELETE_BATCH),
+            ).rowcount
+        deleted += count
+        if count < CLOSED_WORK_PRUNE_DELETE_BATCH:
+            return deleted
+
+
 def prune_closed_journal(
     source: Any, provider: str, *, root: Path | None = None, now: float | None = None
 ) -> dict[str, int] | None:
@@ -1082,46 +1105,50 @@ def prune_closed_journal(
                 "INSERT INTO work_retention VALUES(?,?) ON CONFLICT(provider) DO UPDATE SET next_at=excluded.next_at",
                 (provider, now + CLOSED_WORK_PRUNE_INTERVAL_SECONDS),
             )
-            keys = sorted(
-                str(key)
-                for (key,) in db.execute(
-                    "SELECT work_key FROM work_manifest UNION SELECT work_key FROM work_delivery "
-                    "UNION SELECT work_key FROM work_job UNION SELECT work_key FROM work_response"
-                )
-                if _UUID.fullmatch(str(key))
-            )
         claimed = True
+        # The scan reads every provider's rows; under WAL a reader never blocks a
+        # writer, so it runs after the claim is committed, outside the write lock.
+        keys = sorted(
+            str(key)
+            for (key,) in db.execute(
+                "SELECT work_key FROM work_manifest UNION SELECT work_key FROM work_delivery "
+                "UNION SELECT work_key FROM work_job UNION SELECT work_key FROM work_response"
+            )
+            if _UUID.fullmatch(str(key))
+        )
         closed = closed_work_times(source, work_ids=keys)
         cutoff = now - CLOSED_WORK_RETENTION_SECONDS
         removed = {"works": 0, "unreceipted": 0, "responses": 0}
         for key in keys:
             if closed.get(key, now) >= cutoff:
                 continue
-            with db:
-                db.execute("BEGIN IMMEDIATE")
-                if db.execute(
-                    "SELECT 1 FROM work_delivery WHERE work_key=? AND receipt IS NULL LIMIT 1",
-                    (key,),
-                ).fetchone():
-                    removed["unreceipted"] += 1
-                    continue
-                tables = _JOURNAL_REPLAY_TABLES + (
-                    ("work_response", "work_response_observation", "work_manifest")
-                    if provider in _R2_BACKED_RESPONSES
-                    else ()
-                )
-                for table in tables:
-                    deleted = db.execute(f"DELETE FROM {table} WHERE work_key=?", (key,)).rowcount
-                    if table == "work_response":
-                        removed["responses"] += deleted
-                if provider not in _R2_BACKED_RESPONSES:
-                    for name in _R2_BACKED_RESPONSE_NAMES:
-                        prefix = name + ":"
-                        removed["responses"] += db.execute(
-                            "DELETE FROM work_response WHERE work_key=? "
-                            "AND substr(response_key,1,?)=?",
-                            (key, len(prefix), prefix),
-                        ).rowcount
+            if db.execute(
+                "SELECT 1 FROM work_delivery WHERE work_key=? AND receipt IS NULL LIMIT 1",
+                (key,),
+            ).fetchone():
+                removed["unreceipted"] += 1
+                continue
+            # Source closed the work a week ago, so no consumer writes it any more and
+            # its rows can go over several transactions. The manifest goes last: a pass
+            # stopped partway leaves the work's key for the next pass to find.
+            tables = _JOURNAL_REPLAY_TABLES + (
+                ("work_response", "work_response_observation", "work_manifest")
+                if provider in _R2_BACKED_RESPONSES
+                else ()
+            )
+            for table in tables:
+                deleted = _delete_in_batches(db, table, "work_key=?", (key,))
+                if table == "work_response":
+                    removed["responses"] += deleted
+            if provider not in _R2_BACKED_RESPONSES:
+                for name in _R2_BACKED_RESPONSE_NAMES:
+                    prefix = name + ":"
+                    removed["responses"] += _delete_in_batches(
+                        db,
+                        "work_response",
+                        "work_key=? AND substr(response_key,1,?)=?",
+                        (key, len(prefix), prefix),
+                    )
             removed["works"] += 1
         # Deleted pages are reused by later writes; the file itself only shrinks
         # after an operator VACUUM, so report how much of it is already free.

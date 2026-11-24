@@ -309,3 +309,87 @@ def test_sqlite_retention_failure_logs_its_result_code_only(monkeypatch, capsys,
     out = capsys.readouterr().out
     assert '"closed_work_retention": {"failed": "OperationalError", "code": "SQLITE_BUSY"}' in out
     assert "locked" not in out
+
+
+def test_journal_writers_wait_as_long_as_the_checkpoint_state(tmp_path: Path) -> None:
+    # Every consumer on the host writes the journal; a 5 second default once timed
+    # out a FinLab round while another provider's retention held the write lock.
+    with WorkJournal(tmp_path / "provider-work.sqlite3", OLD_WORK).connection() as db:
+        journal_wait = db.execute("PRAGMA busy_timeout").fetchone()[0]
+    with FullMarketState(tmp_path / "state.sqlite3").connection() as db:
+        state_wait = db.execute("PRAGMA busy_timeout").fetchone()[0]
+    assert journal_wait == state_wait == 30000
+
+
+def _traced(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, bool]]:
+    """Record each statement retention runs, and whether it ran inside a transaction."""
+    import findb_fetcher.provider_work as provider_work
+
+    statements: list[tuple[str, bool]] = []
+    connect = sqlite3.connect
+
+    def traced_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        db = connect(*args, **kwargs)
+        db.set_trace_callback(lambda sql: statements.append((sql, db.in_transaction)))
+        return db
+
+    monkeypatch.setattr(provider_work.sqlite3, "connect", traced_connect)
+    return statements
+
+
+def test_retention_scans_every_provider_outside_the_write_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _journal(tmp_path)
+    statements = _traced(monkeypatch)
+
+    assert prune_closed_journal(_Source({OLD_WORK: OLD}), "fmp", root=tmp_path, now=NOW)
+
+    (scan,) = [held for sql, held in statements if "UNION SELECT work_key" in sql]
+    assert not scan
+
+
+def test_retention_deletes_a_large_work_in_short_transactions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import findb_fetcher.provider_work as provider_work
+
+    path = _journal(tmp_path)
+    with sqlite3.connect(path) as db:
+        db.executemany(
+            "INSERT INTO work_response VALUES(?,?,?,?)",
+            [(OLD_WORK, f"quote:{index}", b"{}", "0" * 64) for index in range(5)],
+        )
+    monkeypatch.setattr(provider_work, "CLOSED_WORK_PRUNE_DELETE_BATCH", 2)
+    statements = _traced(monkeypatch)
+
+    removed = prune_closed_journal(_Source({OLD_WORK: OLD}), "twelve_data", root=tmp_path, now=NOW)
+
+    assert removed is not None and removed["works"] == 1
+    # The work's seven responses go in four transactions of at most two rows.
+    assert removed["responses"] == 7
+    deletes = [sql for sql, _ in statements if sql.startswith("DELETE FROM work_response ")]
+    assert len(deletes) == 4
+    assert OLD_WORK not in _keys(path, "work_response") | _keys(path, "work_manifest")
+
+
+def test_work_stopped_partway_keeps_its_manifest_for_the_next_pass(tmp_path: Path) -> None:
+    path = _journal(tmp_path)
+    source = _Source({OLD_WORK: OLD})
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TRIGGER stuck BEFORE DELETE ON work_manifest "
+            f"WHEN old.work_key='{OLD_WORK}' BEGIN SELECT RAISE(ABORT,'stuck'); END"
+        )
+
+    with pytest.raises(sqlite3.Error):
+        prune_closed_journal(source, "twelve_data", root=tmp_path, now=NOW)
+
+    # Its replay rows and responses are gone; the manifest still names the work.
+    assert OLD_WORK not in _keys(path, "work_delivery") | _keys(path, "work_response")
+    assert OLD_WORK in _keys(path, "work_manifest")
+    with sqlite3.connect(path) as db:
+        db.execute("DROP TRIGGER stuck")
+    removed = prune_closed_journal(source, "twelve_data", root=tmp_path, now=NOW + 3600)
+    assert removed is not None and removed["works"] == 1
+    assert OLD_WORK not in _keys(path, "work_manifest")
