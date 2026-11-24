@@ -1088,15 +1088,19 @@ async def classify_plan(
             or (part_id, snapshot_id, daily_update_id) in complete_groups
         ):
             canonical_keys.add(member_key)
+    historical_no_data: set[str] = set()
     if plan.dataset_key not in {"tw_futures_eod", *SEQUENCED_DATASETS}:
         canonical_keys.update(await _historical_repairs(db, plan, members, scoped=scoped))
+        historical_no_data = await _historical_no_data(db, plan, members)
     states: list[MemberState] = []
     for member in members:
         mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
         state: Literal["data", "no_data", "missing", "blocked"]
         if member.member_key in canonical_keys:
             state = "data"
-        elif member.outcome == "no_data":
+        elif member.outcome == "no_data" or member.member_key in historical_no_data:
+            # Historical no-data proof outranks the daily's own blocked outcome;
+            # the daily work's settlement and member outcome stay as recorded.
             state = "no_data"
         elif (
             member.outcome == "blocked"
@@ -1273,6 +1277,83 @@ async def _historical_repairs(
         ):
             repaired.add(key)
     return repaired
+
+
+async def _historical_no_data(
+    db: AsyncSession,
+    plan: DailyDeliveryPlan,
+    members: list[DailyDeliveryMember],
+) -> set[str]:
+    """Historical no-data proof may complete monitoring, never settle another work.
+
+    A member counts when a completed or partial historical item of the same
+    provider, dataset and date proved it no-data with its raw observation, and
+    that item's work froze it with the same provider symbol under the contract
+    the evidence names. A mapping gap stays blocked.
+    """
+    from app.config import get_settings
+    from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
+    from app.schemas.eod_completion import EODCompletionEvidence
+
+    expected = {
+        member.member_key: member.provider_symbol
+        for member in members
+        if member.mapping_status == "mapped" and member.outcome_reason != "mapping_gap"
+    }
+    if not expected:
+        return set()
+    items = (
+        await db.execute(
+            select(HistoricalBackfillItem.item_id, HistoricalBackfillItem.result_evidence)
+            .join(HistoricalBackfillRequest)
+            .where(
+                HistoricalBackfillRequest.provider == plan.provider,
+                HistoricalBackfillRequest.dataset_key == plan.dataset_key,
+                HistoricalBackfillItem.trade_date == plan.trade_date,
+                HistoricalBackfillItem.status.in_(("completed", "partial")),
+                HistoricalBackfillItem.result_evidence.is_not(None),
+            )
+        )
+    ).all()
+    proven: dict[UUID, tuple[dict, set[str]]] = {}
+    for item_id, raw_evidence in items:
+        try:
+            evidence = EODCompletionEvidence.model_validate(raw_evidence)
+        except ValueError:
+            continue
+        keys = {
+            row.member_key
+            for row in evidence.members
+            if row.outcome == "no_data" and row.raw is not None and row.member_key in expected
+        }
+        if evidence.trade_date == plan.trade_date and keys:
+            contract = {"schema_id": evidence.schema_id, "schema_version": evidence.schema_version}
+            proven[item_id] = (contract, keys)
+    if not proven:
+        return set()
+    works = await db.scalars(
+        select(ProviderWork).where(
+            ProviderWork.environment == get_settings().APP_ENVIRONMENT,
+            ProviderWork.provider == plan.provider,
+            ProviderWork.kind == "historical",
+            ProviderWork.dataset_key == plan.dataset_key,
+            ProviderWork.trade_date == plan.trade_date,
+            ProviderWork.stable_key.in_([f"historical:{item_id}" for item_id in proven]),
+        )
+    )
+    no_data: set[str] = set()
+    for work in works:
+        manifest = work.manifest or {}
+        contract, keys = proven[UUID(work.stable_key.removeprefix("historical:"))]
+        if manifest.get("contract") != contract:
+            continue
+        frozen = {
+            row["key"]: row["source_symbol"]
+            for row in manifest.get("members", [])
+            if row.get("mapping_status") == "mapped"
+        }
+        no_data.update(key for key in keys if frozen.get(key) == expected[key])
+    return no_data
 
 
 async def get_plan(

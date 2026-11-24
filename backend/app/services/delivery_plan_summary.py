@@ -3,7 +3,7 @@
 import logging
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from sqlalchemy import case, exists, func, or_, select, tuple_, update
@@ -520,6 +520,35 @@ async def refresh_summaries_for_run(db: AsyncSession, run: IngestionRun) -> None
                         DeliveryMemberEvidence.run_id == run.run_id
                     )
                 ),
+            )
+            .distinct()
+        )
+    ).all()
+    for plan_id, part_id in sorted(parts):
+        await refresh_part_summary(db, plan_id, part_id)
+
+
+async def refresh_summaries_for_historical_no_data(
+    db: AsyncSession,
+    *,
+    provider: str,
+    dataset_key: str,
+    trade_date: date,
+    member_keys: set[str],
+) -> None:
+    """A historical item's no-data proof writes no run; reclassify its members' parts."""
+    if not member_keys:
+        return
+    await db.flush()
+    parts = (
+        await db.execute(
+            select(DailyDeliveryMember.plan_id, DailyDeliveryMember.part_id)
+            .join(DailyDeliveryPlan, DailyDeliveryPlan.plan_id == DailyDeliveryMember.plan_id)
+            .where(
+                DailyDeliveryPlan.provider == provider,
+                DailyDeliveryPlan.dataset_key == dataset_key,
+                DailyDeliveryPlan.trade_date == trade_date,
+                DailyDeliveryMember.member_key.in_(sorted(member_keys)),
             )
             .distinct()
         )

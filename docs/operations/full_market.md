@@ -1336,7 +1336,18 @@ queue worker 只在 terminal commit 前刷新一次，直接呼叫 normalizer �
 Historical 實際寫入的修復會更新同 dataset／provider／date 的 plan 摘要：FactSet、Twelve Data 與
 FinLab 的 historical work 只要以相同契約、相同 provider symbol 凍結該成員並有本 work 的 receipt 與
 canonical 寫入證據，該成員即算 data，解除 gap 與 missing-delivery 告警；原 Full work 的結算不改寫。
-Historical 的 no_data 證據不改變 Full plan 的 missing。
+Historical 的 no_data 證據同樣會讓同 dataset／provider／date 的 plan 成員算 no_data（#595），條件是：
+
+- 回補項目（`historical_backfill_item`）以 completed 或 partial 結束；request 之後被取消不影響已完成的項目。
+- 該成員在項目的完成證據（`result_evidence`）是 `no_data`，並附原始檔（R2 ref 與 SHA-256）。
+  `missing`、`invalid` 與沒有原始檔的列都不算，供應商的空回應不會變成 no_data。
+- 該項目的 work 以證據所列的契約、相同的 provider symbol 凍結該成員，與 data 的條件相同。
+- 成員在 plan 上不是 mapping gap（`mapping_status = gap` 或 outcome reason 為 `mapping_gap`），gap 仍算 blocked。
+
+這份證據優先於 daily 記下的 blocked（例如舊版的 `blocked / source_error`），但 canonical 寫入仍優先於 no_data。
+成員的 `outcome`、原 Full work 的結算與 receipts 都不改寫，只影響 plan 的統計、lateness 與告警。
+No_data 沒有 run，所以回補項目完成時，Backend 直接重新分類這些成員所在的 part。修正上線前已完成的回補，
+用下面的 `rebuild_delivery_plan_summaries.py` 重建；期貨與分鐘資料不在這個範圍。
 OHLCV 人工修正不改變 member 身份或完整度，無須重算摘要。
 
 `expected = data + no_data + missing + blocked` 與原 canonical／durable evidence 規則相同。
