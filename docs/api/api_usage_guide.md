@@ -234,7 +234,8 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   operation，如 `list_eod`）與 `volume_unit`（`share`、`lot`、`contract` 或 `provider_defined`）。
 - `GET /serve/instruments`、`GET /serve/instruments/{instrument_id}`：商品、facets與分離的
   `coverage.eod`／`coverage.minute`／`coverage.futures`。有 `q` 且沒指定 `sort_by` 時依相關度排序：
-  代號完全相符、代號開頭相符、名稱開頭相符、其他，同級內代號短的在前（`2330` 排在 `23301` 前）。
+  代號完全相符、代號開頭相符、名稱開頭相符、代號包含、其他（名稱包含），同級內代號短的在前（`2330` 排在
+  `23301` 前）。`q` 只在等於完整 `instrument_id` 時比對 id，不比對 UUID 的部分字串。
 - `GET /serve/instruments/resolve?symbols=TW:2330,US:AAPL,HK:700`：以「市場:代號」精確查商品，最多 50 個；
   沒寫市場的值用 `market` 參數。代號不分大小寫，港股純數字代號補成 5 位（`700` → `00700`）。
   每個輸入各回一筆 `status`：`resolved`、`ambiguous`（同代號有多種資產類別，從 `matches` 選）、

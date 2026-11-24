@@ -19,6 +19,10 @@ SHARED_EQUITY = UUID("55555555-5555-5555-5555-555555555555")
 SHARED_ETF = UUID("66666666-6666-6666-6666-666666666666")
 UNSERVED = UUID("77777777-7777-7777-7777-777777777777")
 NAMED = UUID("88888888-8888-8888-8888-888888888888")
+HK_LOOKALIKE = UUID("99999999-9999-9999-9999-999999999999")
+NAME_INSIDE = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+# Only its random id contains the digits being searched for.
+ID_ONLY = UUID("bbbb2330-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
 URL = "/api/v1/serve/instruments/resolve"
 
@@ -34,6 +38,9 @@ async def catalog(test_session) -> None:
             instrument(TSMC, "2330", name="台積電"),
             instrument(TSMC_LOOKALIKE, "23301", name="Another"),
             instrument(NAMED, "9999", name="2330 Holdings"),
+            instrument(HK_LOOKALIKE, "02330", market="HK", name="China Uptown"),
+            instrument(NAME_INSIDE, "8888", name="Fund 2330"),
+            instrument(ID_ONLY, "UBER", market="US"),
             instrument(AAPL, "AAPL", market="US", name="Apple Inc."),
             instrument(TENCENT, "00700", market="HK", name="Tencent"),
             instrument(SHARED_EQUITY, "SAME", name="Equity twin"),
@@ -102,7 +109,21 @@ async def test_search_ranks_exact_symbol_before_prefix_and_name_matches(
     response = await client.get("/api/v1/serve/instruments", params={"q": "2330"})
 
     assert response.status_code == 200
-    assert [item["symbol"] for item in response.json()["data"]] == ["2330", "23301", "9999"]
+    assert [item["symbol"] for item in response.json()["data"]] == [
+        "2330",
+        "23301",
+        "9999",
+        "02330",
+        "8888",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_matches_an_instrument_id_only_when_whole(client: AsyncClient, catalog):
+    whole = await client.get("/api/v1/serve/instruments", params={"q": str(ID_ONLY).upper()})
+    assert [item["symbol"] for item in whole.json()["data"]] == ["UBER"]
+    partial = await client.get("/api/v1/serve/instruments", params={"q": "bbbb2330"})
+    assert partial.json()["data"] == []
 
 
 @pytest.mark.asyncio
@@ -116,4 +137,10 @@ async def test_search_without_query_keeps_market_order_and_explicit_sort_wins(
     explicit = await client.get(
         "/api/v1/serve/instruments", params={"q": "2330", "sort_by": "symbol", "sort_dir": "desc"}
     )
-    assert [item["symbol"] for item in explicit.json()["data"]] == ["9999", "23301", "2330"]
+    assert [item["symbol"] for item in explicit.json()["data"]] == [
+        "9999",
+        "8888",
+        "23301",
+        "2330",
+        "02330",
+    ]

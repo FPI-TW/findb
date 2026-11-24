@@ -187,7 +187,11 @@ async def get_instruments(
         str | None,
         Query(
             max_length=200,
-            description="Text to find in the symbol, name or instrument id (case-insensitive).",
+            description=(
+                "Text to find in the symbol or name (case-insensitive), or a whole "
+                "`instrument_id`. Results rank exact symbol, symbol prefix, name prefix, "
+                "symbol substring, then name substring, unless `sort_by` is given."
+            ),
             examples=["2330", "Apple"],
         ),
     ] = None,
@@ -217,8 +221,9 @@ async def get_instruments(
         InstrumentSort | None,
         Query(
             description=(
-                "Sort field. Default: `relevance` when `q` is given (exact symbol, then symbol "
-                "prefix, then name prefix, shorter symbols first), otherwise `market`."
+                "Sort field. Default: `relevance` when `q` is given (exact symbol, symbol "
+                "prefix, name prefix, symbol substring, then the rest; shorter symbols first), "
+                "otherwise `market`."
             )
         ),
     ] = None,
