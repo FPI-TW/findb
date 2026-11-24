@@ -161,7 +161,7 @@ repair、raw 與 canonical 都在 Backend。以兩個工具清除，不另外封
 - `backend/scripts/retired_provider_works.py --provider <provider>`：在 `findb-ingest` 內以唯讀交易列出該
   provider 在本環境的所有 work ID 與排序後的 SHA-256。該 provider 仍在 catalog、有未退役的 control、
   有非 terminal 的 work 或未 settled 的 attempt，或 owner 仍握有 attempt 時拒絕。
-- `findb-fetch-retired-purge --provider <provider> --works <上一步的 JSON> --journal <provider-work.sqlite3> --state <state.sqlite3>`：
+- `findb-fetch-retired-purge --provider <provider> --works <上一步的 JSON> --journal <provider-work.sqlite3> --state <checkpoint>`：
   預設 dry-run，逐表列出要刪的列數、位元組數與保留的列數，另列沒有 receipt 的本機 body 數（`unreceipted`，一併刪除）。
   加 `--apply` 才刪除，`--vacuum` 再原地縮小檔案（inode、擁有者與權限不變）。Provider 仍在 image 的 metadata 內、
   JSON 的 provider 或 SHA-256 不符、清單中的 work manifest 寫明其他 provider，或另一個連線正在寫入時拒絕。
@@ -192,6 +192,8 @@ repair、raw 與 canonical 都在 Backend。以兩個工具清除，不另外封
    ```
 
    Checkpoint 目錄：staging 是 `/var/lib/findb-full-market/staging`，production 是 `/var/lib/findb-full-market`。
+   `--state` 是該 provider 列所在的檔：主機共用的 `state.sqlite3`；該 provider 在
+   [Full checkpoint 分檔](deployment.md#full-checkpoint-分檔)後才退役時，改用它自己的 `state-<provider>.sqlite3`。
    `SQLITE_TMPDIR` 必須用 `-e` 從 process 環境帶入：SQLite 在模組載入時就決定暫存目錄，工具啟動後才設定不會生效，
    VACUUM 會寫到 16 MiB 的 `/tmp` 而以 `database or disk is full` 失敗。沒有設定時 `--vacuum` 在刪除前就拒絕。
    VACUUM 需要與檔案大小相當的可用磁碟。工具可以重複執行：已刪除的列不會再出現，只會核對後縮小檔案。

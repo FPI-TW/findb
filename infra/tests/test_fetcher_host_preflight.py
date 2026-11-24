@@ -249,6 +249,37 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.assertEqual(len(self.rows), len(host.CONSUMERS))
         self.assertEqual(self.check(), "drained")
 
+    def test_full_consumers_run_on_their_own_checkpoint_or_the_shared_one(self):
+        # #691 moved each Full consumer to state-<provider>.sqlite3; hosts
+        # installed before it still run on the shared state.sqlite3.
+        original = copy.deepcopy(self.rows)
+        checked = 0
+        for index, row in enumerate(original):
+            args = row["Config"]["Cmd"]
+            if "--state-path" not in args:
+                continue
+            at = args.index("--state-path") + 1
+            provider = args[args.index("--provider") + 1]
+            folder = args[at].rsplit("/", 1)[0]
+            for name, accepted in (
+                (f"state-{provider}.sqlite3", True),
+                ("state-other.sqlite3", False),
+                (f"state-{provider}.sqlite3.unused", False),
+            ):
+                changed = [*args]
+                changed[at] = f"{folder}/{name}"
+                with self.subTest(consumer=row["Name"], state=name):
+                    self.rows = copy.deepcopy(original)
+                    self.rows[index]["Config"]["Cmd"] = changed
+                    self.rows[index]["Args"] = changed[1:]
+                    if accepted:
+                        self.assertEqual(self.check(), "drained")
+                    else:
+                        with self.assertRaises(ValueError):
+                            self.check()
+            checked += 1
+        self.assertEqual(checked, len(host.PROVIDERS))
+
     # Providers a bundle version first installs, with the topology marker it adds.
     NEWER = {"hkex": ("# hkex-consumers-v1:", 6), "fmp": ("# fmp-consumers-v1:", 7)}
 

@@ -118,7 +118,7 @@ daily、historical 與名單更新共用一條 FIFO 和一個 owner。#504 已�
 | 檔案 | 現況（2026-11-24 production） | 設計 |
 | --- | --- | --- |
 | provider-work journal | 12 個 consumer 共用一個檔，約 1.0 GB | 每個 provider 一個檔（fetcher-v0.1.51）；舊共用檔只排空。同一 provider 的 lane 共用該 provider 的檔 |
-| Full checkpoint `state.sqlite3` | 6 個 daily consumer 共用，約 165 MB | 每個 provider 一個檔；部署停止窗口內由 release helper 搬移該 provider 的列並核對筆數 |
+| Full checkpoint `state.sqlite3` | 6 個 daily consumer 共用，約 165 MB | 每個 provider 一個檔（`state-<provider>.sqlite3`）；release helper 在該 consumer 停止後複製該 provider 的列並逐表核對，共用檔留作備份 |
 | 帳號 governor | 12 個 consumer 共用，約 430 MB，約一半是未回收空頁 | 依帳號共用，維持一個檔；部署停止窗口內於主機上 VACUUM |
 
 - 所有連線等鎖上限一致為 30 秒；SQLite 鎖逾時只延後該成員，不結束整輪（#698）。
