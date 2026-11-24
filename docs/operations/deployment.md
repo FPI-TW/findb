@@ -610,6 +610,17 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 1. 解析指定版本與 AWS 設定，驗證 schema、account、instance tags／instance profile、SSM Online、
    registry、release manifest 與 exact image digests。RDS 需 available、備份保留至少一天，且可還原時間不超過一小時。
+   RDS 在每日自動備份期間不是 available，此時部署會以 `rds_backup=failed` 中止（`infra/deploy/check_rds_backup.py`），
+   不是程式問題：待備份結束、狀態回到 available 後重跑失敗的 job；Fetcher CD 等待同一 revision 的 FinDB 部署，
+   會一併取消，FinDB 成功後也要重跑。兩環境的備份與維護時段：
+
+   | 環境 | RDS | 每日備份（UTC／台北） | 每週維護（UTC） | 保留 | 設定位置 |
+   | --- | --- | --- | --- | --- | --- |
+   | staging | `fin-db` | 18:00–19:00／02:00–03:00 | 週三 14:22–14:52 | 10 天 | 不在 tofu 管理內，以 `aws rds modify-db-instance --preferred-backup-window` 修改 |
+   | production | `findb-production` | 18:00–19:00／02:00–03:00 | 週日 19:00–20:00 | 14 天 | `infra/tofu/production/database.tf` 的 `backup_window` |
+
+   staging 原本是 08:00–08:30 UTC（台北 16:00–16:30），2026-11-24 白天合併的部署撞上備份而失敗，已改成與
+   production 相同的深夜時段。調整任一環境的時段時同步更新此表。
 2. 以實際 image 執行 configuration、DB migration compatibility、credential reconciliation 的唯讀 preflight。
    SQLite checkpoint 必須存在且完整；已安裝 runtime 的 checkpoint 遺失不得被當成新主機初始化。
 3. Backend candidate 停止公開 nginx、舊讀寫服務，優雅停止 writers；以 migration role 升級、核對 exact revision、
