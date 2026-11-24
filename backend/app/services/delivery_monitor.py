@@ -28,6 +28,7 @@ from app.services.delivery_plan_summary import (
     correct_summary_drift,
     plan_complete_with_part,
     stored_counts,
+    stored_summary_response,
 )
 from app.services.delivery_policy import (
     delivery_run_coverage_condition,
@@ -50,6 +51,11 @@ class DeliveryMonitorResult:
     resolved: int = 0
     diagnostics: tuple[dict[str, Any], ...] = ()
     skipped_locked: bool = False
+    audited: int = 0
+
+
+# Where the rotating drift audit resumes; process-local, so a restart starts over.
+_audit_cursor: UUID | None = None
 
 
 def _terminal_success_condition():
@@ -194,7 +200,13 @@ async def scan_missing_deliveries(
     """Resolve late arrivals and upsert one alert per missing identity/date."""
     evaluated_at = (now or utc_now()).astimezone(timezone.utc)
     datasets = list(
-        (await db.execute(select(DatasetRegistry).where(DatasetRegistry.is_active.is_(True))))
+        (
+            await db.execute(
+                select(DatasetRegistry)
+                .where(DatasetRegistry.is_active.is_(True))
+                .order_by(DatasetRegistry.dataset_key)
+            )
+        )
         .scalars()
         .all()
     )
@@ -377,12 +389,45 @@ async def scan_missing_deliveries(
             refreshed += 1
             await db.commit()
 
+    audited = await audit_plan_summaries(
+        db, now=evaluated_at, limit=get_settings().DELIVERY_MONITOR_AUDIT_PLANS
+    )
     return DeliveryMonitorResult(
         created_or_refreshed=refreshed,
         resolved=resolved,
         diagnostics=tuple(diagnostics[:100]),
         skipped_locked=skipped_locked,
+        audited=audited,
     )
+
+
+async def audit_plan_summaries(db: AsyncSession, *, now: datetime, limit: int) -> int:
+    """Fully classify a bounded, rotating batch of overdue plans and correct drift.
+
+    Alerts read the stored counts, which every write path maintains in its own
+    transaction; this audit catches what bypassed them (direct repairs, a
+    rolled-back release) without classifying every plan on every scan.
+    """
+    global _audit_cursor
+    if limit <= 0:
+        return 0
+    query = (
+        select(DailyDeliveryPlan)
+        .where(DailyDeliveryPlan.deadline_at <= now)
+        .order_by(DailyDeliveryPlan.plan_id)
+        .limit(limit)
+    )
+    if _audit_cursor is not None:
+        query = query.where(DailyDeliveryPlan.plan_id > _audit_cursor)
+    plans = list((await db.scalars(query)).all())
+    for plan in plans:
+        before = await stored_counts(db, plan.plan_id)
+        summary = await reconcile_plan(db, plan, now=now, gap_limit=0)
+        await correct_summary_drift(db, plan.plan_id, before, summary)
+    await db.commit()
+    # A short batch reached the end; the next scan starts from the first plan.
+    _audit_cursor = plans[-1].plan_id if len(plans) == limit else None
+    return len(plans)
 
 
 async def _scan_full_market_feed(
@@ -481,6 +526,7 @@ async def _scan_full_market_feed(
         .returning(MissingDeliveryAlert.alert_id)
     )
     resolved = len(policy_resolved.scalars().all())
+    long_gap_feed = source == "factset" and schema_id == "market_eod"
     gap_streaks: dict[str, int] = {}
     unplanned_streak = 0
     for trade_date in dates:
@@ -488,11 +534,16 @@ async def _scan_full_market_feed(
         deadline = ensure_utc(plan.deadline_at) if plan else _deadline(dataset, trade_date)
         if evaluated_at < deadline:
             continue
-        stored = await stored_counts(db, plan.plan_id) if plan else None
-        summary = await reconcile_plan(db, plan, now=evaluated_at, gap_limit=None) if plan else None
-        if plan and summary:
-            # The scan's full classification doubles as the incremental-count audit.
-            await correct_summary_drift(db, plan.plan_id, stored, summary)
+        # The stored counts decide completeness; only a FactSet streak needs the
+        # incomplete plan's member gaps. Drift is caught by the rotating audit.
+        summary = await stored_summary_response(db, plan, now=evaluated_at) if plan else None
+        if (
+            plan
+            and summary
+            and long_gap_feed
+            and summary.data + summary.no_data != summary.expected
+        ):
+            summary = await reconcile_plan(db, plan, now=evaluated_at, gap_limit=None)
         # Only exchange-expected dates enter this loop. Data or durable no_data
         # removes that member from gaps and therefore resets its streak. Without
         # a frozen plan, escalate the feed gap without inventing member scope.
@@ -547,7 +598,7 @@ async def _scan_full_market_feed(
             )
             if dated_wait is not None:
                 details.update(dated_wait)
-        if source == "factset" and schema_id == "market_eod":
+        if long_gap_feed:
             threshold = get_settings().EOD_LONG_GAP_TRADING_DAYS
             long_gaps = [
                 {"member_key": key, "consecutive_trading_days": count}
