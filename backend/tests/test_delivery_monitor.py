@@ -1079,3 +1079,70 @@ async def test_alert_closed_while_the_scheduler_stops_reopens_after_restart(
         ("resolved", "SCHEDULER_STOPPED"),
         ("open", None),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("written", [None, "run", "no_data"])
+async def test_a_plan_frozen_on_a_day_the_calendar_now_closes_is_not_expected_unless_written(
+    test_session, written
+):
+    """Early versions planned weekends and holidays; such never-written plans retire."""
+    from app.models.registry import DailyDeliveryPart, DailyDeliveryPlanSummary
+    from app.services.effective_calendar import acquisition_dates
+    from tests.test_full_market import DAY
+
+    plan, now = await _overdue_etf_plan(test_session)
+    await scan_missing_deliveries(test_session, now=now)
+    alert = await test_session.scalar(select(MissingDeliveryAlert))
+    assert alert.status == "open"
+    if written == "run":
+        part = await test_session.scalar(
+            select(DailyDeliveryPart).where(DailyDeliveryPart.plan_id == plan.plan_id)
+        )
+        test_session.add(
+            IngestionRun(
+                dataset_key="tw_etf_eod",
+                source="finlab",
+                schema_id="market_eod",
+                schema_version=1,
+                batch_data_date=DAY,
+                delivery_mode="full_snapshot",
+                delivery_part_id=part.part_id,
+                is_rerun=False,
+                status="failed",
+            )
+        )
+    elif written == "no_data":
+        summary = await test_session.get(DailyDeliveryPlanSummary, plan.plan_id)
+        summary.no_data_count, summary.missing_count = 1, summary.missing_count - 1
+    # The published calendar now closes the day the plan was frozen on.
+    day = await test_session.scalar(
+        select(CalendarRevisionDay)
+        .join(CalendarYearRevision)
+        .where(CalendarYearRevision.market == "TW", CalendarRevisionDay.trade_date == DAY)
+    )
+    day.day_status, day.is_open = "closed", False
+    await test_session.commit()
+    scope = {
+        "market": "TW",
+        "dataset_key": "tw_etf_eod",
+        "provider": "finlab",
+        "profile": "full_market",
+        "start": DAY,
+        "end": DAY,
+    }
+    assert await acquisition_dates(test_session, **scope) == ([] if written is None else [DAY])
+
+    await scan_missing_deliveries(test_session, now=now)
+    await test_session.refresh(alert)
+    if written is None:
+        assert alert.status == "resolved"
+        assert alert.details == {
+            "code": "SKIPPED_CALENDAR",
+            "reason": "closed_day_unwritten_plan",
+            "plan_id": str(plan.plan_id),
+            "calendar_revision_id": str(day.calendar_revision_id),
+        }
+    else:
+        # A write on a closed day keeps the date expected: calendar or data needs a look.
+        assert alert.status == "open"

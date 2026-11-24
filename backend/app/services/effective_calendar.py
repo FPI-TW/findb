@@ -188,23 +188,13 @@ async def ensure_market_for_edit(db: AsyncSession, market: str):
     return await db.get(CalendarMarket, market)
 
 
-async def acquisition_dates(
-    db: AsyncSession,
-    *,
-    market: str,
-    dataset_key: str,
-    provider: str,
-    profile: str,
-    start: date,
-    end: date,
-) -> list[date]:
-    """Project eligible dates without changing frozen decisions or writing state."""
+async def _decisions(
+    db: AsyncSession, *, dataset_key: str, provider: str, profile: str, start: date, end: date
+) -> dict[date, Any]:
     from app.models.registry import DailyExecutionDecision
 
-    if end < start:
-        return []
-    decisions = {
-        row.trade_date: row.kind
+    return {
+        row.trade_date: row
         for row in (
             await db.scalars(
                 select(DailyExecutionDecision).where(
@@ -217,10 +207,104 @@ async def acquisition_dates(
             )
         ).all()
     }
+
+
+async def _unwritten_closed_plans(
+    db: AsyncSession, decisions: dict[date, Any], days: list[dict[str, Any]]
+) -> dict[date, dict[str, Any]]:
+    """Plans frozen on a day the published calendar now closes, that never wrote anything.
+
+    Early versions planned some weekends and holidays before their calendar was
+    published; every member stayed blocked and no provider ever delivered. Such a
+    date is not expected. A plan with any run, data or no-data proof stays expected:
+    a write on a closed day means the calendar or the data needs a look.
+    """
+    from app.models.registry import (
+        DailyDeliveryPart,
+        DailyDeliveryPlanSummary,
+        IngestionRun,
+    )
+
+    closed = {
+        date.fromisoformat(day["trade_date"]): day["calendar_revision_id"]
+        for day in days
+        if not day["is_open"] and day["calendar_source"] == "published"
+    }
+    candidates = {
+        decision.plan_id: day
+        for day, decision in decisions.items()
+        if day in closed and decision.kind == "planned" and decision.plan_id is not None
+    }
+    if not candidates:
+        return {}
+    written = set(
+        await db.scalars(
+            select(DailyDeliveryPart.plan_id)
+            .join(IngestionRun, IngestionRun.delivery_part_id == DailyDeliveryPart.part_id)
+            .where(DailyDeliveryPart.plan_id.in_(candidates))
+        )
+    ) | set(
+        await db.scalars(
+            select(DailyDeliveryPlanSummary.plan_id).where(
+                DailyDeliveryPlanSummary.plan_id.in_(candidates),
+                DailyDeliveryPlanSummary.data_count + DailyDeliveryPlanSummary.no_data_count > 0,
+            )
+        )
+    )
+    return {
+        day: {"plan_id": str(plan_id), "calendar_revision_id": closed[day]}
+        for plan_id, day in candidates.items()
+        if plan_id not in written
+    }
+
+
+async def unwritten_closed_plans(
+    db: AsyncSession,
+    *,
+    market: str,
+    dataset_key: str,
+    provider: str,
+    profile: str,
+    start: date,
+    end: date,
+) -> dict[date, dict[str, Any]]:
+    """Planned dates no longer expected: closed by the published calendar, never written."""
+    if end < start:
+        return {}
+    decisions = await _decisions(
+        db, dataset_key=dataset_key, provider=provider, profile=profile, start=start, end=end
+    )
+    return await _unwritten_closed_plans(
+        db, decisions, await effective_days(db, market, start, end)
+    )
+
+
+async def acquisition_dates(
+    db: AsyncSession,
+    *,
+    market: str,
+    dataset_key: str,
+    provider: str,
+    profile: str,
+    start: date,
+    end: date,
+) -> list[date]:
+    """Project eligible dates without changing frozen decisions or writing state."""
+    if end < start:
+        return []
+    decisions = await _decisions(
+        db, dataset_key=dataset_key, provider=provider, profile=profile, start=start, end=end
+    )
+    days = await effective_days(db, market, start, end)
+    retired = await _unwritten_closed_plans(db, decisions, days)
     skip = execution_policy(provider)["skip_non_trading_days"]
-    return [
-        date.fromisoformat(day["trade_date"])
-        for day in await effective_days(db, market, start, end)
-        if decisions.get(date.fromisoformat(day["trade_date"])) == "planned"
-        or (date.fromisoformat(day["trade_date"]) not in decisions and (not skip or day["is_open"]))
-    ]
+    result = []
+    for day in days:
+        current = date.fromisoformat(day["trade_date"])
+        decision = decisions.get(current)
+        if decision is not None and decision.kind == "planned":
+            if current not in retired:
+                result.append(current)
+        elif decision is None and (not skip or day["is_open"]):
+            result.append(current)
+    return result

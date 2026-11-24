@@ -581,7 +581,8 @@ blocked；空 response 與缺結果不能歸為 no_data。
 Missing-delivery scan 只對 `full_market` scheduler control 為 `desired_state=running`、
 未 retired 時建立或刷新告警。Control 停止、退役或不存在時，既有同 dataset／provider
 open alerts 以 `resolution.code=SCHEDULER_STOPPED` 關閉；control 恢復 running 後，下一次掃描對仍未完成的
-plan 重開告警。掃描必須在 `DELIVERY_MONITOR_TIMEOUT_SECONDS` 內做完所有 dataset，超時時已 commit 的 dataset
+plan 重開告警。已發布日曆標示休市、而且從沒有寫入的 `planned` plan 不算應有資料，告警以
+`SKIPPED_CALENDAR`（`reason = closed_day_unwritten_plan`）關閉，見 [full_market.md](full_market.md)。掃描必須在 `DELIVERY_MONITOR_TIMEOUT_SECONDS` 內做完所有 dataset，超時時已 commit 的 dataset
 保留、其餘這一輪不掃描，所以 dispatcher log 出現 `scan timed out` 時，open 告警數不代表資料完整。Pilot alerts 已由退役 migration 刪除，
 只因舊 server default 標為 pilot 的 legacy alerts 改標 `full_market`。
 
