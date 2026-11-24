@@ -149,7 +149,8 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
 - **Missing-delivery 掃描（已實作，#683）**：原本每次掃描都對每個逾期 plan 完整分類，2026-11-24
   production 合計約 80 秒，30 秒的 `DELIVERY_MONITOR_TIMEOUT_SECONDS` 每次超時，只掃得到前 3 個
   dataset。改讀已存摘要後，同一份資料唯讀實測：202 個逾期 plan 讀摘要 0.7 秒，稽核 10 個 plan 3.6 秒。
-  Dataset 依 `dataset_key` 排序。Dispatcher 每次掃描的 log 附 `audited` 與 `elapsed`，超過上限一半時記
+  Dataset 依 `dataset_key` 排序。Dispatcher 每次掃描的 log 附 `audited` 與 `elapsed`；告警沒有變動、只做了稽核的掃描
+  也會記這一行，所以 controls 全部停止的環境（例如 staging 平時）也看得到耗時。超過上限一半時記
   `Delivery monitor scan took … seconds` warning。
   驗收：`reconcile_ms` 不再隨 plan 進度上升、log 皆為 `scope=part`、summary 與完整
   reconcile 一致。

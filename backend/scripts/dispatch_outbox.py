@@ -69,7 +69,9 @@ async def scan_missing_deliveries_safely(
     elapsed = time.monotonic() - started
     if result.skipped_locked:
         logger.info("Delivery monitor scan skipped because another replica owns the lock")
-    elif result.created_or_refreshed or result.resolved or result.diagnostics:
+    elif result.created_or_refreshed or result.resolved or result.diagnostics or result.audited:
+        # The audit runs on every scan with overdue plans, so an idle environment
+        # (every control stopped) still records how long a scan takes.
         logger.info(
             "Delivery monitor refreshed=%s resolved=%s diagnostics=%s audited=%s elapsed=%.1fs",
             result.created_or_refreshed,

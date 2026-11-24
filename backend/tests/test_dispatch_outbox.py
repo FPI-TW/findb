@@ -175,3 +175,40 @@ async def test_summary_backfill_failure_closes_transaction_and_waits_before_retr
                 await task
     assert attempted == 1
     assert "Failed to initialize delivery plan summaries" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audited, logged", [(0, False), (10, True)])
+async def test_audit_only_scan_logs_its_duration(test_engine, monkeypatch, caplog, audited, logged):
+    from app.services.delivery_monitor import DeliveryMonitorResult
+
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def audit_only(session, **kwargs):
+        return DeliveryMonitorResult(audited=audited)
+
+    monkeypatch.setattr(dispatch_outbox, "scan_missing_deliveries", audit_only)
+    with caplog.at_level(logging.INFO):
+        await dispatch_outbox.scan_missing_deliveries_safely(session_factory)
+    # No alert changed: only the audit makes the scan worth a line.
+    assert ("audited=10 elapsed=" in caplog.text) is logged
+    assert "scan took" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scan_past_half_its_limit_warns(test_engine, monkeypatch, caplog):
+    from app.services.delivery_monitor import DeliveryMonitorResult
+
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def slow(session, **kwargs):
+        # Past half of the one-second limit, well before the limit itself.
+        await asyncio.sleep(0.6)
+        return DeliveryMonitorResult(audited=10)
+
+    monkeypatch.setattr(dispatch_outbox, "scan_missing_deliveries", slow)
+    monkeypatch.setattr(dispatch_outbox.settings, "DELIVERY_MONITOR_TIMEOUT_SECONDS", 1.0)
+    with caplog.at_level(logging.WARNING):
+        await dispatch_outbox.scan_missing_deliveries_safely(session_factory)
+    assert "Delivery monitor scan took" in caplog.text and "of 1.0 seconds" in caplog.text
+    assert "timed out" not in caplog.text
