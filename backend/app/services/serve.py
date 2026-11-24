@@ -576,13 +576,14 @@ async def list_instruments(
     normalized_q = _normalize(q)
     if normalized_q:
         pattern = _literal_like_pattern(normalized_q)
-        filters.append(
-            or_(
-                _normalized_db_text(Instrument.instrument_id).ilike(pattern, escape="\\"),
-                _normalized_db_text(Instrument.symbol).ilike(pattern, escape="\\"),
-                _normalized_db_text(Instrument.name).ilike(pattern, escape="\\"),
-            )
-        )
+        text_matches: list[ColumnElement[bool]] = [
+            _normalized_db_text(Instrument.symbol).ilike(pattern, escape="\\"),
+            _normalized_db_text(Instrument.name).ilike(pattern, escape="\\"),
+        ]
+        # Only a whole id matches: digits inside random UUIDs would flood code searches.
+        if (wanted_id := _parse_uuid(normalized_q)) is not None:
+            text_matches.append(Instrument.instrument_id == wanted_id)
+        filters.append(or_(*text_matches))
     normalized_market = _normalize_filter(market)
     normalized_asset = _normalize_filter(asset_class)
     normalized_status = _normalize_filter(status)
@@ -668,8 +669,15 @@ async def list_instruments(
     )
 
 
+def _parse_uuid(value: str) -> UUID | None:
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
 def _relevance_order(normalized_q: str) -> list[ColumnElement[Any]]:
-    """Exact symbol, then symbol prefix, then name prefix, then any other match.
+    """Exact symbol, symbol prefix, name prefix, symbol substring, then any other match.
 
     Shorter symbols come first within a rank, so ``2330`` precedes ``23301``.
     """
@@ -681,7 +689,8 @@ def _relevance_order(normalized_q: str) -> list[ColumnElement[Any]]:
         (symbol == needle, 0),
         (symbol.like(prefix, escape="\\"), 1),
         (name.like(prefix, escape="\\"), 2),
-        else_=3,
+        (symbol.like(f"%{prefix}", escape="\\"), 3),
+        else_=4,
     )
     return [rank.asc(), func.length(Instrument.symbol).asc()]
 
