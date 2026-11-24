@@ -49,6 +49,17 @@ CLOSED_WORK_PRUNE_BUSY_SECONDS = JOURNAL_BUSY_SECONDS
 # write lock long enough to time out another consumer's write.
 CLOSED_WORK_PRUNE_DELETE_BATCH = 64
 CLOSED_LOOKUP_BATCH = 500
+_PROVIDER_NAME = re.compile(r"[a-z][a-z0-9_]{0,49}")
+# Every work row lands in one of these (all keyed by work_key first): a work found in
+# none of them was never journaled in that file.
+_WORK_PRESENCE_TABLES = (
+    "work_manifest",
+    "work_budget",
+    "work_delivery",
+    "work_job",
+    "work_cooldown",
+    "work_response",
+)
 # Replay state that only an open work reads.
 _JOURNAL_REPLAY_TABLES = (
     "work_delivery",
@@ -1018,14 +1029,48 @@ class ProviderWorkSession:
             raise ProviderWorkRecoveryBlockedError("heartbeat thread has not stopped")
 
 
-def journal_path(root: Path | None = None) -> Path:
-    """The host-wide provider-work journal beside the shared account ledger."""
-    return (
+def journal_path(root: Path | None = None, provider: str | None = None) -> Path:
+    """A provider's work journal, beside the shared account ledger.
+
+    Without ``provider`` this is the host-wide journal every provider shared before
+    each got its own; the works journaled there keep using it until retention
+    retires them (see ``work_journal_path``).
+    """
+    folder = (
         root
         or Path(
             os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3")
         ).parent
-    ) / "provider-work.sqlite3"
+    )
+    if provider is None:
+        return folder / "provider-work.sqlite3"
+    if _PROVIDER_NAME.fullmatch(provider) is None:
+        raise ValueError("provider name is invalid")
+    return folder / f"provider-work-{provider}.sqlite3"
+
+
+def work_journal_path(provider: str, work_id: str, *, root: Path | None = None) -> Path:
+    """The journal holding this work: the host-wide one if it already has it, else the provider's.
+
+    Each provider writing its own file keeps one provider's lock or retention from
+    timing out another's writes. Works already journaled in the shared file stay
+    there so nothing is moved; it stops being written once they are retired.
+    """
+    shared = journal_path(root)
+    if shared.is_file():
+        query = " UNION ALL ".join(
+            f"SELECT 1 FROM {table} WHERE work_key=?" for table in _WORK_PRESENCE_TABLES
+        )
+        db = sqlite3.connect(shared, timeout=JOURNAL_BUSY_SECONDS)
+        try:
+            found = db.execute(
+                f"{query} LIMIT 1", (work_id,) * len(_WORK_PRESENCE_TABLES)
+            ).fetchone()
+        finally:
+            db.close()
+        if found:
+            return shared
+    return journal_path(root, provider)
 
 
 def closed_work_times(
@@ -1072,16 +1117,29 @@ def prune_closed_journal(
 ) -> dict[str, int] | None:
     """Retire journal replay state of this provider's works Source closed a week ago.
 
-    Runs at most once a day per provider. The journal is shared by every provider
-    on the host; Source answers only for the caller's own scope, so each provider
-    retires only its own works. A work with any delivery lacking a receipt keeps
-    everything, since its acceptance is not proven locally. A pass that fails
-    partway keeps the works it already retired and runs again within the hour.
+    Runs at most once a day per provider and file: the provider's own journal, then
+    the host-wide one while it still holds works. Source answers only for the
+    caller's own scope, so in the shared file each provider retires only its own
+    works. A work with any delivery lacking a receipt keeps everything, since its
+    acceptance is not proven locally. A pass that fails partway keeps the works it
+    already retired and runs again within the hour.
     """
-    path = journal_path(root)
+    now = time.time() if now is None else now
+    passes = [
+        removed
+        for path in (journal_path(root, provider), journal_path(root))
+        if (removed := _prune_journal_file(path, source, provider, now)) is not None
+    ]
+    if not passes:
+        return None
+    return {key: sum(removed[key] for removed in passes) for key in passes[0]}
+
+
+def _prune_journal_file(
+    path: Path, source: Any, provider: str, now: float
+) -> dict[str, int] | None:
     if not path.is_file():
         return None
-    now = time.time() if now is None else now
     db = sqlite3.connect(path, timeout=CLOSED_WORK_PRUNE_BUSY_SECONDS)
     claimed = False
     try:
@@ -1201,7 +1259,9 @@ def claimed_work(
         if work is None:
             yield None
             return
-        journal = WorkJournal(journal_path(root), work["work_id"])
+        journal = WorkJournal(
+            work_journal_path(provider, work["work_id"], root=root), work["work_id"]
+        )
         session = ProviderWorkSession(source, provider, work, journal)
         token = _current.set(session)
         try:

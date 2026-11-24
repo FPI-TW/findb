@@ -404,7 +404,7 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
 
         from findb_fetcher.provider_work import WorkJournal
 
-        journal = WorkJournal(h.path / "account/provider-work.sqlite3", str(work_id))
+        journal = WorkJournal(h.path / f"account/provider-work-{h.provider}.sqlite3", str(work_id))
         with journal.connection() as db:
             negative = db.execute(
                 "SELECT body,sha256 FROM work_response_observation WHERE work_key=?",

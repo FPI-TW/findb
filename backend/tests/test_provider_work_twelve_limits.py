@@ -66,7 +66,9 @@ async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_
         h.db.expire_all()
         work = await h.db.get(ProviderWork, work_id)
         assert work.scope == scope
-        journal = h.queue.WorkJournal(h.path / "account/provider-work.sqlite3", str(work_id))
+        journal = h.queue.WorkJournal(
+            h.path / f"account/provider-work-{h.provider}.sqlite3", str(work_id)
+        )
         with journal.connection() as db:
             charged = db.execute(
                 "SELECT sum(attempts) FROM work_budget WHERE work_key=?", (str(work_id),)

@@ -222,7 +222,12 @@ async def test_actual_account_quota_waits_preserve_dispatched_budget_and_resume_
             *(["quota_wait"] * 4),
         ]
     else:
-        with closing(sqlite3.connect(Path(governor).parent / "provider-work.sqlite3")) as db, db:
+        with (
+            closing(
+                sqlite3.connect(Path(governor).parent / f"provider-work-{h.provider}.sqlite3")
+            ) as db,
+            db,
+        ):
             assert (
                 db.execute(
                     "SELECT sum(attempts) FROM work_budget WHERE work_key=?", (str(work_id),)

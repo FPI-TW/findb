@@ -120,19 +120,26 @@ Full worker 每日對自己的 provider 清理一次已結案工作的本機狀�
 transaction 登記當天的執行，登記提交後才掃描整個 journal 的工作清單（WAL 下讀取不擋其他 consumer 的寫入）；
 刪除時每個 transaction 最多刪 `CLOSED_WORK_PRUNE_DELETE_BATCH`（64）列，manifest 最後刪，中途失敗時這筆工作仍留在
 manifest，下一次會再找到並刪完。失敗時已清掉的工作維持清除，下一次嘗試提前到一小時後
-（`CLOSED_WORK_PRUNE_RETRY_SECONDS`），不等到隔天。同一台主機的所有 consumer（各 provider 的 daily 與 historical）
-共用 journal，所有 journal 連線與 Full checkpoint 一樣等待其他寫入最多 30 秒（`JOURNAL_BUSY_SECONDS`）。
+（`CLOSED_WORK_PRUNE_RETRY_SECONDS`），不等到隔天。每個 provider 的 daily 與 historical 共用自己的
+journal（`provider-work-<provider>.sqlite3`）；所有 journal 連線與 Full checkpoint 一樣等待其他寫入最多 30 秒
+（`JOURNAL_BUSY_SECONDS`）。清理依檔案各自登記：先清自己 provider 的檔，再清仍在排空的主機共用檔
+（`provider-work.sqlite3`，見下方）。
 
 - 是否結案由 Source 判定：Fetcher 以 `POST /api/v1/source/provider-work/closed` 查詢（唯讀，
   依 Source credential 的 provider／dataset scope 回答，一次最多 500 筆）；仍在進行、未知或越權的
   工作不會出現在回應中，一律保留。Source 尚未提供此 API 時查詢失敗，等同不清理。
 - 只清 Source `completed_at` 已超過 7 天的工作。R2 保存 provider bytes 90 天，本機只保留恢復所需。
-- Provider-work journal（主機共用的 `provider-work.sqlite3`）：刪除 `work_delivery`、`work_job`、
+- Provider-work journal（各 provider 的 `provider-work-<provider>.sqlite3`，以及仍在排空的主機共用
+  `provider-work.sqlite3`）：刪除 `work_delivery`、`work_job`、
   `work_budget`、`work_cooldown`、`work_source_error`。Twelve Data 的回應已確認有 R2 副本，另刪
   `work_response`、`work_response_observation` 與 `work_manifest`。官方名單快照
   （`work_response` 的 `official_snapshot:*`）在下載的同一次呼叫內就寫入 R2，所以不分 provider 一律刪除。其他格式
   （FinLab dataset、TAIFEX 報表、FactSet 回應、catalogue）的回應、觀測與 manifest 保留，這些列都很小。
   任一 delivery 缺 receipt 的工作整筆保留。只寫過回應、沒有 manifest 或 delivery 的工作同樣納入清理。
+- 主機共用的 `provider-work.sqlite3` 只保留 fetcher-v0.1.51 之前開始的工作：已在其中的工作繼續使用它到結束，
+  新工作一律寫入自己 provider 的檔，所以共用檔在這些工作結案並清理後就不再有寫入。檔案本身不會自動刪除；
+  確認所有 provider 都沒有列（`work_manifest`、`work_budget`、`work_delivery`、`work_job`、`work_cooldown`、
+  `work_response` 皆無資料）後，可在部署停止窗口內連同 sidecars 備份後移除。
 - Full checkpoint：以 `daily:full_market:<dataset>:<trade_date>` 對應 plan，刪除該 plan 的
   `full_work` 及其 receipt、diagnostic、empty outcome、member repair，以及 plan、reconcile、outage、
   no-data trip／round 與 schedule 列。仍有 prepared body 但沒有 receipt 的 plan 整筆保留。
