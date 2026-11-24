@@ -389,7 +389,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
-      "historical_requests_per_date": 2,
+      "historical_requests_per_date": 3,
       "lifecycle": "active",
       "market": "HK",
       "provider": "fmp",
@@ -434,7 +434,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
-      "historical_requests_per_date": 8,
+      "historical_requests_per_date": 73,
       "lifecycle": "active",
       "market": "US",
       "provider": "fmp",
@@ -802,5 +802,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "e59d690f38fc8a6b3377b435bfb033a560e7c6a535976e488478f8c15b45e12b"
+  "source_sha256": "aa18abd4ff61083b8cb1673de0d2d995cd9cb3ec657b690a3adf01deb0219818"
 }

@@ -1708,25 +1708,29 @@ DB 舊值修正與發布下限見 [PR5 遷移](deployment.md#provider-catalog-pr
 
 ## FMP 市場指數
 
-FMP 提供 10 檔市場指數的日線，依發布時間分兩條 feed，各一個 dataset，`asset_class` 為 `index`，代號沿用
-FMP（例如 `^GSPC`）。設計與實測見 [FMP 導入規劃](../dev/fmp-provider.md)。
+FMP 提供 76 檔市場指數的日線（港股 3、美股 73），依發布時間分兩條 feed，各一個 dataset，`asset_class` 為
+`index`，代號沿用 FMP（例如 `^GSPC`、`DX-Y.NYB`）。名單在 Fetcher 的 `provider_adapters/fmp.py`
+（`INDEX_UNIVERSES`），選取依據、排除的標的與實測見 [FMP 導入規劃](../dev/fmp-provider.md)。
 
 | Dataset | 指數 | 排程 | 完成期限 | 交易日曆 |
 | --- | --- | --- | --- | --- |
-| `hk_index_eod` | `^HSI`、`^HSCE` | 香港時間 20:00，當天 | 隔天 08:00 HKT | HK |
-| `us_index_eod` | `^GSPC`、`^NDX`、`^DJI`、`^IXIC`、`^RUT`、`^VIX`、`^SOX`、`^NYA` | 台北時間 08:30，前一個紐約日 | 同日 20:30（台北） | US |
+| `hk_index_eod` | `^HSI`、`^HSCE`、`512.HK` | 香港時間 20:00，當天 | 隔天 08:00 HKT | HK |
+| `us_index_eod` | 第一批 8（`^GSPC`、`^NDX`、`^DJI`、`^IXIC`、`^RUT`、`^VIX`、`^SOX`、`^NYA`）、主要指數與羅素 12、S&P 500 類股與精選類股 22、產業 10、波動率 14、利率與美元 6、商品 1（`^SPGSCI`） | 台北時間 08:30，前一個紐約日 | 同日 20:30（台北） | US |
 
 - 兩條 feed 共用一個 control `full_market_fmp_v1`，控制列顯示最早的 feed（台北 08:30）。
 - **必須有已發布的交易所日曆**（`calendar_required`）：缺日曆的日期以 `CALENDAR_UNPUBLISHED` 等待重試，
   不以週一至週五代替；同一天另一條 feed 照常規劃。兩環境的港股日曆涵蓋 1987–2026 年，2027 年起要先發布該年日曆。
 - **名單**固定，由 Fetcher 以 FMP 的指數清單核對每檔都在、幣別相符後發布；任一檔不符就保留上一份名單。
+  名單變動（例如新增標的）由 universe 更新自動發布新的 release，從新 release 的生效日起計入 `expected`。
+- **休市日的列不寫入**：`DX-Y.NYB`（ICE 期貨）、`^SPGSCI` 週日與美股假日也有列，`^IDCTCRT` 美股假日也有列；
+  plan 只依 US 日曆的交易日建立，這些列不會被抓取。
   讀清單遇到 429 或格式錯的回應時，名單工作結算為重試（429 另寫入帳號冷卻），受每件工作的重試次數限制；
   401 等不可重試的 HTTP 錯誤結算為失敗。
 - **每日抓取**：每檔指數呼叫一次 `historical-price-eod/full`。回應沒有目標日那一列時視為尚未發布，在發布
   重試窗口（4 小時）內重試；FMP 沒有「定案」標記，所以排程放在實測的定案時間之後，且不重抓覆寫。
 - **成交量**照 FMP 原值寫入，0 就是 0。FMP 的指數成交量不是一致的數列（例如 `^RUT`、`^NYA` 多數日子與
   `^GSPC` 相同，`^HSCE` 2024-10-08 起單位改為千股），使用前請看導入規劃的說明。
-- **歷史回補**以建立請求時的名單服務每一天（`current_release`），每天的請求數為港股 2、美股 8；本輪不執行。
+- **歷史回補**以建立請求時的名單服務每一天（`current_release`），每天的請求數為港股 3、美股 73；本輪不執行。
   交易所日曆已補到 HK 1987、US 1953 年起（見「有效日曆與每日政策」），回補範圍仍受 production 最近 366 天、
   staging 31 天的限制。
 - staging 驗收：只啟動 `fmp`，兩個 dataset 的首日都先設成單一日期，確認 Source → raw → queue → canonical →

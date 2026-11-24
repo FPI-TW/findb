@@ -725,7 +725,7 @@
       },
       "historical_execution": null,
       "historical_cohort": "current_release",
-      "historical_requests_per_date": 2,
+      "historical_requests_per_date": 3,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": true
@@ -770,7 +770,7 @@
       },
       "historical_execution": null,
       "historical_cohort": "current_release",
-      "historical_requests_per_date": 8,
+      "historical_requests_per_date": 73,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": true

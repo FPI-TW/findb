@@ -595,8 +595,8 @@ def test_historical_requests_per_date_rules(declaration):
         # The Main Board and GEM reports.
         ("hkex", "hk_equity_official_eod"): 2,
         # One request per index.
-        ("fmp", "hk_index_eod"): 2,
-        ("fmp", "us_index_eod"): 8,
+        ("fmp", "hk_index_eod"): 3,
+        ("fmp", "us_index_eod"): 73,
         ("finlab", "tw_equity_eod"): 5,
         ("finlab", "tw_etf_eod"): 5,
         ("taifex", "tw_futures_eod"): 5,
