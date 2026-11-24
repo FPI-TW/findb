@@ -33,8 +33,9 @@ FMP_INDEX_LIST_PATH = "/stable/index-list"
 FMP_DAILY_RESPONSE = "fmp_index_daily"
 FMP_INDEX_LIST_RESPONSE = "fmp_index_list"
 _MAX_RESPONSE_BYTES_HARD = 16 * 1024 * 1024
-# FMP index symbols: a caret and the provider's code, e.g. ``^GSPC``.
-INDEX_SYMBOL = re.compile(r"^\^[A-Z0-9][A-Z0-9.]{0,19}$")
+# FMP's index codes: caret indices (``^GSPC``, ``^SP500-45``) and the few it spells
+# with a venue suffix (``512.HK``, ``DX-Y.NYB``). A bare ticker is a listing.
+INDEX_SYMBOL = re.compile(r"^(?:\^[A-Z0-9][A-Z0-9.-]{0,19}|[A-Z0-9][A-Z0-9-]{0,14}\.[A-Z]{1,4})$")
 # Index levels above this do not fit the canonical NUMERIC(20, 8) column.
 _MAX_LEVEL = Decimal("1000000000000")
 # Bounded diagnostic vocabulary; provider messages never enter durable state.

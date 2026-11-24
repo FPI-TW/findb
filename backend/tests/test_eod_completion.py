@@ -110,11 +110,27 @@ async def test_actual_writes_and_dq_errors_cover_partial_without_false_success(t
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["data", "no_data", "invalid", "missing", "mapping_gap"])
+@pytest.mark.parametrize("outcome", ["data", "no_data", "invalid", "mapping_gap"])
 async def test_unproven_claim_never_completes_a_mapped_member(test_session, outcome):
     work = await scope(test_session)
     evidence = proof(("00700", outcome), ("00005", "missing"), ("00001", "mapping_gap"))
     with pytest.raises(ValueError):
+        await validate_eod_completion(test_session, work, [], evidence, outcome="partial")
+
+
+@pytest.mark.asyncio
+async def test_a_member_no_attempt_fetched_leaves_a_current_release_date_partial(test_session):
+    # Retries exhausted without a response: nothing to cite, yet the date must settle.
+    work = await scope(test_session)
+    evidence = proof(("00700", "missing"), ("00005", "missing"), ("00001", "mapping_gap"))
+    result = await validate_eod_completion(test_session, work, [], evidence, outcome="partial")
+    assert result["data"] == [] and result["gaps"] == ["00001", "00005", "00700"]
+    with pytest.raises(ValueError, match="full coverage"):
+        await validate_eod_completion(test_session, work, [], evidence, outcome="completed")
+    # A daily plan's member is never settled this way.
+    work.kind = "daily"
+    await test_session.flush()
+    with pytest.raises(ValueError, match="gap claim"):
         await validate_eod_completion(test_session, work, [], evidence, outcome="partial")
 
 
