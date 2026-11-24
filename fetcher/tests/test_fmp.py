@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -13,6 +14,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
+from findb_fetcher import raw_storage
 from findb_fetcher.contracts import ContractRegistry
 from findb_fetcher.full_market_errors import MemberUnavailableError, ReadinessBlockedError
 from findb_fetcher.provider_adapters.base import (
@@ -542,3 +544,14 @@ def test_a_historical_date_delivers_each_index_through_the_member_runner(monkeyp
     assert body["payload"]["batch"]["delivery_mode"] == "backfill"
     assert body["payload"]["data"][0]["symbol"] == "^GSPC"
     assert body["payload"]["data"][0]["trade_date"] == "2021-03-05"
+
+
+def test_every_listed_index_is_a_safe_raw_symbol():
+    # Raw metadata and Backend members both take FMP's spelling, caret or not.
+    pattern = re.compile(r"^\^?[A-Za-z0-9._:-]+$")
+    symbols = [symbol for group in INDEX_UNIVERSES.values() for symbol in group]
+    assert len(symbols) == len(set(symbols)) == 76
+    assert all(
+        pattern.fullmatch(symbol) and raw_storage._SYMBOL_PATTERN.fullmatch(symbol)
+        for symbol in symbols
+    )

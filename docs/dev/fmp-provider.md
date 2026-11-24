@@ -447,6 +447,44 @@ Fetcher descriptors、infra inventory、部署與 host 檢查都會要求它存�
   `execution_config.v1.json`）、`backend/tests/test_provider_catalog.py`、infra inventory 測試；
   Source → raw → queue → canonical → Serve 驗收；staging 只啟動 `fmp`，首日先設成單日再 start。
 
+#### 第二批指數
+
+Owner 於 2026-11-24 決定：導入已有交易日曆的市場（美股、港股；台股另由 #647 從證交所取得），類別為主要指數與
+羅素、類股與產業、波動率／利率／美元／商品；總報酬版本與 Cboe 選擇權策略指數不導入。新增的 66 檔沿用現有兩條
+feed，不改排程，只延長 `INDEX_UNIVERSES`，`historical_requests_per_date` 改為港股 3、美股 73。
+
+| 類別 | FMP 代號 |
+| --- | --- |
+| 港股 | `512.HK`（中華交易服務香港內地指數） |
+| 主要指數與羅素 | `^DJT`、`^DJU`、`^XAX`、`^OEX`、`^MID`、`^SPXEW`、`^W5000`、`^DWCF`、`^RUI`、`^RUA`、`^RLG`、`^RLV` |
+| S&P 500 類股 | `^GSPE`、`^SP500-15`、`-20`、`-25`、`-30`、`-35`、`-40`、`-45`、`-50`、`-55`、`-60` |
+| 精選類股 | `^SIXB`、`^SIXC`、`^SIXE`、`^SIXI`、`^SIXM`、`^SIXR`、`^SIXRE`、`^SIXT`、`^SIXU`、`^SIXV`、`^SIXY` |
+| 產業 | `^DJUSSC`、`^BKX`、`^NBI`、`^SPSIBI`、`^ICEBIO`、`^DJUSPM`、`^PSE`、`^EMCLOUD`、`^TRAN`、`^AMZ` |
+| 波動率 | `^VIX1D`、`^VIX9D`、`^VIX3M`、`^VIX6M`、`^VIX1Y`、`^VVIX`、`^VXN`、`^RVX`、`^VXD`、`^GVZ`、`^OVX`、`^VXSLV`、`^VXTLT`、`^VIXEQ` |
+| 利率、美元、商品 | `^IRX`、`^FVX`、`^TNX`、`^TYX`、`DX-Y.NYB`、`^IDCTCRT`、`^SPGSCI` |
+
+選取依據（2026-11-24，FMP `historical-price-eod/full` 2025-11-03 至 2026-11-23，對照 NYSE 與 HKEX 日曆）：
+
+- 上表每一檔在每個交易日都有列，名單刷新所需的 `index-list` 都有、幣別為 USD／HKD。
+- **排除**：
+  - `^MOVE`：美債休市、股市開盤的日子沒有列（2025-11-11、2026-10-12、2026-11-11），每年會固定出現缺漏。
+  - `^TRCCRBTR`：一年內有 3 個交易日沒有列（2025-12-17、2026-01-30、2026-05-11），另有 1 列高低價不一致。
+  - 與已導入指數重複或是縮小版：`^SPX`（同 `^GSPC`）、`^XEO`（同 `^OEX`）、`^DJX`、`^XSP`、`^NANOS`、`^MRUT`。
+- `DX-Y.NYB`、`^SPGSCI` 週日與美股假日也有列，`^IDCTCRT` 美股假日也有列；plan 只依 US 日曆建立，這些列不會被抓。
+- `^EMCLOUD` 一年內有 2 列高低價與開收不一致，遇到時由 Backend DQ 擋下該檔當天的資料。
+- 成交量有值的只有 `^DJT`、`^DJU`、`^OEX`、`^MID`、S&P 500 類股、`^DJUSSC`、`^DJUSPM` 與 `512.HK`，其餘一律為 0，
+  照原值寫入。
+- 第二批沒有逐檔量測定案時間。美股組排在台北 08:30（紐約前一天 19:30 或 20:30 之後），另有 4 小時發布重試窗口；
+  staging 驗收時確認每一檔在排程時都已有目標日的列。
+
+#### 日股交易日曆（2026-11-24 確認）
+
+可以取得：`pandas_market_calendars` 的 `JPX` 涵蓋 1990 年起，與 JPX 官方公告的 2026、2027 年休市日逐日相同；
+與 FMP `^N225` 的實際交易日比對，2003-10 以後完全一致，之前 FMP 在 30 個日本假日有列（FMP 的假列），日曆以
+`JPX` 為準。exchange_calendars 的 `XTKS` 只涵蓋最近 20 年，與 `JPX` 相同；2020-10-01 系統故障全日停止交易，
+兩者都記為休市。Admin 日曆 API 接受任何 `^[A-Z][A-Z0-9_]{1,9}$` 的市場代碼，但 catalog 的 `market`／
+`calendar_market` 目前只接受 US、HK、TW（與 TAIFEX），日股指數 feed 要先擴充。
+
 ### 階段 3：公司行動
 
 - 新增 `corporate_action` contract 與 normalizer、DQ 與 Serve 端點，涵蓋分割與股息。

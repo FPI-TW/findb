@@ -35,3 +35,27 @@ async def test_index_members_belong_to_index_datasets_only(test_session):
             body.model_copy(update={"dataset_key": "us_index_eod", "provider": "fmp"}),
             allowed_datasets=["us_index_eod"],
         )
+
+
+@pytest.mark.parametrize(
+    ("key", "symbol", "exchange", "currency"),
+    [("hk_index_eod", "512.HK", "HKSE", "HKD"), ("us_index_eod", "DX-Y.NYB", "ICEF", "USD")],
+)
+async def test_an_index_symbol_without_a_caret_is_accepted(
+    test_session, key, symbol, exchange, currency
+):
+    # FMP spells a few indices like a listing (``512.HK``) or a futures code (``DX-Y.NYB``).
+    await _dataset(test_session, key)
+    body = _universe(key, 1)
+    member = body.members[0].model_copy(
+        update={
+            "symbol": symbol,
+            "provider_symbol": symbol,
+            "exchange": exchange,
+            "currency": currency,
+        }
+    )
+    release = await submit_universe(
+        test_session, body.model_copy(update={"members": [member]}), allowed_datasets=[key]
+    )
+    assert release.member_count == 1

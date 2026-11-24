@@ -263,7 +263,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
-      "historical_requests_per_date": 2,
+      "historical_requests_per_date": 3,
       "lifecycle": "active",
       "market": "HK",
       "provider": "fmp",
@@ -292,7 +292,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
-      "historical_requests_per_date": 8,
+      "historical_requests_per_date": 73,
       "lifecycle": "active",
       "market": "US",
       "provider": "fmp",
@@ -424,7 +424,7 @@
       "unlisted_symbols": "none"
     }
   ],
-  "projection_sha256": "0b32d2de1be7a752104c51f7b15c2a62049ef17c92eb43f28fc61a756df91673",
+  "projection_sha256": "709e453145a96d6d2f9c614695b0c76b39a894879fd74d169869620303a163b7",
   "providers": [
     {
       "credential_env_names": [
