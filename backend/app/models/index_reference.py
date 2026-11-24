@@ -1,11 +1,10 @@
 """Index reference data: definitions, published changes, snapshots and membership.
 
-An index publisher (Hang Seng Indexes Company, ``hsil``) publishes three kinds
-of document, each kept here as published:
+An index publisher (Hang Seng Indexes Company, ``hsil``) publishes two kinds of
+document, each kept here as published:
 
 - a constituent report per trading day: every constituent with its weight;
-- a change workbook per index family: every effective addition and deletion;
-- an index review release: changes announced before they take effect.
+- a change workbook per index family: every effective addition and deletion.
 
 ``index_membership`` is derived from them and is never written by a delivery:
 the latest snapshot anchors it and the published changes roll it forwards and
@@ -67,7 +66,7 @@ class ReferenceDocumentArchive(Base):
             name="reference_document_archive_bytes_positive",
         ),
         CheckConstraint(
-            "kind IN ('constituent_report', 'change_workbook', 'review_release')",
+            "kind IN ('constituent_report', 'change_workbook')",
             name="reference_document_archive_kind",
         ),
         CheckConstraint(
@@ -89,10 +88,10 @@ class ReferenceDocumentArchive(Base):
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     publisher: Mapped[str] = mapped_column(String(50), nullable=False)
     kind: Mapped[str] = mapped_column(String(30), nullable=False)
-    # Index family of a report or workbook (``hsi``, ``hsci``); none for a release.
-    series: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    # Date the content speaks for: the report's trading day, the workbook's
-    # latest effective date, or the release's publication date (publisher-local).
+    # Index family the document covers (``hsi``, ``hsci``).
+    series: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Date the content speaks for: the report's trading day, or the workbook's
+    # latest effective date (publisher-local).
     document_date: Mapped[date] = mapped_column(Date, nullable=False)
     gzip_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     gzip_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -253,68 +252,6 @@ class IndexChangeEvent(Base):
         nullable=True,
     )
     last_seen_run_id: Mapped[Optional[UUID]] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, onupdate=utc_now
-    )
-
-
-class IndexChangeAnnouncement(Base):
-    """A change an index review release announced before it took effect.
-
-    ``announced`` until the workbook lists the same change (``confirmed``), a
-    later release replaces it (``superseded``), or it is still missing after
-    taking effect (``unconfirmed``).
-    """
-
-    __tablename__ = "index_change_announcement"
-    __table_args__ = (
-        UniqueConstraint(
-            "archive_id", "index_id", "symbol", "action", name="uq_index_change_announcement"
-        ),
-        CheckConstraint("action IN ('add', 'delete')", name="index_change_announcement_action"),
-        CheckConstraint(
-            "status IN ('announced', 'confirmed', 'superseded', 'unconfirmed')",
-            name="index_change_announcement_status",
-        ),
-        CheckConstraint(f"symbol ~ '{SYMBOL_CHECK}'", name="index_change_announcement_symbol"),
-        CheckConstraint(
-            "(status = 'confirmed') = (confirmed_event_id IS NOT NULL)",
-            name="index_change_announcement_confirmation",
-        ),
-        Index("idx_index_change_announcement_date", "index_id", "effective_date"),
-    )
-
-    announcement_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
-    index_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("index_definition.index_id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    symbol: Mapped[str] = mapped_column(String(5), nullable=False)
-    name_en: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    listing_place: Mapped[str] = mapped_column(String(50), nullable=False)
-    action: Mapped[str] = mapped_column(String(10), nullable=False)
-    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="announced")
-    confirmed_event_id: Mapped[Optional[UUID]] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("index_change_event.event_id", ondelete="RESTRICT"),
-        nullable=True,
-    )
-    archive_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("reference_document_archive.archive_id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    run_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("ingestion_run.run_id", ondelete="SET NULL"),
         nullable=True,

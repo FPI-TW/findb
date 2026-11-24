@@ -16,19 +16,13 @@
       "path": "index_constituent_changes/v1.schema.json",
       "schema_id": "index_constituent_changes",
       "schema_version": 1,
-      "sha256": "77e80414ed474f0037567505e9d549eafdb53264d93580d4e7c741bb92fa40ab"
+      "sha256": "e8d783b3fdbf490c38e9f394eb0f0a2b2c71937befe4c59c2a6c7d731ff8fb74"
     },
     {
       "path": "index_constituents/v1.schema.json",
       "schema_id": "index_constituents",
       "schema_version": 1,
-      "sha256": "df12320984a8f2fee4542afc7e6652f191176b734eb5ba46843d80bfa4c31721"
-    },
-    {
-      "path": "index_review_announcement/v1.schema.json",
-      "schema_id": "index_review_announcement",
-      "schema_version": 1,
-      "sha256": "3979fab8f46f5d2e6d91bd6a8f333cbaf3e0f16064b911ae8c54c90d6b9a5828"
+      "sha256": "e1fd880eae6ed6b98ea01f320bac7bd9371a5881124636e6411a8169b2dd9ce4"
     },
     {
       "path": "intraday_partition/v1.schema.json",

@@ -323,7 +323,7 @@
     },
     "IndexDocumentEvidence": {
       "additionalProperties": false,
-      "description": "The publisher's document the rows were read from, as the publisher served it.\n\n``document_date`` is the date the content speaks for: a report's trading\nday, a workbook's latest effective date, or a release's publication date,\nin the publisher's local time.  ``part_key`` names the part of the document\nthis delivery carries (an index code), or ``document`` for all of it.  The\npublisher's download service sends no ETag and often no Last-Modified.",
+      "description": "The publisher's document the rows were read from, as the publisher served it.\n\n``document_date`` is the date the content speaks for: a report's trading\nday or a workbook's latest effective date, in the publisher's local time.  ``part_key`` names the part of the document\nthis delivery carries (an index code), or ``document`` for all of it.  The\npublisher's download service sends no ETag and often no Last-Modified.",
       "properties": {
         "document_date": {
           "format": "date",
@@ -353,8 +353,7 @@
         "kind": {
           "enum": [
             "constituent_report",
-            "change_workbook",
-            "review_release"
+            "change_workbook"
           ],
           "title": "Kind",
           "type": "string"
@@ -394,20 +393,12 @@
           "type": "string"
         },
         "series": {
-          "anyOf": [
-            {
-              "enum": [
-                "hsi",
-                "hsci"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+          "enum": [
+            "hsi",
+            "hsci"
           ],
-          "default": null,
-          "title": "Series"
+          "title": "Series",
+          "type": "string"
         },
         "url": {
           "maxLength": 500,
@@ -419,6 +410,7 @@
       "required": [
         "publisher",
         "kind",
+        "series",
         "url",
         "document_date",
         "part_key",
@@ -864,18 +856,6 @@
     },
     {
       "context_dependencies": [],
-      "description": "a review release names no series; constituent reports and change workbooks name the index family they cover",
-      "error_code": "INGRESS_SCHEMA_INVALID",
-      "id": "reference.document.series",
-      "parameters": {
-        "none_when": {
-          "kind": "review_release"
-        }
-      },
-      "scope": "payload.batch.document"
-    },
-    {
-      "context_dependencies": [],
       "description": "each index is declared once; a parent_code names another index the document lists, and that parent has no parent of its own",
       "error_code": "INGRESS_SCHEMA_INVALID",
       "id": "reference.indexes.declared_once_with_root_parents",
@@ -887,7 +867,7 @@
     },
     {
       "context_dependencies": [],
-      "description": "a change workbook is delivered one index at a time (part_key is the index code); constituent reports and review releases are delivered whole (part_key is document)",
+      "description": "a change workbook is delivered one index at a time (part_key is the index code); a constituent report is delivered whole (part_key is document)",
       "error_code": "INGRESS_SCHEMA_INVALID",
       "id": "reference.document.part",
       "parameters": {

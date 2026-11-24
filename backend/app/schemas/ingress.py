@@ -392,7 +392,6 @@ class MarketMinuteRow(_OHLCRow):
 
     @model_validator(mode="after")
     def validate_one_minute_bar(self) -> "MarketMinuteRow":
-        from zoneinfo import ZoneInfo
 
         if self.bar_end_time != self.bar_start_time + timedelta(minutes=1):
             raise ValueError("bar_end_time must equal bar_start_time plus one minute")
@@ -740,7 +739,6 @@ INDEX_REFERENCE_SCHEMAS: Mapping[str, str] = MappingProxyType(
     {
         "index_constituents": "constituent_report",
         "index_constituent_changes": "change_workbook",
-        "index_review_announcement": "review_release",
     }
 )
 INDEX_CODE_PATTERN = r"^[0-9]{5}\.[0-9]{2}$"
@@ -749,8 +747,6 @@ INDEX_PART_KEY_PATTERN = r"^(?:[0-9]{5}\.[0-9]{2}|document)$"
 # Bounded to the stored precision, so a stored value is the published one.
 IndexWeight = Annotated[Decimal, Field(ge=0, le=100, decimal_places=4)]
 IndexPrice = Annotated[Decimal, Field(ge=0, max_digits=20, decimal_places=6)]
-# Each publisher states its document dates in its own local time.
-INDEX_PUBLISHER_TIMEZONES: Mapping[str, str] = MappingProxyType({"hsil": "Asia/Hong_Kong"})
 IndexText = Annotated[str, Field(min_length=1, max_length=200)]
 
 
@@ -758,8 +754,7 @@ class IndexDocumentEvidence(BaseModel):
     """The publisher's document the rows were read from, as the publisher served it.
 
     ``document_date`` is the date the content speaks for: a report's trading
-    day, a workbook's latest effective date, or a release's publication date,
-    in the publisher's local time.  ``part_key`` names the part of the document
+    day or a workbook's latest effective date, in the publisher's local time.  ``part_key`` names the part of the document
     this delivery carries (an index code), or ``document`` for all of it.  The
     publisher's download service sends no ETag and often no Last-Modified.
     """
@@ -767,8 +762,8 @@ class IndexDocumentEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     publisher: Literal["hsil"]
-    kind: Literal["constituent_report", "change_workbook", "review_release"]
-    series: Optional[Literal["hsi", "hsci"]] = None
+    kind: Literal["constituent_report", "change_workbook"]
+    series: Literal["hsi", "hsci"]
     url: str = Field(max_length=500, pattern=INDEX_DOCUMENT_URL_PATTERN)
     document_date: date
     part_key: str = Field(pattern=INDEX_PART_KEY_PATTERN)
@@ -786,12 +781,6 @@ class IndexDocumentEvidence(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("last_modified must include a timezone")
         return value.astimezone(timezone.utc)
-
-    @model_validator(mode="after")
-    def series_matches_kind(self) -> "IndexDocumentEvidence":
-        if (self.kind == "review_release") != (self.series is None):
-            raise ValueError("a review release has no series; reports and workbooks name theirs")
-        return self
 
 
 class IndexClassification(BaseModel):
@@ -1006,96 +995,6 @@ class IndexChangesPayload(BaseModel):
         return self
 
 
-class IndexReviewIndex(IndexDescriptor):
-    """An index a review release decides on, with the decision's dates and counts."""
-
-    implemented_after_close: date
-    effective_date: date
-    constituents_before: Optional[NonNegativeInt] = None
-    constituents_after: NonNegativeInt
-
-    @model_validator(mode="after")
-    def effective_after_implementation(self) -> "IndexReviewIndex":
-        if self.effective_date <= self.implemented_after_close:
-            raise ValueError("effective_date must follow implemented_after_close")
-        return self
-
-
-class IndexReviewRow(_IngressRow):
-    """One change a review release announces."""
-
-    index_code: str = Field(pattern=INDEX_CODE_PATTERN)
-    action: Literal["add", "delete"]
-    symbol: str = Field(pattern=EXCHANGE_SYMBOL_PATTERN)
-    name_en: Optional[IndexText] = None
-    listing_place: str = Field(min_length=1, max_length=50)
-
-
-class IndexReviewBatch(IndexDocumentBatch):
-    title: IndexText
-    published_at: datetime
-    indexes: list[IndexReviewIndex] = Field(min_length=1, max_length=50)
-
-    @field_validator("published_at")
-    @classmethod
-    def require_utc_aware_published_at(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("published_at must include a timezone")
-        return value.astimezone(timezone.utc)
-
-
-class IndexReviewPayload(BaseModel):
-    """Payload body for ``index_review_announcement.v1``: one release's announced changes.
-
-    A release may announce no change to an index; it still states the count.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    batch: IndexReviewBatch
-    data: list[IndexReviewRow] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def validate_announced_changes(self) -> "IndexReviewPayload":
-        batch = self.batch
-        _require_declared_rows(batch, self.data)
-        if batch.document.kind != "review_release" or batch.document.part_key != "document":
-            raise ValueError("a review release is delivered whole")
-        decided = {index.code: index for index in batch.indexes}
-        if len(decided) != len(batch.indexes):
-            raise ValueError("every decided index must be declared once")
-        _require_root_parents(batch.indexes)
-        local = ZoneInfo(INDEX_PUBLISHER_TIMEZONES[batch.document.publisher])
-        if batch.published_at.astimezone(local).date() != batch.document.document_date:
-            raise ValueError("document_date must be the publisher-local date of published_at")
-        if any(
-            index.implemented_after_close < batch.document.document_date
-            for index in decided.values()
-        ):
-            raise ValueError("a release announces changes after its publication date")
-        if any(row.index_code not in decided for row in self.data):
-            raise ValueError("every announced change must name a decided index")
-        if len({(row.index_code, row.symbol) for row in self.data}) != len(self.data):
-            raise PydanticCustomError(
-                "duplicate_delivery_key",
-                "duplicate (index_code, symbol) rows are not allowed",
-            )
-        for index in decided.values():
-            if index.constituents_before is None:
-                continue
-            net = sum(
-                1 if row.action == "add" else -1
-                for row in self.data
-                if row.index_code == index.code
-            )
-            if index.constituents_before + net != index.constituents_after:
-                raise ValueError(
-                    "constituents_after must equal constituents_before plus net changes"
-                )
-        ensure_payload_size_within_limit(self.model_dump(mode="json"))
-        return self
-
-
 class _IngressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -1205,19 +1104,10 @@ class IndexChangesIngressRequest(_IngressRequest):
     payload: IndexChangesPayload
 
 
-class IndexReviewIngressRequest(_IngressRequest):
-    """Complete ``index_review_announcement.v1`` request."""
-
-    schema_id: Literal["index_review_announcement"]
-    schema_version: Literal[1]
-    payload: IndexReviewPayload
-
-
 # Requests that carry a publisher document rather than market observations.
 INDEX_REFERENCE_REQUESTS = (
     IndexConstituentsIngressRequest,
     IndexChangesIngressRequest,
-    IndexReviewIngressRequest,
 )
 
 
@@ -1249,6 +1139,5 @@ IngressRequestV1 = (
     | ExchangeDailyQuoteIngressRequest
     | IndexConstituentsIngressRequest
     | IndexChangesIngressRequest
-    | IndexReviewIngressRequest
 )
 IngressRequest = IngressRequestV1 | MarketEODIngressRequestV2

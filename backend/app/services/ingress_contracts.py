@@ -8,7 +8,6 @@ from typing import Annotated, Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from app.schemas.ingress import (
-    INDEX_PUBLISHER_TIMEZONES,
     INDEX_REFERENCE_SCHEMAS,
     INTRADAY_ROW_LAYOUTS,
     MINUTES_PER_DAY,
@@ -17,7 +16,6 @@ from app.schemas.ingress import (
     FuturesEODIngressRequest,
     IndexChangesIngressRequest,
     IndexConstituentsIngressRequest,
-    IndexReviewIngressRequest,
     IngressRequest,
     IntradayPartitionIngressRequest,
     MarketEODIngressRequest,
@@ -37,7 +35,6 @@ ContractModel = (
     | type[ExchangeDailyQuoteIngressRequest]
     | type[IndexConstituentsIngressRequest]
     | type[IndexChangesIngressRequest]
-    | type[IndexReviewIngressRequest]
 )
 PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 
@@ -51,7 +48,6 @@ _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
         ("exchange_daily_quote", 1): ExchangeDailyQuoteIngressRequest,
         ("index_constituents", 1): IndexConstituentsIngressRequest,
         ("index_constituent_changes", 1): IndexChangesIngressRequest,
-        ("index_review_announcement", 1): IndexReviewIngressRequest,
     }
 )
 
@@ -313,7 +309,7 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                     else ["product_code", "contract_code", "trade_date", "session"]
                     if schema_id == "futures_eod"
                     else ["index_code", "symbol"]
-                    if schema_id in {"index_constituents", "index_review_announcement"}
+                    if schema_id == "index_constituents"
                     else ["effective_date", "symbol", "action"]
                     if schema_id == "index_constituent_changes"
                     else ["symbol", "trade_date"]
@@ -514,14 +510,6 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                     "error_code": "INGRESS_SCHEMA_INVALID",
                 },
                 {
-                    "id": "reference.document.series",
-                    "scope": "payload.batch.document",
-                    "description": "a review release names no series; constituent reports and change workbooks name the index family they cover",
-                    "parameters": {"none_when": {"kind": "review_release"}},
-                    "context_dependencies": [],
-                    "error_code": "INGRESS_SCHEMA_INVALID",
-                },
-                {
                     "id": "reference.indexes.declared_once_with_root_parents",
                     "scope": "payload.batch",
                     "description": "each index is declared once; a parent_code names another index the document lists, and that parent has no parent of its own",
@@ -533,7 +521,7 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                     "id": "reference.document.part",
                     "scope": "payload.batch.document",
                     "description": (
-                        "a change workbook is delivered one index at a time (part_key is the index code); constituent reports and review releases are delivered whole (part_key is document)"
+                        "a change workbook is delivered one index at a time (part_key is the index code); a constituent report is delivered whole (part_key is document)"
                     ),
                     "parameters": {
                         "kind": INDEX_REFERENCE_SCHEMAS[schema_id],
@@ -570,34 +558,6 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                     "parameters": {
                         "history_start": "min(data[*].effective_date)",
                         "latest": "batch.document.document_date",
-                    },
-                    "context_dependencies": [],
-                    "error_code": "INGRESS_SCHEMA_INVALID",
-                }
-            )
-        if schema_id == "index_review_announcement":
-            semantic_rules.append(
-                {
-                    "id": "review.dates",
-                    "scope": "payload.batch",
-                    "description": "document.document_date is the publisher-local date of published_at; each decided index is implemented no earlier than that date and takes effect after its implementation date",
-                    "parameters": {
-                        "publisher_timezones": dict(INDEX_PUBLISHER_TIMEZONES),
-                        "implemented_after_close": "greater_than_or_equal document.document_date",
-                        "effective_date": "greater_than implemented_after_close",
-                    },
-                    "context_dependencies": [],
-                    "error_code": "INGRESS_SCHEMA_INVALID",
-                }
-            )
-            semantic_rules.append(
-                {
-                    "id": "review.counts_balance",
-                    "scope": "payload",
-                    "description": "every change names a decided index; when constituents_before is stated, it plus additions minus deletions equals constituents_after",
-                    "parameters": {
-                        "indexes": "batch.indexes[*]",
-                        "net": "count(add) - count(delete)",
                     },
                     "context_dependencies": [],
                     "error_code": "INGRESS_SCHEMA_INVALID",
@@ -748,24 +708,6 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "payload.data[*].symbol",
             "payload.data[*].name_en",
             "payload.data[*].name_zh",
-            "payload.data[*].listing_place",
-        ],
-        "index_review_announcement": [
-            "payload.batch.document.url",
-            "payload.batch.document.part_key",
-            "payload.batch.document.original_sha256",
-            "payload.batch.document.etag",
-            "payload.batch.title",
-            "payload.batch.indexes[*].code",
-            "payload.batch.indexes[*].name_en",
-            "payload.batch.indexes[*].name_zh",
-            "payload.batch.indexes[*].parent_code",
-            "payload.batch.indexes[*].classification.code",
-            "payload.batch.indexes[*].classification.name_en",
-            "payload.batch.indexes[*].classification.name_zh",
-            "payload.data[*].index_code",
-            "payload.data[*].symbol",
-            "payload.data[*].name_en",
             "payload.data[*].listing_place",
         ],
         "intraday_partition": [

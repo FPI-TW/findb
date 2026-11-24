@@ -16,7 +16,6 @@ TABLES = (
     "reference_delivery_evidence",
     "index_definition",
     "index_change_event",
-    "index_change_announcement",
     "index_snapshot",
     "index_snapshot_constituent",
     "index_membership_build",
@@ -68,7 +67,7 @@ async def test_tables_are_removed_only_while_no_document_is_archived():
 
 
 @pytest.mark.asyncio
-async def test_constraints_keep_membership_intervals_and_confirmations_coherent():
+async def test_constraints_keep_membership_intervals_and_definitions_coherent():
     async with get_active_migration_database_factory().clone(
         "3553ed95cfbf", "index_reference_checks"
     ) as (url, engine):
@@ -96,12 +95,6 @@ async def test_constraints_keep_membership_intervals_and_confirmations_coherent(
                 "INSERT INTO index_membership (membership_id, index_id, symbol, valid_from, "
                 "valid_to, starts_at_history_start, build_id) VALUES (gen_random_uuid(), :index, "
                 "'00005', '2026-11-23', '2026-11-23', false, :build)"
-            ),
-            "confirmed without its event": (
-                "INSERT INTO index_change_announcement (announcement_id, index_id, symbol, "
-                "listing_place, action, published_at, effective_date, status, archive_id, "
-                "created_at, updated_at) VALUES (gen_random_uuid(), :index, '02475', 'SEHK', "
-                "'add', now(), '2026-12-07', 'confirmed', :archive, now(), now())"
             ),
             "consistent build without anchor": (
                 "INSERT INTO index_membership_build (build_id, publisher, family, inputs_sha256, "

@@ -36,7 +36,7 @@ HSCI_UTILITIES = {
 def document(
     kind: str,
     *,
-    series: str | None,
+    series: str,
     document_date: date,
     part_key: str = "document",
     original: bytes = b"%PDF-1.4 synthetic publisher document\n",
@@ -174,57 +174,6 @@ def changes_payload(
             "document": evidence,
             "index": index,
             "history_start": history_start,
-        },
-        "data": rows,
-    }
-
-
-def review_payload(
-    rows: list[dict[str, Any]] | None = None,
-    indexes: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    rows = (
-        rows
-        if rows is not None
-        else [
-            {
-                "index_code": "00011.00",
-                "action": "add",
-                "symbol": "02475",
-                "name_en": "Luxshare Precision Industry Co., Ltd.",
-                "listing_place": "SEHK",
-            }
-        ]
-    )
-    indexes = (
-        indexes
-        if indexes is not None
-        else [
-            {
-                **HSI,
-                "implemented_after_close": "2026-12-04",
-                "effective_date": "2026-12-07",
-                "constituents_before": 95,
-                "constituents_after": 95,
-            },
-            {
-                **HSCI,
-                "implemented_after_close": "2026-12-04",
-                "effective_date": "2026-12-07",
-                "constituents_before": 580,
-                "constituents_after": 581,
-            },
-        ]
-    )
-    _, batch, evidence = document("review_release", series=None, document_date=date(2026, 11, 20))
-    return {
-        "batch": {
-            **batch,
-            "declared_record_count": len(rows),
-            "document": evidence,
-            "title": "Hang Seng Indexes Company Announces Index Review Results",
-            "published_at": "2026-11-20T09:45:00Z",
-            "indexes": indexes,
         },
         "data": rows,
     }

@@ -113,7 +113,6 @@ TARGET_TABLES = (
     "public.index_membership_build",
     "public.index_snapshot_constituent",
     "public.index_snapshot",
-    "public.index_change_announcement",
     "public.index_change_event",
     "public.index_definition",
     "public.reference_delivery_evidence",

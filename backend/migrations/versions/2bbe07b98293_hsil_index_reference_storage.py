@@ -3,10 +3,9 @@
 Revision ID: 2bbe07b98293
 Revises: b6d8f0a2c4e7
 
-An index publisher's constituent reports, change workbooks and review releases
-are kept in ``reference_document_archive``; what they state is kept in
-``index_definition``, ``index_change_event``, ``index_change_announcement``
-and ``index_snapshot``/``index_snapshot_constituent``.  ``index_membership``
+An index publisher's constituent reports and change workbooks are kept in
+``reference_document_archive``; what they state is kept in ``index_definition``,
+``index_change_event`` and ``index_snapshot``/``index_snapshot_constituent``.  ``index_membership``
 and ``index_membership_build`` hold the membership history reconstructed from
 them, and ``reference_delivery_evidence`` records which document parts a
 reference dataset has stored.
@@ -32,7 +31,7 @@ def upgrade() -> None:
         sa.Column("source", sa.String(length=50), nullable=False),
         sa.Column("publisher", sa.String(length=50), nullable=False),
         sa.Column("kind", sa.String(length=30), nullable=False),
-        sa.Column("series", sa.String(length=20), nullable=True),
+        sa.Column("series", sa.String(length=20), nullable=False),
         sa.Column("document_date", sa.Date(), nullable=False),
         sa.Column("gzip_sha256", sa.String(length=64), nullable=False),
         sa.Column("gzip_bytes", sa.BigInteger(), nullable=False),
@@ -50,7 +49,7 @@ def upgrade() -> None:
             name=op.f("ck_reference_document_archive_reference_document_archive_sha256"),
         ),
         sa.CheckConstraint(
-            "kind IN ('constituent_report', 'change_workbook', 'review_release')",
+            "kind IN ('constituent_report', 'change_workbook')",
             name=op.f("ck_reference_document_archive_reference_document_archive_kind"),
         ),
         sa.CheckConstraint(
@@ -187,73 +186,6 @@ def upgrade() -> None:
         unique=False,
     )
     op.create_index("idx_index_change_event_symbol", "index_change_event", ["symbol"], unique=False)
-    op.create_table(
-        "index_change_announcement",
-        sa.Column("announcement_id", sa.UUID(), nullable=False),
-        sa.Column("index_id", sa.UUID(), nullable=False),
-        sa.Column("symbol", sa.String(length=5), nullable=False),
-        sa.Column("name_en", sa.String(length=200), nullable=True),
-        sa.Column("listing_place", sa.String(length=50), nullable=False),
-        sa.Column("action", sa.String(length=10), nullable=False),
-        sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("effective_date", sa.Date(), nullable=False),
-        sa.Column("status", sa.String(length=20), nullable=False),
-        sa.Column("confirmed_event_id", sa.UUID(), nullable=True),
-        sa.Column("archive_id", sa.UUID(), nullable=False),
-        sa.Column("run_id", sa.UUID(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.CheckConstraint(
-            "(status = 'confirmed') = (confirmed_event_id IS NOT NULL)",
-            name=op.f("ck_index_change_announcement_index_change_announcement_confirmation"),
-        ),
-        sa.CheckConstraint(
-            "action IN ('add', 'delete')",
-            name=op.f("ck_index_change_announcement_index_change_announcement_action"),
-        ),
-        sa.CheckConstraint(
-            "status IN ('announced', 'confirmed', 'superseded', 'unconfirmed')",
-            name=op.f("ck_index_change_announcement_index_change_announcement_status"),
-        ),
-        sa.CheckConstraint(
-            "symbol ~ '^[0-9]{5}$'",
-            name=op.f("ck_index_change_announcement_index_change_announcement_symbol"),
-        ),
-        sa.ForeignKeyConstraint(
-            ["archive_id"],
-            ["reference_document_archive.archive_id"],
-            name=op.f("fk_index_change_announcement_archive_id_reference_document_archive"),
-            ondelete="RESTRICT",
-        ),
-        sa.ForeignKeyConstraint(
-            ["confirmed_event_id"],
-            ["index_change_event.event_id"],
-            name=op.f("fk_index_change_announcement_confirmed_event_id_index_change_event"),
-            ondelete="RESTRICT",
-        ),
-        sa.ForeignKeyConstraint(
-            ["index_id"],
-            ["index_definition.index_id"],
-            name=op.f("fk_index_change_announcement_index_id_index_definition"),
-            ondelete="RESTRICT",
-        ),
-        sa.ForeignKeyConstraint(
-            ["run_id"],
-            ["ingestion_run.run_id"],
-            name=op.f("fk_index_change_announcement_run_id_ingestion_run"),
-            ondelete="SET NULL",
-        ),
-        sa.PrimaryKeyConstraint("announcement_id", name=op.f("pk_index_change_announcement")),
-        sa.UniqueConstraint(
-            "archive_id", "index_id", "symbol", "action", name="uq_index_change_announcement"
-        ),
-    )
-    op.create_index(
-        "idx_index_change_announcement_date",
-        "index_change_announcement",
-        ["index_id", "effective_date"],
-        unique=False,
-    )
     op.create_table(
         "index_snapshot",
         sa.Column("snapshot_id", sa.UUID(), nullable=False),
@@ -479,8 +411,6 @@ def downgrade() -> None:
     op.drop_index("idx_index_snapshot_constituent_symbol", table_name="index_snapshot_constituent")
     op.drop_table("index_snapshot_constituent")
     op.drop_table("index_snapshot")
-    op.drop_index("idx_index_change_announcement_date", table_name="index_change_announcement")
-    op.drop_table("index_change_announcement")
     op.drop_index("idx_index_change_event_date", table_name="index_change_event")
     op.drop_index("idx_index_change_event_symbol", table_name="index_change_event")
     op.drop_table("index_change_event")

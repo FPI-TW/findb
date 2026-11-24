@@ -13,7 +13,6 @@ from app.schemas.ingress import (
     INDEX_REFERENCE_SCHEMAS,
     IndexChangesIngressRequest,
     IndexConstituentsIngressRequest,
-    IndexReviewIngressRequest,
 )
 from app.services.delivery_policy import DeliveryExpectation, evaluate_delivery_policy
 from app.services.ingress_contracts import get_contract_json_schema, validate_ingress_request
@@ -26,7 +25,6 @@ from tests.index_reference_support import (
     constituent,
     constituents_payload,
     request,
-    review_payload,
 )
 
 
@@ -46,9 +44,6 @@ def test_each_contract_dispatches_to_its_request_model():
     )
     assert isinstance(
         _validate("index_constituent_changes", changes_payload()), IndexChangesIngressRequest
-    )
-    assert isinstance(
-        _validate("index_review_announcement", review_payload()), IndexReviewIngressRequest
     )
     assert set(INDEX_REFERENCE_SCHEMAS) == {
         model.model_fields["schema_id"].annotation.__args__[0]  # type: ignore[union-attr]
@@ -76,16 +71,6 @@ def test_document_url_must_be_the_publishers():
     payload["batch"]["document"]["url"] = "https://example.com/con_23Nov26.pdf"
 
     assert "url" in _rejected("index_constituents", payload)
-
-
-def test_review_release_has_no_series_and_reports_name_theirs():
-    payload = constituents_payload()
-    payload["batch"]["document"]["series"] = None
-    assert "series" in _rejected("index_constituents", payload)
-
-    release = review_payload()
-    release["batch"]["document"]["series"] = "hsi"
-    assert "series" in _rejected("index_review_announcement", release)
 
 
 def test_constituent_report_lists_exactly_its_declared_counts():
@@ -169,36 +154,6 @@ def test_change_rows_are_unique():
     )
 
 
-def test_review_counts_must_balance_the_announced_changes():
-    payload = review_payload()
-    payload["batch"]["indexes"][1]["constituents_after"] = 585
-
-    assert "constituents_before plus net changes" in _rejected("index_review_announcement", payload)
-
-
-def test_review_without_changes_still_states_its_counts():
-    indexes = review_payload()["batch"]["indexes"][:1]
-
-    validated = _validate("index_review_announcement", review_payload([], indexes))
-
-    assert validated.payload.data == []
-
-
-def test_review_changes_name_a_decided_index_and_take_effect_later():
-    payload = review_payload()
-    payload["data"][0]["index_code"] = "00014.00"
-    assert "decided index" in _rejected("index_review_announcement", payload)
-
-    payload = review_payload()
-    payload["batch"]["indexes"][0]["effective_date"] = "2026-12-04"
-    assert "effective_date must follow" in _rejected("index_review_announcement", payload)
-
-    payload = review_payload()
-    payload["batch"]["indexes"][0]["implemented_after_close"] = "2026-11-19"
-    payload["batch"]["indexes"][0]["effective_date"] = "2026-11-20"
-    assert "after its publication date" in _rejected("index_review_announcement", payload)
-
-
 @pytest.mark.parametrize("schema_id", sorted(INDEX_REFERENCE_SCHEMAS))
 def test_published_schema_states_reference_rules(schema_id: str):
     schema = get_contract_json_schema(schema_id, 1)
@@ -278,15 +233,6 @@ def test_a_parent_index_is_itself_top_level():
     assert "top-level index" in _rejected("index_constituents", constituents_payload(rows, indexes))
 
 
-def test_review_document_date_is_the_publisher_local_publication_date():
-    payload = review_payload()
-    payload["batch"]["published_at"] = "2026-11-19T17:30:00Z"  # 2026-11-20 01:30 in Hong Kong
-    assert isinstance(_validate("index_review_announcement", payload), IndexReviewIngressRequest)
-
-    payload["batch"]["published_at"] = "2026-11-19T09:45:00Z"
-    assert "publisher-local date" in _rejected("index_review_announcement", payload)
-
-
 def test_constituent_values_fit_their_stored_precision():
     payload = constituents_payload()
     payload["data"][0]["weight_pct"] = "59.99995"
@@ -304,12 +250,9 @@ def test_constituent_values_fit_their_stored_precision():
     [
         ("index_constituents", constituents_payload()),
         ("index_constituent_changes", changes_payload()),
-        ("index_review_announcement", review_payload([], review_payload()["batch"]["indexes"][:1])),
     ],
 )
 async def test_delivery_policy_does_not_judge_a_document_by_market_baselines(schema_id, payload):
-    if schema_id == "index_review_announcement":
-        payload["batch"]["indexes"][0]["constituents_after"] = 95
     expectation = DeliveryExpectation.model_validate(
         {"record_count": {"minimum_record_count": 5, "action": "reject"}}
     )

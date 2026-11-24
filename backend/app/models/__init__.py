@@ -28,7 +28,6 @@ from app.models.canonical import (
 )
 from app.models.correction import CanonicalCorrection
 from app.models.index_reference import (
-    IndexChangeAnnouncement,
     IndexChangeEvent,
     IndexDefinition,
     IndexMembership,
@@ -108,7 +107,6 @@ __all__ = [
     "EODFieldCorrection",
     "ExchangeDailyQuote",
     "ExchangeReportArchive",
-    "IndexChangeAnnouncement",
     "IndexChangeEvent",
     "IndexDefinition",
     "IndexMembership",
