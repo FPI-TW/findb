@@ -153,7 +153,8 @@ async def test_a_current_release_date_settles_by_writes_halts_and_bad_rows(test_
     )
 
     assert result["data"] == ["00700"] and result["gaps"] == ["00005", "09999"]
-    # Without the report a missing member is unproven: only dated cohorts allow that.
+    # A member every attempt failed for has no report to cite; it stays a gap, so the
+    # date settles partial instead of holding the provider's later requests.
     unproven = proof(
         ("00700", "data"),
         ("00005", "invalid"),
@@ -161,8 +162,12 @@ async def test_a_current_release_date_settles_by_writes_halts_and_bad_rows(test_
         ("09999", "missing"),
         raw={"00036": _report_raw()},
     )
-    with pytest.raises(ValueError, match="gap claim"):
-        await validate_eod_completion(test_session, work, [accepted], unproven, outcome="partial")
+    settled = await validate_eod_completion(
+        test_session, work, [accepted], unproven, outcome="partial"
+    )
+    assert settled["gaps"] == ["00005", "09999"]
+    with pytest.raises(ValueError, match="full coverage"):
+        await validate_eod_completion(test_session, work, [accepted], unproven, outcome="completed")
     # A report outside this feed's raw scope proves nothing.
     foreign = proof(
         ("00700", "data"),

@@ -3,7 +3,8 @@
 Every work freezes its feed's current per-member EOD contract: a provider's
 ``market_eod`` or an exchange's ``exchange_daily_quote``. Historical cohorts
 (dated or current release) may additionally prove a no-trade member by its raw
-observation, or report a member whose provider returned no series as missing.
+observation, or report a member whose provider returned no series, or that every
+attempt failed to fetch, as missing; such a date settles partial.
 """
 
 from uuid import UUID
@@ -89,10 +90,10 @@ async def validate_eod_completion(
     """No run counts, pre-existing canonical prices, or caller data claims prove writes."""
     manifest = work.manifest or {}
     contract = eod_contract(work)
-    # A release cohort (dated or current) may prove no-trade by its scoped raw;
-    # only a dated one may report a member the provider served no series for.
+    # A historical release cohort (dated or current) may prove no-trade by its scoped
+    # raw, and may leave a member it could not fetch as a gap: its date then settles
+    # partial instead of holding every later request of the provider.
     cohort = _historical_cohort(work) in {"dated_release", "current_release"}
-    dated = _historical_cohort(work) == "dated_release"
     if (
         work.kind not in {"daily", "historical"}
         or contract is None
@@ -187,8 +188,8 @@ async def validate_eod_completion(
             gaps.add(key)
         elif member.outcome == "invalid" and key in invalid:
             gaps.add(key)
-        elif dated and member.outcome == "missing" and member.raw is None:
-            # The provider served no series for the member; it stays a Full plan gap.
+        elif cohort and member.outcome == "missing" and member.raw is None:
+            # No series was served, or every attempt failed; the member stays a gap.
             gaps.add(key)
         elif _scoped_raw(work, member) and (
             member.outcome == "invalid"
