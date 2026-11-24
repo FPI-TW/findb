@@ -280,6 +280,11 @@ class BaseNormalizer(ABC):
                 asset_class=record_asset_class,
             )
             if instrument:
+                name = getattr(record, "name", None)
+                if instrument.name is None and name:
+                    # Same rule as the symbol upsert: a name is filled, never replaced.
+                    instrument.name = name
+                    instrument.updated_at = utc_now()
                 return instrument
 
         symbol = record.symbol or record.identifier_value or ""
