@@ -18,6 +18,7 @@ from app.models.canonical import (
 )
 from app.schemas.ingress import FuturesEODRow
 from app.services.dq.validators import DQIssueRecord, MarketEODV2DQValidator
+from app.services.index_names import index_name
 from app.services.normalize.base import BaseNormalizer, NormalizeResult
 from app.services.normalize.types import MappedRecord, MarketMinuteRecord
 from app.utils import utc_now, uuid7
@@ -82,7 +83,9 @@ class MarketEODContractNormalizer(BaseNormalizer):
                     trade_date=trade_date,
                     market=market,
                     asset_class=asset_class,
-                    name=item.get("name"),
+                    # An index row names nothing; FinDB keeps its own display names.
+                    name=item.get("name")
+                    or (index_name(market, symbol) if asset_class == "index" else None),
                     currency=currency,
                     open=self._parse_decimal(item.get("open")),
                     high=self._parse_decimal(item.get("high")),

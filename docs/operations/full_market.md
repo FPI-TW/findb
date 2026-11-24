@@ -1722,6 +1722,9 @@ FMP 提供 76 檔市場指數的日線（港股 3、美股 73），依發布時�
   不以週一至週五代替；同一天另一條 feed 照常規劃。兩環境的港股日曆涵蓋 1987–2026 年，2027 年起要先發布該年日曆。
 - **名單**固定，由 Fetcher 以 FMP 的指數清單核對每檔都在、幣別相符後發布；任一檔不符就保留上一份名單。
   名單變動（例如新增標的）由 universe 更新自動發布新的 release，從新 release 的生效日起計入 `expected`。
+- **名稱**由 Backend 寫入時自動帶入：`app/services/index_names.py` 列出每檔指數的中文名稱，contract normalizer
+  建立 index instrument 時帶入；已存在但名稱為空的 instrument 在下一次寫入時補上，已有名稱（包括手動修改）不覆寫。
+  新增指數時把名稱加進同一張表；`backend/scripts/backfill_world_names.py --markets indices` 用同一張表補不再寫入的舊列。
 - **休市日的列不寫入**：`DX-Y.NYB`（ICE 期貨）、`^SPGSCI` 週日與美股假日也有列，`^IDCTCRT` 美股假日也有列；
   plan 只依 US 日曆的交易日建立，這些列不會被抓取。
   讀清單遇到 429 或格式錯的回應時，名單工作結算為重試（429 另寫入帳號冷卻），受每件工作的重試次數限制；
