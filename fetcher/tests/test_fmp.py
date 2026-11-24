@@ -194,7 +194,9 @@ def test_a_response_above_the_bound_is_refused() -> None:
     assert failed.value.category == "response_too_large"
 
 
-@pytest.mark.parametrize("symbol", ["GSPC", "^gspc", "^GS PC", "^" + "A" * 21])
+@pytest.mark.parametrize(
+    "symbol", ["GSPC", "^gspc", "^GS PC", "^" + "A" * 21, "512.hk", "DX-Y.", "../X.HK"]
+)
 def test_only_index_symbols_are_requested(symbol) -> None:
     client = FMPClient(
         FMPConfig.from_env(), client=httpx.Client(transport=httpx.MockTransport(_FMP()))
@@ -555,3 +557,15 @@ def test_every_listed_index_is_a_safe_raw_symbol():
         pattern.fullmatch(symbol) and raw_storage._SYMBOL_PATTERN.fullmatch(symbol)
         for symbol in symbols
     )
+
+
+def test_every_listed_index_is_requested_as_fmp_spells_it() -> None:
+    # 512.HK and DX-Y.NYB carry no caret; the daily request must still go out.
+    symbols = [symbol for group in INDEX_UNIVERSES.values() for symbol in group]
+    server = _FMP(full=[_json([])])
+    client = FMPClient(
+        FMPConfig.from_env(), client=httpx.Client(transport=httpx.MockTransport(server))
+    )
+    for symbol in symbols:
+        assert client.index_daily(symbol, FRIDAY) == b"[]"
+    assert [request.url.params["symbol"] for request in server.requests] == symbols
