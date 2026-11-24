@@ -13,6 +13,18 @@
       "sha256": "8edd496e943d626c731364374d4e10a77a4d1101a1a0446f3b2a928eefe6e885"
     },
     {
+      "path": "index_constituent_changes/v1.schema.json",
+      "schema_id": "index_constituent_changes",
+      "schema_version": 1,
+      "sha256": "e8d783b3fdbf490c38e9f394eb0f0a2b2c71937befe4c59c2a6c7d731ff8fb74"
+    },
+    {
+      "path": "index_constituents/v1.schema.json",
+      "schema_id": "index_constituents",
+      "schema_version": 1,
+      "sha256": "e1fd880eae6ed6b98ea01f320bac7bd9371a5881124636e6411a8169b2dd9ce4"
+    },
+    {
       "path": "intraday_partition/v1.schema.json",
       "schema_id": "intraday_partition",
       "schema_version": 1,

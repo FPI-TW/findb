@@ -8,6 +8,7 @@ from decimal import Decimal
 from enum import Enum
 from types import MappingProxyType
 from typing import Annotated, Literal, NamedTuple, Optional
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
@@ -391,7 +392,6 @@ class MarketMinuteRow(_OHLCRow):
 
     @model_validator(mode="after")
     def validate_one_minute_bar(self) -> "MarketMinuteRow":
-        from zoneinfo import ZoneInfo
 
         if self.bar_end_time != self.bar_start_time + timedelta(minutes=1):
             raise ValueError("bar_end_time must equal bar_start_time plus one minute")
@@ -733,6 +733,268 @@ class ExchangeDailyQuotePayload(BaseModel):
         return self
 
 
+# Index reference documents: a publisher's own files, kept as evidence.
+# Each index reference contract and the publisher document kind it carries.
+INDEX_REFERENCE_SCHEMAS: Mapping[str, str] = MappingProxyType(
+    {
+        "index_constituents": "constituent_report",
+        "index_constituent_changes": "change_workbook",
+    }
+)
+INDEX_CODE_PATTERN = r"^[0-9]{5}\.[0-9]{2}$"
+INDEX_DOCUMENT_URL_PATTERN = r"^https://www\.hsi\.com\.hk/[A-Za-z0-9_./?=%&-]+$"
+INDEX_PART_KEY_PATTERN = r"^(?:[0-9]{5}\.[0-9]{2}|document)$"
+# Bounded to the stored precision, so a stored value is the published one.
+IndexWeight = Annotated[Decimal, Field(ge=0, le=100, decimal_places=4)]
+IndexPrice = Annotated[Decimal, Field(ge=0, max_digits=20, decimal_places=6)]
+IndexText = Annotated[str, Field(min_length=1, max_length=200)]
+
+
+class IndexDocumentEvidence(BaseModel):
+    """The publisher's document the rows were read from, as the publisher served it.
+
+    ``document_date`` is the date the content speaks for: a report's trading
+    day or a workbook's latest effective date, in the publisher's local time.  ``part_key`` names the part of the document
+    this delivery carries (an index code), or ``document`` for all of it.  The
+    publisher's download service sends no ETag and often no Last-Modified.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    publisher: Literal["hsil"]
+    kind: Literal["constituent_report", "change_workbook"]
+    series: Literal["hsi", "hsci"]
+    url: str = Field(max_length=500, pattern=INDEX_DOCUMENT_URL_PATTERN)
+    document_date: date
+    part_key: str = Field(pattern=INDEX_PART_KEY_PATTERN)
+    original_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    original_bytes: int = Field(ge=1, le=EXCHANGE_REPORT_MAX_BYTES)
+    gzip_bytes: int = Field(ge=1, le=EXCHANGE_REPORT_GZIP_MAX_BYTES)
+    last_modified: Optional[datetime] = None
+    etag: Optional[str] = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("last_modified")
+    @classmethod
+    def require_utc_aware_last_modified(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("last_modified must include a timezone")
+        return value.astimezone(timezone.utc)
+
+
+class IndexClassification(BaseModel):
+    """The industry an industry index stands for, in the publisher's scheme."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    scheme: Literal["hsics"]
+    code: str = Field(pattern=r"^[0-9]{2}$")
+    name_en: str = Field(min_length=1, max_length=100)
+    name_zh: Optional[str] = Field(default=None, min_length=1, max_length=100)
+
+
+class IndexDescriptor(BaseModel):
+    """An index as the document names it; an industry index carries its industry."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    code: str = Field(pattern=INDEX_CODE_PATTERN)
+    name_en: IndexText
+    name_zh: Optional[IndexText] = None
+    parent_code: Optional[str] = Field(default=None, pattern=INDEX_CODE_PATTERN)
+    classification: Optional[IndexClassification] = None
+
+    @model_validator(mode="after")
+    def parent_is_another_index(self) -> "IndexDescriptor":
+        if self.parent_code == self.code:
+            raise ValueError("an index is not its own parent")
+        return self
+
+
+class IndexDocumentBatch(IngressBatch):
+    """A complete document part: the gzip-compressed document is mandatory evidence.
+
+    ``data_date`` is the publisher-local date the producer observed the document;
+    the content's own date is ``document.document_date``.
+    """
+
+    delivery_mode: Literal["full_snapshot"]  # type: ignore[assignment]
+    source_raw_ref: str = Field(max_length=2048, pattern=RAW_OBJECT_REF_PATTERN)
+    source_raw_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    document: IndexDocumentEvidence
+    sequence: None = None
+    sequence_count: None = None
+    coverage_start_date: None = None  # type: ignore[assignment]
+    coverage_end_date: None = None  # type: ignore[assignment]
+
+    @model_validator(mode="after")
+    def document_is_not_from_the_future(self) -> "IndexDocumentBatch":
+        if self.document.document_date > self.data_date:
+            raise ValueError("document_date must not follow the observation data_date")
+        return self
+
+
+def _require_root_parents(indexes: Sequence["IndexDescriptor"]) -> None:
+    """A parent is another index the document names, and is itself a top-level index."""
+    parents = {index.code: index.parent_code for index in indexes}
+    for index in indexes:
+        if index.parent_code is None:
+            continue
+        if index.parent_code not in parents:
+            raise ValueError("a parent index must be one the document lists")
+        if parents[index.parent_code] is not None:
+            raise ValueError("a parent index must itself be a top-level index")
+
+
+def _require_declared_rows(batch: IngressBatch, rows: Sequence[object]) -> None:
+    ensure_data_items_count_within_limit(len(rows))
+    if batch.declared_record_count != len(rows):
+        raise PydanticCustomError(
+            "declared_record_count_mismatch",
+            "declared_record_count must equal the number of data rows",
+        )
+
+
+class IndexConstituentCount(IndexDescriptor):
+    """An index a constituent report lists, with how many constituents it lists."""
+
+    constituent_count: int = Field(ge=1)
+
+
+class IndexConstituentRow(_IngressRow):
+    """One constituent's line in a constituent report, as published."""
+
+    index_code: str = Field(pattern=INDEX_CODE_PATTERN)
+    trade_date: date
+    symbol: str = Field(pattern=EXCHANGE_SYMBOL_PATTERN)
+    name_en: Optional[IndexText] = None
+    name_zh: Optional[IndexText] = None
+    listing_place: str = Field(min_length=1, max_length=50)
+    currency: CurrencyCode
+    close: Optional[IndexPrice] = None
+    weight_pct: IndexWeight
+    # The report's own industry column; membership of an industry index decides.
+    industry: Optional[IndexClassification] = None
+
+
+class IndexConstituentsBatch(IndexDocumentBatch):
+    indexes: list[IndexConstituentCount] = Field(min_length=1, max_length=50)
+
+
+class IndexConstituentsPayload(BaseModel):
+    """Payload body for ``index_constituents.v1``: one report's complete constituent lists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch: IndexConstituentsBatch
+    data: list[IndexConstituentRow] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_complete_lists(self) -> "IndexConstituentsPayload":
+        batch = self.batch
+        _require_declared_rows(batch, self.data)
+        if batch.document.kind != "constituent_report" or batch.document.part_key != "document":
+            raise ValueError("a constituent report is delivered whole")
+        if any(row.trade_date != batch.document.document_date for row in self.data):
+            raise ValueError("every row trade_date must equal document.document_date")
+        declared = {index.code: index.constituent_count for index in batch.indexes}
+        if len(declared) != len(batch.indexes):
+            raise ValueError("every listed index must be declared once")
+        _require_root_parents(batch.indexes)
+        if len({(row.index_code, row.symbol) for row in self.data}) != len(self.data):
+            raise PydanticCustomError(
+                "duplicate_delivery_key",
+                "duplicate (index_code, symbol) rows are not allowed",
+            )
+        listed: dict[str, int] = {}
+        for row in self.data:
+            listed[row.index_code] = listed.get(row.index_code, 0) + 1
+        if listed != declared:
+            raise ValueError("every index must list exactly its declared constituent_count rows")
+        ensure_payload_size_within_limit(self.model_dump(mode="json"))
+        return self
+
+
+class IndexChangeRow(_IngressRow):
+    """One effective addition or deletion, as the publisher's workbook lists it."""
+
+    ordinal: int = Field(ge=1)
+    effective_date: date
+    action: Literal["add", "delete"]
+    symbol: str = Field(pattern=EXCHANGE_SYMBOL_PATTERN)
+    name_en: Optional[IndexText] = None
+    name_zh: Optional[IndexText] = None
+    listing_place: str = Field(min_length=1, max_length=50)
+    # Constituent count once every change of that effective date is applied.
+    constituents_after: NonNegativeInt
+    # How many rows of this action the effective date lists, signed by the
+    # action (``+2`` for two additions), when the publisher states it.
+    count_change: Optional[int] = None
+
+    @model_validator(mode="after")
+    def count_change_signed_by_action(self) -> "IndexChangeRow":
+        if self.count_change is not None and (
+            self.count_change == 0 or (self.count_change > 0) != (self.action == "add")
+        ):
+            raise ValueError("count_change is positive for additions and negative for deletions")
+        return self
+
+
+class IndexChangesBatch(IndexDocumentBatch):
+    index: IndexDescriptor
+    # Earliest effective date the publisher lists for this index.
+    history_start: date
+
+
+class IndexChangesPayload(BaseModel):
+    """Payload body for ``index_constituent_changes.v1``: one index's complete change history."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    batch: IndexChangesBatch
+    data: list[IndexChangeRow] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_complete_history(self) -> "IndexChangesPayload":
+        batch = self.batch
+        _require_declared_rows(batch, self.data)
+        if batch.document.kind != "change_workbook" or batch.document.part_key != batch.index.code:
+            raise ValueError("a change workbook is delivered one index at a time")
+        dates = [row.effective_date for row in self.data]
+        if min(dates) != batch.history_start:
+            raise ValueError("history_start must equal the earliest effective_date")
+        if max(dates) > batch.document.document_date:
+            raise ValueError("no effective_date may follow document.document_date")
+        if len({row.ordinal for row in self.data}) != len(self.data):
+            raise PydanticCustomError(
+                "duplicate_delivery_key", "duplicate ordinal rows are not allowed"
+            )
+        if len({(row.effective_date, row.symbol, row.action) for row in self.data}) != len(
+            self.data
+        ):
+            raise PydanticCustomError(
+                "duplicate_delivery_key",
+                "duplicate (effective_date, symbol, action) rows are not allowed",
+            )
+        by_date: dict[date, list[IndexChangeRow]] = {}
+        for row in self.data:
+            by_date.setdefault(row.effective_date, []).append(row)
+        for rows in by_date.values():
+            if len({row.constituents_after for row in rows}) != 1:
+                raise ValueError(
+                    "every row of an effective date states the same constituents_after"
+                )
+            for action in ("add", "delete"):
+                listed = [row for row in rows if row.action == action]
+                stated = {row.count_change for row in listed} - {None}
+                signed = len(listed) if action == "add" else -len(listed)
+                if stated and stated != {signed}:
+                    raise ValueError("count_change must equal the rows of its action on that date")
+        ensure_payload_size_within_limit(self.model_dump(mode="json"))
+        return self
+
+
 class _IngressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -826,6 +1088,29 @@ class ExchangeDailyQuoteIngressRequest(_IngressRequest):
     payload: ExchangeDailyQuotePayload
 
 
+class IndexConstituentsIngressRequest(_IngressRequest):
+    """Complete ``index_constituents.v1`` request."""
+
+    schema_id: Literal["index_constituents"]
+    schema_version: Literal[1]
+    payload: IndexConstituentsPayload
+
+
+class IndexChangesIngressRequest(_IngressRequest):
+    """Complete ``index_constituent_changes.v1`` request."""
+
+    schema_id: Literal["index_constituent_changes"]
+    schema_version: Literal[1]
+    payload: IndexChangesPayload
+
+
+# Requests that carry a publisher document rather than market observations.
+INDEX_REFERENCE_REQUESTS = (
+    IndexConstituentsIngressRequest,
+    IndexChangesIngressRequest,
+)
+
+
 def minute_sequence_key_digest(
     *, dataset_key: str, data_date: date, snapshot_id: str, sequence: int
 ) -> str:
@@ -852,5 +1137,7 @@ IngressRequestV1 = (
     | FuturesEODIngressRequest
     | IntradayPartitionIngressRequest
     | ExchangeDailyQuoteIngressRequest
+    | IndexConstituentsIngressRequest
+    | IndexChangesIngressRequest
 )
 IngressRequest = IngressRequestV1 | MarketEODIngressRequestV2

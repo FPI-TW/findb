@@ -27,6 +27,16 @@ from app.models.canonical import (
     TradingCalendar,
 )
 from app.models.correction import CanonicalCorrection
+from app.models.index_reference import (
+    IndexChangeEvent,
+    IndexDefinition,
+    IndexMembership,
+    IndexMembershipBuild,
+    IndexSnapshot,
+    IndexSnapshotConstituent,
+    ReferenceDeliveryEvidence,
+    ReferenceDocumentArchive,
+)
 from app.models.provider_work import (
     ProviderWork,
     ProviderWorkAttempt,
@@ -97,6 +107,14 @@ __all__ = [
     "EODFieldCorrection",
     "ExchangeDailyQuote",
     "ExchangeReportArchive",
+    "IndexChangeEvent",
+    "IndexDefinition",
+    "IndexMembership",
+    "IndexMembershipBuild",
+    "IndexSnapshot",
+    "IndexSnapshotConstituent",
+    "ReferenceDeliveryEvidence",
+    "ReferenceDocumentArchive",
     "TradingCalendar",
     "CalendarMarket",
     "CalendarRevisionDay",

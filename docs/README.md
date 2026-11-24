@@ -27,6 +27,7 @@
 | 同一 provider 多條執行線、Fetcher 並行與回補效率的擴充設計 | [dev/provider-throughput-scaling.md](dev/provider-throughput-scaling.md) |
 | FMP provider 的需求範圍、已定事項、分階段導入計畫與待決事項 | [dev/fmp-provider.md](dev/fmp-provider.md) |
 | 港股個股日線由 FactSet 供應、以 HKEX 官方值修正的設計與三方比對 | [dev/hk-equity-factset-hkex.md](dev/hk-equity-factset-hkex.md) |
+| 港股產業分類與恒指成分股（HSIL 參考資料）的設計、來源實測與 PR 進度 | [dev/hsil-index-reference.md](dev/hsil-index-reference.md) |
 | 還原價的調整因子表、各 provider 的調整行為、計算方式與 DQ | [dev/price-adjustment-factors.md](dev/price-adjustment-factors.md) |
 | FactSet 港股 EOD、每日 HKEX 清單與現行名單回補 | [operations/factset_hk.md](operations/factset_hk.md) |
 | TAIFEX 期貨 EOD 官方來源行為、日曆維護與待發布／休市排查 | [operations/taifex.md](operations/taifex.md) |
