@@ -232,6 +232,15 @@ def load_readiness(
     return value
 
 
+def _local_state_busy(exc: BaseException) -> bool:
+    """A shared local SQLite file stayed write-locked past the connection's busy wait."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    # Extended codes (e.g. SQLITE_BUSY_SNAPSHOT) keep the primary code in the low byte.
+    return isinstance(code, int) and code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+
+
 def _plan_deadline(plan: dict[str, Any]) -> float:
     """The plan's frozen completion deadline; Source always sends one."""
     try:
@@ -2387,6 +2396,27 @@ class FullMarketRuntime:
                     raise ProviderWorkRecoveryBlockedError(
                         "Source provider owner fence differs"
                     ) from None
+                if _local_state_busy(exc):
+                    # Another consumer held a shared local SQLite file (journal, governor
+                    # or checkpoint state) past its busy wait. That says nothing about
+                    # the provider or this member, so it is never reported to Source:
+                    # the member waits and the round goes on with the others. As for a
+                    # suspension, only a provider call already made charges the member.
+                    self._record_diagnostic(key, exc)
+                    try:
+                        if owner.dispatch_observations != dispatch_before:
+                            self.state.finish(
+                                key,
+                                status="prepared" if self.state.prepared(key) else "pending",
+                                reason="local_state_busy",
+                                now=time.time(),
+                            )
+                        else:
+                            self.state.defer_wait(key, now=time.time(), reason="local_state_busy")
+                    except sqlite3.Error:
+                        # The checkpoint itself stays locked: end the round instead.
+                        return False
+                    continue
                 failure = self.adapter.classify(exc, "member")
                 if failure.kind is FailureKind.WORK_FAILED:
                     # The provider rejects every member alike (credential,
@@ -2659,6 +2689,8 @@ class FullMarketRuntime:
             self.state.record_diagnostic(
                 key, provider=self.provider, category="price_basis_mismatch"
             )
+        elif _local_state_busy(exc):
+            self.state.record_diagnostic(key, provider=self.provider, category="local_state_busy")
         elif (fields := self.adapter.diagnostic(exc)) is not None:
             self.state.record_diagnostic(key, provider=self.provider, **fields)
         elif isinstance(exc, MemberUnavailableError):

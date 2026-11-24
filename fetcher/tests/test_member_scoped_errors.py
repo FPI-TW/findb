@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import timedelta
 
 import httpx
@@ -147,6 +148,82 @@ def test_twelve_data_ohlc_violation_blocks_only_that_member(tmp_path, monkeypatc
     }
     assert diagnostics == ["member:ohlc_bounds"]
     assert not runtime.state.has_blocking_manual(plan["plan_id"])
+    assert not runtime.state.pending_source_error_keys(plan["plan_id"])
+
+
+def _sqlite_busy(tmp_path) -> sqlite3.OperationalError:
+    """The error another consumer's write lock raises once the busy wait runs out."""
+    path = tmp_path / "busy.sqlite3"
+    holder = sqlite3.connect(path)
+    holder.execute("CREATE TABLE t(x)")
+    holder.execute("BEGIN IMMEDIATE")
+    waiter = sqlite3.connect(path, timeout=0)
+    try:
+        waiter.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError as exc:
+        return exc
+    finally:
+        waiter.close()
+        holder.close()
+    raise AssertionError("the write lock was not held")
+
+
+def test_local_sqlite_lock_timeout_defers_only_that_member(tmp_path, monkeypatch):
+    """FinLab 1-minute bars on 2026-11-24 ended a round on a shared journal lock."""
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+    from findb_fetcher.providers.twelve_data import (
+        TwelveDataClient,
+        TwelveDataConfig,
+        TwelveDataResponse,
+    )
+
+    _clock(monkeypatch)
+    monkeypatch.setattr(TwelveDataConfig, "from_env", classmethod(lambda cls: cls(api_key="k")))
+    busy = _sqlite_busy(tmp_path)
+    calls: list[str] = []
+
+    def fetch_daily(self, symbol, **kwargs):
+        calls.append(symbol)
+        if symbol == "BUSY":
+            raise busy
+        payload = _twelve_payload(symbol, "11")
+        return TwelveDataResponse(payload, raw_bytes=canonical_bytes(payload))
+
+    monkeypatch.setattr(TwelveDataClient, "fetch_daily", fetch_daily)
+    monkeypatch.setattr(TwelveDataAdapter, "member_batch_limit", 0)
+    runtime, source, delivery, _ = _runtime(tmp_path, "twelve_data")
+    keys = ["BUSY", "AAPL", "IBM"]
+    plan = _plan("us_equity_eod", keys)
+    runtime.state.record_plan(plan, "twelve_data")
+    try:
+        runtime._deliver_plan(
+            plan,
+            {"release_id": "r", "members": [_us(key) for key in keys]},
+            _feed("twelve_data", "us_equity_eod"),
+        )
+        rows, diagnostics = _rows(runtime, plan["plan_id"])
+        with runtime.state.connection() as db:
+            (attempts,) = db.execute(
+                "SELECT attempts FROM full_work WHERE member_key='BUSY'"
+            ).fetchone()
+    finally:
+        runtime.close()
+    # The round goes on: the others are delivered after the lock timeout.
+    assert calls == keys
+    assert [json.loads(body)["payload"]["data"][0]["symbol"] for body in delivery.prepared] == [
+        "AAPL",
+        "IBM",
+    ]
+    # A local lock says nothing about the provider or the member: no Source
+    # outcome, no charge, and the member waits for a later pass.
+    assert source.outcomes == []
+    assert rows == {
+        "BUSY": ("pending", "local_state_busy"),
+        "AAPL": ("complete", None),
+        "IBM": ("complete", None),
+    }
+    assert attempts == 0
+    assert diagnostics == ["local_state_busy"]
     assert not runtime.state.pending_source_error_keys(plan["plan_id"])
 
 
