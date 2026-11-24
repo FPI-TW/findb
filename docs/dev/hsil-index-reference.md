@@ -14,8 +14,12 @@
   - Source provider 名稱維持 `hkex`。
   - 實際發布者以 `document.publisher = "hsil"` 與文件 URL 記錄。
 - **僅供內部使用。** HSIL 的指數資料若要對外轉發，需要另簽授權。
+  - HSIL 的 PDF 在中繼資料中標示「不允許擷取文字」；pypdf 與 pdfminer 都會忽略這個標示。Owner 於 2026-11-24 確認維持「僅內部使用、可以擷取」。
 - **產業分類只收 HSCI 成分股**（約 580 檔），只到行業層；非成分股沒有分類。
-- **歷史用變動 xlsx 補到 2008 年**：以最新快照為錨點往回推算，並以每份快照交叉核對。
+- **歷史採混合做法**（2026-11-24 Owner 決定）：
+  - 有每日快照的日子以快照為準（本機歸檔從 2026-10-02 起）。
+  - 更早的日子由變動 xlsx 往回推到 2008 年，並標為「推算」。
+  - 兩份資料對不上的地方記為 DQ warning，不擋寫入。
 - **不收檢討結果新聞稿**（2026-11-24 Owner 決定）：
   - 每日 PDF 與變動 xlsx 已涵蓋所有已生效的名單、權重與分類。
   - 新聞稿只多「尚未生效的預告」，下游目前用不到；而且它是自由格式文字，HSCI 行業指數的變動也不在其中（另見「指數通告」）。
@@ -60,6 +64,24 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
   - **reference feed 在 production 上線、歸檔匯入完成後，移除排程：**
     `launchctl bootout gui/$(id -u)/com.findb.hsil-archive`，再刪除 `~/Library/LaunchAgents/com.findb.hsil-archive.plist`。
 
+## 以真實資料驗證重建（2026-11-24）
+
+以本機歸檔的 36 天快照與 2026-11-24 的兩份 xlsx 驗證：
+- **HSI 系列**：5 個指數與所有快照完全一致，沒有任何 finding。
+- **HSCI 系列**：13 個指數在快照期間全部一致；往回推算時有 3 個已知缺口。
+  - 2026-03-09 xlsx 記了臨時代碼 02910、02911 的加入，之後換回正式代碼卻沒有紀錄；
+    這兩檔的正式代碼因此被推成 2008 年起就是成分股。
+  - 2022-03-07 的 06878 加入，和當時的成分對不上。
+  - 這 3 個缺口讓更早日期推算出的檔數多 1～3 檔，記為 `count_after_change`。
+- **HSIL 資料本身的特性**（重建時要處理）：
+  - **臨時櫃台**：合股或拆股期間，股票改以 HKEX 保留的 02900–02999 代碼交易。
+    - 快照照實列出臨時代碼，xlsx 只記正式代碼。例如 02915 換成 02670、02947 換成 02723、02963 換成 01440。
+    - 重建時依快照中「同一天一出一入」的交換，把臨時代碼對回正式代碼；同一天有多組交換時，以同一行業指數配對。
+  - **佔位代碼 99999**：例如 2026-11-19 起 HSCI 快照出現 99999，看來是為即將納入的新股預留，不算成分股。
+  - **同一天以同一代碼刪除再加入**：例如 2015-03-18 長和集團重組時的 00001。這不是錯誤，成員區間在當天切成兩段。
+  - **HSI 報告的分類指數權重欄**：只印出所屬的那一欄，純文字抽取無法分辨是哪一欄，
+    所以 PR 3 要用 pdfminer 依字元位置判斷（10 頁約 0.7 秒）。
+
 ## 設計
 
 - **新的 provider-work kind `reference`**
@@ -74,13 +96,25 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
   - 由重建產生的 `index_membership`、`index_membership_build`。
   - 產業分類由 HSCI 行業指數的成員推得，不另建表。
 - **代碼對應**：一律保存 5 碼 symbol；`instrument_id` 依成員區間對應，可為空，不自動建立 instrument。
+  - 只有在區間延續到快照期間，或區間結束時該 instrument 已有日線時，才對應到 instrument，以免代碼重複使用造成錯配。
+- **重建**：每次交付都以該系列已存的全部快照與變動重建一次，所以交付順序不影響結果。
+  - 輸入和上次重建相同時略過，重送已存的文件不會觸發重建。
+  - 同一系列的歸檔、寫入與重建都在同一把 advisory lock 下進行。
+  - 臨時代碼每「一段出現期間」各自配對，代碼日後被別的股票沿用也不會配錯。
+- **舊版文件**：同一天的報告或同一指數的變動檔，若晚到的是較舊的版本，不會取代較新的版本，只記 `INDEX_DOCUMENT_STALE` warning。
+  - 文件沒寫父指數或行業時，保留已存的值。
+  - 成員區間 `valid_from` 為空，代表「在 HSIL 最早紀錄之前」。
+  - `index_membership_build.observed_from` 是第一份快照日，在它之前的成員為推算。
+- **DQ**
+  - 單份文件自相矛盾時整份擋下，不寫入任何資料，例如權重合計不是 100、成員不在父指數內、行業欄與行業指數不符。
+  - 文件之間不一致時記 warning，每個規則與指數各一筆，附前 20 例。
 
 ## PR 進度
 
 | PR | 內容 | 狀態 |
 | --- | --- | --- |
-| 1 | 兩個契約與 artifacts、canonical 與歸檔表、`reference_delivery_evidence`、migration `2bbe07b98293`；尚無 dataset 接收 | 進行中 |
-| 2 | `reconstruct()`、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP` | 未開始 |
+| 1 | 兩個契約與 artifacts、canonical 與歸檔表、`reference_delivery_evidence`、migration `2bbe07b98293`；尚無 dataset 接收 | #692 已合併並部署 staging |
+| 2 | 重建演算法、歸檔服務、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP`、migration `ebb187773e30` | 進行中 |
 | 3 | Fetcher 解析器、pypdf、讀取多個 sheet 的 xlsx、raw 格式 | 未開始 |
 | 4 | `reference` work kind 與 known-parts 端點 | 未開始 |
 | 5 | 啟用兩條 feed、scheduler migration、Serve scope 分支、監控排除 | 未開始 |

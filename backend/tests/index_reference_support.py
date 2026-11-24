@@ -10,6 +10,8 @@ from typing import Any
 from tests.intraday_support import ACCOUNT, RAW_BUCKET
 
 SOURCE = "hkex"
+# Every gzip a builder made, by its sha256, so a test can stage it like the producer.
+BODIES: dict[str, bytes] = {}
 OBSERVED = date(2026, 11, 24)
 FETCHED = datetime(2026, 11, 24, 14, 30, tzinfo=timezone.utc)
 HSI = {"code": "00001.00", "name_en": "Hang Seng Index", "name_zh": "恒生指數"}
@@ -44,6 +46,7 @@ def document(
     """The gzip the producer stores, its batch evidence fields, and the document fields."""
     body = gzip.compress(original, mtime=0)
     digest = hashlib.sha256(body).hexdigest()
+    BODIES[digest] = body
     batch = {
         "data_date": OBSERVED.isoformat(),
         "delivery_mode": "full_snapshot",
@@ -103,6 +106,8 @@ def constituents_payload(
     indexes: list[dict[str, Any]] | None = None,
     *,
     trade_date: date = date(2026, 11, 23),
+    series: str = "hsi",
+    original: bytes | None = None,
 ) -> dict[str, Any]:
     rows = (
         rows
@@ -121,7 +126,12 @@ def constituents_payload(
             {**HSI_FINANCE, "constituent_count": 1},
         ]
     )
-    _, batch, evidence = document("constituent_report", series="hsi", document_date=trade_date)
+    _, batch, evidence = document(
+        "constituent_report",
+        series=series,
+        document_date=trade_date,
+        original=original or f"%PDF-1.4 {series} report {trade_date}\n".encode(),
+    )
     return {
         "batch": {
             **batch,
@@ -154,6 +164,8 @@ def changes_payload(
     index: dict[str, Any] | None = None,
     history_start: str = "2008-10-08",
     document_date: date = date(2026, 10, 23),
+    series: str = "hsci",
+    original: bytes | None = None,
 ) -> dict[str, Any]:
     rows = (
         rows
@@ -165,7 +177,11 @@ def changes_payload(
     )
     index = index or HSCI
     _, batch, evidence = document(
-        "change_workbook", series="hsci", document_date=document_date, part_key=index["code"]
+        "change_workbook",
+        series=series,
+        document_date=document_date,
+        part_key=index["code"],
+        original=original or f"PK workbook {series} {document_date}\n".encode(),
     )
     return {
         "batch": {

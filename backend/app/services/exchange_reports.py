@@ -48,26 +48,35 @@ def archive_key(source: str, batch: ExchangeDailyQuoteBatch) -> str:
     )
 
 
-def _prove_report(body: bytes, batch: ExchangeDailyQuoteBatch) -> None:
-    """The gzip holds exactly the report the delivery describes, and nothing more."""
-    report = batch.report
-    if len(body) != report.gzip_bytes:
+def prove_gzip(body: bytes, *, gzip_bytes: int, original_bytes: int, original_sha256: str) -> None:
+    """The gzip holds exactly the file the delivery describes, and nothing more."""
+    if len(body) != gzip_bytes:
         raise ReportRejectedError("gzip_bytes")
     inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
     try:
         # One byte more than declared proves the declared size without trusting it.
-        original = inflater.decompress(body, report.original_bytes + 1)
+        original = inflater.decompress(body, original_bytes + 1)
     except zlib.error:
         raise ReportRejectedError("gzip") from None
     if not inflater.eof or inflater.unused_data or inflater.unconsumed_tail:
         raise ReportRejectedError("gzip")
-    if len(original) != report.original_bytes:
+    if len(original) != original_bytes:
         raise ReportRejectedError("original_bytes")
-    if hashlib.sha256(original).hexdigest() != report.original_sha256:
+    if hashlib.sha256(original).hexdigest() != original_sha256:
         raise ReportRejectedError("original_sha256")
 
 
-def _put(publisher: CanonicalPublisher, key: str, body: bytes) -> str:
+def _prove_report(body: bytes, batch: ExchangeDailyQuoteBatch) -> None:
+    report = batch.report
+    prove_gzip(
+        body,
+        gzip_bytes=report.gzip_bytes,
+        original_bytes=report.original_bytes,
+        original_sha256=report.original_sha256,
+    )
+
+
+def put_object(publisher: CanonicalPublisher, key: str, body: bytes) -> str:
     """Create the object; adopt an identical one a failed earlier attempt left behind."""
     try:
         return publisher.write(key, body, content_type=CONTENT_TYPE, expected_etag=None)
@@ -122,7 +131,7 @@ async def archive_report(
         # Another compression of a report already kept: proven, not kept twice.
         return stored
     key = archive_key(source, batch)
-    etag = await asyncio.to_thread(_put, publisher, key, body)
+    etag = await asyncio.to_thread(put_object, publisher, key, body)
     row = ExchangeReportArchive(
         source=source,
         board=report.board,

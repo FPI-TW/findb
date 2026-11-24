@@ -21,7 +21,6 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -171,6 +170,7 @@ class IndexDefinition(Base):
     __tablename__ = "index_definition"
     __table_args__ = (
         UniqueConstraint("publisher", "code", name="uq_index_definition_code"),
+        Index("idx_index_definition_series", "publisher", "series"),
         CheckConstraint(f"code ~ '{INDEX_CODE_CHECK}'", name="index_definition_code"),
         CheckConstraint(
             "(classification_scheme IS NULL) = (classification_code IS NULL)",
@@ -185,6 +185,8 @@ class IndexDefinition(Base):
     index_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     publisher: Mapped[str] = mapped_column(String(50), nullable=False)
     code: Mapped[str] = mapped_column(String(8), nullable=False)
+    # Index family the publisher's documents group it in (``hsi``, ``hsci``).
+    series: Mapped[str] = mapped_column(String(20), nullable=False)
     name_en: Mapped[str] = mapped_column(String(200), nullable=False)
     name_zh: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     parent_index_id: Mapped[Optional[UUID]] = mapped_column(
@@ -329,7 +331,10 @@ class IndexMembershipBuild(Base):
     """One reconstruction of an index family's membership history.
 
     ``consistent`` builds replace the family's membership; ``no_anchor`` means
-    changes are known but no snapshot exists yet to anchor them.
+    changes are known but no snapshot exists yet to anchor them.  Membership
+    from ``observed_from`` (the first snapshot) to ``anchor_trade_date`` (the
+    latest) is as the snapshots list it; before ``observed_from`` it is derived
+    from the published changes.  ``findings`` counts where the sources disagree.
     """
 
     __tablename__ = "index_membership_build"
@@ -345,6 +350,12 @@ class IndexMembershipBuild(Base):
             "(status = 'consistent') = (anchor_trade_date IS NOT NULL)",
             name="index_membership_build_anchor",
         ),
+        CheckConstraint(
+            "(anchor_trade_date IS NULL) = (observed_from IS NULL) "
+            "AND (observed_from IS NULL OR observed_from <= anchor_trade_date)",
+            name="index_membership_build_observed",
+        ),
+        CheckConstraint("findings >= 0", name="index_membership_build_findings"),
         Index("idx_index_membership_build_family", "publisher", "family", "created_at"),
     )
 
@@ -352,6 +363,8 @@ class IndexMembershipBuild(Base):
     publisher: Mapped[str] = mapped_column(String(50), nullable=False)
     family: Mapped[str] = mapped_column(String(20), nullable=False)
     anchor_trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    observed_from: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    findings: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     inputs_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     run_id: Mapped[Optional[UUID]] = mapped_column(
@@ -366,17 +379,24 @@ class IndexMembership(Base):
     """A symbol's membership of an index over ``[valid_from, valid_to)``.
 
     Derived by reconstruction, never delivered.  ``valid_to`` is empty while
-    the symbol is still a member.  ``starts_at_history_start`` marks a
-    membership whose real start is before the publisher's earliest listed
-    change; ``valid_from`` is then only the first date it is known.
+    the symbol is still a member; ``valid_from`` is empty when the membership
+    began before the publisher's earliest recorded change.
     """
 
     __tablename__ = "index_membership"
     __table_args__ = (
-        UniqueConstraint("index_id", "symbol", "valid_from", name="uq_index_membership_interval"),
+        # An unknown start is one value: a code has one membership before history.
+        UniqueConstraint(
+            "index_id",
+            "symbol",
+            "valid_from",
+            name="uq_index_membership_interval",
+            postgresql_nulls_not_distinct=True,
+        ),
         CheckConstraint(f"symbol ~ '{SYMBOL_CHECK}'", name="index_membership_symbol"),
         CheckConstraint(
-            "valid_to IS NULL OR valid_to > valid_from", name="index_membership_interval"
+            "valid_to IS NULL OR valid_from IS NULL OR valid_to > valid_from",
+            name="index_membership_interval",
         ),
         Index("idx_index_membership_symbol", "symbol", "valid_from"),
         Index("idx_index_membership_instrument", "instrument_id"),
@@ -397,9 +417,8 @@ class IndexMembership(Base):
         nullable=True,
     )
     name_en: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    valid_from: Mapped[date] = mapped_column(Date, nullable=False)
+    valid_from: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     valid_to: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    starts_at_history_start: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     from_event_id: Mapped[Optional[UUID]] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("index_change_event.event_id", ondelete="SET NULL"),

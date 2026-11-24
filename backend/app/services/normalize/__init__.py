@@ -8,6 +8,10 @@ from app.services.normalize.contracts import (
     MarketMinuteContractNormalizer,
 )
 from app.services.normalize.exchange_quote import ExchangeDailyQuoteNormalizer
+from app.services.normalize.index_reference import (
+    IndexChangesNormalizer,
+    IndexConstituentsNormalizer,
+)
 from app.services.normalize.institutional_flow import (
     InstitutionalFlowStockNormalizer,
     InstitutionalFlowSummaryNormalizer,
@@ -28,4 +32,6 @@ __all__ = [
     "ExchangeDailyQuoteNormalizer",
     "InstitutionalFlowSummaryNormalizer",
     "InstitutionalFlowStockNormalizer",
+    "IndexConstituentsNormalizer",
+    "IndexChangesNormalizer",
 ]
