@@ -110,6 +110,21 @@ daily、historical 與名單更新共用一條 FIFO 和一個 owner。#504 已�
 - ingest 的 uvicorn worker 數與 DB pool（目前 1 個 worker、3+5），避免持鎖等待佔滿連線池。
 - 先建立主機與 RDS 的量測方法：同時跑 2–3 條 lane 時的 CPU、DB 連線、`server_ms`、`queue_wait_ms`。
 
+### 8. 共用的本機 SQLite（多條執行線上線前完成）
+
+2026-11-24 production 的 FinLab 1 分 K 第一輪，因為另一個 provider 的每日 journal 清理在寫鎖內掃描整個
+共用 journal（約 1 GB），超過當時 5 秒的等鎖上限而結束整輪。lane 會讓寫入者變多，所以以下列為正式設計項目：
+
+| 檔案 | 現況（2026-11-24 production） | 設計 |
+| --- | --- | --- |
+| provider-work journal | 12 個 consumer 共用一個檔，約 1.0 GB | 每個 provider 一個檔（fetcher-v0.1.51）；舊共用檔只排空。同一 provider 的 lane 共用該 provider 的檔 |
+| Full checkpoint `state.sqlite3` | 6 個 daily consumer 共用，約 165 MB | 每個 provider 一個檔；部署停止窗口內由 release helper 搬移該 provider 的列並核對筆數 |
+| 帳號 governor | 12 個 consumer 共用，約 430 MB，約一半是未回收空頁 | 依帳號共用，維持一個檔；部署停止窗口內於主機上 VACUUM |
+
+- 所有連線等鎖上限一致為 30 秒；SQLite 鎖逾時只延後該成員，不結束整輪（#698）。
+- 每日清理不在寫鎖內掃描整個檔，刪除分批提交（#698）。
+- 監控：SQLite 檔大小、Fetcher 主機剩餘磁碟、`local_state_busy` 診斷次數送 CloudWatch 並建告警。
+
 ## 新增 worker 的選項與風險評估
 
 現在替同一 provider 多開 consumer 不會變快：Fetcher 的 `host_lock(provider)` 是非阻塞鎖，拿不到的 consumer
@@ -136,7 +151,7 @@ daily、historical 與名單更新共用一條 FIFO 和一個 owner。#504 已�
 | Backend provider lock | 不改的話所有 lane 在 Backend 仍排成一列，約 550–650 檔／分鐘 | 同一次改為 lane 層級的鎖 |
 | FinDB 主機與 RDS | 主機 2 vCPU 同時跑 ingest、worker、serve；RDS `db.t4g.medium` 有 CPU credit，額度用完會降速；Serve 延遲可能一起變差 | 先在 staging 量兩條 lane 同時跑時的 CPU、DB 連線數與 Serve 延遲 |
 | Fetcher 主機記憶體 | `t3.medium` 4 GiB、容器沒有記憶體上限；FinLab 日 K 整表載入子行程峰值約 940 MiB，與盤中同時跑可能用到 swap | 量測峰值；必要時讓兩條 lane 避開同時載入整表，或換機型 |
-| 共用的本機 SQLite | governor、journal、Full 狀態由多個 consumer 共用，寫入者變多會互等鎖；consumer 的 `/tmp` 只有 16 MiB（#572） | 量測 busy wait；大量刪除與排序維持不使用 `/tmp` |
+| 共用的本機 SQLite | governor、journal、Full 狀態由多個 consumer 共用，寫入者變多會互等鎖；consumer 的 `/tmp` 只有 16 MiB（#572） | 見第 8 節，多條執行線上線前完成；大量刪除與排序維持不使用 `/tmp` |
 | 正確性 | 每條 lane 的 prepared／receipt、crash replay、stop 掃描、daily 結算都要維持；`expected = data + no_data + missing + blocked` 不能錯 | 依本文件驗收矩陣；staging 一次只啟動一個 provider |
 | 部署 | 需要 migration 與 rollback 下限，Backend 先、Fetcher 後；consumer 變多，告警與 host lock 登記要跟著加（#642） | 分 PR 上線，每一步先在 staging 驗收 |
 
@@ -163,9 +178,11 @@ daily、historical 與名單更新共用一條 FIFO 和一個 owner。#504 已�
 - `expected = data + no_data + missing + blocked`，summary 與完整 `reconcile_plan` 一致。
 - lane 之間互不阻塞；daily 優先；historical 不會一直排不到。
 - staging 一次只啟動一個 provider，首日先調成單日；以 `delivery_timing` 比較每檔耗時與 RPC 數。
+- 多條 lane 同時跑時，各 SQLite 檔的等鎖時間與 `local_state_busy` 次數；不得出現因本機鎖結束整輪。
 
 ## 建議的 PR 順序
 
+0. 共用的本機 SQLite（第 8 節）：journal 分檔、Full checkpoint 分檔、監控與 governor VACUUM。
 1. Backend 容量量測（不改行為）：兩條 lane 同時跑的模擬負載與指標。
 2. Lane 資料模型與 Backend owner／FIFO（migration），含 daily 優先。
 3. Fetcher host lock 與 consumer 拓撲依 lane 產生。

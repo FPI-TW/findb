@@ -185,7 +185,7 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
             attempts[-1].not_before > utc_now()
             and attempts[-1].queue_order > attempts[0].queue_order
         )
-    journal = WorkJournal(h.path / "account/provider-work.sqlite3", work_id)
+    journal = WorkJournal(h.path / f"account/provider-work-{h.provider}.sqlite3", work_id)
     with journal.connection() as db:
         assert db.execute(
             "SELECT attempts FROM work_budget WHERE work_key=?", (work_id,)

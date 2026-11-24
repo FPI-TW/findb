@@ -651,6 +651,8 @@ catalog 的 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝�
 | Staging Full | `/var/lib/findb-full-market/staging/state.sqlite3` |
 | Production Full（保留既有路徑） | `/var/lib/findb-full-market/state.sqlite3` |
 | 共用帳號 governor | `/var/lib/findb-account/<environment>/governor.sqlite3` |
+| Provider-work journal（每個 provider 一個檔） | `/var/lib/findb-account/<environment>/provider-work-<provider>.sqlite3` |
+| 主機共用的舊 journal（只排空） | `/var/lib/findb-account/<environment>/provider-work.sqlite3`：只供 fetcher-v0.1.51 之前開始的工作使用到結案清理 |
 | Historical request state | 原 provider `/var/lib/findb-*-fetcher/historical`，Twelve Data 為 `/var/lib/findb-fetcher/historical` |
 
 Historical Twelve Data／FinLab 以 Backend request／item lease 為持久狀態；Shioaji 另以 request UUID 命名 SQLite。
@@ -692,6 +694,10 @@ Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉�
 舊 v1／v2 accepted replay、舊 pilot layout、舊主機路徑及 cutover 開關不再支援。
 首次切換失敗時保持停止，以成套備份恢復，不能直接讓舊 image 操作新 schema／checkpoint。
 成功後統一版本是 rollback 下限；schema migration 不提供 downgrade，日常 rollback 仍須通過 DB compatibility。
+
+**Provider-work journal 分檔（fetcher-v0.1.51）是 rollback 下限。** 之後新開始的工作只寫入
+`provider-work-<provider>.sqlite3`，更早的版本只讀主機共用的 `provider-work.sqlite3`，看不到這些工作的
+manifest、prepared bytes 與 receipts。退回更早版本不受支援：採 forward fix，或在停止狀態下以部署前的成套備份還原。
 
 Rollback 入口與 promotion 相同，選擇 `mode=rollback` 和該環境已 accepted 的 exact bundle key。
 它不重建 images、不修改 immutable acceptance、不刪 governor 或 prepared bodies。若 migration 不相容，採 forward fix，

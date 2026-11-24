@@ -86,7 +86,9 @@ async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_origin
         assert item_response.status_code == 200, item_response.text
         item = await h.db.get(HistoricalBackfillItem, UUID(item_response.json()["item_id"]))
         job_key = f"historical:{h.request_id}:{item.trade_date}:{universe.symbols[0].symbol}"
-        journal = h.queue.WorkJournal(h.path / "account/provider-work.sqlite3", str(work_id))
+        journal = h.queue.WorkJournal(
+            h.path / f"account/provider-work-{h.provider}.sqlite3", str(work_id)
+        )
         journal.freeze(manifest)
         journal.reserve_attempt(job_key, schedule.max_attempts)
         response = await h.client.post(
