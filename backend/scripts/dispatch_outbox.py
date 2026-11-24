@@ -48,6 +48,7 @@ async def scan_missing_deliveries_safely(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """Keep delivery-monitor failures isolated from durable outbox dispatch."""
+    started = time.monotonic()
     try:
         async with session_factory() as session:
             try:
@@ -65,14 +66,24 @@ async def scan_missing_deliveries_safely(
     except Exception:
         logger.exception("Failed to scan missing dataset deliveries")
         return
+    elapsed = time.monotonic() - started
     if result.skipped_locked:
         logger.info("Delivery monitor scan skipped because another replica owns the lock")
     elif result.created_or_refreshed or result.resolved or result.diagnostics:
         logger.info(
-            "Delivery monitor refreshed=%s resolved=%s diagnostics=%s",
+            "Delivery monitor refreshed=%s resolved=%s diagnostics=%s audited=%s elapsed=%.1fs",
             result.created_or_refreshed,
             result.resolved,
             len(result.diagnostics),
+            result.audited,
+            elapsed,
+        )
+    if elapsed > settings.DELIVERY_MONITOR_TIMEOUT_SECONDS / 2:
+        # Past half the limit a growing scan is about to time out again.
+        logger.warning(
+            "Delivery monitor scan took %.1f of %s seconds",
+            elapsed,
+            settings.DELIVERY_MONITOR_TIMEOUT_SECONDS,
         )
 
 

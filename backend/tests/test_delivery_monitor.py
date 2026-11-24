@@ -975,3 +975,107 @@ async def test_monitor_uses_frozen_plan_deadline(
     if alerts:
         alert = await test_session.scalar(select(MissingDeliveryAlert))
         assert alert.details["deadline_at"] == frozen.isoformat()
+
+
+async def _overdue_etf_plan(test_session):
+    from app.models.registry import DailyDeliveryPlan
+    from tests.test_full_market import DAY, _activated_plan
+
+    _, _, response = await _activated_plan(test_session, "tw_etf_eod", count=2)
+    plan = await test_session.get(DailyDeliveryPlan, response.plan_id)
+    plan.deadline_at = datetime.combine(DAY, time(14), timezone.utc)
+    await test_session.commit()
+    return plan, datetime.combine(DAY, time(15), timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_scan_trusts_stored_counts_and_the_rotating_audit_corrects_drift(
+    test_session, monkeypatch
+):
+    from app.config import get_settings
+    from app.models.registry import DailyDeliveryPlanSummary
+    from app.services import delivery_monitor
+
+    plan, now = await _overdue_etf_plan(test_session)
+    monkeypatch.setattr(delivery_monitor, "_audit_cursor", None)
+    monkeypatch.setattr(get_settings(), "DELIVERY_MONITOR_AUDIT_PLANS", 0)
+    classified = []
+    reconcile = delivery_monitor.reconcile_plan
+
+    async def counting(db, target, **kwargs):
+        classified.append(target.plan_id)
+        return await reconcile(db, target, **kwargs)
+
+    monkeypatch.setattr(delivery_monitor, "reconcile_plan", counting)
+
+    async def open_alert():
+        return await test_session.scalar(
+            select(MissingDeliveryAlert)
+            .where(MissingDeliveryAlert.status == "open")
+            .execution_options(populate_existing=True)
+        )
+
+    result = await scan_missing_deliveries(test_session, now=now)
+    assert result.created_or_refreshed == 1 and result.audited == 0
+    assert (await open_alert()).details["missing"] == 2
+    # A summary that drifted to complete is trusted until the audit reaches it.
+    summary = await test_session.get(DailyDeliveryPlanSummary, plan.plan_id)
+    summary.data_count, summary.missing_count = 2, 0
+    await test_session.commit()
+    await scan_missing_deliveries(test_session, now=now)
+    assert await open_alert() is None
+    assert classified == []
+    # The audit reclassifies the plan, corrects the counts and the alert reopens.
+    monkeypatch.setattr(get_settings(), "DELIVERY_MONITOR_AUDIT_PLANS", 10)
+    result = await scan_missing_deliveries(test_session, now=now)
+    assert result.audited == 1 and classified == [plan.plan_id]
+    await test_session.refresh(summary)
+    assert (summary.data_count, summary.missing_count) == (0, 2)
+    await scan_missing_deliveries(test_session, now=now)
+    assert (await open_alert()).details["missing"] == 2
+
+
+@pytest.mark.asyncio
+async def test_audit_rotates_through_overdue_plans_and_starts_over(test_session, monkeypatch):
+    from app.services import delivery_monitor
+    from app.services.delivery_monitor import audit_plan_summaries
+
+    plan, now = await _overdue_etf_plan(test_session)
+    monkeypatch.setattr(delivery_monitor, "_audit_cursor", None)
+    # A full batch keeps its place; the next batch past the last plan is short and
+    # sends the cursor back to the start.
+    assert await audit_plan_summaries(test_session, now=now, limit=1) == 1
+    assert delivery_monitor._audit_cursor == plan.plan_id
+    assert await audit_plan_summaries(test_session, now=now, limit=1) == 0
+    assert delivery_monitor._audit_cursor is None
+    assert await audit_plan_summaries(test_session, now=now, limit=1) == 1
+    # Plans before their deadline are not audited.
+    delivery_monitor._audit_cursor = None
+    earlier = plan.deadline_at - timedelta(hours=1)
+    assert await audit_plan_summaries(test_session, now=earlier, limit=5) == 0
+
+
+@pytest.mark.asyncio
+async def test_alert_closed_while_the_scheduler_stops_reopens_after_restart(
+    test_session, monkeypatch
+):
+    from app.execution_profiles import scheduler_key
+    from app.models.registry import SchedulerControl
+
+    _, now = await _overdue_etf_plan(test_session)
+    control = await test_session.get(SchedulerControl, scheduler_key("finlab", "full_market"))
+    states = []
+    for desired in ("running", "stopped", "running"):
+        control.desired_state = desired
+        await test_session.commit()
+        await scan_missing_deliveries(test_session, now=now)
+        alert = await test_session.scalar(
+            select(MissingDeliveryAlert).execution_options(populate_existing=True)
+        )
+        states.append((alert.status, (alert.details.get("resolution") or {}).get("code")))
+    # A deploy's stop closes the alert; the next scan after the restart reopens it.
+    assert states == [
+        ("open", None),
+        ("resolved", "SCHEDULER_STOPPED"),
+        ("open", None),
+    ]

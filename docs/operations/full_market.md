@@ -1331,8 +1331,12 @@ Part 計數為 NULL（既有 plan）或 `parts_synced_at` 不等於 `updated_at`
 的新 run 不會改變計數，只以單調條件更新 latest run metadata，不取 plan lock、不重算；完整
 重算寫回時也只在其 latest run 不舊於已記錄者時覆寫 metadata。Processing 狀態不刷新摘要；
 queue worker 只在 terminal commit 前刷新一次，直接呼叫 normalizer 時由 terminal 狀態更新
-負責。Missing-delivery 掃描本來就對逾期 plan 完整分類，順便與已存摘要比對：掃描期間摘要
-未被寫入但計數不同時，記 `Plan summary drift corrected` warning 並完整重算修正。
+負責。Missing-delivery 掃描以已存摘要判斷逾期 plan 是否完整，不重新分類（#683）；只有 FactSet
+`market_eod` 的未完成 plan 會完整分類，因為長期缺口要逐成員的缺口。摘要的核對改由掃描結尾的輪替稽核
+負責：每次依 `plan_id` 順序完整分類 `DELIVERY_MONITOR_AUDIT_PLANS`（預設 10）個已過截止時間的 plan，
+上次的位置記在 dispatcher process 內，到最後一個 plan 後從頭開始，重啟也從頭開始。稽核期間摘要未被寫入
+但計數不同時，記 `Plan summary drift corrected` warning 並完整重算修正，告警在下一次掃描跟著更新。
+2026-11-24 production 有 202 個逾期 plan，約 21 分鐘輪完一遍。
 Historical 實際寫入的修復會更新同 dataset／provider／date 的 plan 摘要：FactSet、Twelve Data 與
 FinLab 的 historical work 只要以相同契約、相同 provider symbol 凍結該成員並有本 work 的 receipt 與
 canonical 寫入證據，該成員即算 data，解除 gap 與 missing-delivery 告警；原 Full work 的結算不改寫。
