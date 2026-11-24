@@ -1329,6 +1329,21 @@ async def complete_item(
         )
         request.completed_at = now
     await db.flush()
+    if eod_evidence is not None:
+        from app.services.delivery_plan_summary import refresh_summaries_for_historical_no_data
+
+        # Written members already refreshed with their runs; no-data proof has no run.
+        await refresh_summaries_for_historical_no_data(
+            db,
+            provider=provider,
+            dataset_key=item.request.dataset_key,
+            trade_date=item.trade_date,
+            member_keys={
+                member.member_key
+                for member in eod_evidence.members
+                if member.outcome == "no_data" and member.raw is not None
+            },
+        )
     return item
 
 

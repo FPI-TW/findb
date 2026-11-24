@@ -398,10 +398,155 @@ async def test_member_evidence_completes_and_repairs_the_full_plan(
         HistoricalBackfillItem, UUID(item["item_id"]), populate_existing=True
     )
     assert stored.unlisted_symbols == ["0003"]
-    # The historical write resolves the Full plan's gap; the gap member stays blocked.
-    await refresh_plan_summary(test_session, plan_id)
-    summary = await test_session.get(DailyDeliveryPlanSummary, plan_id, populate_existing=True)
-    assert (summary.data_count, summary.missing_count, summary.blocked_count) == (1, 1, 1)
+    # The historical write resolves the Full plan's gap and its no-trade proof
+    # completes the member; a missing series stays missing, the gap stays blocked.
+    # Completion itself refreshes the stored counts; a full rebuild agrees.
+    expected = (1, 1, 0, 1) if quiet else (1, 0, 1, 1)
+    for rebuild in (False, True):
+        if rebuild:
+            await refresh_plan_summary(test_session, plan_id)
+        summary = await test_session.get(DailyDeliveryPlanSummary, plan_id, populate_existing=True)
+        counts = (
+            summary.data_count,
+            summary.no_data_count,
+            summary.missing_count,
+            summary.blocked_count,
+        )
+        assert counts == expected
+    # The Full plan's own members keep the outcomes their daily work recorded.
+    assert {
+        member.outcome
+        for member in await test_session.scalars(
+            select(DailyDeliveryMember).where(DailyDeliveryMember.plan_id == plan_id)
+        )
+    } == {None}
+
+
+async def _historical_item(db, provider, day, *, status, members, frozen, schema_version=1):
+    """A settled historical date with its work manifest, as completion leaves them."""
+    from app.models.provider_work import ProviderWork
+
+    request = HistoricalBackfillRequest(
+        request_id=uuid7(),
+        request_key=f"{provider}-{uuid7().hex}",
+        provider=provider,
+        dataset_key=SCOPES[provider],
+        market="TW" if provider == "finlab" else "US",
+        start_date=day,
+        end_date=day,
+        status=status,
+        created_by="owner",
+    )
+    item = HistoricalBackfillItem(
+        item_id=uuid7(),
+        request_id=request.request_id,
+        trade_date=day,
+        status=status,
+        result_evidence={
+            "version": 2,
+            "schema_id": "market_eod",
+            "schema_version": schema_version,
+            "trade_date": day.isoformat(),
+            "item_id": None,
+            "request_id": str(request.request_id),
+            "members": members,
+        },
+    )
+    db.add_all([request, item])
+    await db.flush()
+    db.add(
+        ProviderWork(
+            work_id=uuid7(),
+            environment=get_settings().APP_ENVIRONMENT,
+            provider=provider,
+            stable_key=f"historical:{item.item_id}",
+            kind="historical",
+            dataset_key=SCOPES[provider],
+            trade_date=day,
+            scope={},
+            manifest={
+                "mode": "canonical",
+                "contract": {"schema_id": "market_eod", "schema_version": 1},
+                "members": [
+                    {"key": key, "source_symbol": symbol, "mapping_status": "mapped"}
+                    for key, symbol in frozen.items()
+                ],
+            },
+            state="completed",
+        )
+    )
+    await db.flush()
+    return item
+
+
+@pytest.mark.asyncio
+async def test_historical_no_data_outranks_daily_blocked_but_never_a_mapping_gap(
+    test_session, monkeypatch
+):
+    _, body, release = await setup(test_session, monkeypatch)
+    plan = await _plan(test_session, "finlab", release.release_id, FIRST, body.members[:3])
+    members = {
+        member.member_key: member
+        for member in await test_session.scalars(
+            select(DailyDeliveryMember).where(DailyDeliveryMember.plan_id == plan.plan_id)
+        )
+    }
+    # The daily left 0001 blocked by a provider error; 0003 is the release's gap.
+    members["0001"].outcome, members["0001"].outcome_reason = "blocked", "source_error"
+    members["0003"].outcome, members["0003"].outcome_reason = "blocked", "mapping_gap"
+    raw = {"ref": RAW, "sha256": SHA}
+    proof = [
+        {"member_key": "0001", "outcome": "no_data", "raw": raw},
+        {"member_key": "0002", "outcome": "missing", "reason": "no_source_row"},
+        {"member_key": "0003", "outcome": "no_data", "raw": raw},
+    ]
+    symbols = {key: member.provider_symbol for key, member in members.items()}
+    await _historical_item(
+        test_session, "finlab", FIRST, status="completed", members=proof, frozen=symbols
+    )
+    await refresh_plan_summary(test_session, plan.plan_id)
+
+    async def counts():
+        summary = await test_session.get(
+            DailyDeliveryPlanSummary, plan.plan_id, populate_existing=True
+        )
+        return (
+            summary.data_count,
+            summary.no_data_count,
+            summary.missing_count,
+            summary.blocked_count,
+        )
+
+    # 0001 becomes no-data; a missing series stays missing; the gap stays blocked.
+    assert await counts() == (0, 1, 1, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", ["failed_item", "other_symbol", "other_contract", "no_raw", "other_date"]
+)
+async def test_historical_no_data_requires_the_same_frozen_member_and_a_settled_item(
+    test_session, monkeypatch, case
+):
+    _, body, release = await setup(test_session, monkeypatch)
+    plan = await _plan(test_session, "finlab", release.release_id, FIRST, body.members[:2])
+    symbols = {member.symbol: member.provider_symbol for member in body.members[:2]}
+    row = {"member_key": "0001", "outcome": "no_data", "raw": {"ref": RAW, "sha256": SHA}}
+    if case == "no_raw":
+        # Stored evidence without its raw observation never proves no-data.
+        row = {"member_key": "0001", "outcome": "no_data"}
+    await _historical_item(
+        test_session,
+        "finlab",
+        SECOND if case == "other_date" else FIRST,
+        status="failed" if case == "failed_item" else "partial",
+        members=[row, {"member_key": "0002", "outcome": "data"}],
+        frozen={**symbols, "0001": "OTHER"} if case == "other_symbol" else symbols,
+        schema_version=2 if case == "other_contract" else 1,
+    )
+    await refresh_plan_summary(test_session, plan.plan_id)
+    summary = await test_session.get(DailyDeliveryPlanSummary, plan.plan_id, populate_existing=True)
+    assert (summary.no_data_count, summary.missing_count) == (0, 2)
 
 
 @pytest.mark.asyncio
