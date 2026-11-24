@@ -554,7 +554,7 @@ def _plan_day_evidence(item_id, request_id, day, rows):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["completed", "failed_item", "failed_run"])
+@pytest.mark.parametrize("case", ["completed", "failed_item", "failed_run", "unlisted"])
 async def test_completed_history_repairs_the_futures_plan_with_writes_and_no_trade_rows(
     test_session, case
 ):
@@ -636,8 +636,9 @@ async def test_completed_history_repairs_the_futures_plan_with_writes_and_no_tra
         [
             row(202608, "regular", traded=True),
             row(202608, "after_hours", traded=False),
-            # Officially traded, but this run never wrote it: still a gap.
-            row(202609, "regular", traded=True),
+            # Officially traded, but this run never wrote it: still a gap. Its
+            # night session is absent, but the contract is listed: still a gap.
+            *([] if case == "unlisted" else [row(202609, "regular", traded=True)]),
         ],
     )
     test_session.add(item)
@@ -656,6 +657,10 @@ async def test_completed_history_repairs_the_futures_plan_with_writes_and_no_tra
     )
     if case == "completed":
         assert counts == (1, 1, 2, 0)
+    elif case == "unlisted":
+        # The day's reports list no 202609 contract at all: both sessions are
+        # proven not listed that day, like a contract past its last trading day.
+        assert counts == (1, 3, 0, 0)
     elif case == "failed_run":
         # Without a completed write only the official no-trade row counts.
         assert counts == (0, 1, 3, 0)

@@ -1406,7 +1406,8 @@ async def _historical_futures(
     The completion proof was validated against the official reports and its
     run's member evidence, and a member key names the product, contract and
     session itself. Data needs the run's write evidence; a no-trade row counts
-    only without it. Neither settles the daily work.
+    only without it, and so does a member whose contract the reports do not list.
+    None of them settles the daily work.
     """
     from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
     from app.schemas.historical_backfill import HistoricalResultEvidence
@@ -1433,6 +1434,8 @@ async def _historical_futures(
     ).all()
     run_ids: set[UUID] = set()
     quiet: set[str] = set()
+    # Contracts each whole-day proof lists; one listing it proves it was listed.
+    listed: list[set[str]] = []
     for run_id, raw_evidence in items:
         try:
             evidence = HistoricalResultEvidence.model_validate(raw_evidence)
@@ -1447,6 +1450,24 @@ async def _historical_futures(
             for row in evidence.rows
             if row.no_trade
         )
+        listed.append({row.contract_code for row in evidence.rows})
+    # The five product reports list every listed contract, untraded ones included.
+    # A frozen member whose contract none of them lists was no longer listed that
+    # day, e.g. a contract past its last trading day in an older frozen universe.
+    contracts = {
+        member.member_key: member.contract_code
+        for member in members
+        if member.member_key in expected
+    }
+    unlisted = (
+        {
+            key
+            for key, contract in contracts.items()
+            if contract and all(contract not in day for day in listed)
+        }
+        if listed
+        else set()
+    )
     written: set[str] = set()
     if run_ids:
         written = set(
@@ -1464,7 +1485,7 @@ async def _historical_futures(
             )
         )
     repaired = written & expected
-    return repaired, (quiet & expected) - repaired
+    return repaired, ((quiet | unlisted) & expected) - repaired
 
 
 async def get_plan(
