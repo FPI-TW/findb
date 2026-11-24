@@ -246,3 +246,50 @@ async def test_only_an_intraday_dataset_may_claim_a_missing_record(test_session)
 def test_a_missing_record_can_only_mean_no_trade() -> None:
     with pytest.raises(ValidationError, match="source_status must match reason"):
         DeliveryOutcomeRequest.model_validate(_claim("fp1:x", "0001", reason="halted"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason, bar, counted",
+    [
+        # The day had only odd lots: FinLab's daily bar carries the earlier close.
+        ("empty_response", CARRIED, True),
+        # A board lot traded at a new price: its partition should exist.
+        ("empty_response", ("10.3", "10.3", "10.3", "10.3"), False),
+        # Another blocking reason is not a missing record at all.
+        ("source_error", CARRIED, False),
+    ],
+    ids=["carried close", "priced", "provider error"],
+)
+async def test_a_member_left_blocked_for_an_empty_answer_counts_once_the_bar_shows_no_trade(
+    test_session, reason, bar, counted
+) -> None:
+    """Members blocked before #612 (odd lots above one lot) reclassify, outcomes untouched."""
+    from app.models.registry import DailyDeliveryPlanSummary
+    from app.services.delivery_plan_summary import refresh_plan_summary
+
+    intraday, _, _ = await _plans(test_session)
+    await record_outcome(
+        test_session,
+        intraday.plan_id,
+        DeliveryOutcomeRequest.model_validate(
+            {
+                "version": 1,
+                "work_item_id": intraday.parts[0].work_item_id,
+                "member_key": "0002",
+                "outcome": "blocked",
+                "reason": reason,
+            }
+        ),
+        provider="finlab",
+        allowed_datasets=["tw_equity_bar_1m"],
+    )
+    await _daily_bar(test_session, "0002", bar)
+    await refresh_plan_summary(test_session, intraday.plan_id)
+    summary = await test_session.get(
+        DailyDeliveryPlanSummary, intraday.plan_id, populate_existing=True
+    )
+    assert (summary.no_data_count, summary.blocked_count) == ((1, 0) if counted else (0, 1))
+    test_session.expire_all()
+    member = await _member(test_session, intraday, "0002")
+    assert (member.outcome, member.outcome_reason) == ("blocked", reason)

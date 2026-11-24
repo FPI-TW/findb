@@ -1088,22 +1088,23 @@ async def classify_plan(
             or (part_id, snapshot_id, daily_update_id) in complete_groups
         ):
             canonical_keys.add(member_key)
-    historical_no_data: set[str] = set()
+    proven_no_data: set[str] = set()
     if plan.dataset_key == "tw_futures_eod":
-        repaired, historical_no_data = await _historical_futures(db, plan, members)
+        repaired, proven_no_data = await _historical_futures(db, plan, members)
         canonical_keys.update(repaired)
     elif plan.dataset_key not in SEQUENCED_DATASETS:
         canonical_keys.update(await _historical_repairs(db, plan, members, scoped=scoped))
-        historical_no_data = await _historical_no_data(db, plan, members)
+        proven_no_data = await _historical_no_data(db, plan, members)
+        proven_no_data |= await _corroborated_empty_responses(db, plan, members, canonical_keys)
     states: list[MemberState] = []
     for member in members:
         mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
         state: Literal["data", "no_data", "missing", "blocked"]
         if member.member_key in canonical_keys:
             state = "data"
-        elif member.outcome == "no_data" or member.member_key in historical_no_data:
-            # Historical no-data proof outranks the daily's own blocked outcome;
-            # the daily work's settlement and member outcome stay as recorded.
+        elif member.outcome == "no_data" or member.member_key in proven_no_data:
+            # Historical or corroborated no-data proof outranks the daily's own
+            # blocked outcome; its settlement and member outcome stay as recorded.
             state = "no_data"
         elif (
             member.outcome == "blocked"
@@ -1357,6 +1358,42 @@ async def _historical_no_data(
         }
         no_data.update(key for key in keys if frozen.get(key) == expected[key])
     return no_data
+
+
+async def _corroborated_empty_responses(
+    db: AsyncSession,
+    plan: DailyDeliveryPlan,
+    members: list[DailyDeliveryMember],
+    written: set[str],
+) -> set[str]:
+    """Intraday members left blocked for an empty answer that the daily bar shows untraded.
+
+    Before #612 (production 2026-11-20) the daily bar corroborated a missing partition
+    only below one board lot of volume, so odd-lot-only days stayed blocked. The same
+    corroboration that now accepts a no-record answer reclassifies them; the member's
+    recorded outcome and the daily work's settlement stay as they are.
+    """
+    candidates = [
+        member
+        for member in members
+        if member.outcome == "blocked"
+        and member.outcome_reason == "empty_response"
+        and member.mapping_status == "mapped"
+        and member.member_key not in written
+    ]
+    if not candidates:
+        return set()
+    feed = catalog_feed(plan.provider, plan.dataset_key)
+    if feed is None or feed.contract.schema_id != "intraday_partition":
+        return set()
+    dataset = await db.get(DatasetRegistry, plan.dataset_key)
+    if dataset is None:
+        return set()
+    return {
+        member.member_key
+        for member in candidates
+        if await corroborate_no_record(db, plan, member, dataset) is not None
+    }
 
 
 async def _historical_futures(
