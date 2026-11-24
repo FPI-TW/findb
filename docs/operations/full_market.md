@@ -1351,7 +1351,17 @@ Historical 的 no_data 證據同樣會讓同 dataset／provider／date 的 plan 
 這份證據優先於 daily 記下的 blocked（例如舊版的 `blocked / source_error`），但 canonical 寫入仍優先於 no_data。
 成員的 `outcome`、原 Full work 的結算與 receipts 都不改寫，只影響 plan 的統計、lateness 與告警。
 No_data 沒有 run，所以回補項目完成時，Backend 直接重新分類這些成員所在的 part。修正上線前已完成的回補，
-用下面的 `rebuild_delivery_plan_summaries.py` 重建；期貨與分鐘資料不在這個範圍。
+用下面的 `rebuild_delivery_plan_summaries.py` 重建。分鐘資料不在這個範圍。
+
+TAIFEX `tw_futures_eod` 的 historical 也會修復同日的 plan（#595），規則不同於逐檔日線：
+
+- 只認 completed 的回補項目。完成證據（第 1 版，含五個商品的官方報表與 manifest）在完成時已和報表、
+  run 的寫入證據核對過，成員鍵 `product|contract|session` 本身就是合約身份，所以不比對 work manifest。
+- Data：項目的 run（`historical_backfill_item.run_id`）為 completed 且對該成員有 `delivery_member_evidence`。
+- No_data：證據裡該列是無成交（成交量 0，開高低收、結算價與未平倉都空白），而且沒有寫入。
+- Mapping gap 仍算 blocked；證據裡沒有的成員（例如凍結的名單裡已到期的合約）維持原狀。
+
+期貨 run 的寫入要等項目完成才算數，所以完成時重新分類證據涵蓋的所有成員所在的 part。
 OHLCV 人工修正不改變 member 身份或完整度，無須重算摘要。
 
 `expected = data + no_data + missing + blocked` 與原 canonical／durable evidence 規則相同。

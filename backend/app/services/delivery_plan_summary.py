@@ -528,7 +528,7 @@ async def refresh_summaries_for_run(db: AsyncSession, run: IngestionRun) -> None
         await refresh_part_summary(db, plan_id, part_id)
 
 
-async def refresh_summaries_for_historical_no_data(
+async def refresh_summaries_for_historical_members(
     db: AsyncSession,
     *,
     provider: str,
@@ -536,7 +536,11 @@ async def refresh_summaries_for_historical_no_data(
     trade_date: date,
     member_keys: set[str],
 ) -> None:
-    """A historical item's no-data proof writes no run; reclassify its members' parts."""
+    """Reclassify the parts of members a completed historical item newly proves.
+
+    No-data proof has no run, and a futures run's write only counts once its
+    item completes, so neither refreshes with the run itself.
+    """
     if not member_keys:
         return
     await db.flush()

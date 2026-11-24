@@ -231,8 +231,27 @@ async def test_http_completion_validates_evidence_and_canonical_pipeline(
     assert (
         await client.post(path, json={**complete, "result_evidence": altered}, headers=headers)
     ).status_code == 422
+    from app.services import delivery_plan_summary
+
+    refreshed = []
+    original = delivery_plan_summary.refresh_summaries_for_historical_members
+
+    async def capture(db, **scope):
+        refreshed.append(scope)
+        await original(db, **scope)
+
+    monkeypatch.setattr(delivery_plan_summary, "refresh_summaries_for_historical_members", capture)
     response = await client.post(path, json={**complete, "result_evidence": proof}, headers=headers)
     assert response.status_code == 200, response.text
+    # Completion reclassifies every member the proof covers, written or no-trade.
+    assert refreshed == [
+        {
+            "provider": "taifex",
+            "dataset_key": "tw_futures_eod",
+            "trade_date": date(2026, 10, 1),
+            "member_keys": {f"{product}|{product}:202610F1|regular" for product in PRODUCTS},
+        }
+    ]
     test_session.expire_all()
     saved = await test_session.get(HistoricalBackfillItem, item_id)
     assert saved.status == "completed" and saved.result_evidence == proof
@@ -494,3 +513,152 @@ def client(client, test_session):
     from tests.owned_history import OwnedHistoricalClient
 
     return OwnedHistoricalClient(client, test_session)
+
+
+def _plan_day_evidence(item_id, request_id, day, rows):
+    """Whole-day proof for ``day``: the plan's TX rows plus no-trade rows elsewhere."""
+    others = [
+        {
+            "product_code": product,
+            "contract_code": f"{product}:202608",
+            "contract_month": "202608",
+            "session": "regular",
+            "trade_date": day.isoformat(),
+            "open": None,
+            "high": None,
+            "low": None,
+            "close": None,
+            "volume": 0,
+            "settlement_price": None,
+            "open_interest": None,
+        }
+        for product in PRODUCTS[1:]
+    ]
+    body = {
+        "version": 1,
+        "item_id": str(item_id),
+        "request_id": str(request_id),
+        "trade_date": day.isoformat(),
+        "fetched_at": f"{day.isoformat()}T10:00:00Z",
+        "reports": [
+            {
+                **reference(product.encode(), "csv"),
+                "product_code": product,
+                "url": "https://www.taifex.com.tw/cht/3/futDataDown",
+            }
+            for product in PRODUCTS
+        ],
+        "rows": [*rows, *others],
+    }
+    return {**body, "manifest": reference(canonical(body))}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["completed", "failed_item", "failed_run"])
+async def test_completed_history_repairs_the_futures_plan_with_writes_and_no_trade_rows(
+    test_session, case
+):
+    from app.models.registry import (
+        DailyDeliveryMember,
+        DailyDeliveryPlanSummary,
+        DeliveryMemberEvidence,
+        HistoricalBackfillRequest,
+    )
+    from app.services.delivery_plan_summary import refresh_plan_summary
+    from tests.test_full_market import DAY, _activated_plan
+
+    _, _, response = await _activated_plan(test_session, "tw_futures_eod", count=2)
+    members = {
+        member.member_key: member
+        for member in await test_session.scalars(
+            select(DailyDeliveryMember).where(DailyDeliveryMember.plan_id == response.plan_id)
+        )
+    }
+    assert set(members) == {
+        f"TX|TX:{month}|{session}"
+        for month in (202608, 202609)
+        for session in ("regular", "after_hours")
+    }
+    # The daily left the quiet session blocked by a provider error.
+    quiet = members["TX|TX:202608|after_hours"]
+    quiet.outcome, quiet.outcome_reason = "blocked", "source_error"
+
+    def row(month, session, *, traded):
+        return {
+            "product_code": "TX",
+            "contract_code": f"TX:{month}",
+            "contract_month": str(month),
+            "session": session,
+            "trade_date": DAY.isoformat(),
+            "open": None,
+            "high": None,
+            "low": None,
+            "close": "105" if traded else None,
+            "volume": 37 if traded else 0,
+            "settlement_price": None,
+            "open_interest": None,
+        }
+
+    request = HistoricalBackfillRequest(
+        request_id=uuid7(),
+        request_key="taifex-plan-repair",
+        provider="taifex",
+        dataset_key="tw_futures_eod",
+        market="TAIFEX",
+        start_date=DAY,
+        end_date=DAY,
+        status="completed",
+        created_by="owner",
+    )
+    run = IngestionRun(
+        dataset_key="tw_futures_eod",
+        source="taifex",
+        schema_id="futures_eod",
+        schema_version=1,
+        batch_data_date=DAY,
+        delivery_mode="backfill",
+        is_rerun=False,
+        status="failed" if case == "failed_run" else "completed",
+    )
+    test_session.add_all([request, run])
+    await test_session.flush()
+    item = HistoricalBackfillItem(
+        item_id=uuid7(),
+        request_id=request.request_id,
+        trade_date=DAY,
+        status="failed" if case == "failed_item" else "completed",
+        run_id=run.run_id,
+    )
+    item.result_evidence = _plan_day_evidence(
+        item.item_id,
+        request.request_id,
+        DAY,
+        [
+            row(202608, "regular", traded=True),
+            row(202608, "after_hours", traded=False),
+            # Officially traded, but this run never wrote it: still a gap.
+            row(202609, "regular", traded=True),
+        ],
+    )
+    test_session.add(item)
+    # The run wrote only the first contract's regular session.
+    test_session.add(DeliveryMemberEvidence(run_id=run.run_id, member_key="TX|TX:202608|regular"))
+    await test_session.flush()
+    await refresh_plan_summary(test_session, response.plan_id)
+    summary = await test_session.get(
+        DailyDeliveryPlanSummary, response.plan_id, populate_existing=True
+    )
+    counts = (
+        summary.data_count,
+        summary.no_data_count,
+        summary.missing_count,
+        summary.blocked_count,
+    )
+    if case == "completed":
+        assert counts == (1, 1, 2, 0)
+    elif case == "failed_run":
+        # Without a completed write only the official no-trade row counts.
+        assert counts == (0, 1, 3, 0)
+    else:
+        assert counts == (0, 0, 3, 1)
+    assert (quiet.outcome, quiet.outcome_reason) == ("blocked", "source_error")

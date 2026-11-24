@@ -1089,7 +1089,10 @@ async def classify_plan(
         ):
             canonical_keys.add(member_key)
     historical_no_data: set[str] = set()
-    if plan.dataset_key not in {"tw_futures_eod", *SEQUENCED_DATASETS}:
+    if plan.dataset_key == "tw_futures_eod":
+        repaired, historical_no_data = await _historical_futures(db, plan, members)
+        canonical_keys.update(repaired)
+    elif plan.dataset_key not in SEQUENCED_DATASETS:
         canonical_keys.update(await _historical_repairs(db, plan, members, scoped=scoped))
         historical_no_data = await _historical_no_data(db, plan, members)
     states: list[MemberState] = []
@@ -1354,6 +1357,77 @@ async def _historical_no_data(
         }
         no_data.update(key for key in keys if frozen.get(key) == expected[key])
     return no_data
+
+
+async def _historical_futures(
+    db: AsyncSession,
+    plan: DailyDeliveryPlan,
+    members: list[DailyDeliveryMember],
+) -> tuple[set[str], set[str]]:
+    """A completed TAIFEX historical date's writes and official no-trade rows.
+
+    The completion proof was validated against the official reports and its
+    run's member evidence, and a member key names the product, contract and
+    session itself. Data needs the run's write evidence; a no-trade row counts
+    only without it. Neither settles the daily work.
+    """
+    from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
+    from app.schemas.historical_backfill import HistoricalResultEvidence
+
+    expected = {
+        member.member_key
+        for member in members
+        if member.mapping_status == "mapped" and member.outcome_reason != "mapping_gap"
+    }
+    if not expected:
+        return set(), set()
+    items = (
+        await db.execute(
+            select(HistoricalBackfillItem.run_id, HistoricalBackfillItem.result_evidence)
+            .join(HistoricalBackfillRequest)
+            .where(
+                HistoricalBackfillRequest.provider == plan.provider,
+                HistoricalBackfillRequest.dataset_key == plan.dataset_key,
+                HistoricalBackfillItem.trade_date == plan.trade_date,
+                HistoricalBackfillItem.status == "completed",
+                HistoricalBackfillItem.result_evidence.is_not(None),
+            )
+        )
+    ).all()
+    run_ids: set[UUID] = set()
+    quiet: set[str] = set()
+    for run_id, raw_evidence in items:
+        try:
+            evidence = HistoricalResultEvidence.model_validate(raw_evidence)
+        except ValueError:
+            continue
+        if evidence.trade_date != plan.trade_date:
+            continue
+        if run_id is not None:
+            run_ids.add(run_id)
+        quiet.update(
+            f"{row.product_code}|{row.contract_code}|{row.session}"
+            for row in evidence.rows
+            if row.no_trade
+        )
+    written: set[str] = set()
+    if run_ids:
+        written = set(
+            await db.scalars(
+                select(DeliveryMemberEvidence.member_key)
+                .join(IngestionRun, IngestionRun.run_id == DeliveryMemberEvidence.run_id)
+                .where(
+                    DeliveryMemberEvidence.run_id.in_(run_ids),
+                    IngestionRun.source == plan.provider,
+                    IngestionRun.dataset_key == plan.dataset_key,
+                    IngestionRun.schema_id == "futures_eod",
+                    IngestionRun.batch_data_date == plan.trade_date,
+                    IngestionRun.status.in_(("completed", "completed_with_errors")),
+                )
+            )
+        )
+    repaired = written & expected
+    return repaired, (quiet & expected) - repaired
 
 
 async def get_plan(
