@@ -15,8 +15,9 @@ Sources (all free, no API key required):
 - **FX** – static dict in this file. Most ``FX/fx`` rows are
   Bloomberg-style macro/derivative tickers, not pure FX pairs, so a
   hand-curated map is the only reliable path.
-- **Indices** – static dict in this file. Indices have small, fixed
-  inventories per market (HSI family, S&P 500 sectors, 上證 行業 etc.).
+- **Indices** – ``app.services.index_names``, the table the contract
+  normalizer also names new index instruments from. Indices have small,
+  fixed inventories per market (HSI family, S&P 500 sectors, 上證 行業 etc.).
 
 The script is idempotent: every column is only filled where it is
 currently ``NULL``. Re-running after a partial update only writes the
@@ -44,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import get_settings
 from app.models.canonical import Instrument
+from app.services.index_names import INDEX_NAMES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -96,131 +98,7 @@ FX_NAMES: dict[str, str] = {
     "VIX": "VIX 波動率指數",
 }
 
-# (market, symbol) -> name. Currency is derived from the market in
-# ``run_indices`` (US→USD, HK→HKD, CN→CNY, TW→TWD). Indices FinDB ingests keep
-# the provider's symbol, e.g. FMP's ``^GSPC``.
-INDEX_NAMES: dict[tuple[str, str], str] = {
-    # --- US ---
-    ("US", "^GSPC"): "S&P 500 指數",
-    ("US", "^NDX"): "NASDAQ 100 指數",
-    ("US", "^DJI"): "道瓊工業平均指數",
-    ("US", "^IXIC"): "NASDAQ 綜合指數",
-    ("US", "^RUT"): "羅素 2000 指數",
-    ("US", "^SOX"): "費城半導體指數",
-    ("US", "^VIX"): "CBOE 波動率指數",
-    ("US", "^NYA"): "NYSE 綜合指數",
-    ("US", "^DJT"): "道瓊運輸平均指數",
-    ("US", "^DJU"): "道瓊公用事業平均指數",
-    ("US", "^XAX"): "NYSE American 綜合指數",
-    ("US", "^OEX"): "S&P 100 指數",
-    ("US", "^MID"): "S&P 中型股 400 指數",
-    ("US", "^SPXEW"): "S&P 500 等權重指數",
-    ("US", "^W5000"): "威爾夏 5000 全市場指數",
-    ("US", "^DWCF"): "道瓊美國全市場指數",
-    ("US", "^RUI"): "羅素 1000 指數",
-    ("US", "^RUA"): "羅素 3000 指數",
-    ("US", "^RLG"): "羅素 1000 成長指數",
-    ("US", "^RLV"): "羅素 1000 價值指數",
-    ("US", "^GSPE"): "S&P 500 能源類股指數",
-    ("US", "^SP500-15"): "S&P 500 原物料類股指數",
-    ("US", "^SP500-20"): "S&P 500 工業類股指數",
-    ("US", "^SP500-25"): "S&P 500 非必需消費類股指數",
-    ("US", "^SP500-30"): "S&P 500 必需消費類股指數",
-    ("US", "^SP500-35"): "S&P 500 醫療保健類股指數",
-    ("US", "^SP500-40"): "S&P 500 金融類股指數",
-    ("US", "^SP500-45"): "S&P 500 資訊科技類股指數",
-    ("US", "^SP500-50"): "S&P 500 通訊服務類股指數",
-    ("US", "^SP500-55"): "S&P 500 公用事業類股指數",
-    ("US", "^SP500-60"): "S&P 500 房地產類股指數",
-    ("US", "^SIXB"): "原物料精選類股指數",
-    ("US", "^SIXC"): "通訊服務精選類股指數",
-    ("US", "^SIXE"): "能源精選類股指數",
-    ("US", "^SIXI"): "工業精選類股指數",
-    ("US", "^SIXM"): "金融精選類股指數",
-    ("US", "^SIXR"): "必需消費精選類股指數",
-    ("US", "^SIXRE"): "房地產精選類股指數",
-    ("US", "^SIXT"): "科技精選類股指數",
-    ("US", "^SIXU"): "公用事業精選類股指數",
-    ("US", "^SIXV"): "醫療保健精選類股指數",
-    ("US", "^SIXY"): "非必需消費精選類股指數",
-    ("US", "^DJUSSC"): "道瓊美國半導體指數",
-    ("US", "^BKX"): "KBW 那斯達克銀行指數",
-    ("US", "^NBI"): "那斯達克生技指數",
-    ("US", "^SPSIBI"): "S&P 生技精選產業指數",
-    ("US", "^ICEBIO"): "NYSE 生技指數",
-    ("US", "^DJUSPM"): "道瓊美國金礦指數",
-    ("US", "^PSE"): "NYSE Arca 科技 100 指數",
-    ("US", "^EMCLOUD"): "BVP 那斯達克新興雲端指數",
-    ("US", "^TRAN"): "那斯達克運輸指數",
-    ("US", "^AMZ"): "Alerian MLP 指數",
-    ("US", "^VIX1D"): "CBOE 1 日波動率指數",
-    ("US", "^VIX9D"): "CBOE 9 日波動率指數",
-    ("US", "^VIX3M"): "CBOE 3 個月波動率指數",
-    ("US", "^VIX6M"): "CBOE 6 個月波動率指數",
-    ("US", "^VIX1Y"): "CBOE 1 年波動率指數",
-    ("US", "^VVIX"): "CBOE VIX 波動率指數",
-    ("US", "^VXN"): "CBOE 那斯達克 100 波動率指數",
-    ("US", "^RVX"): "CBOE 羅素 2000 波動率指數",
-    ("US", "^VXD"): "CBOE 道瓊波動率指數",
-    ("US", "^GVZ"): "CBOE 黃金波動率指數",
-    ("US", "^OVX"): "CBOE 原油波動率指數",
-    ("US", "^VXSLV"): "CBOE 白銀 ETF 波動率指數",
-    ("US", "^VXTLT"): "CBOE 20 年期以上公債 ETF 波動率指數",
-    ("US", "^VIXEQ"): "CBOE S&P 500 成分股波動率指數",
-    ("US", "^IRX"): "13 週美國國庫券殖利率指數",
-    ("US", "^FVX"): "5 年期美債殖利率指數",
-    ("US", "^TNX"): "10 年期美債殖利率指數",
-    ("US", "^TYX"): "30 年期美債殖利率指數",
-    ("US", "DX-Y.NYB"): "美元指數",
-    ("US", "^IDCTCRT"): "ICE 美國公債核心指數",
-    ("US", "^SPGSCI"): "S&P 高盛商品指數",
-    ("US", "S5COND"): "S&P 500 非必需消費品行業指數",
-    ("US", "S5CONS"): "S&P 500 必需消費品行業指數",
-    ("US", "S5ENRS"): "S&P 500 能源行業指數",
-    ("US", "S5FINL"): "S&P 500 金融行業指數",
-    ("US", "S5HLTH"): "S&P 500 醫療保健行業指數",
-    ("US", "S5INDU"): "S&P 500 工業行業指數",
-    ("US", "S5INFT"): "S&P 500 資訊科技行業指數",
-    ("US", "S5MATR"): "S&P 500 原材料行業指數",
-    ("US", "S5RLST"): "S&P 500 房地產行業指數",
-    ("US", "S5TELS"): "S&P 500 通訊服務行業指數",
-    ("US", "S5UTIL"): "S&P 500 公用事業行業指數",
-    # BM7T is intentionally omitted — meaning is ambiguous in our datasource;
-    # leaving it unmatched so the operator can fill it in manually.
-    # --- HK ---
-    ("HK", "^HSI"): "恒生指數",
-    ("HK", "^HSCE"): "恒生中國企業指數",
-    ("HK", "512.HK"): "中華交易服務香港內地指數",
-    ("HK", "HSTECH"): "恒生科技指數",
-    ("HK", "HSMSI"): "恒生中小型股指數",
-    ("HK", "VHSI"): "恒生波幅指數",
-    ("HK", "HSCICD"): "恒生綜合行業指數 - 非必需性消費",
-    ("HK", "HSCICS"): "恒生綜合行業指數 - 必需性消費",
-    ("HK", "HSCIEN"): "恒生綜合行業指數 - 能源",
-    ("HK", "HSCIFN"): "恒生綜合行業指數 - 金融",
-    ("HK", "HSCIH"): "恒生綜合行業指數 - 醫療保健",
-    ("HK", "HSCIIN"): "恒生綜合行業指數 - 工業",
-    ("HK", "HSCIIT"): "恒生綜合行業指數 - 資訊科技",
-    ("HK", "HSCIMT"): "恒生綜合行業指數 - 原材料",
-    ("HK", "HSCIPC"): "恒生綜合行業指數 - 地產建築",
-    ("HK", "HSCITC"): "恒生綜合行業指數 - 電訊",
-    ("HK", "HSCIUT"): "恒生綜合行業指數 - 公用事業",
-    # --- CN ---
-    ("CN", "SHCOMP"): "上證綜合指數",
-    ("CN", "SHSZ300"): "滬深 300 指數",
-    ("CN", "SZ399006"): "創業板指數",
-    ("CN", "SZCOMP"): "深證成份指數",
-    ("CN", "SH000908"): "上證能源行業指數",
-    ("CN", "SH000909"): "上證原材料行業指數",
-    ("CN", "SH000910"): "上證工業行業指數",
-    ("CN", "SH000911"): "上證非必需消費行業指數",
-    ("CN", "SH000912"): "上證主要消費行業指數",
-    ("CN", "SH000913"): "上證醫療保健行業指數",
-    ("CN", "SH000914"): "上證金融地產行業指數",
-    ("CN", "SH000915"): "上證資訊技術行業指數",
-    ("CN", "SH000916"): "上證電信服務行業指數",
-    ("CN", "SH000917"): "上證公用事業行業指數",
-}
+# Index names live in ``app.services.index_names`` (the normalizer uses them too).
 
 INDEX_CURRENCY_BY_MARKET: dict[str, str] = {
     "US": "USD",

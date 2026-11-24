@@ -474,6 +474,8 @@ feed，不改排程，只延長 `INDEX_UNIVERSES`，`historical_requests_per_dat
 - `^EMCLOUD` 一年內有 2 列高低價與開收不一致，遇到時由 Backend DQ 擋下該檔當天的資料。
 - 成交量有值的只有 `^DJT`、`^DJU`、`^OEX`、`^MID`、S&P 500 類股、`^DJUSSC`、`^DJUSPM` 與 `512.HK`，其餘一律為 0，
   照原值寫入。
+- 名稱改由寫入時自動帶入（`app/services/index_names.py`，原本在 `backfill_world_names.py`）；已寫入但名稱為空的
+  instrument 在下一次寫入時補上，所以已抓過的環境不必再手動執行回補腳本。
 - 第二批沒有逐檔量測定案時間。美股組排在台北 08:30（紐約前一天 19:30 或 20:30 之後），另有 4 小時發布重試窗口；
   staging 驗收時確認每一檔在排程時都已有目標日的列。
 
