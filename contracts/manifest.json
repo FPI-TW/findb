@@ -13,6 +13,24 @@
       "sha256": "8edd496e943d626c731364374d4e10a77a4d1101a1a0446f3b2a928eefe6e885"
     },
     {
+      "path": "index_constituent_changes/v1.schema.json",
+      "schema_id": "index_constituent_changes",
+      "schema_version": 1,
+      "sha256": "77e80414ed474f0037567505e9d549eafdb53264d93580d4e7c741bb92fa40ab"
+    },
+    {
+      "path": "index_constituents/v1.schema.json",
+      "schema_id": "index_constituents",
+      "schema_version": 1,
+      "sha256": "df12320984a8f2fee4542afc7e6652f191176b734eb5ba46843d80bfa4c31721"
+    },
+    {
+      "path": "index_review_announcement/v1.schema.json",
+      "schema_id": "index_review_announcement",
+      "schema_version": 1,
+      "sha256": "3979fab8f46f5d2e6d91bd6a8f333cbaf3e0f16064b911ae8c54c90d6b9a5828"
+    },
+    {
       "path": "intraday_partition/v1.schema.json",
       "schema_id": "intraday_partition",
       "schema_version": 1,

@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import CalendarRevisionDay
 from app.models.registry import IngestionRun
-from app.schemas.ingress import DeliveryMode, IngressRequest
+from app.schemas.ingress import INDEX_REFERENCE_REQUESTS, DeliveryMode, IngressRequest
 from app.services.calendar_management import published_year
 from app.services.feed_scope import lock_feed_scope
 from app.utils import utc_now
@@ -595,7 +595,9 @@ async def evaluate_delivery_policy(
     evaluated_at = (now or utc_now()).astimezone(timezone.utc)
     mode = request.payload.batch.delivery_mode
     mode_value = getattr(mode, "value", mode)
-    if expectation is None:
+    # A publisher document is complete by its own declared counts and speaks for
+    # its own date: record-count baselines and the expected session do not apply.
+    if expectation is None or isinstance(request, INDEX_REFERENCE_REQUESTS):
         return DeliveryPolicyResult(
             outcome="pass",
             baseline_status="disabled",

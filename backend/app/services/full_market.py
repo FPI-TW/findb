@@ -51,6 +51,7 @@ from app.schemas.full_market import (
     UniverseSubmitRequest,
 )
 from app.schemas.ingress import (
+    INDEX_REFERENCE_REQUESTS,
     ExchangeDailyQuoteIngressRequest,
     ExchangeDailyQuoteRow,
     FuturesEODIngressRequest,
@@ -1736,6 +1737,9 @@ async def validate_ingest_part(
         if governance.get("required"):
             raise FullMarketError("This feed requires a frozen full-market work item", 409)
         return None
+    if isinstance(request, INDEX_REFERENCE_REQUESTS):
+        # A publisher document has no frozen daily plan to be a part of.
+        raise FullMarketError("Reference documents are not delivered against a daily plan", 409)
     part = (
         await db.scalars(
             select(DailyDeliveryPart).where(DailyDeliveryPart.work_item_id == work_item_id)

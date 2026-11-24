@@ -8,11 +8,16 @@ from typing import Annotated, Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from app.schemas.ingress import (
+    INDEX_PUBLISHER_TIMEZONES,
+    INDEX_REFERENCE_SCHEMAS,
     INTRADAY_ROW_LAYOUTS,
     MINUTES_PER_DAY,
     CurrencyCode,
     ExchangeDailyQuoteIngressRequest,
     FuturesEODIngressRequest,
+    IndexChangesIngressRequest,
+    IndexConstituentsIngressRequest,
+    IndexReviewIngressRequest,
     IngressRequest,
     IntradayPartitionIngressRequest,
     MarketEODIngressRequest,
@@ -30,6 +35,9 @@ ContractModel = (
     | type[FuturesEODIngressRequest]
     | type[IntradayPartitionIngressRequest]
     | type[ExchangeDailyQuoteIngressRequest]
+    | type[IndexConstituentsIngressRequest]
+    | type[IndexChangesIngressRequest]
+    | type[IndexReviewIngressRequest]
 )
 PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 
@@ -41,6 +49,9 @@ _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
         ("futures_eod", 1): FuturesEODIngressRequest,
         ("intraday_partition", 1): IntradayPartitionIngressRequest,
         ("exchange_daily_quote", 1): ExchangeDailyQuoteIngressRequest,
+        ("index_constituents", 1): IndexConstituentsIngressRequest,
+        ("index_constituent_changes", 1): IndexChangesIngressRequest,
+        ("index_review_announcement", 1): IndexReviewIngressRequest,
     }
 )
 
@@ -301,6 +312,10 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                     if schema_id == "market_minute"
                     else ["product_code", "contract_code", "trade_date", "session"]
                     if schema_id == "futures_eod"
+                    else ["index_code", "symbol"]
+                    if schema_id in {"index_constituents", "index_review_announcement"}
+                    else ["effective_date", "symbol", "action"]
+                    if schema_id == "index_constituent_changes"
                     else ["symbol", "trade_date"]
                 ),
             },
@@ -464,6 +479,130 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 },
             ]
         )
+    if schema_id in INDEX_REFERENCE_SCHEMAS:
+        # One publisher document part per request; its rows carry no prices to bound.
+        reference_rules = (
+            "row.ohlc.",
+            "batch.sequence.",
+            "batch.coverage.",
+            "batch.backfill.",
+            "payload.coverage.",
+        )
+        semantic_rules = [
+            rule for rule in semantic_rules if not rule["id"].startswith(reference_rules)
+        ]
+        semantic_rules.extend(
+            [
+                {
+                    "id": "reference.document.raw_object",
+                    "scope": "payload.batch",
+                    "description": "source_raw_ref names the gzip of the publisher document; source_raw_sha256 and document.gzip_bytes describe the gzip, document.original_* the document as served",
+                    "parameters": {"encoding": "gzip", "enforcement_stage": "normalization"},
+                    "context_dependencies": [],
+                    "error_code": None,
+                },
+                {
+                    "id": "reference.document.dates",
+                    "scope": "payload.batch",
+                    "description": "data_date is the publisher-local observation date; document.document_date, the date the content speaks for, must not follow it",
+                    "parameters": {
+                        "left": "batch.document.document_date",
+                        "operator": "less_than_or_equal",
+                        "right": "batch.data_date",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "reference.document.series",
+                    "scope": "payload.batch.document",
+                    "description": "a review release names no series; constituent reports and change workbooks name the index family they cover",
+                    "parameters": {"none_when": {"kind": "review_release"}},
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "reference.indexes.declared_once_with_root_parents",
+                    "scope": "payload.batch",
+                    "description": "each index is declared once; a parent_code names another index the document lists, and that parent has no parent of its own",
+                    "parameters": {"indexes": "batch.indexes[*] | batch.index", "max_depth": 1},
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "reference.document.part",
+                    "scope": "payload.batch.document",
+                    "description": (
+                        "a change workbook is delivered one index at a time (part_key is the index code); constituent reports and review releases are delivered whole (part_key is document)"
+                    ),
+                    "parameters": {
+                        "kind": INDEX_REFERENCE_SCHEMAS[schema_id],
+                        "part_key": "batch.index.code"
+                        if schema_id == "index_constituent_changes"
+                        else "document",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+            ]
+        )
+        if schema_id == "index_constituents":
+            semantic_rules.append(
+                {
+                    "id": "constituents.complete_lists",
+                    "scope": "payload",
+                    "description": "every row trade_date equals document.document_date, and every declared index lists exactly constituent_count rows",
+                    "parameters": {
+                        "row_date": "data[*].trade_date",
+                        "document_date": "batch.document.document_date",
+                        "count": "batch.indexes[*].constituent_count",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                }
+            )
+        if schema_id == "index_constituent_changes":
+            semantic_rules.append(
+                {
+                    "id": "changes.complete_history",
+                    "scope": "payload",
+                    "description": "history_start equals the earliest effective_date, no effective_date follows document.document_date, ordinals are unique, every row of an effective date states the same constituents_after, and a stated count_change is the signed number of rows of its action on that date",
+                    "parameters": {
+                        "history_start": "min(data[*].effective_date)",
+                        "latest": "batch.document.document_date",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                }
+            )
+        if schema_id == "index_review_announcement":
+            semantic_rules.append(
+                {
+                    "id": "review.dates",
+                    "scope": "payload.batch",
+                    "description": "document.document_date is the publisher-local date of published_at; each decided index is implemented no earlier than that date and takes effect after its implementation date",
+                    "parameters": {
+                        "publisher_timezones": dict(INDEX_PUBLISHER_TIMEZONES),
+                        "implemented_after_close": "greater_than_or_equal document.document_date",
+                        "effective_date": "greater_than implemented_after_close",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                }
+            )
+            semantic_rules.append(
+                {
+                    "id": "review.counts_balance",
+                    "scope": "payload",
+                    "description": "every change names a decided index; when constituents_before is stated, it plus additions minus deletions equals constituents_after",
+                    "parameters": {
+                        "indexes": "batch.indexes[*]",
+                        "net": "count(add) - count(delete)",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                }
+            )
     if schema_id == "futures_eod":
         observation_fields = ["open", "high", "low", "close", "settlement_price", "open_interest"]
         schema["$defs"]["FuturesEODRow"]["anyOf"] = [
@@ -571,6 +710,63 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "payload.batch.report.url",
             "payload.batch.report.original_sha256",
             "payload.batch.report.etag",
+        ],
+        "index_constituents": [
+            "payload.batch.document.url",
+            "payload.batch.document.part_key",
+            "payload.batch.document.original_sha256",
+            "payload.batch.document.etag",
+            "payload.batch.indexes[*].code",
+            "payload.batch.indexes[*].name_en",
+            "payload.batch.indexes[*].name_zh",
+            "payload.batch.indexes[*].parent_code",
+            "payload.batch.indexes[*].classification.code",
+            "payload.batch.indexes[*].classification.name_en",
+            "payload.batch.indexes[*].classification.name_zh",
+            "payload.data[*].index_code",
+            "payload.data[*].symbol",
+            "payload.data[*].name_en",
+            "payload.data[*].name_zh",
+            "payload.data[*].listing_place",
+            "payload.data[*].currency",
+            "payload.data[*].industry.code",
+            "payload.data[*].industry.name_en",
+            "payload.data[*].industry.name_zh",
+        ],
+        "index_constituent_changes": [
+            "payload.batch.document.url",
+            "payload.batch.document.part_key",
+            "payload.batch.document.original_sha256",
+            "payload.batch.document.etag",
+            "payload.batch.index.code",
+            "payload.batch.index.name_en",
+            "payload.batch.index.name_zh",
+            "payload.batch.index.parent_code",
+            "payload.batch.index.classification.code",
+            "payload.batch.index.classification.name_en",
+            "payload.batch.index.classification.name_zh",
+            "payload.data[*].symbol",
+            "payload.data[*].name_en",
+            "payload.data[*].name_zh",
+            "payload.data[*].listing_place",
+        ],
+        "index_review_announcement": [
+            "payload.batch.document.url",
+            "payload.batch.document.part_key",
+            "payload.batch.document.original_sha256",
+            "payload.batch.document.etag",
+            "payload.batch.title",
+            "payload.batch.indexes[*].code",
+            "payload.batch.indexes[*].name_en",
+            "payload.batch.indexes[*].name_zh",
+            "payload.batch.indexes[*].parent_code",
+            "payload.batch.indexes[*].classification.code",
+            "payload.batch.indexes[*].classification.name_en",
+            "payload.batch.indexes[*].classification.name_zh",
+            "payload.data[*].index_code",
+            "payload.data[*].symbol",
+            "payload.data[*].name_en",
+            "payload.data[*].listing_place",
         ],
         "intraday_partition": [
             "payload.data[*].symbol",
