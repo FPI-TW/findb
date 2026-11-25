@@ -191,6 +191,8 @@ def test_a_block_page_is_a_payload_error_not_a_format_change() -> None:
 def test_displayed_values_parse_exactly() -> None:
     assert tw_official.roc_date("115/11/24") == TUESDAY
     assert tw_official.roc_date("89/01/04") == date(2000, 1, 4)
+    # TWSE pads two-digit Minguo years in older months.
+    assert tw_official.roc_date(" 88/06/01") == date(1999, 6, 1)
     assert tw_official.slash_date("2026/11/24") == TUESDAY
     assert tw_official.number("-1,234.50") == Decimal("-1234.50")
     for bad in ("", "1.2.3", "--", "1,2a"):
