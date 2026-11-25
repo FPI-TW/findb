@@ -14,6 +14,7 @@ from uuid import UUID
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.models.canonical import (
     MANUAL_CORRECTION_PRIORITY,
@@ -557,6 +558,22 @@ async def list_dq_issues(
             raw_filters.append(RawMarketPayload.run_id.in_(fallback_run_ids))
         raw_stmt = (
             select(RawMarketPayload)
+            # Only provenance metadata is shown; never transport the payload JSON.
+            .options(
+                load_only(
+                    RawMarketPayload.raw_payload_id,
+                    RawMarketPayload.run_id,
+                    RawMarketPayload.created_at,
+                    RawMarketPayload.expire_at,
+                    RawMarketPayload.fetched_at,
+                    RawMarketPayload.source,
+                    RawMarketPayload.dataset_key,
+                    RawMarketPayload.request_key,
+                    RawMarketPayload.schema_id,
+                    RawMarketPayload.schema_version,
+                    raiseload=True,
+                )
+            )
             .where(or_(*raw_filters))
             .order_by(RawMarketPayload.created_at.desc(), RawMarketPayload.raw_payload_id.desc())
         )

@@ -503,6 +503,24 @@ Admin 計畫查詢支援 `dataset_key` 與 `trade_date`；指定任一 `page/pag
 未指定 `summary_only` 時，每個 plan 都會重新分類全部成員並列出缺口，資料量大時每次請求要數秒；需要缺口明細時
 改對單一 plan 讀 `/{plan_id}/summary`。
 
+`GET /admin/delivery-plans/{plan_id}/summary` 是唯一會即時分類計畫成員的 Admin 讀取，Dashboard 只在使用者
+展開明細時才呼叫，不會輪詢它。
+- **篩選與分頁**：`gap_status`（可重複帶 missing、blocked、unavailable）篩選缺口，`gap_page`、`gap_page_size`
+  （預設 1／1000，每頁上限 1000）分頁。
+- **`gaps_total`**：篩選後的缺口總數。
+- **計數**：仍是整個計畫的計數，不受篩選影響。
+- **`unlisted`**：最多 1000 筆。
+
+`GET /admin/historical-backfills`（operator 以上）列出回補請求。
+- **`item_counts`**：每筆請求依 item 狀態的件數。
+- **items**：只帶摘要欄位（日期、狀態、run、失敗原因、清單外代碼）；`calendar_snapshot` 與 `result_evidence`
+  一律為 null，所以一頁的大小不隨證據量成長。
+- **`include_items=false`**：不帶 items，只看件數。
+
+`GET /admin/historical-backfills/{request_id}/items` 依交易日分頁列出單一請求的 items（`page`、`page_size`，
+每頁上限 500）。加上 `include_evidence=true` 才會帶 `calendar_snapshot` 與 `result_evidence`；
+請求不存在時回 404。
+
 `GET /admin/completeness` 回傳完整性矩陣：每個 full-market feed 一列，每列依交易所當地交易日列出格子。
 - **參數**：`date_from`、`date_to`、`dataset_key`。預設為到今天為止的 28 天，範圍最多 62 天，超過或起訖顛倒回 422。
 - **每格內容**：`state`、`plan_id`、`deadline_at`、`counts`（expected、data、no_data、missing、blocked、unavailable、
