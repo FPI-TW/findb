@@ -184,8 +184,14 @@ Unit（`.U`、U）、權利（`.R`、R）、特別股（`.PR`、`代碼-字母`�
 一次觀測為準。2026-11-22 的 production 目錄依上述規則約
 628 個代碼，每日請求約增加 11%。回補每個日期也凍結該日 plan 的補查（沒有 plan 時為當天以前最新的一份），與之後
 release 的成員一起當補查成員。
-`unavailable` 是 provider 無法提供的已知情境（#593），目前只有 mapping gap：凍結官方商品在 provider 的目錄裡
-沒有對應代號。它們不算 missing 或 blocked，不讓 plan 逾時、不開缺漏告警、不影響 freshness，也不計入 FactSet
+`unavailable` 是 provider 無法提供的已知情境（#593）：
+
+- `mapping_gap`：凍結官方商品在 provider 的目錄裡沒有對應代號。
+- `not_yet_trading`：新掛牌尚未交易。成員用完全部 no-data 重試後，Fetcher 回報最終的 `no_data_exhausted`；
+  若該成員只出現在這條 feed 最多 5 個交易日的 plan 中，且該市場在這個交易日以前沒有它的任何 canonical 資料，
+  就歸為此類。之後的資料不會改變這一天的判定；不符合條件的成員維持 blocked／`no_data_exhausted`。
+
+它們不算 missing 或 blocked，不讓 plan 逾時、不開缺漏告警、不影響 freshness，也不計入 FactSet
 連續缺漏；summary 的 `unavailable` 與 `mapping_gap` 分別是總數與其中 mapping gap 的數量，`gaps` 以
 `status = unavailable` 列出這些成員。`is_late` 只看抓取進度：超過 deadline 時仍有 missing 或 blocked。
 
@@ -364,6 +370,7 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `empty_response` | 有空回應證據，原因未知；檢查觀測額度與下一次時間 |
 | `unknown_dispatch` | 曾保留未知派送責任，尚未證實空回應；同樣檢查觀測額度與退避 |
 | `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據。Plan 統計把它們算作 unavailable，不是 blocked；plan 只缺這種成員時即完整，daily work 以 `completed` 結束（見 [provider_work](../architecture/provider_work.md)） |
+| `no_data_exhausted` | 成員用完全部 no-data 重試仍無資料，是最終結果。新掛牌尚未交易者歸為 unavailable／`not_yet_trading`，其餘維持 blocked |
 | `local_state_busy` | 本機共用的 SQLite（journal、governor 或 Full checkpoint）被其他 consumer 鎖住超過等待上限（30 秒）。不回報 Source、不結束這一輪，該檔稍後重試；只有已經呼叫過 provider 時才計入失敗額度。`full_work_diagnostic.category` 記為 `local_state_busy`，十分鐘內出現就觸發 `LocalStateBusyDiagnostics` 告警（見[監控](monitoring.md)）；經常出現時查同時間其他 consumer 的清理或大量寫入 |
 | `retry_exhausted` | 本地一般失敗額度（`FULL_WORK_MAX_ATTEMPTS`，5 次，所有 provider 一致）耗盡，不等於五次 native 請求。這類失敗（provider 的一般回應錯誤、單檔 5xx、未預期的例外）不結束這一輪：該檔扣一次額度，其他成員照常抓；只有連續 3 檔（`FULL_WORK_FAILURE_BREAKER`）這樣失敗、中間沒有任何一檔成功時才結束這一輪，避免整個 provider 出問題時每檔都被扣一次（#711）。連線錯誤（到 provider 或 Source 的網路中斷、Source 回應遺失，包括 client 包成 `transport` 類別的錯誤）不是單一成員的問題，且可能有遺失的交付確認，仍立即結束這一輪。額度耗盡的成員仍會阻擋 plan，需人工檢查 |
 | `source_rejected` | Source 拒收該檔的交付內容（409、422）：該檔轉 manual 並阻擋 plan，但同一輪其他成員照常交付，連續 3 檔才結束這一輪。401、403、5xx 是憑證或 Source 的問題，仍立即結束這一輪 |

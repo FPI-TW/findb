@@ -36,6 +36,8 @@ import type { DeliveriesSearchUpdate } from "./operations.deliveries"
 
 const reasonLabels: Record<string, string> = {
   mapping_gap: "供應商未收錄",
+  not_yet_trading: "新掛牌尚未交易",
+  no_data_exhausted: "重試用完仍無資料",
   quota: "額度不足",
   rate_limited: "來源請求頻率受限",
   halted: "暫停交易",

@@ -333,6 +333,12 @@ def test_no_data_member_keeps_the_round_going_with_bounded_retries(tmp_path, rep
             "no_data_exhausted",
             FULL_WORK_NO_DATA_MAX_ATTEMPTS,
         )
+        # The last retry reports a final outcome after its own source error.
+        assert [(row["member_key"], row["reason"]) for row in source.outcomes[-2:]] == [
+            ("ACA", "source_error"),
+            ("ACA", "no_data_exhausted"),
+        ]
+        assert sum(row["reason"] == "no_data_exhausted" for row in source.outcomes) == 1
         assert not runtime.state.has_blocking_manual("p")
         expected = reply.get("category", "not_found")
         assert {row["category"] for row in runtime.state.diagnostics("fp1:123:ACA")} == {expected}

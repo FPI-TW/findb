@@ -10,7 +10,7 @@ from typing import Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile, execution_profile, scheduler_key
@@ -959,7 +959,8 @@ async def classify_plan(
     """Classify the whole frozen cohort, or only the given members of the plan.
 
     A member's state depends only on its own canonical rows, evidence, outcome and
-    mapping, so a subset classifies exactly as it would inside the whole plan.
+    mapping, and on the feed's earlier plans and rows of that member, so a subset
+    classifies exactly as it would inside the whole plan.
     """
     from app.services.shioaji_repair import effective_mappings
 
@@ -1127,7 +1128,75 @@ async def classify_plan(
         else:
             state = "missing"
         states.append(MemberState(member, state, reason))
+    if plan.dataset_key != "tw_futures_eod" and plan.dataset_key not in SEQUENCED_DATASETS:
+        exhausted = [
+            item.member
+            for item in states
+            if item.state == "blocked" and item.reason == "no_data_exhausted"
+        ]
+        if exhausted:
+            listing = await _not_yet_trading(db, plan, exhausted)
+            states = [
+                MemberState(item.member, "unavailable", "not_yet_trading")
+                if item.member.member_key in listing
+                else item
+                for item in states
+            ]
     return states
+
+
+# A listing is new for its first trading days in the plan (#593).
+NOT_YET_TRADING_PLAN_DAYS = 5
+
+
+async def _not_yet_trading(
+    db: AsyncSession, plan: DailyDeliveryPlan, members: list[DailyDeliveryMember]
+) -> set[str]:
+    """Members that used every no-data retry while still a listing that never traded.
+
+    A member is new while it appears in at most ``NOT_YET_TRADING_PLAN_DAYS`` of
+    the feed's plans up to this trade date, and it has not traded while its market
+    holds no canonical row of it on or before this date. A later row never changes
+    the day: only rows up to the trade date count.
+    """
+    keys = [member.member_key for member in members]
+    appearances = await db.execute(
+        select(DailyDeliveryMember.member_key, func.count())
+        .join(DailyDeliveryPlan, DailyDeliveryPlan.plan_id == DailyDeliveryMember.plan_id)
+        .where(
+            DailyDeliveryPlan.dataset_key == plan.dataset_key,
+            DailyDeliveryPlan.provider == plan.provider,
+            DailyDeliveryPlan.execution_profile == plan.execution_profile,
+            DailyDeliveryPlan.trade_date <= plan.trade_date,
+            DailyDeliveryMember.member_key.in_(keys),
+        )
+        .group_by(DailyDeliveryMember.member_key)
+    )
+    new = {key for key, count in appearances if count <= NOT_YET_TRADING_PLAN_DAYS}
+    if not new:
+        return set()
+    table: type[MarketDataEOD] | type[ExchangeDailyQuote] = (
+        ExchangeDailyQuote
+        if (feed := catalog_feed(plan.provider, plan.dataset_key)) is not None
+        and feed.contract.schema_id == "exchange_daily_quote"
+        else MarketDataEOD
+    )
+    traded = set(
+        await db.scalars(
+            select(Instrument.symbol)
+            .join(table, table.instrument_id == Instrument.instrument_id)
+            .where(
+                Instrument.symbol.in_(new),
+                Instrument.market
+                == select(DatasetRegistry.market)
+                .where(DatasetRegistry.dataset_key == plan.dataset_key)
+                .scalar_subquery(),
+                table.trade_date <= plan.trade_date,
+            )
+            .distinct()
+        )
+    )
+    return new - traded
 
 
 def summarize_states(
