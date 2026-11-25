@@ -70,7 +70,7 @@ _JOURNAL_REPLAY_TABLES = (
 )
 # Response caches retire only where every body is known to have an R2 copy;
 # other formats (SDK datasets, exchange reports) are kept.
-_R2_BACKED_RESPONSES = frozenset({"twelve_data", "hkex", "fmp"})
+_R2_BACKED_RESPONSES = frozenset({"twelve_data", "hkex", "fmp", "twse", "tpex"})
 # Responses that are persisted to R2 inside the call that fetches them, so every
 # journaled body has its copy whichever provider owns the work. Official exchange
 # listings are by far the largest rows (one ISIN page is over 10 MB).
