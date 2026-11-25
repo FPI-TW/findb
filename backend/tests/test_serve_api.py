@@ -895,6 +895,7 @@ SERVE_ROUTE_URLS = {
     "/api/v1/serve/eod/latest": (
         "/api/v1/serve/eod/latest?instruments=11111111-1111-1111-1111-111111111111"
     ),
+    "/api/v1/serve/eod/bias-ratios": "/api/v1/serve/eod/bias-ratios?instruments=TW:2330",
     "/api/v1/serve/minute": (
         "/api/v1/serve/minute?instrument_id=11111111-1111-1111-1111-111111111111"
     ),

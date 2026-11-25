@@ -256,6 +256,22 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   該市場交易日曆上的開市日數；不是 0（缺資料或停牌）時 `change` 與 `change_percent` 為 null，避免把跨多日的
   差距當成當天漲跌；`previous_close` 仍照常回傳。答不出的輸入列在 `missing`，
   原因是 `not_found`、`ambiguous`（附 `matches`）、`not_available` 或 `no_data`，不會讓整個請求失敗。
+- `GET /serve/eod/bias-ratios?instruments=TW:2330,TW:^TWII`：乖離率，(收盤 − N 日簡單平均) ÷ 平均 × 100，
+  每次查詢依 canonical 收盤價即時計算，不另存。
+  - 範圍：只提供 TW 股票、ETF 與指數，其他市場回 422 `DATASET_NOT_AVAILABLE`；`instruments` 最多 50 個。
+  - 均線：`windows` 只能從 5、10、20、60、120、240 根日 K 中選，預設六個都算。
+  - 價格：使用原始收盤價（`price_basis=unadjusted_close`），窗口跨除權息日時均線會混入不同價位。
+  - 日期：
+    - 不給日期時，每檔只回最新一根；只給 `end_date` 時，回當天或之前的最後一根。
+    - 給 `start_date` 時，回到 `end_date`（預設 `start_date` 後 365 天）為止的每一根，最多 366 天。
+    - 窗口可以往回取到範圍之前的日 K。
+  - 數值：`sma` 與 `bias_percent` 都四捨五入到小數 4 位，`bias_percent` 由未進位的平均算出。
+  - 值為 null 時，`reason` 說明原因：
+    - `insufficient_history`：不足 N 根；
+    - `missing_sessions`：窗口內有開市日沒有日 K，例如缺資料或停牌，`missing_sessions` 是缺的天數；
+    - `missing_close`：窗口內有收盤價為空的日 K；
+    - `calendar_unavailable`：讀不到交易日曆。
+  - 排序與分頁比照 `/serve/eod`。
 - `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
   最新canonical minute日期向前一個曆月，resolved range會固定在cursor內。
 - `GET /serve/futures/eod`：實際到期合約與 `regular`／`after_hours` session，使用 opaque cursor；

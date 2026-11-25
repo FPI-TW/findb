@@ -73,6 +73,7 @@ def test_serve_operations_have_stable_ids_summaries_and_descriptions(spec):
         "resolve_instruments",
         "list_eod",
         "get_latest_eod",
+        "list_bias_ratios",
         "list_minute_bars",
         "list_intraday_bars",
         "list_intraday_ticks",
