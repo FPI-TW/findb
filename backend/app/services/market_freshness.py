@@ -13,7 +13,8 @@ from typing import Any, Literal, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import case, func, select, true
+from sqlalchemy import Date, String, and_, case, column, func, select, tuple_, values
+from sqlalchemy import cast as sql_cast
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile, unified_scheduler
@@ -452,41 +453,40 @@ async def _feed_freshness(
     )
 
 
-async def _profile_feed_freshness(
-    db: AsyncSession,
-    feed: _ConfiguredFeed,
-    profile: ExecutionProfile,
-    evaluated_at: datetime,
-    first_date: str | None,
-) -> FreshnessFeed:
-    from app.services.effective_calendar import acquisition_dates
-    from app.services.feed_schedule import completion_deadline_at, latest_due_date
-    from app.services.provider_metadata import dataset_calendar_market
+_SNAPSHOT_DEFAULTS: dict[str, Any] = {
+    "latest_complete": None,
+    "last_successful_update": None,
+    "pending": 0,
+    "expected_count": None,
+    "data_count": None,
+    "no_data_count": None,
+    "blocked_count": None,
+    "unavailable_count": None,
+    "deadline_at": None,
+    "latest_run_id": None,
+    "last_fetched_at": None,
+    "last_failure_code": None,
+    "policy_outcome": None,
+}
 
-    through = latest_due_date(feed.dataset.dataset_key, evaluated_at)
-    dates = (
-        await acquisition_dates(
-            db,
-            market=dataset_calendar_market(feed.dataset.dataset_key, feed.dataset.market),
-            dataset_key=feed.dataset.dataset_key,
-            provider=feed.source,
-            profile=profile,
-            start=date.fromisoformat(first_date),
-            end=through,
-        )
-        if first_date
-        else []
-    )
-    expected = max(dates) if dates else None
-    scope = (
-        DailyDeliveryPlan.dataset_key == feed.dataset.dataset_key,
-        DailyDeliveryPlan.provider == feed.source,
-        DailyDeliveryPlan.execution_profile == profile,
-    )
-    # One statement gives counts, coverage and latest-run metadata one snapshot.
-    projection = (
+
+async def _feed_snapshots(
+    db: AsyncSession,
+    profile: ExecutionProfile,
+    feeds: list[tuple[str, str, date, date | None]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Counts, coverage and latest-run metadata of every feed's plans, in three reads.
+
+    `feeds` holds (dataset_key, provider, latest due date, expected date).
+    """
+    if not feeds:
+        return {}
+    pairs = sorted({(key, provider) for key, provider, _, _ in feeds})
+    plans = (
         select(
             *DailyDeliveryPlanSummary.__table__.columns,
+            DailyDeliveryPlan.dataset_key.label("feed_dataset_key"),
+            DailyDeliveryPlan.provider.label("feed_provider"),
             DailyDeliveryPlan.trade_date,
             DailyDeliveryPlan.deadline_at,
         )
@@ -494,83 +494,197 @@ async def _profile_feed_freshness(
         .outerjoin(
             DailyDeliveryPlanSummary, DailyDeliveryPlanSummary.plan_id == DailyDeliveryPlan.plan_id
         )
-        .where(*scope)
+        .where(
+            DailyDeliveryPlan.execution_profile == profile,
+            tuple_(DailyDeliveryPlan.dataset_key, DailyDeliveryPlan.provider).in_(pairs),
+        )
         .cte("feed_plan_summaries")
     )
-    totals = select(
-        func.max(
-            case(
-                (
-                    (projection.c.trade_date <= through)
-                    & (
-                        projection.c.data_count
-                        + projection.c.no_data_count
-                        + projection.c.unavailable_count
-                        == projection.c.expected_count
-                    ),
-                    projection.c.trade_date,
-                )
-            )
-        ).label("latest_complete"),
-        func.max(projection.c.last_completed_at).label("last_successful_update"),
-        func.count()
-        .filter((projection.c.trade_date <= through) & projection.c.plan_id.is_(None))
-        .label("pending"),
-    ).subquery()
-    current = (
-        select(
-            projection.c.expected_count,
-            projection.c.data_count,
-            projection.c.no_data_count,
-            projection.c.blocked_count,
-            projection.c.unavailable_count,
-            projection.c.deadline_at,
-        )
-        .where(projection.c.trade_date == expected)
-        .subquery()
+    targets = values(
+        column("dataset_key", String),
+        column("provider", String),
+        column("through", Date),
+        column("expected", Date),
+        name="feed_targets",
+    ).data(feeds)
+    # A VALUES column of only NULLs has no type, so the dates are cast explicitly.
+    through = sql_cast(targets.c.through, Date)
+    expected_date = sql_cast(targets.c.expected, Date)
+    same_feed = and_(
+        plans.c.feed_dataset_key == targets.c.dataset_key,
+        plans.c.feed_provider == targets.c.provider,
     )
+    snapshots = {(key, provider): dict(_SNAPSHOT_DEFAULTS) for key, provider in pairs}
+    totals = (
+        select(
+            targets.c.dataset_key,
+            targets.c.provider,
+            func.max(
+                case(
+                    (
+                        (plans.c.trade_date <= through)
+                        & (
+                            plans.c.data_count + plans.c.no_data_count + plans.c.unavailable_count
+                            == plans.c.expected_count
+                        ),
+                        plans.c.trade_date,
+                    )
+                )
+            ).label("latest_complete"),
+            func.max(plans.c.last_completed_at).label("last_successful_update"),
+            func.count(plans.c.trade_date)
+            .filter((plans.c.trade_date <= through) & plans.c.plan_id.is_(None))
+            .label("pending"),
+        )
+        .select_from(targets.outerjoin(plans, same_feed))
+        .group_by(targets.c.dataset_key, targets.c.provider)
+    )
+    for row in (await db.execute(totals)).mappings():
+        snapshots[(row["dataset_key"], row["provider"])].update(
+            latest_complete=row["latest_complete"],
+            last_successful_update=row["last_successful_update"],
+            pending=row["pending"],
+        )
+    current = select(
+        targets.c.dataset_key,
+        targets.c.provider,
+        plans.c.expected_count,
+        plans.c.data_count,
+        plans.c.no_data_count,
+        plans.c.blocked_count,
+        plans.c.unavailable_count,
+        plans.c.deadline_at,
+    ).select_from(targets.join(plans, and_(same_feed, plans.c.trade_date == expected_date)))
+    for row in (await db.execute(current)).mappings():
+        snapshots[(row["dataset_key"], row["provider"])].update(
+            {key: row[key] for key in row if key not in {"dataset_key", "provider"}}
+        )
     latest = (
         select(
-            projection.c.latest_run_id,
-            projection.c.last_fetched_at,
-            projection.c.last_failure_code,
-            projection.c.policy_outcome,
+            plans.c.feed_dataset_key,
+            plans.c.feed_provider,
+            plans.c.latest_run_id,
+            plans.c.last_fetched_at,
+            plans.c.last_failure_code,
+            plans.c.policy_outcome,
         )
-        .where(projection.c.latest_run_id.is_not(None))
+        .where(plans.c.latest_run_id.is_not(None))
         .order_by(
-            projection.c.latest_run_created_at.desc(),
-            projection.c.latest_run_id.desc(),
+            plans.c.feed_dataset_key,
+            plans.c.feed_provider,
+            plans.c.latest_run_created_at.desc(),
+            plans.c.latest_run_id.desc(),
         )
-        .limit(1)
-        .subquery()
+        .distinct(plans.c.feed_dataset_key, plans.c.feed_provider)
     )
-    snapshot = (
-        (
-            await db.execute(
-                select(totals, current, latest)
-                .select_from(totals)
-                .outerjoin(current, true())
-                .outerjoin(latest, true())
+    for row in (await db.execute(latest)).mappings():
+        snapshots[(row["feed_dataset_key"], row["feed_provider"])].update(
+            latest_run_id=row["latest_run_id"],
+            last_fetched_at=row["last_fetched_at"],
+            last_failure_code=row["last_failure_code"],
+            policy_outcome=row["policy_outcome"],
+        )
+    return snapshots
+
+
+async def _profile_feeds_freshness(
+    db: AsyncSession,
+    items: list[tuple[_ConfiguredFeed, str | None]],
+    profile: ExecutionProfile,
+    evaluated_at: datetime,
+) -> dict[tuple[str, str], FreshnessFeed]:
+    """Freshness of every full-market feed with a fixed number of reads.
+
+    `items` pairs each feed with its first start date; the statement count does
+    not depend on the number of feeds, days since first start, plans or alerts.
+    """
+    from app.services.effective_calendar import AcquisitionRequest, acquisition_dates_many
+    from app.services.feed_schedule import completion_deadline_at, latest_due_date
+    from app.services.provider_metadata import dataset_calendar_market
+
+    throughs = [latest_due_date(feed.dataset.dataset_key, evaluated_at) for feed, _ in items]
+    dated = [
+        (index, feed, first_date)
+        for index, (feed, first_date) in enumerate(items)
+        if first_date is not None
+    ]
+    projected = await acquisition_dates_many(
+        db,
+        [
+            AcquisitionRequest(
+                market=dataset_calendar_market(feed.dataset.dataset_key, feed.dataset.market),
+                dataset_key=feed.dataset.dataset_key,
+                provider=feed.source,
+                profile=profile,
+                start=date.fromisoformat(first_date),
+                end=throughs[index],
             )
-        )
-        .mappings()
-        .one()
+            for index, feed, first_date in dated
+        ],
     )
-    alert = (
-        await db.scalar(
-            select(MissingDeliveryAlert.alert_id)
-            .where(
-                MissingDeliveryAlert.dataset_key == feed.dataset.dataset_key,
-                MissingDeliveryAlert.source == feed.source,
-                MissingDeliveryAlert.execution_profile == profile,
-                MissingDeliveryAlert.expected_data_date == expected,
-                MissingDeliveryAlert.status == "open",
-            )
-            .limit(1)
-        )
-        if expected
-        else None
+    expected_by_index: dict[int, date | None] = {
+        index: (max(dates) if dates else None)
+        for (index, _, _), dates in zip(dated, projected, strict=True)
+    }
+    expected = [expected_by_index.get(index) for index in range(len(items))]
+    snapshots = await _feed_snapshots(
+        db,
+        profile,
+        [
+            (feed.dataset.dataset_key, feed.source, throughs[index], expected[index])
+            for index, (feed, _) in enumerate(items)
+        ],
     )
+    wanted_alerts = [
+        (feed.dataset.dataset_key, feed.source, expected[index])
+        for index, (feed, _) in enumerate(items)
+        if expected[index] is not None
+    ]
+    open_alerts = (
+        set(
+            (
+                await db.execute(
+                    select(
+                        MissingDeliveryAlert.dataset_key,
+                        MissingDeliveryAlert.source,
+                        MissingDeliveryAlert.expected_data_date,
+                    ).where(
+                        MissingDeliveryAlert.execution_profile == profile,
+                        MissingDeliveryAlert.status == "open",
+                        tuple_(
+                            MissingDeliveryAlert.dataset_key,
+                            MissingDeliveryAlert.source,
+                            MissingDeliveryAlert.expected_data_date,
+                        ).in_(wanted_alerts),
+                    )
+                )
+            ).tuples()
+        )
+        if wanted_alerts
+        else set()
+    )
+    rows: dict[tuple[str, str], FreshnessFeed] = {}
+    for index, (feed, _) in enumerate(items):
+        key = (feed.dataset.dataset_key, feed.source)
+        rows[key] = _profile_feed_row(
+            feed,
+            evaluated_at,
+            expected[index],
+            snapshots.get(key, _SNAPSHOT_DEFAULTS),
+            (feed.dataset.dataset_key, feed.source, expected[index]) in open_alerts,
+            completion_deadline_at,
+        )
+    return rows
+
+
+def _profile_feed_row(
+    feed: _ConfiguredFeed,
+    evaluated_at: datetime,
+    expected: date | None,
+    snapshot: dict[str, Any],
+    alert_open: bool,
+    completion_deadline_at: Any,
+) -> FreshnessFeed:
     state: FreshnessStatus = "not_due" if expected is None else "never_received"
     if expected is not None:
         deadline = (
@@ -611,7 +725,7 @@ async def _profile_feed_freshness(
         success_records=snapshot["data_count"],
         failed_records=snapshot["blocked_count"],
         policy_outcome=snapshot["policy_outcome"],
-        open_missing_delivery_alert=alert is not None,
+        open_missing_delivery_alert=alert_open,
         last_failure_code=snapshot["last_failure_code"],
         configuration_error="; ".join(
             (
@@ -622,6 +736,17 @@ async def _profile_feed_freshness(
         or None,
         status=state,
     )
+
+
+async def _profile_feed_freshness(
+    db: AsyncSession,
+    feed: _ConfiguredFeed,
+    profile: ExecutionProfile,
+    evaluated_at: datetime,
+    first_date: str | None,
+) -> FreshnessFeed:
+    rows = await _profile_feeds_freshness(db, [(feed, first_date)], profile, evaluated_at)
+    return rows[(feed.dataset.dataset_key, feed.source)]
 
 
 def _definition_from_control(row: SchedulerControl) -> _SchedulerDefinition:
@@ -699,6 +824,7 @@ async def _build_scheduler_freshness(
     definition: _SchedulerDefinition,
     datasets: dict[str, DatasetRegistry],
     evaluated_at: datetime,
+    profile_rows: dict[tuple[str, str], FreshnessFeed] | None = None,
 ) -> MarketFreshness:
     full_market = unified_scheduler(definition.scheduler_key)
     profile: ExecutionProfile = "full_market"
@@ -775,7 +901,8 @@ async def _build_scheduler_freshness(
     for feed in feed_configs:
         eligible = not full_market or feed.dataset.dataset_key in active_keys
         if full_market:
-            row = await _profile_feed_freshness(
+            precomputed = (profile_rows or {}).get((feed.dataset.dataset_key, feed.source))
+            row = precomputed or await _profile_feed_freshness(
                 db,
                 feed,
                 profile,
@@ -1034,7 +1161,7 @@ async def list_market_freshness(
             .all()
         }
 
-    results: list[MarketFreshness] = []
+    selected: list[_SchedulerDefinition] = []
     for definition in definitions:
         if profile is not None and not unified_scheduler(definition.scheduler_key):
             continue
@@ -1049,10 +1176,37 @@ async def list_market_freshness(
             # An invalid scheduler still appears for an unfiltered view, but a
             # market filter cannot safely infer its market.
             continue
-        row = await _build_scheduler_freshness(db, definition, datasets, evaluated_at)
-        if status and row.status != status:
-            continue
-        results.append(row)
+        selected.append(definition)
+
+    from app.services.full_market_admission import (
+        admission_projection,
+        admission_read_cache,
+        prefetch_admission,
+    )
+
+    results: list[MarketFreshness] = []
+    with admission_read_cache(db):
+        full_market = [item for item in selected if unified_scheduler(item.scheduler_key)]
+        await prefetch_admission(db, (item.provider for item in full_market))
+        # Every full-market feed is evaluated together so a request costs the
+        # same statements for one scheduler as for all of them.
+        items: list[tuple[_ConfiguredFeed, str | None]] = []
+        for definition in full_market:
+            first_dates = (await admission_projection(db, definition.provider))["first_start_dates"]
+            for key in definition.dataset_keys:
+                if key in datasets:
+                    items.extend(
+                        (feed, first_dates.get(key))
+                        for feed in _feed_configuration(datasets[key], definition.providers)
+                    )
+        profile_rows = await _profile_feeds_freshness(db, items, "full_market", evaluated_at)
+        for definition in selected:
+            row = await _build_scheduler_freshness(
+                db, definition, datasets, evaluated_at, profile_rows
+            )
+            if status and row.status != status:
+                continue
+            results.append(row)
     return sorted(
         results,
         key=lambda item: (

@@ -1252,6 +1252,12 @@ class IngestionRun(Base):
         Index("idx_run_raw_payload", "raw_payload_id"),
         # Plan reads join runs to their delivery parts; without it each join scans every run.
         Index("idx_run_delivery_part", "delivery_part_id"),
+        # Queue health counts retry-exhausted runs every minute.
+        Index(
+            "idx_run_retry_exhausted",
+            "failure_code",
+            postgresql_where=text("failure_code = 'RETRY_EXHAUSTED'"),
+        ),
         Index(
             "idx_run_minute_sequence_group",
             "dataset_key",

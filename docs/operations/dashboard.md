@@ -66,6 +66,24 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 成員或分鐘 K 線。既有資料初始化期間會顯示 `delivery_summary_pending`，操作與部署驗收見
 [Freshness 摘要維運](full_market.md#freshness-的持久化完整度摘要)。
 
+### 讀取成本
+
+輪詢讀取的 SQL 條數固定，不隨 scheduler、feed、天數或成員數成長，由 query budget 測試把關：
+
+| 端點 | SQL 條數（含認證） |
+| --- | --- |
+| `market-freshness` | 18 |
+| `schedulers` | 11 |
+| `queue/health` | 10 |
+
+規則見 `backend/AGENTS.md`「Admin 讀取的查詢預算」。
+
+- **admission 與 eligibility**：同一請求內只載入一次，所有 scheduler 共用。
+- **各 feed 的應有日期、計畫摘要與未關閉告警**：全部 feed 一起查詢。
+- **`queue/health` 的 `counts`**：只統計 queued、retrying、processing、failed，不再統計已完成的 job。
+- **outbox 與重試耗盡的計數**：outbox 只計算 pending／publishing；重試耗盡的 run 走部分索引
+  `idx_run_retry_exhausted`。
+
 ## 前端維護契約
 
 - 側邊欄依路徑標示目前頁面，不將 profile、篩選或分頁等查詢參數納入選取比對；
