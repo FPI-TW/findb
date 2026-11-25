@@ -208,6 +208,60 @@ def slash_date(text: object) -> date:
         raise TwOfficialFormatError("date is not YYYY/MM/DD") from None
 
 
+def integer(text: object) -> int:
+    """A displayed whole number such as ``-1,234``."""
+    value = str(text).strip()
+    if not re.fullmatch(r"-?[\d,]+", value):
+        raise TwOfficialFormatError("value is not a whole number")
+    return int(value.replace(",", ""))
+
+
+def label(text: object) -> str:
+    """A row label without the full-width and ordinary spaces used for indenting."""
+    return str(text).replace("\u3000", "").strip()
+
+
+# The per-security layout of ``institutional_flow_stock`` rows objects, in order.
+STOCK_COLUMNS = (
+    "symbol",
+    "name",
+    *(
+        f"{prefix}_{side}"
+        for prefix in ("foreign_ex_dealer", "foreign_dealer", "foreign_total", "investment_trust")
+        for side in ("buy", "sell", "net")
+    ),
+    *(
+        f"{prefix}_{side}"
+        for prefix in ("dealer_proprietary", "dealer_hedge")
+        for side in ("buy", "sell", "net")
+    ),
+    "dealer_total_buy",
+    "dealer_total_sell",
+    "dealer_total_net",
+    "total_net",
+)
+_SECURITY = re.compile(r"^[0-9A-Z]{4,6}$")
+
+
+def security_code(text: object) -> str:
+    code = str(text).strip()
+    if not _SECURITY.fullmatch(code):
+        raise TwOfficialFormatError("security code has another form")
+    return code
+
+
+def rows_object(rows: list[dict[str, Any]]) -> bytes:
+    """The delivered rows object: the published column order, one list per security."""
+    return json.dumps(
+        {
+            "columns": list(STOCK_COLUMNS),
+            "rows": [[row[name] for name in STOCK_COLUMNS] for row in rows],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+
+
 def number(text: object) -> Decimal:
     """A displayed number such as ``39,148.91`` or ``-1,234``."""
     value = str(text).strip()

@@ -8,10 +8,12 @@ from typing import Any
 
 import httpx
 
-from findb_fetcher.provider_adapters.tw_official import TwOfficialAdapter
+from findb_fetcher.provider_adapters.tw_official import Table, TwOfficialAdapter
 from findb_fetcher.providers import tpex
 
 INDEX_DATASET = "tw_tpex_index_eod"
+SUMMARY_DATASET = "tw_tpex_institutional_summary"
+STOCK_DATASET = "tw_tpex_institutional_stock"
 
 
 class TpexAdapter(TwOfficialAdapter):
@@ -19,6 +21,7 @@ class TpexAdapter(TwOfficialAdapter):
     index_dataset = INDEX_DATASET
     index_symbol = "^TWOII"
     exchange = "TPEX"
+    table_datasets = {"summary": SUMMARY_DATASET, "stock": STOCK_DATASET}
 
     def fetch_index_month(
         self,
@@ -45,3 +48,16 @@ class TpexAdapter(TwOfficialAdapter):
 
     def validate_month(self, raw: bytes, month: date) -> None:
         tpex.index_rows(raw, month)
+
+    def table(self, kind: str) -> Table:
+        if kind == "summary":
+            return Table(
+                "summary",
+                "insti_summary",
+                tpex.fetch_summary,
+                tpex.summary_categories,
+                tpex.summary_url,
+            )
+        return Table(
+            "stock", "insti_daily_trade", tpex.fetch_stock, tpex.stock_rows, tpex.stock_url
+        )
