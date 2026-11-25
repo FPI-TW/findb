@@ -1,7 +1,7 @@
 import type { ColumnDef, PaginationState } from "@tanstack/react-table"
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock3 } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useServerFn } from "@tanstack/react-start"
 
 import { DataTable } from "../../components/data-table"
@@ -18,6 +18,8 @@ import {
   SelectValue,
 } from "../../components/ui/select"
 import type { HistoricalBackfill, MissingDelivery } from "../../lib/admin-api"
+import { loadHistoricalBackfillItems } from "../../lib/admin.functions"
+import { useProtectedQueryScope } from "../../components/ProtectedQueryScope"
 import type { AdminRole } from "../../lib/admin-governance-api"
 import {
   cancelHistoricalBackfill,
@@ -30,7 +32,11 @@ import {
   type DeliveriesPageSearch,
 } from "./operations.search"
 import { useDeliveryResource } from "./delivery.queries"
-import { useOperationsRefresh } from "../../components/OperationsRefresh"
+import {
+  manualQueryOptions,
+  useOperationsRefresh,
+  useRegisterOperationsQuery,
+} from "../../components/OperationsRefresh"
 import { QueryStatus } from "../../components/AsyncState"
 
 export type DeliveriesSearchUpdate =
@@ -87,6 +93,11 @@ function BackfillStepHeader({
 }
 
 type BackfillItem = HistoricalBackfill["items"][number]
+// What a backfill draft needs, from an alert or a completeness matrix cell.
+export type BackfillSeed = Pick<
+  MissingDelivery,
+  "source" | "dataset_key" | "expected_data_date"
+>
 
 const backfillStatusLabels: Record<HistoricalBackfill["status"], string> = {
   queued: "排隊中",
@@ -172,18 +183,46 @@ const backfillItemColumns: ColumnDef<BackfillItem, unknown>[] = [
   },
 ]
 
-function BackfillItemsTable({ items }: { items: BackfillItem[] }) {
+function BackfillItemsTable({ requestId }: { requestId: string }) {
+  // The list carries counts only; a request's dates load when its row opens.
+  const load = useServerFn(loadHistoricalBackfillItems)
+  const scope = useProtectedQueryScope()
+  const queryKey = [
+    "operations",
+    "historical-backfill-items",
+    scope,
+    requestId,
+  ] as const
+  useRegisterOperationsQuery(queryKey, true)
+  const items = useQuery({
+    ...manualQueryOptions,
+    queryKey,
+    queryFn: () => load({ data: { requestId, page: 1, pageSize: 500 } }),
+  })
   return (
-    <DataTable
-      ariaLabel="回補日期項目"
-      columns={backfillItemColumns}
-      data={items}
-      getRowId={item => item.item_id}
-      refreshingState={null}
-      emptyState="此請求沒有日期項目。"
-      fillAvailableWidth
-      viewportClassName="max-h-80"
-    />
+    <div className="space-y-2">
+      <QueryStatus
+        hasData={items.data !== undefined}
+        pending={items.isFetching}
+        error={items.error}
+        updatedAt={items.dataUpdatedAt}
+        onRetry={() => void items.refetch({ cancelRefetch: false })}
+        label="回補日期項目"
+      />
+      <DataTable
+        ariaLabel="回補日期項目"
+        columns={backfillItemColumns}
+        data={items.data?.data ?? []}
+        getRowId={(item: BackfillItem) => item.item_id}
+        isLoading={items.isPending}
+        refreshingState={null}
+        error={items.data === undefined ? items.error : undefined}
+        errorState={null}
+        emptyState="此請求沒有日期項目。"
+        fillAvailableWidth
+        viewportClassName="max-h-80"
+      />
+    </div>
   )
 }
 
@@ -219,14 +258,14 @@ const baseBackfillColumns: ColumnDef<HistoricalBackfill, unknown>[] = [
     header: "進度",
     meta: { minWidth: 160 },
     cell: ({ row }) => {
-      const items = row.original.items
-      const completed = items.filter(item => item.status === "completed")
-      const partial = items.filter(item => item.status === "partial")
+      const counts = row.original.item_counts
+      const total = Object.values(counts).reduce((sum, count) => sum + count, 0)
+      const partial = counts.partial ?? 0
       return (
         <span>
-          {completed.length}/{items.length} 完成
-          {partial.length > 0 && (
-            <span className="ml-2 text-muted">{partial.length} 日仍有缺漏</span>
+          {counts.completed ?? 0}/{total} 完成
+          {partial > 0 && (
+            <span className="ml-2 text-muted">{partial} 日仍有缺漏</span>
           )}
         </span>
       )
@@ -269,7 +308,7 @@ export function HistoricalBackfillsPanel({
   updateSearch?: (next: DeliveriesSearchUpdate) => void
   role?: AdminRole
   active?: boolean
-  seed?: MissingDelivery | undefined
+  seed?: BackfillSeed | undefined
 } = {}) {
   const query = useDeliveryResource(
     { resource: "backfills", page: search.bp, pageSize: search.bps },
@@ -772,7 +811,7 @@ export function HistoricalBackfillsPanel({
             errorState={null}
             emptyState="尚無歷史回補請求。"
             renderExpandedRow={({ original }) => (
-              <BackfillItemsTable items={original.items} />
+              <BackfillItemsTable requestId={original.request_id} />
             )}
             fillAvailableWidth
             manualPagination

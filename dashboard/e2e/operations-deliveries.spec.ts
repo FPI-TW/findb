@@ -5,7 +5,6 @@ import {
   type Page,
 } from "@playwright/test"
 const backend = "http://127.0.0.1:18081"
-const plansPath = "/api/v1/admin/delivery-plans"
 const backfillsPath = "/api/v1/admin/historical-backfills"
 async function reads(request: APIRequestContext, path: string) {
   const state = await (await request.get(`${backend}/fixture/state`)).json()
@@ -19,8 +18,8 @@ async function login(page: Page, role = "owner") {
   await page.getByRole("button", { name: "登入", exact: true }).click()
   await page.getByRole("link", { name: "交付監控", exact: true }).click()
   await expect(
-    page.getByRole("button", { name: "展開詳細資料" }).first()
-  ).toBeVisible()
+    page.getByRole("table", { name: "未解決的交付缺漏" })
+  ).toContainText("tw_equity_eod")
 }
 // Hold the real tab module so SSR is observable before any tab handlers attach.
 async function withDelayedTabs(
@@ -123,48 +122,37 @@ test("authenticated provider queue shows active daily work and historical FIFO w
   ).toBeGreaterThan(0)
 })
 
-test("tabs, filters, pagination, browser history and backfill draft remain independent", async ({
+test("tabs, browser history and backfill draft remain independent", async ({
   page,
   request,
 }) => {
   await login(page)
-  await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
-    "aria-selected",
-    "true"
-  )
-  await page.getByRole("button", { name: "交付計畫分頁下一頁" }).click()
-  await expect(page).toHaveURL(/pp=2/)
-  await page.locator("#plan-dataset").click()
-  await page.getByRole("option", { name: "old_dataset", exact: true }).click()
-  await expect(page).toHaveURL(/dataset=old_dataset/)
-  await expect(
-    page.getByRole("table", { name: "交付計畫", exact: true })
-  ).toContainText("old_dataset")
-  await withDelayedTabs(
-    page,
-    () => page.reload({ waitUntil: "commit" }),
-    async () => {
-      await expect(page.locator("#plan-dataset")).toHaveText("old_dataset")
-      await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
-        "aria-selected",
-        "true"
-      )
-    }
-  )
-  await page.getByRole("tab", { name: "缺漏告警" }).click()
-  await expect(page).toHaveURL(/tab=alerts/)
+  // Daily completeness has its own page; deliveries open on the alerts.
+  await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveCount(0)
   await expect(page.getByRole("tab", { name: "缺漏告警" })).toHaveAttribute(
     "aria-selected",
     "true"
   )
+  await page.getByRole("tab", { name: "Universe 名單" }).click()
+  await expect(page).toHaveURL(/tab=candidates/)
+  await withDelayedTabs(
+    page,
+    () => page.reload({ waitUntil: "commit" }),
+    async () => {
+      await expect(
+        page.getByRole("tab", { name: "Universe 名單" })
+      ).toHaveAttribute("aria-selected", "true")
+    }
+  )
+  await page.getByRole("tab", { name: "缺漏告警" }).click()
+  await expect(page).toHaveURL(/tab=alerts/)
   await expect(page.getByRole("tab", { name: "缺漏告警" })).toBeFocused()
   await page
     .getByRole("button", { name: "帶入 tw_equity_eod 2026-10-07 回補參數" })
     .click()
   await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
   await page.getByLabel("回補結束日期").fill("2026-10-08")
-  await page.getByRole("tab", { name: "交付計畫" }).click()
-  await expect(page.locator("#plan-dataset")).toHaveText("old_dataset")
+  await page.getByRole("tab", { name: "Universe 名單" }).click()
   await page.goBack()
   await expect(page.getByRole("tab", { name: "歷史回補" })).toHaveAttribute(
     "aria-selected",
@@ -175,112 +163,12 @@ test("tabs, filters, pagination, browser history and backfill draft remain indep
     page.getByRole("button", { name: "建立回補", exact: true })
   ).toBeDisabled()
   await page.goForward()
-  await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
-    "aria-selected",
-    "true"
-  )
+  await expect(
+    page.getByRole("tab", { name: "Universe 名單" })
+  ).toHaveAttribute("aria-selected", "true")
   expect(
     (await (await request.get(`${backend}/fixture/state`)).json()).mutations
   ).toEqual([])
-})
-
-test("three polling cycles and manual refresh preserve layout, focus, expansion and scroll; failures retain data", async ({
-  page,
-  request,
-}) => {
-  await page.setViewportSize({ width: 1440, height: 1000 })
-  await page.clock.install()
-  await login(page)
-  await page.getByRole("button", { name: "展開詳細資料" }).first().click()
-  // Gap details load after the row opens; measure the layout once they are in.
-  await expect(page.getByText("已列出 2／總缺口 2")).toBeVisible()
-  const table = page.getByRole("table", { name: "交付計畫", exact: true })
-  const viewport = table.locator("..")
-  const focus = page.getByLabel("交易日", { exact: true })
-  await focus.focus()
-  await expect(focus).toBeFocused()
-  await viewport.evaluate(element => {
-    element.scrollTop = 30
-    element.scrollLeft = 60
-  })
-  const before = await table.boundingBox()
-  const toolbarBefore = await focus.boundingBox()
-  const scroll = await viewport.evaluate(element => [
-    element.scrollTop,
-    element.scrollLeft,
-  ])
-  // Each refresh stays in flight until released, so its layout is measured mid-update.
-  await request.post(`${backend}/fixture/delivery-config`, {
-    data: { hold: true },
-  })
-  for (let index = 0; index < 3; index++) {
-    const count = await reads(request, plansPath)
-    await page.clock.fastForward(60_000)
-    await expect.poll(() => reads(request, plansPath)).toBe(count + 1)
-    await expect(
-      page.getByText("正在更新交付計畫…", { exact: false })
-    ).toBeVisible()
-    const during = await table.boundingBox()
-    expect(Math.abs(during!.y - before!.y)).toBeLessThanOrEqual(1)
-    expect(
-      Math.abs((await focus.boundingBox())!.y - toolbarBefore!.y)
-    ).toBeLessThanOrEqual(1)
-    await request.post(`${backend}/fixture/delivery-release`)
-    await expect(
-      page.getByText("正在更新交付計畫…", { exact: false })
-    ).toHaveCount(0)
-    await expect(focus).toBeFocused()
-    await expect(
-      page.getByRole("button", { name: "收合詳細資料" })
-    ).toBeVisible()
-    expect(
-      await viewport.evaluate(element => [
-        element.scrollTop,
-        element.scrollLeft,
-      ])
-    ).toEqual(scroll)
-  }
-  await page
-    .getByRole("button", { name: "重新整理", exact: true })
-    .evaluate((button: HTMLButtonElement) => button.click())
-  await expect(
-    page.getByText("正在更新交付計畫…", { exact: false })
-  ).toBeVisible()
-  expect(
-    Math.abs((await table.boundingBox())!.y - before!.y)
-  ).toBeLessThanOrEqual(1)
-  await request.post(`${backend}/fixture/delivery-release`)
-  await expect(
-    page.getByText("正在更新交付計畫…", { exact: false })
-  ).toHaveCount(0)
-  await request.post(`${backend}/fixture/delivery-config`, {
-    data: { error: true },
-  })
-  await page.getByRole("button", { name: "重新整理", exact: true }).click()
-  await expect(page.getByRole("alert")).toContainText("保留最後成功資料")
-  await expect(page.getByRole("button", { name: "收合詳細資料" })).toBeVisible()
-  await request.post(`${backend}/fixture/delivery-config`, { data: {} })
-  await page.getByRole("button", { name: "重試", exact: true }).click()
-  await expect(page.getByRole("alert")).toHaveCount(0)
-  await page.screenshot({
-    path: "/private/tmp/findb-deliveries-desktop.png",
-    fullPage: true,
-    animations: "disabled",
-  })
-  await page.setViewportSize({ width: 390, height: 844 })
-  await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "dark" })
-  await page.evaluate(() => document.documentElement.classList.add("dark"))
-  await expect(table).toBeVisible()
-  expect(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= window.innerWidth
-    )
-  ).toBe(true)
-  await page.screenshot({
-    path: "/private/tmp/findb-deliveries-mobile.png",
-    fullPage: true,
-    animations: "disabled",
-  })
 })
 
 test("viewer deep links cannot expose historical backfill and tab keyboard navigation works", async ({
@@ -296,17 +184,18 @@ test("viewer deep links cannot expose historical backfill and tab keyboard navig
         waitUntil: "commit",
       }),
     async () => {
-      await expect(page.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
+      await expect(page.getByRole("tab", { name: "缺漏告警" })).toHaveAttribute(
         "aria-selected",
         "true"
       )
       await expect(page.getByRole("tab", { name: "歷史回補" })).toHaveCount(0)
     }
   )
-  await page.getByRole("tab", { name: "交付計畫" }).focus()
+  await page.getByRole("tab", { name: "缺漏告警" }).focus()
   await page.keyboard.press("ArrowRight")
-  await expect(page.getByRole("tab", { name: "缺漏告警" })).toBeFocused()
-  await expect(page).toHaveURL(/tab=alerts/)
+  await expect(page.getByRole("tab", { name: "Universe 名單" })).toBeFocused()
+  await expect(page).toHaveURL(/tab=candidates/)
+  await page.keyboard.press("ArrowLeft")
   await expect(page.getByRole("tab", { name: "缺漏告警" })).toHaveAttribute(
     "aria-selected",
     "true"
@@ -333,7 +222,6 @@ for (const role of ["operator", "owner"]) {
     await request.post(`${backend}/fixture/reset`, { data: { role } })
     await page.clock.install()
     await login(page, role)
-    await page.getByRole("tab", { name: "缺漏告警" }).click()
     await page
       .getByRole("button", {
         name: "帶入 tw_equity_eod 2026-10-07 回補參數",
@@ -361,7 +249,7 @@ for (const role of ["operator", "owner"]) {
     ).toEqual([])
     await confirmation.check()
     await expect(create).toBeEnabled()
-    await page.getByRole("tab", { name: "交付計畫" }).click()
+    await page.getByRole("tab", { name: "缺漏告警" }).click()
     await page.getByRole("button", { name: "重新整理", exact: true }).click()
     await page.getByRole("tab", { name: "歷史回補" }).click()
     await expect(preview).toBeVisible()
@@ -525,32 +413,6 @@ for (const expiry of ["local", "upstream"] as const) {
     ).toEqual([])
   })
 }
-
-test("retired profile deep links show daily plans without profile tabs or pilot data", async ({
-  page,
-  request,
-}) => {
-  await login(page)
-  await page.goto("/dashboard/operations/deliveries?profile=pilot")
-  const plans = page.getByRole("table", { name: "交付計畫", exact: true })
-  await expect(plans).toContainText("tw_futures_eod")
-  await expect(plans).not.toContainText("pilot_dataset")
-  await page.locator("#plan-dataset").click()
-  const datasetOptions = page.getByRole("listbox")
-  await expect(datasetOptions).toContainText("全部資料集")
-  await expect(datasetOptions).not.toContainText("pilot_dataset")
-  await page.keyboard.press("Escape")
-  await expect(
-    page.getByRole("tab", { name: "Pilot", exact: true })
-  ).toHaveCount(0)
-  await expect(
-    page.getByRole("tab", { name: "Full market", exact: true })
-  ).toHaveCount(0)
-  await expect(page.getByText(/Pilot/)).toHaveCount(0)
-  expect(
-    (await (await request.get(`${backend}/fixture/state`)).json()).mutations
-  ).toEqual([])
-})
 
 test("owner refreshes a universe by hand after reading the approval; a viewer cannot", async ({
   page,

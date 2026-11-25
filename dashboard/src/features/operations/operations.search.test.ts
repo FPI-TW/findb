@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  completenessSearchSchema,
   correctionsSearchSchema,
-  deliveriesAuditFromSearch,
   deliveriesSearchSchema,
   operationsAuditFromSearch,
   qualitySearchSchema,
@@ -24,7 +24,8 @@ describe("operations route search", () => {
     expect(deliveriesSearchSchema.parse({})).toEqual({
       p: 1,
       ps: 100,
-      tab: "plans",
+      tab: "alerts",
+      seed: "",
       dataset: "",
       date: "",
       pp: 1,
@@ -79,20 +80,43 @@ describe("operations route search", () => {
     })
   })
 
-  it("maps deliveries pagination separately from missing-delivery pagination", () => {
-    expect(
-      deliveriesAuditFromSearch(
-        deliveriesSearchSchema.parse({ p: 4, ps: 100, bp: 2, bps: 50 })
-      )
-    ).toEqual({
-      datasetKey: "",
-      runId: "",
-      dateFrom: "",
-      dateTo: "",
-      page: 4,
-      pageSize: 100,
-      backfillPage: 2,
-      backfillPageSize: 50,
+  it("keeps the matrix range, filters and selected cell", () => {
+    expect(completenessSearchSchema.parse({})).toEqual({
+      from: "",
+      to: "",
+      market: "",
+      gaps: false,
+      dataset: "",
+      provider: "",
+      date: "",
     })
+    expect(
+      completenessSearchSchema.parse({
+        from: "2026-11-01",
+        to: "not-a-date",
+        gaps: true,
+        dataset: "tw_equity_eod",
+        provider: "finlab",
+        date: "2026-11-24",
+      })
+    ).toEqual({
+      from: "2026-11-01",
+      to: "",
+      market: "",
+      gaps: true,
+      dataset: "tw_equity_eod",
+      provider: "finlab",
+      date: "2026-11-24",
+    })
+  })
+
+  it("accepts only a well-formed backfill seed from the matrix", () => {
+    expect(
+      deliveriesSearchSchema.parse({ seed: "finlab|tw_equity_eod|2026-11-24" })
+        .seed
+    ).toBe("finlab|tw_equity_eod|2026-11-24")
+    expect(
+      deliveriesSearchSchema.parse({ seed: "finlab|<x>|today" }).seed
+    ).toBe("")
   })
 })

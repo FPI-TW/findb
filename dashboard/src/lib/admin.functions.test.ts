@@ -281,28 +281,6 @@ describe("FinDB Admin server boundary", () => {
     )
   })
 
-  it("viewer does not request historical backfill scope or status", async () => {
-    const calls: RecordedCall[] = []
-    const result = await fetchDashboardData(
-      request("deliveries"),
-      "viewer-secret",
-      "https://findb.internal:8443",
-      recordingFetch(calls),
-      "viewer"
-    )
-
-    expect(calls.map(call => `${call.url.pathname}${call.url.search}`)).toEqual(
-      [
-        "/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100&execution_profile=full_market",
-      ]
-    )
-    expect(result.view).toBe("deliveries")
-    if (result.view === "deliveries") {
-      expect(result.backfills.ok).toBe(false)
-      expect(result.backfillScopes.ok).toBe(false)
-    }
-  })
-
   it.each([
     [
       "overview",
@@ -310,14 +288,6 @@ describe("FinDB Admin server boundary", () => {
         "/api/v1/admin/market-freshness?execution_profile=full_market",
         "/api/v1/admin/queue/health",
         "/api/v1/admin/schedulers?execution_profile=full_market",
-      ],
-    ],
-    [
-      "deliveries",
-      [
-        "/api/v1/admin/missing-deliveries?status=open&page=3&page_size=100&execution_profile=full_market",
-        "/api/v1/admin/historical-backfills?page=1&page_size=25",
-        "/api/v1/admin/historical-backfills/scopes",
       ],
     ],
     ["quality", ["/api/v1/admin/dq-issues"]],
@@ -334,13 +304,11 @@ describe("FinDB Admin server boundary", () => {
         recordingFetch(calls)
       )
 
-      expect(calls).toHaveLength(
-        view === "overview" || view === "deliveries" ? 3 : 1
-      )
+      expect(calls).toHaveLength(view === "overview" ? 3 : 1)
       expect(
         calls.map(
           call =>
-            `${call.url.pathname}${view === "deliveries" || view === "corrections" || view === "overview" ? call.url.search : ""}`
+            `${call.url.pathname}${view === "corrections" || view === "overview" ? call.url.search : ""}`
         )
       ).toEqual(expected)
       expect(result.view).toBe(view)

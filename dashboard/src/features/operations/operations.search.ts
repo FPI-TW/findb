@@ -31,10 +31,17 @@ function pageSchema(defaultPageSize: (typeof OPERATIONS_PAGE_SIZES)[number]) {
 }
 
 export const deliveriesSearchSchema = pageSchema(100).extend({
+  // "plans" remains only so old links redirect to the completeness matrix.
   tab: z
     .enum(["plans", "alerts", "candidates", "backfills"])
-    .catch("plans")
-    .default("plans"),
+    .catch("alerts")
+    .default("alerts"),
+  // A backfill draft carried from the matrix: "provider|dataset|YYYY-MM-DD".
+  seed: z
+    .string()
+    .regex(/^[a-z0-9_]+\|[a-z0-9_]+\|\d{4}-\d{2}-\d{2}$/)
+    .catch("")
+    .default(""),
   dataset: z.string().trim().max(100).catch("").default(""),
   date: z
     .union([z.iso.date(), z.literal("")])
@@ -57,6 +64,23 @@ export const deliveriesSearchSchema = pageSchema(100).extend({
     .catch(25)
     .default(25),
 })
+const optionalDate = z
+  .union([z.iso.date(), z.literal("")])
+  .catch("")
+  .default("")
+
+// Matrix range, filters and the selected cell (dataset, provider, trade date).
+export const completenessSearchSchema = z.object({
+  from: optionalDate,
+  to: optionalDate,
+  market: z.string().trim().max(10).catch("").default(""),
+  gaps: z.boolean().catch(false).default(false),
+  dataset: z.string().trim().max(100).catch("").default(""),
+  provider: z.string().trim().max(50).catch("").default(""),
+  date: optionalDate,
+})
+export type CompletenessSearch = z.output<typeof completenessSearchSchema>
+
 export const qualitySearchSchema = pageSchema(25)
 export const correctionsSearchSchema = pageSchema(50)
 export const rawPayloadsSearchSchema = pageSchema(25).extend({
@@ -89,16 +113,6 @@ export function operationsAuditFromSearch(
     dateTo: "",
     page: search.p,
     pageSize: search.ps,
-  }
-}
-
-export function deliveriesAuditFromSearch(
-  search: DeliveriesPageSearch
-): DashboardRequest["audit"] {
-  return {
-    ...operationsAuditFromSearch(search),
-    backfillPage: search.bp,
-    backfillPageSize: search.bps,
   }
 }
 

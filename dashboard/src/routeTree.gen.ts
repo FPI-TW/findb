@@ -17,6 +17,7 @@ import { Route as AuthenticatedChangePasswordRouteImport } from './routes/_authe
 import { Route as AuthenticatedOperationsRouteImport } from './routes/_authenticated/operations'
 import { Route as AuthenticatedOperationsIndexRouteImport } from './routes/_authenticated/operations.index'
 import { Route as AuthenticatedOperationsCalendarsRouteImport } from './routes/_authenticated/operations.calendars'
+import { Route as AuthenticatedOperationsCompletenessRouteImport } from './routes/_authenticated/operations.completeness'
 import { Route as AuthenticatedOperationsCorrectionsRouteImport } from './routes/_authenticated/operations.corrections'
 import { Route as AuthenticatedOperationsCredentialsRouteImport } from './routes/_authenticated/operations.credentials'
 import { Route as AuthenticatedOperationsDeliveriesRouteImport } from './routes/_authenticated/operations.deliveries'
@@ -66,6 +67,12 @@ const AuthenticatedOperationsCalendarsRoute =
     path: '/calendars',
     getParentRoute: () => AuthenticatedOperationsRoute,
   } as any)
+const AuthenticatedOperationsCompletenessRoute =
+  AuthenticatedOperationsCompletenessRouteImport.update({
+    id: '/completeness',
+    path: '/completeness',
+    getParentRoute: () => AuthenticatedOperationsRoute,
+  } as any)
 const AuthenticatedOperationsCorrectionsRoute =
   AuthenticatedOperationsCorrectionsRouteImport.update({
     id: '/corrections',
@@ -110,6 +117,7 @@ export interface FileRoutesByFullPath {
   '/change-password': typeof AuthenticatedChangePasswordRoute
   '/operations': typeof AuthenticatedOperationsRouteWithChildren
   '/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
+  '/operations/completeness': typeof AuthenticatedOperationsCompletenessRoute
   '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
   '/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
@@ -124,6 +132,7 @@ export interface FileRoutesByTo {
   '/lookup': typeof LookupRoute
   '/change-password': typeof AuthenticatedChangePasswordRoute
   '/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
+  '/operations/completeness': typeof AuthenticatedOperationsCompletenessRoute
   '/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
   '/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
@@ -141,6 +150,7 @@ export interface FileRoutesById {
   '/_authenticated/change-password': typeof AuthenticatedChangePasswordRoute
   '/_authenticated/operations': typeof AuthenticatedOperationsRouteWithChildren
   '/_authenticated/operations/calendars': typeof AuthenticatedOperationsCalendarsRoute
+  '/_authenticated/operations/completeness': typeof AuthenticatedOperationsCompletenessRoute
   '/_authenticated/operations/corrections': typeof AuthenticatedOperationsCorrectionsRoute
   '/_authenticated/operations/credentials': typeof AuthenticatedOperationsCredentialsRoute
   '/_authenticated/operations/deliveries': typeof AuthenticatedOperationsDeliveriesRoute
@@ -158,6 +168,7 @@ export interface FileRouteTypes {
     | '/change-password'
     | '/operations'
     | '/operations/calendars'
+    | '/operations/completeness'
     | '/operations/corrections'
     | '/operations/credentials'
     | '/operations/deliveries'
@@ -172,6 +183,7 @@ export interface FileRouteTypes {
     | '/lookup'
     | '/change-password'
     | '/operations/calendars'
+    | '/operations/completeness'
     | '/operations/corrections'
     | '/operations/credentials'
     | '/operations/deliveries'
@@ -188,6 +200,7 @@ export interface FileRouteTypes {
     | '/_authenticated/change-password'
     | '/_authenticated/operations'
     | '/_authenticated/operations/calendars'
+    | '/_authenticated/operations/completeness'
     | '/_authenticated/operations/corrections'
     | '/_authenticated/operations/credentials'
     | '/_authenticated/operations/deliveries'
@@ -262,6 +275,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedOperationsCalendarsRouteImport
       parentRoute: typeof AuthenticatedOperationsRoute
     }
+    '/_authenticated/operations/completeness': {
+      id: '/_authenticated/operations/completeness'
+      path: '/completeness'
+      fullPath: '/operations/completeness'
+      preLoaderRoute: typeof AuthenticatedOperationsCompletenessRouteImport
+      parentRoute: typeof AuthenticatedOperationsRoute
+    }
     '/_authenticated/operations/corrections': {
       id: '/_authenticated/operations/corrections'
       path: '/corrections'
@@ -309,6 +329,7 @@ declare module '@tanstack/react-router' {
 
 interface AuthenticatedOperationsRouteChildren {
   AuthenticatedOperationsCalendarsRoute: typeof AuthenticatedOperationsCalendarsRoute
+  AuthenticatedOperationsCompletenessRoute: typeof AuthenticatedOperationsCompletenessRoute
   AuthenticatedOperationsCorrectionsRoute: typeof AuthenticatedOperationsCorrectionsRoute
   AuthenticatedOperationsCredentialsRoute: typeof AuthenticatedOperationsCredentialsRoute
   AuthenticatedOperationsDeliveriesRoute: typeof AuthenticatedOperationsDeliveriesRoute
@@ -322,6 +343,8 @@ const AuthenticatedOperationsRouteChildren: AuthenticatedOperationsRouteChildren
   {
     AuthenticatedOperationsCalendarsRoute:
       AuthenticatedOperationsCalendarsRoute,
+    AuthenticatedOperationsCompletenessRoute:
+      AuthenticatedOperationsCompletenessRoute,
     AuthenticatedOperationsCorrectionsRoute:
       AuthenticatedOperationsCorrectionsRoute,
     AuthenticatedOperationsCredentialsRoute:

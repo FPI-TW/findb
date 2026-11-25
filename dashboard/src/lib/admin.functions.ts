@@ -2,29 +2,30 @@ import { createServerFn } from "@tanstack/react-start"
 import { setResponseHeader } from "@tanstack/react-start/server"
 
 import {
+  completenessRequestSchema,
   dashboardRequestSchema,
+  historicalBackfillItemsRequestSchema,
   rawPayloadDetailRequestSchema,
   schedulerMutationRequestSchema,
   historicalBackfillCancelSchema,
   historicalBackfillCreateSchema,
   historicalBackfillPreviewSchema,
   deliveryPlanSummaryRequestSchema,
-  deliveryPlansRequestSchema,
   deliveryResourceRequestSchema,
   universeCandidatesRequestSchema,
   universeDiffRequestSchema,
   universeRefreshRequestSchema,
 } from "./admin-api"
 import {
+  fetchCompletenessData,
   fetchDashboardData,
+  fetchHistoricalBackfillItemsData,
   fetchRawPayloadDetailData,
   patchSchedulerData,
   cancelHistoricalBackfillData,
   createHistoricalBackfillData,
   previewHistoricalBackfillData,
   fetchDeliveryPlanSummaryData,
-  fetchDeliveryPlansData,
-  fetchDeliveryPlanDatasetsData,
   fetchDeliveryResourceData,
   fetchUniverseCandidatesData,
   fetchUniverseDiffData,
@@ -47,25 +48,7 @@ export const loadDashboard = createServerFn({ method: "POST" })
     setResponseHeader("Cache-Control", "no-store")
     setResponseHeader("Vary", "Cookie")
     return withDashboardAuthentication(() =>
-      fetchDashboardData(
-        data,
-        session.token,
-        config.apiBaseUrl,
-        fetch,
-        session.user.role
-      )
-    )
-  })
-
-export const loadDeliveryPlans = createServerFn({ method: "POST" })
-  .validator(deliveryPlansRequestSchema)
-  .handler(async ({ data }) => {
-    const config = getDashboardConfig()
-    const session = await requireDashboardSession()
-    setResponseHeader("Cache-Control", "no-store")
-    setResponseHeader("Vary", "Cookie")
-    return withDashboardAuthentication(() =>
-      fetchDeliveryPlansData(data, session.token, config.apiBaseUrl)
+      fetchDashboardData(data, session.token, config.apiBaseUrl)
     )
   })
 
@@ -154,17 +137,6 @@ export const previewHistoricalBackfill = createServerFn({ method: "POST" })
     )
   })
 
-export const loadDeliveryPlanDatasets = createServerFn({
-  method: "POST",
-}).handler(async () => {
-  const config = getDashboardConfig()
-  const session = await requireDashboardSession()
-  markPrivateResponse()
-  return withDashboardAuthentication(() =>
-    fetchDeliveryPlanDatasetsData(session.token, config.apiBaseUrl)
-  )
-})
-
 export const loadDeliveryResource = createServerFn({ method: "POST" })
   .validator(deliveryResourceRequestSchema)
   .handler(async ({ data }) => {
@@ -175,6 +147,31 @@ export const loadDeliveryResource = createServerFn({ method: "POST" })
     markPrivateResponse()
     return withDashboardAuthentication(() =>
       fetchDeliveryResourceData(data, session.token, config.apiBaseUrl)
+    )
+  })
+
+export const loadCompleteness = createServerFn({ method: "POST" })
+  .validator(completenessRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    markPrivateResponse()
+    return withDashboardAuthentication(() =>
+      fetchCompletenessData(data, session.token, config.apiBaseUrl)
+    )
+  })
+
+export const loadHistoricalBackfillItems = createServerFn({ method: "POST" })
+  .validator(historicalBackfillItemsRequestSchema)
+  .handler(async ({ data }) => {
+    const config = getDashboardConfig()
+    const session = await requireDashboardSession()
+    // Backfills are operator data, like the list they open from.
+    if (session.user.role === "viewer")
+      throw new Error("沒有執行此操作的權限。")
+    markPrivateResponse()
+    return withDashboardAuthentication(() =>
+      fetchHistoricalBackfillItemsData(data, session.token, config.apiBaseUrl)
     )
   })
 

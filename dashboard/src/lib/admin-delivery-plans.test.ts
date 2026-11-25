@@ -1,126 +1,199 @@
 import { describe, expect, it, vi } from "vitest"
 
 import {
+  completenessRequestSchema,
+  deliveryPlanSummaryRequestSchema,
+  historicalBackfillItemsRequestSchema,
+} from "./admin-api"
+import {
+  fetchCompletenessData,
   fetchDeliveryPlanSummaryData,
-  fetchDeliveryPlansData,
+  fetchHistoricalBackfillItemsData,
 } from "./admin.server"
 
-const plan = {
-  plan_id: "plan-1",
-  dataset_key: "tw_futures_eod",
-  provider: "taifex",
-  trade_date: "2026-10-01",
-  release_id: "release-1",
+const summary = {
+  expected: 5,
+  data: 2,
+  no_data: 1,
+  missing: 1,
+  blocked: 1,
   deadline_at: "2026-10-01T15:00:00Z",
-  status: "incomplete",
-  parts: [],
-  summary: {
-    expected: 5,
-    data: 2,
-    no_data: 1,
-    missing: 1,
-    blocked: 1,
-    deadline_at: "2026-10-01T15:00:00Z",
-    is_late: true,
-    gaps: [
-      { member_key: "TX", status: "missing", reason: "pending" },
-      { member_key: "MTX", status: "blocked", reason: "quota" },
-    ],
-  },
+  is_late: true,
+  gaps: [
+    { member_key: "TX", status: "missing", reason: "pending" },
+    { member_key: "MTX", status: "blocked", reason: "quota" },
+  ],
+  gaps_total: 2,
 }
 
-describe("delivery plan session proxy", () => {
-  it("uses the session bearer token and bounded filters while preserving no_data and gaps", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          data: [plan],
-          pagination: {
-            page: 1,
-            page_size: 25,
-            total_records: 1,
-            total_pages: 1,
+const matrix = {
+  execution_profile: "full_market",
+  date_from: "2026-10-01",
+  date_to: "2026-10-02",
+  evaluated_at: "2026-10-02T12:00:00Z",
+  rows: [
+    {
+      dataset_key: "tw_futures_eod",
+      provider: "taifex",
+      market: "TAIFEX",
+      first_start_date: "2026-09-01",
+      latest_due_date: "2026-10-02",
+      cells: [
+        {
+          trade_date: "2026-10-01",
+          state: "late",
+          plan_id: "0195a000-0000-7000-8000-000000000001",
+          deadline_at: "2026-10-01T15:00:00Z",
+          counts: {
+            expected: 5,
+            data: 2,
+            no_data: 1,
+            missing: 1,
+            blocked: 1,
+            unavailable: 0,
+            mapping_gap: 0,
+            unlisted_data: 0,
           },
-        }),
-        { status: 200 }
-      )
-    )
-    const payload = await fetchDeliveryPlansData(
-      {
-        datasetKey: "tw_futures_eod",
-        tradeDate: "2026-10-01",
-        page: 1,
-        pageSize: 25,
-      },
+          counts_synced: true,
+          open_alert: true,
+        },
+        {
+          trade_date: "2026-10-02",
+          state: "not_planned",
+          plan_id: null,
+          deadline_at: null,
+          counts: null,
+          counts_synced: true,
+          open_alert: false,
+        },
+      ],
+    },
+  ],
+}
+
+function respond(body: unknown, status = 200) {
+  return vi
+    .fn()
+    .mockResolvedValue(new Response(JSON.stringify(body), { status }))
+}
+
+describe("completeness session proxy", () => {
+  it("asks for stored counts with the session token and the chosen range", async () => {
+    const fetchMock = respond(matrix)
+    const payload = await fetchCompletenessData(
+      completenessRequestSchema.parse({
+        dateFrom: "2026-10-01",
+        dateTo: "2026-10-02",
+      }),
       "session-token",
       "https://api.example.test",
       fetchMock
     )
     const [url, init] = fetchMock.mock.calls[0] ?? []
     expect(String(url)).toBe(
-      "https://api.example.test/api/v1/admin/delivery-plans?execution_profile=full_market&page=1&page_size=25&summary_only=true&dataset_key=tw_futures_eod&trade_date=2026-10-01"
+      "https://api.example.test/api/v1/admin/completeness?execution_profile=full_market&date_from=2026-10-01&date_to=2026-10-02"
     )
     expect(init.headers).toEqual({
       Authorization: "Bearer session-token",
       Accept: "application/json",
     })
     expect(init.cache).toBe("no-store")
-    expect(payload.data[0]?.summary).toMatchObject({
-      no_data: 1,
-      missing: 1,
-      blocked: 1,
-    })
-    expect(payload.data[0]?.summary.gaps).toHaveLength(2)
+    expect(payload.rows[0]?.cells.map(cell => cell.state)).toEqual([
+      "late",
+      "not_planned",
+    ])
   })
 
-  it("rejects API errors rather than treating them as an empty complete plan list", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(new Response("error", { status: 503 }))
-    await expect(
-      fetchDeliveryPlansData(
-        { datasetKey: "", tradeDate: "", page: 1, pageSize: 25 },
-        "session-token",
-        "https://api.example.test",
-        fetchMock
-      )
-    ).rejects.toThrow("503")
-  })
-
-  it("reads one plan's gap details from its own summary endpoint", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify(plan.summary), { status: 200 })
-      )
-    const planId = "0195a000-0000-7000-8000-000000000001"
-    const summary = await fetchDeliveryPlanSummaryData(
-      { planId },
+  it("leaves the range to the server when none is chosen", async () => {
+    const fetchMock = respond(matrix)
+    await fetchCompletenessData(
+      completenessRequestSchema.parse({}),
       "session-token",
       "https://api.example.test",
       fetchMock
     )
-    const [url, init] = fetchMock.mock.calls[0] ?? []
-    expect(String(url)).toBe(
-      `https://api.example.test/api/v1/admin/delivery-plans/${planId}/summary`
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://api.example.test/api/v1/admin/completeness?execution_profile=full_market"
     )
-    expect(init.headers).toEqual({
-      Authorization: "Bearer session-token",
-      Accept: "application/json",
-    })
-    expect(summary.gaps).toEqual(plan.summary.gaps)
   })
 
-  it("only accepts a plan id that cannot change the request path", async () => {
-    const { deliveryPlanSummaryRequestSchema } = await import("./admin-api")
+  it("rejects API errors rather than showing an empty matrix", async () => {
+    await expect(
+      fetchCompletenessData(
+        completenessRequestSchema.parse({}),
+        "session-token",
+        "https://api.example.test",
+        vi.fn().mockResolvedValue(new Response("error", { status: 503 }))
+      )
+    ).rejects.toThrow("503")
+  })
+})
+
+describe("plan gap details", () => {
+  it("reads one plan's gaps filtered by status and paged", async () => {
+    const fetchMock = respond(summary)
+    const planId = "0195a000-0000-7000-8000-000000000001"
+    const payload = await fetchDeliveryPlanSummaryData(
+      deliveryPlanSummaryRequestSchema.parse({
+        planId,
+        gapStatus: ["missing", "blocked"],
+        gapPage: 2,
+        gapPageSize: 200,
+      }),
+      "session-token",
+      "https://api.example.test",
+      fetchMock
+    )
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      `https://api.example.test/api/v1/admin/delivery-plans/${planId}/summary?gap_page=2&gap_page_size=200&gap_status=missing&gap_status=blocked`
+    )
+    expect(payload.gaps).toEqual(summary.gaps)
+    expect(payload.gaps_total).toBe(2)
+  })
+
+  it("only accepts a plan id that cannot change the request path", () => {
     for (const planId of ["", "p1", "../schedulers", "a/b", "plan-1?x=1"])
       expect(
         deliveryPlanSummaryRequestSchema.safeParse({ planId }).success
       ).toBe(false)
     expect(
-      deliveryPlanSummaryRequestSchema.safeParse({
+      deliveryPlanSummaryRequestSchema.parse({
         planId: "0195a000-0000-7000-8000-000000000001",
-      }).success
-    ).toBe(true)
+      })
+    ).toMatchObject({ gapStatus: [], gapPage: 1, gapPageSize: 1000 })
+  })
+})
+
+describe("historical backfill items", () => {
+  it("loads one request's dates on demand", async () => {
+    const requestId = "0195a000-0000-7000-8000-000000000002"
+    const fetchMock = respond({
+      data: [
+        {
+          item_id: "0195a000-0000-7000-8000-000000000003",
+          trade_date: "2026-10-01",
+          status: "completed",
+          run_id: null,
+          failure_code: null,
+          failure_message: null,
+          unlisted_symbols: null,
+        },
+      ],
+      pagination: { page: 1, page_size: 500, total_records: 1, total_pages: 1 },
+    })
+    const payload = await fetchHistoricalBackfillItemsData(
+      historicalBackfillItemsRequestSchema.parse({ requestId }),
+      "session-token",
+      "https://api.example.test",
+      fetchMock
+    )
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      `https://api.example.test/api/v1/admin/historical-backfills/${requestId}/items?page=1&page_size=500`
+    )
+    expect(payload.data).toHaveLength(1)
+    expect(
+      historicalBackfillItemsRequestSchema.safeParse({ requestId: "../x" })
+        .success
+    ).toBe(false)
   })
 })

@@ -18,6 +18,7 @@ import type {
   DashboardRequest,
   DashboardResponse,
   DQIssue,
+  HistoricalBackfill,
   MissingDelivery,
   PanelResult,
   RawPayload,
@@ -35,8 +36,8 @@ import { ProtectedQueryScopeProvider } from "../../components/ProtectedQueryScop
 const mocks = vi.hoisted(() => ({
   loadDashboard: vi.fn(),
   loadRawPayloadDetail: vi.fn(),
-  loadDeliveryPlans: vi.fn(),
-  loadDeliveryPlanDatasets: vi.fn(),
+  loadCompleteness: vi.fn(),
+  loadHistoricalBackfillItems: vi.fn(),
   loadUniverseCandidates: vi.fn(),
   loadUniverseDiff: vi.fn(),
   loadUniverseFeeds: vi.fn(),
@@ -141,14 +142,40 @@ function overviewResponse(schedulers: Scheduler[] = []): DashboardResponse {
   }
 }
 
-function deliveriesResponse(missingDeliveries: MissingDelivery[] = []): Extract<
-  DashboardResponse,
-  { view: "deliveries" }
-> & {
-  deliveries: { ok: true }
-  backfills: { ok: true }
-  backfillScopes: { ok: true }
-} {
+type BackfillFixture = Omit<HistoricalBackfill, "item_counts"> & {
+  item_counts?: HistoricalBackfill["item_counts"]
+}
+type Page<T> = {
+  data: T[]
+  pagination: {
+    page: number
+    page_size: number
+    total_records: number
+    total_pages: number
+  }
+}
+// The delivery panels' resources, served to the mocked server functions below.
+type DeliveriesFixture = {
+  view: "deliveries"
+  fetchedAt: string
+  deliveries: { ok: true; data: Page<MissingDelivery> }
+  backfills: { ok: true; data: Page<BackfillFixture> }
+  backfillScopes: {
+    ok: true
+    data: {
+      data: {
+        provider: string
+        dataset_key: string
+        market: string
+        executable: boolean
+      }[]
+    }
+  }
+}
+
+function deliveriesResponse(
+  missingDeliveries: MissingDelivery[] = []
+): DeliveriesFixture {
   return {
     view: "deliveries",
     fetchedAt: timestamp,
@@ -347,11 +374,22 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.loadDashboard.mockResolvedValue(qualityResponse())
   mocks.loadRawPayloadDetail.mockResolvedValue(makeRawPayload())
-  mocks.loadDeliveryPlans.mockResolvedValue({
-    data: [],
-    pagination: { page: 1, page_size: 25, total_records: 0, total_pages: 0 },
+  mocks.loadHistoricalBackfillItems.mockImplementation(async ({ data }) => {
+    const response = await mocks.loadDashboard({ data: { view: "deliveries" } })
+    const request = response.backfills?.data?.data.find(
+      (row: BackfillFixture) => row.request_id === data.requestId
+    )
+    const items = request?.items ?? []
+    return {
+      data: items,
+      pagination: {
+        page: 1,
+        page_size: 500,
+        total_records: items.length,
+        total_pages: items.length ? 1 : 0,
+      },
+    }
   })
-  mocks.loadDeliveryPlanDatasets.mockResolvedValue({ data: [] })
   mocks.loadDeliveryResource.mockImplementation(async ({ data }) => {
     const response = await mocks.loadDashboard({
       data: {
@@ -368,7 +406,28 @@ beforeEach(() => {
             : "backfillScopes"
       ]
     if (!result?.ok) throw new Error(result?.error ?? "Unavailable")
-    return { resource: data.resource, result: result.data }
+    if (data.resource !== "backfills")
+      return { resource: data.resource, result: result.data }
+    // Like the API with include_items=false: counts per status, no items.
+    return {
+      resource: data.resource,
+      result: {
+        ...result.data,
+        data: result.data.data.map((row: BackfillFixture) => ({
+          ...row,
+          items: [],
+          item_counts:
+            row.item_counts ??
+            row.items.reduce(
+              (counts: Record<string, number>, item: { status: string }) => ({
+                ...counts,
+                [item.status]: (counts[item.status] ?? 0) + 1,
+              }),
+              {}
+            ),
+        })),
+      },
+    }
   })
   mocks.previewHistoricalBackfill.mockResolvedValue({
     provider: "taifex",
@@ -1915,7 +1974,16 @@ describe("Operations presentation", () => {
     expect(row).toHaveTextContent("1 日仍有缺漏")
 
     fireEvent.click(within(row!).getByRole("button", { name: "展開詳細資料" }))
+    // A request's dates load only once its row opens.
     const items = screen.getByRole("table", { name: "回補日期項目" })
+    await within(items).findByText("019565d2-f838-7c91-85c1-72d4d7bbbeb3")
+    expect(mocks.loadHistoricalBackfillItems).toHaveBeenCalledWith({
+      data: {
+        requestId: "019565d2-f838-7c91-85c1-72d4d7bbbeb1",
+        page: 1,
+        pageSize: 500,
+      },
+    })
     expect(items).toHaveTextContent("部分完成，保留缺漏")
     expect(items).toHaveTextContent("019565d2-f838-7c91-85c1-72d4d7bbbeb3")
     expect(items).toHaveTextContent("1 檔：9999")
@@ -2319,11 +2387,12 @@ describe("Operations presentation", () => {
         <DeliveriesPage role="operator" />
       </QueryClientProvider>
     )
-    expect(screen.getByRole("tab", { name: "交付計畫" })).toHaveAttribute(
+    // Alerts open first now that daily completeness lives in its own page.
+    expect(screen.queryByRole("tab", { name: "交付計畫" })).toBeNull()
+    expect(screen.getByRole("tab", { name: "缺漏告警" })).toHaveAttribute(
       "aria-selected",
       "true"
     )
-    fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
     fireEvent.click(
       await screen.findByRole("button", {
         name: "帶入 tw_futures_eod 2026-08-31 回補參數",
@@ -2343,11 +2412,39 @@ describe("Operations presentation", () => {
     fireEvent.change(screen.getByLabelText("回補結束日期"), {
       target: { value: "2026-09-01" },
     })
-    fireEvent.click(screen.getByRole("tab", { name: "交付計畫" }))
+    fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
     fireEvent.click(screen.getByRole("tab", { name: "歷史回補" }))
     expect(screen.getByLabelText("回補結束日期")).toHaveValue("2026-09-01")
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
     expect(screen.getByRole("button", { name: "建立回補" })).toBeDisabled()
+  })
+
+  it("prefills a backfill draft carried from the completeness matrix once", async () => {
+    mocks.loadDashboard.mockResolvedValue(deliveriesResponse())
+    const updateSearch = vi.fn()
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <DeliveriesPage
+          role="operator"
+          search={deliveriesSearchSchema.parse({
+            tab: "backfills",
+            seed: "finlab|tw_equity_eod|2026-08-31",
+          })}
+          updateSearch={updateSearch}
+        />
+      </QueryClientProvider>
+    )
+    await waitForBackfillScopes()
+    expect(screen.getByRole("combobox", { name: "資料集" })).toHaveTextContent(
+      "tw_equity_eod"
+    )
+    expect(screen.getByLabelText("回補起始日期")).toHaveValue("2026-08-31")
+    expect(screen.getByLabelText("回補結束日期")).toHaveValue("2026-08-31")
+    // The draft leaves the URL so a reload never refills it.
+    expect(updateSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ tab: "backfills", seed: "" })
+    )
+    expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
   })
 
   it("ignores an old preview response after prefilling a different alert", async () => {

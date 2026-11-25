@@ -6,26 +6,51 @@ Dashboard 透過具名 session 與 Admin API 提供監控及授權操作，不�
 | 分組     | 頁面                             | 用途                                                               |
 | -------- | -------------------------------- | ------------------------------------------------------------------ |
 | 營運監控 | 導入概況                         | 全市場排程、readiness、Owner 啟停、佇列與 Worker 健康              |
-| 營運監控 | 交付監控                         | 全市場逐成員核對、資料集日期層級告警、授權歷史回補                 |
+| 營運監控 | 資料完整性                       | 資料集 × 交易日矩陣、單日缺口明細、帶入回補                        |
+| 營運監控 | 交付監控                         | 資料集日期層級告警、Universe 名單、授權歷史回補                    |
 | 營運監控 | 資料品質                         | 未解決 DQ 問題及政策資訊                                           |
 | 資料稽核 | 修正稽核、原始資料               | 修正 lineage 與保留中的 raw payload                                |
 | 系統管理 | 交易日曆、API 憑證、管理者使用者 | 日曆治理及身份／憑證管理，依原有角色限制操作                       |
 
+## 資料完整性
+
+入口為 `/dashboard/operations/completeness`，是追蹤每個資料集每日是否完整的主畫面。
+
+- **矩陣**：每個 full-market feed 一列（資料集、供應商、市場），每個交易所當地交易日一格。
+  - 預設顯示到今天為止的 28 天，可指定起迄日，最多 62 天。
+  - 可依市場篩選，或只顯示有缺口的資料集。
+  - 每 60 秒更新，納入頁首的「重新整理」。
+- **每格狀態**：
+  - ● 完整：data + no_data + unavailable = expected
+  - ◑ 未完成：尚未逾時
+  - ◐ 逾時：過了期限仍有缺漏或受阻
+  - ○ 尚未到期
+  - ✕ 已到期但沒有計畫
+  - · 休市或依設定略過
+  - 空白：首次抓取日之前
+  
+  數字是缺漏＋受阻檔數。黃框表示已存計數還在同步，數字可能落後，由交付監控自動補正。
+- **讀取方式**：矩陣只讀已存的計畫摘要、分區計數、日曆決策與未關閉告警，不在讀取時重新分類計畫
+  （API 見 [API 使用指南](../api/api_usage_guide.md)）。
+- **所選格子**：點選後在側欄顯示計數、完成期限、是否逾時與未關閉告警。
+  - 「載入缺口明細」按下才讀 `/delivery-plans/{plan_id}/summary`，可依缺漏、受阻、無法取得篩選，每頁 200 筆。
+  - operator／owner 可「帶入回補」，帶著供應商、資料集與日期開啟歷史回補分頁。草稿以 URL 參數 `seed` 傳遞，
+    填入表單後立即從 URL 移除，重新載入不會再填一次；仍需預覽、確認與送出才會建立回補。
+- **URL 參數**：`from`、`to`、`market`、`gaps` 與所選格子（`dataset`、`provider`、`date`）。
+  導入概況的 feed 連結帶這三個欄位，直接選取該 feed 的預期日期。
+- **說明**：`expected = data + no_data + missing + blocked + unavailable`。正常無資料依後端持久化證據判定；
+  無法取得（例如供應商未收錄）不算缺口；清單外有資料是 provider 有提供、但不在凍結清單上的標的，
+  已寫入，不計入預期。
+
 ## 交付監控
 
-入口為 `/dashboard/operations/deliveries`，分為計畫、缺漏告警、Universe 名單與歷史回補；
-viewer 不顯示歷史回補。Pilot profile 已退役，頁面只呈現 Full market，沒有執行模式分頁；
+入口為 `/dashboard/operations/deliveries`，分為缺漏告警、Universe 名單與歷史回補，預設開啟缺漏告警；
+viewer 不顯示歷史回補。舊的計畫分頁連結（`tab=plans`）會帶著 `dataset`、`date` 導向資料完整性頁。
+Pilot profile 已退役，頁面只呈現 Full market，沒有執行模式分頁；
 Dashboard 所有請求固定帶 `execution_profile=full_market`。
-尚未啟動、已有啟動日期但尚無計畫、以及已建立計畫的實際缺漏分別呈現。
 
-- 全市場計畫：資料集下拉選單列出所有曾有計畫的資料集，不受最近筆數或交易日篩選限制；
-  預設全部資料集、不限交易日、每頁 25 筆，可選 50／100 筆。
-- 計畫表格比較完整性、截止時間、六種數量與「清單外有資料」；展開查看 universe release、缺口成員及原因、
-  無法取得的成員（例如供應商未收錄），以及清單外有資料的代碼。`expected = data + no_data + missing + blocked +
-  unavailable`，正常無資料依後端持久化證據判定；無法取得不算缺口，計畫沒有它們也算完整；
-  清單外有資料是 provider 有提供、但不在凍結清單上的標的，已寫入，不計入預期。
-- 歷史回補的每個日期另列出該日期寫入的清單外代碼。
-- 缺口明細最多列出 1,000 筆，介面同時顯示已列出筆數與總缺口數；完整性與逾時為不同概念。
+- 歷史回補列表只讀各請求的狀態件數（`include_items=false`）；展開某一列時才分頁載入該請求的日期項目，
+  每個日期另列出該日期寫入的清單外代碼。
 - 缺漏告警追蹤資料集／日期層級的交付；「帶入回補」僅切換分頁並填入條件。
   operator／owner 仍需預覽交易日、確認與送出，才會建立回補。
 - TAIFEX 同日 universe 候選超過交付截止仍未發布時，告警顯示「Universe 等待發布」與候選數，
@@ -41,10 +66,10 @@ Dashboard 所有請求固定帶 `execution_profile=full_market`。
   手動與定期更新不改寫草稿、預覽或確認狀態；修改參數或帶入新的告警會取消先前預覽與確認，
   較晚完成的舊預覽也不能授權目前草稿。建立後由回補紀錄刷新顯示已建立請求。
 
-URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`、告警 `p/ps`、Universe 名單分頁的候選清單 `cp/cps`、回補 `bp/bps`
+URL 的 `tab=alerts|candidates|backfills`、告警 `p/ps`、Universe 名單分頁的候選清單 `cp/cps`、回補 `bp/bps`
 各自獨立。切換分頁、篩選及換頁可用瀏覽器上一頁／下一頁還原；新篩選會將該清單頁碼重設為 1。
 舊連結帶的 `profile` 參數會被忽略，不報錯也不切換內容。
-計畫是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
+完整性矩陣與告警都是唯讀核對，不會啟動抓取，也不會自動建立回補；排程操作仍在導入概況。
 
 ## 載入、更新與失敗
 
@@ -52,7 +77,7 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 並在固定高度狀態列顯示更新進度。失敗顯示錯誤、最後成功時間與重試；失敗請求不推進成功時間。
 新篩選無快取時使用骨架，避免把上一條件的資料誤當成新結果。
 
-頁首「重新整理」只刷新目前頁面／分頁與必要的選項查詢。概況、DQ、全市場計畫、缺漏告警、Universe 名單與候選及
+頁首「重新整理」只刷新目前頁面／分頁與必要的選項查詢。概況、資料完整性、DQ、缺漏告警、Universe 名單與候選及
 回補紀錄每 60 秒更新；隱藏分頁及瀏覽器背景停止輪詢，重新可見時只有超過 60 秒的資料才補刷新。
 稽核、交易日曆、使用者與憑證不定時輪詢，使用手動刷新及操作後失效重取。
 
@@ -76,7 +101,6 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 | `schedulers` | 11 |
 | `queue/health` | 10 |
 | `completeness`（完整性矩陣） | 14 以內 |
-| `delivery-plans?summary_only=true`（一頁） | 7 以內 |
 | `historical-backfills`（一頁，`include_items=false`） | 6 以內 |
 
 規則見 `backend/AGENTS.md`「Admin 讀取的查詢預算」。
@@ -132,11 +156,7 @@ FactSet 的排程卡片、批次啟動跳過提示與確認視窗把 `full_marke
 
 日曆管理同時顯示可編輯修訂與「抓取使用的日曆」來源；published revision 優先，未設定日期標示
 依市場`weekend_days`顯示預設日期（內建市場預設週六日休市）且 revision 為空，draft 不影響抓取。日曆 API 查詢不寫入或自動發布。
-交付計畫顯示有效 provider 政策及「依設定略過」日期／資料集，支援日期與資料集篩選。
-列表以 `summary_only=true` 讀取，只帶各計畫的統計；展開某一列時才對該計畫讀 `/{plan_id}/summary` 取得缺口明細，
-沒有缺口與無法取得的成員（缺漏、受阻、無法取得皆為 0）的計畫不發出這個請求。明細查詢與列表分開顯示載入與錯誤狀態，並納入頁首的手動刷新，
-不隨列表的自動更新重讀。
-略過清單最多顯示最近 100 筆並顯示總數；略過不混入 expected、missing、blocked 或 no_data。
+資料完整性矩陣把「依設定略過」與休市日顯示為休市格（·），不混入 expected、missing、blocked 或 no_data。
 人工回補的 skipped_calendar 顯示「依設定略過」，不算成功 Source run。
 
 交付監控頁的「供應商工作佇列」顯示跨每日抓取／historical／maintenance／rerun 的 provider owner、

@@ -12,15 +12,15 @@ const paginationSchema = z.object({
   total_pages: z.number().int().nonnegative(),
 })
 
-export const deliveryPlansRequestSchema = z.object({
-  datasetKey: z.string().trim().max(100).default(""),
-  tradeDate: z.union([z.iso.date(), z.literal("")]).default(""),
-  page: z.number().int().positive().default(1),
-  pageSize: z.number().int().min(1).max(100).default(25),
+export const GAP_STATUSES = ["missing", "blocked", "unavailable"] as const
+export type GapStatus = (typeof GAP_STATUSES)[number]
+// Gap details are the one read that classifies a plan; they load on demand, paged.
+export const deliveryPlanSummaryRequestSchema = z.object({
+  planId: z.uuid(),
+  gapStatus: z.array(z.enum(GAP_STATUSES)).max(3).default([]),
+  gapPage: z.number().int().positive().default(1),
+  gapPageSize: z.number().int().min(1).max(1000).default(1000),
 })
-export type DeliveryPlansRequest = z.infer<typeof deliveryPlansRequestSchema>
-
-export const deliveryPlanSummaryRequestSchema = z.object({ planId: z.uuid() })
 export type DeliveryPlanSummaryRequest = z.infer<
   typeof deliveryPlanSummaryRequestSchema
 >
@@ -48,59 +48,10 @@ export const deliveryPlanSummarySchema = z.object({
   // Served symbols outside the frozen list that the plan wrote; never in `expected`.
   unlisted_data: z.number().int().nonnegative().default(0),
   unlisted: z.array(z.string()).default([]),
+  // Gaps matching the status filter; older servers omit it.
+  gaps_total: z.number().int().nonnegative().optional(),
 })
 export type DeliveryPlanSummary = z.infer<typeof deliveryPlanSummarySchema>
-
-export const deliveryPlansSchema = z.object({
-  skipped: z
-    .array(
-      z.object({
-        execution_profile: executionProfileSchema,
-        dataset_key: z.string(),
-        provider: z.string(),
-        trade_date: z.iso.date(),
-        status: z.literal("skipped_calendar"),
-        snapshot: z.object({
-          calendar_source: z.enum(["published", "weekday_default"]),
-          calendar_revision: z.number().nullable(),
-        }),
-      })
-    )
-    .default([]),
-  skipped_total: z.number().int().nonnegative().default(0),
-  execution_policies: z
-    .record(z.string(), z.object({ skip_non_trading_days: z.boolean() }))
-    .default({}),
-  pagination: paginationSchema,
-  data: z.array(
-    z.object({
-      execution_profile: executionProfileSchema.default("full_market"),
-      plan_id: z.string(),
-      dataset_key: z.string(),
-      provider: z.string(),
-      trade_date: z.iso.date(),
-      release_id: z.string(),
-      deadline_at: isoDateTime,
-      status: z.enum([
-        "pending",
-        "running",
-        "complete",
-        "incomplete",
-        "blocked",
-      ]),
-      parts: z.array(
-        z.object({
-          part_id: z.string(),
-          work_item_id: z.string(),
-          member_keys: z.array(z.string()),
-          member_sha256: z.string(),
-        })
-      ),
-      summary: deliveryPlanSummarySchema,
-    })
-  ),
-})
-export type DeliveryPlan = z.infer<typeof deliveryPlansSchema>["data"][number]
 
 export const auditFiltersSchema = z.object({
   datasetKey: z.string().trim().max(100).default(""),
@@ -109,18 +60,10 @@ export const auditFiltersSchema = z.object({
   dateTo: z.union([z.iso.date(), z.literal("")]).default(""),
   page: z.number().int().positive().default(1),
   pageSize: z.number().int().min(1).max(100).default(25),
-  backfillPage: z.number().int().positive().optional(),
-  backfillPageSize: z.number().int().min(1).max(100).optional(),
 })
 
 export const dashboardRequestSchema = z.object({
-  view: z.enum([
-    "overview",
-    "deliveries",
-    "quality",
-    "corrections",
-    "rawPayloads",
-  ]),
+  view: z.enum(["overview", "quality", "corrections", "rawPayloads"]),
   audit: auditFiltersSchema,
 })
 
@@ -484,6 +427,15 @@ export const universeDiffSchema = z.object({
 })
 export type UniverseDiff = z.infer<typeof universeDiffSchema>
 
+export const historicalBackfillItemSchema = z.object({
+  item_id: z.uuid(),
+  trade_date: z.iso.date(),
+  status: z.string(),
+  run_id: z.uuid().nullable(),
+  failure_code: z.string().nullable(),
+  failure_message: z.string().nullable(),
+  unlisted_symbols: z.array(z.string()).nullable().default(null),
+})
 export const historicalBackfillSchema = z.object({
   request_id: z.uuid(),
   request_key: z.string(),
@@ -509,20 +461,24 @@ export const historicalBackfillSchema = z.object({
   failure_message: z.string().nullable(),
   created_at: isoDateTime,
   updated_at: isoDateTime,
-  items: z.array(
-    z.object({
-      item_id: z.uuid(),
-      trade_date: z.iso.date(),
-      status: z.string(),
-      run_id: z.uuid().nullable(),
-      failure_code: z.string().nullable(),
-      failure_message: z.string().nullable(),
-      unlisted_symbols: z.array(z.string()).nullable().default(null),
-    })
-  ),
+  // The list asks for counts only; one request's items load when its row opens.
+  items: z.array(historicalBackfillItemSchema).default([]),
+  item_counts: z.record(z.string(), z.number().int().nonnegative()).default({}),
 })
 export const historicalBackfillsSchema = z.object({
   data: z.array(historicalBackfillSchema),
+  pagination: paginationSchema,
+})
+export const historicalBackfillItemsRequestSchema = z.object({
+  requestId: z.uuid(),
+  page: z.number().int().positive().default(1),
+  pageSize: z.number().int().min(1).max(500).default(500),
+})
+export type HistoricalBackfillItemsRequest = z.infer<
+  typeof historicalBackfillItemsRequestSchema
+>
+export const historicalBackfillItemsSchema = z.object({
+  data: z.array(historicalBackfillItemSchema),
   pagination: paginationSchema,
 })
 export const historicalBackfillScopesSchema = z.object({
@@ -678,12 +634,6 @@ export const dashboardResponseSchema = z.discriminatedUnion("view", [
     schedulers: panelResultSchema(schedulersResponseSchema),
   }),
   responseMetadataSchema.extend({
-    view: z.literal("deliveries"),
-    deliveries: panelResultSchema(missingDeliveriesSchema),
-    backfills: panelResultSchema(historicalBackfillsSchema),
-    backfillScopes: panelResultSchema(historicalBackfillScopesSchema),
-  }),
-  responseMetadataSchema.extend({
     view: z.literal("quality"),
     issues: panelResultSchema(dqIssuesSchema),
   }),
@@ -717,9 +667,6 @@ export type DashboardPanelName =
   | "freshness"
   | "queue"
   | "schedulers"
-  | "deliveries"
-  | "backfills"
-  | "backfillScopes"
   | "issues"
   | "corrections"
   | "rawPayloads"
@@ -734,12 +681,6 @@ export function dashboardPanels(
         ["freshness", response.freshness],
         ["queue", response.queue],
         ["schedulers", response.schedulers],
-      ]
-    case "deliveries":
-      return [
-        ["deliveries", response.deliveries],
-        ["backfills", response.backfills],
-        ["backfillScopes", response.backfillScopes],
       ]
     case "quality":
       return [["issues", response.issues]]
@@ -770,29 +711,6 @@ export function mergeDashboardRefresh(
         freshness: freshness.error,
         queue: queue.error,
         schedulers: schedulers.error,
-      },
-    }
-  }
-  if (next.view === "deliveries") {
-    const previous = current?.view === next.view ? current : undefined
-    const result = mergePanel(previous?.deliveries, next.deliveries)
-    return {
-      data: {
-        ...next,
-        deliveries: result.panel,
-        backfills: mergePanel(previous?.backfills, next.backfills).panel,
-        backfillScopes: mergePanel(
-          previous?.backfillScopes,
-          next.backfillScopes
-        ).panel,
-      },
-      errors: {
-        deliveries: result.error,
-        backfills: mergePanel(previous?.backfills, next.backfills).error,
-        backfillScopes: mergePanel(
-          previous?.backfillScopes,
-          next.backfillScopes
-        ).error,
       },
     }
   }
@@ -832,9 +750,61 @@ export function buildAuditSearch(filters: DashboardRequest["audit"]) {
   return params
 }
 
-export const deliveryPlanDatasetsSchema = z.object({
-  data: z.array(z.string()),
+export const COMPLETENESS_STATES = [
+  "complete",
+  "incomplete",
+  "late",
+  "not_due",
+  "not_planned",
+  "closed",
+  "not_started",
+] as const
+export type CompletenessState = (typeof COMPLETENESS_STATES)[number]
+export const completenessRequestSchema = z.object({
+  dateFrom: z.union([z.iso.date(), z.literal("")]).default(""),
+  dateTo: z.union([z.iso.date(), z.literal("")]).default(""),
+  datasetKey: z.string().trim().max(100).default(""),
 })
+export type CompletenessRequest = z.infer<typeof completenessRequestSchema>
+const completenessCountsSchema = z.object({
+  expected: z.number().int().nonnegative(),
+  data: z.number().int().nonnegative(),
+  no_data: z.number().int().nonnegative(),
+  missing: z.number().int().nonnegative(),
+  blocked: z.number().int().nonnegative(),
+  unavailable: z.number().int().nonnegative(),
+  mapping_gap: z.number().int().nonnegative(),
+  unlisted_data: z.number().int().nonnegative(),
+})
+export const completenessCellSchema = z.object({
+  trade_date: z.iso.date(),
+  state: z.enum(COMPLETENESS_STATES),
+  plan_id: z.uuid().nullable(),
+  deadline_at: nullableDateTime,
+  counts: completenessCountsSchema.nullable(),
+  counts_synced: z.boolean(),
+  open_alert: z.boolean(),
+})
+export const completenessSchema = z.object({
+  execution_profile: executionProfileSchema,
+  date_from: z.iso.date(),
+  date_to: z.iso.date(),
+  evaluated_at: isoDateTime,
+  rows: z.array(
+    z.object({
+      dataset_key: z.string(),
+      provider: z.string(),
+      market: z.string(),
+      first_start_date: z.iso.date().nullable(),
+      latest_due_date: z.iso.date(),
+      cells: z.array(completenessCellSchema),
+    })
+  ),
+})
+export type Completeness = z.infer<typeof completenessSchema>
+export type CompletenessRow = Completeness["rows"][number]
+export type CompletenessCell = z.infer<typeof completenessCellSchema>
+
 export const deliveryResourceRequestSchema = z.object({
   resource: z.enum(["alerts", "backfills", "scopes", "providerWork"]),
   page: z.number().int().positive().default(1),

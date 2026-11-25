@@ -5,6 +5,8 @@ import {
   correctionsSchema,
   dashboardResponseSchema,
   dqIssuesSchema,
+  completenessSchema,
+  historicalBackfillItemsSchema,
   historicalBackfillsSchema,
   marketFreshnessSchema,
   missingDeliveriesSchema,
@@ -19,16 +21,15 @@ import {
   historicalBackfillSchema,
   historicalBackfillScopesSchema,
   historicalBackfillPreviewResponseSchema,
-  deliveryPlansSchema,
   deliveryPlanSummarySchema,
-  deliveryPlanDatasetsSchema,
   deliveryResourceResponseSchema,
   universeCandidatesSchema,
   universeDiffSchema,
   universeFeedsSchema,
   universeRefreshSchema,
+  type CompletenessRequest,
   type DeliveryResourceRequest,
-  type DeliveryPlansRequest,
+  type HistoricalBackfillItemsRequest,
   type DeliveryPlanSummaryRequest,
   type SchedulerMutationRequest,
   type UniverseCandidatesRequest,
@@ -40,35 +41,9 @@ import {
   assertDashboardAuthentication,
   isDashboardAuthenticationError,
 } from "./auth-errors"
-import type { AdminRole } from "./admin-governance-api"
 
 type FetchImplementation = typeof fetch
 const UPSTREAM_TIMEOUT_MS = 10_000
-
-export async function fetchDeliveryPlansData(
-  request: DeliveryPlansRequest,
-  sessionToken: string,
-  baseUrlValue: string | undefined,
-  fetchImplementation: FetchImplementation = fetch
-) {
-  const params = new URLSearchParams({
-    execution_profile: "full_market",
-    page: String(request.page),
-    page_size: String(request.pageSize),
-    // Counts only: classifying every listed plan on each refresh is slow, so
-    // gap details load per plan when its row is expanded.
-    summary_only: "true",
-  })
-  if (request.datasetKey) params.set("dataset_key", request.datasetKey)
-  if (request.tradeDate) params.set("trade_date", request.tradeDate)
-  return fetchTarget(
-    safeBaseUrl(baseUrlValue),
-    sessionToken,
-    `/api/v1/admin/delivery-plans?${params}`,
-    deliveryPlansSchema,
-    fetchImplementation
-  )
-}
 
 export async function fetchDeliveryPlanSummaryData(
   request: DeliveryPlanSummaryRequest,
@@ -76,11 +51,51 @@ export async function fetchDeliveryPlanSummaryData(
   baseUrlValue: string | undefined,
   fetchImplementation: FetchImplementation = fetch
 ) {
+  const params = new URLSearchParams({
+    gap_page: String(request.gapPage),
+    gap_page_size: String(request.gapPageSize),
+  })
+  for (const status of request.gapStatus) params.append("gap_status", status)
   return fetchTarget(
     safeBaseUrl(baseUrlValue),
     sessionToken,
-    `/api/v1/admin/delivery-plans/${encodeURIComponent(request.planId)}/summary`,
+    `/api/v1/admin/delivery-plans/${encodeURIComponent(request.planId)}/summary?${params}`,
     deliveryPlanSummarySchema,
+    fetchImplementation
+  )
+}
+
+export async function fetchCompletenessData(
+  request: CompletenessRequest,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  // Stored counts only: the matrix never asks the backend to classify a plan.
+  const params = new URLSearchParams({ execution_profile: "full_market" })
+  if (request.dateFrom) params.set("date_from", request.dateFrom)
+  if (request.dateTo) params.set("date_to", request.dateTo)
+  if (request.datasetKey) params.set("dataset_key", request.datasetKey)
+  return fetchTarget(
+    safeBaseUrl(baseUrlValue),
+    sessionToken,
+    `/api/v1/admin/completeness?${params}`,
+    completenessSchema,
+    fetchImplementation
+  )
+}
+
+export async function fetchHistoricalBackfillItemsData(
+  request: HistoricalBackfillItemsRequest,
+  sessionToken: string,
+  baseUrlValue: string | undefined,
+  fetchImplementation: FetchImplementation = fetch
+) {
+  return fetchTarget(
+    safeBaseUrl(baseUrlValue),
+    sessionToken,
+    `/api/v1/admin/historical-backfills/${encodeURIComponent(request.requestId)}/items?page=${request.page}&page_size=${request.pageSize}`,
+    historicalBackfillItemsSchema,
     fetchImplementation
   )
 }
@@ -243,8 +258,7 @@ export async function fetchDashboardData(
   data: DashboardRequest,
   sessionToken: string,
   baseUrlValue: string | undefined,
-  fetchImplementation: FetchImplementation = fetch,
-  role: AdminRole = "operator"
+  fetchImplementation: FetchImplementation = fetch
 ) {
   const baseUrl = safeBaseUrl(baseUrlValue)
   const auditSearch = buildAuditSearch(data.audit)
@@ -285,49 +299,6 @@ export async function fetchDashboardData(
       freshness: settled(freshness),
       queue: settled(queue),
       schedulers: settled(schedulers),
-    })
-  }
-  if (data.view === "deliveries") {
-    const [deliveries, backfills, backfillScopes] = await Promise.allSettled([
-      fetchTarget(
-        baseUrl,
-        sessionToken,
-        `/api/v1/admin/missing-deliveries?status=open&page=${data.audit.page}&page_size=${data.audit.pageSize}&execution_profile=full_market`,
-        missingDeliveriesSchema,
-        fetchImplementation
-      ),
-      role === "viewer"
-        ? Promise.resolve(null)
-        : fetchTarget(
-            baseUrl,
-            sessionToken,
-            `/api/v1/admin/historical-backfills?page=${data.audit.backfillPage ?? 1}&page_size=${data.audit.backfillPageSize ?? 25}`,
-            historicalBackfillsSchema,
-            fetchImplementation
-          ),
-      role === "viewer"
-        ? Promise.resolve(null)
-        : fetchTarget(
-            baseUrl,
-            sessionToken,
-            "/api/v1/admin/historical-backfills/scopes",
-            historicalBackfillScopesSchema,
-            fetchImplementation
-          ),
-    ])
-    assertNoAuthenticationFailure([deliveries, backfills, backfillScopes])
-    return dashboardResponseSchema.parse({
-      view: data.view,
-      fetchedAt,
-      deliveries: settled(deliveries),
-      backfills:
-        role === "viewer"
-          ? { ok: false, error: "Historical backfills require operator access" }
-          : settled(backfills),
-      backfillScopes:
-        role === "viewer"
-          ? { ok: false, error: "Historical backfills require operator access" }
-          : settled(backfillScopes),
     })
   }
   if (data.view === "quality") {
@@ -572,20 +543,6 @@ export function previewHistoricalBackfillData(
   )
 }
 
-export async function fetchDeliveryPlanDatasetsData(
-  sessionToken: string,
-  baseUrl: string | undefined,
-  fetchImplementation: FetchImplementation = fetch
-) {
-  return fetchTarget(
-    safeBaseUrl(baseUrl),
-    sessionToken,
-    "/api/v1/admin/delivery-plans/datasets?execution_profile=full_market",
-    deliveryPlanDatasetsSchema,
-    fetchImplementation
-  )
-}
-
 export async function fetchDeliveryResourceData(
   request: DeliveryResourceRequest,
   sessionToken: string,
@@ -622,7 +579,8 @@ export async function fetchDeliveryResourceData(
       result: await fetchTarget(
         base,
         sessionToken,
-        `/api/v1/admin/historical-backfills?page=${page}&page_size=${pageSize}`,
+        // Counts per request; each request's items load when its row opens.
+        `/api/v1/admin/historical-backfills?page=${page}&page_size=${pageSize}&include_items=false`,
         historicalBackfillsSchema,
         fetchImplementation
       ),
