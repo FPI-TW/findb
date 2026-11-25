@@ -117,6 +117,10 @@ TARGET_TABLES = (
     "public.index_definition",
     "public.reference_delivery_evidence",
     "public.reference_document_archive",
+    # Exchange institutional tables; their raw responses expire with raw.market_payload.
+    "public.institutional_flow_stock",
+    "public.institutional_flow_summary",
+    "public.institutional_flow_publication",
     "public.futures_contract_eod",
     "public.etf_details",
     "public.futures_continuous_eod",

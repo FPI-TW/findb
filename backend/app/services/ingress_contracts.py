@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, m
 
 from app.schemas.ingress import (
     INDEX_REFERENCE_SCHEMAS,
+    INSTITUTIONAL_FLOW_SCHEMAS,
+    INSTITUTIONAL_STOCK_COLUMNS,
     INTRADAY_ROW_LAYOUTS,
     MINUTES_PER_DAY,
     CurrencyCode,
@@ -17,6 +19,8 @@ from app.schemas.ingress import (
     IndexChangesIngressRequest,
     IndexConstituentsIngressRequest,
     IngressRequest,
+    InstitutionalFlowStockIngressRequest,
+    InstitutionalFlowSummaryIngressRequest,
     IntradayPartitionIngressRequest,
     MarketEODIngressRequest,
     MarketEODIngressRequestV2,
@@ -35,6 +39,8 @@ ContractModel = (
     | type[ExchangeDailyQuoteIngressRequest]
     | type[IndexConstituentsIngressRequest]
     | type[IndexChangesIngressRequest]
+    | type[InstitutionalFlowSummaryIngressRequest]
+    | type[InstitutionalFlowStockIngressRequest]
 )
 PositiveStrictInt = Annotated[StrictInt, Field(ge=1)]
 
@@ -48,6 +54,8 @@ _CONTRACT_MODELS: Mapping[ContractKey, ContractModel] = MappingProxyType(
         ("exchange_daily_quote", 1): ExchangeDailyQuoteIngressRequest,
         ("index_constituents", 1): IndexConstituentsIngressRequest,
         ("index_constituent_changes", 1): IndexChangesIngressRequest,
+        ("institutional_flow_summary", 1): InstitutionalFlowSummaryIngressRequest,
+        ("institutional_flow_stock", 1): InstitutionalFlowStockIngressRequest,
     }
 )
 
@@ -435,6 +443,88 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 },
             ]
         )
+    if schema_id in INSTITUTIONAL_FLOW_SCHEMAS:
+        # One whole exchange table per request: no rows to bound, order or deduplicate.
+        table_rules = (
+            "row.ohlc.",
+            "batch.sequence.",
+            "payload.coverage.",
+            "payload.declared_record_count.",
+            "payload.delivery_key.",
+            "payload.data.max_items",
+        )
+        semantic_rules = [rule for rule in semantic_rules if not rule["id"].startswith(table_rules)]
+        semantic_rules.extend(
+            [
+                {
+                    "id": "table.single_trading_day",
+                    "scope": "payload",
+                    "description": "the table trade_date equals batch.data_date; coverage dates, when present, equal it too",
+                    "parameters": {
+                        "left": "data[0].trade_date",
+                        "operator": "equal",
+                        "right": "batch.data_date",
+                        "coverage": ["batch.coverage_start_date", "batch.coverage_end_date"],
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "table.board_is_source",
+                    "scope": "payload.data[0]",
+                    "description": "an exchange publishes only its own board: symbol is the upper-cased source (TWSE for twse, TPEX for tpex)",
+                    "parameters": {
+                        "left": "data[0].symbol",
+                        "operator": "equal",
+                        "right": "upper(source)",
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                },
+                {
+                    "id": "table.identities",
+                    "scope": "payload.data[0]",
+                    "description": "every net equals buy - sell; total equals foreign_ex_dealer + investment_trust + dealer_proprietary + dealer_hedge (foreign_dealer is already counted by the dealers); dealer_total equals dealer_proprietary + dealer_hedge and foreign_total equals foreign_ex_dealer + foreign_dealer, where printed. Any violation rejects the whole table as a DQ error",
+                    "parameters": {"enforcement_stage": "normalization", "severity": "error"},
+                    "context_dependencies": [],
+                    "error_code": None,
+                },
+            ]
+        )
+        if schema_id == "institutional_flow_summary":
+            semantic_rules.append(
+                {
+                    "id": "summary.categories",
+                    "scope": "payload.data[0].categories",
+                    "description": "categories are unique and include every leaf category and total; amounts are TWD",
+                    "parameters": {
+                        "required": [
+                            "foreign_ex_dealer",
+                            "foreign_dealer",
+                            "investment_trust",
+                            "dealer_proprietary",
+                            "dealer_hedge",
+                            "total",
+                        ]
+                    },
+                    "context_dependencies": [],
+                    "error_code": "INGRESS_SCHEMA_INVALID",
+                }
+            )
+        else:
+            semantic_rules.append(
+                {
+                    "id": "stock.rows.layout",
+                    "scope": "payload.data[0]",
+                    "description": "the JSON object at rows_ref is {columns, rows}: columns exactly x-findb-row-layout, row_count rows of unique securities; its sha256 and byte size are rows_sha256 and rows_bytes",
+                    "parameters": {
+                        "layout": "x-findb-row-layout",
+                        "enforcement_stage": "normalization",
+                    },
+                    "context_dependencies": [],
+                    "error_code": None,
+                }
+            )
     if schema_id == "exchange_daily_quote":
         # Relations between published values are data-quality rules (see the row model).
         quote_rules = ("row.ohlc.", "batch.sequence.", "payload.coverage.")
@@ -710,6 +800,18 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
             "payload.data[*].name_zh",
             "payload.data[*].listing_place",
         ],
+        "institutional_flow_summary": [
+            "payload.data[*].symbol",
+            "payload.data[*].source_symbol",
+            "payload.data[*].currency",
+        ],
+        "institutional_flow_stock": [
+            "payload.data[*].symbol",
+            "payload.data[*].source_symbol",
+            "payload.data[*].currency",
+            "payload.data[*].rows_ref",
+            "payload.data[*].rows_sha256",
+        ],
         "intraday_partition": [
             "payload.data[*].symbol",
             "payload.data[*].source_symbol",
@@ -914,6 +1016,16 @@ def get_contract_json_schema(schema_id: str, schema_version: int) -> dict[str, A
                 }
             }
             if schema_id == "intraday_partition"
+            else {}
+        ),
+        **(
+            {
+                "x-findb-row-layout": {
+                    "format": "json",
+                    "columns": [column._asdict() for column in INSTITUTIONAL_STOCK_COLUMNS],
+                }
+            }
+            if schema_id == "institutional_flow_stock"
             else {}
         ),
         **schema,

@@ -995,6 +995,181 @@ class IndexChangesPayload(BaseModel):
         return self
 
 
+# --- Three major institutional investors (三大法人) --------------------------------
+#
+# TWSE and TPEx each publish two tables per trading day: market totals in TWD and
+# per-security flows in shares. One request carries one whole table; its row is
+# keyed by the board (``TWSE`` or ``TPEX``), the daily plan's only member.
+INSTITUTIONAL_BOARDS = ("TWSE", "TPEX")
+InstitutionalBoard = Literal["TWSE", "TPEX"]
+# Leaf investor categories, the subtotals the exchanges print, and the total.
+# The total excludes ``foreign_dealer``: the exchanges count it under dealers.
+INSTITUTIONAL_LEAF_CATEGORIES = (
+    "foreign_ex_dealer",
+    "foreign_dealer",
+    "investment_trust",
+    "dealer_proprietary",
+    "dealer_hedge",
+)
+INSTITUTIONAL_CATEGORIES = (
+    *INSTITUTIONAL_LEAF_CATEGORIES,
+    "foreign_total",
+    "dealer_total",
+    "total",
+)
+InstitutionalCategory = Literal[
+    "foreign_ex_dealer",
+    "foreign_dealer",
+    "investment_trust",
+    "dealer_proprietary",
+    "dealer_hedge",
+    "foreign_total",
+    "dealer_total",
+    "total",
+]
+# Signed integer amounts: TWD in the summary, shares per security.
+InstitutionalAmount = Annotated[int, Field(ge=-(10**18), le=10**18)]
+InstitutionalVolume = Annotated[int, Field(ge=0, le=10**18)]
+# Securities of both boards: four- to six-character codes such as 2330, 00631L, 030001.
+INSTITUTIONAL_SECURITY_PATTERN = r"^[0-9A-Z]{4,6}$"
+INSTITUTIONAL_MAX_ROWS = 20_000
+INSTITUTIONAL_MAX_ROWS_BYTES = 16 * 1024 * 1024
+
+
+class InstitutionalFlowBatch(IngressBatch):
+    """One exchange table of one trading day; the exchange's response is mandatory evidence."""
+
+    delivery_mode: Literal["incremental", "backfill"]  # type: ignore[assignment]
+    declared_record_count: Literal[1]  # type: ignore[assignment]
+    source_raw_ref: str = Field(max_length=2048, pattern=RAW_OBJECT_REF_PATTERN)
+    source_raw_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sequence: None = None
+    sequence_count: None = None
+
+
+class _InstitutionalTableRow(_IngressRow):
+    # The board is the plan member; ``source_symbol`` names the exchange's table.
+    symbol: InstitutionalBoard
+    source_symbol: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    trade_date: date
+    currency: Literal["TWD"]
+
+
+class InstitutionalFlowAmount(BaseModel):
+    """One investor category's TWD totals as the exchange printed them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: InstitutionalCategory
+    buy_amount: InstitutionalVolume
+    sell_amount: InstitutionalVolume
+    net_amount: InstitutionalAmount
+
+
+class InstitutionalFlowSummaryRow(_InstitutionalTableRow):
+    """A board's market totals of one day: every leaf category and the total."""
+
+    categories: list[InstitutionalFlowAmount] = Field(min_length=6, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_categories(self) -> "InstitutionalFlowSummaryRow":
+        names = [item.category for item in self.categories]
+        if len(names) != len(set(names)):
+            raise ValueError("summary categories must be unique")
+        if not {*INSTITUTIONAL_LEAF_CATEGORIES, "total"} <= set(names):
+            raise ValueError("summary must carry every leaf category and the total")
+        return self
+
+
+class InstitutionalFlowStockRow(_InstitutionalTableRow):
+    """A board's per-security flows of one day, described but not carried.
+
+    The rows are a stored JSON object in the layout ``INSTITUTIONAL_STOCK_COLUMNS``;
+    its size, checksum and row count are proven again before it is read.
+    """
+
+    row_count: int = Field(ge=1, le=INSTITUTIONAL_MAX_ROWS)
+    rows_ref: str = Field(max_length=2048, pattern=RAW_OBJECT_REF_PATTERN)
+    rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rows_bytes: int = Field(ge=1, le=INSTITUTIONAL_MAX_ROWS_BYTES)
+    rows_format: Literal["json"]
+    volume_unit: Literal["share"]
+
+
+class InstitutionalStockColumn(NamedTuple):
+    name: str
+    type: Literal["string", "int64"]
+    nullable: bool
+    description: str
+
+
+def _flow_columns(category: str, label: str, *, nullable: bool = False) -> list:
+    return [
+        InstitutionalStockColumn(f"{category}_{side}", "int64", nullable, f"{label} {text}")
+        for side, text in (
+            ("buy", "shares bought"),
+            ("sell", "shares sold"),
+            ("net", "net shares (buy - sell)"),
+        )
+    ]
+
+
+# The rows object: ``{"columns": [names...], "rows": [[values...], ...]}``.
+INSTITUTIONAL_STOCK_COLUMNS: tuple[InstitutionalStockColumn, ...] = (
+    InstitutionalStockColumn("symbol", "string", False, "security code as the board lists it"),
+    InstitutionalStockColumn("name", "string", True, "security name as the board lists it"),
+    *_flow_columns("foreign_ex_dealer", "foreign and mainland investors excluding dealers:"),
+    *_flow_columns("foreign_dealer", "foreign dealers:"),
+    *_flow_columns("foreign_total", "foreign total (TPEx only):", nullable=True),
+    *_flow_columns("investment_trust", "investment trusts:"),
+    *_flow_columns("dealer_proprietary", "dealers trading on own account:"),
+    *_flow_columns("dealer_hedge", "dealers hedging:"),
+    InstitutionalStockColumn(
+        "dealer_total_buy", "int64", True, "dealers total: shares bought (TPEx only)"
+    ),
+    InstitutionalStockColumn(
+        "dealer_total_sell", "int64", True, "dealers total: shares sold (TPEx only)"
+    ),
+    InstitutionalStockColumn("dealer_total_net", "int64", False, "dealers total: net shares"),
+    InstitutionalStockColumn(
+        "total_net", "int64", False, "three institutional investors: net shares"
+    ),
+)
+
+
+class InstitutionalFlowSummaryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    batch: InstitutionalFlowBatch
+    data: list[InstitutionalFlowSummaryRow] = Field(min_length=1, max_length=1)
+
+    @model_validator(mode="after")
+    def validate_single_table(self) -> "InstitutionalFlowSummaryPayload":
+        _require_single_table_day(self.batch, self.data[0])
+        return self
+
+
+class InstitutionalFlowStockPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    batch: InstitutionalFlowBatch
+    data: list[InstitutionalFlowStockRow] = Field(min_length=1, max_length=1)
+
+    @model_validator(mode="after")
+    def validate_single_table(self) -> "InstitutionalFlowStockPayload":
+        _require_single_table_day(self.batch, self.data[0])
+        return self
+
+
+def _require_single_table_day(batch: InstitutionalFlowBatch, row: _InstitutionalTableRow) -> None:
+    if row.trade_date != batch.data_date:
+        raise ValueError("table trade_date must equal batch data_date")
+    if batch.coverage_start_date not in (None, batch.data_date) or (
+        batch.coverage_end_date not in (None, batch.data_date)
+    ):
+        raise ValueError("table coverage must be the single batch data_date")
+
+
 class _IngressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -1104,6 +1279,47 @@ class IndexChangesIngressRequest(_IngressRequest):
     payload: IndexChangesPayload
 
 
+class InstitutionalFlowSummaryIngressRequest(_IngressRequest):
+    """Complete ``institutional_flow_summary.v1`` request."""
+
+    schema_id: Literal["institutional_flow_summary"]
+    schema_version: Literal[1]
+    source: Literal["twse", "tpex"]
+    payload: InstitutionalFlowSummaryPayload
+
+    @model_validator(mode="after")
+    def board_matches_source(self) -> "InstitutionalFlowSummaryIngressRequest":
+        _require_board_source(self.source, self.payload.data[0].symbol)
+        return self
+
+
+class InstitutionalFlowStockIngressRequest(_IngressRequest):
+    """Complete ``institutional_flow_stock.v1`` request."""
+
+    schema_id: Literal["institutional_flow_stock"]
+    schema_version: Literal[1]
+    source: Literal["twse", "tpex"]
+    payload: InstitutionalFlowStockPayload
+
+    @model_validator(mode="after")
+    def board_matches_source(self) -> "InstitutionalFlowStockIngressRequest":
+        _require_board_source(self.source, self.payload.data[0].symbol)
+        return self
+
+
+def _require_board_source(source: str, board: str) -> None:
+    # Each exchange publishes only its own board.
+    if board != source.upper():
+        raise ValueError("table board must be the source exchange")
+
+
+INSTITUTIONAL_FLOW_REQUESTS = (
+    InstitutionalFlowSummaryIngressRequest,
+    InstitutionalFlowStockIngressRequest,
+)
+INSTITUTIONAL_FLOW_SCHEMAS = frozenset({"institutional_flow_summary", "institutional_flow_stock"})
+
+
 # Requests that carry a publisher document rather than market observations.
 INDEX_REFERENCE_REQUESTS = (
     IndexConstituentsIngressRequest,
@@ -1139,5 +1355,7 @@ IngressRequestV1 = (
     | ExchangeDailyQuoteIngressRequest
     | IndexConstituentsIngressRequest
     | IndexChangesIngressRequest
+    | InstitutionalFlowSummaryIngressRequest
+    | InstitutionalFlowStockIngressRequest
 )
 IngressRequest = IngressRequestV1 | MarketEODIngressRequestV2

@@ -8,6 +8,10 @@ from app.services.normalize.contracts import (
     MarketMinuteContractNormalizer,
 )
 from app.services.normalize.exchange_quote import ExchangeDailyQuoteNormalizer
+from app.services.normalize.institutional_flow import (
+    InstitutionalFlowStockNormalizer,
+    InstitutionalFlowSummaryNormalizer,
+)
 from app.services.normalize.intraday import IntradayPartitionContractNormalizer
 from app.services.normalize.types import MappedRecord, MarketMinuteRecord
 
@@ -22,4 +26,6 @@ __all__ = [
     "FuturesEODContractNormalizer",
     "IntradayPartitionContractNormalizer",
     "ExchangeDailyQuoteNormalizer",
+    "InstitutionalFlowSummaryNormalizer",
+    "InstitutionalFlowStockNormalizer",
 ]

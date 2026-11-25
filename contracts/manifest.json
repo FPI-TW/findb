@@ -25,6 +25,18 @@
       "sha256": "e1fd880eae6ed6b98ea01f320bac7bd9371a5881124636e6411a8169b2dd9ce4"
     },
     {
+      "path": "institutional_flow_stock/v1.schema.json",
+      "schema_id": "institutional_flow_stock",
+      "schema_version": 1,
+      "sha256": "3e1a39d6bd197968ca43981b3079c9eefc2e3b03651127dfa3bb7c73c76dffdb"
+    },
+    {
+      "path": "institutional_flow_summary/v1.schema.json",
+      "schema_id": "institutional_flow_summary",
+      "schema_version": 1,
+      "sha256": "8315efbcb9d4196538102ed552e582c4df1bcdf736aa30e8ac72cadd242a7ae5"
+    },
+    {
       "path": "intraday_partition/v1.schema.json",
       "schema_id": "intraday_partition",
       "schema_version": 1,

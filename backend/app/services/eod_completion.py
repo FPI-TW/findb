@@ -16,8 +16,11 @@ from app.models.provider_work import ProviderWork
 from app.models.registry import DailyDeliveryMember, DeliveryMemberEvidence, DQIssue, IngestionRun
 from app.schemas.eod_completion import EODCompletionEvidence
 
-# Contracts whose rows are one member's day each, settled member by member.
-MEMBER_EOD_SCHEMAS = frozenset({"market_eod", "exchange_daily_quote"})
+# Contracts whose rows are one member's day each, settled member by member. An
+# exchange's institutional table is its board's one member of the day.
+MEMBER_EOD_SCHEMAS = frozenset(
+    {"market_eod", "exchange_daily_quote", "institutional_flow_summary", "institutional_flow_stock"}
+)
 # Row-level DQ errors: the member's row was unusable, the delivery itself sound.
 ROW_DQ_ERRORS = frozenset(
     {
@@ -29,6 +32,8 @@ ROW_DQ_ERRORS = frozenset(
         "DELISTED_AFTER_DATE",
         "QUOTE_HIGH_BELOW_LOW",
         "QUOTE_TURNOVER_WITHOUT_VOLUME",
+        # The whole table broke a printed relation: its board member is invalid.
+        "INSTITUTIONAL_TABLE_REJECTED",
     }
 )
 

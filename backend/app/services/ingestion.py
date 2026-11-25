@@ -47,6 +47,8 @@ from app.services.normalize import (
     BaseNormalizer,
     ExchangeDailyQuoteNormalizer,
     FuturesEODContractNormalizer,
+    InstitutionalFlowStockNormalizer,
+    InstitutionalFlowSummaryNormalizer,
     IntradayPartitionContractNormalizer,
     MarketEODContractNormalizer,
     MarketEODV2ContractNormalizer,
@@ -74,6 +76,8 @@ CONTRACT_NORMALIZER_MAP: dict[tuple[str, int], NormalizerFactory] = {
     ("futures_eod", 1): FuturesEODContractNormalizer,
     ("intraday_partition", 1): IntradayPartitionContractNormalizer,
     ("exchange_daily_quote", 1): ExchangeDailyQuoteNormalizer,
+    ("institutional_flow_summary", 1): InstitutionalFlowSummaryNormalizer,
+    ("institutional_flow_stock", 1): InstitutionalFlowStockNormalizer,
 }
 
 

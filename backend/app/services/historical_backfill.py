@@ -37,6 +37,8 @@ from app.schemas.eod_completion import EODCompletionEvidence
 from app.schemas.historical_backfill import HistoricalResultEvidence
 from app.schemas.ingress import (
     ExchangeDailyQuoteIngressRequest,
+    InstitutionalFlowStockIngressRequest,
+    InstitutionalFlowSummaryIngressRequest,
     MarketEODIngressRequest,
     MarketEODIngressRequestV2,
 )
@@ -1468,7 +1470,11 @@ async def complete_item(
 
 async def validate_eod_historical_delivery(
     db: AsyncSession,
-    request: MarketEODIngressRequest | MarketEODIngressRequestV2 | ExchangeDailyQuoteIngressRequest,
+    request: MarketEODIngressRequest
+    | MarketEODIngressRequestV2
+    | ExchangeDailyQuoteIngressRequest
+    | InstitutionalFlowSummaryIngressRequest
+    | InstitutionalFlowStockIngressRequest,
 ) -> None:
     """One frozen-cohort EOD delivery (current or dated release cohort) of a leased date."""
     from app.services.provider_work import fence, prepared_descriptors

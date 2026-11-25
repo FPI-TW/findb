@@ -52,11 +52,14 @@ from app.schemas.full_market import (
 )
 from app.schemas.ingress import (
     INDEX_REFERENCE_REQUESTS,
+    INSTITUTIONAL_FLOW_REQUESTS,
     ExchangeDailyQuoteIngressRequest,
     ExchangeDailyQuoteRow,
     FuturesEODIngressRequest,
     FuturesEODRow,
     IngressRequest,
+    InstitutionalFlowStockRow,
+    InstitutionalFlowSummaryRow,
     IntradayPartitionRow,
     MarketEODIngressRequest,
     MarketEODIngressRequestV2,
@@ -1785,7 +1788,12 @@ async def validate_ingest_part(
         and work_item_id.startswith("historical:")
         and isinstance(
             request,
-            (MarketEODIngressRequest, MarketEODIngressRequestV2, ExchangeDailyQuoteIngressRequest),
+            (
+                MarketEODIngressRequest,
+                MarketEODIngressRequestV2,
+                ExchangeDailyQuoteIngressRequest,
+                *INSTITUTIONAL_FLOW_REQUESTS,
+            ),
         )
         and member_evidence_feed(request.source, dataset.dataset_key)
     ):
@@ -1939,7 +1947,16 @@ async def validate_ingest_part(
             and not delivers_unlisted(plan.provider, plan.dataset_key)
         ):
             raise FullMarketError("Mapping-gap members cannot be submitted as data", 409)
-        if isinstance(row, (MarketEODRow, MarketMinuteRow, IntradayPartitionRow)):
+        if isinstance(
+            row,
+            (
+                MarketEODRow,
+                MarketMinuteRow,
+                IntradayPartitionRow,
+                InstitutionalFlowSummaryRow,
+                InstitutionalFlowStockRow,
+            ),
+        ):
             effective_currency = (
                 row.currency if isinstance(row, MarketEODRow) else None
             ) or declaration.defaults.currency
