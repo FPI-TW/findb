@@ -1070,6 +1070,29 @@ Dataset 已有使用紀錄時拒絕 downgrade；downgrade 會把 credential 範�
   baseline，首日設成單一日期，再由 Owner start（control 已在執行時，新 dataset 隨下一輪排程規劃）。已寫入的
   `DX-Y.NYB` canonical 列保留，instrument 不變。
 
+## Backend 與 Fetcher 的 feed 目錄版本落差
+
+Backend 與 Fetcher 分開部署，替既有 provider 新增或移除 feed 時，兩邊的 catalog 會有一段時間不同。
+自本節的版本起，Fetcher 容忍兩個方向的落差，只執行兩邊都有的 feed：
+
+- **Backend 較新**（多了 Fetcher 還沒安裝的 feed）：execution-config 裡不認得的 feed 直接略過，不檢查它的欄位
+  （新版可能多了欄位）；control 綁定的 dataset 多出來也接受。
+- **Backend 較舊**（Fetcher 已安裝、Backend 還沒發布的 feed）：那條 feed 不規劃，其他照常。
+- 仍然拒絕：digest 不符、重複的 feed、別的 provider 的 feed、已安裝 feed 的欄位或契約不符，以及
+  execution-config 或 control 與本 image 完全沒有交集。
+- 已知限制：Backend 為 Fetcher 不認得的 dataset 建立工作（例如手動更新名單）時，Fetcher 會把它當成已退役的
+  feed 結算為 `RETIRED_FEED_MANUAL_REVIEW`。落差期間不要對新 dataset 做手動操作。
+
+在這個版本之前的 Fetcher 兩個方向都會拒絕啟動：`Unknown or duplicate execution feed`，以及
+`full-market control scope mismatch`（control 綁定的 dataset 必須完全相同）。2026-11-25 #715 的 staging 部署就是
+因此卡住：FinDB 先上，舊版 FMP consumer 反覆重啟，部署前主機檢查判 `runtime_not_eligible`，第一次嘗試的
+交易停在 `recovery_required`。當時的復原步驟：停 control、暫時把 `fetcher-fmp` 範圍與 control 綁定改回舊值、
+以該 release 的 `deployment_transaction.py abort --root <release>` 結清交易、在舊 consumer 執行中改回新值後重跑
+Fetcher CD。
+
+**仍在舊版 Fetcher 的環境**（例如 production 的 `fetcher-v0.1.49`）要先 promote 含本修正的 Fetcher，再 promote
+新增 feed 的 FinDB：新版 Fetcher 在 Backend 較舊時照樣執行既有 feed，FinDB 上線後自動納入新 feed。
+
 ## 清單外標的計數
 
 Migration `f3a5c7e9b1d2` 為 `daily_delivery_plan_summary` 新增 `unlisted_data_count`（預設 0），為

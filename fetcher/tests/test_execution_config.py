@@ -28,6 +28,8 @@ def resolve(value):
     )
 
 
+# A missing installed feed or an uninstalled published one is catalog skew, not a
+# fault: see the older/newer Backend tests below.
 @pytest.mark.parametrize(
     "fault",
     [
@@ -35,11 +37,9 @@ def resolve(value):
         "environment",
         "profile",
         "provider",
-        "missing",
         "extra",
         "empty",
         "duplicate",
-        "adapter",
         "contract",
         "timezone",
         "clock",
@@ -60,16 +60,12 @@ def test_invalid_complete_snapshot_fails_closed(fault):
         value[fault] = "unknown"
     elif fault == "profile":
         value["execution_profile"] = "pilot"  # Retired profile fails closed.
-    elif fault == "missing":
-        value["feeds"].pop()
     elif fault == "extra":
         value["extra"] = True
     elif fault == "empty":
         value["feeds"] = []
     elif fault == "duplicate":
         value["feeds"].append(deepcopy(feed))
-    elif fault == "adapter":
-        feed["dataset_key"] = "unsupported"
     elif fault == "contract":
         feed["contract"]["current_version"] = 999
     elif fault == "timezone":
@@ -94,7 +90,9 @@ def test_invalid_complete_snapshot_fails_closed(fault):
 
 
 @pytest.mark.parametrize("fault", [None, "timezone", "digest"])
-def test_maintenance_scope_may_be_narrower_but_never_unvalidated(fault):
+def test_an_older_backend_publishes_fewer_feeds_but_never_unvalidated_ones(fault):
+    # Backend not yet deployed with a feed this image installs (or a narrower
+    # maintenance credential): the published feeds run, the missing one waits.
     value = publication("finlab", profile="full_market", environment="local")
     value["feeds"].pop()
     if fault == "timezone":
@@ -103,28 +101,41 @@ def test_maintenance_scope_may_be_narrower_but_never_unvalidated(fault):
     if fault == "digest":
         value["schedule_digest"] = "0" * 64
     if fault is None:
-        with pytest.raises(ValueError, match="Incomplete execution config scope"):
-            resolve(value)
-        snapshot = resolve_execution_config(
-            value,
-            provider="finlab",
-            environment="local",
-            profile="full_market",
-            complete_scope=False,
-        )
+        snapshot = resolve(value)
         assert [feed["dataset_key"] for feed in snapshot.feeds] == [
             feed["dataset_key"] for feed in value["feeds"]
         ]
         assert len(snapshot.feeds) == len(FINLAB_FEEDS) - 1
     else:
         with pytest.raises((ValueError, KeyError)):
-            resolve_execution_config(
-                value,
-                provider="finlab",
-                environment="local",
-                profile="full_market",
-                complete_scope=False,
-            )
+            resolve(value)
+
+
+def test_a_newer_backends_feed_is_skipped_without_stopping_the_installed_ones():
+    # Backend deployed first with a feed this image does not install yet (#715).
+    value = publication("finlab", profile="full_market", environment="local")
+    newer = {
+        **deepcopy(value["feeds"][0]),
+        "dataset_key": "tw_newer_eod",
+        # A newer Backend may also publish fields this image does not know.
+        "future_field": True,
+    }
+    value["feeds"].append(newer)
+    snapshot = resolve(signed(value))
+    assert "tw_newer_eod" not in {feed["dataset_key"] for feed in snapshot.feeds}
+    assert len(snapshot.feeds) == len(FINLAB_FEEDS)
+
+    # The snapshot is still validated as a whole: duplicates, another provider's
+    # feed or a scope with nothing this image installs never pass.
+    duplicate = publication("finlab", profile="full_market", environment="local")
+    duplicate["feeds"].append(deepcopy(duplicate["feeds"][0]))
+    foreign = publication("finlab", profile="full_market", environment="local")
+    foreign["feeds"].append({**deepcopy(newer), "provider": "twelve_data"})
+    only_newer = publication("finlab", profile="full_market", environment="local")
+    only_newer["feeds"] = [newer]
+    for bad in (duplicate, foreign, only_newer):
+        with pytest.raises(ValueError):
+            resolve(signed(bad))
 
 
 def test_snapshot_is_detached_and_has_complete_authorized_scopes():
