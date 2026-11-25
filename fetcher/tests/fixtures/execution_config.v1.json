@@ -4,7 +4,7 @@
     "environment": "local",
     "execution_profile": "full_market",
     "provider": "factset",
-    "schedule_digest": "fff560326faa606765994e0460f606d5922b7cf2b344ffb36c2ba627dac7a8cc",
+    "schedule_digest": "d8aa1956357e491fa5aa5451445fd1e767d37a632be2e9d5df6ce095e7dfe9fc",
     "feeds": [
       {
         "provider": "factset",
@@ -24,7 +24,7 @@
         "scheduled_time": "18:30",
         "source_timezone": "Asia/Hong_Kong",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 16200,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Hong_Kong",
           "local_time": "06:30",
@@ -42,7 +42,7 @@
     "environment": "local",
     "execution_profile": "full_market",
     "provider": "finlab",
-    "schedule_digest": "98dc02465b81ce3ed76caad64e9eeef96f690bd6e6f78c40db260e39cd8bd09a",
+    "schedule_digest": "6148430bb494f23f1d1b476c1ca12c71b3c05878d68dad402d2792180aaa2e96",
     "feeds": [
       {
         "provider": "finlab",
@@ -61,7 +61,7 @@
         "scheduled_time": "18:30",
         "source_timezone": "Asia/Taipei",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "06:30",
@@ -89,7 +89,7 @@
         "scheduled_time": "18:00",
         "source_timezone": "Asia/Taipei",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "06:00",
@@ -121,7 +121,7 @@
         "scheduled_time": "18:30",
         "source_timezone": "Asia/Taipei",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "06:30",
@@ -149,7 +149,7 @@
         "scheduled_time": "18:30",
         "source_timezone": "Asia/Taipei",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "06:30",
@@ -177,7 +177,7 @@
         "scheduled_time": "18:00",
         "source_timezone": "Asia/Taipei",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "06:00",
@@ -205,7 +205,7 @@
         "scheduled_time": "18:30",
         "source_timezone": "Asia/Taipei",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "06:30",
@@ -223,7 +223,7 @@
     "environment": "local",
     "execution_profile": "full_market",
     "provider": "fmp",
-    "schedule_digest": "e9e730405c3d172133529682db66ed6e3327a5e09808846e43a5f979d37b6c50",
+    "schedule_digest": "378412307791ca10cb85f61c01c1b22840839de28b750d5a94db73d93c6f3dc7",
     "feeds": [
       {
         "provider": "fmp",
@@ -242,7 +242,7 @@
         "scheduled_time": "20:00",
         "source_timezone": "Asia/Hong_Kong",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Hong_Kong",
           "local_time": "08:00",
@@ -270,7 +270,7 @@
         "scheduled_time": "08:30",
         "source_timezone": "Asia/Taipei",
         "target_date_lag_days": 1,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "20:30",
@@ -306,7 +306,7 @@
         "scheduled_time": "21:05",
         "source_timezone": "Asia/Hong_Kong",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 14400,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Hong_Kong",
           "local_time": "09:05",
@@ -318,14 +318,14 @@
         }
       }
     ],
-    "schedule_digest": "88afda6fc1820b8a8b72e87f6ccd8d963740e6909c8a135f46bd194fb01ec522"
+    "schedule_digest": "d407a8ba5b6636041881d2ccfcce494fe29ab3aceb7b2fd0e4353c7994cd57b2"
   },
   "taifex": {
     "schema_version": 1,
     "environment": "local",
     "execution_profile": "full_market",
     "provider": "taifex",
-    "schedule_digest": "cdfbce5a78b8c3715d6d191dfda6390f76a77ed5b2acf94ca8926da04c4b723c",
+    "schedule_digest": "a58e29e03daa9c20249cedff41383b05cbb7ef7878ecfa150cf2e8690a74630e",
     "feeds": [
       {
         "provider": "taifex",
@@ -344,7 +344,7 @@
         "scheduled_time": "17:00",
         "source_timezone": "Asia/Taipei",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 18000,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "05:00",
@@ -362,7 +362,7 @@
     "environment": "local",
     "execution_profile": "full_market",
     "provider": "twelve_data",
-    "schedule_digest": "a3b72f6f0f8607ed26f22750a5e668ccfa69e45a4080062b392ad9dc699b10f2",
+    "schedule_digest": "f51100b7a9afcbde9ddaab54535368f173bbe72ee5718d82d47f5344075eec94",
     "feeds": [
       {
         "provider": "twelve_data",
@@ -381,7 +381,7 @@
         "scheduled_time": "17:00",
         "source_timezone": "America/New_York",
         "target_date_lag_days": 0,
-        "publication_retry_window_seconds": 10800,
+        "publication_retry_window_seconds": 41400,
         "completion_deadline": {
           "timezone": "America/New_York",
           "local_time": "05:00",

@@ -290,18 +290,6 @@
           "title": "Provider",
           "type": "string"
         },
-        "publication_retry_window_seconds": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Publication Retry Window Seconds"
-        },
         "schedule": {
           "anyOf": [
             {
@@ -342,7 +330,6 @@
         "schedule",
         "completion_deadline",
         "bounded_monitor",
-        "publication_retry_window_seconds",
         "delivery",
         "historical_execution",
         "historical_cohort",

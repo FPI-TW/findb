@@ -161,6 +161,8 @@ compact separators、ASCII escape 編碼再做 SHA-256；排序後的 feed 陣�
 
 每條 feed 提供 identity、contract、`scheduled_time`、`source_timezone`、`target_date_lag_days`、
 `publication_retry_window_seconds`、獨立 `completion_deadline` 及 `bounded_monitor`。
+`publication_retry_window_seconds` 不在 catalog 設定，由完成期限推算（排程後 12 小時減 30 分鐘，41,400 秒），
+所以尚未發布的日期一路重試到期限前最後一輪；catalog 若宣告這個欄位即載入失敗。
 `source_timezone` 可以和交易所時區不同：目標日期是排程時區當天往前 `target_date_lag_days` 天的交易所日期，
 收盤、日曆與休市判斷仍依交易所時區，完成期限依排程時區與 lag 計算（例如台北 08:30 抓前一個紐約交易日，
 期限為台北當天 20:30）。`asset_class` 可為 `equity`、`etf`、`future` 或 `index`；指數名單成員的代號沿用

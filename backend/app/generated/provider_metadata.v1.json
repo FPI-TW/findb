@@ -37,7 +37,6 @@
       "lifecycle": "active",
       "market": "HK",
       "provider": "factset",
-      "publication_retry_window_seconds": 16200,
       "schedule": {
         "local_time": "20:00",
         "target_date_lag_days": 0,
@@ -82,7 +81,6 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "publication_retry_window_seconds": 14400,
       "schedule": {
         "local_time": "19:15",
         "target_date_lag_days": 0,
@@ -168,7 +166,6 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "publication_retry_window_seconds": 16200,
       "schedule": {
         "local_time": "18:00",
         "target_date_lag_days": 0,
@@ -213,7 +210,6 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "publication_retry_window_seconds": 14400,
       "schedule": {
         "local_time": "19:15",
         "target_date_lag_days": 0,
@@ -258,7 +254,6 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "publication_retry_window_seconds": 14400,
       "schedule": {
         "local_time": "19:15",
         "target_date_lag_days": 0,
@@ -303,7 +298,6 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "publication_retry_window_seconds": 16200,
       "schedule": {
         "local_time": "18:00",
         "target_date_lag_days": 0,
@@ -348,7 +342,6 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
-      "publication_retry_window_seconds": 14400,
       "schedule": {
         "local_time": "19:15",
         "target_date_lag_days": 0,
@@ -393,7 +386,6 @@
       "lifecycle": "active",
       "market": "HK",
       "provider": "fmp",
-      "publication_retry_window_seconds": 14400,
       "schedule": {
         "local_time": "20:00",
         "target_date_lag_days": 0,
@@ -438,7 +430,6 @@
       "lifecycle": "active",
       "market": "US",
       "provider": "fmp",
-      "publication_retry_window_seconds": 14400,
       "schedule": {
         "local_time": "08:30",
         "target_date_lag_days": 1,
@@ -483,7 +474,6 @@
       "lifecycle": "active",
       "market": "HK",
       "provider": "hkex",
-      "publication_retry_window_seconds": 14400,
       "schedule": {
         "local_time": "21:05",
         "target_date_lag_days": 0,
@@ -528,7 +518,6 @@
       "lifecycle": "active",
       "market": "TW",
       "provider": "taifex",
-      "publication_retry_window_seconds": 18000,
       "schedule": {
         "local_time": "17:00",
         "target_date_lag_days": 0,
@@ -614,7 +603,6 @@
       "lifecycle": "active",
       "market": "US",
       "provider": "twelve_data",
-      "publication_retry_window_seconds": 10800,
       "schedule": {
         "local_time": "17:00",
         "target_date_lag_days": 0,
@@ -802,5 +790,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "aa18abd4ff61083b8cb1673de0d2d995cd9cb3ec657b690a3adf01deb0219818"
+  "source_sha256": "bc7f81091d3235ab1a5c716fe41b15d1ab7aba159a68d26f7cce62c47669dbd4"
 }

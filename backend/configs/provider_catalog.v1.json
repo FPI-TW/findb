@@ -190,7 +190,6 @@
           "trade_date_day_offset": 1
         }
       },
-      "publication_retry_window_seconds": 10800,
       "delivery": {
         "slot_id": "western_markets_window"
       },
@@ -273,7 +272,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 16200,
       "delivery": {
         "slot_id": "asia_pacific_markets_window"
       },
@@ -322,7 +320,6 @@
           "trade_date_day_offset": 0
         }
       },
-      "publication_retry_window_seconds": 16200,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -404,7 +401,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 16200,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -449,7 +445,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 14400,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -494,7 +489,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 14400,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -539,7 +533,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 14400,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -584,7 +577,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 14400,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -629,7 +621,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 18000,
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
@@ -674,7 +665,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 14400,
       "delivery": {
         "slot_id": "asia_pacific_markets_window"
       },
@@ -719,7 +709,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 14400,
       "delivery": {
         "slot_id": "asia_pacific_markets_window"
       },
@@ -764,7 +753,6 @@
         "enabled": false,
         "deadline": null
       },
-      "publication_retry_window_seconds": 14400,
       "delivery": {
         "slot_id": "western_markets_window"
       },

@@ -287,9 +287,13 @@ Migration `91a4c7e2d630` 保留既有計畫及歷史項目，用升級當時有�
 
 FinLab daily 回傳 target-not-ready，或 FactSet daily 成功查詢但出現 `no_source_row` 時，以
 該交易日的排程時刻（work 凍結的 feed 的 `scheduled_time`、`source_timezone` 與 `target_date_lag_days`）加上
-feed 的 `publication_retry_window_seconds`（catalog 與 execution-config 的欄位名稱；Fetcher runtime 內部的 feed
-欄位是 `completion_window_seconds`）作為 immutable publication deadline。不從 work 建立時間起算：停止後補抓的
-過去日期，排程窗口早已過去，缺列即為最終結果，不會再等一整個窗口。
+發布重試窗口作為 immutable publication deadline。窗口不是逐 feed 設定，而是由完成期限推算：排程後 12 小時的
+期限減 30 分鐘，即 41,400 秒（`PUBLICATION_RETRY_WINDOW_SECONDS`；最後一輪與無資料的最後一輪同為期限前
+30 分鐘，留給最後的交付完成 normalization）。所以只有完成期限一個時間點結束當日任務，期限前不會出現沒有任何
+執行的空檔（Owner 於 2026-11-25 決定，#708）。Source execution-config 仍以 `publication_retry_window_seconds`
+發布這個推算值（Fetcher runtime 內部的 feed 欄位是 `completion_window_seconds`）；work 建立時凍結 feed，
+部署前建立的 work 沿用當時的窗口。不從 work 建立時間起算：停止後補抓的過去日期，排程窗口早已過去，
+缺列即為最終結果，不會再等一整個窗口。
 截止前安全 close／drain 並排到 provider FIFO 尾端，單次最長等待 15 分鐘；這種等待不消耗
 local `FULL_WORK_MAX_ATTEMPTS`。FactSet 只保存缺列 observation，不將空結果保存成可 replay 的
 authoritative snapshot，因此下輪會重新查詢。FinLab 與 FactSet 的其他永久格式、mapping、DQ、
@@ -1735,13 +1739,13 @@ FMP 提供 76 檔市場指數的日線（港股 3、美股 73），依發布時�
   讀清單遇到 429 或格式錯的回應時，名單工作結算為重試（429 另寫入帳號冷卻），受每件工作的重試次數限制；
   401 等不可重試的 HTTP 錯誤結算為失敗。
 - **每日抓取**：每檔指數呼叫一次 `historical-price-eod/full`。回應沒有目標日那一列時視為尚未發布，在發布
-  重試窗口（4 小時）內重試；FMP 沒有「定案」標記，所以排程放在實測的定案時間之後，且不重抓覆寫。
+  重試窗口內重試；FMP 沒有「定案」標記，所以排程放在實測的定案時間之後，且不重抓覆寫。
   每檔指數各自發布（adapter 的 `publication_per_member`）：尚未發布的那檔只延後自己，同一輪其他指數照常抓，
   這一輪結束後若仍有未發布的指數，整份工作 15 分鐘後重試；窗口結束仍未發布的指數轉為 manual，不影響其他指數。
   整份一起發布的 provider（FinLab、Twelve Data 等）維持「第一檔未發布就結束這一輪」。
-- **重試窗口與完成期限**：發布重試窗口由各 feed 的 `publication_retry_window_seconds` 決定（指數為 4 小時，
-  美股組到台北 12:30、港股組到 24:00 HKT）；完成期限與所有 feed 相同，固定為排程後 12 小時
-  （`COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`），期限時仍有缺漏或受阻成員就判為逾時。
+- **重試窗口與完成期限**：完成期限與所有 feed 相同，固定為排程後 12 小時
+  （`COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE`）；尚未發布的指數每 15 分鐘重試，直到期限前 30 分鐘
+  （美股組到排程當天台北 20:00、港股組到隔天 07:30 HKT），期限時仍有缺漏或受阻成員就判為逾時。
 - **成交量**照 FMP 原值寫入，0 就是 0。FMP 的指數成交量不是一致的數列（例如 `^RUT`、`^NYA` 多數日子與
   `^GSPC` 相同，`^HSCE` 2024-10-08 起單位改為千股），使用前請看導入規劃的說明。
 - **歷史回補**以建立請求時的名單服務每一天（`current_release`），每天的請求數為港股 3、美股 73；本輪不執行。

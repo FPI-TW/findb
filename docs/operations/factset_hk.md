@@ -123,7 +123,7 @@ FactSet 一次整批載入一個市場日，停牌的 listing 不會有列；港
 （約 4%）。若要求全部到齊，每天都要等滿重試期限。已發布的 snapshot 立即成為 authoritative，
 沒有列的成員記為 `missing`／`no_source_row`，daily work 結算為 `partial`。
 
-Daily work 在該交易日排程時刻（20:00）加 `completion_window_seconds` 的截止前，只要該日尚未發布，
+Daily work 在該交易日排程時刻（20:00）加 `completion_window_seconds`（期限前 30 分鐘，即隔天 07:30）的截止前，只要該日尚未發布，
 就只將該次結果保存為 observation，不保存可 replay 的成功 snapshot；work
 安全 close／drain 後排到 provider FIFO 尾端，最長 15 分鐘後重新查詢來源。這類等待不消耗
 local `FULL_WORK_MAX_ATTEMPTS`，但每次查詢及其 hash、計數與時間仍保留稽核。截止後仍未發布
