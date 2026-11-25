@@ -123,8 +123,7 @@ export function useOperationsDashboardQuery(
   const queryKey = operationsKeys.dashboard(view, audit, sessionScope)
 
   useRegisterOperationsQuery(queryKey)
-  const live =
-    view === "overview" || view === "deliveries" || view === "quality"
+  const live = view === "overview" || view === "quality"
   const query = useQuery<OperationsQueryData, Error>({
     queryKey,
     queryFn: async () => {

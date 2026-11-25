@@ -8,6 +8,7 @@ import {
   Clock3,
   Database,
   Gauge,
+  Grid3x3,
   KeyRound,
   LogOut,
   RefreshCw,
@@ -301,6 +302,12 @@ export function OperationsDashboardStatus({
 const navigation = [
   { to: "/operations", label: "導入概況", icon: Gauge, exact: true },
   {
+    to: "/operations/completeness",
+    label: "資料完整性",
+    icon: Grid3x3,
+    exact: false,
+  },
+  {
     to: "/operations/deliveries",
     label: "交付監控",
     icon: Clock3,
@@ -422,11 +429,11 @@ function OperationsLayoutContent({
                 const Icon = item.icon
                 return (
                   <div key={item.to} className="shrink-0">
-                    {[0, 3, 5].includes(index) && (
+                    {[0, 4, 6].includes(index) && (
                       <p className="hidden px-3 pt-3 pb-1 text-xs font-medium text-muted lg:block">
                         {index === 0
                           ? "營運監控"
-                          : index === 3
+                          : index === 4
                             ? "資料稽核"
                             : "系統管理"}
                       </p>
@@ -557,15 +564,17 @@ export function FeedDetails({ feeds }: { feeds: MarketFreshness["feeds"] }) {
           </div>
           <div className="flex items-center justify-end">
             {feed.status !== "fresh" && (
+              // Opens the matrix on this feed's expected date, its cell selected.
               <Link
-                to={
-                  feed.open_missing_delivery_alert
-                    ? "/operations/deliveries"
-                    : "/operations/raw-payloads"
-                }
+                to="/operations/completeness"
+                search={{
+                  dataset: feed.dataset_key,
+                  provider: feed.source,
+                  date: feed.expected_data_date ?? "",
+                }}
                 className="font-bold text-accent underline-offset-4 hover:underline"
               >
-                {feed.open_missing_delivery_alert ? "查看缺漏" : "查看稽核"}
+                {feed.open_missing_delivery_alert ? "查看缺漏" : "查看完整性"}
               </Link>
             )}
           </div>

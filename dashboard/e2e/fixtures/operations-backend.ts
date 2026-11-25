@@ -105,6 +105,65 @@ const plans = Array.from({ length: 31 }, (_, index) => ({
     ],
   },
 }))
+// The matrix the Backend would build from these plans' stored counts.
+function completeness(params: URLSearchParams) {
+  const from = params.get("date_from") || "2026-09-01"
+  const to = params.get("date_to") || "2026-09-30"
+  const days: string[] = []
+  for (
+    let day = new Date(`${from}T00:00:00Z`);
+    day.toISOString().slice(0, 10) <= to;
+    day.setUTCDate(day.getUTCDate() + 1)
+  )
+    days.push(day.toISOString().slice(0, 10))
+  return {
+    execution_profile: "full_market",
+    date_from: from,
+    date_to: to,
+    evaluated_at: timestamp,
+    rows: ["tw_futures_eod", "old_dataset"].map(dataset_key => ({
+      dataset_key,
+      provider: "taifex",
+      market: "TAIFEX",
+      first_start_date: "2026-09-01",
+      latest_due_date: "2026-09-30",
+      cells: days.map(trade_date => {
+        const plan = plans.find(
+          item =>
+            item.dataset_key === dataset_key && item.trade_date === trade_date
+        )
+        return plan
+          ? {
+              trade_date,
+              state: "late",
+              plan_id: plan.plan_id,
+              deadline_at: plan.deadline_at,
+              counts: {
+                expected: plan.summary.expected,
+                data: plan.summary.data,
+                no_data: plan.summary.no_data,
+                missing: plan.summary.missing,
+                blocked: plan.summary.blocked,
+                unavailable: 0,
+                mapping_gap: 0,
+                unlisted_data: 0,
+              },
+              counts_synced: true,
+              open_alert: trade_date === "2026-09-30",
+            }
+          : {
+              trade_date,
+              state: "closed",
+              plan_id: null,
+              deadline_at: null,
+              counts: null,
+              counts_synced: true,
+              open_alert: false,
+            }
+      }),
+    })),
+  }
+}
 function paginated<T>(items: T[], params: URLSearchParams) {
   const page = Number(params.get("page") ?? 1),
     size = Number(params.get("page_size") ?? 25)
@@ -255,13 +314,23 @@ createServer(async (request, response) => {
       )
     )
   }
+  if (path === "/api/v1/admin/completeness") {
+    // Held reads stay in flight until the test releases them, however slow the host is.
+    if (plansHeld)
+      await new Promise<void>(resolve => plansWaiting.push(resolve))
+    if (plansError) return send({ detail: "Unavailable" }, 503)
+    return send(completeness(url.searchParams))
+  }
   const planSummary =
     /^\/api\/v1\/admin\/delivery-plans\/([^/]+)\/summary$/.exec(path)
   if (planSummary) {
     const plan = plans.find(item => item.plan_id === planSummary[1])
-    return plan
-      ? send(plan.summary)
-      : send({ detail: "Delivery plan not found" }, 404)
+    if (!plan) return send({ detail: "Delivery plan not found" }, 404)
+    const wanted = url.searchParams.getAll("gap_status")
+    const gaps = plan.summary.gaps.filter(
+      gap => !wanted.length || wanted.includes(gap.status)
+    )
+    return send({ ...plan.summary, gaps, gaps_total: gaps.length })
   }
   if (path === "/api/v1/admin/missing-deliveries")
     return send(
@@ -321,9 +390,34 @@ createServer(async (request, response) => {
       await new Promise(resolve => setTimeout(resolve, previewDelay))
     return send(result)
   }
+  const backfillItems =
+    /^\/api\/v1\/admin\/historical-backfills\/([^/]+)\/items$/.exec(path)
+  if (backfillItems) {
+    const row = backfills.find(item => item.request_id === backfillItems[1])
+    return row
+      ? send(paginated(row.items, url.searchParams))
+      : send({ detail: "Historical backfill request not found" }, 404)
+  }
   if (path === "/api/v1/admin/historical-backfills") {
-    if (request.method === "GET")
-      return send(paginated(backfills, url.searchParams))
+    if (request.method === "GET") {
+      const page = paginated(backfills, url.searchParams)
+      // As the Backend does: counts per status always, items only when asked.
+      const withItems = url.searchParams.get("include_items") !== "false"
+      return send({
+        ...page,
+        data: page.data.map(row => ({
+          ...row,
+          items: withItems ? row.items : [],
+          item_counts: row.items.reduce<Record<string, number>>(
+            (counts, item) => ({
+              ...counts,
+              [item.status]: (counts[item.status] ?? 0) + 1,
+            }),
+            {}
+          ),
+        })),
+      })
+    }
     if (request.method !== "POST")
       return send({ detail: "Method not allowed" }, 405)
     if (role === "viewer")

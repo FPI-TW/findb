@@ -12,10 +12,17 @@ import {
 export const Route = createFileRoute("/_authenticated/operations/deliveries")({
   validateSearch: deliveriesSearchSchema,
   beforeLoad: ({ context, search }) => {
+    // The plan list moved to the completeness matrix; old links land there.
+    if (search.tab === "plans")
+      throw redirect({
+        to: "/operations/completeness",
+        search: { dataset: search.dataset, date: search.date },
+        replace: true,
+      })
     if (context.role === "viewer" && search.tab === "backfills")
       throw redirect({
         to: "/operations/deliveries",
-        search: { ...search, tab: "plans" },
+        search: { ...search, tab: "alerts", seed: "" },
         replace: true,
       })
   },
