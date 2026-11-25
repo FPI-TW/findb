@@ -1241,6 +1241,8 @@ class IngestionRun(Base):
         Index("idx_run_dataset", "dataset_key"),
         Index("idx_run_status", "status"),
         Index("idx_run_raw_payload", "raw_payload_id"),
+        # Plan reads join runs to their delivery parts; without it each join scans every run.
+        Index("idx_run_delivery_part", "delivery_part_id"),
         Index(
             "idx_run_minute_sequence_group",
             "dataset_key",

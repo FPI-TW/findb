@@ -15,6 +15,7 @@ from app.services.calendar_management import (
     RevisionConflictError,
     apply_preview,
     clone_with_day_change,
+    complete_published_revision_ids,
     create_preview,
     latest_revision,
     parse_twse_csv,
@@ -170,6 +171,56 @@ async def test_preview_apply_publish_isolated_from_observed_calendar(test_sessio
     assert resolved_after_rollback is not None
     restored = {day.trade_date.isoformat(): day for day in resolved_after_rollback[2]}
     assert restored["2026-01-02"].day_status == "open"
+
+
+@pytest.mark.asyncio
+async def test_complete_revision_ids_stay_within_market_and_year(test_session, tw_market):
+    us_market = CalendarMarket(
+        market="US",
+        display_name="美國",
+        timezone="America/New_York",
+        weekend_days=[5, 6],
+        default_session_open=time(9, 30),
+        default_session_close=time(16),
+        active=True,
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    test_session.add_all([tw_market, us_market])
+    await test_session.commit()
+    closed = {
+        "status": "closed",
+        "holiday_name": "元旦",
+        "description": None,
+        "session_open": None,
+        "session_close": None,
+    }
+    published = {}
+    for market, year in (("TW", 2026), ("TW", 2025), ("US", 2026)):
+        draft = await clone_with_day_change(
+            test_session,
+            market=market,
+            trade_date=date(year, 1, 1),
+            expected_revision=0,
+            replacement=closed,
+        )
+        published[market, year] = await publish_revision(
+            test_session,
+            market=market,
+            year=year,
+            expected_revision=draft.revision,
+            published_by="owner",
+        )
+
+    # Every other year and market is complete too; only the requested one is returned.
+    for (market, year), revision in published.items():
+        ids = (
+            await test_session.scalars(complete_published_revision_ids(market=market, year=year))
+        ).all()
+        assert ids == [revision.id]
+    assert (
+        await test_session.scalars(complete_published_revision_ids(market="TW", year=2024))
+    ).all() == []
 
 
 @pytest.mark.asyncio
