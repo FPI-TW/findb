@@ -19,11 +19,11 @@ PROVIDER = "factset"
 NOTE = "HKEX listing change reviewed by the owner."
 
 
-async def _request(client, headers, *, provider=PROVIDER, dataset_key=KEY):
+async def _request(client, headers, *, provider=PROVIDER, dataset_key=KEY, note=NOTE):
     return await client.post(
         "/api/v1/admin/universes/refresh",
         headers=headers,
-        json={"provider": provider, "dataset_key": dataset_key, "evidence_note": NOTE},
+        json={"provider": provider, "dataset_key": dataset_key, "evidence_note": note},
     )
 
 
@@ -113,6 +113,18 @@ async def test_manual_refresh_publishes_the_first_baseline(client, admin_headers
         select(AdminAuditEvent).where(AdminAuditEvent.action == "publish")
     )
     assert event.details["first_baseline_approved"] is True
+
+
+@pytest.mark.asyncio
+async def test_manual_refresh_reason_needs_at_least_five_characters(
+    client, admin_headers, test_session
+):
+    await _dataset(test_session, KEY)
+    await _source_headers(test_session, PROVIDER, [KEY])
+    short = await _request(client, admin_headers, note="  核對公告  ")
+    assert short.status_code == 422, short.text
+    accepted = await _request(client, admin_headers, note="  核對新公告  ")
+    assert accepted.status_code == 202, accepted.text
 
 
 @pytest.mark.asyncio

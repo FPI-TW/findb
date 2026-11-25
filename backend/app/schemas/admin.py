@@ -616,7 +616,7 @@ class UniverseRefreshRequest(BaseModel):
     provider: str = Field(min_length=1, max_length=50)
     dataset_key: str = Field(min_length=1, max_length=50)
     # Recorded as the approval note of the release this refresh publishes.
-    evidence_note: str = Field(min_length=10, max_length=500)
+    evidence_note: str = Field(min_length=5, max_length=500)
 
 
 class UniverseRefreshResponse(BaseModel):

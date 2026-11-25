@@ -130,7 +130,13 @@ describe("universe feeds", () => {
       name: "確認更新並核准",
     })
     expect(confirm).toBeDisabled()
-    fireEvent.change(within(dialog).getByLabelText("更新原因"), {
+    expect(dialog).toHaveTextContent("至少 5 個字")
+    const noteInput = within(dialog).getByLabelText("更新原因")
+    fireEvent.change(noteInput, { target: { value: "  核對公告  " } })
+    expect(confirm).toBeDisabled()
+    fireEvent.change(noteInput, { target: { value: "核對新公告" } })
+    expect(confirm).not.toBeDisabled()
+    fireEvent.change(noteInput, {
       target: { value: "  已核對交易所公告的新上市商品  " },
     })
     expect(confirm).not.toBeDisabled()
