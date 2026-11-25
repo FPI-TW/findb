@@ -902,6 +902,8 @@ SERVE_ROUTE_URLS = {
     "/api/v1/serve/futures/eod": "/api/v1/serve/futures/eod",
     "/api/v1/serve/futures/contracts": "/api/v1/serve/futures/contracts",
     "/api/v1/serve/exchange-quotes": "/api/v1/serve/exchange-quotes?instruments=HK:700",
+    "/api/v1/serve/institutional-flows": "/api/v1/serve/institutional-flows?symbols=2330",
+    "/api/v1/serve/institutional-flows/summary": "/api/v1/serve/institutional-flows/summary",
     "/api/v1/serve/intraday/bars": (
         "/api/v1/serve/intraday/bars?instrument_id=11111111-1111-1111-1111-111111111111"
     ),

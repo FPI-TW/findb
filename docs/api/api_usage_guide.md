@@ -272,6 +272,21 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
     - `missing_close`：窗口內有收盤價為空的日 K；
     - `calendar_unavailable`：讀不到交易日曆。
   - 排序與分頁比照 `/serve/eod`。
+- `GET /serve/institutional-flows`：TWSE 與 TPEx 公布的三大法人個股買賣超股數，含權證，只供內部使用。
+  - 查詢方式：
+    - `instruments`：最多 50 個 TW 股票或 ETF；
+    - `symbols`：最多 50 個掛牌代號，可查 FinDB 沒有 instrument 的代號，例如權證；
+    - 只給 `trade_date`：回當天整張表。
+  - `instruments`、`symbols` 都可以搭配 `start_date`／`end_date` 或 `trade_date`。
+  - `board` 可篩選 `TWSE`／`TPEX`。
+  - 排序：預設依交易日、板別、代號排序。只給 `trade_date` 時，可用 `sort` 依某個買賣超（`total_net`、
+    `foreign_ex_dealer_net`、`investment_trust_net`、`dealer_total_net`）排名。
+  - 每列的各類別是 `{buy, sell, net}`：
+    - TWSE 沒有印外資合計，`foreign_total` 的三個值都是 null；
+    - TWSE 的自營商合計只印買賣超。
+  - `total_net` 是交易所自己的合計，不含外資自營商（已計入自營商）。
+- `GET /serve/institutional-flows/summary`：三大法人市場彙總金額（TWD），每個板別、每天一列。
+  - TWSE 沒印的外資合計與自營商合計，由 FinDB 從組成相加，並標 `reported: false`。
 - `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
   最新canonical minute日期向前一個曆月，resolved range會固定在cursor內。
 - `GET /serve/futures/eod`：實際到期合約與 `regular`／`after_hours` session，使用 opaque cursor；

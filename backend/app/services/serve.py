@@ -32,6 +32,7 @@ from app.models.canonical import (
     MarketDataEOD,
     MarketDataMinute,
 )
+from app.models.institutional_flow import InstitutionalFlowPublication, InstitutionalFlowStock
 from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.common import PaginationInfo
 from app.schemas.serve import (
@@ -138,6 +139,23 @@ class ExchangeQuoteScope:
 
 
 @dataclass(frozen=True)
+class FlowScope:
+    """An active dataset of one TW exchange's three institutional investors table."""
+
+    dataset_key: str
+    kind: Literal["summary", "stock"]
+    # The publishing exchange's board (``TWSE`` or ``TPEX``) and its provider name.
+    board: str
+    source: str
+
+
+FLOW_SCHEMA_KINDS: dict[str, Literal["summary", "stock"]] = {
+    "institutional_flow_summary": "summary",
+    "institutional_flow_stock": "stock",
+}
+
+
+@dataclass(frozen=True)
 class IntradayDatasetScope:
     """An active dataset whose rows are canonical intraday objects."""
 
@@ -160,12 +178,17 @@ async def active_exchange_quote_datasets(db: AsyncSession) -> tuple[ExchangeQuot
     return (await _active_registry_scopes(db))[2]
 
 
+async def active_flow_datasets(db: AsyncSession) -> tuple[FlowScope, ...]:
+    return (await _active_registry_scopes(db))[3]
+
+
 async def _active_registry_scopes(
     db: AsyncSession,
 ) -> tuple[
     tuple[ActiveDatasetScope, ...],
     tuple[IntradayDatasetScope, ...],
     tuple[ExchangeQuoteScope, ...],
+    tuple[FlowScope, ...],
 ]:
     """Every active dataset's read model; any inconsistent declaration fails closed."""
     rows = (
@@ -178,6 +201,7 @@ async def _active_registry_scopes(
     scopes: list[ActiveDatasetScope] = []
     intraday: list[IntradayDatasetScope] = []
     quotes: list[ExchangeQuoteScope] = []
+    flows: list[FlowScope] = []
     for row in rows:
         try:
             declaration = DatasetContractDeclaration.model_validate(row.config)
@@ -215,6 +239,25 @@ async def _active_registry_scopes(
                         ),
                     )
                 )
+                continue
+            if schema_id in FLOW_SCHEMA_KINDS:
+                # Each exchange publishes its own board's tables: one source, one board.
+                sources = {source.strip().lower() for source in declaration.allowed_sources}
+                source = next(iter(sources)) if len(sources) == 1 else ""
+                if (
+                    set(declaration.accepted_schema_versions) != {1}
+                    or declaration.defaults.market != market
+                    or market != "TW"
+                    or declaration.defaults.asset_class != asset_class
+                    or frequency != "daily"
+                    or source not in {"twse", "tpex"}
+                ):
+                    raise ValueError("active institutional flow dataset declaration is invalid")
+                kind = FLOW_SCHEMA_KINDS[schema_id]
+                board = source.upper()
+                if any((item.kind, item.board) == (kind, board) for item in flows):
+                    raise ValueError("duplicate active institutional flow scope")
+                flows.append(FlowScope(row.dataset_key, kind, board, source))
                 continue
             if schema_id == "exchange_daily_quote":
                 # The official table is not a read model of its own; its values are
@@ -267,7 +310,7 @@ async def _active_registry_scopes(
             )
         except (AttributeError, TypeError, ValueError):
             raise configuration_error() from None
-    return tuple(scopes), tuple(intraday), tuple(quotes)
+    return tuple(scopes), tuple(intraday), tuple(quotes), tuple(flows)
 
 
 def _pairs(
@@ -380,7 +423,7 @@ def _instrument_response(
 async def list_datasets(db: AsyncSession) -> DatasetListResponse:
     from app.services.serve_intraday import intraday_dataset_coverage
 
-    scopes, intraday_scopes, quote_scopes = await _active_registry_scopes(db)
+    scopes, intraday_scopes, quote_scopes, flow_scopes = await _active_registry_scopes(db)
     items: list[DatasetResponse] = []
     for intraday_scope in intraday_scopes:
         first, latest, symbols = await intraday_dataset_coverage(db, intraday_scope.dataset_key)
@@ -505,6 +548,53 @@ async def list_datasets(db: AsyncSession) -> DatasetListResponse:
                     coverage_start_date=first_date,
                     coverage_end_date=latest_date,
                     instrument_count=int(instrument_count or 0),
+                ),
+            )
+        )
+    for flow_scope in flow_scopes:
+        first_date, latest_date, tables = (
+            await db.execute(
+                select(
+                    func.min(InstitutionalFlowPublication.trade_date),
+                    func.max(InstitutionalFlowPublication.trade_date),
+                    func.count(),
+                ).where(
+                    InstitutionalFlowPublication.kind == flow_scope.kind,
+                    InstitutionalFlowPublication.board == flow_scope.board,
+                )
+            )
+        ).one()
+        securities = (
+            await db.scalar(
+                select(func.count(func.distinct(InstitutionalFlowStock.symbol))).where(
+                    InstitutionalFlowStock.board == flow_scope.board
+                )
+            )
+            if flow_scope.kind == "stock"
+            else 0
+        )
+        data_kind: Literal["institutional_flows", "institutional_flow_summary"] = (
+            "institutional_flows" if flow_scope.kind == "stock" else "institutional_flow_summary"
+        )
+        items.append(
+            DatasetResponse(
+                dataset_key=flow_scope.dataset_key,
+                display_name=(
+                    f"TW {flow_scope.board} institutional "
+                    f"{'flows by security' if flow_scope.kind == 'stock' else 'totals'} 1d"
+                ),
+                market="TW",
+                asset_class="equity",
+                frequency="daily",
+                data_kind=data_kind,
+                interval="1d",
+                operation_id=DATASET_OPERATIONS[data_kind],
+                volume_unit="share" if flow_scope.kind == "stock" else "provider_defined",
+                availability="available" if tables else "configured_empty",
+                coverage=DatasetCoverageResponse(
+                    coverage_start_date=first_date,
+                    coverage_end_date=latest_date,
+                    instrument_count=int(securities or 0),
                 ),
             )
         )
@@ -876,6 +966,8 @@ DATASET_OPERATIONS = {
     "intraday_bars": "list_intraday_bars",
     "intraday_ticks": "list_intraday_ticks",
     "exchange_quotes": "list_exchange_quotes",
+    "institutional_flows": "list_institutional_flows",
+    "institutional_flow_summary": "list_institutional_flow_summary",
 }
 
 

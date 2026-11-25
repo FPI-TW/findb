@@ -81,6 +81,8 @@ def test_serve_operations_have_stable_ids_summaries_and_descriptions(spec):
         "list_futures_eod",
         "list_futures_contracts",
         "list_exchange_quotes",
+        "list_institutional_flows",
+        "list_institutional_flow_summary",
         "get_calendar_year",
         "list_calendar_days",
         "list_market_freshness",
