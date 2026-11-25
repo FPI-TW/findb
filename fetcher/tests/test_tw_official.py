@@ -499,8 +499,15 @@ def test_a_changed_table_is_a_format_change(parser, raw) -> None:
         parser(raw, FRIDAY)
 
 
+def test_the_rows_object_layout_is_the_contracts(contracts_dir) -> None:
+    schema = json.loads((contracts_dir / "institutional_flow_stock" / "v1.schema.json").read_text())
+    columns = [column["name"] for column in schema["x-findb-row-layout"]["columns"]]
+    assert columns == list(STOCK_COLUMNS)
+    assert schema["x-findb-row-layout"]["format"] == "json"
+
+
 @pytest.mark.parametrize("provider", ["twse", "tpex"])
-def test_a_summary_is_one_inline_request_of_the_board(provider) -> None:
+def test_a_summary_is_one_inline_request_of_the_board(provider, contracts_dir) -> None:
     adapter_class, dataset, source_symbol, raw = TABLES[(provider, "summary")]
     server = _Exchange(_ok(raw))
     context, persisted, _ = _context(
@@ -524,13 +531,16 @@ def test_a_summary_is_one_inline_request_of_the_board(provider) -> None:
     assert row["trade_date"] == FRIDAY.isoformat()
     assert len(row["categories"]) == (6 if provider == "twse" else 8)
     assert persisted.calls == [(raw, source_symbol)]
+    request = {**result.request, "request_key": "full:x", "idempotency_key": "full:x"}
+    attach_raw_object(request, result.raw_object)
+    ContractRegistry(contracts_dir).validate("institutional_flow_summary", 1, request)
     sent = server.requests[0]
     expected = {"dayDate": "20261120"} if provider == "twse" else {"date": "2026/11/20"}
     assert expected.items() <= dict(sent.url.params).items()
 
 
 @pytest.mark.parametrize("provider", ["twse", "tpex"])
-def test_a_stock_table_is_delivered_by_reference(provider) -> None:
+def test_a_stock_table_is_delivered_by_reference(provider, contracts_dir) -> None:
     adapter_class, dataset, source_symbol, raw = TABLES[(provider, "stock")]
     server = _Exchange(_ok(raw))
     context, persisted, _ = _context(
@@ -553,6 +563,9 @@ def test_a_stock_table_is_delivered_by_reference(provider) -> None:
     assert row["rows_format"] == "json" and row["volume_unit"] == "share"
     assert row["rows_ref"].endswith(f"{row['rows_sha256']}.json")
     assert result.raw_object.sha256 != row["rows_sha256"]
+    request = {**result.request, "request_key": "full:x", "idempotency_key": "full:x"}
+    attach_raw_object(request, result.raw_object)
+    ContractRegistry(contracts_dir).validate("institutional_flow_stock", 1, request)
     if provider == "twse":
         # Warrants are kept: every TWSE class is requested.
         assert dict(server.requests[0].url.params)["selectType"] == "ALL"
