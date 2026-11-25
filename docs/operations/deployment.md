@@ -1070,6 +1070,14 @@ Dataset 已有使用紀錄時拒絕 downgrade；downgrade 會把 credential 範�
   baseline，首日設成單一日期，再由 Owner start（control 已在執行時，新 dataset 隨下一輪排程規劃）。已寫入的
   `DX-Y.NYB` canonical 列保留，instrument 不變。
 
+## ingestion_run 的 delivery part 索引
+
+Migration `1587769858c0` 只新增 `idx_run_delivery_part`（`ingestion_run.delivery_part_id`）。Plan 摘要更新、
+market freshness 與未列名單標的的讀取都以這個欄位 join `daily_delivery_part`，沒有索引時每次整表掃描
+（2026-11-25 production 約 37 萬列，每次 0.2–0.5 秒）。建立索引會短暫鎖住 `ingestion_run` 的寫入，沿用停止
+writers 後執行 migration 的部署程序即可。Downgrade 只移除索引，不改資料；與所有 migration 相同，回退到舊
+Backend image 前必須先 downgrade 到 `64da893e5e78`。
+
 ## Backend 與 Fetcher 的 feed 目錄版本落差
 
 Backend 與 Fetcher 分開部署，替既有 provider 新增或移除 feed 時，兩邊的 catalog 會有一段時間不同。

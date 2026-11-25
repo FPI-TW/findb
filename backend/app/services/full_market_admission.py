@@ -281,12 +281,15 @@ async def eligibility(
         )
         if baseline is None:
             reasons.append("full_market_baseline_missing")
+        calendar_market = market(dataset)
         calendar = await db.scalar(
             select(CalendarYearRevision)
             .where(
-                CalendarYearRevision.market == market(dataset),
+                CalendarYearRevision.market == calendar_market,
                 CalendarYearRevision.year == today.year,
-                CalendarYearRevision.id.in_(complete_published_revision_ids()),
+                CalendarYearRevision.id.in_(
+                    complete_published_revision_ids(market=calendar_market, year=today.year)
+                ),
             )
             .limit(1)
         )

@@ -362,12 +362,14 @@ async def revision_days(db: AsyncSession, revision_id: Any) -> list[CalendarRevi
     )
 
 
-def complete_published_revision_ids():
-    """Return revision IDs whose published day projection is complete.
+def complete_published_revision_ids(*, market: str, year: int):
+    """Return the market-year's revision IDs whose published day projection is complete.
 
     This is deliberately based on managed revisions only.  ``TradingCalendar``
     remains an observation written by normalizers and is never an authority for
-    scheduling or Serve calendar reads.
+    scheduling or Serve calendar reads.  The market and year filter sits inside
+    the grouped subquery: PostgreSQL cannot push an outer filter into it, so an
+    unscoped subquery counts every day of every published year on each call.
     """
     expected_year_days = case(
         (
@@ -384,6 +386,8 @@ def complete_published_revision_ids():
             CalendarRevisionDay.calendar_revision_id == CalendarYearRevision.id,
         )
         .where(
+            CalendarYearRevision.market == market,
+            CalendarYearRevision.year == year,
             CalendarYearRevision.status == "published",
             CalendarYearRevision.actual_days == CalendarYearRevision.expected_days,
             CalendarYearRevision.expected_days == expected_year_days,
@@ -401,7 +405,9 @@ async def published_year(
             select(CalendarYearRevision).where(
                 CalendarYearRevision.market == market,
                 CalendarYearRevision.year == year,
-                CalendarYearRevision.id.in_(complete_published_revision_ids()),
+                CalendarYearRevision.id.in_(
+                    complete_published_revision_ids(market=market, year=year)
+                ),
             )
         )
     ).scalar_one_or_none()
