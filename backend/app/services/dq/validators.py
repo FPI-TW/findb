@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.canonical import CorporateAction, MarketDataEOD
+from app.services.index_quality import close_only
 from app.services.normalize.types import EODLikeRecord, MarketMinuteRecord
 from app.services.ohlc_range import ohlc_range_severity
 
@@ -371,6 +372,30 @@ class DQValidator:
 
 class MarketEODV2DQValidator(DQValidator):
     """Check every provided OHLC value without changing v1 or minute semantics."""
+
+    def validate_eod(
+        self,
+        record: EODLikeRecord,
+        *,
+        seen_keys: Optional[set[tuple[str, str, datetime]]] = None,
+    ) -> list[DQIssueRecord]:
+        issues = super().validate_eod(record, seen_keys=seen_keys)
+        if getattr(record, "asset_class", None) == "index" and close_only(
+            getattr(record, "market", None), record.symbol
+        ):
+            # Written as served, but marked: only this index's close is reliable.
+            issues.append(
+                DQIssueRecord(
+                    issue_type="INDEX_OHL_UNRELIABLE",
+                    severity="warning",
+                    description="Open, high and low are vendor fills; only the close is reliable",
+                    trade_date=record.trade_date
+                    if isinstance(record.trade_date, datetime)
+                    else None,
+                    raw_data=record.raw_data,
+                )
+            )
+        return issues
 
     def _check_ohlc_high(self, record: EODLikeRecord) -> Optional[DQIssueRecord]:
         values = [value for value in (record.open, record.low, record.close) if value is not None]

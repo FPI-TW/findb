@@ -249,6 +249,8 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   `field_sources` 列出值不是 `source` 提供的欄位，例如港股以 HKEX 官方值覆寫後為
   `{"close": "hkex", "volume": "hkex", ...}`、Admin 修正後為 `{"close": "manual"}`；所有欄位都是
   `source` 自己的值時為 null。
+  指數 `US:^NYA`、`US:^RUT`、`US:^RUA`、`US:^RLG`、`US:^RLV`、`US:^SPXEW`、`US:^PSE`、`US:^XAX` 只有 `close`
+  可信：它們沒有可靠的官方開盤價，開高低是資料商的補值，每列都有 DQ 警告 `INDEX_OHL_UNRELIABLE`。
 - `GET /serve/eod/latest?instruments=TW:2330,US:AAPL`：每檔在 `as_of_date`（預設最新）當天或之前的最後一根
   日 K，附前一根的日期與收盤、`change` 與 `change_percent`（小數 4 位）。`missing_sessions` 是兩根之間
   該市場交易日曆上的開市日數；不是 0（缺資料或停牌）時 `change` 與 `change_percent` 為 null，避免把跨多日的

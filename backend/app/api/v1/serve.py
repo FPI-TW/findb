@@ -47,6 +47,7 @@ from app.schemas.serve import (
 from app.services import serve as serve_queries
 from app.services import serve_downloads, serve_intraday
 from app.services.effective_calendar import published_calendar_year
+from app.services.index_quality import CLOSE_ONLY_INDICES
 from app.services.market_freshness import list_market_freshness
 from app.services.serve_downloads import DOWNLOAD_SCOPE
 from app.services.serve_errors import serve_error
@@ -337,7 +338,10 @@ SELECTOR_ERRORS = (
         "for splits or dividends); `units` gives the volume unit per asset class. Dates are "
         "exchange-local and inclusive; without dates every stored date is returned, so give a "
         "range and follow `pagination.next_cursor` until it is null. For just the latest bar, "
-        "use `get_latest_eod`."
+        "use `get_latest_eod`. For the indices "
+        + ", ".join(f"`{market}:{symbol}`" for market, symbol in sorted(CLOSE_ONLY_INDICES))
+        + " only `close` is reliable: their open, high and low are vendor fills (each row "
+        "carries the DQ warning `INDEX_OHL_UNRELIABLE`)."
     ),
     responses=_errors(
         {
