@@ -80,7 +80,7 @@ Full market 的 universe 與 daily plan 核心由 `app/services/full_market.py` 
 符合 provider 與 dataset scope；每日成員凍結後，以 `fp1:<part UUID hex>` 連結 ingestion run。
 EOD 逐批寫入後可立即查詢；minute canonical bars 可逐 sequence 查詢，但成員完整性須等待
 該 canonical row 所屬的 sequenced snapshot group 完成，同 part 的其他群組不會帶過部分交付。
-`expected = data + no_data + missing + blocked` 只依 canonical
+`expected = data + no_data + missing + blocked + unavailable` 只依 canonical
 寫入證據（`delivery_member_evidence`，與 normalization 同 transaction）及持久化官方 no-data 證據計算，空批次或 quota failure 不代表正常無資料。
 
 Execution profile 只剩 `full_market`（Pilot 已退役，DB CHECK 限定）；日計畫凍結完整 published cohort，期貨保留其 sessions，成員不可因重試或 universe 更新而改寫。

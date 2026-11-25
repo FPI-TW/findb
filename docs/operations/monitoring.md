@@ -324,7 +324,7 @@ SHA-256。此工具不呼叫 provider、不建立 plan、不改首次日期、pr
 Shared account governor 的 recent operations、official usage 與 unknown／armed liabilities 另列，
 不得將缺少 usage 解讀為零用量，也不得抹除既有 debt 以通過驗收。
 
-每條 feed 至少有一筆真實非零資料，且該 plan 全部 expected 成員已有 data／有證據的 no_data，
+每條 feed 至少有一筆真實非零資料，且該 plan 全部 expected 成員已有 data／有證據的 no_data 或屬於 unavailable，
 missing／blocked 為零、Fetcher 工作全部完成，才通過。五條日線 feeds 全數通過才可將 staging native 結果用於
 production promotion 決策；all-no_data、未到排程時間、未建立 plan、空批次、quota failure 與部署
 健康成功皆不能替代。Production 使用同工具與 `--environment production`（`--profile` 只接受且預設

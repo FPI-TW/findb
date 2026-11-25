@@ -190,7 +190,10 @@ class DeliverySummaryResponse(FullMarketModel):
     no_data: int
     missing: int
     blocked: int
-    # Blocked members whose provider mapping is missing; not counted toward is_late.
+    # Known cases the provider cannot serve; neither missing nor blocked, and a
+    # plan is complete when data + no_data + unavailable == expected.
+    unavailable: int = 0
+    # Unavailable members whose provider mapping is missing.
     mapping_gap: int = 0
     deadline_at: datetime
     is_late: bool

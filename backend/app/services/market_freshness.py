@@ -503,7 +503,9 @@ async def _profile_feed_freshness(
                 (
                     (projection.c.trade_date <= through)
                     & (
-                        projection.c.data_count + projection.c.no_data_count
+                        projection.c.data_count
+                        + projection.c.no_data_count
+                        + projection.c.unavailable_count
                         == projection.c.expected_count
                     ),
                     projection.c.trade_date,
@@ -521,6 +523,7 @@ async def _profile_feed_freshness(
             projection.c.data_count,
             projection.c.no_data_count,
             projection.c.blocked_count,
+            projection.c.unavailable_count,
             projection.c.deadline_at,
         )
         .where(projection.c.trade_date == expected)
@@ -581,7 +584,9 @@ async def _profile_feed_freshness(
     if has_current:
         state = (
             "fresh"
-            if snapshot["data_count"] + snapshot["no_data_count"] == snapshot["expected_count"]
+            # A known unavailable member never holds a feed back from fresh.
+            if snapshot["data_count"] + snapshot["no_data_count"] + snapshot["unavailable_count"]
+            == snapshot["expected_count"]
             else "partial"
             if snapshot["data_count"] or snapshot["no_data_count"]
             else "late"

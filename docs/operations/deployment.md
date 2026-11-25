@@ -1595,6 +1595,17 @@ consumers 排空後以已核對備份復原；migration 的 downgrade 只供停�
 同一停止時點的 RDS snapshot。部署前產生的 Shioaji repair 預覽與休市結清盤點 digest 改以新的
 prepared descriptor 計算，部署後會以 stale preview 拒絕，須重新取得正式預覽。
 
+## 交付計畫 unavailable 計數的 rollback 下限
+
+Migration `c7e9a1b3d5f8` 在 `daily_delivery_plan_summary` 與 `daily_delivery_part` 新增 `unavailable_count`，等式改為
+`expected = data + no_data + missing + blocked + unavailable`（#593）。Part 計數已初始化的 mapping gap 由
+`blocked_count` 移到 `unavailable_count`；plan 摘要只在所有 part 計數齊全且與摘要同時寫入時移動，其餘摘要計數不變、
+清除 `parts_synced_at`，下一次寫入走完整刷新，輪替稽核也會修正。Backend 先部署：舊版 Fetcher 讀到只缺
+unavailable 成員的 plan 時，依 Source 的 `complete` 以 `completed` 結算；依舊統計送出的 `partial` Source 仍接受。
+新 Fetcher 本地判定完整時把 `unavailable` 算進去，不再送出 mapping gap 的 `partial`。成功 accepted 後此版本即為新的
+rollback 下限：舊版 Backend 寫入的 blocked 含 mapping gap、不寫 `unavailable_count`，會違反新的 CHECK。Downgrade 把
+`unavailable_count` 併回 `blocked_count`，只供停止狀態下的人工復原。
+
 ## FactSet 港股版本下限
 
 新 Fetcher bundle v2 包含 FactSet 第四個 image、第五個 provider 與十五個 consumers。

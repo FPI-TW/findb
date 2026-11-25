@@ -399,9 +399,9 @@ async def test_member_evidence_completes_and_repairs_the_full_plan(
     )
     assert stored.unlisted_symbols == ["0003"]
     # The historical write resolves the Full plan's gap and its no-trade proof
-    # completes the member; a missing series stays missing, the gap stays blocked.
+    # completes the member; a missing series stays missing, the gap stays unavailable.
     # Completion itself refreshes the stored counts; a full rebuild agrees.
-    expected = (1, 1, 0, 1) if quiet else (1, 0, 1, 1)
+    expected = (1, 1, 0, 0, 1) if quiet else (1, 0, 1, 0, 1)
     for rebuild in (False, True):
         if rebuild:
             await refresh_plan_summary(test_session, plan_id)
@@ -411,6 +411,7 @@ async def test_member_evidence_completes_and_repairs_the_full_plan(
             summary.no_data_count,
             summary.missing_count,
             summary.blocked_count,
+            summary.unavailable_count,
         )
         assert counts == expected
     # The Full plan's own members keep the outcomes their daily work recorded.
@@ -515,10 +516,11 @@ async def test_historical_no_data_outranks_daily_blocked_but_never_a_mapping_gap
             summary.no_data_count,
             summary.missing_count,
             summary.blocked_count,
+            summary.unavailable_count,
         )
 
-    # 0001 becomes no-data; a missing series stays missing; the gap stays blocked.
-    assert await counts() == (0, 1, 1, 1)
+    # 0001 becomes no-data; a missing series stays missing; the gap stays unavailable.
+    assert await counts() == (0, 1, 1, 0, 1)
 
 
 @pytest.mark.asyncio

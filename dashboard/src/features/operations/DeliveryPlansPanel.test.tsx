@@ -192,6 +192,39 @@ describe("full market plans", () => {
     expect(screen.getByText(/清單外有資料：已列出 2／共 2/)).toBeInTheDocument()
     expect(screen.getByText("此計畫沒有待處理缺口。")).toBeInTheDocument()
   })
+  it("lists members the provider cannot serve apart from gaps", async () => {
+    const summary = {
+      ...plan.summary,
+      data: 4,
+      no_data: 0,
+      missing: 0,
+      blocked: 0,
+      unavailable: 1,
+      mapping_gap: 1,
+      is_late: false,
+    }
+    mocks.loadDeliveryPlans.mockResolvedValue({
+      data: [{ ...plan, status: "complete", summary }],
+      pagination,
+    })
+    mocks.loadDeliveryPlanSummary.mockResolvedValue({
+      ...summary,
+      gaps: [
+        { member_key: "AIB", status: "unavailable", reason: "mapping_gap" },
+      ],
+    })
+    renderPanel()
+    expect(
+      await screen.findByRole("columnheader", { name: "無法取得" })
+    ).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole("button", { name: "展開詳細資料" }))
+    expect(
+      await screen.findByText(/無法取得：已列出 1／共 1 檔/)
+    ).toBeInTheDocument()
+    expect(screen.getByText("AIB")).toBeInTheDocument()
+    expect(screen.getByText(/供應商未收錄（mapping_gap）/)).toBeInTheDocument()
+    expect(screen.getByText("此計畫沒有待處理缺口。")).toBeInTheDocument()
+  })
   it("retains expanded rows and prior results after refetch failure, then recovers", async () => {
     const { client } = renderPanel()
     fireEvent.click(await screen.findByRole("button", { name: "展開詳細資料" }))

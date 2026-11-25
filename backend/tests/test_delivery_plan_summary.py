@@ -584,7 +584,8 @@ async def test_untrusted_part_counts_take_one_full_refresh(test_session, monkeyp
         await test_session.execute(
             text(
                 "UPDATE daily_delivery_part SET data_count = NULL, no_data_count = NULL, "
-                "missing_count = NULL, blocked_count = NULL, mapping_gap_count = NULL "
+                "missing_count = NULL, blocked_count = NULL, unavailable_count = NULL, "
+                "mapping_gap_count = NULL "
                 "WHERE plan_id = :plan_id"
             ),
             {"plan_id": plan.plan_id},
@@ -684,12 +685,13 @@ async def test_outcome_updates_its_part_and_responds_from_stored_counts(test_ses
 
 @pytest.mark.asyncio
 async def test_mapping_gap_outcome_keeps_counts_and_mapping_gap_total(test_session, monkeypatch):
+    """A mapping-gap member is unavailable before and after its outcome."""
     dataset, _, plan = await _activated_plan(test_session, count=1)
     member = await _first_member(test_session, plan.plan_id)
     member.mapping_status = "gap"
     await refresh_plan_summary(test_session, plan.plan_id)
     before = await summary(test_session, plan.plan_id)
-    counts = (before.blocked_count, before.missing_count)
+    counts = (before.unavailable_count, before.blocked_count, before.missing_count)
     calls, reconcile = _count_reconciles(monkeypatch)
     gap = DeliveryOutcomeRequest(
         version=1,
@@ -702,9 +704,12 @@ async def test_mapping_gap_outcome_keeps_counts_and_mapping_gap_total(test_sessi
         test_session, plan.plan_id, gap, provider="taifex", allowed_datasets=[dataset.dataset_key]
     )
     stored = await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
-    assert calls == [] and (stored.blocked_count, stored.missing_count) == counts == (1, 1)
+    assert calls == []
+    assert (stored.unavailable_count, stored.blocked_count, stored.missing_count) == counts
+    assert counts == (1, 0, 1)
     full = await reconcile(test_session, plan, gap_limit=0)
-    assert response.mapping_gap == full.mapping_gap == 1 and response.is_late == full.is_late
+    assert response.mapping_gap == full.mapping_gap == response.unavailable == 1
+    assert response.is_late == full.is_late
 
 
 @pytest.mark.asyncio

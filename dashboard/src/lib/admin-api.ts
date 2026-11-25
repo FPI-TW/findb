@@ -32,6 +32,10 @@ export const deliveryPlanSummarySchema = z.object({
   no_data: z.number().int().nonnegative(),
   missing: z.number().int().nonnegative(),
   blocked: z.number().int().nonnegative(),
+  // Known cases the provider cannot serve; a plan is complete without them.
+  unavailable: z.number().int().nonnegative().default(0),
+  // Unavailable members whose provider mapping is missing.
+  mapping_gap: z.number().int().nonnegative().default(0),
   deadline_at: isoDateTime,
   is_late: z.boolean(),
   gaps: z.array(

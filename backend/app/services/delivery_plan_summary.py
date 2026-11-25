@@ -35,7 +35,13 @@ LATEST_RUN_FIELDS = (
     "last_failure_code",
     "policy_outcome",
 )
-COUNT_FIELDS = ("data_count", "no_data_count", "missing_count", "blocked_count")
+COUNT_FIELDS = (
+    "data_count",
+    "no_data_count",
+    "missing_count",
+    "blocked_count",
+    "unavailable_count",
+)
 PART_COUNT_FIELDS = (*COUNT_FIELDS, "mapping_gap_count")
 
 
@@ -45,7 +51,7 @@ def _part_counts(states) -> dict[UUID, dict[str, int]]:
     for item in states:
         tally = tallies.setdefault(item.member.part_id, Counter())
         tally[f"{item.state}_count"] += 1
-        if item.state == "blocked" and item.reason == "mapping_gap":
+        if item.state == "unavailable" and item.reason == "mapping_gap":
             tally["mapping_gap_count"] += 1
     return {
         part_id: {key: tally[key] for key in PART_COUNT_FIELDS}
@@ -338,6 +344,7 @@ async def stored_summary_response(
         no_data=stored.no_data_count,
         missing=stored.missing_count,
         blocked=stored.blocked_count,
+        unavailable=stored.unavailable_count,
         mapping_gap=mapping_gap,
         now=now,
         gaps=[],
@@ -351,7 +358,7 @@ async def plan_complete_with_part(db: AsyncSession, plan: DailyDeliveryPlan, par
     Reads the committed summary and part together and reclassifies only the
     part; untrusted counts fall back to classifying the whole cohort.
     """
-    from app.services.full_market import SEQUENCED_DATASETS, reconcile_plan
+    from app.services.full_market import SEQUENCED_DATASETS, plan_complete, reconcile_plan
 
     await db.flush()
     synced = (
@@ -360,17 +367,12 @@ async def plan_complete_with_part(db: AsyncSession, plan: DailyDeliveryPlan, par
         else await _parts_synced(db, plan.plan_id, part_id)
     )
     if synced is None:
-        summary = await reconcile_plan(db, plan, gap_limit=0)
-        return summary.data + summary.no_data == summary.expected
+        return plan_complete(await reconcile_plan(db, plan, gap_limit=0))
     stored, part = synced
     counts, _ = await _classify_part(db, plan, part_id)
-    settled = (
-        stored.data_count
-        + stored.no_data_count
-        - part.data_count
-        - part.no_data_count
-        + counts["data_count"]
-        + counts["no_data_count"]
+    settled = sum(
+        getattr(stored, key) - getattr(part, key) + counts[key]
+        for key in ("data_count", "no_data_count", "unavailable_count")
     )
     return settled == stored.expected_count
 
@@ -403,7 +405,14 @@ async def correct_summary_drift(
     """
     if before is None or await stored_counts(db, plan_id) != before:
         return False
-    reconciled = (summary.expected, summary.data, summary.no_data, summary.missing, summary.blocked)
+    reconciled = (
+        summary.expected,
+        summary.data,
+        summary.no_data,
+        summary.missing,
+        summary.blocked,
+        summary.unavailable,
+    )
     if before[1:] == reconciled:
         return False
     logger.warning(

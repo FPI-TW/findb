@@ -345,8 +345,9 @@ class DailyDeliveryPlanSummary(Base):
     __table_args__ = (
         CheckConstraint(
             "expected_count >= 0 AND data_count >= 0 AND no_data_count >= 0 "
-            "AND missing_count >= 0 AND blocked_count >= 0 AND "
-            "expected_count = data_count + no_data_count + missing_count + blocked_count",
+            "AND missing_count >= 0 AND blocked_count >= 0 AND unavailable_count >= 0 AND "
+            "expected_count = data_count + no_data_count + missing_count + blocked_count "
+            "+ unavailable_count",
             name="delivery_plan_summary_counts",
         ),
     )
@@ -361,6 +362,11 @@ class DailyDeliveryPlanSummary(Base):
     no_data_count: Mapped[int] = mapped_column(Integer, nullable=False)
     missing_count: Mapped[int] = mapped_column(Integer, nullable=False)
     blocked_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Known cases the provider cannot serve (no provider mapping); neither blocked
+    # nor missing, and a plan is complete without them.
+    unavailable_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     # Served symbols outside the frozen list that were written; never in expected.
     unlisted_data_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
@@ -410,11 +416,12 @@ class DailyDeliveryPart(Base):
         UniqueConstraint("work_item_id", name="uq_daily_delivery_part_work_item"),
         CheckConstraint(
             "num_nulls(data_count, no_data_count, missing_count, blocked_count, "
-            "mapping_gap_count) IN (0, 5) "
+            "unavailable_count, mapping_gap_count) IN (0, 6) "
             "AND (data_count IS NULL OR (data_count >= 0 AND no_data_count >= 0 "
-            "AND missing_count >= 0 AND blocked_count >= 0 AND mapping_gap_count >= 0 "
-            "AND mapping_gap_count <= blocked_count AND "
-            "expected_count = data_count + no_data_count + missing_count + blocked_count))",
+            "AND missing_count >= 0 AND blocked_count >= 0 AND unavailable_count >= 0 "
+            "AND mapping_gap_count >= 0 AND mapping_gap_count <= unavailable_count AND "
+            "expected_count = data_count + no_data_count + missing_count + blocked_count "
+            "+ unavailable_count))",
             name="delivery_part_summary_counts",
         ),
     )
@@ -433,6 +440,8 @@ class DailyDeliveryPart(Base):
     no_data_count: Mapped[Optional[int]] = mapped_column(Integer)
     missing_count: Mapped[Optional[int]] = mapped_column(Integer)
     blocked_count: Mapped[Optional[int]] = mapped_column(Integer)
+    unavailable_count: Mapped[Optional[int]] = mapped_column(Integer)
+    # Unavailable members whose provider mapping is missing.
     mapping_gap_count: Mapped[Optional[int]] = mapped_column(Integer)
 
     plan: Mapped["DailyDeliveryPlan"] = relationship(back_populates="parts")

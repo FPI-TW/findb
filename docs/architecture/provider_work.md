@@ -150,12 +150,11 @@ FinLab 的抓表失敗是例外：五張表由整個 cohort 共用，失敗時�
 即重新計算，provider 恢復後可接續。全面無資料時，breaker 中斷後接續同一輪的未抓成員，累計 5 次即結束 plan：大型
 plan 約 100 次呼叫（5 × 20 個 member），小型 plan 另含每輪未滿 20 個、未觸發 breaker 的尾端成員。
 沒有未結成員且 plan 未完整時也是 `failed`，缺漏由 Source canonical evidence 判定，不計為成功或 no_data。
-唯一的例外是 plan 只缺對應缺口：Source 的 plan 統計 `missing` 為 0、`blocked` 全部是 `mapping_gap` 時，work 以
-`partial` 結算，proof 的 `mapping_gaps` 列出這些成員，Source 以同一份統計驗證後才接受。對應缺口不會呼叫
-provider，也沒有重試能解決，所以不算 work 的失敗；plan 的統計不變，這些成員仍是 blocked。Source 的缺口清單
-上限 1,000 筆，超過時無法列舉，仍以 `failed` 結算。之後 universe 取得對應時，該成員在 plan 上變成 missing，
-以 historical 回補。FactSet daily 走整批路徑，原本就以逐成員 evidence 結算 `partial`。此規則需要 Backend 先部署：
-舊版 Source 會拒絕這種 `partial`。
+對應缺口（`mapping_gap`）在 plan 統計中是 `unavailable`，不是 blocked（#593）：provider 沒有這個代號，不會呼叫
+provider，也沒有重試能解決。Plan 只缺 unavailable 成員時就是完整，daily work 以 `completed` 結算。之後 universe
+取得對應時，該成員在 plan 上變成 missing，以 historical 回補。舊版 Fetcher 依舊統計（blocked 全是 `mapping_gap`）送出的
+`partial` 結算（proof 的 `mapping_gaps` 列出這些成員），Source 仍以現行統計（`blocked` 與 `missing` 為 0、
+`unavailable` 全是 `mapping_gap`）驗證後接受。FactSet daily 走整批路徑，原本就以逐成員 evidence 結算 `partial`。
 Tail round 不再對已終結、退避中或等待重試輪的 member 查詢 prepared。
 原 controls／request 仍允許抓取時，下一 attempt 才可接續同一 frozen scope 的剩餘 members。
 Daily member 的一般例外會先持久保存 `source_error_pending`，再回報 Source `source_error`；
@@ -251,7 +250,7 @@ Historical request 失敗時同樣以 provider transaction 同步取消後續 do
 Controls／request 仍允許 acquisition 的正常 retry 可接續原 frozen scope 的未抓取 members，原 budgets 不重設。
 未交付的可恢復 intent 阻擋 completed／cancelled 等 terminal settlement；永久拒絕或需要人工複查時，
 明確保存 failed／manual failure code、原 bytes 與 `manual_pending_prepared` proof，不能默默丟棄。
-`expected = data + no_data + missing + blocked`、first dates、calendar decisions、Full checkpoints 與
+`expected = data + no_data + missing + blocked + unavailable`、first dates、calendar decisions、Full checkpoints 與
 原 controls／admission audits 不變。Historical 可在 Full desired running 時執行。
 FactSet HK historical 在建立 request 時凍結現行 HKEX cohort；EOD v2 daily／historical 可依完整成員證據結算 partial，historical 繼續下一日期。原 work 的 completed 只採認自己的 receipts。Shioaji historical 已停止新申請；既有股票／ETF minute 的 frozen 成員、sequences 與完整 receipts 保留供查詢及稽核。TW ETF EOD historical 仍不支援。詳見 [FactSet runbook](../operations/factset_hk.md) 與 [資料維護](../operations/data_maintenance.md#shioaji-股票etf-分鐘回補)。
 

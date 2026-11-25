@@ -295,7 +295,7 @@ canonical 日線由同一 provider 寫入、開高低收都等於前一筆日線
 最終 no_data 亦須通過上述交易日／session 收盤限制：伺服器與 evidence `observed_at`
 皆已到收盤，`observed_at` 不得超過伺服器時間五分鐘；收盤前仍可登錄非最終 blocked。
 缺權限、mapping gap、限流、下載錯誤、空 response 都不能視為 no_data；blocked 原因限
-`mapping_gap`／`rate_limited`／`source_error`。Data 由 canonical reconciliation 判定，producer
+`mapping_gap`／`rate_limited`／`source_error`。Plan 統計把 `mapping_gap` 成員算作 `unavailable`，不是 blocked。Data 由 canonical reconciliation 判定，producer
 不能直接宣告 data completion。
 
 ## 發布與dataset declaration
