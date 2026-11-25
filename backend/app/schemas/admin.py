@@ -1093,12 +1093,67 @@ class DeliveryPlanDatasetsResponse(BaseModel):
     data: list[str]
 
 
+class AdminDeliveryPlanResponse(DeliveryPlanResponse):
+    """A plan as Admin lists it; `counts_synced` is false while stored counts catch up.
+
+    List reads never reclassify a plan; the delivery monitor repairs counts that
+    drifted, and the per-plan summary read still classifies on demand.
+    """
+
+    counts_synced: bool = True
+
+
 class DeliveryPlanListResponse(BaseModel):
     skipped: list[CalendarSkipResponse] = Field(default_factory=list)
     skipped_total: int = 0
     execution_policies: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    data: list[DeliveryPlanResponse]
+    data: list[AdminDeliveryPlanResponse]
 
 
 class PaginatedDeliveryPlanListResponse(DeliveryPlanListResponse):
     pagination: PaginationInfo
+
+
+CompletenessState = Literal[
+    "complete", "incomplete", "late", "not_due", "not_planned", "closed", "not_started"
+]
+
+
+class CompletenessCounts(BaseModel):
+    expected: int
+    data: int
+    no_data: int
+    missing: int
+    blocked: int
+    unavailable: int
+    mapping_gap: int
+    unlisted_data: int
+
+
+class CompletenessCell(BaseModel):
+    """One feed on one exchange-local trade date."""
+
+    trade_date: date
+    state: CompletenessState
+    plan_id: Optional[UUID] = None
+    deadline_at: Optional[datetime] = None
+    counts: Optional[CompletenessCounts] = None
+    counts_synced: bool = True
+    open_alert: bool = False
+
+
+class CompletenessRow(BaseModel):
+    dataset_key: str
+    provider: str
+    market: str
+    first_start_date: Optional[date] = None
+    latest_due_date: date
+    cells: list[CompletenessCell]
+
+
+class CompletenessResponse(BaseModel):
+    execution_profile: ExecutionProfile = "full_market"
+    date_from: date
+    date_to: date
+    evaluated_at: datetime
+    rows: list[CompletenessRow]

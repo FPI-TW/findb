@@ -75,11 +75,15 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 | `market-freshness` | 18 |
 | `schedulers` | 11 |
 | `queue/health` | 10 |
+| `completeness`（完整性矩陣） | 14 以內 |
+| `delivery-plans?summary_only=true`（一頁） | 7 以內 |
 
 規則見 `backend/AGENTS.md`「Admin 讀取的查詢預算」。
 
 - **admission 與 eligibility**：同一請求內只載入一次，所有 scheduler 共用。
 - **各 feed 的應有日期、計畫摘要與未關閉告警**：全部 feed 一起查詢。
+- **計畫列表與矩陣**：只讀已存的計畫摘要與分區計數，不重新分類。計數未同步時標示 `counts_synced=false`，
+  不在讀取時重算。
 - **`queue/health` 的 `counts`**：只統計 queued、retrying、processing、failed，不再統計已完成的 job。
 - **outbox 與重試耗盡的計數**：outbox 只計算 pending／publishing；重試耗盡的 run 走部分索引
   `idx_run_retry_exhausted`。

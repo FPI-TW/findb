@@ -66,6 +66,7 @@ from app.schemas.admin import (
     CalendarRollbackRequest,
     CalendarYearResponse,
     ChangePasswordRequest,
+    CompletenessResponse,
     CorrectionListResponse,
     CorrectionResponse,
     CredentialCreateRequest,
@@ -469,6 +470,30 @@ async def list_full_market_delivery_plans(
         page_size=page_size,
         summary_only=summary_only,
     )
+
+
+@router.get("/completeness", response_model=CompletenessResponse)
+async def get_completeness_matrix(
+    execution_profile: ExecutionProfile = "full_market",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    dataset_key: str | None = Query(default=None, min_length=1, max_length=50),
+    _: AdminPrincipal = Depends(require_viewer),
+    db: AsyncSession = Depends(get_db),
+) -> CompletenessResponse:
+    """Each full-market feed by exchange-local trade date, from stored counts only."""
+    from app.services.completeness_matrix import CompletenessRangeError, completeness_matrix
+
+    try:
+        return await completeness_matrix(
+            db,
+            date_from=date_from,
+            date_to=date_to,
+            dataset_key=dataset_key,
+            profile=execution_profile,
+        )
+    except CompletenessRangeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/delivery-plans/{plan_id}/summary", response_model=DeliverySummaryResponse)

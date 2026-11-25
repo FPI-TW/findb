@@ -112,10 +112,9 @@ async def test_plan_list_summary_only_returns_counts_without_members_or_gaps(
     assert summary["summary"]["unavailable"] == summary["summary"]["mapping_gap"] == 1
     assert summary["status"] == complete["status"] == "incomplete"
     assert summary["summary"]["gaps"] == []
-    assert [part["member_keys"] for part in summary["parts"]] == [[] for _ in complete["parts"]]
-    assert [part["part_id"] for part in summary["parts"]] == [
-        part["part_id"] for part in complete["parts"]
-    ]
+    # The list carries no part or member detail and says its stored counts are current.
+    assert summary["parts"] == []
+    assert summary["counts_synced"] is True
     assert sum(len(part["member_keys"]) for part in complete["parts"]) == len(members)
     # The gap details the list no longer carries are one per-plan read away.
     assert detail.json()["gaps"] == complete["summary"]["gaps"]
