@@ -7,11 +7,13 @@ capability enrollment/report/repair tools remain independent diagnostics.
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -249,6 +251,144 @@ async def verify_enrollment(
     )
 
 
+_READ_CACHE = "full_market_admission_read_cache"
+
+
+@dataclass
+class _ReadCache:
+    """Admission inputs one read request shares across schedulers and feeds."""
+
+    states: dict[tuple[str, str], FullMarketDatasetState | None] = field(default_factory=dict)
+    baselines: dict[tuple[str, str, date], UniverseRelease | None] = field(default_factory=dict)
+    calendars: dict[tuple[str, int], CalendarYearRevision | None] = field(default_factory=dict)
+    admissions: dict[str, tuple[FullMarketAdmission | None, list[str]]] = field(
+        default_factory=dict
+    )
+    datasets: dict[str, DatasetRegistry] = field(default_factory=dict)
+
+
+@contextmanager
+def admission_read_cache(db: AsyncSession) -> Iterator[None]:
+    """Share admission inputs for the rest of one read-only request.
+
+    Only Admin reads open it: a write path must see rows it changed itself, so
+    it keeps loading fresh inputs on every call.
+    """
+    owner = _READ_CACHE not in db.info
+    if owner:
+        db.info[_READ_CACHE] = _ReadCache()
+    try:
+        yield
+    finally:
+        if owner:
+            db.info.pop(_READ_CACHE, None)
+
+
+def _cache(db: AsyncSession) -> _ReadCache:
+    """The open request cache, or a throwaway one so every call batches its own reads."""
+    cache = db.info.get(_READ_CACHE)
+    return cache if isinstance(cache, _ReadCache) else _ReadCache()
+
+
+async def _load_states(
+    db: AsyncSession, cache: _ReadCache, keys: Iterable[str], profile: str
+) -> None:
+    missing = sorted({key for key in keys if (key, profile) not in cache.states})
+    if not missing:
+        return
+    rows = await db.scalars(
+        select(FullMarketDatasetState).where(
+            FullMarketDatasetState.execution_profile == profile,
+            FullMarketDatasetState.dataset_key.in_(missing),
+        )
+    )
+    found = {row.dataset_key: row for row in rows}
+    for key in missing:
+        cache.states[(key, profile)] = found.get(key)
+
+
+async def _load_baselines(
+    db: AsyncSession, cache: _ReadCache, wanted: Iterable[tuple[str, str, date]]
+) -> None:
+    """The latest published baseline effective by each dataset's local today, in one read."""
+    missing = sorted({item for item in wanted if item not in cache.baselines})
+    if not missing:
+        return
+    rows = await db.scalars(
+        select(UniverseRelease)
+        .where(
+            UniverseRelease.status == "published",
+            or_(
+                *(
+                    and_(
+                        UniverseRelease.dataset_key == key,
+                        UniverseRelease.provider == provider,
+                        UniverseRelease.effective_date <= today,
+                    )
+                    for key, provider, today in missing
+                )
+            ),
+        )
+        .order_by(
+            UniverseRelease.dataset_key,
+            UniverseRelease.provider,
+            UniverseRelease.effective_date.desc(),
+            UniverseRelease.created_at.desc(),
+        )
+        .distinct(UniverseRelease.dataset_key, UniverseRelease.provider)
+    )
+    found = {(row.dataset_key, row.provider): row for row in rows}
+    for key, provider, today in missing:
+        cache.baselines[(key, provider, today)] = found.get((key, provider))
+
+
+async def _load_calendars(
+    db: AsyncSession, cache: _ReadCache, wanted: Iterable[tuple[str, int]]
+) -> None:
+    """Each market-year's complete published revision, scoped per market-year, in one read."""
+    missing = sorted({item for item in wanted if item not in cache.calendars})
+    if not missing:
+        return
+    rows = await db.scalars(
+        select(CalendarYearRevision).where(
+            or_(
+                *(
+                    and_(
+                        CalendarYearRevision.market == calendar_market,
+                        CalendarYearRevision.year == year,
+                        CalendarYearRevision.id.in_(
+                            complete_published_revision_ids(market=calendar_market, year=year)
+                        ),
+                    )
+                    for calendar_market, year in missing
+                )
+            )
+        )
+    )
+    found: dict[tuple[str, int], CalendarYearRevision] = {}
+    for row in rows:
+        found.setdefault((row.market, row.year), row)
+    for item in missing:
+        cache.calendars[item] = found.get(item)
+
+
+async def _load_eligibility_inputs(
+    db: AsyncSession,
+    cache: _ReadCache,
+    pairs: Iterable[tuple[str, DatasetRegistry]],
+    profile: str,
+) -> None:
+    pairs = list(pairs)
+    await _load_states(db, cache, (dataset.dataset_key for _, dataset in pairs), profile)
+    todays = [(provider, dataset, local_today(dataset)) for provider, dataset in pairs]
+    await _load_baselines(
+        db, cache, ((dataset.dataset_key, provider, today) for provider, dataset, today in todays)
+    )
+    await _load_calendars(
+        db, cache, ((market(dataset), today.year) for _, dataset, today in todays)
+    )
+
+
 async def eligibility(
     db: AsyncSession,
     provider: str,
@@ -257,6 +397,10 @@ async def eligibility(
     profile: ExecutionProfile = "full_market",
 ) -> dict:
     settings = get_settings()
+    cache = _cache(db)
+    await _load_eligibility_inputs(
+        db, cache, ((provider, dataset) for dataset in datasets), profile
+    )
     blockers = []
     ready = []
     feeds = []
@@ -264,35 +408,11 @@ async def eligibility(
     for dataset in datasets:
         reasons: list[str] = []
         today = local_today(dataset)
-        state = await db.get(
-            FullMarketDatasetState,
-            {"dataset_key": dataset.dataset_key, "execution_profile": profile},
-        )
-        baseline = await db.scalar(
-            select(UniverseRelease)
-            .where(
-                UniverseRelease.dataset_key == dataset.dataset_key,
-                UniverseRelease.provider == provider,
-                UniverseRelease.status == "published",
-                UniverseRelease.effective_date <= today,
-            )
-            .order_by(UniverseRelease.effective_date.desc(), UniverseRelease.created_at.desc())
-            .limit(1)
-        )
+        state = cache.states.get((dataset.dataset_key, profile))
+        baseline = cache.baselines.get((dataset.dataset_key, provider, today))
         if baseline is None:
             reasons.append("full_market_baseline_missing")
-        calendar_market = market(dataset)
-        calendar = await db.scalar(
-            select(CalendarYearRevision)
-            .where(
-                CalendarYearRevision.market == calendar_market,
-                CalendarYearRevision.year == today.year,
-                CalendarYearRevision.id.in_(
-                    complete_published_revision_ids(market=calendar_market, year=today.year)
-                ),
-            )
-            .limit(1)
-        )
+        calendar = cache.calendars.get((market(dataset), today.year))
         feed_blockers.update(reasons)
         info = {
             "dataset_key": dataset.dataset_key,
@@ -395,6 +515,72 @@ def _valid_source_binding(client: SourceClient | None, provider: str) -> bool:
     return set(client.allowed_datasets) <= set(PROVIDER_DATASET_SCOPE.get(provider, ()))
 
 
+async def _load_admissions(db: AsyncSession, cache: _ReadCache, keys: Iterable[str]) -> None:
+    """Each scheduler's latest admission and its admitted datasets, in two reads."""
+    missing = sorted({key for key in keys if key not in cache.admissions})
+    if not missing:
+        return
+    latest = {
+        row.scheduler_key: row
+        for row in await db.scalars(
+            select(FullMarketAdmission)
+            .where(FullMarketAdmission.scheduler_key.in_(missing))
+            .order_by(
+                FullMarketAdmission.scheduler_key, FullMarketAdmission.control_revision.desc()
+            )
+            .distinct(FullMarketAdmission.scheduler_key)
+        )
+    }
+    scopes: dict[UUID, list[str]] = {row.admission_id: [] for row in latest.values()}
+    if scopes:
+        for admission_id, dataset_key in (
+            await db.execute(
+                select(FullMarketAdmissionFeed.admission_id, FullMarketAdmissionFeed.dataset_key)
+                .where(FullMarketAdmissionFeed.admission_id.in_(scopes))
+                .order_by(FullMarketAdmissionFeed.dataset_key)
+            )
+        ).all():
+            scopes[admission_id].append(dataset_key)
+    for key in missing:
+        admission = latest.get(key)
+        cache.admissions[key] = (admission, scopes[admission.admission_id] if admission else [])
+
+
+async def _load_datasets(db: AsyncSession, cache: _ReadCache, keys: Iterable[str]) -> None:
+    missing = sorted({key for key in keys if key not in cache.datasets})
+    if missing:
+        for row in await db.scalars(
+            select(DatasetRegistry).where(DatasetRegistry.dataset_key.in_(missing))
+        ):
+            cache.datasets[row.dataset_key] = row
+
+
+async def prefetch_admission(
+    db: AsyncSession, providers: Iterable[str], *, profile: ExecutionProfile = "full_market"
+) -> None:
+    """Load every input the providers' admission projections need, in a fixed number of reads.
+
+    Within `admission_read_cache` later `admission_projection` and `eligibility`
+    calls for these providers then issue no statements of their own.
+    """
+    cache = _cache(db)
+    providers = sorted(set(providers))
+    scopes = {provider: PROVIDER_DATASET_SCOPE.get(provider, ()) for provider in providers}
+    await _load_admissions(db, cache, (scheduler_key(provider, profile) for provider in providers))
+    await _load_datasets(db, cache, (key for keys in scopes.values() for key in keys))
+    await _load_eligibility_inputs(
+        db,
+        cache,
+        (
+            (provider, cache.datasets[key])
+            for provider, keys in scopes.items()
+            for key in keys
+            if key in cache.datasets
+        ),
+        profile,
+    )
+
+
 async def admission_projection(
     db: AsyncSession,
     provider: str,
@@ -403,37 +589,22 @@ async def admission_projection(
     profile: ExecutionProfile = "full_market",
 ) -> dict:
     key = scheduler_key(provider, profile)
+    cache = _cache(db)
     control = await db.get(SchedulerControl, key)
-    admission = await db.scalar(
-        select(FullMarketAdmission)
-        .where(FullMarketAdmission.scheduler_key == key)
-        .order_by(FullMarketAdmission.control_revision.desc())
-        .limit(1)
-    )
-    scope = []
-    first_dates = {}
-    if admission:
-        scope = list(
-            (
-                await db.scalars(
-                    select(FullMarketAdmissionFeed.dataset_key)
-                    .where(FullMarketAdmissionFeed.admission_id == admission.admission_id)
-                    .order_by(FullMarketAdmissionFeed.dataset_key)
-                )
-            ).all()
-        )
-    states = await db.scalars(
-        select(FullMarketDatasetState).where(
-            FullMarketDatasetState.execution_profile == profile,
-            FullMarketDatasetState.dataset_key.in_(PROVIDER_DATASET_SCOPE.get(provider, ())),
-        )
-    )
-    first_dates = {state.dataset_key: state.first_start_date.isoformat() for state in states}
-    datasets = list(
-        (
-            await db.scalars(select(DatasetRegistry).where(DatasetRegistry.dataset_key.in_(scope)))
-        ).all()
-    )
+    await _load_admissions(db, cache, [key])
+    admission, scope = cache.admissions[key]
+    scope = list(scope)
+    provider_scope = PROVIDER_DATASET_SCOPE.get(provider, ())
+    await _load_states(db, cache, provider_scope, profile)
+    first_dates = {
+        dataset_key: state.first_start_date.isoformat()
+        for dataset_key in sorted(provider_scope)
+        if (state := cache.states.get((dataset_key, profile))) is not None
+    }
+    await _load_datasets(db, cache, scope)
+    datasets = [
+        cache.datasets[dataset_key] for dataset_key in scope if dataset_key in cache.datasets
+    ]
     result = await acquisition_eligibility(db, provider, datasets, profile=profile)
     allowed = bool(
         control

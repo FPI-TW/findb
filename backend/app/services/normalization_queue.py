@@ -655,11 +655,23 @@ async def execute_normalization(
         await engine.dispose()
 
 
+# Job states the health view counts; completed history is never counted.
+QUEUE_HEALTH_STATUSES = ("queued", "retrying", "processing", "failed")
+# The outbox only moves pending -> publishing -> published.
+UNPUBLISHED_OUTBOX_STATUSES = ("pending", "publishing")
+
+
 async def queue_health(session: AsyncSession) -> dict:
-    """Return DB-authoritative queue health for the Admin API."""
+    """Return DB-authoritative queue health for the Admin API.
+
+    Polled every minute, so every statement reads an index range bounded by
+    pending or failed work, never the whole history of completed jobs, runs or
+    published outbox rows.
+    """
     now = utc_now()
     counts_result = await session.execute(
         select(NormalizationJob.status, func.count())
+        .where(NormalizationJob.status.in_(QUEUE_HEALTH_STATUSES))
         .group_by(NormalizationJob.status)
         .order_by(NormalizationJob.status)
     )
@@ -672,11 +684,11 @@ async def queue_health(session: AsyncSession) -> dict:
     unpublished = await session.scalar(
         select(func.count())
         .select_from(NormalizationOutbox)
-        .where(NormalizationOutbox.status != "published")
+        .where(NormalizationOutbox.status.in_(UNPUBLISHED_OUTBOX_STATUSES))
     )
     oldest_outbox_at = await session.scalar(
         select(func.min(NormalizationOutbox.created_at)).where(
-            NormalizationOutbox.status != "published"
+            NormalizationOutbox.status.in_(UNPUBLISHED_OUTBOX_STATUSES)
         )
     )
     heartbeat = await session.scalar(select(func.max(NormalizationWorkerHeartbeat.last_seen_at)))

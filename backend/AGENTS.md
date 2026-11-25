@@ -28,6 +28,22 @@ Admin負責已認證的營運、修正與治理操作。
 - 保持versioned contract ingest與rerun的idempotency行為。
 - Error payload不得洩漏secret、internal trace或敏感設定；不得繞過受保護endpoint的認證。
 
+### Admin 讀取的查詢預算
+
+Dashboard 每 60 秒輪詢的 Admin 讀取，成本會乘上輪詢次數，曾讓概況頁每次重新整理要 300 條以上 SQL。
+
+- 輪詢或列表用的 Admin GET 只讀已存的投影或計數，例如 `DailyDeliveryPlanSummary`、分區計數、
+  `missing_delivery_alert`。不得呼叫 `reconcile_plan`、`classify_plan` 重新分類整個計畫；
+  只有使用者點開單一計畫的明細才可以按需分類。
+- SQL 條數不得隨列數、日數、成員數或 scheduler 數成長：不可以在迴圈內逐列查詢。要先批次載入，
+  例如用 `IN`／`tuple_().in_()`、`VALUES` join、`DISTINCT ON`，再在記憶體中組合。
+  需要 admission 或 eligibility 的讀取，先開 `admission_read_cache` 並呼叫 `prefetch_admission`；
+  寫入路徑不得開這個快取。
+- 列表回應不得內嵌無上限的巢狀陣列，例如每列附全部成員、items 或 evidence；明細改為另一支分頁 API。
+- 每個 Dashboard 會輪詢的 Admin GET 都要有 query budget 測試：用 `tests/query_budget.py` 的
+  `count_statements` 量測小資料與大資料各一次，以 `assert_within_budget` 要求兩者條數相同，
+  且不超過上限（範例見 `tests/test_admin_overview_query_budget.py`）。
+
 ### 驗證
 
 - 依變更範圍更新`tests/test_source_routes.py`、`test_canonical_ingest_api.py`、

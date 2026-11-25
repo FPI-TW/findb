@@ -5,14 +5,20 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import AdminPrincipal
 from app.config import get_settings
 from app.execution_profiles import unified_scheduler
-from app.models.registry import AdminAuditEvent, FullMarketAdmission, SchedulerControl
+from app.models.registry import (
+    AdminAuditEvent,
+    DatasetRegistry,
+    FullMarketAdmission,
+    SchedulerControl,
+    SchedulerDataset,
+)
 from app.services.admin_audit import record_admin_audit
 from app.services.feed_schedule import feed_schedule_view
 from app.services.scheduler_start import scheduler_start_blockers, scheduler_start_datasets
@@ -359,31 +365,39 @@ def present_scheduler_control(
 
 
 async def present_admin_scheduler_control(
-    db: AsyncSession, row: SchedulerControl
+    db: AsyncSession,
+    row: SchedulerControl,
+    *,
+    datasets: list[DatasetRegistry] | None = None,
+    running_since: datetime | None = None,
+    running_since_known: bool = False,
 ) -> dict[str, Any]:
-    """Add current authoritative start eligibility without changing Source poll shape."""
-    blockers = await scheduler_start_blockers(db, row, scheduler_dataset_keys(row))
+    """Add current authoritative start eligibility without changing Source poll shape.
+
+    A list read passes `datasets` and `running_since` it loaded for every row at
+    once; a single read loads them itself.
+    """
+    if datasets is None:
+        datasets = await scheduler_start_datasets(db, row.scheduler_key)
+    blockers = await scheduler_start_blockers(db, row, scheduler_dataset_keys(row), datasets)
     from app.services.full_market_admission import admission_projection, eligibility
 
     projection: dict[str, Any] = {}
     if unified_scheduler(row.scheduler_key):
         # The admission frozen by the current stopped-to-running revision marks
         # when the Owner started it; Dashboard uses it as the first-cycle grace.
-        running_since = (
-            await db.scalar(
-                select(FullMarketAdmission.created_at).where(
-                    FullMarketAdmission.scheduler_key == row.scheduler_key,
-                    FullMarketAdmission.control_revision == row.revision,
+        if not running_since_known:
+            running_since = (
+                await db.scalar(
+                    select(FullMarketAdmission.created_at).where(
+                        FullMarketAdmission.scheduler_key == row.scheduler_key,
+                        FullMarketAdmission.control_revision == row.revision,
+                    )
                 )
+                if row.desired_state == "running"
+                else None
             )
-            if row.desired_state == "running"
-            else None
-        )
-        result = await eligibility(
-            db,
-            row.provider,
-            await scheduler_start_datasets(db, row.scheduler_key),
-        )
+        result = await eligibility(db, row.provider, datasets)
         projection = {
             **await admission_projection(db, row.provider),
             "feed_readiness": result["feeds"],
@@ -397,6 +411,64 @@ async def present_admin_scheduler_control(
         "start_blockers": blockers,
         "expected_cycle_interval_seconds": get_settings().SCHEDULER_EXPECTED_CYCLE_INTERVAL_SECONDS,
     }
+
+
+async def present_admin_scheduler_controls(
+    db: AsyncSession, rows: list[SchedulerControl]
+) -> list[dict[str, Any]]:
+    """Shape every scheduler with a fixed number of reads, however many there are."""
+    from app.services.full_market_admission import admission_read_cache, prefetch_admission
+
+    keys = [row.scheduler_key for row in rows]
+    datasets: dict[str, list[DatasetRegistry]] = {key: [] for key in keys}
+    if keys:
+        for scheduler_key, dataset in (
+            await db.execute(
+                select(SchedulerDataset.scheduler_key, DatasetRegistry)
+                .join(DatasetRegistry, DatasetRegistry.dataset_key == SchedulerDataset.dataset_key)
+                .where(SchedulerDataset.scheduler_key.in_(keys))
+                .order_by(SchedulerDataset.scheduler_key, DatasetRegistry.dataset_key)
+                .execution_options(populate_existing=True)
+            )
+        ).all():
+            datasets[scheduler_key].append(dataset)
+    running = [
+        row
+        for row in rows
+        if unified_scheduler(row.scheduler_key) and row.desired_state == "running"
+    ]
+    started: dict[tuple[str, int], datetime] = {}
+    if running:
+        started = {
+            (key, revision): created_at
+            for key, revision, created_at in (
+                await db.execute(
+                    select(
+                        FullMarketAdmission.scheduler_key,
+                        FullMarketAdmission.control_revision,
+                        FullMarketAdmission.created_at,
+                    ).where(
+                        tuple_(
+                            FullMarketAdmission.scheduler_key, FullMarketAdmission.control_revision
+                        ).in_([(row.scheduler_key, row.revision) for row in running])
+                    )
+                )
+            ).all()
+        }
+    with admission_read_cache(db):
+        await prefetch_admission(
+            db, (row.provider for row in rows if unified_scheduler(row.scheduler_key))
+        )
+        return [
+            await present_admin_scheduler_control(
+                db,
+                row,
+                datasets=datasets[row.scheduler_key],
+                running_since=started.get((row.scheduler_key, row.revision)),
+                running_since_known=True,
+            )
+            for row in rows
+        ]
 
 
 __all__ = [
@@ -413,6 +485,7 @@ __all__ = [
     "poll_scheduler_control",
     "present_scheduler_control",
     "present_admin_scheduler_control",
+    "present_admin_scheduler_controls",
     "scheduler_dataset_keys",
     "update_scheduler_desired_state",
 ]

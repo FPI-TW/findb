@@ -232,6 +232,7 @@ from app.services.scheduler_control import (
     SchedulerControlStartBlockedError,
     list_scheduler_controls,
     present_admin_scheduler_control,
+    present_admin_scheduler_controls,
     update_scheduler_desired_state,
 )
 from app.services.security_events import record_admin_session_revoked
@@ -775,12 +776,15 @@ async def list_schedulers(
     db: AsyncSession = Depends(get_db),
 ):
     """List durable scheduler state for Dashboard and operations tooling."""
-    rows = await list_scheduler_controls(db)
+    rows = [
+        row
+        for row in await list_scheduler_controls(db)
+        if execution_profile is None or unified_scheduler(row.scheduler_key)
+    ]
     return SchedulerControlListResponse(
         data=[
-            SchedulerControlResponse(**await present_admin_scheduler_control(db, row))
-            for row in rows
-            if execution_profile is None or unified_scheduler(row.scheduler_key)
+            SchedulerControlResponse(**item)
+            for item in await present_admin_scheduler_controls(db, rows)
         ]
     )
 

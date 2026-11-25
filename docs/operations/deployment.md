@@ -1078,6 +1078,14 @@ market freshness 與未列名單標的的讀取都以這個欄位 join `daily_de
 writers 後執行 migration 的部署程序即可。Downgrade 只移除索引，不改資料；與所有 migration 相同，回退到舊
 Backend image 前必須先 downgrade 到 `64da893e5e78`。
 
+## ingestion_run 的重試耗盡索引
+
+Migration `208a9707fe3f` 只新增部分索引 `idx_run_retry_exhausted`（`ingestion_run.failure_code`，
+條件 `failure_code = 'RETRY_EXHAUSTED'`）。Dashboard 每分鐘輪詢 queue health 時要計算重試耗盡的 run，
+沒有索引時每次都整表掃描（2026-11-25 production 約 37 萬列，每次約 0.3 秒）。索引只包含這類少數 run，
+建立很快，沿用停止 writers 後執行 migration 的部署程序即可。Downgrade 只移除索引、不改資料；與所有
+migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `c7e9a1b3d5f8`。
+
 ## Backend 與 Fetcher 的 feed 目錄版本落差
 
 Backend 與 Fetcher 分開部署，替既有 provider 新增或移除 feed 時，兩邊的 catalog 會有一段時間不同。
