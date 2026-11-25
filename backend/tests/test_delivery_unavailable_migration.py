@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from app.utils import uuid7
 from tests.migration_database import get_active_migration_database_factory, run_alembic
 
-BEFORE = "64da893e5e78"
+BEFORE = "1587769858c0"
 UNAVAILABLE = "c7e9a1b3d5f8"
 
 
