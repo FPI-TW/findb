@@ -96,6 +96,7 @@ SUPPORTED_ACTIVE_SCOPES = frozenset(
         ("market_eod", "HK", "equity"),
         ("market_eod", "US", "index"),
         ("market_eod", "HK", "index"),
+        ("market_eod", "TW", "index"),
         ("futures_eod", "TW", "future"),
         ("market_minute", "TW", "equity"),
         ("market_minute", "TW", "etf"),

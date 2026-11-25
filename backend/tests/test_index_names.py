@@ -113,6 +113,11 @@ def test_every_fmp_index_has_a_display_name():
     assert index_name("us", " ^gspc ") == "S&P 500 指數"
 
 
+def test_official_tw_indices_have_display_names():
+    assert index_name("TW", "^TWII") == "發行量加權股價指數"
+    assert index_name("tw", "^twoii") == "櫃買指數"
+
+
 async def test_a_new_index_instrument_takes_its_display_name(test_session, index_dataset):
     await _write(test_session, _row("^GSPC"), _row("DX-Y.NYB"), _row("^UNLISTED"))
     assert await _names(test_session) == {

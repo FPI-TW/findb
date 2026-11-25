@@ -233,6 +233,7 @@
       },
       "historical_cohort": "dated_release",
       "historical_requests_per_date": "per_member",
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": false
@@ -278,6 +279,7 @@
       "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 1,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": false
@@ -363,6 +365,7 @@
       },
       "historical_cohort": "dated_release",
       "historical_requests_per_date": 5,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "deliver",
       "calendar_required": false
@@ -407,6 +410,7 @@
       "historical_execution": null,
       "historical_cohort": "dated_release",
       "historical_requests_per_date": 5,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "deliver",
       "calendar_required": false
@@ -451,6 +455,7 @@
       "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": false
@@ -495,6 +500,7 @@
       "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": false
@@ -539,6 +545,7 @@
       "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": false
@@ -583,6 +590,7 @@
       "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": false
@@ -627,6 +635,7 @@
       "historical_execution": null,
       "historical_cohort": "daily_report",
       "historical_requests_per_date": 5,
+      "historical_lookback_days": null,
       "universe_mode": "dated",
       "unlisted_symbols": "none",
       "calendar_required": false
@@ -671,6 +680,7 @@
       "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 2,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": false
@@ -715,6 +725,7 @@
       "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 3,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": true
@@ -759,6 +770,7 @@
       "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 72,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": true
@@ -803,6 +815,7 @@
       "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 1,
+      "historical_lookback_days": null,
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": true
