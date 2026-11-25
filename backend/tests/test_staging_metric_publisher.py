@@ -544,3 +544,146 @@ def test_dlm_policy_health_requires_enabled_state_and_status(
     assert metrics == [
         module._metric("DLMPolicyHealthy", 1, "Count", "findb", "policy-0123456789abcdef0")
     ]
+
+
+def _checkpoint(path: Path, diagnostics: list[tuple[str, float]]) -> None:
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute(
+            "CREATE TABLE full_work_diagnostic (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, "
+            "provider TEXT NOT NULL, category TEXT NOT NULL, http_status INTEGER, "
+            "provider_code INTEGER, dispatched INTEGER, observed_at REAL NOT NULL)"
+        )
+        db.executemany(
+            "INSERT INTO full_work_diagnostic(key,provider,category,observed_at) VALUES('k','p',?,?)",
+            diagnostics,
+        )
+    db.close()
+
+
+def _local_state_layout(
+    module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    full = tmp_path / "full-market" / "staging"
+    history = tmp_path / "taifex-historical"
+    monkeypatch.setattr(module, "ACCOUNT_STATE_ROOT", str(tmp_path / "account"))
+    monkeypatch.setattr(module, "FULL_MARKET_STATE_DIRS", {"staging": str(full)})
+    monkeypatch.setattr(
+        module,
+        "HISTORICAL_STATE_DIRS",
+        {"taifex": str(history), "fmp": str(tmp_path / "fmp-historical")},
+    )
+    return full
+
+
+def test_local_state_metrics_report_the_largest_file_and_recent_sqlite_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_module()
+    full = _local_state_layout(module, tmp_path, monkeypatch)
+    now = 1_795_000_000.0
+    monkeypatch.setattr(module.time, "time", Mock(return_value=now))
+    account = tmp_path / "account" / "staging"
+    account.mkdir(parents=True)
+    (account / "governor.sqlite3").write_bytes(b"g" * 100_000)
+    (account / "provider-work-fmp.sqlite3").write_bytes(b"j" * 60_000)
+    # A write-ahead log not yet checkpointed counts with its file.
+    (account / "provider-work-fmp.sqlite3-wal").write_bytes(b"w" * 50_000)
+    _checkpoint(
+        full / "state-fmp.sqlite3",
+        [
+            ("local_state_busy", now - 30),
+            ("local_state_busy", now - 590),
+            ("local_state_busy", now - 900),  # outside the window
+            ("exception:OperationalError", now - 60),
+            ("source_error", now - 60),
+        ],
+    )
+    # The host-wide checkpoint only drains; its old rows are outside the window.
+    _checkpoint(full / "state.sqlite3", [("exception:OperationalError", now - 86_400)])
+    # A split set aside by a rolled-back deploy is never read.
+    (full / "state-hkex.sqlite3.unused-20261125T000000Z").write_bytes(b"u" * 900_000)
+    _checkpoint(
+        tmp_path / "taifex-historical" / "state.sqlite3", [("exception:DatabaseError", now)]
+    )
+
+    metrics, errors = module._local_state_metrics("staging")
+
+    assert errors == []
+    assert metrics == [
+        module._metric("LocalStateLargestFileBytes", 110_000, "Bytes", "fetcher", "local-state"),
+        module._metric("LocalStateBusyDiagnostics", 2, "Count", "fetcher", "local-state"),
+        module._metric("LocalStateErrorDiagnostics", 2, "Count", "fetcher", "local-state"),
+    ]
+
+
+def test_local_state_diagnostics_read_only_the_newest_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_module()
+    full = _local_state_layout(module, tmp_path, monkeypatch)
+    now = 1_795_000_000.0
+    monkeypatch.setattr(module.time, "time", Mock(return_value=now))
+    monkeypatch.setattr(module, "LOCAL_STATE_DIAGNOSTIC_ROWS", 3)
+    _checkpoint(full / "state-finlab.sqlite3", [("local_state_busy", now)] * 5)
+
+    metrics, errors = module._local_state_metrics("staging")
+
+    assert errors == []
+    assert metrics[1] == module._metric(
+        "LocalStateBusyDiagnostics", 3, "Count", "fetcher", "local-state"
+    )
+
+
+def test_local_state_metrics_never_write_the_checkpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    module = _load_module()
+    full = _local_state_layout(module, tmp_path, monkeypatch)
+    checkpoint = full / "state-finlab.sqlite3"
+    _checkpoint(checkpoint, [("local_state_busy", 1.0)])
+    before = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+
+    module._local_state_metrics("staging")
+
+    assert hashlib.sha256(checkpoint.read_bytes()).hexdigest() == before
+
+
+def test_an_unreadable_checkpoint_fails_the_collector_but_keeps_the_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_module()
+    full = _local_state_layout(module, tmp_path, monkeypatch)
+    full.mkdir(parents=True)
+    (full / "state-fmp.sqlite3").write_bytes(b"not a database" * 100)
+
+    metrics, errors = module._local_state_metrics("staging")
+
+    assert errors == ["local state diagnostics query failed"]
+    assert metrics == [
+        module._metric("LocalStateLargestFileBytes", 1400, "Bytes", "fetcher", "local-state")
+    ]
+
+
+def test_fetcher_collector_includes_local_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    monkeypatch.setattr(module, "_filesystem_metrics", Mock(return_value=[]))
+    monkeypatch.setattr(module, "_container_metrics", Mock(return_value=([], [])))
+    monkeypatch.setattr(module, "_fetcher_runtime_security_metrics", Mock(return_value=([], [])))
+    local = module._metric("LocalStateBusyDiagnostics", 0, "Count", "fetcher", "local-state")
+    monkeypatch.setattr(
+        module, "_local_state_metrics", Mock(return_value=([local], ["local failed"]))
+    )
+
+    metrics, errors = module.collect_metrics(
+        "fetcher", "ap-southeast-1", "fin-db", "policy-0123456789abcdef0", "x", "production"
+    )
+
+    module._local_state_metrics.assert_called_once_with("production")
+    assert errors == ["local failed"]
+    assert metrics == [local, module._metric("CollectorSuccess", 0, "Count", "fetcher", "host")]
