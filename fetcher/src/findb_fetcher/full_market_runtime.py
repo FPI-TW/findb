@@ -55,6 +55,7 @@ from findb_fetcher.full_market_errors import (
 )
 from findb_fetcher.full_market_errors import retryable_http_status as _retryable_http_status
 from findb_fetcher.full_market_state import (
+    FULL_WORK_FAILURE_BREAKER,
     FULL_WORK_MAX_ATTEMPTS,
     FULL_WORK_NO_DATA_BREAKER,
     FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS,
@@ -357,6 +358,15 @@ def _governed(method):
             return method(self, *args, **kwargs)
 
     return run
+
+
+def _network_failure(exc: BaseException) -> bool:
+    """A transport failure to the provider or to Source, raw or as a client wraps it."""
+    return (
+        isinstance(exc, (httpx.TransportError, SourceAPITransportError))
+        or getattr(exc, "category", None) == "transport"
+        or isinstance(exc.__cause__, httpx.TransportError)
+    )
 
 
 def only_mapping_gaps(plan: dict[str, Any]) -> list[str] | None:
@@ -2136,6 +2146,8 @@ class FullMarketRuntime:
         ordered = ordered[offset:] + ordered[:offset]
         calendar_checked = False
         no_data_streak = 0
+        # Members failing in a row for a reason that may not be their own.
+        failure_streak = 0
         # Once this pass sees acquisition closed (stopped, suspended or outside the
         # window) it stays closed: unprepared members are skipped without a restore
         # probe or another gate RPC each. Locally prepared bodies still deliver;
@@ -2235,7 +2247,7 @@ class FullMarketRuntime:
                     requests = self._acquire(
                         member, plan, part, release, feed, *([candidates] if candidates else [])
                     )
-                    no_data_streak = 0
+                    no_data_streak = failure_streak = 0
                     self.state.clear_no_data_trips(plan["plan_id"])
                     self.state.clear_provider_outage(plan["plan_id"])
                     if not requests:
@@ -2389,7 +2401,11 @@ class FullMarketRuntime:
                     reason="source_rejected",
                     now=time.time(),
                 )
-
+                if exc.status_code in {409, 422}:
+                    # Source refused this member's body; the others are judged on their own.
+                    failure_streak += 1
+                    if failure_streak < FULL_WORK_FAILURE_BREAKER:
+                        continue
                 return False
             except Exception as exc:
                 if isinstance(exc, FullMarketProtocolError) and exc.code == "PROVIDER_WORK_FENCE":
@@ -2456,14 +2472,32 @@ class FullMarketRuntime:
                             publication_pending = publication_pending or pending
                             continue
                         raise pending from None
+                    if self.adapter.publication_per_member:
+                        # Only this member was never published: it does not hold the plan.
+                        self.state.finish(key, status="manual", reason="member_not_published")
+                        continue
                     self.state.finish(
                         key,
                         status="manual",
                         reason="target_not_ready",
                     )
-                    if self.adapter.publication_per_member:
-                        continue
                     return False
+                if (
+                    failure.wait is None
+                    and failure.kind is FailureKind.MEMBER
+                    and not failure.no_data
+                ):
+                    # Deterministic for this member alone (e.g. outside the plan's
+                    # coverage): retrying cannot change it, and the others go on.
+                    self.source.outcome(
+                        plan["plan_id"],
+                        work_item_id=part["work_item_id"],
+                        member_key=member_key,
+                        reason=failure.reason,
+                    )
+                    self.state.finish(key, status="manual", reason="member_unavailable")
+                    self._record_diagnostic(key, exc)
+                    continue
                 if failure.wait is None and failure.kind in {
                     FailureKind.MEMBER,
                     FailureKind.QUOTA_WAIT,
@@ -2492,6 +2526,13 @@ class FullMarketRuntime:
                             plan["plan_id"],
                             until=time.time() + FULL_WORK_NO_DATA_BREAKER_HOLD_SECONDS,
                         )
+                        return False
+                    if failure.kind is FailureKind.ROUND_RETRY and not _network_failure(exc):
+                        # One member's failure keeps its own retries; a run of them
+                        # points at the provider and stops the round.
+                        failure_streak += 1
+                        if failure_streak < FULL_WORK_FAILURE_BREAKER:
+                            continue
                     return False
                 if failure.wait == "outage":
                     # One shared report serves every member: an outage keeps the
@@ -2535,6 +2576,15 @@ class FullMarketRuntime:
                 self.state.stage_source_error(key)
                 self._record_diagnostic(key, exc)
                 self._report_source_error(plan, part, member_key, key)
+                if _network_failure(exc):
+                    # The network to the provider or to Source failed: that is no
+                    # member's own, and an acknowledgement may be lost, so stop here.
+                    return False
+                # An unclassified failure of one member keeps its own retries; a run
+                # of them may be the provider's or this code's, and stops the round.
+                failure_streak += 1
+                if failure_streak < FULL_WORK_FAILURE_BREAKER:
+                    continue
                 return False
 
         if publication_pending is not None:

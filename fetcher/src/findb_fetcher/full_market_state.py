@@ -29,6 +29,9 @@ FULL_WORK_MAX_ATTEMPTS = 5
 # Consecutive no-data members that stop a round: past this it is unlikely to be per symbol.
 # Also the acquired members that prove the date is open and the provider is serving it.
 FULL_WORK_NO_DATA_BREAKER = 20
+# Consecutive members failing for a reason that may be the provider's or Source's
+# own: past this the round stops rather than charge every member the same failure.
+FULL_WORK_FAILURE_BREAKER = 3
 # A symbol's end-of-day row can publish hours later than the rest, so its retries span hours.
 # The wait after each completed round that leads to another regular round. A round ends once
 # every no-data member has been fetched in it.
@@ -50,6 +53,7 @@ _FAILURE_REASONS = (
     "normalization_failed",
     "mapping_gap",
     "member_unavailable",
+    "member_not_published",
     "retry_exhausted",
     "empty_response",
     "unknown_dispatch",
@@ -939,15 +943,16 @@ class FullMarketState:
     def has_blocking_manual(self, plan_id: str) -> bool:
         """Whether a manual member needs review before the rest of the plan may continue.
 
-        A mapping gap, a symbol out of no-data retries or a member whose own values
-        are unusable concerns only that member, and so does any other no-data reply
+        A mapping gap, a symbol out of no-data retries, a member whose own values
+        are unusable or a member-published one never published concerns only that member, and so does any other no-data reply
         until the breaker keeps tripping with no data in between. Any other manual reason may be systemic, so it still ends the
         plan at once.
         """
         with self.connection() as db:
             manual = db.execute(
                 "SELECT 1 FROM full_work WHERE plan_id=? AND status='manual' "
-                "AND COALESCE(reason,'') NOT IN ('mapping_gap','no_data_exhausted','member_unavailable') LIMIT 1",
+                "AND COALESCE(reason,'') NOT IN ('mapping_gap','no_data_exhausted','member_unavailable',"
+                "'member_not_published') LIMIT 1",
                 (plan_id,),
             ).fetchone()
             trips = db.execute(

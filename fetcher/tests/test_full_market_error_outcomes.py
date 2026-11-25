@@ -69,7 +69,7 @@ def test_fence_failure_is_never_reported_as_provider_source_error(tmp_path):
 
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab", "taifex"])
 @pytest.mark.parametrize("network", [False, True])
-def test_generic_failure_reports_source_error_and_stops_before_next_member(
+def test_generic_failure_reports_source_error_and_only_a_network_failure_stops_the_round(
     tmp_path, provider, network
 ):
     runtime, source, _ = _runtime(tmp_path, provider=provider)
@@ -90,16 +90,24 @@ def test_generic_failure_reports_source_error_and_stops_before_next_member(
     outage = provider == "taifex" and network
     try:
         with owned_unit_work(provider, tmp_path):
-            assert not runtime._deliver_plan(
+            scanned = runtime._deliver_plan(
                 plan,
                 {"members": [_member(), {**_member(), "member_key": "MSFT"}]},
                 runtime.feeds[0],
             )
-        assert acquired == ["AAPL"]
+        # A network failure is no member's own and stops the round at once; any other
+        # failure is reported and the next member still runs (two in a row stay
+        # below the breaker).
+        stops = outage or network
+        assert scanned is not stops
+        assert acquired == (["AAPL"] if stops else ["AAPL", "MSFT"])
         assert source.outcomes == (
             []
             if outage
-            else [{"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}]
+            else [
+                {"work_item_id": "fp1:123", "member_key": key, "reason": "source_error"}
+                for key in (["AAPL"] if network else ["AAPL", "MSFT"])
+            ]
         )
         assert not runtime.state.pending_source_error_keys("p")
         assert "private SDK detail" not in json.dumps(runtime.state.plan_progress("p"))
@@ -230,7 +238,8 @@ def test_member_failure_appends_bounded_diagnostic_without_provider_text(
     try:
         with owned_unit_work(runtime.provider, tmp_path):
             scanned = runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
-        assert scanned is (error in {"no_data", "not_found"})
+        # Only one member: every failure that keeps the round going scans it to its end.
+        assert scanned is True
         assert source.outcomes == [
             {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}
         ]
@@ -1000,15 +1009,25 @@ def test_terminal_members_are_not_probed_again_in_a_tail_round(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "acquired_keys"),
     [
-        {"status_code": 503, "category": "server_error"},
-        {"status_code": 429},
-        {"status_code": 400, "provider_code": 400, "category": "invalid_symbol"},
-        {"status_code": 403, "provider_code": 403, "category": "plan_restricted"},
+        # A rate limit is the account's: the round stops at once.
+        ({"status_code": 429}, ["AAPL"]),
+        # One symbol's provider error keeps its retries and the next symbol runs.
+        ({"status_code": 503, "category": "server_error"}, ["AAPL", "MSFT"]),
+        (
+            {"status_code": 400, "provider_code": 400, "category": "invalid_symbol"},
+            ["AAPL", "MSFT"],
+        ),
+        (
+            {"status_code": 403, "provider_code": 403, "category": "plan_restricted"},
+            ["AAPL", "MSFT"],
+        ),
     ],
 )
-def test_other_provider_errors_still_stop_the_round_at_the_first_member(tmp_path, error):
+def test_only_an_account_wide_provider_error_stops_the_round_at_the_first_member(
+    tmp_path, error, acquired_keys
+):
     from findb_fetcher.providers.twelve_data import TwelveDataResponseError
 
     runtime, source, _ = _runtime(tmp_path)
@@ -1024,9 +1043,10 @@ def test_other_provider_errors_still_stop_the_round_at_the_first_member(tmp_path
     runtime.state.record_plan(plan, runtime.provider)
     try:
         with owned_unit_work(runtime.provider, tmp_path):
-            assert not runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
-        assert acquired == ["AAPL"]
-        assert len(source.outcomes) == 1
+            scanned = runtime._deliver_plan(plan, _members("AAPL", "MSFT"), runtime.feeds[0])
+        assert scanned is (len(acquired_keys) == 2)
+        assert acquired == acquired_keys
+        assert len(source.outcomes) == len(acquired_keys)
     finally:
         runtime.close()
 
@@ -1369,3 +1389,123 @@ def test_settlement_records_finished_runs_so_the_next_attempt_is_the_next_round(
         # A run still processing keeps its one-minute revisit.
         assert statuses["MSFT"][:2] == ("prepared", "normalizing")
         assert owner.delays[-1] <= 61
+
+
+def _isolation_round(tmp_path, failures):
+    """A Twelve Data round of four members; ``failures`` maps a member to its exception."""
+    runtime, source, _ = _runtime(tmp_path)
+    runtime._acquisition_allowed = lambda: True
+    acquired: list[str] = []
+
+    def acquire(member, *args):
+        acquired.append(member["member_key"])
+        failure = failures.get(member["member_key"])
+        if failure is not None:
+            raise failure
+        return []  # Served and proven without a trade: the member completes.
+
+    runtime._acquire = acquire
+    plan = _plan()
+    keys = ["AAPL", "MSFT", "NVDA", "TSLA"]
+    plan["parts"][0]["member_keys"] = keys
+    runtime.state.record_plan(plan, runtime.provider)
+    with owned_unit_work(runtime.provider, tmp_path):
+        scanned = runtime._deliver_plan(plan, _members(*keys), runtime.feeds[0])
+    with runtime.state.connection() as db:
+        rows = {
+            row["member_key"]: (row["status"], row["reason"])
+            for row in db.execute("SELECT member_key,status,reason FROM full_work")
+        }
+    return runtime, source, scanned, acquired, rows
+
+
+def test_three_failures_in_a_row_stop_the_round_and_one_success_resets_the_count(tmp_path):
+    from findb_fetcher.full_market_state import FULL_WORK_FAILURE_BREAKER
+
+    assert FULL_WORK_FAILURE_BREAKER == 3
+    boom = RuntimeError("private SDK detail")
+    runtime, source, scanned, acquired, rows = _isolation_round(
+        tmp_path, {"AAPL": boom, "MSFT": boom, "NVDA": boom}
+    )
+    try:
+        # Three unclassified failures in a row may be the provider's: TSLA waits.
+        assert scanned is False and acquired == ["AAPL", "MSFT", "NVDA"]
+        assert [o["member_key"] for o in source.outcomes] == ["AAPL", "MSFT", "NVDA"]
+        assert rows.get("TSLA", ("pending", None)) == ("pending", None)
+    finally:
+        runtime.close()
+
+    runtime, source, scanned, acquired, rows = _isolation_round(
+        tmp_path / "reset", {"AAPL": boom, "MSFT": boom, "TSLA": boom}
+    )
+    try:
+        # NVDA succeeds between them, so no run of three forms and the round completes.
+        assert scanned is True and acquired == ["AAPL", "MSFT", "NVDA", "TSLA"]
+        assert rows["NVDA"][0] == "complete"
+        assert {rows[key] for key in ("AAPL", "MSFT", "TSLA")} == {("pending", "source_error")}
+    finally:
+        runtime.close()
+
+
+def test_a_member_scoped_provider_failure_is_final_and_does_not_hold_the_plan(
+    tmp_path, monkeypatch
+):
+    from findb_fetcher.provider_adapters.base import FailureKind, ProviderFailure
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+
+    class PlanRestrictedError(RuntimeError):
+        pass
+
+    classify = TwelveDataAdapter.classify
+
+    def member_scoped(self, exc, phase):
+        if isinstance(exc, PlanRestrictedError):
+            return ProviderFailure(FailureKind.MEMBER, code="plan_restricted")
+        return classify(self, exc, phase)
+
+    monkeypatch.setattr(TwelveDataAdapter, "classify", member_scoped)
+    runtime, source, scanned, acquired, rows = _isolation_round(
+        tmp_path, {"AAPL": PlanRestrictedError(), "MSFT": PlanRestrictedError()}
+    )
+    try:
+        # Outside the plan's coverage, say: no retry can change it, and nothing else waits.
+        assert scanned is True and acquired == ["AAPL", "MSFT", "NVDA", "TSLA"]
+        assert rows["AAPL"] == rows["MSFT"] == ("manual", "member_unavailable")
+        assert [o["reason"] for o in source.outcomes] == ["source_error", "source_error"]
+        assert not runtime.state.has_blocking_manual("p")
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("status", "continues"),
+    [(409, True), (422, True), (401, False), (403, False), (503, False)],
+)
+def test_only_a_member_body_refusal_lets_the_round_continue(tmp_path, status, continues):
+    from findb_fetcher.client import SourceAPIResponseError
+
+    runtime, _, scanned, acquired, rows = _isolation_round(
+        tmp_path, {"AAPL": SourceAPIResponseError(status)}
+    )
+    try:
+        assert rows["AAPL"][1] == "source_rejected"
+        # A refused body is that member's; credentials or a Source outage are everyone's.
+        assert acquired == (["AAPL", "MSFT", "NVDA", "TSLA"] if continues else ["AAPL"])
+        assert scanned is continues
+    finally:
+        runtime.close()
+
+
+def test_only_a_member_published_providers_unpublished_member_does_not_hold_the_plan(tmp_path):
+    runtime, _, _ = _runtime(tmp_path)
+    plan = _plan()
+    plan["parts"][0]["member_keys"] = ["AAPL", "MSFT"]
+    runtime.state.record_plan(plan, runtime.provider)
+    try:
+        runtime.state.finish("fp1:123:AAPL", status="manual", reason="member_not_published")
+        assert not runtime.state.has_blocking_manual("p")
+        # A cohort-published provider's unpublished date may be the provider's own state.
+        runtime.state.finish("fp1:123:MSFT", status="manual", reason="target_not_ready")
+        assert runtime.state.has_blocking_manual("p")
+    finally:
+        runtime.close()

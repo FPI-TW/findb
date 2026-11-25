@@ -907,12 +907,12 @@ def test_a_refused_unlisted_body_is_never_drained_again(
             ("pending", "target_not_ready"),
             ("complete", "source_proven_no_trade"),
         ),
-        # Its window over, the late member turns manual and the others still run.
+        # Its window over, the late member turns manual without holding the plan.
         (
             True,
             -14401,
             ["2330", "2317"],
-            ("manual", "target_not_ready"),
+            ("manual", "member_not_published"),
             ("complete", "source_proven_no_trade"),
         ),
     ],

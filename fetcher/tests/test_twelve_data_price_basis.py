@@ -363,7 +363,7 @@ def test_full_daily_pre_basis_member_is_manual_and_others_continue(tmp_path, pre
         acquired.append(member["member_key"])
         if member["member_key"] == "AAPL":
             raise queue.ProviderWorkBasisMismatchError("response predates basis")
-        raise RuntimeError("stop after the next member")
+        raise RuntimeError("the next member fails on its own")
 
     runtime._acquire = acquire
     plan = _plan()
@@ -374,7 +374,8 @@ def test_full_daily_pre_basis_member_is_manual_and_others_continue(tmp_path, pre
     try:
         with owned_unit_work(runtime.provider, tmp_path) as owner:
             owner.journal.response(_base() + ":validated-target-v1", _encoded(old))
-            assert not runtime._deliver_plan(
+            # One member's failure no longer ends the round: both are scanned.
+            assert runtime._deliver_plan(
                 plan,
                 {"members": [_member(), {**_member(), "member_key": "MSFT"}]},
                 runtime.feeds[0],
@@ -417,10 +418,12 @@ def test_diagnostic_write_failure_never_suppresses_the_source_report(tmp_path, m
     runtime._acquire = acquire
     monkeypatch.setattr(runtime.state, "record_diagnostic", locked)
     plan = _plan()
+    plan["parts"][0]["member_keys"] = ["AAPL"]
     runtime.state.record_plan(plan, runtime.provider)
     try:
         with owned_unit_work(runtime.provider, tmp_path):
-            assert not runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
+            # The only member failed on its own: the round still scans to its end.
+            assert runtime._deliver_plan(plan, {"members": [_member()]}, runtime.feeds[0])
         assert source.outcomes == [
             {"work_item_id": "fp1:123", "member_key": "AAPL", "reason": "source_error"}
         ]
