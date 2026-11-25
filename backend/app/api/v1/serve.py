@@ -20,6 +20,7 @@ from app.api.deps import (
 )
 from app.dependencies import get_db
 from app.schemas.serve import (
+    BiasRatioListResponse,
     CalendarListResponse,
     CalendarResponse,
     DatasetListResponse,
@@ -422,6 +423,91 @@ async def get_latest_eod(
     db: AsyncSession = Depends(get_db),
 ) -> EODLatestResponse:
     return await serve_queries.latest_eod(db, instruments_raw=instruments, as_of_date=as_of_date)
+
+
+@router.get(
+    "/eod/bias-ratios",
+    response_model=BiasRatioListResponse,
+    operation_id="list_bias_ratios",
+    summary="Bias ratios (乖離率) of TW daily closes",
+    description=(
+        "Bias ratio of TW stocks, ETFs and indices: the close's distance from its simple "
+        "moving average, (close - sma) / sma * 100, for windows of 5, 10, 20, 60, 120 and 240 "
+        "stored bars. Computed on each read from unadjusted closes; nothing is stored. A value "
+        "is null with a `reason` when the window lacks history, skips open sessions of the "
+        "market calendar, or has no close. Without dates each instrument's latest bar is "
+        "answered (on or before `end_date` if given); with `start_date` every bar from it to "
+        "`end_date` (at most 366 dates) is answered. Other markets return "
+        "`DATASET_NOT_AVAILABLE`."
+    ),
+    responses=_errors(
+        {
+            404: f"{INSTRUMENT_NOT_FOUND} `details.inputs` lists the unknown values.",
+            422: (
+                f"{SELECTOR_ERRORS} {DATASET_NOT_AVAILABLE} `INVALID_WINDOWS`: a window is not "
+                f"one of 5, 10, 20, 60, 120, 240. {INVALID_DATE_RANGE} {INVALID_CURSOR}"
+            ),
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
+async def list_bias_ratios(
+    instruments: Annotated[
+        str,
+        Query(
+            description=(
+                "Comma-separated TW instruments, at most 50, each a FinDB UUID or "
+                "`MARKET:SYMBOL` (stocks, ETFs or indices such as `TW:^TWII`)."
+            ),
+            examples=["TW:2330,TW:0050"],
+        ),
+    ],
+    windows: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Comma-separated windows from 5, 10, 20, 60, 120 and 240 bars; default: all six."
+            ),
+            examples=["5,20,60"],
+        ),
+    ] = None,
+    start_date: Annotated[
+        date | None,
+        Query(
+            description=(
+                "First exchange-local trade date to answer (YYYY-MM-DD). Omit to answer only "
+                "the latest bar."
+            ),
+            examples=["2026-11-01"],
+        ),
+    ] = None,
+    end_date: Annotated[
+        date | None,
+        Query(
+            description=(
+                "Last exchange-local trade date (YYYY-MM-DD), inclusive; default: the latest "
+                "stored, or 365 days after `start_date`."
+            ),
+            examples=["2026-11-20"],
+        ),
+    ] = None,
+    order: Annotated[SortDirection, Query(description=ORDER_DESCRIPTION)] = "desc",
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
+    db: AsyncSession = Depends(get_db),
+) -> BiasRatioListResponse:
+    return await serve_queries.list_bias_ratios(
+        db,
+        instruments_raw=instruments,
+        windows_raw=windows,
+        start_date=start_date,
+        end_date=end_date,
+        order=order,
+        cursor=cursor,
+        page_size=page_size,
+    )
 
 
 @router.get(

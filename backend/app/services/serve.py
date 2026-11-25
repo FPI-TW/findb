@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import bisect
 import calendar
 import json
 import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Literal, cast
 from uuid import UUID
@@ -34,6 +35,10 @@ from app.models.canonical import (
 from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.common import PaginationInfo
 from app.schemas.serve import (
+    BIAS_RATIO_WINDOWS,
+    BiasRatioListResponse,
+    BiasRatioResponse,
+    BiasRatioValue,
     CalendarListResponse,
     CalendarResponse,
     CursorPaginationInfo,
@@ -1252,6 +1257,233 @@ async def latest_eod(
         )
     return EODLatestResponse(
         as_of_date=as_of_date, units=_eod_units(eod_pairs), data=data, missing=missing
+    )
+
+
+# Bias ratios use unadjusted closes, so they are offered only where FinDB stores
+# split-free daily series: TW stocks, ETFs and indices.
+BIAS_RATIO_SCOPES = frozenset({("TW", "equity"), ("TW", "etf"), ("TW", "index")})
+BIAS_RATIO_MAX_RANGE_DAYS = 366
+
+
+def _parse_bias_windows(raw: str | None) -> list[int]:
+    if raw is None:
+        return list(BIAS_RATIO_WINDOWS)
+    try:
+        values = {int(token.strip()) for token in raw.split(",")}
+    except ValueError:
+        values = set()
+    if not values or not values <= set(BIAS_RATIO_WINDOWS):
+        raise serve_error(
+            422,
+            "INVALID_WINDOWS",
+            f"windows must be a comma-separated subset of {','.join(map(str, BIAS_RATIO_WINDOWS))}",
+        )
+    return sorted(values)
+
+
+def _bias_values(
+    bars: list[MarketDataEOD],
+    index: int,
+    windows: list[int],
+    open_days: list[date] | None,
+    open_prefix: list[int],
+) -> list[BiasRatioValue]:
+    """Each window's average and bias for ``bars[index]``; bars ascend by date."""
+    values: list[BiasRatioValue] = []
+    latest = bars[index]
+    for window in windows:
+        first = index - window + 1
+        if first < 0:
+            values.append(BiasRatioValue(window=window, reason="insufficient_history"))
+            continue
+        span = bars[first : index + 1]
+        closes = [bar.close for bar in span]
+        if any(close is None for close in closes) or latest.close is None:
+            values.append(BiasRatioValue(window=window, reason="missing_close"))
+            continue
+        if open_days is None:
+            values.append(BiasRatioValue(window=window, reason="calendar_unavailable"))
+            continue
+        opened = bisect.bisect_right(open_days, latest.trade_date) - bisect.bisect_left(
+            open_days, span[0].trade_date
+        )
+        stored = open_prefix[index + 1] - open_prefix[first]
+        if opened != stored:
+            values.append(
+                BiasRatioValue(
+                    window=window, reason="missing_sessions", missing_sessions=opened - stored
+                )
+            )
+            continue
+        average = sum(cast(list[Decimal], closes), Decimal(0)) / window
+        if average == 0:
+            values.append(BiasRatioValue(window=window, reason="missing_close"))
+            continue
+        values.append(
+            BiasRatioValue(
+                window=window,
+                sma=average.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP),
+                bias_percent=((latest.close - average) / average * 100).quantize(
+                    Decimal("0.0001"), rounding=ROUND_HALF_UP
+                ),
+            )
+        )
+    return values
+
+
+async def list_bias_ratios(
+    db: AsyncSession,
+    *,
+    instruments_raw: str,
+    windows_raw: str | None,
+    start_date: date | None,
+    end_date: date | None,
+    order: SortDirection,
+    cursor: str | None,
+    page_size: int,
+) -> BiasRatioListResponse:
+    """Bias ratios of TW daily closes, computed from stored bars on each read."""
+    _validate_dates(start_date, end_date)
+    if start_date is not None and end_date is None:
+        end_date = start_date + timedelta(days=BIAS_RATIO_MAX_RANGE_DAYS - 1)
+    if start_date is not None and end_date is not None:
+        if (end_date - start_date).days >= BIAS_RATIO_MAX_RANGE_DAYS:
+            raise serve_error(
+                422,
+                "INVALID_DATE_RANGE",
+                f"Bias ratio range may cover at most {BIAS_RATIO_MAX_RANGE_DAYS} dates",
+            )
+    windows = _parse_bias_windows(windows_raw)
+    pairs = _pairs(await active_dataset_scopes(db), "eod") & BIAS_RATIO_SCOPES
+    if not pairs:
+        raise serve_error(
+            422, "DATASET_NOT_AVAILABLE", "Bias ratios are not available for any active dataset"
+        )
+    selectors = parse_selectors(instruments_raw, param="instruments", allow_uuid=True)
+    matched = _require_matched(await _match_selectors(db, selectors, pairs), "Bias ratios")
+    instruments = {row.instrument_id: row for row in matched}
+    ids = sorted(instruments)
+    scope = {
+        "instrument_ids": [str(value) for value in ids],
+        "windows": windows,
+        "start_date": _date_text(start_date),
+        "end_date": _date_text(end_date),
+        "order": order,
+    }
+    last_key: tuple[date, UUID] | None = None
+    if cursor:
+        payload = _decode_cursor(cursor)
+        if (
+            set(payload) != {"v", "kind", "scope", "last"}
+            or payload.get("v") != 1
+            or payload.get("kind") != "bias_ratios"
+            or payload.get("scope") != scope
+        ):
+            raise serve_error(422, "INVALID_CURSOR", "Cursor does not match this query")
+        last = payload.get("last")
+        if not isinstance(last, dict) or set(last) != {"trade_date", "instrument_id"}:
+            raise serve_error(422, "INVALID_CURSOR", "Cursor is invalid")
+        try:
+            last_key = (date.fromisoformat(last["trade_date"]), UUID(last["instrument_id"]))
+        except (KeyError, TypeError, ValueError):
+            raise serve_error(422, "INVALID_CURSOR", "Cursor is invalid") from None
+    # Enough bars before the range for the longest window; without a range only the
+    # latest bar (on or before end_date) is answered.
+    target_bars = BIAS_RATIO_MAX_RANGE_DAYS if start_date is not None else 1
+    wanted = (
+        select(Instrument.instrument_id.label("wanted_id"))
+        .where(Instrument.instrument_id.in_(ids))
+        .subquery()
+    )
+    recent_query = select(MarketDataEOD).where(MarketDataEOD.instrument_id == wanted.c.wanted_id)
+    if end_date is not None:
+        recent_query = recent_query.where(MarketDataEOD.trade_date <= end_date)
+    recent = (
+        recent_query.order_by(MarketDataEOD.trade_date.desc())
+        .limit(target_bars + max(windows) - 1)
+        .lateral("recent")
+    )
+    recent_eod = aliased(MarketDataEOD, recent)
+    series: dict[UUID, list[MarketDataEOD]] = {}
+    for bar in (
+        (await db.execute(select(recent_eod).select_from(wanted).join(recent, true())))
+        .scalars()
+        .all()
+    ):
+        series.setdefault(bar.instrument_id, []).append(bar)
+    from app.services.effective_calendar import effective_days
+
+    spans: dict[str, tuple[date, date]] = {}
+    for instrument_id, bars in series.items():
+        bars.sort(key=lambda bar: bar.trade_date)
+        market = instruments[instrument_id].market
+        low, high = spans.get(market, (bars[0].trade_date, bars[-1].trade_date))
+        spans[market] = (min(low, bars[0].trade_date), max(high, bars[-1].trade_date))
+    calendars: dict[str, list[date] | None] = {}
+    for market, (low, high) in spans.items():
+        try:
+            days = await effective_days(db, market, low, high)
+        except ValueError:
+            calendars[market] = None
+            continue
+        calendars[market] = sorted(
+            date.fromisoformat(day["trade_date"]) for day in days if day["is_open"]
+        )
+    rows: list[BiasRatioResponse] = []
+    for instrument_id, bars in series.items():
+        instrument = instruments[instrument_id]
+        open_days = calendars.get(instrument.market)
+        open_set = set(open_days or ())
+        open_prefix = [0]
+        for bar in bars:
+            open_prefix.append(open_prefix[-1] + (bar.trade_date in open_set))
+        selected = [
+            position
+            for position, bar in enumerate(bars)
+            if start_date is None or bar.trade_date >= start_date
+        ]
+        if start_date is None:
+            selected = selected[-1:]
+        for position in selected:
+            rows.append(
+                BiasRatioResponse(
+                    instrument=_instrument_summary(instrument),
+                    trade_date=bars[position].trade_date,
+                    close=bars[position].close,
+                    values=_bias_values(bars, position, windows, open_days, open_prefix),
+                )
+            )
+    ascending = order == "asc"
+    rows.sort(key=lambda row: row.instrument.instrument_id)
+    rows.sort(key=lambda row: row.trade_date, reverse=not ascending)
+    if last_key is not None:
+        last_date, last_id = last_key
+        rows = [
+            row
+            for row in rows
+            if (row.trade_date > last_date if ascending else row.trade_date < last_date)
+            or (row.trade_date == last_date and row.instrument.instrument_id > last_id)
+        ]
+    next_cursor = None
+    if len(rows) > page_size:
+        tail = rows[page_size - 1]
+        next_cursor = _encode_cursor(
+            {
+                "v": 1,
+                "kind": "bias_ratios",
+                "scope": scope,
+                "last": {
+                    "trade_date": tail.trade_date.isoformat(),
+                    "instrument_id": str(tail.instrument.instrument_id),
+                },
+            }
+        )
+        rows = rows[:page_size]
+    return BiasRatioListResponse(
+        windows=windows,
+        data=rows,
+        pagination=CursorPaginationInfo(page_size=page_size, next_cursor=next_cursor),
     )
 
 

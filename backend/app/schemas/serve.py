@@ -384,6 +384,72 @@ class EODLatestResponse(BaseModel):
     )
 
 
+BIAS_RATIO_WINDOWS: tuple[int, ...] = (5, 10, 20, 60, 120, 240)
+
+
+class BiasRatioValue(BaseModel):
+    window: int = Field(description="Moving-average length in stored daily bars: 5 to 240.")
+    sma: Decimal | None = Field(
+        default=None,
+        description=(
+            "Simple moving average of the last `window` closes up to and including "
+            "`trade_date`, rounded to 4 decimal places; null when `reason` is set."
+        ),
+    )
+    bias_percent: Decimal | None = Field(
+        default=None,
+        description=(
+            "Bias ratio (乖離率) in percent: (close - sma) / sma * 100, from the unrounded "
+            "average, rounded half up to 4 decimal places; null when `reason` is set."
+        ),
+    )
+    missing_sessions: int | None = Field(
+        default=None,
+        description=(
+            "Open days of the market calendar inside the window that have no stored bar. "
+            "Null unless `reason` is `missing_sessions`."
+        ),
+    )
+    reason: (
+        Literal["insufficient_history", "missing_sessions", "missing_close", "calendar_unavailable"]
+        | None
+    ) = Field(
+        default=None,
+        description=(
+            "Why the value is null. `insufficient_history`: fewer than `window` bars are stored. "
+            "`missing_sessions`: the window skips open sessions (missing bars or a suspension), "
+            "so it would not be a `window`-session average. `missing_close`: a bar in the window "
+            "has no close. `calendar_unavailable`: the market calendar could not be read. "
+            "Null when the value is reported."
+        ),
+    )
+
+
+class BiasRatioResponse(BaseModel):
+    instrument: InstrumentSummaryResponse = Field(description="The instrument.")
+    trade_date: date = Field(description=TRADE_DATE)
+    close: Decimal | None = Field(default=None, description=f"Closing {UNADJUSTED_PRICE}.")
+    values: list[BiasRatioValue] = Field(
+        description="One entry per requested window, in ascending window order."
+    )
+
+
+class BiasRatioListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    price_basis: Literal["unadjusted_close"] = Field(
+        default="unadjusted_close",
+        description=(
+            "Averages use stored closes as traded, not adjusted for dividends or splits, so a "
+            "window that spans an ex-date mixes price levels."
+        ),
+    )
+    windows: list[int] = Field(description="The windows computed for every row.")
+    data: list[BiasRatioResponse] = Field(
+        description="Rows ordered by trade date (see `order`), then by instrument_id."
+    )
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
+
+
 class FuturesEODResponse(BaseModel):
     contract_id: UUID = Field(description="FinDB UUID of the expiry contract.")
     instrument_id: UUID = Field(description="FinDB UUID of the futures product.")
