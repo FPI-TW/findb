@@ -37,6 +37,11 @@ from app.models.index_reference import (
     ReferenceDeliveryEvidence,
     ReferenceDocumentArchive,
 )
+from app.models.institutional_flow import (
+    InstitutionalFlowPublication,
+    InstitutionalFlowStock,
+    InstitutionalFlowSummary,
+)
 from app.models.provider_work import (
     ProviderWork,
     ProviderWorkAttempt,
@@ -112,6 +117,9 @@ __all__ = [
     "IndexMembership",
     "IndexMembershipBuild",
     "IndexSnapshot",
+    "InstitutionalFlowPublication",
+    "InstitutionalFlowStock",
+    "InstitutionalFlowSummary",
     "IndexSnapshotConstituent",
     "ReferenceDeliveryEvidence",
     "ReferenceDocumentArchive",

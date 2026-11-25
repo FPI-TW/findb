@@ -1,0 +1,695 @@
+{
+  "$defs": {
+    "IngressDeliveryMetadata": {
+      "additionalProperties": false,
+      "description": "Optional scheduler context retained for run-level observability.",
+      "properties": {
+        "scheduled_for": {
+          "format": "date-time",
+          "title": "Scheduled For",
+          "type": "string"
+        },
+        "slot_id": {
+          "enum": [
+            "western_markets_window",
+            "global_markets_window",
+            "taiwan_market_window",
+            "asia_pacific_markets_window"
+          ],
+          "title": "Slot Id",
+          "type": "string"
+        },
+        "target_data_date": {
+          "format": "date",
+          "title": "Target Data Date",
+          "type": "string"
+        },
+        "work_item_id": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Work Item Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot_id",
+        "scheduled_for",
+        "target_data_date",
+        "work_item_id"
+      ],
+      "title": "IngressDeliveryMetadata",
+      "type": "object"
+    },
+    "InstitutionalFlowAmount": {
+      "additionalProperties": false,
+      "description": "One investor category's TWD totals as the exchange printed them.",
+      "properties": {
+        "buy_amount": {
+          "maximum": 1000000000000000000,
+          "minimum": 0,
+          "title": "Buy Amount",
+          "type": "integer"
+        },
+        "category": {
+          "enum": [
+            "foreign_ex_dealer",
+            "foreign_dealer",
+            "investment_trust",
+            "dealer_proprietary",
+            "dealer_hedge",
+            "foreign_total",
+            "dealer_total",
+            "total"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "net_amount": {
+          "maximum": 1000000000000000000,
+          "minimum": -1000000000000000000,
+          "title": "Net Amount",
+          "type": "integer"
+        },
+        "sell_amount": {
+          "maximum": 1000000000000000000,
+          "minimum": 0,
+          "title": "Sell Amount",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "category",
+        "buy_amount",
+        "sell_amount",
+        "net_amount"
+      ],
+      "title": "InstitutionalFlowAmount",
+      "type": "object"
+    },
+    "InstitutionalFlowBatch": {
+      "additionalProperties": false,
+      "description": "One exchange table of one trading day; the exchange's response is mandatory evidence.",
+      "properties": {
+        "coverage_end_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coverage End Date"
+        },
+        "coverage_start_date": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coverage Start Date"
+        },
+        "data_date": {
+          "format": "date",
+          "title": "Data Date",
+          "type": "string"
+        },
+        "declared_record_count": {
+          "const": 1,
+          "title": "Declared Record Count",
+          "type": "integer"
+        },
+        "delivery_mode": {
+          "enum": [
+            "incremental",
+            "backfill"
+          ],
+          "title": "Delivery Mode",
+          "type": "string"
+        },
+        "sequence": {
+          "default": null,
+          "title": "Sequence",
+          "type": "null"
+        },
+        "sequence_count": {
+          "default": null,
+          "title": "Sequence Count",
+          "type": "null"
+        },
+        "source_raw_ref": {
+          "maxLength": 2048,
+          "pattern": "^r2://[0-9a-f]{32}/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/[A-Za-z0-9_=-][A-Za-z0-9._=-]*)+$",
+          "title": "Source Raw Ref",
+          "type": "string"
+        },
+        "source_raw_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Raw Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data_date",
+        "delivery_mode",
+        "declared_record_count",
+        "source_raw_ref",
+        "source_raw_sha256"
+      ],
+      "title": "InstitutionalFlowBatch",
+      "type": "object"
+    },
+    "InstitutionalFlowSummaryPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "batch": {
+          "$ref": "#/$defs/InstitutionalFlowBatch"
+        },
+        "data": {
+          "items": {
+            "$ref": "#/$defs/InstitutionalFlowSummaryRow"
+          },
+          "maxItems": 1,
+          "minItems": 1,
+          "title": "Data",
+          "type": "array"
+        }
+      },
+      "required": [
+        "batch",
+        "data"
+      ],
+      "title": "InstitutionalFlowSummaryPayload",
+      "type": "object"
+    },
+    "InstitutionalFlowSummaryRow": {
+      "additionalProperties": false,
+      "description": "A board's market totals of one day: every leaf category and the total.",
+      "properties": {
+        "categories": {
+          "items": {
+            "$ref": "#/$defs/InstitutionalFlowAmount"
+          },
+          "maxItems": 8,
+          "minItems": 6,
+          "title": "Categories",
+          "type": "array"
+        },
+        "currency": {
+          "const": "TWD",
+          "title": "Currency",
+          "type": "string"
+        },
+        "source_symbol": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Symbol"
+        },
+        "symbol": {
+          "enum": [
+            "TWSE",
+            "TPEX"
+          ],
+          "title": "Symbol",
+          "type": "string"
+        },
+        "trade_date": {
+          "format": "date",
+          "title": "Trade Date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "trade_date",
+        "currency",
+        "categories"
+      ],
+      "title": "InstitutionalFlowSummaryRow",
+      "type": "object"
+    }
+  },
+  "$id": "urn:findb:ingress-contract:institutional_flow_summary:v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Complete ``institutional_flow_summary.v1`` request.",
+  "properties": {
+    "dataset_key": {
+      "maxLength": 50,
+      "minLength": 1,
+      "pattern": "^[a-z0-9_]+$",
+      "title": "Dataset Key",
+      "type": "string"
+    },
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IngressDeliveryMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "fetched_at": {
+      "format": "date-time",
+      "title": "Fetched At",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Idempotency Key",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/InstitutionalFlowSummaryPayload"
+    },
+    "request_key": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Request Key",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "institutional_flow_summary",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "enum": [
+        "twse",
+        "tpex"
+      ],
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "dataset_key",
+    "schema_id",
+    "schema_version",
+    "source",
+    "request_key",
+    "idempotency_key",
+    "fetched_at",
+    "payload"
+  ],
+  "title": "InstitutionalFlowSummaryIngressRequest",
+  "type": "object",
+  "x-findb-contract": {
+    "schema_id": "institutional_flow_summary",
+    "schema_version": 1
+  },
+  "x-findb-contract-scope": {
+    "additional_acceptance_boundaries": [
+      {
+        "attempt_semantics": "not_created",
+        "http_statuses": [
+          401,
+          403
+        ],
+        "id": "authentication.api_key",
+        "public_codes": [],
+        "stage": "before_attempt_dependency"
+      },
+      {
+        "attempt_semantics": "not_created",
+        "http_statuses": [
+          503
+        ],
+        "id": "authentication.database_lookup",
+        "public_codes": [],
+        "stage": "before_attempt_dependency"
+      },
+      {
+        "actors": [
+          "source_client",
+          "client_ip"
+        ],
+        "attempt_semantics": "not_created",
+        "http_statuses": [
+          429
+        ],
+        "id": "rate_limit.credential_or_client_ip",
+        "public_codes": [],
+        "stage": "before_attempt_dependency"
+      },
+      {
+        "attempt_semantics": "not_created",
+        "http_statuses": [
+          403
+        ],
+        "id": "request.client_ip.available",
+        "public_codes": [],
+        "stage": "before_attempt_dependency"
+      },
+      {
+        "attempt_semantics": "durably_rejected",
+        "http_statuses": [
+          403
+        ],
+        "id": "credential.source_binding",
+        "public_codes": [
+          "SOURCE_IDENTITY_MISMATCH"
+        ],
+        "stage": "after_attempt_application_validation"
+      },
+      {
+        "attempt_semantics": "durably_rejected",
+        "http_statuses": [
+          403
+        ],
+        "id": "credential.dataset_allowlist",
+        "public_codes": [
+          "DATASET_ACCESS_DENIED"
+        ],
+        "stage": "after_attempt_application_validation"
+      },
+      {
+        "attempt_semantics": "durably_rejected",
+        "http_statuses": [
+          400
+        ],
+        "id": "dataset.existence",
+        "public_codes": [
+          "DATASET_NOT_FOUND"
+        ],
+        "stage": "after_attempt_application_validation"
+      },
+      {
+        "attempt_semantics": "durably_rejected",
+        "http_statuses": [
+          409
+        ],
+        "id": "dataset.active",
+        "public_codes": [
+          "DATASET_INACTIVE"
+        ],
+        "stage": "after_attempt_application_validation"
+      },
+      {
+        "attempt_semantics": "durably_rejected",
+        "http_statuses": [
+          409
+        ],
+        "id": "dataset.contract_declaration",
+        "public_codes": [
+          "DATASET_CONTRACT_NOT_CONFIGURED"
+        ],
+        "stage": "after_attempt_application_validation"
+      },
+      {
+        "attempt_semantics": "durably_rejected",
+        "http_statuses": [
+          409
+        ],
+        "id": "dataset.contract_scope",
+        "public_codes": [
+          "DATASET_CONTRACT_NOT_CONFIGURED"
+        ],
+        "stage": "after_attempt_application_validation"
+      },
+      {
+        "attempt_semantics": "durably_rejected",
+        "http_statuses": [
+          422
+        ],
+        "id": "dataset.accepted_contract_version",
+        "public_codes": [
+          "INGRESS_SCHEMA_NOT_ALLOWED"
+        ],
+        "stage": "after_attempt_application_validation"
+      },
+      {
+        "attempt_semantics": "durably_rejected",
+        "http_statuses": [
+          409
+        ],
+        "id": "idempotency.collision",
+        "public_codes": [
+          "IDEMPOTENCY_PAYLOAD_MISMATCH"
+        ],
+        "stage": "after_attempt_persistence_validation"
+      },
+      {
+        "attempt_semantics": "depends_on_failure_stage",
+        "http_statuses": [
+          500,
+          503
+        ],
+        "id": "infrastructure.database_or_internal_failure",
+        "public_codes": [
+          "DATABASE_UNAVAILABLE",
+          "INTERNAL_ERROR"
+        ],
+        "stage": "multiple"
+      }
+    ],
+    "artifact_kind": "versioned_request_body_shape_and_semantics",
+    "covers": [
+      {
+        "id": "request_body.json_parsing",
+        "stage": "body_parsing"
+      },
+      {
+        "id": "request_body.shape",
+        "stage": "json_schema_validation"
+      },
+      {
+        "extension": "x-findb-transformations",
+        "id": "request_body.normalization",
+        "stage": "body_normalization"
+      },
+      {
+        "extension": "x-findb-semantic-rules",
+        "id": "request_body.semantics",
+        "stage": "body_semantic_validation"
+      }
+    ],
+    "dispatch_discriminators": [
+      {
+        "expected": "institutional_flow_summary",
+        "matching": "exact",
+        "normalization": "none_before_dispatch",
+        "path": "schema_id",
+        "type": "string"
+      },
+      {
+        "expected": 1,
+        "matching": "exact",
+        "normalization": "none_before_dispatch",
+        "path": "schema_version",
+        "type": "integer_non_boolean"
+      }
+    ],
+    "excludes": [
+      "authentication_and_database_credential_lookup",
+      "rate_limiting",
+      "credential_source_and_dataset_authorization",
+      "dataset_registry_state_and_contract_declaration",
+      "idempotency_state",
+      "infrastructure_availability"
+    ],
+    "necessary_for_api_acceptance": true,
+    "sufficient_for_api_acceptance": false
+  },
+  "x-findb-semantic-rules": [
+    {
+      "context_dependencies": [],
+      "description": "fetched_at must include a timezone and is normalized to UTC",
+      "error_code": "INGRESS_SCHEMA_INVALID",
+      "id": "envelope.fetched_at.timezone_aware",
+      "parameters": {
+        "format": "iso8601_date_time",
+        "normalization": "utc",
+        "timezone_offset": "required"
+      },
+      "scope": "fetched_at"
+    },
+    {
+      "context_dependencies": [],
+      "description": "coverage_start_date and coverage_end_date must be provided together",
+      "error_code": "INGRESS_SCHEMA_INVALID",
+      "id": "batch.coverage.co_presence",
+      "parameters": {
+        "fields": [
+          "coverage_start_date",
+          "coverage_end_date"
+        ],
+        "operator": "co_present"
+      },
+      "scope": "payload.batch"
+    },
+    {
+      "context_dependencies": [],
+      "description": "coverage_start_date must not follow coverage_end_date",
+      "error_code": "INGRESS_SCHEMA_INVALID",
+      "id": "batch.coverage.order",
+      "parameters": {
+        "left": "coverage_start_date",
+        "operator": "less_than_or_equal",
+        "right": "coverage_end_date"
+      },
+      "scope": "payload.batch"
+    },
+    {
+      "context_dependencies": [],
+      "description": "backfill data_date must equal coverage_end_date when coverage is set",
+      "error_code": "INGRESS_SCHEMA_INVALID",
+      "id": "batch.backfill.data_date_equals_coverage_end",
+      "parameters": {
+        "left": "data_date",
+        "operator": "equal",
+        "right": "coverage_end_date",
+        "when": {
+          "coverage_end_date": "present",
+          "delivery_mode": "backfill"
+        }
+      },
+      "scope": "payload.batch"
+    },
+    {
+      "context_dependencies": [
+        {
+          "kind": "runtime_setting",
+          "name": "SOURCE_MAX_PAYLOAD_BYTES"
+        }
+      ],
+      "description": "compact UTF-8 JSON encoding is bounded by the active server setting",
+      "error_code": "INGRESS_SCHEMA_INVALID",
+      "id": "payload.serialized.max_bytes",
+      "parameters": {
+        "encoding": "utf-8",
+        "enforcement_stage": "after_attempt_contract_validation",
+        "ensure_ascii": false,
+        "minimum_effective_limit": 1,
+        "non_native_values": "stringified",
+        "operator": "max_bytes",
+        "serialization": "compact_json"
+      },
+      "scope": "payload"
+    },
+    {
+      "context_dependencies": [
+        {
+          "kind": "runtime_setting",
+          "name": "SOURCE_MAX_PAYLOAD_BYTES"
+        }
+      ],
+      "description": "known Content-Length is bounded before endpoint processing",
+      "error_code": null,
+      "id": "request.body.max_bytes",
+      "parameters": {
+        "enforcement_stage": "before_attempt_middleware",
+        "measurement": "content_length_header",
+        "minimum_effective_limit": 1,
+        "operator": "max_bytes"
+      },
+      "response": {
+        "durable_attempt": false,
+        "envelope": "middleware_detail",
+        "http_status": 413
+      },
+      "scope": "request"
+    },
+    {
+      "context_dependencies": [],
+      "description": "the table trade_date equals batch.data_date; coverage dates, when present, equal it too",
+      "error_code": "INGRESS_SCHEMA_INVALID",
+      "id": "table.single_trading_day",
+      "parameters": {
+        "coverage": [
+          "batch.coverage_start_date",
+          "batch.coverage_end_date"
+        ],
+        "left": "data[0].trade_date",
+        "operator": "equal",
+        "right": "batch.data_date"
+      },
+      "scope": "payload"
+    },
+    {
+      "context_dependencies": [],
+      "description": "an exchange publishes only its own board: symbol is the upper-cased source (TWSE for twse, TPEX for tpex)",
+      "error_code": "INGRESS_SCHEMA_INVALID",
+      "id": "table.board_is_source",
+      "parameters": {
+        "left": "data[0].symbol",
+        "operator": "equal",
+        "right": "upper(source)"
+      },
+      "scope": "payload.data[0]"
+    },
+    {
+      "context_dependencies": [],
+      "description": "every net equals buy - sell; total equals foreign_ex_dealer + investment_trust + dealer_proprietary + dealer_hedge (foreign_dealer is already counted by the dealers); dealer_total equals dealer_proprietary + dealer_hedge and foreign_total equals foreign_ex_dealer + foreign_dealer, where printed. Any violation rejects the whole table as a DQ error",
+      "error_code": null,
+      "id": "table.identities",
+      "parameters": {
+        "enforcement_stage": "normalization",
+        "severity": "error"
+      },
+      "scope": "payload.data[0]"
+    },
+    {
+      "context_dependencies": [],
+      "description": "categories are unique and include every leaf category and total; amounts are TWD",
+      "error_code": "INGRESS_SCHEMA_INVALID",
+      "id": "summary.categories",
+      "parameters": {
+        "required": [
+          "foreign_ex_dealer",
+          "foreign_dealer",
+          "investment_trust",
+          "dealer_proprietary",
+          "dealer_hedge",
+          "total"
+        ]
+      },
+      "scope": "payload.data[0].categories"
+    }
+  ],
+  "x-findb-transformations": [
+    {
+      "description": "leading and trailing whitespace is stripped before validation",
+      "id": "normalization.strings.strip_whitespace",
+      "operation": "strip_leading_trailing_whitespace",
+      "paths": [
+        "dataset_key",
+        "source",
+        "request_key",
+        "idempotency_key",
+        "payload.batch.source_raw_ref",
+        "payload.batch.source_raw_sha256",
+        "payload.data[*].symbol",
+        "payload.data[*].source_symbol",
+        "payload.data[*].currency"
+      ],
+      "phase": "before_field_validation",
+      "scope": "request_body"
+    }
+  ]
+}

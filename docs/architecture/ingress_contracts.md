@@ -252,6 +252,43 @@ Normalizer 第一次遇到某份報表時，以 Worker 的 Raw reader 讀出 gzi
 - 以 staging 2026-11-20 的 2,596 列 FactSet 港股列與當日主板、GEM 報表重播：收盤、最高、最低、
   成交量全部一致，兩種寫入順序結果相同，沒有修正紀錄也沒有 warning。
 
+## `institutional_flow_summary.v1` 與 `institutional_flow_stock.v1`
+
+TWSE 與 TPEx 每個交易日各發布兩張三大法人表：市場彙總（TWD）與個股（股數）。一個請求只送一整張表，
+`data` 只有一列。這一列的 `symbol` 是發布的板別（`TWSE` 或 `TPEX`），也就是 daily plan 的唯一成員；
+`source_symbol` 是交易所的表名，`currency` 固定為 `TWD`。
+
+- **共同規則**
+  - 只有 `twse`／`tpex` 可以送，且板別必須是來源本身：`twse` 送 `TWSE`，`tpex` 送 `TPEX`。
+  - batch 必須帶交易所原始回應的 `source_raw_ref` 與 `source_raw_sha256`。
+  - `trade_date` 與 coverage 都必須等於 `batch.data_date`。
+  - `delivery_mode` 只能是 `incremental` 或 `backfill`。
+- **類別**
+  - 細項：`foreign_ex_dealer`（外資及陸資不含外資自營商）、`foreign_dealer`、`investment_trust`、`dealer_proprietary`、
+    `dealer_hedge`。
+  - 小計：`foreign_total`（只有 TPEx 印）、`dealer_total`。
+  - `total` 是三大法人合計。兩個交易所的附註都寫明，外資自營商已計入自營商，所以不納入合計。
+- **彙總表**：`categories` 列出各類別的買進、賣出、買賣超金額，類別不重複，五個細項與 `total` 必須都有。
+- **個股表**
+  - by-reference：表格是 Raw R2 裡的 JSON 物件 `{"columns": [...], "rows": [[...], ...]}`。
+  - 欄位順序公布在 schema 的 `x-findb-row-layout`。
+  - 請求帶 `rows_ref`、`rows_sha256`、`rows_bytes`、`row_count`，`rows_format` 為 `json`，`volume_unit` 為 `share`。
+  - TWSE 沒有印外資合計，自營商合計也只印買賣超，這些欄位為 null。
+  - 權證也照收。
+- **DQ（Owner 於 2026-11-24 決定）**
+  - Worker 在寫入前逐一檢查交易所印出的關係：
+    - 每個買賣超等於買進減賣出；
+    - 合計等於 `foreign_ex_dealer + investment_trust + dealer_proprietary + dealer_hedge`；
+    - 印出的小計等於它的組成。
+  - 任何一列不符，整張表都不寫入，記一筆 `INSTITUTIONAL_TABLE_REJECTED` error，`raw_data.symbol` 是板別，該成員以 invalid 結算。
+  - rows 物件的 sha、大小、表頭、列數不符，或代號重複，也是同樣的處理。
+- **寫入與比對**
+  - 寫入以（表、板別、交易日）為單位整張替換；`source_fetched_at` 較早的送達記為 precedence rejected。
+  - 個股列只連到既有的 TW 股票或 ETF instrument，不建立新的；查不到的（例如權證）`instrument_id` 為空。
+    同一代號同時是股票與 ETF 時也不連，並記 `INSTITUTIONAL_INSTRUMENT_AMBIGUOUS` warning。
+  - Canonical tables 是 `institutional_flow_publication`、`institutional_flow_summary`、`institutional_flow_stock`。
+    寫入時記下 `run_id`，delivery evidence 以板別記為 data。
+
 ## Frozen universe 與 daily plan protocol
 
 Control protocol v1 定義在 `backend/app/schemas/full_market.py`，與 ingest JSON Schema

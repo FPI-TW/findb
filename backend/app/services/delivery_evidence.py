@@ -13,7 +13,9 @@ from app.models.canonical import (
     MarketDataEOD,
     MarketDataMinute,
 )
+from app.models.institutional_flow import InstitutionalFlowPublication
 from app.models.registry import DailyDeliveryMember, DeliveryMemberEvidence, IngestionRun
+from app.schemas.ingress import INSTITUTIONAL_FLOW_SCHEMAS
 from app.utils import utc_now
 
 
@@ -44,6 +46,15 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
         written = set(
             await db.scalars(
                 select(IntradayPartition.symbol).where(IntradayPartition.run_id == run.run_id)
+            )
+        )
+    elif run.schema_id in INSTITUTIONAL_FLOW_SCHEMAS:
+        # A stored table's version names its run; the board is the plan member.
+        written = set(
+            await db.scalars(
+                select(InstitutionalFlowPublication.board).where(
+                    InstitutionalFlowPublication.run_id == run.run_id
+                )
             )
         )
     elif run.schema_id == "exchange_daily_quote":

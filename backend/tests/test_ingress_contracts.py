@@ -370,6 +370,8 @@ def test_registry_dispatches_explicit_contract_version():
         ("futures_eod", 1),
         ("index_constituent_changes", 1),
         ("index_constituents", 1),
+        ("institutional_flow_stock", 1),
+        ("institutional_flow_summary", 1),
         ("intraday_partition", 1),
         ("market_eod", 1),
         ("market_eod", 2),
