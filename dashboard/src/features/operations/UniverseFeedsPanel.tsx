@@ -34,7 +34,7 @@ import {
 } from "../../lib/admin.functions"
 import { formatDate, Panel } from "./operations.shared"
 
-const NOTE_MIN_LENGTH = 10
+const NOTE_MIN_LENGTH = 5
 const NOTE_MAX_LENGTH = 500
 
 function refreshInProgress(refresh: UniverseRefresh | null) {

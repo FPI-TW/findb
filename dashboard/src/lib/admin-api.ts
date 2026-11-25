@@ -386,7 +386,7 @@ export type UniverseFeed = z.infer<typeof universeFeedsSchema>["data"][number]
 export const universeRefreshRequestSchema = z.object({
   provider: z.string().trim().min(1).max(50),
   datasetKey: z.string().trim().min(1).max(50),
-  note: z.string().trim().min(10).max(500),
+  note: z.string().trim().min(5).max(500),
 })
 export type UniverseRefreshRequest = z.infer<
   typeof universeRefreshRequestSchema
