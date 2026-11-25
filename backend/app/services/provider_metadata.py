@@ -75,6 +75,12 @@ def delivers_unlisted(provider: str, dataset_key: str) -> bool:
     return feed is not None and feed.unlisted_symbols == "deliver"
 
 
+def historical_lookback_days(provider: str, dataset_key: str) -> int | None:
+    """The feed's production backfill window when it extends the default."""
+    feed = catalog_feed(provider, dataset_key)
+    return feed.historical_lookback_days if feed is not None else None
+
+
 def calendar_required(provider: str, dataset_key: str) -> bool:
     """Whether the feed's dates wait for a published exchange calendar."""
     feed = catalog_feed(provider, dataset_key)

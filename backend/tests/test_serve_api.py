@@ -362,6 +362,30 @@ async def test_a_wrongly_declared_exchange_quote_dataset_still_fails_closed(
 
 
 @pytest.mark.asyncio
+async def test_the_official_tw_index_datasets_are_served(client: AsyncClient, test_session):
+    """TWSE and TPEx publish one index each; both datasets share the TW index scope."""
+    taiex = uuid7()
+    test_session.add_all(
+        [
+            dataset("tw_twse_index_eod", market="TW", asset_class="index", schema_id="market_eod"),
+            dataset("tw_tpex_index_eod", market="TW", asset_class="index", schema_id="market_eod"),
+            instrument(taiex, "^TWII", asset_class="index"),
+            eod(taiex, date(2026, 11, 20), "27000"),
+        ]
+    )
+    await test_session.commit()
+
+    catalog = await client.get("/api/v1/serve/datasets")
+    assert catalog.status_code == 200, catalog.text
+    assert {"tw_twse_index_eod", "tw_tpex_index_eod"} <= {
+        row["dataset_key"] for row in catalog.json()["data"]
+    }
+    response = await client.get("/api/v1/serve/eod", params={"instruments": "TW:^TWII"})
+    assert response.status_code == 200, response.text
+    assert [row["close"] for row in response.json()["data"]] == ["27000.00000000"]
+
+
+@pytest.mark.asyncio
 async def test_internally_consistent_unsupported_active_scope_fails_closed(
     client: AsyncClient, test_session
 ):

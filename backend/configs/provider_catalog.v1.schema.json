@@ -250,6 +250,19 @@
             }
           ]
         },
+        "historical_lookback_days": {
+          "anyOf": [
+            {
+              "maximum": 3660,
+              "minimum": 367,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Historical Lookback Days"
+        },
         "historical_requests_per_date": {
           "anyOf": [
             {
@@ -334,6 +347,7 @@
         "historical_execution",
         "historical_cohort",
         "historical_requests_per_date",
+        "historical_lookback_days",
         "universe_mode",
         "unlisted_symbols",
         "calendar_required"

@@ -114,6 +114,9 @@ INDEX_NAMES: dict[tuple[str, str], str] = {
     ("HK", "HSCIPC"): "恒生綜合行業指數 - 地產建築",
     ("HK", "HSCITC"): "恒生綜合行業指數 - 電訊",
     ("HK", "HSCIUT"): "恒生綜合行業指數 - 公用事業",
+    # --- TW (official TWSE and TPEx feeds, Yahoo-style codes) ---
+    ("TW", "^TWII"): "發行量加權股價指數",
+    ("TW", "^TWOII"): "櫃買指數",
     # --- CN ---
     ("CN", "SHCOMP"): "上證綜合指數",
     ("CN", "SHSZ300"): "滬深 300 指數",

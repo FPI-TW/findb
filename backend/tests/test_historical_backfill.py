@@ -204,6 +204,49 @@ def test_production_keeps_one_year_eod_and_retained_shioaji_window(monkeypatch) 
     assert historical_backfill._supports_backfill("shioaji", "tw_etf_minute") is False
 
 
+def test_a_feed_may_extend_only_the_production_window(monkeypatch) -> None:
+    extended = {("fmp", "hk_index_eod"): 731}
+    monkeypatch.setattr(
+        historical_backfill,
+        "historical_lookback_days",
+        lambda provider, dataset_key: extended.get((provider, dataset_key)),
+    )
+    now = datetime(2026, 11, 24, 10, 0, tzinfo=timezone.utc)
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    assert historical_backfill._max_backfill_days("fmp", "hk_index_eod") == 731
+    assert historical_backfill._max_backfill_days("fmp", "us_index_eod") == 366
+    assert historical_backfill._max_backfill_days("fmp") == 366
+    assert historical_backfill.expiry_cutoff("fmp", "hk_index_eod", now) == date(2024, 11, 24)
+    assert historical_backfill.expiry_cutoff("fmp", "us_index_eod", now) == date(2025, 11, 24)
+    monkeypatch.setenv("APP_ENVIRONMENT", "staging")
+    assert historical_backfill._max_backfill_days("fmp", "hk_index_eod") == 31
+
+
+@pytest.mark.parametrize(
+    ("historical", "days", "message"),
+    [
+        ("unsupported", 731, "only historical feeds may extend the backfill window"),
+        ("executable", 366, "greater than or equal to 367"),
+        ("executable", 3661, "less than or equal to 3660"),
+    ],
+)
+def test_catalog_bounds_the_extended_backfill_window(historical, days, message) -> None:
+    from pydantic import ValidationError
+
+    from app.provider_catalog import FeedDefinition
+    from app.services.provider_metadata import catalog_feed
+
+    feed = catalog_feed("fmp", "hk_index_eod")
+    assert feed is not None
+    data = feed.model_dump(mode="json")
+    data["historical_lookback_days"] = days
+    if historical == "unsupported":
+        data["capabilities"]["historical"] = "unsupported"
+        data.update(historical_cohort=None, historical_requests_per_date=None)
+    with pytest.raises(ValidationError, match=message):
+        FeedDefinition.model_validate(data)
+
+
 async def _seed_scope(session, today: date, *, dataset_key: str = "tw_equity_eod") -> None:
     session.add(
         DatasetRegistry(

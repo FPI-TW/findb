@@ -33,6 +33,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": 1,
       "lifecycle": "active",
       "market": "HK",
@@ -77,6 +78,7 @@
       "frequency": "minute",
       "historical_cohort": null,
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
@@ -162,6 +164,7 @@
           "wait_timeout_seconds": 1800
         }
       },
+      "historical_lookback_days": null,
       "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
@@ -206,6 +209,7 @@
       "frequency": "tick",
       "historical_cohort": null,
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
@@ -250,6 +254,7 @@
       "frequency": "minute",
       "historical_cohort": null,
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
@@ -294,6 +299,7 @@
       "frequency": "daily",
       "historical_cohort": "dated_release",
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
@@ -338,6 +344,7 @@
       "frequency": "tick",
       "historical_cohort": null,
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": null,
       "lifecycle": "active",
       "market": "TW",
@@ -382,6 +389,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": 3,
       "lifecycle": "active",
       "market": "HK",
@@ -426,6 +434,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": 1,
       "lifecycle": "active",
       "market": "US",
@@ -470,6 +479,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": 72,
       "lifecycle": "active",
       "market": "US",
@@ -514,6 +524,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": 2,
       "lifecycle": "active",
       "market": "HK",
@@ -558,6 +569,7 @@
       "frequency": "daily",
       "historical_cohort": "daily_report",
       "historical_execution": null,
+      "historical_lookback_days": null,
       "historical_requests_per_date": 5,
       "lifecycle": "active",
       "market": "TW",
@@ -643,6 +655,7 @@
           "wait_timeout_seconds": 1800
         }
       },
+      "historical_lookback_days": null,
       "historical_requests_per_date": "per_member",
       "lifecycle": "active",
       "market": "US",
@@ -835,5 +848,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "eb0b9cc5eefcad4602cbc231b67d7bd8fedba240f305019c0694e9838393ae01"
+  "source_sha256": "fa9c61ced230da229bffc988496bd40a4f942108b4076782bf273ed65cf96089"
 }

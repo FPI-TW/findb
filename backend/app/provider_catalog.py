@@ -16,6 +16,9 @@ Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=100)]
 EnvName = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=100)]
 Clock = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
 PositiveInt = Annotated[int, Field(gt=0)]
+# A feed may reach further back than the production default of 366 days (the
+# latest year), never less, and at most about ten years.
+HistoricalLookbackDays = Annotated[int, Field(ge=367, le=3660)]
 DayOffset = Annotated[int, Field(ge=0, le=366)]
 ConsumerRole = Literal["full_market", "historical"]
 # Every acquiring feed is due this long after its scheduled start, in the schedule's timezone.
@@ -199,6 +202,9 @@ class FeedDefinition(CatalogModel):
     historical_execution: HistoricalExecutionProfiles | None
     historical_cohort: HistoricalCohort | None
     historical_requests_per_date: HistoricalRequests | None
+    # Production backfill window in calendar days; None keeps the 366-day default.
+    # Staging stays at its own short window regardless.
+    historical_lookback_days: HistoricalLookbackDays | None
     universe_mode: UniverseMode
     unlisted_symbols: UnlistedSymbols
     # A weekday default never stands in for a missing exchange calendar: the date waits.
@@ -234,6 +240,8 @@ class FeedDefinition(CatalogModel):
             raise ValueError("historical feeds, and only they, declare a historical cohort")
         if (self.historical_requests_per_date is None) != (caps.historical == "unsupported"):
             raise ValueError("historical feeds, and only they, declare requests per date")
+        if self.historical_lookback_days is not None and caps.historical == "unsupported":
+            raise ValueError("only historical feeds may extend the backfill window")
         if (
             self.historical_requests_per_date == "per_member"
             and self.historical_cohort != "dated_release"

@@ -262,7 +262,8 @@ production/staging target混用都會fail closed。`source_sha256`是該次revie
 `symbols_sha256`是依manifest順序、每行一個canonical symbol（Shioaji為
 `dataset_key:symbol`）且結尾換行的摘要。
 
-Production EOD historical control plane允許最近366個calendar days；Shioaji 已停止新申請，既有 minute request 的 31 天視窗語意保留。
+Production EOD historical control plane允許最近366個calendar days；catalog 的 `historical_lookback_days`
+可為個別 feed 延長（見 [Provider metadata](../architecture/provider_metadata.md)）。Shioaji 已停止新申請，既有 minute request 的 31 天視窗語意保留。
 日期視窗以 provider 日曆市場的當地今天計算（Twelve Data 為紐約、FinLab／TAIFEX 為台北、FactSet 為香港），
 建立、preview、claim 與過期判定共用同一個邊界。休市日是否略過，所有 provider 都跟 daily 使用同一個
 `*_SKIP_NON_TRADING_DAYS`；preview 與建立 request 套用相同規則。

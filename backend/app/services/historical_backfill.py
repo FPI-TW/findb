@@ -47,6 +47,7 @@ from app.services.provider_metadata import (
     catalog_feed,
     dataset_calendar_market,
     historical_cohort,
+    historical_lookback_days,
     provider_catalog,
 )
 from app.services.universe_supplement import latest_supplement
@@ -73,14 +74,18 @@ FEED_TIMEZONES: dict[tuple[str, str], str] = {
 RETIRED_PROVIDER_TIMEZONES = {"shioaji": market_timezone("TW").key}
 
 
-def _max_backfill_days(provider: str | None = None) -> int:
+def _max_backfill_days(provider: str | None = None, dataset_key: str | None = None) -> int:
+    """The latest calendar days a request may reach; a feed may extend production's."""
     if provider == "shioaji":
         return STAGING_MAX_BACKFILL_DAYS
-    return (
-        PRODUCTION_MAX_BACKFILL_DAYS
-        if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() == "production"
-        else STAGING_MAX_BACKFILL_DAYS
+    if os.getenv("APP_ENVIRONMENT", "staging").strip().lower() != "production":
+        return STAGING_MAX_BACKFILL_DAYS
+    extended = (
+        historical_lookback_days(provider, dataset_key)
+        if provider is not None and dataset_key is not None
+        else None
     )
+    return extended or PRODUCTION_MAX_BACKFILL_DAYS
 
 
 def _supports_backfill(provider: str, dataset_key: str) -> bool:
@@ -426,7 +431,7 @@ def expiry_cutoff(provider: str, dataset_key: str, now: datetime) -> date:
     same day it would no longer be accepted.
     """
     return _feed_current_date(provider, dataset_key, now) - timedelta(
-        days=_max_backfill_days(provider) - 1
+        days=_max_backfill_days(provider, dataset_key) - 1
     )
 
 
@@ -470,7 +475,7 @@ async def create_request(
 
         await lock_provider(db, provider)
     today = today or _request_today(provider, dataset_key)
-    max_days = _max_backfill_days(provider)
+    max_days = _max_backfill_days(provider, dataset_key)
     if start_date < today - timedelta(days=max_days - 1) or end_date > today:
         raise HistoricalBackfillError(
             f"backfill dates must be within the latest {max_days} calendar days"
@@ -820,7 +825,7 @@ async def preview_request(
     today = today or _request_today(provider, dataset_key)
     dataset = await db.get(DatasetRegistry, dataset_key)
     market = dataset.market if dataset is not None else None
-    max_days = _max_backfill_days(provider)
+    max_days = _max_backfill_days(provider, dataset_key)
     scope_reason: str | None = None
     if end_date < start_date:
         scope_reason = "date_order_invalid"
