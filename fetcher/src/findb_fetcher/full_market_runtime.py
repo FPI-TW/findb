@@ -2707,6 +2707,15 @@ class FullMarketRuntime:
             reason=finish_reason,
             now=time.time(),
         )
+        if finish_reason == "no_data" and self.state.no_data_exhausted(key):
+            # The last no-data retry: Source may now classify a known case, such as a
+            # listing that has not traded yet, from a final outcome.
+            self.source.outcome(
+                plan["plan_id"],
+                work_item_id=part["work_item_id"],
+                member_key=member_key,
+                reason="no_data_exhausted",
+            )
         self._record_diagnostic(key, exc)
 
     def _record_diagnostic(self, key: str, exc: BaseException) -> None:

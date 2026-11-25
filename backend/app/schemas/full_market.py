@@ -257,7 +257,14 @@ class DeliveryOutcomeRequest(FullMarketModel):
     member_key: str = Field(min_length=1, max_length=150)
     outcome: Literal["no_data", "blocked"]
     reason: Literal[
-        "halted", "no_trade", "mapping_gap", "rate_limited", "source_error", "empty_response"
+        "halted",
+        "no_trade",
+        "mapping_gap",
+        "rate_limited",
+        "source_error",
+        "empty_response",
+        # Final: the member used its last no-data retry.
+        "no_data_exhausted",
     ]
     evidence: OutcomeEvidence | None = None
 
@@ -273,7 +280,13 @@ class DeliveryOutcomeRequest(FullMarketModel):
                 self.evidence.source_status,
             ) != ("no_trade", "no_record"):
                 raise ValueError("no_data evidence source_status must match reason")
-        elif self.reason not in {"mapping_gap", "rate_limited", "source_error", "empty_response"}:
+        elif self.reason not in {
+            "mapping_gap",
+            "rate_limited",
+            "source_error",
+            "empty_response",
+            "no_data_exhausted",
+        }:
             raise ValueError("blocked requires a failure reason")
         return self
 

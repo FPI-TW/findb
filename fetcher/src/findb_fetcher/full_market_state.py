@@ -1119,6 +1119,12 @@ class FullMarketState:
                 (key,),
             )
 
+    def no_data_exhausted(self, key: str) -> bool:
+        """The member used its last no-data retry; its blocked outcome is final."""
+        with self.connection() as db:
+            row = db.execute("SELECT status,reason FROM full_work WHERE key=?", (key,)).fetchone()
+            return row is not None and tuple(row) == ("manual", "no_data_exhausted")
+
     def member_complete(self, key: str) -> bool:
         with self.connection() as db:
             row = db.execute("SELECT status FROM full_work WHERE key=?", (key,)).fetchone()
