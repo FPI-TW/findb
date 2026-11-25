@@ -371,6 +371,7 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | `unknown_dispatch` | 曾保留未知派送責任，尚未證實空回應；同樣檢查觀測額度與退避 |
 | `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據。Plan 統計把它們算作 unavailable，不是 blocked；plan 只缺這種成員時即完整，daily work 以 `completed` 結束（見 [provider_work](../architecture/provider_work.md)） |
 | `no_data_exhausted` | 成員用完全部 no-data 重試仍無資料，是最終結果。新掛牌尚未交易者歸為 unavailable／`not_yet_trading`，其餘維持 blocked |
+| `halted` | 官方停牌證據的 no_data。`us_equity_eod` 成員用完最後一次 no-data 重試時，Fetcher 讀取 Nasdaq 停牌清單（`https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts`，原始內容存入 raw）；停牌日早於交易日且交易日前尚未復牌，就以該筆停牌（代號、市場、停牌日期／時間、原因代碼、復牌日期）為證據回報 `no_data/halted`。當天才停牌或當天復牌不算，因為停牌前後可能有成交。清單讀不到、內容無效或 Source 拒收證據時，改回報 `no_data_exhausted` |
 | `local_state_busy` | 本機共用的 SQLite（journal、governor 或 Full checkpoint）被其他 consumer 鎖住超過等待上限（30 秒）。不回報 Source、不結束這一輪，該檔稍後重試；只有已經呼叫過 provider 時才計入失敗額度。`full_work_diagnostic.category` 記為 `local_state_busy`，十分鐘內出現就觸發 `LocalStateBusyDiagnostics` 告警（見[監控](monitoring.md)）；經常出現時查同時間其他 consumer 的清理或大量寫入 |
 | `retry_exhausted` | 本地一般失敗額度（`FULL_WORK_MAX_ATTEMPTS`，5 次，所有 provider 一致）耗盡，不等於五次 native 請求。這類失敗（provider 的一般回應錯誤、單檔 5xx、未預期的例外）不結束這一輪：該檔扣一次額度，其他成員照常抓；只有連續 3 檔（`FULL_WORK_FAILURE_BREAKER`）這樣失敗、中間沒有任何一檔成功時才結束這一輪，避免整個 provider 出問題時每檔都被扣一次（#711）。連線錯誤（到 provider 或 Source 的網路中斷、Source 回應遺失，包括 client 包成 `transport` 類別的錯誤）不是單一成員的問題，且可能有遺失的交付確認，仍立即結束這一輪。額度耗盡的成員仍會阻擋 plan，需人工檢查 |
 | `source_rejected` | Source 拒收該檔的交付內容（409、422）：該檔轉 manual 並阻擋 plan，但同一輪其他成員照常交付，連續 3 檔才結束這一輪。401、403、5xx 是憑證或 Source 的問題，仍立即結束這一輪 |

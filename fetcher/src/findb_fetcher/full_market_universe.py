@@ -19,6 +19,10 @@ NASDAQ_URLS = (
     "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
     "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
 )
+# Nasdaq's current trade halts across US listing markets (#593): a halt stays listed
+# until the issue resumes, so a long suspension is still present.
+NASDAQ_HALTS_URL = "https://www.nasdaqtrader.com/rss.aspx?feed=tradehalts"
+_NASDAQ_HALTS_NS = "{http://www.nasdaqtrader.com/}"
 HKEX_URL = (
     "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx"
 )
@@ -93,13 +97,55 @@ def official_snapshot_dataset(url: str, datasets: Collection[str] = ()) -> str:
     The HKEX list serves FactSet's HK feed and the exchange's own; the runtime's
     installed ``datasets`` say which provider observed it.
     """
-    if url in NASDAQ_URLS:
+    if url in NASDAQ_URLS or url == NASDAQ_HALTS_URL:
         return "us_equity_eod"
     if url == HKEX_URL:
         return "hk_equity_official_eod" if "hk_equity_official_eod" in datasets else "hk_equity_eod"
     if url == TAIFEX_URL:
         return "tw_futures_eod"
     return "tw_etf_eod" if url in TW_ISIN_ETF_URLS else "tw_equity_eod"
+
+
+def nasdaq_halt(body: bytes, symbol: str, day: date) -> dict[str, str] | None:
+    """The halt that kept ``symbol`` from trading through ``day``, if the feed lists one.
+
+    Only a halt dated before the trade date that has not resumed by it covers the
+    whole session; a halt on the day itself may follow trades.
+    """
+    if b"<!DOCTYPE" in body or b"<!ENTITY" in body:
+        raise UniverseSnapshotError("Nasdaq halts feed declares a document type")
+    try:
+        root = ET.fromstring(body)
+    except ET.ParseError as exc:
+        raise UniverseSnapshotError("Nasdaq halts feed is not XML") from exc
+
+    def field(item: ET.Element, name: str) -> str:
+        return (item.findtext(_NASDAQ_HALTS_NS + name) or "").strip()
+
+    def parsed(value: str) -> date | None:
+        try:
+            return datetime.strptime(value, "%m/%d/%Y").date() if value else None
+        except ValueError as exc:
+            raise UniverseSnapshotError("Nasdaq halts feed date is invalid") from exc
+
+    for item in root.iter("item"):
+        if field(item, "IssueSymbol") != symbol:
+            continue
+        halted, resumed = parsed(field(item, "HaltDate")), parsed(field(item, "ResumptionDate"))
+        if halted is not None and halted < day and (resumed is None or resumed > day):
+            return {
+                name: field(item, name)
+                for name in (
+                    "IssueSymbol",
+                    "IssueName",
+                    "Market",
+                    "HaltDate",
+                    "HaltTime",
+                    "ReasonCode",
+                    "ResumptionDate",
+                )
+            }
+    return None
 
 
 def canonical_bytes(value: object) -> bytes:

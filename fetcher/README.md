@@ -246,7 +246,8 @@ Source plan 的完成狀態必須經 canonical 查核，queued run 不能視為�
 
 空 provider 回應、rate limit 與 source error 都屬 unresolved/blocked，不自動變成 no-data；mapping gap 在 Source
 plan 統計中是 unavailable，plan 不缺其他成員即完整。僅具日期、商品、session、URL/checksum、觀察時間及實質來源片段的 halted/no-trade
-證據可以完成 no-data。TAIFEX 明確零 volume 且無成交價會附官方 report 證據提交 no-trade；
+證據可以完成 no-data。TAIFEX 明確零 volume 且無成交價會附官方 report 證據提交 no-trade；Twelve Data 美股成員用完
+最後一次 no-data 重試時，若 Nasdaq 停牌清單列出交易日前已停牌且未復牌，附該筆停牌提交 halted；
 其他未能提供來源證據的商品保持缺口。八次無法恢復的 acquisition/source failure、mapping gap
 或 normalization failure 轉 manual，`--health` 保留 unresolved、late 及 manual-required，交由
 營運人員核實處置，不跳過後將整份 plan 宣稱完成。Health 以各原因的筆數回報失敗成員，只附少量範例；

@@ -66,6 +66,7 @@ from findb_fetcher.full_market_state import (
 from findb_fetcher.full_market_universe import (
     EMPTY_OFFICIAL_SNAPSHOT_URLS,
     MAX_SNAPSHOT_BYTES,
+    UniverseSnapshotError,
     canonical_bytes,
     checksum,
     official_snapshot_dataset,
@@ -2484,6 +2485,9 @@ class FullMarketRuntime:
                         exc,
                         failure.reason,
                         "no_data" if failure.no_data else failure.reason,
+                        final_evidence=lambda: self.adapter.no_data_evidence(
+                            member, self._acquisition_context(plan, part, release, feed)
+                        ),
                     )
                     # One symbol without data says nothing about the provider or account,
                     # so it keeps its bounded retries without stopping the other members.
@@ -2693,8 +2697,12 @@ class FullMarketRuntime:
         exc: BaseException,
         reason: str,
         finish_reason: str,
+        final_evidence: Callable[[], dict[str, Any] | None] | None = None,
     ) -> None:
-        """Report one classified member failure; its retry budget stays durable."""
+        """Report one classified member failure; its retry budget stays durable.
+
+        ``final_evidence`` is asked once the member used its last no-data retry.
+        """
         self.source.outcome(
             plan["plan_id"],
             work_item_id=part["work_item_id"],
@@ -2708,15 +2716,51 @@ class FullMarketRuntime:
             now=time.time(),
         )
         if finish_reason == "no_data" and self.state.no_data_exhausted(key):
-            # The last no-data retry: Source may now classify a known case, such as a
-            # listing that has not traded yet, from a final outcome.
+            # The last no-data retry: official evidence of a halt makes it no_data;
+            # otherwise Source may classify a known case, such as a listing that has
+            # not traded yet, from the final blocked outcome.
+            if not self._report_final_no_data(plan, part, member_key, final_evidence):
+                self.source.outcome(
+                    plan["plan_id"],
+                    work_item_id=part["work_item_id"],
+                    member_key=member_key,
+                    reason="no_data_exhausted",
+                )
+        self._record_diagnostic(key, exc)
+
+    def _report_final_no_data(
+        self,
+        plan: dict[str, Any],
+        part: dict[str, Any],
+        member_key: str,
+        final_evidence: Callable[[], dict[str, Any] | None] | None,
+    ) -> bool:
+        """Report official no-data evidence for an exhausted member; False when there is none.
+
+        The evidence only completes a member: an unavailable list, or Source refusing
+        the evidence, leaves the final blocked outcome to the caller.
+        """
+        if final_evidence is None:
+            return False
+        try:
+            evidence = final_evidence()
+        except (ProviderHTTPError, ReadinessBlockedError, UniverseSnapshotError, httpx.HTTPError):
+            return False
+        if evidence is None:
+            return False
+        try:
             self.source.outcome(
                 plan["plan_id"],
                 work_item_id=part["work_item_id"],
                 member_key=member_key,
-                reason="no_data_exhausted",
+                reason=evidence["source_status"],
+                evidence=evidence,
             )
-        self._record_diagnostic(key, exc)
+        except FullMarketProtocolError as exc:
+            if exc.status_code not in {409, 422}:
+                raise
+            return False
+        return True
 
     def _record_diagnostic(self, key: str, exc: BaseException) -> None:
         """Best effort: a diagnostic write never suppresses the failure's own report."""
