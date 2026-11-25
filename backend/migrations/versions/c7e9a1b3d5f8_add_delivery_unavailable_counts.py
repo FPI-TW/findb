@@ -1,7 +1,7 @@
 """Count members a provider cannot serve apart from blocked ones (#593).
 
 Revision ID: c7e9a1b3d5f8
-Revises: 64da893e5e78
+Revises: 1587769858c0
 
 A frozen member without a provider mapping used to count as blocked, so a plan
 whose only remaining members were mapping gaps stayed incomplete forever. Those
@@ -26,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "c7e9a1b3d5f8"
-down_revision = "64da893e5e78"
+down_revision = "1587769858c0"
 branch_labels = None
 depends_on = None
 
