@@ -315,6 +315,15 @@ class ProviderAdapter:
             )
         return None
 
+    def no_data_evidence(
+        self, member: Mapping[str, Any], context: AcquisitionContext
+    ) -> dict[str, Any] | None:
+        """Official evidence that a member which used every no-data retry had no session.
+
+        Asked once, after the last retry; ``None`` leaves the outcome blocked.
+        """
+        return None
+
     def pending_shared_fetch(self, dataset_key: str, trade_date: date) -> bool:
         """True when the next ``acquire`` fetches a native response every member shares."""
         return False

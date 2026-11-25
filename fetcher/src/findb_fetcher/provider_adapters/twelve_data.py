@@ -16,11 +16,15 @@ from findb_fetcher.full_market_errors import (
     retryable_http_status,
 )
 from findb_fetcher.full_market_universe import (
+    NASDAQ_HALTS_URL,
     NASDAQ_URLS,
     TWELVE_DATA_EQUITY_TYPES,
+    canonical_bytes,
     catalogue_supplement,
+    checksum,
     map_catalogue,
     nasdaq_effective_date,
+    nasdaq_halt,
     nasdaq_security_names,
     parse_nasdaq,
     scope_us_members,
@@ -270,6 +274,26 @@ class TwelveDataAdapter(ProviderAdapter):
             http=True,
             status_code=exc.status_code,
         )
+
+    def no_data_evidence(
+        self, member: Mapping[str, Any], context: AcquisitionContext
+    ) -> dict[str, Any] | None:
+        """A US listing Nasdaq lists as halted before the trade date and not yet resumed."""
+        if context.dataset_key != "us_equity_eod":
+            return None
+        body = context.snapshot(NASDAQ_HALTS_URL)
+        halt = nasdaq_halt(body, str(member["symbol"]), context.trade_date)
+        if halt is None:
+            return None
+        return {
+            "url": NASDAQ_HALTS_URL,
+            "sha256": checksum(body),
+            "observed_at": context.fetched_at.isoformat(),
+            "source_symbol": member["provider_symbol"],
+            "trade_date": context.trade_date.isoformat(),
+            "source_status": "halted",
+            "source_excerpt": canonical_bytes(halt).decode()[:500],
+        }
 
     def member_outcome(self, exc: BaseException) -> tuple[str, str | None] | None:
         # A symbol without a series for the date says nothing about the others.
