@@ -2141,6 +2141,8 @@ class FullMarketRuntime:
         # probe or another gate RPC each. Locally prepared bodies still deliver;
         # server-retained ones stay pending for the next running attempt.
         acquisition_closed = False
+        # A member-published provider's unpublished members, after the round's others.
+        publication_pending: ProviderPublicationPendingError | None = None
         for index, (part, member_key) in ordered:
             key = part["work_item_id"] + ":" + member_key
             if drain_keys is not None and key not in drain_keys:
@@ -2445,15 +2447,22 @@ class FullMarketRuntime:
                             reason="target_not_ready",
                             delay_seconds=retry_delay,
                         )
-                        raise ProviderPublicationPendingError(
+                        pending = ProviderPublicationPendingError(
                             failure.code or "provider_target_not_ready",
                             retry_after_seconds=retry_delay,
-                        ) from None
+                        )
+                        if self.adapter.publication_per_member:
+                            # Only this member is late; the others need not wait for it.
+                            publication_pending = publication_pending or pending
+                            continue
+                        raise pending from None
                     self.state.finish(
                         key,
                         status="manual",
                         reason="target_not_ready",
                     )
+                    if self.adapter.publication_per_member:
+                        continue
                     return False
                 if failure.wait is None and failure.kind in {
                     FailureKind.MEMBER,
@@ -2528,6 +2537,8 @@ class FullMarketRuntime:
                 self._report_source_error(plan, part, member_key, key)
                 return False
 
+        if publication_pending is not None:
+            raise publication_pending
         return True
 
     def _batch_candidates(

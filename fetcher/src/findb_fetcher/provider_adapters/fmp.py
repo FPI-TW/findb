@@ -130,6 +130,8 @@ class FMPAdapter(ProviderAdapter):
     provider = "fmp"
     # The index list is read inside ``build_universe`` with the account key.
     catalogue_datasets = None
+    # Every index settles at its own time (``^W5000`` well after ``^GSPC``).
+    publication_per_member = True
 
     def __init__(self) -> None:
         self._client: FMPClient | None = None
