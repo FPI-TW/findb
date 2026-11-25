@@ -119,10 +119,12 @@ INDEX_UNIVERSES: dict[str, dict[str, str]] = {
         "^FVX": "USD",
         "^TNX": "USD",
         "^TYX": "USD",
-        "DX-Y.NYB": "USD",
         "^IDCTCRT": "USD",
         "^SPGSCI": "USD",
     },
+    # The dollar index trades around the clock: fetched after its 17:00 New York
+    # settlement and before the next session replaces FMP's row for the date.
+    "us_dollar_index_eod": {"DX-Y.NYB": "USD"},
 }
 
 

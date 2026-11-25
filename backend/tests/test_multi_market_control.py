@@ -17,6 +17,7 @@ async def test_a_control_appears_under_each_slot_and_market_of_its_feeds(test_se
     assert {feed.dataset_key: feed.schedule.source_timezone for feed in fmp.feeds} == {
         "hk_index_eod": "Asia/Hong_Kong",
         "us_index_eod": "Asia/Taipei",
+        "us_dollar_index_eod": "America/New_York",
     }
     # The control's own slot is its earliest feed's; filtering reads every feed's.
     assert fmp.slot_id == "western_markets_window"

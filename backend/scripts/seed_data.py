@@ -38,6 +38,7 @@ SUPPORTED_DATASETS = (
     "hk_equity_official_eod",
     "hk_index_eod",
     "us_index_eod",
+    "us_dollar_index_eod",
     "tw_etf_eod",
     "tw_futures_eod",
     "tw_equity_bar_1m",
@@ -500,6 +501,7 @@ DATASETS.extend(
         # Market indices: one dataset per publication-time group (FMP).
         _staged_eod_dataset("hk_index_eod", "港股指數日K", currency="HKD"),
         _staged_eod_dataset("us_index_eod", "美股指數日K", currency="USD"),
+        _staged_eod_dataset("us_dollar_index_eod", "美元指數日K", currency="USD"),
     ]
 )
 
@@ -675,6 +677,7 @@ async def seed_datasets(session: AsyncSession) -> None:
             "hk_equity_official_eod",
             "hk_index_eod",
             "us_index_eod",
+            "us_dollar_index_eod",
             "tw_etf_eod",
             "tw_futures_eod",
         }:

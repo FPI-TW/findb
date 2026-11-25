@@ -1,8 +1,9 @@
 # Provider metadata
 
-`backend/configs/provider_catalog.v1.json` 定義六個 providers／十二條 feeds：
+`backend/configs/provider_catalog.v1.json` 定義六個 providers／十三條 feeds：
 Twelve Data US EOD、FactSet HK EOD、HKEX 官方每日行情（`hk_equity_official_eod`，契約 `exchange_daily_quote.v1`）、
-FMP 市場指數日線（`hk_index_eod` 與 `us_index_eod`，契約 `market_eod.v2`，`asset_class` 為 `index`）、
+FMP 市場指數日線（`hk_index_eod`、`us_index_eod` 與 `us_dollar_index_eod`，契約 `market_eod.v2`，`asset_class` 為 `index`；
+同一市場可有多個指數 dataset，Serve 依市場與資產類別讀取，`/datasets` 以各 dataset 自己寫入的資料計算涵蓋範圍）、
 FinLab TW equity／ETF EOD、TAIFEX futures EOD，以及 FinLab 的四條盤中 feed
 （`tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick`，契約 `intraday_partition.v1`）。
 只有盤中 feed 的頻率不是 `daily`：1 分 K 為 `minute`，逐筆為 `tick`。

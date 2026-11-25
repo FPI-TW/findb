@@ -102,7 +102,7 @@ def test_every_fmp_index_has_a_display_name():
     # The Fetcher's lists are the source of every index symbol FinDB writes.
     from findb_fetcher.provider_adapters.fmp import INDEX_UNIVERSES
 
-    markets = {"hk_index_eod": "HK", "us_index_eod": "US"}
+    markets = {"hk_index_eod": "HK", "us_index_eod": "US", "us_dollar_index_eod": "US"}
     unnamed = [
         (markets[dataset], symbol)
         for dataset, group in INDEX_UNIVERSES.items()

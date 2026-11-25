@@ -24,7 +24,7 @@ def test_only_index_feeds_require_a_calendar() -> None:
         (feed.provider, feed.dataset_key)
         for feed in provider_catalog().feeds
         if feed.calendar_required
-    } == {("fmp", "hk_index_eod"), ("fmp", "us_index_eod")}
+    } == {("fmp", "hk_index_eod"), ("fmp", "us_index_eod"), ("fmp", "us_dollar_index_eod")}
     assert calendar_required("fmp", "us_index_eod") is True
     assert calendar_required("taifex", "tw_futures_eod") is False
     assert calendar_required("unknown", "tw_futures_eod") is False

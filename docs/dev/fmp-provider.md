@@ -463,6 +463,8 @@ feed，不改排程，只延長 `INDEX_UNIVERSES`，`historical_requests_per_dat
 | 波動率 | `^VIX1D`、`^VIX9D`、`^VIX3M`、`^VIX6M`、`^VIX1Y`、`^VVIX`、`^VXN`、`^RVX`、`^VXD`、`^GVZ`、`^OVX`、`^VXSLV`、`^VXTLT`、`^VIXEQ` |
 | 利率、美元、商品 | `^IRX`、`^FVX`、`^TNX`、`^TYX`、`DX-Y.NYB`、`^IDCTCRT`、`^SPGSCI` |
 
+`DX-Y.NYB` 後來移到獨立的 `us_dollar_index_eod`（紐約 17:15），見 [full_market](../operations/full_market.md) 的「FMP 市場指數」與 #713。
+
 選取依據（2026-11-24，FMP `historical-price-eod/full` 2025-11-03 至 2026-11-23，對照 NYSE 與 HKEX 日曆）：
 
 - 上表每一檔在每個交易日都有列，名單刷新所需的 `index-list` 都有、幣別為 USD／HKD。

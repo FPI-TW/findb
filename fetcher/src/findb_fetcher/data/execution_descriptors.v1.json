@@ -285,6 +285,35 @@
         "current_version": 2,
         "schema_id": "market_eod"
       },
+      "dataset_key": "us_dollar_index_eod",
+      "delivery": {
+        "slot_id": "western_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": "current_release",
+      "historical_execution": null,
+      "historical_requests_per_date": 1,
+      "lifecycle": "active",
+      "market": "US",
+      "provider": "fmp",
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
+      "asset_class": "index",
+      "calendar_market": "US",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          2
+        ],
+        "current_version": 2,
+        "schema_id": "market_eod"
+      },
       "dataset_key": "us_index_eod",
       "delivery": {
         "slot_id": "western_markets_window"
@@ -292,7 +321,7 @@
       "frequency": "daily",
       "historical_cohort": "current_release",
       "historical_execution": null,
-      "historical_requests_per_date": 73,
+      "historical_requests_per_date": 72,
       "lifecycle": "active",
       "market": "US",
       "provider": "fmp",
@@ -424,7 +453,7 @@
       "unlisted_symbols": "none"
     }
   ],
-  "projection_sha256": "709e453145a96d6d2f9c614695b0c76b39a894879fd74d169869620303a163b7",
+  "projection_sha256": "0e2c6cb79c7c1abb6a22a73cf14fda4bda4bcc19098c30fe64674d97491ee0a8",
   "providers": [
     {
       "credential_env_names": [
