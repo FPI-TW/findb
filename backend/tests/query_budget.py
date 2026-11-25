@@ -11,6 +11,8 @@ from contextlib import contextmanager
 
 from sqlalchemy import event
 
+_TRANSACTION_CONTROL = ("SAVEPOINT", "RELEASE SAVEPOINT", "ROLLBACK TO SAVEPOINT")
+
 
 class StatementLog(list[str]):
     """Statements captured while the context was open, in execution order."""
@@ -25,7 +27,9 @@ def count_statements(db) -> Iterator[StatementLog]:
     statements = StatementLog()
 
     def capture(conn, cursor, statement, params, context, many):
-        statements.append(statement)
+        # Test isolation savepoints are not the read's own statements.
+        if not statement.lstrip().upper().startswith(_TRANSACTION_CONTROL):
+            statements.append(statement)
 
     engine = db.bind.sync_engine
     event.listen(engine, "before_cursor_execute", capture)

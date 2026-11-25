@@ -1275,8 +1275,15 @@ class TestDQIssueProvenance:
         test_session.add(issue)
         await test_session.commit()
 
-        response = await client.get("/api/v1/admin/dq-issues?page_size=1", headers=admin_headers)
+        from tests.query_budget import count_statements
+
+        with count_statements(test_session) as statements:
+            response = await client.get(
+                "/api/v1/admin/dq-issues?page_size=1", headers=admin_headers
+            )
         assert response.status_code == 200
+        # Provenance needs only raw metadata; the payload JSON is never read.
+        assert not any("market_payload.payload" in statement for statement in statements)
         item = response.json()["data"][0]
         assert item["source"] == "finlab"
         assert item["provider"] == "finlab"

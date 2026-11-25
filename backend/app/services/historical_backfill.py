@@ -11,7 +11,7 @@ import json
 import os
 from collections import OrderedDict
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -663,6 +663,112 @@ async def list_requests(
         .all()
     )
     return list(rows), total
+
+
+ITEM_SUMMARY_FIELDS = (
+    "item_id",
+    "trade_date",
+    "status",
+    "unlisted_symbols",
+    "started_at",
+    "completed_at",
+    "failure_code",
+    "failure_message",
+    "run_id",
+)
+
+
+async def list_request_summaries(
+    db: AsyncSession, *, page: int, page_size: int, include_items: bool = True
+) -> tuple[list[tuple[HistoricalBackfillRequest, dict[str, int], list[dict]]], int]:
+    """A page of requests with per-status item counts, in a fixed number of reads.
+
+    Items carry only their summary fields; calendar snapshots and result evidence
+    stay with the per-request item read, so a page never grows with evidence size.
+    """
+    from sqlalchemy import func
+
+    total = int(
+        (await db.execute(select(func.count()).select_from(HistoricalBackfillRequest))).scalar_one()
+    )
+    requests = list(
+        (
+            await db.scalars(
+                select(HistoricalBackfillRequest)
+                .order_by(
+                    HistoricalBackfillRequest.created_at.desc(),
+                    HistoricalBackfillRequest.request_id.desc(),
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).all()
+    )
+    ids = [row.request_id for row in requests]
+    counts: dict[Any, dict[str, int]] = {request_id: {} for request_id in ids}
+    items: dict[Any, list[dict]] = {request_id: [] for request_id in ids}
+    if ids:
+        for request_id, status, count in (
+            await db.execute(
+                select(
+                    HistoricalBackfillItem.request_id,
+                    HistoricalBackfillItem.status,
+                    func.count(),
+                )
+                .where(HistoricalBackfillItem.request_id.in_(ids))
+                .group_by(HistoricalBackfillItem.request_id, HistoricalBackfillItem.status)
+            )
+        ).all():
+            counts[request_id][status] = count
+        if include_items:
+            columns = [getattr(HistoricalBackfillItem, name) for name in ITEM_SUMMARY_FIELDS]
+            for row in (
+                await db.execute(
+                    select(HistoricalBackfillItem.request_id, *columns)
+                    .where(HistoricalBackfillItem.request_id.in_(ids))
+                    .order_by(HistoricalBackfillItem.request_id, HistoricalBackfillItem.trade_date)
+                )
+            ).mappings():
+                items[row["request_id"]].append({name: row[name] for name in ITEM_SUMMARY_FIELDS})
+    return [(row, counts[row.request_id], items[row.request_id]) for row in requests], total
+
+
+async def list_request_items(
+    db: AsyncSession,
+    request_id: Any,
+    *,
+    page: int,
+    page_size: int,
+    include_evidence: bool = False,
+) -> tuple[list[dict], int] | None:
+    """One request's items by trade date; evidence only when asked for."""
+    from sqlalchemy import func
+
+    if await db.get(HistoricalBackfillRequest, request_id) is None:
+        return None
+    names = (
+        (*ITEM_SUMMARY_FIELDS, "calendar_snapshot", "result_evidence")
+        if include_evidence
+        else (ITEM_SUMMARY_FIELDS)
+    )
+    total = int(
+        await db.scalar(
+            select(func.count())
+            .select_from(HistoricalBackfillItem)
+            .where(HistoricalBackfillItem.request_id == request_id)
+        )
+        or 0
+    )
+    rows = (
+        await db.execute(
+            select(*(getattr(HistoricalBackfillItem, name) for name in names))
+            .where(HistoricalBackfillItem.request_id == request_id)
+            .order_by(HistoricalBackfillItem.trade_date)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).mappings()
+    return [{name: row[name] for name in names} for row in rows], total
 
 
 async def list_enabled_scopes(db: AsyncSession) -> list[tuple[str, str, str, bool]]:

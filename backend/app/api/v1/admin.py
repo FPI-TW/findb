@@ -39,6 +39,7 @@ from app.models.registry import (
     SourceClient,
 )
 from app.schemas.admin import (
+    AdminDeliverySummaryResponse,
     AdminUserCreateRequest,
     AdminUserEnvelope,
     AdminUserListResponse,
@@ -79,6 +80,8 @@ from app.schemas.admin import (
     DQIssueListResponse,
     DQIssueResponse,
     HistoricalBackfillCreateRequest,
+    HistoricalBackfillItemListResponse,
+    HistoricalBackfillItemResponse,
     HistoricalBackfillPreviewDay,
     HistoricalBackfillPreviewRequest,
     HistoricalBackfillPreviewResponse,
@@ -135,7 +138,6 @@ from app.schemas.calendar_closure import (
 )
 from app.schemas.common import PaginationInfo
 from app.schemas.full_market import (
-    DeliverySummaryResponse,
     UniversePublishRequest,
     UniverseReleaseResponse,
 )
@@ -211,7 +213,10 @@ from app.services.historical_backfill import (
     create_request as create_historical_backfill,
 )
 from app.services.historical_backfill import (
-    list_requests as list_historical_backfills,
+    list_request_items as list_historical_backfill_items,
+)
+from app.services.historical_backfill import (
+    list_request_summaries as list_historical_backfill_summaries,
 )
 from app.services.historical_backfill import (
     preview_request as preview_historical_backfill,
@@ -496,16 +501,35 @@ async def get_completeness_matrix(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.get("/delivery-plans/{plan_id}/summary", response_model=DeliverySummaryResponse)
+GAP_PAGE_LIMIT = 1000
+
+
+@router.get("/delivery-plans/{plan_id}/summary", response_model=AdminDeliverySummaryResponse)
 async def get_full_market_delivery_summary(
     plan_id: UUID,
+    gap_status: list[Literal["missing", "blocked", "unavailable"]] | None = Query(default=None),
+    gap_page: int = Query(default=1, ge=1),
+    gap_page_size: int = Query(default=GAP_PAGE_LIMIT, ge=1, le=GAP_PAGE_LIMIT),
     _: AdminPrincipal = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
-) -> DeliverySummaryResponse:
+) -> AdminDeliverySummaryResponse:
+    """The only Admin read that classifies a plan's members; the Dashboard loads it on demand.
+
+    Gaps can be filtered by status and paged; `gaps_total` counts the filtered gaps.
+    """
     plan = await db.get(DailyDeliveryPlan, plan_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Delivery plan not found")
-    return await reconcile_plan(db, plan)
+    summary = await reconcile_plan(db, plan, gap_limit=None)
+    wanted = set(gap_status or ())
+    gaps = [gap for gap in summary.gaps if not wanted or gap.get("status") in wanted]
+    start = (gap_page - 1) * gap_page_size
+    return AdminDeliverySummaryResponse(
+        **summary.model_dump(exclude={"gaps", "unlisted"}),
+        gaps=gaps[start : start + gap_page_size],
+        gaps_total=len(gaps),
+        unlisted=summary.unlisted[:GAP_PAGE_LIMIT],
+    )
 
 
 settings = get_settings()
@@ -639,22 +663,65 @@ async def preview_historical_backfill_endpoint(
     )
 
 
+def _pagination(page: int, page_size: int, total: int) -> PaginationInfo:
+    return PaginationInfo(
+        page=page,
+        page_size=page_size,
+        total_records=total,
+        total_pages=(total + page_size - 1) // page_size if total else 0,
+    )
+
+
 @router.get("/historical-backfills", response_model=HistoricalBackfillRequestListResponse)
 async def list_historical_backfill_endpoint(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
+    include_items: bool = Query(default=True),
     _api_key: AdminPrincipal = Depends(require_operator),
     db: AsyncSession = Depends(get_db),
 ):
-    rows, total = await list_historical_backfills(db, page=page, page_size=page_size)
+    """Requests with item counts; items carry summary fields only, never evidence."""
+    rows, total = await list_historical_backfill_summaries(
+        db, page=page, page_size=page_size, include_items=include_items
+    )
     return HistoricalBackfillRequestListResponse(
-        data=[HistoricalBackfillRequestResponse.model_validate(row) for row in rows],
-        pagination=PaginationInfo(
-            page=page,
-            page_size=page_size,
-            total_records=total,
-            total_pages=(total + page_size - 1) // page_size if total else 0,
-        ),
+        data=[
+            HistoricalBackfillRequestResponse(
+                **{
+                    name: getattr(row, name)
+                    for name in HistoricalBackfillRequestResponse.model_fields
+                    if name not in {"items", "item_counts"}
+                },
+                items=[HistoricalBackfillItemResponse(**item) for item in items],
+                item_counts=counts,
+            )
+            for row, counts, items in rows
+        ],
+        pagination=_pagination(page, page_size, total),
+    )
+
+
+@router.get(
+    "/historical-backfills/{request_id}/items", response_model=HistoricalBackfillItemListResponse
+)
+async def list_historical_backfill_items_endpoint(
+    request_id: UUID,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=500),
+    include_evidence: bool = Query(default=False),
+    _api_key: AdminPrincipal = Depends(require_operator),
+    db: AsyncSession = Depends(get_db),
+):
+    """One request's items by trade date; calendar snapshot and evidence only on request."""
+    result = await list_historical_backfill_items(
+        db, request_id, page=page, page_size=page_size, include_evidence=include_evidence
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Historical backfill request not found")
+    items, total = result
+    return HistoricalBackfillItemListResponse(
+        data=[HistoricalBackfillItemResponse(**item) for item in items],
+        pagination=_pagination(page, page_size, total),
     )
 
 

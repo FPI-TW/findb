@@ -77,6 +77,7 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 | `queue/health` | 10 |
 | `completeness`（完整性矩陣） | 14 以內 |
 | `delivery-plans?summary_only=true`（一頁） | 7 以內 |
+| `historical-backfills`（一頁，`include_items=false`） | 6 以內 |
 
 規則見 `backend/AGENTS.md`「Admin 讀取的查詢預算」。
 
@@ -84,6 +85,8 @@ URL 的 `tab=plans|alerts|candidates|backfills`、計畫 `dataset/date/pp/pps`�
 - **各 feed 的應有日期、計畫摘要與未關閉告警**：全部 feed 一起查詢。
 - **計畫列表與矩陣**：只讀已存的計畫摘要與分區計數，不重新分類。計數未同步時標示 `counts_synced=false`，
   不在讀取時重算。
+- **明細按需載入**：計畫缺口（`/{plan_id}/summary`）是唯一會即時分類成員的讀取，只在展開時載入，且支援依狀態
+  篩選與分頁。回補列表不帶證據與日曆快照，單一請求的 items 另有分頁 API。
 - **`queue/health` 的 `counts`**：只統計 queued、retrying、processing、failed，不再統計已完成的 job。
 - **outbox 與重試耗盡的計數**：outbox 只計算 pending／publishing；重試耗盡的 run 走部分索引
   `idx_run_retry_exhausted`。

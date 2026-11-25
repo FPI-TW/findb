@@ -12,7 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.execution_profiles import ExecutionProfile
 from app.schemas.common import PaginatedResponse, PaginationInfo
 from app.schemas.execution_config import FeedScheduleView
-from app.schemas.full_market import CalendarSkipResponse, DeliveryPlanResponse
+from app.schemas.full_market import (
+    CalendarSkipResponse,
+    DeliveryPlanResponse,
+    DeliverySummaryResponse,
+)
 from app.schemas.shioaji_repair import RepairPreviewRequest
 from app.services.slot_identity import CanonicalSlotId
 from app.utils import ensure_utc, utc_now
@@ -138,10 +142,16 @@ class HistoricalBackfillRequestResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     items: list[HistoricalBackfillItemResponse] = Field(default_factory=list)
+    # Items per status; a list read fills it whether or not it carries the items.
+    item_counts: dict[str, int] = Field(default_factory=dict)
     model_config = ConfigDict(from_attributes=True)
 
 
 class HistoricalBackfillRequestListResponse(PaginatedResponse[HistoricalBackfillRequestResponse]):
+    pass
+
+
+class HistoricalBackfillItemListResponse(PaginatedResponse[HistoricalBackfillItemResponse]):
     pass
 
 
@@ -1101,6 +1111,12 @@ class AdminDeliveryPlanResponse(DeliveryPlanResponse):
     """
 
     counts_synced: bool = True
+
+
+class AdminDeliverySummaryResponse(DeliverySummaryResponse):
+    """A plan summary with gaps filtered and paged; `gaps_total` counts the filtered gaps."""
+
+    gaps_total: int = 0
 
 
 class DeliveryPlanListResponse(BaseModel):
