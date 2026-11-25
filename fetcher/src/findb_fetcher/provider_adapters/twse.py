@@ -8,11 +8,13 @@ from typing import Any
 
 import httpx
 
-from findb_fetcher.provider_adapters.tw_official import TwOfficialAdapter
+from findb_fetcher.provider_adapters.tw_official import Table, TwOfficialAdapter
 from findb_fetcher.providers import twse
 from findb_fetcher.providers.tw_official import TwOfficialFormatError
 
 INDEX_DATASET = "tw_twse_index_eod"
+SUMMARY_DATASET = "tw_twse_institutional_summary"
+STOCK_DATASET = "tw_twse_institutional_stock"
 
 
 class TwseAdapter(TwOfficialAdapter):
@@ -20,6 +22,7 @@ class TwseAdapter(TwOfficialAdapter):
     index_dataset = INDEX_DATASET
     index_symbol = "^TWII"
     exchange = "TWSE"
+    table_datasets = {"summary": SUMMARY_DATASET, "stock": STOCK_DATASET}
 
     def fetch_index_month(
         self,
@@ -47,3 +50,14 @@ class TwseAdapter(TwOfficialAdapter):
     def validate_month(self, raw: bytes, month: date) -> None:
         if any((day.year, day.month) != (month.year, month.month) for day in twse.index_rows(raw)):
             raise TwOfficialFormatError("TWSE index response is of another month")
+
+    def table(self, kind: str) -> Table:
+        if kind == "summary":
+            return Table(
+                "summary",
+                "BFI82U",
+                twse.fetch_summary,
+                twse.summary_categories,
+                twse.summary_url,
+            )
+        return Table("stock", "T86", twse.fetch_stock, twse.stock_rows, twse.stock_url)

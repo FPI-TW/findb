@@ -24,6 +24,7 @@ from findb_fetcher.provider_adapters.tpex import TpexAdapter
 from findb_fetcher.provider_adapters.twse import TwseAdapter
 from findb_fetcher.providers import tpex, tw_official, twse
 from findb_fetcher.providers.tw_official import (
+    STOCK_COLUMNS,
     TwOfficialFormatError,
     TwOfficialNotPublishedError,
     TwOfficialPayloadError,
@@ -352,3 +353,265 @@ def test_the_universe_needs_the_published_lag_and_a_known_dataset() -> None:
         TwseAdapter().build_universe(
             [{"dataset_key": "tw_equity_eod"}], _universe_context(server, "tw_equity_eod")
         )
+
+
+# --- Three institutional investors tables -------------------------------------
+
+FRIDAY = date(2026, 11, 20)
+TWSE_SUMMARY = (FIXTURES / "twse_summary_20261120.json").read_bytes()
+TPEX_SUMMARY = (FIXTURES / "tpex_summary_20261120.json").read_bytes()
+TWSE_STOCK = (FIXTURES / "twse_stock_20261120.json").read_bytes()
+TPEX_STOCK = (FIXTURES / "tpex_stock_20261120.json").read_bytes()
+TWSE_NONE = json.dumps({"stat": "很抱歉，沒有符合條件的資料!", "total": 0}).encode()
+
+TABLES = {
+    ("twse", "summary"): (TwseAdapter, "tw_twse_institutional_summary", "BFI82U", TWSE_SUMMARY),
+    ("tpex", "summary"): (
+        TpexAdapter,
+        "tw_tpex_institutional_summary",
+        "insti_summary",
+        TPEX_SUMMARY,
+    ),
+    ("twse", "stock"): (TwseAdapter, "tw_twse_institutional_stock", "T86", TWSE_STOCK),
+    ("tpex", "stock"): (
+        TpexAdapter,
+        "tw_tpex_institutional_stock",
+        "insti_daily_trade",
+        TPEX_STOCK,
+    ),
+}
+
+
+def _edit(raw: bytes, change) -> bytes:
+    value = json.loads(raw)
+    change(value)
+    return json.dumps(value, ensure_ascii=False).encode()
+
+
+def _board_member(provider: str, source_symbol: str) -> dict[str, Any]:
+    return {
+        "member_key": provider.upper(),
+        "symbol": provider.upper(),
+        "provider_symbol": source_symbol,
+        "exchange": provider.upper(),
+        "currency": "TWD",
+        "asset_class": "equity",
+        "mapping_status": "mapped",
+    }
+
+
+def test_both_summaries_map_every_printed_category() -> None:
+    day, twse_rows = twse.summary_categories(TWSE_SUMMARY, FRIDAY)
+    assert day == FRIDAY
+    assert {row["category"]: row["net_amount"] for row in twse_rows} == {
+        "dealer_proprietary": -5_067_838_740,
+        "dealer_hedge": -29_015_401_380,
+        "investment_trust": -7_346_992_003,
+        "foreign_ex_dealer": -9_510_543_572,
+        "foreign_dealer": 0,
+        "total": -50_940_775_695,
+    }
+    _, tpex_rows = tpex.summary_categories(TPEX_SUMMARY, FRIDAY)
+    categories = {row["category"] for row in tpex_rows}
+    assert categories == {
+        "foreign_total",
+        "foreign_ex_dealer",
+        "foreign_dealer",
+        "investment_trust",
+        "dealer_total",
+        "dealer_proprietary",
+        "dealer_hedge",
+        "total",
+    }
+
+
+def test_both_stock_tables_map_to_the_published_layout() -> None:
+    _, twse_rows = twse.stock_rows(TWSE_STOCK, FRIDAY)
+    assert len(twse_rows) == 5
+    first = twse_rows[0]
+    assert (first["symbol"], first["name"], first["total_net"]) == ("3481", "群創", 49_349_043)
+    assert first["foreign_total_net"] is None and first["dealer_total_buy"] is None
+    assert first["dealer_total_net"] == first["dealer_proprietary_net"] + first["dealer_hedge_net"]
+    _, tpex_rows = tpex.stock_rows(TPEX_STOCK, FRIDAY)
+    assert [row["symbol"] for row in tpex_rows] == [
+        "00411A",
+        "006201",
+        "00679B",
+        "700024",
+        "700126",
+    ]
+    warrant = tpex_rows[3]
+    assert (warrant["dealer_total_buy"], warrant["dealer_total_net"]) == (4000, -66000)
+    for row in (*twse_rows, *tpex_rows):
+        assert set(row) == set(STOCK_COLUMNS)
+    rows_object = json.loads(tw_official.rows_object(tpex_rows))
+    assert rows_object["columns"] == list(STOCK_COLUMNS)
+    assert rows_object["rows"][3][:2] == ["700024", "新應材統一64購02"]
+
+
+@pytest.mark.parametrize(
+    ("parser", "raw"),
+    [
+        (twse.summary_categories, TWSE_NONE),
+        (twse.stock_rows, TWSE_NONE),
+        # An unpublished day is answered with the latest one.
+        (twse.summary_categories, TWSE_SUMMARY),
+        (tpex.summary_categories, TPEX_SUMMARY),
+        (tpex.stock_rows, _edit(TPEX_STOCK, lambda value: value["tables"][0].update(data=[]))),
+    ],
+)
+def test_a_table_of_another_day_or_none_is_not_published(parser, raw) -> None:
+    with pytest.raises(TwOfficialNotPublishedError):
+        parser(raw, date(2026, 11, 23))
+
+
+@pytest.mark.parametrize(
+    ("parser", "raw"),
+    [
+        (
+            twse.stock_rows,
+            _edit(TWSE_STOCK, lambda value: value["fields"].__setitem__(4, "外陸資買賣超")),
+        ),
+        (twse.stock_rows, _edit(TWSE_STOCK, lambda value: value.update(total=6))),
+        (tpex.stock_rows, _edit(TPEX_STOCK, lambda value: value["tables"][0].update(totalCount=9))),
+        (
+            twse.summary_categories,
+            _edit(
+                TWSE_SUMMARY, lambda value: value["data"].__setitem__(0, ["自營商", "1", "1", "0"])
+            ),
+        ),
+        (
+            tpex.summary_categories,
+            _edit(TPEX_SUMMARY, lambda value: value["tables"][0]["data"].pop()),
+        ),
+        (
+            tpex.stock_rows,
+            _edit(TPEX_STOCK, lambda value: value["tables"][0]["data"][0].__setitem__(2, "1.5")),
+        ),
+        (
+            twse.stock_rows,
+            _edit(TWSE_STOCK, lambda value: value["data"][0].__setitem__(0, "33-1")),
+        ),
+    ],
+)
+def test_a_changed_table_is_a_format_change(parser, raw) -> None:
+    with pytest.raises(TwOfficialFormatError):
+        parser(raw, FRIDAY)
+
+
+@pytest.mark.parametrize("provider", ["twse", "tpex"])
+def test_a_summary_is_one_inline_request_of_the_board(provider) -> None:
+    adapter_class, dataset, source_symbol, raw = TABLES[(provider, "summary")]
+    server = _Exchange(_ok(raw))
+    context, persisted, _ = _context(
+        provider,
+        server,
+        FRIDAY,
+        dataset_key=dataset,
+        contract={"schema_id": "institutional_flow_summary", "current_version": 1},
+    )
+
+    result = adapter_class().acquire(_board_member(provider, source_symbol), context)
+
+    assert result.request is not None and result.raw_object is not None
+    assert result.request["schema_id"] == "institutional_flow_summary"
+    [row] = result.request["payload"]["data"]
+    assert (row["symbol"], row["source_symbol"], row["currency"]) == (
+        provider.upper(),
+        source_symbol,
+        "TWD",
+    )
+    assert row["trade_date"] == FRIDAY.isoformat()
+    assert len(row["categories"]) == (6 if provider == "twse" else 8)
+    assert persisted.calls == [(raw, source_symbol)]
+    sent = server.requests[0]
+    expected = {"dayDate": "20261120"} if provider == "twse" else {"date": "2026/11/20"}
+    assert expected.items() <= dict(sent.url.params).items()
+
+
+@pytest.mark.parametrize("provider", ["twse", "tpex"])
+def test_a_stock_table_is_delivered_by_reference(provider) -> None:
+    adapter_class, dataset, source_symbol, raw = TABLES[(provider, "stock")]
+    server = _Exchange(_ok(raw))
+    context, persisted, _ = _context(
+        provider,
+        server,
+        FRIDAY,
+        dataset_key=dataset,
+        contract={"schema_id": "institutional_flow_stock", "current_version": 1},
+    )
+
+    result = adapter_class().acquire(_board_member(provider, source_symbol), context)
+
+    assert result.request is not None
+    [row] = result.request["payload"]["data"]
+    (original, _), (rows_body, symbol) = persisted.calls
+    assert original == raw and symbol == source_symbol
+    rows_object = json.loads(rows_body)
+    assert rows_object["columns"] == list(STOCK_COLUMNS) and len(rows_object["rows"]) == 5
+    assert row["row_count"] == 5 and row["rows_bytes"] == len(rows_body)
+    assert row["rows_format"] == "json" and row["volume_unit"] == "share"
+    assert row["rows_ref"].endswith(f"{row['rows_sha256']}.json")
+    assert result.raw_object.sha256 != row["rows_sha256"]
+    if provider == "twse":
+        # Warrants are kept: every TWSE class is requested.
+        assert dict(server.requests[0].url.params)["selectType"] == "ALL"
+
+
+def test_an_unpublished_table_waits_and_a_past_one_is_missing() -> None:
+    adapter_class, dataset, source_symbol, _ = TABLES[("twse", "stock")]
+    server = _Exchange(_ok(TWSE_NONE))
+    context, persisted, _ = _context(
+        "twse",
+        server,
+        FRIDAY,
+        dataset_key=dataset,
+        contract={"schema_id": "institutional_flow_stock", "current_version": 1},
+    )
+    adapter = adapter_class()
+    with pytest.raises(TwOfficialNotPublishedError) as unpublished:
+        adapter.acquire(_board_member("twse", source_symbol), context)
+    # The response is kept as evidence even though it is not the day's table.
+    assert persisted.calls == [(TWSE_NONE, source_symbol)]
+    failure = adapter.classify(unpublished.value, "member")
+    assert (failure.kind, failure.wait) == (FailureKind.ROUND_RETRY, "publication")
+    assert adapter.member_outcome(unpublished.value) == ("missing", "no_source_row")
+
+
+def test_only_the_boards_own_table_member_is_served() -> None:
+    _, dataset, _, raw = TABLES[("tpex", "summary")]
+    context, _, _ = _context(
+        "tpex",
+        _Exchange(_ok(raw)),
+        FRIDAY,
+        dataset_key=dataset,
+        contract={"schema_id": "institutional_flow_summary", "current_version": 1},
+    )
+    with pytest.raises(ReadinessBlockedError):
+        TpexAdapter().acquire(_board_member("twse", "insti_summary"), context)
+    with pytest.raises(ReadinessBlockedError):
+        TpexAdapter().acquire(_board_member("tpex", "insti_daily_trade"), context)
+
+
+@pytest.mark.parametrize(("provider", "kind"), sorted(TABLES))
+def test_a_table_universe_is_the_board_evidenced_by_the_latest_table(provider, kind) -> None:
+    adapter_class, dataset, source_symbol, raw = TABLES[(provider, kind)]
+    server = _Exchange(_ok(raw))
+
+    snapshot = adapter_class().build_universe(
+        [{"dataset_key": dataset}], _universe_context(server, dataset)
+    )[dataset]
+
+    [member] = snapshot.members
+    assert (member["symbol"], member["provider_symbol"], member["asset_class"]) == (
+        provider.upper(),
+        source_symbol,
+        "equity",
+    )
+    [(url, evidence)] = snapshot.evidence.items()
+    assert evidence == raw
+    # Asked without a day: the exchange answers with its latest published table.
+    params = dict(server.requests[0].url.params)
+    assert "date" not in params and "dayDate" not in params
+    module = twse if provider == "twse" else tpex
+    assert url == (module.summary_url if kind == "summary" else module.stock_url)(None)
