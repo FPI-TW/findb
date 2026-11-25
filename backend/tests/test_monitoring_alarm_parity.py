@@ -43,6 +43,7 @@ CONTRACT: dict[tuple[str, str], Rule] = {
     ("FinDB", "TLSCertificateDaysRemaining"): Rule(LTE, 30, 2, 2, "breaching"),
     ("FinDB", "RDSBackupLagSeconds"): Rule(GTE, 1800, 2, 2, "breaching"),
     ("FinDB", "DLMPolicyHealthy"): Rule(LT, 1, 2, 2, "breaching"),
+    ("FinDB", "LocalStateLargestFileBytes"): Rule(GTE, 2 * 1024**3, 2, 2, "breaching"),
     # Flags and integrity counts: one datum is enough, and missing still breaches.
     ("FinDB", "RabbitMQDiskAlarm"): Rule(GTE, 1, 1, 1, "breaching"),
     ("FinDB", "RabbitMQMemoryAlarm"): Rule(GTE, 1, 1, 1, "breaching"),
@@ -55,6 +56,8 @@ CONTRACT: dict[tuple[str, str], Rule] = {
     ("FinDB", "ActiveFeedRejectedAttempts"): Rule(GTE, 1, 1, 1, "notBreaching"),
     ("FinDB", "ActiveFeedEmptySnapshots"): Rule(GTE, 1, 1, 1, "notBreaching"),
     ("FinDB", "ActiveFeedDQErrors"): Rule(GTE, 1, 1, 1, "notBreaching"),
+    ("FinDB", "LocalStateBusyDiagnostics"): Rule(GTE, 1, 1, 1, "notBreaching"),
+    ("FinDB", "LocalStateErrorDiagnostics"): Rule(GTE, 1, 1, 1, "notBreaching"),
     ("FinDB", "DeploymentFailure"): Rule(GTE, 1, 1, 1, "notBreaching"),
 }
 

@@ -109,7 +109,9 @@ R2 raw不屬PostgreSQL reset，維持既有lifecycle與bucket lock。舊SQLite�
 - 熱路徑以`acquisition_intent_status(account,status,completed_at)`查armed recovery與unknown liability。
 - Schema初始化（含既有大帳本補建index）以`temp_store=MEMORY`排序；consumer rootfs唯讀、`/tmp`
   僅16 MiB，排序溢出到`/tmp`會以`database or disk is full`讓每次受治理的抓取失敗。
-- 刪除後不自動VACUUM，空間由SQLite重用。
+- 刪除後不自動VACUUM，空間由SQLite重用，檔案不會再變大。governor由主機上全部consumer共用，而部署是逐個consumer輪流更新，
+  沒有全部停止的時段，因此不定期VACUUM；`LocalStateLargestFileBytes`告警（任一本機SQLite檔連同WAL達2 GiB，見
+  [監控](monitoring.md)）出現時，才在所有provider的controls停止後停掉主機上的全部consumer，再原地VACUUM。
 
 ## 已結案工作的本機保留
 

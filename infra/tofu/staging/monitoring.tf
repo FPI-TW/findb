@@ -411,6 +411,46 @@ locals {
         treat_missing_data  = "notBreaching"
         description         = "At least one API credential was rejected in the overlapping ten-minute Docker log window."
       }
+      # Local SQLite files of the Fetcher host (#691).
+      fetcher_local_state_size = {
+        alarm_name          = "findb-staging-fetcher-local-state-size"
+        metric_name         = "LocalStateLargestFileBytes"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 2147483648
+        unit                = "Bytes"
+        deployment_unit     = "fetcher"
+        resource            = "local-state"
+        evaluation_periods  = 2
+        datapoints_to_alarm = 2
+        treat_missing_data  = "breaching"
+        description         = "A local SQLite file of the Fetcher host, with its write-ahead log, is at least 2 GiB, or the host metric is missing."
+      }
+      fetcher_local_state_busy = {
+        alarm_name          = "findb-staging-fetcher-local-state-busy"
+        metric_name         = "LocalStateBusyDiagnostics"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "fetcher"
+        resource            = "local-state"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "notBreaching"
+        description         = "A consumer found a local SQLite file locked past its wait in the overlapping ten-minute window."
+      }
+      fetcher_local_state_errors = {
+        alarm_name          = "findb-staging-fetcher-local-state-errors"
+        metric_name         = "LocalStateErrorDiagnostics"
+        comparison_operator = "GreaterThanOrEqualToThreshold"
+        threshold           = 1
+        unit                = "Count"
+        deployment_unit     = "fetcher"
+        resource            = "local-state"
+        evaluation_periods  = 1
+        datapoints_to_alarm = 1
+        treat_missing_data  = "notBreaching"
+        description         = "A consumer recorded another SQLite operational or database error in the overlapping ten-minute window."
+      }
     },
     # Staging controls are normally stopped and the publisher skips stopped
     # controls. A running control always reports its persisted heartbeat age,

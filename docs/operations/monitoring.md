@@ -209,8 +209,8 @@ silently treated as healthy or breaching.
 The custom expansion declares the following low-cardinality
 `FinDB/Staging` metrics. Every datum has only `DeploymentUnit` and a bounded
 `Resource` dimension. Missing periodic health metrics are breaching. Event
-counters (container restart count, the three active-feed counts and invalid
-credentials) and the sparse `DeploymentFailure` metric treat missing data as
+counters (container restart count, the three active-feed counts, invalid
+credentials and the two local SQLite diagnostic counts) and the sparse `DeploymentFailure` metric treat missing data as
 healthy and alarm on a single datum; the collector-success alarm covers a
 failed or stopped collector. Alarms wait for the first SSM association runs so
 normal metrics can be seeded before the breaching-on-missing alarms are created.
@@ -232,6 +232,8 @@ normal metrics can be seeded before the breaching-on-missing alarms are created.
 | EOD partition routing | `market_data_eod_default` row count; any row or missing metric breaches |
 | Credential aggregate integrity | Durable rollup/request aggregate mismatch count; any row or missing metric breaches |
 | Invalid credentials | Rejected Source, Serve, or Admin credential log events `>= 1` in the overlapping ten-minute window |
+| Fetcher local SQLite size | `LocalStateLargestFileBytes`, the largest local SQLite file with its write-ahead log, `>= 2 GiB` for 2 × 5 minutes; the root disk alarm covers free space for SQLite and Docker images together |
+| Fetcher local SQLite locks and errors | Member diagnostics in the Full and historical checkpoints within the overlapping ten-minute window: `LocalStateBusyDiagnostics` (`local_state_busy`, a file locked past its 30-second wait) `>= 1`, and `LocalStateErrorDiagnostics` (`exception:OperationalError` or `exception:DatabaseError`) `>= 1` |
 | Staging CD | A failed or cancelled protected-`main` build/deploy publishes one sparse `DeploymentFailure` datum |
 
 The collector reads scheduler heartbeat ages through the local authenticated
@@ -239,7 +241,9 @@ FinDB Admin endpoint from inside `findb-ingest`; the credential never crosses
 the container boundary or enters metric dimensions/output. It reads only
 Docker state, root filesystem counters, RabbitMQ local alarm flags, scheduler
 keys/ages, bounded active-feed aggregate counts, aggregate DB integrity counts,
-the stable invalid-credential log message, and RDS `LatestRestorableTime`. It
+the stable invalid-credential log message, RDS `LatestRestorableTime`, and on the
+Fetcher host the sizes of the local SQLite files and the category counts of the
+newest 5,000 member diagnostics of each checkpoint, opened read-only. It
 does not publish supplied keys, client IPs, endpoints, row IDs, request IDs,
 symbols, or provider error text. Instance and deployment roles may
 publish only the exact `FinDB/Staging` namespace; only the FinDB instance role

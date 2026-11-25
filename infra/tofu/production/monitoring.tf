@@ -82,6 +82,13 @@ locals {
       eod_default_partition     = { unit = "findb", metric = "EODDefaultPartitionRows", resource = "market_data_eod_default", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "breaching" }
       credential_usage_mismatch = { unit = "findb", metric = "CredentialUsageAggregateMismatches", resource = "api-credentials", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "breaching" }
     },
+    # Local SQLite files of the Fetcher host (#691): the largest file and the
+    # member diagnostics for a lock past its wait or another SQLite failure.
+    {
+      fetcher_local_state_size   = { unit = "fetcher", metric = "LocalStateLargestFileBytes", resource = "local-state", op = "GreaterThanOrEqualToThreshold", threshold = 2147483648, periods = 2, datapoints = 2, missing = "breaching" }
+      fetcher_local_state_busy   = { unit = "fetcher", metric = "LocalStateBusyDiagnostics", resource = "local-state", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "notBreaching" }
+      fetcher_local_state_errors = { unit = "fetcher", metric = "LocalStateErrorDiagnostics", resource = "local-state", op = "GreaterThanOrEqualToThreshold", threshold = 1, periods = 1, datapoints = 1, missing = "notBreaching" }
+    },
   )
   metric_service = {
     for unit in keys(local.units) : unit => <<-EOT

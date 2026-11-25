@@ -8,9 +8,11 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import ssl
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -81,6 +83,17 @@ IMAGE_ANONYMOUS_VOLUMES = {
     "twelve_data": frozenset({"/var/lib/findb-fetcher"}),
 }
 _ANONYMOUS_VOLUME_NAME = re.compile(r"[0-9a-f]{64}")
+# Local SQLite files of the Fetcher host (#691): the account governor, each
+# provider's work journal and Full checkpoint, the historical checkpoints and the
+# host-wide journal and checkpoint that only drain until they are removed.
+LOCAL_STATE_RESOURCE = "local-state"
+# Consumers record a member diagnostic for a SQLite file that stayed locked past
+# its 30-second wait, and for any other SQLite failure. The window overlaps the
+# five-minute publisher interval; only the newest rows of a checkpoint are read.
+LOCAL_STATE_WINDOW_SECONDS = 600
+LOCAL_STATE_DIAGNOSTIC_ROWS = 5000
+LOCAL_STATE_BUSY_CATEGORIES = frozenset({"local_state_busy"})
+LOCAL_STATE_ERROR_CATEGORIES = frozenset({"exception:OperationalError", "exception:DatabaseError"})
 INVALID_CREDENTIAL_LOG_CONTAINERS = (
     "findb-ingest",
     "findb-serve",
@@ -278,6 +291,75 @@ def _fetcher_runtime_security_metrics(
             )
         )
     return metrics, errors
+
+
+def _local_state_files(environment: str) -> tuple[list[Path], list[Path]]:
+    """Every local SQLite file, and the checkpoints among them that keep diagnostics."""
+    full = Path(FULL_MARKET_STATE_DIRS[environment])
+    historical = [
+        Path(path) / "state.sqlite3" for path in sorted(set(HISTORICAL_STATE_DIRS.values()))
+    ]
+    checkpoints = [
+        path for path in [*sorted(full.glob("state*.sqlite3")), *historical] if path.is_file()
+    ]
+    account = sorted((Path(ACCOUNT_STATE_ROOT) / environment).glob("*.sqlite3"))
+    return [*account, *checkpoints], checkpoints
+
+
+def _recent_diagnostics(path: Path, since: float) -> dict[str, int]:
+    # Read-only. Run as root, SQLite gives any -wal or -shm file it creates the
+    # owner and mode of the database file, so the consumers can still open them.
+    db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=10)
+    try:
+        table = db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='full_work_diagnostic'"
+        ).fetchone()
+        if table is None:
+            return {}
+        return {
+            str(category): int(count)
+            for category, count in db.execute(
+                "SELECT category, COUNT(*) FROM full_work_diagnostic "
+                "WHERE id > (SELECT COALESCE(MAX(id), 0) FROM full_work_diagnostic) - ? "
+                "AND observed_at >= ? GROUP BY category",
+                (LOCAL_STATE_DIAGNOSTIC_ROWS, since),
+            )
+        }
+    finally:
+        db.close()
+
+
+def _local_state_metrics(environment: str) -> tuple[list[dict[str, Any]], list[str]]:
+    files, checkpoints = _local_state_files(environment)
+    largest = 0
+    for path in files:
+        size = 0
+        # A write-ahead log not yet checkpointed is part of the file's footprint.
+        for part in (path, path.with_name(path.name + "-wal")):
+            try:
+                size += part.stat().st_size
+            except FileNotFoundError:
+                pass
+        largest = max(largest, size)
+    metrics = [
+        _metric("LocalStateLargestFileBytes", largest, "Bytes", "fetcher", LOCAL_STATE_RESOURCE)
+    ]
+    busy = errors = 0
+    since = time.time() - LOCAL_STATE_WINDOW_SECONDS
+    for path in checkpoints:
+        try:
+            counts = _recent_diagnostics(path, since)
+        except sqlite3.Error:
+            return metrics, ["local state diagnostics query failed"]
+        busy += sum(count for name, count in counts.items() if name in LOCAL_STATE_BUSY_CATEGORIES)
+        errors += sum(
+            count for name, count in counts.items() if name in LOCAL_STATE_ERROR_CATEGORIES
+        )
+    metrics += [
+        _metric("LocalStateBusyDiagnostics", busy, "Count", "fetcher", LOCAL_STATE_RESOURCE),
+        _metric("LocalStateErrorDiagnostics", errors, "Count", "fetcher", LOCAL_STATE_RESOURCE),
+    ]
+    return metrics, []
 
 
 def _tls_certificate_metrics(hostname: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -702,9 +784,10 @@ def collect_metrics(
         metrics.extend(tls_metrics)
         errors.extend(tls_errors)
     else:
-        security_metrics, security_errors = _fetcher_runtime_security_metrics(environment)
-        metrics.extend(security_metrics)
-        errors.extend(security_errors)
+        for fetcher_collector in (_fetcher_runtime_security_metrics, _local_state_metrics):
+            collected, collector_errors = fetcher_collector(environment)
+            metrics.extend(collected)
+            errors.extend(collector_errors)
     metrics.append(_metric("CollectorSuccess", int(not errors), "Count", unit, "host"))
     return metrics, errors
 
