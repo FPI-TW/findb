@@ -80,7 +80,7 @@ X-API-Key: <source-client-key>
 `execution_profile` 必填且只接受 `full_market`（已退役的 `pilot` 回 422），`schema_version` 預設 1。
 Provider 與 feeds 依 credential 的非空合法 scope 決定，不接受 provider／environment override。
 回應為完整快照，含環境、profile、schema version、schedule digest、逐 feed 當地觸發時間與時區，
-另列 completion deadline、bounded monitor 及發布重試窗口；`Cache-Control: no-store`。
+另列 completion deadline、bounded monitor 及發布重試窗口（由期限推算，為排程後 11.5 小時）；`Cache-Control: no-store`。
 沒有／無效 credential 回 401／403，無效 scope 回 403，不支援的查詢參數回 422。
 此 API 不授予抓取權限，不改 controls、first dates、plans 或 historical lease。
 設定欄位、digest 與 Admin 逐 feed 投影見 [provider metadata](../architecture/provider_metadata.md#backend-排程發布)。

@@ -976,3 +976,67 @@ def test_only_member_published_adapters_let_a_round_pass_a_late_member() -> None
     from findb_fetcher.provider_adapters import ADAPTERS
 
     assert {name for name, adapter in ADAPTERS.items() if adapter.publication_per_member} == {"fmp"}
+
+
+@pytest.mark.parametrize(
+    ("since_start", "status", "retry_in"),
+    [
+        # Within the last quarter hour before the final round, the wait shortens to it.
+        (41400 - 600, "pending", 600),
+        # The final round has passed: 30 minutes before the deadline, the date stops.
+        (41400 + 1, "manual", None),
+    ],
+)
+def test_an_unpublished_date_is_retried_until_30_minutes_before_its_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    since_start: int,
+    status: str,
+    retry_in: int | None,
+) -> None:
+    from execution_config_support import publication
+
+    runtime, _, _, clock, context = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
+    # The window Source publishes: 12 hours to the deadline, less the final 30 minutes.
+    window = publication("finlab")["feeds"][0]["publication_retry_window_seconds"]
+    assert window == 12 * 3600 - 1800
+    member_key = context.plan["parts"][0]["member_keys"][0]
+    context.plan["parts"][0]["member_keys"] = [member_key]
+    runtime._acquire = lambda *args, **kwargs: (_ for _ in ()).throw(
+        FinLabTargetNotReadyError("target date has not been published")
+    )
+    owner = SimpleNamespace(
+        work={"work_id": "daily-work", "kind": "daily", "trade_date": context.plan["trade_date"]},
+        request=lambda action: {
+            "work_id": "daily-work",
+            "trade_date": context.plan["trade_date"],
+            "repair_required": False,
+        },
+        restore=lambda **kwargs: [],
+        authorize=lambda: None,
+        dispatch_observations=0,
+    )
+    monkeypatch.setattr("findb_fetcher.provider_work.active", lambda: owner)
+    start = clock.now() - timedelta(seconds=since_start)
+    runtime.feeds[0].update(
+        completion_window_seconds=window, **scheduled_at(start, context.plan["trade_date"])
+    )
+
+    if retry_in is None:
+        assert not runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+    else:
+        with pytest.raises(ProviderPublicationPendingError) as pending:
+            runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+        assert pending.value.retry_after_seconds == retry_in
+
+    key = context.plan["parts"][0]["work_item_id"] + ":" + member_key
+    with runtime.state.connection() as db:
+        row = db.execute(
+            "SELECT status,reason,next_at FROM full_work WHERE key=?", (key,)
+        ).fetchone()
+    assert (row["status"], row["reason"]) == (status, "target_not_ready")
+    if retry_in is not None:
+        # The last retry lands exactly 30 minutes before the 12-hour deadline.
+        deadline = start + timedelta(hours=12)
+        assert row["next_at"] == pytest.approx((deadline - timedelta(minutes=30)).timestamp())
+    runtime.http.close()

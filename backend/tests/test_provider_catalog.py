@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.provider_catalog import ProviderCatalog, load_catalog
+from app.provider_catalog import PUBLICATION_RETRY_WINDOW_SECONDS, ProviderCatalog, load_catalog
 from scripts.export_provider_catalog import CATALOG_PATH, build_artifacts, export
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -116,14 +116,15 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "us_index_eod",
     }
     assert us.bounded_monitor.deadline.local_time == "09:15"
-    assert us.publication_retry_window_seconds == 10800
-    # FinLab daily waits for the final price tables until 22:30: past the Fetcher's
-    # 22:15 fallback, which takes the table as it is when the 18:32 and 21:32 runs fail.
+    # One time point ends a date: an unpublished one is retried until 30 minutes before
+    # its deadline (the last no-data round), never by a separate per-feed window.
+    # FinLab daily thus still waits past the Fetcher's 22:15 final-table fallback.
     assert {
         f.dataset_key: f.publication_retry_window_seconds
         for f in catalog.feeds
-        if f.dataset_key in ("tw_equity_eod", "tw_etf_eod")
-    } == {"tw_equity_eod": 16200, "tw_etf_eod": 16200}
+        if f.capabilities.acquisition
+    } == dict.fromkeys((f.dataset_key for f in catalog.feeds if f.capabilities.acquisition), 41400)
+    assert PUBLICATION_RETRY_WINDOW_SECONDS == 12 * 3600 - 1800
     for provider in catalog.providers:
         assert provider.calendar_switch_env in Settings.model_fields
 
@@ -148,7 +149,7 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "bad_timezone",
         "bad_clock",
         "bad_slot",
-        "boolean_window",
+        "configured_window",
         "current_not_accepted",
         "duplicate_contract_version",
         "draining_acquisition",
@@ -200,8 +201,9 @@ def test_invalid_metadata_fails_closed(declaration, fault):
         f["schedule"]["local_time"] = "25:00"
     elif fault == "bad_slot":
         f["delivery"]["slot_id"] = "afternoon"
-    elif fault == "boolean_window":
-        f["publication_retry_window_seconds"] = True
+    elif fault == "configured_window":
+        # The retry window follows the deadline; a feed cannot set its own.
+        f["publication_retry_window_seconds"] = 14400
     elif fault == "current_not_accepted":
         f["contract"]["current_version"] = 2
     elif fault == "duplicate_contract_version":

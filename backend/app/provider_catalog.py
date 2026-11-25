@@ -20,6 +20,15 @@ DayOffset = Annotated[int, Field(ge=0, le=366)]
 ConsumerRole = Literal["full_market", "historical"]
 # Every acquiring feed is due this long after its scheduled start, in the schedule's timezone.
 COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE = 12
+# The last publication retry comes this long before the deadline, as the last
+# no-data round does (Fetcher ``FULL_WORK_NO_DATA_FINAL_ROUND_LEAD_SECONDS``),
+# leaving the final deliveries time to normalize before the date is judged.
+PUBLICATION_FINAL_ROUND_LEAD_SECONDS = 1800
+# A date not yet published keeps being retried until then: one window, derived
+# from the deadline, never configured per feed.
+PUBLICATION_RETRY_WINDOW_SECONDS = (
+    COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE * 3600 - PUBLICATION_FINAL_ROUND_LEAD_SECONDS
+)
 
 
 class CatalogModel(BaseModel):
@@ -186,7 +195,6 @@ class FeedDefinition(CatalogModel):
     schedule: AcquisitionSchedule | None
     completion_deadline: CompletionDeadline | None
     bounded_monitor: BoundedMonitor
-    publication_retry_window_seconds: PositiveInt | None
     delivery: DeliveryCompatibility
     historical_execution: HistoricalExecutionProfiles | None
     historical_cohort: HistoricalCohort | None
@@ -195,6 +203,11 @@ class FeedDefinition(CatalogModel):
     unlisted_symbols: UnlistedSymbols
     # A weekday default never stands in for a missing exchange calendar: the date waits.
     calendar_required: bool
+
+    @property
+    def publication_retry_window_seconds(self) -> int | None:
+        """Seconds after the scheduled start a not-yet-published date is retried."""
+        return PUBLICATION_RETRY_WINDOW_SECONDS if self.capabilities.acquisition else None
 
     @model_validator(mode="after")
     def coherent_capabilities(self) -> Self:
@@ -211,8 +224,6 @@ class FeedDefinition(CatalogModel):
                     "completion deadline must be "
                     f"{COMPLETION_DEADLINE_HOURS_AFTER_SCHEDULE} hours after the scheduled start"
                 )
-            if self.publication_retry_window_seconds is None:
-                raise ValueError("acquiring feed requires publication retry window")
         elif self.schedule is not None:
             raise ValueError("non-acquiring feed must not publish a schedule")
         if caps.historical != "unsupported" and (not caps.source or self.lifecycle != "active"):
