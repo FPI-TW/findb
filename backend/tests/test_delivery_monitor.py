@@ -500,6 +500,7 @@ async def test_taifex_candidate_wait_past_deadline_uses_dedicated_alert_details(
         "no_data": 0,
         "missing": None,
         "blocked": None,
+        "unavailable": None,
         "deadline_at": "2026-07-21T21:00:00+00:00",
         "completion_deadline_at": "2026-07-21T21:00:00+00:00",
         "wait_age_seconds": 60.0,

@@ -111,6 +111,13 @@ FORWARD_COLUMN_GROUPS = (
     ),
     # Old schemas have no supplement table for a key to reference; plans keep null.
     ("a4c6e8f0b2d3", (("daily_delivery_plan", "supplement_id", "uuid"),)),
+    (
+        "c7e9a1b3d5f8",
+        (
+            ("daily_delivery_part", "unavailable_count", "integer"),
+            ("daily_delivery_plan_summary", "unavailable_count", "integer DEFAULT 0"),
+        ),
+    ),
 )
 FORWARD_COLUMN_SHIM = "migration-test forward column shim"
 # Tables later revisions add that current services read, as comment-marked shims.

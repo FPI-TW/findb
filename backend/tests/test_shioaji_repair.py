@@ -161,7 +161,12 @@ async def test_repair_refreshes_persisted_summary_and_effective_gap_reason(test_
     await refresh_plan_summary(db, plan.plan_id)
     await db.commit()
     before = await reconcile_plan(db, plan)
-    assert before.blocked == 1 and before.missing == 1
+    # The frozen member has no Shioaji mapping: unavailable whatever outcome it holds.
+    assert before.unavailable == 1 and before.missing == 1 and before.blocked == 0
+    assert (
+        next(row for row in before.gaps if row["member_key"] == member.member_key)["status"]
+        == "unavailable"
+    )
     assert next(row for row in before.gaps if row["member_key"] == member.member_key)["reason"] == (
         reason or "mapping_gap"
     )
@@ -180,7 +185,8 @@ async def test_repair_refreshes_persisted_summary_and_effective_gap_reason(test_
         stored.no_data_count,
         stored.missing_count,
         stored.blocked_count,
-    ) == (after.expected, 0, 0, after.missing, after.blocked)
+        stored.unavailable_count,
+    ) == (after.expected, 0, 0, after.missing, after.blocked, 0)
     assert after.expected == after.data + after.no_data + after.missing + after.blocked == 2
     assert member.mapping_status == frozen.mapping_status == "gap"
     assert member.outcome_reason == reason
@@ -208,13 +214,13 @@ async def test_repair_summary_and_approval_rollback_together(test_session):
             await apply(db, work.work_id, request, actor="owner")
             assert (
                 await db.get(DailyDeliveryPlanSummary, plan.plan_id, populate_existing=True)
-            ).blocked_count == 0
+            ).unavailable_count == 0
             raise RuntimeError("abort approval")
     assert not list(await db.scalars(select(ShioajiMemberRepair)))
     assert len(list(await db.scalars(select(ProviderWorkAttempt)))) == 1
     assert (
         await db.get(DailyDeliveryPlanSummary, plan.plan_id, populate_existing=True)
-    ).blocked_count == 1
+    ).unavailable_count == 1
     assert (await db.get(ProviderWork, work_id, populate_existing=True)).state == "failed"
 
 

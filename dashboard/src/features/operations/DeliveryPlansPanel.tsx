@@ -35,7 +35,7 @@ import {
 import type { DeliveriesSearchUpdate } from "./operations.deliveries"
 
 const reasonLabels: Record<string, string> = {
-  mapping_gap: "商品對照缺漏",
+  mapping_gap: "供應商未收錄",
   quota: "額度不足",
   rate_limited: "來源請求頻率受限",
   halted: "暫停交易",
@@ -84,13 +84,19 @@ const columns: ColumnDef<DeliveryPlan, unknown>[] = [
       ["no_data", "正常無資料"],
       ["missing", "缺漏"],
       ["blocked", "受阻"],
+      ["unavailable", "無法取得"],
       ["unlisted_data", "清單外有資料"],
     ] as const
   ).map(([key, header]): ColumnDef<DeliveryPlan, unknown> => ({
     id: key,
     header,
     meta: {
-      width: key === "no_data" || key === "unlisted_data" ? 110 : 80,
+      width:
+        key === "no_data" || key === "unlisted_data"
+          ? 110
+          : key === "unavailable"
+            ? 90
+            : 80,
       align: "right",
     },
     cell: ({ row }) => (
@@ -105,8 +111,9 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
   const loadSummary = useServerFn(loadDeliveryPlanSummary)
   const scope = useProtectedQueryScope()
   const total = plan.summary.missing + plan.summary.blocked
+  const unavailableTotal = plan.summary.unavailable ?? 0
   const unlistedTotal = plan.summary.unlisted_data ?? 0
-  const hasDetails = total > 0 || unlistedTotal > 0
+  const hasDetails = total > 0 || unavailableTotal > 0 || unlistedTotal > 0
   // The list carries counts only; the members behind them load once the row is open.
   const queryKey = [
     "operations",
@@ -121,7 +128,10 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
     queryFn: () => loadSummary({ data: { planId: plan.plan_id } }),
     enabled: hasDetails,
   })
-  const gaps = details.data?.gaps
+  const gaps = details.data?.gaps.filter(gap => gap.status !== "unavailable")
+  const unavailable = details.data?.gaps.filter(
+    gap => gap.status === "unavailable"
+  )
   const unlisted = details.data?.unlisted
   return (
     <div className="space-y-3">
@@ -129,8 +139,9 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
         Universe release：<span className="font-mono">{plan.release_id}</span>
       </p>
       <p className="text-xs text-muted">
-        預期 = 有資料 + 正常無資料 + 缺漏 +
-        受阻。正常無資料須有持久化證據，不代表失敗。清單外有資料是供應商有提供、
+        預期 = 有資料 + 正常無資料 + 缺漏 + 受阻 +
+        無法取得。正常無資料須有持久化證據，不代表失敗。無法取得是已知取不到的情境（例如供應商未收錄該代號），
+        不算缺口，計畫沒有它們也算完整。清單外有資料是供應商有提供、
         但不在凍結清單上的標的，已寫入資料，不計入預期。
       </p>
       {total === 0 ? (
@@ -149,7 +160,13 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
           error={details.error}
           updatedAt={details.dataUpdatedAt}
           onRetry={() => void details.refetch({ cancelRefetch: false })}
-          label={total > 0 ? "缺口明細" : "清單外明細"}
+          label={
+            total > 0
+              ? "缺口明細"
+              : unavailableTotal > 0
+                ? "無法取得明細"
+                : "清單外明細"
+          }
         />
       )}
       {gaps?.length ? (
@@ -175,6 +192,32 @@ function PlanDetails({ plan }: { plan: DeliveryPlan }) {
           ))}
         </ul>
       ) : null}
+      {unavailableTotal > 0 && (
+        <div className="space-y-1">
+          <p className="text-sm font-medium">
+            無法取得：
+            {unavailable ? `已列出 ${unavailable.length}／` : ""}共{" "}
+            {unavailableTotal} 檔
+          </p>
+          {unavailable?.length ? (
+            <ul className="max-h-32 space-y-1 overflow-auto text-xs">
+              {unavailable.map(gap => (
+                <li key={gap.member_key}>
+                  <span className="font-mono">{gap.member_key}</span>
+                  {gap.reason && (
+                    <span>
+                      ：
+                      {reasonLabels[gap.reason]
+                        ? `${reasonLabels[gap.reason]}（${gap.reason}）`
+                        : gap.reason}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      )}
       {unlistedTotal > 0 && (
         <div className="space-y-1">
           <p className="text-sm font-medium">

@@ -244,8 +244,8 @@ Catchup 使用 TAIFEX 官方 CSV
 snapshot/sequence identity；每次 request 限單商品、15,000 rows 與小於 1 MiB 本文。
 Source plan 的完成狀態必須經 canonical 查核，queued run 不能視為完成。
 
-空 provider 回應、mapping gap、rate limit 與 source error 都屬 unresolved/blocked，不自動變成
-no-data。僅具日期、商品、session、URL/checksum、觀察時間及實質來源片段的 halted/no-trade
+空 provider 回應、rate limit 與 source error 都屬 unresolved/blocked，不自動變成 no-data；mapping gap 在 Source
+plan 統計中是 unavailable，plan 不缺其他成員即完整。僅具日期、商品、session、URL/checksum、觀察時間及實質來源片段的 halted/no-trade
 證據可以完成 no-data。TAIFEX 明確零 volume 且無成交價會附官方 report 證據提交 no-trade；
 其他未能提供來源證據的商品保持缺口。八次無法恢復的 acquisition/source failure、mapping gap
 或 normalization failure 轉 manual，`--health` 保留 unresolved、late 及 manual-required，交由

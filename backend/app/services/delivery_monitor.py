@@ -36,7 +36,7 @@ from app.services.delivery_policy import (
     resolve_expected_data_date,
 )
 from app.services.feed_scope import lock_feed_scope
-from app.services.full_market import _calendar_market, _deadline, reconcile_plan
+from app.services.full_market import _calendar_market, _deadline, plan_complete, reconcile_plan
 from app.services.ingress_contracts import DatasetContractDeclaration
 from app.services.provider_metadata import calendar_required, universe_mode
 from app.services.sequenced_snapshots import list_sequenced_snapshot_groups
@@ -571,19 +571,14 @@ async def _scan_full_market_feed(
         # The stored counts decide completeness; only a FactSet streak needs the
         # incomplete plan's member gaps. Drift is caught by the rotating audit.
         summary = await stored_summary_response(db, plan, now=evaluated_at) if plan else None
-        if (
-            plan
-            and summary
-            and long_gap_feed
-            and summary.data + summary.no_data != summary.expected
-        ):
+        if plan and summary and long_gap_feed and not plan_complete(summary):
             summary = await reconcile_plan(db, plan, now=evaluated_at, gap_limit=None)
         # Only exchange-expected dates enter this loop. Data or durable no_data
         # removes that member from gaps and therefore resets its streak. Without
         # a frozen plan, escalate the feed gap without inventing member scope.
         gap_streaks = advance_gap_streaks(gap_streaks, summary.gaps if summary else [])
         unplanned_streak = 0 if plan else unplanned_streak + 1
-        complete = bool(summary and summary.data + summary.no_data == summary.expected)
+        complete = bool(summary and plan_complete(summary))
         if complete:
             resolution = await db.execute(
                 update(MissingDeliveryAlert)
@@ -610,6 +605,7 @@ async def _scan_full_market_feed(
             "no_data": summary.no_data if summary else 0,
             "missing": summary.missing if summary else None,
             "blocked": summary.blocked if summary else None,
+            "unavailable": summary.unavailable if summary else None,
             "deadline_at": deadline.isoformat(),
         }
         if plan is None:
@@ -705,8 +701,15 @@ async def _close_open_feed_alerts(
 
 
 def advance_gap_streaks(previous: dict[str, int], gaps: list[dict]) -> dict[str, int]:
-    """A valid observation or authoritative no-data breaks a member's streak."""
-    return {row["member_key"]: previous.get(row["member_key"], 0) + 1 for row in gaps}
+    """A valid observation or authoritative no-data breaks a member's streak.
+
+    A known unavailable member is not a gap the provider owes.
+    """
+    return {
+        row["member_key"]: previous.get(row["member_key"], 0) + 1
+        for row in gaps
+        if row["status"] != "unavailable"
+    }
 
 
 async def _resolve_open_alerts_for_feed(

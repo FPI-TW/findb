@@ -1211,8 +1211,10 @@ class FullMarketState:
 
     def evaluate(self, plan: dict[str, Any]) -> None:
         summary = plan["summary"]
+        # A member the provider cannot serve (no mapping) is a known unavailable case.
         complete = (
-            summary["expected"] == summary["data"] + summary["no_data"]
+            summary["expected"]
+            == summary["data"] + summary["no_data"] + summary.get("unavailable", 0)
             and summary["missing"] == summary["blocked"] == 0
         )
         with self.connection() as db:

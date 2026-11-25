@@ -16,7 +16,7 @@ async def _part_columns(db) -> set[str]:
         text(
             "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' "
             "AND ((table_name = 'daily_delivery_part' AND column_name LIKE '%_count' "
-            "AND column_name <> 'expected_count') "
+            "AND column_name NOT IN ('expected_count', 'unavailable_count')) "
             "OR (table_name = 'daily_delivery_plan_summary' AND column_name = 'parts_synced_at'))"
         )
     )

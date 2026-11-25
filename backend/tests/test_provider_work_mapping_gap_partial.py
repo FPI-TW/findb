@@ -1,7 +1,10 @@
-"""A per-member daily work ends partial when mapping gaps are all its plan lacks."""
+"""A daily plan lacking only mapping gaps is complete (#593).
+
+Its work settles completed. Source still accepts the partial settlement a Fetcher
+decided from a summary it read before mapping gaps became unavailable.
+"""
 
 from datetime import timedelta
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -97,26 +100,6 @@ async def test_the_proof_must_name_exactly_the_plans_mapping_gaps(test_session, 
     assert raised.value.code == "PROVIDER_WORK_INVALID_PROOF"
 
 
-@pytest.mark.asyncio
-async def test_the_fetcher_decision_reads_the_same_plan_response(test_session, monkeypatch):
-    """Fetcher names the gaps from Source's plan response; Source accepts exactly that."""
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2] / "fetcher/src"))
-    from findb_fetcher.full_market_runtime import only_mapping_gaps
-
-    work, keys = await _gapped_plan(test_session)
-    response = await get_plan(
-        test_session,
-        work.manifest["plan_id"],
-        provider=work.provider,
-        allowed_datasets=[work.dataset_key],
-    )
-
-    gaps = only_mapping_gaps(response.model_dump(mode="json"))
-
-    assert gaps == sorted(keys)
-    await queue.validate_mapping_gap_partial(test_session, work, {"mapping_gaps": gaps})
-
-
 async def _owned_closed_work(db, source: SimpleNamespace) -> tuple[ProviderWork, dict]:
     work = ProviderWork(
         environment=queue.environment(),
@@ -174,3 +157,22 @@ async def test_settle_rejects_partial_while_another_member_is_unresolved(test_se
 
     assert raised.value.code == "PROVIDER_WORK_INVALID_PROOF"
     assert work.state == "running"
+
+
+@pytest.mark.asyncio
+async def test_a_plan_lacking_only_mapping_gaps_is_complete_and_settles_completed(test_session):
+    source, keys = await _gapped_plan(test_session)
+    plan = await get_plan(
+        test_session,
+        source.manifest["plan_id"],
+        provider=source.provider,
+        allowed_datasets=[source.dataset_key],
+    )
+    assert plan.status == "complete"
+    assert plan.summary.unavailable == plan.summary.mapping_gap == len(keys)
+    assert plan.summary.blocked == plan.summary.missing == 0
+    work, identity = await _owned_closed_work(test_session, source)
+
+    await queue.settle(test_session, outcome="completed", proof={}, **identity)
+
+    assert work.state == "completed"

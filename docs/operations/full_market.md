@@ -146,7 +146,8 @@ receipt 與 retry budget 不重寫。操作前先停止相關 control、保存 c
 inode 復原；不得藉重新啟動 daemon、等待 TTL 或刪除相容 scope 排除舊工作。Staging 實際處置見
 [FactSet 部署證據](deployment.md#2026-10-21-staging-hk-切換)。
 
-`expected = data + no_data + missing + blocked`。Data 必須有該 plan 所屬 run 的持久化 canonical 寫入證據；
+`expected = data + no_data + missing + blocked + unavailable`。Plan 在 `data + no_data + unavailable = expected`
+時完整。Data 必須有該 plan 所屬 run 的持久化 canonical 寫入證據；
 舊 Pilot 留下的 runs 已脫離 plan（`delivery_part_id` 為 NULL），不計入任何 plan。
 Minute 必須有完整 sequenced snapshot；DQ error、空批次、quota failure 不得算成功或 no_data。
 No_data 必須有 durable provider evidence。
@@ -183,9 +184,10 @@ Unit（`.U`、U）、權利（`.R`、R）、特別股（`.PR`、`代碼-字母`�
 一次觀測為準。2026-11-22 的 production 目錄依上述規則約
 628 個代碼，每日請求約增加 11%。回補每個日期也凍結該日 plan 的補查（沒有 plan 時為當天以前最新的一份），與之後
 release 的成員一起當補查成員。
-Summary 另回傳 `mapping_gap`：blocked 中屬於 mapping gap 的成員數。`is_late` 只看抓取進度，
-也就是超過 deadline 時，扣除 mapping gap 後仍有 missing 或 blocked；mapping gap 照樣計入 blocked
-與缺漏告警，不會因此被隱藏。
+`unavailable` 是 provider 無法提供的已知情境（#593），目前只有 mapping gap：凍結官方商品在 provider 的目錄裡
+沒有對應代號。它們不算 missing 或 blocked，不讓 plan 逾時、不開缺漏告警、不影響 freshness，也不計入 FactSet
+連續缺漏；summary 的 `unavailable` 與 `mapping_gap` 分別是總數與其中 mapping gap 的數量，`gaps` 以
+`status = unavailable` 列出這些成員。`is_late` 只看抓取進度：超過 deadline 時仍有 missing 或 blocked。
 
 ## 啟動契約
 
@@ -361,7 +363,7 @@ Historical 共用快取驗證，保留原重試政策，不使用 daily 的觀�
 | attempts=0／無 observation | 尚未嘗試，不能視為已被 SDK 拒絕 |
 | `empty_response` | 有空回應證據，原因未知；檢查觀測額度與下一次時間 |
 | `unknown_dispatch` | 曾保留未知派送責任，尚未證實空回應；同樣檢查觀測額度與退避 |
-| `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據。Plan 只缺這種成員時，daily work 以 `partial` 結束而不是 `failed`；plan 統計仍把它們算作 blocked（見 [provider_work](../architecture/provider_work.md)） |
+| `mapping_gap` | 凍結官方商品尚缺 provider mapping，須先取得 catalogue 證據。Plan 統計把它們算作 unavailable，不是 blocked；plan 只缺這種成員時即完整，daily work 以 `completed` 結束（見 [provider_work](../architecture/provider_work.md)） |
 | `local_state_busy` | 本機共用的 SQLite（journal、governor 或 Full checkpoint）被其他 consumer 鎖住超過等待上限（30 秒）。不回報 Source、不結束這一輪，該檔稍後重試；只有已經呼叫過 provider 時才計入失敗額度。`full_work_diagnostic.category` 記為 `local_state_busy`，十分鐘內出現就觸發 `LocalStateBusyDiagnostics` 告警（見[監控](monitoring.md)）；經常出現時查同時間其他 consumer 的清理或大量寫入 |
 | `retry_exhausted` | 本地一般失敗額度（`FULL_WORK_MAX_ATTEMPTS`，5 次，所有 provider 一致）耗盡，不等於五次 native 請求。這類失敗（provider 的一般回應錯誤、單檔 5xx、未預期的例外）不結束這一輪：該檔扣一次額度，其他成員照常抓；只有連續 3 檔（`FULL_WORK_FAILURE_BREAKER`）這樣失敗、中間沒有任何一檔成功時才結束這一輪，避免整個 provider 出問題時每檔都被扣一次（#711）。連線錯誤（到 provider 或 Source 的網路中斷、Source 回應遺失，包括 client 包成 `transport` 類別的錯誤）不是單一成員的問題，且可能有遺失的交付確認，仍立即結束這一輪。額度耗盡的成員仍會阻擋 plan，需人工檢查 |
 | `source_rejected` | Source 拒收該檔的交付內容（409、422）：該檔轉 manual 並阻擋 plan，但同一輪其他成員照常交付，連續 3 檔才結束這一輪。401、403、5xx 是憑證或 Source 的問題，仍立即結束這一輪 |
@@ -1235,7 +1237,7 @@ Staging 驗收（一次只啟動一個 provider，結束後停止）：
 2. Owner 啟動該 provider 的 control，等 daily 的 provider work 結束。
 3. 核對 daily 的結果：
    - work 的結束狀態與 `failure_code` 符合預期。
-   - Plan 統計符合 `expected = data + no_data + missing + blocked`，`missing` 為 0，每個 blocked 成員都有原因。
+   - Plan 統計符合 `expected = data + no_data + missing + blocked + unavailable`，`missing` 為 0，每個 blocked 與 unavailable 成員都有原因。
    - 這次的 `ingestion_run` 全部 completed，沒有新的 `dq_issue`。
    - Canonical 筆數等於 `data`；抽一檔從 Serve 查得到，數值與來源一致。
 4. 建立一筆單日的 historical request，核對結束狀態、逐成員結果與耗時。
@@ -1336,7 +1338,7 @@ snapshot；交易日曆、首次日期與 deadline 仍依查詢時間計算，�
 Plan row lock 串行化同 plan 的摘要寫入，失敗 rollback 不得先公布摘要。鎖順序固定為 plan → part：
 摘要寫入者在 plan lock 下更新 part 計數；outcome 只鎖自己的 member 列（`FOR UPDATE OF`），不鎖
 join 到的 part，再取 plan lock，避免與 worker 的 part 更新互相等待而死結。
-`daily_delivery_part` 另存各 part 的 data／no_data／missing／blocked／mapping_gap 計數，
+`daily_delivery_part` 另存各 part 的 data／no_data／missing／blocked／unavailable／mapping_gap 計數，
 各 part 加總等於 plan 摘要。成員狀態只取決於自身的 canonical、證據、outcome 與 mapping，
 因此：
 
@@ -1369,7 +1371,7 @@ Historical 的 no_data 證據同樣會讓同 dataset／provider／date 的 plan 
 - 該成員在項目的完成證據（`result_evidence`）是 `no_data`，並附原始檔（R2 ref 與 SHA-256）。
   `missing`、`invalid` 與沒有原始檔的列都不算，供應商的空回應不會變成 no_data。
 - 該項目的 work 以證據所列的契約、相同的 provider symbol 凍結該成員，與 data 的條件相同。
-- 成員在 plan 上不是 mapping gap（`mapping_status = gap` 或 outcome reason 為 `mapping_gap`），gap 仍算 blocked。
+- 成員在 plan 上不是 mapping gap（`mapping_status = gap` 或 outcome reason 為 `mapping_gap`），gap 仍算 unavailable。
 
 這份證據優先於 daily 記下的 blocked（例如舊版的 `blocked / source_error`），但 canonical 寫入仍優先於 no_data。
 成員的 `outcome`、原 Full work 的結算與 receipts 都不改寫，只影響 plan 的統計、lateness 與告警。
@@ -1392,7 +1394,7 @@ TAIFEX `tw_futures_eod` 的 historical 也會修復同日的 plan（#595），�
 期貨 run 的寫入要等項目完成才算數，所以完成時重新分類證據涵蓋的所有成員所在的 part。
 OHLCV 人工修正不改變 member 身份或完整度，無須重算摘要。
 
-`expected = data + no_data + missing + blocked` 與原 canonical／durable evidence 規則相同。
+`expected = data + no_data + missing + blocked + unavailable` 與原 canonical／durable evidence 規則相同。
 分鐘資料仍要求所屬 snapshot/update 的所有最新 sequence attempts 都完成；新 queued
 或 failed attempt 必須使該 group 失效，不能沿用之前完整的計數。No-data 仍需原本的
 官方證據驗證，canonical 實際寫入可優先於既有 no-data。
@@ -1498,7 +1500,7 @@ TW universe 成員帶有 ISIN 的上市日（`listed_date`，存於 `universe_me
 release 會被之後的日期沿用。分類查詢不保證提前列出：2026-11-13 查核時，上市日在下一個交易日的權證已列出，
 上市日在六天後的兩檔 ETF 尚未列出（完整頁面已列出）。新上市的商品要等分類查詢列出之後的下一次 universe refresh
 才進入 release。建立 daily plan 時才以 trade date 判斷：`listed_date > trade_date` 的成員
-不列入 expected，上市當日起列入；已上市但仍是 mapping gap 的成員維持 blocked 與告警。沒有上市日
+不列入 expected，上市當日起列入；已上市但仍是 mapping gap 的成員算 unavailable，不開告警。沒有上市日
 的成員（其他市場、或上市日加入前建立的 release）視為已上市。Plan 有排除成員時，`member_sha256`
 改為過濾後成員的 digest；沒有排除時與 release 相同。第一次帶入上市日的 release 不把「補上上市日」
 算進 2% 變更比例，之後上市日改變才計入。
@@ -1764,4 +1766,4 @@ FMP 提供 76 檔市場指數的日線（港股 3、美股 72、美元指數 1�
   交易所日曆已補到 HK 1987、US 1953 年起（見「有效日曆與每日政策」），回補範圍仍受 production 最近 366 天、
   staging 31 天的限制。
 - staging 驗收：只啟動 `fmp`，兩個 dataset 的首日都先設成單一日期，確認 Source → raw → queue → canonical →
-  Serve 與 `expected = data + no_data + missing + blocked`，完成後停止 control。
+  Serve 與 `expected = data + no_data + missing + blocked + unavailable`，完成後停止 control。

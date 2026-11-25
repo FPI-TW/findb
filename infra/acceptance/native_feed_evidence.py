@@ -74,7 +74,8 @@ def assess(backend: dict[str, Any], fetchers: dict[str, dict[str, Any]]) -> dict
             summary["execution_profile"] == scope["execution_profile"]
             and summary["expected"] > 0
             and summary["data"] > 0
-            and summary["data"] + summary["no_data"] == summary["expected"]
+            and summary["data"] + summary["no_data"] + summary.get("unavailable", 0)
+            == summary["expected"]
             and summary["missing"] == summary["blocked"] == 0
             and sample["status"] == "completed"
             and sample["job_status"] == "completed"

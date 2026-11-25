@@ -161,13 +161,14 @@ missing alert。不同snapshot不得拼接；partial、failed或identity缺失�
 Full-market plan 以官方 published universe 與 exchange calendar 凍結 expected 成員；activation
 之前不建立 plan，也不將舊 canonical 資料當成本次 delivery。每日查詢
 `GET /api/v1/admin/delivery-plans` 與 `/{plan_id}/summary`，核對
-`expected = data + no_data + missing + blocked`，並保留 release digest、part／work item、raw
+`expected = data + no_data + missing + blocked + unavailable`，並保留 release digest、part／work item、raw
 reference、run／job 與 canonical lineage。
 
 `data` 來自成功 canonical persistence；`no_data` 僅接受可稽核停牌／無成交來源 evidence。
 空 payload、權限失敗、provider response 錯誤或超限列為 missing／blocked。不得用 subset
 清單替換原 plan，或把缺資料補為零。某 part 成功不阻擋其 canonical 查詢，但全日需
-`data + no_data = expected` 且 missing／blocked 均為零才 complete。
+`data + no_data + unavailable = expected` 且 missing／blocked 均為零才 complete；unavailable 是 provider 無法提供的
+已知情境（無 mapping）。
 
 每條 feed 的 deadline 都是排程開始後 12 小時（逐 feed 的台北時間見
 [Catalog 排程與 frozen deadline](full_market.md#catalog-排程與-frozen-deadline)）；Source 202、provider fetch

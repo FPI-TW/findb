@@ -942,8 +942,13 @@ SEQUENCED_DATASETS = frozenset({"tw_equity_minute", "tw_etf_minute"})
 @dataclass(frozen=True)
 class MemberState:
     member: DailyDeliveryMember
-    state: Literal["data", "no_data", "missing", "blocked"]
+    state: Literal["data", "no_data", "missing", "blocked", "unavailable"]
     reason: str | None
+
+
+def plan_complete(summary: DeliverySummaryResponse) -> bool:
+    """Every frozen member has data, durable no_data, or is a known unavailable case."""
+    return summary.data + summary.no_data + summary.unavailable == summary.expected
 
 
 async def classify_plan(
@@ -1100,23 +1105,27 @@ async def classify_plan(
     states: list[MemberState] = []
     for member in members:
         mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
-        state: Literal["data", "no_data", "missing", "blocked"]
+        state: Literal["data", "no_data", "missing", "blocked", "unavailable"]
+        reason = member.outcome_reason or ("mapping_gap" if mapping_gap else None)
+        if reason == "mapping_gap" and member.member_key in mappings:
+            reason = None
         if member.member_key in canonical_keys:
             state = "data"
         elif member.outcome == "no_data" or member.member_key in proven_no_data:
             # Historical or corroborated no-data proof outranks the daily's own
             # blocked outcome; its settlement and member outcome stay as recorded.
             state = "no_data"
-        elif (
-            member.outcome == "blocked"
-            and not (member.outcome_reason == "mapping_gap" and member.member_key in mappings)
-        ) or mapping_gap:
+        elif mapping_gap or (member.outcome == "blocked" and reason == "mapping_gap"):
+            # The provider cannot serve a member it has no symbol for: a known case,
+            # counted apart from blocked members and not holding the plan open.
+            state = "unavailable"
+        elif member.outcome == "blocked" and not (
+            # A repaired mapping replaces the gap outcome; the member is fetchable again.
+            member.outcome_reason == "mapping_gap" and member.member_key in mappings
+        ):
             state = "blocked"
         else:
             state = "missing"
-        reason = member.outcome_reason or ("mapping_gap" if mapping_gap else None)
-        if reason == "mapping_gap" and member.member_key in mappings:
-            reason = None
         states.append(MemberState(member, state, reason))
     return states
 
@@ -1129,14 +1138,16 @@ def summarize_states(
     now: datetime | None = None,
     gap_limit: int | None = 1000,
 ) -> DeliverySummaryResponse:
-    counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0}
+    counts = {"data": 0, "no_data": 0, "missing": 0, "blocked": 0, "unavailable": 0}
     unmapped = 0
     gaps: list[dict] = []
     for item in states:
         counts[item.state] += 1
-        if item.state == "blocked" and item.reason == "mapping_gap":
+        if item.state == "unavailable" and item.reason == "mapping_gap":
             unmapped += 1
-        if item.state in {"missing", "blocked"} and (gap_limit is None or len(gaps) < gap_limit):
+        if item.state in {"missing", "blocked", "unavailable"} and (
+            gap_limit is None or len(gaps) < gap_limit
+        ):
             gaps.append(
                 {
                     "member_key": item.member.member_key,
@@ -1164,6 +1175,7 @@ def summary_response(
     no_data: int,
     missing: int,
     blocked: int,
+    unavailable: int,
     mapping_gap: int,
     now: datetime | None = None,
     gaps: list[dict],
@@ -1178,11 +1190,11 @@ def summary_response(
         no_data=no_data,
         missing=missing,
         blocked=blocked,
+        unavailable=unavailable,
         mapping_gap=mapping_gap,
         deadline_at=plan.deadline_at,
-        # Lateness tracks acquisition progress: a mapping gap cannot be fetched, so
-        # it stays blocked (and alerting) without making the plan late.
-        is_late=evaluated_at > plan.deadline_at and missing + blocked - mapping_gap > 0,
+        # Lateness tracks acquisition progress; an unavailable member cannot be fetched.
+        is_late=evaluated_at > plan.deadline_at and missing + blocked > 0,
         gaps=gaps,
         unlisted_data=unlisted_data,
         unlisted=unlisted or [],
@@ -1527,7 +1539,7 @@ async def plan_summary_response(db: AsyncSession, plan: DailyDeliveryPlan) -> De
         trade_date=plan.trade_date,
         release_id=plan.release_id,
         deadline_at=plan.deadline_at,
-        status="complete" if summary.data + summary.no_data == summary.expected else "incomplete",
+        status="complete" if plan_complete(summary) else "incomplete",
         parts=[
             DeliveryPartResponse(
                 part_id=part.part_id,
@@ -1577,7 +1589,7 @@ async def plan_response(db: AsyncSession, plan: DailyDeliveryPlan) -> DeliveryPl
         trade_date=plan.trade_date,
         release_id=plan.release_id,
         deadline_at=plan.deadline_at,
-        status="complete" if summary.data + summary.no_data == summary.expected else "incomplete",
+        status="complete" if plan_complete(summary) else "incomplete",
         parts=[
             DeliveryPartResponse(
                 part_id=part.part_id,

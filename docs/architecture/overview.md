@@ -83,10 +83,11 @@ Mapping gap 仍列為 expected，不能刪除成員來降低分母；範圍排�
 
 每個 profile／已到排程時間的日期建立 frozen daily delivery plan，以 release 固定成員、日期與 work item；
 只有 provider 明確設定跳過非交易日時才記錄 durable skip。TAIFEX 新計畫使用同日期官方報表的 published release。
-完整度恆等式是 `expected = data + no_data + missing + blocked`；data 只計入成功 canonical
-lineage，no_data 只接受停牌／無成交的 durable source evidence。清單只用來算缺漏：catalog 宣告
+完整度恆等式是 `expected = data + no_data + missing + blocked + unavailable`；data 只計入成功 canonical
+lineage，no_data 只接受停牌／無成交的 durable source evidence，unavailable 是 provider 無法提供的已知情境（無 mapping），
+plan 不缺其他成員即完整。清單只用來算缺漏：catalog 宣告
 `unlisted_symbols: deliver` 的全市場 feed 也寫入清單外有提供的標的，另計 `unlisted_data`，不進 expected。成功部分立即可查，partial
-coverage 不等同全日 complete；mapping、quota、permission 或 source error 均保留 gap。
+coverage 不等同全日 complete；quota、permission 或 source error 均保留 gap，mapping gap 列為 unavailable。
 
 啟用從 activation date 向前運作，只追補啟用後缺口；full-market 不建立歷史回補或連續期貨。
 TAIFEX trade date 使用交易所歸屬日，盤後不由 timestamp 推算成隔日；無 settlement／open

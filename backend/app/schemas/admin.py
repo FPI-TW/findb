@@ -33,7 +33,7 @@ class ShioajiRepairInventoryMemberResponse(ShioajiRepairResponseModel):
     original_mapping_status: Literal["mapped", "gap"]
     exchange: str
     currency: str
-    status: Literal["missing", "blocked", "resolved"]
+    status: Literal["missing", "blocked", "unavailable", "resolved"]
     reason: str | None
     has_prepared: bool = Field(strict=True)
 

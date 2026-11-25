@@ -1104,8 +1104,9 @@ async def validate_mapping_gap_partial(db: AsyncSession, work: ProviderWork, pro
     """A per-member daily plan may end partial only when mapping gaps are all it lacks.
 
     Every other member already has data or no-data evidence in the plan, and the
-    proof names exactly the plan's mapping-gap members. The plan keeps counting
-    them as blocked; only the work stops being a failure nobody can act on.
+    proof names exactly the plan's mapping-gap members. Such a plan is now complete,
+    so a current Fetcher settles it completed; this accepts the partial settlement
+    a Fetcher sent from the summary it read before mapping gaps became unavailable.
     """
     from app.services.full_market import get_plan
 
@@ -1122,10 +1123,11 @@ async def validate_mapping_gap_partial(db: AsyncSession, work: ProviderWork, pro
         plan.trade_date != work.trade_date
         or plan.execution_profile != work.execution_profile
         or summary.missing
-        or not summary.blocked
-        or summary.blocked != summary.mapping_gap
+        or summary.blocked
+        or not summary.mapping_gap
+        or summary.unavailable != summary.mapping_gap
         # The summary lists a bounded number of gaps; a longer list cannot be compared.
-        or len(summary.gaps) != summary.blocked
+        or len(summary.gaps) != summary.unavailable
         or not isinstance(claimed, list)
         or any(not isinstance(key, str) for key in claimed)
         or len(claimed) != len(set(claimed))
