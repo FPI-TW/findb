@@ -96,7 +96,7 @@ def runtime_command(target, provider, profile):
         "--config",
         f"/app/configs/bootstrap.{target}.v1.json",
         "--state-path",
-        f"{state_dir}/state.sqlite3",
+        f"{state_dir}/state-{provider}.sqlite3",
         "--provider",
         provider,
         "--run-forever",
@@ -142,11 +142,14 @@ def require_runtime(row, image, target, provider, profile):
     if identity != [target] or any(value != target for value in legacy):
         raise ValueError("installed runtime environment mismatch")
     args = config["Cmd"]
+    expected = runtime_command(target, provider, profile)
+    # Before #691 every Full consumer shared state.sqlite3.
+    shared = [re.sub(r"/state-\w+\.sqlite3$", "/state.sqlite3", arg) for arg in expected]
     if (
         not committed_runtime(row)
         or config["Image"] != image
         or not isinstance(args, list)
-        or args != runtime_command(target, provider, profile)
+        or args not in (expected, shared)
         or "Entrypoint" not in config
         or config["Entrypoint"] not in (None, [])
         or row.get("Path") != command

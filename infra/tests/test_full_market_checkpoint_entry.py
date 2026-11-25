@@ -1,5 +1,6 @@
 """Transported read-only checkpoint safety for both execution profiles."""
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -140,11 +141,14 @@ def test_transported_checkpoint_guard(
     command_rc=0,
     inspect_rc=0,
     expected_reason=None,
+    layout="shared",
 ):
     builder, binaries = _transport(tmp_path)
-    checkpoint = tmp_path / "checkpoint/state.sqlite3"
+    # A provider split from the host-wide checkpoint (#691) is checked in its own file.
+    name = "state.sqlite3" if layout == "shared" else "state-finlab.sqlite3"
+    checkpoint = tmp_path / "checkpoint" / name
     if state_kind != "missing":
-        checkpoint.parent.mkdir()
+        checkpoint.parent.mkdir(exist_ok=True)
         if state_kind == "empty":
             checkpoint.touch()
         else:
@@ -173,13 +177,23 @@ def test_transported_checkpoint_guard(
     before = checkpoint.read_bytes() if checkpoint.exists() else None
     shell = r"""set -euo pipefail
 export APP_ENVIRONMENT
+host_path() {
+  case "$1" in
+    "${expected_state_path%/*}") printf '%s\n' "${checkpoint%/*}" ;;
+    "${expected_state_path%/*}"/state.sqlite3|"${expected_state_path%/*}"/state-finlab.sqlite3)
+      printf '%s\n' "${checkpoint%/*}/${1##*/}" ;;
+    *) return 96 ;;
+  esac
+}
 sudo() {
+  local path
   if [ "$1" = test ]; then
-    local path="$3"
-    if [ "$path" = "$expected_state_path" ]; then path="$checkpoint";
-    elif [ "$path" = "${expected_state_path%/*}" ]; then path="${checkpoint%/*}"; else return 96; fi
+    path="$(host_path "$3")" || return 96
     test "$2" "$path"
-  elif [ "$1" = python3 ]; then python3 - "$checkpoint"; else return 95; fi
+  elif [ "$1" = python3 ] && [ "$2" = - ]; then
+    path="$(host_path "$3")" || return 97
+    python3 - "$path"
+  else return 95; fi
 }
 docker() {
   case "$1" in
@@ -188,7 +202,7 @@ docker() {
     *) return 94 ;;
   esac
 }
-export -f sudo docker
+export -f host_path sudo docker
 """
     shell += builder + '\neval "$checkpoint_entry_gate"\ntouch gate-passed\n'
     state_dir = f"/var/lib/findb-{profile.replace('_', '-')}/{target}"
@@ -203,7 +217,14 @@ export -f sudo docker
             "APP_ENVIRONMENT": target,
             "installed_name": f"findb-{profile.replace('_', '-')}-finlab{suffix}",
             "command_output": command_output
-            or f'["findb-fetch-runtime","--execution-profile","{profile}"]',
+            or (
+                f'["findb-fetch-runtime","--execution-profile","{profile}"]'
+                if layout == "shared"
+                else json.dumps(
+                    ["findb-fetch-runtime", "--execution-profile", profile]
+                    + ["--state-path", f"{state_dir}/{name}", "--provider", "finlab"]
+                )
+            ),
             "command_rc": str(command_rc),
             "inspect_rc": str(inspect_rc),
             "checkpoint": str(checkpoint),
@@ -230,6 +251,65 @@ export -f sudo docker
         assert result.returncode == 0, result.stderr
         assert (tmp_path / "gate-passed").exists()
     assert (checkpoint.read_bytes() if checkpoint.exists() else None) == before
+
+
+@pytest.mark.parametrize("target", ["staging", "production"])
+@pytest.mark.parametrize("state_kind", ["missing", "valid", "corrupt", "unusable"])
+def test_transported_guard_checks_a_split_provider_in_its_own_file(tmp_path, target, state_kind):
+    test_transported_checkpoint_guard(
+        tmp_path, target, "full_market", "", state_kind, layout="split"
+    )
+
+
+def _legacy_checkpoint(path):
+    path.parent.mkdir(exist_ok=True)
+    with sqlite3.connect(path) as db:
+        db.executescript(
+            (REPO_ROOT / "fetcher/tests/fixtures/full_market_legacy_core.sql").read_text()
+        )
+    return path.read_bytes()
+
+
+def test_transported_guard_never_lets_the_host_wide_file_mask_a_broken_own_file(tmp_path):
+    shared = tmp_path / "checkpoint/state.sqlite3"
+    before = _legacy_checkpoint(shared)
+    test_transported_checkpoint_guard(
+        tmp_path, "staging", "full_market", "", "empty", layout="split"
+    )
+    assert shared.read_bytes() == before
+
+
+def test_transported_guard_ignores_a_file_set_aside_by_a_rolled_back_release(tmp_path):
+    stale = tmp_path / "checkpoint/state-finlab.sqlite3"
+    stale.parent.mkdir()
+    stale.write_bytes(b"not a checkpoint")
+    command = json.dumps(
+        ["findb-fetch-runtime", "--execution-profile", "full_market", "--state-path"]
+        + ["/var/lib/findb-full-market/staging/state.sqlite3", "--provider", "finlab"]
+    )
+    test_transported_checkpoint_guard(
+        tmp_path, "staging", "full_market", "", "valid", command_output=command
+    )
+    assert stale.read_bytes() == b"not a checkpoint"
+
+
+@pytest.mark.parametrize(
+    "state_path",
+    [["/tmp/state-finlab.sqlite3"], ["/var/lib/findb-full-market/staging/other.db"], []],
+)
+def test_transported_guard_refuses_a_checkpoint_outside_the_full_directory(tmp_path, state_path):
+    command = json.dumps(
+        ["findb-fetch-runtime", "--execution-profile", "full_market", "--state-path", *state_path]
+    )
+    test_transported_checkpoint_guard(
+        tmp_path,
+        "staging",
+        "full_market",
+        "",
+        "valid",
+        command_output=command,
+        expected_reason="full_market_checkpoint_missing",
+    )
 
 
 @pytest.mark.parametrize("profile", ["full_market"])

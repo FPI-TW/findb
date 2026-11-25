@@ -245,6 +245,7 @@ stable=stable
 previous=previous
 preflight_name=preflight
 image=reviewed-image
+legacy_present=false
 cache_mount=()
 account_mount=()
 account_dir="$state_dir/account"
@@ -464,6 +465,7 @@ def test_named_full_journal_restores_names_state_and_stale_backup(
         "set -Eeuo pipefail\n"
         "FETCHER_DEPLOY_MODE=candidate\n"
         "provider_stop_timeout_seconds=90\n"
+        "checkpoint_split=false\n"
         f"processed=(){transaction}\nstable={stable}\nprevious={previous}\n{operations}"
     )
     env = {

@@ -65,6 +65,24 @@ case "$operation" in
       printf '%s\n' "${FAKE_CANDIDATE_STATUS:-running}" > "$state_dir/$name"
     else
       [ "${FAKE_PREFLIGHT_FAIL:-0}" != 1 ]
+      for argument in "$@"; do
+        [ "$argument" != "${FAKE_FAIL_ON_ARGUMENT:-}" ] || exit 1
+      done
+      case " $* " in
+        *" --split-checkpoint "*)
+          # The checkpoint split (#691): FAKE_SPLIT=split or failed.
+          checkpoint=""
+          previous=""
+          for argument in "$@"; do
+            if [ "$previous" = --state-path ]; then checkpoint="$argument"; fi
+            previous="$argument"
+          done
+          case "${FAKE_SPLIT:-split}" in
+            split) printf 'split-copy\n' > "$checkpoint"; printf '{"status":"split"}\n' ;;
+            *) printf '{"status": "refused", "reason": "copy_mismatch"}\n'; exit 1 ;;
+          esac
+          ;;
+      esac
     fi
     ;;
   create)
@@ -96,6 +114,7 @@ case "$operation" in
         esac
         ;;
       *Config.Image*) printf '%s\n' "${FAKE_IMAGE:?}" ;;
+      *Config.Cmd*) printf '%s\n' "${FAKE_INSTALLED_COMMAND:-$status}" ;;
       *Config.User*) printf '10001:10001\n' ;;
       *HostConfig.RestartPolicy.Name*) printf 'no\n' ;;
       *HostConfig.Memory*) printf '%s\n' "${FAKE_MEMORY:-0}" ;;

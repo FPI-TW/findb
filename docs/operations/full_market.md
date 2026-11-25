@@ -444,7 +444,7 @@ credential、config 與 `FETCHER_ACCOUNT_STATE_PATH` 執行，明確指定 profi
 
 ```bash
 findb-fetch-runtime --provider shioaji --execution-profile full_market \
-  --config /path/to/full-market.json --state-path /path/to/state.sqlite3 \
+  --config /path/to/full-market.json --state-path /path/to/state-shioaji.sqlite3 \
   --diagnose-shioaji --work-id WORK_UUID > /tmp/shioaji-diagnostic.json
 ```
 
@@ -1291,9 +1291,9 @@ Backend 逐成員驗證 evidence 與本 work 的實際寫入證據。本變更�
 cd fetcher
 export APP_ENVIRONMENT=local FETCHER_ACCOUNT_STATE_PATH=.state/account/governor.sqlite3
 uv run --env-file .env findb-fetch-runtime --execution-profile full_market --provider finlab \
-  --config configs/bootstrap.local.v1.json --state-path .state/full_market/state.sqlite3 --sync-universes
+  --config configs/bootstrap.local.v1.json --state-path .state/full_market/state-finlab.sqlite3 --sync-universes
 uv run --env-file .env findb-fetch-runtime --execution-profile full_market --provider finlab \
-  --config configs/bootstrap.local.v1.json --state-path .state/full_market/state.sqlite3 --run-forever
+  --config configs/bootstrap.local.v1.json --state-path .state/full_market/state-finlab.sqlite3 --run-forever
 ```
 
 Consumer 以 `FETCHER_CONSUMER_PROFILE=full_market|maintenance|historical` 標示角色（部署 consumers 只用
@@ -1305,6 +1305,10 @@ account DB 指向同一檔。既有 governor 的 pins、debt、unknown liability
 
 AWS 路徑、首次切換、備份與回退下限見 [deployment.md](deployment.md)。CLI 的 `--check` 不呼叫 provider，
 `--initialize-state` 只允許新 installation 建立 schema，既有 checkpoint 遺失必須阻塞。
+每個 provider 的 checkpoint 是 `state-<provider>.sqlite3`（未指定 `--state-path` 時為
+`/var/lib/findb-full-market/state-<provider>.sqlite3`）；`--split-checkpoint --legacy-state-path` 只供
+release helper 從主機共用的舊 `state.sqlite3` 拆出該 provider 的列，見
+[Full checkpoint 分檔](deployment.md#full-checkpoint-分檔)。
 `--require-stopped` 唯讀驗證 Full checkpoint 與 controls，不能藉部署修改 desired state。
 
 ## Dashboard 與 API
