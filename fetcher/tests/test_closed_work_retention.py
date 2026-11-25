@@ -84,8 +84,15 @@ def _keys(path: Path, table: str) -> set[str]:
 @pytest.mark.parametrize(
     ("provider", "responses_retired"),
     # Each HKEX report body is the gzip it persisted to Raw R2.
-    # FMP journals each index response it persisted unchanged.
-    [("twelve_data", True), ("hkex", True), ("fmp", True), ("finlab", False)],
+    # FMP, TWSE and TPEx journal each index response they persisted unchanged.
+    [
+        ("twelve_data", True),
+        ("hkex", True),
+        ("fmp", True),
+        ("twse", True),
+        ("tpex", True),
+        ("finlab", False),
+    ],
 )
 def test_journal_retires_only_week_old_closed_and_receipted_works(
     tmp_path: Path, provider: str, responses_retired: bool

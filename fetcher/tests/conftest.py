@@ -85,6 +85,7 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         "test_historical_backfill.py",
         "test_hkex.py",
         "test_fmp.py",
+        "test_tw_official.py",
     }
     if request.path.name not in modules:
         yield
