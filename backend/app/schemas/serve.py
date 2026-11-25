@@ -198,12 +198,21 @@ class DatasetResponse(BaseModel):
     asset_class: str = Field(description="Asset class, e.g. `equity`, `etf`, `index`, `future`.")
     frequency: Literal["daily", "minute", "tick"] = Field(description="Sampling frequency.")
     data_kind: Literal[
-        "eod", "minute", "futures_eod", "intraday_bars", "intraday_ticks", "exchange_quotes"
+        "eod",
+        "minute",
+        "futures_eod",
+        "intraday_bars",
+        "intraday_ticks",
+        "exchange_quotes",
+        "institutional_flows",
+        "institutional_flow_summary",
     ] = Field(
         description=(
             "Kind of data; `operation_id` names the endpoint that serves it. "
             "`exchange_quotes` is the exchange's official daily report (HKEX), whose values "
-            "also correct the `eod` rows."
+            "also correct the `eod` rows. `institutional_flows` and "
+            "`institutional_flow_summary` are a TW exchange's three institutional investors "
+            "tables (per security in shares, and market totals in TWD)."
         )
     )
     interval: Literal["1d", "1m", "tick"] = Field(description="Native bar interval.")
@@ -879,3 +888,100 @@ class MarketFreshnessSummaryResponse(BaseModel):
 class MarketFreshnessSummaryListResponse(BaseModel):
     success: Literal[True] = Field(default=True, description="Always true on success.")
     data: list[MarketFreshnessSummaryResponse] = Field(description="One entry per market.")
+
+
+InstitutionalBoardValue = Literal["TWSE", "TPEX"]
+BOARD = "`TWSE` (listed market) or `TPEX` (over-the-counter market): the publishing exchange."
+
+
+class InstitutionalFlowSides(BaseModel):
+    buy: int | None = Field(default=None, description="Shares bought; null if not published.")
+    sell: int | None = Field(default=None, description="Shares sold; null if not published.")
+    net: int | None = Field(
+        default=None, description="Net shares (buy - sell); null if not published."
+    )
+
+
+class InstitutionalFlowResponse(BaseModel):
+    trade_date: date = Field(description=TRADE_DATE)
+    board: InstitutionalBoardValue = Field(description=BOARD)
+    symbol: str = Field(
+        description="Security code as the board lists it, warrants included, e.g. `2330`."
+    )
+    name: str | None = Field(default=None, description="Security name as the board lists it.")
+    instrument: InstrumentSummaryResponse | None = Field(
+        default=None,
+        description="The FinDB TW equity or ETF instrument of this code; null for securities "
+        "FinDB does not list, such as warrants.",
+    )
+    foreign_ex_dealer: InstitutionalFlowSides = Field(
+        description="Foreign and mainland investors, excluding foreign dealers."
+    )
+    foreign_dealer: InstitutionalFlowSides = Field(description="Foreign dealers.")
+    foreign_total: InstitutionalFlowSides = Field(
+        description="All foreign investors; TPEx prints it, TWSE does not (null sides)."
+    )
+    investment_trust: InstitutionalFlowSides = Field(description="Domestic investment trusts.")
+    dealer_proprietary: InstitutionalFlowSides = Field(
+        description="Securities dealers trading on their own account."
+    )
+    dealer_hedge: InstitutionalFlowSides = Field(description="Securities dealers hedging.")
+    dealer_total: InstitutionalFlowSides = Field(
+        description="All securities dealers; TWSE prints only the net."
+    )
+    total_net: int = Field(
+        description="Net shares of the three institutional investors as the board prints it: "
+        "foreign excluding foreign dealers + investment trusts + dealers."
+    )
+    source: str = Field(description="Publishing exchange's provider name: `twse` or `tpex`.")
+    source_fetched_at: datetime = Field(description="When FinDB fetched this table (UTC).")
+
+
+class InstitutionalFlowListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    unit: Literal["share"] = Field(default="share", description="Every value is in shares.")
+    data: list[InstitutionalFlowResponse] = Field(
+        description="Rows ordered by trade date (see `order`), board and symbol, or by `sort`."
+    )
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
+
+
+class InstitutionalAmountResponse(BaseModel):
+    buy_amount: int = Field(description="Amount bought in TWD.")
+    sell_amount: int = Field(description="Amount sold in TWD.")
+    net_amount: int = Field(description="Net amount (buy - sell) in TWD.")
+    reported: bool = Field(
+        description="True when the board printed this line; false when FinDB added it from "
+        "its parts (TWSE prints no foreign or dealer subtotal)."
+    )
+
+
+class InstitutionalFlowSummaryResponse(BaseModel):
+    trade_date: date = Field(description=TRADE_DATE)
+    board: InstitutionalBoardValue = Field(description=BOARD)
+    currency: Literal["TWD"] = Field(default="TWD", description="Currency of every amount.")
+    foreign_ex_dealer: InstitutionalAmountResponse = Field(
+        description="Foreign and mainland investors, excluding foreign dealers."
+    )
+    foreign_dealer: InstitutionalAmountResponse = Field(description="Foreign dealers.")
+    foreign_total: InstitutionalAmountResponse = Field(description="All foreign investors.")
+    investment_trust: InstitutionalAmountResponse = Field(description="Domestic investment trusts.")
+    dealer_proprietary: InstitutionalAmountResponse = Field(
+        description="Securities dealers trading on their own account."
+    )
+    dealer_hedge: InstitutionalAmountResponse = Field(description="Securities dealers hedging.")
+    dealer_total: InstitutionalAmountResponse = Field(description="All securities dealers.")
+    total: InstitutionalAmountResponse = Field(
+        description="The three institutional investors as the board prints it. Foreign dealers "
+        "are excluded: their trades are already counted under dealers."
+    )
+    source: str = Field(description="Publishing exchange's provider name: `twse` or `tpex`.")
+    source_fetched_at: datetime = Field(description="When FinDB fetched this table (UTC).")
+
+
+class InstitutionalFlowSummaryListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[InstitutionalFlowSummaryResponse] = Field(
+        description="One row per board and trade date, ordered by trade date (see `order`)."
+    )
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")

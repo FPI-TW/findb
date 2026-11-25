@@ -29,6 +29,8 @@ from app.schemas.serve import (
     ExchangeQuoteListResponse,
     FuturesContractListResponse,
     FuturesEODListResponse,
+    InstitutionalFlowListResponse,
+    InstitutionalFlowSummaryListResponse,
     InstrumentDetailResponse,
     InstrumentListResponse,
     InstrumentResolveResponse,
@@ -46,7 +48,7 @@ from app.schemas.serve import (
     SortDirection,
 )
 from app.services import serve as serve_queries
-from app.services import serve_downloads, serve_intraday
+from app.services import serve_downloads, serve_flows, serve_intraday
 from app.services.effective_calendar import published_calendar_year
 from app.services.index_quality import CLOSE_ONLY_INDICES
 from app.services.market_freshness import list_market_freshness
@@ -842,6 +844,153 @@ async def get_exchange_quotes(
     return await serve_queries.list_exchange_quotes(
         db,
         instruments_raw=instruments,
+        start_date=start_date,
+        end_date=end_date,
+        order=order,
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+BoardQuery = Annotated[
+    Literal["TWSE", "TPEX"] | None,
+    Query(
+        description=(
+            "Only this board: `TWSE` (listed market) or `TPEX` (over-the-counter market). "
+            "Default: every active board."
+        )
+    ),
+]
+INTERNAL_USE = "For internal use only, as the exchanges publish it."
+
+
+@router.get(
+    "/institutional-flows",
+    response_model=InstitutionalFlowListResponse,
+    operation_id="list_institutional_flows",
+    summary="Three institutional investors flows by security (TW, shares)",
+    description=(
+        "Daily buy, sell and net shares of the three major institutional investors (三大法人: "
+        "foreign investors, investment trusts and securities dealers) per security, as TWSE "
+        "and TPEx publish them, warrants included. Give one scope: `instruments` (up to 50 TW "
+        "stocks or ETFs) or `symbols` (up to 50 listed codes, e.g. warrants) over "
+        "`start_date`..`end_date`; or only `trade_date` for that day's whole table, which may "
+        "be sorted by a net flow (`sort`) to rank securities. `total_net` is the boards' own "
+        "total, which excludes foreign dealers (counted under dealers). " + INTERNAL_USE
+    ),
+    responses=_errors(
+        {
+            404: f"{INSTRUMENT_NOT_FOUND} `details.inputs` lists the unknown values.",
+            422: (
+                "`QUERY_SCOPE_REQUIRED`: give instruments, symbols or a trade_date. "
+                "`INVALID_SORT`: sorting by a flow needs a single trade_date. "
+                f"{SELECTOR_ERRORS} {DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}"
+            ),
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
+async def list_institutional_flows(
+    instruments: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Comma-separated TW stocks or ETFs, at most 50, each a FinDB UUID or "
+                "`MARKET:SYMBOL`. Do not combine with `symbols`."
+            ),
+            examples=["TW:2330,TW:0050"],
+        ),
+    ] = None,
+    symbols: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Comma-separated listed codes, at most 50, including codes FinDB has no "
+                "instrument for, such as warrants. Do not combine with `instruments`."
+            ),
+            examples=["2330,030001"],
+        ),
+    ] = None,
+    trade_date: Annotated[
+        date | None,
+        Query(
+            description=(
+                "One exchange-local trade date (YYYY-MM-DD). Alone it returns that day's whole "
+                "table; with instruments or symbols it limits them to that day."
+            ),
+            examples=["2026-11-20"],
+        ),
+    ] = None,
+    board: BoardQuery = None,
+    start_date: StartDateQuery = None,
+    end_date: EndDateQuery = None,
+    sort: Annotated[
+        serve_flows.FlowSort,
+        Query(
+            description=(
+                "`symbol` (default): by trade date, board and code. A net flow (`total_net`, "
+                "`foreign_ex_dealer_net`, `investment_trust_net`, `dealer_total_net`) ranks "
+                "securities; it needs `trade_date`."
+            )
+        ),
+    ] = "symbol",
+    order: Annotated[
+        SortDirection,
+        Query(description="`desc` (default) or `asc`, for the trade date or the `sort` flow."),
+    ] = "desc",
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
+    db: AsyncSession = Depends(get_db),
+) -> InstitutionalFlowListResponse:
+    return await serve_flows.list_institutional_flows(
+        db,
+        instruments_raw=instruments,
+        symbols_raw=symbols,
+        trade_date=trade_date,
+        board=board,
+        start_date=start_date,
+        end_date=end_date,
+        sort=sort,
+        order=order,
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+@router.get(
+    "/institutional-flows/summary",
+    response_model=InstitutionalFlowSummaryListResponse,
+    operation_id="list_institutional_flow_summary",
+    summary="Three institutional investors market totals (TW, TWD)",
+    description=(
+        "Daily market totals in TWD bought, sold and net by foreign investors, investment "
+        "trusts and securities dealers, as TWSE and TPEx publish them; one row per board and "
+        "day. Subtotals a board does not print are added from their parts and marked "
+        "`reported: false`. " + INTERNAL_USE
+    ),
+    responses=_errors(
+        {
+            422: f"{DATASET_NOT_AVAILABLE} {INVALID_DATE_RANGE} {INVALID_CURSOR}",
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
+async def list_institutional_flow_summary(
+    board: BoardQuery = None,
+    start_date: StartDateQuery = None,
+    end_date: EndDateQuery = None,
+    order: Annotated[SortDirection, Query(description=ORDER_DESCRIPTION)] = "desc",
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(100, 1000)] = 100,
+    _: str | None = Depends(verify_paginated_serve_api_key(100)),
+    db: AsyncSession = Depends(get_db),
+) -> InstitutionalFlowSummaryListResponse:
+    return await serve_flows.list_institutional_flow_summary(
+        db,
+        board=board,
         start_date=start_date,
         end_date=end_date,
         order=order,
