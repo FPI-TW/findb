@@ -66,12 +66,14 @@ def resolve_execution_config(
     provider: str,
     environment: str,
     profile: str,
-    complete_scope: bool = True,
 ) -> ExecutionSnapshot:
-    """Validate the complete snapshot before exposing any feed to the planner.
+    """Validate the snapshot, then expose the feeds this image installs and Source publishes.
 
-    Maintenance may hold a narrower credential scope; it still validates every
-    published feed but does not require the full installed provider scope.
+    Backend and Fetcher deploy separately, so their catalogs may differ for a while:
+    a feed published by a newer Backend is skipped here (this image cannot run it),
+    and an installed feed an older Backend does not publish yet is simply not
+    planned. Neither stops the feeds both sides know. A maintenance credential may
+    also publish a narrower scope.
     """
     body = deepcopy(value)
     if set(body) != {
@@ -107,6 +109,20 @@ def resolve_execution_config(
     seen = set()
     resolved = []
     for feed in feeds:
+        if (
+            not isinstance(feed, dict)
+            or feed.get("provider") != provider
+            or not isinstance(feed.get("dataset_key"), str)
+        ):
+            raise ValueError("Invalid execution feed shape")
+        key = feed["dataset_key"]
+        if key in seen:
+            raise ValueError("Unknown or duplicate execution feed")
+        seen.add(key)
+        if key not in expected:
+            # A newer Backend's feed: not executable by this image, and its shape
+            # may be newer too. It waits for the Fetcher release that installs it.
+            continue
         if set(feed) != {
             "provider",
             "dataset_key",
@@ -123,10 +139,8 @@ def resolve_execution_config(
             "bounded_monitor",
         }:
             raise ValueError("Invalid execution feed shape")
-        key = feed["dataset_key"]
-        if key in seen or key not in expected or (provider, key) not in _IMPLEMENTED_ADAPTERS:
+        if (provider, key) not in _IMPLEMENTED_ADAPTERS:
             raise ValueError("Unknown or duplicate execution feed")
-        seen.add(key)
         installed = expected[key]
         if any(
             json.dumps(feed[k], sort_keys=True) != json.dumps(installed[k], sort_keys=True)
@@ -164,6 +178,6 @@ def resolve_execution_config(
                 "slot_id": installed["delivery"]["slot_id"],
             }
         )
-    if complete_scope and seen != set(expected):
-        raise ValueError("Incomplete execution config scope")
+    if not resolved:
+        raise ValueError("Execution config publishes no installed feed")
     return ExecutionSnapshot(digest=digest, feeds=tuple(resolved))

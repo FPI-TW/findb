@@ -823,7 +823,6 @@ class FullMarketRuntime:
             provider=self.provider,
             environment=app_environment(),
             profile=self.execution_profile,
-            complete_scope=False,
         )
         self.refresh_snapshot = snapshot
         published = {feed["dataset_key"]: feed["source_timezone"] for feed in snapshot.feeds}

@@ -1458,12 +1458,17 @@ def test_require_stopped_never_recreates_unavailable_checkpoint(
     "scope,accepted",
     [
         (["us_equity_eod"], True),
-        (["us_equity_eod", "hk_equity_eod"], False),
+        # A Backend ahead of this image binds a dataset it does not install yet.
+        (["us_equity_eod", "hk_equity_eod"], True),
+        (["us_equity_eod", "tw_equity_eod"], True),
+        # A control sharing nothing with this image is not its control.
         (["hk_equity_eod"], False),
-        (["us_equity_eod", "tw_equity_eod"], False),
+        ([], False),
     ],
 )
-def test_twelve_data_control_scope_is_us_only(tmp_path, monkeypatch, scope, accepted, capsys):
+def test_control_scope_must_share_the_installed_feeds(
+    tmp_path, monkeypatch, scope, accepted, capsys
+):
     from findb_fetcher import full_market_cli
 
     class Control:

@@ -348,9 +348,10 @@ def main(argv: list[str] | None = None) -> int:
                 run_forever=args.run_forever,
                 max_delay=config["poll_seconds"],
             )
-            if (
-                observed.provider != args.provider
-                or set(observed.dataset_keys) != _SCOPES[args.provider]
+            # A Backend deployed ahead of or behind this image may bind more or fewer
+            # datasets; the control must still be this provider's and share some.
+            if observed.provider != args.provider or not (
+                set(observed.dataset_keys) & _SCOPES[args.provider]
             ):
                 raise ValueError("full-market control scope mismatch")
             if args.require_stopped:
