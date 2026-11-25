@@ -1711,6 +1711,7 @@ HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 只負責 US，HK �
 | HKEX `hk_equity_official_eod` | 香港 21:05 | 09:05 |
 | Twelve Data `us_equity_eod` | 紐約 17:00 | 18:00（美國夏令時間 17:00） |
 | FMP `us_index_eod` | 台北 08:30（抓前一個紐約交易日） | 20:30 |
+| FMP `us_dollar_index_eod` | 紐約 17:15 | 05:15 |
 
 既有 plan 以儲存的 `deadline_at` 判定，不因後續
 catalog 修改提早或延後告警。Bounded US 09:15 是另一政策，使用自己的 timezone／day offset。
@@ -1719,16 +1720,20 @@ DB 舊值修正與發布下限見 [PR5 遷移](deployment.md#provider-catalog-pr
 
 ## FMP 市場指數
 
-FMP 提供 76 檔市場指數的日線（港股 3、美股 73），依發布時間分兩條 feed，各一個 dataset，`asset_class` 為
+FMP 提供 76 檔市場指數的日線（港股 3、美股 72、美元指數 1），依發布時間分三條 feed，各一個 dataset，`asset_class` 為
 `index`，代號沿用 FMP（例如 `^GSPC`、`DX-Y.NYB`）。名單在 Fetcher 的 `provider_adapters/fmp.py`
 （`INDEX_UNIVERSES`），選取依據、排除的標的與實測見 [FMP 導入規劃](../dev/fmp-provider.md)。
 
 | Dataset | 指數 | 排程 | 完成期限 | 交易日曆 |
 | --- | --- | --- | --- | --- |
 | `hk_index_eod` | `^HSI`、`^HSCE`、`512.HK` | 香港時間 20:00，當天 | 隔天 08:00 HKT | HK |
-| `us_index_eod` | 第一批 8（`^GSPC`、`^NDX`、`^DJI`、`^IXIC`、`^RUT`、`^VIX`、`^SOX`、`^NYA`）、主要指數與羅素 12、S&P 500 類股與精選類股 22、產業 10、波動率 14、利率與美元 6、商品 1（`^SPGSCI`） | 台北時間 08:30，前一個紐約日 | 同日 20:30（台北） | US |
+| `us_index_eod` | 第一批 8（`^GSPC`、`^NDX`、`^DJI`、`^IXIC`、`^RUT`、`^VIX`、`^SOX`、`^NYA`）、主要指數與羅素 12、S&P 500 類股與精選類股 22、產業 10、波動率 14、利率 5、商品 1（`^SPGSCI`） | 台北時間 08:30，前一個紐約日 | 同日 20:30（台北） | US |
+| `us_dollar_index_eod` | `DX-Y.NYB` | 紐約時間 17:15，當天 | 隔天 05:15（紐約） | US |
 
-- 兩條 feed 共用一個 control `full_market_fmp_v1`，控制列顯示最早的 feed（台北 08:30）。
+- 三條 feed 共用一個 control `full_market_fmp_v1`，控制列顯示最早的 feed（台北 08:30）。
+- **美元指數獨立排程**（Owner 於 2026-11-25 決定，#713）：`DX-Y.NYB` 幾乎 24 小時交易，紐約約 20:00 之後 FMP 會以
+  下一個交易時段的數字覆蓋當日列，原本台北 08:30 的排程正落在覆蓋之後。改在紐約 17:00 結算後的 17:15 抓；FMP
+  盤中就有當日列，這時抓到的就是完整的一天。#680 的隔天重抓不納入這條 feed。
 - **必須有已發布的交易所日曆**（`calendar_required`）：缺日曆的日期以 `CALENDAR_UNPUBLISHED` 等待重試，
   不以週一至週五代替；同一天另一條 feed 照常規劃。兩環境的港股日曆涵蓋 1987–2026 年，2027 年起要先發布該年日曆。
 - **名單**固定，由 Fetcher 以 FMP 的指數清單核對每檔都在、幣別相符後發布；任一檔不符就保留上一份名單。

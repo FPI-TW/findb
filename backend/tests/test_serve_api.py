@@ -1012,3 +1012,71 @@ async def test_openapi_publishes_exactly_the_current_serve_routes(client: AsyncC
     paths = (await client.get("/openapi.json")).json()["paths"]
     serve_paths = {path for path in paths if path.startswith("/api/v1/serve/")}
     assert serve_paths == set(SERVE_ROUTE_URLS)
+
+
+@pytest.mark.asyncio
+async def test_two_datasets_may_share_a_canonical_scope_and_count_their_own_writes(
+    client: AsyncClient, test_session
+):
+    from app.models.registry import IngestionRun
+
+    # Index groups fetched at different times write the same market and asset class.
+    test_session.add(
+        dataset("us_index_eod", market="US", asset_class="index", schema_id="market_eod")
+    )
+    test_session.add(
+        dataset("us_dollar_index_eod", market="US", asset_class="index", schema_id="market_eod")
+    )
+    await test_session.flush()
+    gspc, dxy = uuid7(), uuid7()
+    test_session.add(instrument(gspc, "^GSPC", market="US", asset_class="index"))
+    test_session.add(instrument(dxy, "DX-Y.NYB", market="US", asset_class="index"))
+    runs = {}
+    for key in ("us_index_eod", "us_dollar_index_eod"):
+        run = IngestionRun(
+            run_id=uuid7(),
+            dataset_key=key,
+            source="secret_provider",
+            status="completed",
+            raw_records=1,
+            total_records=1,
+            success_records=1,
+            failed_records=0,
+        )
+        test_session.add(run)
+        runs[key] = run.run_id
+    await test_session.flush()
+    rows = [
+        eod(gspc, date(2026, 11, 20)),
+        eod(gspc, date(2026, 11, 23)),
+        eod(dxy, date(2026, 11, 23)),
+    ]
+    for row, key in zip(rows, ("us_index_eod", "us_index_eod", "us_dollar_index_eod")):
+        row.run_id = runs[key]
+        test_session.add(row)
+    await test_session.commit()
+
+    response = await client.get("/api/v1/serve/datasets")
+
+    assert response.status_code == 200
+    coverage = {
+        item["dataset_key"]: item["coverage"]
+        for item in response.json()["data"]
+        if item["asset_class"] == "index"
+    }
+    assert coverage == {
+        "us_index_eod": {
+            "coverage_start_date": "2026-11-20",
+            "coverage_end_date": "2026-11-23",
+            "instrument_count": 1,
+        },
+        "us_dollar_index_eod": {
+            "coverage_start_date": "2026-11-23",
+            "coverage_end_date": "2026-11-23",
+            "instrument_count": 1,
+        },
+    }
+    # Reads go by market and asset class: both datasets' rows are served alike.
+    bars = await client.get("/api/v1/serve/eod", params={"instruments": "US:^GSPC,US:DX-Y.NYB"})
+    assert bars.status_code == 200
+    assert {row["symbol"] for row in bars.json()["data"]} == {"^GSPC", "DX-Y.NYB"}

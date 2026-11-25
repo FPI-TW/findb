@@ -28,6 +28,7 @@ _IMPLEMENTED_ADAPTERS = frozenset(
         ("hkex", "hk_equity_official_eod"),
         ("fmp", "hk_index_eod"),
         ("fmp", "us_index_eod"),
+        ("fmp", "us_dollar_index_eod"),
     }
 )
 

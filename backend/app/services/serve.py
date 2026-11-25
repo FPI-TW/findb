@@ -8,6 +8,7 @@ import calendar
 import json
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
@@ -30,7 +31,7 @@ from app.models.canonical import (
     MarketDataEOD,
     MarketDataMinute,
 )
-from app.models.registry import DatasetRegistry
+from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.common import PaginationInfo
 from app.schemas.serve import (
     CalendarListResponse,
@@ -171,7 +172,6 @@ async def _active_registry_scopes(
     scopes: list[ActiveDatasetScope] = []
     intraday: list[IntradayDatasetScope] = []
     quotes: list[ExchangeQuoteScope] = []
-    seen: set[tuple[str, str, str]] = set()
     for row in rows:
         try:
             declaration = DatasetContractDeclaration.model_validate(row.config)
@@ -247,9 +247,8 @@ async def _active_registry_scopes(
             identity = (schema_id, market, asset_class)
             if identity not in SUPPORTED_ACTIVE_SCOPES:
                 raise ValueError("active dataset is outside the supported Serve scope")
-            if identity in seen:
-                raise ValueError("duplicate active canonical scope")
-            seen.add(identity)
+            # Several datasets may write one canonical scope (index groups fetched at
+            # different times): reads go by market and asset class, never by dataset.
             scopes.append(
                 ActiveDatasetScope(
                     dataset_key=row.dataset_key,
@@ -402,6 +401,7 @@ async def list_datasets(db: AsyncSession) -> DatasetListResponse:
                 ),
             )
         )
+    shared = Counter((scope.data_kind, scope.market, scope.asset_class) for scope in scopes)
     for scope in scopes:
         table: Any
         if scope.data_kind == "eod":
@@ -425,6 +425,18 @@ async def list_datasets(db: AsyncSession) -> DatasetListResponse:
                 .where(
                     Instrument.market == scope.market,
                     Instrument.asset_class == scope.asset_class,
+                    # A scope two datasets share counts each dataset's own writes.
+                    *(
+                        (
+                            table.run_id.in_(
+                                select(IngestionRun.run_id).where(
+                                    IngestionRun.dataset_key == scope.dataset_key
+                                )
+                            ),
+                        )
+                        if shared[(scope.data_kind, scope.market, scope.asset_class)] > 1
+                        else ()
+                    ),
                 )
             )
         ).one()

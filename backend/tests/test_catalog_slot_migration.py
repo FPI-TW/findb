@@ -57,6 +57,7 @@ def test_seed_and_frozen_migration_use_catalog_slots():
         "hk_equity_official_eod",
         "hk_index_eod",
         "us_index_eod",
+        "us_dollar_index_eod",
     }
 
 

@@ -59,6 +59,7 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         ("taifex", "tw_futures_eod"),
         ("fmp", "hk_index_eod"),
         ("fmp", "us_index_eod"),
+        ("fmp", "us_dollar_index_eod"),
     }
     # Intraday feeds deliver minute bars or ticks by reference; nothing else is non-daily.
     assert {
@@ -105,15 +106,19 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         # Index groups by publication time; New York's is fetched the next Taipei morning.
         "hk_index_eod": ("Asia/Hong_Kong", "20:00", "Asia/Hong_Kong", "08:00", 1),
         "us_index_eod": ("Asia/Taipei", "08:30", "Asia/Taipei", "20:30", 1),
+        # The dollar index after its 17:00 settlement, before the next session.
+        "us_dollar_index_eod": ("America/New_York", "17:15", "America/New_York", "05:15", 1),
     }
     assert feeds["us_index_eod"].schedule.target_date_lag_days == 1
     assert {f.dataset_key for f in catalog.feeds if f.asset_class == "index"} == {
         "hk_index_eod",
         "us_index_eod",
+        "us_dollar_index_eod",
     }
     assert {f.dataset_key for f in catalog.feeds if f.calendar_required} == {
         "hk_index_eod",
         "us_index_eod",
+        "us_dollar_index_eod",
     }
     assert us.bounded_monitor.deadline.local_time == "09:15"
     # One time point ends a date: an unpublished one is retried until 30 minutes before
@@ -467,6 +472,7 @@ def test_historical_cohorts_are_catalog_fields():
         # The index lists are fixed: one list serves every date of a request.
         ("fmp", "hk_index_eod"): "current_release",
         ("fmp", "us_index_eod"): "current_release",
+        ("fmp", "us_dollar_index_eod"): "current_release",
         ("finlab", "tw_equity_eod"): "dated_release",
         ("finlab", "tw_etf_eod"): "dated_release",
         ("taifex", "tw_futures_eod"): "daily_report",
@@ -598,7 +604,8 @@ def test_historical_requests_per_date_rules(declaration):
         ("hkex", "hk_equity_official_eod"): 2,
         # One request per index.
         ("fmp", "hk_index_eod"): 3,
-        ("fmp", "us_index_eod"): 73,
+        ("fmp", "us_index_eod"): 72,
+        ("fmp", "us_dollar_index_eod"): 1,
         ("finlab", "tw_equity_eod"): 5,
         ("finlab", "tw_etf_eod"): 5,
         ("taifex", "tw_futures_eod"): 5,

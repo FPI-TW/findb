@@ -493,7 +493,8 @@ WITH active_feed(dataset_key, source) AS (
         ('hk_equity_eod', 'factset'),
         ('hk_equity_official_eod', 'hkex'),
         ('hk_index_eod', 'fmp'),
-        ('us_index_eod', 'fmp')
+        ('us_index_eod', 'fmp'),
+        ('us_dollar_index_eod', 'fmp')
 )
 SELECT
     (

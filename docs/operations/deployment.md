@@ -1054,6 +1054,22 @@ Migration `44a94f0f8481` 只改 `dataset_registry.description` 的顯示文字�
 inspection 仍是 `e5a7c9b1d3f2`。Downgrade 保留修正後的描述（沒有 runtime 讀取它），但與所有 migration 相同，
 回退到舊 Backend image 前必須先 downgrade 到 `e5a7c9b1d3f2`。
 
+## FMP 美元指數 feed
+
+Migration `64da893e5e78` 新增 dataset `us_dollar_index_eod`（只有 `DX-Y.NYB`，紐約 17:15、當天），綁定既有的
+stopped control `full_market_fmp_v1`（仍顯示最早的 feed：台北 08:30），並在 `fetcher-fmp` 的 Source credential
+範圍正好是 `hk_index_eod`、`us_index_eod` 時擴為三個 dataset；其他範圍（例如人工擴大過的）保留不動。
+這個 revision 取代 `e5a7c9b1d3f2` 成為部署前 schedule inspection，其他列沿用前一版的凍結規則。
+Dataset 已有使用紀錄時拒絕 downgrade；downgrade 會把 credential 範圍改回兩個 dataset。
+
+- **Serve**：同一個「契約＋市場＋資產類別」可以有多個 active dataset，查詢依市場與資產類別讀取；`/datasets`
+  在同一範圍有多個 dataset 時，以各 dataset 自己寫入的 canonical 列計算涵蓋範圍。舊 Backend image 遇到兩個
+  US index dataset 會回 `SERVE_CONFIGURATION_INVALID`，所以 migration 後回退 image 前必須先 downgrade。
+- **Fetcher**：`DX-Y.NYB` 從 `us_index_eod` 移到新的名單（72＋1 檔）。Fetcher 部署需要 controls 停止。
+- **上線後**：`us_index_eod` 下一次名單更新自動發布 72 檔的 release；`us_dollar_index_eod` 先手動更新名單發布第一份
+  baseline，首日設成單一日期，再由 Owner start（control 已在執行時，新 dataset 隨下一輪排程規劃）。已寫入的
+  `DX-Y.NYB` canonical 列保留，instrument 不變。
+
 ## 清單外標的計數
 
 Migration `f3a5c7e9b1d2` 為 `daily_delivery_plan_summary` 新增 `unlisted_data_count`（預設 0），為
