@@ -241,6 +241,9 @@ class ProviderAdapter:
     # as a whole, and an exhausted window ends the work instead of charging the
     # members one at a time.
     outage_holds_plan: ClassVar[bool] = False
+    # Each member publishes on its own (one native series per member): a member not
+    # yet published waits alone while the round goes on with the others.
+    publication_per_member: ClassVar[bool] = False
     # ``acquire_batch`` replaces the member loop (see FactSet).
     batch: ClassVar[bool] = False
     # Journal key of the batch's native snapshot, and the pending reason it raises.

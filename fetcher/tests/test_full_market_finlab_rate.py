@@ -892,3 +892,87 @@ def test_a_refused_unlisted_body_is_never_drained_again(
     journal = provider_work.require_owner("finlab").journal
     refused = runtime_module._refused_keys(journal)
     assert len(refused) == 1 and not refused & {r["idempotency_key"] for r in delivered}
+
+
+@pytest.mark.parametrize(
+    ("per_member", "window_left", "acquired", "first", "second"),
+    [
+        # A cohort-published provider: the first unpublished member ends the round.
+        (False, 0, ["2330"], ("pending", "target_not_ready"), ("pending", None)),
+        # A member-published provider (FMP): the late member waits alone.
+        (
+            True,
+            0,
+            ["2330", "2317"],
+            ("pending", "target_not_ready"),
+            ("complete", "source_proven_no_trade"),
+        ),
+        # Its window over, the late member turns manual and the others still run.
+        (
+            True,
+            -14401,
+            ["2330", "2317"],
+            ("manual", "target_not_ready"),
+            ("complete", "source_proven_no_trade"),
+        ),
+    ],
+)
+def test_an_unpublished_member_holds_the_round_only_for_cohort_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    per_member: bool,
+    window_left: int,
+    acquired: list[str],
+    first: tuple[str, str | None],
+    second: tuple[str, str | None],
+) -> None:
+    runtime, _, _, clock, context = _finlab_runtime(tmp_path, monkeypatch, "tw_equity_eod")
+    monkeypatch.setattr(type(runtime.adapter), "publication_per_member", per_member)
+    calls: list[str] = []
+
+    def acquire(member, *args, **kwargs):
+        calls.append(member["member_key"])
+        if member["member_key"] == "2330":
+            raise FinLabTargetNotReadyError("target date has not been published")
+        return []  # The provider proves the other member traded nothing.
+
+    runtime._acquire = acquire
+    owner = SimpleNamespace(
+        work={"work_id": "daily-work", "kind": "daily", "trade_date": context.plan["trade_date"]},
+        request=lambda action: {
+            "work_id": "daily-work",
+            "trade_date": context.plan["trade_date"],
+            "repair_required": False,
+        },
+        restore=lambda **kwargs: [],
+        authorize=lambda: None,
+        dispatch_observations=0,
+    )
+    monkeypatch.setattr("findb_fetcher.provider_work.active", lambda: owner)
+    runtime.feeds[0].update(
+        scheduled_at(clock.now() + timedelta(seconds=window_left), context.plan["trade_date"])
+    )
+
+    if window_left == 0:
+        with pytest.raises(ProviderPublicationPendingError) as pending:
+            runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+        assert pending.value.retry_after_seconds == 900
+    else:
+        # Nothing is left to wait for: the round ends without a publication retry.
+        assert runtime._deliver_plan(context.plan, context.release, runtime.feeds[0])
+
+    assert calls == acquired
+    with runtime.state.connection() as db:
+        rows = {
+            row["member_key"]: (row["status"], row["reason"])
+            for row in db.execute("SELECT member_key,status,reason FROM full_work")
+        }
+    assert rows.get("2330") == first
+    assert rows.get("2317", ("pending", None)) == second
+    runtime.http.close()
+
+
+def test_only_member_published_adapters_let_a_round_pass_a_late_member() -> None:
+    from findb_fetcher.provider_adapters import ADAPTERS
+
+    assert {name for name, adapter in ADAPTERS.items() if adapter.publication_per_member} == {"fmp"}
