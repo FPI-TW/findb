@@ -426,7 +426,7 @@ def test_taifex_member_acquisition_is_byte_identical(tmp_path, monkeypatch):
                 "mapping_status": "mapped",
             }
         )
-    # A frozen member the report no longer lists ends the round as a source error.
+    # A frozen member the report no longer lists is a source error of that member alone.
     members.append(
         {
             **members[0],
@@ -439,7 +439,7 @@ def test_taifex_member_acquisition_is_byte_identical(tmp_path, monkeypatch):
     plan = _plan("tw_futures_eod", keys)
     runtime.state.record_plan(plan, "taifex")
     try:
-        assert runtime._deliver_plan(plan, {"release_id": "r", "members": members}, feed) is False
+        assert runtime._deliver_plan(plan, {"release_id": "r", "members": members}, feed) is True
         _check(
             "taifex",
             {"calls": calls, **_capture(runtime, source, delivery, s3, plan)},

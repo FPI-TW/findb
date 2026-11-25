@@ -1213,7 +1213,8 @@ def test_taifex_rejected_latest_report_remains_member_source_error(tmp_path: Pat
     feed = {**runtime.feeds[0], "dataset_key": "tw_futures_eod", "slot_id": "taiwan_market_window"}
     runtime.state.record_plan(plan, runtime.provider)
 
-    assert runtime._deliver_plan(plan, {"release_id": "r", "members": [member]}, feed) is False
+    # The only member is reported and keeps its retries; the round scans to its end.
+    assert runtime._deliver_plan(plan, {"release_id": "r", "members": [member]}, feed) is True
     assert [outcome["reason"] for outcome in source.outcomes] == ["source_error"]
 
 

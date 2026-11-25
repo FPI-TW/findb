@@ -303,7 +303,10 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
             finally:
                 runtime.close()
 
-    assert bool(await asyncio.wait_for(asyncio.to_thread(run_round), 30)) is member_no_data
+    # A failure scoped to one member (no data, or its row not published yet) lets the
+    # round go on to the next member; every other fault stops it at the first.
+    member_scoped = member_no_data or not_published
+    assert bool(await asyncio.wait_for(asyncio.to_thread(run_round), 30)) is member_scoped
     h.db.expire_all()
     work = await h.db.get(ProviderWork, work_id)
     assert work.state == "queued"
@@ -311,13 +314,11 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         work.manifest,
         json.loads(json.dumps((await prepared_map(h.db, work.work_id)))),
     )
-    assert len(acquired_members) == (2 if member_no_data else 1), (
-        "only a member-scoped no_data round may acquire another frozen member",
+    assert len(acquired_members) == (2 if member_scoped else 1), (
+        "only a member-scoped failure lets the round acquire another frozen member",
         h.source_events,
     )
-    assert len(descriptors) == (
-        0 if fault == "native-network" or native_rate or not_published else 1
-    )
+    assert len(descriptors) == (0 if fault == "native-network" or native_rate else 1)
     if calls_at_failure is not None:
         assert h.native_calls() == calls_at_failure
     first_attempt = await h.db.scalar(
@@ -433,11 +434,10 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
         # MSFT is served from the shared batch; only AAPL is asked again.
         assert observed_calls == ["AAPL,MSFT", "AAPL"]
     if not_published:
-        # The stale batch is never replayed: the restart asks for the same members again.
+        # The stale row is never replayed: the restart asks again for the member it
+        # held back, while MSFT was already delivered from the first batch.
         assert observed_calls == (
-            ["AAPL,MSFT", "AAPL,MSFT"]
-            if h.dataset == "us_equity_eod"
-            else ["00005", "00005", "00700"]
+            ["AAPL,MSFT", "AAPL"] if h.dataset == "us_equity_eod" else ["00005", "00005", "00700"]
         )
         with journal.connection() as db:
             assert (

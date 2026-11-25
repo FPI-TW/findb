@@ -302,7 +302,7 @@ def test_taifex_report_gaps_block_only_their_members_on_a_same_date_universe(tmp
     assert not runtime.state.has_blocking_manual(plan["plan_id"])
 
 
-def test_taifex_contract_missing_from_an_older_universe_keeps_the_round_retry(
+def test_taifex_contract_missing_from_an_older_universe_retries_without_holding_the_round(
     tmp_path, monkeypatch
 ):
     # Plans frozen before #307 may bind an earlier universe whose contract has rolled.
@@ -310,18 +310,23 @@ def test_taifex_contract_missing_from_an_older_universe_keeps_the_round_retry(
         tmp_path, monkeypatch, effective=DAY - timedelta(days=1)
     )
     try:
-        assert not runtime._deliver_plan(plan, release, _feed("taifex", "tw_futures_eod"))
+        # The member the older universe still binds keeps its retries; it no
+        # longer ends the round, so the later contracts are still delivered.
+        assert runtime._deliver_plan(plan, release, _feed("taifex", "tw_futures_eod"))
         rows, diagnostics = _rows(runtime, plan["plan_id"])
     finally:
         runtime.close()
-    assert len(delivery.prepared) == 1
+    assert len(delivery.prepared) == 2
     assert source.outcomes == [
         {
             "plan_id": plan["plan_id"],
             "work_item_id": plan["parts"][0]["work_item_id"],
-            "member_key": "TX:202701:regular",
+            "member_key": key,
             "reason": "source_error",
         }
+        for key in ("TX:202701:regular", "TX:202611:regular")
     ]
     assert rows["TX:202701:regular"] == ("pending", "source_error")
-    assert diagnostics == ["exception:ReadinessBlockedError"]
+    assert rows["TX:202611:regular"] == ("manual", "member_unavailable")
+    assert rows["TX:202610:regular"] == rows["TX:202612:regular"] == ("complete", None)
+    assert diagnostics == ["exception:ReadinessBlockedError", "member:no_observation"]
