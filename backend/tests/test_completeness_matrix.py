@@ -11,10 +11,12 @@ from app.models.registry import (
     DailyDeliveryPlan,
     DailyDeliveryPlanSummary,
     DailyExecutionDecision,
+    HistoricalBackfillItem,
+    HistoricalBackfillRequest,
     MissingDeliveryAlert,
 )
 from app.services.feed_schedule import latest_due_date
-from app.utils import utc_now
+from app.utils import utc_now, uuid7
 from tests.query_budget import assert_within_budget, count_statements
 from tests.test_admin_overview_query_budget import _environment
 
@@ -130,6 +132,105 @@ async def test_cells_cover_every_state_from_stored_counts(
         today + timedelta(days=n) for n in range(1, 8) if (today + timedelta(days=n)).weekday() == 6
     )
     assert cells[future_weekend.isoformat()]["state"] == "closed"
+
+
+def _backfill(day_statuses, *, provider="finlab", completed_at=None):
+    days = sorted(day_statuses)
+    request = HistoricalBackfillRequest(
+        request_id=uuid7(),
+        request_key=f"matrix-{uuid7()}",
+        provider=provider,
+        dataset_key=DATASET,
+        market="TW",
+        start_date=days[0],
+        end_date=days[-1],
+        status="partial",
+        created_by="test",
+    )
+    request.items = [
+        HistoricalBackfillItem(
+            item_id=uuid7(),
+            trade_date=day,
+            status=status,
+            completed_at=completed_at or utc_now(),
+        )
+        for day, status in day_statuses.items()
+    ]
+    return request
+
+
+@pytest.mark.asyncio
+async def test_settled_backfills_mark_dates_without_a_daily_plan(
+    client: AsyncClient, test_session, admin_headers: dict
+):
+    db = test_session
+    await _environment(db, ["finlab"], days=14)
+    now = utc_now()
+    today = now.date()
+    first = today - timedelta(days=14)
+    through = latest_due_date(DATASET, now)
+    earlier = list(_weekdays(first - timedelta(days=21), first - timedelta(days=1)))
+    done, partial, retried, failed, untouched = earlier[-5:]
+    planned_day, unplanned_day = list(_weekdays(first, through - timedelta(days=1)))[:2]
+    unplanned = await _plan(db, unplanned_day)
+    await db.execute(
+        delete(DailyExecutionDecision).where(
+            DailyExecutionDecision.dataset_key == DATASET,
+            DailyExecutionDecision.trade_date == unplanned_day,
+        )
+    )
+    for table in (DailyDeliveryPart, DailyDeliveryPlanSummary, DailyDeliveryPlan):
+        await db.execute(delete(table).where(table.plan_id == unplanned.plan_id))
+    finished = now - timedelta(hours=3)
+    db.add_all(
+        [
+            _backfill(
+                {
+                    done: "completed",
+                    partial: "partial",
+                    retried: "partial",
+                    failed: "failed",
+                    planned_day: "completed",
+                    unplanned_day: "partial",
+                },
+                completed_at=finished,
+            ),
+            # A later request completed the date an earlier one left partial.
+            _backfill({retried: "completed"}, completed_at=finished),
+            # Another provider's backfill never marks this feed.
+            _backfill({untouched: "completed"}, provider="twelve_data"),
+        ]
+    )
+    await db.commit()
+
+    response = await client.get(
+        URL,
+        params={
+            "date_from": earlier[0].isoformat(),
+            "date_to": today.isoformat(),
+            "dataset_key": DATASET,
+        },
+        headers=admin_headers,
+    )
+    assert response.status_code == 200, response.text
+    (row,) = response.json()["rows"]
+    cells = {cell["trade_date"]: cell for cell in row["cells"]}
+    state = {day: cells[day.isoformat()]["state"] for day in earlier[-5:]}
+    assert state == {
+        done: "backfilled",
+        partial: "backfill_partial",
+        retried: "backfilled",
+        failed: "not_started",
+        untouched: "not_started",
+    }
+    assert datetime.fromisoformat(cells[done.isoformat()]["backfill_completed_at"]) == finished
+    assert cells[failed.isoformat()]["backfill_completed_at"] is None
+    assert cells[unplanned_day.isoformat()]["state"] == "backfill_partial"
+    # A planned date keeps its plan's state; the backfill already reclassified its counts.
+    planned = cells[planned_day.isoformat()]
+    assert planned["plan_id"] is not None
+    assert planned["state"] in {"complete", "incomplete", "late"}
+    assert planned["backfill_completed_at"] is None
 
 
 @pytest.mark.asyncio

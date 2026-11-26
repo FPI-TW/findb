@@ -758,6 +758,8 @@ export const COMPLETENESS_STATES = [
   "not_planned",
   "closed",
   "not_started",
+  "backfilled",
+  "backfill_partial",
 ] as const
 export type CompletenessState = (typeof COMPLETENESS_STATES)[number]
 export const completenessRequestSchema = z.object({
@@ -784,6 +786,8 @@ export const completenessCellSchema = z.object({
   counts: completenessCountsSchema.nullable(),
   counts_synced: z.boolean(),
   open_alert: z.boolean(),
+  // A date without a daily plan that a historical backfill settled.
+  backfill_completed_at: nullableDateTime.default(null),
 })
 export const completenessSchema = z.object({
   execution_profile: executionProfileSchema,

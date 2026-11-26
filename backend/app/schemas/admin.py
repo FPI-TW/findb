@@ -1081,7 +1081,15 @@ class PaginatedDeliveryPlanListResponse(DeliveryPlanListResponse):
 
 
 CompletenessState = Literal[
-    "complete", "incomplete", "late", "not_due", "not_planned", "closed", "not_started"
+    "complete",
+    "incomplete",
+    "late",
+    "not_due",
+    "not_planned",
+    "closed",
+    "not_started",
+    "backfilled",
+    "backfill_partial",
 ]
 
 
@@ -1106,6 +1114,8 @@ class CompletenessCell(BaseModel):
     counts: Optional[CompletenessCounts] = None
     counts_synced: bool = True
     open_alert: bool = False
+    # A date without a daily plan that a historical backfill settled.
+    backfill_completed_at: Optional[datetime] = None
 
 
 class CompletenessRow(BaseModel):

@@ -1,7 +1,7 @@
 """Dataset × trade-date completeness matrix for the Dashboard, from stored counts only.
 
 Every cell comes from what writers already persisted: plan summaries, part
-counts, calendar decisions and open alerts. Nothing here classifies a plan's
+counts, calendar decisions, settled backfill items and open alerts. Nothing here classifies a plan's
 members, so the statement count is fixed whatever the number of feeds, days or
 members; a plan whose stored counts are still catching up is shown with
 `counts_synced=False` instead of being recomputed.
@@ -9,7 +9,7 @@ members; a plan whose stored counts are still catching up is shown with
 
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.execution_profiles import ExecutionProfile, unified_scheduler
@@ -19,6 +19,8 @@ from app.models.registry import (
     DailyExecutionDecision,
     DatasetRegistry,
     FullMarketDatasetState,
+    HistoricalBackfillItem,
+    HistoricalBackfillRequest,
     MissingDeliveryAlert,
 )
 from app.schemas.admin import (
@@ -42,6 +44,11 @@ from app.utils import ensure_utc, utc_now
 
 DEFAULT_DAYS = 28
 MAX_DAYS = 62
+# A settled backfill item wrote the date; a completed one beats a partial one.
+BACKFILL_STATES: dict[str, CompletenessState] = {
+    "completed": "backfilled",
+    "partial": "backfill_partial",
+}
 
 
 class CompletenessRangeError(ValueError):
@@ -149,6 +156,7 @@ async def completeness_matrix(
     plans: dict[tuple[str, str, date], CompletenessCell] = {}
     skipped: set[tuple[str, str, date]] = set()
     alerts: set[tuple[str, str, date]] = set()
+    backfills: dict[tuple[str, str, date], tuple[CompletenessState, datetime | None]] = {}
     if pairs:
         parts = part_aggregates()
         for plan, stored, mapping_gap, part_unsynced in (
@@ -214,6 +222,39 @@ async def completeness_matrix(
                 )
             ).tuples()
         )
+        for key, provider, day, status, completed_at in (
+            await db.execute(
+                select(
+                    HistoricalBackfillRequest.dataset_key,
+                    HistoricalBackfillRequest.provider,
+                    HistoricalBackfillItem.trade_date,
+                    HistoricalBackfillItem.status,
+                    func.max(HistoricalBackfillItem.completed_at),
+                )
+                .join(
+                    HistoricalBackfillRequest,
+                    HistoricalBackfillRequest.request_id == HistoricalBackfillItem.request_id,
+                )
+                .where(
+                    tuple_(
+                        HistoricalBackfillRequest.dataset_key, HistoricalBackfillRequest.provider
+                    ).in_(pairs),
+                    HistoricalBackfillItem.status.in_(BACKFILL_STATES),
+                    HistoricalBackfillItem.trade_date >= start,
+                    HistoricalBackfillItem.trade_date <= end,
+                )
+                .group_by(
+                    HistoricalBackfillRequest.dataset_key,
+                    HistoricalBackfillRequest.provider,
+                    HistoricalBackfillItem.trade_date,
+                    HistoricalBackfillItem.status,
+                )
+            )
+        ).tuples():
+            identity = (key, provider, day)
+            state = BACKFILL_STATES[status]
+            if identity not in backfills or state == "backfilled":
+                backfills[identity] = (state, ensure_utc(completed_at) if completed_at else None)
         alerts = set(
             (
                 await db.execute(
@@ -241,16 +282,20 @@ async def completeness_matrix(
             identity = (key, provider, day)
             cell = plans.get(identity)
             if cell is None:
-                cell = CompletenessCell(
-                    trade_date=day,
-                    state=_unplanned_state(
-                        day,
-                        first=first,
-                        through=through,
-                        skipped=identity in skipped,
-                        expected=day in expected_dates.get(index, set()),
-                    ),
+                state = _unplanned_state(
+                    day,
+                    first=first,
+                    through=through,
+                    skipped=identity in skipped,
+                    expected=day in expected_dates.get(index, set()),
                 )
+                backfill = backfills.get(identity)
+                if backfill is not None and state in ("not_started", "not_planned"):
+                    cell = CompletenessCell(
+                        trade_date=day, state=backfill[0], backfill_completed_at=backfill[1]
+                    )
+                else:
+                    cell = CompletenessCell(trade_date=day, state=state)
             cells.append(cell.model_copy(update={"open_alert": identity in alerts}))
         result.append(
             CompletenessRow(

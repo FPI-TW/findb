@@ -555,7 +555,7 @@ Admin 計畫查詢支援 `dataset_key` 與 `trade_date`；指定任一 `page/pag
 `GET /admin/completeness` 回傳完整性矩陣：每個 full-market feed 一列，每列依交易所當地交易日列出格子。
 - **參數**：`date_from`、`date_to`、`dataset_key`。預設為到今天為止的 28 天，範圍最多 62 天，超過或起訖顛倒回 422。
 - **每格內容**：`state`、`plan_id`、`deadline_at`、`counts`（expected、data、no_data、missing、blocked、unavailable、
-  mapping_gap、unlisted_data）、`counts_synced` 與 `open_alert`。
+  mapping_gap、unlisted_data）、`counts_synced`、`open_alert` 與 `backfill_completed_at`。
 - **`state` 的值**：
   - `complete`：data + no_data + unavailable = expected
   - `incomplete`：未完成、尚未逾時
@@ -564,7 +564,10 @@ Admin 計畫查詢支援 `dataset_key` 與 `trade_date`；指定任一 `page/pag
   - `not_planned`：已到期、應有資料，卻沒有計畫
   - `closed`：休市，或依設定略過
   - `not_started`：早於首次抓取日
-- **查詢成本**：只讀已存的計畫摘要、分區計數、日曆決策與未關閉告警，SQL 條數固定，不隨 feed、天數或成員數成長。
+  - `backfilled`／`backfill_partial`：這天沒有每日計畫（早於首次抓取日，或已到期卻沒有計畫），但同一 provider／dataset
+    的回補 item 已 completed／partial；兩者都有時取 completed，`backfill_completed_at` 為該狀態最晚的完成時間。
+    有每日計畫的日期不使用這兩個值：回補寫入會直接重算該計畫的計數。
+- **查詢成本**：只讀已存的計畫摘要、分區計數、日曆決策、已結束的回補 items 與未關閉告警，SQL 條數固定，不隨 feed、天數或成員數成長。
 `GET /admin/delivery-plans/datasets` 回傳 `{"data":["dataset_key", ...]}`，由指定 profile 的全部計畫去重並排序，
 不受日期或最近筆數限制。以上端點須具 viewer 以上 Admin 權限，皆為唯讀，不改交付狀態。
 缺口總數使用 `missing + blocked`；`unavailable` 是 provider 無法提供的已知情境，不算缺口；`summary.gaps` 明細最多 1,000 筆。
