@@ -101,6 +101,7 @@ from app.services.ingress_contracts import (
 )
 from app.services.provider_work import ProviderWorkDrainingError, ProviderWorkError
 from app.services.scheduler_control import (
+    SchedulerControlLaneError,
     SchedulerControlNotFoundError,
     SchedulerControlScopeError,
     get_scheduler_control,
@@ -570,11 +571,15 @@ async def poll_scheduler(
             cycle_started_at=body.cycle_started_at,
             cycle_completed_at=body.cycle_completed_at,
             last_error=body.last_error,
+            lane=body.lane,
         )
     except SchedulerControlNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Scheduler not found") from exc
     except SchedulerControlScopeError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SchedulerControlLaneError as exc:
+        # Same status as a provider work claim for a lane the catalog lacks.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return SchedulerControlPollResponse(
         scheduler_key=row.scheduler_key,

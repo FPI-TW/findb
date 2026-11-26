@@ -422,7 +422,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_equity_bar_1m",
-      "lane": "default",
+      "lane": "intraday",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "equity",
@@ -468,7 +468,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_etf_bar_1m",
-      "lane": "default",
+      "lane": "intraday",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "etf",
@@ -514,7 +514,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_equity_tick",
-      "lane": "default",
+      "lane": "intraday",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "equity",
@@ -560,7 +560,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_etf_tick",
-      "lane": "default",
+      "lane": "intraday",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "etf",

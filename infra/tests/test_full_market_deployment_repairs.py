@@ -29,7 +29,7 @@ def test_provider_stop_timeout_covers_bounded_factset_query_and_reap():
     assert "docker stop --time 30" not in helper
 
 
-@pytest.mark.parametrize("bundle_version", [7])
+@pytest.mark.parametrize("bundle_version", [8])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 def test_production_container_arguments_bind_full_and_historical_inspection(
     tmp_path, monkeypatch, provider, bundle_version
@@ -80,8 +80,15 @@ def test_production_container_arguments_bind_full_and_historical_inspection(
     ]:
         (tmp_path / name).write_text(json.dumps(value))
     actual = {}
-    for consumer in ["full_market", "historical"]:
-        name = f"findb-{consumer.replace('_', '-')}-" + provider.replace("_", "-")
+    # Every generated consumer of the provider: FinLab also has its intraday lane's.
+    inventory = json.loads(
+        (REPO_ROOT / "infra/deploy/generated/provider_inventory.v1.json").read_text()
+    )
+    installed = [
+        (row["role"], row["name"]) for row in inventory["consumers"] if row["provider"] == provider
+    ]
+    assert len(installed) == (3 if provider == "finlab" else 2)
+    for consumer, name in installed:
         args_env = {
             **script_env(),
             "APP_ENVIRONMENT": "production",
@@ -197,7 +204,7 @@ def test_production_container_arguments_bind_full_and_historical_inspection(
         tmp_path / "allocation",
     )
     assert result["consumers"] == ["full_market", "historical", "maintenance"]
-    assert len(result["installed_consumers"]) == 2
+    assert len(result["installed_consumers"]) == len(installed)
     assert not any(
         "FULL_MARKET_ENABLED" in item for row in actual.values() for item in row["Config"]["Env"]
     )

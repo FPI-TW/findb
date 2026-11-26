@@ -365,7 +365,8 @@ def test_inventory_preserves_image_sharing_and_all_roles(declaration):
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
     assert inventory["images"] == ["factset", "finlab", "twelve_data"]
-    assert len(inventory["consumers"]) == 12
+    # One historical and one Full consumer per provider, plus FinLab's intraday lane.
+    assert len(inventory["consumers"]) == 13
     # The public exchange providers and FMP run on the Twelve Data image.
     for provider in ("taifex", "hkex", "fmp"):
         assert {c["name"] for c in inventory["consumers"] if c["provider"] == provider} == {
@@ -384,19 +385,40 @@ DESCRIPTORS = Path("fetcher/src/findb_fetcher/data/execution_descriptors.v1.json
 FINLAB_INTRADAY = ("tw_equity_bar_1m", "tw_etf_bar_1m", "tw_equity_tick", "tw_etf_tick")
 
 
-def _intraday_lane(declaration):
+def _intraday_lane(declaration, lane="intraday"):
     for feed in declaration["feeds"]:
         if feed["provider"] == "finlab" and feed["dataset_key"] in FINLAB_INTRADAY:
-            feed["lane"] = "intraday"
+            feed["lane"] = lane
     return declaration
 
 
+def test_only_finlab_intraday_feeds_leave_the_default_lane(declaration):
+    from app.services.provider_metadata import provider_lanes, work_lane
+
+    assert {
+        (feed["provider"], feed["dataset_key"])
+        for feed in declaration["feeds"]
+        if feed["lane"] != "default"
+    } == {("finlab", key) for key in FINLAB_INTRADAY}
+    assert provider_lanes("finlab") == ("default", "intraday")
+    assert all(provider_lanes(p) == ("default",) for p in ("twelve_data", "fmp", "taifex"))
+    for key in FINLAB_INTRADAY:
+        assert work_lane("finlab", "daily", key) == "intraday"
+        assert work_lane("finlab", "maintenance", key) == "intraday"
+    for key in ("tw_equity_eod", "tw_etf_eod"):
+        assert work_lane("finlab", "daily", key) == "default"
+        assert work_lane("finlab", "historical", key) == "default"
+
+
 def test_fetcher_descriptors_and_inventory_carry_each_lane(declaration):
-    artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
+    # With every feed in the default lane, the inventory is the pre-lane twelve.
+    artifacts = build_artifacts(
+        ProviderCatalog.model_validate(_intraday_lane(declaration, "default"))
+    )
     descriptors = json.loads(artifacts[DESCRIPTORS])
     assert {feed["lane"] for feed in descriptors["feeds"]} == {"default"}
     inventory = json.loads(artifacts[INVENTORY])
-    # One historical and one Full consumer per provider: still the same twelve.
+    # One historical and one Full consumer per provider.
     assert len(inventory["consumers"]) == 12
     assert all(
         set(row) == {"name", "provider", "role", "lane", "image_key"} and row["lane"] == "default"
@@ -468,7 +490,7 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
     declaration["feeds"].append(feed)
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
-    assert len(inventory["consumers"]) == 14
+    assert len(inventory["consumers"]) == 15
     assert (
         'example: ["example_eod"]'
         in artifacts[Path("dashboard/src/lib/generated/provider-catalog.ts")]
@@ -528,17 +550,23 @@ def test_backend_publication_is_consumable_by_independent_fetcher():
 
     from app.config import get_settings
     from app.services.feed_schedule import execution_config
-    from app.services.provider_metadata import source_scopes
+    from app.services.provider_metadata import provider_lanes, source_scopes
 
     for provider, scopes in source_scopes().items():
         published = execution_config(provider, scopes, "full_market").model_dump(mode="json")
-        result = resolve_execution_config(
-            published,
-            provider=provider,
-            environment=get_settings().APP_ENVIRONMENT,
-            profile="full_market",
-        )
-        assert {f["dataset_key"] for f in result.feeds} == set(scopes)
+        # Each lane's consumer resolves only its own lane's feeds; together, all of them.
+        resolved = set()
+        for lane in provider_lanes(provider):
+            result = resolve_execution_config(
+                published,
+                provider=provider,
+                environment=get_settings().APP_ENVIRONMENT,
+                profile="full_market",
+                lane=lane,
+            )
+            assert result.feeds and not resolved & {f["dataset_key"] for f in result.feeds}
+            resolved |= {f["dataset_key"] for f in result.feeds}
+        assert resolved == set(scopes)
         assert all("slot_id" not in f for f in published["feeds"])
 
 

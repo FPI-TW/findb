@@ -897,6 +897,18 @@ class SuccessResponse(BaseModel):
     success: bool = True
 
 
+class SchedulerControlLaneResponse(BaseModel):
+    """The latest poll report of one non-default lane's consumer."""
+
+    lane: str
+    observed_state: Literal["running", "stopped"]
+    last_heartbeat_at: datetime
+    last_cycle_started_at: Optional[datetime] = None
+    last_cycle_completed_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    heartbeat_age_seconds: Optional[float] = None
+
+
 class SchedulerControlResponse(BaseModel):
     feed_schedules: list[FeedScheduleView] = Field(default_factory=list)
     execution_profile: ExecutionProfile = "full_market"
@@ -918,6 +930,8 @@ class SchedulerControlResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     heartbeat_age_seconds: Optional[float] = None
+    # The default lane's consumer reports in the fields above; each other lane here.
+    lanes: list[SchedulerControlLaneResponse] = Field(default_factory=list)
     start_allowed: bool
     start_blockers: list[str]
     environment: str | None = None

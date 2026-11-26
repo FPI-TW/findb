@@ -1,11 +1,10 @@
 # Provider 吞吐擴充：多條執行線、並行與回補效率
 
-狀態：實作中，進度與 PR 切分見 #691。第 1 節的 Backend lane（第 2a 步）與 Fetcher／部署工具的 lane
-支援（第 3a 步，host lock、journal、checkpoint 與 consumer 拓撲依 lane 產生；目前仍全部在 `default`）已完成，
-現行規則見 [Provider work FIFO](../architecture/provider_work.md) 的「執行線（lane）」與
-[部署](../operations/deployment.md#runtime-與持久化狀態)；FinLab 盤中改走 `intraday` lane（第 3b 步）與其餘
-仍是設計草案。Owner
-已決定的方向寫在「已定事項」；其餘待決事項列在文末。
+狀態：實作中，進度與 PR 切分見 #691。第 1 節（多條執行線）已完成：Backend lane（第 2a 步）、Fetcher 與部署工具
+（第 3a 步）、FinLab 盤中改走 `intraday` lane 與第十三個 consumer（第 3b 步）。現行規則見
+[Provider work FIFO](../architecture/provider_work.md) 的「執行線（lane）」與
+[部署](../operations/deployment.md#finlab-盤中改走-intraday-執行線)；其餘各節仍是設計草案。Owner 已決定的方向寫在
+「已定事項」；其餘待決事項列在文末。
 
 ## 背景
 
@@ -54,17 +53,9 @@ daily、historical 與名單更新共用一條 FIFO 和一個 owner。#504 已�
 
 ### 1. 多條執行線（lane）
 
-- **目標**：同一 provider 的不同工作類型互不阻塞，例如 FinLab 盤中 6.5 小時不擋住表格型 dataset 的 daily。
-- **定義**：lane 由 catalog 宣告在 feed 上（例如 FinLab：`table_daily`、`intraday`；historical 自成一條）。
-  未宣告的 feed 屬於 provider 的預設 lane，行為與現在相同。
-- **Owner 與鎖**
-  - Backend：owner 由 `provider` 改為 `(provider, lane)`，`lock_provider()` 改為 lane 層級；FIFO 取用
-    （`claim()` 的 `queue_order` 與 `accepted_kinds`）依 lane 分開。
-  - Fetcher：`host_lock` 改為 `(provider, lane)`；consumer 拓撲依 lane 產生
-    （`infra/deploy/generated/provider_inventory.v1.json`、`release_fetcher_provider.sh`）。
-  - 同一 provider 帳號仍由同一個 governor 管理用量與 cooldown；lane 之間只共用帳號，不共用 owner。
-- **遷移**：需要 migration（owner／attempt 加上 lane），部署順序 Backend 先、Fetcher 後；rollback 下限
-  寫入 `docs/operations/deployment.md`。既有 work 全部屬於預設 lane。
+已完成（#691 第 2a、3a、3b 步）。lane 由 catalog 的 feed 宣告，Backend owner／FIFO／advisory lock、Fetcher host
+lock、journal、checkpoint 與 consumer 拓撲都依 lane 分開；帳號 governor 與 cooldown 仍依帳號共用。現行規則見
+[Provider work FIFO](../architecture/provider_work.md) 的「執行線（lane）」。
 
 ### 2. Daily 優先（#615）
 
@@ -115,50 +106,37 @@ daily、historical 與名單更新共用一條 FIFO 和一個 owner。#504 已�
 - ingest 的 uvicorn worker 數與 DB pool（目前 1 個 worker、3+5），避免持鎖等待佔滿連線池。
 - 先建立主機與 RDS 的量測方法：同時跑 2–3 條 lane 時的 CPU、DB 連線、`server_ms`、`queue_wait_ms`。
 
-## 新增 worker 的選項與風險評估
+## 多條執行線的後續風險
 
-現在替同一 provider 多開 consumer 不會變快：Fetcher 的 `host_lock(provider)` 是非阻塞鎖，拿不到的 consumer
-只會閒置；Backend 每個 provider 也只有一條 FIFO、一個 owner。不同 provider 之間本來就並行（12 個 consumer），
-卡住的是同一 provider 底下有很多 dataset，FinLab 正是如此。
+FinLab 已拆成 `default` 與 `intraday` 兩條 lane（做法的取捨見
+[Provider work FIFO](../architecture/provider_work.md) 的「執行線（lane）」）。下表是兩條以上 lane 同時跑時仍要
+量測與處理的風險，也是加更多 lane 之前的檢查項目。
 
-### 選項
-
-| 做法 | 要改的地方 | 效益 | 風險 |
-| --- | --- | --- | --- |
-| A. 多條執行線（本文件的方向） | Backend owner／FIFO 依 lane（migration）、Fetcher host lock、consumer 拓撲 | FinLab 表格 daily 與盤中各一條，daily 不再被盤中擋住 | 中：改動大但語意清楚 |
-| B. 把 FinLab 拆成兩個 provider 名稱 | catalog、credential、governor | 表面上改動較小 | 高：provider 名稱寫進 canonical 的 `source`、source precedence 與 credential scope，等於改資料身分。不採用 |
-| C. 只把 normalization worker 從 2 調到 3–4 | `docker-compose.prod.yml` 的 `--concurrency` | 只在多個 dataset 同時 normalize 時有用；目前 worker 跟得上，幾乎沒有效益 | 低：多佔 DB 連線與 CPU |
-
-做法 A 的效益（推估）：帳號鎖不改時 provider 呼叫仍一次一個，但兩條 lane 可以錯開，一條交付給 Source 時另一條在
-抓取。交付佔每檔時間的一大半，FinLab 盤中約可從 6.5 小時降到 3.5–4 小時，daily 的完成時間不再受盤中影響。
-
-### 做法 A 的風險
+### 風險
 
 | 風險 | 說明 | 緩解 |
 | --- | --- | --- |
 | Provider 帳號限制 | FinLab 並行限制未知；FinLab 與 Twelve Data 帳號 staging 與 production 共用 | 帳號鎖先維持一次一個請求，對 provider 的請求頻率不變；確認 FinLab 限制後再放寬 |
 | Source rate limit | 同一把 key 2,400／60 秒，兩條 lane 一起跑會先撞到；429 帶 `Retry-After: 60`，整條 lane 會停住 | 依實際每檔 RPC 數調高 `rate_limit_requests`，或 historical 改用另一把 key |
-| Backend provider lock | 不改的話所有 lane 在 Backend 仍排成一列，約 550–650 檔／分鐘 | 同一次改為 lane 層級的鎖 |
 | FinDB 主機與 RDS | 主機 2 vCPU 同時跑 ingest、worker、serve；RDS `db.t4g.medium` 有 CPU credit，額度用完會降速；Serve 延遲可能一起變差 | 先在 staging 量兩條 lane 同時跑時的 CPU、DB 連線數與 Serve 延遲 |
 | Fetcher 主機記憶體 | `t3.medium` 4 GiB、容器沒有記憶體上限；FinLab 日 K 整表載入子行程峰值約 940 MiB，與盤中同時跑可能用到 swap | 量測峰值；必要時讓兩條 lane 避開同時載入整表，或換機型 |
-| 共用的本機 SQLite | governor 由全部 consumer 共用，同一 provider 的 lane 共用該 provider 的 journal 與 checkpoint，寫入者變多會互等鎖；consumer 的 `/tmp` 只有 16 MiB（#572） | 等鎖上限 30 秒、鎖逾時只延後該成員、journal 與 Full checkpoint 每個 provider 一個檔、檔案大小與鎖逾時告警已上線（#691）；大量刪除與排序維持不使用 `/tmp` |
+| 共用的本機 SQLite | governor 由全部 consumer 共用，寫入者變多會互等鎖；consumer 的 `/tmp` 只有 16 MiB（#572） | 每條 lane 各有自己的 journal 與 Full checkpoint；等鎖上限 30 秒、鎖逾時只延後該成員、檔案大小與鎖逾時告警已上線（#691）；大量刪除與排序維持不使用 `/tmp` |
 | 正確性 | 每條 lane 的 prepared／receipt、crash replay、stop 掃描、daily 結算都要維持；`expected = data + no_data + missing + blocked` 不能錯 | 依本文件驗收矩陣；staging 一次只啟動一個 provider |
 | 部署 | 需要 migration 與 rollback 下限，Backend 先、Fetcher 後；consumer 變多，告警與 host lock 登記要跟著加（#642） | 分 PR 上線，每一步先在 staging 驗收 |
 
 ### 建議
 
-1. 最小的一步：FinLab 拆成表格 daily 與盤中兩條 lane。帳號鎖不動；同一次調高 Source rate limit、Backend 鎖改為
-   lane 層級；在 staging 量 FinDB 主機、RDS 與 Fetcher 記憶體。
-2. 數字可接受後，再考慮更多 lane 與縮小帳號鎖範圍。
-3. 做法 C 等量測顯示 normalization 跟不上時再調。
+1. 已完成：FinLab 拆成日 K 與盤中兩條 lane，帳號鎖不動。接著在 staging 量兩條 lane 同時跑時的 FinDB 主機、RDS
+   與 Fetcher 記憶體，並依量測調整 Source rate limit。
+2. 數字可接受後，再考慮更多 lane（例如表格型 dataset）與縮小帳號鎖範圍。
+3. 調大 normalization worker（`--concurrency`）等量測顯示跟不上時再調。
 
 ## 待 Owner 決定
 
 1. **授權類 RPC 合併或快取**：先前決定暫不做。每檔約 5 次（control poll、full-market authorization、
    work authorize），約 0.3–0.6 秒，佔逐檔成本的一半左右；擴充後這部分成本按成員數放大。
-2. **lane 的切分方式**：依工作類型（daily／intraday／historical），還是依 feed 宣告。
-3. **盤中並行數**：需向 FinLab 確認並行限制與盤中下載是否計入每日配額。
-4. **配額分配**：回補的每日 MB 預算，以及 staging 的上限。
+2. **盤中並行數**：需向 FinLab 確認並行限制與盤中下載是否計入每日配額。
+3. **配額分配**：回補的每日 MB 預算，以及 staging 的上限。
 
 ## 驗收矩陣
 
@@ -173,8 +151,8 @@ daily、historical 與名單更新共用一條 FIFO 和一個 owner。#504 已�
 ## 建議的 PR 順序
 
 1. Backend 容量量測（不改行為）：兩條 lane 同時跑的模擬負載與指標。
-2. Lane 資料模型與 Backend owner／FIFO（migration），含 daily 優先。
-3. Fetcher host lock 與 consumer 拓撲依 lane 產生。
+2. Lane 資料模型與 Backend owner／FIFO（migration）：已完成；daily 優先仍待做。
+3. Fetcher host lock 與 consumer 拓撲依 lane 產生，FinLab 盤中改走 `intraday`：已完成。
 4. FinLab 盤中長駐 SDK worker。
 5. 帳號鎖範圍縮小與抓取、交付重疊。
 6. 有限並行與 Backend 盤中鎖改為 `(dataset, symbol)`、worker 與 rate limit 調整。

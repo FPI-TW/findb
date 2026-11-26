@@ -219,12 +219,15 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 continue
             at = args.index("--state-path") + 1
             provider = args[args.index("--provider") + 1]
+            own = provider + (f"-{args[args.index('--lane') + 1]}" if "--lane" in args else "")
             folder = args[at].rsplit("/", 1)[0]
             for name, accepted in (
-                (f"state-{provider}.sqlite3", True),
+                (f"state-{own}.sqlite3", True),
                 ("state.sqlite3", False),
                 ("state-other.sqlite3", False),
-                (f"state-{provider}.sqlite3.unused", False),
+                (f"state-{own}.sqlite3.unused", False),
+                # A lane never runs on another lane's checkpoint of its provider.
+                (f"state-{provider}{'' if own != provider else '-intraday'}.sqlite3", False),
             ):
                 changed = [*args]
                 changed[at] = f"{folder}/{name}"
@@ -238,7 +241,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             self.check()
             checked += 1
-        self.assertEqual(checked, len(host.PROVIDERS))
+        self.assertEqual(checked, sum(row[2] == "full_market" for row in host.CONSUMERS))
 
     def test_the_current_version_requires_every_consumer(self):
         for name in ("/findb-historical-hkex", "/findb-full-market-fmp"):
@@ -248,6 +251,81 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "unknown consumer"):
                     self.check()
                 self.rows = rows
+
+    LANE_CONSUMER = "/findb-full-market-intraday-finlab"
+
+    def install_v7(self):
+        """Make the installed release a bundle v7 one: no FinLab intraday-lane topology."""
+        script = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+        script.write_text(
+            "".join(
+                line
+                for line in script.read_text().splitlines(keepends=True)
+                if not line.startswith("# finlab-intraday-lane-v1:")
+            )
+        )
+        self.manifest["fetcher_bundle_version"] = 7
+        with release.SourceBundleReader(self.root) as source:
+            self.manifest["deployment_source_bundle_sha256"] = (
+                source.deployment_source_bundle_sha256("fetcher", 3, 7)
+            )
+        self.write_manifest()
+
+    def test_a_v7_host_may_lack_the_whole_intraday_lane_group(self):
+        self.install_v7()
+        everything = self.rows
+        # Before this release installs it, the lane consumer is absent...
+        self.rows = [row for row in everything if row["Name"] != self.LANE_CONSUMER]
+        self.assertEqual(self.check(), "drained")
+        # ...or, after a release that installed it but kept the v7 pointer, complete.
+        self.rows = everything
+        self.assertEqual(self.check(), "drained")
+        # Every other consumer is still required on a v7 host.
+        self.rows = [
+            row
+            for row in everything
+            if row["Name"] not in (self.LANE_CONSUMER, "/findb-full-market-finlab")
+        ]
+        with self.assertRaisesRegex(ValueError, "unknown consumer"):
+            self.check()
+
+    def test_a_v8_host_requires_the_intraday_lane_consumer(self):
+        self.assertEqual(release.FETCHER_BUNDLE_VERSION, 8)
+        self.rows = [row for row in self.rows if row["Name"] != self.LANE_CONSUMER]
+        with self.assertRaisesRegex(ValueError, "unknown consumer"):
+            self.check()
+
+    def test_a_v7_bundle_with_the_v8_topology_marker_is_rejected(self):
+        self.manifest["fetcher_bundle_version"] = 7
+        with release.SourceBundleReader(self.root) as source:
+            self.manifest["deployment_source_bundle_sha256"] = (
+                source.deployment_source_bundle_sha256("fetcher", 3, 7)
+            )
+        self.write_manifest()
+        with self.assertRaisesRegex(Exception, "topology"):
+            self.check()
+
+    def test_a_lane_group_is_absent_or_complete_never_partial(self):
+        # A two-consumer lane group, so a partial installation can be expressed.
+        consumers = (
+            *host.CONSUMERS,
+            ("findb-full-market-intraday-example", "finlab", "full_market", "intraday", "finlab"),
+        )
+        group = {"findb-full-market-intraday-finlab", "findb-full-market-intraday-example"}
+        expected = {row[0] for row in consumers}
+        with (
+            patch.object(host, "CONSUMERS", consumers),
+            patch.object(host, "EXPECTED_RUNTIMES", tuple(sorted(expected))),
+        ):
+            others = expected - group
+            self.assertEqual(host.required_consumers(7, others), others)
+            self.assertEqual(host.required_consumers(7, expected), expected)
+            for present in group:
+                with self.subTest(present=present):
+                    self.assertIsNone(host.required_consumers(7, others | {present}))
+                    self.assertIsNone(host.required_consumers(8, others | {present}))
+            self.assertIsNone(host.required_consumers(8, others))
+            self.assertEqual(host.required_consumers(8, expected), expected)
 
     def test_restarting_runtime_reports_only_trusted_consumer_identity(self):
         self.rows[0]["State"].update(
@@ -403,6 +481,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 self.rows = rows
 
     def test_pre_v7_hosts_are_below_the_rollback_floor(self):
+        # v7 stays accepted while hosts move to v8; earlier bundles never are.
         for version in (1, 2, 3, 4, 5, 6):
             with self.subTest(version=version):
                 self.manifest["fetcher_bundle_version"] = version

@@ -27,6 +27,7 @@ PROVIDERS = tuple(
         consumer["image_key"].replace("_", "-"),
         consumer["provider"],
         consumer["role"],
+        consumer["lane"],
     )
     for role in ("full_market", "historical")
     for consumer in INVENTORY["consumers"]
@@ -279,6 +280,11 @@ def fake_call(state, command, args, parent, environ):
 FULL_STATE = "@full-state@"
 
 
+def _state_name(provider, lane):
+    # Each Full consumer runs on its own lane's checkpoint (#691).
+    return f"state-{provider}{'' if lane == 'default' else '-' + lane}.sqlite3"
+
+
 def original_rows():
     return {
         stable: dict(
@@ -292,10 +298,12 @@ def original_rows():
                 f"findb-fetch-historical-backfill --provider {provider} --run-forever"
                 if profile == "historical"
                 else f"findb-fetch-runtime --execution-profile {profile} "
-                f"--state-path {FULL_STATE}/state-{provider}.sqlite3 --provider {provider} --run-forever"
+                f"--state-path {FULL_STATE}/{_state_name(provider, lane)} --provider {provider}"
+                + ("" if lane == "default" else f" --lane {lane}")
+                + " --run-forever"
             ),
         )
-        for stable, repository, provider, profile in PROVIDERS
+        for stable, repository, provider, profile, lane in PROVIDERS
     }
 
 
@@ -313,6 +321,7 @@ def execute(
     command_query=None,
     checkpoint_kind="valid",
     inventory_change=None,
+    absent_checkpoints=(),
 ):
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -353,9 +362,10 @@ def execute(
             state_dir.mkdir(parents=True)
             # Each Full consumer runs on its own checkpoint (#691).
             files = [
-                state_dir / f"state-{provider}.sqlite3"
-                for _, _, provider, profile in PROVIDERS
+                state_dir / _state_name(provider, lane)
+                for _, _, provider, profile, lane in PROVIDERS
                 if profile == "full_market"
+                and _state_name(provider, lane) not in absent_checkpoints
             ]
             for path in files:
                 with sqlite3.connect(path) as db:
@@ -503,7 +513,7 @@ def test_invalid_checkpoint_has_no_runtime_effects(kind):
 
 
 def test_missing_installed_checkpoint_does_not_bootstrap():
-    name = next(name for name, _, _, item in PROVIDERS if item == "full_market")
+    name = next(name for name, _, _, item, _ in PROVIDERS if item == "full_market")
     completed, state, _ = execute({name: original_rows()[name]}, full_checkpoint=False)
     assert completed.returncode != 0
     assert "checkpoint_missing" in completed.stderr
@@ -566,7 +576,7 @@ def test_inventory_derived_images_and_host_layout_are_unchanged():
     assert completed.returncode == 0, completed.stderr
     layouts = state["provider_layouts"]
     assert set(layouts) == {stable for stable, *_ in PROVIDERS}
-    for stable, repository, provider, profile in PROVIDERS:
+    for stable, repository, provider, profile, _ in PROVIDERS:
         image, state_dir, cache = layouts[stable]
         assert image == f"{REGISTRY}/findb/staging/fetcher/{repository}@sha256:{'c' * 64}"
         history, expected_cache = HOST_LAYOUT[provider]
@@ -697,16 +707,9 @@ def test_a_new_consumer_that_was_killed_or_did_not_drain_still_fails_closed(faul
     assert {row["id"] for row in original.values()} <= kept
 
 
-def _add_finlab_intraday_lane(value):
-    value["consumers"].append(
-        {
-            "name": "findb-full-market-intraday-finlab",
-            "provider": "finlab",
-            "role": "full_market",
-            "lane": "intraday",
-            "image_key": "finlab",
-        }
-    )
+def _intraday_consumer(value):
+    (row,) = [row for row in value["consumers"] if row["lane"] == "intraday"]
+    return row
 
 
 def _helper_calls(state):
@@ -724,11 +727,9 @@ def _helper_calls(state):
 
 @pytest.mark.parametrize("mode", ["candidate", "activate"])
 def test_lane_consumer_is_released_on_its_own_lane_and_checkpoint(mode):
-    completed, state, _ = execute(
-        original_rows(), mode=mode, inventory_change=_add_finlab_intraday_lane
-    )
+    completed, state, _ = execute(original_rows(), mode=mode)
     assert completed.returncode == 0, completed.stderr
-    assert f"providers={len(INVENTORY['consumers']) + 1} " in completed.stdout
+    assert f"providers={len(INVENTORY['consumers'])} " in completed.stdout
     calls = _helper_calls(state)
     lane = calls["findb-full-market-intraday-finlab"]
     default = calls["findb-full-market-finlab"]
@@ -751,8 +752,7 @@ def test_lane_consumer_is_released_on_its_own_lane_and_checkpoint(mode):
 
 def _malformed_lane(change):
     def apply(value):
-        _add_finlab_intraday_lane(value)
-        change(value["consumers"][-1], value)
+        change(_intraday_consumer(value), value)
 
     return apply
 
@@ -830,3 +830,26 @@ def test_apply_installs_every_lane_between_default_and_historical(tmp_path):
     assert lanes[2][-2:] == ["--lane", "intra_day"]
     assert lanes[-1][0] == "historical"
     assert lanes[-1][-3:] == ["findb-fetch-historical-backfill", "--provider", "finlab"]
+
+
+@pytest.mark.parametrize("mode", ["candidate", "activate"])
+def test_a_host_without_the_lane_consumer_installs_it_beside_the_others(mode):
+    # A bundle v7 host has no intraday-lane consumer and no checkpoint for it yet:
+    # the checkpoint gate checks installed runtimes only, and the helper bootstraps
+    # the new lane's state like a first install.
+    before = original_rows()
+    before.pop("findb-full-market-intraday-finlab")
+    completed, state, pointer = execute(
+        before, mode=mode, absent_checkpoints=("state-finlab-intraday.sqlite3",)
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "checkpoint" not in completed.stderr
+    calls = _helper_calls(state)
+    assert calls["findb-full-market-intraday-finlab"][3].endswith("/state-finlab-intraday.sqlite3")
+    if mode == "candidate":
+        assert_restored(before, state)
+        assert pointer == "b" * 64 + "-122-1"
+    else:
+        assert pointer == "a" * 64 + "-123-1"
+        assert state["rows"]["findb-full-market-intraday-finlab"]["id"].startswith("new-")
+        assert set(state["rows"]) == set(original_rows())

@@ -353,8 +353,15 @@ def _round_runtime(tmp_path, provider):
 
     runtime, source, _ = _runtime(tmp_path, provider=provider)
     runtime._ensure_proof = lambda: None
-    # Catalog feeds, never the low-level harness field subset.
-    runtime.installed_feeds = runtime.feeds = [_feed(provider)]
+    # Catalog feeds, never the low-level harness field subset; one of this
+    # consumer's own (default) lane, as another lane's work is handed back.
+    from findb_fetcher.execution_metadata import lane_feeds
+
+    default = {feed["dataset_key"] for feed in lane_feeds(provider, "default")}
+    (dataset,) = [
+        f["dataset_key"] for f in publication(provider)["feeds"] if f["dataset_key"] in default
+    ][:1]
+    runtime.installed_feeds = runtime.feeds = [_feed(provider, dataset)]
     source.request = lambda *args, **kwargs: {"acquisition_allowed": False}
     return runtime
 

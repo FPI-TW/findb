@@ -642,14 +642,14 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 ## Runtime 與持久化狀態
 
-每次 Fetcher bundle v7 部署固定安裝十二個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
-與一個 `findb-historical-<suffix>`。Daily 使用 `findb-fetch-runtime --execution-profile full_market`、
+每次 Fetcher bundle v8 部署固定安裝十三個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
+與一個 `findb-historical-<suffix>`，再加上 FinLab `intraday` 執行線的 `findb-full-market-intraday-finlab`。Daily 使用 `findb-fetch-runtime --execution-profile full_market`、
 catalog 的 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝拓撲不隨設定改變。
 
 Consumer 拓撲由 catalog 產生的 `infra/deploy/generated/provider_inventory.v1.json` 決定，每列有
 `name`、`provider`、`role`、`lane`、`image_key`：每個 provider 一個 historical consumer（lane 一律
-`default`），每條[執行線](../architecture/provider_work.md#權威範圍與排序)一個 Full consumer。目前所有
-feed 都在 `default`，所以仍是上述十二個 consumers，指令與檔名都不變。非 default lane 的 consumer 名稱是
+`default`），每條[執行線](../architecture/provider_work.md#權威範圍與排序)一個 Full consumer。目前只有
+FinLab 的四條盤中 feed 在 `intraday`，其他 consumers 的指令與檔名都不變。非 default lane 的 consumer 名稱是
 `findb-full-market-<lane>-<suffix>`（lane 的 `_` 換成 `-`），指令多帶 `--lane <lane>`，checkpoint 是
 `<Full 目錄>/state-<provider>-<lane>.sqlite3`，與 default 共用同一 provider image、Full 目錄與 SDK cache。
 lane 放在 provider 前面，因為部署交易把「consumer 名稱加 `-`」開頭的容器都視為該 consumer 的替換中容器；
@@ -699,9 +699,11 @@ Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉�
 - Backend：migration `c7e9a1b3d5f8`（[交付計畫 unavailable 計數](#交付計畫-unavailable-計數的-rollback-下限)）。
   Migration 測試從前一版 `1587769858c0` 開始，container regression 從此 revision 升級。
 - Fetcher：`fetcher-v0.1.51`（provider-work journal 與 Full checkpoint 分檔，見下節）與 bundle v7
-  （十二個 consumers，見 [FMP provider 加入](#fmp-provider-加入與-rollback-下限)）。Host preflight 只接受
-  已安裝 bundle v7，且主機上只能有這十二個 consumers：Pilot／Shioaji 殘留與統一版以前的 scheduler
-  一律以 unknown consumer 拒絕，部署不再自動封存或移除它們。
+  （十二個 consumers，見 [FMP provider 加入](#fmp-provider-加入與-rollback-下限)）。CD 只部署 bundle v8
+  （[FinLab 盤中執行線](#finlab-盤中改走-intraday-執行線)）；host preflight 接受已安裝 v7 或 v8，v7 主機
+  可以整組缺少 FinLab 盤中 lane 的 consumer，v8 主機必須十三個齊全。主機上只能有這些 consumers：
+  Pilot／Shioaji 殘留與統一版以前的 scheduler 一律以 unknown consumer 拒絕，部署不再自動封存或移除它們。
+  兩環境都 accepted bundle v8 與 migration `e5979e281ba9` 之後，下限前進到這兩項，host preflight 改為只接受 v8。
 
 下限前進時，同步更新本節、`AGENTS.md`、`backend/tests/migration_database.py` 的 template 與
 `infra/tests/test_backend_runtime_container.py` 的升級基線。
@@ -1098,12 +1100,45 @@ migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `c7e9a1
 
 Migration `36bfabaae072` 為 `provider_work` 與 `provider_work_owner` 新增 `lane`（既有列一律
 `default`），owner 的 primary key 改為 `(environment, provider, lane)`，`idx_provider_work_scope`
-加上 lane（#691 第 2a 步）。catalog 的每條 feed 必須宣告 `lane`，目前全部是 `default`，所以 FIFO、
+加上 lane（#691 第 2a 步）。catalog 的每條 feed 必須宣告 `lane`，當時全部是 `default`，所以 FIFO、
 owner 與 advisory lock 的行為不變；Fetcher 不需要部署。
 
 - **Downgrade**：任何 work 或 owner 用到非 default lane 後拒絕。
 - **Rollback**：與所有 migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `7733f9692fe6`。舊
   image 以兩欄 key 讀 owner，在新 schema 下會失敗。
+
+## FinLab 盤中改走 intraday 執行線
+
+Catalog 把 FinLab 的四條盤中 feed（`tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick`）
+放到 `intraday` lane（#691 第 3b 步），新增第十三個 consumer `findb-full-market-intraday-finlab`。FinLab 日 K、
+日 K 的名單更新與 historical 留在 `default`；盤中 dataset 的名單更新跟著 feed 在 `intraday`。盤中排程仍是台北 19:35，schedule inspection 不變。
+
+- **Migration `e5979e281ba9`**：把 FinLab 這四個 dataset 在 `default` 的 work（任何狀態）改為 `intraday`，
+  並建立 `scheduler_control_lane`（非 default lane consumer 的 control poll 回報）。只要其中有 work 是
+  `running`／`recovery_blocked`，或 FinLab default owner 的 `attempt_id` 指向這些 work 的 attempt，就在任何
+  變更前拒絕。已排入的 work 即使留有前一輪停止時的 prepared 或 receipts 也會移動：lane consumer 找不到自己的
+  journal 時會讀 FinLab default 的 journal 檔，重送由 Source 冪等去重。
+- **Downgrade**：FinLab `intraday` owner 的 generation 已大於 0（或持有 attempt），或這些 work 有
+  `running`／`recovery_blocked` 時拒絕；否則把 work 移回 `default`、刪除未使用的 intraday owner 與
+  `scheduler_control_lane`。與所有 migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `36bfabaae072`。
+- **Fetcher bundle v8**（marker `# finlab-intraday-lane-v1:`）：安裝十三個 consumers；CD 只接受 v8。Host
+  preflight 接受已安裝 v7（可整組缺少 lane consumer，部分存在則拒絕）或 v8（必須齊全）；部署後的 runtime
+  recovery 同樣容許尚未安裝的 lane consumer。第一次安裝時，checkpoint gate 只檢查已安裝的 runtime，所以新 lane
+  沒有 `state-finlab-intraday.sqlite3` 不會被拒絕；`release_fetcher_provider.sh` 以 `--initialize-state` 建立
+  checkpoint 與 lane host lock，再做 stopped-state 檢查。
+- **部署順序**（白天、沒有盤中工作在執行時進行）：
+  1. Owner 停止所有 controls，確認 FinLab 沒有 running 的盤中 work（migration 會拒絕）。
+  2. 部署 FinDB（migration 在 ingest 啟動前執行），完成後立刻部署 Fetcher。Backend 新、Fetcher 舊的期間，
+     舊的單一 FinLab consumer 只 claim `default`，盤中 work 會一直等；反過來（Fetcher 先）時，新的 lane
+     consumer claim `intraday` 會被舊 Backend 以 409 拒絕，poll 也會覆寫 control 列的 heartbeat，所以必須 FinDB 先。
+  3. Fetcher 部署完成後完整 `tofu apply`：新 container 的告警由 inventory 產生，缺資料視為 breaching，
+     apply 前新 consumer 沒有告警，apply 後才開始監控。
+  4. lane consumer 第一次 claim 時，Backend 自動登記它的 host lock（audit `register_host_lock`，resource
+     `<environment>:finlab:intraday`），不需要重做 provider-work cutover。
+  5. Owner 依原本的方式啟動 controls；FinLab 的一個 control 同時啟動兩個 consumers。
+- **Rollback**：順序是先 Fetcher、後 Backend（先 downgrade 再換舊 image）。本變更後的 workflow 只部署 v8，而舊
+  workflow 的 host preflight 只接受已安裝 v7，所以主機裝上 v8 之後，CD 無法回退到 v7 bundle；Fetcher 的下限實際上
+  是 v8。intraday owner 用過之後 downgrade 也會拒絕。兩者都只能往前修。
 
 ## FinLab 日 K 改 19:30
 

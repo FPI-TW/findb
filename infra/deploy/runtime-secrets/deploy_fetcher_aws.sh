@@ -834,6 +834,7 @@ export FETCHER_CONSUMER_PROFILE=historical
 # pilot-retired-v1: accepted installations require four providers and eight consumers.
 # hkex-consumers-v1: accepted installations require the HKEX consumers (five providers, ten consumers).
 # fmp-consumers-v1: accepted installations require the FMP consumers (six providers, twelve consumers).
+# finlab-intraday-lane-v1: accepted installations require FinLab's intraday-lane consumer (six providers, thirteen consumers).
 for provider in "${providers[@]}"; do
   image="$(provider_image "$provider")"
   layout="$(provider_host_layout "$provider")"

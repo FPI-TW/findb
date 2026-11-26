@@ -453,7 +453,13 @@ class InstallationReceiptTests(unittest.TestCase):
                 receipt["source_key_sha256"], hashlib.sha256(b"private-key").hexdigest()
             )
             self.assertNotIn("private-key", json.dumps(receipt))
-            self.assertEqual(len(calls), 6)  # Both allocations plus actual config, twice.
+            # Every FinLab consumer's allocation (two Full lanes and historical) plus
+            # the actual config, twice.
+            self.assertEqual(len(calls), 8)
+            self.assertEqual(
+                [(item["consumer"], item.get("lane")) for item in receipt["installed_consumers"]],
+                [("full_market", None), ("full_market", "intraday"), ("historical", None)],
+            )
             self.assertEqual(receipt["consumers"], ["full_market", "historical", "maintenance"])
             environment_fields[:] = ["DEPLOYMENT_TARGET=staging"]
             with (

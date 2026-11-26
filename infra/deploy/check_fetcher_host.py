@@ -19,6 +19,7 @@ CONSUMERS = (
     ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
     ("findb-full-market-fmp", "fmp", "full_market", "default", "twelve_data"),
     ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-intraday-finlab", "finlab", "full_market", "intraday", "finlab"),
     ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "default", "factset"),
@@ -30,6 +31,20 @@ CONSUMERS = (
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
+
+# Lanes a bundle first installs: an older host lacks the whole group, never part.
+LANE_SINCE_BUNDLE = {("finlab", "intraday"): 8}
+
+
+def required_consumers(version, names):
+    required = set(EXPECTED_RUNTIMES)
+    for key, since in LANE_SINCE_BUNDLE.items():
+        group = {row[0] for row in CONSUMERS if (row[1], row[3]) == key}
+        if version < since and not names & group:
+            required -= group
+        elif not group <= names:
+            return None
+    return required
 
 
 def require_root_directory(path):
@@ -58,11 +73,10 @@ def installed_manifest(base, validator, target, registry):
         raise ValueError("release root mode invalid")
     with validator.SourceBundleReader(root) as source:
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
-        if (
-            type(manifest.get("fetcher_bundle_version")) is not int
-            or manifest["fetcher_bundle_version"] != 7
-        ):
-            # Bundle v7 is installed on every host and is the rollback floor.
+        if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
+            "fetcher_bundle_version"
+        ] not in (7, 8):
+            # Bundle v7 is the rollback floor; v8 adds FinLab's intraday lane.
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
         validator.validate_manifest(manifest, contracts, source)
@@ -177,7 +191,8 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     manifest = installed_manifest(base, validator, target, registry)
     names = {row["Name"].removeprefix("/"): row for row in rows}
     # Only the current consumers may exist: retired providers and profiles fail here too.
-    if set(names) != set(EXPECTED_RUNTIMES) or len(names) != len(rows):
+    required = required_consumers(manifest["fetcher_bundle_version"], set(names))
+    if required is None or set(names) != required or len(names) != len(rows):
         print("fetcher_host_eligibility=failed reason=consumer_inventory_mismatch")
         raise ValueError("missing, duplicate or unknown consumer")
     for name, provider, profile, lane, image_key in CONSUMERS:

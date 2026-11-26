@@ -54,7 +54,7 @@
       "historical_cohort": null,
       "historical_execution": null,
       "historical_requests_per_date": null,
-      "lane": "default",
+      "lane": "intraday",
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -151,7 +151,7 @@
       "historical_cohort": null,
       "historical_execution": null,
       "historical_requests_per_date": null,
-      "lane": "default",
+      "lane": "intraday",
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -181,7 +181,7 @@
       "historical_cohort": null,
       "historical_execution": null,
       "historical_requests_per_date": null,
-      "lane": "default",
+      "lane": "intraday",
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -241,7 +241,7 @@
       "historical_cohort": null,
       "historical_execution": null,
       "historical_requests_per_date": null,
-      "lane": "default",
+      "lane": "intraday",
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -466,7 +466,7 @@
       "unlisted_symbols": "none"
     }
   ],
-  "projection_sha256": "80cbeb487caa783d839a9a4e5120ec215d5d4bf73e4a121c72562587ae57347c",
+  "projection_sha256": "e156243336a3e37e6f65283e1d6b1be5606a21451403938103d9dd35c43a9697",
   "providers": [
     {
       "credential_env_names": [

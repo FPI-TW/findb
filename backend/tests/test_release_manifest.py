@@ -71,6 +71,7 @@ def _write_selected_source_bundle(root: Path, unit: str) -> None:
             + (
                 "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 "\n# pilot-retired-v1:\n# hkex-consumers-v1:\n# fmp-consumers-v1:"
+                "\n# finlab-intraday-lane-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -655,6 +656,7 @@ def test_bundle_digest_is_sorted_and_rejects_symlink_or_content_mutation(tmp_pat
             + (
                 "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 "\n# pilot-retired-v1:\n# hkex-consumers-v1:\n# fmp-consumers-v1:"
+                "\n# finlab-intraday-lane-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1262,6 +1264,7 @@ def test_bundle_checksum_rejects_external_hardlink(tmp_path: Path) -> None:
             + (
                 "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 "\n# pilot-retired-v1:\n# hkex-consumers-v1:\n# fmp-consumers-v1:"
+                "\n# finlab-intraday-lane-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1286,6 +1289,7 @@ def test_bundle_checksum_rejects_directory_input(tmp_path: Path) -> None:
             + (
                 "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 "\n# pilot-retired-v1:\n# hkex-consumers-v1:\n# fmp-consumers-v1:"
+                "\n# finlab-intraday-lane-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1310,6 +1314,7 @@ def test_source_bundle_rejects_unsafe_parent_paths(tmp_path: Path, parent_kind: 
             + (
                 "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 "\n# pilot-retired-v1:\n# hkex-consumers-v1:\n# fmp-consumers-v1:"
+                "\n# finlab-intraday-lane-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1403,6 +1408,7 @@ def test_bundle_checksum_keeps_one_open_root_across_a_root_path_replacement(
             + (
                 "\n# factset-consumers-v1:\n# shioaji-retired-v1:\n# backend-schedules-v1:"
                 "\n# pilot-retired-v1:\n# hkex-consumers-v1:\n# fmp-consumers-v1:"
+                "\n# finlab-intraday-lane-v1:"
                 if relative.endswith("deploy_fetcher_aws.sh")
                 else ""
             ),
@@ -1627,20 +1633,21 @@ def test_bundle_allowlist_rejects_untrusted_format_before_selecting_files(versio
         release_manifest.bundle_paths("fetcher", 4, version)
 
 
-@pytest.mark.parametrize("older", [6, 5, 4])
+@pytest.mark.parametrize("older", [7, 6, 5, 4])
 def test_fetcher_bundle_version_binds_its_deployment_topology(tmp_path, older) -> None:
-    """A bundle states the topology it installs: v5 retired Pilot, v6 HKEX's, v7 FMP's."""
+    """A bundle states the topology it installs: v5 retired Pilot, v6 HKEX's, v7 FMP's,
+    v8 FinLab's intraday lane."""
     root = tmp_path / "source"
     _write_selected_source_bundle(root, "fetcher")
     manifest = _manifest("fetcher")
     with release_manifest.SourceBundleReader(root) as source:
         manifest["deployment_source_bundle_sha256"] = source.deployment_source_bundle_sha256(
-            "fetcher", 3, 7
+            "fetcher", 3, 8
         )
         release_manifest.validate_manifest(manifest, CONTRACT_DATA, source)
         manifest["fetcher_bundle_version"] = older
         with pytest.raises(release_manifest.ManifestError, match="deployment topology"):
             release_manifest.validate_manifest(manifest, CONTRACT_DATA, source)
     assert release_manifest.bundle_paths("fetcher", 4) == release_manifest.bundle_paths(
-        "fetcher", 4, 7
+        "fetcher", 4, 8
     )

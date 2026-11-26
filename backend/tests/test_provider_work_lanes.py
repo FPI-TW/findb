@@ -1,4 +1,4 @@
-"""Execution lanes: one FIFO and owner per (provider, lane), one account (#691 step 2a)."""
+"""Execution lanes: one FIFO and owner per (provider, lane), one account (#691 steps 2a, 3b)."""
 
 import asyncio
 from datetime import timedelta
@@ -28,10 +28,10 @@ def _catalog_data(**lanes: str) -> dict:
 
 
 @pytest.fixture
-def intraday_lane(monkeypatch):
-    """The catalog as it will be once FinLab's intraday feeds run in their own lane."""
-    catalog = ProviderCatalog.model_validate(_catalog_data(**{key: "intraday" for key in INTRADAY}))
-    monkeypatch.setattr(provider_metadata, "provider_catalog", lambda: catalog)
+def intraday_lane():
+    """The committed catalog, where FinLab's intraday feeds run in their own lane."""
+    catalog = provider_metadata.provider_catalog()
+    assert provider_metadata.provider_lanes("finlab") == ("default", "intraday")
     return catalog
 
 
@@ -65,11 +65,15 @@ async def _claim(db, lane: str, identity: str, **options):
     )
 
 
-def test_every_current_feed_runs_in_the_default_lane():
+def test_only_finlab_intraday_feeds_run_outside_the_default_lane():
     catalog = provider_metadata.provider_catalog()
-    assert {feed.lane for feed in catalog.feeds} == {"default"}
+    assert {(feed.dataset_key, feed.lane) for feed in catalog.feeds if feed.lane != "default"} == {
+        (key, "intraday") for key in INTRADAY
+    }
     for provider in catalog.providers:
-        assert provider_metadata.provider_lanes(provider.provider) == ("default",)
+        assert provider_metadata.provider_lanes(provider.provider) == (
+            ("default", "intraday") if provider.provider == "finlab" else ("default",)
+        )
     assert provider_metadata.provider_lanes("shioaji") == ()
 
 
@@ -277,3 +281,60 @@ async def test_one_lane_lock_never_waits_for_another_but_the_provider_lock_does(
         finally:
             await other.rollback()
             await holder.rollback()
+
+
+@pytest.mark.asyncio
+async def test_the_daily_eod_round_settles_while_an_intraday_round_is_open(
+    test_session, intraday_lane
+):
+    await _datasets(test_session, "tw_equity_eod", "tw_etf_eod", "tw_equity_bar_1m")
+    # A long intraday round is claimed first and stays open for the whole test.
+    bar = await _maintenance(test_session, "tw_equity_bar_1m")
+    _, intraday_attempt, intraday_owner = await _claim(test_session, "intraday", "local:1:11")
+    eod = await _maintenance(test_session, "tw_equity_eod")
+    etf = await _maintenance(test_session, "tw_etf_eod")
+
+    for expected in (eod, etf):
+        claimed = await queue.claim(
+            test_session,
+            provider="finlab",
+            datasets=["tw_equity_eod", "tw_etf_eod", *INTRADAY],
+            host_lock_identity="local:1:10",
+        )
+        assert claimed is not None
+        work, _, owner = claimed
+        assert work.work_id == expected.work_id
+        fence = {
+            "provider": "finlab",
+            "work_id": work.work_id,
+            "generation": owner.generation,
+            "token": owner.token,
+        }
+        await queue.fence(test_session, **fence, acquisition=True)
+        await queue.freeze_manifest(test_session, manifest={"members": [{"key": "m"}]}, **fence)
+        await queue.close(test_session, **fence)
+        # A terminal settlement that needs no member evidence ends the round.
+        await queue.settle(
+            test_session,
+            **fence,
+            outcome="failed",
+            proof={},
+            failure_code="NORMALIZATION_FAILED",
+        )
+        await test_session.commit()
+        assert (await test_session.get(ProviderWork, work.work_id)).state == "failed"
+        await test_session.refresh(owner)
+        assert owner.attempt_id is None
+
+    # The intraday round never noticed: same owner, same open attempt, still fenced.
+    await test_session.refresh(intraday_owner)
+    assert intraday_owner.attempt_id == intraday_attempt.attempt_id
+    assert (await test_session.get(ProviderWork, bar.work_id)).state == "running"
+    await queue.fence(
+        test_session,
+        provider="finlab",
+        work_id=bar.work_id,
+        generation=intraday_owner.generation,
+        token=intraday_owner.token,
+        acquisition=True,
+    )

@@ -397,8 +397,8 @@ FinLab 的價格表每天台北 15:32、16:32、18:32、21:32 各更新一次，
   `{"finlab_final_publication_missing": {...}}`，欄位相同。日 K 的發布等待持續到完成期限前 30 分鐘（隔日 07:00），
   所以 22:15 之後一定還有一輪。這種日子的成交量可能偏小，隔天的改值偵測會列出來。
 - 補抓過去的日期與 historical 回補讀到的表，發布時間都晚於該日 18:32，不受影響。
-- 等待期間日 K 的重試排到佇列尾端；四條盤中 feed 排在 19:35，晚於日 K 的 19:30，日 K 才不會被盤中工作插隊。
-  盤中改為獨立執行線（#691）之前維持這個順序。
+- 等待期間日 K 的重試排到佇列尾端。四條盤中 feed 在自己的 `intraday` 執行線（#691），不和日 K 共用佇列，
+  盤中工作不會插在日 K 前面；盤中排程暫時維持 19:35。
 
 ### FinLab 事後改值的偵測
 
@@ -768,9 +768,13 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
   control 才會納入。
 - **名單**：沿用台股日 K 的官方名單（TWSE／TPEx），不查 FinLab 的目錄。FinLab 沒有盤中標的清單，而且會提供
   日 K 價格表還沒有的標的（例如新上市），所以每個已分類的成員都會嘗試。
-- **排程**：台北 19:35，完成期限為隔日 07:35（開始後 12 小時）。FinLab 的工作共用一條佇列，所以盤中排在日 K（19:30）
-  之後，日 K 才不會被插隊（見「FinLab 日 K 只取最終版」）。FinLab 的 control 顯示的是該 provider 最早的 feed 時間
-  （19:30）；feeds 的時區不同時，以同一天換算成 UTC 的時刻比較。同一個交易日的工作依排程時間排入佇列，日 K 一定排在盤中之前；跨日補抓時仍是日期優先。
+- **排程**：台北 19:35，完成期限為隔日 07:35（開始後 12 小時）。四條盤中 feed 在 FinLab 的 `intraday`
+  [執行線](../architecture/provider_work.md#權威範圍與排序)，由 `findb-full-market-intraday-finlab` 執行，有自己的
+  佇列與 owner；日 K（19:30）、名單更新與 historical 在 `default`，由 `findb-full-market-finlab` 執行，不再排在
+  4–6 小時的盤中工作後面。兩條 lane 共用 FinLab 帳號（同一時間只有一個 FinLab 請求）、帳號 cooldown 與同一個
+  control：Owner 的 start／stop 同時作用於兩個 consumers。盤中的時間暫時維持 19:35。FinLab 的 control 顯示的是該
+  provider 最早的 feed 時間（19:30）；feeds 的時區不同時，以同一天換算成 UTC 的時刻比較。每條 lane 內，同一個交易日
+  的工作依排程時間排入佇列；跨日補抓時仍是日期優先。
 - **Historical**：不支援，回補不在第 1 批範圍。
 
 FinLab 對單一成員的回答與結果：

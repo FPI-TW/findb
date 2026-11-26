@@ -19,6 +19,7 @@ CONSUMERS = (
     ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
     ("findb-full-market-fmp", "fmp", "full_market", "default", "twelve_data"),
     ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-intraday-finlab", "finlab", "full_market", "intraday", "finlab"),
     ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "default", "factset"),
@@ -34,9 +35,19 @@ EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # Consumers of providers a newer bundle first installs, by provider: before that
 # release a provider's are absent as a whole, after it they recover like every other.
 NEWER_PROVIDERS = ("hkex", "fmp")
+# Likewise a provider lane's consumer a newer bundle first installs (v8: FinLab intraday).
+NEWER_LANES = (("finlab", "intraday"),)
 NEWER_RUNTIMES = {
-    provider: frozenset(row[0] for row in CONSUMERS if row[1] == provider)
-    for provider in NEWER_PROVIDERS
+    **{
+        provider: frozenset(row[0] for row in CONSUMERS if row[1] == provider)
+        for provider in NEWER_PROVIDERS
+    },
+    **{
+        f"{provider}:{lane}": frozenset(
+            row[0] for row in CONSUMERS if (row[1], row[3]) == (provider, lane)
+        )
+        for provider, lane in NEWER_LANES
+    },
 }
 
 

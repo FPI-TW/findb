@@ -37,12 +37,12 @@ def full_market_containers(path: Path = PROVIDER_INVENTORY) -> frozenset[str]:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     if hashlib.sha256(canonical).hexdigest() != digest or value["schema_version"] != 1:
         raise ValueError("provider inventory integrity mismatch")
-    names = frozenset(
-        consumer["name"] for consumer in value["consumers"] if consumer["role"] == "full_market"
-    )
-    if len(names) != len(value["providers"]):
+    full = [consumer for consumer in value["consumers"] if consumer["role"] == "full_market"]
+    # Each provider has one default-lane Full consumer; another lane adds its own.
+    defaults = [consumer["provider"] for consumer in full if consumer["lane"] == "default"]
+    if sorted(defaults) != sorted(value["providers"]):
         raise ValueError("provider inventory must name one Full market consumer per provider")
-    return names
+    return frozenset(consumer["name"] for consumer in full)
 
 
 def _run(command: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:

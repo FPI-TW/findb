@@ -81,7 +81,7 @@
       "historical_execution": null,
       "historical_lookback_days": null,
       "historical_requests_per_date": null,
-      "lane": "default",
+      "lane": "intraday",
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -214,7 +214,7 @@
       "historical_execution": null,
       "historical_lookback_days": null,
       "historical_requests_per_date": null,
-      "lane": "default",
+      "lane": "intraday",
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -260,7 +260,7 @@
       "historical_execution": null,
       "historical_lookback_days": null,
       "historical_requests_per_date": null,
-      "lane": "default",
+      "lane": "intraday",
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -352,7 +352,7 @@
       "historical_execution": null,
       "historical_lookback_days": null,
       "historical_requests_per_date": null,
-      "lane": "default",
+      "lane": "intraday",
       "lifecycle": "active",
       "market": "TW",
       "provider": "finlab",
@@ -861,5 +861,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "2010f548f7a9d0acc776c806c5f3db7075b192181b87cb0de646ea828908ed75"
+  "source_sha256": "4f3e957bfd04597f0b953917111f973bd55767ddc7ebaac07931a70ad1f6c304"
 }

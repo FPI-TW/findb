@@ -116,12 +116,27 @@ PostgreSQL `provider_work` 保存穩定工作，`provider_work_attempt` 以 sequ
 - **相容性**：default consumer 送出的 claim 與 scheduler control poll 和沒有 lane 之前逐 byte 相同（不帶
   `lane`）；只有非 default lane 才帶 `lane`，並檢查 claim 回應的 `lane` 是否相符。同一 provider 的所有
   lane 共用一個 scheduler control。
+- **Control poll**：所有 lane 讀同一個 control 的 desired state，Owner 的 start／stop 對整個 provider 生效。
+  default consumer 的回報（observed state、heartbeat、cycle 時間、`last_error`）照舊寫在 `scheduler_control`；
+  非 default lane 的回報寫在 `scheduler_control_lane`（每個 control、每條 lane 一列），不改 control 列的任何
+  欄位（包含 `updated_at`）。欄位規則與 control 列相同：沒帶 cycle 時間就保留舊值，帶完成時間且沒有錯誤時
+  清除 `last_error`。catalog 沒有的 lane 回 409。Admin `GET /schedulers` 的 `observed_state` 與 heartbeat
+  仍是 default consumer 的，另以 `lanes` 列出其他 lane 的回報與 heartbeat 年齡；Dashboard 目前只看 control 列。
 - **catalog 不一致**：Backend 與 Fetcher 分開部署，可能短暫對某條 feed 屬於哪條 lane 看法不同。consumer
   claim 到不屬於自己 lane 的工作（回應的 `lane` 不符，或 image 把它的 feed 放在另一條 lane）時，以
   `retry`、`LANE_MISMATCH` 結算並延後 10 分鐘，等擁有它的 consumer 處理；不會當成退役 feed，也不會
   結算為 failed。
-- **目前狀態**：所有 feed 都在 `default`，部署仍是十二個 consumers。FinLab 盤中改走 `intraday` lane
-  （新增 `findb-full-market-intraday-finlab`）在 #691 第 3b 步。
+- **目前狀態**：只有 FinLab 的四條盤中 feed（`tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、
+  `tw_etf_tick`）在 `intraday` lane，由 `findb-full-market-intraday-finlab` 執行（#691 第 3b 步）；FinLab 日 K
+  （`tw_equity_eod`、`tw_etf_eod`）、historical 與其他 provider 都在 `default`。部署共十三個 consumers。一輪
+  4–6 小時的盤中工作不再擋住 FinLab 日 K 或之後加入 default lane 的 dataset。Migration `e5979e281ba9` 把
+  既有的盤中 work 移到 `intraday`（見[部署](../operations/deployment.md#finlab-盤中改走-intraday-執行線)）。
+- **為什麼要多條 lane**：原本每個 provider 只有一條 FIFO、一個 owner 與一個 consumer，同一 provider 的所有
+  dataset 逐成員串行，FinLab 盤中一輪約 6.5 小時會擋住同 provider 的其他工作。不採用把 FinLab 拆成兩個
+  provider 名稱：provider 名稱寫在 canonical 的 `source`、source precedence 與 credential scope 裡，等於改資料身分。
+- **lane 之間仍共用的序列點**：帳號鎖（`acquisition.py` 的 `account_lock`）讓同一帳號一次只有一個 provider
+  請求，所以兩條 lane 只能錯開（一條交付給 Source 時另一條抓取），對 provider 的請求頻率不變；Source rate
+  limit 由同一把 Source key 共用；normalization worker、FinDB 主機與 RDS 也共用。同時跑多條 lane 時要觀察這幾層。
 `provider_work_receipt` 將所有 Source runs 永久綁定原 work，包含同日多商品與 minute 各 sequence。
 重複 enqueue 不改寫原 scope／順序；不同 profile、historical item 與 retained-raw rerun 決策分開保存。
 
