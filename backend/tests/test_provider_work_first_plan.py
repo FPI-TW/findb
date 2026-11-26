@@ -163,7 +163,7 @@ async def test_daily_taifex_first_plan_known_native_failure_retries_original_wor
         and work.manifest is None
     )
     assert not (await prepared_map(h.db, work.work_id)) and not h.runs
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     assert owner.attempt_id is None and owner.recovery_reason is None
     assert calls == (
         []
@@ -261,4 +261,6 @@ async def test_daily_taifex_first_plan_known_native_failure_retries_original_wor
         [event for event in h.source_events if event[1] >= 400],
     )
     assert work.manifest and h.runs
-    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+    assert (
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+    ).attempt_id is None

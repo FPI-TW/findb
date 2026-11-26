@@ -109,5 +109,7 @@ async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_
     else:
         assert work.state == "completed" and h.runs and (await prepared_map(h.db, work.work_id))
         assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "completed"
-    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+    assert (
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+    ).attempt_id is None
     successful.close()

@@ -397,7 +397,9 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
                 )
             )
         assert work.state == "failed"
-        assert not (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id
+        assert not (
+            await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+        ).attempt_id
         assert len(acquired_members) == FULL_WORK_MAX_ATTEMPTS
         return
     if not_published:

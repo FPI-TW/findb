@@ -21,6 +21,7 @@ from sqlalchemy import literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.provider_work import DEFAULT_LANE
 from app.models.registry import (
     DailyDeliveryPlan,
     DatasetRegistry,
@@ -474,9 +475,9 @@ async def create_request(
     provider = provider.lower()
     cohort = historical_cohort(provider, dataset_key)
     if cohort == "current_release":
-        from app.services.provider_work import lock_provider
+        from app.services.provider_work import lock_lane
 
-        await lock_provider(db, provider)
+        await lock_lane(db, provider, DEFAULT_LANE)
     today = today or _request_today(provider, dataset_key)
     max_days = _max_backfill_days(provider, dataset_key)
     if start_date < today - timedelta(days=max_days - 1) or end_date > today:
@@ -927,11 +928,11 @@ async def _cancel_queued_item_work(
 async def cancel_request(
     db: AsyncSession, request_id: UUID, *, actor: str
 ) -> HistoricalBackfillRequest:
-    from app.services.provider_work import lock_provider
+    from app.services.provider_work import lock_lane
 
     initial = await db.get(HistoricalBackfillRequest, request_id)
     if initial is not None:
-        await lock_provider(db, initial.provider)
+        await lock_lane(db, initial.provider, DEFAULT_LANE)
     row = (
         await db.execute(
             select(HistoricalBackfillRequest)
@@ -1040,9 +1041,9 @@ async def claim_next_item(
     """
     now = now or utc_now()
 
-    from app.services.provider_work import ProviderWorkError, fence, has_prepared, lock_provider
+    from app.services.provider_work import ProviderWorkError, fence, has_prepared, lock_lane
 
-    await lock_provider(db, provider)
+    await lock_lane(db, provider, DEFAULT_LANE)
     await expire_requests(db, provider=provider, now=now)
 
     identity = db.info.get("provider_work")
@@ -1137,7 +1138,9 @@ async def authorize_item(
     from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
     from app.services.provider_work import environment
 
-    owner = await db.get(ProviderWorkOwner, (environment(), provider), populate_existing=True)
+    owner = await db.get(
+        ProviderWorkOwner, (environment(), provider, DEFAULT_LANE), populate_existing=True
+    )
     attempt = (
         await db.get(ProviderWorkAttempt, owner.attempt_id) if owner and owner.attempt_id else None
     )
@@ -1181,7 +1184,7 @@ async def complete_item(
 ) -> HistoricalBackfillItem:
     from app.services import provider_work as queue
 
-    await queue.lock_provider(db, provider)
+    await queue.lock_lane(db, provider, DEFAULT_LANE)
     item = (
         await db.execute(
             select(HistoricalBackfillItem)
@@ -1242,7 +1245,7 @@ async def complete_item(
     from app.models.provider_work import ProviderWorkOwner
     from app.services.provider_work import environment, fence, prepared_keys
 
-    owner = await db.get(ProviderWorkOwner, (environment(), provider))
+    owner = await db.get(ProviderWorkOwner, (environment(), provider, DEFAULT_LANE))
     identity = db.info.get("provider_work")
     if identity is None or owner is None:
         raise HistoricalBackfillConflictError("provider work protocol is required")
@@ -1749,7 +1752,9 @@ async def validate_futures_historical_delivery(db: AsyncSession, request) -> Non
         from app.models.provider_work import ProviderWork, ProviderWorkOwner
         from app.services.provider_work import environment, fence
 
-        owner = await db.get(ProviderWorkOwner, (environment(), item.request.provider))
+        owner = await db.get(
+            ProviderWorkOwner, (environment(), item.request.provider, DEFAULT_LANE)
+        )
         if owner is not None:
             item.lease_expires_at = owner.expires_at
         identity = db.info.get("provider_work")

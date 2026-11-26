@@ -279,6 +279,11 @@
           ],
           "title": "Historical Requests Per Date"
         },
+        "lane": {
+          "pattern": "^[a-z][a-z0-9_]{0,29}$",
+          "title": "Lane",
+          "type": "string"
+        },
         "lifecycle": {
           "enum": [
             "active",
@@ -333,6 +338,7 @@
       "required": [
         "provider",
         "dataset_key",
+        "lane",
         "market",
         "calendar_market",
         "asset_class",

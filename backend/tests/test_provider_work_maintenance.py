@@ -161,7 +161,7 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
     assert work.state == (
         "queued" if fault in {503, "503-invalid", "transport", "quota"} else "failed"
     )
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     assert owner.attempt_id is None and owner.recovery_reason is None
     attempts = list(
         await h.db.scalars(
@@ -244,7 +244,7 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
             h.db.expire_all()
             current = await h.db.get(ProviderWork, UUID(work_id))
             assert (
-                await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+                await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
             ).attempt_id is None
             with journal.connection() as db:
                 budget = db.execute(

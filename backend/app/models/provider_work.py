@@ -24,6 +24,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 from app.utils import utc_now, uuid7
 
+# The lane every work and owner used before lanes existed; providers that declare
+# none run all their work in it.
+DEFAULT_LANE = "default"
+LANE_PATTERN_CHECK = "{column} ~ '^[a-z][a-z0-9_]{{0,29}}$'"
+
 
 class ProviderWork(Base):
     __tablename__ = "provider_work"
@@ -37,11 +42,15 @@ class ProviderWork(Base):
             "execution_profile IS NULL OR execution_profile = 'full_market'",
             name="provider_work_profile",
         ),
-        Index("idx_provider_work_scope", "environment", "provider", "state"),
+        CheckConstraint(LANE_PATTERN_CHECK.format(column="lane"), name="provider_work_lane_valid"),
+        Index("idx_provider_work_scope", "environment", "provider", "lane", "state"),
     )
     work_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid7)
     environment: Mapped[str] = mapped_column(String(20))
     provider: Mapped[str] = mapped_column(String(50))
+    # The provider's execution lane: each lane has its own FIFO and owner. Fixed at
+    # enqueue from the catalog feed (historical work always runs in ``default``).
+    lane: Mapped[str] = mapped_column(String(30), default=DEFAULT_LANE, server_default=DEFAULT_LANE)
     stable_key: Mapped[str] = mapped_column(String(200))
     kind: Mapped[str] = mapped_column(String(20))
     dataset_key: Mapped[str] = mapped_column(
@@ -79,11 +88,19 @@ class ProviderWorkAttempt(Base):
 
 
 class ProviderWorkOwner(Base):
-    """Exactly one durable slot per environment/provider; expiry never releases it."""
+    """Exactly one durable slot per environment/provider/lane; expiry never releases it."""
 
     __tablename__ = "provider_work_owner"
+    __table_args__ = (
+        CheckConstraint(
+            LANE_PATTERN_CHECK.format(column="lane"), name="provider_work_owner_lane_valid"
+        ),
+    )
     environment: Mapped[str] = mapped_column(String(20), primary_key=True)
     provider: Mapped[str] = mapped_column(String(50), primary_key=True)
+    lane: Mapped[str] = mapped_column(
+        String(30), primary_key=True, default=DEFAULT_LANE, server_default=DEFAULT_LANE
+    )
     attempt_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("provider_work_attempt.attempt_id", ondelete="RESTRICT"),
         unique=True,

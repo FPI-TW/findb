@@ -49,7 +49,7 @@ async def test_active_historical_authorization_checks_exact_expiry_without_mutat
         current = [boundary - timedelta(microseconds=1)]
         monkeypatch.setattr(queue, "utc_now", lambda: current[0])
         monkeypatch.setattr(historical, "utc_now", lambda: current[0])
-        owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+        owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
         owner.heartbeat_at, owner.expires_at = boundary, boundary + timedelta(minutes=2)
         await h.db.commit()
         item = await h.db.get(HistoricalBackfillItem, h.item_id)
@@ -105,7 +105,7 @@ async def test_active_historical_authorization_checks_exact_expiry_without_mutat
         h.db.expire_all()
         item = await h.db.get(HistoricalBackfillItem, h.item_id)
         assert item.status == "failed" and item.failure_code == "BACKFILL_EXPIRED"
-        owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+        owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
         assert owner.attempt_id is None
 
 
@@ -134,7 +134,7 @@ async def test_owner_expiry_blocks_new_intent_but_drains_original_prepared_body(
         work_id = work.work_id
         descriptor = next(iter((await prepared_map(h.db, work.work_id)).values()))
         body = descriptor["body"]
-        owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+        owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
         later = queue.utc_now() + timedelta(days=90)
         owner.expires_at = later + timedelta(minutes=2)
         owner.heartbeat_at = later
@@ -160,7 +160,9 @@ async def test_owner_expiry_blocks_new_intent_but_drains_original_prepared_body(
         work = await h.db.get(ProviderWork, work_id)
         assert next(iter((await prepared_map(h.db, work.work_id)).values()))["body"] == body
         assert h.native_calls() == calls and h.runs
-        assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+        assert (
+            await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+        ).attempt_id is None
     finally:
         h.allow_confirm.set()
         if not task.done():
@@ -196,7 +198,7 @@ async def test_owner_authorization_projects_latest_heartbeat_expiry(
             work["expires_at"]
         )
         owner = await h.db.get(
-            ProviderWorkOwner, (h.environment, h.provider), populate_existing=True
+            ProviderWorkOwner, (h.environment, h.provider, "default"), populate_existing=True
         )
         assert owner.heartbeat_at == later
         assert owner.expires_at == later + queue.HEARTBEAT_TTL

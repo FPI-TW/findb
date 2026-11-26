@@ -168,7 +168,7 @@ async def test_factset_fenced_runner_partial_continues_and_serve_only_has_valid_
         assert len(evidence) == 2
         works = list(await test_session.scalars(select(ProviderWork)))
         assert all(work.state == "partial" for work in works)
-        owner = await test_session.get(ProviderWorkOwner, ("local", "factset"))
+        owner = await test_session.get(ProviderWorkOwner, ("local", "factset", "default"))
         assert owner.attempt_id is None
         response = await client.get("/api/v1/serve/eod", params={"instruments": "HK:00001"})
         assert response.status_code == 200, response.text
@@ -325,7 +325,7 @@ async def test_factset_prepared_drain_preserves_terminal_domain_and_completion_a
         assert h.native_calls() == calls and len(h.runs) == 1
         assert acknowledgements == [200]
         owner = await test_session.get(
-            ProviderWorkOwner, ("local", "factset"), populate_existing=True
+            ProviderWorkOwner, ("local", "factset", "default"), populate_existing=True
         )
         assert owner.attempt_id is None
     finally:

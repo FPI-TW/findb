@@ -1676,14 +1676,14 @@ async def test_waiting_duplicate_rechecks_after_scope_lock_before_dynamic_policy
 
         second_reached_idempotency_lock = asyncio.Event()
         second_policy_calls = 0
-        original_provider_lock = work_queue.lock_provider
+        original_provider_lock = work_queue.lock_lane
 
-        async def observed_provider_lock(db, provider):
+        async def observed_provider_lock(db, provider, lane):
             if db is second_session:
                 second_reached_idempotency_lock.set()
-            return await original_provider_lock(db, provider)
+            return await original_provider_lock(db, provider, lane)
 
-        monkeypatch.setattr(work_queue, "lock_provider", observed_provider_lock)
+        monkeypatch.setattr(work_queue, "lock_lane", observed_provider_lock)
 
         async def observed_idempotency_lock(
             db,
@@ -1799,14 +1799,14 @@ async def test_cross_source_waiter_returns_mismatch_before_dynamic_policy(
 
         second_reached_idempotency_lock = asyncio.Event()
         second_policy_calls = 0
-        original_provider_lock = work_queue.lock_provider
+        original_provider_lock = work_queue.lock_lane
 
-        async def observed_provider_lock(db, provider):
+        async def observed_provider_lock(db, provider, lane):
             if db is second_session:
                 second_reached_idempotency_lock.set()
-            return await original_provider_lock(db, provider)
+            return await original_provider_lock(db, provider, lane)
 
-        monkeypatch.setattr(work_queue, "lock_provider", observed_provider_lock)
+        monkeypatch.setattr(work_queue, "lock_lane", observed_provider_lock)
 
         async def observed_idempotency_lock(
             db,

@@ -4,7 +4,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from app.provider_catalog import FeedDefinition, ProviderCatalog
+from app.provider_catalog import DEFAULT_LANE, FeedDefinition, ProviderCatalog
 
 METADATA_PATH = Path(__file__).resolve().parents[1] / "generated/provider_metadata.v1.json"
 
@@ -55,6 +55,20 @@ def catalog_feed(provider: str, dataset_key: str) -> FeedDefinition | None:
         ),
         None,
     )
+
+
+def provider_lanes(provider: str) -> tuple[str, ...]:
+    """The provider's execution lanes, default first; a provider without feeds has none."""
+    lanes = {f.lane for f in provider_catalog().feeds if f.provider == provider}
+    return tuple(sorted(lanes, key=lambda lane: (lane != DEFAULT_LANE, lane)))
+
+
+def work_lane(provider: str, kind: str, dataset_key: str) -> str:
+    """The lane a new work runs in: historical always default, else its feed's lane."""
+    if kind == "historical":
+        return DEFAULT_LANE
+    feed = catalog_feed(provider, dataset_key)
+    return feed.lane if feed is not None else DEFAULT_LANE
 
 
 def historical_cohort(provider: str, dataset_key: str) -> str | None:

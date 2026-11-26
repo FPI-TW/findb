@@ -577,7 +577,9 @@ async def test_daily_historical_handoff_with_real_fenced_source_and_proofs(
         )
         assert pending_attempt and pending_attempt.drain_only
         assert (
-            await test_session.get(ProviderWorkOwner, (get_settings().APP_ENVIRONMENT, "finlab"))
+            await test_session.get(
+                ProviderWorkOwner, (get_settings().APP_ENVIRONMENT, "finlab", "default")
+            )
         ).attempt_id is None
         pending_attempt.not_before = utc_now() - timedelta(seconds=1)
         await test_session.commit()

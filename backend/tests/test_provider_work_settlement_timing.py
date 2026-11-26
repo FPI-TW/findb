@@ -40,7 +40,7 @@ async def test_elapsed_retry_floor_keeps_fifo_and_durable_owner_settlement(
     assert attempts[0].state == "settled" and attempts[0].proof == proof
     assert attempts[-1].work_id == first.work_id and attempts[-1].attempt_number == 2
     assert attempts[-1].not_before == max(requested, now + timedelta(seconds=1))
-    owner = await db.get(ProviderWorkOwner, (queue.environment(), "shioaji"))
+    owner = await db.get(ProviderWorkOwner, (queue.environment(), "shioaji", "default"))
     assert owner.attempt_id is None
     assert (
         await queue.claim(db, provider="shioaji", datasets=[key], host_lock_identity="host:1:22")
@@ -102,7 +102,9 @@ async def test_real_consumer_survives_slow_settlement_and_ack_replay(
     assert attempts[0].proof == requests[0]["proof"]
     assert attempts[1].not_before == attempts[0].settled_at + timedelta(seconds=1)
     assert attempts[1].queue_order > attempts[0].queue_order
-    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+    assert (
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+    ).attempt_id is None
     assert not h.native_calls()
     # A lost successful ACK can replay the original, now elapsed timestamp.
     path = f"/api/v1/source/provider-work/{first_id}/settle"
@@ -171,7 +173,7 @@ async def test_elapsed_retry_does_not_bypass_fence_proof_or_time_validation(
     assert response.status_code == 409, response.text
     assert response.headers["X-FinDB-Error-Code"] == code
     h.db.expire_all()
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     assert owner.attempt_id == attempt_id
     attempts = list(
         await h.db.scalars(

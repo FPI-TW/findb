@@ -149,7 +149,7 @@ async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_origin
         assert journal.cooldown_until() == 0
     assert await h.run()  # New coordinator recovers same work/fence and tail-retries.
     h.db.expire_all()
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     assert owner.attempt_id is None and owner.acquisition_not_before > utc_now() + timedelta(
         seconds=290
     )

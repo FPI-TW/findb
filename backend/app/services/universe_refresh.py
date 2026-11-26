@@ -63,8 +63,10 @@ async def request_refresh(
         raise UniverseRefreshError("Universe refresh is not available for this feed", 404)
     if await db.get(DatasetRegistry, dataset_key) is None:
         raise UniverseRefreshError("Dataset is not registered", 404)
-    # The provider lock serializes requests, so two clicks cannot both pass the check.
-    await provider_work.lock_provider(db, provider)
+    # The lane lock serializes requests, so two clicks cannot both pass the check.
+    await provider_work.lock_lane(
+        db, provider, provider_work.work_lane(provider, "maintenance", dataset_key)
+    )
     pending = await db.scalar(
         _manual_works(provider, dataset_key).where(ProviderWork.completed_at.is_(None)).limit(1)
     )
@@ -96,8 +98,8 @@ async def owning_refresh(
 ) -> ProviderWork | None:
     """The manual refresh that holds the provider's owner slot right now, if any.
 
-    A provider has one owner at a time, so a universe submitted while this work is
-    open comes from it. Nothing a Source client sends can assert the approval.
+    Each lane of a provider has one owner at a time, and only the dataset's lane
+    runs its refresh, so a universe submitted while this work is open comes from it. Nothing a Source client sends can assert the approval.
     """
     return await db.scalar(
         _manual_works(provider, dataset_key)

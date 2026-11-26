@@ -1,6 +1,8 @@
 # Provider 吞吐擴充：多條執行線、並行與回補效率
 
-狀態：設計草案，尚未實作。Owner 已決定的方向寫在「已定事項」；其餘待決事項列在文末。
+狀態：實作中，進度與 PR 切分見 #691。第 1 節的 Backend lane（第 2a 步）已完成，現行規則見
+[Provider work FIFO](../architecture/provider_work.md) 的「執行線（lane）」；其餘仍是設計草案。Owner
+已決定的方向寫在「已定事項」；其餘待決事項列在文末。
 
 ## 背景
 

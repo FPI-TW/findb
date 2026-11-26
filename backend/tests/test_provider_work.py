@@ -715,7 +715,7 @@ async def test_missing_heartbeat_never_releases_and_recovery_fences_old_generati
         db, provider="taifex", datasets=[key], host_lock_identity="host:1:22"
     )
     old = identity(claimed)
-    owner = await db.get(ProviderWorkOwner, (queue.environment(), "taifex"))
+    owner = await db.get(ProviderWorkOwner, (queue.environment(), "taifex", "default"))
     owner.expires_at = utc_now() - timedelta(seconds=1)
     await db.flush()
     assert (
@@ -901,7 +901,7 @@ async def test_unaccepted_original_intent_prevents_terminal_abandon_but_retains_
     for outcome in ("completed", "cancelled", "failed"):
         with pytest.raises(queue.ProviderWorkPreparedDrainingError):
             await queue.settle(test_session, **identity(claimed), outcome=outcome, proof={})
-    owner = await test_session.get(ProviderWorkOwner, (queue.environment(), "finlab"))
+    owner = await test_session.get(ProviderWorkOwner, (queue.environment(), "finlab", "default"))
     assert owner.attempt_id == claimed[1].attempt_id
     await queue.settle(
         test_session,
@@ -979,19 +979,19 @@ async def test_authenticated_subset_claim_waits_for_global_provider_head_and_oth
     )
     assert denied.status_code == 200 and denied.json() == {"work": None}
     entered, release = asyncio.Event(), asyncio.Event()
-    lock = queue.lock_provider
+    lock = queue.lock_lane
     armed = True
 
-    async def paused_lock(db, provider):
+    async def paused_lock(db, provider, lane):
         nonlocal armed
-        owner = await lock(db, provider)
+        owner = await lock(db, provider, lane)
         if provider == "finlab" and armed:
             armed = False
             entered.set()
             await release.wait()
         return owner
 
-    monkeypatch.setattr(queue, "lock_provider", paused_lock)
+    monkeypatch.setattr(queue, "lock_lane", paused_lock)
     head = asyncio.create_task(
         client.post("/api/v1/source/provider-work/claim", headers=headers["equity"], json=payload)
     )
@@ -1138,5 +1138,5 @@ async def test_authenticated_retained_raw_precedence_skip_settles_failed_and_rep
     ) == ("completed", 1, 1, 0)
     assert (raw.payload_sha256, raw.payload) == frozen_raw
     assert (
-        await test_session.get(ProviderWorkOwner, (queue.environment(), "finlab"))
+        await test_session.get(ProviderWorkOwner, (queue.environment(), "finlab", "default"))
     ).attempt_id is None

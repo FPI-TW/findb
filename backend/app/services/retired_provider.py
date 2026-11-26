@@ -67,8 +67,14 @@ async def retired_provider_works(db: AsyncSession, provider: str) -> dict[str, A
     )
     if unsettled is not None:
         reasons.append("attempt_not_settled")
-    owner = await db.get(ProviderWorkOwner, {"environment": environment, "provider": provider})
-    if owner is not None and owner.attempt_id is not None:
+    owner = await db.scalar(
+        select(ProviderWorkOwner).where(
+            ProviderWorkOwner.environment == environment,
+            ProviderWorkOwner.provider == provider,
+            ProviderWorkOwner.attempt_id.is_not(None),
+        )
+    )
+    if owner is not None:
         reasons.append("owner_holds_attempt")
     if reasons:
         raise RetiredProviderError(reasons)

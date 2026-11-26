@@ -140,7 +140,9 @@ async def _assert_historical_completed(h):
             select(SchedulerControl).where(SchedulerControl.provider == h.provider)
         )
     )
-    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+    assert (
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+    ).attempt_id is None
 
 
 @pytest.mark.asyncio
@@ -199,7 +201,7 @@ async def test_cancel_after_local_prepared_save_before_confirmation_drains_exact
         body["request_key"], body["idempotency_key"] = f"mmr:{digest}", f"mms:{digest}"
     else:
         body["idempotency_key"] = "not-prepared"
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     generation, token, inode = owner.generation, str(owner.token), owner.host_lock_identity
     headers = {
         **h.headers,
@@ -472,7 +474,7 @@ async def test_permanent_prepared_rejection_retains_body_and_explicit_manual_fai
     )
     assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "failed"
     assert not h.runs
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     assert owner.attempt_id is None
     following = await provider_work.enqueue(
         h.db,
@@ -593,7 +595,9 @@ async def test_cancel_queued_prepared_retry_preserves_executable_drain_without_n
         key: {**value, "confirmed": True} for key, value in original.items()
     }
     assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "cancelled"
-    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+    assert (
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+    ).attempt_id is None
     assert set(
         await h.db.scalars(
             select(ProviderWorkReceipt.member_key).where(ProviderWorkReceipt.work_id == work_id)

@@ -138,7 +138,7 @@ async def test_finlab_native_catalogue_known_failure_settles(
 
     await asyncio.wait_for(asyncio.to_thread(run), 30)
     h.db.expire_all()
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     work = await h.db.get(ProviderWork, work_id)
     attempt = await h.db.scalar(
         select(ProviderWorkAttempt).where(

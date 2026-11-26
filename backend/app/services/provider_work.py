@@ -2,6 +2,10 @@
 
 Global transaction lock order: provider FIFO -> full-market environment/dataset/
 calendar/control -> ingestion idempotency -> delivery policy -> run/job rows.
+The provider FIFO is one lock per execution lane. The default lane keeps the
+provider's original key; a provider-wide operation (``lock_provider``) takes the
+default lane first and then every other lane in name order. A transaction that
+holds only a non-default lane never takes another lane's lock.
 No owner is relinquished by a clock. Recovery requires the same host lock inode,
 which can only be acquired after every inheriting provider subprocess has exited.
 """
@@ -20,6 +24,7 @@ from sqlalchemy.orm import aliased
 
 from app.config import get_settings
 from app.models.provider_work import (
+    DEFAULT_LANE,
     ProviderWork,
     ProviderWorkAttempt,
     ProviderWorkOwner,
@@ -28,7 +33,12 @@ from app.models.provider_work import (
 )
 from app.models.registry import AdminAuditEvent, IngestionRun, SchedulerControl
 from app.services.daily_runtime import daily_window
-from app.services.provider_metadata import dataset_calendar_market, provider_catalog
+from app.services.provider_metadata import (
+    dataset_calendar_market,
+    provider_catalog,
+    provider_lanes,
+    work_lane,
+)
 from app.utils import ensure_utc, utc_now, uuid7
 
 HEARTBEAT_TTL = timedelta(minutes=2)
@@ -71,7 +81,7 @@ async def daily_readiness(db: AsyncSession, *, provider: str, values: dict) -> d
 
     existing = await _existing_work(db, provider, values["stable_key"])
     if existing is None:
-        await lock_provider(db, provider)
+        await lock_lane(db, provider, work_lane(provider, values["kind"], values["dataset_key"]))
         existing = await _existing_work(db, provider, values["stable_key"])
     if existing is not None:
         # Enqueue replays cannot rewrite a previously frozen calendar or an
@@ -218,19 +228,67 @@ async def confirm_prepared(db: AsyncSession, work_id: UUID, key: str) -> None:
     )
 
 
-async def lock_provider(db: AsyncSession, provider: str) -> ProviderWorkOwner:
-    """Serialize enqueue, claim, acceptance, close and settlement until commit."""
+def _lane_lock_key(provider: str, lane: str) -> str:
+    # The default lane keeps the provider's original key, so a provider without
+    # other lanes serializes exactly as it did before lanes existed.
+    key = f"provider-work:{environment()}:{provider}"
+    return key if lane == DEFAULT_LANE else f"{key}:{lane}"
+
+
+async def lock_lane(db: AsyncSession, provider: str, lane: str) -> ProviderWorkOwner:
+    """Serialize one lane's enqueue, claim, acceptance, close and settlement until commit."""
     env = environment()
     await db.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
-        {"key": f"provider-work:{env}:{provider}"},
+        {"key": _lane_lock_key(provider, lane)},
     )
-    owner = await db.get(ProviderWorkOwner, (env, provider), populate_existing=True)
+    owner = await db.get(ProviderWorkOwner, (env, provider, lane), populate_existing=True)
     if owner is None:
-        owner = ProviderWorkOwner(environment=env, provider=provider, generation=0)
+        owner = ProviderWorkOwner(environment=env, provider=provider, lane=lane, generation=0)
         db.add(owner)
         await db.flush()
     return owner
+
+
+async def lock_provider(db: AsyncSession, provider: str) -> ProviderWorkOwner:
+    """Serialize every lane of the provider (start/stop, cutover); returns the default owner."""
+    owner = await lock_lane(db, provider, DEFAULT_LANE)
+    for lane in provider_lanes(provider):
+        if lane != DEFAULT_LANE:
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                {"key": _lane_lock_key(provider, lane)},
+            )
+    return owner
+
+
+async def lock_work_lane(db: AsyncSession, provider: str, work_id: UUID) -> ProviderWorkOwner:
+    """Lock the lane a work was enqueued in; a lane never changes after enqueue."""
+    try:
+        work_id = work_id if isinstance(work_id, UUID) else UUID(str(work_id))
+    except ValueError:
+        return await lock_lane(db, provider, DEFAULT_LANE)
+    lane = await db.scalar(
+        select(ProviderWork.lane).where(
+            ProviderWork.work_id == work_id,
+            ProviderWork.environment == environment(),
+            ProviderWork.provider == provider,
+        )
+    )
+    return await lock_lane(db, provider, lane or DEFAULT_LANE)
+
+
+async def provider_cooldown(db: AsyncSession, provider: str) -> datetime | None:
+    """The account cooldown floor: the latest any lane of the provider recorded.
+
+    Lanes share the provider account, so a cooldown one lane reports holds them all.
+    """
+    return await db.scalar(
+        select(func.max(ProviderWorkOwner.acquisition_not_before)).where(
+            ProviderWorkOwner.environment == environment(),
+            ProviderWorkOwner.provider == provider,
+        )
+    )
 
 
 def _lock_device(identity: str | None) -> str | None:
@@ -253,40 +311,66 @@ async def _register_first_host_lock(
     """
     if (
         owner.provider not in CUTOVER_PROVIDERS
+        or owner.lane not in provider_lanes(owner.provider)
         or owner.attempt_id is not None
         or owner.recovery_reason is not None
         or owner.generation != 0
     ):
         return False
     device = _lock_device(host_lock_identity)
-    attested = (
-        await db.scalars(
-            select(ProviderWorkOwner.host_lock_identity).where(
+    others = (
+        await db.execute(
+            select(
+                ProviderWorkOwner.provider,
+                ProviderWorkOwner.lane,
+                ProviderWorkOwner.host_lock_identity,
+                ProviderWorkOwner.recovery_reason,
+            ).where(
                 ProviderWorkOwner.environment == owner.environment,
-                ProviderWorkOwner.provider != owner.provider,
                 ProviderWorkOwner.host_lock_identity.is_not(None),
             )
         )
     ).all()
+    attested = [
+        row.host_lock_identity
+        for row in others
+        if (row.provider, row.lane) != (owner.provider, owner.lane)
+    ]
     # Every attested lock shares one device; the new lock must be on it too.
     if device is None or not attested or {_lock_device(i) for i in attested} != {device}:
         return False
-    # Work that ever ran, or legacy work imported before the cutover, needs the
-    # cutover's drain proof. Queued work an Owner start enqueued before the first
-    # consumer arrived is neither.
+    if owner.lane == DEFAULT_LANE:
+        # Work that ever ran, or legacy work imported before the cutover, needs the
+        # cutover's drain proof. Queued work an Owner start enqueued before the first
+        # consumer arrived is neither.
+        unproven = or_(ProviderWork.state != "queued", ProviderWork.scope.has_key("legacy_id"))
+    else:
+        # A new lane of a provider whose default lane is already proven on this
+        # device: its work may have run under the default owner before the lane
+        # existed, but none may be open or recovering, and none may be legacy.
+        if not any(
+            (row.provider, row.lane, row.recovery_reason) == (owner.provider, DEFAULT_LANE, None)
+            for row in others
+        ):
+            return False
+        unproven = or_(
+            ProviderWork.state.in_(("running", "recovery_blocked")),
+            ProviderWork.scope.has_key("legacy_id"),
+        )
     used = await db.scalar(
         select(
             exists().where(
                 ProviderWork.environment == owner.environment,
                 ProviderWork.provider == owner.provider,
-                or_(ProviderWork.state != "queued", ProviderWork.scope.has_key("legacy_id")),
+                ProviderWork.lane == owner.lane,
+                unproven,
             )
         )
     )
     if used:
         return False
     if any(i == host_lock_identity for i in attested):
-        # Each provider has its own lock file; reusing another's would merge queues.
+        # Each provider lane has its own lock file; reusing another's would merge queues.
         return False
     owner.host_lock_identity = host_lock_identity
     db.add(
@@ -296,8 +380,13 @@ async def _register_first_host_lock(
             actor_display_name="Source provider work",
             action="register_host_lock",
             resource_type="provider_work",
-            resource_id=f"{owner.environment}:{owner.provider}",
-            details={"provider": owner.provider, "host_lock_identity": host_lock_identity},
+            resource_id=f"{owner.environment}:{owner.provider}"
+            + ("" if owner.lane == DEFAULT_LANE else f":{owner.lane}"),
+            details={
+                "provider": owner.provider,
+                **({} if owner.lane == DEFAULT_LANE else {"lane": owner.lane}),
+                "host_lock_identity": host_lock_identity,
+            },
         )
     )
     await db.flush()
@@ -330,9 +419,10 @@ async def enqueue(
         raise ProviderWorkError("not_before must be timezone-aware")
     # Identity rows are immutable once created, so an idempotent replay needs
     # neither the provider FIFO lock nor any retained preparation bytes.
+    lane = work_lane(provider, kind, dataset_key)
     existing = await _existing_work(db, provider, stable_key)
     if existing is None:
-        await lock_provider(db, provider)
+        await lock_lane(db, provider, lane)
         existing = await _existing_work(db, provider, stable_key)
     immutable = (kind, dataset_key, trade_date, execution_profile, scope or {})
     if existing is not None:
@@ -387,6 +477,7 @@ async def enqueue(
         work_id=uuid7(),
         environment=environment(),
         provider=provider,
+        lane=lane,
         stable_key=stable_key,
         kind=kind,
         dataset_key=dataset_key,
@@ -424,10 +515,15 @@ async def claim(
     requested_work_id: UUID | None = None,
     accepted_kinds: list[str] | None = None,
     execution_profile: str | None = None,
+    lane: str = DEFAULT_LANE,
     now: datetime | None = None,
 ) -> tuple[ProviderWork, ProviderWorkAttempt, ProviderWorkOwner] | None:
     now = now or utc_now()
-    owner = await lock_provider(db, provider)
+    # A provider the catalog no longer lists (retired) keeps only its default lane.
+    if lane not in (provider_lanes(provider) or (DEFAULT_LANE,)):
+        raise ProviderWorkError("provider work lane is not in the catalog")
+    owner = await lock_lane(db, provider, lane)
+    cooldown = await provider_cooldown(db, provider)
     if (
         require_cutover
         and owner.host_lock_identity is None
@@ -469,9 +565,11 @@ async def claim(
         attempt.state = "open" if attempt.state == "recovery_blocked" else attempt.state
         work.state = "running"
     else:
-        from app.services.historical_backfill import reconcile_cancelled_queue
+        if lane == DEFAULT_LANE:
+            # Historical work lives only in the default lane.
+            from app.services.historical_backfill import reconcile_cancelled_queue
 
-        await reconcile_cancelled_queue(db, provider=provider, now=now)
+            await reconcile_cancelled_queue(db, provider=provider, now=now)
         candidate = (
             await db.execute(
                 select(ProviderWork, ProviderWorkAttempt)
@@ -479,6 +577,7 @@ async def claim(
                 .where(
                     ProviderWork.environment == environment(),
                     ProviderWork.provider == provider,
+                    ProviderWork.lane == lane,
                     ProviderWork.state == "queued",
                     ProviderWorkAttempt.state == "queued",
                     ProviderWorkAttempt.not_before <= now,
@@ -508,10 +607,7 @@ async def claim(
                                 IngestionRun.status.not_in(TERMINAL_RUNS),
                             )
                         ),
-                        literal(
-                            owner.acquisition_not_before is None
-                            or owner.acquisition_not_before <= now
-                        ),
+                        literal(cooldown is None or cooldown <= now),
                     ),
                     or_(
                         ProviderWork.kind != "daily",
@@ -577,14 +673,10 @@ async def claim(
         attempt.drain_only = (
             attempt.drain_only
             or not can_acquire
-            or bool(
-                work.kind != "rerun"
-                and owner.acquisition_not_before
-                and owner.acquisition_not_before > now
-            )
+            or bool(work.kind != "rerun" and cooldown and cooldown > now)
         )
         owner.attempt_id = attempt.attempt_id
-    if work.kind != "rerun" and owner.acquisition_not_before and owner.acquisition_not_before > now:
+    if work.kind != "rerun" and cooldown and cooldown > now:
         # Recovery of an open round may follow a committed cooldown whose ACK
         # was lost. It can drain/close, never reacquire during that floor.
         attempt.drain_only = True
@@ -608,7 +700,7 @@ async def fence(
     token: UUID,
     acquisition: bool = False,
 ) -> tuple[ProviderWork, ProviderWorkAttempt, ProviderWorkOwner]:
-    owner = await lock_provider(db, provider)
+    owner = await lock_work_lane(db, provider, work_id)
     attempt = await db.get(ProviderWorkAttempt, owner.attempt_id) if owner.attempt_id else None
     if (
         attempt is None
@@ -625,13 +717,10 @@ async def fence(
         raise ProviderWorkError(
             "provider work requires host recovery", code="PROVIDER_WORK_RECOVERY_REQUIRED"
         )
-    if (
-        acquisition
-        and work.kind != "rerun"
-        and owner.acquisition_not_before
-        and owner.acquisition_not_before > utc_now()
-    ):
-        raise ProviderWorkSuspendedError("provider account cooldown is pending")
+    if acquisition and work.kind != "rerun":
+        cooldown = await provider_cooldown(db, provider)
+        if cooldown and cooldown > utc_now():
+            raise ProviderWorkSuspendedError("provider account cooldown is pending")
     if acquisition and (attempt.state != "open" or work.state != "running" or attempt.drain_only):
         raise ProviderWorkError("provider work acquisition is closed")
     if (
@@ -807,7 +896,7 @@ async def acceptance(
     identity = db.info.get("provider_work")
     if identity is None:
         raise ProviderWorkError("provider work protocol is required")
-    owner = await lock_provider(db, provider)
+    owner = await lock_work_lane(db, provider, identity["work_id"])
     work = await db.get(ProviderWork, identity["work_id"])
     if (
         work is None
@@ -1516,6 +1605,7 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
         select(
             ProviderWork.work_id,
             ProviderWork.provider,
+            ProviderWork.lane,
             ProviderWork.dataset_key,
             ProviderWork.kind,
             ProviderWork.stable_key,
@@ -1564,11 +1654,12 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
     if provider:
         stmt = stmt.where(ProviderWork.provider == provider)
     owners = {
-        row.provider: row
+        (row.provider, row.lane): row
         for row in (
             await db.execute(
                 select(
                     ProviderWorkOwner.provider,
+                    ProviderWorkOwner.lane,
                     ProviderWorkOwner.attempt_id,
                     ProviderWorkOwner.heartbeat_at,
                     ProviderWorkOwner.expires_at,
@@ -1590,8 +1681,16 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
     controls = {
         row.scheduler_key: row.desired_state for row in control_rows if row.retired_at is None
     }
+    # Lanes share the provider account: any lane's cooldown holds them all.
+    cooldowns: dict[str, datetime] = {}
+    for owner_row in owners.values():
+        if owner_row.acquisition_not_before is not None:
+            cooldowns[owner_row.provider] = max(
+                cooldowns.get(owner_row.provider, owner_row.acquisition_not_before),
+                owner_row.acquisition_not_before,
+            )
     rows = []
-    positions: dict[str, int] = {}
+    positions: dict[tuple[str, str], int] = {}
     now = utc_now()
     pending = (await db.execute(stmt)).all()
     acquisition_states = await _projection_acquisition_states(
@@ -1605,7 +1704,7 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
             bool(work.has_prepared or work.source_error_pending)
             and not acquisition_states[work.work_id]
         )
-        owner = owners.get(work.provider)
+        owner = owners.get((work.provider, work.lane))
         active = owner is not None and owner.attempt_id == work.attempt_id
         needs_drain = work.pending_prepared or work.pending_run or bool(work.source_error_pending)
         runtime_window = daily_window(work.provider, now) if work.kind == "daily" else None
@@ -1616,9 +1715,8 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
             and controls.get(f"{work.execution_profile}_{work.provider}_v1") != "running"
             and not needs_drain
         )
-        cooling = bool(
-            owner and owner.acquisition_not_before and owner.acquisition_not_before > now
-        )
+        cooldown = cooldowns.get(work.provider)
+        cooling = bool(cooldown and cooldown > now)
         cooldown_blocked = cooling and not needs_drain and work.kind != "rerun"
         drain_only = drain_only or bool(cooling and needs_drain)
         runnable = (
@@ -1628,8 +1726,9 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
             and not cooldown_blocked
             and not window_closed
         )
+        lane_key = (work.provider, work.lane)
         if runnable:
-            positions[work.provider] = positions.get(work.provider, 0) + 1
+            positions[lane_key] = positions.get(lane_key, 0) + 1
         rows.append(
             {
                 "work_id": str(work.work_id),
@@ -1641,7 +1740,7 @@ async def projection(db: AsyncSession, *, provider: str | None = None) -> list[d
                 "execution_profile": work.execution_profile,
                 "state": work.state,
                 "queue_order": work.queue_order,
-                "position": positions[work.provider] if runnable else None,
+                "position": positions[lane_key] if runnable else None,
                 "active": active,
                 "attempt_number": work.attempt_number,
                 "drain_only": drain_only,
@@ -1710,11 +1809,21 @@ async def apply_cutover(db: AsyncSession, proof: dict) -> None:
                 {"key": f"provider-work:{environment()}:{provider}"},
             )
             retired_owner = await db.get(
-                ProviderWorkOwner, (environment(), provider), populate_existing=True
+                ProviderWorkOwner, (environment(), provider, DEFAULT_LANE), populate_existing=True
             )
             if retired_owner is not None:
                 retired_owners.append(retired_owner)
-    if any(owner.attempt_id is not None for owner in [*owners.values(), *retired_owners]):
+    if any(owner.attempt_id is not None for owner in [*owners.values(), *retired_owners]) or (
+        await db.scalar(
+            select(
+                exists().where(
+                    ProviderWorkOwner.environment == environment(),
+                    ProviderWorkOwner.provider.in_(providers),
+                    ProviderWorkOwner.attempt_id.is_not(None),
+                )
+            )
+        )
+    ):
         raise ProviderWorkError("provider work is already active")
     if await db.scalar(
         select(IngestionRun.run_id)
