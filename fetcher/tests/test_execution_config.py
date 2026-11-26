@@ -20,12 +20,21 @@ FINLAB_FEEDS = {
     "tw_equity_tick",
     "tw_etf_tick",
 }
+# FinLab's daily EOD runs in the default lane, its intraday feeds in their own.
+LANE_FEEDS = {
+    "default": {"tw_equity_eod", "tw_etf_eod"},
+    "intraday": FINLAB_FEEDS - {"tw_equity_eod", "tw_etf_eod"},
+}
 
 
-def resolve(value):
+def resolve(value, lane="default"):
     return resolve_execution_config(
-        value, provider="finlab", environment="local", profile="full_market"
+        value, provider="finlab", environment="local", profile="full_market", lane=lane
     )
+
+
+def _lane_feed(value, lane="default"):
+    return next(feed for feed in value["feeds"] if feed["dataset_key"] in LANE_FEEDS[lane])
 
 
 # A missing installed feed or an uninstalled published one is catalog skew, not a
@@ -51,9 +60,11 @@ def resolve(value):
         "digest",
     ],
 )
-def test_invalid_complete_snapshot_fails_closed(fault):
+@pytest.mark.parametrize("lane", ["default", "intraday"])
+def test_invalid_complete_snapshot_fails_closed(fault, lane):
     value = publication("finlab", profile="full_market", environment="local")
-    feed = value["feeds"][0]
+    # Each lane's consumer validates the feeds it runs.
+    feed = _lane_feed(value, lane)
     if fault == "version":
         value["schema_version"] = 2
     elif fault in {"environment", "provider"}:
@@ -86,7 +97,16 @@ def test_invalid_complete_snapshot_fails_closed(fault):
     if fault == "digest":
         value["schedule_digest"] = "0" * 64
     with pytest.raises((ValueError, KeyError)):
-        resolve(value)
+        resolve(value, lane)
+
+
+def test_a_lane_never_validates_or_plans_another_lanes_feeds():
+    value = publication("finlab", profile="full_market", environment="local")
+    _lane_feed(value, "intraday")["source_timezone"] = "Not/AZone"
+    signed(value)
+    assert {feed["dataset_key"] for feed in resolve(value).feeds} == LANE_FEEDS["default"]
+    with pytest.raises((ValueError, KeyError)):
+        resolve(value, "intraday")
 
 
 @pytest.mark.parametrize("fault", [None, "timezone", "digest"])
@@ -94,18 +114,20 @@ def test_an_older_backend_publishes_fewer_feeds_but_never_unvalidated_ones(fault
     # Backend not yet deployed with a feed this image installs (or a narrower
     # maintenance credential): the published feeds run, the missing one waits.
     value = publication("finlab", profile="full_market", environment="local")
-    value["feeds"].pop()
+    value["feeds"] = [feed for feed in value["feeds"] if feed["dataset_key"] != "tw_etf_eod"]
     if fault == "timezone":
-        value["feeds"][0]["source_timezone"] = "Not/AZone"
+        _lane_feed(value)["source_timezone"] = "Not/AZone"
     signed(value)
     if fault == "digest":
         value["schedule_digest"] = "0" * 64
     if fault is None:
         snapshot = resolve(value)
         assert [feed["dataset_key"] for feed in snapshot.feeds] == [
-            feed["dataset_key"] for feed in value["feeds"]
+            feed["dataset_key"]
+            for feed in value["feeds"]
+            if feed["dataset_key"] in LANE_FEEDS["default"]
         ]
-        assert len(snapshot.feeds) == len(FINLAB_FEEDS) - 1
+        assert len(snapshot.feeds) == len(LANE_FEEDS["default"]) - 1
     else:
         with pytest.raises((ValueError, KeyError)):
             resolve(value)
@@ -123,7 +145,7 @@ def test_a_newer_backends_feed_is_skipped_without_stopping_the_installed_ones():
     value["feeds"].append(newer)
     snapshot = resolve(signed(value))
     assert "tw_newer_eod" not in {feed["dataset_key"] for feed in snapshot.feeds}
-    assert len(snapshot.feeds) == len(FINLAB_FEEDS)
+    assert len(snapshot.feeds) == len(LANE_FEEDS["default"])
 
     # The snapshot is still validated as a whole: duplicates, another provider's
     # feed or a scope with nothing this image installs never pass.
@@ -140,10 +162,13 @@ def test_a_newer_backends_feed_is_skipped_without_stopping_the_installed_ones():
 
 def test_snapshot_is_detached_and_has_complete_authorized_scopes():
     value = publication("finlab", profile="full_market", environment="local")
-    snapshot = resolve(value)
-    value["feeds"][0]["scheduled_time"] = "00:00"
-    assert snapshot.feeds[0]["scheduled_time"] != "00:00"
-    assert {f["dataset_key"] for f in snapshot.feeds} == FINLAB_FEEDS
+    snapshots = {lane: resolve(value, lane) for lane in LANE_FEEDS}
+    for feed in value["feeds"]:
+        feed["scheduled_time"] = "00:00"
+    for lane, snapshot in snapshots.items():
+        assert snapshot.feeds[0]["scheduled_time"] != "00:00"
+        # Each lane sees its own feeds; together they are the whole authorized scope.
+        assert {f["dataset_key"] for f in snapshot.feeds} == LANE_FEEDS[lane]
     assert all("slot_id" not in feed for feed in value["feeds"])
 
 
@@ -255,7 +280,8 @@ def test_published_clock_controls_due_dates_across_dst_and_year(
     runtime.close()
 
 
-def test_a_date_queues_its_earlier_scheduled_feeds_first(tmp_path, monkeypatch):
+@pytest.mark.parametrize("lane", ["default", "intraday"])
+def test_a_date_queues_its_earlier_scheduled_feeds_first(tmp_path, monkeypatch, lane):
     from contextlib import contextmanager
 
     import findb_fetcher.full_market_runtime as module
@@ -269,7 +295,7 @@ def test_a_date_queues_its_earlier_scheduled_feeds_first(tmp_path, monkeypatch):
 
     monkeypatch.setattr(module, "datetime", Clock)
     monkeypatch.setenv("APP_ENVIRONMENT", "local")
-    runtime, source, _ = _runtime(tmp_path, provider="finlab")
+    runtime, source, _ = _runtime(tmp_path, provider="finlab", lane=lane)
     source.execution_config = lambda: publication("finlab")
     runtime._ensure_proof = lambda: None
     source.request = lambda *args: {
@@ -292,15 +318,12 @@ def test_a_date_queues_its_earlier_scheduled_feeds_first(tmp_path, monkeypatch):
     runtime.close()
 
     daily = [(r["trade_date"], r["dataset_key"]) for r in enqueued if r["kind"] == "daily"]
-    # The daily bars (18:00) of a date are never behind its hours of intraday work (18:30).
-    one_date = [
-        "tw_equity_eod",
-        "tw_etf_eod",
-        "tw_equity_bar_1m",
-        "tw_equity_tick",
-        "tw_etf_bar_1m",
-        "tw_etf_tick",
-    ]
+    # Each lane queues only its own feeds, a date's earlier scheduled ones first: the
+    # daily bars no longer share a FIFO with the hours of intraday work.
+    one_date = {
+        "default": ["tw_equity_eod", "tw_etf_eod"],
+        "intraday": ["tw_equity_bar_1m", "tw_equity_tick", "tw_etf_bar_1m", "tw_etf_tick"],
+    }[lane]
     assert daily == [(day, key) for day in ("2026-11-12", "2026-11-13") for key in one_date]
 
 

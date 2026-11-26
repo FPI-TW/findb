@@ -20,7 +20,7 @@ def inventory(root):
         (root / f"provider-work-staging-{provider}.lock").touch(mode=0o600)
     return [
         {
-            "Name": f"/findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}",
+            "Name": f"/{name}",
             "State": {"Running": False, "ExitCode": 0, "OOMKilled": False, "Error": ""},
             "Config": {
                 "Env": [
@@ -39,8 +39,9 @@ def inventory(root):
                 }
             ],
         }
-        for profile in ("full_market", "historical")
-        for provider in preflight.PROVIDERS
+        # Every generated consumer, a non-default lane's included; the cutover attests
+        # each provider's default-lane lock, and a lane's lock registers on first claim.
+        for name in preflight.EXPECTED_RUNTIMES
     ]
 
 

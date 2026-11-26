@@ -577,8 +577,9 @@ def test_a_killed_or_undrained_provisional_consumer_still_requires_recovery(host
 
 
 def test_transaction_owns_only_full_market_and_historical_consumers():
-    # Two consumers per catalog provider.
-    assert len(transaction.FETCHER_NAMES) == 2 * len(transaction.PROVIDERS)
+    # Two consumers per catalog provider, plus one per non-default lane (FinLab intraday).
+    assert len(transaction.FETCHER_NAMES) == 2 * len(transaction.PROVIDERS) + 1
+    assert "findb-full-market-intraday-finlab" in transaction.FETCHER_NAMES
     assert not any("pilot" in name for name in transaction.FETCHER_NAMES)
     assert {name.split("-")[1] for name in transaction.FETCHER_NAMES} == {"full", "historical"}
     # The retired flag is never journaled or replayed into an older release.

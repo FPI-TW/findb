@@ -147,6 +147,8 @@ TARGET_TABLES = (
     "public.provider_work_receipt",
     "public.provider_work_calendar_closure",
     "public.roll_rule",
+    # Lane consumers' latest poll reports; the controls themselves are protected.
+    "public.scheduler_control_lane",
     "public.shioaji_member_repair",
     "public.shioaji_repair_ack",
     "public.trading_calendar",

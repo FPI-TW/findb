@@ -41,6 +41,9 @@ class SchedulerControlPollRequest(BaseModel):
     cycle_started_at: datetime | None = None
     cycle_completed_at: datetime | None = None
     last_error: str | None = Field(default=None, max_length=4000)
+    # The consumer's execution lane. A default-lane consumer sends none and reports
+    # on the control row; another lane's report is kept per lane.
+    lane: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,29}$")
 
     @field_validator("cycle_started_at", "cycle_completed_at")
     @classmethod

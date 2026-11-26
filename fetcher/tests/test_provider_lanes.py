@@ -1,12 +1,11 @@
 """Per-lane consumer identity: files, wire compatibility and skew guards (#691).
 
-The packaged catalog puts every feed in the default lane, so these tests install a
-descriptor set where FinLab's four intraday feeds run in an ``intraday`` lane.
+The packaged catalog runs FinLab's four intraday feeds in an ``intraday`` lane
+(#691 step 3b); every other feed stays in the default lane.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sqlite3
@@ -35,32 +34,23 @@ LANE_WORK = "019a0000-0000-7000-8000-000000000022"
 
 
 @pytest.fixture
-def intraday_lane(monkeypatch, tmp_path):
-    """Install descriptors where FinLab's intraday feeds run in their own lane."""
-    value = json.loads(metadata.METADATA_PATH.read_text())
-    for feed in value["feeds"]:
-        if feed["provider"] == "finlab" and feed["dataset_key"] in INTRADAY:
-            feed["lane"] = "intraday"
-    body = {key: item for key, item in value.items() if key != "projection_sha256"}
-    value["projection_sha256"] = hashlib.sha256(
-        json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    target = tmp_path / "descriptors.json"
-    target.write_text(json.dumps(value))
-    monkeypatch.setattr(metadata, "METADATA_PATH", target)
-    lanes = {
-        provider: {"default": set(datasets)}
-        for provider, datasets in full_market_cli._SCOPES.items()
-    }
-    lanes["finlab"] = {"default": set(EOD), "intraday": set(INTRADAY)}
-    monkeypatch.setattr(full_market_cli, "_LANES", lanes)
+def intraday_lane():
+    """The packaged descriptors, where FinLab's intraday feeds run in their own lane."""
+    assert full_market_cli._LANES["finlab"] == {"default": set(EOD), "intraday": set(INTRADAY)}
 
 
-def test_packaged_descriptors_run_every_provider_in_the_default_lane():
+def test_packaged_descriptors_run_only_finlab_intraday_outside_the_default_lane():
     for provider in metadata.provider_ids():
+        if provider == "finlab":
+            assert metadata.provider_lanes(provider) == ("default", "intraday")
+            continue
         assert metadata.provider_lanes(provider) == ("default",)
         assert metadata.lane_feeds(provider) == metadata.acquisition_feeds(provider)
-    assert all(feed["lane"] == "default" for feed in metadata.provider_feeds())
+    assert {
+        (feed["provider"], feed["dataset_key"])
+        for feed in metadata.provider_feeds()
+        if feed["lane"] != "default"
+    } == {("finlab", key) for key in INTRADAY}
 
 
 def test_lane_feeds_split_one_provider(intraday_lane):

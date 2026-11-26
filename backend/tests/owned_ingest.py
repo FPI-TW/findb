@@ -14,6 +14,11 @@ from app.models.registry import DatasetRegistry
 from app.services import provider_work as queue
 
 
+def _lane_inode(lane: str) -> str:
+    # Each lane has its own host lock file, so its own inode.
+    return f"{queue.environment()}:1:{22 if lane == queue.DEFAULT_LANE else 23}"
+
+
 async def owned_headers(db, body: dict, headers: dict) -> dict:
     if any(key.lower() == "x-findb-work-id" for key in headers):
         return headers
@@ -28,8 +33,10 @@ async def owned_headers(db, body: dict, headers: dict) -> dict:
         return headers
     if await db.get(DatasetRegistry, dataset) is None:
         return headers
-    owner = await queue.lock_provider(db, provider)
-    inode = f"{queue.environment()}:1:22"
+    # The work runs in its feed's lane, under that lane's owner and lock file.
+    lane = queue.work_lane(provider, "maintenance", dataset)
+    owner = await queue.lock_lane(db, provider, lane)
+    inode = _lane_inode(lane)
     owner.host_lock_identity = inode
     stable = f"contract-test:{provider}:{dataset}:{day}"
     if owner.attempt_id:
@@ -71,6 +78,7 @@ async def owned_headers(db, body: dict, headers: dict) -> dict:
             datasets=[dataset],
             host_lock_identity=inode,
             require_cutover=True,
+            lane=lane,
         )
         assert result is not None
         work, attempt, owner = result
@@ -116,12 +124,21 @@ def set_owned_identity(db, headers):
     }
 
 
-async def finish_contract_scope(db, provider):
-    """Drain the opt-in contract fixture before testing another work kind."""
+async def finish_contract_scope(db, provider, lane: str | None = None):
+    """Drain the opt-in contract fixture before testing another work kind.
+
+    Without ``lane``, every lane of the provider is drained.
+    """
+    lanes = [lane] if lane else list(queue.provider_lanes(provider) or (queue.DEFAULT_LANE,))
+    for item in lanes:
+        await _finish_lane_scope(db, provider, item)
+
+
+async def _finish_lane_scope(db, provider, lane):
     from app.models.provider_work import ProviderWorkReceipt
     from app.models.registry import IngestionRun
 
-    owner = await queue.lock_provider(db, provider)
+    owner = await queue.lock_lane(db, provider, lane)
     if not owner.attempt_id:
         return
     attempt = await db.get(ProviderWorkAttempt, owner.attempt_id)
@@ -158,13 +175,15 @@ async def execute_owned_rerun(db, run_id):
     from app.services.ingestion import IngestionService
 
     run = await db.get(IngestionRun, run_id)
-    await finish_contract_scope(db, run.source)
+    lane = queue.work_lane(run.source, "rerun", run.dataset_key)
+    await finish_contract_scope(db, run.source, lane)
     result = await queue.claim(
         db,
         provider=run.source,
         datasets=[run.dataset_key],
-        host_lock_identity=f"{queue.environment()}:1:22",
+        host_lock_identity=_lane_inode(lane),
         require_cutover=True,
+        lane=lane,
     )
     assert result is not None
     work, _, owner = result

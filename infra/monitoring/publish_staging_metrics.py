@@ -31,6 +31,7 @@ CONSUMERS = (
     ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
     ("findb-full-market-fmp", "fmp", "full_market", "default", "twelve_data"),
     ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-intraday-finlab", "finlab", "full_market", "intraday", "finlab"),
     ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "default", "factset"),

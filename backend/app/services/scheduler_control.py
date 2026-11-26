@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import inspect, select, tuple_
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,10 +18,13 @@ from app.models.registry import (
     DatasetRegistry,
     FullMarketAdmission,
     SchedulerControl,
+    SchedulerControlLane,
     SchedulerDataset,
 )
+from app.provider_catalog import DEFAULT_LANE
 from app.services.admin_audit import record_admin_audit
 from app.services.feed_schedule import feed_schedule_view
+from app.services.provider_metadata import provider_lanes
 from app.services.scheduler_start import scheduler_start_blockers, scheduler_start_datasets
 from app.utils import ensure_utc, utc_now
 
@@ -39,6 +43,10 @@ class SchedulerControlRevisionConflictError(SchedulerControlError):
 
 class SchedulerControlScopeError(SchedulerControlError):
     """The authenticated Source credential is outside the scheduler scope."""
+
+
+class SchedulerControlLaneError(SchedulerControlError):
+    """The reported execution lane is not one of the provider's catalog lanes."""
 
 
 class SchedulerControlStartBlockedError(SchedulerControlError):
@@ -64,7 +72,10 @@ async def list_scheduler_controls(db: AsyncSession) -> list[SchedulerControl]:
     result = await db.execute(
         select(SchedulerControl)
         .where(SchedulerControl.retired_at.is_(None))
-        .options(selectinload(SchedulerControl.scheduler_datasets))
+        .options(
+            selectinload(SchedulerControl.scheduler_datasets),
+            selectinload(SchedulerControl.lanes),
+        )
         .order_by(SchedulerControl.scheduler_key)
     )
     return list(result.scalars().all())
@@ -74,7 +85,10 @@ async def get_scheduler_control(db: AsyncSession, scheduler_key: str) -> Schedul
     """Load one scheduler without acquiring a mutation lock."""
     result = await db.execute(
         select(SchedulerControl)
-        .options(selectinload(SchedulerControl.scheduler_datasets))
+        .options(
+            selectinload(SchedulerControl.scheduler_datasets),
+            selectinload(SchedulerControl.lanes),
+        )
         .where(SchedulerControl.scheduler_key == scheduler_key)
         .execution_options(populate_existing=True)
     )
@@ -114,7 +128,10 @@ async def update_scheduler_desired_state(
         await lock_calendars(db, datasets)
     result = await db.execute(
         select(SchedulerControl)
-        .options(selectinload(SchedulerControl.scheduler_datasets))
+        .options(
+            selectinload(SchedulerControl.scheduler_datasets),
+            selectinload(SchedulerControl.lanes),
+        )
         .where(SchedulerControl.scheduler_key == scheduler_key)
         .execution_options(populate_existing=True)
         .with_for_update()
@@ -264,6 +281,17 @@ def _loaded_scheduler_dataset_keys(row: SchedulerControl) -> list[str]:
     ]
 
 
+def _loaded_lanes(row: SchedulerControl) -> list[SchedulerControlLane]:
+    """Return eagerly loaded lane reports without triggering an async lazy load."""
+    try:
+        loaded = inspect(row).attrs.lanes.loaded_value
+    except (AttributeError, KeyError):
+        return []
+    if not isinstance(loaded, (list, tuple)):
+        return []
+    return [item for item in loaded if isinstance(item, SchedulerControlLane)]
+
+
 def scheduler_dataset_keys(row: SchedulerControl) -> list[str]:
     """Return only eagerly loaded scheduler-to-dataset associations.
 
@@ -302,15 +330,41 @@ async def poll_scheduler_control(
     cycle_started_at: datetime | None = None,
     cycle_completed_at: datetime | None = None,
     last_error: str | None = None,
+    lane: str | None = None,
     commit: bool = True,
 ) -> tuple[SchedulerControl, datetime]:
-    """Validate provider scope and persist one Source heartbeat report."""
+    """Validate provider scope and persist one Source heartbeat report.
+
+    The default lane's consumer (no ``lane``) reports on the control row. Every
+    lane of a provider shares that control, so another lane's consumer reports on
+    its own ``scheduler_control_lane`` row and leaves the control row untouched.
+    """
     row = await get_scheduler_control(db, scheduler_key)
     if row is None:
         raise SchedulerControlNotFoundError(scheduler_key)
     _check_source_scope(db, row)
 
     server_time = utc_now()
+    if lane is not None and lane != DEFAULT_LANE:
+        if lane not in provider_lanes(row.provider):
+            raise SchedulerControlLaneError("scheduler control lane is not in the catalog")
+        await _record_lane_poll(
+            db,
+            scheduler_key=scheduler_key,
+            lane=lane,
+            observed_state=observed_state,
+            server_time=server_time,
+            cycle_started_at=cycle_started_at,
+            cycle_completed_at=cycle_completed_at,
+            last_error=last_error,
+        )
+        if commit:
+            await db.commit()
+            refreshed = await get_scheduler_control(db, scheduler_key)
+            if refreshed is not None:
+                row = refreshed
+        return row, server_time
+
     row.observed_state = observed_state
     row.last_heartbeat_at = server_time
     if cycle_started_at is not None:
@@ -331,13 +385,57 @@ async def poll_scheduler_control(
     return row, server_time
 
 
+async def _record_lane_poll(
+    db: AsyncSession,
+    *,
+    scheduler_key: str,
+    lane: str,
+    observed_state: str,
+    server_time: datetime,
+    cycle_started_at: datetime | None,
+    cycle_completed_at: datetime | None,
+    last_error: str | None,
+) -> None:
+    """Upsert one lane's report with the control row's field rules."""
+    values: dict[str, Any] = {
+        "observed_state": observed_state,
+        "last_heartbeat_at": server_time,
+        "updated_at": server_time,
+    }
+    if cycle_started_at is not None:
+        values["last_cycle_started_at"] = _normalize_timestamp(cycle_started_at)
+    if cycle_completed_at is not None:
+        values["last_cycle_completed_at"] = _normalize_timestamp(cycle_completed_at)
+        # As on the control row, a completed cycle without an error clears an older one.
+        values["last_error"] = last_error
+    elif last_error is not None:
+        values["last_error"] = last_error
+    statement = insert(SchedulerControlLane).values(
+        scheduler_key=scheduler_key, lane=lane, **values
+    )
+    await db.execute(
+        statement.on_conflict_do_update(
+            index_elements=[SchedulerControlLane.scheduler_key, SchedulerControlLane.lane],
+            set_={key: statement.excluded[key] for key in values},
+        )
+    )
+
+
+def _heartbeat_age(heartbeat: datetime | None, reference: datetime) -> float | None:
+    return max(0.0, (reference - heartbeat).total_seconds()) if heartbeat else None
+
+
 def present_scheduler_control(
     row: SchedulerControl, *, now: datetime | None = None
 ) -> dict[str, Any]:
-    """Shape a scheduler ORM row for the Admin API, including heartbeat age."""
+    """Shape a scheduler ORM row for the Admin API, including heartbeat age.
+
+    ``observed_state`` and the heartbeat fields are the default lane consumer's;
+    ``lanes`` lists every other lane consumer's latest report.
+    """
     reference = ensure_utc(now) if now is not None else utc_now()
     heartbeat = _normalize_timestamp(row.last_heartbeat_at)
-    heartbeat_age = max(0.0, (reference - heartbeat).total_seconds()) if heartbeat else None
+    heartbeat_age = _heartbeat_age(heartbeat, reference)
     return {
         "scheduler_key": row.scheduler_key,
         "execution_profile": "full_market",
@@ -361,6 +459,20 @@ def present_scheduler_control(
         "created_at": _normalize_timestamp(row.created_at),
         "updated_at": _normalize_timestamp(row.updated_at),
         "heartbeat_age_seconds": heartbeat_age,
+        "lanes": [_present_lane(item, reference) for item in _loaded_lanes(row)],
+    }
+
+
+def _present_lane(item: SchedulerControlLane, reference: datetime) -> dict[str, Any]:
+    heartbeat = _normalize_timestamp(item.last_heartbeat_at)
+    return {
+        "lane": item.lane,
+        "observed_state": item.observed_state,
+        "last_heartbeat_at": heartbeat,
+        "last_cycle_started_at": _normalize_timestamp(item.last_cycle_started_at),
+        "last_cycle_completed_at": _normalize_timestamp(item.last_cycle_completed_at),
+        "last_error": item.last_error,
+        "heartbeat_age_seconds": _heartbeat_age(heartbeat, reference),
     }
 
 
@@ -473,6 +585,7 @@ async def present_admin_scheduler_controls(
 
 __all__ = [
     "SchedulerControlError",
+    "SchedulerControlLaneError",
     "SchedulerControlNotFoundError",
     "SchedulerControlRevisionConflictError",
     "SchedulerControlStartBlockedError",

@@ -570,6 +570,46 @@ class SchedulerControl(Base):
         cascade="all, delete-orphan",
         order_by="SchedulerDataset.dataset_key",
     )
+    lanes: Mapped[list["SchedulerControlLane"]] = relationship(
+        back_populates="scheduler",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="SchedulerControlLane.lane",
+    )
+
+
+class SchedulerControlLane(Base):
+    """The latest poll report of one non-default lane's consumer.
+
+    Every lane of a provider shares the scheduler control; the default lane's
+    consumer reports on the control row itself, each other lane here, so the
+    consumers never overwrite each other's heartbeat.
+    """
+
+    __tablename__ = "scheduler_control_lane"
+    __table_args__ = (
+        CheckConstraint("lane ~ '^[a-z][a-z0-9_]{0,29}$' AND lane <> 'default'", name="lane_valid"),
+        CheckConstraint("observed_state IN ('running', 'stopped')", name="observed_state_valid"),
+    )
+
+    scheduler_key: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("scheduler_control.scheduler_key", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    lane: Mapped[str] = mapped_column(String(30), primary_key=True)
+    observed_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    last_heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_cycle_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_cycle_completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    scheduler: Mapped["SchedulerControl"] = relationship(back_populates="lanes")
 
 
 class SchedulerDataset(Base):

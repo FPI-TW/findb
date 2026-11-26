@@ -4,7 +4,7 @@ from datetime import datetime, time, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import delete, null, select, update
+from sqlalchemy import delete, func, null, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -12,6 +12,7 @@ from app.models.registry import (
     AdminAuditEvent,
     DatasetRegistry,
     SchedulerControl,
+    SchedulerControlLane,
     SchedulerDataset,
     SourceClient,
 )
@@ -444,3 +445,106 @@ async def test_authorization_requires_exact_nonempty_complete_provider_scope(
     if status == 200:
         assert result.json()["acquisition_allowed"] is True
         assert set(result.json()["dataset_keys"]) == {"tw_equity_eod", "tw_etf_eod"}
+
+
+@pytest.mark.asyncio
+async def test_a_lane_consumer_reports_on_its_own_row_and_leaves_the_control_untouched(
+    client: AsyncClient,
+    test_session: AsyncSession,
+):
+    row = await _add_scheduler(test_session)
+    source_headers = await _source_headers(
+        test_session, provider="finlab", allowed_datasets=["tw_equity_eod"]
+    )
+    await test_session.commit()
+    before = (row.observed_state, row.last_heartbeat_at, row.last_error, row.updated_at)
+    path = f"/api/v1/source/scheduler-controls/{SCHEDULER_KEY}/poll"
+    started = datetime(2026, 8, 4, 11, 35, tzinfo=timezone.utc)
+
+    response = await client.post(
+        path,
+        headers=source_headers,
+        json={
+            "observed_state": "running",
+            "cycle_started_at": started.isoformat(),
+            "last_error": "intraday retry",
+            "lane": "intraday",
+        },
+    )
+    assert response.status_code == 200
+    # The poll answer is the shared control's, whichever lane asks.
+    assert response.json()["desired_state"] == "stopped"
+    assert response.json()["revision"] == 1
+
+    await test_session.refresh(row)
+    assert (row.observed_state, row.last_heartbeat_at, row.last_error, row.updated_at) == before
+    lane = await test_session.get(SchedulerControlLane, (SCHEDULER_KEY, "intraday"))
+    assert lane is not None
+    assert (lane.observed_state, lane.last_cycle_started_at, lane.last_error) == (
+        "running",
+        started,
+        "intraday retry",
+    )
+    assert lane.last_heartbeat_at is not None and lane.last_cycle_completed_at is None
+
+    # An idle heartbeat keeps the lane's cycle and error; a clean completed cycle clears it.
+    idle = await client.post(
+        path, headers=source_headers, json={"observed_state": "stopped", "lane": "intraday"}
+    )
+    assert idle.status_code == 200
+    await test_session.refresh(lane)
+    assert (lane.observed_state, lane.last_cycle_started_at, lane.last_error) == (
+        "stopped",
+        started,
+        "intraday retry",
+    )
+    completed = started + timedelta(hours=4)
+    done = await client.post(
+        path,
+        headers=source_headers,
+        json={
+            "observed_state": "running",
+            "cycle_completed_at": completed.isoformat(),
+            "lane": "intraday",
+        },
+    )
+    assert done.status_code == 200
+    await test_session.refresh(lane)
+    assert (lane.last_cycle_completed_at, lane.last_error) == (completed, None)
+
+    # The default lane reports on the control row, named or not.
+    named = await client.post(
+        path, headers=source_headers, json={"observed_state": "running", "lane": "default"}
+    )
+    assert named.status_code == 200
+    await test_session.refresh(row)
+    assert row.observed_state == "running" and row.last_heartbeat_at is not None
+    assert (await test_session.scalar(select(func.count()).select_from(SchedulerControlLane))) == 1
+
+    # A lane the catalog does not give FinLab is refused like a claim; a malformed one too.
+    unknown = await client.post(
+        path, headers=source_headers, json={"observed_state": "running", "lane": "tables"}
+    )
+    assert unknown.status_code == 409
+    malformed = await client.post(
+        path, headers=source_headers, json={"observed_state": "running", "lane": "Intraday"}
+    )
+    assert malformed.status_code == 422
+
+    admin = await client.get(
+        "/api/v1/admin/schedulers", headers=await _admin_headers(test_session, role="viewer")
+    )
+    assert admin.status_code == 200
+    control = admin.json()["data"][0]
+    assert control["observed_state"] == "running"
+    assert [
+        {key: item[key] for key in ("lane", "observed_state", "last_error")}
+        for item in control["lanes"]
+    ] == [{"lane": "intraday", "observed_state": "running", "last_error": None}]
+    assert control["lanes"][0]["heartbeat_age_seconds"] >= 0
+    assert control["lanes"][0]["last_cycle_completed_at"] is not None
+
+    # Removing a control removes its lane reports.
+    await test_session.delete(row)
+    await test_session.flush()
+    assert (await test_session.scalar(select(func.count()).select_from(SchedulerControlLane))) == 0

@@ -29,6 +29,13 @@
       "role": "full_market"
     },
     {
+      "image_key": "finlab",
+      "lane": "intraday",
+      "name": "findb-full-market-intraday-finlab",
+      "provider": "finlab",
+      "role": "full_market"
+    },
+    {
       "image_key": "twelve_data",
       "lane": "default",
       "name": "findb-full-market-taifex",
@@ -90,7 +97,7 @@
     "finlab",
     "twelve_data"
   ],
-  "projection_sha256": "a6d55d1ff6f0939225b7d8769b813c19e63ef7f422adacd7a570b96afe727f8a",
+  "projection_sha256": "e426c7ba49775bfd9467fc3f4eea0ffb166431d2324f12a9837cef6f385e3acc",
   "providers": [
     "factset",
     "finlab",

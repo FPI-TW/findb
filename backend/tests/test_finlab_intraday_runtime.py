@@ -257,8 +257,8 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
         if checkpoint is not None:
             checkpoint()
         with pytest.raises(coordinator.ProviderWorkWaitingError):
-            with coordinator.host_lock("finlab"):
-                pytest.fail("a FinLab request left the provider's work lock")
+            with coordinator.host_lock("finlab", "intraday"):
+                pytest.fail("a FinLab request left the intraday lane's work lock")
         native.append({k: payload[k] for k in ("record_kind", "provider_symbol", "trade_date")})
         answer = answers[payload["provider_symbol"]]
         entry = {"date": payload["trade_date"], "status": answer, "generation": "1794560332114812"}
@@ -326,6 +326,8 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
                 delivery=delivery,
                 raw_store=raw_store,
                 execution_profile="full_market",
+                # FinLab's intraday feeds run in their own lane's consumer.
+                lane="intraday",
             )
             try:
                 return runtime.cycle()
