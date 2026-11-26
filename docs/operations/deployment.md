@@ -1550,7 +1550,7 @@ Migration `d8e3f0b5a2c4` 接在 `c7d2e9a4f1b3` 之後，只撤除 acquisition：
 - 撤銷所有尚未撤銷的 Shioaji Source credentials，保留原 hash、scope、歷史使用與輪替紀錄。
   Create／rotate／credential reconciliation 都不再供應 Shioaji。
 - 將 Shioaji controls 標為 retired、增加 revision，保留 scheduler-dataset 關聯；關閉既有 open
-  missing-delivery alerts。Admin repair inventory／preview 仍可讀，retired control 不可核准重開 work。
+  missing-delivery alerts。Shioaji repair 與休市結清 API 之後已移除（兩環境均無紀錄），表保留。
 - Backend／Fetcher catalog 與 active Source scope 均為五條 feeds。兩條 minute registry 仍
   `is_active=true`，`market_minute.v1`、normalizer、canonical／Admin／Serve／archive 查詢仍保留。
   新版 seed 不會把 operator override 中的 Shioaji expected sources 加回去。

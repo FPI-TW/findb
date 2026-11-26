@@ -966,9 +966,6 @@ async def classify_plan(
     exchange feed's halt record of that member, so a subset classifies exactly as
     it would inside the whole plan.
     """
-    from app.services.shioaji_repair import effective_mappings
-
-    mappings = await effective_mappings(db, plan.plan_id) if plan.provider == "shioaji" else {}
     scoped = members is not None
     if members is None:
         members = list(
@@ -1127,11 +1124,9 @@ async def classify_plan(
     )
     states: list[MemberState] = []
     for member in members:
-        mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
+        mapping_gap = member.mapping_status == "gap"
         state: Literal["data", "no_data", "missing", "blocked", "unavailable"]
         reason = member.outcome_reason or ("mapping_gap" if mapping_gap else None)
-        if reason == "mapping_gap" and member.member_key in mappings:
-            reason = None
         if member.member_key in canonical_keys:
             state = "data"
         elif member.outcome == "no_data" or member.member_key in proven_no_data:
@@ -1144,10 +1139,7 @@ async def classify_plan(
             # The provider cannot serve a member it has no symbol for: a known case,
             # counted apart from blocked members and not holding the plan open.
             state = "unavailable"
-        elif member.outcome == "blocked" and not (
-            # A repaired mapping replaces the gap outcome; the member is fetchable again.
-            member.outcome_reason == "mapping_gap" and member.member_key in mappings
-        ):
+        elif member.outcome == "blocked":
             state = "blocked"
         else:
             state = "missing"
@@ -1724,19 +1716,13 @@ async def record_outcome(
     if member is None:
         raise FullMarketError("Outcome member is outside the frozen plan part", 409)
     from app.services.delivery_plan_summary import refresh_part_summary, stored_summary_response
-    from app.services.shioaji_repair import effective_mappings
 
-    mappings = await effective_mappings(db, plan_id) if provider == "shioaji" else {}
-    if (
-        body.outcome == "no_data"
-        and member.mapping_status != "mapped"
-        and member.member_key not in mappings
-    ):
+    if body.outcome == "no_data" and member.mapping_status != "mapped":
         raise FullMarketError("Mapping gaps cannot be classified as no_data", 422)
     corroboration = None
     if body.outcome == "no_data" and body.evidence is not None:
         if (
-            body.evidence.source_symbol != mappings.get(member.member_key, member.provider_symbol)
+            body.evidence.source_symbol != member.provider_symbol
             or body.evidence.trade_date != plan.trade_date
             or body.evidence.session != member.session
         ):
@@ -1945,9 +1931,6 @@ async def validate_ingest_part(
             raise FullMarketError("Payload contains members outside the declared plan part", 409)
     declaration = parse_dataset_contract_declaration(dataset.config)
     assert declaration is not None
-    from app.services.shioaji_repair import effective_mappings
-
-    mappings = await effective_mappings(db, plan.plan_id) if plan.provider == "shioaji" else {}
     for row in request.payload.data:
         key = (
             f"{row.product_code}|{row.contract_code}|{row.session}"
@@ -1975,10 +1958,8 @@ async def validate_ingest_part(
                 raise FullMarketError("Unlisted payload currency differs from the dataset", 409)
             continue
         # A whole-market provider's served row proves the gap member has data.
-        if (
-            frozen.mapping_status != "mapped"
-            and key not in mappings
-            and not delivers_unlisted(plan.provider, plan.dataset_key)
+        if frozen.mapping_status != "mapped" and not delivers_unlisted(
+            plan.provider, plan.dataset_key
         ):
             raise FullMarketError("Mapping-gap members cannot be submitted as data", 409)
         if isinstance(
@@ -1996,9 +1977,7 @@ async def validate_ingest_part(
             ) or declaration.defaults.currency
             if effective_currency != frozen.currency:
                 raise FullMarketError("Payload currency differs from frozen universe", 409)
-            if row.source_symbol is not None and row.source_symbol != mappings.get(
-                key, frozen.provider_symbol
-            ):
+            if row.source_symbol is not None and row.source_symbol != frozen.provider_symbol:
                 raise FullMarketError("Payload provider symbol differs from frozen universe", 409)
         if isinstance(row, ExchangeDailyQuoteRow) and row.currency != frozen.currency:
             # The exchange's listed code is the member; its counter is the currency.

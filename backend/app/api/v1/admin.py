@@ -115,8 +115,6 @@ from app.schemas.admin import (
     SchedulerControlResponse,
     SchedulerControlUpdateRequest,
     SessionResponse,
-    ShioajiRepairApplyResponse,
-    ShioajiRepairPreviewResponse,
     SourceClientCreateRequest,
     SourceClientCreateResponse,
     SourceClientListResponse,
@@ -130,18 +128,11 @@ from app.schemas.admin import (
     UniverseReleaseDiffResponse,
     UniverseReleaseListResponse,
 )
-from app.schemas.calendar_closure import (
-    CalendarClosureApplyRequest,
-    CalendarClosurePreview,
-    CalendarClosureRequest,
-    CalendarClosureResult,
-)
 from app.schemas.common import PaginationInfo
 from app.schemas.full_market import (
     UniversePublishRequest,
     UniverseReleaseResponse,
 )
-from app.schemas.shioaji_repair import RepairApplyRequest, RepairPreviewRequest
 from app.schemas.source import IngestResponse
 from app.services.admin import (
     AlreadyResolvedError,
@@ -533,49 +524,6 @@ async def get_full_market_delivery_summary(
 
 
 settings = get_settings()
-
-
-@router.post(
-    "/provider-work/{work_id}/shioaji-repairs/preview",
-    response_model=ShioajiRepairPreviewResponse,
-)
-async def preview_shioaji_repair(
-    work_id: UUID,
-    body: RepairPreviewRequest,
-    _: AdminPrincipal = Depends(require_owner),
-    db: AsyncSession = Depends(get_db),
-) -> ShioajiRepairPreviewResponse:
-    from app.services.full_market import FullMarketError
-    from app.services.shioaji_repair import preview
-
-    try:
-        return ShioajiRepairPreviewResponse.model_validate(await preview(db, work_id, body))
-    except FullMarketError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-
-@router.post(
-    "/provider-work/{work_id}/shioaji-repairs",
-    response_model=ShioajiRepairApplyResponse,
-)
-async def apply_shioaji_repair(
-    work_id: UUID,
-    body: RepairApplyRequest,
-    principal: AdminPrincipal = Depends(require_owner),
-    db: AsyncSession = Depends(get_db),
-) -> ShioajiRepairApplyResponse:
-    from app.services.full_market import FullMarketError
-    from app.services.shioaji_repair import apply
-
-    try:
-        result = ShioajiRepairApplyResponse.model_validate(
-            await apply(db, work_id, body, actor=str(principal))
-        )
-        await db.commit()
-        return result
-    except FullMarketError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.post(
@@ -2327,40 +2275,3 @@ async def rollback_calendar_year(
         },
     )
     return _calendar_revision_response(revision)
-
-
-@router.post(
-    "/provider-work/{work_id}/calendar-closure/preview", response_model=CalendarClosurePreview
-)
-async def preview_calendar_closure(
-    work_id: UUID,
-    body: CalendarClosureRequest,
-    _: AdminPrincipal = Depends(require_owner),
-    db: AsyncSession = Depends(get_db),
-) -> CalendarClosurePreview:
-    from app.services.calendar_closure import preview
-    from app.services.full_market import FullMarketError
-
-    try:
-        return await preview(db, work_id, body)
-    except FullMarketError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-
-@router.post("/provider-work/{work_id}/calendar-closure", response_model=CalendarClosureResult)
-async def apply_calendar_closure(
-    work_id: UUID,
-    body: CalendarClosureApplyRequest,
-    principal: AdminPrincipal = Depends(require_owner),
-    db: AsyncSession = Depends(get_db),
-) -> CalendarClosureResult:
-    from app.services.calendar_closure import apply
-    from app.services.full_market import FullMarketError
-
-    try:
-        result = await apply(db, work_id, body, actor=str(principal))
-        await db.commit()
-        return result
-    except FullMarketError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

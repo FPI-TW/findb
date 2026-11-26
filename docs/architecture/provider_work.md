@@ -69,8 +69,7 @@ acquisition check，僅以 `defer_wait(reason=source_unavailable)` 退還這次�
 清除本次 lease 並延後 60 秒；隨即重新拋出 recovery error，不繼續舊 owner。保護範圍包含
 initial owner authorize、governed acquisition gate／Source authorization 及實際派送前的
 owner recheck。一旦任一步已 started／possibly-started，原 failure budget、quota、unknown
-liability、cooldown 均保留；先前 attempts、其他成員 prepared／receipts 不重設。這不改變
-Shioaji 空回應採獨立持久觀測額度與人工恢復授權，見 [修復程序](../operations/full_market.md#shioaji-空-kbars-與凍結-mapping-修復)。
+liability、cooldown 均保留；先前 attempts、其他成員 prepared／receipts 不重設。
 
 同一個明確的 Source authorization wait 也適用於 TD／FinLab historical operation、
 universe maintenance、FactSet snapshot、TAIFEX historical operation，以及 Shioaji historical
@@ -196,16 +195,6 @@ FinLab daily target-not-ready 與 FactSet daily 尚未發布在該交易日排�
 
 已人工改為 `skipped_calendar` 的舊 Shioaji daily canonical work 也拒絕 acquisition，
 即使仍有原 plan／manifest；calendar_skip manifest 與 prepared drain 保持原行為。
-Owner 可在 Full control 停止、owner 閒置且 Backend／checkpoint 均無交付／在途證據時，
-經 typed preview／expected SHA 將原 work 結清為 `calendar_closed`。
-`provider_work_calendar_closure` 附加保存原 work／plan／attempts／修復授權、既有休市決策
-audit 與 Owner 本機 attestation；同 transaction 只修改 work.state／completed_at。
-原 manifest、attempt rows、plan members／summary、grants／ACK、checkpoint 及 native 帳務不變，
-不產生 canonical、no_data 或 synthetic receipt。FIFO projection 排除該 work，stable enqueue
-保留其 terminal 身分。十五分鐘證明與 provider-first 鎖序阻止 stale／active-owner 套用；
-同請求重播回傳原 closure，降版不得丟失既有結清證據。CLI 只讀 Source inventory 與 SQLite，
-持有既有 shared host lock 至 Owner API 回應，不取得 provider SDK。
-詳見 [舊工作結清操作](../operations/full_market.md#已更正休市決策的舊工作結清)。
 TAIFEX maintenance 官方 JSON 須為非空 row list，每列具有效且一致的 `Date` 字串，才可推導報表日期並
 進行完整 report validation。空／錯誤形狀、缺欄位、錯誤日期或永久 body 格式錯誤會保留 safe failure
 code 並安全結束 failed/manual、釋放 owner；空報表不構成 no-trade／no_data 證據，也不外洩原 exception details。
@@ -348,7 +337,7 @@ lock、不結案或修改任何 work／attempt，不授予新 acquisition；正�
 控制路徑同樣不搬運 prepared body。每筆 prepared delivery 是 `provider_work_prepared` 的一列
 （`work_id`、`delivery_key`、不含 body 的 `descriptor` 與原 `body`），intent 只插入新列、confirm 只
 更新該列 descriptor，不會重寫同一 work 的其他 bodies。fence、claim、acceptance、receipt、settle、
-projection、Shioaji repair 與休市結清盤點只讀 delivery key 或 descriptor；只有 Source `prepared`
+projection 只讀 delivery key 或 descriptor；只有 Source `prepared`
 lookup 回傳原 bytes。讀取順序沿用舊 JSONB 物件的 key 順序（長度後位元組）。
 Migration `9c1e4f7a2b6d` 逐 work 驗證搬移後可無損重建原 JSONB 才刪除舊欄位，任何不一致即整批
 失敗；downgrade 重建原物件後再逐列拆回比對，並核對每個 work 的筆數才刪表。Runtime 要求 Alembic
@@ -431,23 +420,6 @@ runtime 不因觀測 gate／calendar 錯誤關閉存活的 gateway；transport�
 dead child／pause／close 的回收保留。cache replay、重啟、換 attempt 不重置。未知派送從首次即套用上限與
 退避；尚無空回應證據時不回報 empty_response。本地 continuation 先於 calendar／outcome RPC
 保存，避免 Source calendar 失聯遺失續報或耗掉本輪 local claim。
-Backend `shioaji_member_repair` 以 environment／profile／work／plan／member 綁定 Owner 核准、
-原值摘要及證據；effective mapping 是附加覆蓋，不更新 universe／plan／manifest。Ingress、對帳與
-Fetcher 使用同一有效 mapping；有任何 prepared／accepted canonical membership 的成員拒絕更正。
-核准／冪等重播於同一交易刷新 persisted plan summary；有效 mapping 消除原 `mapping_gap`，
-但獨立 outcome reason 與 canonical completion 規則保留。重開 attempt 依 `acquisition_open`
-設定 `drain_only`，claim 重查；唯讀 queue projection 的 drain 判定同步套用相同條件。
-`shioaji_repair_ack` 保存 fenced 安裝證據；本地 `full_member_repair` 以 repair ID 冪等安裝，
-`full_empty_outcome` 保存 Source outcome 的 ACK-loss continuation。Original terminal work 用新
-attempt 恢復，舊 attempts、prepared bytes、receipts、quota、cooldown 不改寫。
-本機 terminal／prepared 成員不重開；Source resolved 不覆寫既有 complete reason。
-先保存 local installation，再冪等保存 journal grant，兩者完成才 ACK 該 repair ID；略過者不 ACK。
-重啟時 local installation 證據可接續未完成的 grant／ACK，不重發額度。
-`shioaji-repairs` 回傳各 repair 的 `acknowledged`；已 ACK 且本地已安裝、或本機已完成／prepared
-的修復只套用 effective mapping，不再查 diagnostics、restore 或 ACK。待安裝成員只先補報自身的
-pending outcome，其餘補報維持 member loop 順序。Shioaji observation guard 重用 member loop
-剛取得且仍在 freshness bound 內的 work authorization，逾時（如 calendar check 後）才重新 RPC；
-實際 native dispatch 仍有自己的 Source fence 與 cooldown 檢查。
 不把其他格式錯誤變成無限 not-published retry。新 provider 必須在 replay authority 前驗證 target，並保留
 negative observation 的 audit 與有界重試驗收。
 

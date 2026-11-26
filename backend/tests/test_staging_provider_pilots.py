@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
@@ -21,10 +20,7 @@ from app.models.registry import (
 )
 from app.services.normalization_queue import execute_normalization, reconcile_stale_jobs
 from app.utils import utc_now
-from scripts.provision_registry import (
-    provision_registry,
-    provision_taifex_pilot_config,
-)
+from scripts.provision_registry import provision_registry
 from scripts.reconcile_fetcher_credentials import source_specs_for_profile
 from scripts.seed_data import DATASETS, seed_datasets
 from tests.test_full_market import _calendar, _ingress, _quote, _source_headers
@@ -48,18 +44,6 @@ def test_shared_feed_catalog_matches_source_scope_and_supported_contracts(target
         assert set(spec.allowed_datasets) == acquisition
         for key in spec.allowed_datasets:
             assert spec.source_name in declarations[key]["allowed_sources"]
-
-
-def test_futures_provisioning_has_same_policy_in_both_environments():
-    neutral = deepcopy(
-        next(item["config"] for item in DATASETS if item["dataset_key"] == "tw_futures_eod")
-    )
-    neutral["operator_note"] = "keep"
-    for target in ("staging", "production"):
-        assert provision_taifex_pilot_config(neutral, deployment_target=target) == neutral
-        custom = deepcopy(neutral)
-        custom["full_market"]["enabled"] = True
-        assert provision_taifex_pilot_config(custom, deployment_target=target) == custom
 
 
 @pytest.mark.parametrize("recovery", ["none", "published_lost", "expired_lease"])
@@ -355,16 +339,3 @@ async def test_actual_market_pipeline_serve_provenance(
         )
         rejected = exporter._serve_probe(schema, sample)
         assert rejected["success"] is False and rejected["run_id"] is None
-
-
-def test_provision_preserves_first_start_and_registry_migration_marker():
-    config = deepcopy(
-        next(item["config"] for item in DATASETS if item["dataset_key"] == "tw_futures_eod")
-    )
-    config["full_market"].update(
-        activation_date="2026-10-01", _registry_active_before_2442dc84beae=False
-    )
-    staged = provision_taifex_pilot_config(config, deployment_target="staging")
-    restored = provision_taifex_pilot_config(staged, deployment_target="production")
-    assert restored == config
-    assert "readiness_approved" not in restored["full_market"]
