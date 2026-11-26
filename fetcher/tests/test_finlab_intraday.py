@@ -41,6 +41,7 @@ from findb_fetcher.providers.finlab import (
 )
 from findb_fetcher.providers.finlab_intraday import (
     FinLabIntradayNotReadyError,
+    FinLabIntradaySymbolError,
     IntradayPartition,
     fetch_partition,
     manifest_bytes,
@@ -564,6 +565,7 @@ def test_the_gateway_call_returns_the_partition_and_accounts_the_provider_bytes(
         ("quota", "quota"),
         ("auth", "auth"),
         ("process_timeout", "process_timeout"),
+        ("sdk_error", "sdk_error"),
     ],
 )
 def test_a_worker_failure_becomes_a_not_ready_scope_or_a_bounded_operational_class(
@@ -587,9 +589,11 @@ def test_a_worker_failure_becomes_a_not_ready_scope_or_a_bounded_operational_cla
         # Waiting for publication is not a failure worth a log line.
         assert capsys.readouterr().out == ""
     else:
-        with pytest.raises(FinLabOperationalError) as failed:
+        with pytest.raises(FinLabIntradaySymbolError) as failed:
             fetch_partition(gateway, **arguments)
         assert failed.value.code == expected
+        # Still an operational failure for every caller that does not tell them apart.
+        assert isinstance(failed.value, FinLabOperationalError)
         assert json.loads(capsys.readouterr().out) == {
             "finlab_sdk_failure": {"dataset": "tw_minute:2330", "code": expected}
         }
@@ -798,6 +802,17 @@ def test_a_day_without_a_partition_is_a_claim_only_source_can_accept(monkeypatch
         # Only this symbol: it keeps its retries, the other members go on.
         (FinLabIntradayNotReadyError("partition"), FailureKind.MEMBER, None, True),
         (FinLabOperationalError("x", "network"), FailureKind.ROUND_RETRY, "outage", False),
+        # One symbol's request failed in a way that says nothing about the provider:
+        # that member is charged and the round goes on, until a run of three (#747).
+        (FinLabIntradaySymbolError("x", "sdk_error"), FailureKind.ROUND_RETRY, None, False),
+        (FinLabIntradaySymbolError("x", "bad_response"), FailureKind.ROUND_RETRY, None, False),
+        (FinLabIntradaySymbolError("x", "os_error"), FailureKind.ROUND_RETRY, None, False),
+        # The provider or the account failed: every member would, so the plan waits.
+        (FinLabIntradaySymbolError("x", "network"), FailureKind.ROUND_RETRY, "outage", False),
+        (FinLabIntradaySymbolError("x", "timeout"), FailureKind.ROUND_RETRY, "outage", False),
+        (FinLabIntradaySymbolError("x", "quota"), FailureKind.ROUND_RETRY, "outage", False),
+        (FinLabIntradaySymbolError("x", "killed"), FailureKind.ROUND_RETRY, "outage", False),
+        (FinLabIntradaySymbolError("x", "auth"), FailureKind.WORK_FAILED, None, False),
         (FinLabOperationalError("x", "quota"), FailureKind.ROUND_RETRY, "outage", False),
         (FinLabOperationalError("x", "auth"), FailureKind.WORK_FAILED, None, False),
         (FinLabOperationalError("x", "sdk_contract"), FailureKind.WORK_FAILED, None, False),

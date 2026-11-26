@@ -782,6 +782,8 @@ FinLab 對單一成員的回答與結果：
 | FinLab 尚未驗證該交易日 | 沒有標的可取：整輪等待發布，不記在任何成員身上 |
 | 沒有該標的的分區，同日日 K 無成交，或 FinLab 當天沒有成交價 | `no_data`（`no_trade`），證據狀態為 `no_record`，佐證記在成員的結果歷史 |
 | 沒有該標的的分區，同日日 K 有成交價或尚未有結果 | 只影響該成員：回報 `blocked`（`empty_response`）並保留有限次重試，其他成員繼續 |
+| 該標的的請求失敗：`sdk_error`、`bad_response`、`os_error` | 只影響該成員：回報 `source_error` 並扣一次一般失敗額度，其他成員繼續；連續 3 檔這樣失敗才結束這一輪（與 `retry_exhausted` 同一規則，#747） |
+| 該標的的請求遇到 `network`、`timeout`、`quota`、子程序失敗（`killed`、`crashed`、`process_timeout`）等 | provider 或帳號的問題，每一檔都會遇到：與日 K 抓表失敗相同，整個 plan 等待後重試，不記在成員身上 |
 
 FinLab 對當天沒有整張成交的標的不產生分區，也不標示 `no_trades`；分區還在產生中時，回覆也一樣。兩者從
 FinLab 的回覆分不出來，所以由 Source 對照同一個 provider 同一天的日 K 判定：

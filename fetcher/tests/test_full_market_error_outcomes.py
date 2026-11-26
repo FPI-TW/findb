@@ -1414,6 +1414,47 @@ def test_three_failures_in_a_row_stop_the_round_and_one_success_resets_the_count
         runtime.close()
 
 
+def test_one_intraday_symbol_sdk_failure_keeps_the_round_and_a_run_of_three_stops_it(
+    tmp_path, monkeypatch
+):
+    """#747: one symbol's FinLab request failing is that member's, not an outage."""
+    from findb_fetcher.provider_adapters.finlab import FinLabAdapter
+    from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+    from findb_fetcher.providers.finlab_intraday import FinLabIntradaySymbolError
+
+    classify = TwelveDataAdapter.classify
+
+    def finlab_symbol(self, exc, phase):
+        # Borrow FinLab's classification for its per-symbol intraday failures.
+        if isinstance(exc, FinLabIntradaySymbolError):
+            return FinLabAdapter.classify(self, exc, phase)
+        return classify(self, exc, phase)
+
+    monkeypatch.setattr(TwelveDataAdapter, "classify", finlab_symbol)
+
+    def failed() -> FinLabIntradaySymbolError:
+        return FinLabIntradaySymbolError("FinLab SDK intraday retrieval failed", "sdk_error")
+
+    runtime, source, scanned, acquired, rows = _isolation_round(tmp_path, {"MSFT": failed()})
+    try:
+        # The other members are delivered in the same round; MSFT keeps its retries.
+        assert scanned is True and acquired == ["AAPL", "MSFT", "NVDA", "TSLA"]
+        assert rows["MSFT"] == ("pending", "source_error")
+        assert [o["member_key"] for o in source.outcomes] == ["MSFT"]
+    finally:
+        runtime.close()
+
+    runtime, source, scanned, acquired, rows = _isolation_round(
+        tmp_path / "run", {"AAPL": failed(), "MSFT": failed(), "NVDA": failed()}
+    )
+    try:
+        # Three in a row may be the provider's: the round stops before TSLA.
+        assert scanned is False and acquired == ["AAPL", "MSFT", "NVDA"]
+        assert rows.get("TSLA", ("pending", None)) == ("pending", None)
+    finally:
+        runtime.close()
+
+
 def test_a_member_scoped_provider_failure_is_final_and_does_not_hold_the_plan(
     tmp_path, monkeypatch
 ):
