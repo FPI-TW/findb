@@ -147,6 +147,11 @@ async def test_history_shape_allows_unknown_starts_and_blocks_removal_once_used(
         "3553ed95cfbf", "index_history_shape"
     ) as (url, engine):
         await run_alembic(url, SHAPE)
+        async with engine.connect() as db:
+            assert (
+                await db.scalar(text("SELECT to_regclass('public.reference_delivery_evidence')"))
+                is None
+            )
         assert await _shape(engine) == {
             "index_definition.series": "NO",
             "index_membership.valid_from": "YES",
@@ -154,6 +159,11 @@ async def test_history_shape_allows_unknown_starts_and_blocks_removal_once_used(
             "index_membership_build.findings": "NO",
         }
         await run_alembic(url, BEFORE_SHAPE, command="downgrade")
+        async with engine.connect() as db:
+            assert (
+                await db.scalar(text("SELECT to_regclass('public.reference_delivery_evidence')"))
+                is not None
+            )
         assert await _shape(engine) == {
             "index_membership.valid_from": "NO",
             "index_membership.starts_at_history_start": "NO",

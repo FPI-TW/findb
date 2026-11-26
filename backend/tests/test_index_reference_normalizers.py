@@ -18,7 +18,6 @@ from app.models.index_reference import (
     IndexMembershipBuild,
     IndexSnapshot,
     IndexSnapshotConstituent,
-    ReferenceDeliveryEvidence,
     ReferenceDocumentArchive,
 )
 from app.models.registry import DatasetRegistry, DQIssue, IngestionRun
@@ -196,12 +195,6 @@ async def test_a_report_is_archived_stored_and_anchors_the_family(test_session, 
         date(2026, 11, 23),
         0,
     )
-    (evidence,) = await test_session.scalars(select(ReferenceDeliveryEvidence))
-    assert (evidence.dataset_key, evidence.part_key, evidence.run_id) == (
-        CONSTITUENTS,
-        "document",
-        run_id,
-    )
     run = await test_session.get(IngestionRun, run_id)
     assert run.status == "completed"
 
@@ -219,7 +212,6 @@ async def test_a_report_delivered_again_is_neither_archived_nor_stored_twice(
     assert stores.writes() == writes
     assert await count(test_session, ReferenceDocumentArchive) == 1
     assert await count(test_session, IndexSnapshot) == 3
-    assert await count(test_session, ReferenceDeliveryEvidence) == 1
     assert await issues(test_session, run_id) == []
 
 
@@ -369,7 +361,6 @@ async def test_a_report_that_contradicts_itself_stores_nothing(
         ReferenceDocumentArchive,
         IndexSnapshot,
         IndexDefinition,
-        ReferenceDeliveryEvidence,
     ):
         assert await count(test_session, model) == 0
     assert stores.canonical_objects() == {}

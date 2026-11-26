@@ -84,9 +84,11 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 
 ## 設計
 
-- **新的 provider-work kind `reference`**
-  - 成員是文件的部分，不是股票；不建 plan，也不需要 universe baseline，只受 `full_market_hkex_v1` control 管制。
-  - 未變動的文件以 `reference_delivery_evidence` 結為 `no_data`。
+- **排程：固定成員的 daily plan**（2026-11-26 Owner 決定，取代原本的 `reference` work kind；做法和 #647 三大法人的整張表相同）
+  - 每個港股交易日一個 plan。
+  - `hk_index_constituents` 的成員是 `HSI`、`HSCI` 兩份報告。
+  - `hk_index_changes` 的成員是 18 個指數的 sheet。
+  - 每個成員每天送一次；變動檔內容沒變時，重建會略過。
 - **兩個契約**
   - `index_constituents.v1`：一份成分股表現 PDF 的完整名單。
   - `index_constituent_changes.v1`：一個 sheet，即一個指數的完整變動歷史。
@@ -113,10 +115,10 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 
 | PR | 內容 | 狀態 |
 | --- | --- | --- |
-| 1 | 兩個契約與 artifacts、canonical 與歸檔表、`reference_delivery_evidence`、migration `2bbe07b98293`；尚無 dataset 接收 | #692 已合併並部署 staging |
-| 2 | 重建演算法、歸檔服務、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP`、migration `ebb187773e30` | 進行中 |
-| 3 | Fetcher 解析器、pypdf、讀取多個 sheet 的 xlsx、raw 格式 | 未開始 |
-| 4 | `reference` work kind 與 known-parts 端點 | 未開始 |
-| 5 | 啟用兩條 feed、scheduler migration、Serve scope 分支、監控排除 | 未開始 |
+| 1 | 兩個契約與 artifacts、canonical 與歸檔表、migration `2bbe07b98293`；尚無 dataset 接收 | #692 已合併並部署 staging |
+| 2 | 重建演算法、歸檔服務、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP`、migration `ebb187773e30`（含刪除 `reference_delivery_evidence`） | #697 |
+| 3 | Fetcher 解析器（HSI 用 pdfminer、HSCI 用 pypdf、多 sheet xlsx）、raw 格式、hkex adapter 的固定成員與 acquire | 未開始 |
+| 4 | Backend plan 整合：成員鍵、`validate_ingest_part`、完成判定、delivery evidence | 未開始 |
+| 5 | 啟用兩條 feed、dataset／scheduler migration、Serve scope 分支、`historical_lookback_days` | 未開始 |
 | 6 | Serve 端點 | 未開始 |
-| 7 | staging 驗收、整併文件並刪除本檔 | 未開始 |
+| 7 | staging 驗收、本機歸檔匯入、移除 launchd 排程、整併文件並刪除本檔 | 未開始 |

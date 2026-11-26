@@ -112,53 +112,6 @@ class ReferenceDocumentArchive(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
-class ReferenceDeliveryEvidence(Base):
-    """A document part a reference dataset stored completely.
-
-    A reference work delivers every part it has not seen before; a part already
-    stored is proven here instead of delivered again.  Written in the same
-    transaction as the part's rows, so a part is never marked stored early.
-    """
-
-    __tablename__ = "reference_delivery_evidence"
-    __table_args__ = (
-        UniqueConstraint(
-            "dataset_key",
-            "part_key",
-            "document_sha256",
-            name="uq_reference_delivery_evidence_part",
-        ),
-        CheckConstraint(
-            f"document_sha256 ~ '{SHA256_CHECK}'", name="reference_delivery_evidence_sha256"
-        ),
-        CheckConstraint("part_key <> ''", name="reference_delivery_evidence_part_key"),
-    )
-
-    evidence_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), primary_key=True, default=uuid7
-    )
-    dataset_key: Mapped[str] = mapped_column(
-        String(50),
-        ForeignKey("dataset_registry.dataset_key", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    # Which part of the document: an index code, or the whole document.
-    part_key: Mapped[str] = mapped_column(String(100), nullable=False)
-    # The document as published, so a republished document is a new part.
-    document_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    run_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("ingestion_run.run_id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    archive_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("reference_document_archive.archive_id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-
-
 class IndexDefinition(Base):
     """One index a publisher computes, as its documents describe it.
 

@@ -1,8 +1,9 @@
 """Normalizers for index reference documents: constituent reports and change workbooks.
 
-Each delivery archives its document once, stores what the document states,
-rebuilds its family's membership history from everything stored, and records
-the part as stored, all in one transaction.  A document that contradicts
+Each delivery archives its document once, stores what the document states and
+rebuilds its family's membership history from everything stored, all in one
+transaction.  Which deliveries a day needs is the daily plan's business: a
+report is one member per family, a change workbook one member per index.  A document that contradicts
 itself (weights that do not sum to 100, a member outside its parent) is
 rejected whole and stores nothing; disagreements between documents are
 reported as warnings by the rebuild and never block.
@@ -26,7 +27,6 @@ from app.models.index_reference import (
     IndexDefinition,
     IndexSnapshot,
     IndexSnapshotConstituent,
-    ReferenceDeliveryEvidence,
     ReferenceDocumentArchive,
 )
 from app.models.registry import IngestionRun
@@ -34,7 +34,6 @@ from app.schemas.ingress import (
     IndexChangesPayload,
     IndexConstituentsPayload,
     IndexDescriptor,
-    IndexDocumentBatch,
 )
 from app.services.dq.validators import DQIssueRecord
 from app.services.index_membership import lock_family, rebuild_family, summarize
@@ -148,21 +147,6 @@ class _IndexDocumentNormalizer(BaseNormalizer):
             await self.db.flush()
         return stored
 
-    async def _evidence(
-        self, run: IngestionRun, batch: IndexDocumentBatch, archive: ReferenceDocumentArchive
-    ) -> None:
-        await self.db.execute(
-            insert(ReferenceDeliveryEvidence)
-            .values(
-                dataset_key=run.dataset_key,
-                part_key=batch.document.part_key,
-                document_sha256=batch.document.original_sha256,
-                run_id=run.run_id,
-                archive_id=archive.archive_id,
-            )
-            .on_conflict_do_nothing(constraint="uq_reference_delivery_evidence_part")
-        )
-
     async def _rebuild(
         self, result: NormalizeResult, run: IngestionRun, publisher: str, series: str
     ) -> None:
@@ -226,7 +210,6 @@ class _IndexDocumentNormalizer(BaseNormalizer):
             )
             await self._store_document(payload, run, result, archive)
             await self._rebuild(result, run, document.publisher, document.series)
-            await self._evidence(run, payload.batch, archive)
         except (ReportRejectedError, DocumentRejectedError) as exc:
             await savepoint.rollback()
             await self._reject_all(result, run.run_id, exc.rule, getattr(exc, "detail", None))
