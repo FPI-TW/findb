@@ -342,3 +342,13 @@ def test_unread_runs_replay_their_receipts_after_a_status_outage(tmp_path, monke
     result = runner.run(**arguments)
     assert len(queries) == 1 and len(deliveries) == 2
     assert [r["outcome"] for r in result["members"]][:2] == ["data", "invalid"]
+
+
+def test_mapping_gaps_alone_complete_a_date():
+    # A mapping gap is unavailable: the provider cannot supply it, so it is not a gap (#593).
+    def evidence(*outcomes):
+        return {"members": [{"member_key": str(i), "outcome": o} for i, o in enumerate(outcomes)]}
+
+    assert completion_status(evidence("data", "no_data", "mapping_gap")) == "completed"
+    assert completion_status(evidence("data", "mapping_gap", "missing")) == "partial"
+    assert completion_status(evidence("data", "invalid")) == "partial"

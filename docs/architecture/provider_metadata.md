@@ -58,7 +58,8 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   item 以成員證據或 Source run 完成，並決定 planner 是否接受 `--universe-file`（只有 `dated_release` 接受）。
   兩種 release cohort 的成員證據都可以把「沒有可引用回應」的成員（provider 沒有該檔序列，或每次嘗試都失敗、
   重試用完）記為 `missing` gap，該日期以 `partial` 結算，不會卡住同一 provider 之後的 historical 工作；
-  daily plan 的成員不適用（Owner 於 2026-11-24 決定）。
+  daily plan 的成員不適用（Owner 於 2026-11-24 決定）。Mapping gap，以及 `current_release` 裡交易日當天
+  名單尚未列入的成員是 unavailable，不讓日期 partial（#593）。
 - `historical_requests_per_date` 是 planner 估算每個日期的 provider 請求數：固定次數（共用報表或表格，例如 TAIFEX
   五個商品、FinLab 五張表、FactSet 一次查詢），或 `per_member`（每個成員一次；Twelve Data），historical feed 必填。
   `per_member` 只能用在 `dated_release`，因為要有成員清單才能計數。

@@ -1314,6 +1314,7 @@ async def complete_item(
         raise HistoricalBackfillConflictError("backfill item is not leased")
     run: IngestionRun | None = None
     eod_evidence = None
+    unavailable: dict[str, str] = {}
     if outcome in {"completed", "partial"} and eod:
         try:
             eod_evidence = EODCompletionEvidence.model_validate(result_evidence)
@@ -1344,10 +1345,22 @@ async def complete_item(
             )
         ):
             raise HistoricalBackfillValidationError("EOD evidence differs from the frozen request")
-        if member_cohort(item.request) and outcome != (
-            "partial" if _eod_partial(eod_evidence) else "completed"
-        ):
+        from app.services.eod_completion import unavailable_members
+
+        unavailable = await unavailable_members(
+            db,
+            provider=provider,
+            dataset_key=item.request.dataset_key,
+            evidence=eod_evidence,
+            current_release=current_release_cohort(item.request),
+        )
+        partial = _eod_partial(eod_evidence, unavailable)
+        if member_cohort(item.request) and outcome != ("partial" if partial else "completed"):
             raise HistoricalBackfillValidationError("EOD outcome differs from its member evidence")
+        if outcome == "partial" and not partial:
+            # Only unavailable members are absent: the Fetcher cannot tell a member
+            # listed after the date, and an older one counts mapping gaps too.
+            outcome = "completed"
         item.result_evidence = eod_evidence.model_dump(mode="json")
     elif outcome == "completed" and futures_report_feed(provider, item.request.dataset_key):
         await _validate_futures_completion(db, item, run_id, result_evidence, now)
@@ -1394,6 +1407,8 @@ async def complete_item(
             ),
             "no_data": no_data,
             **({"eod": eod_evidence.model_dump(mode="json")} if eod_evidence else {}),
+            # Members the provider cannot supply for the date, and why (#593).
+            **({"unavailable": unavailable} if unavailable else {}),
             **(
                 {
                     "manual_pending_prepared": await prepared_keys(db, owned_work.work_id),
@@ -1596,8 +1611,12 @@ def _contract_version(request: HistoricalBackfillRequest) -> int:
     return feed.contract.current_version
 
 
-def _eod_partial(evidence: EODCompletionEvidence) -> bool:
-    return any(member.outcome not in {"data", "no_data"} for member in evidence.members)
+def _eod_partial(evidence: EODCompletionEvidence, unavailable: dict[str, str]) -> bool:
+    """A date stays partial only for a member the provider could still supply."""
+    return any(
+        member.outcome not in {"data", "no_data"} and member.member_key not in unavailable
+        for member in evidence.members
+    )
 
 
 def _valid_completed_run(run: IngestionRun | None, item: HistoricalBackfillItem) -> bool:

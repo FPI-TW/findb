@@ -1614,6 +1614,11 @@ unavailable 成員的 plan 時，依 Source 的 `complete` 以 `completed` 結�
 rollback 下限：舊版 Backend 寫入的 blocked 含 mapping gap、不寫 `unavailable_count`，會違反新的 CHECK。Downgrade 把
 `unavailable_count` 併回 `blocked_count`，只供停止狀態下的人工復原。
 
+EOD 成員證據的結算同樣把 unavailable 排除在缺漏之外（mapping gap，以及 `current_release` 回補裡交易日當天名單
+尚未列入的成員）。Backend 先部署：新版 Fetcher 對只缺 mapping gap 的日期送出 `completed`，舊版 Backend 會因
+「completed 不得有 gap」拒絕；新版 Backend 仍接受舊 Fetcher 送出的 `partial`，回補項目改記 completed。此變更沒有
+migration，Backend 可單獨回退，但須先回退 Fetcher。
+
 ## FactSet 港股版本下限
 
 新 Fetcher bundle v2 包含 FactSet 第四個 image、第五個 provider 與十五個 consumers。
