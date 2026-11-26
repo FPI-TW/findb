@@ -15,17 +15,24 @@ from tests.migration_database import get_active_migration_database_factory, run_
 
 def test_the_preflight_inspects_the_latest_schedule_revision():
     module = migration_module()
-    assert module.revision == "64da893e5e78"
-    assert module.FEEDS["us_dollar_index_eod"] == (
-        "fmp",
-        "America/New_York",
-        "17:15:00",
-        (),
-        None,
+    assert module.revision == "7733f9692fe6"
+    assert module.FEEDS["tw_equity_eod"] == (
+        "finlab",
+        "Asia/Taipei",
+        "19:30:00",
+        (("Asia/Taipei", "18:00:00", 0, "finlab"),),
+        "17:00:00",
         0,
     )
+    assert module.CONTROLS["finlab"] == (
+        "Asia/Taipei",
+        "19:30:00",
+        (("Asia/Taipei", "18:00:00"),),
+    )
     # The earlier feeds keep the rules of the revisions that installed them.
-    assert {"hk_index_eod", "us_index_eod", "us_equity_eod"} <= set(module.FEEDS)
+    assert {"us_dollar_index_eod", "hk_index_eod", "us_index_eod", "us_equity_eod"} <= set(
+        module.FEEDS
+    )
 
 
 def test_frozen_inputs_match_the_live_catalog():

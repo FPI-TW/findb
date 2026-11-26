@@ -219,8 +219,9 @@ async def test_source_daily_close_is_frozen_and_does_not_block_runnable_maintena
             ProviderWorkAttempt.work_id == UUID(first.json()["work_id"])
         )
     )
-    # The later of the 13:30 close and the FinLab 18:00 scheduled start (10:00 UTC).
-    assert attempt.not_before.year == 2099 and attempt.not_before.hour == 10
+    # The later of the 13:30 close and the FinLab 19:30 scheduled start (11:30 UTC).
+    assert attempt.not_before.year == 2099
+    assert (attempt.not_before.hour, attempt.not_before.minute) == (11, 30)
 
     async def calendar_must_remain_frozen(*args, **kwargs):
         pytest.fail("enqueue replay must retain its original published close")

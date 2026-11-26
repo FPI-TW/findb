@@ -175,8 +175,8 @@ def test_completion_and_bounded_deadlines_are_independent():
         == "2027-01-01T01:15:00+00:00"
     )
     for provider, key, expected in [
-        ("finlab", "tw_equity_eod", "2026-11-09T22:00:00+00:00"),
-        ("finlab", "tw_equity_bar_1m", "2026-11-09T23:15:00+00:00"),
+        ("finlab", "tw_equity_eod", "2026-11-09T23:30:00+00:00"),
+        ("finlab", "tw_equity_bar_1m", "2026-11-09T23:35:00+00:00"),
         ("factset", "hk_equity_eod", "2026-11-10T00:00:00+00:00"),
         ("taifex", "tw_futures_eod", "2026-11-09T21:00:00+00:00"),
     ]:
@@ -280,7 +280,7 @@ def test_catalog_trigger_boundary_and_dst(clock, expected):
         ("factset", "hk_equity_eod", ("16:00:00", "Asia/Hong_Kong"), "2026-11-20T12:00:00+00:00"),
         # TAIFEX waits for its 17:00 start, not the 13:45 close.
         ("taifex", "tw_futures_eod", ("13:45:00", "Asia/Taipei"), "2026-11-20T09:00:00+00:00"),
-        ("finlab", "tw_equity_eod", ("13:30:00", "Asia/Taipei"), "2026-11-20T10:00:00+00:00"),
+        ("finlab", "tw_equity_eod", ("13:30:00", "Asia/Taipei"), "2026-11-20T11:30:00+00:00"),
         (
             "twelve_data",
             "us_equity_eod",

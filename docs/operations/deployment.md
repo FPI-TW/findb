@@ -1081,6 +1081,19 @@ Migration `208a9707fe3f` 只新增部分索引 `idx_run_retry_exhausted`（`inge
 建立很快，沿用停止 writers 後執行 migration 的部署程序即可。Downgrade 只移除索引、不改資料；與所有
 migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `c7e9a1b3d5f8`。
 
+## FinLab 日 K 改 19:30
+
+Migration `7733f9692fe6` 把 `tw_equity_eod`、`tw_etf_eod` 的排程由台北 18:00 改為 19:30（期限隔日 07:30），
+`full_market_finlab_v1` 的 control 時鐘跟著改為 19:30；四條盤中 feed 由 19:15 改為 19:35（期限 07:35），
+維持日 K 先排入佇列。FinLab 成交量最終版自 2026-11-16 起都在 18:48–18:54 發布，18:00 排程每天白等三輪。
+這個 revision 取代 `64da893e5e78` 成為部署前 schedule inspection：兩條日 K 與 FinLab control 的目標是 19:30，
+18:00 是已知舊值，其他列沿用前一版的凍結規則；盤中四條不在 inspection 內，只隨 seed 的宣告更新。
+遇到其他值一律在更新前中止。Downgrade 只在值仍是本 revision 的目標時改回 18:00／19:15。
+
+- 只動 Backend；Fetcher 每輪讀取 Backend 發布的排程，不需要部署。
+- 已建立的工作凍結建立時的 feed，沿用 18:00；部署後的新交易日才用 19:30。
+- 與所有 migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `ebb187773e30`。
+
 ## Backend 與 Fetcher 的 feed 目錄版本落差
 
 Backend 與 Fetcher 分開部署，替既有 provider 新增或移除 feed 時，兩邊的 catalog 會有一段時間不同。

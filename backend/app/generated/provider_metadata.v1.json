@@ -60,7 +60,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "07:15",
+        "local_time": "07:35",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -84,7 +84,7 @@
       "market": "TW",
       "provider": "finlab",
       "schedule": {
-        "local_time": "19:15",
+        "local_time": "19:35",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
@@ -109,7 +109,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "06:00",
+        "local_time": "07:30",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -170,7 +170,7 @@
       "market": "TW",
       "provider": "finlab",
       "schedule": {
-        "local_time": "18:00",
+        "local_time": "19:30",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
@@ -191,7 +191,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "07:15",
+        "local_time": "07:35",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -215,7 +215,7 @@
       "market": "TW",
       "provider": "finlab",
       "schedule": {
-        "local_time": "19:15",
+        "local_time": "19:35",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
@@ -236,7 +236,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "07:15",
+        "local_time": "07:35",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -260,7 +260,7 @@
       "market": "TW",
       "provider": "finlab",
       "schedule": {
-        "local_time": "19:15",
+        "local_time": "19:35",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
@@ -281,7 +281,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "06:00",
+        "local_time": "07:30",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -305,7 +305,7 @@
       "market": "TW",
       "provider": "finlab",
       "schedule": {
-        "local_time": "18:00",
+        "local_time": "19:30",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
@@ -326,7 +326,7 @@
         "source": true
       },
       "completion_deadline": {
-        "local_time": "07:15",
+        "local_time": "07:35",
         "timezone": "Asia/Taipei",
         "trade_date_day_offset": 1
       },
@@ -350,7 +350,7 @@
       "market": "TW",
       "provider": "finlab",
       "schedule": {
-        "local_time": "19:15",
+        "local_time": "19:35",
         "target_date_lag_days": 0,
         "timezone": "Asia/Taipei"
       },
@@ -848,5 +848,5 @@
       "us_equity_eod"
     ]
   },
-  "source_sha256": "fa9c61ced230da229bffc988496bd40a4f942108b4076782bf273ed65cf96089"
+  "source_sha256": "a5e9aac56074e26c52366dbc11fe48d5f82a1eb83c51a0356cb0a44bc873df83"
 }

@@ -126,7 +126,7 @@ def test_control_clock_is_the_earliest_start_across_timezones(lagged):
     assert earliest_feed([hong_kong, us_index]) is us_index
     assert earliest_feed([us_equity, hong_kong]) is hong_kong
     finlab = [f for f in catalog.feeds if f.provider == "finlab" and f.schedule is not None]
-    assert earliest_feed(finlab).schedule.local_time == "18:00"
+    assert earliest_feed(finlab).schedule.local_time == "19:30"
 
 
 def test_seed_delivery_expectations_use_catalog_slots():

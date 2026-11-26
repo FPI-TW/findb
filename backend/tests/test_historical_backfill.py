@@ -185,8 +185,8 @@ class _StatusOnlyNormalizer(BaseNormalizer):
 
 @pytest.fixture
 def historical_backfill_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
-    # 18:30 Taipei: past both the TW close and the FinLab 18:00 scheduled start.
-    now = datetime(2026, 9, 1, 10, 30, tzinfo=timezone.utc)
+    # 19:45 Taipei: past both the TW close and the FinLab 19:30 scheduled start.
+    now = datetime(2026, 9, 1, 11, 45, tzinfo=timezone.utc)
     monkeypatch.setattr(historical_backfill, "utc_now", lambda: now)
     return now
 
