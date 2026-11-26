@@ -29,7 +29,7 @@ def test_provider_stop_timeout_covers_bounded_factset_query_and_reap():
     assert "docker stop --time 30" not in helper
 
 
-@pytest.mark.parametrize("bundle_version", [3, 4, 5, 6])
+@pytest.mark.parametrize("bundle_version", [7])
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 def test_production_container_arguments_bind_full_and_historical_inspection(
     tmp_path, monkeypatch, provider, bundle_version

@@ -34,6 +34,7 @@ def _frozen_plan(dataset: str, day: date, release: dict[str, Any]) -> dict[str, 
             "no_data": 0,
             "missing": len(members),
             "blocked": 0,
+            "unavailable": 0,
             "is_late": True,
         },
     }

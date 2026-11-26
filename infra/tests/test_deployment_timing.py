@@ -284,8 +284,6 @@ def test_retired_pilot_scheduler_identity_is_not_surfaced(tmp_path):
 @pytest.mark.parametrize(
     "line",
     [
-        "fetcher_host_eligibility=failed reason=pilot_residue_running",
-        "fetcher_host_eligibility=failed reason=pilot_residue_not_drained",
         "fetcher_aws_deploy=failed reason=pilot_residue_running runtime=findb-pilot-finlab",
         "fetcher_aws_deploy=failed reason=pilot_state_archive_failed",
     ],

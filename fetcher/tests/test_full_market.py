@@ -395,6 +395,7 @@ def _plan() -> dict[str, Any]:
             "no_data": 0,
             "missing": 2,
             "blocked": 0,
+            "unavailable": 0,
             "is_late": False,
         },
     }

@@ -126,7 +126,7 @@ def test_migration_script_does_not_let_compose_consume_remaining_commands(
             "APP_ENVIRONMENT": "production",
             "FINDB_DEPLOY_MODE": mode,
             "DOCKER_CALLS": str(docker_calls),
-            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "3553ed95cfbf",
+            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "c7e9a1b3d5f8",
             "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.test",
         },
         timeout=10,
@@ -251,7 +251,7 @@ def test_predeploy_script_checks_credentials_without_consuming_remaining_command
             "APP_ENVIRONMENT": "staging",
             "FINDB_DEPLOY_MODE": mode,
             "DOCKER_CALLS": str(docker_calls),
-            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "3553ed95cfbf",
+            "PREDEPLOY_EXPECTED_ALEMBIC_REVISION": "c7e9a1b3d5f8",
             "PREDEPLOY_EXPECTED_RDS_ENDPOINT": "db.example.test",
         },
         timeout=10,
@@ -3334,36 +3334,6 @@ def test_fetcher_ci_verifies_shipped_bytecode_for_every_runtime_image() -> None:
     assert steps[-1] == "Verify runtime images ship valid import bytecode"
 
 
-def _fetcher_scheduler_cases() -> tuple[tuple[str, str, str, str, str, str], ...]:
-    """Return provider-specific function arguments for the shell state machine."""
-    return (
-        (
-            "twelve",
-            "Release and validate Twelve Data scheduler on Fetcher EC2",
-            "findb-fetch-scheduler",
-            "findb-fetcher-scheduler",
-            "findb-fetcher-scheduler-candidate",
-            "findb-fetcher-scheduler-previous",
-        ),
-        (
-            "finlab",
-            "Release and validate FinLab scheduler on Fetcher EC2",
-            "findb-fetch-finlab-scheduler --schedule-file /app/configs/daily_scheduler.v2.json --slot-id taiwan_market_window --dataset-key tw_equity_eod",
-            "findb-fetcher-finlab-scheduler",
-            "findb-fetcher-finlab-scheduler-candidate",
-            "findb-fetcher-finlab-scheduler-previous",
-        ),
-        (
-            "shioaji",
-            "Release and validate Shioaji scheduler on Fetcher EC2",
-            "findb-fetch-shioaji-scheduler --manifest /app/configs/shioaji_tw_pilot.v1.json",
-            "findb-fetcher-shioaji-scheduler",
-            "findb-fetcher-shioaji-scheduler-candidate",
-            "findb-fetcher-shioaji-scheduler-previous",
-        ),
-    )
-
-
 # Shared with the offline deployment repair suites in infra/tests.
 _FAKE_DOCKER = (REPO_ROOT / "infra/tests/fixtures/fake_docker.sh").read_text(encoding="utf-8")
 
@@ -3394,107 +3364,6 @@ case "$1" in
     ;;
 esac
 """
-
-
-def _run_fetcher_reconciliation(
-    tmp_path: Path,
-    provider: tuple[str, str, str, str, str, str],
-    *,
-    initial: dict[str, str],
-    candidate_status: str = "running",
-    preflight_fails: bool = False,
-    wrong_raw_bucket_marker: bool = False,
-    stable_exit_code: int = 0,
-) -> tuple[subprocess.CompletedProcess[str], dict[str, str], list[str], str]:
-    provider_id, step_name, command, stable, candidate, previous = provider
-    workflow = _load_workflow(FETCHER_CD_WORKFLOW)
-    script = _named_step(workflow, "deploy", step_name)["with"]["script"]
-    function_start = script.index("reconcile_scheduler() {")
-    function_end = script.index("\nruntime_env_args=", function_start)
-    function = script[function_start:function_end]
-
-    state_dir = tmp_path / provider_id / "state"
-    fake_bin = tmp_path / provider_id / "bin"
-    state_dir.mkdir(parents=True)
-    fake_bin.mkdir(parents=True)
-    for name, status in initial.items():
-        (state_dir / name).write_text(status + "\n", encoding="utf-8")
-    state_path = state_dir / "state.sqlite3"
-    state_path.write_text("durable-state\n", encoding="utf-8")
-    marker_components = "0123456789abcdef0123456789abcdef\nraw-bucket"
-    if not wrong_raw_bucket_marker:
-        marker_components += f"\n{provider_id}"
-    (state_dir / "raw-bucket.sha256").write_text(
-        hashlib.sha256(marker_components.encode()).hexdigest() + "\n",
-        encoding="utf-8",
-    )
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text(_FAKE_DOCKER, encoding="utf-8")
-    fake_docker.chmod(0o755)
-    fake_sudo = fake_bin / "sudo"
-    fake_sudo.write_text(_FAKE_SUDO, encoding="utf-8")
-    fake_sudo.chmod(0o755)
-    fake_sleep = fake_bin / "sleep"
-    fake_sleep.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    fake_sleep.chmod(0o755)
-
-    image = "image:test"
-    if provider_id == "shioaji":
-        invocation = (
-            f"reconcile_scheduler {provider_id} {image} "
-            f"{state_dir} {state_path} {stable} {candidate} {previous} "
-            f'preflight "" {command}'
-        )
-    else:
-        cache_dir = state_dir / "cache" if provider_id == "finlab" else "-"
-        invocation = (
-            f"reconcile_scheduler {provider_id} {image} "
-            f"{state_dir} {state_path} {stable} {candidate} {previous} "
-            f'preflight {cache_dir} "" {command}'
-        )
-    harness = f"""set -euo pipefail
-SOURCE_API_URL=https://findb.example.com
-SOURCE_CLIENT_KEY=source-key
-FINDB_SERVE_BASE_URL=https://findb.example.com
-FETCHER_CALENDAR_SERVE_API_KEY=calendar-key
-CLOUDFLARE_R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef
-CLOUDFLARE_R2_RAW_BUCKET=raw-bucket
-FETCHER_STATE_PATH={state_path}
-FETCHER_SHIOAJI_STATE_PATH={state_path}
-SHIOAJI_SIMULATION=true
-export SOURCE_API_URL SOURCE_CLIENT_KEY FINDB_SERVE_BASE_URL FETCHER_CALENDAR_SERVE_API_KEY
-export CLOUDFLARE_R2_ACCOUNT_ID CLOUDFLARE_R2_RAW_BUCKET FETCHER_STATE_PATH FETCHER_SHIOAJI_STATE_PATH SHIOAJI_SIMULATION
-stable={stable}
-candidate={candidate}
-previous={previous}
-{function}
-{invocation}
-"""
-    log_path = tmp_path / provider_id / "docker.log"
-    environment = script_env()
-    environment.update(
-        PATH=f"{fake_bin}:{environment['PATH']}",
-        FAKE_DOCKER_STATE=str(state_dir),
-        FAKE_DOCKER_LOG=str(log_path),
-        FAKE_IMAGE=image,
-        FAKE_CANDIDATE_STATUS=candidate_status,
-        FAKE_PREFLIGHT_FAIL="1" if preflight_fails else "0",
-        FAKE_STABLE_EXIT_CODE=str(stable_exit_code),
-    )
-    completed = subprocess.run(
-        ["bash", "-c", harness],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
-    statuses = {
-        path.name: path.read_text(encoding="utf-8").strip()
-        for path in state_dir.iterdir()
-        if path.is_file() and path.name not in {"state.sqlite3", "raw-bucket.sha256"}
-    }
-    operations = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
-    return completed, statuses, operations, state_path.read_text(encoding="utf-8")
 
 
 def test_ec2_setup_instructions_match_findb_environment_boundary() -> None:

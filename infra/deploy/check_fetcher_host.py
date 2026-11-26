@@ -31,10 +31,6 @@ CONSUMERS = (
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
 
-# Providers whose consumers a bundle version first installs. A host still on an
-# older bundle has none of them yet; this release installs them.
-PROVIDER_SINCE_BUNDLE = {"hkex": 6, "fmp": 7}
-
 
 def require_root_directory(path):
     info = path.lstat()
@@ -62,10 +58,11 @@ def installed_manifest(base, validator, target, registry):
         raise ValueError("release root mode invalid")
     with validator.SourceBundleReader(root) as source:
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
-        if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
-            "fetcher_bundle_version"
-        ] not in {5, 6, 7}:
-            # Bundle v5 (Pilot retirement) is the rollback floor on every host.
+        if (
+            type(manifest.get("fetcher_bundle_version")) is not int
+            or manifest["fetcher_bundle_version"] != 7
+        ):
+            # Bundle v7 is installed on every host and is the rollback floor.
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
         validator.validate_manifest(manifest, contracts, source)
@@ -190,20 +187,7 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
         raise ValueError("retired provider container remains on host")
     residue = [names.pop(name) for name in PILOT_RESIDUE if name in names]
     require_no_pilot_residue(residue)
-    version = manifest["fetcher_bundle_version"]
-    # Every consumer the installed bundle installed is required; each newer provider's
-    # are installed by this release, and may only already exist as a whole.
-    required = {row[0] for row in CONSUMERS if version >= PROVIDER_SINCE_BUNDLE.get(row[1], 0)}
-    newer = [
-        {row[0] for row in CONSUMERS if row[1] == provider}
-        for provider, since in PROVIDER_SINCE_BUNDLE.items()
-        if version < since
-    ]
-    if (
-        not required <= set(names) <= set(EXPECTED_RUNTIMES)
-        or any(names.keys() & group and not group <= set(names) for group in newer)
-        or len(names) + len(residue) != len(rows)
-    ):
+    if set(names) != set(EXPECTED_RUNTIMES) or len(names) + len(residue) != len(rows):
         print("fetcher_host_eligibility=failed reason=consumer_inventory_mismatch")
         raise ValueError("missing, duplicate or unknown consumer")
     for name, provider, profile, image_key in CONSUMERS:

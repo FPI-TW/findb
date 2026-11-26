@@ -186,6 +186,7 @@ def test_failed_member_does_not_terminate_pending_siblings_and_settlement_drains
             "no_data": 0,
             "missing": 99,
             "blocked": 1,
+            "unavailable": 0,
             "is_late": True,
         },
     }

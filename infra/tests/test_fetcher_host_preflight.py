@@ -11,7 +11,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import textwrap
 import unittest
@@ -34,71 +33,6 @@ def load(name, relative):
 
 host = load("fetcher_host_preflight", "infra/deploy/check_fetcher_host.py")
 release = load("preflight_manifest", "infra/deploy/release_manifest.py")
-HISTORICAL_SOURCE_SHA = "28e9d8fa55deb5580d2bed54a4f2d717c27fb1355a7bb29da21177ebb6eb92c9"
-HISTORICAL_VALIDATOR_SHA = "0fdb3091f5f9dbdd61a4a695a5f469e2b0558afc27e5eca20b1b445e484b1a38"
-
-
-def historical_source(destination):
-    # Full selected source is needed to prove the historical validator's real
-    # checksum algorithm and materialization protocol, offline in shallow CI.
-    archive = ROOT / "infra/tests/fixtures/fetcher-v0.1.5-source.tar.gz"
-    assert archive.stat().st_size < 100_000
-    assert hashlib.sha256(archive.read_bytes()).hexdigest() == HISTORICAL_SOURCE_SHA
-    with tarfile.open(archive, "r:gz") as source:
-        members = source.getmembers()
-        assert len(members) < 128
-        contents = {}
-        for member in members:
-            assert member.isfile() and member.size < 4 * 1024 * 1024
-            assert not member.name.startswith("/") and ".." not in Path(member.name).parts
-            contents[member.name] = source.extractfile(member).read()
-    validator_raw = contents["infra/deploy/release_manifest.py"]
-    assert hashlib.sha256(validator_raw).hexdigest() == HISTORICAL_VALIDATOR_SHA
-    validator_path = destination / "infra/deploy/release_manifest.py"
-    validator_path.parent.mkdir(parents=True, exist_ok=True)
-    validator_path.write_bytes(validator_raw)
-    validator = load("historical_preflight_manifest", validator_path)
-    contracts = json.loads(contents["contracts/manifest.json"])
-    expected = set(validator.FETCHER_BUNDLE_FILES) | {
-        "contracts/" + row["path"] for row in contracts["contracts"]
-    }
-    assert set(contents) == expected
-    for relative, content in contents.items():
-        path = destination / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-    return validator
-
-
-def production_args(command, provider=None):
-    # Independent fixtures match deployed v0.1.5/v0.1.6 helper emissions.
-    if command == "findb-fetch-full-market":
-        return [
-            command,
-            "--config",
-            "/app/configs/bootstrap.production.v1.json",
-            "--state-path",
-            "/var/lib/findb-full-market/state.sqlite3",
-            "--provider",
-            provider,
-            "--readiness-file",
-            f"/var/lib/findb-account/readiness/{provider}.json",
-            "--run-forever",
-        ]
-    slot, dataset = {
-        "findb-fetch-scheduler": ("western_markets_window", "us_equity_eod"),
-        "findb-fetch-finlab-scheduler": ("taiwan_market_window", "tw_equity_eod"),
-    }[command]
-    return [
-        command,
-        "--schedule-file",
-        "/app/configs/daily_scheduler.production.v3.json",
-        "--slot-id",
-        slot,
-        "--dataset-key",
-        dataset,
-        "--run-forever",
-    ]
 
 
 REGISTRY = "289112218471.dkr.ecr.ap-southeast-1.amazonaws.com"
@@ -182,18 +116,6 @@ class FetcherHostPreflightTests(unittest.TestCase):
             provider,
             "--run-forever",
         ]
-
-    def install_historical_source(self):
-        shutil.rmtree(self.root)
-        self.root.mkdir(mode=0o700)
-        validator = historical_source(self.root)
-        with validator.SourceBundleReader(self.root) as source:
-            self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher")
-            )
-        self.manifest["release_tag"] = "fetcher-v0.1.5"
-        self.write_manifest()
-        return validator
 
     def write_manifest(self):
         (self.root / "release-manifest.json").write_text(json.dumps(self.manifest))
@@ -280,50 +202,6 @@ class FetcherHostPreflightTests(unittest.TestCase):
             checked += 1
         self.assertEqual(checked, len(host.PROVIDERS))
 
-    # Providers a bundle version first installs, with the topology marker it adds.
-    NEWER = {"hkex": ("# hkex-consumers-v1:", 6), "fmp": ("# fmp-consumers-v1:", 7)}
-
-    def install_version(self, version):
-        """Hosts awaiting a release run its predecessor, without the newer consumers."""
-        self.manifest["fetcher_bundle_version"] = version
-        newer = [p for p, (_, since) in self.NEWER.items() if since > version]
-        self.rows = [
-            row for row in self.rows if not any(row["Name"].endswith("-" + p) for p in newer)
-        ]
-        path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-        text = path.read_text()
-        for provider in newer:
-            text = text.replace(self.NEWER[provider][0], "# previous-consumers:")
-        path.write_text(text)
-        with release.SourceBundleReader(self.root) as source:
-            self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher", 3, version)
-            )
-        self.write_manifest()
-
-    def test_a_version_five_host_awaits_the_hkex_and_fmp_consumers(self):
-        self.install_version(5)
-        self.assertEqual(len(self.rows), 8)
-        self.assertEqual(self.check(), "drained")
-
-    def test_a_version_six_host_awaits_the_fmp_consumers(self):
-        self.install_version(6)
-        self.assertEqual(len(self.rows), 10)
-        self.assertEqual(self.check(), "drained")
-
-    def test_a_partial_set_of_newer_consumers_is_rejected(self):
-        for provider, version in (("hkex", 5), ("fmp", 6)):
-            with self.subTest(provider=provider):
-                self.setUp()
-                rows = [row for row in self.rows if row["Name"].endswith("-" + provider)]
-                self.install_version(version)
-                # An older host holds either none of a newer provider's consumers or all.
-                self.rows.append(rows[0])
-                with self.assertRaisesRegex(ValueError, "unknown consumer"):
-                    self.check()
-                self.rows.append(rows[1])
-                self.assertEqual(self.check(), "drained")
-
     def test_the_current_version_requires_every_consumer(self):
         for name in ("/findb-historical-hkex", "/findb-full-market-fmp"):
             with self.subTest(name=name):
@@ -347,95 +225,6 @@ class FetcherHostPreflightTests(unittest.TestCase):
             f"execution_profile={host.CONSUMERS[0][2]} provider={host.CONSUMERS[0][1]}\n",
         )
         self.assertNotIn("secret", output.getvalue())
-
-    def install_version_two(self):
-        """Hosts awaiting this release still run the Shioaji consumers of version 2."""
-        image = REGISTRY + "/findb/production/fetcher/shioaji@sha256:" + "c" * 64
-        self.manifest["fetcher_bundle_version"] = 2
-        # Bundle v6 first installs HKEX's consumers, v7 FMP's.
-        self.rows = [
-            row
-            for row in self.rows
-            if not row["Name"].endswith("-hkex") and not row["Name"].endswith("-fmp")
-        ]
-        self.manifest["images"]["shioaji"] = image
-        for profile in ("pilot", "full_market"):
-            prefix = profile.replace("_", "-")
-            state = (
-                "/var/lib/findb-full-market"
-                if profile == "full_market"
-                else (f"/var/lib/findb-{prefix}/production")
-            )
-            self.rows.append(
-                self.row(
-                    f"findb-{prefix}-shioaji",
-                    "shioaji",
-                    [
-                        "findb-fetch-runtime",
-                        "--execution-profile",
-                        profile,
-                        "--config",
-                        "/app/configs/bootstrap.production.v1.json",
-                        "--state-path",
-                        state + "/state.sqlite3",
-                        "--provider",
-                        "shioaji",
-                        "--run-forever",
-                    ],
-                )
-            )
-        self.rows.append(
-            self.row(
-                "findb-historical-shioaji",
-                "shioaji",
-                ["findb-fetch-historical-backfill", "--provider", "shioaji", "--run-forever"],
-            )
-        )
-        path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-        path.write_text(
-            path.read_text()
-            .replace("# shioaji-retired-v1:", "# previous-providers:")
-            .replace("# pilot-retired-v1:", "# previous-profiles:")
-            .replace("# hkex-consumers-v1:", "# previous-consumers:")
-            .replace("# fmp-consumers-v1:", "# previous-consumers:")
-        )
-        with release.SourceBundleReader(self.root) as source:
-            self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher")
-            )
-        self.write_manifest()
-
-    def test_version_two_host_is_below_retirement_floor(self):
-        self.install_version_two()
-        self.assertEqual(len(self.rows), 11)
-        self.rows = [row for row in self.rows if row["Name"] != "/findb-pilot-shioaji"]
-        with self.assertRaises((ValueError, KeyError)):
-            self.check()
-
-    def test_retired_shioaji_consumers_are_not_required_after_version_three(self):
-        self.assertFalse(any("shioaji" in row["Name"] for row in self.rows))
-        self.assertEqual(self.check(), "drained")
-
-    def test_version_one_host_is_below_retirement_floor(self):
-        self.install_version_two()
-        self.manifest["fetcher_bundle_version"] = 1
-        self.manifest["images"].pop("factset")
-        self.rows = [row for row in self.rows if not row["Name"].endswith("-factset")]
-        self.rows = [row for row in self.rows if row["Name"] != "/findb-historical-taifex"]
-        path = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
-        path.write_text(
-            path.read_text()
-            .replace("# historical-taifex-v1:", "# previous-historical-consumers:")
-            .replace("# factset-consumers-v1:", "# previous-provider-consumers:")
-        )
-        with release.SourceBundleReader(self.root) as source:
-            self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher")
-            )
-        self.write_manifest()
-        self.assertEqual(len(self.rows), 8)
-        with self.assertRaises(ValueError):
-            self.check()
 
     def test_retired_consumer_residue_is_rejected(self):
         self.rows.append({"Name": "/findb-pilot-shioaji-previous"})
@@ -572,8 +361,8 @@ class FetcherHostPreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown consumer"):
             self.check()
 
-    def test_pre_v5_hosts_are_below_the_rollback_floor(self):
-        for version in (3, 4):
+    def test_pre_v7_hosts_are_below_the_rollback_floor(self):
+        for version in (1, 2, 3, 4, 5, 6):
             with self.subTest(version=version):
                 self.manifest["fetcher_bundle_version"] = version
                 self.write_manifest()
@@ -698,24 +487,21 @@ class FetcherHostPreflightTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check()
 
-    def generated_preflight(self, *, historical_candidate=False, tamper=None):
+    def generated_preflight(self, *, tamper=None):
         workspace = Path(self.temp.name) / "workflow"
         workspace.mkdir()
         candidate_root = workspace / "candidate"
         candidate_root.mkdir()
-        if historical_candidate:
-            candidate_validator = historical_source(candidate_root)
-        else:
-            candidate_validator = release
-            for relative in release.FETCHER_BUNDLE_FILES:
-                path = candidate_root / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(ROOT / relative, path)
-            contracts = json.loads((candidate_root / "contracts/manifest.json").read_text())
-            for row in contracts["contracts"]:
-                path = candidate_root / "contracts" / row["path"]
-                path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(ROOT / "contracts" / row["path"], path)
+        candidate_validator = release
+        for relative in release.FETCHER_BUNDLE_FILES:
+            path = candidate_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, path)
+        contracts = json.loads((candidate_root / "contracts/manifest.json").read_text())
+        for row in contracts["contracts"]:
+            path = candidate_root / "contracts" / row["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / "contracts" / row["path"], path)
         candidate_manifest = copy.deepcopy(self.manifest)
         with candidate_validator.SourceBundleReader(candidate_root) as source:
             candidate_manifest["deployment_source_bundle_sha256"] = (

@@ -13,7 +13,7 @@ import pytest
 
 from findb_fetcher import full_market_cli
 from findb_fetcher.full_market_state import FullMarketState
-from findb_fetcher.provider_work import WorkJournal, prune_closed_journal
+from findb_fetcher.provider_work import WorkJournal, journal_path, prune_closed_journal
 
 NOW = datetime(2026, 11, 20, tzinfo=timezone.utc).timestamp()
 OLD = "2026-11-12T00:00:00+00:00"
@@ -45,8 +45,8 @@ class _Source:
         }
 
 
-def _journal(tmp_path: Path) -> Path:
-    path = tmp_path / "provider-work.sqlite3"
+def _journal(tmp_path: Path, provider: str = "finlab") -> Path:
+    path = journal_path(tmp_path, provider)
     for key in (OLD_WORK, UNRECEIPTED, RECENT_WORK, OPEN_WORK):
         journal = WorkJournal(path, key)
         journal.freeze({"members": [{"key": "m"}]})
@@ -97,7 +97,7 @@ def _keys(path: Path, table: str) -> set[str]:
 def test_journal_retires_only_week_old_closed_and_receipted_works(
     tmp_path: Path, provider: str, responses_retired: bool
 ) -> None:
-    path = _journal(tmp_path)
+    path = _journal(tmp_path, provider)
     source = _Source({OLD_WORK: OLD, UNRECEIPTED: OLD, RECENT_WORK: RECENT, RESPONSE_ONLY: OLD})
 
     removed = prune_closed_journal(source, provider, root=tmp_path, now=NOW)
@@ -120,6 +120,7 @@ def test_journal_retires_only_week_old_closed_and_receipted_works(
     # Once a day per provider: the next pass neither asks Source nor deletes.
     assert prune_closed_journal(source, provider, root=tmp_path, now=NOW + 60) is None
     assert len(source.calls) == 1
+    _journal(tmp_path, "taifex")
     assert prune_closed_journal(source, "taifex", root=tmp_path, now=NOW + 60) is not None
 
 
@@ -168,7 +169,7 @@ def test_source_failure_after_the_claim_is_also_retried_within_the_hour(tmp_path
 def test_retiring_snapshots_does_not_rewrite_the_pages_it_frees(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "provider-work.sqlite3"
+    path = journal_path(tmp_path, "finlab")
     body = b"x" * (8 << 20)
     with WorkJournal(path, OLD_WORK).connection() as db:
         db.execute(
@@ -199,7 +200,8 @@ def test_retiring_snapshots_does_not_rewrite_the_pages_it_frees(
 
 def test_missing_journal_is_never_created(tmp_path: Path) -> None:
     assert prune_closed_journal(_Source({}), "finlab", root=tmp_path, now=NOW) is None
-    assert not (tmp_path / "provider-work.sqlite3").exists()
+    assert not journal_path(tmp_path, "finlab").exists()
+    assert not journal_path(tmp_path).exists()
 
 
 def _plan(state: FullMarketState, day: str, *, prepared: bool) -> str:
@@ -321,7 +323,7 @@ def test_sqlite_retention_failure_logs_its_result_code_only(monkeypatch, capsys,
 def test_journal_writers_wait_as_long_as_the_checkpoint_state(tmp_path: Path) -> None:
     # Every consumer on the host writes the journal; a 5 second default once timed
     # out a FinLab round while another provider's retention held the write lock.
-    with WorkJournal(tmp_path / "provider-work.sqlite3", OLD_WORK).connection() as db:
+    with WorkJournal(journal_path(tmp_path, "finlab"), OLD_WORK).connection() as db:
         journal_wait = db.execute("PRAGMA busy_timeout").fetchone()[0]
     with FullMarketState(tmp_path / "state.sqlite3").connection() as db:
         state_wait = db.execute("PRAGMA busy_timeout").fetchone()[0]
@@ -347,7 +349,7 @@ def _traced(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, bool]]:
 def test_retention_scans_every_provider_outside_the_write_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _journal(tmp_path)
+    _journal(tmp_path, "fmp")
     statements = _traced(monkeypatch)
 
     assert prune_closed_journal(_Source({OLD_WORK: OLD}), "fmp", root=tmp_path, now=NOW)
@@ -361,7 +363,7 @@ def test_retention_deletes_a_large_work_in_short_transactions(
 ) -> None:
     import findb_fetcher.provider_work as provider_work
 
-    path = _journal(tmp_path)
+    path = _journal(tmp_path, "twelve_data")
     with sqlite3.connect(path) as db:
         db.executemany(
             "INSERT INTO work_response VALUES(?,?,?,?)",
@@ -381,7 +383,7 @@ def test_retention_deletes_a_large_work_in_short_transactions(
 
 
 def test_work_stopped_partway_keeps_its_manifest_for_the_next_pass(tmp_path: Path) -> None:
-    path = _journal(tmp_path)
+    path = _journal(tmp_path, "twelve_data")
     source = _Source({OLD_WORK: OLD})
     with sqlite3.connect(path) as db:
         db.execute(

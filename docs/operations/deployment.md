@@ -679,6 +679,20 @@ Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉�
 收到 TERM 後完成當前 transaction 並中斷每日等待。禁止用 `docker rm -f` 越過停止或 checkpoint 問題。交易保存原 container ID、image、名稱與 running state；
 失敗或 INT／TERM／HUP 依反向順序恢復已接受的統一版 runtime。查詢失敗不代表不存在。
 
+## 現行 rollback 下限
+
+各次變更累積的下限中，目前生效的是下列各項（兩環境均已 accepted）；更早的下限已被取代，
+低於這些下限的狀態不再支援，相關相容測試也一併移除：
+
+- Backend：migration `c7e9a1b3d5f8`（[交付計畫 unavailable 計數](#交付計畫-unavailable-計數的-rollback-下限)）。
+  Migration 測試從前一版 `1587769858c0` 開始，container regression 從此 revision 升級。
+- Fetcher：`fetcher-v0.1.51`（provider-work journal 與 Full checkpoint 分檔，見下節）與 bundle v7
+  （十二個 consumers，見 [FMP provider 加入](#fmp-provider-加入與-rollback-下限)）。Host preflight 只接受
+  已安裝 bundle v7。
+
+下限前進時，同步更新本節、`AGENTS.md`、`backend/tests/migration_database.py` 的 template 與
+`infra/tests/test_backend_runtime_container.py` 的升級基線。
+
 ## 首次切換與 rollback 下限
 
 首次切換先建立 SSM 設定、Secrets Manager configuration／TLS 及 main-ref IAM trust，驗證四組 schema。
@@ -807,8 +821,8 @@ lock（列鎖可與其他 row 一起在同一 transaction 中觀察與稽核）�
 
 Fetcher bundle v5 每個 provider 安裝 Full 與 historical 兩個 consumers，四個 providers 共八個；
 `release_fetcher_provider.sh` 只接受 `FETCHER_CONSUMER_PROFILE=full_market|historical`，其他值為
-`consumer_profile_invalid`。Rollback 下限只接受 v5（v3／v4 含 Pilot consumers，v1／v2 含 Shioaji）；
-host preflight 允許從 v3／v4 主機首次切換。Account allocation 的 `account.consumers` 必須剛好是
+`consumer_profile_invalid`。當時 rollback 下限為 v5（v3／v4 含 Pilot consumers，v1／v2 含 Shioaji），
+現行下限見[現行 rollback 下限](#現行-rollback-下限)。Account allocation 的 `account.consumers` 必須剛好是
 `{full_market, historical, maintenance}`，由 `inspect_full_market_installation.py` 檢查。
 
 部署腳本不會 stop 或 `rm -f` 任何 `findb-pilot-*` container：仍在執行者以 `pilot_residue_running`、
@@ -996,7 +1010,7 @@ Catalog 加入第五個 provider `hkex`（feed `hk_equity_official_eod`，契約
   取代 `b3d5f7a9c1e2` 成為部署前 schedule inspection；其他列沿用 `b3d5f7a9c1e2` 的凍結規則。已啟動過 control
   或已有使用紀錄時拒絕 downgrade。Migration 後回退到舊 Backend image 會被舊 inspection 判為
   `unknown_difference`，必須先 downgrade。
-- Fetcher bundle v6（marker `# hkex-consumers-v1:`）安裝十個 consumers。Host preflight 接受已安裝 v5 或 v6：
+- Fetcher bundle v6（marker `# hkex-consumers-v1:`）安裝十個 consumers。當時 host preflight 接受已安裝 v5 或 v6：
   v5 主機可以沒有 HKEX 的兩個 consumers（本版安裝），但不能只有其中一個；v6 主機必須十個齊全。
   Recovery gate 同樣容許 HKEX 的兩個 consumers 整組缺席。CD 只接受部署 v6 bundle。
 - **部署順序**：Fetcher consumer 啟動就以 Source key 呼叫 Source，未登記的 key 回 401（不屬於暫時性錯誤），
@@ -1032,10 +1046,9 @@ provider credential：
   Migration 後回退到舊 Backend image 會被舊 inspection 判為 `unknown_difference`，必須先 downgrade。
 - Serve 的 active scope 加入 `market_eod` 的 `US`／`HK` `index`；舊 Backend image 遇到 active 的指數 dataset
   會回 `SERVE_CONFIGURATION_INVALID`，這也是 migration 後不可直接回退 image 的原因之一。
-- Fetcher bundle v7（marker `# fmp-consumers-v1:`）安裝十二個 consumers。Host preflight 接受已安裝 v5、v6 或 v7，
-  每個較新的 provider 各自判斷：v6 主機可以沒有 FMP 的兩個 consumers，v5 主機可以 HKEX 與 FMP 都沒有，
-  但同一個 provider 不能只有其中一個；v7 主機必須十二個齊全。Recovery gate 同樣逐個 provider 判斷。
-  CD 只接受部署 v7 bundle。
+- Fetcher bundle v7（marker `# fmp-consumers-v1:`）安裝十二個 consumers。CD 只接受部署 v7 bundle。
+  兩台主機都已安裝 v7 後，host preflight 只接受已安裝 v7，且十二個 consumers 必須齊全；
+  下次新增 provider 時，須再讓 host preflight 容許已安裝前一版的主機整組缺少新 provider 的 consumers。
 - **部署順序**與 HKEX 相同：
   1. 合併並暫停 Fetcher 部署。
   2. 從 main 以 `tofu apply -target` 建立 FMP 的兩個 secret（Source key 與 provider key）的 metadata 與

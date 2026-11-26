@@ -127,3 +127,18 @@ def test_control_clock_is_the_earliest_start_across_timezones(lagged):
     assert earliest_feed([us_equity, hong_kong]) is hong_kong
     finlab = [f for f in catalog.feeds if f.provider == "finlab" and f.schedule is not None]
     assert earliest_feed(finlab).schedule.local_time == "18:00"
+
+
+def test_seed_delivery_expectations_use_catalog_slots():
+    from scripts.seed_data import DATASETS
+
+    feeds = {feed.dataset_key: feed for feed in provider_metadata.acquisition_feeds()}
+    checked = 0
+    for definition in DATASETS:
+        feed = feeds.get(definition["dataset_key"])
+        if feed is None:
+            continue
+        schedule = definition["config"]["delivery_expectation"]["schedule"]
+        assert schedule["slot_id"] == feed.delivery.slot_id, definition["dataset_key"]
+        checked += 1
+    assert checked == len(feeds)

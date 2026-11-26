@@ -46,7 +46,7 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
 - `delivery.slot_id` 只表示既有 contract 相容欄位與 Dashboard 區域分組，不能作為時鐘或新 acquisition
   權威。Seed 的 delivery expectation 與 `scheduler_control` 的 slot、時鐘、時區都由 catalog 投影
   （`seed_datasets` 會更新現役 control 的 slot），既有列由 migration `c3f6a9d1e2b7` 投影一次；
-  `test_catalog_slot_migration.py` 強制 seed、frozen migration 與 catalog 一致。
+  `test_cross_timezone_schedule.py` 強制 seed 與 catalog 一致。
 - Historical execution profiles 保留現行 local／staging／production 的靜態 universe reference 與 executor
   預設值，不包含觸發時間。這些是打包預設，不是 DB request、operator overrides 或即時授權。
 - `historical_cohort` 宣告 historical 日期如何凍結成員，historical feed 必填、其它 feed 為 null：

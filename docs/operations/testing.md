@@ -330,19 +330,15 @@ FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type chec
 `infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service；不需資料庫的部署 shell
 suites（Fetcher inventory、full-market repair 與 checkpoint entry）放在 `infra/tests`。
 GitHub 4 vCPU runner 上 Backend 與 Infra 固定四個
-workers；migration job 維持序列執行。Migration tests 只涵蓋 AGENTS.md 記載的 rollback 下限
-`a7c3e1f9d2b4` 及之後的 revisions；session template 停在下限前一版 `e9f4a1c6b3d5`，讓測試
-能在下限 migration 執行前建立種子。下限前進時，同時前移 template，並刪除只驗證下限以前
-revisions 的測試。`test_schema_drift_migration.py` 比對 `alembic upgrade head` 與 ORM metadata
-的結構、CHECK 名稱及 server defaults，三類差異均直接使測試失敗。Partition children 僅由
-migration 管理，不當成 ORM drift。
-舊 revision 的 migration 測試以目前 services 建立種子，因此 `tests/migration_database.py`
-的 `run_alembic` 會補兩類相容：`d7a2c4e6f8b1` 前已退役欄位的 server default，以及
-`FORWARD_COLUMN_GROUPS`／`FORWARD_TABLES` 列出、較新 revision 才新增的欄位與表（例如
-`b4d6f8a1c3e5` 的 part 計數／`parts_synced_at`；ORM 會把未設定的 nullable 欄位寫成 NULL）。
-後者以 comment 標記為 shim，只在升版會套用該 revision 前移除，讓該 migration 仍新增真正
-欄位；驗證該 migration 本身的測試以 `forward_columns=False` 關閉 shim。Alembic subprocess
-前後的 shim 各共用一條連線與 transaction，不為每個群組另建 engine。
+workers；migration job 維持序列執行。Migration tests 只涵蓋 Backend rollback 下限
+`c7e9a1b3d5f8`（見 `docs/operations/deployment.md` 的現行 rollback 下限）及之後的 revisions；
+session template 停在下限前一版 `1587769858c0`，讓測試能在下限 migration 執行前建立種子。
+下限前進時，同時前移 template，並刪除只驗證下限以前 revisions 的測試；部署 preflight 載入的
+schedule inspection 由 `test_catalog_schedule_preflight_migration.py` 驗證。
+`test_schema_drift_migration.py` 比對 `alembic upgrade head` 與 ORM metadata 的結構、CHECK
+名稱及 server defaults，三類差異均直接使測試失敗。Partition children 僅由 migration 管理，
+不當成 ORM drift。Template 之後沒有已退役或尚未存在、需要相容的欄位，
+`tests/migration_database.py` 的 `run_alembic` 只在 subprocess 執行 Alembic，不補 shim。
 
 Raw SQL INSERT 驗證 ORM 建表的 boolean／integer／string／JSONB 預設值與市場代碼 CHECK，
 migration 建表的 server defaults 由上述 drift 比對涵蓋；並以 `Asia/Taipei` session 驗證
@@ -356,7 +352,7 @@ Fetcher deployment transaction harness 以 fake Docker／sudo／sleep 驗證十�
 Migration job 另以正式 `backend/Dockerfile` 建置 image，執行
 `infra/tests/test_backend_runtime_container.py`。測試從 deploy helper 擷取實際 migration container
 argv，在獨立 internal Docker network 與 PostgreSQL 16 上驗證空 DB、從 rollback 下限
-`a7c3e1f9d2b4` 升級、exact head、重跑與 sentinel 保留。Runtime image 不掛 repo、不含 Fetcher／
+`c7e9a1b3d5f8` 升級、exact head、重跑與 sentinel 保留。Runtime image 不掛 repo、不含 Fetcher／
 pytest，不允許對外網路或寫入 root filesystem；fixture 只清理自己建立的 containers／network。
 一般 Infra suite 未指定 image 時略過這兩個案例；CI migration job 明確設定 image，不能略過。
 本機重現：
@@ -491,8 +487,7 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 
 兩個 AWS 環境共用部署 schema、設定 loader、必要 gates 與健康驗收。
 `test_execution_profiles.py` 覆蓋七條 feed 的凍結樣本、`full_market` 以外 profile 的 422 拒絕、canonical 覆寫後持久化證據及缺漏告警；
-Pilot 退役由 `test_retire_pilot_profile_migration.py` 驗證刪除 Pilot workflow rows、保留 runs／raw／canonical
-與 audit，以及任一未結 Pilot 狀態整筆拒絕；`test_scheduler_start.py`／`test_full_market_lifecycle.py` 驗證
+`test_scheduler_start.py`／`test_full_market_lifecycle.py` 驗證
 緊急停止的 audit、冪等與 first dates 保留；Infra `test_fetcher_shutdown_transaction.py`／
 `test_fetcher_host_preflight.py` 驗證 `findb-pilot-*` 殘留封存、執行中殘留 fail closed、candidate 只檢查及
 symlink checkpoint 拒絕。
