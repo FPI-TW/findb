@@ -144,7 +144,7 @@ async def _shape(engine) -> dict[str, str]:
 @pytest.mark.asyncio
 async def test_history_shape_allows_unknown_starts_and_blocks_removal_once_used():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "index_history_shape"
+        "e9f4a1c6b3d5", "index_history_shape"
     ) as (url, engine):
         await run_alembic(url, SHAPE)
         async with engine.connect() as db:
