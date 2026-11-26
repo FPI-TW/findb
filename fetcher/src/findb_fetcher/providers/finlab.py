@@ -78,7 +78,8 @@ _NOT_READY_TAIL_DATES = 5
 FINLAB_TIMEZONE = ZoneInfo("Asia/Taipei")
 FINLAB_FINAL_AFTER = clock_time(18, 32)
 # When neither the 18:32 nor the 21:32 run has published by then, the table is
-# taken as it is (logged), before the daily publication window closes at 22:30.
+# taken as it is (logged). This is a cut-off of its own: since #710 the publication
+# wait lasts until 30 minutes before the feed's completion deadline, next morning.
 FINLAB_FINAL_FALLBACK = clock_time(22, 15)
 
 
@@ -442,6 +443,12 @@ class FinLabSdkGateway:
                             ) from None
                         if usage is not None:
                             _record_usage(operation, dataset.strip(), usage)
+                        # Still under the account lock the get ran in (see _published_at).
+                        published = (
+                            _published_at(data, get, dataset.strip())
+                            if target_date is not None
+                            else None
+                        )
                     if account:
                         try:
                             if observed is None:
@@ -477,7 +484,7 @@ class FinLabSdkGateway:
                             _require_final(
                                 dataset.strip(),
                                 target_date,
-                                _published_at(data, get, dataset.strip()),
+                                published,
                                 datetime.now(timezone.utc),
                             )
                             prior = _prior_row(
@@ -1331,8 +1338,11 @@ def _published_at(data: object, get: object, dataset: str) -> datetime | None:
     """The published revision of the cached table the get just read, or ``None``.
 
     The SDK dates its cache file at the revision it downloaded or confirmed. The
-    worker shares this file system, and the provider's host lock keeps every other
-    FinLab process from touching the cache between its get and this read.
+    worker shares this file system. The caller reads this inside the acquisition
+    that ran the get, under the FinLab account lock: every FinLab consumer (each
+    lane and the historical one) takes that lock before the SDK touches the shared
+    cache, so none can replace the file between the get and this read. The host
+    lock is per lane and does not exclude another lane's consumer.
     """
     for storage in _file_storages(data, get):
         try:

@@ -682,7 +682,11 @@ def test_live_readiness_probe_samples_us_only() -> None:
 
 
 def _runtime(
-    tmp_path: Path, *, provider: str = "twelve_data", execution_profile: str = "full_market"
+    tmp_path: Path,
+    *,
+    provider: str = "twelve_data",
+    execution_profile: str = "full_market",
+    lane: str = "default",
 ) -> tuple[Any, Any, Any]:
     from findb_fetcher.full_market_runtime import FullMarketRuntime
     from findb_fetcher.raw_storage import RawObject
@@ -740,6 +744,7 @@ def _runtime(
         raw_store=raw,
         readiness_file=None,
         client=httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(500))),
+        lane=lane,
     )
     # Low-level executor fixtures intentionally use a synthetic scope.
     runtime.installed_feeds = runtime.feeds = config["feeds"]
@@ -1473,7 +1478,7 @@ def test_control_scope_must_share_the_installed_feeds(
     from findb_fetcher import full_market_cli
 
     class Control:
-        def __init__(self, _config, _key):
+        def __init__(self, _config, _key, *, lane="default"):
             pass
 
         def __enter__(self):
@@ -1522,7 +1527,7 @@ def test_require_stopped_checks_existing_control_without_mutating_prepared_check
     calls = []
 
     class Control:
-        def __init__(self, _config, key):
+        def __init__(self, _config, key, *, lane="default"):
             assert key == "full_market_twelve_data_v1"
 
         def __enter__(self):
@@ -1608,7 +1613,7 @@ def test_require_stopped_validates_physical_integrity_and_bound_core(
     events = []
 
     class Control:
-        def __init__(self, *_):
+        def __init__(self, *_, **__):
             events.append("Source")
 
         def __enter__(self):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from pathlib import Path
@@ -17,6 +18,12 @@ if TYPE_CHECKING:
 
 METADATA_PATH = Path(__file__).parent / "data/execution_descriptors.v1.json"
 CONFIGS_DIR = Path("/app/configs")
+# A provider's execution lane: its own Source FIFO, owner, consumer and local files.
+# The default lane keeps every pre-lane name; historical work always runs there.
+DEFAULT_LANE = "default"
+
+
+_LANE_NAME = re.compile(r"[a-z][a-z0-9_]{0,29}")
 
 
 class ExecutionMetadataError(ValueError):
@@ -182,6 +189,27 @@ def acquisition_feeds(provider: str | None = None) -> tuple[dict[str, Any], ...]
     return tuple(
         row for row in provider_feeds(provider) if row["capabilities"]["acquisition"] is True
     )
+
+
+def feed_lane(feed: dict[str, Any]) -> str:
+    """The packaged lane of one descriptor feed; a feed naming none runs in the default lane."""
+    lane = feed.get("lane", DEFAULT_LANE)
+    if type(lane) is not str or _LANE_NAME.fullmatch(lane) is None:
+        raise ExecutionMetadataError("Invalid execution lane")
+    return lane
+
+
+def provider_lanes(provider: str) -> tuple[str, ...]:
+    """The lanes this image runs a provider's daily acquisition in, default first."""
+    lanes = {feed_lane(feed) for feed in acquisition_feeds(provider)} | {DEFAULT_LANE}
+    return tuple(sorted(lanes, key=lambda lane: (lane != DEFAULT_LANE, lane)))
+
+
+def lane_feeds(provider: str, lane: str = DEFAULT_LANE) -> tuple[dict[str, Any], ...]:
+    """The provider's acquiring feeds that run in ``lane``; other lanes' consumers own the rest."""
+    if lane not in provider_lanes(provider):
+        raise ExecutionMetadataError("Unknown execution lane")
+    return tuple(feed for feed in acquisition_feeds(provider) if feed_lane(feed) == lane)
 
 
 def historical_feeds(provider: str) -> tuple[dict[str, Any], ...]:

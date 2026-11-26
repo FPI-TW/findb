@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from findb_fetcher.execution_metadata import acquisition_feeds
+from findb_fetcher.execution_metadata import DEFAULT_LANE, acquisition_feeds, feed_lane
 
 # Implemented dispatch paths, not configuration. Adding metadata cannot install
 # a provider adapter or silently fall through to another provider's SDK.
@@ -66,6 +66,7 @@ def resolve_execution_config(
     provider: str,
     environment: str,
     profile: str,
+    lane: str = DEFAULT_LANE,
 ) -> ExecutionSnapshot:
     """Validate the snapshot, then expose the feeds this image installs and Source publishes.
 
@@ -74,6 +75,10 @@ def resolve_execution_config(
     and an installed feed an older Backend does not publish yet is simply not
     planned. Neither stops the feeds both sides know. A maintenance credential may
     also publish a narrower scope.
+
+    Only ``lane``'s feeds are exposed: the packaged descriptors, never the
+    published config, say which lane a feed runs in, and another lane's consumer
+    validates and plans the rest.
     """
     body = deepcopy(value)
     if set(body) != {
@@ -122,6 +127,9 @@ def resolve_execution_config(
         if key not in expected:
             # A newer Backend's feed: not executable by this image, and its shape
             # may be newer too. It waits for the Fetcher release that installs it.
+            continue
+        if feed_lane(expected[key]) != lane:
+            # Another lane's consumer owns this feed.
             continue
         if set(feed) != {
             "provider",

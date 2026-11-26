@@ -126,6 +126,7 @@ def test_daily_cycle_and_drain_only_dispatch_queue(provider, drain, monkeypatch)
 
     runtime.provider = provider
     runtime.execution_profile = "full_market"
+    runtime.lane = "default"
     runtime.source = SimpleNamespace(execution_config=lambda: publication(provider))
     calls = []
     runtime._queued_cycle = lambda **kwargs: calls.append(kwargs) or {"status": "queued"}

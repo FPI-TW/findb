@@ -13,7 +13,7 @@ REPO_ROOT = BACKEND_ROOT.parent
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.provider_catalog import ProviderCatalog, load_catalog  # noqa: E402
+from app.provider_catalog import DEFAULT_LANE, ProviderCatalog, load_catalog  # noqa: E402
 
 CATALOG_PATH = Path("backend/configs/provider_catalog.v1.json")
 
@@ -34,6 +34,46 @@ def _typescript_list(name: str, values: list[str]) -> list[str]:
     if len(line) <= 80:
         return [line]
     return [f"  {name}: [", *(f"    {json.dumps(value)}," for value in values), "  ],"]
+
+
+def consumer_name(role: str, lane: str, container_suffix: str) -> str:
+    """A consumer's container name; the default lane keeps the pre-lane name."""
+    if lane == DEFAULT_LANE:
+        return f"findb-{role.replace('_', '-')}-{container_suffix}"
+    # The lane goes before the provider so no name extends another consumer's name
+    # plus "-", which the deployment transaction reserves for its own replicas.
+    return f"findb-{role.replace('_', '-')}-{lane.replace('_', '-')}-{container_suffix}"
+
+
+def provider_consumers(data: dict) -> list[dict[str, str]]:
+    """One historical consumer per provider and one Full consumer per provider lane."""
+    rows = []
+    for p in data["providers"]:
+        lanes = sorted(
+            {feed["lane"] for feed in data["feeds"] if feed["provider"] == p["provider"]}
+            | {DEFAULT_LANE},
+            key=lambda lane: (lane != DEFAULT_LANE, lane),
+        )
+        for role in p["consumer_roles"]:
+            for lane in lanes if role == "full_market" else [DEFAULT_LANE]:
+                rows.append(
+                    {
+                        "name": consumer_name(role, lane, p["container_suffix"]),
+                        "provider": p["provider"],
+                        "role": role,
+                        "lane": lane,
+                        "image_key": p["image_key"],
+                    }
+                )
+    names = [row["name"] for row in rows]
+    if len(set(names)) != len(names):
+        raise ValueError("generated consumer names collide")
+    for name in names:
+        for other in names:
+            if other.startswith(name + "-"):
+                # deployment_transaction.py treats NAME-* as NAME's own replicas.
+                raise ValueError(f"consumer name {other} extends consumer name {name}")
+    return sorted(rows, key=lambda row: row["name"])
 
 
 def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
@@ -74,6 +114,7 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
                     "asset_class",
                     "frequency",
                     "contract",
+                    "lane",
                     "lifecycle",
                     "capabilities",
                     "delivery",
@@ -88,19 +129,7 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
         ],
     }
     fetcher["projection_sha256"] = projection_digest(fetcher)
-    consumers = sorted(
-        (
-            {
-                "name": f"findb-{role.replace('_', '-')}-{p['container_suffix']}",
-                "provider": p["provider"],
-                "role": role,
-                "image_key": p["image_key"],
-            }
-            for p in data["providers"]
-            for role in p["consumer_roles"]
-        ),
-        key=lambda row: row["name"],
-    )
+    consumers = provider_consumers(data)
     inventory = {
         "schema_version": 1,
         "images": sorted({p["image_key"] for p in data["providers"]}),
@@ -163,7 +192,9 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
     for row in consumers:
         block += (
             "    ("
-            + ", ".join(json.dumps(row[k]) for k in ("name", "provider", "role", "image_key"))
+            + ", ".join(
+                json.dumps(row[k]) for k in ("name", "provider", "role", "lane", "image_key")
+            )
             + "),\n"
         )
     block += ")\nEXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)\n"

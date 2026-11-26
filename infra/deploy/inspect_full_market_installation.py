@@ -14,18 +14,18 @@ from pathlib import Path
 # BEGIN GENERATED PROVIDER INVENTORY
 PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
 CONSUMERS = (
-    ("findb-full-market-factset", "factset", "full_market", "factset"),
-    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
-    ("findb-full-market-fmp", "fmp", "full_market", "twelve_data"),
-    ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
-    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
-    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
-    ("findb-historical-factset", "factset", "historical", "factset"),
-    ("findb-historical-finlab", "finlab", "historical", "finlab"),
-    ("findb-historical-fmp", "fmp", "historical", "twelve_data"),
-    ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
-    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
-    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
+    ("findb-full-market-factset", "factset", "full_market", "default", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
+    ("findb-full-market-fmp", "fmp", "full_market", "default", "twelve_data"),
+    ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "default", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "default", "finlab"),
+    ("findb-historical-fmp", "fmp", "historical", "default", "twelve_data"),
+    ("findb-historical-hkex", "hkex", "historical", "default", "twelve_data"),
+    ("findb-historical-taifex", "taifex", "historical", "default", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "default", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
@@ -61,11 +61,21 @@ def build(
         or accepted.get("images") != manifest["images"]
     ):
         raise ValueError("immutable acceptance does not bind this installation")
-    consumers = {role: (name, image) for name, owner, role, image in CONSUMERS if owner == provider}
-    if set(consumers) != {"full_market", "historical"}:
+    # One Full consumer per provider lane (default first) and one historical consumer.
+    consumers = {
+        (role, lane): (name, image)
+        for name, owner, role, lane, image in CONSUMERS
+        if owner == provider
+    }
+    if (
+        ("full_market", "default") not in consumers
+        or {key for key in consumers if key[0] == "historical"} != {("historical", "default")}
+        or {role for role, _ in consumers} != {"full_market", "historical"}
+    ):
         raise ValueError("provider is not in the generated consumer inventory")
-    full_name, image_key = consumers["full_market"]
-    actual = [(role, inspect(consumers[role][0])) for role in ("full_market", "historical")]
+    full_name, image_key = consumers[("full_market", "default")]
+    order = sorted(consumers, key=lambda key: (key[0] != "full_market", key[1] != "default", key))
+    actual = [(role, lane, inspect(consumers[(role, lane)][0])) for role, lane in order]
     allocation = json.loads(allocation_path.read_bytes())
     if (
         allocation["environment"] != target
@@ -80,7 +90,7 @@ def build(
     identities = []
     source_key_sha256 = None
     environment_contracts = set()
-    for consumer, row in actual:
+    for consumer, lane, row in actual:
         env = dict(item.split("=", 1) for item in row["Config"]["Env"] if "=" in item)
         canonical, legacy = env.get("APP_ENVIRONMENT"), env.get("DEPLOYMENT_TARGET")
         if canonical is not None and legacy is not None and canonical != legacy:
@@ -135,13 +145,24 @@ def build(
         if installed_digest != allocation_digest:
             raise ValueError("running consumer allocation differs from supplied configuration")
         if consumer == "full_market":
-            source_key_sha256 = hashlib.sha256(env["SOURCE_CLIENT_KEY"].encode()).hexdigest()
+            # Every lane runs under the provider's one Source credential.
+            key_sha256 = hashlib.sha256(env["SOURCE_CLIENT_KEY"].encode()).hexdigest()
+            if source_key_sha256 not in (None, key_sha256):
+                raise ValueError("installed Full consumers use different Source credentials")
+            source_key_sha256 = key_sha256
         if not row["State"]["Running"]:
             raise ValueError("installed consumer is not running")
         identities.append(
-            {"consumer": consumer, "container_id": row["Id"], "image": row["Config"]["Image"]}
+            {
+                "consumer": consumer,
+                # Only a non-default lane names itself; default receipts stay unchanged.
+                **({} if lane == "default" else {"lane": lane}),
+                "container_id": row["Id"],
+                "image": row["Config"]["Image"],
+            }
         )
-    command = actual[0][1]["Config"]["Cmd"]
+    profiles = list(dict.fromkeys(consumer for consumer, _, _ in actual))
+    command = actual[0][2]["Config"]["Cmd"]
     installed_config = command[command.index("--config") + 1]
     actual_digest = subprocess.check_output(
         [
@@ -157,9 +178,7 @@ def build(
     ).strip()
     if actual_digest != digest(config_path):
         raise ValueError("running config differs from supplied immutable config")
-    if set(allocation["account"]["consumers"]) != {consumer for consumer, _ in actual} | {
-        "maintenance"
-    }:
+    if set(allocation["account"]["consumers"]) != set(profiles) | {"maintenance"}:
         raise ValueError("account allocation must cover actual installed consumers")
     config = json.loads(config_path.read_bytes())
     if config.get("deployment_target") != target:
@@ -179,7 +198,7 @@ def build(
         "kind": "deployed-installed",
         "environment": target,
         "environment_contracts": sorted(environment_contracts),
-        "runtime_id": actual[0][1]["Id"],
+        "runtime_id": actual[0][2]["Id"],
         "source_key_sha256": source_key_sha256,
         "artifact_sha256": digest(manifest_path),
         "config_sha256": digest(config_path),
@@ -189,7 +208,7 @@ def build(
         "installed_at": datetime.now(timezone.utc).isoformat(),
         "governor_identity": governor,
         "account_allocation_sha256": allocation_digest,
-        "consumers": [consumer for consumer, _ in actual] + ["maintenance"],
+        "consumers": profiles + ["maintenance"],
         "installed_consumers": identities,
     }
 

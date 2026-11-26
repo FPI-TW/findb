@@ -15,18 +15,18 @@ from pathlib import Path
 # BEGIN GENERATED PROVIDER INVENTORY
 PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
 CONSUMERS = (
-    ("findb-full-market-factset", "factset", "full_market", "factset"),
-    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
-    ("findb-full-market-fmp", "fmp", "full_market", "twelve_data"),
-    ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
-    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
-    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
-    ("findb-historical-factset", "factset", "historical", "factset"),
-    ("findb-historical-finlab", "finlab", "historical", "finlab"),
-    ("findb-historical-fmp", "fmp", "historical", "twelve_data"),
-    ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
-    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
-    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
+    ("findb-full-market-factset", "factset", "full_market", "default", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
+    ("findb-full-market-fmp", "fmp", "full_market", "default", "twelve_data"),
+    ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "default", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "default", "finlab"),
+    ("findb-historical-fmp", "fmp", "historical", "default", "twelve_data"),
+    ("findb-historical-hkex", "hkex", "historical", "default", "twelve_data"),
+    ("findb-historical-taifex", "taifex", "historical", "default", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "default", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
@@ -75,7 +75,7 @@ def installed_manifest(base, validator, target, registry):
     return manifest
 
 
-def runtime_command(target, provider, profile):
+def runtime_command(target, provider, profile, lane="default"):
     if profile == "historical":
         return [
             "findb-fetch-historical-backfill",
@@ -86,6 +86,9 @@ def runtime_command(target, provider, profile):
     state_dir = f"/var/lib/findb-{profile.replace('_', '-')}/{target}"
     if profile == "full_market" and target == "production":
         state_dir = "/var/lib/findb-full-market"
+    # The default lane keeps the pre-lane command; another lane names itself and
+    # runs on its own checkpoint.
+    suffix, lane_args = ("", []) if lane == "default" else (f"-{lane}", ["--lane", lane])
     return [
         "findb-fetch-runtime",
         "--execution-profile",
@@ -93,9 +96,10 @@ def runtime_command(target, provider, profile):
         "--config",
         f"/app/configs/bootstrap.{target}.v1.json",
         "--state-path",
-        f"{state_dir}/state-{provider}.sqlite3",
+        f"{state_dir}/state-{provider}{suffix}.sqlite3",
         "--provider",
         provider,
+        *lane_args,
         "--run-forever",
     ]
 
@@ -130,8 +134,8 @@ def committed_runtime(row, base=Path("/opt/fetcher")):
         return False
 
 
-def require_runtime(row, image, target, provider, profile):
-    command = runtime_command(target, provider, profile)[0]
+def require_runtime(row, image, target, provider, profile, lane="default"):
+    command = runtime_command(target, provider, profile, lane)[0]
     config, state = row["Config"], row["State"]
     fields = [item.split("=", 1) for item in config["Env"] if "=" in item]
     identity = [value for key, value in fields if key == "APP_ENVIRONMENT"]
@@ -139,7 +143,7 @@ def require_runtime(row, image, target, provider, profile):
     if identity != [target] or any(value != target for value in legacy):
         raise ValueError("installed runtime environment mismatch")
     args = config["Cmd"]
-    expected = runtime_command(target, provider, profile)
+    expected = runtime_command(target, provider, profile, lane)
     if (
         not committed_runtime(row)
         or config["Image"] != image
@@ -176,12 +180,12 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     if set(names) != set(EXPECTED_RUNTIMES) or len(names) != len(rows):
         print("fetcher_host_eligibility=failed reason=consumer_inventory_mismatch")
         raise ValueError("missing, duplicate or unknown consumer")
-    for name, provider, profile, image_key in CONSUMERS:
+    for name, provider, profile, lane, image_key in CONSUMERS:
         if name not in names:
             continue
         image = manifest["images"][image_key]
         try:
-            require_runtime(names[name], image, target, provider, profile)
+            require_runtime(names[name], image, target, provider, profile, lane)
         except (ValueError, KeyError):
             print(
                 "fetcher_host_blocked reason=runtime_not_eligible "

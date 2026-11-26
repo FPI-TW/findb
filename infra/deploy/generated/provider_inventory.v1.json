@@ -2,72 +2,84 @@
   "consumers": [
     {
       "image_key": "factset",
+      "lane": "default",
       "name": "findb-full-market-factset",
       "provider": "factset",
       "role": "full_market"
     },
     {
       "image_key": "finlab",
+      "lane": "default",
       "name": "findb-full-market-finlab",
       "provider": "finlab",
       "role": "full_market"
     },
     {
       "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-full-market-fmp",
       "provider": "fmp",
       "role": "full_market"
     },
     {
       "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-full-market-hkex",
       "provider": "hkex",
       "role": "full_market"
     },
     {
       "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-full-market-taifex",
       "provider": "taifex",
       "role": "full_market"
     },
     {
       "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-full-market-twelve-data",
       "provider": "twelve_data",
       "role": "full_market"
     },
     {
       "image_key": "factset",
+      "lane": "default",
       "name": "findb-historical-factset",
       "provider": "factset",
       "role": "historical"
     },
     {
       "image_key": "finlab",
+      "lane": "default",
       "name": "findb-historical-finlab",
       "provider": "finlab",
       "role": "historical"
     },
     {
       "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-historical-fmp",
       "provider": "fmp",
       "role": "historical"
     },
     {
       "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-historical-hkex",
       "provider": "hkex",
       "role": "historical"
     },
     {
       "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-historical-taifex",
       "provider": "taifex",
       "role": "historical"
     },
     {
       "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-historical-twelve-data",
       "provider": "twelve_data",
       "role": "historical"
@@ -78,7 +90,7 @@
     "finlab",
     "twelve_data"
   ],
-  "projection_sha256": "abde0b91e8806b652199498457b33003bdf586a729a73f3eec4725b95e596bd6",
+  "projection_sha256": "a6d55d1ff6f0939225b7d8769b813c19e63ef7f422adacd7a570b96afe727f8a",
   "providers": [
     "factset",
     "finlab",

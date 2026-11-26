@@ -152,10 +152,12 @@ def test_transported_checkpoint_guard(
     inspect_rc=0,
     expected_reason=None,
     provider="finlab",
+    lane=None,
 ):
     builder, binaries = _transport(tmp_path)
-    # Each Full consumer runs on its own checkpoint (#691).
-    name = f"state-{provider}.sqlite3"
+    # Each Full consumer (one per provider lane) runs on its own checkpoint (#691).
+    name = f"state-{provider}{'-' + lane if lane else ''}.sqlite3"
+    consumer = f"{lane.replace('_', '-')}-{provider}" if lane else provider
     checkpoint = tmp_path / "checkpoint" / name
     if state_kind != "missing":
         checkpoint.parent.mkdir(exist_ok=True)
@@ -226,12 +228,13 @@ export -f host_path sudo docker
             "PATH": binaries + ":" + os.environ["PATH"],
             "APP_ENVIRONMENT": target,
             "installed_name": (
-                f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}{suffix}"
+                f"findb-{profile.replace('_', '-')}-{consumer.replace('_', '-')}{suffix}"
             ),
             "command_output": command_output
             or json.dumps(
                 ["findb-fetch-runtime", "--execution-profile", profile]
                 + ["--state-path", f"{state_dir}/{name}", "--provider", provider]
+                + (["--lane", lane] if lane else [])
             ),
             "command_rc": str(command_rc),
             "inspect_rc": str(inspect_rc),
@@ -271,6 +274,64 @@ def test_transported_guard_checks_every_installed_providers_full_checkpoint(
     test_transported_checkpoint_guard(
         tmp_path, "production", "full_market", suffix, state_kind, provider=provider
     )
+
+
+@pytest.mark.parametrize("suffix", ["", "-previous", "-preflight-state"])
+@pytest.mark.parametrize("state_kind", ["missing", "valid", "corrupt"])
+@pytest.mark.parametrize("lane", ["intraday", "intra_day"])
+def test_transported_guard_checks_a_lane_consumers_own_checkpoint(
+    tmp_path, suffix, state_kind, lane
+):
+    test_transported_checkpoint_guard(
+        tmp_path, "staging", "full_market", suffix, state_kind, lane=lane
+    )
+
+
+def _checkpoint_selectors():
+    """The checkpoint path selector each copy of the gate runs, as written."""
+    selectors = []
+    for path in (GUARD, REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"):
+        source = path.read_text()
+        start = source.index("<<'STATE'\n") + len("<<'STATE'\n")
+        selectors.append(source[start : source.index("\nSTATE\n", start)])
+    return selectors
+
+
+def test_both_gate_copies_select_the_same_checkpoints():
+    guard, deploy = _checkpoint_selectors()
+    assert guard == deploy
+
+
+@pytest.mark.parametrize(
+    ("name", "accepted"),
+    [
+        ("state-finlab.sqlite3", True),
+        ("state-twelve_data.sqlite3", True),
+        ("state-finlab-intraday.sqlite3", True),
+        ("state-twelve_data-intra_day.sqlite3", True),
+        ("state-finlab-.sqlite3", False),
+        ("state-finlab--intraday.sqlite3", False),
+        ("state-finlab-Intraday.sqlite3", False),
+        ("state-finlab-intraday-extra.sqlite3", False),
+        ("state-finlab-9lane.sqlite3", False),
+        ("state-finlab-" + "a" * 31 + ".sqlite3", False),
+        ("state.sqlite3", False),
+    ],
+)
+def test_gate_accepts_only_provider_and_lane_checkpoint_names(name, accepted):
+    root = "/var/lib/findb-full-market/staging"
+    command = json.dumps(["findb-fetch-runtime", "--state-path", f"{root}/{name}"])
+    result = subprocess.run(
+        ["python3", "-", command, root],
+        input=_checkpoint_selectors()[0],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        env=script_env(),
+    )
+    assert (result.returncode == 0) is accepted
+    if accepted:
+        assert result.stdout.strip() == f"{root}/{name}"
 
 
 @pytest.mark.parametrize(

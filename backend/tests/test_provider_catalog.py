@@ -12,7 +12,12 @@ from pydantic import ValidationError
 
 from app.config import Settings
 from app.provider_catalog import PUBLICATION_RETRY_WINDOW_SECONDS, ProviderCatalog, load_catalog
-from scripts.export_provider_catalog import CATALOG_PATH, build_artifacts, export
+from scripts.export_provider_catalog import (
+    CATALOG_PATH,
+    build_artifacts,
+    export,
+    provider_consumers,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -372,6 +377,85 @@ def test_inventory_preserves_image_sharing_and_all_roles(declaration):
             for c in inventory["consumers"]
             if c["provider"] == provider
         )
+
+
+INVENTORY = Path("infra/deploy/generated/provider_inventory.v1.json")
+DESCRIPTORS = Path("fetcher/src/findb_fetcher/data/execution_descriptors.v1.json")
+FINLAB_INTRADAY = ("tw_equity_bar_1m", "tw_etf_bar_1m", "tw_equity_tick", "tw_etf_tick")
+
+
+def _intraday_lane(declaration):
+    for feed in declaration["feeds"]:
+        if feed["provider"] == "finlab" and feed["dataset_key"] in FINLAB_INTRADAY:
+            feed["lane"] = "intraday"
+    return declaration
+
+
+def test_fetcher_descriptors_and_inventory_carry_each_lane(declaration):
+    artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
+    descriptors = json.loads(artifacts[DESCRIPTORS])
+    assert {feed["lane"] for feed in descriptors["feeds"]} == {"default"}
+    inventory = json.loads(artifacts[INVENTORY])
+    # One historical and one Full consumer per provider: still the same twelve.
+    assert len(inventory["consumers"]) == 12
+    assert all(
+        set(row) == {"name", "provider", "role", "lane", "image_key"} and row["lane"] == "default"
+        for row in inventory["consumers"]
+    )
+    for path, text in artifacts.items():
+        if path.suffix == ".py" and "BEGIN GENERATED PROVIDER INVENTORY" in text:
+            assert (
+                '"findb-full-market-finlab", "finlab", "full_market", "default", "finlab"' in text
+            )
+
+
+def test_a_lane_adds_one_full_consumer_and_no_historical_one(declaration):
+    artifacts = build_artifacts(ProviderCatalog.model_validate(_intraday_lane(declaration)))
+    descriptors = json.loads(artifacts[DESCRIPTORS])
+    assert {
+        feed["dataset_key"] for feed in descriptors["feeds"] if feed["lane"] == "intraday"
+    } == set(FINLAB_INTRADAY)
+    inventory = json.loads(artifacts[INVENTORY])
+    assert len(inventory["consumers"]) == 13
+    finlab = sorted(
+        (row["name"], row["role"], row["lane"])
+        for row in inventory["consumers"]
+        if row["provider"] == "finlab"
+    )
+    assert finlab == [
+        ("findb-full-market-finlab", "full_market", "default"),
+        ("findb-full-market-intraday-finlab", "full_market", "intraday"),
+        ("findb-historical-finlab", "historical", "default"),
+    ]
+    assert all(
+        row["image_key"] == "finlab"
+        for row in inventory["consumers"]
+        if row["provider"] == "finlab"
+    )
+    for path, text in artifacts.items():
+        if path.suffix == ".py" and "BEGIN GENERATED PROVIDER INVENTORY" in text:
+            assert (
+                '("findb-full-market-intraday-finlab", "finlab", "full_market", "intraday", "finlab")'
+                in text
+            )
+
+
+def test_no_consumer_name_extends_another_consumers_name(declaration):
+    data = ProviderCatalog.model_validate(declaration).canonical_data()
+    # A provider whose container name reads as another's replica (NAME-*) is refused.
+    clash = deepcopy(next(p for p in data["providers"] if p["provider"] == "finlab"))
+    clash.update(provider="finlab_extra", container_suffix="finlab-extra")
+    with pytest.raises(ValueError, match="extends consumer name findb-full-market-finlab"):
+        provider_consumers({**data, "providers": [*data["providers"], clash]})
+    # So is a lane whose consumer collides with another provider's.
+    lane_clash = deepcopy(clash)
+    lane_clash.update(provider="intraday_finlab", container_suffix="intraday-finlab")
+    feeds = [
+        {**feed, "lane": "intraday"} if feed["dataset_key"] == "tw_equity_tick" else feed
+        for feed in data["feeds"]
+    ]
+    with pytest.raises(ValueError, match="collide"):
+        provider_consumers({**data, "providers": [*data["providers"], lane_clash], "feeds": feeds})
 
 
 def test_new_feed_and_drain_derive_consumer_views(declaration):

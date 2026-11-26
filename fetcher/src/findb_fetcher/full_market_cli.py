@@ -20,7 +20,7 @@ from findb_fetcher.account_governor import prune_ledger
 from findb_fetcher.client import SourceAPIClient
 from findb_fetcher.config import FetcherConfig, app_environment, require_provider_work_protocol
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.execution_metadata import acquisition_feeds
+from findb_fetcher.execution_metadata import DEFAULT_LANE, acquisition_feeds, feed_lane
 from findb_fetcher.full_market_client import FullMarketSourceClient
 from findb_fetcher.full_market_runtime import FullMarketRuntime
 from findb_fetcher.full_market_state import FullMarketState, FullMarketStateError
@@ -33,8 +33,19 @@ from findb_fetcher.source_recovery import (
 )
 
 _SCOPES: dict[str, set[str]] = {}
+# Each provider's installed feeds by lane; the default lane is always present.
+_LANES: dict[str, dict[str, set[str]]] = {}
 for _feed in acquisition_feeds():
     _SCOPES.setdefault(_feed["provider"], set()).add(_feed["dataset_key"])
+    _LANES.setdefault(_feed["provider"], {DEFAULT_LANE: set()}).setdefault(
+        feed_lane(_feed), set()
+    ).add(_feed["dataset_key"])
+
+
+def default_state_path(provider: str, lane: str = DEFAULT_LANE) -> Path:
+    """A provider lane's Full checkpoint; the default lane keeps the pre-lane file name."""
+    suffix = "" if lane == DEFAULT_LANE else f"-{lane}"
+    return Path("/var/lib/findb-full-market") / f"state-{provider}{suffix}.sqlite3"
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -209,7 +220,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", required=True, choices=sorted(_SCOPES))
     # Retained for command compatibility; full_market is the only daily profile.
     parser.add_argument("--execution-profile", default="full_market")
-    # Each provider owns its checkpoint (#691).
+    # One consumer per provider lane; the default lane keeps every pre-lane name.
+    parser.add_argument(
+        "--lane",
+        default=DEFAULT_LANE,
+        choices=sorted({lane for lanes in _LANES.values() for lane in lanes}),
+    )
+    # Each provider lane owns its checkpoint (#691).
     parser.add_argument("--state-path", type=Path)
     parser.add_argument("--readiness-file", type=Path)
     modes = parser.add_mutually_exclusive_group()
@@ -224,8 +241,10 @@ def main(argv: list[str] | None = None) -> int:
     ):
         modes.add_argument("--" + mode, action="store_true")
     args = parser.parse_args(argv)
+    if args.lane not in _LANES[args.provider]:
+        parser.error(f"--lane {args.lane!r} is not a lane of provider {args.provider!r}")
     if args.state_path is None:
-        args.state_path = Path("/var/lib/findb-full-market") / f"state-{args.provider}.sqlite3"
+        args.state_path = default_state_path(args.provider, args.lane)
     if args.execution_profile != "full_market":
         parser.error(
             f"--execution-profile {args.execution_profile!r} is retired; "
@@ -303,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.initialize_state:
                 from findb_fetcher.provider_work import initialize_host_lock
 
-                initialize_host_lock(args.provider)
+                initialize_host_lock(args.provider, args.lane)
             from findb_fetcher.daily_runtime import window
 
             print(
@@ -323,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         scheduler_key = f"{args.execution_profile}_{args.provider}_v1"
         with (
             scheduler_stop_event() as stopped,
-            SchedulerControlClient(fetcher, scheduler_key) as control,
+            SchedulerControlClient(fetcher, scheduler_key, lane=args.lane) as control,
         ):
             observed = retry_source(
                 lambda: control.poll(observed_state="stopped"),
@@ -332,9 +351,10 @@ def main(argv: list[str] | None = None) -> int:
                 max_delay=config["poll_seconds"],
             )
             # A Backend deployed ahead of or behind this image may bind more or fewer
-            # datasets; the control must still be this provider's and share some.
+            # datasets; the control must still be this provider's and share some
+            # with this lane. All of a provider's lanes share its one control.
             if observed.provider != args.provider or not (
-                set(observed.dataset_keys) & _SCOPES[args.provider]
+                set(observed.dataset_keys) & _LANES[args.provider][args.lane]
             ):
                 raise ValueError("full-market control scope mismatch")
             if args.require_stopped:
@@ -368,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
                 raw_store=R2RawPayloadStore(RawStorageConfig.from_env()),
                 can_acquire=can_acquire,
                 readiness_file=Path(os.environ["FETCHER_ACCOUNT_READINESS_FILE"]),
+                lane=args.lane,
             )
             if args.sync_universes:
                 os.environ["FETCHER_CONSUMER_PROFILE"] = "maintenance"

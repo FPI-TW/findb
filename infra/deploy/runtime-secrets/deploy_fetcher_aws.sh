@@ -111,7 +111,7 @@ esac
 fi
 
 provider_inventory="$(python3 - "$FETCHER_RELEASE_ROOT/infra/deploy/generated/provider_inventory.v1.json" <<'INVENTORY'
-import hashlib, json, sys
+import hashlib, json, re, sys
 try:
     value = json.load(open(sys.argv[1]))
     digest = value.pop("projection_sha256")
@@ -121,20 +121,34 @@ try:
         raise ValueError()
     consumers = value["consumers"]
     providers = value["providers"]
-    if not providers or len(set(providers)) != len(providers) or len(consumers) != len(providers) * 2:
+    if not providers or len(set(providers)) != len(providers):
         raise ValueError()
-    if len({c["name"] for c in consumers}) != len(consumers):
+    names = [c["name"] for c in consumers]
+    if len(set(names)) != len(consumers) or any(c["provider"] not in providers for c in consumers):
+        raise ValueError()
+    # The transaction treats NAME-* as replicas of NAME; no consumer may look like one.
+    if any(other.startswith(name + "-") for name in names for other in names):
         raise ValueError()
     # Host state/cache layouts are checked in bash below; unknown providers fail there.
     for provider in providers:
         rows = [c for c in consumers if c["provider"] == provider]
-        if {c["role"] for c in rows} != {"full_market", "historical"} or len(rows) != 2:
+        if any(type(c["lane"]) is not str or not re.fullmatch(r"[a-z][a-z0-9_]{0,29}", c["lane"]) for c in rows):
             raise ValueError()
-        if not all(c["name"] == "findb-" + c["role"].replace("_", "-") + "-" + provider.replace("_", "-") for c in rows):
+        # One historical and one default Full consumer, plus one Full consumer per other lane.
+        defaults = sorted(c["role"] for c in rows if c["lane"] == "default")
+        lanes = [c["lane"] for c in rows if c["lane"] != "default"]
+        if defaults != ["full_market", "historical"] or len(set(lanes)) != len(lanes):
             raise ValueError()
+        if any(c["role"] != "full_market" for c in rows if c["lane"] != "default"):
+            raise ValueError()
+        suffix = provider.replace("_", "-")
+        for c in rows:
+            lane = "" if c["lane"] == "default" else c["lane"].replace("_", "-") + "-"
+            if c["name"] != "findb-" + c["role"].replace("_", "-") + "-" + lane + suffix:
+                raise ValueError()
         if len({c["image_key"] for c in rows}) != 1 or rows[0]["image_key"] not in value["images"]:
             raise ValueError()
-        print(provider.replace("_", "-"), rows[0]["image_key"])
+        print(suffix, rows[0]["image_key"], ",".join(sorted(lanes)) or "-")
 except Exception:
     raise SystemExit("fetcher_aws_deploy=failed reason=provider_inventory_invalid") from None
 INVENTORY
@@ -142,8 +156,14 @@ INVENTORY
 providers=()
 image_keys=()
 seen_image_keys=" "
-while read -r provider image_key; do
+consumer_count=0
+while read -r provider image_key lanes; do
   providers+=("$provider")
+  consumer_count=$((consumer_count + 2))
+  if [ "$lanes" != - ]; then
+    IFS=, read -r -a provider_lane_list <<< "$lanes"
+    consumer_count=$((consumer_count + ${#provider_lane_list[@]}))
+  fi
   case "$seen_image_keys" in
     *" $image_key "*) ;;
     *) image_keys+=("$image_key"); seen_image_keys="$seen_image_keys$image_key " ;;
@@ -160,14 +180,36 @@ image_ref() {
   esac
 }
 provider_image() {
-  local provider image_key
-  while read -r provider image_key; do
+  local provider image_key lanes
+  while read -r provider image_key lanes; do
     if [ "$provider" = "$1" ]; then
       image_ref "$image_key"
       return
     fi
   done <<< "$provider_inventory"
   return 1
+}
+# A provider's non-default Full lanes (comma-separated, or - for none). The default
+# lane keeps every pre-lane container, checkpoint and command.
+provider_lanes() {
+  local provider image_key lanes
+  while read -r provider image_key lanes; do
+    if [ "$provider" = "$1" ]; then
+      printf '%s' "$lanes"
+      return
+    fi
+  done <<< "$provider_inventory"
+  return 1
+}
+# Full consumer names of a provider: default lane first, then each other lane.
+provider_full_names() {
+  local lanes lane
+  lanes="$(provider_lanes "$1")" || return 1
+  printf '%s\n' "findb-full-market-$1"
+  [ "$lanes" != - ] || return 0
+  for lane in ${lanes//,/ }; do
+    printf '%s\n' "findb-full-market-${lane//_/-}-$1"
+  done
 }
 # Existing durable host directories (historical state, optional SDK cache). They
 # are adapter-owned on-disk locations, so a catalog edit can never move state.
@@ -257,13 +299,13 @@ full_market_state=/var/lib/findb-full-market/$APP_ENVIRONMENT
 require_full_checkpoint() {
   # Installed workers own durable prepared work. Never replace a lost checkpoint,
   # including when an accepted replay invokes an older helper/image. Check the
-  # provider's own file the installed runtime runs on (#691).
+  # provider lane's own file the installed runtime runs on (#691).
   local checkpoint_file
   if ! checkpoint_file="$(python3 - "$1" "$full_market_state" <<'STATE'
 import json, re, sys
 command, root = json.loads(sys.argv[1]), sys.argv[2]
 path = command[command.index("--state-path") + 1] if "--state-path" in command else ""
-if not re.fullmatch(re.escape(root) + r"/state-[a-z][a-z0-9_]{0,49}\.sqlite3", path):
+if not re.fullmatch(re.escape(root) + r"/state-[a-z][a-z0-9_]{0,49}(-[a-z][a-z0-9_]{0,29})?\.sqlite3", path):
     raise SystemExit(1)
 print(path)
 STATE
@@ -354,8 +396,9 @@ initial_runtime_exists() {
 }
 retained_full_market=false
 for provider in "${providers[@]}"; do
-  full_name="findb-full-market-$provider"
-  for base in "$full_name" "findb-historical-$provider"; do
+  full_names=()
+  while IFS= read -r name; do full_names+=("$name"); done < <(provider_full_names "$provider")
+  for base in "${full_names[@]}" "findb-historical-$provider"; do
     for installed in "$base" "${base}-previous" "${base}-candidate" "${base}-transaction-backup" "${base}-legacy-previous" "${base}-preflight" "${base}-preflight-state" "${base}-preflight-control"; do
       if initial_runtime_exists "$installed"; then
         initial_runtime_state "$installed"
@@ -365,7 +408,7 @@ for provider in "${providers[@]}"; do
           installed_command="$(docker inspect --format '{{json .Config.Cmd}}' "$installed")" || runtime_inventory_failure
         fi
         installed_role="$(runtime_command_role "$installed_command")" || runtime_inventory_failure
-        if [[ "$installed" == "$full_name"* ]] || [ "$installed_role" = full_market ]; then
+        if [[ "$installed" == findb-full-market-* ]] || [ "$installed_role" = full_market ]; then
           require_full_checkpoint "$installed_command"
           retained_full_market=true
         fi
@@ -702,56 +745,83 @@ verify_activated_runtimes() {
   done
 }
 
-provider_count="$((${#providers[@]} * 2))"
+# Every generated consumer: one historical and one Full consumer per provider lane.
+provider_count="$consumer_count"
 if [ "$FETCHER_DEPLOY_MODE" = apply ]; then
   for provider in "${providers[@]}"; do
     image="$(provider_image "$provider")"
     layout="$(provider_host_layout "$provider")"
     read -r history cache <<< "$layout"
-    for profile in full-market historical; do
-      stable="findb-$profile-$provider"
+    lanes="$(provider_lanes "$provider")"
+    stables=()
+    while IFS= read -r name; do stables+=("$name"); done < <(provider_full_names "$provider")
+    stables+=("findb-historical-$provider")
+    for stable in "${stables[@]}"; do
       register_provider "$stable" "${stable}-previous"
     done
-    run_runtime --consumer "$provider" -- bash -s -- "$provider_helper" "$provider" "$image" "$full_market_state" "$history" "$cache" <<'PROVIDER_PROFILES'
+    run_runtime --consumer "$provider" -- bash -s -- "$provider_helper" "$provider" "$image" "$full_market_state" "$history" "$cache" "$lanes" <<'PROVIDER_PROFILES'
 set -euo pipefail
-helper="$1"; provider="$2"; image="$3"; full="$4"; history="$5"; cache="$6"
-for profile in full_market historical; do
+helper="$1"; provider="$2"; image="$3"; full="$4"; history="$5"; cache="$6"; lanes="$7"
+# The default lane first, then each other Full lane, then historical (always default).
+consumers=(full_market:default)
+if [ "$lanes" != - ]; then
+  for lane in ${lanes//,/ }; do consumers+=("full_market:$lane"); done
+fi
+consumers+=(historical:default)
+for consumer in "${consumers[@]}"; do
+  profile="${consumer%%:*}"; lane="${consumer#*:}"
   export FETCHER_CONSUMER_PROFILE="$profile"
   stable="findb-${profile//_/-}-$provider"
+  [ "$lane" = default ] || stable="findb-${profile//_/-}-${lane//_/-}-$provider"
   case "$profile" in
     full_market) state="$full" ;;
     historical) state="$history" ;;
   esac
   # Each Full consumer owns its checkpoint file; historical keeps its own directory.
   checkpoint="$state/state.sqlite3"
-  [ "$profile" = historical ] || checkpoint="$state/state-${provider//-/_}.sqlite3"
+  if [ "$profile" != historical ]; then
+    checkpoint="$state/state-${provider//-/_}.sqlite3"
+    [ "$lane" = default ] || checkpoint="$state/state-${provider//-/_}-$lane.sqlite3"
+  fi
   command=(findb-fetch-runtime --execution-profile "$profile" --config "/app/configs/bootstrap.$APP_ENVIRONMENT.v1.json" --state-path "$checkpoint" --provider "${provider//-/_}")
+  [ "$lane" = default ] || command+=(--lane "$lane")
   if [ "$profile" = historical ]; then command=(findb-fetch-historical-backfill --provider "${provider//-/_}"); fi
   "$helper" "$provider" "$image" "$state" "$checkpoint" "$stable" "$stable-candidate" "$stable-previous" "$stable-preflight" "$cache" "${command[@]}"
 done
 PROVIDER_PROFILES
-    for profile in full-market historical; do
-      record_activated_runtime "findb-$profile-$provider" "$image"
+    for stable in "${stables[@]}"; do
+      record_activated_runtime "$stable" "$image"
     done
   done
 else
-provider_count="$((${#providers[@]} * 2))"
 export FETCHER_CONSUMER_PROFILE=full_market
 for provider in "${providers[@]}"; do
   image="$(provider_image "$provider")"
   identity="${provider//-/_}"
   layout="$(provider_host_layout "$provider")"
   read -r _ cache_dir <<< "$layout"
-  stable="findb-full-market-$provider"
-  register_provider "$stable" "${stable}-previous"
-  run_runtime --consumer "$provider" -- \
-    "$provider_helper" "$provider" "$image" \
-    "$full_market_state" "$full_market_state/state-$identity.sqlite3" \
-    "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
-    findb-fetch-runtime --execution-profile full_market \
-    --config "/app/configs/bootstrap.$APP_ENVIRONMENT.v1.json" \
-    --state-path "$full_market_state/state-$identity.sqlite3" --provider "$identity"
-  record_activated_runtime "$stable" "$image"
+  lanes="$(provider_lanes "$provider")"
+  consumer_lanes=(default)
+  [ "$lanes" = - ] || consumer_lanes+=(${lanes//,/ })
+  for lane in "${consumer_lanes[@]}"; do
+    stable="findb-full-market-$provider"
+    checkpoint="$full_market_state/state-$identity.sqlite3"
+    lane_args=()
+    if [ "$lane" != default ]; then
+      stable="findb-full-market-${lane//_/-}-$provider"
+      checkpoint="$full_market_state/state-$identity-$lane.sqlite3"
+      lane_args=(--lane "$lane")
+    fi
+    register_provider "$stable" "${stable}-previous"
+    run_runtime --consumer "$provider" -- \
+      "$provider_helper" "$provider" "$image" \
+      "$full_market_state" "$checkpoint" \
+      "$stable" "${stable}-candidate" "${stable}-previous" "${stable}-preflight" "$cache_dir" \
+      findb-fetch-runtime --execution-profile full_market \
+      --config "/app/configs/bootstrap.$APP_ENVIRONMENT.v1.json" \
+      --state-path "$checkpoint" --provider "$identity" ${lane_args[@]+"${lane_args[@]}"}
+    record_activated_runtime "$stable" "$image"
+  done
 done
 
 # Historical requests retain their existing provider-specific durable directory.
