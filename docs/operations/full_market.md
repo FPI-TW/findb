@@ -921,8 +921,7 @@ account DB 指向同一檔。既有 governor 的 pins、debt、unknown liability
 AWS 路徑、首次切換、備份與回退下限見 [deployment.md](deployment.md)。CLI 的 `--check` 不呼叫 provider，
 `--initialize-state` 只允許新 installation 建立 schema，既有 checkpoint 遺失必須阻塞。
 每個 provider 的 checkpoint 是 `state-<provider>.sqlite3`（未指定 `--state-path` 時為
-`/var/lib/findb-full-market/state-<provider>.sqlite3`）；`--split-checkpoint --legacy-state-path` 只供
-release helper 從主機共用的舊 `state.sqlite3` 拆出該 provider 的列，見
+`/var/lib/findb-full-market/state-<provider>.sqlite3`），主機共用的舊 `state.sqlite3` 已封存移除，見
 [Full checkpoint 分檔](deployment.md#full-checkpoint-分檔)。
 `--require-stopped` 唯讀驗證 Full checkpoint 與 controls，不能藉部署修改 desired state。
 

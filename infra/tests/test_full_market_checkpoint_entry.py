@@ -151,12 +151,11 @@ def test_transported_checkpoint_guard(
     command_rc=0,
     inspect_rc=0,
     expected_reason=None,
-    layout="shared",
     provider="finlab",
 ):
     builder, binaries = _transport(tmp_path)
-    # A provider split from the host-wide checkpoint (#691) is checked in its own file.
-    name = "state.sqlite3" if layout == "shared" else f"state-{provider}.sqlite3"
+    # Each Full consumer runs on its own checkpoint (#691).
+    name = f"state-{provider}.sqlite3"
     checkpoint = tmp_path / "checkpoint" / name
     if state_kind != "missing":
         checkpoint.parent.mkdir(exist_ok=True)
@@ -191,7 +190,7 @@ export APP_ENVIRONMENT
 host_path() {
   case "$1" in
     "${expected_state_path%/*}") printf '%s\n' "${checkpoint%/*}" ;;
-    "${expected_state_path%/*}"/state.sqlite3|"${expected_state_path%/*}"/state-*.sqlite3)
+    "${expected_state_path%/*}"/state-*.sqlite3)
       printf '%s\n' "${checkpoint%/*}/${1##*/}" ;;
     *) return 96 ;;
   esac
@@ -230,13 +229,9 @@ export -f host_path sudo docker
                 f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}{suffix}"
             ),
             "command_output": command_output
-            or (
-                f'["findb-fetch-runtime","--execution-profile","{profile}"]'
-                if layout == "shared"
-                else json.dumps(
-                    ["findb-fetch-runtime", "--execution-profile", profile]
-                    + ["--state-path", f"{state_dir}/{name}", "--provider", provider]
-                )
+            or json.dumps(
+                ["findb-fetch-runtime", "--execution-profile", profile]
+                + ["--state-path", f"{state_dir}/{name}", "--provider", provider]
             ),
             "command_rc": str(command_rc),
             "inspect_rc": str(inspect_rc),
@@ -266,14 +261,6 @@ export -f host_path sudo docker
     assert (checkpoint.read_bytes() if checkpoint.exists() else None) == before
 
 
-@pytest.mark.parametrize("target", ["staging", "production"])
-@pytest.mark.parametrize("state_kind", ["missing", "valid", "corrupt", "unusable"])
-def test_transported_guard_checks_a_split_provider_in_its_own_file(tmp_path, target, state_kind):
-    test_transported_checkpoint_guard(
-        tmp_path, target, "full_market", "", state_kind, layout="split"
-    )
-
-
 @pytest.mark.parametrize("provider", _generated_providers())
 @pytest.mark.parametrize("suffix", ["", "-previous", "-preflight-state"])
 @pytest.mark.parametrize("state_kind", ["missing", "valid", "corrupt"])
@@ -282,45 +269,19 @@ def test_transported_guard_checks_every_installed_providers_full_checkpoint(
 ):
     # The gate finds consumers on the host, so a provider added later is covered too.
     test_transported_checkpoint_guard(
-        tmp_path, "production", "full_market", suffix, state_kind, layout="split", provider=provider
+        tmp_path, "production", "full_market", suffix, state_kind, provider=provider
     )
-
-
-def _legacy_checkpoint(path):
-    path.parent.mkdir(exist_ok=True)
-    with sqlite3.connect(path) as db:
-        db.executescript(
-            (REPO_ROOT / "fetcher/tests/fixtures/full_market_legacy_core.sql").read_text()
-        )
-    return path.read_bytes()
-
-
-def test_transported_guard_never_lets_the_host_wide_file_mask_a_broken_own_file(tmp_path):
-    shared = tmp_path / "checkpoint/state.sqlite3"
-    before = _legacy_checkpoint(shared)
-    test_transported_checkpoint_guard(
-        tmp_path, "staging", "full_market", "", "empty", layout="split"
-    )
-    assert shared.read_bytes() == before
-
-
-def test_transported_guard_ignores_a_file_set_aside_by_a_rolled_back_release(tmp_path):
-    stale = tmp_path / "checkpoint/state-finlab.sqlite3"
-    stale.parent.mkdir()
-    stale.write_bytes(b"not a checkpoint")
-    command = json.dumps(
-        ["findb-fetch-runtime", "--execution-profile", "full_market", "--state-path"]
-        + ["/var/lib/findb-full-market/staging/state.sqlite3", "--provider", "finlab"]
-    )
-    test_transported_checkpoint_guard(
-        tmp_path, "staging", "full_market", "", "valid", command_output=command
-    )
-    assert stale.read_bytes() == b"not a checkpoint"
 
 
 @pytest.mark.parametrize(
     "state_path",
-    [["/tmp/state-finlab.sqlite3"], ["/var/lib/findb-full-market/staging/other.db"], []],
+    [
+        ["/tmp/state-finlab.sqlite3"],
+        ["/var/lib/findb-full-market/staging/other.db"],
+        # The host-wide checkpoint the #691 split retired is no consumer's checkpoint.
+        ["/var/lib/findb-full-market/staging/state.sqlite3"],
+        [],
+    ],
 )
 def test_transported_guard_refuses_a_checkpoint_outside_the_full_directory(tmp_path, state_path):
     command = json.dumps(

@@ -25,9 +25,8 @@ Shioaji staging 與 TAIFEX pilot）只回傳 exit 2 的安全退役訊息，不�
 使用 `findb-fetch-runtime`、`findb-fetch-historical-backfill` 與 runtime 的 queued universe refresh。
 共用 mapper／executor、舊 checkpoint parser、prepared bytes、receipts、raw lineage、operation budgets、
 account pins／debt／cooldown 全部保留；不執行清檔、重新入列全部 backlog 或資料 migration。
-`legacy_checkpoints.read_taifex_pilot_checkpoint()` 保留舊 TAIFEX meta／pilot_day 的 schema／identity
-驗證與逐列唯讀檢查，使用既有檔案的 SQLite `mode=ro`；原 prepared、receipts、attempts 與 request
-用量照原值讀取，沒有建立、修復、抓取或交付方法。其餘仍使用的 shared mapper／executor／
+舊 TAIFEX pilot checkpoint 已於 2026-11-26 封存於 staging Fetcher 主機
+`/var/backups/findb-pilot-retirement/`，唯讀 parser 隨之移除。其餘仍使用的 shared mapper／executor／
 checkpoint parser 繼續放在各自模組，退役入口不再匯入它們。
 原 TAIFEX 格式使用 rollback journal。Reader 在 SQLite connect 前拒絕 WAL 格式，避免
 `mode=ro` 仍建立 sidecars；即使 sidecars 不存在也不忽略 WAL。WAL 檔須先經 SQLite

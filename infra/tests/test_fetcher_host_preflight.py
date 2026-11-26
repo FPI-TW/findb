@@ -111,7 +111,8 @@ class FetcherHostPreflightTests(unittest.TestCase):
             "--config",
             "/app/configs/bootstrap.production.v1.json",
             "--state-path",
-            state + "/state.sqlite3",
+            state
+            + (f"/state-{provider}.sqlite3" if profile == "full_market" else "/state.sqlite3"),
             "--provider",
             provider,
             "--run-forever",
@@ -171,9 +172,9 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.assertEqual(len(self.rows), len(host.CONSUMERS))
         self.assertEqual(self.check(), "drained")
 
-    def test_full_consumers_run_on_their_own_checkpoint_or_the_shared_one(self):
-        # #691 moved each Full consumer to state-<provider>.sqlite3; hosts
-        # installed before it still run on the shared state.sqlite3.
+    def test_full_consumers_run_only_on_their_own_checkpoint(self):
+        # Each Full consumer owns state-<provider>.sqlite3 (#691); the host-wide
+        # state.sqlite3 the split retired is no consumer's checkpoint.
         original = copy.deepcopy(self.rows)
         checked = 0
         for index, row in enumerate(original):
@@ -185,6 +186,7 @@ class FetcherHostPreflightTests(unittest.TestCase):
             folder = args[at].rsplit("/", 1)[0]
             for name, accepted in (
                 (f"state-{provider}.sqlite3", True),
+                ("state.sqlite3", False),
                 ("state-other.sqlite3", False),
                 (f"state-{provider}.sqlite3.unused", False),
             ):

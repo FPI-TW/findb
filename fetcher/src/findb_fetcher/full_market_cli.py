@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 from findb_fetcher.account_governor import prune_ledger
-from findb_fetcher.checkpoint_split import CheckpointSplitError, provider_path, split
 from findb_fetcher.client import SourceAPIClient
 from findb_fetcher.config import FetcherConfig, app_environment, require_provider_work_protocol
 from findb_fetcher.contracts import ContractRegistry
@@ -210,10 +209,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", required=True, choices=sorted(_SCOPES))
     # Retained for command compatibility; full_market is the only daily profile.
     parser.add_argument("--execution-profile", default="full_market")
-    # Each provider owns its checkpoint; the host-wide state.sqlite3 only feeds
-    # --split-checkpoint until it is removed (#691).
+    # Each provider owns its checkpoint (#691).
     parser.add_argument("--state-path", type=Path)
-    parser.add_argument("--legacy-state-path", type=Path)
     parser.add_argument("--readiness-file", type=Path)
     modes = parser.add_mutually_exclusive_group()
     for mode in (
@@ -224,14 +221,11 @@ def main(argv: list[str] | None = None) -> int:
         "once",
         "sync-universes",
         "health",
-        "split-checkpoint",
     ):
         modes.add_argument("--" + mode, action="store_true")
     args = parser.parse_args(argv)
     if args.state_path is None:
-        args.state_path = provider_path(Path("/var/lib/findb-full-market"), args.provider)
-    if args.split_checkpoint != (args.legacy_state_path is not None):
-        parser.error("--split-checkpoint and --legacy-state-path go together")
+        args.state_path = Path("/var/lib/findb-full-market") / f"state-{args.provider}.sqlite3"
     if args.execution_profile != "full_market":
         parser.error(
             f"--execution-profile {args.execution_profile!r} is retired; "
@@ -261,18 +255,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         )
-        if args.split_checkpoint:
-            # Runs while this provider's consumer is stopped; never builds a client.
-            try:
-                result = split(args.legacy_state_path, args.state_path, args.provider)
-            except CheckpointSplitError as exc:
-                print(json.dumps({"status": "refused", "reason": exc.reason}))
-                return 1
-            from findb_fetcher.provider_work import initialize_host_lock
-
-            initialize_host_lock(args.provider)
-            print(json.dumps(result, separators=(",", ":"), sort_keys=True))
-            return 0
         if args.check:
             print(
                 json.dumps(

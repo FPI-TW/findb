@@ -649,7 +649,7 @@ catalog 的 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝�
 | 狀態 | 路徑 |
 | --- | --- |
 | Full checkpoint（每個 provider 一個檔） | `<Full 目錄>/state-<provider>.sqlite3`；Full 目錄 staging 是 `/var/lib/findb-full-market/staging`，production 是 `/var/lib/findb-full-market`（保留既有路徑） |
-| 主機共用的舊 Full checkpoint（拆分來源與備份） | `<Full 目錄>/state.sqlite3`：分檔後不再寫入，見下方「Full checkpoint 分檔」 |
+| 主機共用的舊 Full checkpoint | 已封存於 `/var/backups/findb-shared-checkpoint/` 並自 `<Full 目錄>` 移除，見下方「Full checkpoint 分檔」 |
 | 共用帳號 governor | `/var/lib/findb-account/<environment>/governor.sqlite3` |
 | Provider-work journal（每個 provider 一個檔） | `/var/lib/findb-account/<environment>/provider-work-<provider>.sqlite3` |
 | 主機共用的舊 journal（只排空） | `/var/lib/findb-account/<environment>/provider-work.sqlite3`：只供 fetcher-v0.1.51 之前開始的工作使用到結案清理 |
@@ -720,33 +720,14 @@ bytes 與 receipts。退回更早版本同樣不受支援。
 
 ### Full checkpoint 分檔
 
-六個 Full consumers 原本共用 `<Full 目錄>/state.sqlite3`。Release helper 在每個 provider 的 consumer
-停止並改名為 previous 之後、`--require-stopped` 之前，若主機共用檔還在，依已安裝的 consumer 決定：
+六個 Full consumers 原本共用 `<Full 目錄>/state.sqlite3`；#691 的 release helper 曾在部署時把每個 provider
+的列一次性複製到 `state-<provider>.sqlite3`。兩環境都完成後，2026-11-26 已在部署停止窗口外、確認沒有
+任何 process 開著共用檔時，以 SQLite backup API 複製、逐表核對筆數並壓縮，封存於 Fetcher 主機的
+`/var/backups/findb-shared-checkpoint/<環境>-<UTC>/`（附 `manifest.json` 與 `SHA256SUMS`），再刪除共用檔與
+sidecars。分檔程式與 `--split-checkpoint` 已移除。
 
-| 已安裝的 consumer | Provider 檔 | 動作 |
-| --- | --- | --- |
-| 已在用 `state-<provider>.sqlite3` | 存在 | 不拆分，照常部署 |
-| 仍在用共用檔 | 不存在 | 拆分 |
-| 仍在用共用檔 | 存在（之前被回復的部署留下） | 整檔連同 `-wal`／`-shm` 移到 `state-<provider>.sqlite3.unused-<UTC>`，再拆分 |
-| 沒有 | 不存在 | 拆分（新 provider 得到只有 schema 的檔） |
-| 沒有 | 存在 | 不拆分，沿用該檔 |
-
-拆分以一次性容器執行 `findb-fetch-runtime ... --split-checkpoint --legacy-state-path <共用檔>`，不建立
-provider 或 Source client：以唯讀方式在同一個讀取交易內讀共用檔，把該 provider 的列（plan、work 與其
-receipt／diagnostic 等、cursor、refresh、prerequisite，以及 runtime 以 provider 名稱記錄在 checkpoint
-的 quota、pacing、cooldown、capacity、intent／usage）複製到暫存檔，逐表核對筆數與內容 digest、
-`integrity_check` 後才改名成 `state-<provider>.sqlite3`，並在新檔的 `checkpoint_origin` 記下來源、時間、
-各表筆數與 digest。共用檔不會被寫入。Account governor 的 ledger retention 不屬於 checkpoint，不複製。
-共用檔有任何拆分不認得的表或欄位時拒絕，避免新表的資料被漏掉。失敗時 helper 以
-`checkpoint_split_failed`（或 `checkpoint_split_metadata`、`legacy_checkpoint_metadata`）結束並恢復原
-consumer，原 consumer 繼續用共用檔。
-
-部署交易回復後，原 consumer 會繼續用共用檔，provider 檔留著不用；下一次部署依上表移開並重新拆分，
-所以共用檔永遠是已安裝版本實際使用的資料。部署閘門（`require_full_checkpoint`）檢查的是已安裝 consumer
-指令中 `--state-path` 指向的檔，必須是 Full 目錄下的 `state.sqlite3` 或 `state-<provider>.sqlite3`。
-
-六個 consumer 都在 production 改用自己的檔並驗收後，`.unused-*` 可刪除；共用檔可在部署停止窗口內連同
-sidecars 備份後移除。移除後新 provider 走一般的 `--initialize-state` bootstrap。
+部署閘門（`require_full_checkpoint`）與 host guard 只接受已安裝 consumer 指令中 `--state-path` 指向的
+`<Full 目錄>/state-<provider>.sqlite3`；新 provider 走一般的 `--initialize-state` bootstrap。
 
 Rollback 入口與 promotion 相同，選擇 `mode=rollback` 和該環境已 accepted 的 exact bundle key。
 它不重建 images、不修改 immutable acceptance、不刪 governor 或 prepared bodies。若 migration 不相容，採 forward fix，

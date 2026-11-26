@@ -1791,3 +1791,30 @@ def test_acquisition_gate_uses_only_control_and_source_authorization(monkeypatch
     desired[0] = "stopped"
     assert can_acquire() is False
     assert requests == ["full-market/authorization?consumer=full_market"] * 2
+
+
+def test_default_checkpoint_is_the_providers_own_file(monkeypatch):
+    from findb_fetcher import full_market_cli
+
+    seen = []
+
+    def stop(_config):
+        seen.append(True)
+        raise SystemExit(0)
+
+    monkeypatch.setattr(full_market_cli, "load_config", stop)
+    monkeypatch.setattr(full_market_cli, "require_provider_work_protocol", lambda: None)
+    monkeypatch.setenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3")
+    captured = {}
+    original = full_market_cli.argparse.ArgumentParser.parse_args
+
+    def parse(self, argv=None, namespace=None):
+        captured["args"] = original(self, argv, namespace)
+        return captured["args"]
+
+    monkeypatch.setattr(full_market_cli.argparse.ArgumentParser, "parse_args", parse)
+    with pytest.raises(SystemExit):
+        full_market_cli.main(["--provider", "twelve_data", "--check"])
+    assert captured["args"].state_path == Path(
+        "/var/lib/findb-full-market/state-twelve_data.sqlite3"
+    )

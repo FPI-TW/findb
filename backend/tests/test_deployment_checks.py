@@ -2552,12 +2552,6 @@ def _run_twelve_fetcher_release_with_marker(
     preflight_fails: bool = False,
     consumer_profile: str = "full_market",
     fake_memory: str = "0",
-    split_layout: str | None = None,
-    stable_running: bool = False,
-    fake_split: str = "",
-    fail_on_argument: str = "",
-    linked_legacy: bool = False,
-    installed_command: str = "",
 ) -> subprocess.CompletedProcess[str]:
     helper = REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh"
     state_dir = tmp_path / "state"
@@ -2576,19 +2570,8 @@ def _run_twelve_fetcher_release_with_marker(
         .replace("/etc/findb-full-market/readiness", str(readiness_dir)),
         encoding="utf-8",
     )
-    state_path = state_dir / "state.sqlite3"
+    state_path = state_dir / "state-twelve_data.sqlite3"
     state_path.write_text("durable-state\n", encoding="utf-8")
-    if split_layout is not None:
-        # The host-wide checkpoint stays; the provider owns its own file (#691).
-        state_path = state_dir / "state-twelve_data.sqlite3"
-        if split_layout == "done":
-            state_path.write_text("earlier-copy\n", encoding="utf-8")
-    if linked_legacy:
-        legacy = state_dir / "state.sqlite3"
-        legacy.unlink()
-        legacy.symlink_to(tmp_path / "elsewhere.sqlite3")
-    if stable_running:
-        (state_dir / "stable").write_text("running\n", encoding="utf-8")
     if residual_candidate:
         (state_dir / "candidate").write_text("running\n", encoding="utf-8")
     if residual_previous:
@@ -2647,9 +2630,6 @@ def _run_twelve_fetcher_release_with_marker(
         FETCHER_DEPLOY_MODE="candidate" if transactional_candidate else "activate",
         FETCHER_CONSUMER_PROFILE=consumer_profile,
         FAKE_MEMORY=fake_memory,
-        FAKE_SPLIT=fake_split,
-        FAKE_FAIL_ON_ARGUMENT=fail_on_argument,
-        FAKE_INSTALLED_COMMAND=installed_command,
     )
     return subprocess.run(
         [
@@ -2673,148 +2653,6 @@ def _run_twelve_fetcher_release_with_marker(
         text=True,
         env=environment,
     )
-
-
-def _split_runs(tmp_path: Path) -> list[list[str]]:
-    """Docker argument lists of the release, one per call, from the fake's log."""
-    calls: list[list[str]] = []
-    for line in (tmp_path / "docker-arguments.log").read_text(encoding="utf-8").splitlines():
-        if line in {
-            "run",
-            "stop",
-            "rename",
-            "create",
-            "start",
-            "rm",
-            "pull",
-            "container",
-            "inspect",
-            "image",
-        }:
-            calls.append([line])
-        elif calls:
-            calls[-1].append(line)
-    return calls
-
-
-def test_aws_fetcher_release_splits_the_checkpoint_after_stopping_the_consumer(
-    tmp_path: Path,
-) -> None:
-    completed = _run_twelve_fetcher_release_with_marker(
-        tmp_path, marker_identity="full-market", split_layout="pending", stable_running=True
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert "provider=twelve-data split=created stale_set_aside=false" in completed.stdout
-    state = tmp_path / "state"
-    assert (state / "state-twelve_data.sqlite3").read_text() == "split-copy\n"
-    assert (state / "state.sqlite3").read_text() == "durable-state\n"
-    calls = _split_runs(tmp_path)
-    split = next(i for i, call in enumerate(calls) if "--split-checkpoint" in call)
-    stop = next(i for i, call in enumerate(calls) if call[0] == "stop")
-    probe = next(i for i, call in enumerate(calls) if "--require-stopped" in call)
-    assert stop < split < probe
-    arguments = calls[split]
-    assert arguments[arguments.index("--legacy-state-path") + 1] == str(state / "state.sqlite3")
-    assert arguments[arguments.index("--name") + 1] == "preflight-state"
-    assert "--initialize-state" not in sum(calls, [])
-    assert "SOURCE_CLIENT_KEY" not in arguments
-
-
-def test_aws_fetcher_release_keeps_the_file_its_installed_consumer_runs_on(
-    tmp_path: Path,
-) -> None:
-    own = tmp_path / "state/state-twelve_data.sqlite3"
-    completed = _run_twelve_fetcher_release_with_marker(
-        tmp_path,
-        marker_identity="full-market",
-        split_layout="done",
-        stable_running=True,
-        installed_command=json.dumps(["findb-fetch-runtime", "--state-path", str(own)]),
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert "split=" not in completed.stdout
-    assert own.read_text() == "earlier-copy\n"
-    assert not any("--split-checkpoint" in call for call in _split_runs(tmp_path))
-
-
-def test_aws_fetcher_release_splits_again_over_a_rolled_back_split(tmp_path: Path) -> None:
-    # The installed consumer still runs on the host-wide file, so the provider
-    # file came from a release that was rolled back; it is kept aside.
-    completed = _run_twelve_fetcher_release_with_marker(
-        tmp_path, marker_identity="full-market", split_layout="done", stable_running=True
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert "split=created stale_set_aside=true" in completed.stdout
-    state = tmp_path / "state"
-    assert (state / "state-twelve_data.sqlite3").read_text() == "split-copy\n"
-    (aside,) = state.glob("state-twelve_data.sqlite3.unused-*")
-    assert aside.read_text() == "earlier-copy\n"
-
-
-def test_aws_fetcher_release_keeps_a_provider_file_without_an_installed_consumer(
-    tmp_path: Path,
-) -> None:
-    completed = _run_twelve_fetcher_release_with_marker(
-        tmp_path, marker_identity="full-market", split_layout="done"
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert (tmp_path / "state/state-twelve_data.sqlite3").read_text() == "earlier-copy\n"
-    calls = sum(_split_runs(tmp_path), [])
-    assert "--split-checkpoint" not in calls and "--initialize-state" not in calls
-
-
-def test_aws_fetcher_release_restores_the_consumer_when_the_split_fails(tmp_path: Path) -> None:
-    completed = _run_twelve_fetcher_release_with_marker(
-        tmp_path,
-        marker_identity="full-market",
-        split_layout="pending",
-        stable_running=True,
-        fake_split="failed",
-    )
-
-    assert completed.returncode != 0
-    assert "reason=checkpoint_split_failed provider=twelve-data" in completed.stderr
-    state = tmp_path / "state"
-    assert (state / "stable").read_text() == "running\n"
-    assert (state / "state.sqlite3").read_text() == "durable-state\n"
-    assert not (state / "state-twelve_data.sqlite3").exists()
-
-
-def test_aws_fetcher_release_restores_the_consumer_after_a_split_and_a_later_refusal(
-    tmp_path: Path,
-) -> None:
-    completed = _run_twelve_fetcher_release_with_marker(
-        tmp_path,
-        marker_identity="full-market",
-        split_layout="pending",
-        stable_running=True,
-        fail_on_argument="--require-stopped",
-    )
-
-    assert completed.returncode != 0
-    state = tmp_path / "state"
-    # The restored consumer runs on the host-wide file; the next release
-    # sets this copy aside and splits again.
-    assert (state / "stable").read_text() == "running\n"
-    assert (state / "state.sqlite3").read_text() == "durable-state\n"
-    assert (state / "state-twelve_data.sqlite3").read_text() == "split-copy\n"
-
-
-def test_aws_fetcher_release_rejects_a_linked_host_wide_checkpoint(tmp_path: Path) -> None:
-    (tmp_path / "elsewhere.sqlite3").write_text("other\n", encoding="utf-8")
-
-    completed = _run_twelve_fetcher_release_with_marker(
-        tmp_path, marker_identity="full-market", split_layout="pending", linked_legacy=True
-    )
-
-    assert completed.returncode != 0
-    assert "reason=legacy_checkpoint_metadata" in completed.stderr
-    assert not (tmp_path / "state/state-twelve_data.sqlite3").exists()
-    assert (tmp_path / "elsewhere.sqlite3").read_text() == "other\n"
 
 
 @pytest.mark.parametrize("retired_marker", ["pilot", "twelve-data"])

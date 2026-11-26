@@ -253,20 +253,6 @@ account_mount=(--mount "type=bind,src=$account_dir,dst=$account_dir" --mount "ty
   readiness_mount=(--mount "type=bind,src=$readiness_dir,dst=$state_dir/readiness,readonly")
 }
 
-# Full consumers used to share $state_dir/state.sqlite3; each now owns
-# $state_path (#691). The host-wide file stays, read-only, as the split source.
-legacy_state="$state_dir/state.sqlite3"
-legacy_present=false
-if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ] && [ "$state_path" != "$legacy_state" ] \
-  && { sudo test -e "$legacy_state" || sudo test -L "$legacy_state"; }; then
-  if ! sudo test -f "$legacy_state" || sudo test -L "$legacy_state" \
-    || [ "$(sudo stat -c '%u:%g:%a' "$legacy_state")" != "10001:10001:600" ]; then
-    echo "release_fetcher_provider=failed reason=legacy_checkpoint_metadata" >&2
-    exit 1
-  fi
-  legacy_present=true
-fi
-
 if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ]; then
 raw_marker="$state_dir/raw-bucket.sha256"
 # All four providers share only the quota/checkpoint DB, never credentials.
@@ -279,7 +265,7 @@ write_marker() {
   sudo chmod 0600 "$marker_tmp"
   sudo mv "$marker_tmp" "$raw_marker"
 }
-if sudo test -e "$state_path" || [ "$legacy_present" = true ]; then
+if sudo test -e "$state_path"; then
   if ! sudo test -f "$raw_marker" || [ "$(sudo stat -c '%u:%g:%a' "$raw_marker")" != "10001:10001:600" ]; then
     echo "release_fetcher_provider=failed reason=raw_marker_metadata" >&2
     exit 1
@@ -370,28 +356,7 @@ case "${FETCHER_CONSUMER_PROFILE:-}:$1" in
   full_market:findb-fetch-runtime|historical:findb-fetch-historical-backfill) ;;
   *) echo "release_fetcher_provider=failed reason=consumer_command_mismatch" >&2; exit 2 ;;
 esac
-# Split while the installed release still runs on the host-wide file. A
-# provider file left by a release that was rolled back holds no accepted
-# progress, so it is set aside and split again from the current rows.
-checkpoint_split=false
-split_stale=false
-if [ "$legacy_present" = true ]; then
-  installed_on_own_file=false
-  if runtime_exists "$stable"; then
-    installed_command="$(docker inspect --format '{{json .Config.Cmd}}' "$stable")"
-    if grep -Fq "\"$state_path\"" <<<"$installed_command"; then installed_on_own_file=true; fi
-  fi
-  if [ "$installed_on_own_file" = false ]; then
-    if ! sudo test -e "$state_path" && ! sudo test -L "$state_path"; then
-      checkpoint_split=true
-    elif runtime_exists "$stable"; then
-      checkpoint_split=true
-      split_stale=true
-    fi
-  fi
-fi
-if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ] && [ "$checkpoint_split" = false ] \
-  && ! sudo test -e "$state_path"; then
+if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ] && ! sudo test -e "$state_path"; then
   for installed in "$stable" "$previous"; do
     if runtime_exists "$installed"; then
       echo "release_fetcher_provider=failed reason=checkpoint_missing_with_runtime" >&2
@@ -515,46 +480,6 @@ if runtime_exists "$stable"; then
   fi
   [ "$(docker inspect --format '{{.Id}}' "$stable")" = "$recovery_original_id" ] || false
   docker rename "$stable" "$previous"
-fi
-
-if [ "$checkpoint_split" = true ]; then
-  if [ "$split_stale" = true ]; then
-    # Kept, never deleted: the rolled-back release's file moves aside whole.
-    split_aside="$state_path.unused-$(date -u +%Y%m%dT%H%M%SZ)"
-    for suffix in "" -wal -shm; do
-      if sudo test -e "$state_path$suffix"; then sudo mv "$state_path$suffix" "$split_aside$suffix"; fi
-    done
-  fi
-  state_split_name="${preflight_name}-state"
-  if runtime_exists "$state_split_name"; then
-    remove_recovery_runtime "$state_split_name"
-  fi
-  # Copies only this provider's rows into a new file and checks the copy; the
-  # host-wide file is opened read-only. Never builds a provider or Source client.
-  if ! docker run --rm \
-    --name "$state_split_name" \
-    --env "APP_ENVIRONMENT=$APP_ENVIRONMENT" \
-    --env "FETCHER_ACCOUNT_STATE_PATH=$account_dir/governor.sqlite3" \
-    --user 10001:10001 \
-    --read-only \
-    --cap-drop ALL \
-    --security-opt no-new-privileges \
-    --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-    ${account_mount[@]+"${account_mount[@]}"} \
-    --mount "type=bind,src=$state_dir,dst=$state_dir" \
-    ${cache_mount[@]+"${cache_mount[@]}"} \
-    ${readiness_mount[@]+"${readiness_mount[@]}"} \
-    "$image" "$@" --state-path "$state_path" \
-    --split-checkpoint --legacy-state-path "$legacy_state" >/dev/null; then
-    echo "release_fetcher_provider=failed reason=checkpoint_split_failed provider=$provider" >&2
-    false
-  fi
-  if [ ! -f "$state_path" ] \
-    || [ "$(sudo stat -c '%u:%g:%a' "$state_path")" != "10001:10001:600" ]; then
-    echo "release_fetcher_provider=failed reason=checkpoint_split_metadata" >&2
-    false
-  fi
-  echo "release_fetcher_provider_checkpoint provider=$provider split=created stale_set_aside=$split_stale"
 fi
 
 # The deployment identity only reports the already-stopped observation and
