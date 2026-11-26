@@ -346,10 +346,6 @@ class FullMarketDeploymentTests(unittest.TestCase):
             with self.assertRaises(release.ManifestError):
                 self.validate(manifest)
 
-    def test_first_cutover_rejects_legacy_containers(self):
-        source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
-        self.assertIn("reason=legacy_runtime_requires_cutover", source)
-
     def test_infra_tests_run_ci_without_staging_deployment(self):
         routed = policy.classify(["infra/tests/test_full_market_deployment.py"])
         self.assertTrue(routed["findb_ci"])

@@ -2943,7 +2943,7 @@ def test_fetcher_transaction_tracks_provider_before_interruption(
     )
     transaction = (
         _runtime_inventory_policy(helper)
-        + helper.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
+        + helper.split("processed=()", 1)[1].split("# -- end of transaction helpers", 1)[0]
     )
     state_dir = tmp_path / "state"
     fake_bin = tmp_path / "bin"
@@ -3040,7 +3040,7 @@ def test_fetcher_candidate_cleanup_remains_recoverable_during_each_rollback_oper
     )
     transaction = (
         _runtime_inventory_policy(helper)
-        + helper.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
+        + helper.split("processed=()", 1)[1].split("# -- end of transaction helpers", 1)[0]
     )
     state_dir = tmp_path / "state"
     fake_bin = tmp_path / "bin"

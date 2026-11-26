@@ -279,17 +279,3 @@ def test_retired_pilot_scheduler_identity_is_not_surfaced(tmp_path):
     )
     assert result.returncode != 0
     assert "Fetcher deployment blocked:" not in result.stderr
-
-
-@pytest.mark.parametrize(
-    "line",
-    [
-        "fetcher_aws_deploy=failed reason=pilot_residue_running runtime=findb-pilot-finlab",
-        "fetcher_aws_deploy=failed reason=pilot_state_archive_failed",
-    ],
-)
-def test_pilot_residue_reasons_are_surfaced(tmp_path, line):
-    result, _ = run_wait(tmp_path, status="Failed", stdout=f"secret\n{line}\n")
-    assert result.returncode != 0
-    assert f"Remote deployment failure: {line}" in result.stderr
-    assert "secret" not in result.stderr

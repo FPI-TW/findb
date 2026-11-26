@@ -161,15 +161,6 @@ def require_runtime(row, image, target, provider, profile):
         raise ValueError("installed runtime is not an accepted gracefully drained consumer")
 
 
-PILOT_RESIDUE = tuple(f"findb-pilot-{provider.replace('_', '-')}" for provider in PROVIDERS)
-
-
-def require_no_pilot_residue(rows):
-    """Bundle v5 archived and removed every Pilot consumer; one left over blocks the release."""
-    if rows:
-        raise ValueError("retired pilot consumer remains after its retirement")
-
-
 def check_host(target, registry, validator, base=Path("/opt/fetcher")):
     inventory = subprocess.check_output(
         ["docker", "container", "ls", "--all", "--format", "{{.ID}}"], text=True
@@ -183,11 +174,8 @@ def check_host(target, registry, validator, base=Path("/opt/fetcher")):
         raise ValueError("container inventory incomplete")
     manifest = installed_manifest(base, validator, target, registry)
     names = {row["Name"].removeprefix("/"): row for row in rows}
-    if any("shioaji" in name for name in names):
-        raise ValueError("retired provider container remains on host")
-    residue = [names.pop(name) for name in PILOT_RESIDUE if name in names]
-    require_no_pilot_residue(residue)
-    if set(names) != set(EXPECTED_RUNTIMES) or len(names) + len(residue) != len(rows):
+    # Only the current consumers may exist: retired providers and profiles fail here too.
+    if set(names) != set(EXPECTED_RUNTIMES) or len(names) != len(rows):
         print("fetcher_host_eligibility=failed reason=consumer_inventory_mismatch")
         raise ValueError("missing, duplicate or unknown consumer")
     for name, provider, profile, image_key in CONSUMERS:
