@@ -190,7 +190,6 @@ def test_rollback_inspection_matches_rolling_unknown_login_across_midnight(
     )
     main()
     inspection = json.loads(capsys.readouterr().out)
-    assert inspection["legacy_rollback_safe"] is (not blocked)
     assert inspection["current_unknown_or_armed"] == int(blocked)
 
 

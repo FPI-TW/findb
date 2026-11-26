@@ -470,13 +470,11 @@ class InstallationReceiptTests(unittest.TestCase):
                     "/account/governor.sqlite3",
                     base / "allocation",
                 )
-                with self.assertRaisesRegex(ValueError, "explicit legacy inspection"):
+                with self.assertRaisesRegex(ValueError, "APP_ENVIRONMENT unavailable"):
                     inspection.build(*arguments)
-                legacy = inspection.build(*arguments, allow_legacy_environment=True)
-                self.assertEqual(legacy["environment_contracts"], ["legacy-deployment-target-v1"])
                 environment_fields[:] = ["APP_ENVIRONMENT=staging", "DEPLOYMENT_TARGET=production"]
                 with self.assertRaisesRegex(ValueError, "metadata conflict"):
-                    inspection.build(*arguments, allow_legacy_environment=True)
+                    inspection.build(*arguments)
             environment_fields[:] = ["APP_ENVIRONMENT=staging"]
             with (
                 patch.object(inspection, "inspect", side_effect=row),

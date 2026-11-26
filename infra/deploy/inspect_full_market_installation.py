@@ -46,8 +46,6 @@ def build(
     provider: str,
     governor: str,
     allocation_path: Path,
-    *,
-    allow_legacy_environment: bool = False,
 ) -> dict:
     manifest, accepted = (
         json.loads(manifest_path.read_bytes()),
@@ -88,15 +86,9 @@ def build(
         if canonical is not None and legacy is not None and canonical != legacy:
             raise ValueError("installed canonical and legacy environment metadata conflict")
         if canonical is None:
-            if not allow_legacy_environment or legacy != target:
-                raise ValueError(
-                    "installed APP_ENVIRONMENT unavailable; explicit legacy inspection required"
-                )
-            installed_environment = legacy
-            environment_contracts.add("legacy-deployment-target-v1")
-        else:
-            installed_environment = canonical
-            environment_contracts.add("app-environment-v1")
+            raise ValueError("installed APP_ENVIRONMENT unavailable")
+        installed_environment = canonical
+        environment_contracts.add("app-environment-v1")
         labels = row["Config"].get("Labels") or {}
         if "com.findb.deployment.transaction" in labels:
             from deployment_receipt import committed_runtime
@@ -212,11 +204,6 @@ def main() -> None:
         choices=PROVIDERS,
     )
     parser.add_argument("--governor", required=True)
-    parser.add_argument(
-        "--allow-legacy-environment",
-        action="store_true",
-        help="Inspect verified accepted pre-APP_ENVIRONMENT consumers; never permits conflicting metadata",
-    )
     args = parser.parse_args()
     receipt = build(
         args.manifest,
@@ -225,7 +212,6 @@ def main() -> None:
         args.provider,
         args.governor,
         args.allocation,
-        allow_legacy_environment=args.allow_legacy_environment,
     )
     args.output.write_text(json.dumps(receipt, sort_keys=True) + "\n")
     args.output.chmod(0o600)

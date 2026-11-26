@@ -137,18 +137,7 @@ class FullMarketState:
                 CREATE TABLE IF NOT EXISTS account_ledger_retention (id INTEGER PRIMARY KEY CHECK(id=1), next_at REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS checkpoint_retention (provider TEXT PRIMARY KEY, next_at REAL NOT NULL);
             """)
-            if "reason" not in {
-                row[1] for row in db.execute("PRAGMA table_info(full_empty_outcome)")
-            }:
-                db.execute(
-                    "ALTER TABLE full_empty_outcome ADD COLUMN reason TEXT NOT NULL DEFAULT 'empty_response'"
-                )
-            columns = {row[1] for row in db.execute("PRAGMA table_info(full_capacity_violation)")}
-            for column in ("received_bytes", "declared_bytes"):
-                if column not in columns:
-                    db.execute(
-                        f"ALTER TABLE full_capacity_violation ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
-                    )
+            # These columns postdate their tables' CREATE statements; every new file needs them.
             for table, additions in {
                 "acquisition_intent": {
                     "operation_kind": "TEXT NOT NULL DEFAULT 'acquisition'",

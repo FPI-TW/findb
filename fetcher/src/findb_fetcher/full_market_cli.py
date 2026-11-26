@@ -311,7 +311,8 @@ def main(argv: list[str] | None = None) -> int:
                     if identity_table
                     else None
                 )
-                if identity is not None and identity[0] != args.execution_profile:
+                # Every supported checkpoint (rollback floor fetcher-v0.1.51) is bound.
+                if identity is None or identity[0] != args.execution_profile:
                     raise ValueError("checkpoint execution profile mismatch")
         else:
             state = FullMarketState(args.state_path)

@@ -1491,6 +1491,7 @@ def test_control_scope_must_share_the_installed_feeds(
     monkeypatch.setattr(full_market_cli.FetcherConfig, "from_env", lambda: object())
     monkeypatch.setattr(full_market_cli, "SchedulerControlClient", Control)
     state = FullMarketState(tmp_path / "state.sqlite3")
+    state.bind_profile("full_market")
     args = [
         "--config",
         str(Path(__file__).resolve().parents[1] / "configs/bootstrap.production.v1.json"),
@@ -1511,6 +1512,7 @@ def test_require_stopped_checks_existing_control_without_mutating_prepared_check
     from findb_fetcher import full_market_cli
 
     state = FullMarketState(tmp_path / "state.sqlite3")
+    state.bind_profile("full_market")
     state.record_plan(_plan(), "twelve_data")
     state.prepare("fp1:123:AAPL", b"prepared delivery")
     with state.connection() as db:
@@ -1575,8 +1577,8 @@ def test_require_stopped_checks_existing_control_without_mutating_prepared_check
 
 
 @pytest.mark.parametrize("target", ["local", "staging", "production"])
-@pytest.mark.parametrize("kind", ["legacy", "corrupt", "unusable"])
-def test_require_stopped_validates_physical_integrity_and_usable_legacy_core(
+@pytest.mark.parametrize("kind", ["bound", "unbound", "corrupt", "unusable"])
+def test_require_stopped_validates_physical_integrity_and_bound_core(
     tmp_path, monkeypatch, target, kind
 ):
     import sqlite3
@@ -1588,6 +1590,12 @@ def test_require_stopped_validates_physical_integrity_and_usable_legacy_core(
         db.executescript(
             (Path(__file__).parent / "fixtures/full_market_legacy_core.sql").read_text()
         )
+        if kind != "unbound":
+            # Every supported checkpoint records the profile it was bound to.
+            db.execute(
+                "CREATE TABLE execution_identity (id INTEGER PRIMARY KEY CHECK(id=1), profile TEXT NOT NULL)"
+            )
+            db.execute("INSERT INTO execution_identity VALUES (1, 'full_market')")
         if kind == "unusable":
             db.execute("ALTER TABLE full_work RENAME COLUMN body TO unusable")
         page = db.execute("SELECT rootpage FROM sqlite_master WHERE name='full_work'").fetchone()[0]
@@ -1637,8 +1645,8 @@ def test_require_stopped_validates_physical_integrity_and_usable_legacy_core(
             "--require-stopped",
         ]
     )
-    assert result == (0 if kind == "legacy" else 2)
-    assert events == (["credentials", "Source"] if kind == "legacy" else [])
+    assert result == (0 if kind == "bound" else 2)
+    assert events == (["credentials", "Source"] if kind == "bound" else [])
     assert checkpoint.read_bytes() == before
     assert not (tmp_path / "state.sqlite3-wal").exists()
     assert not (tmp_path / "state.sqlite3-shm").exists()

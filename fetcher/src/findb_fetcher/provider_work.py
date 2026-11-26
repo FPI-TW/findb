@@ -240,8 +240,6 @@ class WorkJournal:
         with self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS work_manifest(work_key TEXT PRIMARY KEY, body TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS work_shioaji_grant(work_key TEXT NOT NULL, operation_key TEXT NOT NULL, grant_id TEXT NOT NULL, maximum INTEGER NOT NULL, PRIMARY KEY(work_key,operation_key,grant_id));
-                CREATE TABLE IF NOT EXISTS work_shioaji_probe(probe_id INTEGER PRIMARY KEY, work_key TEXT NOT NULL, operation_key TEXT NOT NULL, grant_id TEXT NOT NULL, reserved_at REAL NOT NULL, outcome TEXT NOT NULL, diagnostic TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS work_cooldown(work_key TEXT PRIMARY KEY, not_before REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS work_delivery(work_key TEXT NOT NULL, member_key TEXT NOT NULL,
                     body BLOB NOT NULL, sha256 TEXT NOT NULL, receipt TEXT, terminal TEXT,
