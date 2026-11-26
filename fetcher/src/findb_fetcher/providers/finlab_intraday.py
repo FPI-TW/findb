@@ -87,6 +87,15 @@ class FinLabIntradayNotReadyError(FinLabSdkError):
         self.scope = scope
 
 
+class FinLabIntradaySymbolError(FinLabOperationalError):
+    """One symbol's partition retrieval failed; ``code`` is the bounded failure class.
+
+    Unlike a daily price table, which every member is read from, an intraday
+    request asks for one symbol's trading day only. Whether the failure belongs to
+    that symbol or to the provider is decided by ``code`` (see the adapter).
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class IntradayPartition:
     """What FinLab says about one symbol's trading day, with its files when it traded.
@@ -162,7 +171,9 @@ def fetch_partition(
                 if code in _NOT_READY:
                     raise FinLabIntradayNotReadyError(_NOT_READY[code]) from None  # type: ignore[arg-type]
                 _log_sdk_failure(dataset, code)
-                raise FinLabOperationalError("FinLab SDK intraday retrieval failed", code) from None
+                raise FinLabIntradaySymbolError(
+                    "FinLab SDK intraday retrieval failed", code
+                ) from None
     except QuotaBlockedError as exc:
         if exc.quota_wait and not exc.dispatched:
             raise

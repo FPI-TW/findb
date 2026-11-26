@@ -60,6 +60,7 @@ from findb_fetcher.providers.finlab import (
 )
 from findb_fetcher.providers.finlab_intraday import (
     FinLabIntradayNotReadyError,
+    FinLabIntradaySymbolError,
     fetch_partition,
     manifest_bytes,
 )
@@ -82,6 +83,12 @@ FINLAB_PRICE_FIELDS = ("open", "high", "low", "close")
 FINLAB_OUTAGE_DELAY_SECONDS = 5 * 60
 # The daily quota does not come back within minutes.
 FINLAB_QUOTA_DELAY_SECONDS = 30 * 60
+# Failure classes of one symbol's intraday request that say nothing about the
+# provider: the SDK raised, FinLab answered malformed JSON, or a local OS error.
+# That symbol keeps its bounded retries and the other members go on; a run of
+# them stops the round (#711, #747). Network, timeout, quota and process failures
+# still hold the plan as a provider outage.
+FINLAB_INTRADAY_MEMBER_CODES = frozenset({"sdk_error", "bad_response", "os_error"})
 # At most this many no-trade members of the previous trade date are asked about
 # again per intraday feed and day; each question is one manifest request.
 FINLAB_NO_TRADE_RECHECK_LIMIT = 100
@@ -784,9 +791,16 @@ class FinLabAdapter(ProviderAdapter):
                 wait="publication",
                 code="finlab_target_not_ready",
             )
+        if (
+            phase == "member"
+            and isinstance(exc, FinLabIntradaySymbolError)
+            and exc.code in FINLAB_INTRADAY_MEMBER_CODES
+        ):
+            # Only this symbol's request failed: it is charged, the others go on.
+            return ProviderFailure(FailureKind.ROUND_RETRY, code="finlab_" + exc.code)
         if phase == "member" and isinstance(exc, (FinLabSdkError, FinLabConfigError)):
-            # Only the shared table fetch raises these in the member loop, so the
-            # failure belongs to the provider or the account, never to this member.
+            # The shared daily table fetch, or an intraday failure of the provider or
+            # account (network, timeout, quota, process): never this member's own.
             code = (
                 exc.code
                 if isinstance(exc, FinLabOperationalError)
