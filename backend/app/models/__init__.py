@@ -34,7 +34,6 @@ from app.models.index_reference import (
     IndexMembershipBuild,
     IndexSnapshot,
     IndexSnapshotConstituent,
-    ReferenceDeliveryEvidence,
     ReferenceDocumentArchive,
 )
 from app.models.institutional_flow import (
@@ -121,7 +120,6 @@ __all__ = [
     "InstitutionalFlowStock",
     "InstitutionalFlowSummary",
     "IndexSnapshotConstituent",
-    "ReferenceDeliveryEvidence",
     "ReferenceDocumentArchive",
     "TradingCalendar",
     "CalendarMarket",

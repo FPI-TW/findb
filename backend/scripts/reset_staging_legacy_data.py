@@ -115,7 +115,6 @@ TARGET_TABLES = (
     "public.index_snapshot",
     "public.index_change_event",
     "public.index_definition",
-    "public.reference_delivery_evidence",
     "public.reference_document_archive",
     # Exchange institutional tables; their raw responses expire with raw.market_payload.
     "public.institutional_flow_stock",
