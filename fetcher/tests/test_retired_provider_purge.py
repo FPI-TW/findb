@@ -38,7 +38,15 @@ def _journal(path: Path) -> Path:
                 (key, "r", 1.0, "native", b"o", "sha"),
             )
             db.execute("INSERT INTO work_budget VALUES(?,?,?)", (key, "op", 1))
-        # Grants and probes of works Backend no longer lists still belong to the provider.
+        # Grants and probes of works Backend no longer lists still belong to the provider;
+        # journals written before the Shioaji runtime was removed still hold these tables.
+        db.executescript(
+            "CREATE TABLE work_shioaji_grant(work_key TEXT NOT NULL, operation_key TEXT NOT NULL, "
+            "grant_id TEXT NOT NULL, maximum INTEGER NOT NULL, PRIMARY KEY(work_key,operation_key,grant_id));"
+            "CREATE TABLE work_shioaji_probe(probe_id INTEGER PRIMARY KEY, work_key TEXT NOT NULL, "
+            "operation_key TEXT NOT NULL, grant_id TEXT NOT NULL, reserved_at REAL NOT NULL, "
+            "outcome TEXT NOT NULL, diagnostic TEXT NOT NULL);"
+        )
         db.execute("INSERT INTO work_shioaji_grant VALUES(?,?,?,?)", ("gone", "op", "g", 1))
         db.execute(
             "INSERT INTO work_shioaji_probe(work_key,operation_key,grant_id,reserved_at,outcome,diagnostic) "

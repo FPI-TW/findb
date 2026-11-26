@@ -328,15 +328,7 @@ def main() -> None:
                 "SELECT COUNT(*) FROM acquisition_intent WHERE provider=? AND (status='armed' OR (status='unknown' AND (completed_at>=? OR completed_at+cooldown_bound>=? OR (login_units=1 AND (actual_start>? OR (actual_start IS NULL AND armed_at<=? AND completed_at>?))))))",
                 (args.provider, now - now % 86400, now, now - 86400, now, now - 86400),
             ).fetchone()[0]
-        print(
-            json.dumps(
-                {
-                    "acquisition_protocol_version": 2,
-                    "legacy_rollback_safe": active == 0,
-                    "current_unknown_or_armed": active,
-                }
-            )
-        )
+        print(json.dumps({"acquisition_protocol_version": 2, "current_unknown_or_armed": active}))
         return
     repair_capacity(**{key: value for key, value in vars(args).items() if key != "command"})
     print("account_capacity_repair=accepted usage_preserved=true")

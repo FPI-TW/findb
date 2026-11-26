@@ -18,16 +18,14 @@ def installed_artifact_digest(directory: Path) -> str:
     return digest.hexdigest()
 
 
-def process_environment(raw: str, *, allow_legacy: bool = False) -> tuple[str, str]:
+def process_environment(raw: str) -> tuple[str, str]:
     canonical = re.search(r"(?:^|\s)APP_ENVIRONMENT=([^\s]+)", raw)
     legacy = re.search(r"(?:^|\s)DEPLOYMENT_TARGET=([^\s]+)", raw)
-    if canonical is not None:
-        if legacy is not None and legacy.group(1) != canonical.group(1):
-            raise ValueError("installed canonical and legacy environment metadata conflict")
-        return canonical.group(1), "app-environment-v1"
-    if allow_legacy and legacy is not None:
-        return legacy.group(1), "legacy-deployment-target-v1"
-    raise ValueError("installed APP_ENVIRONMENT unavailable; explicit legacy inspection required")
+    if canonical is None:
+        raise ValueError("installed APP_ENVIRONMENT unavailable")
+    if legacy is not None and legacy.group(1) != canonical.group(1):
+        raise ValueError("installed canonical and legacy environment metadata conflict")
+    return canonical.group(1), "app-environment-v1"
 
 
 def main() -> None:
@@ -45,7 +43,6 @@ def main() -> None:
     )
     parser.add_argument("--allocation", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--allow-legacy-environment", action="store_true")
     args = parser.parse_args()
     command = subprocess.check_output(
         ["ps", "-p", str(args.pid), "-o", "command="], text=True
@@ -65,9 +62,7 @@ def main() -> None:
     governor_env = re.search(r"(?:^|\s)FETCHER_ACCOUNT_STATE_PATH=([^\s]+)", environment)
     if governor_env is None or governor_env.group(1) != str(args.governor):
         raise ValueError("installed governor environment differs from receipt")
-    target, environment_contract = process_environment(
-        environment, allow_legacy=args.allow_legacy_environment
-    )
+    target, environment_contract = process_environment(environment)
     if target != "local":
         raise ValueError("installed environment differs from local enrollment")
     allocation_env = re.search(r"(?:^|\s)FETCHER_ACCOUNT_ALLOCATION_FILE=([^\s]+)", environment)
@@ -114,9 +109,7 @@ def main() -> None:
         installed_env = subprocess.check_output(
             ["ps", "eww", "-p", str(int(pid)), "-o", "command="], text=True
         )
-        extra_environment, _ = process_environment(
-            installed_env, allow_legacy=args.allow_legacy_environment
-        )
+        extra_environment, _ = process_environment(installed_env)
         if extra_environment != "local":
             raise ValueError("installed consumer environment differs from local enrollment")
         if f"FETCHER_ACCOUNT_STATE_PATH={args.governor}" not in installed_env or (

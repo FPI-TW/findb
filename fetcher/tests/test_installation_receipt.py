@@ -86,7 +86,7 @@ def test_local_artifact_identity_changes_with_provider_source(tmp_path):
     assert installation_receipt.installed_artifact_digest(tmp_path) != before
 
 
-def test_legacy_process_inspection_is_explicit_and_rejects_conflicts():
+def test_process_inspection_requires_app_environment_and_rejects_conflicts():
     inspect = installation_receipt.process_environment
     assert inspect("APP_ENVIRONMENT=local") == ("local", "app-environment-v1")
     assert inspect("APP_ENVIRONMENT=local DEPLOYMENT_TARGET=local") == (
@@ -94,10 +94,6 @@ def test_legacy_process_inspection_is_explicit_and_rejects_conflicts():
         "app-environment-v1",
     )
     with pytest.raises(ValueError, match="conflict"):
-        inspect("APP_ENVIRONMENT=local DEPLOYMENT_TARGET=production", allow_legacy=True)
-    with pytest.raises(ValueError, match="explicit legacy"):
+        inspect("APP_ENVIRONMENT=local DEPLOYMENT_TARGET=production")
+    with pytest.raises(ValueError, match="APP_ENVIRONMENT unavailable"):
         inspect("DEPLOYMENT_TARGET=local")
-    assert inspect("DEPLOYMENT_TARGET=local", allow_legacy=True) == (
-        "local",
-        "legacy-deployment-target-v1",
-    )
