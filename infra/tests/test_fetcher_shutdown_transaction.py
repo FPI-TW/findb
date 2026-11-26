@@ -275,6 +275,10 @@ def fake_call(state, command, args, parent, environ):
     return status, "".join(line + "\n" for line in output)
 
 
+# Placeholder for the Full checkpoint directory; execute() binds it to the harness root.
+FULL_STATE = "@full-state@"
+
+
 def original_rows():
     return {
         stable: dict(
@@ -287,7 +291,8 @@ def original_rows():
             cmd=(
                 f"findb-fetch-historical-backfill --provider {provider} --run-forever"
                 if profile == "historical"
-                else f"findb-fetch-runtime --execution-profile {profile} --provider {provider} --run-forever"
+                else f"findb-fetch-runtime --execution-profile {profile} "
+                f"--state-path {FULL_STATE}/state-{provider}.sqlite3 --provider {provider} --run-forever"
             ),
         )
         for stable, repository, provider, profile in PROVIDERS
@@ -346,24 +351,36 @@ def execute(
 
             state_dir = checkpoint / "staging" if target == "staging" else checkpoint
             state_dir.mkdir(parents=True)
-            with sqlite3.connect(state_dir / "state.sqlite3") as db:
-                db.executescript(
-                    (ROOT / "fetcher/tests/fixtures/full_market_legacy_core.sql").read_text()
-                )
-            if checkpoint_kind == "corrupt":
-                with sqlite3.connect(state_dir / "state.sqlite3") as db:
-                    page = db.execute(
-                        "SELECT rootpage FROM sqlite_master WHERE name='full_work'"
-                    ).fetchone()[0]
-                    size = db.execute("PRAGMA page_size").fetchone()[0]
-                with (state_dir / "state.sqlite3").open("r+b") as raw:
-                    raw.seek((page - 1) * size)
-                    raw.write(b"\0")
-            elif checkpoint_kind == "unusable":
-                with sqlite3.connect(state_dir / "state.sqlite3") as db:
-                    db.executescript("DROP TABLE full_work; CREATE TABLE full_work(unusable TEXT);")
+            # Each Full consumer runs on its own checkpoint (#691).
+            files = [
+                state_dir / f"state-{provider}.sqlite3"
+                for _, _, provider, profile in PROVIDERS
+                if profile == "full_market"
+            ]
+            for path in files:
+                with sqlite3.connect(path) as db:
+                    db.executescript(
+                        (ROOT / "fetcher/tests/fixtures/full_market_legacy_core.sql").read_text()
+                    )
+                if checkpoint_kind == "corrupt":
+                    with sqlite3.connect(path) as db:
+                        page = db.execute(
+                            "SELECT rootpage FROM sqlite_master WHERE name='full_work'"
+                        ).fetchone()[0]
+                        size = db.execute("PRAGMA page_size").fetchone()[0]
+                    with path.open("r+b") as raw:
+                        raw.seek((page - 1) * size)
+                        raw.write(b"\0")
+                elif checkpoint_kind == "unusable":
+                    with sqlite3.connect(path) as db:
+                        db.executescript(
+                            "DROP TABLE full_work; CREATE TABLE full_work(unusable TEXT);"
+                        )
             script_source = script_source.replace("/var/lib/findb-full-market", str(checkpoint))
-        checkpoint_bytes = (state_dir / "state.sqlite3").read_bytes() if full_checkpoint else None
+            for row in rows.values():
+                if isinstance(row.get("cmd"), str):
+                    row["cmd"] = row["cmd"].replace(FULL_STATE, str(state_dir))
+        checkpoint_bytes = [path.read_bytes() for path in files] if full_checkpoint else None
         if postcommit_field:
             script_source = script_source.replace(
                 "trap - ERR INT TERM HUP\nif ! cleanup_originals",
@@ -412,9 +429,9 @@ def execute(
             )
         actual = json.loads(json.dumps(state))
         if full_checkpoint:
-            actual["checkpoint_preserved"] = (
-                state_dir / "state.sqlite3"
-            ).read_bytes() == checkpoint_bytes
+            actual["checkpoint_preserved"] = [
+                path.read_bytes() for path in files
+            ] == checkpoint_bytes
         return (
             completed,
             actual,

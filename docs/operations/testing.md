@@ -153,10 +153,6 @@ bootstrap shared account path 分別由 Infra `test_provider_work_retirement.py`
 且在 package 既有 public exports 載入後不再匯入其它 provider／legacy 模組。
 舊 CLI parser、summary、私人 smoke IPC 與 TAIFEX standalone executor tests 已移除；
 實際隔離 worker／FD／timeout／輸出抑制仍由現行 provider process／SDK suites 驗證。
-`test_legacy_checkpoints.py` 使用舊格式資料驗證 TAIFEX 唯讀 parser，核對原 inode、permissions、
-prepared、receipt 與 request／attempt 用量均保留，缺檔、錯誤 schema／identity、symlink fail closed。
-WAL fixtures 同時覆蓋已關閉且無 sidecar，以及仍有未 checkpoint 證據的 sidecars，均須在
-connect 前明確拒絕且不新增或改動任何原檔；不得以忽略 WAL 的 immutable reader 偽裝支援。
 `test_runtime_owner_contract.py` 直接驗證真實空 claim 的 idle、缺少 owner 時不能動 retained state，
 以及 member executor 使用已驗證 owner 依序 restore／authorize／reserve，沒有 owner 可選 fallback。
 `test_historical_owner_contract.py` 覆蓋歷史 executor 的 stopped scope、drain-only、closed／draining、

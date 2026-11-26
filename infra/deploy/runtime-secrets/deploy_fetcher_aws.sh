@@ -257,13 +257,13 @@ full_market_state=/var/lib/findb-full-market/$APP_ENVIRONMENT
 require_full_checkpoint() {
   # Installed workers own durable prepared work. Never replace a lost checkpoint,
   # including when an accepted replay invokes an older helper/image. Check the
-  # file the installed runtime runs on: its own or the host-wide one (#691).
+  # provider's own file the installed runtime runs on (#691).
   local checkpoint_file
   if ! checkpoint_file="$(python3 - "$1" "$full_market_state" <<'STATE'
 import json, re, sys
 command, root = json.loads(sys.argv[1]), sys.argv[2]
-path = command[command.index("--state-path") + 1] if "--state-path" in command else root + "/state.sqlite3"
-if not re.fullmatch(re.escape(root) + r"/state(-[a-z][a-z0-9_]{0,49})?\.sqlite3", path):
+path = command[command.index("--state-path") + 1] if "--state-path" in command else ""
+if not re.fullmatch(re.escape(root) + r"/state-[a-z][a-z0-9_]{0,49}\.sqlite3", path):
     raise SystemExit(1)
 print(path)
 STATE
