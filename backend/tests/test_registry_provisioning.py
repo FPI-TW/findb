@@ -13,79 +13,56 @@ DEPLOY_HELPER_PATH = (
 )
 
 
-def _config(*, finlab: dict | None = None, other: dict | None = None) -> dict:
-    overrides = {}
-    if finlab is not None:
-        overrides["finlab"] = finlab
-    if other is not None:
-        overrides["other"] = other
+def _config() -> dict:
     return {
         "operator_note": "preserve",
         "delivery_expectation": {
             "record_count": {"minimum_record_count": 2100},
-            "source_overrides": overrides,
+            "source_overrides": {"finlab": {"record_count": {"minimum_record_count": 99}}},
         },
     }
 
 
-@pytest.mark.parametrize("target", ["staging", "production"])
-def test_unified_registry_removes_exact_legacy_pilot_and_is_idempotent(target):
-    original = _config(
-        finlab=provisioning.FINLAB_PILOT_OVERRIDE,
-        other={"record_count": {"minimum_record_count": 17}},
-    )
-    first, report = provisioning.provision_registry_config(original, deployment_target=target)
-    assert first["delivery_expectation"]["record_count"] == {"minimum_record_count": 2100}
-    assert first["delivery_expectation"]["source_overrides"] == {
-        "other": {"record_count": {"minimum_record_count": 17}}
+def _seed_configs() -> dict[str, dict]:
+    return {
+        dataset["dataset_key"]: deepcopy(dataset["config"]) for dataset in provisioning.DATASETS
     }
-    assert report.changed and report.action == "legacy_finlab_pilot_removed"
-    second, second_report = provisioning.provision_registry_config(first, deployment_target=target)
-    assert second == first and not second_report.changed
 
 
 @pytest.mark.parametrize("target", ["staging", "production"])
-def test_unified_registry_preserves_operator_overrides(target):
-    original = _config(
-        finlab={"baseline": {"enabled": True}, "record_count": {"minimum_record_count": 99}}
-    )
-    result, report = provisioning.provision_registry_config(original, deployment_target=target)
-    assert result == original
-    assert not report.changed
-    assert report.action == "operator_policy_preserved"
+def test_reconciliation_preserves_operator_overrides_and_is_idempotent(target):
+    existing = _seed_configs()
+    override = {
+        "finlab": {"baseline": {"enabled": True}, "record_count": {"minimum_record_count": 99}}
+    }
+    existing["tw_equity_eod"]["delivery_expectation"]["source_overrides"] = override
+    existing["tw_equity_eod"]["operator_note"] = "preserve"
 
-
-def test_report_never_serializes_arbitrary_custom_policy() -> None:
-    marker = "operator-secret-annotation-" + ("x" * 10_000)
-    config = _config(
-        finlab={
-            "baseline": {"enabled": True, "annotation": marker},
-            "record_count": {"minimum_record_count": 99},
-        }
+    first, report = provisioning.reconcile_supported_dataset_configs(
+        existing, deployment_target=target
     )
-    _, report = provisioning.provision_registry_config(config, deployment_target="production")
-    encoded = str(report.as_dict())
-    assert marker not in encoded
-    assert report.previous_finlab_override == "custom"
-    assert report.resulting_finlab_override == "custom"
+    assert first["tw_equity_eod"]["delivery_expectation"]["source_overrides"] == override
+    assert first["tw_equity_eod"]["operator_note"] == "preserve"
+    second, second_report = provisioning.reconcile_supported_dataset_configs(
+        first, deployment_target=target
+    )
+    assert second == first
+    assert not second_report.changed
+    assert second_report.action == "operator_policy_preserved"
+    assert report.as_dict()["deployment_target"] == target
 
 
 @pytest.mark.parametrize("target", ("qa", "", "STAGING "))
 def test_noncanonical_target_is_rejected(target: str) -> None:
     with pytest.raises(provisioning.RegistryProvisioningError):
-        provisioning.provision_registry_config({}, deployment_target=target)
+        provisioning.reconcile_supported_dataset_configs(_seed_configs(), deployment_target=target)
 
 
 def test_malformed_policy_fails_closed() -> None:
-    with pytest.raises(provisioning.RegistryProvisioningError, match="delivery_expectation"):
-        provisioning.provision_registry_config(
-            {"delivery_expectation": []}, deployment_target="staging"
-        )
-    with pytest.raises(provisioning.RegistryProvisioningError, match="source_overrides"):
-        provisioning.provision_registry_config(
-            {"delivery_expectation": {"source_overrides": []}},
-            deployment_target="production",
-        )
+    existing = _seed_configs()
+    existing["tw_equity_eod"] = []
+    with pytest.raises(provisioning.RegistryProvisioningError, match="tw_equity_eod"):
+        provisioning.reconcile_supported_dataset_configs(existing, deployment_target="staging")
 
 
 def test_supported_registry_reconciliation_restores_missing_us_policy() -> None:
@@ -159,7 +136,7 @@ class _FakeConnection:
         self.configs = {
             dataset["dataset_key"]: deepcopy(dataset["config"]) for dataset in provisioning.DATASETS
         }
-        self.configs[provisioning.DATASET_KEY] = config
+        self.configs["tw_equity_eod"] = config
         self.fail_update = fail_update
         self.updated = False
 

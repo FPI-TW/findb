@@ -3,10 +3,8 @@ Pytest configuration and fixtures.
 """
 
 import os
-from datetime import datetime
 from inspect import signature
 from typing import AsyncGenerator
-from zoneinfo import ZoneInfo
 
 import pytest
 import pytest_asyncio
@@ -74,29 +72,6 @@ def pre_listing_schema(request, monkeypatch):
             return {}
 
         monkeypatch.setattr(full_market, "_listing_dates", no_listings)
-
-
-@pytest.fixture(autouse=True)
-def daily_runtime_clock(monkeypatch):
-    """Keep ordinary daily admission tests inside a defined acquisition window.
-
-    Only the daily policy clock moves; grant, quota, lease and wall clocks stay
-    real. Boundary tests can override this clock or pass an explicit datetime.
-    """
-    from app.services import daily_runtime, provider_work
-
-    clock = [
-        datetime.now(ZoneInfo("Asia/Taipei")).replace(hour=20, minute=0, second=0, microsecond=0)
-    ]
-    monkeypatch.setattr(daily_runtime, "utc_now", lambda: clock[0])
-    # Queue eligibility supplies an explicit lease clock. Keep its policy
-    # decision on this same clock without moving lease or heartbeat timestamps.
-    monkeypatch.setattr(
-        provider_work,
-        "daily_window",
-        lambda provider, now=None: daily_runtime.daily_window(provider),
-    )
-    return clock
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session", autouse=True)
@@ -275,25 +250,6 @@ async def admin_headers(test_session: AsyncSession) -> AsyncGenerator[dict, None
 def isolate_full_market_settings(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "APP_ENVIRONMENT", "local")
-
-
-@pytest.fixture
-def legacy_shioaji_window(monkeypatch):
-    """Reconstruct the old daily window when exercising retained recovery evidence."""
-    from app.services import daily_runtime
-
-    policies = {"shioaji": {"timezone": "Asia/Taipei", "start": "18:00", "end": "06:00"}}
-    monkeypatch.setattr(daily_runtime, "_runtime_policies", lambda: policies)
-    return policies
-
-
-@pytest.fixture
-def legacy_shioaji_acquisition():
-    """Exercise pre-retirement recovery protocols against explicit historical state."""
-    from tests.market_minute_fixture import legacy_acquisition_catalog
-
-    with legacy_acquisition_catalog():
-        yield
 
 
 @pytest.fixture

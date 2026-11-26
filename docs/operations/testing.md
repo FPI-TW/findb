@@ -99,13 +99,8 @@ Fetcher 的 slow owner RPC／dispatch grant 測試使用局部可控的 wall／m
 `test_actual_processes_merge_proven_debt_exactly_once` 同樣將 seeded quota 與父程序 admission
 固定在相同 UTC 分鐘，三個 identity merge 子程序仍以真實 spawn 併發執行；避免啟動成本跨分鐘
 後，合法的新分鐘額度使舊債務阻擋斷言失效。產品的 quota rollover 規則維持不變。
-Backend 的 `daily_runtime_clock` fixture 預設將日常 policy 時鐘固定在台北當日 20:00，
-讓一般 admission／queue／migration 測試不依賴執行時是否落在 Shioaji 18:00–隔日 06:00 窗口。
-Queue 即使收到獨立 lease clock，policy 判定仍使用相同的受控時鐘；一般案例的 UTC grant、
-quota 與 lease 保持原有時鐘，Shioaji native 功能驗收則使用下述共用邏輯 UTC。
-窗口邊界案例應明確調整 fixture clock 或覆寫
-`daily_runtime.utc_now`／`daily_window`；pure policy tests 可直接傳入 aware datetime，
-驗證開窗、關窗與跨日，不把窗口判定改成永遠允許。
+現役 provider 沒有 provider-wide 每日窗口，`daily_window` 一律開放；窗口關閉的 queue、admission
+與授權路徑由測試直接覆寫 `daily_window` 驗證。
 `RuntimeHarness` 的 Shioaji 功能驗收預設使用 `shioaji_dispatch_clock`：Backend 的標準
 `utc_now` aliases、Source checked-at／lease、Fetcher queue、account governor、SDK child 及
 historical coordinator／SQLite checkpoint 共用邏輯 UTC；明確覆寫的時間邊界 clock 保留。
@@ -121,8 +116,8 @@ provider 訊息或 credentials。Heartbeat 重疊案例用事件強制與 delive
 真實 20 秒 interval；harness 僅序列化共用測試 AsyncSession 的 HTTP／normalization 使用，
 保留 request 前的故障 barriers、真實 heartbeat thread 與正式程式的並行行為。
 `test_shioaji_time_limits.py` 以顯式 clock 獨立驗證 50ms grant
-及 50 次／60 秒 rolling limit；日常 18:00–06:00 窗口、31 天日期限制／台北跨日與 SDK timeout
-分別由 `test_shioaji_daily_runtime.py`、`test_historical_backfill.py` 與 Fetcher 的
+及 50 次／60 秒 rolling limit；31 天日期限制／台北跨日與 SDK timeout
+分別由 `test_historical_backfill.py` 與 Fetcher 的
 `test_shioaji.py`／`test_provider_process_reap.py`／`test_provider_worker.py` 驗證。
 時間限制案例不依賴跑測試當下的時刻。
 
@@ -144,29 +139,9 @@ identities 時都讀這份清單，不寫死 provider。
 Shioaji 歷史 owner／prepared／receipts 的保留與舊五-provider proof 拒絕，由
 `test_shioaji_backend_retirement.py` 驗證。修改 cutover inventory 時須執行完整 Backend
 非 migration suite，涵蓋各 provider 的獨立 harness，不能只跑 `test_provider_work*.py`。
-
-Shioaji 空 Kbars／mapping 修復由 Fetcher `test_shioaji_recovery.py`、
-`test_shioaji_repair_cli.py` 及 Backend `test_shioaji_repair.py` 驗證：legacy 快取證據保留、跨重啟三次觀測上限與十五分鐘退避、
-unknown dispatch 不退款、日曆衝突、Owner／Source fence、stale preview、mapping overlay、
-首次未知派送跨重啟的上限與退避、空回應後 calendar-status outage 的續報與 claim 保留、
-正式 gateway／decoder 的缺欄、向量長度與 scalar 格式拒絕沿用 `FULL_WORK_MAX_ATTEMPTS` 一般失敗政策，
-以及 Mapping API 與 Fetcher symbol validator 的邊界一致性及核准前 `422` 拒絕、
-舊失敗次數及新 grant 分離、重複安裝／ACK-loss，以及 migration 保留性與 rollback floor。
-Admin 修復回應另驗證 OpenAPI typed schemas、必要摘要欄位與格式、序列化後摘要相符、
-使用 preview 回應套用與重播，以及錯誤 apply 回應不得提交授權。
-觀測 gate 測試亦涵蓋舊空快取等待／耗盡、calendar conflict／outage／無效證據保留原 gateway，
-其他成員可重用 session；SDK 建立／登入／兩個 contracts 群組失敗仍採 `FULL_WORK_MAX_ATTEMPTS` 一般重試，
-不扣 Kbars 觀測額度，保留先前 unknown debt，後續資料不需額外 grant。
-`test_sdk_bootstrap.py` 另以正式 child protocol 與離線 SDK 驗證登入失敗仍保留 native／登入帳務，
-僅將 Kbars probe 記為 `predispatch`；dead child 仍須回收並由後續 acquisition 替換。
-修復續作另覆蓋 persisted summary 同交易更新／回滾／重播、無 outcome 的已修復 mapping
-不再顯示 gap、獨立 source error 保留，以及 repair→claim 的窗口／control 矩陣。本機 no-trade complete、Backend resolved、prepared／receipt 成員不得重開或新增
-安裝 ACK；混合成員僅 ACK 實際安裝者，local→grant 中斷與 ACK-loss 可用同 ID 續作。
-已 ACK 修復的後續回合不再查 diagnostics／restore／ACK，只補報待安裝成員自身的 outcome；
-observation guard 重用 fresh member authorization，逾時才重新 RPC。
-`test_provider_work_daily_faults.py` 的股票／ETF 空回應案例走正式 decorator、隔離 fake SDK、
-Source→raw→normalization→canonical，驗證後續合法回應完成原 scope；同 suite 保留 outage／
-lost-ACK 原 bytes／idempotency 驗證。測試不呼叫真實 provider，不能代替 production 根因驗收。
+`test_provider_work_daily_faults.py` 以正式 decorator 與隔離 fake provider 走 Source→raw→normalization→canonical，
+驗證 native 失敗後下一個 attempt 完成原 scope、單檔 no_data 只重試該檔，以及尚未發布時重啟後重抓原 operation；
+測試不呼叫真實 provider，不能代替 production 根因驗收。
 
 所有五 provider 的設定／無 owner 拒絕矩陣在 Backend `test_provider_work_retirement.py`
 與 Fetcher `test_twelve_data_cli.py`；後者覆蓋八個舊 acquiring CLI 的 exit 2、無新檔案與原
@@ -586,17 +561,6 @@ SDK 的登入）。只有沒裝 extra 的環境才會略過這個模組；CI 另
 以及 draft、部分發布、閏年與不寫入的預設查詢。Fetcher recovery 測試驗證週末仍取得 Source 決策，
 skipped_calendar 不建立本機抓取工作。Dashboard 驗證來源標示、政策略過與 profile cache 隔離。
 
-`test_calendar_closure.py` 驗證舊 Shioaji canonical work 的休市結清、Owner／Source scope、
-typed schemas、stale preview、競爭 owner、rollback、重播及原 manifest／attempts／grants／ACK／
-summary 保留；結清後 queue projection／claim／repair／enqueue 不得恢復 acquisition。
-負向案例涵蓋開市／政策／決策／audit 衝突、Backend prepared／receipt／run、本地 lease／
-未知派送責任與證明過期；schema drift suite 核對 Alembic／ORM 一致。
-Fetcher `test_calendar_closure_cli.py` 驗證 existing inode 鎖、SQLite 唯讀、checksum、Source outage、
-stale apply 與 ACK-loss 重播，且無 SDK 呼叫。staging 匯出預覽以同一 evaluator 執行，不能
-取代新 migration／API 部署後的正式預覽與受控套用；本次不做原生派送或 production 驗收。
-`test_source_routes.py` 同步列入新唯讀 inventory；staging reset inventory 納入 closure table，
-`test_reset_staging_legacy_data.py` 驗證空表的完整 FK 清理與已有 closure evidence 時拒絕
-reset，並逐項核對原工作／計畫／attempts／授權 graph 不變。這些 reset 僅在本機隔離測試 DB 執行。
 `pnpm check`、`pnpm test` 與兩環境 IaC format／validate／plan 必須通過後才能部署。
 以上架構與 fixture 驗收不代表 provider／R2 native 資料問題已排除。
 

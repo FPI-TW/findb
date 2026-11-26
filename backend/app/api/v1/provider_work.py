@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import verify_source_api_key
 from app.dependencies import get_db
 from app.execution_profiles import execution_profile
-from app.schemas.calendar_closure import CalendarClosureInventory
 from app.services import provider_work as service
 from app.services.universe_refresh import MANUAL_REFRESH
 
@@ -84,10 +83,6 @@ class ClosedLookup(BaseModel):
         if not 1 <= len(self.work_ids) + len(self.stable_keys) <= 500:
             raise ValueError("closed lookup takes 1 to 500 works")
         return self
-
-
-class RepairAckRequest(FenceRequest):
-    repair_ids: list[UUID] = Field(max_length=5000)
 
 
 def scope(db: AsyncSession) -> tuple[str, list[str]]:
@@ -320,19 +315,6 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
             }
         elif action == "calendar-status":
             return await service.current_calendar_status(db, work)
-        elif action in {"shioaji-repairs", "shioaji-repair-ack"}:
-            from app.services.shioaji_repair import approved
-
-            result = await approved(
-                db,
-                work,
-                ack_ids=[str(value) for value in body.repair_ids]
-                if isinstance(body, RepairAckRequest)
-                else None,
-                generation=body.generation,
-            )
-            await db.commit()
-            return result
         elif action == "close":
             await service.close(db, **identity)
         elif action == "execute-rerun":
@@ -435,35 +417,6 @@ async def calendar_status(
     return await mutate(db, work_id, body, "calendar-status")
 
 
-@router.post("/{work_id}/shioaji-repairs")
-async def shioaji_repairs(
-    work_id: UUID, body: FenceRequest, db: AsyncSession = Depends(get_db)
-) -> dict:
-    return await mutate(db, work_id, body, "shioaji-repairs")
-
-
-@router.post("/{work_id}/shioaji-repair-ack")
-async def shioaji_repair_ack(
-    work_id: UUID, body: RepairAckRequest, db: AsyncSession = Depends(get_db)
-) -> dict:
-    return await mutate(db, work_id, body, "shioaji-repair-ack")
-
-
-@router.get("/{work_id}/shioaji-diagnostics")
-async def shioaji_diagnostics(work_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
-    from app.services.full_market import FullMarketError
-    from app.services.shioaji_repair import inventory, work_scope
-
-    provider, datasets = scope(db)
-    try:
-        work, _ = await work_scope(db, work_id)
-        if work.provider != provider or work.dataset_key not in datasets:
-            raise HTTPException(status_code=403, detail="Source dataset scope denied")
-        return await inventory(db, work_id)
-    except FullMarketError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-
 @router.post("/{work_id}/execute-rerun")
 async def execute_rerun(
     work_id: UUID, body: FenceRequest, db: AsyncSession = Depends(get_db)
@@ -508,26 +461,3 @@ async def queue(db: AsyncSession = Depends(get_db)) -> dict:
             if row["dataset_key"] in datasets
         ]
     }
-
-
-@router.get("/{work_id}/calendar-closure", response_model=CalendarClosureInventory)
-async def calendar_closure_inventory(
-    work_id: UUID, db: AsyncSession = Depends(get_db)
-) -> CalendarClosureInventory:
-    from app.models.provider_work import ProviderWork
-    from app.services.calendar_closure import inventory
-    from app.services.full_market import FullMarketError
-
-    provider, datasets = scope(db)
-    work = await db.get(ProviderWork, work_id)
-    if (
-        work is None
-        or work.environment != service.environment()
-        or work.provider != provider
-        or work.dataset_key not in datasets
-    ):
-        raise HTTPException(status_code=403, detail="Source calendar closure scope denied")
-    try:
-        return await inventory(db, work_id)
-    except FullMarketError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
