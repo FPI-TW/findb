@@ -79,7 +79,9 @@ timeout 必須 terminate／kill／reap 後才能釋放 owner。
 最高、最低之外只記 warning 並照常寫入，最高低於最低仍擋下；原因見
 [`market_eod.v2`](../architecture/ingress_contracts.md#market_eodv2)。
 Native bytes 先持久保存，再逐一處理成員；結構錯誤與缺列保留 raw 證據並繼續其他成員。
-缺列是 missing，不是 no_data；目前來源沒有可用的每日停牌／無交易證據，adapter 不造 no_data。
+缺列是 missing，不是 no_data；adapter 不造 no_data。HKEX 官方日線同一天記為停牌的成員，由 Backend
+引用 HKEX 日報表證據算成 `no_data/halted`（#593，見 [Full market](full_market.md) 的原因表）；回補先跑 HKEX
+同一日期，FactSet 回補才會採用。
 
 EOD v2 daily/historical 結算核對完整 frozen member 集、所有永久 receipts、實際寫入證據及
 DQ／raw 缺漏證據。所有 accepted runs 必須 terminal，原 prepared 必須已交付或有合法
