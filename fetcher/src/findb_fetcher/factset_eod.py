@@ -284,8 +284,11 @@ def _confirmed(owner, delivery, key: str, prepared: Any, run_id: UUID) -> dict[s
 
 
 def completion_status(evidence: dict) -> str:
+    """Partial only for a member the provider could still supply; a mapping gap cannot be."""
     return (
         "partial"
-        if any(row["outcome"] not in {"data", "no_data"} for row in evidence["members"])
+        if any(
+            row["outcome"] not in {"data", "no_data", "mapping_gap"} for row in evidence["members"]
+        )
         else "completed"
     )

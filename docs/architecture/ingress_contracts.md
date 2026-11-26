@@ -108,7 +108,11 @@ canonical read model；不支援的版本仍 fail closed。
 EOD v2 daily／historical 可結算 `partial`：所有 accepted runs 必須 terminal，原 prepared 已交付
 或有合法終結證據，完整 frozen member 集須逐一以本 work 的實際寫入、DQ 或持久 raw 缺漏證據
 對帳。資料錯誤不阻止 historical 下一日期；request 最終仍保留 partial。暫時 provider／Source
-故障採 close／drain／tail retry，不能視為 partial。切換與修補方式見
+故障採 close／drain／tail retry，不能視為 partial。供應商無法提供的成員是 unavailable，不讓日期
+partial（#593）：mapping gap，以及 `current_release` 回補裡、交易日當天生效的名單都還沒列入的成員
+（`not_yet_trading`；判斷條件是同 provider／dataset 有生效日 ≤ 交易日的已發布名單，而這些名單都不含該成員；
+早於第一份名單的日期不判定）。只缺 unavailable 成員時，Fetcher 回報的 partial 由 Backend 改記
+completed，結算 proof 的 `unavailable` 列出成員與原因；Fetcher 原始回報保留在 `historical_completion`。切換與修補方式見
 [FactSet 港股日行情](../operations/factset_hk.md)。
 
 ## `market_minute.v1`

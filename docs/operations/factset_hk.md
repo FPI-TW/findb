@@ -84,7 +84,8 @@ Native bytes 先持久保存，再逐一處理成員；結構錯誤與缺列保�
 EOD v2 daily/historical 結算核對完整 frozen member 集、所有永久 receipts、實際寫入證據及
 DQ／raw 缺漏證據。所有 accepted runs 必須 terminal，原 prepared 必須已交付或有合法
 終結證據。存在資料缺漏時結果為 `partial`；historical 繼續下一日期，最終 request 仍標示
-partial。暫時來源／Source／raw storage 故障停止新 I/O，close、drain 後 FIFO tail retry，
+partial。Mapping gap 與回補日期當天尚未列入名單的新股是 unavailable，不算缺漏（#593，見
+[ingress contracts](../architecture/ingress_contracts.md#market_eodv2)）。暫時來源／Source／raw storage 故障停止新 I/O，close、drain 後 FIFO tail retry，
 不能用 partial 掩蓋。Native response、prepared bytes、receipts 與 operation budgets 跨 retry 保留。
 窗口／control 停止也走安全 tail retry；只有該操作尚未 dispatch 時退還預留次數，已開始的
 來源 I/O 仍計入原預算。已知永久來源、raw storage 或 Source 拒絕會 close／drain 後結算

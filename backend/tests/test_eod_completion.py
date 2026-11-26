@@ -92,7 +92,9 @@ async def test_actual_writes_and_dq_errors_cover_partial_without_false_success(t
     result = await validate_eod_completion(
         test_session, work, [accepted], evidence, outcome="partial"
     )
-    assert result["data"] == ["00700"] and result["gaps"] == ["00001", "00005"]
+    assert result["data"] == ["00700"] and result["gaps"] == ["00005"]
+    # A mapping gap is unavailable: it never keeps a date partial on its own (#593).
+    assert result["unavailable"] == {"00001": "mapping_gap"}
     with pytest.raises(ValueError, match="partial requires"):
         await validate_eod_completion(test_session, work, [accepted], evidence, outcome="completed")
     # A later successful receipt cannot hide a non-data normalization failure.
@@ -124,7 +126,7 @@ async def test_a_member_no_attempt_fetched_leaves_a_current_release_date_partial
     work = await scope(test_session)
     evidence = proof(("00700", "missing"), ("00005", "missing"), ("00001", "mapping_gap"))
     result = await validate_eod_completion(test_session, work, [], evidence, outcome="partial")
-    assert result["data"] == [] and result["gaps"] == ["00001", "00005", "00700"]
+    assert result["data"] == [] and result["gaps"] == ["00005", "00700"]
     with pytest.raises(ValueError, match="full coverage"):
         await validate_eod_completion(test_session, work, [], evidence, outcome="completed")
     # A daily plan's member is never settled this way.
@@ -147,7 +149,7 @@ async def test_raw_gaps_require_scoped_content_address_and_complete_member_accou
         member.reason = reason
     evidence = EODCompletionEvidence.model_validate(evidence.model_dump())
     result = await validate_eod_completion(test_session, work, [], evidence, outcome="partial")
-    assert result["data"] == [] and len(result["gaps"]) == 3
+    assert result["data"] == [] and len(result["gaps"]) == 2
     evidence.members.pop()
     with pytest.raises(ValueError, match="every frozen"):
         await validate_eod_completion(test_session, work, [], evidence, outcome="partial")
