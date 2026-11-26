@@ -10,7 +10,6 @@ clones the required revision for each test with PostgreSQL's
 from __future__ import annotations
 
 import asyncio
-import functools
 import os
 import re
 import subprocess
@@ -22,16 +21,17 @@ from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 MAX_DATABASE_IDENTIFIER_LENGTH = 63
 
-# Migrations below the rollback floor (AGENTS.md) never run again on a deployed
-# database, so their tests are gone.  The template sits one revision below the
-# floor so a test can still seed data before the floor migration runs; later
-# revisions are applied only inside each test's cloned database.
-MIGRATION_TEMPLATE_REVISIONS = ("e9f4a1c6b3d5",)
+# Migrations below the Backend rollback floor (c7e9a1b3d5f8, AGENTS.md) never run
+# again on a deployed database, so their tests are gone.  The template sits one
+# revision below the floor so a test can still seed data before the floor
+# migration runs; later revisions are applied only inside each test's cloned
+# database.  When the floor moves, move the template and drop the tests below it.
+MIGRATION_TEMPLATE_REVISIONS = ("1587769858c0",)
 
 _REVISION_PATTERN = re.compile(r"^[0-9a-f]{12}$")
 _DATABASE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
@@ -54,183 +54,9 @@ def _safe_identifier(*parts: str) -> str:
     return value[:MAX_DATABASE_IDENTIFIER_LENGTH].rstrip("_") or "findb_migration"
 
 
-# Retired columns (dropped by e8b3d5f7a9c2) with the server default migration
-# d7a2c4e6f8b1 gives them.  Revisions before d7a2c4e6f8b1 have the column
-# without a default, so current services could not seed rows there.
-RETIRED_COLUMN_DEFAULTS = (
-    ("full_market_environment", "enabled", "false"),
-    ("full_market_enrollment", "reported_enabled", "true"),
-)
+async def run_alembic(database_url: str, revision: str, *, command: str = "upgrade") -> None:
+    """Run ``alembic <command> <revision>`` against ``database_url`` in a subprocess."""
 
-
-@asynccontextmanager
-async def _shim_transaction(database_url: str) -> AsyncIterator[AsyncConnection]:
-    """One connection and transaction for every compatibility shim of one phase."""
-
-    engine = create_async_engine(database_url)
-    try:
-        async with engine.begin() as connection:
-            yield connection
-    finally:
-        await engine.dispose()
-
-
-async def _add_retired_column_defaults(connection: AsyncConnection) -> None:
-    """Give pre-d7a2c4e6f8b1 schemas the defaults current ORM inserts rely on."""
-
-    for table, column, default in RETIRED_COLUMN_DEFAULTS:
-        missing = await connection.scalar(
-            text(
-                "SELECT column_default IS NULL FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND table_name = :table "
-                "AND column_name = :column"
-            ),
-            {"table": table, "column": column},
-        )
-        if missing:
-            await connection.execute(
-                text(f"ALTER TABLE {table} ALTER COLUMN {column} SET DEFAULT {default}")
-            )
-
-
-# Columns added by later revisions that current services write (the ORM renders
-# unset nullable columns as NULL).  An older schema gets them as comment-marked
-# shims so current services can seed it; each revision's shims are dropped right
-# before an upgrade that applies it, so it still adds the real columns.
-FORWARD_COLUMN_GROUPS = (
-    (
-        "b4d6f8a1c3e5",
-        (
-            ("daily_delivery_part", "data_count", "integer"),
-            ("daily_delivery_part", "no_data_count", "integer"),
-            ("daily_delivery_part", "missing_count", "integer"),
-            ("daily_delivery_part", "blocked_count", "integer"),
-            ("daily_delivery_part", "mapping_gap_count", "integer"),
-            ("daily_delivery_plan_summary", "parts_synced_at", "timestamptz"),
-        ),
-    ),
-    (
-        "f3a5c7e9b1d2",
-        (
-            ("daily_delivery_plan_summary", "unlisted_data_count", "integer DEFAULT 0"),
-            ("historical_backfill_item", "unlisted_symbols", "jsonb"),
-        ),
-    ),
-    # Old schemas have no supplement table for a key to reference; plans keep null.
-    ("a4c6e8f0b2d3", (("daily_delivery_plan", "supplement_id", "uuid"),)),
-    (
-        "c7e9a1b3d5f8",
-        (
-            ("daily_delivery_part", "unavailable_count", "integer"),
-            ("daily_delivery_plan_summary", "unavailable_count", "integer DEFAULT 0"),
-        ),
-    ),
-)
-FORWARD_COLUMN_SHIM = "migration-test forward column shim"
-# Tables later revisions add that current services read, as comment-marked shims.
-FORWARD_TABLES = (
-    (
-        "a4c6e8f0b2d3",
-        "universe_supplement",
-        "(supplement_id uuid PRIMARY KEY, dataset_key varchar(50) NOT NULL,"
-        " provider varchar(50) NOT NULL, effective_date date NOT NULL,"
-        " observed_at timestamptz NOT NULL, member_sha256 varchar(64) NOT NULL,"
-        " member_count integer NOT NULL, members jsonb NOT NULL,"
-        " created_at timestamptz NOT NULL)",
-    ),
-)
-
-
-async def _forward_table_shims(connection: AsyncConnection, *, add: bool, revision: str) -> None:
-    """Drop one revision's shim tables, or add them where an older schema lacks them."""
-
-    for applied, table, columns in FORWARD_TABLES:
-        if applied != revision:
-            continue
-        comment = await connection.scalar(
-            text("SELECT obj_description(to_regclass(:table), 'pg_class')"),
-            {"table": table},
-        )
-        exists = await connection.scalar(
-            text("SELECT to_regclass(:table) IS NOT NULL"), {"table": table}
-        )
-        if add and not exists:
-            await connection.execute(text(f"CREATE TABLE {table} {columns}"))
-            await connection.execute(text(f"COMMENT ON TABLE {table} IS '{FORWARD_COLUMN_SHIM}'"))
-        elif not add and comment == FORWARD_COLUMN_SHIM:
-            await connection.execute(text(f"DROP TABLE {table}"))
-
-
-@functools.cache
-def _revisions_with(revision: str) -> frozenset[str]:
-    from alembic.config import Config
-    from alembic.script import ScriptDirectory
-
-    script = ScriptDirectory.from_config(Config(str(BACKEND_ROOT / "alembic.ini")))
-    # ``iterate_revisions`` stops above its lower bound; the revision itself applies too.
-    return frozenset(
-        {"head", "heads", revision}
-        | {rev.revision for rev in script.iterate_revisions("heads", revision)}
-    )
-
-
-async def _forward_column_shims(
-    connection: AsyncConnection, *, add: bool, columns: tuple[tuple[str, str, str], ...]
-) -> None:
-    """Drop the shims, or add them where an older schema lacks the columns."""
-
-    for table, column, sql_type in columns:
-        comment = await connection.scalar(
-            text(
-                "SELECT coalesce(col_description(c.attrelid, c.attnum), '') "
-                "FROM pg_attribute c WHERE c.attrelid = to_regclass(:table) "
-                "AND c.attname = :column AND NOT c.attisdropped"
-            ),
-            {"table": table, "column": column},
-        )
-        if (
-            add
-            and comment is None
-            and await connection.scalar(
-                text("SELECT to_regclass(:table) IS NOT NULL"), {"table": table}
-            )
-        ):
-            await connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
-            await connection.execute(
-                text(f"COMMENT ON COLUMN {table}.{column} IS '{FORWARD_COLUMN_SHIM}'")
-            )
-        elif not add and comment == FORWARD_COLUMN_SHIM:
-            await connection.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
-
-
-async def run_alembic(
-    database_url: str,
-    revision: str,
-    *,
-    command: str = "upgrade",
-    forward_columns: bool = True,
-) -> None:
-    """Run ``alembic <command> <revision>`` against ``database_url`` in a subprocess.
-
-    Afterwards an older schema gets the retired-column defaults so current
-    services can seed it; this never changes a schema at or after d7a2c4e6f8b1,
-    where the columns have defaults or no longer exist.  Unless
-    ``forward_columns`` is false (which also removes existing shims), a schema
-    before a revision in ``FORWARD_COLUMN_GROUPS`` gets that revision's
-    forward-column shims; seeded shim values survive runs that stay before it.
-    The shims before and after the subprocess each share one connection.
-    """
-
-    dropped = [
-        (applied, columns)
-        for applied, columns in FORWARD_COLUMN_GROUPS
-        if not forward_columns or (command == "upgrade" and revision in _revisions_with(applied))
-    ]
-    if dropped:
-        async with _shim_transaction(database_url) as connection:
-            for applied, columns in dropped:
-                await _forward_column_shims(connection, add=False, columns=columns)
-                await _forward_table_shims(connection, add=False, revision=applied)
     environment = os.environ.copy()
     environment["DATABASE_URL"] = database_url
     await asyncio.to_thread(
@@ -242,12 +68,6 @@ async def run_alembic(
         capture_output=True,
         text=True,
     )
-    async with _shim_transaction(database_url) as connection:
-        await _add_retired_column_defaults(connection)
-        if forward_columns:
-            for applied, columns in FORWARD_COLUMN_GROUPS:
-                await _forward_table_shims(connection, add=True, revision=applied)
-                await _forward_column_shims(connection, add=True, columns=columns)
 
 
 class MigrationDatabaseFactory:

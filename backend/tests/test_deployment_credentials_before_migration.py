@@ -48,7 +48,7 @@ def _revision_before_head() -> str:
 async def test_check_only_works_against_the_schema_before_head() -> None:
     previous = _revision_before_head()
     async with get_active_migration_database_factory().clone(
-        "e9f4a1c6b3d5", "credentials_before"
+        "1587769858c0", "credentials_before"
     ) as (
         url,
         engine,

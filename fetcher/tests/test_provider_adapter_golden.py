@@ -101,6 +101,7 @@ def _runtime(tmp_path: Path, provider: str, http: httpx.Client | None = None):
                     "no_data": 0,
                     "missing": 0,
                     "blocked": 0,
+                    "unavailable": 0,
                     "is_late": False,
                 },
             }

@@ -264,47 +264,6 @@ async def test_historical_drain_classification_matches_acquisition_gate(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["daily", "maintenance", "rerun"])
-@pytest.mark.parametrize("before_boundary", [False, True])
-async def test_hk_cutover_drain_classification_uses_original_eligibility(
-    test_session, kind, before_boundary
-):
-    db = test_session
-    works = []
-    for provider in ["factset", "twelve_data"]:
-        work, _ = await seed_work(db, provider, kind=kind, prepared={"saved": {"body": "kept"}})
-        work.dataset_key = "hk_equity_eod"
-        work.trade_date = utc_now().date() - timedelta(days=int(before_boundary))
-        db.add(
-            SchedulerControl(
-                scheduler_key=f"full_market_{provider}_v1",
-                provider=provider,
-                execution_profile="full_market",
-                desired_state="running",
-                observed_state="running",
-                slot_id="asia_pacific_markets_window",
-                timezone="Asia/Hong_Kong",
-            )
-        )
-        works.append(work)
-    dataset = await db.get(DatasetRegistry, "hk_equity_eod")
-    dataset.config = {
-        "hk_provider_cutover": {
-            "provider": "factset",
-            "previous_provider": "twelve_data",
-            "effective_date": utc_now().date().isoformat(),
-        }
-    }
-    await db.flush()
-    expected = {work.work_id: not await queue.acquisition_open(db, work) for work in works}
-    with monitor_reads(db):
-        rows = await queue.projection(db)
-    assert {row["work_id"]: row["drain_only"] for row in rows} == {
-        str(key): value for key, value in expected.items()
-    }
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("desired_state", ["stopped", "running"])
 async def test_prepared_projection_matches_control_acquisition_gate(
     test_session, monkeypatch, desired_state

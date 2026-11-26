@@ -156,7 +156,7 @@ def runtime() -> Iterator[tuple[Callable[..., str], Callable[[str], str]]]:
 @pytest.mark.parametrize(
     # A deployed database is never older than the rollback floor (AGENTS.md).
     "previous_revision",
-    [None, "a7c3e1f9d2b4"],
+    [None, "c7e9a1b3d5f8"],
     ids=["fresh", "accepted-upgrade"],
 )
 def test_deployed_migration_uses_installed_runtime(

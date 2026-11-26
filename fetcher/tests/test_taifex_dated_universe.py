@@ -78,6 +78,7 @@ def plan(profile, day=DAY):
             "no_data": 0,
             "missing": 0,
             "blocked": 0,
+            "unavailable": 0,
             "is_late": False,
         },
     }

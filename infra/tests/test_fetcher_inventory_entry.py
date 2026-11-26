@@ -588,12 +588,8 @@ def test_retirement_field_query_failure_is_not_empty_success(tmp_path, field, fa
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("branch", ["generic-cleanup"])
 @pytest.mark.parametrize("failure", ["rc1", "rc81", "empty", "invalid"])
-@pytest.mark.parametrize("running", [False, True])
-def test_conditional_legacy_and_generic_recovery_do_not_guess_running_state(
-    tmp_path, branch, failure, running
-):
+def test_conditional_generic_recovery_does_not_guess_running_state(tmp_path, failure):
     import re
 
     source = DEPLOY.read_text()
@@ -614,11 +610,7 @@ def test_conditional_legacy_and_generic_recovery_do_not_guess_running_state(
       else printf '%s\n' "$*" >> "$events"; fi
     }
     """
-    operation = (
-        f'legacy_moves=("original|full|accepted-id|{str(running).lower()}|accepted-image")\nif rollback_legacy_moves; then exit 91; fi\n'
-        if branch == "legacy"
-        else "if rollback_provider original previous 0 -; then exit 91; fi\n"
-    )
+    operation = "if rollback_provider original previous 0 -; then exit 91; fi\n"
     script = (
         "set -Eeuo pipefail\nFETCHER_DEPLOY_MODE=candidate\nprocessed=()\n"
         + _inventory_policy(source)
@@ -793,21 +785,17 @@ def test_conditional_identity_queries_require_success_before_mutation(
         "restore": "restore_named_identity original relocated accepted-id accepted-image true",
         "backup-prepare": "prepare_named_full_backup_cleanup",
         "backup-cleanup": "cleanup_named_full_backups",
-        "legacy-restore": "rollback_legacy_moves",
         "original-prepare": "prepare_original_cleanup",
         "commit-named": "prepare_commit_backups",
-        "commit-legacy": "prepare_commit_backups",
         "cleanup": "cleanup_originals",
     }
     setup = r"""set -euo pipefail
 runtime_inventory_recovery=none
-processed=(); named_full_originals=(); named_full_backups=(); legacy_moves=(); legacy_previous_backups=(); commit_removals=()
+processed=(); named_full_originals=(); named_full_backups=(); commit_removals=()
 names=relocated
 case "$operation" in
   backup-*|commit-named) names=backup; named_full_backups=('original|backup|accepted-id|accepted-image|false') ;;
-  legacy-restore) legacy_moves=('original|relocated|accepted-id|true|accepted-image') ;;
   original-prepare) names=previous; named_full_originals=('stable|previous|stable|accepted-id|accepted-image|false|-|-') ;;
-  commit-legacy) names=backup; legacy_previous_backups=(backup); legacy_moves=('original|backup|accepted-id|false|accepted-image') ;;
   cleanup) commit_removals=('original|accepted-id|accepted-image|original') ;;
 esac
 docker() {

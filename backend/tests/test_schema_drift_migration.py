@@ -105,7 +105,7 @@ def _check_constraint_diffs(connection: Connection) -> list[str]:
 
 
 async def _upgraded_schema_diffs() -> tuple[list[Any], list[str]]:
-    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "schema_drift") as (
+    async with get_active_migration_database_factory().clone("1587769858c0", "schema_drift") as (
         database_url,
         engine,
     ):

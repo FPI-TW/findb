@@ -57,9 +57,9 @@ async def _counts(db, table: str, key: str, value) -> tuple:
 @pytest.mark.asyncio
 async def test_unavailable_counts_take_the_mapping_gaps_and_fold_back_on_downgrade():
     async with get_active_migration_database_factory().clone(
-        "e9f4a1c6b3d5", "findb_unavailable_counts"
+        "1587769858c0", "findb_unavailable_counts"
     ) as (url, engine):
-        await run_alembic(url, BEFORE, forward_columns=False)
+        await run_alembic(url, BEFORE)
         ids = {
             "release": uuid7(),
             "synced": uuid7(),
@@ -120,7 +120,7 @@ async def test_unavailable_counts_take_the_mapping_gaps_and_fold_back_on_downgra
                             {"plan": ids["synced"]},
                         )
 
-        await run_alembic(url, BEFORE, command="downgrade", forward_columns=False)
+        await run_alembic(url, BEFORE, command="downgrade")
 
         async with engine.connect() as db:
             for table, key, value in (
