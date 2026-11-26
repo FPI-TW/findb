@@ -222,7 +222,7 @@ async def test_report_continuation_uses_real_queue_and_cannot_reopen_acquisition
     assert not state.pending_source_error_keys(str(db_plan.plan_id))
     with state.connection() as local:
         assert local.execute("SELECT SUM(attempts) FROM full_work").fetchone()[0] == 1
-    owner_row = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner_row = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     if gate == "cooldown":
         assert owner_row.acquisition_not_before > utc_now() + timedelta(minutes=50)
     attempt = await h.db.scalar(

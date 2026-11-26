@@ -1081,6 +1081,17 @@ Migration `208a9707fe3f` 只新增部分索引 `idx_run_retry_exhausted`（`inge
 建立很快，沿用停止 writers 後執行 migration 的部署程序即可。Downgrade 只移除索引、不改資料；與所有
 migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `c7e9a1b3d5f8`。
 
+## Provider work 執行線（lane）
+
+Migration `36bfabaae072` 為 `provider_work` 與 `provider_work_owner` 新增 `lane`（既有列一律
+`default`），owner 的 primary key 改為 `(environment, provider, lane)`，`idx_provider_work_scope`
+加上 lane（#691 第 2a 步）。catalog 的每條 feed 必須宣告 `lane`，目前全部是 `default`，所以 FIFO、
+owner 與 advisory lock 的行為不變；Fetcher 不需要部署。
+
+- **Downgrade**：任何 work 或 owner 用到非 default lane 後拒絕。
+- **Rollback**：與所有 migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `7733f9692fe6`。舊
+  image 以兩欄 key 讀 owner，在新 schema 下會失敗。
+
 ## FinLab 日 K 改 19:30
 
 Migration `7733f9692fe6` 把 `tw_equity_eod`、`tw_etf_eod` 的排程由台北 18:00 改為 19:30（期限隔日 07:30），

@@ -108,7 +108,9 @@ async def test_daily_prefetch_source_failure_closes_and_requeues_without_native(
     assert attempts[0].outcome == "retry" and attempts[0].failure_code == "DAILY_SOURCE_UNAVAILABLE"
     assert attempts[1].not_before > utc_now()
     assert not h.native_calls() and not h.runs
-    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+    assert (
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+    ).attempt_id is None
     with h.queue.host_lock(h.provider):
         pass
 
@@ -163,7 +165,7 @@ async def test_account_cooldown_skips_other_unprepared_dates_but_allows_retained
     )
     assert await h.run()
     h.db.expire_all()
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     floor = owner.acquisition_not_before
     assert floor > utc_now() + timedelta(seconds=110) and owner.attempt_id is None
     assert not await h.run(), (
@@ -185,11 +187,13 @@ async def test_account_cooldown_skips_other_unprepared_dates_but_allows_retained
             retained.state == "queued" and (await prepared_map(h.db, retained.work_id)) == original
         )
         assert calls == ["AAPL"] and h.runs
-        assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+        assert (
+            await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+        ).attempt_id is None
     await drain_retained_rerun_during_cooldown(h)
     h.db.expire_all()
     assert (
-        await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     ).acquisition_not_before == floor
     rows = await provider_work.projection(h.db, provider=h.provider)
     assert any(row["wait_reason"] == "account_cooldown" for row in rows)
@@ -272,7 +276,9 @@ async def test_expiry_preserves_original_prepared_date_as_failed_domain_drain(
         event for event in h.source_events if event[1] >= 400
     ]
     assert h.native_calls() == calls
-    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+    assert (
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+    ).attempt_id is None
 
 
 @pytest.mark.asyncio
@@ -350,7 +356,7 @@ async def test_fenced_cooldown_is_monotonic_survives_release_and_other_provider_
         assert response.json()["work"] is None
     h.db.expire_all()
     assert (
-        await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     ).acquisition_not_before == floor
     with h.queue.host_lock("finlab") as (_, inode):
         response = await h.client.post(

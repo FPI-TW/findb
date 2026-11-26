@@ -13,6 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.services.slot_identity import CanonicalSlotId
 
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=100)]
+# A provider's execution lane: its own FIFO, owner and consumer. Every provider keeps
+# the default lane; historical work always runs there.
+DEFAULT_LANE = "default"
+LaneName = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,29}$")]
 EnvName = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=100)]
 Clock = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
 PositiveInt = Annotated[int, Field(gt=0)]
@@ -187,6 +191,7 @@ UnlistedSymbols = Literal["deliver", "none"]
 class FeedDefinition(CatalogModel):
     provider: Identifier
     dataset_key: Identifier
+    lane: LaneName
     market: Literal["US", "HK", "TW"]
     calendar_market: Literal["US", "HK", "TW", "TAIFEX"]
     asset_class: Literal["equity", "etf", "future", "index"]
@@ -257,6 +262,12 @@ class FeedDefinition(CatalogModel):
             raise ValueError("only refreshed market_eod feeds deliver unlisted symbols")
         if self.lifecycle == "retired" and (caps.source or self.bounded_monitor.enabled):
             raise ValueError("retired feed cannot accept Source writes or monitor new deliveries")
+        if self.lane != DEFAULT_LANE and (not caps.acquisition or caps.historical != "unsupported"):
+            # Historical, maintenance of retired feeds and reruns of non-acquiring feeds
+            # all run in the default lane; only a daily-acquiring feed may leave it.
+            raise ValueError(
+                "only acquiring feeds without historical capability leave the default lane"
+            )
         return self
 
 
@@ -302,6 +313,17 @@ class ProviderCatalog(CatalogModel):
                 raise ValueError("acquiring feed requires daily consumers")
             if feed.capabilities.historical != "unsupported" and "historical" not in roles:
                 raise ValueError("historical capability requires a consumer")
+        for name in providers:
+            lanes = {feed.lane for feed in self.feeds if feed.provider == name}
+            if lanes - {DEFAULT_LANE} and not any(
+                feed.provider == name
+                and feed.lane == DEFAULT_LANE
+                and feed.capabilities.acquisition
+                for feed in self.feeds
+            ):
+                # The default lane's consumer is the provider's only historical and
+                # maintenance runner; it must have an acquiring feed of its own.
+                raise ValueError("a provider with lanes needs an acquiring default-lane feed")
         for provider in self.providers:
             if provider.image_key not in providers:
                 raise ValueError("unknown image provider reference")

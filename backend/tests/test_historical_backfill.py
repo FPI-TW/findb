@@ -798,7 +798,9 @@ async def test_expired_legacy_projection_never_reclaims_whole_work_owner(
     from app.models.provider_work import ProviderWorkOwner
     from app.services import provider_work
 
-    owner = await test_session.get(ProviderWorkOwner, (provider_work.environment(), "finlab"))
+    owner = await test_session.get(
+        ProviderWorkOwner, (provider_work.environment(), "finlab", "default")
+    )
     owner.expires_at = historical_backfill_clock - timedelta(seconds=1)
     owner_identity = (owner.attempt_id, owner.generation, owner.token)
     assert (

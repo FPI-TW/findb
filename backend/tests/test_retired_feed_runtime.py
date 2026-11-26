@@ -186,7 +186,7 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
                     pytest.fail("normalization still requires the same owner")
             h.db.expire_all()
             assert (
-                await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+                await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
             ).attempt_id is not None
             from tests.test_canonical_ingest_api import _execute_run
 
@@ -204,7 +204,9 @@ async def test_retired_legacy_hk_round_drains_real_source_and_releases_fifo_with
     assert attempt.failure_code == "RETIRED_FEED_MANUAL_REVIEW"
     assert saved.scope == {"legacy_id": "original-plan"}
     assert not h.native_calls()
-    assert (await h.db.get(ProviderWorkOwner, (h.environment, h.provider))).attempt_id is None
+    assert (
+        await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
+    ).attempt_id is None
     assert (
         await h.db.get(SchedulerControl, "full_market_twelve_data_v1")
     ).desired_state == "running"

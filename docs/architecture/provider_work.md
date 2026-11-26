@@ -81,7 +81,23 @@ audit 與至少 60 秒的下一次時間。任一前置 SDK login／catalogue �
 ## 權威、範圍與排序
 
 PostgreSQL `provider_work` 保存穩定工作，`provider_work_attempt` 以 sequence 保存每輪入列順序，
-`provider_work_owner` 的 `(environment, provider)` primary key 是唯一 owner slot。
+`provider_work_owner` 的 `(environment, provider, lane)` primary key 是唯一 owner slot。
+
+**執行線（lane）**：每個 provider 可以有多條 lane，每條 lane 有自己的 FIFO 與 owner，互不阻塞
+（#691）。
+
+- **lane 怎麼決定**：lane 由 catalog 的 feed 宣告（`lane`）。work 在 enqueue 時依 feed 決定 lane，
+  之後不再改變。historical 一律在 `default`；maintenance、rerun 與 daily 跟著 feed 的 lane。
+- **catalog 檢查**：只有能抓取、且不支援 historical 的 feed 可以離開 `default`。有其他 lane 的 provider，
+  `default` 必須仍有能抓取的 feed，因為它的 consumer 也負責 historical 與 maintenance。
+- **鎖**：每條 lane 一把 advisory lock。`default` 沿用原本的 provider key，所以只有一條 lane 的 provider
+  行為與以前完全相同。control 的 start／stop、緊急停止與 cutover 要取得整個 provider 的鎖：先 `default`，
+  再依名稱取其他 lane。只持有非 default lane 的 transaction 不再取其他 lane 的鎖。
+- **帳號**：lane 之間共用 provider 帳號。任何一條 lane 回報的 cooldown（`acquisition_not_before`）都會
+  擋住所有 lane 的新抓取。
+- **claim**：claim request 可以帶 `lane`；沒帶就是 `default`，所以舊版 consumer 不受影響。catalog 沒有的
+  lane 回 409。只有帶 `lane` 的 request，回應才會附上 `lane`。
+- **目前狀態**：所有 feed 都在 `default`。FinLab 盤中改走 `intraday` lane 在 #691 第 3b 步。
 `provider_work_receipt` 將所有 Source runs 永久綁定原 work，包含同日多商品與 minute 各 sequence。
 重複 enqueue 不改寫原 scope／順序；不同 profile、historical item 與 retained-raw rerun 決策分開保存。
 

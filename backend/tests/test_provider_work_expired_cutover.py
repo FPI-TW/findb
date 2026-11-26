@@ -109,7 +109,7 @@ async def test_repeated_cutover_retains_expired_prepared_and_authenticated_drain
         failed_item.failure_code,
         failed_item.completed_at,
     ) == failed_details
-    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider))
+    owner = await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
     assert owner.attempt_id is None
     following = await queue.enqueue(
         h.db,

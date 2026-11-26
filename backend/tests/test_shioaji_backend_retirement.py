@@ -199,7 +199,9 @@ async def test_cutover_uses_four_providers_and_preserves_retired_history(test_se
         await test_session.flush()
         assert await _snapshot(test_session, records) == before
     for provider, inode in proof["host_lock_identities"].items():
-        owner = await test_session.get(ProviderWorkOwner, (queue.environment(), provider))
+        owner = await test_session.get(
+            ProviderWorkOwner, (queue.environment(), provider, "default")
+        )
         assert owner.host_lock_identity == inode
 
 
@@ -210,7 +212,10 @@ async def test_cutover_does_not_create_retired_owner_and_matches_host_preflight(
     )
     assert set(_proof()["host_lock_identities"]) == set(host["PROVIDERS"])
     await queue.apply_cutover(test_session, _proof())
-    assert await test_session.get(ProviderWorkOwner, (queue.environment(), "shioaji")) is None
+    assert (
+        await test_session.get(ProviderWorkOwner, (queue.environment(), "shioaji", "default"))
+        is None
+    )
 
 
 @pytest.mark.asyncio

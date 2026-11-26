@@ -567,8 +567,13 @@ class IngestionService:
         if not raw_payload:
             raise RawPayloadNotFoundError(f"Raw payload not found for run {run_id}")
         from app.services import provider_work as queue
+        from app.services.provider_metadata import work_lane
 
-        await queue.lock_provider(self.db, raw_payload.source)
+        await queue.lock_lane(
+            self.db,
+            raw_payload.source,
+            work_lane(raw_payload.source, "rerun", raw_payload.dataset_key),
+        )
         if (
             self.bound_source is not None
             and raw_payload.source.strip().lower() != self.bound_source

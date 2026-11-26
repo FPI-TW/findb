@@ -74,7 +74,7 @@ async def test_a_new_provider_binds_its_lock_on_the_attested_device(test_session
     identity = f"{queue.environment()}:1:999"
 
     assert await _claim(test_session, provider, identity) is None
-    owner = await test_session.get(ProviderWorkOwner, (queue.environment(), provider))
+    owner = await test_session.get(ProviderWorkOwner, (queue.environment(), provider, "default"))
     assert owner.host_lock_identity == identity
     audit = await test_session.scalar(
         select(AdminAuditEvent).where(AdminAuditEvent.action == "register_host_lock")
@@ -136,7 +136,7 @@ async def test_queued_work_enqueued_before_the_first_consumer_does_not_block(tes
     await _work(test_session, provider, "queued", {})
 
     assert await _claim(test_session, provider, f"{queue.environment()}:1:999") is None
-    owner = await test_session.get(ProviderWorkOwner, (queue.environment(), provider))
+    owner = await test_session.get(ProviderWorkOwner, (queue.environment(), provider, "default"))
     assert owner.host_lock_identity == f"{queue.environment()}:1:999"
 
 

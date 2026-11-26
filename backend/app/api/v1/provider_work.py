@@ -36,6 +36,8 @@ class ClaimRequest(BaseModel):
     requested_work_id: UUID | None = None
     accepted_kinds: list[Literal["daily", "historical", "maintenance", "rerun"]] | None = None
     execution_profile: Literal["full_market"] | None = None
+    # The consumer's execution lane; an older consumer sends none and runs ``default``.
+    lane: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,29}$")
 
 
 class FenceRequest(BaseModel):
@@ -168,6 +170,7 @@ async def claim(body: ClaimRequest, db: AsyncSession = Depends(get_db)) -> dict:
             requested_work_id=body.requested_work_id,
             accepted_kinds=list(body.accepted_kinds) if body.accepted_kinds is not None else None,
             execution_profile=body.execution_profile,
+            lane=body.lane or service.DEFAULT_LANE,
         )
         await db.commit()
         if claimed is None:
@@ -191,6 +194,8 @@ async def claim(body: ClaimRequest, db: AsyncSession = Depends(get_db)) -> dict:
                 "generation": owner.generation,
                 "token": str(owner.token),
                 "expires_at": owner.expires_at,
+                # Only a lane-aware consumer asks for its lane; older ones see no new key.
+                **({"lane": work.lane} if body.lane is not None else {}),
             }
         }
     except service.ProviderWorkError as exc:
@@ -212,7 +217,7 @@ async def mutate(db: AsyncSession, work_id: UUID, body: FenceRequest, action: st
 
             from app.models.provider_work import ProviderWork, ProviderWorkAttempt
 
-            await service.lock_provider(db, provider)
+            await service.lock_work_lane(db, provider, work_id)
             previous = await db.scalar(
                 select(ProviderWorkAttempt)
                 .join(ProviderWork)

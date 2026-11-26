@@ -155,6 +155,7 @@
     {
       "provider": "twelve_data",
       "dataset_key": "us_equity_eod",
+      "lane": "default",
       "market": "US",
       "calendar_market": "US",
       "asset_class": "equity",
@@ -241,6 +242,7 @@
     {
       "provider": "factset",
       "dataset_key": "hk_equity_eod",
+      "lane": "default",
       "market": "HK",
       "calendar_market": "HK",
       "asset_class": "equity",
@@ -287,6 +289,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_equity_eod",
+      "lane": "default",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "equity",
@@ -373,6 +376,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_etf_eod",
+      "lane": "default",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "etf",
@@ -418,6 +422,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_equity_bar_1m",
+      "lane": "default",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "equity",
@@ -463,6 +468,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_etf_bar_1m",
+      "lane": "default",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "etf",
@@ -508,6 +514,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_equity_tick",
+      "lane": "default",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "equity",
@@ -553,6 +560,7 @@
     {
       "provider": "finlab",
       "dataset_key": "tw_etf_tick",
+      "lane": "default",
       "market": "TW",
       "calendar_market": "TW",
       "asset_class": "etf",
@@ -598,6 +606,7 @@
     {
       "provider": "taifex",
       "dataset_key": "tw_futures_eod",
+      "lane": "default",
       "market": "TW",
       "calendar_market": "TAIFEX",
       "asset_class": "future",
@@ -643,6 +652,7 @@
     {
       "provider": "hkex",
       "dataset_key": "hk_equity_official_eod",
+      "lane": "default",
       "market": "HK",
       "calendar_market": "HK",
       "asset_class": "equity",
@@ -688,6 +698,7 @@
     {
       "provider": "fmp",
       "dataset_key": "hk_index_eod",
+      "lane": "default",
       "market": "HK",
       "calendar_market": "HK",
       "asset_class": "index",
@@ -733,6 +744,7 @@
     {
       "provider": "fmp",
       "dataset_key": "us_index_eod",
+      "lane": "default",
       "market": "US",
       "calendar_market": "US",
       "asset_class": "index",
@@ -778,6 +790,7 @@
     {
       "provider": "fmp",
       "dataset_key": "us_dollar_index_eod",
+      "lane": "default",
       "market": "US",
       "calendar_market": "US",
       "asset_class": "index",

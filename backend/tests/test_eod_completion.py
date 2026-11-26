@@ -182,7 +182,7 @@ async def test_partial_keeps_owner_until_all_receipts_are_terminal(test_session)
     await queue.close(test_session, **identity(claimed))
     with pytest.raises(queue.ProviderWorkDrainingError):
         await queue.settle(test_session, **identity(claimed), outcome="partial", proof={})
-    owner = await test_session.get(ProviderWorkOwner, (queue.environment(), "factset"))
+    owner = await test_session.get(ProviderWorkOwner, (queue.environment(), "factset", "default"))
     assert owner.attempt_id == claimed[1].attempt_id
 
 
