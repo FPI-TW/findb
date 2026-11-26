@@ -108,20 +108,24 @@ CHECKPOINT
 # Retired findb-pilot-* residue is not a managed consumer: the deployment
 # archives it only after proving it stopped, so this gate never inspects it.
 runtime_inventory="$(docker container ls --all --format '{{.Names}}' 2>/dev/null)" || runtime_inventory_failure
-retained_full_market=false
-for pair in "findb-fetcher-scheduler:findb-full-market-twelve-data" "findb-fetcher-finlab-scheduler:findb-full-market-finlab" "findb-fetcher-shioaji-scheduler:findb-full-market-shioaji" "findb-fetcher-taifex-scheduler:findb-full-market-taifex"; do
-  legacy_name="${pair%%:*}"
-  full_name="${pair#*:}"
-  for base in "${full_name/full-market/historical}" "$full_name" "$legacy_name" "${full_name}-historical" "${legacy_name}-historical"; do
-    for installed in "$base" "${base}-previous" "${base}-candidate" "${base}-transaction-backup" "${base}-legacy-previous" "${base}-preflight" "${base}-preflight-state" "${base}-preflight-control"; do
-      if runtime_exists "$installed"; then
-        installed_command="$(docker inspect --format '{{json .Config.Cmd}}' "$installed")" || runtime_inventory_failure
-        installed_role="$(runtime_command_role "$installed_command")" || runtime_inventory_failure
-        if [[ "$installed" == "$full_name"* ]] || [ "$installed_role" = full_market ]; then
-          require_full_checkpoint "$installed_command"
-          retained_full_market=true
-        fi
-      fi
-    done
+# Every installed provider's consumers, with the names a release gives them while it
+# replaces one, so a provider added later is checked without changing this gate.
+consumer_suffixes=(-preflight-control -preflight-state -preflight -transaction-backup -legacy-previous -previous -candidate)
+while IFS= read -r installed; do
+  [ -n "$installed" ] || continue
+  base="$installed"
+  for suffix in "${consumer_suffixes[@]}"; do
+    if [[ "$base" == *"$suffix" ]]; then
+      base="${base%"$suffix"}"
+      break
+    fi
   done
-done
+  [[ "$base" =~ ^findb-(full-market|historical)-[a-z][a-z0-9-]*$ ]] || continue
+  if runtime_exists "$installed"; then
+    installed_command="$(docker inspect --format '{{json .Config.Cmd}}' "$installed")" || runtime_inventory_failure
+    installed_role="$(runtime_command_role "$installed_command")" || runtime_inventory_failure
+    if [[ "$base" == findb-full-market-* ]] || [ "$installed_role" = full_market ]; then
+      require_full_checkpoint "$installed_command"
+    fi
+  fi
+done <<< "$runtime_inventory"

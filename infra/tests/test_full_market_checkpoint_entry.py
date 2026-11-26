@@ -1,5 +1,6 @@
 """Transported read-only checkpoint safety for both execution profiles."""
 
+import importlib.util
 import json
 import os
 import sqlite3
@@ -11,6 +12,15 @@ import yaml
 from script_env import script_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _generated_providers():
+    path = REPO_ROOT / "infra/deploy/check_fetcher_host.py"
+    spec = importlib.util.spec_from_file_location("checkpoint_gate_inventory", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.PROVIDERS
+
 
 GUARD = REPO_ROOT / "infra/deploy/check_full_market_checkpoint.sh"
 
@@ -142,10 +152,11 @@ def test_transported_checkpoint_guard(
     inspect_rc=0,
     expected_reason=None,
     layout="shared",
+    provider="finlab",
 ):
     builder, binaries = _transport(tmp_path)
     # A provider split from the host-wide checkpoint (#691) is checked in its own file.
-    name = "state.sqlite3" if layout == "shared" else "state-finlab.sqlite3"
+    name = "state.sqlite3" if layout == "shared" else f"state-{provider}.sqlite3"
     checkpoint = tmp_path / "checkpoint" / name
     if state_kind != "missing":
         checkpoint.parent.mkdir(exist_ok=True)
@@ -180,7 +191,7 @@ export APP_ENVIRONMENT
 host_path() {
   case "$1" in
     "${expected_state_path%/*}") printf '%s\n' "${checkpoint%/*}" ;;
-    "${expected_state_path%/*}"/state.sqlite3|"${expected_state_path%/*}"/state-finlab.sqlite3)
+    "${expected_state_path%/*}"/state.sqlite3|"${expected_state_path%/*}"/state-*.sqlite3)
       printf '%s\n' "${checkpoint%/*}/${1##*/}" ;;
     *) return 96 ;;
   esac
@@ -215,14 +226,16 @@ export -f host_path sudo docker
             **script_env(),
             "PATH": binaries + ":" + os.environ["PATH"],
             "APP_ENVIRONMENT": target,
-            "installed_name": f"findb-{profile.replace('_', '-')}-finlab{suffix}",
+            "installed_name": (
+                f"findb-{profile.replace('_', '-')}-{provider.replace('_', '-')}{suffix}"
+            ),
             "command_output": command_output
             or (
                 f'["findb-fetch-runtime","--execution-profile","{profile}"]'
                 if layout == "shared"
                 else json.dumps(
                     ["findb-fetch-runtime", "--execution-profile", profile]
-                    + ["--state-path", f"{state_dir}/{name}", "--provider", "finlab"]
+                    + ["--state-path", f"{state_dir}/{name}", "--provider", provider]
                 )
             ),
             "command_rc": str(command_rc),
@@ -258,6 +271,18 @@ export -f host_path sudo docker
 def test_transported_guard_checks_a_split_provider_in_its_own_file(tmp_path, target, state_kind):
     test_transported_checkpoint_guard(
         tmp_path, target, "full_market", "", state_kind, layout="split"
+    )
+
+
+@pytest.mark.parametrize("provider", _generated_providers())
+@pytest.mark.parametrize("suffix", ["", "-previous", "-preflight-state"])
+@pytest.mark.parametrize("state_kind", ["missing", "valid", "corrupt"])
+def test_transported_guard_checks_every_installed_providers_full_checkpoint(
+    tmp_path, provider, suffix, state_kind
+):
+    # The gate finds consumers on the host, so a provider added later is covered too.
+    test_transported_checkpoint_guard(
+        tmp_path, "production", "full_market", suffix, state_kind, layout="split", provider=provider
     )
 
 
