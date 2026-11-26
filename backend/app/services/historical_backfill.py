@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from collections import OrderedDict
+from collections.abc import Collection
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
@@ -1315,6 +1316,7 @@ async def complete_item(
     run: IngestionRun | None = None
     eod_evidence = None
     unavailable: dict[str, str] = {}
+    halted: set[str] = set()
     if outcome in {"completed", "partial"} and eod:
         try:
             eod_evidence = EODCompletionEvidence.model_validate(result_evidence)
@@ -1345,7 +1347,7 @@ async def complete_item(
             )
         ):
             raise HistoricalBackfillValidationError("EOD evidence differs from the frozen request")
-        from app.services.eod_completion import unavailable_members
+        from app.services.eod_completion import halted_members, unavailable_members
 
         unavailable = await unavailable_members(
             db,
@@ -1354,12 +1356,20 @@ async def complete_item(
             evidence=eod_evidence,
             current_release=current_release_cohort(item.request),
         )
-        partial = _eod_partial(eod_evidence, unavailable)
+        halted = await halted_members(
+            db,
+            provider=provider,
+            dataset_key=item.request.dataset_key,
+            evidence=eod_evidence,
+            exclude=set(unavailable),
+        )
+        partial = _eod_partial(eod_evidence, unavailable.keys() | halted)
         if member_cohort(item.request) and outcome != ("partial" if partial else "completed"):
             raise HistoricalBackfillValidationError("EOD outcome differs from its member evidence")
         if outcome == "partial" and not partial:
-            # Only unavailable members are absent: the Fetcher cannot tell a member
-            # listed after the date, and an older one counts mapping gaps too.
+            # Only unavailable or exchange-halted members are absent: the Fetcher
+            # cannot tell a member listed after the date or the exchange's halt
+            # record, and an older one counts mapping gaps too.
             outcome = "completed"
         item.result_evidence = eod_evidence.model_dump(mode="json")
     elif outcome == "completed" and futures_report_feed(provider, item.request.dataset_key):
@@ -1409,6 +1419,8 @@ async def complete_item(
             **({"eod": eod_evidence.model_dump(mode="json")} if eod_evidence else {}),
             # Members the provider cannot supply for the date, and why (#593).
             **({"unavailable": unavailable} if unavailable else {}),
+            # Missing members the exchange's own feed recorded halted for the date.
+            **({"halted": sorted(halted)} if halted else {}),
             **(
                 {
                     "manual_pending_prepared": await prepared_keys(db, owned_work.work_id),
@@ -1480,6 +1492,18 @@ async def complete_item(
         trade_date=item.trade_date,
         member_keys=proven,
     )
+    if eod_evidence is not None and proven:
+        from app.services.official_halts import citing_feeds
+
+        # An exchange date's halted members reclassify a provider feed citing them.
+        for cited_provider, cited_dataset in citing_feeds(provider, item.request.dataset_key):
+            await refresh_summaries_for_historical_members(
+                db,
+                provider=cited_provider,
+                dataset_key=cited_dataset,
+                trade_date=item.trade_date,
+                member_keys=proven,
+            )
     return item
 
 
@@ -1611,10 +1635,13 @@ def _contract_version(request: HistoricalBackfillRequest) -> int:
     return feed.contract.current_version
 
 
-def _eod_partial(evidence: EODCompletionEvidence, unavailable: dict[str, str]) -> bool:
-    """A date stays partial only for a member the provider could still supply."""
+def _eod_partial(evidence: EODCompletionEvidence, resolved: Collection[str]) -> bool:
+    """A date stays partial only for a member the provider could still supply.
+
+    ``resolved`` names members that are unavailable or that the exchange recorded halted.
+    """
     return any(
-        member.outcome not in {"data", "no_data"} and member.member_key not in unavailable
+        member.outcome not in {"data", "no_data"} and member.member_key not in resolved
         for member in evidence.members
     )
 

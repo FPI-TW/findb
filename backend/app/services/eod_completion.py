@@ -7,7 +7,8 @@ observation, or report a member whose provider returned no series, or that every
 attempt failed to fetch, as missing; such a date settles partial. Members the
 provider cannot supply are unavailable and never make a date partial: a mapping
 gap, and in a current-release cohort a member no release in effect on the date
-listed yet (#593).
+listed yet (#593). A missing member the exchange's own feed recorded halted for
+the date is no-data, not a gap either.
 """
 
 from uuid import UUID
@@ -120,6 +121,29 @@ async def unavailable_members(
         ):
             unavailable[key] = "not_yet_trading"
     return unavailable
+
+
+async def halted_members(
+    db: AsyncSession,
+    *,
+    provider: str,
+    dataset_key: str,
+    evidence: EODCompletionEvidence,
+    exclude: set[str],
+) -> set[str]:
+    """Missing members the exchange's own feed recorded halted for the date (#593)."""
+    from app.services.official_halts import official_halts
+
+    missing = {row.member_key for row in evidence.members if row.outcome == "missing"} - exclude
+    return set(
+        await official_halts(
+            db,
+            provider=provider,
+            dataset_key=dataset_key,
+            trade_date=evidence.trade_date,
+            keys=missing,
+        )
+    )
 
 
 async def _outside_runs(
@@ -276,9 +300,23 @@ async def validate_eod_completion(
         else:
             raise ValueError("EOD gap claim lacks matching raw or normalization evidence")
     gaps -= set(unavailable)
-    # A Fetcher that cannot tell a not-yet-listed member, or one released before
-    # mapping gaps became unavailable, may still report such a date partial.
-    if outcome == "completed" and gaps or outcome == "partial" and not (gaps or unavailable):
+    halted = await halted_members(
+        db,
+        provider=work.provider,
+        dataset_key=work.dataset_key,
+        evidence=evidence,
+        exclude=set(unavailable),
+    )
+    gaps -= halted
+    # A Fetcher cannot tell a not-yet-listed member or the exchange's halt record,
+    # and one released before mapping gaps became unavailable counts them: any of
+    # them may still report such a date partial.
+    if (
+        outcome == "completed"
+        and gaps
+        or outcome == "partial"
+        and not (gaps or unavailable or halted)
+    ):
         raise ValueError("partial requires gaps; completed requires full coverage")
     return {
         "eod": evidence.model_dump(mode="json"),
@@ -286,6 +324,8 @@ async def validate_eod_completion(
         "no_data": sorted(no_data - written),
         "gaps": sorted(gaps),
         "unavailable": dict(sorted(unavailable.items())),
+        # Missing here, recorded halted by the exchange's own feed for the date.
+        "halted": sorted(halted),
         # Served symbols written outside the frozen list; never part of expected.
         "unlisted": sorted(unlisted),
     }

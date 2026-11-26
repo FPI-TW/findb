@@ -112,7 +112,8 @@ EOD v2 daily／historical 可結算 `partial`：所有 accepted runs 必須 term
 partial（#593）：mapping gap，以及 `current_release` 回補裡、交易日當天生效的名單都還沒列入的成員
 （`not_yet_trading`；判斷條件是同 provider／dataset 有生效日 ≤ 交易日的已發布名單，而這些名單都不含該成員；
 早於第一份名單的日期不判定）。只缺 unavailable 成員時，Fetcher 回報的 partial 由 Backend 改記
-completed，結算 proof 的 `unavailable` 列出成員與原因；Fetcher 原始回報保留在 `historical_completion`。切換與修補方式見
+completed，結算 proof 的 `unavailable` 列出成員與原因；Fetcher 原始回報保留在 `historical_completion`。
+FactSet 港股缺列成員若 HKEX 官方日線同一天記為停牌，同樣不算缺漏，列在 proof 的 `halted`。切換與修補方式見
 [FactSet 港股日行情](../operations/factset_hk.md)。
 
 ## `market_minute.v1`

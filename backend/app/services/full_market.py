@@ -962,8 +962,9 @@ async def classify_plan(
     """Classify the whole frozen cohort, or only the given members of the plan.
 
     A member's state depends only on its own canonical rows, evidence, outcome and
-    mapping, and on the feed's earlier plans and rows of that member, so a subset
-    classifies exactly as it would inside the whole plan.
+    mapping, on the feed's earlier plans and rows of that member, and on the
+    exchange feed's halt record of that member, so a subset classifies exactly as
+    it would inside the whole plan.
     """
     from app.services.shioaji_repair import effective_mappings
 
@@ -1106,6 +1107,24 @@ async def classify_plan(
         canonical_keys.update(await _historical_repairs(db, plan, members, scoped=scoped))
         proven_no_data = await _historical_no_data(db, plan, members)
         proven_no_data |= await _corroborated_empty_responses(db, plan, members, canonical_keys)
+    from app.services.official_halts import official_halts
+
+    # A member with no row and no outcome of its own that the exchange's own feed
+    # recorded halted for the date (#593); its outcome stays unrecorded.
+    halted = await official_halts(
+        db,
+        provider=plan.provider,
+        dataset_key=plan.dataset_key,
+        trade_date=plan.trade_date,
+        keys={
+            member.member_key
+            for member in members
+            if member.outcome is None
+            and member.mapping_status == "mapped"
+            and member.member_key not in canonical_keys
+            and member.member_key not in proven_no_data
+        },
+    )
     states: list[MemberState] = []
     for member in members:
         mapping_gap = member.mapping_status == "gap" and member.member_key not in mappings
@@ -1119,6 +1138,8 @@ async def classify_plan(
             # Historical or corroborated no-data proof outranks the daily's own
             # blocked outcome; its settlement and member outcome stay as recorded.
             state = "no_data"
+        elif member.member_key in halted:
+            state, reason = "no_data", "halted"
         elif mapping_gap or (member.outcome == "blocked" and reason == "mapping_gap"):
             # The provider cannot serve a member it has no symbol for: a known case,
             # counted apart from blocked members and not holding the plan open.
@@ -1770,6 +1791,19 @@ async def record_outcome(
     # An outcome reclassifies only its member's part; the response reuses the
     # stored counts instead of classifying the cohort again.
     await refresh_part_summary(db, plan.plan_id, member.part_id)
+    if body.outcome == "no_data" and body.reason == "halted":
+        from app.services.delivery_plan_summary import refresh_summaries_for_historical_members
+        from app.services.official_halts import citing_feeds
+
+        # A provider feed of the same market that cites this halt reclassifies too.
+        for cited_provider, cited_dataset in citing_feeds(plan.provider, plan.dataset_key):
+            await refresh_summaries_for_historical_members(
+                db,
+                provider=cited_provider,
+                dataset_key=cited_dataset,
+                trade_date=plan.trade_date,
+                member_keys={member.member_key},
+            )
     await db.commit()
     return await stored_summary_response(db, plan)
 
