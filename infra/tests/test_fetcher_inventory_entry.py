@@ -348,7 +348,9 @@ def run_entry(
     command = ["/bin/bash", *args]
     if parent:
         source = DEPLOY.read_text()
-        transaction = source.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
+        transaction = source.split("processed=()", 1)[1].split(
+            "# -- end of transaction helpers", 1
+        )[0]
         # Execute actual registration/rollback together with the whole child.
         script = (
             "set -Eeuo pipefail\nFETCHER_DEPLOY_MODE=candidate\nprocessed=()\n"
@@ -593,7 +595,7 @@ def test_conditional_generic_recovery_does_not_guess_running_state(tmp_path, fai
     import re
 
     source = DEPLOY.read_text()
-    transaction = source.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
+    transaction = source.split("processed=()", 1)[1].split("# -- end of transaction helpers", 1)[0]
     retirement = re.search(r"require_retired_runtime\(\) \{\n.*?\n\}", source, re.S).group()
     fake = r"""
     docker() {

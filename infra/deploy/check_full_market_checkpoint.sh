@@ -105,8 +105,6 @@ CHECKPOINT
 }
 # One successful read-only snapshot is the sole absence proof. Every listed
 # managed name still requires a successful inspect before command/role checks.
-# Retired findb-pilot-* residue is not a managed consumer: the deployment
-# archives it only after proving it stopped, so this gate never inspects it.
 runtime_inventory="$(docker container ls --all --format '{{.Names}}' 2>/dev/null)" || runtime_inventory_failure
 # Every installed provider's consumers, with the names a release gives them while it
 # replaces one, so a provider added later is checked without changing this gate.

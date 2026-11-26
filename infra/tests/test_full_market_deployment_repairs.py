@@ -397,7 +397,7 @@ def test_named_full_journal_restores_names_state_and_stale_backup(
     helper = (REPO_ROOT / "infra/deploy/runtime-secrets/release_fetcher_provider.sh").read_text()
     transaction = (
         _inventory_policy(deploy)
-        + deploy.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
+        + deploy.split("processed=()", 1)[1].split("# -- end of transaction helpers", 1)[0]
     )
     restore = helper[
         helper.index('if runtime_exists "$previous"') : helper.index(
@@ -545,7 +545,7 @@ def test_named_registration_preflight_and_each_journal_boundary_preserve_origina
     source = (REPO_ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
     transaction = (
         _inventory_policy(source)
-        + source.split("processed=()", 1)[1].split("# A first cutover", 1)[0]
+        + source.split("processed=()", 1)[1].split("# -- end of transaction helpers", 1)[0]
     )
     state = tmp_path / "containers"
     state.mkdir()

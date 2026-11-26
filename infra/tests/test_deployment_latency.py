@@ -199,22 +199,7 @@ def test_initial_batch_inventory_validates_every_runtime_and_fails_closed(tmp_pa
     source = (RUNTIME / "deploy_fetcher_aws.sh").read_text()
     role = source[source.index("runtime_command_role() {") : source.index("\nset +x")]
     inventory = source[source.index("initial_runtime_state() {") : source.index("\nprocessed=()")]
-    # Retired Pilot residue is listed but never role-checked by the inventory:
-    # the residue step archives it after proving it stopped.
-    rows = [
-        {
-            "name": f"/findb-pilot-{provider}",
-            "id": f"pilot-{provider}",
-            "image": "image@sha256:abc",
-            "running": False,
-            "exit_code": 0,
-            "oom": False,
-            "error": "",
-            "accepted": "true",
-            "command": ["findb-fetch-runtime", "--execution-profile", "pilot"],
-        }
-        for provider in ("twelve-data", "finlab")
-    ]
+    rows = []
     for provider in INVENTORY_PROVIDERS:
         for profile in ("full-market", "historical"):
             command = (
@@ -260,7 +245,8 @@ else: sys.exit(99)
 """)
     docker.chmod(0o755)
     script = (
-        "set -euo pipefail\nFETCHER_DEPLOY_MODE=apply\nproviders=(factset finlab taifex twelve-data)\n"
+        "set -euo pipefail\nFETCHER_DEPLOY_MODE=apply\n"
+        + f"providers=({' '.join(INVENTORY_PROVIDERS)})\n"
         + role
         + "\n"
         + """
@@ -285,7 +271,7 @@ require_full_checkpoint() { echo checked >> "$INVENTORY_TEST/checkpoints"; }
     assert (result.returncode == 0) == (fault == ""), result.stderr
     assert (tmp_path / "calls").read_text().splitlines() == ["container", "inspect"]
     if not fault:
-        assert len((tmp_path / "checkpoints").read_text().splitlines()) == 4
+        assert len((tmp_path / "checkpoints").read_text().splitlines()) == len(INVENTORY_PROVIDERS)
 
 
 @pytest.mark.parametrize("failure", ["", "predeploy", "credentials"])

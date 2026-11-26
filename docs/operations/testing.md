@@ -463,9 +463,8 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 兩個 AWS 環境共用部署 schema、設定 loader、必要 gates 與健康驗收。
 `test_execution_profiles.py` 覆蓋七條 feed 的凍結樣本、`full_market` 以外 profile 的 422 拒絕、canonical 覆寫後持久化證據及缺漏告警；
 `test_scheduler_start.py`／`test_full_market_lifecycle.py` 驗證
-緊急停止的 audit、冪等與 first dates 保留；Infra `test_fetcher_shutdown_transaction.py`／
-`test_fetcher_host_preflight.py` 驗證 `findb-pilot-*` 殘留封存、執行中殘留 fail closed、candidate 只檢查及
-symlink checkpoint 拒絕。
+緊急停止的 audit、冪等與 first dates 保留；Infra `test_fetcher_host_preflight.py` 驗證主機上的
+Pilot／Shioaji 殘留與統一版以前的 scheduler 都以 unknown consumer 拒絕。
 `infra/tests/test_full_market_checkpoint_entry.py` 執行 workflow 實際傳輸的 checkpoint guard；
 Fetcher host／shutdown／inventory suites 覆蓋停止、訊號、遺失狀態及失敗回退。
 Shutdown 與 inventory suites 的假 `docker`／`sudo` 由 `infra/tests/fake_daemon.py` 提供：每個指令是只

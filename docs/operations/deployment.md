@@ -688,7 +688,8 @@ Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉�
   Migration 測試從前一版 `1587769858c0` 開始，container regression 從此 revision 升級。
 - Fetcher：`fetcher-v0.1.51`（provider-work journal 與 Full checkpoint 分檔，見下節）與 bundle v7
   （十二個 consumers，見 [FMP provider 加入](#fmp-provider-加入與-rollback-下限)）。Host preflight 只接受
-  已安裝 bundle v7。
+  已安裝 bundle v7，且主機上只能有這十二個 consumers：Pilot／Shioaji 殘留與統一版以前的 scheduler
+  一律以 unknown consumer 拒絕，部署不再自動封存或移除它們。
 
 下限前進時，同步更新本節、`AGENTS.md`、`backend/tests/migration_database.py` 的 template 與
 `infra/tests/test_backend_runtime_container.py` 的升級基線。

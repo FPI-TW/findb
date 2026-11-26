@@ -352,14 +352,17 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.write_manifest()
         self.assertEqual(self.check(), "drained")
 
-    def test_pilot_residue_is_rejected_after_retirement(self):
-        residue = self.row("findb-pilot-finlab", "finlab", self.runtime_args("pilot", "finlab"))
-        self.rows.append(residue)
-        with self.assertRaisesRegex(ValueError, "after its retirement"):
-            self.check()
-        self.rows[-1]["Name"] = "/findb-pilot-factset-previous"
-        with self.assertRaisesRegex(ValueError, "unknown consumer"):
-            self.check()
+    def test_retired_profile_and_pre_unification_consumers_are_unknown(self):
+        for name, provider, profile in (
+            ("findb-pilot-finlab", "finlab", "pilot"),
+            ("findb-fetcher-scheduler", "twelve_data", "full_market"),
+        ):
+            with self.subTest(name=name):
+                rows = self.rows
+                self.rows = [*rows, self.row(name, provider, self.runtime_args(profile, provider))]
+                with self.assertRaisesRegex(ValueError, "unknown consumer"):
+                    self.check()
+                self.rows = rows
 
     def test_pre_v7_hosts_are_below_the_rollback_floor(self):
         for version in (1, 2, 3, 4, 5, 6):
