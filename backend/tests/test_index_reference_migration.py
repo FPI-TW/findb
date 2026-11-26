@@ -48,7 +48,7 @@ async def _archive(db) -> object:
 
 @pytest.mark.asyncio
 async def test_tables_are_removed_only_while_no_document_is_archived():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "index_reference") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "index_reference") as (
         url,
         engine,
     ):
@@ -69,7 +69,7 @@ async def test_tables_are_removed_only_while_no_document_is_archived():
 @pytest.mark.asyncio
 async def test_constraints_keep_membership_intervals_and_definitions_coherent():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "index_reference_checks"
+        "e9f4a1c6b3d5", "index_reference_checks"
     ) as (url, engine):
         await run_alembic(url, REVISION)
         async with engine.begin() as db:

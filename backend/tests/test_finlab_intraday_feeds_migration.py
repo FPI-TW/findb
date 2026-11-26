@@ -32,7 +32,7 @@ async def _scopes(db) -> dict[str, list[str] | None]:
 @pytest.mark.asyncio
 async def test_intraday_feeds_are_staged_inactive_with_the_scopes_the_catalog_now_requires():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "findb_intraday_feeds"
+        "e9f4a1c6b3d5", "findb_intraday_feeds"
     ) as (url, engine):
         await run_alembic(url, BEFORE)
         clients = {
@@ -159,7 +159,7 @@ async def _active(db) -> dict[str, bool]:
 @pytest.mark.asyncio
 async def test_the_intraday_datasets_are_active_like_every_governed_dataset():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "findb_intraday_active"
+        "e9f4a1c6b3d5", "findb_intraday_active"
     ) as (url, engine):
         await run_alembic(url, STAGED)
         async with engine.connect() as db:

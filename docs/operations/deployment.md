@@ -1915,8 +1915,7 @@ unknown_difference；此快照不能取代發布時重跑 preflight。Production
 
 既有環境的升級基線是已完成 Shioaji 退役的 `d8e3f0b5a2c4`；不支援在同一次
 candidate deployment 才從退役前版本補做退役。正式 image 的 container regression 必須
-實際驗證乾淨安裝、上述基線升級及重跑冪等，並驗證退役前 `a42c89d3e610` 被 preflight
-阻擋且 revision、dataset config、controls 完全不變。一般 `pnpm test` 未設定
+實際驗證乾淨安裝、從現行 rollback 下限升級及重跑冪等（見 `docs/operations/testing.md`）。一般 `pnpm test` 未設定
 `FINDB_TEST_BACKEND_IMAGE` 時會跳過此 suite，不能視為已完成 container migration 驗證。
 
 1. 確認目標已接受 PR3＋4 bundle v4，遵循既有 maintenance window、controls 停止／排空流程，

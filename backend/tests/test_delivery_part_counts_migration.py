@@ -26,7 +26,7 @@ async def _part_columns(db) -> set[str]:
 @pytest.mark.asyncio
 async def test_part_counts_roundtrip_keeps_plans_and_validates_counts():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "findb_part_counts"
+        "e9f4a1c6b3d5", "findb_part_counts"
     ) as (url, engine):
         await run_alembic(url, BEFORE, forward_columns=False)
         ids = {"release": uuid7(), "plan": uuid7(), "part": uuid7()}

@@ -57,7 +57,7 @@ def test_the_preflight_inspects_this_revision():
 
 @pytest.mark.asyncio
 async def test_the_feed_joins_the_stopped_fmp_control_with_the_config_seed_declares():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "fmp_dollar") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "fmp_dollar") as (
         url,
         engine,
     ):

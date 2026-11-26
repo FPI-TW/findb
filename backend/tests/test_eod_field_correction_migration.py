@@ -27,7 +27,7 @@ async def _shape(engine) -> tuple[bool, bool]:
 @pytest.mark.asyncio
 async def test_column_and_table_are_removed_only_while_no_correction_is_recorded():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "eod_field_correction"
+        "e9f4a1c6b3d5", "eod_field_correction"
     ) as (url, engine):
         await run_alembic(url, REVISION)
         assert await _shape(engine) == (True, True)

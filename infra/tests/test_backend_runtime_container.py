@@ -154,9 +154,9 @@ def runtime() -> Iterator[tuple[Callable[..., str], Callable[[str], str]]]:
 
 
 @pytest.mark.parametrize(
-    # PR5 requires the accepted Shioaji retirement revision before deployment.
+    # A deployed database is never older than the rollback floor (AGENTS.md).
     "previous_revision",
-    [None, "d8e3f0b5a2c4"],
+    [None, "a7c3e1f9d2b4"],
     ids=["fresh", "accepted-upgrade"],
 )
 def test_deployed_migration_uses_installed_runtime(
@@ -192,26 +192,3 @@ def test_deployed_migration_uses_installed_runtime(
         if previous_revision is None and iteration == 0:
             seed_sentinel()
         assert sql("SELECT value FROM runtime_sentinel WHERE id = 1") == "preserve-existing-data"
-
-
-def test_deployment_rejects_unretired_shioaji_without_writes(
-    runtime: tuple[Callable[..., str], Callable[[str], str]],
-) -> None:
-    run, sql = runtime
-    previous_revision = "a42c89d3e610"
-    run("alembic", "upgrade", previous_revision)
-    snapshot_query = """
-        SELECT jsonb_build_object(
-            'datasets', (SELECT jsonb_agg(to_jsonb(d) ORDER BY dataset_key)
-                         FROM dataset_registry d),
-            'controls', (SELECT jsonb_agg(to_jsonb(c) ORDER BY scheduler_key)
-                         FROM scheduler_control c)
-        )
-    """
-    before = sql(snapshot_query)
-    with pytest.raises(AssertionError, match="unknown_difference") as failure:
-        run(*deployment_migration_command())
-    assert "pilot_shioaji_v1" in str(failure.value)
-    assert "full_market_shioaji_v1" in str(failure.value)
-    assert sql("SELECT version_num FROM alembic_version") == previous_revision
-    assert sql(snapshot_query) == before

@@ -28,7 +28,7 @@ async def _columns(engine) -> set[tuple[str, str]]:
 @pytest.mark.asyncio
 async def test_columns_are_added_and_downgrade_keeps_recorded_unlisted_writes():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "unlisted_symbol_counts"
+        "e9f4a1c6b3d5", "unlisted_symbol_counts"
     ) as (url, engine):
         await run_alembic(url, HEAD)
         assert len(await _columns(engine)) == 2

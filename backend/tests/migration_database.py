@@ -22,16 +22,16 @@ from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 MAX_DATABASE_IDENTIFIER_LENGTH = 63
 
-# Data migrations older than the deployed rollback floor (91a4c7e2d630) never run
-# again on a deployed database.  Tests start two revisions below the floor so they
-# can seed data before 6b93ef20a147 and the floor run; later revisions are applied
-# only inside each test's cloned database.
-MIGRATION_TEMPLATE_REVISIONS = ("3553ed95cfbf",)
+# Migrations below the rollback floor (AGENTS.md) never run again on a deployed
+# database, so their tests are gone.  The template sits one revision below the
+# floor so a test can still seed data before the floor migration runs; later
+# revisions are applied only inside each test's cloned database.
+MIGRATION_TEMPLATE_REVISIONS = ("e9f4a1c6b3d5",)
 
 _REVISION_PATTERN = re.compile(r"^[0-9a-f]{12}$")
 _DATABASE_IDENTIFIER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
@@ -63,27 +63,34 @@ RETIRED_COLUMN_DEFAULTS = (
 )
 
 
-async def add_retired_column_defaults(database_url: str) -> None:
-    """Give pre-d7a2c4e6f8b1 schemas the defaults current ORM inserts rely on."""
+@asynccontextmanager
+async def _shim_transaction(database_url: str) -> AsyncIterator[AsyncConnection]:
+    """One connection and transaction for every compatibility shim of one phase."""
 
     engine = create_async_engine(database_url)
     try:
         async with engine.begin() as connection:
-            for table, column, default in RETIRED_COLUMN_DEFAULTS:
-                missing = await connection.scalar(
-                    text(
-                        "SELECT column_default IS NULL FROM information_schema.columns "
-                        "WHERE table_schema = 'public' AND table_name = :table "
-                        "AND column_name = :column"
-                    ),
-                    {"table": table, "column": column},
-                )
-                if missing:
-                    await connection.execute(
-                        text(f"ALTER TABLE {table} ALTER COLUMN {column} SET DEFAULT {default}")
-                    )
+            yield connection
     finally:
         await engine.dispose()
+
+
+async def _add_retired_column_defaults(connection: AsyncConnection) -> None:
+    """Give pre-d7a2c4e6f8b1 schemas the defaults current ORM inserts rely on."""
+
+    for table, column, default in RETIRED_COLUMN_DEFAULTS:
+        missing = await connection.scalar(
+            text(
+                "SELECT column_default IS NULL FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = :table "
+                "AND column_name = :column"
+            ),
+            {"table": table, "column": column},
+        )
+        if missing:
+            await connection.execute(
+                text(f"ALTER TABLE {table} ALTER COLUMN {column} SET DEFAULT {default}")
+            )
 
 
 # Columns added by later revisions that current services write (the ORM renders
@@ -134,31 +141,24 @@ FORWARD_TABLES = (
 )
 
 
-async def _forward_table_shims(database_url: str, *, add: bool, revision: str) -> None:
+async def _forward_table_shims(connection: AsyncConnection, *, add: bool, revision: str) -> None:
     """Drop one revision's shim tables, or add them where an older schema lacks them."""
 
-    engine = create_async_engine(database_url)
-    try:
-        async with engine.begin() as connection:
-            for applied, table, columns in FORWARD_TABLES:
-                if applied != revision:
-                    continue
-                comment = await connection.scalar(
-                    text("SELECT obj_description(to_regclass(:table), 'pg_class')"),
-                    {"table": table},
-                )
-                exists = await connection.scalar(
-                    text("SELECT to_regclass(:table) IS NOT NULL"), {"table": table}
-                )
-                if add and not exists:
-                    await connection.execute(text(f"CREATE TABLE {table} {columns}"))
-                    await connection.execute(
-                        text(f"COMMENT ON TABLE {table} IS '{FORWARD_COLUMN_SHIM}'")
-                    )
-                elif not add and comment == FORWARD_COLUMN_SHIM:
-                    await connection.execute(text(f"DROP TABLE {table}"))
-    finally:
-        await engine.dispose()
+    for applied, table, columns in FORWARD_TABLES:
+        if applied != revision:
+            continue
+        comment = await connection.scalar(
+            text("SELECT obj_description(to_regclass(:table), 'pg_class')"),
+            {"table": table},
+        )
+        exists = await connection.scalar(
+            text("SELECT to_regclass(:table) IS NOT NULL"), {"table": table}
+        )
+        if add and not exists:
+            await connection.execute(text(f"CREATE TABLE {table} {columns}"))
+            await connection.execute(text(f"COMMENT ON TABLE {table} IS '{FORWARD_COLUMN_SHIM}'"))
+        elif not add and comment == FORWARD_COLUMN_SHIM:
+            await connection.execute(text(f"DROP TABLE {table}"))
 
 
 @functools.cache
@@ -175,39 +175,32 @@ def _revisions_with(revision: str) -> frozenset[str]:
 
 
 async def _forward_column_shims(
-    database_url: str, *, add: bool, columns: tuple[tuple[str, str, str], ...]
+    connection: AsyncConnection, *, add: bool, columns: tuple[tuple[str, str, str], ...]
 ) -> None:
     """Drop the shims, or add them where an older schema lacks the columns."""
 
-    engine = create_async_engine(database_url)
-    try:
-        async with engine.begin() as connection:
-            for table, column, sql_type in columns:
-                comment = await connection.scalar(
-                    text(
-                        "SELECT coalesce(col_description(c.attrelid, c.attnum), '') "
-                        "FROM pg_attribute c WHERE c.attrelid = to_regclass(:table) "
-                        "AND c.attname = :column AND NOT c.attisdropped"
-                    ),
-                    {"table": table, "column": column},
-                )
-                if (
-                    add
-                    and comment is None
-                    and await connection.scalar(
-                        text("SELECT to_regclass(:table) IS NOT NULL"), {"table": table}
-                    )
-                ):
-                    await connection.execute(
-                        text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
-                    )
-                    await connection.execute(
-                        text(f"COMMENT ON COLUMN {table}.{column} IS '{FORWARD_COLUMN_SHIM}'")
-                    )
-                elif not add and comment == FORWARD_COLUMN_SHIM:
-                    await connection.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
-    finally:
-        await engine.dispose()
+    for table, column, sql_type in columns:
+        comment = await connection.scalar(
+            text(
+                "SELECT coalesce(col_description(c.attrelid, c.attnum), '') "
+                "FROM pg_attribute c WHERE c.attrelid = to_regclass(:table) "
+                "AND c.attname = :column AND NOT c.attisdropped"
+            ),
+            {"table": table, "column": column},
+        )
+        if (
+            add
+            and comment is None
+            and await connection.scalar(
+                text("SELECT to_regclass(:table) IS NOT NULL"), {"table": table}
+            )
+        ):
+            await connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
+            await connection.execute(
+                text(f"COMMENT ON COLUMN {table}.{column} IS '{FORWARD_COLUMN_SHIM}'")
+            )
+        elif not add and comment == FORWARD_COLUMN_SHIM:
+            await connection.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
 
 
 async def run_alembic(
@@ -225,12 +218,19 @@ async def run_alembic(
     ``forward_columns`` is false (which also removes existing shims), a schema
     before a revision in ``FORWARD_COLUMN_GROUPS`` gets that revision's
     forward-column shims; seeded shim values survive runs that stay before it.
+    The shims before and after the subprocess each share one connection.
     """
 
-    for applied, columns in FORWARD_COLUMN_GROUPS:
-        if not forward_columns or (command == "upgrade" and revision in _revisions_with(applied)):
-            await _forward_column_shims(database_url, add=False, columns=columns)
-            await _forward_table_shims(database_url, add=False, revision=applied)
+    dropped = [
+        (applied, columns)
+        for applied, columns in FORWARD_COLUMN_GROUPS
+        if not forward_columns or (command == "upgrade" and revision in _revisions_with(applied))
+    ]
+    if dropped:
+        async with _shim_transaction(database_url) as connection:
+            for applied, columns in dropped:
+                await _forward_column_shims(connection, add=False, columns=columns)
+                await _forward_table_shims(connection, add=False, revision=applied)
     environment = os.environ.copy()
     environment["DATABASE_URL"] = database_url
     await asyncio.to_thread(
@@ -242,11 +242,12 @@ async def run_alembic(
         capture_output=True,
         text=True,
     )
-    await add_retired_column_defaults(database_url)
-    if forward_columns:
-        for applied, columns in FORWARD_COLUMN_GROUPS:
-            await _forward_table_shims(database_url, add=True, revision=applied)
-            await _forward_column_shims(database_url, add=True, columns=columns)
+    async with _shim_transaction(database_url) as connection:
+        await _add_retired_column_defaults(connection)
+        if forward_columns:
+            for applied, columns in FORWARD_COLUMN_GROUPS:
+                await _forward_table_shims(connection, add=True, revision=applied)
+                await _forward_column_shims(connection, add=True, columns=columns)
 
 
 class MigrationDatabaseFactory:

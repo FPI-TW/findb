@@ -25,7 +25,7 @@ async def _columns(engine) -> dict[tuple[str, str], str | None]:
 
 @pytest.mark.asyncio
 async def test_drop_keeps_environment_lock_and_downgrade_restores_defaults():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "retired_flags") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "retired_flags") as (
         url,
         engine,
     ):

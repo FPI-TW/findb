@@ -69,7 +69,7 @@ async def _clocks(engine) -> tuple[str, str, dict]:
 async def test_hong_kong_start_moves_to_2000_and_downgrade_restores_1830():
     module = migration_module()
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "factset_hk_clock"
+        "e9f4a1c6b3d5", "factset_hk_clock"
     ) as (
         url,
         engine,
@@ -106,7 +106,7 @@ async def test_hong_kong_start_moves_to_2000_and_downgrade_restores_1830():
 @pytest.mark.asyncio
 async def test_unknown_schedule_difference_aborts_without_moving_hong_kong():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "factset_hk_drift"
+        "e9f4a1c6b3d5", "factset_hk_drift"
     ) as (
         url,
         engine,
@@ -124,13 +124,13 @@ async def test_unknown_schedule_difference_aborts_without_moving_hong_kong():
 
 @pytest.mark.asyncio
 async def test_pre_projection_upgrade_passes_preflight_and_reaches_head():
-    """The accepted upgrade base still carries the TW bootstrap policy and Taipei clocks."""
+    """The rollback floor still carries the TW bootstrap policy and Taipei clocks."""
     module = migration_module()
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "factset_hk_base") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "factset_hk_base") as (
         url,
         engine,
     ):
-        await run_alembic(url, "d8e3f0b5a2c4")
+        await run_alembic(url, "a7c3e1f9d2b4")
         async with engine.connect() as db:
             report, _, _ = await db.run_sync(module.inspect)
         assert not [row for row in report if row["status"] == "unknown_difference"]

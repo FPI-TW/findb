@@ -26,7 +26,7 @@ async def _tables(engine) -> set[str]:
 
 @pytest.mark.asyncio
 async def test_tables_are_added_and_removed_only_while_no_report_is_archived():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "exchange_quote") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "exchange_quote") as (
         url,
         engine,
     ):

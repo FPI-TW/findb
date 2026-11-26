@@ -35,7 +35,7 @@ async def _set_config(engine, key: str, config: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_the_feeds_are_installed_stopped_with_the_config_seed_declares():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "fmp_feeds") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "fmp_feeds") as (
         url,
         engine,
     ):

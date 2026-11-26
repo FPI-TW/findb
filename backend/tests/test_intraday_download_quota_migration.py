@@ -25,7 +25,7 @@ async def _shape(engine) -> tuple[bool, bool]:
 
 @pytest.mark.asyncio
 async def test_existing_keys_get_the_default_limit_and_downgrade_removes_the_quota():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "download_quota") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "download_quota") as (
         url,
         engine,
     ):

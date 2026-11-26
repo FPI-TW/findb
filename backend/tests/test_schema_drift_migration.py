@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from typing import Any
 
 import pytest
@@ -26,8 +25,6 @@ from tests.migration_database import (
 
 # Same scope as migrations/env.py: the public schema plus the raw payload schema.
 INCLUDED_SCHEMAS = {None, "raw"}
-PREVIOUS_REVISION = "0d57f9b8a2c1"
-RECONCILED_REVISION = "1e68a0c9b3d2"
 
 
 def _include_name(name: str | None, type_: str, parent_names: dict[str, Any]) -> bool:
@@ -108,7 +105,7 @@ def _check_constraint_diffs(connection: Connection) -> list[str]:
 
 
 async def _upgraded_schema_diffs() -> tuple[list[Any], list[str]]:
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "schema_drift") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "schema_drift") as (
         database_url,
         engine,
     ):
@@ -152,32 +149,6 @@ async def test_orm_server_defaults_match_upgraded_schema() -> None:
     assert [(diff[2], diff[3]) for diff in metadata_diffs if diff[0] == "modify_default"] == []
 
 
-async def _checks(db: AsyncConnection) -> dict[int, tuple[str, str, str]]:
-    rows = await db.execute(
-        text(
-            "SELECT c.oid, t.relname, c.conname, pg_get_constraintdef(c.oid) "
-            "FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid "
-            "JOIN pg_namespace n ON n.oid = t.relnamespace "
-            "WHERE c.contype = 'c' AND n.nspname IN ('public', 'raw')"
-        )
-    )
-    return {oid: (table, name, definition) for oid, table, name, definition in rows}
-
-
-async def _calendar_defaults(db: AsyncConnection) -> dict[str, str]:
-    return dict(
-        (
-            await db.execute(
-                text(
-                    "SELECT column_name, column_default FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND table_name = 'trading_calendar' "
-                    "AND column_name IN ('created_at', 'updated_at')"
-                )
-            )
-        ).all()
-    )
-
-
 async def _insert_calendar_market(db: AsyncConnection, market: str) -> None:
     await db.execute(
         text(
@@ -187,17 +158,6 @@ async def _insert_calendar_market(db: AsyncConnection, market: str) -> None:
         ),
         {"market": market},
     )
-
-
-async def _calendar_rows(db: AsyncConnection) -> dict[str, list[dict]]:
-    snapshots = {}
-    for table, order in (("calendar_market", "market"), ("trading_calendar", "market, trade_date")):
-        snapshots[table] = list(
-            (
-                await db.execute(text(f"SELECT to_jsonb(t) FROM {table} t ORDER BY {order}"))
-            ).scalars()
-        )
-    return snapshots
 
 
 async def _assert_raw_defaults(db: AsyncConnection) -> None:
@@ -283,93 +243,3 @@ async def test_orm_server_defaults_apply_to_raw_sql(test_engine: AsyncEngine) ->
         with pytest.raises(IntegrityError, match="calendar_market_code_valid"):
             async with db.begin_nested():
                 await _insert_calendar_market(db, "tw")
-
-
-@pytest.mark.asyncio
-async def test_schema_reconciliation_preserves_data_and_round_trips() -> None:
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "reconcile") as (
-        url,
-        engine,
-    ):
-        await run_alembic(url, PREVIOUS_REVISION)
-        async with engine.begin() as db:
-            await _insert_calendar_market(db, "X_OLD")
-            await db.execute(
-                text(
-                    "INSERT INTO trading_calendar "
-                    "(id, market, trade_date, is_open, created_at, updated_at) "
-                    "VALUES (:id, 'X_OLD', '2026-10-28', true, "
-                    "'2026-10-27 01:00:00+00', '2026-10-28 02:00:00+00')"
-                ),
-                {"id": uuid7()},
-            )
-            checks_before = await _checks(db)
-            defaults_before = await _calendar_defaults(db)
-            rows_before = await _calendar_rows(db)
-        await run_alembic(url, RECONCILED_REVISION)
-        async with engine.begin() as db:
-            checks_after = await _checks(db)
-            assert len(checks_after) == len(checks_before) + 1
-            renamed = 0
-            for oid, (table, name, definition) in checks_before.items():
-                actual_table, actual_name, actual_definition = checks_after[oid]
-                assert (actual_table, actual_definition) == (table, definition)
-                renamed += actual_name != name
-            assert renamed == 16
-            assert await _calendar_defaults(db) == {
-                "created_at": "now()",
-                "updated_at": "now()",
-            }
-            assert await _calendar_rows(db) == rows_before
-            await _assert_raw_defaults(db)
-            for invalid in ("tw", "X", "TW-NEW"):
-                with pytest.raises(IntegrityError, match="calendar_market_code_valid"):
-                    async with db.begin_nested():
-                        await _insert_calendar_market(db, invalid)
-            rows_before_downgrade = await _calendar_rows(db)
-        await run_alembic(url, PREVIOUS_REVISION, command="downgrade")
-        async with engine.connect() as db:
-            assert await _checks(db) == checks_before
-            assert await _calendar_defaults(db) == defaults_before
-            assert await _calendar_rows(db) == rows_before_downgrade
-        await run_alembic(url, RECONCILED_REVISION)
-        async with engine.connect() as db:
-            # Pin this historical round trip to its own revision. Head/ORM
-            # parity is tested separately so future additive changes stay valid.
-            assert set((await _checks(db)).values()) == set(checks_after.values())
-            assert await _calendar_defaults(db) == {
-                "created_at": "now()",
-                "updated_at": "now()",
-            }
-            assert (
-                await db.scalar(text("SELECT version_num FROM alembic_version"))
-                == RECONCILED_REVISION
-            )
-            assert await _calendar_rows(db) == rows_before_downgrade
-
-
-@pytest.mark.asyncio
-async def test_schema_reconciliation_rejects_invalid_existing_market_atomically() -> None:
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "invalid_market") as (
-        url,
-        engine,
-    ):
-        await run_alembic(url, PREVIOUS_REVISION)
-        async with engine.begin() as db:
-            await _insert_calendar_market(db, "tw")
-            checks_before = await _checks(db)
-            defaults_before = await _calendar_defaults(db)
-        with pytest.raises(subprocess.CalledProcessError) as failure:
-            await run_alembic(url, RECONCILED_REVISION)
-        assert "calendar_market_code_valid" in failure.value.stderr
-        async with engine.connect() as db:
-            assert (
-                await db.scalar(text("SELECT version_num FROM alembic_version"))
-                == PREVIOUS_REVISION
-            )
-            assert await _checks(db) == checks_before
-            assert await _calendar_defaults(db) == defaults_before
-            assert (
-                await db.scalar(text("SELECT count(*) FROM calendar_market WHERE market = 'tw'"))
-                == 1
-            )

@@ -21,7 +21,7 @@ async def _index(engine) -> str | None:
 
 @pytest.mark.asyncio
 async def test_upgrade_indexes_retry_exhausted_runs_and_downgrade_drops_it():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "retry_index") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "retry_index") as (
         url,
         engine,
     ):
