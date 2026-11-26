@@ -258,4 +258,63 @@ describe("completeness matrix", () => {
     expect(within(details).queryByText("帶入回補")).not.toBeInTheDocument()
     expect(within(details).getByText("查看缺漏告警")).toBeInTheDocument()
   })
+
+  it("marks backfilled dates without a daily plan", async () => {
+    mocks.loadCompleteness.mockResolvedValue(
+      completenessSchema.parse({
+        ...matrix,
+        rows: [
+          {
+            ...matrix.rows[1],
+            cells: [
+              cell("2026-11-19", "backfilled", {
+                backfill_completed_at: "2026-11-25T17:50:00Z",
+              }),
+              cell("2026-11-20", "backfill_partial", {
+                backfill_completed_at: "2026-11-25T17:52:00Z",
+              }),
+              cell("2026-11-21", "complete", {
+                plan_id: PLAN,
+                counts: counts(0),
+              }),
+            ],
+          },
+        ],
+      })
+    )
+    renderPage({
+      dataset: "us_index_eod",
+      provider: "fmp",
+      date: "2026-11-20",
+      gaps: true,
+    })
+    const table = await screen.findByRole("table", { name: "完整性矩陣" })
+    expect(
+      within(table).getByRole("button", {
+        name: "us_index_eod fmp 2026-11-19：已回補",
+      })
+    ).toHaveTextContent("◆")
+    // A partial backfill still needs attention, so the row stays under "只顯示有缺口".
+    expect(
+      within(table).getByRole("button", {
+        name: "us_index_eod fmp 2026-11-20：回補部分完成",
+      })
+    ).toHaveTextContent("◇")
+    const details = screen.getByRole("region", { name: "所選日期明細" })
+    expect(details).toHaveTextContent(
+      "早於首次抓取日 2026-11-21，沒有每日計畫，由回補補了一部分"
+    )
+    expect(
+      JSON.parse(
+        within(details).getByText("查看回補列表").getAttribute("data-search") ??
+          "{}"
+      )
+    ).toEqual({ tab: "backfills" })
+    expect(
+      JSON.parse(
+        within(details).getByText("帶入回補").getAttribute("data-search") ??
+          "{}"
+      )
+    ).toEqual({ tab: "backfills", seed: "fmp|us_index_eod|2026-11-20" })
+  })
 })

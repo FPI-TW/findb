@@ -43,6 +43,8 @@ export const STATE_LABELS: Record<CompletenessState, string> = {
   not_planned: "已到期但沒有計畫",
   closed: "休市或依設定略過",
   not_started: "首次抓取日之前",
+  backfilled: "已回補",
+  backfill_partial: "回補部分完成",
 }
 
 const STATE_SYMBOLS: Record<CompletenessState, string> = {
@@ -53,6 +55,8 @@ const STATE_SYMBOLS: Record<CompletenessState, string> = {
   not_planned: "✕",
   closed: "·",
   not_started: "",
+  backfilled: "◆",
+  backfill_partial: "◇",
 }
 
 // States that need someone's attention; "只顯示有缺口" keeps rows with any.
@@ -60,6 +64,7 @@ const GAP_STATES = new Set<CompletenessState>([
   "incomplete",
   "late",
   "not_planned",
+  "backfill_partial",
 ])
 
 function gapCount(cell: CompletenessCell) {
@@ -99,9 +104,9 @@ function CellButton({
       aria-label={`${row.dataset_key} ${row.provider} ${cell.trade_date}：${STATE_LABELS[state]}${gaps ? `，缺口 ${gaps}` : ""}${cell.counts_synced ? "" : "，計數同步中"}${cell.open_alert ? "，有未關閉告警" : ""}`}
       title={`${cell.trade_date} ${STATE_LABELS[state]}${gaps ? ` · 缺口 ${gaps}` : ""}`}
       className={`flex h-8 w-full min-w-11 items-center justify-center gap-0.5 rounded font-mono text-xs tabular-nums focus-visible:ring-3 focus-visible:ring-accent/30 focus-visible:outline-none ${
-        state === "complete"
+        state === "complete" || state === "backfilled"
           ? "bg-accent-soft text-accent"
-          : state === "incomplete"
+          : state === "incomplete" || state === "backfill_partial"
             ? "bg-warning-soft text-warning"
             : state === "late" || state === "not_planned"
               ? "bg-danger-soft text-danger"
@@ -142,9 +147,10 @@ function CellDetails({
         <div className="flex flex-wrap gap-2">
           <Badge
             variant={
-              cell.state === "complete"
+              cell.state === "complete" || cell.state === "backfilled"
                 ? "secondary"
-                : cell.state === "incomplete"
+                : cell.state === "incomplete" ||
+                    cell.state === "backfill_partial"
                   ? "warning"
                   : cell.state === "late" || cell.state === "not_planned"
                     ? "destructive"
@@ -161,6 +167,21 @@ function CellDetails({
         <p className="text-sm text-muted">
           這天應有資料，但沒有建立交付計畫：可能是排程停止、Fetcher
           未執行或規劃失敗。可帶入回補補抓。
+        </p>
+      )}
+      {(cell.state === "backfilled" || cell.state === "backfill_partial") && (
+        <p className="text-sm text-muted">
+          {row.first_start_date && cell.trade_date < row.first_start_date
+            ? `早於首次抓取日 ${row.first_start_date}，沒有每日計畫`
+            : "這天沒有每日計畫"}
+          ，由回補
+          {cell.state === "backfilled"
+            ? "補齊"
+            : "補了一部分，仍有成員未取得，可再帶入回補"}
+          {cell.backfill_completed_at
+            ? `（完成於 ${formatDate(cell.backfill_completed_at)}）`
+            : ""}
+          。逐檔結果見回補列表。
         </p>
       )}
       {cell.state === "not_started" && (
@@ -216,6 +237,15 @@ function CellDetails({
             className="font-bold text-accent underline-offset-4 hover:underline"
           >
             查看缺漏告警
+          </Link>
+        )}
+        {(cell.state === "backfilled" || cell.state === "backfill_partial") && (
+          <Link
+            to="/operations/deliveries"
+            search={{ tab: "backfills" }}
+            className="font-bold text-accent underline-offset-4 hover:underline"
+          >
+            查看回補列表
           </Link>
         )}
         {needsWork && role !== "viewer" && (
