@@ -14,7 +14,7 @@ from app.config import get_settings
 def migration_module():
     path = (
         Path(__file__).resolve().parents[1]
-        / "migrations/versions/64da893e5e78_fmp_dollar_index_feed.py"
+        / "migrations/versions/7733f9692fe6_finlab_daily_1930_schedule.py"
     )
     spec = importlib.util.spec_from_file_location("catalog_schedule_migration", path)
     assert spec is not None and spec.loader is not None
@@ -33,8 +33,9 @@ async def main() -> int:
             if exists is None:
                 print(json.dumps({"status": "empty_bootstrap"}))
                 return 0
-            report, _, _ = await connection.run_sync(migration_module().inspect)
-            print(json.dumps({"revision": "64da893e5e78", "rows": report}, sort_keys=True))
+            module = migration_module()
+            report, _, _ = await connection.run_sync(module.inspect)
+            print(json.dumps({"revision": module.revision, "rows": report}, sort_keys=True))
             return int(any(row["status"] == "unknown_difference" for row in report))
     finally:
         await engine.dispose()

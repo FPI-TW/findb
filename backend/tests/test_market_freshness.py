@@ -924,8 +924,9 @@ def test_serve_freshness_schema_has_a_closed_status_vocabulary():
 
 
 @pytest.mark.asyncio
-# Without a plan the catalog deadline applies: 12 hours after 18:00 Taipei, 22:00 UTC.
-@pytest.mark.parametrize("frozen_hour", [None, 21, 23])
+# Without a plan the catalog deadline applies: 12 hours after 19:30 Taipei, 23:30 UTC.
+# A frozen plan deadline (hours after DAY 00:00 UTC) wins over it.
+@pytest.mark.parametrize("frozen_hour", [None, 22, 26])
 @pytest.mark.parametrize("summary_pending", [False, True])
 async def test_profile_freshness_deadline_without_summary_uses_frozen_plan_first(
     test_session, frozen_hour, summary_pending
@@ -940,7 +941,9 @@ async def test_profile_freshness_deadline_without_summary_uses_frozen_plan_first
     else:
         dataset, _, response = await _activated_plan(test_session, "tw_etf_eod", count=1)
         plan = await test_session.get(DailyDeliveryPlan, response.plan_id)
-        plan.deadline_at = datetime.combine(DAY, time(frozen_hour), timezone.utc)
+        plan.deadline_at = datetime.combine(DAY, time(0), timezone.utc) + timedelta(
+            hours=frozen_hour
+        )
         await test_session.flush()
         if summary_pending:
             from sqlalchemy import delete
@@ -957,16 +960,16 @@ async def test_profile_freshness_deadline_without_summary_uses_frozen_plan_first
         test_session,
         feed,
         "full_market",
-        datetime.combine(DAY, time(21, 30), timezone.utc),
+        datetime.combine(DAY, time(23, 0), timezone.utc),
         DAY.isoformat(),
     )
     after = await _profile_feed_freshness(
         test_session,
         feed,
         "full_market",
-        datetime.combine(DAY, time(22, 30), timezone.utc),
+        datetime.combine(DAY, time(23, 45), timezone.utc),
         DAY.isoformat(),
     )
     overdue = "never_received" if summary_pending or frozen_hour is None else "late"
-    assert before.status == (overdue if frozen_hour == 21 else "not_due")
-    assert after.status == ("not_due" if frozen_hour == 23 else overdue)
+    assert before.status == (overdue if frozen_hour == 22 else "not_due")
+    assert after.status == ("not_due" if frozen_hour == 26 else overdue)

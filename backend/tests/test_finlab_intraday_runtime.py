@@ -296,14 +296,14 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
         lambda name: FINLAB_SDK_VERSION if name == "finlab" else version(name),
     )
 
-    # 19:30 Taipei: after the intraday feeds' 19:15 start.
+    # 19:45 Taipei: after the intraday feeds' 19:35 start.
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):
             return (
-                datetime(2026, 7, 21, 11, 30, tzinfo=timezone.utc).astimezone(tz)
+                datetime(2026, 7, 21, 11, 45, tzinfo=timezone.utc).astimezone(tz)
                 if tz
-                else datetime(2026, 7, 21, 11, 30)
+                else datetime(2026, 7, 21, 11, 45)
             )
 
     monkeypatch.setattr(daily_runtime, "datetime", Clock)

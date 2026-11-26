@@ -96,12 +96,12 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "hk_equity_eod": ("Asia/Hong_Kong", "20:00", "Asia/Hong_Kong", "08:00", 1),
         # HKEX's report is downloadable around 21:00.
         "hk_equity_official_eod": ("Asia/Hong_Kong", "21:05", "Asia/Hong_Kong", "09:05", 1),
-        "tw_equity_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
-        "tw_etf_eod": ("Asia/Taipei", "18:00", "Asia/Taipei", "06:00", 1),
-        "tw_equity_bar_1m": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
-        "tw_etf_bar_1m": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
-        "tw_equity_tick": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
-        "tw_etf_tick": ("Asia/Taipei", "19:15", "Asia/Taipei", "07:15", 1),
+        "tw_equity_eod": ("Asia/Taipei", "19:30", "Asia/Taipei", "07:30", 1),
+        "tw_etf_eod": ("Asia/Taipei", "19:30", "Asia/Taipei", "07:30", 1),
+        "tw_equity_bar_1m": ("Asia/Taipei", "19:35", "Asia/Taipei", "07:35", 1),
+        "tw_etf_bar_1m": ("Asia/Taipei", "19:35", "Asia/Taipei", "07:35", 1),
+        "tw_equity_tick": ("Asia/Taipei", "19:35", "Asia/Taipei", "07:35", 1),
+        "tw_etf_tick": ("Asia/Taipei", "19:35", "Asia/Taipei", "07:35", 1),
         "tw_futures_eod": ("Asia/Taipei", "17:00", "Asia/Taipei", "05:00", 1),
         # Index groups by publication time; New York's is fetched the next Taipei morning.
         "hk_index_eod": ("Asia/Hong_Kong", "20:00", "Asia/Hong_Kong", "08:00", 1),
