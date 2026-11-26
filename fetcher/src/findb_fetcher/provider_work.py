@@ -50,6 +50,9 @@ CLOSED_WORK_PRUNE_BUSY_SECONDS = JOURNAL_BUSY_SECONDS
 CLOSED_WORK_PRUNE_DELETE_BATCH = 64
 CLOSED_LOOKUP_BATCH = 500
 _PROVIDER_NAME = re.compile(r"[a-z][a-z0-9_]{0,49}")
+_LANE_NAME = re.compile(r"[a-z][a-z0-9_]{0,29}")
+# The default lane keeps every file name from before lanes existed.
+DEFAULT_LANE = "default"
 # Every work row lands in one of these (all keyed by work_key first): a work found in
 # none of them was never journaled in that file.
 _WORK_PRESENCE_TABLES = (
@@ -178,7 +181,15 @@ def scoped_identity(seed: bytes) -> bytes:
     return seed + b"\0provider-work:" + owner.work["work_id"].encode() if owner else seed
 
 
-def _open_host_lock(provider: str, *, root: Path | None = None) -> int:
+def _lane_suffix(lane: str) -> str:
+    """File-name suffix of a lane: none for the default lane, ``-<lane>`` otherwise."""
+    if _LANE_NAME.fullmatch(lane) is None:
+        raise ValueError("lane name is invalid")
+    return "" if lane == DEFAULT_LANE else f"-{lane}"
+
+
+def host_lock_path(provider: str, lane: str = DEFAULT_LANE, *, root: Path | None = None) -> Path:
+    """One lock file per (environment, provider, lane); Source fences each lane's owner by it."""
     env = os.getenv("APP_ENVIRONMENT", "local")
     folder = (
         root
@@ -186,24 +197,32 @@ def _open_host_lock(provider: str, *, root: Path | None = None) -> int:
             os.getenv("FETCHER_ACCOUNT_STATE_PATH", "/var/lib/findb-account/governor.sqlite3")
         ).parent
     )
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"provider-work-{env}-{provider}.lock"
+    return folder / f"provider-work-{env}-{provider}{_lane_suffix(lane)}.lock"
+
+
+def _open_host_lock(provider: str, lane: str = DEFAULT_LANE, *, root: Path | None = None) -> int:
+    path = host_lock_path(provider, lane, root=root)
+    path.parent.mkdir(parents=True, exist_ok=True)
     return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
 
 
-def initialize_host_lock(provider: str, *, root: Path | None = None) -> None:
+def initialize_host_lock(
+    provider: str, lane: str = DEFAULT_LANE, *, root: Path | None = None
+) -> None:
     """Ensure the shared inode exists without acquiring or releasing ownership.
 
     A separate open file description can be closed while a sibling consumer
     owns the inode. Never truncate, replace, unlink or LOCK_UN the holder's file.
     """
-    os.close(_open_host_lock(provider, root=root))
+    os.close(_open_host_lock(provider, lane, root=root))
 
 
 @contextmanager
-def host_lock(provider: str, *, root: Path | None = None) -> Iterator[tuple[int, str]]:
+def host_lock(
+    provider: str, lane: str = DEFAULT_LANE, *, root: Path | None = None
+) -> Iterator[tuple[int, str]]:
     env = os.getenv("APP_ENVIRONMENT", "local")
-    fd = _open_host_lock(provider, root=root)
+    fd = _open_host_lock(provider, lane, root=root)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1027,12 +1046,15 @@ class ProviderWorkSession:
             raise ProviderWorkRecoveryBlockedError("heartbeat thread has not stopped")
 
 
-def journal_path(root: Path | None = None, provider: str | None = None) -> Path:
-    """A provider's work journal, beside the shared account ledger.
+def journal_path(
+    root: Path | None = None, provider: str | None = None, lane: str = DEFAULT_LANE
+) -> Path:
+    """A provider lane's work journal, beside the shared account ledger.
 
     Without ``provider`` this is the host-wide journal every provider shared before
     each got its own; the works journaled there keep using it until retention
-    retires them (see ``work_journal_path``).
+    retires them (see ``work_journal_path``). The default lane keeps the provider's
+    pre-lane file name.
     """
     folder = (
         root
@@ -1044,31 +1066,43 @@ def journal_path(root: Path | None = None, provider: str | None = None) -> Path:
         return folder / "provider-work.sqlite3"
     if _PROVIDER_NAME.fullmatch(provider) is None:
         raise ValueError("provider name is invalid")
-    return folder / f"provider-work-{provider}.sqlite3"
+    return folder / f"provider-work-{provider}{_lane_suffix(lane)}.sqlite3"
 
 
-def work_journal_path(provider: str, work_id: str, *, root: Path | None = None) -> Path:
-    """The journal holding this work: the host-wide one if it already has it, else the provider's.
-
-    Each provider writing its own file keeps one provider's lock or retention from
-    timing out another's writes. Works already journaled in the shared file stay
-    there so nothing is moved; it stops being written once they are retired.
-    """
-    shared = journal_path(root)
-    if shared.is_file():
-        query = " UNION ALL ".join(
-            f"SELECT 1 FROM {table} WHERE work_key=?" for table in _WORK_PRESENCE_TABLES
+def _journal_has_work(path: Path, work_id: str) -> bool:
+    if not path.is_file():
+        return False
+    query = " UNION ALL ".join(
+        f"SELECT 1 FROM {table} WHERE work_key=?" for table in _WORK_PRESENCE_TABLES
+    )
+    db = sqlite3.connect(path, timeout=JOURNAL_BUSY_SECONDS)
+    try:
+        return (
+            db.execute(f"{query} LIMIT 1", (work_id,) * len(_WORK_PRESENCE_TABLES)).fetchone()
+            is not None
         )
-        db = sqlite3.connect(shared, timeout=JOURNAL_BUSY_SECONDS)
-        try:
-            found = db.execute(
-                f"{query} LIMIT 1", (work_id,) * len(_WORK_PRESENCE_TABLES)
-            ).fetchone()
-        finally:
-            db.close()
-        if found:
-            return shared
-    return journal_path(root, provider)
+    finally:
+        db.close()
+
+
+def work_journal_path(
+    provider: str, work_id: str, *, lane: str = DEFAULT_LANE, root: Path | None = None
+) -> Path:
+    """The journal holding this work: an older file if it already has it, else the lane's own.
+
+    Each provider (and each of its lanes) writing its own file keeps one owner's
+    lock or retention from timing out another's writes. Works already journaled in
+    an older file stay there so nothing is moved: the host-wide file, and for a
+    non-default lane the provider's default-lane file, which held the lane's works
+    before the lane existed. Each stops being written once its works are retired.
+    """
+    older = [journal_path(root)]
+    if lane != DEFAULT_LANE:
+        older.append(journal_path(root, provider))
+    for path in older:
+        if _journal_has_work(path, work_id):
+            return path
+    return journal_path(root, provider, lane)
 
 
 def closed_work_times(
@@ -1111,7 +1145,12 @@ def _delete_in_batches(
 
 
 def prune_closed_journal(
-    source: Any, provider: str, *, root: Path | None = None, now: float | None = None
+    source: Any,
+    provider: str,
+    *,
+    lane: str = DEFAULT_LANE,
+    root: Path | None = None,
+    now: float | None = None,
 ) -> dict[str, int] | None:
     """Retire journal replay state of this provider's works Source closed a week ago.
 
@@ -1121,11 +1160,20 @@ def prune_closed_journal(
     works. A work with any delivery lacking a receipt keeps everything, since its
     acceptance is not proven locally. A pass that fails partway keeps the works it
     already retired and runs again within the hour.
+
+    A non-default lane prunes only its own file: the default lane's consumer
+    already retires every provider work left in the older files, whichever lane
+    it ran in, since Source answers for the whole provider.
     """
     now = time.time() if now is None else now
+    paths = (
+        (journal_path(root, provider), journal_path(root))
+        if lane == DEFAULT_LANE
+        else (journal_path(root, provider, lane),)
+    )
     passes = [
         removed
-        for path in (journal_path(root, provider), journal_path(root))
+        for path in paths
         if (removed := _prune_journal_file(path, source, provider, now)) is not None
     ]
     if not passes:
@@ -1229,6 +1277,12 @@ def _prune_journal_file(
         db.close()
 
 
+def work_lane(work: dict[str, Any]) -> str:
+    """The lane Source claimed a work in; a response without one (default claims) is default."""
+    lane = work.get("lane", DEFAULT_LANE)
+    return lane if isinstance(lane, str) else ""
+
+
 @contextmanager
 def claimed_work(
     source,
@@ -1237,10 +1291,18 @@ def claimed_work(
     work_id: str | None = None,
     accepted_kinds: list[str] | None = None,
     execution_profile: str | None = None,
+    lane: str = DEFAULT_LANE,
     root: Path | None = None,
 ) -> Iterator[ProviderWorkSession | None]:
+    """Claim the next work of one provider lane under that lane's host lock.
+
+    The default lane sends exactly the pre-lane request; only another lane names
+    itself, so an older Source never sees a field it does not know from a default
+    consumer. Whether the claimed work belongs here is the caller's check
+    (``work_lane``), so a mismatch still settles through the fenced owner.
+    """
     enabled()
-    with host_lock(provider, root=root) as (_, inode):
+    with host_lock(provider, lane, root=root) as (_, inode):
         claimed = source.request(
             "POST",
             "provider-work/claim",
@@ -1251,6 +1313,7 @@ def claimed_work(
                 "requested_work_id": work_id,
                 "accepted_kinds": accepted_kinds,
                 "execution_profile": execution_profile,
+                **({"lane": lane} if lane != DEFAULT_LANE else {}),
             },
         )
         work = claimed.get("work")
@@ -1258,7 +1321,7 @@ def claimed_work(
             yield None
             return
         journal = WorkJournal(
-            work_journal_path(provider, work["work_id"], root=root), work["work_id"]
+            work_journal_path(provider, work["work_id"], lane=lane, root=root), work["work_id"]
         )
         session = ProviderWorkSession(source, provider, work, journal)
         token = _current.set(session)

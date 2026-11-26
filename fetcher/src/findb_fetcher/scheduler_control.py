@@ -39,6 +39,7 @@ from findb_fetcher.source_recovery import (
 _MAX_RESPONSE_BYTES = 64 * 1024
 _MAX_ERROR_CHARS = 512
 _SCHEDULER_KEY_PATTERN = re.compile(r"^[a-z0-9_]{1,100}$")
+_LANE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,29}$")
 _SCHEDULER_KEYS = frozenset(
     {
         "twelve_data_us_common_stocks_daily_v1",
@@ -137,14 +138,20 @@ class SchedulerControlClient:
         client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        lane: str = "default",
     ) -> None:
         if (
             not isinstance(scheduler_key, str)
             or _SCHEDULER_KEY_PATTERN.fullmatch(scheduler_key) is None
         ):
             raise ValueError("scheduler control key is invalid")
+        if not isinstance(lane, str) or _LANE_PATTERN.fullmatch(lane) is None:
+            raise ValueError("scheduler control lane is invalid")
         self._config = config
         self.scheduler_key = scheduler_key
+        # The consumer's execution lane. Only a non-default lane reports it, so a
+        # default consumer's poll stays byte-identical to the pre-lane protocol.
+        self.lane = lane
         self._client = client or httpx.Client(timeout=config.request_timeout_seconds)
         self._owns_client = client is None
         self._sleep = sleep
@@ -174,6 +181,8 @@ class SchedulerControlClient:
             "cycle_completed_at": _encode_datetime(cycle_completed_at),
             "last_error": _bound_error(last_error) if last_error else None,
         }
+        if self.lane != "default":
+            body_payload["lane"] = self.lane
         body = json.dumps(
             body_payload,
             ensure_ascii=False,

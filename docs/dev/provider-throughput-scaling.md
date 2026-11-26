@@ -1,7 +1,10 @@
 # Provider 吞吐擴充：多條執行線、並行與回補效率
 
-狀態：實作中，進度與 PR 切分見 #691。第 1 節的 Backend lane（第 2a 步）已完成，現行規則見
-[Provider work FIFO](../architecture/provider_work.md) 的「執行線（lane）」；其餘仍是設計草案。Owner
+狀態：實作中，進度與 PR 切分見 #691。第 1 節的 Backend lane（第 2a 步）與 Fetcher／部署工具的 lane
+支援（第 3a 步，host lock、journal、checkpoint 與 consumer 拓撲依 lane 產生；目前仍全部在 `default`）已完成，
+現行規則見 [Provider work FIFO](../architecture/provider_work.md) 的「執行線（lane）」與
+[部署](../operations/deployment.md#runtime-與持久化狀態)；FinLab 盤中改走 `intraday` lane（第 3b 步）與其餘
+仍是設計草案。Owner
 已決定的方向寫在「已定事項」；其餘待決事項列在文末。
 
 ## 背景

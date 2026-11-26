@@ -27,18 +27,18 @@ ENVIRONMENT_BY_NAMESPACE = {DEFAULT_NAMESPACE: "staging", "FinDB/Production": "p
 # BEGIN GENERATED PROVIDER INVENTORY
 PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
 CONSUMERS = (
-    ("findb-full-market-factset", "factset", "full_market", "factset"),
-    ("findb-full-market-finlab", "finlab", "full_market", "finlab"),
-    ("findb-full-market-fmp", "fmp", "full_market", "twelve_data"),
-    ("findb-full-market-hkex", "hkex", "full_market", "twelve_data"),
-    ("findb-full-market-taifex", "taifex", "full_market", "twelve_data"),
-    ("findb-full-market-twelve-data", "twelve_data", "full_market", "twelve_data"),
-    ("findb-historical-factset", "factset", "historical", "factset"),
-    ("findb-historical-finlab", "finlab", "historical", "finlab"),
-    ("findb-historical-fmp", "fmp", "historical", "twelve_data"),
-    ("findb-historical-hkex", "hkex", "historical", "twelve_data"),
-    ("findb-historical-taifex", "taifex", "historical", "twelve_data"),
-    ("findb-historical-twelve-data", "twelve_data", "historical", "twelve_data"),
+    ("findb-full-market-factset", "factset", "full_market", "default", "factset"),
+    ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
+    ("findb-full-market-fmp", "fmp", "full_market", "default", "twelve_data"),
+    ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
+    ("findb-historical-factset", "factset", "historical", "default", "factset"),
+    ("findb-historical-finlab", "finlab", "historical", "default", "finlab"),
+    ("findb-historical-fmp", "fmp", "historical", "default", "twelve_data"),
+    ("findb-historical-hkex", "hkex", "historical", "default", "twelve_data"),
+    ("findb-historical-taifex", "taifex", "historical", "default", "twelve_data"),
+    ("findb-historical-twelve-data", "twelve_data", "historical", "default", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
@@ -237,7 +237,7 @@ def _fetcher_runtime_security_metrics(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     metrics: list[dict[str, Any]] = []
     errors: list[str] = []
-    for container, provider, role, image_key in CONSUMERS:
+    for container, provider, role, _lane, image_key in CONSUMERS:
         try:
             expected_binds, anonymous_volumes = expected_consumer_mounts(
                 environment, provider, role, image_key

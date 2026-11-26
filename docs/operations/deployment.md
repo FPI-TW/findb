@@ -646,12 +646,24 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 與一個 `findb-historical-<suffix>`。Daily 使用 `findb-fetch-runtime --execution-profile full_market`、
 catalog 的 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝拓撲不隨設定改變。
 
+Consumer 拓撲由 catalog 產生的 `infra/deploy/generated/provider_inventory.v1.json` 決定，每列有
+`name`、`provider`、`role`、`lane`、`image_key`：每個 provider 一個 historical consumer（lane 一律
+`default`），每條[執行線](../architecture/provider_work.md#權威範圍與排序)一個 Full consumer。目前所有
+feed 都在 `default`，所以仍是上述十二個 consumers，指令與檔名都不變。非 default lane 的 consumer 名稱是
+`findb-full-market-<lane>-<suffix>`（lane 的 `_` 換成 `-`），指令多帶 `--lane <lane>`，checkpoint 是
+`<Full 目錄>/state-<provider>-<lane>.sqlite3`，與 default 共用同一 provider image、Full 目錄與 SDK cache。
+lane 放在 provider 前面，因為部署交易把「consumer 名稱加 `-`」開頭的容器都視為該 consumer 的替換中容器；
+exporter 與部署腳本都拒絕任何一個 consumer 名稱是另一個名稱加 `-` 的開頭。部署腳本驗證 inventory 時，
+每個 provider 要恰好一個 historical 與一個 default Full consumer，另可有零或多個不重複 lane 的 Full
+consumer。
+
 | 狀態 | 路徑 |
 | --- | --- |
-| Full checkpoint（每個 provider 一個檔） | `<Full 目錄>/state-<provider>.sqlite3`；Full 目錄 staging 是 `/var/lib/findb-full-market/staging`，production 是 `/var/lib/findb-full-market`（保留既有路徑） |
+| Full checkpoint（每個 provider 一個檔） | `<Full 目錄>/state-<provider>.sqlite3`；Full 目錄 staging 是 `/var/lib/findb-full-market/staging`，production 是 `/var/lib/findb-full-market`（保留既有路徑）。非 default lane：`state-<provider>-<lane>.sqlite3` |
 | 主機共用的舊 Full checkpoint | 已封存於 `/var/backups/findb-shared-checkpoint/` 並自 `<Full 目錄>` 移除，見下方「Full checkpoint 分檔」 |
 | 共用帳號 governor | `/var/lib/findb-account/<environment>/governor.sqlite3` |
-| Provider-work journal（每個 provider 一個檔） | `/var/lib/findb-account/<environment>/provider-work-<provider>.sqlite3` |
+| Provider-work journal（每個 provider 一個檔） | `/var/lib/findb-account/<environment>/provider-work-<provider>.sqlite3`；非 default lane：`provider-work-<provider>-<lane>.sqlite3` |
+| Provider-work host lock | `/var/lib/findb-account/<environment>/provider-work-<environment>-<provider>.lock`；非 default lane：`provider-work-<environment>-<provider>-<lane>.lock` |
 | 主機共用的舊 journal（只排空） | `/var/lib/findb-account/<environment>/provider-work.sqlite3`：只供 fetcher-v0.1.51 之前開始的工作使用到結案清理 |
 | Historical request state | 原 provider `/var/lib/findb-*-fetcher/historical`，Twelve Data 為 `/var/lib/findb-fetcher/historical` |
 
@@ -727,7 +739,8 @@ bytes 與 receipts。退回更早版本同樣不受支援。
 sidecars。分檔程式與 `--split-checkpoint` 已移除。
 
 部署閘門（`require_full_checkpoint`）與 host guard 只接受已安裝 consumer 指令中 `--state-path` 指向的
-`<Full 目錄>/state-<provider>.sqlite3`；新 provider 走一般的 `--initialize-state` bootstrap。
+`<Full 目錄>/state-<provider>.sqlite3` 或 `<Full 目錄>/state-<provider>-<lane>.sqlite3`；新 provider 與新
+lane 走一般的 `--initialize-state` bootstrap。
 
 Rollback 入口與 promotion 相同，選擇 `mode=rollback` 和該環境已 accepted 的 exact bundle key。
 它不重建 images、不修改 immutable acceptance、不刪 governor 或 prepared bodies。若 migration 不相容，採 forward fix，

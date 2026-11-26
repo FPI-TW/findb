@@ -587,6 +587,7 @@ def _add_example_provider(value):
                 "name": f"findb-{role.replace('_', '-')}-example",
                 "provider": "example",
                 "role": role,
+                "lane": "default",
                 "image_key": "twelve_data",
             }
         )
@@ -694,3 +695,138 @@ def test_a_new_consumer_that_was_killed_or_did_not_drain_still_fails_closed(faul
     # Nothing that existed before the transaction was deleted.
     kept = {row["id"] for row in state["rows"].values()}
     assert {row["id"] for row in original.values()} <= kept
+
+
+def _add_finlab_intraday_lane(value):
+    value["consumers"].append(
+        {
+            "name": "findb-full-market-intraday-finlab",
+            "provider": "finlab",
+            "role": "full_market",
+            "lane": "intraday",
+            "image_key": "finlab",
+        }
+    )
+
+
+def _helper_calls(state):
+    calls = {}
+    for entry in state["log"]:
+        if entry[0] != "sudo" or "--consumer" not in entry:
+            continue
+        index = next(
+            (i for i, a in enumerate(entry) if a.endswith("/release_fetcher_provider.sh")), None
+        )
+        if index is not None:
+            calls[entry[index + 5]] = entry[index + 1 :]
+    return calls
+
+
+@pytest.mark.parametrize("mode", ["candidate", "activate"])
+def test_lane_consumer_is_released_on_its_own_lane_and_checkpoint(mode):
+    completed, state, _ = execute(
+        original_rows(), mode=mode, inventory_change=_add_finlab_intraday_lane
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert f"providers={len(INVENTORY['consumers']) + 1} " in completed.stdout
+    calls = _helper_calls(state)
+    lane = calls["findb-full-market-intraday-finlab"]
+    default = calls["findb-full-market-finlab"]
+    # Same provider image, Full directory and SDK cache; its own checkpoint and lane.
+    assert lane[1:3] == default[1:3] and lane[8] == default[8]
+    assert lane[3] == lane[2] + "/state-finlab-intraday.sqlite3"
+    assert lane[4:8] == [
+        "findb-full-market-intraday-finlab",
+        "findb-full-market-intraday-finlab-candidate",
+        "findb-full-market-intraday-finlab-previous",
+        "findb-full-market-intraday-finlab-preflight",
+    ]
+    command = lane[9:]
+    assert command[command.index("--state-path") + 1] == lane[3]
+    assert command[-4:] == ["--provider", "finlab", "--lane", "intraday"]
+    # The default lane keeps its pre-lane command.
+    assert "--lane" not in default
+    assert default[3] == default[2] + "/state-finlab.sqlite3"
+
+
+def _malformed_lane(change):
+    def apply(value):
+        _add_finlab_intraday_lane(value)
+        change(value["consumers"][-1], value)
+
+    return apply
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # A lane consumer whose name extends the default one reads as its replica.
+        lambda row, _: row.update(name="findb-full-market-finlab-intraday"),
+        lambda row, _: row.update(role="historical", name="findb-historical-intraday-finlab"),
+        lambda row, _: row.update(lane="Intraday"),
+        lambda row, _: row.update(lane="default"),
+        lambda row, _: row.pop("lane"),
+        lambda row, value: value["consumers"].append(dict(row)),
+        lambda row, _: row.update(image_key="twelve_data"),
+    ],
+)
+def test_malformed_lane_inventory_fails_before_docker(change):
+    completed, state, pointer = execute(original_rows(), inventory_change=_malformed_lane(change))
+    assert completed.returncode != 0
+    assert "reason=provider_inventory_invalid" in completed.stderr
+    assert not any(call[0] == "docker" for call in state["log"])
+    assert pointer == "b" * 64 + "-122-1"
+
+
+def test_apply_installs_every_lane_between_default_and_historical(tmp_path):
+    source = DEPLOY.read_text()
+    start = source.index("<<'PROVIDER_PROFILES'\n") + len("<<'PROVIDER_PROFILES'\n")
+    script = source[start : source.index("\nPROVIDER_PROFILES\n", start)]
+    helper = tmp_path / "helper"
+    helper.write_text(
+        '#!/usr/bin/env bash\nprintf "%s|" "$FETCHER_CONSUMER_PROFILE" "$@" >> "$LOG"\necho >> "$LOG"\n'
+    )
+    helper.chmod(0o755)
+    calls = {}
+    for lanes in ("-", "intraday,intra_day"):
+        log = tmp_path / f"log-{len(calls)}"
+        subprocess.run(
+            [
+                "bash",
+                "-s",
+                "--",
+                str(helper),
+                "finlab",
+                "image",
+                "/full",
+                "/history",
+                "/cache",
+                lanes,
+            ],
+            input=script,
+            text=True,
+            check=True,
+            env={**script_env(), "APP_ENVIRONMENT": "staging", "LOG": str(log)},
+            timeout=10,
+        )
+        calls[lanes] = [line.split("|")[:-1] for line in log.read_text().splitlines()]
+    assert [call[5] for call in calls["-"]] == [
+        "findb-full-market-finlab",
+        "findb-historical-finlab",
+    ]
+    lanes = calls["intraday,intra_day"]
+    assert [call[5] for call in lanes] == [
+        "findb-full-market-finlab",
+        "findb-full-market-intraday-finlab",
+        "findb-full-market-intra-day-finlab",
+        "findb-historical-finlab",
+    ]
+    # Without lanes the commands are exactly the pre-lane ones.
+    assert calls["-"] == [lanes[0], lanes[-1]]
+    assert lanes[1][0] == "full_market"
+    assert lanes[1][4] == "/full/state-finlab-intraday.sqlite3"
+    assert lanes[1][-2:] == ["--lane", "intraday"]
+    assert lanes[2][4] == "/full/state-finlab-intra_day.sqlite3"
+    assert lanes[2][-2:] == ["--lane", "intra_day"]
+    assert lanes[-1][0] == "historical"
+    assert lanes[-1][-3:] == ["findb-fetch-historical-backfill", "--provider", "finlab"]

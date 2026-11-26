@@ -170,7 +170,8 @@ Fetcher 端只新增模組與註冊，不修改 runtime 的分支或 `except`：
 | `SOURCE_API_URL` | 是 | FinDB Source API HTTPS origin |
 | `SOURCE_CLIENT_KEY` | 是 | 當前 provider 專用 DB-backed Source client key |
 | `FETCHER_CONTRACTS_DIR` | 否 | Contract manifest 目錄（container 預設 `/app/contracts`） |
-| `--state-path` | 部署是 | 各 provider 的獨立 durable SQLite checkpoint 檔案 |
+| `--state-path` | 部署是 | 各 provider（每條執行線）的獨立 durable SQLite checkpoint 檔案；未指定時為 `/var/lib/findb-full-market/state-<provider>.sqlite3`，非 default lane 為 `state-<provider>-<lane>.sqlite3` |
+| `--lane` | 否 | Full consumer 的執行線，缺省 `default`；只接受該 provider 在 packaged descriptors 中的 lane，見 [執行線](../docs/architecture/provider_work.md#權威範圍與排序) |
 | `FETCHER_ACCOUNT_STATE_PATH` | 本機新抓取是 | 全 providers／daily／maintenance／historical 共用 durable account governor；本機範本從 `fetcher/` 使用 `.state/account/governor.sqlite3` |
 | `FINLAB_API_TOKEN` | FinLab 是 | FinLab headless SDK token |
 | `TWELVE_DATA_API_KEY` | Twelve Data 是 | Twelve Data runtime secret |

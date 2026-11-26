@@ -194,18 +194,27 @@ def test_preparation_contract_rejects_cross_target_replay_and_unprotected_ref(
     assert steps.index(guard) < next(i for i, s in enumerate(steps) if s.get("id") == "candidate")
 
 
+@pytest.mark.parametrize("lanes", [False, True])
 @pytest.mark.parametrize("fault", ["", "missing", "duplicate", "exit_type", "command", "daemon"])
-def test_initial_batch_inventory_validates_every_runtime_and_fails_closed(tmp_path, fault):
+def test_initial_batch_inventory_validates_every_runtime_and_fails_closed(tmp_path, fault, lanes):
     source = (RUNTIME / "deploy_fetcher_aws.sh").read_text()
     role = source[source.index("runtime_command_role() {") : source.index("\nset +x")]
+    lane_names = source[
+        source.index("provider_lanes() {") : source.index("# Existing durable host directories")
+    ]
     inventory = source[source.index("initial_runtime_state() {") : source.index("\nprocessed=()")]
+    # A lane consumer is one more Full consumer of its provider, checked the same way.
+    provider_lanes = {"finlab": "intraday"} if lanes else {}
     rows = []
     for provider in INVENTORY_PROVIDERS:
-        for profile in ("full-market", "historical"):
+        consumers = ["full-market", "historical"]
+        if provider in provider_lanes:
+            consumers.insert(1, f"full-market-{provider_lanes[provider]}")
+        for profile in consumers:
             command = (
                 ["findb-fetch-historical-backfill"]
                 if profile == "historical"
-                else ["findb-fetch-runtime", "--execution-profile", profile.replace("-", "_")]
+                else ["findb-fetch-runtime", "--execution-profile", "full_market"]
             )
             rows.append(
                 {
@@ -247,6 +256,13 @@ else: sys.exit(99)
     script = (
         "set -euo pipefail\nFETCHER_DEPLOY_MODE=apply\n"
         + f"providers=({' '.join(INVENTORY_PROVIDERS)})\n"
+        + "provider_inventory='"
+        + "\n".join(
+            f"{provider} image {provider_lanes.get(provider, '-')}"
+            for provider in INVENTORY_PROVIDERS
+        )
+        + "'\n"
+        + lane_names
         + role
         + "\n"
         + """
@@ -271,7 +287,9 @@ require_full_checkpoint() { echo checked >> "$INVENTORY_TEST/checkpoints"; }
     assert (result.returncode == 0) == (fault == ""), result.stderr
     assert (tmp_path / "calls").read_text().splitlines() == ["container", "inspect"]
     if not fault:
-        assert len((tmp_path / "checkpoints").read_text().splitlines()) == len(INVENTORY_PROVIDERS)
+        assert len((tmp_path / "checkpoints").read_text().splitlines()) == len(
+            INVENTORY_PROVIDERS
+        ) + len(provider_lanes)
 
 
 @pytest.mark.parametrize("failure", ["", "predeploy", "credentials"])

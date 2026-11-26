@@ -331,7 +331,9 @@ class FullMarketDeploymentTests(unittest.TestCase):
         source = (ROOT / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh").read_text()
         self.assertIn('for provider in "${providers[@]}"; do', source)
         self.assertIn("findb-fetch-runtime --execution-profile full_market", source)
-        self.assertIn("for profile in full_market historical; do", source)
+        # Each provider installs its default Full consumer, one per other lane, then historical.
+        self.assertIn("consumers=(full_market:default)", source)
+        self.assertIn("consumers+=(historical:default)", source)
         self.assertNotIn("execution-profile pilot", source)
         self.assertNotIn("FULL_MARKET_ENABLED", source)
         self.assertNotIn(
@@ -497,6 +499,99 @@ class InstallationReceiptTests(unittest.TestCase):
                         "/account/governor.sqlite3",
                         base / "allocation",
                     )
+
+    def test_receipt_covers_every_lane_consumer_of_the_provider(self):
+        from unittest.mock import patch
+
+        inspection = load_module(
+            "full_market_installation_lanes", "infra/deploy/inspect_full_market_installation.py"
+        )
+        lane = ("findb-full-market-intraday-finlab", "finlab", "full_market", "intraday", "finlab")
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            manifest = {
+                "deployment_target": "staging",
+                "runtime_profile": "unified",
+                "unit": "fetcher",
+                "commit_sha": "a" * 40,
+                "images": {"finlab": "image@sha256:" + "b" * 64},
+            }
+            allocation = {
+                "provider": "finlab",
+                "environment": "staging",
+                "requests_per_second": 3.0,
+                "source_requests_per_minute": 120,
+                "account": {
+                    "governor_identity": "/account/governor.sqlite3",
+                    "consumers": ["full_market", "historical", "maintenance"],
+                },
+            }
+            for name, value in (
+                ("manifest", manifest),
+                ("accepted", {**manifest, "state": "accepted", "bundle_sha256": "c" * 64}),
+                ("config", {"deployment_target": "staging", "desired_state": "stopped"}),
+                ("allocation", allocation),
+            ):
+                (base / name).write_text(json.dumps(value))
+            allocation_sha = hashlib.sha256(
+                json.dumps(allocation, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            inspected = []
+            keys = {}
+
+            def row(name):
+                inspected.append(name)
+                return {
+                    "Id": name + "-id",
+                    "Config": {
+                        "Image": manifest["images"]["finlab"],
+                        "Labels": {"com.findb.fetcher.accepted": "true"},
+                        "Cmd": ["findb-fetch-runtime", "--config", "/installed/config"],
+                        "Env": [
+                            "APP_ENVIRONMENT=staging",
+                            "FETCHER_ACCOUNT_STATE_PATH=/account/governor.sqlite3",
+                            "FETCHER_CONSUMER_PROFILE="
+                            + ("historical" if "historical" in name else "full_market"),
+                            "SOURCE_CLIENT_KEY=" + keys.get(name, "private-key"),
+                        ],
+                    },
+                    "Mounts": [{"Destination": "/account", "RW": True}],
+                    "State": {"Running": True},
+                }
+
+            def output(command, **kwargs):
+                if command[-1] == "/installed/config":
+                    return inspection.digest(base / "config") + "\n"
+                return allocation_sha + "\n"
+
+            arguments = (
+                base / "manifest",
+                base / "accepted",
+                base / "config",
+                "finlab",
+                "/account/governor.sqlite3",
+                base / "allocation",
+            )
+            with (
+                patch.object(inspection, "CONSUMERS", (*inspection.CONSUMERS, lane)),
+                patch.object(inspection, "inspect", side_effect=row),
+                patch.object(inspection.subprocess, "check_output", side_effect=output),
+            ):
+                receipt = inspection.build(*arguments)
+                # Every lane runs under the provider's one Source credential.
+                keys[lane[0]] = "other-key"
+                with self.assertRaisesRegex(ValueError, "different Source credentials"):
+                    inspection.build(*arguments)
+            self.assertEqual(
+                inspected[:3],
+                ["findb-full-market-finlab", lane[0], "findb-historical-finlab"],
+            )
+            self.assertEqual(receipt["runtime_id"], "findb-full-market-finlab-id")
+            self.assertEqual(receipt["consumers"], ["full_market", "historical", "maintenance"])
+            self.assertEqual(
+                [item.get("lane") for item in receipt["installed_consumers"]],
+                [None, "intraday", None],
+            )
 
 
 if __name__ == "__main__":

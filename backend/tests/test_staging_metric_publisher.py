@@ -37,7 +37,7 @@ def test_expected_container_sets_are_bounded() -> None:
         consumer["name"] for consumer in inventory["consumers"]
     )
     assert module.CONSUMERS == tuple(
-        (row["name"], row["provider"], row["role"], row["image_key"])
+        (row["name"], row["provider"], row["role"], row["lane"], row["image_key"])
         for row in inventory["consumers"]
     )
     # Retired runtimes keep only notification-disabled alarm identities.
@@ -103,7 +103,7 @@ def test_anonymous_volume_allowlist_matches_image_declarations() -> None:
         "finlab": "Dockerfile.finlab",
         "twelve_data": "Dockerfile",
     }
-    assert set(module.IMAGE_ANONYMOUS_VOLUMES) == {row[3] for row in module.CONSUMERS}
+    assert set(module.IMAGE_ANONYMOUS_VOLUMES) == {row[4] for row in module.CONSUMERS}
     for image_key, name in dockerfiles.items():
         text = (REPO_ROOT / "fetcher" / name).read_text(encoding="utf-8")
         declared = re.findall(r"^VOLUME (\[.*\])$", text, re.MULTILINE)
@@ -119,7 +119,8 @@ def test_every_consumer_has_an_exact_mount_contract(environment: str) -> None:
     readiness = "/etc/findb-full-market/readiness"
 
     contracts = {
-        row[0]: module.expected_consumer_mounts(environment, *row[1:]) for row in module.CONSUMERS
+        row[0]: module.expected_consumer_mounts(environment, row[1], row[2], row[4])
+        for row in module.CONSUMERS
     }
 
     assert set(contracts) == set(module.EXPECTED_RUNTIMES)
@@ -202,7 +203,9 @@ def test_fetcher_runtime_security_requires_exact_flags_and_mounts(
 ) -> None:
     module = _load_module()
     container = "findb-historical-finlab"
-    monkeypatch.setattr(module, "CONSUMERS", ((container, "finlab", "historical", "finlab"),))
+    monkeypatch.setattr(
+        module, "CONSUMERS", ((container, "finlab", "historical", "default", "finlab"),)
+    )
     history = "/var/lib/findb-finlab-fetcher/historical"
     mounts = [
         _bind(history, history),
@@ -245,7 +248,9 @@ def test_fetcher_runtime_security_uses_the_environment_full_market_state(
 ) -> None:
     module = _load_module()
     container = "findb-full-market-taifex"
-    monkeypatch.setattr(module, "CONSUMERS", ((container, "taifex", "full_market", "twelve_data"),))
+    monkeypatch.setattr(
+        module, "CONSUMERS", ((container, "taifex", "full_market", "default", "twelve_data"),)
+    )
     state = "/var/lib/findb-full-market"
     consumer = _secure_consumer(
         [
@@ -276,7 +281,7 @@ def test_fetcher_runtime_security_fails_closed_without_a_mount_contract(
 ) -> None:
     module = _load_module()
     monkeypatch.setattr(
-        module, "CONSUMERS", (("findb-historical-new", "new", "historical", "new"),)
+        module, "CONSUMERS", (("findb-historical-new", "new", "historical", "default", "new"),)
     )
     monkeypatch.setattr(module, "_run", Mock())
 

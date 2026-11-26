@@ -89,21 +89,22 @@ class FetcherHostPreflightTests(unittest.TestCase):
         self.write_manifest()
         self.rows = []
         # The installed consumers of the current catalog, as the guard expects them.
-        for name, provider, profile, image_key in host.CONSUMERS:
+        for name, provider, profile, lane, image_key in host.CONSUMERS:
             args = (
                 ["findb-fetch-historical-backfill", "--provider", provider, "--run-forever"]
                 if profile == "historical"
-                else self.runtime_args(profile, provider)
+                else self.runtime_args(profile, provider, lane)
             )
             self.rows.append(self.row(name, image_key, args))
 
     @staticmethod
-    def runtime_args(profile, provider):
+    def runtime_args(profile, provider, lane="default"):
         state = (
             "/var/lib/findb-full-market"
             if profile == "full_market"
             else f"/var/lib/findb-{profile}/production"
         )
+        suffix = "" if lane == "default" else f"-{lane}"
         return [
             "findb-fetch-runtime",
             "--execution-profile",
@@ -112,11 +113,46 @@ class FetcherHostPreflightTests(unittest.TestCase):
             "/app/configs/bootstrap.production.v1.json",
             "--state-path",
             state
-            + (f"/state-{provider}.sqlite3" if profile == "full_market" else "/state.sqlite3"),
+            + (
+                f"/state-{provider}{suffix}.sqlite3"
+                if profile == "full_market"
+                else "/state.sqlite3"
+            ),
             "--provider",
             provider,
+            *([] if lane == "default" else ["--lane", lane]),
             "--run-forever",
         ]
+
+    def test_lane_consumer_runs_its_own_lane_and_checkpoint(self):
+        self.assertEqual(
+            host.runtime_command("production", "finlab", "full_market", "intraday"),
+            self.runtime_args("full_market", "finlab", "intraday"),
+        )
+        self.assertIn(
+            "/var/lib/findb-full-market/staging/state-finlab-intraday.sqlite3",
+            host.runtime_command("staging", "finlab", "full_market", "intraday"),
+        )
+        # The default lane keeps the pre-lane command byte for byte.
+        self.assertEqual(
+            host.runtime_command("production", "finlab", "full_market"),
+            self.runtime_args("full_market", "finlab"),
+        )
+        self.assertNotIn("--lane", host.runtime_command("production", "finlab", "full_market"))
+        lane_row = self.row(
+            "findb-full-market-intraday-finlab",
+            "finlab",
+            self.runtime_args("full_market", "finlab"),
+        )
+        with self.assertRaises(ValueError):
+            host.require_runtime(
+                lane_row,
+                self.manifest["images"]["finlab"],
+                "production",
+                "finlab",
+                "full_market",
+                "intraday",
+            )
 
     def write_manifest(self):
         (self.root / "release-manifest.json").write_text(json.dumps(self.manifest))

@@ -217,7 +217,7 @@ def test_actual_daily_cli_retries_initial_poll_before_runtime_creation(
         yield stopped
 
     class Control:
-        def __init__(self, config, key):
+        def __init__(self, config, key, *, lane="default"):
             assert key == f"{profile}_{provider}_v1"
 
         def __enter__(self):
@@ -345,7 +345,7 @@ def response(request):
 http=httpx.Client(transport=httpx.MockTransport(response))
 if mode.startswith("daily"):
     real=SchedulerControlClient
-    daily.SchedulerControlClient=lambda config,key:real(config,key,client=http)
+    daily.SchedulerControlClient=lambda config,key,**kw:real(config,key,client=http,**kw)
     daily.FetcherConfig.from_env=lambda:config
     result=daily.main(["--config",config_path,"--state-path",state_path,"--provider","finlab","--run-forever"])
 else:

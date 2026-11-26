@@ -97,7 +97,31 @@ PostgreSQL `provider_work` 保存穩定工作，`provider_work_attempt` 以 sequ
   擋住所有 lane 的新抓取。
 - **claim**：claim request 可以帶 `lane`；沒帶就是 `default`，所以舊版 consumer 不受影響。catalog 沒有的
   lane 回 409。只有帶 `lane` 的 request，回應才會附上 `lane`。
-- **目前狀態**：所有 feed 都在 `default`。FinLab 盤中改走 `intraday` lane 在 #691 第 3b 步。
+- **Fetcher consumer**：每條 lane 一個 Full consumer（`findb-fetch-runtime --lane <lane>`，預設 `default`；
+  只接受該 provider 在 packaged descriptors 裡的 lane）。它只規劃、claim 與執行自己 lane 的 feed，
+  feed 屬於哪條 lane 由 image 內的 descriptors 決定，不看 Backend 發布的 execution-config。historical
+  consumer 一律在 `default`，與 default 的 Full consumer 共用 host lock。
+- **本機檔案**：`default` 沿用原本的檔名；其他 lane 各自有一份：
+
+  | 檔案 | `default` | 其他 lane |
+  | --- | --- | --- |
+  | host lock | `provider-work-<env>-<provider>.lock` | `provider-work-<env>-<provider>-<lane>.lock` |
+  | work journal | `provider-work-<provider>.sqlite3` | `provider-work-<provider>-<lane>.sqlite3` |
+  | Full checkpoint | `state-<provider>.sqlite3` | `state-<provider>-<lane>.sqlite3` |
+
+  非 default lane 找 journal 的順序：主機共用的舊檔、該 provider 的 default 檔、最後才是自己的檔，所以
+  lane 建立前已記在 default 檔的工作留在原處。結案清理時非 default lane 只清自己的檔；default 照舊清
+  自己的檔與主機共用的舊檔。帳號 governor 與帳號鎖（`Acquisition`）仍依帳號共用，所以同一 provider 的
+  lane 之間 provider 呼叫一次一個；FinLab SDK cache 的發布時間也在帳號鎖內讀取。
+- **相容性**：default consumer 送出的 claim 與 scheduler control poll 和沒有 lane 之前逐 byte 相同（不帶
+  `lane`）；只有非 default lane 才帶 `lane`，並檢查 claim 回應的 `lane` 是否相符。同一 provider 的所有
+  lane 共用一個 scheduler control。
+- **catalog 不一致**：Backend 與 Fetcher 分開部署，可能短暫對某條 feed 屬於哪條 lane 看法不同。consumer
+  claim 到不屬於自己 lane 的工作（回應的 `lane` 不符，或 image 把它的 feed 放在另一條 lane）時，以
+  `retry`、`LANE_MISMATCH` 結算並延後 10 分鐘，等擁有它的 consumer 處理；不會當成退役 feed，也不會
+  結算為 failed。
+- **目前狀態**：所有 feed 都在 `default`，部署仍是十二個 consumers。FinLab 盤中改走 `intraday` lane
+  （新增 `findb-full-market-intraday-finlab`）在 #691 第 3b 步。
 `provider_work_receipt` 將所有 Source runs 永久綁定原 work，包含同日多商品與 minute 各 sequence。
 重複 enqueue 不改寫原 scope／順序；不同 profile、historical item 與 retained-raw rerun 決策分開保存。
 

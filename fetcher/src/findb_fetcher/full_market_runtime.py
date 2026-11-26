@@ -34,8 +34,11 @@ from findb_fetcher.config import app_environment
 from findb_fetcher.daily_runtime import window
 from findb_fetcher.execution_config import ExecutionSnapshot, resolve_execution_config
 from findb_fetcher.execution_metadata import (
+    DEFAULT_LANE,
     acquisition_feeds,
     dated_universe,
+    feed_lane,
+    lane_feeds,
     provider_platform_limits,
 )
 from findb_fetcher.full_market_client import (
@@ -94,6 +97,7 @@ from findb_fetcher.provider_work import (
     closed_work_times,
     durable_response,
     prune_closed_journal,
+    work_lane,
 )
 from findb_fetcher.raw_storage import (
     RawObject,
@@ -118,6 +122,9 @@ NORMALIZING_SETTLE_WAIT_SECONDS = 60
 SAME_DAY_UNIVERSE_WAIT_SECONDS = 30 * 60
 SAME_DAY_UNIVERSE_RECHECK_SECONDS = 5 * 60
 NONTERMINAL_RUN_STATUSES = frozenset({"queued", "pending", "processing", "retrying"})
+# A work claimed in a lane that does not own it waits this long for the consumer
+# that does (a Backend and Fetcher catalog briefly disagreeing on a feed's lane).
+LANE_MISMATCH_RETRY_SECONDS = 10 * 60
 
 
 class DailyWindowClosedError(ProviderWorkAcquisitionStopped):
@@ -384,10 +391,14 @@ class FullMarketRuntime:
         execution_profile: str = "full_market",
         client: httpx.Client | None = None,
         can_acquire: Callable[[], bool] | None = None,
+        lane: str = DEFAULT_LANE,
     ) -> None:
         if execution_profile != "full_market":
             raise ValueError("Unsupported execution profile")
         self.execution_profile = execution_profile
+        # This consumer's execution lane: it plans, claims and runs only this
+        # lane's feeds; the packaged descriptors say which feeds those are.
+        self.lane = lane
         self.provider, self.config, self.state = provider, config, state
         self.can_acquire = can_acquire or (lambda: True)
         self.source, self.delivery, self.raw_store = (
@@ -397,8 +408,12 @@ class FullMarketRuntime:
         )
         self.readiness_file = readiness_file
         self.feeds = [
-            {**feed, "slot_id": feed["delivery"]["slot_id"]} for feed in acquisition_feeds(provider)
+            {**feed, "slot_id": feed["delivery"]["slot_id"]} for feed in lane_feeds(provider, lane)
         ]
+        # The provider's feeds another lane's consumer runs; never retired here.
+        self.other_lane_datasets = frozenset(
+            feed["dataset_key"] for feed in acquisition_feeds(provider) if feed_lane(feed) != lane
+        )
         # Packaged catalog contracts; frozen work scope never overrides them.
         self.contracts = {
             feed["dataset_key"]: feed["contract"] for feed in acquisition_feeds(provider)
@@ -805,6 +820,7 @@ class FullMarketRuntime:
             provider=self.provider,
             environment=app_environment(),
             profile=self.execution_profile,
+            lane=self.lane,
         )
         self.refresh_snapshot = snapshot
         published = {feed["dataset_key"]: feed["source_timezone"] for feed in snapshot.feeds}
@@ -814,7 +830,7 @@ class FullMarketRuntime:
 
     def prune_closed_state(self) -> dict[str, Any] | None:
         """Daily retention of local journal and checkpoint rows for closed works."""
-        journal = prune_closed_journal(self.source, self.provider)
+        journal = prune_closed_journal(self.source, self.provider, lane=self.lane)
         plans = self.state.prune_closed_plans(
             self.provider,
             lambda keys: closed_work_times(self.source, stable_keys=keys),
@@ -843,6 +859,7 @@ class FullMarketRuntime:
             provider=self.provider,
             environment=app_environment(),
             profile=self.execution_profile,
+            lane=self.lane,
         )
         self.schedule_snapshot = snapshot
         return self._queued_cycle(snapshot=snapshot)
@@ -861,7 +878,9 @@ class FullMarketRuntime:
                 }
             )
         try:
-            with claimed_work(self.source, self.provider, accepted_kinds=["maintenance"]) as owner:
+            with claimed_work(
+                self.source, self.provider, accepted_kinds=["maintenance"], lane=self.lane
+            ) as owner:
                 if owner is None:
                     return [{"status": "queued"}]
                 try:
@@ -880,6 +899,8 @@ class FullMarketRuntime:
         from findb_fetcher.raw_storage import RawStorageUploadError
 
         work = owner.work
+        if self._settle_lane_mismatch(owner):
+            return [{"status": "queued", "reason": "LANE_MISMATCH"}]
         if not any(feed["dataset_key"] == work["dataset_key"] for feed in self.installed_feeds):
             self._settle_retired_work(owner)
             return [{"status": "manual", "reason": "RETIRED_FEED_MANUAL_REVIEW"}]
@@ -994,6 +1015,27 @@ class FullMarketRuntime:
         slots = refresh_slots(snapshot.feeds if snapshot else (), now)
         # Without a published schedule the refresh keeps its former daily interval.
         return slots[1].timestamp() if slots else now.timestamp() + 86400
+
+    def _settle_lane_mismatch(self, owner) -> bool:
+        """Hand back a work this lane does not own, without running or retiring it.
+
+        Source claimed it in another lane, or this image runs its feed in another
+        lane: the catalogs of a Backend and a Fetcher deployed apart briefly
+        disagree. The work waits for the consumer that owns it; it is never
+        failed or settled as a retired feed.
+        """
+        work = owner.work
+        claimed_lane = work_lane(work)
+        if claimed_lane == self.lane and work.get("dataset_key") not in self.other_lane_datasets:
+            return False
+        self.pause()
+        owner.settle(
+            "retry",
+            delay=LANE_MISMATCH_RETRY_SECONDS,
+            failure_code="LANE_MISMATCH",
+            proof={"lane_mismatch": {"consumer_lane": self.lane, "claimed_lane": claimed_lane}},
+        )
+        return True
 
     def _settle_retired_work(self, owner) -> None:
         """Drain original deliveries without turning compatibility scope into acquisition."""
@@ -1161,11 +1203,14 @@ class FullMarketRuntime:
                 self.provider,
                 accepted_kinds=["daily", "maintenance", "rerun"],
                 execution_profile=self.execution_profile,
+                lane=self.lane,
             ) as owner:
                 if owner is None:
                     return health()
                 try:
                     work = owner.work
+                    if work["kind"] != "maintenance" and self._settle_lane_mismatch(owner):
+                        return health()
                     if work["kind"] == "rerun":
                         owner.request("execute-rerun")
                         self._settle_queued_round(owner, outcome="completed")
