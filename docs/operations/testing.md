@@ -146,8 +146,7 @@ Shioaji 歷史 owner／prepared／receipts 的保留與舊五-provider proof 拒
 非 migration suite，涵蓋各 provider 的獨立 harness，不能只跑 `test_provider_work*.py`。
 
 Shioaji 空 Kbars／mapping 修復由 Fetcher `test_shioaji_recovery.py`、
-`test_shioaji_repair_cli.py` 及 Backend `test_shioaji_repair.py`、
-`test_shioaji_repair_migration.py` 驗證：legacy 快取證據保留、跨重啟三次觀測上限與十五分鐘退避、
+`test_shioaji_repair_cli.py` 及 Backend `test_shioaji_repair.py` 驗證：legacy 快取證據保留、跨重啟三次觀測上限與十五分鐘退避、
 unknown dispatch 不退款、日曆衝突、Owner／Source fence、stale preview、mapping overlay、
 首次未知派送跨重啟的上限與退避、空回應後 calendar-status outage 的續報與 claim 保留、
 正式 gateway／decoder 的缺欄、向量長度與 scalar 格式拒絕沿用 `FULL_WORK_MAX_ATTEMPTS` 一般失敗政策，
@@ -331,21 +330,23 @@ FinDB CI 將測試分成三個 jobs：`backend` 保留 format／lint／type chec
 `infra-tests` 獨立執行 `infra/tests` 且不配置 PostgreSQL service；不需資料庫的部署 shell
 suites（Fetcher inventory、full-market repair 與 checkpoint entry）放在 `infra/tests`。
 GitHub 4 vCPU runner 上 Backend 與 Infra 固定四個
-workers；migration job 維持序列執行。Migration tests 只涵蓋 rollback 下限
-（`docs/operations/deployment.md`）及之後的 revisions；`test_schema_drift_migration.py`
-比對 `alembic upgrade head` 與 ORM metadata 的結構、CHECK 名稱及 server defaults，
-三類差異均直接使測試失敗。Partition children 僅由 migration 管理，不當成 ORM drift。
+workers；migration job 維持序列執行。Migration tests 只涵蓋 AGENTS.md 記載的 rollback 下限
+`a7c3e1f9d2b4` 及之後的 revisions；session template 停在下限前一版 `e9f4a1c6b3d5`，讓測試
+能在下限 migration 執行前建立種子。下限前進時，同時前移 template，並刪除只驗證下限以前
+revisions 的測試。`test_schema_drift_migration.py` 比對 `alembic upgrade head` 與 ORM metadata
+的結構、CHECK 名稱及 server defaults，三類差異均直接使測試失敗。Partition children 僅由
+migration 管理，不當成 ORM drift。
 舊 revision 的 migration 測試以目前 services 建立種子，因此 `tests/migration_database.py`
 的 `run_alembic` 會補兩類相容：`d7a2c4e6f8b1` 前已退役欄位的 server default，以及
-`b4d6f8a1c3e5` 前尚未存在的 part 計數／`parts_synced_at`（ORM 會把未設定的 nullable 欄位寫成
-NULL）。後者以 column comment 標記為 shim，只在升版會套用 `b4d6f8a1c3e5` 前移除，讓該
-migration 仍新增真正欄位；驗證該 migration 本身的測試以 `forward_columns=False` 關閉 shim。
+`FORWARD_COLUMN_GROUPS`／`FORWARD_TABLES` 列出、較新 revision 才新增的欄位與表（例如
+`b4d6f8a1c3e5` 的 part 計數／`parts_synced_at`；ORM 會把未設定的 nullable 欄位寫成 NULL）。
+後者以 comment 標記為 shim，只在升版會套用該 revision 前移除，讓該 migration 仍新增真正
+欄位；驗證該 migration 本身的測試以 `forward_columns=False` 關閉 shim。Alembic subprocess
+前後的 shim 各共用一條連線與 transaction，不為每個群組另建 engine。
 
-Schema reconciliation revision `1e68a0c9b3d2` 的回歸測試涵蓋前一版 populated DB 升級、
-16 個 CHECK 的 OID／定義保留、缺少的市場代碼 CHECK、降版再升級與既有資料保留。
-既存無效市場代碼會使升級 transaction 完整回滾；revision、原約束及資料必須維持原值。
-Raw SQL INSERT 同時驗證 ORM 建表與 migration 建表的 boolean／integer／string／JSONB
-預設值，並以 `Asia/Taipei` session 驗證日曆時間戳代表正確 instant，不能由 Python defaults
+Raw SQL INSERT 驗證 ORM 建表的 boolean／integer／string／JSONB 預設值與市場代碼 CHECK，
+migration 建表的 server defaults 由上述 drift 比對涵蓋；並以 `Asia/Taipei` session 驗證
+日曆時間戳代表正確 instant，不能由 Python defaults
 掩蓋 DB default 缺漏。這些測試只操作 session 自行建立的資料庫。
 
 Fetcher deployment transaction harness 以 fake Docker／sudo／sleep 驗證十五個 consumers；
@@ -354,10 +355,10 @@ Fetcher deployment transaction harness 以 fake Docker／sudo／sleep 驗證十�
 
 Migration job 另以正式 `backend/Dockerfile` 建置 image，執行
 `infra/tests/test_backend_runtime_container.py`。測試從 deploy helper 擷取實際 migration container
-argv，在獨立 internal Docker network 與 PostgreSQL 16 上驗證空 DB、先前 accepted revision
-`a42c89d3e610` 升級、exact head、重跑與 sentinel 保留。Runtime image 不掛 repo、不含 Fetcher／
+argv，在獨立 internal Docker network 與 PostgreSQL 16 上驗證空 DB、從 rollback 下限
+`a7c3e1f9d2b4` 升級、exact head、重跑與 sentinel 保留。Runtime image 不掛 repo、不含 Fetcher／
 pytest，不允許對外網路或寫入 root filesystem；fixture 只清理自己建立的 containers／network。
-一般 Infra suite 未指定 image 時略過這三個案例；CI migration job 明確設定 image，不能略過。
+一般 Infra suite 未指定 image 時略過這兩個案例；CI migration job 明確設定 image，不能略過。
 本機重現：
 
 ```bash
@@ -367,8 +368,7 @@ FINDB_TEST_BACKEND_IMAGE=findb-backend-runtime:local uv --directory backend run 
 
 針對特定 migration 的欄位差異或 downgrade guard 測試，必須明確指定該 revision，
 避免後續 additive 欄位或較新的 rollback 下限改變舊測試的範圍。升級至 `head` 的整合測試
-仍驗證完整 migration chain；TAIFEX evidence 測試另驗證舊 item 保留、新欄位預設 NULL，
-以及拒絕 downgrade 後 revision 與完成證據均保持不變。
+仍驗證下限之後的完整 migration chain。
 Shutdown transaction 的獨立情境由 pytest parameters 分配給 workers；每個情境使用自己的
 暫存目錄與 Docker state，交易內的操作／assertions 仍在同一 case 依序執行。
 
@@ -491,7 +491,6 @@ shell wrapper 與模擬 24k SSM stdout 驗證五 feeds／兩日期及難壓縮�
 
 兩個 AWS 環境共用部署 schema、設定 loader、必要 gates 與健康驗收。
 `test_execution_profiles.py` 覆蓋七條 feed 的凍結樣本、`full_market` 以外 profile 的 422 拒絕、canonical 覆寫後持久化證據及缺漏告警；
-`test_execution_profile_migration.py` 驗證升級保留與 rollback 下限。
 Pilot 退役由 `test_retire_pilot_profile_migration.py` 驗證刪除 Pilot workflow rows、保留 runs／raw／canonical
 與 audit，以及任一未結 Pilot 狀態整筆拒絕；`test_scheduler_start.py`／`test_full_market_lifecycle.py` 驗證
 緊急停止的 audit、冪等與 first dates 保留；Infra `test_fetcher_shutdown_transaction.py`／
@@ -589,16 +588,14 @@ SDK 的登入）。只有沒裝 extra 的環境才會略過這個模組；CI 另
 ## 有效日曆政策回歸
 
 `test_effective_calendar.py` 覆蓋 staging／production、七 feeds 的無日曆／週末／跳過政策，
-以及 draft、部分發布、閏年與不寫入的預設查詢。`test_effective_calendar_migration.py` 與 profile migration 測試
-驗證歷史 item／plan／首次日期保留，標記 migration 時點快照。Fetcher recovery 測試驗證週末仍取得 Source 決策，
+以及 draft、部分發布、閏年與不寫入的預設查詢。Fetcher recovery 測試驗證週末仍取得 Source 決策，
 skipped_calendar 不建立本機抓取工作。Dashboard 驗證來源標示、政策略過與 profile cache 隔離。
 
 `test_calendar_closure.py` 驗證舊 Shioaji canonical work 的休市結清、Owner／Source scope、
 typed schemas、stale preview、競爭 owner、rollback、重播及原 manifest／attempts／grants／ACK／
 summary 保留；結清後 queue projection／claim／repair／enqueue 不得恢復 acquisition。
 負向案例涵蓋開市／政策／決策／audit 衝突、Backend prepared／receipt／run、本地 lease／
-未知派送責任與證明過期。`test_calendar_closure_migration.py` 驗證附加 schema、原值保存與
-有證據時拒絕降版；schema drift suite 核對 Alembic／ORM 一致。
+未知派送責任與證明過期；schema drift suite 核對 Alembic／ORM 一致。
 Fetcher `test_calendar_closure_cli.py` 驗證 existing inode 鎖、SQLite 唯讀、checksum、Source outage、
 stale apply 與 ACK-loss 重播，且無 SDK 呼叫。staging 匯出預覽以同一 evaluator 執行，不能
 取代新 migration／API 部署後的正式預覽與受控套用；本次不做原生派送或 production 驗收。
@@ -719,8 +716,8 @@ Stop／drain handoff 另驗證原 prepared 已 terminal、只剩未抓取 member
 profile 後由新 attempt 接續同一 frozen scope，保留 first date、原 bytes／receipts 與 failure budgets。
 
 Fetcher `test_provider_work.py` 使用真 subprocess 驗證 orphan FD 持鎖、timeout terminate／kill／reap、
-uncertain-stop quarantine 與四種 native response 的 raw-upload crash／restart。Migration 與 host preflight
-測試分別位於 Backend `test_provider_work_migration.py` 與 Infra `test_provider_work_preflight.py`。
+uncertain-stop quarantine 與四種 native response 的 raw-upload crash／restart。Host preflight
+測試位於 Infra `test_provider_work_preflight.py`。
 
 同一 native scope 矩陣另驗證 Source 408／503 tail retry **入列後**才取消的排空，以及 DatasetInactive
 永久拒絕：取消不新增 native I/O，原 prepared 可繼續；永久拒絕保留實際 status／code／digest 與

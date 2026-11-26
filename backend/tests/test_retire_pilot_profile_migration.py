@@ -236,7 +236,7 @@ async def _pilot_counts(engine) -> dict[str, int]:
 
 @pytest.mark.asyncio
 async def test_pilot_retirement_deletes_workflow_rows_and_keeps_ingested_data():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "retire_pilot") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "retire_pilot") as (
         url,
         engine,
     ):
@@ -337,7 +337,7 @@ async def test_pilot_retirement_deletes_workflow_rows_and_keeps_ingested_data():
 @pytest.mark.parametrize("blocker", ["controls", "work", "runs"])
 async def test_pilot_retirement_refuses_unsettled_pilot_state(blocker):
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", f"retire_pilot_{blocker}"
+        "e9f4a1c6b3d5", f"retire_pilot_{blocker}"
     ) as (url, engine):
         await run_alembic(url, BEFORE)
         async with AsyncSession(engine, expire_on_commit=False) as db:

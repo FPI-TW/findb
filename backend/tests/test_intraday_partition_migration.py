@@ -36,7 +36,7 @@ async def _table_exists(db) -> bool:
 @pytest.mark.asyncio
 async def test_intraday_index_roundtrip_validates_rows_and_blocks_a_lossy_downgrade():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "findb_intraday_index"
+        "e9f4a1c6b3d5", "findb_intraday_index"
     ) as (url, engine):
         await run_alembic(url, BEFORE)
         async with engine.connect() as db:

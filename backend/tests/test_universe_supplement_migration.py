@@ -27,7 +27,7 @@ async def _shape(engine) -> tuple[bool, bool]:
 @pytest.mark.asyncio
 async def test_supplement_schema_is_added_and_recorded_supplements_block_downgrade():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "universe_supplement"
+        "e9f4a1c6b3d5", "universe_supplement"
     ) as (url, engine):
         await run_alembic(url, HEAD)
         assert await _shape(engine) == (True, True)

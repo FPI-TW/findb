@@ -87,7 +87,7 @@ def test_a_control_shows_the_slot_of_its_earliest_feed():
 
 @pytest.mark.asyncio
 async def test_slot_migration_projects_catalog_slots_and_keeps_other_config():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "catalog_slots") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "catalog_slots") as (
         url,
         engine,
     ):

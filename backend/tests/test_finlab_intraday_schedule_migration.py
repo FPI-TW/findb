@@ -31,7 +31,7 @@ def _starts(configs: dict[str, dict]) -> set[str]:
 @pytest.mark.asyncio
 async def test_intraday_start_moves_to_1915_and_downgrade_restores_1830():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "finlab_intraday_1915"
+        "e9f4a1c6b3d5", "finlab_intraday_1915"
     ) as (url, engine):
         await run_alembic(url, BEFORE)
         before = await _configs(engine)
@@ -58,7 +58,7 @@ async def test_intraday_start_moves_to_1915_and_downgrade_restores_1830():
 @pytest.mark.asyncio
 async def test_unknown_start_aborts_without_moving_any_feed():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "finlab_intraday_drift"
+        "e9f4a1c6b3d5", "finlab_intraday_drift"
     ) as (url, engine):
         await run_alembic(url, BEFORE)
         async with engine.begin() as db:

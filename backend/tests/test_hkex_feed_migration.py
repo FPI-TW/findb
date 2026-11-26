@@ -25,7 +25,7 @@ async def _report(engine) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_the_feed_is_installed_stopped_with_the_config_seed_declares():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "hkex_feed") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "hkex_feed") as (
         url,
         engine,
     ):

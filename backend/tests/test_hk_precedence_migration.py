@@ -43,7 +43,7 @@ async def _precedence(engine):
 
 @pytest.mark.asyncio
 async def test_never_cutover_environment_gets_factset_first_and_downgrade_restores_it():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "hk_precedence") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "hk_precedence") as (
         url,
         engine,
     ):
@@ -58,7 +58,7 @@ async def test_never_cutover_environment_gets_factset_first_and_downgrade_restor
 @pytest.mark.asyncio
 async def test_cutover_value_and_other_policy_are_kept():
     async with get_active_migration_database_factory().clone(
-        "3553ed95cfbf", "hk_precedence_kept"
+        "e9f4a1c6b3d5", "hk_precedence_kept"
     ) as (
         url,
         engine,

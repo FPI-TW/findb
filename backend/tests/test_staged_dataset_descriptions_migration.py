@@ -18,7 +18,7 @@ async def _descriptions(engine) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_only_the_descriptions_written_by_migrations_or_seed_are_corrected():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "descriptions") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "descriptions") as (
         url,
         engine,
     ):
@@ -48,7 +48,7 @@ async def test_only_the_descriptions_written_by_migrations_or_seed_are_corrected
 
 @pytest.mark.asyncio
 async def test_a_locally_seeded_hong_kong_description_is_corrected():
-    async with get_active_migration_database_factory().clone("3553ed95cfbf", "seeded_hk") as (
+    async with get_active_migration_database_factory().clone("e9f4a1c6b3d5", "seeded_hk") as (
         url,
         engine,
     ):
