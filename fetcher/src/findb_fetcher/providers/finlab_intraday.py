@@ -115,6 +115,12 @@ class IntradayPartition:
     rows: bytes = dataclass_field(default=b"", repr=False)
 
 
+# Partitions one governed acquisition fetches at once, each in its own reused
+# worker (#753). FinLab answered two parallel requests of one account without
+# refusing or slowing; the shared host has two vCPUs.
+FINLAB_INTRADAY_PARALLEL = 2
+
+
 def fetch_partition(
     gateway: FinLabSdkGateway,
     *,
@@ -130,20 +136,90 @@ def fetch_partition(
     With ``manifest_only`` the worker only asks whether the partition exists: a
     ready one comes back without its files, and nothing is downloaded or billed.
     """
+    [outcome] = fetch_partitions(
+        gateway,
+        record_kind=record_kind,
+        members=((provider_symbol, symbol),),
+        trade_date=trade_date,
+        layout=layout,
+        manifest_only=manifest_only,
+    )
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return outcome
+
+
+def fetch_partitions(
+    gateway: FinLabSdkGateway,
+    *,
+    record_kind: str,
+    members: Sequence[tuple[str, str]],
+    trade_date: date,
+    layout: Sequence[Mapping[str, Any]],
+    manifest_only: bool = False,
+) -> list[IntradayPartition | FinLabSdkError]:
+    """Fetch the partitions of up to ``FINLAB_INTRADAY_PARALLEL`` symbols at once.
+
+    ``members`` are ``(provider symbol, canonical symbol)`` pairs. One acquisition
+    covers them all: one intent, one charge per partition, and every worker's
+    dispatch still waits for its own fresh authorization (the checkpoints take
+    turns). Each member gets its own outcome, in order: its partition, or its own
+    failure (``FinLabIntradayNotReadyError`` or ``FinLabIntradaySymbolError``).
+    A failure of the account or of the governed boundary raises for all of them.
+    """
     family = FAMILIES.get(record_kind)
     if (
         family is None
-        or not isinstance(provider_symbol, str)
-        or _SYMBOL.fullmatch(provider_symbol) is None
-        or not isinstance(symbol, str)
-        or not symbol
+        or not 1 <= len(members) <= FINLAB_INTRADAY_PARALLEL
         or not isinstance(trade_date, date)
+        or any(
+            not isinstance(provider_symbol, str)
+            or _SYMBOL.fullmatch(provider_symbol) is None
+            or not isinstance(symbol, str)
+            or not symbol
+            for provider_symbol, symbol in members
+        )
+        or len({provider_symbol for provider_symbol, _ in members}) != len(members)
     ):
         raise FinLabConfigError("FinLab intraday request is invalid")
-    dataset = f"{family}:{provider_symbol}"
+    import contextvars
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
     from findb_fetcher.acquisition import Acquisition
     from findb_fetcher.provider_process import ProviderProcessError, supervised_call
     from findb_fetcher.provider_worker import failure_code
+
+    columns = [dict(column) for column in layout]
+
+    def one(
+        provider_symbol: str, symbol: str, checkpoint: Callable[[], float]
+    ) -> tuple[str, Any, int, bytes, bytes] | FinLabSdkError:
+        try:
+            return supervised_call(  # type: ignore[no-any-return]
+                "finlab.intraday",
+                {
+                    "token": gateway.api_token,
+                    "record_kind": record_kind,
+                    "provider_symbol": provider_symbol,
+                    "symbol": symbol,
+                    "trade_date": trade_date.isoformat(),
+                    "layout": columns,
+                    "manifest_only": manifest_only,
+                },
+                checkpoint=checkpoint,
+                timeout=FINLAB_INTRADAY_TIMEOUT_SECONDS,
+                # One worker serves a whole round of partitions (#753).
+                reuse=True,
+            )
+        except QuotaBlockedError:
+            raise
+        except Exception as exc:
+            code = exc.code if isinstance(exc, ProviderProcessError) else failure_code(exc)
+            if code in _NOT_READY:
+                return FinLabIntradayNotReadyError(_NOT_READY[code])  # type: ignore[arg-type]
+            _log_sdk_failure(f"{family}:{provider_symbol}", code)
+            return FinLabIntradaySymbolError("FinLab SDK intraday retrieval failed", code)
 
     try:
         with (
@@ -153,35 +229,37 @@ def fetch_partition(
                 "finlab",
                 credential=gateway._identity_credential,
                 lock_scope="finlab_intraday",
+                units=len(members),
             ) as operation,
         ):
-            try:
-                status, manifest, row_count, original, rows = supervised_call(
-                    "finlab.intraday",
-                    {
-                        "token": gateway.api_token,
-                        "record_kind": record_kind,
-                        "provider_symbol": provider_symbol,
-                        "symbol": symbol,
-                        "trade_date": trade_date.isoformat(),
-                        "layout": [dict(column) for column in layout],
-                        "manifest_only": manifest_only,
-                    },
-                    checkpoint=operation.dispatch_checkpoint,
-                    timeout=FINLAB_INTRADAY_TIMEOUT_SECONDS,
-                    # One worker serves a whole round of partitions (#753).
-                    reuse=True,
-                )
-            except QuotaBlockedError:
-                raise
-            except Exception as exc:
-                code = exc.code if isinstance(exc, ProviderProcessError) else failure_code(exc)
-                if code in _NOT_READY:
-                    raise FinLabIntradayNotReadyError(_NOT_READY[code]) from None  # type: ignore[arg-type]
-                _log_sdk_failure(dataset, code)
-                raise FinLabIntradaySymbolError(
-                    "FinLab SDK intraday retrieval failed", code
-                ) from None
+            turn = threading.Lock()
+
+            def checkpoint() -> float:
+                with turn:
+                    return operation.dispatch_checkpoint()
+
+            if len(members) == 1:
+                answers: list[Any] = [one(*members[0], checkpoint)]
+            else:
+                with ThreadPoolExecutor(max_workers=len(members)) as pool:
+                    # Each worker thread runs in a copy of this context: the owner,
+                    # the authorization policy and the whole-work descriptor.
+                    futures = [
+                        pool.submit(
+                            contextvars.copy_context().run, one, provider_symbol, symbol, checkpoint
+                        )
+                        for provider_symbol, symbol in members
+                    ]
+                errors = [future.exception() for future in futures]
+                # The account's refusal outranks any other failure of the boundary.
+                for error in sorted(
+                    (error for error in errors if error is not None),
+                    key=lambda error: not isinstance(error, QuotaBlockedError),
+                ):
+                    raise error
+                answers = [future.result() for future in futures]
+            if all(isinstance(answer, FinLabSdkError) for answer in answers):
+                operation.outcome = "error"
     except QuotaBlockedError as exc:
         if exc.quota_wait and not exc.dispatched:
             raise
@@ -191,12 +269,19 @@ def fetch_partition(
     except Exception:
         # Never expose provider/credential context, including scope failures.
         raise FinLabOperationalError("FinLab acquisition failed", "acquisition") from None
-    if gateway.on_response_bytes is not None and original:
-        try:
-            gateway.on_response_bytes(len(original))
-        except Exception:
-            raise FinLabOperationalError("FinLab response accounting failed") from None
-    return IntradayPartition(status, manifest, row_count, original, rows)
+    outcomes: list[IntradayPartition | FinLabSdkError] = []
+    for answer in answers:
+        if isinstance(answer, FinLabSdkError):
+            outcomes.append(answer)
+            continue
+        status, manifest, row_count, original, rows = answer
+        if gateway.on_response_bytes is not None and original:
+            try:
+                gateway.on_response_bytes(len(original))
+            except Exception:
+                raise FinLabOperationalError("FinLab response accounting failed") from None
+        outcomes.append(IntradayPartition(status, manifest, row_count, original, rows))
+    return outcomes
 
 
 def native_intraday(

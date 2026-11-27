@@ -771,8 +771,16 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
 - **排程**：台北 19:35，完成期限為隔日 07:35（開始後 12 小時）。四條盤中 feed 在 FinLab 的 `intraday`
   [執行線](../architecture/provider_work.md#權威範圍與排序)，由 `findb-full-market-intraday-finlab` 執行，有自己的
   佇列與 owner；日 K（19:30）、名單更新與 historical 在 `default`，由 `findb-full-market-finlab` 執行，不再排在
-  4–6 小時的盤中工作後面。兩條 lane 共用 FinLab 帳號（同一時間只有一個 FinLab 請求）、帳號 cooldown 與同一個
-  control：Owner 的 start／stop 同時作用於兩個 consumers。盤中的時間暫時維持 19:35。FinLab 的 control 顯示的是該
+  4–6 小時的盤中工作後面。兩條 lane 共用 FinLab 帳號的額度、cooldown 與同一個 control：Owner 的 start／stop 同時
+  作用於兩個 consumers。盤中請求用自己範圍的帳號鎖，不等日 K 的整表下載（#753，見
+  [provider work](../architecture/provider_work.md) 的帳號鎖範圍）。盤中的時間暫時維持 19:35。
+- **一次 2 檔**（#753）：同一 part 的下一個待抓成員（mapped、沒有 prepared、此刻 eligible）和本檔一起抓，
+  一個 acquisition（一個 intent、計 2 次）、兩個重複使用的 SDK worker 同時跑；每個 worker 派送前照舊各自
+  取得授權，兩次 checkpoint 輪流進行。下一檔的結果留在 Fetcher 記憶體（300 秒內有效），輪到它時照舊經過
+  work fence 與授權後直接交付，raw 也在那時才存。只保留該檔自己的結果（分區、未就緒分區、單檔的
+  `sdk_error`／`bad_response`／`os_error`）；帳號或 provider 層級的失敗（quota、auth、網路、子行程）只算在
+  本檔，下一檔輪到時重新請求。沒有可一起抓的下一檔時只抓本檔。2026-11-27 staging 試驗：同一帳號 2 個並行，
+  FinLab 沒有拒絕，回應只慢約 4%。FinLab 的 control 顯示的是該
   provider 最早的 feed 時間（19:30）；feeds 的時區不同時，以同一天換算成 UTC 的時刻比較。每條 lane 內，同一個交易日
   的工作依排程時間排入佇列；跨日補抓時仍是日期優先。
 - **Historical**：不支援，回補不在第 1 批範圍。

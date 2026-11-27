@@ -272,6 +272,10 @@ class ProviderAdapter:
     def acquire(self, member: Mapping[str, Any], context: AcquisitionContext) -> AcquisitionResult:
         raise NotImplementedError(f"{self.provider} has no member acquisition")
 
+    def batch_limit(self, dataset_key: str) -> int:
+        """Members of one part a dataset may fetch together; below 2 is one at a time."""
+        return int(getattr(self, "member_batch_limit", 0))
+
     def acquire_batch(self, members: list[dict[str, Any]], context: BatchContext) -> dict[str, Any]:
         raise NotImplementedError(f"{self.provider} has no batch acquisition")
 

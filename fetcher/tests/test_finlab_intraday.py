@@ -501,7 +501,7 @@ def ungoverned(monkeypatch):
     answer: dict[str, Any] = {}
 
     @contextmanager
-    def acquiring(provider, credential=None, lock_scope=None):
+    def acquiring(provider, credential=None, lock_scope=None, units=1):
         # Partitions run beside the account lock, under their own scope (#753).
         assert lock_scope == "finlab_intraday"
         yield types_namespace(dispatch_checkpoint=lambda: 0.0)
@@ -683,8 +683,21 @@ def _adapter(monkeypatch, partition: IntradayPartition | Exception) -> tuple[Fin
             raise partition
         return partition
 
+    def fetch_many(gateway, *, members, **arguments):
+        # One call per member, in the shape of a single fetch, so the log reads alike.
+        outcomes = []
+        for provider_symbol, symbol in members:
+            try:
+                outcomes.append(
+                    fetch(gateway, provider_symbol=provider_symbol, symbol=symbol, **arguments)
+                )
+            except (FinLabIntradayNotReadyError, FinLabIntradaySymbolError) as exc:
+                outcomes.append(exc)
+        return outcomes
+
     monkeypatch.setenv("FETCHER_CONTRACTS_DIR", str(CONTRACTS))
     monkeypatch.setattr(adapter_module, "fetch_partition", fetch)
+    monkeypatch.setattr(adapter_module, "fetch_partitions", fetch_many)
     adapter = FinLabAdapter()
     adapter.gateway = lambda observe: object()  # type: ignore[method-assign]
     return adapter, calls
@@ -1215,3 +1228,254 @@ def test_a_stopped_control_ends_the_recheck_silently(monkeypatch, capsys) -> Non
     adapter.round_started(context)  # Must not raise: the stop is a BaseException.
 
     assert _lines(capsys) == {}
+
+
+# --- two partitions at once (#753) ---------------------------------------------------
+
+
+def _paired_sdk(tmp_path: Path, monkeypatch, replies: dict[str, dict[str, Any]]) -> Path:
+    """A fake SDK answering per symbol, logging when each request starts and ends."""
+    script, log = tmp_path / "per_symbol.json", tmp_path / "requests.log"
+    script.write_text(json.dumps(replies))
+    _sdk(
+        tmp_path,
+        monkeypatch,
+        {},
+        **{
+            "finlab/data/auth.py": textwrap.dedent(f"""
+
+                import time
+
+
+                def post_signing_request(kind, query, label):
+                    symbol = query["dataset"].split(":", 1)[1]
+                    with open({str(log)!r}, "a") as out:
+                        out.write(f"start {{symbol}} {{time.monotonic()}}\\n")
+                    time.sleep(0.3)
+                    reply = json.load(open({str(script)!r}))[symbol][query["mode"]]
+                    with open({str(log)!r}, "a") as out:
+                        out.write(f"end {{symbol}} {{time.monotonic()}}\\n")
+                    if "error" not in reply:
+                        reply = {{"schema_version": 1, "dataset": query["dataset"], **reply}}
+                    return reply
+            """)
+        },
+    )
+    return log
+
+
+@pytest.fixture
+def checkpoints(monkeypatch):
+    """Governed boundary stand-in that records each dispatch checkpoint."""
+    import threading
+    import time
+    from contextlib import contextmanager, nullcontext
+
+    from findb_fetcher import acquisition
+    from findb_fetcher.providers import finlab_intraday
+
+    taken: list[str] = []
+    busy = threading.Lock()
+
+    def checkpoint() -> float:
+        # The two workers' checkpoints take turns; overlapping ones would fail here.
+        assert busy.acquire(blocking=False), "dispatch checkpoints overlapped"
+        try:
+            taken.append(threading.current_thread().name)
+            time.sleep(0.05)
+            return time.monotonic() + 30
+        finally:
+            busy.release()
+
+    @contextmanager
+    def acquiring(provider, credential=None, lock_scope=None, units=1):
+        assert (lock_scope, units) == ("finlab_intraday", 2)
+        yield types_namespace(dispatch_checkpoint=checkpoint)
+
+    monkeypatch.setattr(acquisition, "Acquisition", acquiring)
+    monkeypatch.setattr(finlab_intraday, "sdk_credential_scope", nullcontext)
+    return taken
+
+
+def test_two_partitions_are_fetched_at_once_in_two_workers(
+    tmp_path, monkeypatch, checkpoints
+) -> None:
+    from findb_fetcher import provider_process
+    from findb_fetcher.providers.finlab_intraday import fetch_partitions
+
+    files = {symbol: provider_file("bar_1m", symbol=symbol) for symbol in ("2330", "1101")}
+    replies = {}
+    for symbol, raw in files.items():
+        (tmp_path / symbol).mkdir()
+        replies[symbol] = _published(tmp_path / symbol, "bar_1m", raw)
+    log = _paired_sdk(tmp_path, monkeypatch, replies)
+    spawned = []
+    spawn = provider_process._spawn
+    monkeypatch.setattr(provider_process, "_spawn", lambda op: spawned.append(op) or spawn(op))
+
+    outcomes = fetch_partitions(
+        FinLabSdkGateway("offline"),
+        record_kind="bar_1m",
+        members=[("2330", "2330"), ("1101", "1101")],
+        trade_date=DAY,
+        layout=LAYOUTS["bar_1m"]["columns"],
+    )
+
+    assert [(item.status, item.original) for item in outcomes] == [
+        ("ready", files["2330"]),
+        ("ready", files["1101"]),
+    ]
+    assert len(spawned) == 2 and len(checkpoints) == 2
+    events = [line.split() for line in log.read_text().splitlines()]
+    starts = [float(at) for kind, _, at in events if kind == "start"]
+    ends = [float(at) for kind, _, at in events if kind == "end"]
+    # Every request of one member started before the other member's first ended.
+    assert min(ends) > sorted(starts)[1]
+    # Both workers stay for the next pair.
+    assert len(provider_process._idle) == 2
+
+
+def test_a_members_own_failure_is_its_outcome_alone(tmp_path, monkeypatch, checkpoints) -> None:
+    from findb_fetcher.providers.finlab_intraday import fetch_partitions
+
+    raw = provider_file("bar_1m")
+    (tmp_path / "2330").mkdir()
+    replies = {
+        "2330": _published(tmp_path / "2330", "bar_1m", raw),
+        # A refusal FinLab gives for this symbol alone.
+        "1101": {"manifest": {"error": "refused", "code": "unexpected"}},
+    }
+    _paired_sdk(tmp_path, monkeypatch, replies)
+
+    first, second = fetch_partitions(
+        FinLabSdkGateway("offline"),
+        record_kind="bar_1m",
+        members=[("2330", "2330"), ("1101", "1101")],
+        trade_date=DAY,
+        layout=LAYOUTS["bar_1m"]["columns"],
+    )
+
+    assert isinstance(first, IntradayPartition) and first.original == raw
+    assert isinstance(second, FinLabIntradaySymbolError) and second.code == "bad_response"
+
+
+@pytest.mark.parametrize(
+    "members",
+    [
+        [],
+        [("2330", "2330")] * 2,
+        [("2330", "2330"), ("1101", "1101"), ("2317", "2317")],
+    ],
+)
+def test_a_pair_beyond_the_bound_never_reaches_a_worker(members) -> None:
+    from findb_fetcher.providers.finlab_intraday import fetch_partitions
+
+    with pytest.raises(FinLabConfigError):
+        fetch_partitions(
+            FinLabSdkGateway("offline"),
+            record_kind="bar_1m",
+            members=members,
+            trade_date=DAY,
+            layout=(),
+        )
+
+
+COHORT_PAIR = [
+    {"member_key": "2330", "symbol": "2330", "provider_symbol": "2330", "mapping_status": "mapped"},
+    {
+        "member_key": "1101-B",
+        "symbol": "1101-B",
+        "provider_symbol": "1101B",
+        "mapping_status": "mapped",
+    },
+]
+
+
+def _paired_context(**changes):
+    context, raw = _context(cohort=COHORT_PAIR, **changes)
+    return context, raw
+
+
+def test_the_next_member_is_fetched_with_this_one_and_delivered_without_asking_again(
+    monkeypatch,
+) -> None:
+    partition = IntradayPartition("ready", {"generation": "7"}, 3, b"provider file", b"rows")
+    adapter, calls = _adapter(monkeypatch, partition)
+    context, raw = _paired_context(batch_candidates=lambda: ("2330", "1101B"))
+
+    adapter.acquire(MEMBER, context)
+    # The runtime asks for the second member on its own turn.
+    second, _ = _paired_context(batch_candidates=lambda: ("1101B",))
+    result = adapter.acquire(COHORT_PAIR[1], second)
+
+    assert [(call["provider_symbol"], call["symbol"]) for call in calls] == [
+        ("2330", "2330"),
+        ("1101B", "1101-B"),
+    ]
+    (row,) = result.request["payload"]["data"]
+    assert (row["symbol"], row["source_symbol"]) == ("1101-B", "1101B")
+    assert adapter.paired == {}
+
+
+def test_a_paired_members_own_failure_is_raised_on_its_turn(monkeypatch) -> None:
+    from findb_fetcher.provider_adapters import finlab as adapter_module
+
+    ready = IntradayPartition("ready", {"generation": "7"}, 3, b"provider file", b"rows")
+    adapter, _ = _adapter(monkeypatch, ready)
+    asked = []
+
+    def fetch_many(gateway, *, members, **arguments):
+        asked.append([member[0] for member in members])
+        return [ready, FinLabIntradayNotReadyError("partition")][: len(members)]
+
+    monkeypatch.setattr(adapter_module, "fetch_partitions", fetch_many)
+    adapter.acquire(MEMBER, _paired_context(batch_candidates=lambda: ("2330", "1101B"))[0])
+
+    with pytest.raises(FinLabIntradayNotReadyError):
+        adapter.acquire(COHORT_PAIR[1], _paired_context()[0])
+    assert asked == [["2330", "1101B"]]
+
+
+@pytest.mark.parametrize("code", ["network", "quota", "killed"])
+def test_a_paired_failure_of_the_provider_is_not_kept(monkeypatch, code) -> None:
+    from findb_fetcher.provider_adapters import finlab as adapter_module
+
+    ready = IntradayPartition("ready", {"generation": "7"}, 3, b"provider file", b"rows")
+    adapter, _ = _adapter(monkeypatch, ready)
+    asked = []
+
+    def fetch_many(gateway, *, members, **arguments):
+        asked.append([member[0] for member in members])
+        failure = FinLabIntradaySymbolError("failed", code)
+        return [ready, failure][: len(members)] if len(asked) == 1 else [ready]
+
+    monkeypatch.setattr(adapter_module, "fetch_partitions", fetch_many)
+    adapter.acquire(MEMBER, _paired_context(batch_candidates=lambda: ("2330", "1101B"))[0])
+    adapter.acquire(COHORT_PAIR[1], _paired_context()[0])
+
+    # The second member asks FinLab again on its own turn.
+    assert asked == [["2330", "1101B"], ["1101B"]]
+
+
+def test_a_kept_partition_expires_with_its_pass(monkeypatch) -> None:
+    from findb_fetcher.provider_adapters import finlab as adapter_module
+
+    partition = IntradayPartition("ready", {"generation": "7"}, 3, b"provider file", b"rows")
+    adapter, calls = _adapter(monkeypatch, partition)
+    monkeypatch.setattr(adapter_module, "FINLAB_PAIRED_PARTITION_TTL_SECONDS", -1)
+
+    adapter.acquire(MEMBER, _paired_context(batch_candidates=lambda: ("2330", "1101B"))[0])
+    adapter.acquire(COHORT_PAIR[1], _paired_context()[0])
+
+    assert [call["provider_symbol"] for call in calls] == ["2330", "1101B", "1101B"]
+
+
+def test_without_a_next_candidate_one_member_is_fetched(monkeypatch) -> None:
+    partition = IntradayPartition("ready", {"generation": "7"}, 3, b"provider file", b"rows")
+    adapter, calls = _adapter(monkeypatch, partition)
+
+    adapter.acquire(MEMBER, _paired_context(batch_candidates=lambda: ("2330",))[0])
+    adapter.acquire(MEMBER, _paired_context()[0])
+
+    assert [call["provider_symbol"] for call in calls] == ["2330", "2330"]
+    assert adapter.paired == {}

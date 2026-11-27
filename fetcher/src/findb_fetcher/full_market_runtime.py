@@ -377,6 +377,14 @@ def _network_failure(exc: BaseException) -> bool:
     )
 
 
+def _batch_limit(adapter: Any, dataset_key: str) -> int:
+    """The adapter's shared-request size for this dataset (0 without batching)."""
+    limit = getattr(adapter, "batch_limit", None)
+    if callable(limit):
+        return int(limit(dataset_key))
+    return int(getattr(adapter, "member_batch_limit", 0))
+
+
 class FullMarketRuntime:
     def __init__(
         self,
@@ -2259,7 +2267,9 @@ class FullMarketRuntime:
                             "published calendar is now closed"
                         ) from None
                     owner.authorize()
-                    candidates = self._batch_candidates(part, member_key, members, drain_keys)
+                    candidates = self._batch_candidates(
+                        part, member_key, members, drain_keys, plan["dataset_key"]
+                    )
                     # Providers without shared requests keep the original call shape.
                     requests = self._acquire(
                         member, plan, part, release, feed, *([candidates] if candidates else [])
@@ -2617,13 +2627,14 @@ class FullMarketRuntime:
         member_key: str,
         members: dict[str, dict[str, Any]],
         drain_keys: set[str] | None,
+        dataset_key: str,
     ) -> Callable[[], tuple[str, ...]] | None:
         """Later members of this part that this pass will acquire, for a shared request.
 
         Only members that would reach a provider call now qualify: mapped, without
         a prepared body, and eligible (no lease, backoff or pending no-data round).
         """
-        limit = getattr(self.adapter, "member_batch_limit", 0)
+        limit = _batch_limit(self.adapter, dataset_key)
         if limit < 2:
             return None
 
