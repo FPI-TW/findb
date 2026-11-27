@@ -362,15 +362,15 @@ def test_test_parallel_covers_every_level_of_pnpm_test(parallel):
 
     assert tuple(suites) == dev.TEST_SUITES
     assert sorted(suites) == sorted(name for names in levels.values() for name in names)
-    scripts = {"contracts": "test:contracts", "fetcher": "test:fetcher"} | {
+    scripts = {"contracts": "test:contracts"} | {
         f"dashboard-{level}": f"test:dashboard:{level}" for level in dashboard
     }
     for name, script in scripts.items():
         assert suites[name].command[1:] == (script,)
         assert suites[name].cwd == dev.REPO_ROOT
         assert "VIRTUAL_ENV" not in suites[name].env
-    backend, migrations, infra = (
-        suites[name].command for name in ("backend", "migrations", "infra")
+    backend, migrations, infra, fetcher = (
+        suites[name].command for name in ("backend", "migrations", "infra", "fetcher")
     )
     assert backend[backend.index("-n") + 1] == "4"
     assert "--ignore-glob=tests/test_*migration*.py" in backend
@@ -381,6 +381,12 @@ def test_test_parallel_covers_every_level_of_pnpm_test(parallel):
         "-n",
         "4",
     )
+    # The Fetcher suite is `pnpm test:fetcher` with this run's worker count.
+    package = json.loads((dev.REPO_ROOT / "package.json").read_text())["scripts"]
+    assert package["test:fetcher"].split() == [*fetcher[:-4], "-n", "2", *fetcher[-2:]]
+    assert fetcher[-4:] == ("-n", "4", "--dist", "worksteal")
+    assert suites["fetcher"].cwd == dev.REPO_ROOT
+    assert "VIRTUAL_ENV" not in suites["fetcher"].env
     for name in ("backend", "migrations"):
         assert suites[name].env["DEBUG"] == "true"
         assert suites[name].env["TEST_DATABASE_URL"]

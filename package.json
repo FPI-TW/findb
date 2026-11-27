@@ -30,7 +30,7 @@
     "test:backend": "uv --directory backend run python scripts/dev.py test-db",
     "test:infra": "uv --directory backend run python scripts/dev.py test-infra",
     "test:parallel": "uv --directory backend run python scripts/dev.py test-parallel",
-    "test:fetcher": "uv --directory fetcher run pytest",
+    "test:fetcher": "uv --directory fetcher run pytest -n 2 --dist worksteal",
     "format": "pnpm format:dashboard && pnpm format:backend && pnpm format:fetcher",
     "format:dashboard": "pnpm --filter dashboard format",
     "format:backend": "uv --directory backend run ruff check --fix app tests scripts migrations && uv --directory backend run ruff format app tests scripts migrations",

@@ -217,8 +217,10 @@ def test_refuses_a_listed_work_whose_manifest_names_another_provider(tmp_path, f
         purge("shioaji", _works(tmp_path), journal=journal, state=state, apply=True)
 
 
-def test_refuses_while_another_connection_writes(tmp_path, files):
+def test_refuses_while_another_connection_writes(tmp_path, files, monkeypatch):
     journal, state = files
+    # The purge waits this long for the writer before refusing.
+    monkeypatch.setattr("findb_fetcher.retired_provider_purge._WRITER_TIMEOUT_SECONDS", 0.1)
     writer = sqlite3.connect(journal, isolation_level=None)
     writer.execute("BEGIN IMMEDIATE")
     try:

@@ -69,6 +69,10 @@ def _record_phase(operation: str, value: Any) -> None:
         rpc_timing.record(f"worker {operation} {value[0]}", value[1])
 
 
+# How long each termination step waits for the worker and its group to die.
+_REAP_GRACE_SECONDS = 2.0
+
+
 def _wait(process: subprocess.Popen[bytes], timeout: float) -> None:
     try:
         process.wait(timeout=timeout)
@@ -208,16 +212,16 @@ def _terminate(worker: _Worker, *, settle: bool) -> int | None:
         # on macOS). A signal error is not death evidence: still wait,
         # escalate, then prove both leader and group have disappeared.
         pass
-    _wait(process, 2)
+    _wait(process, _REAP_GRACE_SECONDS)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except OSError:
         pass
-    _wait(process, 2)
+    _wait(process, _REAP_GRACE_SECONDS)
     worker.conn.close()
     if process.poll() is None:
         raise ProviderWorkRecoveryBlockedError("blocking provider child has not been reaped")
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + _REAP_GRACE_SECONDS
     while True:
         try:
             os.killpg(process.pid, 0)

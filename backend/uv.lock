@@ -460,6 +460,7 @@ provides-extras = ["factset", "finlab"]
 dev = [
     { name = "mypy", specifier = ">=1.20.1,<2.0.0" },
     { name = "pytest", specifier = ">=9.0.3,<10.0.0" },
+    { name = "pytest-xdist", specifier = ">=3.8.0,<4.0.0" },
     { name = "ruff", specifier = ">=0.15.11,<0.16.0" },
     { name = "types-pymysql", specifier = ">=1.1.0" },
 ]

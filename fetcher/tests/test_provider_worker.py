@@ -119,7 +119,7 @@ def _killed_parent(root, sdk, started):
         install_fake_sdk(
             monkeypatch,
             sdk,
-            fake_finlab(f"open({started!r}, 'w').close()\ntime.sleep(3)\nreturn 'late'"),
+            fake_finlab(f"open({started!r}, 'w').close()\ntime.sleep(1)\nreturn 'late'"),
         )
         with queue.host_lock("finlab", root=root):
             provider_process.supervised_call(

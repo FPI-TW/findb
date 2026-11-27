@@ -345,6 +345,10 @@ def test_trusted_capacity_repair_requires_current_source_authority_and_installed
         return httpx.Response(403 if failure in {"revoked", "replaced"} else 200, json=authority)
 
     http = httpx.Client(transport=httpx.MockTransport(verify))
+    # The client's network retries back off for real; the outcome, not the wait, is under test.
+    monkeypatch.setattr(
+        "findb_fetcher.full_market_client.source_retry_sleep", lambda seconds, sleep: None
+    )
     monkeypatch.setattr(
         "findb_fetcher.full_market_client.FullMarketSourceClient",
         lambda config: FullMarketSourceClient(config, client=http),

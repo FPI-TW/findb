@@ -56,6 +56,8 @@ def test_denied_signals_cannot_release_an_unreaped_live_child(monkeypatch, launc
             raise PermissionError("simulated signal denial")
         return killpg(pid, sig)
 
+    # Each termination step still waits; a short grace keeps the denied path quick.
+    monkeypatch.setattr("findb_fetcher.provider_process._REAP_GRACE_SECONDS", 0.2)
     try:
         with monkeypatch.context() as patch:
             patch.setattr(os, "killpg", denied)
