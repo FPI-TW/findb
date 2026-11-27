@@ -15,8 +15,8 @@ from app.utils import utc_now
 from tests.provider_work_clock import account_clock, drain_retained_rerun_during_cooldown
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
-# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
-pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+# Twelve Data/FinLab requests freeze a published Full release cohort.
+pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
 @pytest.mark.asyncio

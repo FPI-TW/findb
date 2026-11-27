@@ -21,8 +21,8 @@ from app.services import provider_work
 from app.services.provider_work import prepared_map
 from tests.provider_work_runtime_support import SCOPES, RuntimeHarness
 
-# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
-pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+# Twelve Data/FinLab requests freeze a published Full release cohort.
+pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
 @pytest_asyncio.fixture
@@ -145,6 +145,7 @@ async def _assert_historical_completed(h):
     ).attempt_id is None
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime",
@@ -293,6 +294,7 @@ async def test_committed_intent_lost_ack_recovers_original_body_after_cancel_wit
     assert h.runs and h.native_calls() == calls
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("finlab", "tw_equity_eod")], indirect=True)
 async def test_preparation_intent_transaction_serializes_cancel_before_local_save(
@@ -350,6 +352,7 @@ async def test_preparation_intent_transaction_serializes_cancel_before_local_sav
         await asyncio.gather(runtime, cancellation, return_exceptions=True)
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime",

@@ -18,8 +18,8 @@ from tests.owned_history import claim_next_item
 from tests.test_full_market import DAY, _baseline, _dataset
 from tests.test_historical_backfill import _seed_scope
 
-# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
-pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+# Twelve Data/FinLab requests freeze a published Full release cohort.
+pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
 @pytest.mark.parametrize("provider", PROVIDER_CALENDAR_SWITCHES)

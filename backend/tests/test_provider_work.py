@@ -15,8 +15,8 @@ from app.services.provider_work import prepared_map
 from app.utils import utc_now, uuid7
 from tests.provider_work_clock import recent_backfill_day
 
-# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
-pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+# Twelve Data/FinLab requests freeze a published Full release cohort.
+pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
 async def attest_cutover(db, identities=None):
@@ -354,6 +354,7 @@ async def test_daily_owner_reports_new_published_closure_without_rewriting_froze
     assert unchanged.json()["repair_required"] is False
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 async def test_enforced_source_receipts_rerun_queue_and_legacy_fail_closed(
     client, source_headers, admin_headers, test_session, test_engine, monkeypatch
