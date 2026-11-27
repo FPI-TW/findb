@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -59,9 +60,12 @@ from findb_fetcher.providers.finlab import (
     build_market_eod_request as finlab_request,
 )
 from findb_fetcher.providers.finlab_intraday import (
+    FINLAB_INTRADAY_PARALLEL,
     FinLabIntradayNotReadyError,
     FinLabIntradaySymbolError,
+    IntradayPartition,
     fetch_partition,
+    fetch_partitions,
     manifest_bytes,
 )
 
@@ -89,6 +93,9 @@ FINLAB_QUOTA_DELAY_SECONDS = 30 * 60
 # them stops the round (#711, #747). Network, timeout, quota and process failures
 # still hold the plan as a provider outage.
 FINLAB_INTRADAY_MEMBER_CODES = frozenset({"sdk_error", "bad_response", "os_error"})
+# A partition fetched beside another member serves only the pass that fetched it,
+# as Twelve Data's batched series do; a later pass fetches anew.
+FINLAB_PAIRED_PARTITION_TTL_SECONDS = 300
 # At most this many no-trade members of the previous trade date are asked about
 # again per intraday feed and day; each question is one manifest request.
 FINLAB_NO_TRADE_RECHECK_LIMIT = 100
@@ -210,9 +217,19 @@ class FinLabAdapter(ProviderAdapter):
     outage_holds_plan = True
     # Official lists observed at the scheduled time are effective on that Taipei date.
     daily_waits_for_same_day_universe = True
+    # Intraday members of one part fetched together, each in its own worker (#753).
+    # Daily tables never ask for candidates, so they are unaffected.
+    member_batch_limit = FINLAB_INTRADAY_PARALLEL
+
+    def batch_limit(self, dataset_key: str) -> int:
+        # Daily tables keep their one-member call shape.
+        return self.member_batch_limit if dataset_key in INTRADAY_DATASETS else 0
 
     def __init__(self) -> None:
         self.bundles: dict[tuple[str, date], Any] = {}
+        # (dataset, date, provider symbol) -> (fetched monotonic, the member's own
+        # outcome): what a paired fetch got for the member after this one.
+        self.paired: dict[tuple[str, date, str], tuple[float, Any]] = {}
         # FinLab's own equity and ETF symbol sets, read once a day: they describe
         # today's listings, so every backfilled date of a day shares them.
         self.security_types: dict[str, tuple[str, ...]] | None = None
@@ -223,6 +240,7 @@ class FinLabAdapter(ProviderAdapter):
 
     def reset(self) -> None:
         self.bundles.clear()
+        self.paired.clear()
 
     def round_started(self, context: AcquisitionContext) -> None:
         """Ask again about the previous trade date's no-trade members of an intraday feed.
@@ -446,14 +464,10 @@ class FinLabAdapter(ProviderAdapter):
         dataset, day = context.dataset_key, context.trade_date
         record_kind = INTRADAY_DATASETS[dataset][0]
         provider_symbol = member["provider_symbol"]
-        partition = fetch_partition(
-            self.gateway(context.observe_response),
-            record_kind=record_kind,
-            provider_symbol=provider_symbol,
-            symbol=member["symbol"],
-            trade_date=day,
-            layout=self._row_layout(context, record_kind),
-        )
+        outcome = self._partition(member, context, record_kind)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        partition = outcome
         if partition.status in {"no_trades", "absent"}:
             # FinLab states no trades itself; an absent partition is only accepted as
             # no trade once Source finds the same day's daily bar without a board lot.
@@ -513,6 +527,60 @@ class FinLabAdapter(ProviderAdapter):
         if context.delivery is not None:
             request["delivery"] = dict(context.delivery)
         return AcquisitionResult.data(request, original)
+
+    def _partition(
+        self, member: Mapping[str, Any], context: AcquisitionContext, record_kind: str
+    ) -> IntradayPartition | BaseException:
+        """This member's partition, or its own failure, fetched with the next member.
+
+        The next candidate of the part is fetched in parallel and kept for its own
+        turn, which then delivers it without asking FinLab again. Only an answer
+        that is that member's own is kept: an account or provider failure is
+        raised for this member, and the next one asks again on its turn.
+        """
+        dataset, day = context.dataset_key, context.trade_date
+        now = time.monotonic()
+        for key in [
+            key
+            for key, (fetched, _) in self.paired.items()
+            if now - fetched > FINLAB_PAIRED_PARTITION_TTL_SECONDS
+        ]:
+            del self.paired[key]
+        cached = self.paired.pop((dataset, day, member["provider_symbol"]), None)
+        if cached is not None:
+            return cached[1]
+        symbols = {
+            str(item["provider_symbol"]): str(item["symbol"]) for item in context.cohort or ()
+        }
+        members = [(str(member["provider_symbol"]), str(member["symbol"]))]
+        candidates = context.batch_candidates() if context.batch_candidates else ()
+        if candidates and candidates[0] == members[0][0]:
+            members += [
+                (other, symbols[other])
+                for other in candidates[1:FINLAB_INTRADAY_PARALLEL]
+                if other in symbols and other != members[0][0]
+            ]
+        outcomes = fetch_partitions(
+            self.gateway(context.observe_response),
+            record_kind=record_kind,
+            members=members,
+            trade_date=day,
+            layout=self._row_layout(context, record_kind),
+        )
+        fetched = time.monotonic()
+        for (other, _), outcome in zip(members[1:], outcomes[1:], strict=True):
+            if isinstance(outcome, IntradayPartition) or self._member_own(outcome):
+                self.paired[(dataset, day, other)] = (fetched, outcome)
+        return outcomes[0]
+
+    @staticmethod
+    def _member_own(exc: BaseException) -> bool:
+        """Whether a failure belongs to that member alone (see ``classify``)."""
+        if isinstance(exc, FinLabIntradayNotReadyError):
+            return exc.scope == "partition"
+        return isinstance(exc, FinLabIntradaySymbolError) and exc.code in (
+            FINLAB_INTRADAY_MEMBER_CODES
+        )
 
     def _row_layout(self, context: AcquisitionContext, record_kind: str) -> list[dict[str, Any]]:
         """The column layout the installed contract publishes for this record kind."""

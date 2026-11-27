@@ -377,14 +377,16 @@ class MemberHistoricalRunner:
         return stored
 
     def _batch_candidates(
-        self, owner, member: dict, cohort: list[dict]
+        self, owner, member: dict, cohort: list[dict], dataset_key: str
     ) -> Callable[[], tuple[str, ...]] | None:
         """Later cohort members this date still acquires, for one shared provider request.
 
         Mirrors Full daily: only members without a journaled outcome or receipt qualify,
         so a replayed date never fetches a delivered member again.
         """
-        limit = getattr(self.adapter, "member_batch_limit", 0)
+        from findb_fetcher.full_market_runtime import _batch_limit
+
+        limit = _batch_limit(self.adapter, dataset_key)
         if limit < 2:
             return None
 
@@ -473,7 +475,7 @@ class MemberHistoricalRunner:
         try:
             try:
                 context = self._context(item, feed, cohort, persisted)
-                candidates = self._batch_candidates(owner, member, cohort)
+                candidates = self._batch_candidates(owner, member, cohort, item.dataset_key)
                 if candidates is not None:
                     context = replace(context, batch_candidates=candidates)
                 with rpc_timing.timed("step provider_acquire"):
