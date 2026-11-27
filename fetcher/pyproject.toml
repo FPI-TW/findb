@@ -10,16 +10,8 @@ dependencies = [
 ]
 
 [project.scripts]
-findb-fetch-taifex-pilot = "findb_fetcher.taifex_pilot:main"
 findb-fetch-runtime = "findb_fetcher.full_market_cli:main"
 findb-fetch-full-market = "findb_fetcher.full_market_cli:main"
-findb-fetch-twelve-data = "findb_fetcher.twelve_data_cli:main"
-findb-fetch-scheduler = "findb_fetcher.scheduler_cli:main"
-findb-fetch-finlab-scheduler = "findb_fetcher.finlab_scheduler_cli:main"
-findb-fetch-finlab-smoke = "findb_fetcher.finlab_smoke_cli:main"
-findb-fetch-shioaji-smoke = "findb_fetcher.shioaji_smoke_cli:main"
-findb-fetch-shioaji-staging = "findb_fetcher.shioaji_staging_cli:main"
-findb-fetch-shioaji-scheduler = "findb_fetcher.shioaji_scheduler_cli:main"
 findb-fetch-historical-backfill = "findb_fetcher.historical_backfill_cli:main"
 findb-fetch-backfill-plan = "findb_fetcher.production_backfill_cli:main"
 findb-fetch-retired-purge = "findb_fetcher.retired_provider_purge:main"

@@ -167,7 +167,6 @@ candidate_rows 的清理；`admin_session` 到期／撤銷後也未找到定期�
 
 ### 不應直接當孤兒刪除
 
-- 退役 standalone CLI：仍在 `fetcher/pyproject.toml` 註冊，主動回報 retired，避免舊指令重新抓取。
 - `legacy_checkpoints.read_taifex_pilot_checkpoint`：README／provider-work 文件明定的唯讀證據工具。
 - `TwelveDataScheduledExecutor`、`FinLabScheduledExecutor`、靜態 universe 與舊 scheduler state：
   historical runtime 仍有無 cohort request 的相容分支，`docs/dev/backlog.md` 已追蹤排空後移除。

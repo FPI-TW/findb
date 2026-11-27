@@ -20,8 +20,8 @@ plan 建立後凍結，重試、重啟、補抓及 universe 發布不得改寫�
 兩環境每個 provider 安裝一個 daily `full_market` consumer 與一個獨立 historical consumer。
 新抓取只受 Backend scheduler control（`full_market_<provider>_v1`）與 Source acquisition authorization 管控；
 沒有本機 enable flag。部署只接受 stopped controls；Owner 操作啟停。同環境 consumers 共用帳號 governor。
-所有 provider-specific scheduler、Twelve Data one-shot、FinLab smoke 與 TAIFEX pilot CLI 都只回報退役（exit 2）；
-Shioaji Fetcher runtime 已退役，其舊 CLI 回報 `PROVIDER_RETIRED`；Backend 已停止新回補申請，
+provider-specific scheduler、Twelve Data one-shot、FinLab／Shioaji smoke 與 TAIFEX pilot 等舊 CLI 已移除；
+Shioaji Fetcher runtime 已退役，Backend 已停止新回補申請，
 歷史 scope／credentials 與資源清理仍見 [退役狀態](../docs/dev/backlog.md#full-market-external-acceptance)。`PROVIDER_WORK_REQUIRED` 缺省 true，明確 false 拒絕啟動。
 所有新 I/O 與 prepared delivery 須持有 provider-work owner；缺少 attestation 不能 claim。
 現有環境升級前依 [切換程序](../docs/operations/deployment.md#provider-work-切換) 排空與備份。
@@ -63,8 +63,9 @@ FinLab、FactSet images 的預設命令均為 `findb-fetch-runtime --help`；
 不帶覆寫命令啟動時只印出 help 並 exit 0，不載入 credentials 或抓取資料。CI 直接執行 image
 預設命令，另驗證正式 runtime／historical CLI 與 optional SDK 隔離。
 
-舊 scheduler／smoke／staging／TAIFEX pilot／Twelve Data one-shot 命令保留 console 名稱與
-`python -m` tombstone，所有參數皆回傳 exit 2；模組內不再保存舊執行器或 parser。
+Image 只安裝 `findb-fetch-runtime`（與部署仍使用的別名 `findb-fetch-full-market`）、
+`findb-fetch-historical-backfill`、`findb-fetch-backfill-plan` 與 `findb-fetch-retired-purge`；
+舊 scheduler／smoke／staging／TAIFEX pilot／Twelve Data one-shot 命令已移除。
 新抓取與 frozen delivery 恢復統一經現行 queue runtime。
 
 從 repository root 建置：
