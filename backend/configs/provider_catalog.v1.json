@@ -658,6 +658,96 @@
       "calendar_required": false
     },
     {
+      "provider": "hkex",
+      "dataset_key": "hk_index_constituents",
+      "lane": "default",
+      "market": "HK",
+      "calendar_market": "HK",
+      "asset_class": "index",
+      "frequency": "daily",
+      "contract": {
+        "schema_id": "index_constituents",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "unsupported"
+      },
+      "schedule": {
+        "timezone": "Asia/Hong_Kong",
+        "local_time": "21:05",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Hong_Kong",
+        "local_time": "09:05",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "historical_cohort": null,
+      "historical_requests_per_date": null,
+      "historical_lookback_days": null,
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none",
+      "calendar_required": false
+    },
+    {
+      "provider": "hkex",
+      "dataset_key": "hk_index_changes",
+      "lane": "default",
+      "market": "HK",
+      "calendar_market": "HK",
+      "asset_class": "index",
+      "frequency": "daily",
+      "contract": {
+        "schema_id": "index_constituent_changes",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "unsupported"
+      },
+      "schedule": {
+        "timezone": "Asia/Hong_Kong",
+        "local_time": "21:05",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Hong_Kong",
+        "local_time": "09:05",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "historical_cohort": null,
+      "historical_requests_per_date": null,
+      "historical_lookback_days": null,
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none",
+      "calendar_required": false
+    },
+    {
       "provider": "fmp",
       "dataset_key": "hk_index_eod",
       "lane": "default",

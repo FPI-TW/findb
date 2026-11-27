@@ -24,6 +24,8 @@ export const ASSET_CLASS_NAMES: Readonly<Record<string, string>> = {
 export const DATASET_NAMES: Readonly<Record<string, string>> = {
   hk_equity_eod: "港股日K",
   hk_equity_official_eod: "港股交易所日行情",
+  hk_index_changes: "恒指成分股變動",
+  hk_index_constituents: "恒指成分股名單",
   hk_index_eod: "港股指數日K",
   tw_equity_bar_1m: "台股 1 分 K",
   tw_equity_eod: "台股日K",

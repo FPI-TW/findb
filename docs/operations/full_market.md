@@ -1347,7 +1347,7 @@ HK 新抓取使用 FactSet 與 `market_eod.v2`；Twelve Data 只負責 US，HK �
 | FinLab `tw_equity_eod`、`tw_etf_eod` | 台北 19:30 | 07:30 |
 | FinLab 四條盤中 | 台北 19:35 | 07:35 |
 | FactSet `hk_equity_eod`、FMP `hk_index_eod` | 香港 20:00 | 08:00 |
-| HKEX `hk_equity_official_eod` | 香港 21:05 | 09:05 |
+| HKEX `hk_equity_official_eod`、`hk_index_constituents`、`hk_index_changes` | 香港 21:05 | 09:05 |
 | Twelve Data `us_equity_eod` | 紐約 17:00 | 18:00（美國夏令時間 17:00） |
 | FMP `us_index_eod` | 台北 08:30（抓前一個紐約交易日） | 20:30 |
 | FMP `us_dollar_index_eod` | 紐約 17:15 | 05:15 |

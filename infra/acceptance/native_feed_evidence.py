@@ -15,14 +15,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 # The Backend export samples table-backed rows of a feed's own read model; intraday
-# objects, exchange quotes (served as corrections of provider rows) and the exchanges'
-# institutional tables (their own publication tables) have none yet.
+# objects, exchange quotes (served as corrections of provider rows), the exchanges'
+# institutional tables (their own publication tables) and index reference
+# documents (archived whole, no member rows) have none yet.
 UNSAMPLED_SCHEMAS = frozenset(
     {
         "intraday_partition",
         "exchange_daily_quote",
         "institutional_flow_summary",
         "institutional_flow_stock",
+        "index_constituents",
+        "index_constituent_changes",
     }
 )
 

@@ -26,6 +26,8 @@ _IMPLEMENTED_ADAPTERS = frozenset(
         ("finlab", "tw_etf_tick"),
         ("taifex", "tw_futures_eod"),
         ("hkex", "hk_equity_official_eod"),
+        ("hkex", "hk_index_constituents"),
+        ("hkex", "hk_index_changes"),
         ("fmp", "hk_index_eod"),
         ("fmp", "us_index_eod"),
         ("fmp", "us_dollar_index_eod"),

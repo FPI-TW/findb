@@ -1080,6 +1080,28 @@ Dataset 已有使用紀錄時拒絕 downgrade；downgrade 會把 credential 範�
   baseline，首日設成單一日期，再由 Owner start（control 已在執行時，新 dataset 隨下一輪排程規劃）。已寫入的
   `DX-Y.NYB` canonical 列保留，instrument 不變。
 
+## HSIL 恒指參考資料 feed
+
+Migration `21e8f89c680b` 新增兩個 dataset，由既有的 HKEX runtime 讀取恒生指數公司（HSIL）的文件：
+`hk_index_constituents`（契約 `index_constituents.v1`，成員 `HSI`、`HSCI`，各為當日的成分股表現報告）與
+`hk_index_changes`（契約 `index_constituent_changes.v1`，成員是 18 個指數代碼，各為變動 xlsx 的一個 sheet）。
+兩條 feed 都是香港 21:05 抓當天（期限隔日 09:05），historical 為 `unsupported`；過去日期由本機歸檔匯入。
+設計與決定見 [HSIL 參考資料](../dev/hsil-index-reference.md)。
+
+- **Backend**：兩個 dataset 綁定既有的 `full_market_hkex_v1`（control 時鐘仍是 21:05）；`fetcher-hkex` 的 Source
+  credential 範圍正好是 `hk_equity_official_eod` 時擴為三個 dataset，其他範圍保留不動。這個 revision 取代
+  `54a916bdb18f` 成為部署前 schedule inspection，其他列沿用前一版的凍結規則。Dataset 已有使用紀錄時拒絕
+  downgrade；downgrade 會把 credential 範圍改回一個 dataset。與所有 migration 相同，回退到舊 Backend image 前
+  必須先 downgrade 到 `54a916bdb18f`。
+- **Serve**：兩個 dataset 的宣告必須是 HK、`index`、`daily`、只有 `hkex`、契約版本 1，否則和其他錯誤宣告一樣回
+  `SERVE_CONFIGURATION_INVALID`；它們不屬於 EOD 的讀取範圍，查詢端點另行提供。
+- **Fetcher**：沒有新的 consumer 或 secret；需要含 HSIL 解析器（pdfminer.six）的 image。
+- **部署順序**（替既有 provider 加 feed，見下方「Backend 與 Fetcher 的 feed 目錄版本落差」）：
+  1. staging：合併前先停 `full_market_hkex_v1`（Fetcher 部署需要 control 停止）。
+  2. production：先停 HKEX control，先 promote Fetcher，再 promote FinDB。
+  3. 上線後各 dataset 先更新名單、發布第一份 baseline（固定成員，證據是兩個系列的報告清單），把首日設成單一日期，
+     再由 Owner start。
+
 ## ingestion_run 的 delivery part 索引
 
 Migration `1587769858c0` 只新增 `idx_run_delivery_part`（`ingestion_run.delivery_part_id`）。Plan 摘要更新、

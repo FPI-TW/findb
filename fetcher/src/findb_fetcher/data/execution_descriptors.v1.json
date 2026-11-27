@@ -321,6 +321,64 @@
       "unlisted_symbols": "none"
     },
     {
+      "asset_class": "index",
+      "calendar_market": "HK",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "index_constituent_changes"
+      },
+      "dataset_key": "hk_index_changes",
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": null,
+      "historical_requests_per_date": null,
+      "lane": "default",
+      "lifecycle": "active",
+      "market": "HK",
+      "provider": "hkex",
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
+      "asset_class": "index",
+      "calendar_market": "HK",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "index_constituents"
+      },
+      "dataset_key": "hk_index_constituents",
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": null,
+      "historical_requests_per_date": null,
+      "lane": "default",
+      "lifecycle": "active",
+      "market": "HK",
+      "provider": "hkex",
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
       "asset_class": "future",
       "calendar_market": "TAIFEX",
       "capabilities": {
@@ -553,7 +611,7 @@
       "unlisted_symbols": "none"
     }
   ],
-  "projection_sha256": "9be17e7ede5cfce9bc857b64090f12f3d426244d219dd3cca8aca6dc4c865049",
+  "projection_sha256": "02ae9f96f363b06330904a68abd10c03cef581046c33b112ad23f0f5aca8526d",
   "providers": [
     {
       "credential_env_names": [
