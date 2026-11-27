@@ -352,7 +352,6 @@ async def test_preparation_intent_transaction_serializes_cancel_before_local_sav
         await asyncio.gather(runtime, cancellation, return_exceptions=True)
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime",

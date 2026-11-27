@@ -467,6 +467,28 @@ def test_finlab_unpublished_date_retries_the_date_within_one_shared_budget(monke
     assert len(attempts) == member_historical.MEMBER_ATTEMPTS
 
 
+@pytest.mark.parametrize("state", ["closed", "draining"])
+def test_a_recovered_closed_round_defers_members_it_has_not_fetched(monkeypatch, tmp_path, state):
+    item = _item("twelve_data", "us_equity_eod", [_member("AAPL", "USD")])
+    runner, owner, s3 = _runner(monkeypatch, tmp_path, "twelve_data", item)
+    # The round closed before its settlement was durable; Source refuses new I/O on it.
+    owner.work["state"] = state
+    monkeypatch.setattr(
+        runner.adapter,
+        "acquire",
+        lambda *args, **kwargs: pytest.fail("a closed round fetched a new member"),
+    )
+    try:
+        with pytest.raises(HistoricalWorkDeferredError, match="new attempt"):
+            runner.run(item)
+    finally:
+        runner.close()
+    assert s3.puts == []
+    with owner.journal.connection() as db:
+        # Nothing was reserved: the next attempt spends the member's whole budget.
+        assert db.execute("SELECT COUNT(*) FROM work_budget").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
 def test_requests_without_a_cohort_keep_the_legacy_executor(monkeypatch, provider):
     from findb_fetcher import historical_runtime
