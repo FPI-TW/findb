@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from findb_fetcher import rpc_timing
 from findb_fetcher.provider_work import ProviderWorkRecoveryBlockedError, inherited_fds
 
 _FAILURE_CODE = re.compile(r"[a-z_]{1,24}")
@@ -43,6 +44,27 @@ def provider_environment() -> dict[str, str]:
     return values
 
 
+def _ms(since: float) -> float:
+    return (time.monotonic() - since) * 1000
+
+
+def _record_phase(operation: str, value: Any) -> None:
+    """Add one worker step (``provider_worker.phase``) to the delivery timing line.
+
+    Diagnostics only: a malformed report is dropped rather than trusted, so the
+    line keeps fixed names and the call's outcome never depends on it.
+    """
+    if (
+        isinstance(value, tuple)
+        and len(value) == 2
+        and isinstance(value[0], str)
+        and _FAILURE_CODE.fullmatch(value[0])
+        and isinstance(value[1], float)
+        and 0 <= value[1] < 86_400_000
+    ):
+        rpc_timing.record(f"worker {operation} {value[0]}", value[1])
+
+
 def _wait(process: subprocess.Popen[bytes], timeout: float) -> None:
     try:
         process.wait(timeout=timeout)
@@ -64,6 +86,7 @@ def supervised_call(
     deadline, which the worker checks immediately before dispatch.
     """
     parent, child = multiprocessing.Pipe()
+    spawned = time.monotonic()
     try:
         process = subprocess.Popen(
             [sys.executable, "-m", "findb_fetcher.provider_worker", str(child.fileno())],
@@ -80,6 +103,7 @@ def supervised_call(
     finally:
         child.close()
     value = None
+    received = False
     succeeded = False
     failure: str | None = None
     natural_exit: int | None = None
@@ -91,8 +115,14 @@ def supervised_call(
                 event, value = parent.recv()
             except EOFError:
                 break
+            if not received:
+                received = True
+                rpc_timing.record(f"worker {operation} first_message", _ms(spawned))
             if event == "ready" and checkpoint is not None:
                 parent.send(checkpoint())
+                continue
+            if event == "phase":
+                _record_phase(operation, value)
                 continue
             succeeded = event == "result"
             if event == "expired":
@@ -108,6 +138,7 @@ def supervised_call(
         # The worker exited before reading its request; reap it below.
         pass
     finally:
+        answered = time.monotonic()
         if not succeeded and failure is None:
             # The pipe closed without an answer: let the worker's own exit status
             # arrive before the group is signalled, so a kill is told from a crash.
@@ -145,6 +176,8 @@ def supervised_call(
             if time.monotonic() >= deadline:
                 raise ProviderWorkRecoveryBlockedError("provider descendant process group remains")
             time.sleep(0.02)
+    rpc_timing.record(f"worker {operation} run", (answered - spawned) * 1000)
+    rpc_timing.record(f"worker {operation} teardown", _ms(answered))
     if not succeeded:
         if failure is None:
             failure = "killed" if natural_exit is not None and natural_exit < 0 else "crashed"

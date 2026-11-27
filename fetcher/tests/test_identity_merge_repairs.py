@@ -119,7 +119,8 @@ def test_actual_processes_merge_proven_debt_exactly_once(tmp_path, provider, mon
         monkeypatch.setattr(
             acquisition,
             "time",
-            SimpleNamespace(time=lambda: quota_time.timestamp()),
+            # Wall time is pinned; the lock timing still reads the monotonic clock.
+            SimpleNamespace(time=lambda: quota_time.timestamp(), monotonic=time.monotonic),
         )
         with Acquisition(provider, credential=raw, state_path=state.path) as operation:
             with pytest.raises(QuotaBlockedError, match="quota"):

@@ -162,7 +162,13 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
   `{"delivery_timing": {"plan_id", "members", "seconds", "final", "timing"}}`；`members` 為該區間
   claim 的成員數（含只查狀態的重訪），`timing` 為 `{route 或 step: [次數, 總毫秒]}`：Source RPC
   依 route template（`{id}` 取代 UUID、不含 query），另有 `step provider_acquire`（含 R2）與
-  `step raw_persist`。計時只進 log，不寫入 durable batch 或 settlement proof。Historical 逐成員回補輸出同一格式
+  `step raw_persist`。帳號鎖（#753）另有 `account_lock wait`（等鎖）與 `account_lock hold`（持鎖，到結果記錄完成），每個
+  consumer 是自己的 container，所以各 lane 分開；等鎖或持鎖達 30 秒的那一次另外輸出
+  `{"account_lock": {"provider", "kind", "wait_seconds", "hold_seconds"}}`，日 K 整表下載這類不在成員交付計時內的持鎖也看得到。
+  SDK 子行程（`supervised_call`）記 `worker <operation> first_message`（啟動到第一則訊息，含 Python 啟動與 import）、
+  `run`（啟動到回答）與 `teardown`（回答後收掉行程群組）；FinLab 盤中每檔再拆成子行程內的
+  `worker finlab.intraday sdk_import`、`manifest`、`sign`、`download`、`map`（轉成契約欄位），失敗的步驟也會記。
+  `run` 扣掉這五段與期間的 `GET full-market/authorization` 就是行程啟動與傳輸的成本。計時只進 log，不寫入 durable batch 或 settlement proof。Historical 逐成員回補輸出同一格式
   （`item_id` 取代 `plan_id`，另有 `step normalization_wait`）。部署中的 runtime
   沒有 daily batch policy（`max_members`／`max_seconds` 只在設定時生效），計時因此不依附 batch。授權類 RPC（每檔約 10 次、0.57 秒）
   是 dispatch 邊界的即時授權，是否能合併須先以這組計時拆解後另案評估。

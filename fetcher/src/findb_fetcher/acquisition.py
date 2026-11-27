@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import threading
@@ -15,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from findb_fetcher import rpc_timing
 from findb_fetcher.full_market_state import FullMarketState, QuotaBlockedError
 from findb_fetcher.platform_limits import account_identity, interval, limits
 
@@ -24,6 +26,10 @@ class _AuthorizationExpiredError(QuotaBlockedError):
 
 
 PROTOCOL_VERSION = 2
+# A wait for, or a hold of, the account lock this long also gets a line of its own:
+# a whole-table get or a long queue behind another lane stays visible even outside
+# a member delivery's timing line (#753).
+LONG_ACCOUNT_LOCK_SECONDS = 30.0
 LOCAL_DISPATCH_SECONDS = 0.050
 REMOTE_AGE_SECONDS = 5.0
 _mutex_guard = threading.Lock()
@@ -180,13 +186,19 @@ class Acquisition:
         self.quarantined = False
         self.entered = False
         self.outcome = "unknown"
+        self.lock_wait = 0.0
+        self.locked_at: float | None = None
 
     def __enter__(self) -> Acquisition:
         if self.entered:
             raise QuotaBlockedError("acquisition objects cannot be reused")
         self.entered = True
         self._lock = account_lock(self.state.path, self.account)
+        waiting = time.monotonic()
         self.lock_fd = self._lock.__enter__()
+        self.locked_at = time.monotonic()
+        self.lock_wait = self.locked_at - waiting
+        rpc_timing.record("account_lock wait", self.lock_wait * 1000)
         try:
             self.recover()
         except BaseException:
@@ -539,6 +551,29 @@ class Acquisition:
             _quarantined.append(self._lock)
             raise
         self._lock.__exit__(*args)
+        self._record_hold()
+
+    def _record_hold(self) -> None:
+        """Diagnostics only: how long this acquisition waited for and held the lock."""
+        if self.locked_at is None:
+            return
+        hold = time.monotonic() - self.locked_at
+        rpc_timing.record("account_lock hold", hold * 1000)
+        if max(hold, self.lock_wait) >= LONG_ACCOUNT_LOCK_SECONDS:
+            print(
+                json.dumps(
+                    {
+                        "account_lock": {
+                            "provider": self.provider,
+                            "kind": self.kind,
+                            "wait_seconds": round(self.lock_wait, 3),
+                            "hold_seconds": round(hold, 3),
+                        }
+                    },
+                    separators=(",", ":"),
+                ),
+                flush=True,
+            )
 
 
 _quarantined: list[Any] = []
