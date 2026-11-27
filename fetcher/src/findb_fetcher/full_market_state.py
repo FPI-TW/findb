@@ -145,6 +145,8 @@ class FullMarketState:
                     "login_units": "INTEGER NOT NULL DEFAULT 0 CHECK(login_units IN (0,1))",
                     "usage_before_state": "TEXT NOT NULL DEFAULT 'unknown'",
                     "outcome": "TEXT NOT NULL DEFAULT 'unknown'",
+                    # NULL: armed under the account lock; else an account lock scope.
+                    "lock_scope": "TEXT",
                 },
                 "acquisition_usage": {"connections": "INTEGER", "sample_started_at": "REAL"},
             }.items():

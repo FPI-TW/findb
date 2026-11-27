@@ -81,17 +81,35 @@ def authorization_scope(
         _dispatch_attempts.reset(attempts_token)
 
 
+# Requests that do not wait for the account lock: each scope has a lock of its own
+# and runs one at a time beside the account's other requests (#753). The account's
+# quota, cooldown and pacing stay shared; only the serialization is split.
+# FinLab intraday partitions never touch the SDK's local cache, which the account
+# lock also protects for whole-table gets.
+LOCK_SCOPES = ("finlab_intraday",)
+
+
+def _lock_key(path: Path, account: str, scope: str | None) -> str:
+    key = str(path.resolve()) + "\0" + account
+    return key if scope is None else key + "\0" + scope
+
+
+def _lock_path(path: Path, key: str) -> Path:
+    return path.with_name(path.name + "." + hashlib.sha256(key.encode()).hexdigest() + ".lock")
+
+
 @contextmanager
-def account_lock(path: Path, account: str) -> Iterator[int]:
+def account_lock(path: Path, account: str, scope: str | None = None) -> Iterator[int]:
+    """The account's lock, or with ``scope`` one of its ``LOCK_SCOPES`` locks."""
     import fcntl
 
-    key = str(path.resolve()) + "\0" + account
+    if scope is not None and scope not in LOCK_SCOPES:
+        raise ValueError("unknown account lock scope")
+    key = _lock_key(path, account, scope)
     with _mutex_guard:
         mutex = _mutexes.setdefault(key, threading.RLock())
     with mutex:
-        lock_path = path.with_name(
-            path.name + "." + hashlib.sha256(key.encode()).hexdigest() + ".lock"
-        )
+        lock_path = _lock_path(path, key)
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -105,6 +123,31 @@ def account_lock(path: Path, account: str) -> Iterator[int]:
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
+
+
+def _lock_unheld(path: Path, account: str, scope: str | None) -> bool:
+    """Whether nobody holds this lock now: never waits, so it cannot deadlock.
+
+    A lock held through another descriptor of this very process also counts as
+    held (flock belongs to the open file), so a live thread is never mistaken
+    for a dead process.
+    """
+    import fcntl
+
+    fd = os.open(
+        _lock_path(path, _lock_key(path, account, scope)),
+        os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return True
+    finally:
+        os.close(fd)
 
 
 def thread_holds_account_lock(path: Path | None = None) -> bool:
@@ -141,9 +184,14 @@ class Acquisition:
         account: str | None = None,
         strict: bool = False,
         units: int = 1,
+        lock_scope: str | None = None,
     ) -> None:
         if type(units) is not int or units < 1:
             raise ValueError("acquisition units must be a positive integer")
+        if lock_scope is not None and lock_scope not in LOCK_SCOPES:
+            raise ValueError("unknown account lock scope")
+        # None: the account lock; otherwise a scope that runs beside it (#753).
+        self.lock_scope = lock_scope
         self.provider = provider
         self.kind = kind
         # Provider-charged units of one dispatch, e.g. one credit per batched symbol.
@@ -193,7 +241,7 @@ class Acquisition:
         if self.entered:
             raise QuotaBlockedError("acquisition objects cannot be reused")
         self.entered = True
-        self._lock = account_lock(self.state.path, self.account)
+        self._lock = account_lock(self.state.path, self.account, self.lock_scope)
         waiting = time.monotonic()
         self.lock_fd = self._lock.__enter__()
         self.locked_at = time.monotonic()
@@ -215,6 +263,15 @@ class Acquisition:
                 (self.account,),
             ).fetchall()
             for row in rows:
+                # An intent is only abandoned once the lock it was armed under is
+                # free: an intent under another scope may still be dispatching.
+                # The lock this acquisition holds proves its own intents dead.
+                scope = row["lock_scope"]
+                if scope != self.lock_scope and (
+                    scope not in (None, *LOCK_SCOPES)
+                    or not _lock_unheld(self.state.path, self.account, scope)
+                ):
+                    continue
                 if now < row["armed_at"]:
                     raise QuotaBlockedError("account clock moved backwards")
                 db.execute(
@@ -293,7 +350,7 @@ class Acquisition:
                                 "durable account quota is exhausted", quota_wait=True
                             )
                     db.execute(
-                        "INSERT INTO acquisition_intent(operation_id,account,provider,armed_at,status,cooldown_bound,operation_kind,request_units,login_units) VALUES(?,?,?,?,'armed',?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET armed_at=excluded.armed_at WHERE status='armed'",
+                        "INSERT INTO acquisition_intent(operation_id,account,provider,armed_at,status,cooldown_bound,operation_kind,request_units,login_units,lock_scope) VALUES(?,?,?,?,'armed',?,?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET armed_at=excluded.armed_at WHERE status='armed'",
                         (
                             self.operation_id,
                             self.account,
@@ -303,6 +360,7 @@ class Acquisition:
                             self.kind,
                             self.units,
                             0,
+                            self.lock_scope,
                         ),
                     )
                     self.prepared_windows = (day, minute)

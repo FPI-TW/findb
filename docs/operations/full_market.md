@@ -1219,7 +1219,10 @@ Historical 每 item 使用 protected lease／cancellation probe，不延長 leas
 
 HTTP 429 的 headers 一到就 durable MAX 保存 cooldown，先於 body 讀取。Provider `Retry-After`
 秒數／日期採最少 60 秒，最多 `FETCHER_PROVIDER_MAX_RETRY_AFTER_SECONDS`（預設 300，允許 60–86400）；
-此 cap 在 armed intent 預先保存。Crash 尚無 actual-start 證據時，下一個 lock owner 將 armed 轉 unknown，
+此 cap 在 armed intent 預先保存。Armed intent 記下它是在哪把鎖下建立的（`lock_scope`，NULL 是帳號鎖；見
+[provider work](../architecture/provider_work.md) 的帳號鎖範圍）。只有保護它的鎖已沒有人持有時才算 crash：
+自己持有的那把鎖保護的 intent 一定已死，其他範圍的 intent 以不阻塞的試鎖判斷，拿得到才復原（復原後立即
+放開），拿不到表示仍在派送，略過；同一 process 另一個 FD 持有也算持有。Crash 尚無 actual-start 證據時，復原者將 armed 轉 unknown，
 從 recovery 起至少等待該 cap，並在 armed→recovered 可能區間重疊的 quota windows 各保留一筆 liability。
 不偽造精確 start，不重設歷史債務；已知 finalization 不重複計數。Persistence 失敗或無法終止的 SDK
 child 保留 lock，直到 process 結束與後續 recovery，避免其他 consumer 越過未確認操作。

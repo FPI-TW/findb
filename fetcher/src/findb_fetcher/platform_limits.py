@@ -111,7 +111,7 @@ def merge_identity(
     initial: str,
     known_digests: tuple[str, ...] = (),
 ) -> str:
-    from findb_fetcher.acquisition import account_lock, thread_holds_account_lock
+    from findb_fetcher.acquisition import LOCK_SCOPES, account_lock, thread_holds_account_lock
 
     digests = sorted({digest, legacy_digest, *known_digests})
     placeholders = ",".join("?" for _ in digests)
@@ -141,7 +141,9 @@ def merge_identity(
 
         with ExitStack() as stack:
             for account in sorted({target, *(str(row[0]) for row in rows)}):
-                stack.enter_context(account_lock(state.path, account))
+                # Scoped requests of the same account write its debt too (#753).
+                for scope in (None, *LOCK_SCOPES):
+                    stack.enter_context(account_lock(state.path, account, scope))
             with state.connection() as db:
                 db.execute("BEGIN IMMEDIATE")
                 for alias in {str(row[0]) for row in rows} - {target}:

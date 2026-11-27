@@ -148,7 +148,12 @@ def fetch_partition(
     try:
         with (
             sdk_credential_scope(),
-            Acquisition("finlab", credential=gateway._identity_credential) as operation,
+            # Partitions never wait for a whole-table get of the account (#753).
+            Acquisition(
+                "finlab",
+                credential=gateway._identity_credential,
+                lock_scope="finlab_intraday",
+            ) as operation,
         ):
             try:
                 status, manifest, row_count, original, rows = supervised_call(

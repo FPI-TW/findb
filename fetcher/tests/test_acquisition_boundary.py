@@ -420,3 +420,115 @@ def test_lock_wait_and_hold_reach_the_timing_line_and_long_ones_their_own(
         set(entry) == {"provider", "kind", "wait_seconds", "hold_seconds"} for entry in lines
     )
     assert {entry["provider"] for entry in lines} == {"twelve_data"}
+
+
+SCOPE = "finlab_intraday"
+
+
+@account_boundary_unit
+def _crash_under(path: str, queue, scope) -> None:
+    os.environ["FETCHER_ACCOUNT_STATE_PATH"] = path
+    with authorization_scope(_grant), Acquisition("finlab", lock_scope=scope) as operation:
+        operation.prepare()
+        queue.put(operation.operation_id)
+        queue.close()
+        queue.join_thread()
+        os._exit(9)
+
+
+def _crashed_intent(governor, scope) -> str:
+    ctx = multiprocessing.get_context("spawn")
+    queue = ctx.Queue()
+    worker = ctx.Process(target=_crash_under, args=(str(governor), queue, scope))
+    worker.start()
+    identity = queue.get(timeout=10)
+    worker.join(10)
+    assert worker.exitcode == 9
+    return identity
+
+
+def _intent(governor, operation_id):
+    with FullMarketState(governor).connection() as db:
+        return db.execute(
+            "SELECT status,lock_scope FROM acquisition_intent WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()
+
+
+def _recovery_floors(governor) -> int:
+    with FullMarketState(governor).connection() as db:
+        return db.execute(
+            "SELECT COUNT(*) FROM full_account_cooldown WHERE reason='unknown_recovery'"
+        ).fetchone()[0]
+
+
+def test_a_scoped_acquisition_runs_beside_the_account_lock(governor):
+    from threading import Event
+
+    entered, release = Event(), Event()
+
+    def whole_table():
+        with authorization_scope(_grant), Acquisition("finlab") as operation:
+            operation.start()
+            entered.set()
+            assert release.wait(5)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(whole_table)
+        assert entered.wait(5)
+        began = time.monotonic()
+        with authorization_scope(_grant), Acquisition("finlab", lock_scope=SCOPE) as operation:
+            operation.start()
+        # It never queued behind the account lock's holder.
+        assert time.monotonic() - began < 1
+        release.set()
+        future.result(timeout=5)
+
+
+def test_a_live_intent_of_another_scope_is_never_recovered(governor):
+    from threading import Event
+
+    armed, release = Event(), Event()
+    identity: list[str] = []
+
+    def partition():
+        with authorization_scope(_grant), Acquisition("finlab", lock_scope=SCOPE) as operation:
+            operation.prepare()
+            identity.append(operation.operation_id)
+            armed.set()
+            assert release.wait(5)
+            operation.start()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(partition)
+        assert armed.wait(5)
+        # The account lock's next request recovers on entry; the scoped intent is
+        # still dispatching, so it stays armed and no recovery cooldown appears.
+        with authorization_scope(_grant), Acquisition("finlab"):
+            pass
+        assert tuple(_intent(governor, identity[0])) == ("armed", SCOPE)
+        assert _recovery_floors(governor) == 0
+        release.set()
+        future.result(timeout=5)
+    assert _intent(governor, identity[0])["status"] == "finalized"
+
+
+@pytest.mark.parametrize(
+    ("crashed", "recovering"), [(SCOPE, None), (None, SCOPE), (SCOPE, SCOPE), (None, None)]
+)
+def test_an_intent_whose_lock_is_free_is_recovered_by_any_scope(governor, crashed, recovering):
+    identity = _crashed_intent(governor, crashed)
+    began = time.time()
+
+    with authorization_scope(_grant), Acquisition("finlab", lock_scope=recovering):
+        pass
+
+    assert tuple(_intent(governor, identity)) == ("unknown", crashed)
+    # The unknown dispatch still costs the whole account its cooldown.
+    with FullMarketState(governor).connection() as db:
+        assert db.execute("SELECT next_at FROM full_pacing").fetchone()[0] >= began + 300
+
+
+def test_an_unknown_lock_scope_is_refused(governor):
+    with pytest.raises(ValueError, match="scope"):
+        Acquisition("finlab", lock_scope="anything")

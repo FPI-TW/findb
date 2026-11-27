@@ -111,8 +111,8 @@ PostgreSQL `provider_work` 保存穩定工作，`provider_work_attempt` 以 sequ
 
   非 default lane 找 journal 的順序：主機共用的舊檔、該 provider 的 default 檔、最後才是自己的檔，所以
   lane 建立前已記在 default 檔的工作留在原處。結案清理時非 default lane 只清自己的檔；default 照舊清
-  自己的檔與主機共用的舊檔。帳號 governor 與帳號鎖（`Acquisition`）仍依帳號共用，所以同一 provider 的
-  lane 之間 provider 呼叫一次一個；FinLab SDK cache 的發布時間也在帳號鎖內讀取。
+  自己的檔與主機共用的舊檔。帳號 governor（額度、cooldown、pacing、unknown liability）仍依帳號共用；帳號鎖
+  的範圍見下方「lane 之間仍共用的序列點」。FinLab SDK cache 的發布時間在帳號鎖內讀取。
 - **相容性**：default consumer 送出的 claim 與 scheduler control poll 和沒有 lane 之前逐 byte 相同（不帶
   `lane`）；只有非 default lane 才帶 `lane`，並檢查 claim 回應的 `lane` 是否相符。同一 provider 的所有
   lane 共用一個 scheduler control。
@@ -134,9 +134,13 @@ PostgreSQL `provider_work` 保存穩定工作，`provider_work_attempt` 以 sequ
 - **為什麼要多條 lane**：原本每個 provider 只有一條 FIFO、一個 owner 與一個 consumer，同一 provider 的所有
   dataset 逐成員串行，FinLab 盤中一輪約 6.5 小時會擋住同 provider 的其他工作。不採用把 FinLab 拆成兩個
   provider 名稱：provider 名稱寫在 canonical 的 `source`、source precedence 與 credential scope 裡，等於改資料身分。
-- **lane 之間仍共用的序列點**：帳號鎖（`acquisition.py` 的 `account_lock`）讓同一帳號一次只有一個 provider
-  請求，所以兩條 lane 只能錯開（一條交付給 Source 時另一條抓取），對 provider 的請求頻率不變；Source rate
-  limit 由同一把 Source key 共用；normalization worker、FinDB 主機與 RDS 也共用。同時跑多條 lane 時要觀察這幾層。
+- **lane 之間仍共用的序列點**：帳號鎖（`acquisition.py` 的 `account_lock`）讓同一帳號的請求一次一個。
+  例外是 `LOCK_SCOPES` 裡的請求（目前只有 FinLab 盤中 partition，`lock_scope="finlab_intraday"`，#753）：
+  它們用同一帳號下自己範圍的鎖，同範圍內一次一個，但不等帳號鎖，所以盤中不必等日 K 的整表下載，日 K 也不
+  等盤中。盤中 partition 不寫 SDK cache，日 K 與盤中又在不同 container，cache 本來就分開。額度、cooldown 與
+  pacing 仍依帳號共用：任何範圍寫入的 cooldown floor，其他範圍下一次 prepare 就會看到。Identity merge 同時取
+  帳號鎖與所有範圍的鎖。Source rate limit 由同一把 Source key 共用；normalization worker、FinDB 主機與 RDS 也
+  共用。同時跑多條 lane 時要觀察這幾層。
 `provider_work_receipt` 將所有 Source runs 永久綁定原 work，包含同日多商品與 minute 各 sequence。
 重複 enqueue 不改寫原 scope／順序；不同 profile、historical item 與 retained-raw rerun 決策分開保存。
 
