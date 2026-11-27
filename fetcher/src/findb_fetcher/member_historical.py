@@ -70,6 +70,17 @@ TIMING_INTERVAL_SECONDS = 60
 _JOURNAL = "member-historical:"
 
 
+def _require_open_round(owner) -> None:
+    """A recovered closed round only drains its prepared members; new I/O waits.
+
+    The round closed before its settlement became durable (a stop or crash after the
+    close commit). Source refuses acquisition on it, so a member still to be fetched
+    retries in the next attempt instead of failing the round's recovery.
+    """
+    if owner.work.get("state") in {"closed", "draining"}:
+        raise HistoricalWorkDeferredError("closed historical round resumes in a new attempt")
+
+
 @dataclass(frozen=True, slots=True)
 class _Accepted:
     """A delivered member whose run has not been read back yet."""
@@ -244,6 +255,7 @@ class MemberHistoricalRunner:
         done = _JOURNAL + "unlisted:done"
         if owner.journal.response(done) is not None:
             return {}
+        _require_open_round(owner)
         try:
             owner.journal.reserve_attempt(_JOURNAL + "unlisted", MEMBER_ATTEMPTS)
         except ValueError:
@@ -456,6 +468,7 @@ class MemberHistoricalRunner:
         key: str,
         job_key: str,
     ) -> dict[str, Any] | _Accepted:
+        _require_open_round(owner)
         # A shared native table spends one date budget, never one per member.
         shared = self.adapter.pending_shared_fetch(item.dataset_key, item.trade_date)
         operation = (
