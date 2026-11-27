@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 from sqlalchemy import delete, func, null, select, update
@@ -616,9 +617,8 @@ async def test_failure_stops_later_dates_without_manually_resolving_delivery_ale
     assert all(value != "pending" for value in statuses)
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
-async def test_completed_run_must_match_terminal_delivery_before_backfill_item_completes(
+async def test_a_matching_run_alone_never_completes_a_cohort_date(
     test_session, historical_backfill_clock
 ) -> None:
     today = historical_backfill_clock.date()
@@ -637,47 +637,7 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
         test_session, provider="finlab", allowed_datasets=["tw_equity_eod"]
     )
     assert item is not None and item.lease_token is not None
-    with pytest.raises(HistoricalBackfillValidationError, match="requires a Source run"):
-        await complete_item(
-            test_session,
-            item.item_id,
-            provider="finlab",
-            outcome="completed",
-            lease_token=item.lease_token,
-            run_id=None,
-            failure_code=None,
-            failure_message=None,
-        )
-    foreign_run = IngestionRun(
-        run_id=uuid7(),
-        dataset_key="tw_equity_eod",
-        source="other_provider",
-        schema_id="market_eod",
-        schema_version=1,
-        batch_data_date=today,
-        delivery_mode="sequenced_snapshot",
-        snapshot_id="snapshot",
-        daily_update_id="daily",
-        sequence=1,
-        sequence_count=1,
-        status="completed",
-        total_records=1,
-        success_records=1,
-        failed_records=0,
-    )
-    test_session.add(foreign_run)
-    await test_session.flush()
-    with pytest.raises(HistoricalBackfillValidationError, match="does not match"):
-        await complete_item(
-            test_session,
-            item.item_id,
-            provider="finlab",
-            outcome="completed",
-            lease_token=item.lease_token,
-            run_id=foreign_run.run_id,
-            failure_code=None,
-            failure_message=None,
-        )
+    # A matching completed run no longer stands in for the frozen members' evidence.
     successful_run = IngestionRun(
         run_id=uuid7(),
         dataset_key="tw_equity_eod",
@@ -705,18 +665,20 @@ async def test_completed_run_must_match_terminal_delivery_before_backfill_item_c
     )
     test_session.add_all([successful_run, alert])
     await test_session.flush()
-    with pytest.raises(ProviderWorkError, match="complete expected scope"):
-        async with test_session.begin_nested():
-            await complete_item(
-                test_session,
-                item.item_id,
-                provider="finlab",
-                outcome="completed",
-                lease_token=item.lease_token,
-                run_id=successful_run.run_id,
-                failure_code=None,
-                failure_message=None,
-            )
+    item_id, token = item.item_id, item.lease_token
+    for run_id in (None, successful_run.run_id):
+        with pytest.raises(HistoricalBackfillValidationError, match="EOD completion evidence"):
+            async with test_session.begin_nested():
+                await complete_item(
+                    test_session,
+                    item_id,
+                    provider="finlab",
+                    outcome="completed",
+                    lease_token=token,
+                    run_id=run_id,
+                    failure_code=None,
+                    failure_message=None,
+                )
     await test_session.refresh(request)
     await test_session.refresh(item)
     await test_session.refresh(alert)
@@ -1070,9 +1032,8 @@ async def test_source_claim_and_terminal_failure_are_authenticated_and_serial(
     ).status_code == 409
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
-async def test_source_complete_requires_matching_terminal_run_and_lease_token(
+async def test_source_complete_requires_member_evidence_not_a_run(
     client, test_session, historical_backfill_clock
 ) -> None:
     today = historical_backfill_clock.date()
@@ -1110,6 +1071,7 @@ async def test_source_complete_requires_matching_terminal_run_and_lease_token(
         json={"status": "completed", "lease_token": lease_token},
     )
     assert missing_run.status_code == 422
+    # A matching completed run no longer stands in for the frozen members' evidence.
     run = IngestionRun(
         run_id=uuid7(),
         dataset_key="tw_equity_eod",
@@ -1134,14 +1096,10 @@ async def test_source_complete_requires_matching_terminal_run_and_lease_token(
         headers=headers,
         json={"status": "completed", "lease_token": lease_token, "run_id": str(run.run_id)},
     )
-    assert complete.status_code == 409
-    assert (
-        await client.post(
-            f"/api/v1/source/historical-backfills/{item_id}/complete",
-            headers=headers,
-            json={"status": "completed", "lease_token": lease_token, "run_id": str(run.run_id)},
-        )
-    ).status_code == 409
+    assert complete.status_code == 422 and "EOD completion evidence" in complete.text
+    item = await test_session.get(HistoricalBackfillItem, UUID(item_id))
+    await test_session.refresh(item)
+    assert item.status == "running" and str(item.lease_token) == lease_token
 
 
 @pytest.mark.asyncio
@@ -1218,8 +1176,9 @@ async def test_operator_can_preview_create_list_scope_and_cancel_historical_back
     preview = await client.post(
         "/api/v1/admin/historical-backfills/preview", headers=admin_headers, json=body
     )
+    # No release is published before creation here, so the date has no member count yet.
     assert preview.status_code == 200 and preview.json()["days"] == [
-        {"trade_date": today.isoformat(), "valid": True, "reason": None}
+        {"trade_date": today.isoformat(), "valid": True, "reason": None, "members": None}
     ]
     created = await client.post(
         "/api/v1/admin/historical-backfills", headers=admin_headers, json=body

@@ -17,7 +17,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from sqlalchemy import literal, or_, select, tuple_
+from sqlalchemy import func, literal, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -256,6 +256,96 @@ _COHORT_CACHE: "OrderedDict[tuple, tuple[list[dict], list[dict]]]" = OrderedDict
 _COHORT_CACHE_SIZE = 8
 
 
+async def _date_release(
+    db: AsyncSession, *, provider: str, dataset_key: str, day: date
+) -> tuple[DailyDeliveryPlan | None, UniverseRelease | None]:
+    """The date's Full plan and its release, else the latest release published by then."""
+    plan = await db.scalar(
+        select(DailyDeliveryPlan).where(
+            DailyDeliveryPlan.dataset_key == dataset_key,
+            DailyDeliveryPlan.provider == provider,
+            DailyDeliveryPlan.trade_date == day,
+            DailyDeliveryPlan.execution_profile == "full_market",
+        )
+    )
+    release = (
+        await db.get(UniverseRelease, plan.release_id)
+        if plan is not None
+        else await db.scalar(
+            select(UniverseRelease)
+            .where(
+                UniverseRelease.dataset_key == dataset_key,
+                UniverseRelease.provider == provider,
+                UniverseRelease.status == "published",
+                UniverseRelease.effective_date <= day,
+            )
+            .order_by(UniverseRelease.effective_date.desc(), UniverseRelease.created_at.desc())
+            .limit(1)
+        )
+    )
+    return plan, release
+
+
+async def preview_member_counts(
+    db: AsyncSession,
+    *,
+    provider: str,
+    dataset_key: str,
+    days: list[date],
+    today: date | None = None,
+) -> dict[date, int]:
+    """Members a request created now would freeze for each date, for operator estimates.
+
+    A ``current_release`` request freezes today's release for every date; a
+    ``dated_release`` date freezes its own release's mapped members listed by then.
+    Later-release supplements are requested too but never counted here. Feeds whose
+    members come from the date's own report have no count before acquisition.
+    """
+    cohort = historical_cohort(provider, dataset_key)
+    if not days or cohort not in {"current_release", "dated_release"}:
+        return {}
+    if cohort == "current_release":
+        _, release = await _date_release(
+            db,
+            provider=provider,
+            dataset_key=dataset_key,
+            day=today or _request_today(provider, dataset_key),
+        )
+        if release is None:
+            return {}
+        count = await db.scalar(
+            select(func.count())
+            .select_from(UniverseMember)
+            .where(UniverseMember.release_id == release.release_id)
+        )
+        return dict.fromkeys(days, int(count or 0))
+    counts: dict[date, int] = {}
+    # Releases are immutable: each one's mapped members and listing dates are read once.
+    listings: dict[UUID, list[date | None]] = {}
+    for day in days:
+        _, release = await _date_release(db, provider=provider, dataset_key=dataset_key, day=day)
+        if release is None:
+            continue
+        if release.release_id not in listings:
+            rows = await db.execute(
+                select(UniverseMemberListing.listed_date)
+                .select_from(UniverseMember)
+                .outerjoin(
+                    UniverseMemberListing,
+                    UniverseMemberListing.member_id == UniverseMember.member_id,
+                )
+                .where(
+                    UniverseMember.release_id == release.release_id,
+                    UniverseMember.mapping_status == "mapped",
+                )
+            )
+            listings[release.release_id] = [listed for (listed,) in rows]
+        counts[day] = sum(
+            1 for listed in listings[release.release_id] if listed is None or listed <= day
+        )
+    return counts
+
+
 async def _bind_full_releases(
     db: AsyncSession, *, provider: str, dataset_key: str, days: list[date]
 ) -> dict:
@@ -266,29 +356,7 @@ async def _bind_full_releases(
     """
     bindings: dict[str, dict] = {}
     for day in days:
-        plan = await db.scalar(
-            select(DailyDeliveryPlan).where(
-                DailyDeliveryPlan.dataset_key == dataset_key,
-                DailyDeliveryPlan.provider == provider,
-                DailyDeliveryPlan.trade_date == day,
-                DailyDeliveryPlan.execution_profile == "full_market",
-            )
-        )
-        release = (
-            await db.get(UniverseRelease, plan.release_id)
-            if plan is not None
-            else await db.scalar(
-                select(UniverseRelease)
-                .where(
-                    UniverseRelease.dataset_key == dataset_key,
-                    UniverseRelease.provider == provider,
-                    UniverseRelease.status == "published",
-                    UniverseRelease.effective_date <= day,
-                )
-                .order_by(UniverseRelease.effective_date.desc(), UniverseRelease.created_at.desc())
-                .limit(1)
-            )
-        )
+        plan, release = await _date_release(db, provider=provider, dataset_key=dataset_key, day=day)
         if release is None:
             raise HistoricalBackfillError(f"no published universe applies to {day.isoformat()}")
         members = await _release_cohort(db, release.release_id, day)
@@ -1316,7 +1384,6 @@ async def complete_item(
         or item.lease_expires_at <= now
     ):
         raise HistoricalBackfillConflictError("backfill item is not leased")
-    run: IngestionRun | None = None
     eod_evidence = None
     unavailable: dict[str, str] = {}
     halted: set[str] = set()
@@ -1379,13 +1446,9 @@ async def complete_item(
         await _validate_futures_completion(db, item, run_id, result_evidence, now)
         item.result_evidence = result_evidence
     elif outcome == "completed":
-        if run_id is None:
-            raise HistoricalBackfillValidationError("completed item requires a Source run")
-        run = await db.get(IngestionRun, run_id, with_for_update=True)
-        if not _valid_completed_run(run, item):
-            raise HistoricalBackfillValidationError(
-                "Source run does not match completed backfill item"
-            )
+        # Every historical date completes by its frozen members' or its report's
+        # evidence; requests from before cohorts existed have drained.
+        raise HistoricalBackfillValidationError("completed item requires member or report evidence")
     identity = db.info["provider_work"]
     fence_identity = {
         "provider": provider,

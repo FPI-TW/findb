@@ -143,33 +143,6 @@ class DeliveryCompatibility(CatalogModel):
     slot_id: CanonicalSlotId
 
 
-class HistoricalExecution(CatalogModel):
-    """Non-schedule inputs retained by the existing historical executors."""
-
-    universe_file: Annotated[str, Field(pattern=r"^[a-zA-Z0-9_.-]+\.json$")]
-    outputsize: PositiveInt
-    max_attempts: PositiveInt
-    retry_base_seconds: PositiveInt
-    retry_max_seconds: PositiveInt
-    lease_seconds: PositiveInt
-    poll_interval_seconds: PositiveInt
-    wait_timeout_seconds: PositiveInt
-    max_credits_per_run: PositiveInt
-    max_records_per_run: PositiveInt
-
-    @model_validator(mode="after")
-    def retry_bounds(self) -> Self:
-        if self.retry_max_seconds < self.retry_base_seconds:
-            raise ValueError("historical retry ceiling is below base")
-        return self
-
-
-class HistoricalExecutionProfiles(CatalogModel):
-    local: HistoricalExecution
-    staging: HistoricalExecution
-    production: HistoricalExecution
-
-
 # How a historical date's members are frozen: ``dated_release`` binds each date to
 # the Full release that applied to it; ``current_release`` binds the whole request
 # to the release current at creation (the provider can only list today's
@@ -204,7 +177,6 @@ class FeedDefinition(CatalogModel):
     completion_deadline: CompletionDeadline | None
     bounded_monitor: BoundedMonitor
     delivery: DeliveryCompatibility
-    historical_execution: HistoricalExecutionProfiles | None
     historical_cohort: HistoricalCohort | None
     historical_requests_per_date: HistoricalRequests | None
     # Production backfill window in calendar days; None keeps the 366-day default.
@@ -239,8 +211,6 @@ class FeedDefinition(CatalogModel):
             raise ValueError("non-acquiring feed must not publish a schedule")
         if caps.historical != "unsupported" and (not caps.source or self.lifecycle != "active"):
             raise ValueError("historical work requires an active Source capability")
-        if self.historical_execution is not None and caps.historical == "unsupported":
-            raise ValueError("unsupported historical feed has execution parameters")
         if (self.historical_cohort is None) != (caps.historical == "unsupported"):
             raise ValueError("historical feeds, and only they, declare a historical cohort")
         if (self.historical_requests_per_date is None) != (caps.historical == "unsupported"):
@@ -252,9 +222,6 @@ class FeedDefinition(CatalogModel):
             and self.historical_cohort != "dated_release"
         ):
             raise ValueError("per-member estimates need a dated_release member list")
-        if self.historical_execution is not None and self.historical_cohort != "dated_release":
-            # A Backend-owned cohort would make the planner ignore a packaged universe.
-            raise ValueError("only dated_release feeds may package a historical universe")
         if self.unlisted_symbols == "deliver" and (
             self.contract.schema_id != "market_eod" or self.universe_mode != "refreshed"
         ):

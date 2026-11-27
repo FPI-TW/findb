@@ -240,16 +240,6 @@
           ],
           "title": "Historical Cohort"
         },
-        "historical_execution": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HistoricalExecutionProfiles"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "historical_lookback_days": {
           "anyOf": [
             {
@@ -350,7 +340,6 @@
         "completion_deadline",
         "bounded_monitor",
         "delivery",
-        "historical_execution",
         "historical_cohort",
         "historical_requests_per_date",
         "historical_lookback_days",
@@ -359,97 +348,6 @@
         "calendar_required"
       ],
       "title": "FeedDefinition",
-      "type": "object"
-    },
-    "HistoricalExecution": {
-      "additionalProperties": false,
-      "description": "Non-schedule inputs retained by the existing historical executors.",
-      "properties": {
-        "lease_seconds": {
-          "exclusiveMinimum": 0,
-          "title": "Lease Seconds",
-          "type": "integer"
-        },
-        "max_attempts": {
-          "exclusiveMinimum": 0,
-          "title": "Max Attempts",
-          "type": "integer"
-        },
-        "max_credits_per_run": {
-          "exclusiveMinimum": 0,
-          "title": "Max Credits Per Run",
-          "type": "integer"
-        },
-        "max_records_per_run": {
-          "exclusiveMinimum": 0,
-          "title": "Max Records Per Run",
-          "type": "integer"
-        },
-        "outputsize": {
-          "exclusiveMinimum": 0,
-          "title": "Outputsize",
-          "type": "integer"
-        },
-        "poll_interval_seconds": {
-          "exclusiveMinimum": 0,
-          "title": "Poll Interval Seconds",
-          "type": "integer"
-        },
-        "retry_base_seconds": {
-          "exclusiveMinimum": 0,
-          "title": "Retry Base Seconds",
-          "type": "integer"
-        },
-        "retry_max_seconds": {
-          "exclusiveMinimum": 0,
-          "title": "Retry Max Seconds",
-          "type": "integer"
-        },
-        "universe_file": {
-          "pattern": "^[a-zA-Z0-9_.-]+\\.json$",
-          "title": "Universe File",
-          "type": "string"
-        },
-        "wait_timeout_seconds": {
-          "exclusiveMinimum": 0,
-          "title": "Wait Timeout Seconds",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "universe_file",
-        "outputsize",
-        "max_attempts",
-        "retry_base_seconds",
-        "retry_max_seconds",
-        "lease_seconds",
-        "poll_interval_seconds",
-        "wait_timeout_seconds",
-        "max_credits_per_run",
-        "max_records_per_run"
-      ],
-      "title": "HistoricalExecution",
-      "type": "object"
-    },
-    "HistoricalExecutionProfiles": {
-      "additionalProperties": false,
-      "properties": {
-        "local": {
-          "$ref": "#/$defs/HistoricalExecution"
-        },
-        "production": {
-          "$ref": "#/$defs/HistoricalExecution"
-        },
-        "staging": {
-          "$ref": "#/$defs/HistoricalExecution"
-        }
-      },
-      "required": [
-        "local",
-        "staging",
-        "production"
-      ],
-      "title": "HistoricalExecutionProfiles",
       "type": "object"
     },
     "PlatformLimits": {

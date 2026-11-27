@@ -142,10 +142,6 @@ candidate_rows 的清理；`admin_session` 到期／撤銷後也未找到定期�
 | `backend/app/vocabulary.py:41` | `sql_in` | 只有定義 |
 | `backend/app/schemas/full_market.py:268` | `FeedActivateRequest`／`FeedDeactivateRequest` | 無 route／service 使用 |
 | `backend/app/services/full_market.py:1572` | `activate_feed`／`deactivate_feed` | 只有回 410 的內部函式，沒有掛載的 endpoint 或呼叫者 |
-| `fetcher/src/findb_fetcher/finlab_scheduler.py:55` | `FinLabSchedulerError` | 只有定義 |
-| `fetcher/src/findb_fetcher/finlab_universe.py:338` | `_exact_int` | 只有定義 |
-| `fetcher/src/findb_fetcher/schedule.py:177` | `load_schedule_config` | 只有定義；保留它也不構成 runtime 使用舊 schedule 的證據 |
-| `fetcher/src/findb_fetcher/schedule.py:429` | `_optional_date` | 只有定義 |
 
 ### 只剩測試引用，沒有正式 runtime 消費者
 
@@ -155,10 +151,6 @@ candidate_rows 的清理；`admin_session` 到期／撤銷後也未找到定期�
   但正式程式沒有呼叫；這類 patch 已不能證明對應路徑被隔離或覆蓋。
 - `fetcher/src/findb_fetcher/daily_runtime.py:8` 的 `validate_policies`。
 - `fetcher/src/findb_fetcher/scheduler_control.py:128` 的 `require_scheduler_stopped`。
-- `fetcher/src/findb_fetcher/scheduler_state.py:712` 的 `validate_scheduler_state_read_only`。
-- `fetcher/src/findb_fetcher/schedule.py:185` 的 `load_schedule_manifest` 在正式程式只由無消費者的
-  `load_schedule_config` 呼叫；測試仍大量使用。不能據此刪整個 `schedule.py`，
-  因為 `ScheduleConfig`／`ScheduleError` 仍由舊 historical executor 使用。
 - `dashboard/src/features/operations/OperationsConsole.tsx` 是舊 re-export barrel，
   唯一外部引用為 `OperationsConsole.test.tsx`；正式 routes 已直接載入拆分模組。
 
@@ -168,8 +160,6 @@ candidate_rows 的清理；`admin_session` 到期／撤銷後也未找到定期�
 ### 不應直接當孤兒刪除
 
 - `legacy_checkpoints.read_taifex_pilot_checkpoint`：README／provider-work 文件明定的唯讀證據工具。
-- `TwelveDataScheduledExecutor`、`FinLabScheduledExecutor`、靜態 universe 與舊 scheduler state：
-  historical runtime 仍有無 cohort request 的相容分支，`docs/dev/backlog.md` 已追蹤排空後移除。
 - `readiness_probe.py`：有可用的 `python -m` 入口，但只找到測試、沒有正式 runbook／部署使用；
   應先確認 operator 是否仍用，不列為可立即刪除的死模組。
 - `backend/scripts/dev.ps1`：沒有 repo 內呼叫者，但本身是可獨立執行的 Windows wrapper。

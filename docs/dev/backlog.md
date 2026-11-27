@@ -19,10 +19,6 @@
 
 - [ ] 先在 staging 以一個日期驗收 Twelve Data 與 FinLab（含 `tw_etf_eod`）新 request，再到 production
   回補缺口：Twelve Data 11/02–11/05、FinLab 10/28 之後（範圍見 #409、#433）。
-- [ ] 下一版移除舊 historical 路徑（#409、#433）：確認 production 沒有未排空的無 cohort Twelve Data／FinLab
-  request 後，移除 `TwelveDataScheduledExecutor`、`FinLabScheduledExecutor`、`scheduler_state.py`、
-  `finlab_universe.py`、`universe.py`、靜態清單（`fetcher/configs/twelve_data_*`、`finlab_tw50_*.json`、
-  `finlab_tw_review_required.v1.json`）與 catalog 的 `historical_execution`，以及 Backend 的單一 run 相容驗證。
 
 ## CI/CD 五分鐘部署驗收
 

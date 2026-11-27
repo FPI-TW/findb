@@ -233,13 +233,18 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
         )
         work_id = work.work_id
         await test_session.commit()
-        config = json.loads(
-            (
-                Path(__file__).resolve().parents[2]
-                / "fetcher/tests/fixtures/legacy_schedules/full_market.local.v1.json"
-            ).read_text()
-        )
-        feed = next(f for f in config["feeds"] if f["provider"] == "factset")
+        # The FactSet feed's identity as the daily runtime holds it.
+        feed = {
+            "provider": "factset",
+            "dataset_key": "hk_equity_eod",
+            "market": "HK",
+            "asset_class": "equity",
+            "source_timezone": "Asia/Hong_Kong",
+            "scheduled_time": "18:30",
+            "target_date_lag_days": 0,
+            "completion_window_seconds": 16200,
+            "slot_id": "asia_pacific_markets_window",
+        }
         state = FullMarketState(tmp_path / "daily.sqlite3")
         state.bind_profile("full_market")
         frozen = plan.model_dump(mode="json")
@@ -253,7 +258,7 @@ async def test_daily_factset_partial_keeps_frozen_plan_and_prepared_receipts(
                     assert owner is not None
                     instance = runtime.FullMarketRuntime(
                         provider="factset",
-                        config=config,
+                        config={"feeds": [feed]},
                         state=state,
                         source=source,
                         delivery=SourceAPIClient(h.config, h.registry, client=h.http()),

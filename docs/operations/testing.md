@@ -802,6 +802,7 @@ calendar、plan、prepared bytes 與收據；只有同一 daily identity 的明�
 
 Fetcher CI 在三個實際 images 中禁止網路、以唯讀 root 執行四 providers 的 `--check`、
 兩個 profiles 的 `--initialize-state`／`--health` 與 historical `--check`，並確認 image 不含舊排程檔。
-舊排程資料僅位於 `fetcher/tests/fixtures/legacy_schedules`，用於 frozen identity 與既有參數相容性比較。
+舊排程資料與 `legacy_schedules` fixtures 已移除；跨環境 frozen membership 的 parity 測試以 installed
+descriptor 的全部 acquisition feeds 參數化。
 部署測試包含格式 3 已接受主機升級、格式 4 bootstrap／inventory allowlist、未知／缺失 consumer 拒絕，
 以及 activation failure 恢復原 container、image、pointer 與 checkpoint。

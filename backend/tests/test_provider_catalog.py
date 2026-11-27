@@ -80,9 +80,9 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
     feeds = {f.dataset_key: f for f in catalog.feeds}
     assert feeds["hk_equity_eod"].contract.current_version == 2
     assert feeds["hk_equity_eod"].contract.accepted_versions == [1, 2]
-    # ETF historical backfills the Full release cohort; it needs no static universe file.
+    # ETF historical backfills the Full release cohort, like every historical feed.
     assert feeds["tw_etf_eod"].capabilities.historical == "executable"
-    assert feeds["tw_etf_eod"].historical_execution is None
+    assert feeds["tw_etf_eod"].historical_cohort == "dated_release"
     us = feeds["us_equity_eod"]
     assert us.schedule.timezone == "America/New_York"
     assert us.schedule.local_time == "17:00"
@@ -171,7 +171,7 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "deadline_other_timezone",
         "deadline_same_day",
         "disabled_schedule",
-        "unsupported_historical_execution",
+        "retired_historical_execution",
         "bounded_without_deadline",
     ],
 )
@@ -224,7 +224,6 @@ def test_invalid_metadata_fails_closed(declaration, fault):
         f.update(
             lifecycle="retired",
             schedule=None,
-            historical_execution=None,
             historical_cohort=None,
             historical_requests_per_date=None,
         )
@@ -244,10 +243,9 @@ def test_invalid_metadata_fails_closed(declaration, fault):
         f["completion_deadline"]["trade_date_day_offset"] = 0
     elif fault == "disabled_schedule":
         f["capabilities"]["acquisition"] = False
-    elif fault == "unsupported_historical_execution":
-        f["capabilities"]["historical"] = "unsupported"
-        f["historical_cohort"] = None
-        f["historical_requests_per_date"] = None
+    elif fault == "retired_historical_execution":
+        # The packaged static-universe profile left with the legacy historical executor.
+        f["historical_execution"] = None
     elif fault == "bounded_without_deadline":
         f["bounded_monitor"]["deadline"] = None
     with pytest.raises(ValueError):
@@ -296,26 +294,6 @@ def test_time_changes_do_not_republish_fetcher_dashboard_or_inventory(declaratio
     }
 
 
-def test_historical_defaults_match_existing_execution_inputs(declaration):
-    catalog = ProviderCatalog.model_validate(declaration)
-    for profile, filename in (
-        ("local", "daily_scheduler.v2.json"),
-        ("staging", "daily_scheduler.v2.json"),
-        ("production", "daily_scheduler.production.v3.json"),
-    ):
-        manifest = json.loads(
-            (ROOT / "fetcher/tests/fixtures/legacy_schedules" / filename).read_text()
-        )
-        old = {(f["provider"], f["dataset_key"]): f for f in manifest["feeds"]}
-        for feed in catalog.feeds:
-            if feed.historical_execution is None:
-                continue
-            execution = getattr(feed.historical_execution, profile).model_dump()
-            assert execution == {
-                key: old[(feed.provider, feed.dataset_key)][key] for key in execution
-            }
-
-
 def test_retirement_removes_new_options_without_reintroducing_consumers(declaration):
     provider = declaration["providers"][0]
     provider["consumer_roles"] = []
@@ -323,7 +301,6 @@ def test_retirement_removes_new_options_without_reintroducing_consumers(declarat
     feed.update(
         lifecycle="retired",
         schedule=None,
-        historical_execution=None,
         historical_cohort=None,
         historical_requests_per_date=None,
     )
@@ -354,11 +331,8 @@ def test_fetcher_projection_contains_no_schedules(declaration):
     ):
         assert f'"{field}"' not in body
     assert '"slot_id"' in body  # Existing delivery contract only; never a clock.
-    for feed in json.loads(body)["feeds"]:
-        profiles = feed["historical_execution"]
-        if profiles:
-            for profile in profiles.values():
-                assert (ROOT / "fetcher/configs" / profile["universe_file"]).is_file()
+    # Historical members come from the Backend's frozen cohorts, never a packaged list.
+    assert all("historical_execution" not in feed for feed in json.loads(body)["feeds"])
 
 
 def test_inventory_preserves_image_sharing_and_all_roles(declaration):
@@ -498,7 +472,6 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
     feed.update(
         lifecycle="draining",
         schedule=None,
-        historical_execution=None,
         historical_cohort=None,
         historical_requests_per_date=None,
     )
@@ -602,13 +575,6 @@ def test_historical_cohort_rules(declaration):
     taifex["historical_cohort"] = None
     with pytest.raises(ValidationError, match="declare a historical cohort"):
         ProviderCatalog.model_validate(declaration)
-    # A Backend-owned cohort would make the planner ignore a packaged universe.
-    taifex["historical_cohort"] = "daily_report"
-    taifex["historical_execution"] = next(
-        f for f in declaration["feeds"] if f["provider"] == "twelve_data"
-    )["historical_execution"]
-    with pytest.raises(ValidationError, match="only dated_release feeds"):
-        ProviderCatalog.model_validate(declaration)
 
 
 def test_feeds_of_one_dataset_share_a_calendar_market(declaration):
@@ -670,7 +636,6 @@ def test_seed_requires_exactly_one_catalog_source_feed(monkeypatch, declaration,
         feeds[index].update(
             lifecycle="retired",
             schedule=None,
-            historical_execution=None,
             historical_cohort=None,
             historical_requests_per_date=None,
         )

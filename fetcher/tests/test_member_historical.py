@@ -490,21 +490,14 @@ def test_a_recovered_closed_round_defers_members_it_has_not_fetched(monkeypatch,
 
 
 @pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
-def test_requests_without_a_cohort_keep_the_legacy_executor(monkeypatch, provider):
+def test_an_item_without_a_frozen_cohort_is_refused(monkeypatch, provider):
     from findb_fetcher import historical_runtime
 
-    class LegacyPathError(Exception):
-        pass
-
-    def legacy(*args, **kwargs):
-        raise LegacyPathError
-
     monkeypatch.setattr(historical_runtime, "require_owner", lambda provider: None)
-    monkeypatch.setattr(historical_runtime, "historical_execution", legacy)
     monkeypatch.setattr(
         historical_runtime.MemberHistoricalRunner,
         "from_env",
-        classmethod(lambda cls, provider: pytest.fail("legacy request used the cohort runner")),
+        classmethod(lambda cls, provider: pytest.fail("an uncohorted item reached the runner")),
     )
     runner = (
         historical_runtime.TwelveDataHistoricalRunner
@@ -512,7 +505,8 @@ def test_requests_without_a_cohort_keep_the_legacy_executor(monkeypatch, provide
         else historical_runtime.FinLabHistoricalRunner
     )()
     item = _item(provider, "us_equity_eod" if provider == "twelve_data" else "tw_equity_eod", [])
-    with pytest.raises(LegacyPathError):
+    # Requests from before cohorts existed have all drained; none may acquire now.
+    with pytest.raises(historical_runtime.HistoricalRuntimeError, match="no frozen cohort"):
         runner.run(replace(item, universe_snapshot=None))
     runner.close()
 

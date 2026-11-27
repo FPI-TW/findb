@@ -31,7 +31,6 @@ from tests.test_full_market import DAY, _activated_plan
 pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "stop_before_confirmation,close_crash,temporary_rejection",
@@ -92,10 +91,6 @@ async def test_daily_historical_handoff_with_real_fenced_source_and_proofs(
             inodes[provider] = inode
     await attest_cutover(test_session, inodes)
     monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", str(tmp_path / "absent-daily.json"))
-    monkeypatch.setenv(
-        "FETCHER_FINLAB_UNIVERSE_FILE",
-        str(root / "fetcher/configs/finlab_tw_review_required.v1.json"),
-    )
     dataset, _, daily_plan = await _activated_plan(test_session, "tw_equity_eod", count=2)
     from copy import deepcopy
 
@@ -208,8 +203,11 @@ async def test_daily_historical_handoff_with_real_fenced_source_and_proofs(
         )
 
     monkeypatch.setattr(history_client, "FullMarketSourceClient", source_factory)
+    from findb_fetcher import member_historical
+
+    # Frozen cohorts run member by member through the Full daily adapters.
     monkeypatch.setattr(
-        historical_runtime,
+        member_historical,
         "SourceAPIClient",
         lambda value, contracts: SourceAPIClient(
             value, contracts, client=httpx.Client(transport=Transport())
@@ -224,6 +222,13 @@ async def test_daily_historical_handoff_with_real_fenced_source_and_proofs(
             )
 
     class Provider:
+        # Revision checks compare against earlier rows; this offline table has none.
+        prior_rows: dict = {}
+
+        def fetch_market_dataset(self, name, *, target_date, symbols):
+            # The equity feed keeps every served column; the frozen cohort is all served.
+            return self.fetch_dataset(name, target_date=target_date, symbols=symbols)
+
         def fetch_dataset(self, name, *, target_date, symbols):
             owner = coordinator.active()
             assert owner and owner.work["kind"] == "historical"
@@ -237,12 +242,21 @@ async def test_daily_historical_handoff_with_real_fenced_source_and_proofs(
                 (tuple(10 if "成交" in name else 1 for _ in symbols),),
             )
 
+    import importlib.metadata
+
+    from findb_fetcher.providers.finlab import FINLAB_SDK_VERSION, FinLabSdkGateway
+
+    monkeypatch.setattr(FinLabSdkGateway, "from_env", classmethod(lambda cls, **kwargs: Provider()))
+    # The Backend environment has no FinLab SDK; the gateway above stands in for it.
+    version = importlib.metadata.version
     monkeypatch.setattr(
-        historical_runtime.FinLabSdkGateway, "from_env", classmethod(lambda cls: Provider())
+        importlib.metadata,
+        "version",
+        lambda name: FINLAB_SDK_VERSION if name == "finlab" else version(name),
     )
-    monkeypatch.setattr(historical_runtime, "R2RawPayloadStore", lambda value: Raw())
+    monkeypatch.setattr(member_historical, "R2RawPayloadStore", lambda value: Raw())
     monkeypatch.setattr(
-        historical_runtime.RawStorageConfig, "from_env", classmethod(lambda cls: None)
+        member_historical.RawStorageConfig, "from_env", classmethod(lambda cls: None)
     )
     feed = {
         "provider": "finlab",

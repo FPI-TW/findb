@@ -275,11 +275,11 @@ Raw R2 保留完整原始 HTTP bytes，即使 provider 回傳額外日期也不�
 四個 historical runners 與 `findb-fetch-backfill-plan` 使用 package 內的
 `data/execution_descriptors.v1.json`，不讀 daily／full-market 排程檔或 Source execution-config。
 `findb-fetch-historical-backfill --provider ... --check` 驗證 bootstrap 與 metadata，沒有外部抓取。
-Twelve Data／FinLab 的 universe 與重試預設依 `APP_ENVIRONMENT` 選取；Backend request／lease、
-calendar snapshot、cutoff 與 acquisition authorization 仍決定是否合法。
+成員一律來自 Backend 凍結的 cohort，沒有打包的靜態 universe；Backend request／lease、
+calendar snapshot、cutoff 與 acquisition authorization 決定是否合法。
 
-Planner 移除 `--schedule-file`，以 `--universe-file` 指定估算用的 reviewed universe（只限
-Twelve Data／FinLab，不會修改 worker）。既有 `FETCHER_FINLAB_UNIVERSE_FILE` 保留並供兩者共用。
+Planner 不讀任何 universe 檔：逐成員 feed 的呼叫數與筆數以 Admin preview 回傳的每日成員數估算，
+缺少成員數時拒絕估算。`--universe-file` 與 `FETCHER_FINLAB_UNIVERSE_FILE` 已移除。
 新 historical delivery 的 `scheduled_for` 使用 request 交易日 UTC 00:00 作日期標記；舊 prepared
 bytes、job key、attempt 與 frozen members 不改寫。操作與分階段部署見
 [historical runbook](../docs/operations/data_maintenance.md#production-universe與historical-backfill)。

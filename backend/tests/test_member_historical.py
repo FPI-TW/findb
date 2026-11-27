@@ -135,6 +135,10 @@ async def test_each_date_freezes_its_plan_release_or_latest_published(
     changed.members = [*changed.members[1:], late]
     changed.effective_date = date(2026, 10, 16)
     newer = await _publish(test_session, changed, first=False)
+    # The operator preview counts the members each date would freeze, before creation.
+    assert await historical_backfill.preview_member_counts(
+        test_session, provider=provider, dataset_key=SCOPES[provider], days=[FIRST, SECOND]
+    ) == {FIRST: 2, SECOND: 3}
     request, _ = await historical_backfill.create_request(
         test_session,
         provider=provider,
@@ -552,9 +556,7 @@ async def test_historical_no_data_requires_the_same_frozen_member_and_a_settled_
 
 
 @pytest.mark.asyncio
-async def test_requests_created_before_cohorts_keep_single_run_completion(
-    client, test_session, monkeypatch
-):
+async def test_a_request_without_a_cohort_can_no_longer_complete(client, test_session, monkeypatch):
     headers, _, _ = await setup(test_session, monkeypatch)
     request, _ = await historical_backfill.create_request(
         test_session,
@@ -565,7 +567,7 @@ async def test_requests_created_before_cohorts_keep_single_run_completion(
         request_key="finlab-legacy",
         created_by="owner",
     )
-    # A request created before this change has no universe snapshot.
+    # As before cohorts existed: no universe snapshot. Those requests have all drained.
     request.universe_snapshot = None
     await test_session.commit()
     owner, work_headers, item = await _claim(client, headers)
@@ -591,7 +593,7 @@ async def test_requests_created_before_cohorts_keep_single_run_completion(
         headers=work_headers,
         json={"status": "completed", "lease_token": owner["token"]},
     )
-    assert response.status_code == 422 and "Source run" in response.text
+    assert response.status_code == 422 and "member or report evidence" in response.text
 
 
 def _us(body: dict) -> dict:

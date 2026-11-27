@@ -35,13 +35,6 @@ from findb_fetcher.scheduler_control import (
     SchedulerControlResponseError,
     SchedulerControlTransportError,
 )
-from findb_fetcher.universe import (
-    SymbolUniverse,
-    UniverseError,
-    UniverseLimits,
-    UniverseSymbol,
-    load_symbol_universe,
-)
 
 __all__ = [
     "ContractChecksumError",
@@ -65,15 +58,10 @@ __all__ = [
     "SourceAPIProtocolError",
     "SourceAPIResponseError",
     "SourceAPITransportError",
-    "SymbolUniverse",
     "TwelveDataClient",
     "TwelveDataConfig",
     "TwelveDataNoNewDataError",
     "TwelveDataPayloadError",
     "TwelveDataResponseError",
-    "UniverseError",
-    "UniverseLimits",
-    "UniverseSymbol",
     "build_market_eod_request",
-    "load_symbol_universe",
 ]

@@ -78,7 +78,6 @@ class RuntimeHarness:
         root = Path(__file__).resolve().parents[2]
         patch = self.patch
         patch.syspath_prepend(str(root / "fetcher/src"))
-        from findb_fetcher import execution_metadata
         from findb_fetcher import provider_work as coordinator
         from findb_fetcher.config import FetcherConfig
         from findb_fetcher.contracts import ContractRegistry
@@ -87,7 +86,6 @@ class RuntimeHarness:
             from tests.provider_work_clock import dispatch_clock
 
             self.dispatch_clock = dispatch_clock(patch)
-        patch.setattr(execution_metadata, "CONFIGS_DIR", root / "fetcher/configs")
         self.queue = coordinator
         patch.setattr(get_settings(), "PROVIDER_WORK_REQUIRED", True)
         patch.setattr(get_settings(), "APP_ENVIRONMENT", self.environment)
@@ -97,9 +95,6 @@ class RuntimeHarness:
             "FETCHER_ACCOUNT_STATE_PATH": str(self.path / "account/governor.sqlite3"),
             "FETCHER_HISTORICAL_STATE_DIR": str(self.path / "historical"),
             "FETCHER_HISTORICAL_SCHEDULE_FILE": str(self.path / "absent-daily.json"),
-            "FETCHER_FINLAB_UNIVERSE_FILE": str(
-                root / "fetcher/configs/finlab_tw_review_required.v1.json"
-            ),
         }.items():
             patch.setenv(key, value)
         inodes = {}
@@ -168,6 +163,24 @@ class RuntimeHarness:
                 pytest.fail("native I/O escaped whole-work flock")
         with self.trace.open("a") as stream:
             stream.write(json.dumps(operation) + "\n")
+
+    async def draining(self, timeout: float = 15) -> None:
+        """Wait until the Fetcher holds an accepted delivery for its normalization.
+
+        A frozen cohort's runner confirms members later; after a stop it waits on the
+        item's completion, which Source answers 409 until accepted runs are terminal.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while not (
+            self.accepted.is_set()
+            or any(
+                path.endswith(("/complete", "/settle")) and status == 409
+                for path, status, *_ in self.source_events
+            )
+        ):
+            assert loop.time() < deadline, "the accepted delivery never reached its drain"
+            await asyncio.sleep(0.05)
 
     def native_calls(self):
         return self.trace.read_text().splitlines() if self.trace.exists() else []
@@ -255,7 +268,6 @@ class RuntimeHarness:
 
     def install_native_fakes(self):
         from findb_fetcher import historical_backfill as history
-        from findb_fetcher import historical_runtime as adapters
         from findb_fetcher import member_historical as members
         from findb_fetcher.client import SourceAPIClient
         from findb_fetcher.full_market_client import FullMarketSourceClient
@@ -286,12 +298,10 @@ class RuntimeHarness:
                 config, client=client or self.http()
             ),
         )
-        self.patch.setattr(adapters, "SourceAPIClient", source_factory)
-        self.patch.setattr(adapters, "R2RawPayloadStore", lambda config: Raw())
         # Frozen cohorts run member by member through the Full daily adapters.
         self.patch.setattr(members, "SourceAPIClient", source_factory)
         self.patch.setattr(members, "R2RawPayloadStore", lambda config: Raw())
-        self.patch.setattr(adapters.RawStorageConfig, "from_env", classmethod(lambda cls: None))
+        self.patch.setattr(members.RawStorageConfig, "from_env", classmethod(lambda cls: None))
         self.raw = Raw()
 
         def twelve_series(request, symbol):
@@ -328,14 +338,6 @@ class RuntimeHarness:
                 200, json={symbol: twelve_series(request, symbol) for symbol in symbols}
             )
 
-        self.patch.setattr(
-            adapters,
-            "TwelveDataClient",
-            lambda config: TwelveDataClient(
-                TwelveDataConfig("offline-twelve"),
-                client=httpx.Client(transport=httpx.MockTransport(twelve_response)),
-            ),
-        )
         self.patch.setattr(
             twelve_adapter,
             "TwelveDataClient",

@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.finlab_universe import load_finlab_universe
 from findb_fetcher.providers.finlab import (
     FinLabConfigError,
     FinLabDatasetBundle,
@@ -186,22 +185,6 @@ def test_prepare_rejects_raw_store_integrity_mismatch() -> None:
             fetched_at=datetime(2026, 7, 29, 7, tzinfo=timezone.utc),
             raw_store=Store(),
         )
-
-
-def test_disabled_manifest_uses_only_the_reviewed_finlab_pilot_universe() -> None:
-    configs = Path(__file__).parents[1] / "tests/fixtures/legacy_schedules"
-    schedule = json.loads((configs / "daily_scheduler.v2.json").read_text(encoding="utf-8"))
-    finlab = next(feed for feed in schedule["feeds"] if feed["provider"] == "finlab")
-
-    assert finlab["enabled"] is True
-    assert finlab["universe_file"] == "finlab_tw_review_required.v1.json"
-    universe = load_finlab_universe(configs / finlab["universe_file"])
-    assert universe.provider == "finlab"
-    assert universe.dataset == "tw_equity_eod"
-    assert universe.market == "TW"
-    assert universe.asset_class == "equity"
-    assert universe.currency == "TWD"
-    assert {item.source_symbol for item in universe.symbols} == {"2330", "2317"}
 
 
 def test_finlab_dependency_is_pinned_to_the_reviewed_release() -> None:

@@ -746,7 +746,7 @@ Production 53 商品 manifest、sequence 順序與 cutoff／terminal 政策維�
 為 `warning`。其中 16 筆為 Shioaji 09-21 至 09-24 的 historical payload 在 09-30 送達，
 觸發 `LATEST_DATE_MISSING`（expected latest date 為 09-29）；另 10 筆為 FinLab snapshot
 低於 delivery policy 最低 2,100 筆，五次各 50 筆、五次各 2 筆，其中四次同時缺 latest date。
-Bounded FinLab production manifest `fetcher/configs/finlab_tw50_2026_09_21.v2.json`
+Bounded FinLab production manifest `fetcher/configs/finlab_tw50_2026_09_21.v2.json`（2026-11-27 已隨舊 historical 路徑移除）
 只選 50 檔，與 full snapshot 的 2,100 筆 threshold
 不相符，須獨立檢視政策與執行範圍。這 26 個 ingestion runs 均為 completed，合計成功
 寫入 3,668 筆，`failed_records` 合計為 0；warning 不阻擋 canonical 寫入。

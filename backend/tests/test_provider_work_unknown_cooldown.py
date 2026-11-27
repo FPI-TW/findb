@@ -9,9 +9,10 @@ import pytest
 from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt, ProviderWorkOwner
-from app.models.registry import HistoricalBackfillItem
+from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
 from app.services.provider_work import prepared_map
 from app.utils import utc_now
+from tests.conftest import HISTORY_RELEASE_MEMBERS
 from tests.provider_work_clock import account_clock, drain_retained_rerun_during_cooldown
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
@@ -26,9 +27,9 @@ pytestmark = pytest.mark.usefixtures("full_release_cohort")
 async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_original_scope(
     native_runtime, test_engine, monkeypatch, origin, lost_publish_ack
 ):
-    from findb_fetcher import acquisition, historical_runtime
+    from findb_fetcher import acquisition
     from findb_fetcher.full_market_state import FullMarketState
-    from findb_fetcher.historical_runtime import load_symbol_universe
+    from findb_fetcher.member_historical import MEMBER_ATTEMPTS
     from findb_fetcher.platform_limits import account_identity
 
     h = native_runtime
@@ -50,16 +51,17 @@ async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_origin
     assert prepared and not h.runs
     state = FullMarketState(h.path / "account/governor.sqlite3")
     account = account_identity(h.provider, state, credential="offline-twelve")
-    schedule = historical_runtime.historical_execution(h.provider, h.dataset)
-    universe = load_symbol_universe(schedule.universe_file)
+    request = await h.db.get(HistoricalBackfillRequest, h.request_id)
+    binding = next(iter(request.universe_snapshot["dates"].values()))
+    # The frozen manifest exactly as the member runner writes it for this cohort.
     manifest = {
         "mode": "canonical",
+        "contract": {"schema_id": "market_eod", "schema_version": 1},
+        "universe_release_id": binding["release_id"],
         "members": [
-            {"key": member.canonical_symbol, "symbol": member.symbol, "exchange": member.exchange}
-            for member in universe.symbols
+            {"key": symbol, "source_symbol": symbol, "mapping_status": "mapped"}
+            for symbol in sorted(HISTORY_RELEASE_MEMBERS[h.provider])
         ],
-        "universe_id": universe.universe_id,
-        "universe_version": universe.universe_version,
     }
     with h.queue.host_lock(h.provider) as (_, inode):
         response = await h.client.post(
@@ -84,13 +86,13 @@ async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_origin
             "/api/v1/source/historical-backfills/claim", headers=headers
         )
         assert item_response.status_code == 200, item_response.text
-        item = await h.db.get(HistoricalBackfillItem, UUID(item_response.json()["item_id"]))
-        job_key = f"historical:{h.request_id}:{item.trade_date}:{universe.symbols[0].symbol}"
+        await h.db.get(HistoricalBackfillItem, UUID(item_response.json()["item_id"]))
+        job_key = "member-historical:member:" + manifest["members"][0]["key"]
         journal = h.queue.WorkJournal(
             h.path / f"account/provider-work-{h.provider}.sqlite3", str(work_id)
         )
         journal.freeze(manifest)
-        journal.reserve_attempt(job_key, schedule.max_attempts)
+        journal.reserve_attempt(job_key, MEMBER_ATTEMPTS)
         response = await h.client.post(
             f"/api/v1/source/provider-work/{work_id}/manifest",
             headers=h.headers,
@@ -254,13 +256,14 @@ async def test_unknown_account_floor_recovery_drains_prepared_and_resumes_origin
             break
         assert await h.run()
     assert work.state == "completed" and work.manifest == manifest
+    # The crashed reservation stays spent; the recovered acquisition is one more.
     with journal.connection() as db:
         assert (
             db.execute(
                 "SELECT attempts FROM work_budget WHERE work_key=? AND operation_key=?",
                 (str(work_id), job_key),
             ).fetchone()[0]
-            == 1
+            == 2
         )
     with state.connection() as db:
         assert (
