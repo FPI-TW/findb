@@ -650,3 +650,54 @@ def test_reference_failures_map_like_the_exchange_reports(exc, kind, wait) -> No
         assert (failure.kind, failure.wait) == (kind, wait)
     assert adapter.classify(exc, "maintenance").kind == FailureKind.PASSTHROUGH
     assert adapter.diagnostic(exc) is not None
+
+
+def _archive(tmp_path: Path, pdf: bytes, *, sha256: str | None = None) -> Path:
+    """The local archive job's layout: reports by series and a manifest of their digests."""
+    name = f"constituent_reports/hsci/{DAY.isoformat()}_con_27Nov26.pdf"
+    (tmp_path / name).parent.mkdir(parents=True)
+    (tmp_path / name).write_bytes(pdf)
+    manifest = {
+        name: {
+            "url": download_url(REPORT_RESOURCES["hsci"]),
+            "kind": "con-pdf-1",
+            "sha256": sha256 or hashlib.sha256(pdf).hexdigest(),
+            "bytes": len(pdf),
+            "etag": None,
+            "last_modified": None,
+        }
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    return tmp_path
+
+
+def test_an_archived_report_is_imported_without_the_publisher(tmp_path, contracts_dir) -> None:
+    from findb_fetcher.provider_adapters.hsil_reference import HsilReference
+
+    publisher = _publisher()
+    context, raw = _context(publisher, CONSTITUENTS)
+    adapter = HkexAdapter()
+    adapter.reference = HsilReference(archive=_archive(tmp_path, HSCI_PDF))
+
+    result = adapter.acquire(_member("HSCI", "hsci"), context)
+
+    request = _validated(result.request, result.raw_object, contracts_dir)
+    document = request["payload"]["batch"]["document"]
+    assert document["url"] == download_url(REPORT_RESOURCES["hsci"])
+    assert document["original_sha256"] == hashlib.sha256(HSCI_PDF).hexdigest()
+    assert publisher.requests == [] and raw.calls == [("constituent_report_hsci", "pdf_gzip")]
+
+    # A date the archive does not hold is read from HSIL as usual.
+    adapter.acquire(_member("HSI", "hsi"), context)
+    assert str(publisher.requests[0].url) == listing_url("hsi")
+
+
+def test_an_archived_report_that_differs_from_its_manifest_is_rejected(tmp_path) -> None:
+    from findb_fetcher.provider_adapters.hsil_reference import HsilReference
+
+    context, _ = _context(_publisher(), CONSTITUENTS)
+    adapter = HkexAdapter()
+    adapter.reference = HsilReference(archive=_archive(tmp_path, HSCI_PDF, sha256="0" * 64))
+
+    with pytest.raises(HsilFormatError, match="manifest"):
+        adapter.acquire(_member("HSCI", "hsci"), context)

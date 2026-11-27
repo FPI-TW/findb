@@ -165,6 +165,25 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
   前者等於 `constituents?as_of=<報告日>`，後者以 `classifications/hsics?symbols=` 查詢。
 - 某日早於系列第一份報告時標 `derived: true`；早於指數最早的變動日回 `DATE_BEFORE_HISTORY`，不推算。
 
+## 本機歸檔匯入（PR 7a）
+
+HSIL 只保留約 36 個交易日的報告，本機歸檔從 2026-10-02 起，所以較早日期的成分股報告要從歸檔匯入。
+
+- 設定 `HSIL_DOCUMENT_ARCHIVE_DIR` 時，HKEX runtime 讀取歸檔的 `manifest.json`：
+  - plan 交易日在歸檔中有 `constituent_reports/{series}/{日期}_con_*.pdf` 時，改用歸檔的 PDF，不向 HSIL 下載。
+  - 以 manifest 的 SHA-256 核對原檔，並要求 manifest 記錄的網址正好是同一個檔名的 HSIL 下載網址；
+    不符時整份拒收（格式錯誤），不改向 HSIL 下載。同一日期有兩份報告時也拒收。
+  - 歸檔沒有的日期照常向 HSIL 下載，所以設定可以一直保留到匯入結束。
+  - 文件 evidence 的網址、ETag 與 Last-Modified 取自 manifest。
+- 只用於成分股報告。變動 xlsx 只有現行版本，一律向 HSIL 下載；歸檔中的舊版 xlsx 不送。
+- 匯入步驟（需要 Owner 決定執行方式與時間）：
+  1. 把歸檔複製到 Fetcher 主機，唯讀掛進 `findb-full-market-hkex`，並設定 `HSIL_DOCUMENT_ARCHIVE_DIR`
+     （目前的部署設定沒有這個掛載，要另外加上或手動執行一次）。
+  2. `hk_index_constituents` 的首日設為 2026-10-02，Owner start 後 runtime 從首日逐日補 plan。
+  3. `hk_index_changes` 的首日設為上線當天：過去日期的 plan 會因 xlsx 最新生效日晚於交易日
+     （`document_later_than_date`）而受阻。
+  4. 補完後移除掛載與環境變數。
+
 ## PR 進度
 
 | PR | 內容 | 狀態 |
@@ -173,6 +192,7 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 | 2 | 重建演算法、歸檔服務、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP`、migration `ebb187773e30`（含刪除 `reference_delivery_evidence`） | #697 已合併 |
 | 3 | Fetcher 解析器（pdfminer 依字元位置、多 sheet xlsx）、raw 格式、hkex adapter 的固定成員與 acquire；權重容許值依檔數放寬；尚未註冊 dataset | #773 已合併 |
 | 4 | Backend plan 整合：batch 成員鍵、`validate_ingest_part`、delivery evidence | #778 已合併 |
-| 5 | 啟用兩條 feed（香港 21:05、historical `unsupported`）、migration `21e8f89c680b`（dataset、綁定 HKEX control、擴大 `fetcher-hkex` 範圍、schedule inspection）、seed、Serve scope 分支、`_IMPLEMENTED_ADAPTERS`、端到端 plan 測試 | 進行中 |
-| 6 | Serve 端點：`/indexes`、`/indexes/{code}/constituents`、`/indexes/{code}/changes`、`/classifications/hsics` | 進行中 |
-| 7 | staging 驗收、本機歸檔匯入、移除 launchd 排程、整併文件並刪除本檔 | 未開始 |
+| 5 | 啟用兩條 feed（香港 21:05、historical `unsupported`）、migration `21e8f89c680b`（dataset、綁定 HKEX control、擴大 `fetcher-hkex` 範圍、schedule inspection）、seed、Serve scope 分支、`_IMPLEMENTED_ADAPTERS`、端到端 plan 測試 | #780 已合併 |
+| 6 | Serve 端點：`/indexes`、`/indexes/{code}/constituents`、`/indexes/{code}/changes`、`/classifications/hsics` | #782 已合併 |
+| 7a | 本機歸檔匯入：`HSIL_DOCUMENT_ARCHIVE_DIR` 讀取 manifest 核對過的報告 | 進行中 |
+| 7 | staging 驗收、執行歸檔匯入、移除 launchd 排程、整併文件並刪除本檔 | 未開始 |

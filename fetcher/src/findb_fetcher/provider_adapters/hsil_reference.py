@@ -12,8 +12,13 @@ delivered for an earlier trade date.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from collections.abc import Mapping, Sequence
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -39,7 +44,9 @@ from findb_fetcher.providers.hsil import (
     IndexHistory,
     ParsedReport,
     Series,
+    compress,
     decompress,
+    download_url,
     fetch_report,
     fetch_workbook,
     listing_url,
@@ -51,6 +58,9 @@ from findb_fetcher.raw_storage import RawObject
 
 CONSTITUENTS = "hk_index_constituents"
 CHANGES = "hk_index_changes"
+# A local copy of HSIL's reports, for dates HSIL no longer serves: the folder the
+# archive job keeps, with ``manifest.json`` and ``constituent_reports/<series>/``.
+ARCHIVE_ENV = "HSIL_DOCUMENT_ARCHIVE_DIR"
 DATASETS = (CONSTITUENTS, CHANGES)
 
 
@@ -83,7 +93,9 @@ def _outage(exc: BaseException) -> bool:
 class HsilReference:
     """Per-round documents of the two datasets, each fetched and read once."""
 
-    def __init__(self) -> None:
+    def __init__(self, archive: Path | None = None) -> None:
+        configured = os.getenv(ARCHIVE_ENV)
+        self.archive = archive or (Path(configured) if configured else None)
         self.reports: dict[tuple[Series, str], tuple[dict[str, Any], ParsedReport, RawObject]] = {}
         self.workbooks: dict[
             tuple[Series, str], tuple[dict[str, Any], dict[str, IndexHistory], RawObject]
@@ -115,7 +127,7 @@ class HsilReference:
     ) -> tuple[dict[str, Any], ParsedReport, RawObject]:
         key = (series, context.trade_date.isoformat())
         if key not in self.reports:
-            fetched = fetch_report(
+            fetched = self._archived(series, context.trade_date) or fetch_report(
                 context.http,
                 series=series,
                 trade_date=context.trade_date,
@@ -131,6 +143,49 @@ class HsilReference:
             parsed = report_contents(records, series=series, trade_date=context.trade_date)
             self.reports[key] = (fetched, parsed, stored)
         return self.reports[key]
+
+    def _archived(self, series: Series, day: date) -> dict[str, Any] | None:
+        """The archived report of the date, verified against its manifest; None if absent.
+
+        A date the archive does not hold is read from HSIL as usual.
+        """
+        if self.archive is None:
+            return None
+        manifest = json.loads((self.archive / "manifest.json").read_text())
+        prefix = f"constituent_reports/{series}/{day.isoformat()}_con_"
+        found = [
+            (name, entry)
+            for name, entry in manifest.items()
+            if name.startswith(prefix) and name.endswith(".pdf")
+        ]
+        if not found:
+            return None
+        if len(found) > 1:
+            raise HsilFormatError("the HSIL archive holds two reports of one date")
+        name, entry = found[0]
+        original = (self.archive / name).read_bytes()
+        if hashlib.sha256(original).hexdigest() != entry.get("sha256"):
+            raise HsilFormatError("archived HSIL report differs from its manifest")
+        resource = f"/public-website/webapp/contents/en/indexes/report/{series}/{Path(name).name.split('_', 1)[1]}"
+        if entry.get("url") != download_url(resource):
+            raise HsilFormatError("archived HSIL report names another location")
+        modified = None
+        if entry.get("last_modified"):
+            try:
+                parsed = parsedate_to_datetime(entry["last_modified"])
+                modified = parsed.astimezone(timezone.utc).isoformat() if parsed.tzinfo else None
+            except (TypeError, ValueError):
+                modified = None
+        return {
+            "url": entry["url"],
+            "gzip": compress(original),
+            "original_sha256": entry["sha256"],
+            "original_bytes": len(original),
+            "last_modified": modified,
+            "etag": entry.get("etag") or None,
+            "series": series,
+            "document_date": day.isoformat(),
+        }
 
     def _workbook(
         self, series: Series, context: AcquisitionContext
