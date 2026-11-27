@@ -91,12 +91,14 @@ class SourceAPITransportError(ConnectionError):
     """Source API transport retries were exhausted.
 
     ``path`` is the Source API path that failed (no host, query or body), so a
-    caller can tell a Source outage from a provider one.
+    caller can tell a Source outage from a provider one. ``error`` names the class
+    of the last attempt's failure (an httpx transport error, or ``HTTP408``).
     """
 
-    def __init__(self, message: str, *, path: str | None = None) -> None:
+    def __init__(self, message: str, *, path: str | None = None, error: str | None = None) -> None:
         super().__init__(message)
         self.path = path
+        self.error = error
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,10 +364,12 @@ class SourceAPIClient:
                 response = self._client.send(request, stream=True)
             except httpx.DecodingError:
                 raise SourceAPIProtocolError("Source API response encoding was invalid") from None
-            except httpx.TransportError:
+            except httpx.TransportError as exc:
                 if attempt == self._config.max_attempts:
                     raise SourceAPITransportError(
-                        "Source API transport retries exhausted", path=path
+                        "Source API transport retries exhausted",
+                        path=path,
+                        error=type(exc).__name__,
                     ) from None
                 self._sleep_with_deadline(
                     self._backoff_seconds(attempt), deadline=deadline, monotonic=monotonic
@@ -379,10 +383,12 @@ class SourceAPIClient:
                     deadline=deadline,
                     monotonic=monotonic,
                 )
-            except httpx.TransportError:
+            except httpx.TransportError as exc:
                 if attempt == self._config.max_attempts:
                     raise SourceAPITransportError(
-                        "Source API transport retries exhausted", path=path
+                        "Source API transport retries exhausted",
+                        path=path,
+                        error=type(exc).__name__,
                     ) from None
                 self._sleep_with_deadline(
                     self._backoff_seconds(attempt),
@@ -414,7 +420,7 @@ class SourceAPIClient:
                     # A proxy/request timeout cannot prove the original delivery
                     # was rejected before acceptance. Reconcile its immutable identity.
                     raise SourceAPITransportError(
-                        "Source API request timeout retries exhausted", path=path
+                        "Source API request timeout retries exhausted", path=path, error="HTTP408"
                     )
                 raise SourceAPIResponseError(
                     response.status_code,

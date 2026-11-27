@@ -114,6 +114,13 @@ OFFICIAL_SNAPSHOT_TIME_LIMIT_SECONDS = 20 * 60
 # Maintenance works of one provider run back to back and read the same listings;
 # a later one reuses what an earlier one downloaded this recently.
 OFFICIAL_SNAPSHOT_REUSE_SECONDS = 30 * 60
+# An official listing whose connection fails at once is asked once more after this wait
+# (#598): production's TW ISIN failures ended within a second and cleared within 30 s
+# to 3 minutes, while a timeout already spent its own wait and is not asked again.
+OFFICIAL_LISTING_RETRY_SECONDS = 60
+# Only a request that failed this soon is asked again; a download broken partway
+# through already held the provider's owner.
+OFFICIAL_LISTING_FAST_FAILURE_SECONDS = 30
 # Settlement waits at most this long for just-accepted runs before scheduling.
 NORMALIZING_SETTLE_WAIT_SECONDS = 60
 # A failed universe refresh retries behind the day's daily works. Today's plan waits
@@ -647,6 +654,47 @@ class FullMarketRuntime:
             self._recent_snapshots[url] = (time.monotonic(), body, stored)
             return body
 
+    def _listing_snapshot(self, url: str, **kwargs: Any) -> bytes:
+        """A universe listing, asked once more when its connection fails at once (#598).
+
+        At once means a transport error other than a timeout within
+        ``OFFICIAL_LISTING_FAST_FAILURE_SECONDS`` of the request.
+
+        The retry goes through the same governed path, so a stop or a closed window
+        during the wait ends the refresh instead of acquiring again.
+        """
+        started = time.monotonic()
+        try:
+            return self._snapshot(url, **kwargs)
+        except httpx.TimeoutException:
+            raise
+        except httpx.TransportError as exc:
+            if time.monotonic() - started >= OFFICIAL_LISTING_FAST_FAILURE_SECONDS:
+                raise
+            first = type(exc).__name__
+        print(
+            json.dumps(
+                {
+                    "official_listing_retry": {
+                        "url": _redacted_url(url),
+                        "error": first,
+                        "wait_seconds": OFFICIAL_LISTING_RETRY_SECONDS,
+                    }
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        self._listing_retry_wait()
+        return self._snapshot(url, **kwargs)
+
+    def _listing_retry_wait(self) -> None:
+        """Wait before a listing's second request, keeping the control heartbeat."""
+        deadline = time.monotonic() + OFFICIAL_LISTING_RETRY_SECONDS
+        while (remaining := deadline - time.monotonic()) > 0:
+            time.sleep(min(5.0, remaining))
+            self._download_progress()
+
     def _ensure_proof(self) -> None:
         from findb_fetcher.platform_limits import limits
 
@@ -771,7 +819,7 @@ class FullMarketRuntime:
                 dataset_keys=dataset_keys,
                 observed_at=now,
                 zones=zones,
-                snapshot=self._snapshot,
+                snapshot=self._listing_snapshot,
                 catalogue=self._catalogue,
                 catalogue_evidence=self._catalogue_evidence_for,
                 persist=self._persist,
@@ -961,10 +1009,22 @@ class FullMarketRuntime:
         except httpx.TransportError as exc:
             # An official site or the provider's API; the Source client wraps its own.
             retryable, code = True, "MAINTENANCE_PROVIDER_TRANSPORT"
-            detail = {"transport": {"origin": "provider", "url": _transport_url(exc)}}
+            detail = {
+                "transport": {
+                    "origin": "provider",
+                    "url": _transport_url(exc),
+                    "error": type(exc).__name__,
+                }
+            }
         except SourceAPITransportError as exc:
             retryable, code = True, "MAINTENANCE_SOURCE_TRANSPORT"
-            detail = {"transport": {"origin": "source", "url": _redacted_url(exc.path)}}
+            detail = {
+                "transport": {
+                    "origin": "source",
+                    "url": _redacted_url(exc.path),
+                    "error": exc.error,
+                }
+            }
         except FullMarketProtocolError as exc:
             if exc.code == "PROVIDER_WORK_FENCE":
                 raise ProviderWorkRecoveryBlockedError("maintenance owner fence differs") from exc

@@ -476,18 +476,26 @@ def test_maintenance_failure_codes_come_from_adapter_classes(tmp_path, provider,
             {
                 "origin": "provider",
                 "url": "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4&token=%3Credacted%3E",
+                "error": "ConnectError",
             },
         ),
-        (httpx.ReadTimeout("slow"), "MAINTENANCE_PROVIDER_TRANSPORT", {"origin": "provider", "url": None}),
         (
-            SourceAPITransportError("offline", path="/api/v1/source/universes?x=1"),
+            httpx.ReadTimeout("slow"),
+            "MAINTENANCE_PROVIDER_TRANSPORT",
+            {"origin": "provider", "url": None, "error": "ReadTimeout"},
+        ),
+        (
+            SourceAPITransportError(
+                "offline", path="/api/v1/source/universes?x=1", error="ConnectError"
+            ),
             "MAINTENANCE_SOURCE_TRANSPORT",
-            {"origin": "source", "url": "/api/v1/source/universes?x=1"},
+            {"origin": "source", "url": "/api/v1/source/universes?x=1", "error": "ConnectError"},
         ),
     ],
 )  # fmt: skip
 def test_maintenance_transport_failures_name_their_side_and_address(tmp_path, exc, code, transport):
-    """#598: an official site or provider is told apart from Source, with the address."""
+    """#598: an official site or provider is told apart from Source, with the address
+    and the class of the failure."""
     from findb_fetcher import provider_work as queue
 
     runtime = _round_runtime(tmp_path, "finlab")

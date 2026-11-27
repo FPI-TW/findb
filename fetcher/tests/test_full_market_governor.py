@@ -1701,6 +1701,198 @@ def test_sibling_maintenance_works_share_one_official_download(tmp_path):
         runtime.close()
 
 
+def _listing_runtime(tmp_path: Path, answers: list[Any]) -> tuple[Any, list[str]]:
+    """A runtime whose official site answers each request with the next of ``answers``."""
+    runtime, _, _ = _runtime(tmp_path)
+    runtime.proof = {"max_response_bytes": 1000}
+    requests: list[str] = []
+
+    def response(request):
+        requests.append(str(request.url))
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    runtime.http.close()
+    runtime.http = httpx.Client(transport=httpx.MockTransport(response))
+    return runtime, requests
+
+
+@contextmanager
+def _maintenance(tmp_path: Path):
+    token = provider_work._current.set(_owned(tmp_path, "etf-refresh", "maintenance"))
+    try:
+        yield
+    finally:
+        provider_work._current.reset(token)
+
+
+def test_a_listing_whose_connection_fails_at_once_is_asked_once_more(tmp_path, capsys):
+    """#598: TW ISIN refreshes failed within a second and cleared within minutes."""
+    from findb_fetcher.full_market_universe import TW_ISIN_ETF_URLS
+
+    url = TW_ISIN_ETF_URLS[0]
+    runtime, requests = _listing_runtime(
+        tmp_path,
+        [httpx.ConnectError("reset"), httpx.Response(200, content=b"official listing")],
+    )
+    waits: list[int] = []
+    runtime._listing_retry_wait = lambda: waits.append(1)
+    try:
+        with _maintenance(tmp_path):
+            assert runtime._listing_snapshot(url) == b"official listing"
+        assert requests == [url, url] and waits == [1]
+        line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+        assert line == {
+            "official_listing_retry": {
+                "url": url,
+                "error": "ConnectError",
+                "wait_seconds": runtime_module.OFFICIAL_LISTING_RETRY_SECONDS,
+            }
+        }
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        # A timeout already waited its own bound.
+        [httpx.ReadTimeout("slow")],
+        [httpx.ConnectTimeout("slow")],
+        # The second failure is the refresh's own, settled as a transport retry.
+        [httpx.ConnectError("reset"), httpx.RemoteProtocolError("closed")],
+    ],
+    ids=["read-timeout", "connect-timeout", "second-failure"],
+)
+def test_a_listing_is_asked_at_most_twice_and_never_after_a_timeout(tmp_path, answers):
+    from findb_fetcher.full_market_universe import TW_ISIN_ETF_URLS
+
+    expected = type(answers[-1])
+    count = len(answers)
+    runtime, requests = _listing_runtime(tmp_path, answers)
+    runtime._listing_retry_wait = lambda: None
+    try:
+        with _maintenance(tmp_path), pytest.raises(expected):
+            runtime._listing_snapshot(TW_ISIN_ETF_URLS[0])
+        assert len(requests) == count
+    finally:
+        runtime.close()
+
+
+def test_a_listing_broken_partway_through_is_not_asked_again(tmp_path, monkeypatch):
+    from findb_fetcher.full_market_universe import TW_ISIN_ETF_URLS
+
+    runtime, _, _ = _runtime(tmp_path)
+    now = [0.0]
+    monkeypatch.setattr(
+        runtime_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: now[0], sleep=lambda _: None, time=time.time),
+    )
+    calls: list[str] = []
+
+    def snapshot(url: str, **kwargs: Any) -> bytes:
+        calls.append(url)
+        now[0] += runtime_module.OFFICIAL_LISTING_FAST_FAILURE_SECONDS
+        raise httpx.ReadError("dropped")
+
+    runtime._snapshot = snapshot
+    runtime._listing_retry_wait = lambda: pytest.fail("a slow failure is not retried")
+    try:
+        with pytest.raises(httpx.ReadError):
+            runtime._listing_snapshot(TW_ISIN_ETF_URLS[0])
+        assert len(calls) == 1
+    finally:
+        runtime.close()
+
+
+def test_a_listing_http_error_is_not_asked_again(tmp_path):
+    from findb_fetcher.full_market_universe import TW_ISIN_ETF_URLS
+
+    runtime, requests = _listing_runtime(tmp_path, [httpx.Response(503, content=b"busy")])
+    runtime._listing_retry_wait = lambda: pytest.fail("an HTTP answer is not retried here")
+    try:
+        with _maintenance(tmp_path), pytest.raises(runtime_module.ProviderHTTPError):
+            runtime._listing_snapshot(TW_ISIN_ETF_URLS[0])
+        assert len(requests) == 1
+    finally:
+        runtime.close()
+
+
+def test_a_stop_during_the_listing_wait_ends_the_refresh(tmp_path):
+    from findb_fetcher.full_market_universe import TW_ISIN_ETF_URLS
+
+    runtime, requests = _listing_runtime(
+        tmp_path,
+        [httpx.ConnectError("reset"), httpx.Response(200, content=b"official listing")],
+    )
+
+    def stopped() -> None:
+        runtime._acquisition_allowed = lambda: False
+
+    runtime._listing_retry_wait = stopped
+    try:
+        with (
+            _maintenance(tmp_path),
+            pytest.raises(
+                (
+                    runtime_module.ProviderWorkAcquisitionStopped,
+                    runtime_module.DailyWindowClosedError,
+                )
+            ),
+        ):
+            runtime._listing_snapshot(TW_ISIN_ETF_URLS[0])
+        assert len(requests) == 1
+    finally:
+        runtime.close()
+
+
+def test_the_listing_wait_keeps_the_control_heartbeat(tmp_path, monkeypatch):
+    runtime, _, _ = _runtime(tmp_path)
+    now = [0.0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(
+        runtime_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: now[0], sleep=sleep, time=time.time),
+    )
+    beats: list[float] = []
+    runtime.heartbeat = lambda: beats.append(now[0])
+    try:
+        runtime._listing_retry_wait()
+        assert now[0] == runtime_module.OFFICIAL_LISTING_RETRY_SECONDS
+        assert beats == [float(t) for t in range(5, 61, 5)]
+    finally:
+        runtime.close()
+
+
+def test_universe_refreshes_read_listings_through_the_retry(tmp_path, monkeypatch):
+    runtime, _, _ = _runtime(tmp_path)
+    seen: list[Any] = []
+
+    class BuiltError(Exception):
+        pass
+
+    def build_universe(feeds, context):
+        seen.append(context.snapshot)
+        raise BuiltError
+
+    monkeypatch.setattr(runtime.adapter, "build_universe", build_universe)
+    runtime.refresh_snapshot = SimpleNamespace(feeds=[])
+    runtime._universe_zones = lambda feeds: {}
+    try:
+        with pytest.raises(BuiltError):
+            runtime.sync_universes(dataset_keys=[runtime.installed_feeds[0]["dataset_key"]])
+        assert seen == [runtime._listing_snapshot]
+    finally:
+        runtime.close()
+
+
 def test_official_download_keeps_the_control_heartbeat(tmp_path, monkeypatch):
     from findb_fetcher import http_response
     from findb_fetcher.full_market_universe import NASDAQ_URLS
