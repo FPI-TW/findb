@@ -29,7 +29,7 @@ _SYMBOL_PATTERN = re.compile(r"^\^?[A-Za-z0-9_.:-]{1,100}$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _MAX_OBJECT_BYTES_HARD = 16 * 1024 * 1024
 _MAX_REF_LENGTH = 2048
-RawPayloadFormat = Literal["json", "csv_cp950", "parquet", "html_gzip"]
+RawPayloadFormat = Literal["json", "csv_cp950", "parquet", "html_gzip", "pdf_gzip", "xlsx_gzip"]
 
 
 class RawStorageError(RuntimeError):
@@ -186,6 +186,11 @@ class R2RawPayloadStore:
             # The exchange's HTML file, gzip compressed by the producer; not a
             # Content-Encoding, so the object's bytes are the gzip itself.
             extension, content_type = "htm.gz", "application/gzip"
+        elif payload_format == "pdf_gzip":
+            # A publisher's PDF or workbook, gzip compressed by the producer the same way.
+            extension, content_type = "pdf.gz", "application/gzip"
+        elif payload_format == "xlsx_gzip":
+            extension, content_type = "xlsx.gz", "application/gzip"
         else:
             raise RawStorageUploadError("raw provider payload format is unsupported")
 

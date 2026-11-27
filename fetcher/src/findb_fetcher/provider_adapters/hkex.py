@@ -14,6 +14,7 @@ import httpx
 
 from findb_fetcher.full_market_errors import MemberUnavailableError, ReadinessBlockedError
 from findb_fetcher.full_market_universe import HKEX_URL, parse_hkex
+from findb_fetcher.provider_adapters import hsil_reference
 from findb_fetcher.provider_adapters.base import (
     PASSTHROUGH,
     AcquisitionContext,
@@ -38,6 +39,11 @@ from findb_fetcher.providers.hkex import (
     parse_report,
     report_url,
 )
+from findb_fetcher.providers.hsil import (
+    HsilFormatError,
+    HsilNotPublishedError,
+    HsilOperationalError,
+)
 from findb_fetcher.raw_storage import RawObject
 
 DATASET = "hk_equity_official_eod"
@@ -49,6 +55,9 @@ _ARCHIVE_LAYOUT: dict[Board, tuple[str, str]] = {
     "gem": ("gem_reports", "gem_manifest.json"),
 }
 HOLIDAY_EXCERPT = "Hong Kong Public Holiday, NO TRADING."
+# HSIL's index reference documents, read by the same runtime (see ``hsil_reference``).
+REFERENCE_DATASETS = frozenset(hsil_reference.DATASETS)
+_HSIL_ERRORS = (HsilFormatError, HsilNotPublishedError, HsilOperationalError)
 
 
 def _outage(exc: BaseException) -> bool:
@@ -59,6 +68,8 @@ def _outage(exc: BaseException) -> bool:
 
 
 class HkexAdapter(ProviderAdapter):
+    """The exchange's daily quotations, and HSIL's index reference documents."""
+
     provider = "hkex"
     shared_response_prefix = "hkex_report:"
     # Both reports serve the whole cohort: an outage holds the plan, never a member.
@@ -70,12 +81,16 @@ class HkexAdapter(ProviderAdapter):
         self.reports: dict[tuple[str, Board], tuple[dict[str, Any], ParsedReport]] = {}
         # One content-addressed raw object per report, cited by every member.
         self.report_objects: dict[tuple[str, Board], RawObject] = {}
+        self.reference = hsil_reference.HsilReference()
 
     def reset(self) -> None:
         self.reports.clear()
         self.report_objects.clear()
+        self.reference.reset()
 
     def pending_shared_fetch(self, dataset_key: str, trade_date: date) -> bool:
+        if dataset_key in REFERENCE_DATASETS:
+            return self.reference.pending_shared_fetch(dataset_key, trade_date)
         return (trade_date.isoformat(), "main") not in self.reports
 
     def _archived(self, board: Board, day: date) -> dict[str, Any]:
@@ -137,14 +152,24 @@ class HkexAdapter(ProviderAdapter):
     def build_universe(
         self, feeds: Sequence[Mapping[str, Any]], context: UniverseContext
     ) -> dict[str, UniverseSnapshot]:
-        """The exchange's own list; its codes are the report's, so every member is mapped."""
+        """The exchange's own list; its codes are the report's, so every member is mapped.
+
+        The reference datasets have fixed members (see ``hsil_reference``).
+        """
+        keys = {feed["dataset_key"] for feed in feeds}
+        if unknown := sorted(keys - {DATASET, *REFERENCE_DATASETS}):
+            raise ReadinessBlockedError(f"hkex has no universe for {unknown}")
+        groups = hsil_reference.universe_groups(self.reference, feeds, context)
+        if keys and DATASET not in keys:
+            return groups
         listing = context.snapshot(HKEX_URL)
         effective, members = parse_hkex(
             listing, observed_date=context.observed_at.astimezone(context.zones[DATASET]).date()
         )
         for member in members:
             member["mapping_status"] = "mapped"
-        return {DATASET: UniverseSnapshot(effective, members, {HKEX_URL: listing})}
+        groups[DATASET] = UniverseSnapshot(effective, members, {HKEX_URL: listing})
+        return groups
 
     def _evidence(
         self,
@@ -167,6 +192,8 @@ class HkexAdapter(ProviderAdapter):
         }
 
     def acquire(self, member: Mapping[str, Any], context: AcquisitionContext) -> AcquisitionResult:
+        if context.dataset_key in REFERENCE_DATASETS:
+            return self.reference.acquire(member, context)
         symbol = member["provider_symbol"]
         gem = "GEM" in str(member.get("classification", ""))
         for board in ("gem", "main") if gem else BOARDS:
@@ -219,6 +246,8 @@ class HkexAdapter(ProviderAdapter):
     def classify(self, exc: BaseException, phase: Phase) -> ProviderFailure:
         if phase not in {"member", "round"}:
             return PASSTHROUGH
+        if isinstance(exc, _HSIL_ERRORS):
+            return self.reference.classify(exc)
         if isinstance(exc, HkexReportNotPublishedError):
             # Downloadable around 21:00; a 404 before that is the exchange's own.
             return ProviderFailure(
@@ -233,3 +262,10 @@ class HkexAdapter(ProviderAdapter):
         if isinstance(exc, (HkexOperationalError, HkexReportFormatError)):
             return ProviderFailure(FailureKind.WORK_FAILED, code="hkex_report_invalid")
         return PASSTHROUGH
+
+    def member_outcome(self, exc: BaseException) -> tuple[str, str | None] | None:
+        outcome = self.reference.member_outcome(exc)
+        return outcome if outcome is not None else super().member_outcome(exc)
+
+    def diagnostic(self, exc: BaseException) -> dict[str, Any] | None:
+        return self.reference.diagnostic(exc)

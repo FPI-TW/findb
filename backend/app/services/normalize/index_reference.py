@@ -42,8 +42,18 @@ from app.services.normalize.intraday import canonical_publisher, raw_reader
 from app.services.object_storage import ObjectIntegrityError, ObjectNotFoundError
 from app.services.reference_documents import ReportRejectedError, archive_document
 
-# A published weight list may round to a few hundredths either side of 100.
+# Each published weight is rounded to hundredths, so n weights sum to 100 within
+# about 0.0029 x sqrt(n) (one standard deviation): 580 HSCI weights miss it by up
+# to 0.15.  A list may miss by four of those, and always by 0.1.
 WEIGHT_TOLERANCE = Decimal("0.1")
+WEIGHT_ROUNDING_SPREAD = Decimal("0.0116")
+
+
+def weight_tolerance(count: int) -> Decimal:
+    """How far the weights of ``count`` published constituents may sum from 100."""
+    return max(WEIGHT_TOLERANCE, WEIGHT_ROUNDING_SPREAD * Decimal(count).sqrt())
+
+
 # Rows per multi-row upsert; a full workbook sheet is a few thousand rows.
 UPSERT_CHUNK = 1000
 
@@ -262,7 +272,7 @@ class IndexConstituentsNormalizer(_IndexDocumentNormalizer):
             members[row.index_code].add(row.symbol)
             weights[row.index_code] += row.weight_pct
         for code, total in sorted(weights.items()):
-            if abs(total - 100) > WEIGHT_TOLERANCE:
+            if abs(total - 100) > weight_tolerance(len(members[code])):
                 raise DocumentRejectedError(
                     "weights_do_not_sum_to_100", index_code=code, total=str(total)
                 )

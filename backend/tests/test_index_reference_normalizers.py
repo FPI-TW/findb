@@ -332,6 +332,13 @@ async def test_an_industry_index_child_needs_its_parent_only_by_code(
     assert definition.name_en == "Hang Seng Composite Index"
 
 
+def test_weight_tolerance_grows_with_the_rounded_weights():
+    # Four hundredth-rounded weights may miss 100 by 0.1; 580 HSCI weights were
+    # published summing to 99.85.
+    assert index_reference.weight_tolerance(4) == Decimal("0.1")
+    assert Decimal("0.15") < index_reference.weight_tolerance(580) < Decimal("0.3")
+
+
 @pytest.mark.parametrize(
     ("mutate", "rule"),
     [
