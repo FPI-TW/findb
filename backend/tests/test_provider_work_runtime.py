@@ -27,10 +27,11 @@ from tests.provider_work_runtime_support import DAY as HISTORICAL_DAY
 from tests.test_canonical_ingest_api import _execute_run
 from tests.test_full_market import DAY, _activated_plan
 
-# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
-pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+# Twelve Data/FinLab requests freeze a published Full release cohort.
+pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "stop_before_confirmation,close_crash,temporary_rejection",

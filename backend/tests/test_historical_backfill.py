@@ -33,8 +33,8 @@ from app.services.source_clients import create_source_client
 from app.utils import uuid7
 from tests.owned_history import claim_next_item
 
-# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
-pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+# Twelve Data/FinLab requests freeze a published Full release cohort.
+pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
 @pytest.mark.asyncio
@@ -616,6 +616,7 @@ async def test_failure_stops_later_dates_without_manually_resolving_delivery_ale
     assert all(value != "pending" for value in statuses)
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 async def test_completed_run_must_match_terminal_delivery_before_backfill_item_completes(
     test_session, historical_backfill_clock
@@ -1069,6 +1070,7 @@ async def test_source_claim_and_terminal_failure_are_authenticated_and_serial(
     ).status_code == 409
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 async def test_source_complete_requires_matching_terminal_run_and_lease_token(
     client, test_session, historical_backfill_clock

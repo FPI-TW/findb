@@ -14,7 +14,7 @@ from tests.test_full_market_lateness import _block
 from tests.test_historical_backfill import _seed_scope
 
 BACKFILLS = "/api/v1/admin/historical-backfills"
-backfill_cohort = pytest.mark.usefixtures("legacy_member_cohort")
+backfill_cohort = pytest.mark.usefixtures("full_release_cohort")
 TODAY = date(2026, 9, 1)
 
 

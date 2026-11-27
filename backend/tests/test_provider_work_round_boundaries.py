@@ -18,8 +18,8 @@ from tests.test_provider_work_adapters import native_runtime as native_runtime
 DAILY = [*SCOPES, ("finlab", "tw_etf_eod")]
 
 
-# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
-pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+# Twelve Data/FinLab requests freeze a published Full release cohort.
+pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
 @pytest.mark.asyncio
@@ -115,6 +115,7 @@ async def test_daily_prefetch_source_failure_closes_and_requeues_without_native(
         pass
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("twelve_data", "us_equity_eod", 5)], indirect=True)
 @pytest.mark.parametrize("prepared", [False, True])

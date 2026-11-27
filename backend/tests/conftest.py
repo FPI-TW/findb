@@ -252,12 +252,90 @@ def isolate_full_market_settings(monkeypatch):
     monkeypatch.setattr(settings, "APP_ENVIRONMENT", "local")
 
 
-@pytest.fixture
-def legacy_member_cohort(monkeypatch):
-    """Create Twelve Data/FinLab requests as before Full release cohorts existed.
+# The members each provider's historical suites deliver when a test publishes no release.
+HISTORY_RELEASE_MEMBERS = {
+    "twelve_data": ("AAPL", "MSFT", "NVDA"),
+    "finlab": ("2330", "2317"),
+}
 
-    Requests created before the cohort change carry no universe snapshot and keep
-    the single-run legacy completion; these suites exercise that retained path.
+
+@pytest.fixture
+def full_release_cohort(monkeypatch):
+    """Twelve Data/FinLab historical requests freeze a real published Full release.
+
+    A suite that did not publish one gets these members published as of the request's
+    first date, so every request binds, verifies and completes its cohort like production.
+    """
+    import hashlib
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from app.models.registry import UniverseMember, UniverseRelease
+    from app.services import historical_backfill
+    from app.utils import utc_now
+
+    bind = historical_backfill._bind_full_releases
+
+    async def bind_published(db, *, provider, dataset_key, days):
+        if not days:
+            return await bind(db, provider=provider, dataset_key=dataset_key, days=days)
+        first = min(days)
+        published = await db.scalar(
+            select(UniverseRelease.release_id).where(
+                UniverseRelease.provider == provider,
+                UniverseRelease.dataset_key == dataset_key,
+                UniverseRelease.status == "published",
+                UniverseRelease.effective_date <= first,
+            )
+        )
+        if published is None and provider in HISTORY_RELEASE_MEMBERS:
+            us = provider == "twelve_data"
+            symbols = HISTORY_RELEASE_MEMBERS[provider]
+            digest = hashlib.sha256(",".join(symbols).encode()).hexdigest()
+            release = UniverseRelease(
+                dataset_key=dataset_key,
+                provider=provider,
+                effective_date=first,
+                observed_at=utc_now(),
+                source_timezone="America/New_York" if us else "Asia/Taipei",
+                evidence=[{"url": "https://example.test/universe", "sha256": "a" * 64}],
+                member_sha256=digest,
+                semantic_member_sha256=digest,
+                member_count=len(symbols),
+                change_count=0,
+                change_ratio=Decimal(0),
+                status="published",
+                published_at=utc_now(),
+                published_by="test-owner",
+            )
+            db.add(release)
+            await db.flush()
+            db.add_all(
+                UniverseMember(
+                    release_id=release.release_id,
+                    member_key=symbol,
+                    symbol=symbol,
+                    provider_symbol=symbol,
+                    exchange="NASDAQ" if us else "TWSE",
+                    currency="USD" if us else "TWD",
+                    asset_class="etf" if dataset_key == "tw_etf_eod" else "equity",
+                    mapping_status="mapped",
+                )
+                for symbol in symbols
+            )
+            await db.flush()
+        return await bind(db, provider=provider, dataset_key=dataset_key, days=days)
+
+    monkeypatch.setattr(historical_backfill, "_bind_full_releases", bind_published)
+
+
+@pytest.fixture
+def legacy_single_run(full_release_cohort, monkeypatch):
+    """Create requests without a cohort, as before Full release cohorts existed.
+
+    Only tests of the retained legacy executor and its single-run completion use this;
+    they leave with that path, after every request without a cohort has drained.
     """
     from app.services import historical_backfill
 

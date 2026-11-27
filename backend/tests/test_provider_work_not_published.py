@@ -11,10 +11,11 @@ from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
 from tests.test_provider_work_adapters import native_runtime as native_runtime
 
-# Legacy Twelve Data/FinLab requests (no Full release cohort) keep their single-run path.
-pytestmark = pytest.mark.usefixtures("legacy_member_cohort")
+# Twelve Data/FinLab requests freeze a published Full release cohort.
+pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
+@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("twelve_data", "us_equity_eod")], indirect=True)
 async def test_historical_target_not_published_observation_allows_fresh_native_after_restart(
