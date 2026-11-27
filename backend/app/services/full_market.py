@@ -906,6 +906,7 @@ async def create_plan(
                 )
             )
     from app.services.delivery_plan_summary import refresh_plan_summary
+    from app.services.previous_day_refetch import schedule_previous_day_refetch
 
     states = await refresh_plan_summary(db, plan.plan_id)
     await db.commit()
@@ -913,7 +914,11 @@ async def create_plan(
     created = await _plan_scope(
         db, plan.plan_id, provider=body.provider, allowed_datasets=allowed_datasets
     )
-    return await plan_response(db, created, states=states)
+    response = await plan_response(db, created, states=states)
+    # After the plan is durable, in its own transaction: it never fails the plan. The
+    # response is built first because a refused backfill rolls back and expires the rows.
+    await schedule_previous_day_refetch(db, plan)
+    return response
 
 
 def _skip_response(row: DailyExecutionDecision) -> CalendarSkipResponse:

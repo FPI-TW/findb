@@ -25,6 +25,7 @@ from app.models.canonical import (
 from app.models.registry import DQIssue, IngestionRun
 from app.services.delivery_monitor import settle_run_summaries
 from app.services.dq.validators import DQIssueRecord, DQValidator
+from app.services.index_quality import zero_volume_keeps_stored
 from app.services.normalize.exchange_overlay import (
     EXCHANGE_QUOTE_MARKETS,
     apply_exchange_quote,
@@ -394,6 +395,19 @@ class BaseNormalizer(ABC):
 
         # On conflict, update only when data has actually changed
         t = MarketDataEOD.__table__
+        volume: Any = stmt.excluded.volume
+        if zero_volume_keeps_stored(record.source, record.asset_class):
+            # A preliminary 0 from the same source keeps the volume already filled in;
+            # the prices are still replaced (#680).
+            volume = case(
+                (
+                    (stmt.excluded.volume == 0)
+                    & (t.c.volume > 0)
+                    & (t.c.source == stmt.excluded.source),
+                    t.c.volume,
+                ),
+                else_=stmt.excluded.volume,
+            )
         stmt = stmt.on_conflict_do_update(
             index_elements=["instrument_id", "trade_date"],
             set_={
@@ -401,7 +415,7 @@ class BaseNormalizer(ABC):
                 "high": stmt.excluded.high,
                 "low": stmt.excluded.low,
                 "close": stmt.excluded.close,
-                "volume": stmt.excluded.volume,
+                "volume": volume,
                 "total_ticks": stmt.excluded.total_ticks,
                 "turnover": stmt.excluded.turnover,
                 "source": stmt.excluded.source,
