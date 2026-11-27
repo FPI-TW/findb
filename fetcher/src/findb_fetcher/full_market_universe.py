@@ -7,13 +7,14 @@ import hashlib
 import io
 import json
 import re
-import zipfile
 from collections.abc import Collection, Iterable, Mapping
 from datetime import date, datetime
 from html.parser import HTMLParser
 from typing import Any
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from findb_fetcher import xlsx
 
 NASDAQ_URLS = (
     "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
@@ -272,37 +273,10 @@ def nasdaq_security_names(raw: bytes, *, other: bool = False) -> dict[str, str]:
 def _xlsx_rows(raw: bytes) -> list[dict[str, str]]:
     if len(raw) > MAX_SNAPSHOT_BYTES:
         raise UniverseSnapshotError("HKEX snapshot exceeds size limit")
-    ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
     try:
-        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-            if (
-                len(archive.infolist()) > 100
-                or sum(item.file_size for item in archive.infolist()) > 32 * 1024 * 1024
-            ):
-                raise UniverseSnapshotError("HKEX workbook expansion exceeds size limit")
-            strings = []
-            if "xl/sharedStrings.xml" in archive.namelist():
-                strings = [
-                    "".join(node.itertext())
-                    for node in ET.fromstring(archive.read("xl/sharedStrings.xml")).findall(
-                        "s:si", ns
-                    )
-                ]
-            root = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
-            result = []
-            for row in root.findall(".//s:row", ns):
-                cells = {}
-                for cell in row.findall("s:c", ns):
-                    value = cell.find("s:v", ns)
-                    text = value.text or "" if value is not None else "".join(cell.itertext())
-                    if cell.get("t") == "s":
-                        text = strings[int(text)]
-                    column = re.sub(r"[0-9]", "", cell.attrib["r"])
-                    cells[column] = text.strip()
-                result.append(cells)
-            return result
-    except (ValueError, KeyError, zipfile.BadZipFile, ET.ParseError, IndexError) as exc:
-        raise UniverseSnapshotError("HKEX workbook shape is invalid") from exc
+        return xlsx.first_sheet_rows(raw)
+    except xlsx.XlsxError as exc:
+        raise UniverseSnapshotError(f"HKEX {exc}") from exc
 
 
 def parse_hkex(raw: bytes, *, observed_date: date) -> tuple[date, list[dict[str, Any]]]:

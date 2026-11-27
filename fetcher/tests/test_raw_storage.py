@@ -130,6 +130,26 @@ def test_r2_store_keeps_a_gzip_report_as_an_object_not_a_content_encoding() -> N
     assert stored.sha256 == hashlib.sha256(raw).hexdigest()
 
 
+@pytest.mark.parametrize(
+    ("payload_format", "extension"), [("pdf_gzip", "pdf.gz"), ("xlsx_gzip", "xlsx.gz")]
+)
+def test_r2_store_keeps_a_gzip_publisher_document_by_its_kind(payload_format, extension) -> None:
+    raw = gzip.compress(b"%PDF-1.4 document", mtime=0)
+    client = FakeR2()
+
+    R2RawPayloadStore(_config(), client=client).persist(
+        raw,
+        dataset_key="hk_index_constituents",
+        source_symbol="constituent_report_hsci",
+        provider="hkex",
+        payload_format=payload_format,
+    )
+
+    assert client.calls[0]["ContentType"] == "application/gzip"
+    assert "ContentEncoding" not in client.calls[0]
+    assert client.calls[0]["Key"].endswith(f"/{hashlib.sha256(raw).hexdigest()}.{extension}")
+
+
 @pytest.mark.parametrize(("symbol", "accepted"), [("^GSPC", True), ("GS^PC", False), ("^", False)])
 def test_r2_store_accepts_only_a_leading_index_caret(symbol: str, accepted: bool) -> None:
     client = FakeR2()

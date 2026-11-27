@@ -14,7 +14,7 @@
   - Source provider 名稱維持 `hkex`。
   - 實際發布者以 `document.publisher = "hsil"` 與文件 URL 記錄。
 - **僅供內部使用。** HSIL 的指數資料若要對外轉發，需要另簽授權。
-  - HSIL 的 PDF 在中繼資料中標示「不允許擷取文字」；pypdf 與 pdfminer 都會忽略這個標示。Owner 於 2026-11-24 確認維持「僅內部使用、可以擷取」。
+  - HSIL 的 PDF 在中繼資料中標示「不允許擷取文字」；pdfminer 會忽略這個標示。Owner 於 2026-11-24 確認維持「僅內部使用、可以擷取」。
 - **產業分類只收 HSCI 成分股**（約 580 檔），只到行業層；非成分股沒有分類。
 - **歷史採混合做法**（2026-11-24 Owner 決定）：
   - 有每日快照的日子以快照為準（本機歸檔從 2026-10-02 起）。
@@ -51,10 +51,7 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 - **變動 xlsx 的範圍**
   - HSI 從 2008-10-08 起，HSCI 從 2008-09-08 起。
   - 行業指數的起點各不相同，例如非必需性消費、必需性消費始於 2019-10，醫療保健始於 2020-03（HSICS 改制）。在各指數的起點之前不推算。
-- **PDF 解析**
-  - 用 pypdf 的純文字模式，182 頁約 1.7 秒；layout 模式超過 5 分鐘，不可用。
-  - 文字以 NBSP（`\xa0`）分隔，名稱與行業名稱會跨行。
-  - HSCI 權重合計為 100.0。
+- **PDF 解析**：文字以 NBSP（`\xa0`）分隔，負號是 U+2011，名稱與行業名稱會跨行。最後採用的做法見「Fetcher 解析（PR 3）」。
 - **對應不到 instrument 的成分**：production 的 instruments 沒有 00823（領展 REIT），HSI 中這類 REIT 成分會記為對應不到。
 - **本機歸檔**
   - 位於 Owner 本機的 `~/findb-hsil-archive/data/`，附 `manifest.json`。
@@ -80,7 +77,7 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
   - **佔位代碼 99999**：例如 2026-11-19 起 HSCI 快照出現 99999，看來是為即將納入的新股預留，不算成分股。
   - **同一天以同一代碼刪除再加入**：例如 2015-03-18 長和集團重組時的 00001。這不是錯誤，成員區間在當天切成兩段。
   - **HSI 報告的分類指數權重欄**：只印出所屬的那一欄，純文字抽取無法分辨是哪一欄，
-    所以 PR 3 要用 pdfminer 依字元位置判斷（10 頁約 0.7 秒）。
+    所以要依字元位置判斷（見下方「Fetcher 解析」）。
 
 ## 設計
 
@@ -111,13 +108,38 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
   - 單份文件自相矛盾時整份擋下，不寫入任何資料，例如權重合計不是 100、成員不在父指數內、行業欄與行業指數不符。
   - 文件之間不一致時記 warning，每個規則與指數各一筆，附前 20 例。
 
+## Fetcher 解析（PR 3）
+
+- **PDF**：兩種報告都用 pdfminer.six 讀出每個字元的位置，不做版面分析（HSCI 182 頁約 3～6 秒，HSI 約 0.5 秒）。
+  - pypdf 依繪製順序抽文字時會把相鄰欄位併成一段，HSI 的分類指數權重欄也無從分辨，所以不用。
+  - 字元依「左緣在哪一欄之後」歸欄，依「上方最近的交易日」歸列；換行的儲存格保留換行處的空白，各行直接串接即可還原。
+  - 每頁的表頭、頁尾都要和已知版面相同，否則整份拒收（`HsilFormatError`，work failed）。
+  - 解析在子程序中執行，上限 120 秒，避免異常文件卡住 hkex 的日線。
+  - 部分報告把表頭的「易」畫成相容字 U+F9E0，比對前先做 NFC 正規化。
+  - HSCI 報告另列的大型／中型／小型股等 5 個指數不交付；不在已知清單內的指數一律拒收。
+- **名稱**：名稱欄先印英文、空格，再印中文，中英文用同一字型，只能靠規則切分。
+  - 中文名從「第一個全形或中日韓字元之前的最後一個空格」開始，例如 `TCL ELECTRONICS TCL電子`。
+  - 沒有中日韓字元時，只有「同一名稱印兩次」（例如 `MANYCORE TECH MANYCORE TECH`）才切分，其他情況不交付名稱，不猜測。
+  - 以 80 份歸檔報告比對 xlsx 的名稱，差異都是改名或大小寫不同，沒有切錯。
+- **變動 xlsx**：新增共用的 `findb_fetcher.xlsx`，依 `workbook.xml` 的 sheet 順序讀出每個 sheet；HKEX 證券清單改用它的 `first_sheet_rows`。
+  - sheet 標題要和凍結的指數中英文名稱相同；變動列從表頭下兩列開始，到第一列不是日期為止，之後只能是附註。
+  - `document_date` 是整份 workbook 的最晚生效日，同一份 workbook 的 18 個成員一致。workbook 若已列出晚於交易日的生效日，該成員不交付（`document_later_than_date`）。
+- **權重合計容許值**：580 檔 HSCI 權重各自四捨五入到小數兩位，合計曾為 99.85～99.88（40 份中有 6 份），超過 PR 2 原本的 ±0.1。
+  - PR 3 改為依檔數放寬：`max(0.1, 0.0116 × √檔數)`，即四倍標準差；580 檔約 0.28，95 檔約 0.11。
+- **Raw 格式**：新增 `pdf_gzip`（`.pdf.gz`）與 `xlsx_gzip`（`.xlsx.gz`），和 HKEX 報告一樣由 Fetcher 壓縮（`mtime=0`）。
+- **真實資料驗證**：以本機歸檔 2026-10-02～11-27 的 80 份 PDF 與最新 xlsx 驗證。
+  - 每份都解析成功，成員和先前驗證腳本的結果完全一致。
+  - 以 11-26 的文件產生 20 個成員的請求，全部通過 Fetcher 契約、Backend pydantic 與 normalizer 的單份文件檢查；最大的是 HSCI 變動檔，2,061 列、約 417 KB。
+- **PR 4 要處理**：`EODRawEvidence` 只接受 `.json` 與 `.htm.gz` 的 raw 物件，參考文件的 evidence 要加上 `.pdf.gz`、`.xlsx.gz`。
+- **PR 5 要處理**：`hk_index_changes` 的 `historical_lookback_days` 設 0，因為 workbook 只有現行版本，回補過去日期只會重送同一份。
+
 ## PR 進度
 
 | PR | 內容 | 狀態 |
 | --- | --- | --- |
 | 1 | 兩個契約與 artifacts、canonical 與歸檔表、migration `2bbe07b98293`；尚無 dataset 接收 | #692 已合併並部署 staging |
-| 2 | 重建演算法、歸檔服務、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP`、migration `ebb187773e30`（含刪除 `reference_delivery_evidence`） | #697 |
-| 3 | Fetcher 解析器（HSI 用 pdfminer、HSCI 用 pypdf、多 sheet xlsx）、raw 格式、hkex adapter 的固定成員與 acquire | 未開始 |
+| 2 | 重建演算法、歸檔服務、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP`、migration `ebb187773e30`（含刪除 `reference_delivery_evidence`） | #697 已合併 |
+| 3 | Fetcher 解析器（pdfminer 依字元位置、多 sheet xlsx）、raw 格式、hkex adapter 的固定成員與 acquire；權重容許值依檔數放寬；尚未註冊 dataset | 進行中 |
 | 4 | Backend plan 整合：成員鍵、`validate_ingest_part`、完成判定、delivery evidence | 未開始 |
 | 5 | 啟用兩條 feed、dataset／scheduler migration、Serve scope 分支、`historical_lookback_days` | 未開始 |
 | 6 | Serve 端點 | 未開始 |
