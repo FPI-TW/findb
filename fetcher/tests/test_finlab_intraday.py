@@ -872,8 +872,10 @@ def test_a_dataset_without_the_partition_contract_is_a_configuration_error(monke
 @pytest.mark.parametrize(
     ("dataset", "expected"),
     [
-        # 2317 has no company record: its classification is a gap and it is not attempted.
-        ("tw_equity_tick", {"2330": "mapped", "1101": "mapped", "2317": "gap", "6488": "mapped"}),
+        (
+            "tw_equity_tick",
+            {"2330": "mapped", "1101": "mapped", "2317": "mapped", "6488": "mapped"},
+        ),
         ("tw_etf_bar_1m", {"0050": "mapped", "00632R": "mapped"}),
     ],
 )
@@ -881,7 +883,9 @@ def test_an_intraday_dataset_uses_the_daily_official_list_without_a_catalogue_re
     monkeypatch, dataset, expected
 ) -> None:
     official = {
-        TW_COMPANY_URLS[0]: '[{"公司代號":"2330"},{"公司代號":"1101"}]'.encode(),
+        TW_COMPANY_URLS[
+            0
+        ]: '[{"公司代號":"2330"},{"公司代號":"1101"},{"公司代號":"2317"}]'.encode(),
         TW_COMPANY_URLS[1]: b'[{"SecuritiesCompanyCode":"6488"}]',
         TW_ISIN_STOCK_URLS[0]: class_page(
             [
@@ -926,6 +930,109 @@ def test_an_intraday_dataset_uses_the_daily_official_list_without_a_catalogue_re
     # Only this dataset's own lists were downloaded, and they are its evidence.
     assert set(snapshot_result.evidence) == set(requested)
     assert all(member["provider_symbol"] == member["symbol"] for member in snapshot_result.members)
+
+
+FIRST_DAY_OFFICIAL = {
+    # 7869 trades on TPEx from today; the company list does not carry it yet.
+    TW_COMPANY_URLS[0]: '[{"公司代號":"2330"}]'.encode(),
+    TW_COMPANY_URLS[1]: b'[{"SecuritiesCompanyCode":"6488"}]',
+    TW_ISIN_STOCK_URLS[0]: class_page([("2330", "ESVUFR", "1994/09/05")]),
+    TW_ISIN_STOCK_URLS[1]: class_page(
+        [
+            ("6488", "ESVUFR", "2014/03/26"),
+            ("7869", "ESVUFR", "2026/11/26"),
+            ("7870", "ESVUFR", "2026/11/26"),
+        ],
+        otc=True,
+    ),
+}
+
+
+def _first_day_context(datasets, persisted):
+    return UniverseContext(
+        dataset_keys=datasets,
+        observed_at=FETCHED,
+        zones={dataset: TAIPEI for dataset in datasets},
+        snapshot=lambda url, provider_response=False: FIRST_DAY_OFFICIAL[url],
+        catalogue=lambda **kwargs: pytest.fail("no catalogue expected"),
+        catalogue_evidence=lambda dataset: {},
+        persist=lambda raw, dataset, kind: (
+            persisted.append((dataset, kind, raw)) or SimpleNamespace(ref=f"{kind}/{dataset}")
+        ),
+        observe_response=lambda *args, **kwargs: None,
+        snapshot_objects={},
+        refresh_limits=lambda: None,
+        pace=lambda: None,
+    )
+
+
+def test_a_first_day_share_is_attempted_intraday_when_the_price_table_carries_it() -> None:
+    """#767: a share the company lists lack yet follows FinLab's daily price table."""
+    lookups: list[tuple[str, ...]] = []
+
+    class Gateway:
+        def fetch_catalogue(self, *, symbols):
+            lookups.append(tuple(symbols))
+            return FinLabDatasetTable(dates=(), symbols=("7869",), values=())
+
+    adapter = FinLabAdapter()
+    adapter.gateway = lambda observe: Gateway()  # type: ignore[method-assign]
+    datasets = ["tw_equity_bar_1m", "tw_equity_tick"]
+    persisted: list[tuple[str, str, bytes]] = []
+    context = _first_day_context(datasets, persisted)
+
+    groups = adapter.build_universe([{"dataset_key": dataset} for dataset in datasets], context)
+
+    for dataset in datasets:
+        statuses = {
+            m["symbol"]: (m["classification"], m["mapping_status"]) for m in groups[dataset].members
+        }
+        assert statuses == {
+            "2330": ("ordinary", "mapped"),
+            "6488": ("ordinary", "mapped"),
+            "7869": ("classification_gap", "mapped"),
+            # Neither in the company lists nor in FinLab's price table.
+            "7870": ("classification_gap", "gap"),
+        }
+        url = f"https://www.finlab.tw/data/price-close?dataset={dataset}"
+        assert groups[dataset].evidence[url] == persisted[0][2]
+        assert context.snapshot_objects[url].ref == f"provider_catalogue/{dataset}"
+    # Only the unclassified members, once for both datasets.
+    assert lookups == [("7869", "7870")]
+    assert [(dataset, kind) for dataset, kind, _ in persisted] == [
+        (dataset, "provider_catalogue") for dataset in datasets
+    ]
+
+
+def test_a_failed_price_table_lookup_leaves_a_first_day_share_a_gap() -> None:
+    class Gateway:
+        def fetch_catalogue(self, *, symbols):
+            raise FinLabSdkError("FinLab dataset failed")
+
+    adapter = FinLabAdapter()
+    adapter.gateway = lambda observe: Gateway()  # type: ignore[method-assign]
+    persisted: list[tuple[str, str, bytes]] = []
+    groups = adapter.build_universe(
+        [{"dataset_key": "tw_equity_tick"}], _first_day_context(["tw_equity_tick"], persisted)
+    )
+
+    statuses = {m["symbol"]: m["mapping_status"] for m in groups["tw_equity_tick"].members}
+    assert statuses == {"2330": "mapped", "6488": "mapped", "7869": "gap", "7870": "gap"}
+    assert persisted == []
+    assert not any("price-close" in url for url in groups["tw_equity_tick"].evidence)
+
+
+def test_an_account_failure_of_the_price_table_lookup_stops_the_refresh() -> None:
+    class Gateway:
+        def fetch_catalogue(self, *, symbols):
+            raise FinLabOperationalError("FinLab acquisition failed", "account_quota")
+
+    adapter = FinLabAdapter()
+    adapter.gateway = lambda observe: Gateway()  # type: ignore[method-assign]
+    with pytest.raises(FinLabOperationalError):
+        adapter.build_universe(
+            [{"dataset_key": "tw_equity_bar_1m"}], _first_day_context(["tw_equity_bar_1m"], [])
+        )
 
 
 def test_a_refresh_of_the_whole_finlab_scope_builds_daily_and_intraday_universes() -> None:

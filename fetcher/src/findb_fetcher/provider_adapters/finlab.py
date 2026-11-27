@@ -416,14 +416,22 @@ class FinLabAdapter(ProviderAdapter):
     def _intraday_universe(
         self, datasets: Sequence[str], context: UniverseContext
     ) -> dict[str, UniverseSnapshot]:
-        """The same official lists as the daily datasets, without a catalogue check.
+        """The same official lists as the daily datasets.
 
         FinLab has no listing of the symbols it serves intraday, and it serves some
         the daily price table does not carry yet (a new listing, for one). Every
         classified member is therefore attempted; a symbol FinLab does not have is
         found out by its own partition request.
+
+        An ordinary share the company lists lack yet (``classification_gap``, a
+        first trading day after listing or a move to TPEx) is mapped as on the daily
+        dataset: when FinLab's daily price table carries the symbol (#767). Only
+        those members are looked up, once per refresh; a failed lookup leaves
+        them a gap.
         """
         groups: dict[str, UniverseSnapshot] = {}
+        # One price-table lookup per refresh, shared by both equity datasets.
+        catalogue: tuple[frozenset[str], bytes | None] | None = None
         for dataset in datasets:
             if INTRADAY_DATASETS[dataset][1] == "tw_equity_eod":
                 snapshots = {
@@ -449,14 +457,56 @@ class FinLabAdapter(ProviderAdapter):
                     for index, url in enumerate(TW_ISIN_ETF_URLS)
                     for member in parse_tw_etfs(snapshots[url], otc=bool(index))
                 ]
+            unclassified = [m for m in members if m["classification"] == "classification_gap"]
+            if unclassified and catalogue is None:
+                catalogue = self._price_table_symbols(
+                    tuple(member["provider_symbol"] for member in unclassified), context
+                )
+            served, table = catalogue if unclassified and catalogue else (frozenset(), None)
             for member in members:
                 member["mapping_status"] = (
-                    "mapped" if member["classification"] != "classification_gap" else "gap"
+                    "mapped"
+                    if member["classification"] != "classification_gap"
+                    or member["provider_symbol"] in served
+                    else "gap"
                 )
+            evidence = dict(snapshots)
+            if table is not None:
+                # Each dataset's own URL: a refresh of the whole scope also records
+                # the daily dataset's (wider) table under its own.
+                url = FINLAB_PRICE_EVIDENCE_URL.format(dataset=dataset)
+                context.snapshot_objects[url] = context.persist(
+                    table, dataset, "provider_catalogue"
+                )
+                evidence[url] = table
             groups[dataset] = UniverseSnapshot(
-                context.observed_at.astimezone(context.zones[dataset]).date(), members, snapshots
+                context.observed_at.astimezone(context.zones[dataset]).date(), members, evidence
             )
         return groups
+
+    def _price_table_symbols(
+        self, symbols: Sequence[str], context: UniverseContext
+    ) -> tuple[frozenset[str], bytes | None]:
+        """Which of ``symbols`` FinLab's daily price table carries, and its exact bytes.
+
+        The daily dataset's own lookup; an SDK failure answers none (no table), so
+        those members stay a gap. An account or quota failure stops the refresh as
+        on the daily dataset.
+        """
+        context.refresh_limits()
+        gateway = self.gateway(context.observe_response)
+        try:
+            try:
+                table = gateway.fetch_catalogue(symbols=symbols)
+            finally:
+                context.pace()
+        except FinLabOperationalError:
+            raise
+        except FinLabSdkError:
+            return frozenset(), None
+        detached = table_bytes(table)
+        context.observe_response(len(detached))
+        return frozenset(table.symbols), detached
 
     def _acquire_intraday(
         self, member: Mapping[str, Any], context: AcquisitionContext
