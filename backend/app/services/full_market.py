@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -57,6 +58,8 @@ from app.schemas.ingress import (
     ExchangeDailyQuoteRow,
     FuturesEODIngressRequest,
     FuturesEODRow,
+    IndexChangesIngressRequest,
+    IndexConstituentsIngressRequest,
     IngressRequest,
     InstitutionalFlowStockRow,
     InstitutionalFlowSummaryRow,
@@ -65,6 +68,7 @@ from app.schemas.ingress import (
     MarketEODIngressRequestV2,
     MarketEODRow,
     MarketMinuteRow,
+    index_reference_member,
 )
 from app.services.effective_calendar import (
     effective_days,
@@ -1794,6 +1798,38 @@ async def record_outcome(
     return await stored_summary_response(db, plan)
 
 
+def _validate_reference_member(
+    request: IndexConstituentsIngressRequest | IndexChangesIngressRequest,
+    trade_date: date,
+    expected: set[str],
+    universe: Mapping[str, UniverseMember],
+) -> None:
+    """A reference document part is one frozen member, whatever constituents it lists.
+
+    Its rows are the document's constituents, not plan members, so neither the
+    unlisted rules nor the per-row currency checks apply.  A constituent report
+    speaks for the plan's own trading day; a change workbook for its latest
+    effective date, which its contract already keeps on or before the plan's.
+    """
+    payload = request.payload
+    key = index_reference_member(request.schema_id, payload.model_dump(mode="json"))
+    frozen = universe.get(key)
+    if key not in expected or frozen is None:
+        raise FullMarketError("Payload contains members outside the declared plan part", 409)
+    if frozen.mapping_status != "mapped":
+        raise FullMarketError("Mapping-gap members cannot be submitted as data", 409)
+    document = payload.batch.document
+    provider_symbol: str
+    if isinstance(request, IndexConstituentsIngressRequest):
+        provider_symbol = document.series
+        if document.document_date != trade_date:
+            raise FullMarketError("Payload row trade date differs from frozen plan", 409)
+    else:
+        provider_symbol = request.payload.batch.index.code
+    if provider_symbol != frozen.provider_symbol:
+        raise FullMarketError("Payload provider symbol differs from frozen universe", 409)
+
+
 async def validate_ingest_part(
     db: AsyncSession, request: IngressRequest, dataset: DatasetRegistry
 ) -> UUID | None:
@@ -1846,9 +1882,6 @@ async def validate_ingest_part(
         if governance.get("required"):
             raise FullMarketError("This feed requires a frozen full-market work item", 409)
         return None
-    if isinstance(request, INDEX_REFERENCE_REQUESTS):
-        # A publisher document has no frozen daily plan to be a part of.
-        raise FullMarketError("Reference documents are not delivered against a daily plan", 409)
     part = (
         await db.scalars(
             select(DailyDeliveryPart).where(DailyDeliveryPart.work_item_id == work_item_id)
@@ -1897,6 +1930,9 @@ async def validate_ingest_part(
             )
         ).all()
     }
+    if isinstance(request, INDEX_REFERENCE_REQUESTS):
+        _validate_reference_member(request, plan.trade_date, expected, universe)
+        return part.part_id
     if isinstance(request, FuturesEODIngressRequest):
         actual = {
             f"{row.product_code}|{row.contract_code}|{row.session}" for row in request.payload.data

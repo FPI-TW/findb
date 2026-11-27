@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -20,13 +20,20 @@ from app.models.index_reference import (
     IndexSnapshotConstituent,
     ReferenceDocumentArchive,
 )
-from app.models.registry import DatasetRegistry, DQIssue, IngestionRun
+from app.models.raw import RawMarketPayload
+from app.models.registry import (
+    DatasetRegistry,
+    DeliveryMemberEvidence,
+    DQIssue,
+    IngestionRun,
+)
 from app.services.ingestion import CONTRACT_NORMALIZER_MAP, IngestionService
 from app.services.normalize import index_reference
 from app.services.normalize.index_reference import (
     IndexChangesNormalizer,
     IndexConstituentsNormalizer,
 )
+from app.utils import uuid7
 from tests.index_reference_support import (
     BODIES,
     HSCI,
@@ -89,8 +96,13 @@ async def datasets(test_session) -> None:
     await test_session.commit()
 
 
-async def deliver(test_session, stores: Stores, value: dict, *, stage: bool = True):
-    """Stage the gzip like the producer, then normalize one delivery citing it."""
+async def deliver(
+    test_session, stores: Stores, value: dict, *, stage: bool = True, raw: bool = False
+):
+    """Stage the gzip like the producer, then normalize one delivery citing it.
+
+    ``raw`` also keeps the accepted payload, as Source does before normalizing.
+    """
     changes = "index" in value["batch"]
     dataset, schema_id = (
         (CHANGES, "index_constituent_changes") if changes else (CONSTITUENTS, "index_constituents")
@@ -99,6 +111,24 @@ async def deliver(test_session, stores: Stores, value: dict, *, stage: bool = Tr
         digest = value["batch"]["source_raw_sha256"]
         key = value["batch"]["source_raw_ref"].split(f"{RAW_BUCKET}/", 1)[1]
         stores.r2.objects[(RAW_BUCKET, key)] = BODIES[digest]
+    raw_payload_id, run_id = (uuid7() if raw else None), uuid7()
+    if raw_payload_id is not None:
+        test_session.add(
+            RawMarketPayload(
+                raw_payload_id=raw_payload_id,
+                dataset_key=dataset,
+                source="hkex",
+                request_key=f"{schema_id}-{raw_payload_id}",
+                idempotency_key=f"{schema_id}-{raw_payload_id}",
+                schema_id=schema_id,
+                schema_version=1,
+                payload=value,
+                fetched_at=FETCHED,
+                expire_at=FETCHED + timedelta(days=30),
+                run_id=run_id,
+            )
+        )
+        await test_session.flush()
     run = await IngestionService(test_session).create_ingestion_run(
         dataset,
         source="hkex",
@@ -107,6 +137,8 @@ async def deliver(test_session, stores: Stores, value: dict, *, stage: bool = Tr
         schema_version=1,
         batch_data_date=date.fromisoformat(value["batch"]["data_date"]),
         delivery_mode="full_snapshot",
+        run_id=run_id,
+        raw_payload_id=raw_payload_id,
     )
     await test_session.commit()
     run_id = run.run_id
@@ -532,3 +564,34 @@ async def test_a_document_that_states_no_industry_keeps_the_stored_one(
     definitions = {item.code: item for item in await test_session.scalars(select(IndexDefinition))}
     assert definitions["00011.07"].classification_code == "40"
     assert definitions["00011.07"].parent_index_id == definitions["00011.00"].index_id
+
+
+async def evidence(test_session, run_id) -> set[str]:
+    return set(
+        await test_session.scalars(
+            select(DeliveryMemberEvidence.member_key).where(DeliveryMemberEvidence.run_id == run_id)
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_kept_document_is_the_evidence_of_its_plan_member(test_session, stores, datasets):
+    # A report stands for its series, whichever constituents it lists.
+    report = hsi_report()
+    first, _ = await deliver(test_session, stores, report, raw=True)
+    assert await evidence(test_session, first) == {"HSI"}
+
+    # Delivered again it stores nothing new, yet the member's document is kept.
+    again, _ = await deliver(test_session, stores, report, raw=True)
+    assert await evidence(test_session, again) == {"HSI"}
+
+    # A sheet stands for its index.
+    sheet, _ = await deliver(test_session, stores, changes_payload(), raw=True)
+    assert await evidence(test_session, sheet) == {"00011.00"}
+
+    # A document rejected whole stands for no member.
+    rejected = hsi_report(trade_date=date(2026, 11, 20))
+    rejected["data"][0]["weight_pct"] = "10"
+    run_id, result = await deliver(test_session, stores, rejected, raw=True)
+    assert result.failed_records == result.total_records
+    assert await evidence(test_session, run_id) == set()

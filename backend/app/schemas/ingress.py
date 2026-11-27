@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from types import MappingProxyType
-from typing import Annotated, Literal, NamedTuple, Optional
+from typing import Annotated, Any, Literal, NamedTuple, Optional
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -1325,6 +1325,33 @@ INDEX_REFERENCE_REQUESTS = (
     IndexConstituentsIngressRequest,
     IndexChangesIngressRequest,
 )
+
+
+def index_reference_member(schema_id: str, payload: Mapping[str, Any]) -> str:
+    """The daily-plan member a reference document part stands for.
+
+    A constituent report is its series' member (``HSI``, ``HSCI``); a change
+    workbook sheet is its index's (``00011.08``).  The rows name constituents,
+    never the member.
+    """
+    batch = payload["batch"]
+    if schema_id == "index_constituents":
+        return str(batch["document"]["series"]).upper()
+    if schema_id == "index_constituent_changes":
+        return str(batch["index"]["code"])
+    raise ValueError(f"{schema_id} is not an index reference contract")
+
+
+def delivered_members(schema_id: str, payload: Mapping[str, Any]) -> set[str]:
+    """The plan members a contract payload delivers, by the key the plan freezes."""
+    if schema_id in INDEX_REFERENCE_SCHEMAS:
+        return {index_reference_member(schema_id, payload)}
+    if schema_id == "futures_eod":
+        return {
+            f"{row['product_code']}|{row['contract_code']}|{row['session']}"
+            for row in payload["data"]
+        }
+    return {row["symbol"] for row in payload["data"]}
 
 
 def minute_sequence_key_digest(

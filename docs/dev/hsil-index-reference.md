@@ -130,8 +130,25 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 - **真實資料驗證**：以本機歸檔 2026-10-02～11-27 的 80 份 PDF 與最新 xlsx 驗證。
   - 每份都解析成功，成員和先前驗證腳本的結果完全一致。
   - 以 11-26 的文件產生 20 個成員的請求，全部通過 Fetcher 契約、Backend pydantic 與 normalizer 的單份文件檢查；最大的是 HSCI 變動檔，2,061 列、約 417 KB。
-- **PR 4 要處理**：`EODRawEvidence` 只接受 `.json` 與 `.htm.gz` 的 raw 物件，參考文件的 evidence 要加上 `.pdf.gz`、`.xlsx.gz`。
-- **PR 5 要處理**：`hk_index_changes` 的 `historical_lookback_days` 設 0，因為 workbook 只有現行版本，回補過去日期只會重送同一份。
+
+## Backend plan 整合（PR 4）
+
+- **成員鍵取自 batch，不取自資料列**：資料列的 `symbol` 是成分股代碼，不是 plan 成員。
+  - 成分股報告的成員是 `document.series` 轉大寫（`HSI`、`HSCI`）；變動檔的成員是 `index.code`。
+  - 共用的 `delivered_members()`（`app/schemas/ingress.py`）供 ingest 的 `associate_receipt` 與 prepared delivery 的 `register_prepared` 使用，期貨與逐檔資料集的推導不變。
+- **`validate_ingest_part`**：移除 PR 1「參考文件不屬於 daily plan」的拒收，改為參考文件分支 `_validate_reference_member`。
+  - 成員必須是這個 part 凍結的成員，且為 mapped；`series`／`index.code` 要等於名單的 `provider_symbol`。
+  - 成分股報告的 `document_date` 要等於 plan 交易日；變動檔的 `document_date` 由契約保證不晚於觀察日。
+  - 不套用 unlisted 規則與逐列幣別檢查。
+- **完成判定**：`record_delivery_evidence` 對參考文件 run 記錄它代表的成員。
+  - 只有 `completed`（整份文件沒被拒收）的 run 才算；重送相同文件、或較舊版本被略過時，文件仍已保存，照樣算數。
+  - `classify_plan` 走既有的 `DeliveryMemberEvidence` 路徑，不需另外分支。
+- **只走 daily，不做 historical**（2026-11-28 調整）：
+  - Fetcher 的 historical 路徑會把 batch 改成 `backfill` 並填 coverage 日期，參考文件契約只接受 `full_snapshot`；
+    變動 xlsx 只有現行版本，回補過去日期只會重送同一份。
+  - PR 5 兩條 feed 的 `capabilities.historical` 設 `unsupported`。過去日期的報告由 PR 7 的本機歸檔匯入補上（歸檔從 2026-10-02 起，比 HSIL 保留的約 36 個交易日更長）。
+  - 因此不需要放寬 `EODRawEvidence`（只有 EOD v2／historical 證據用它），`MEMBER_EOD_SCHEMAS` 與 `ROW_DQ_ERRORS` 也不加參考文件。
+- **已知限制**：Fetcher 回報 `document_later_than_date`、`missing_symbol` 的成員會是 blocked，plan 不會完成；這兩種情況只在 Fetcher 遲到或 HSIL 移除 sheet 時發生，上線觀察後再決定是否歸為 unavailable。
 
 ## PR 進度
 
@@ -139,8 +156,8 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 | --- | --- | --- |
 | 1 | 兩個契約與 artifacts、canonical 與歸檔表、migration `2bbe07b98293`；尚無 dataset 接收 | #692 已合併並部署 staging |
 | 2 | 重建演算法、歸檔服務、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP`、migration `ebb187773e30`（含刪除 `reference_delivery_evidence`） | #697 已合併 |
-| 3 | Fetcher 解析器（pdfminer 依字元位置、多 sheet xlsx）、raw 格式、hkex adapter 的固定成員與 acquire；權重容許值依檔數放寬；尚未註冊 dataset | 進行中 |
-| 4 | Backend plan 整合：成員鍵、`validate_ingest_part`、完成判定、delivery evidence | 未開始 |
-| 5 | 啟用兩條 feed、dataset／scheduler migration、Serve scope 分支、`historical_lookback_days` | 未開始 |
+| 3 | Fetcher 解析器（pdfminer 依字元位置、多 sheet xlsx）、raw 格式、hkex adapter 的固定成員與 acquire；權重容許值依檔數放寬；尚未註冊 dataset | #773 已合併 |
+| 4 | Backend plan 整合：batch 成員鍵、`validate_ingest_part`、delivery evidence | 進行中 |
+| 5 | 啟用兩條 feed（historical `unsupported`）、dataset／scheduler migration、Serve scope 分支、端到端 plan 測試 | 未開始 |
 | 6 | Serve 端點 | 未開始 |
 | 7 | staging 驗收、本機歸檔匯入、移除 launchd 排程、整併文件並刪除本檔 | 未開始 |
