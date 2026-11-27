@@ -183,6 +183,11 @@ async def active_flow_datasets(db: AsyncSession) -> tuple[FlowScope, ...]:
     return (await _active_registry_scopes(db))[3]
 
 
+async def active_reference_schemas(db: AsyncSession) -> frozenset[str]:
+    """The index reference contracts with an active dataset."""
+    return (await _active_registry_scopes(db))[4]
+
+
 async def _active_registry_scopes(
     db: AsyncSession,
 ) -> tuple[
@@ -190,6 +195,7 @@ async def _active_registry_scopes(
     tuple[IntradayDatasetScope, ...],
     tuple[ExchangeQuoteScope, ...],
     tuple[FlowScope, ...],
+    frozenset[str],
 ]:
     """Every active dataset's read model; any inconsistent declaration fails closed."""
     rows = (
@@ -327,7 +333,7 @@ async def _active_registry_scopes(
             )
         except (AttributeError, TypeError, ValueError):
             raise configuration_error() from None
-    return tuple(scopes), tuple(intraday), tuple(quotes), tuple(flows)
+    return tuple(scopes), tuple(intraday), tuple(quotes), tuple(flows), frozenset(references)
 
 
 def _pairs(
@@ -440,7 +446,7 @@ def _instrument_response(
 async def list_datasets(db: AsyncSession) -> DatasetListResponse:
     from app.services.serve_intraday import intraday_dataset_coverage
 
-    scopes, intraday_scopes, quote_scopes, flow_scopes = await _active_registry_scopes(db)
+    scopes, intraday_scopes, quote_scopes, flow_scopes, _ = await _active_registry_scopes(db)
     items: list[DatasetResponse] = []
     for intraday_scope in intraday_scopes:
         first, latest, symbols = await intraday_dataset_coverage(db, intraday_scope.dataset_key)
