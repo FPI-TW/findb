@@ -183,6 +183,32 @@ print(json.dumps(result))
 """
 
 
+def _python(script: str, *args: str, env: dict[str, str], timeout: float) -> str:
+    """Run SDK code in a fresh interpreter; return its stdout.
+
+    A hang dumps every thread's stack shortly before the timeout and ends the child,
+    so a CI log names the line it waited on instead of only the timeout.
+    """
+    watchdog = (
+        f"import faulthandler; faulthandler.dump_traceback_later({timeout - 15}, exit=True)\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", watchdog + script, *args],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if completed.returncode != 0:
+        hung = "Timeout (" in completed.stderr
+        pytest.fail(
+            ("SDK subprocess hung; thread stacks follow:\n" if hung else "SDK subprocess failed:\n")
+            + completed.stderr[-8000:]
+        )
+    return completed.stdout
+
+
 def _run(tmp_path: Path, mode: str, *, account: bool = False, calls: int = 1) -> dict:
     root = tmp_path / "transport"
     root.mkdir()
@@ -190,44 +216,30 @@ def _run(tmp_path: Path, mode: str, *, account: bool = False, calls: int = 1) ->
     (root / "mode").write_text(mode)
     home = tmp_path / "home"
     home.mkdir()
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            textwrap.dedent(DRIVER),
-            str(root),
-            "account" if account else "plain",
-            TOKEN,
-            str(calls),
-        ],
+    stdout = _python(
+        textwrap.dedent(DRIVER),
+        str(root),
+        "account" if account else "plain",
+        TOKEN,
+        str(calls),
         env={**os.environ, "HOME": str(home), "PROVIDER_WORK_REQUIRED": "true"},
-        capture_output=True,
-        text=True,
         timeout=180,
     )
-    assert completed.returncode == 0, completed.stderr[-2000:]
-    return json.loads(completed.stdout.splitlines()[-1])
+    return json.loads(stdout.splitlines()[-1])
 
 
 def test_the_installed_sdk_is_the_reviewed_release_and_shape(tmp_path) -> None:
     assert importlib.metadata.version("finlab") == FINLAB_SDK_VERSION
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "from findb_fetcher.providers.finlab import verify_sdk_contract; verify_sdk_contract()",
-        ],
+    _python(
+        "from findb_fetcher.providers.finlab import verify_sdk_contract; verify_sdk_contract()",
         # The image carries the contracts at their default path; here they are the repo's.
         env={
             **os.environ,
             "HOME": str(tmp_path),
             "FETCHER_CONTRACTS_DIR": str(Path(__file__).resolve().parents[2] / "contracts"),
         },
-        capture_output=True,
-        text=True,
         timeout=120,
     )
-    assert completed.returncode == 0, completed.stderr[-2000:]
 
 
 @pytest.mark.parametrize("account", [False, True])
