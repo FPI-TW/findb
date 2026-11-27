@@ -249,7 +249,8 @@ Twelve Data 與 FinLab 的 historical request 不使用靜態清單：每個日�
 已全部結束，舊 executor 與靜態 reviewed universe 已移除（2026-11-27）。
 
 Production EOD historical control plane允許最近366個calendar days；catalog 的 `historical_lookback_days`
-可為個別 feed 延長（見 [Provider metadata](../architecture/provider_metadata.md)）。Shioaji 已停止新申請，既有 minute request 的 31 天視窗語意保留。
+可為個別 feed 延長（見 [Provider metadata](../architecture/provider_metadata.md)；FinLab 日線、TAIFEX、FMP
+三條指數已延長），但一筆 request 最多 366 個 calendar days。Shioaji 已停止新申請，既有 minute request 的 31 天視窗語意保留。
 日期視窗以 provider 日曆市場的當地今天計算（Twelve Data 為紐約、FinLab／TAIFEX 為台北、FactSet 為香港），
 建立、preview、claim 與過期判定共用同一個邊界。休市日是否略過，所有 provider 都跟 daily 使用同一個
 `*_SKIP_NON_TRADING_DAYS`；preview 與建立 request 套用相同規則。
@@ -318,7 +319,8 @@ claim 成功後須確認實際 item 與非空 lease token，再驗證 terminal s
 ## TAIFEX futures EOD 回補
 
 `taifex / tw_futures_eod` 支援 TX、MTX、TMF、TE、TF 全部官方實際月／週／F 契約與
-regular／after_hours；production 最近 366 個 calendar days，local／staging 最近 31 天。
+regular／after_hours；production 依 catalog 可回到 2000 年前後（一筆 request 最多 366 天），local／staging 最近 31 天。
+早於 2024-07 TMF 上市的日期仍會因五個商品缺一而失敗，要等 #754 PR D。
 日期邊界採 Asia/Taipei；日曆使用 TAIFEX published revision，缺少日期採 weekday default，
 建立時凍結 snapshot；`TAIFEX_SKIP_NON_TRADING_DAYS=true`（預設）時已知休市日為 skipped_calendar，避免把無報表誤報 no-data。當日必須已過 snapshot 收盤且至少 17:00 才能 claim／新抓取。
 年度 ZIP、多年建庫、價差及 continuous 不在此路徑。

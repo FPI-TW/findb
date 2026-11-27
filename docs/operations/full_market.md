@@ -1400,7 +1400,7 @@ FMP 提供 76 檔市場指數的日線（港股 3、美股 72、美元指數 1�
 - **成交量**照 FMP 原值寫入，0 就是 0。FMP 的指數成交量不是一致的數列（例如 `^RUT`、`^NYA` 多數日子與
   `^GSPC` 相同，`^HSCE` 2024-10-08 起單位改為千股），使用前請看導入規劃的說明。
 - **歷史回補**以建立請求時的名單服務每一天（`current_release`），每天的請求數為港股 3、美股 73；本輪不執行。
-  交易所日曆已補到 HK 1987、US 1953 年起（見「有效日曆與每日政策」），回補範圍仍受 production 最近 366 天、
-  staging 31 天的限制。
+  交易所日曆已補到 HK 1987、US 1953 年起（見「有效日曆與每日政策」）。Production 回補窗口依 catalog 可回到
+  2000 年前後（一筆 request 最多 366 天），staging 31 天；早於各指數起始日的日期要等 #754 PR E。
 - staging 驗收：只啟動 `fmp`，兩個 dataset 的首日都先設成單一日期，確認 Source → raw → queue → canonical →
   Serve 與 `expected = data + no_data + missing + blocked + unavailable`，完成後停止 control。

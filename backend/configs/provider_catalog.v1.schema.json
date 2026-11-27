@@ -243,7 +243,7 @@
         "historical_lookback_days": {
           "anyOf": [
             {
-              "maximum": 3660,
+              "maximum": 10950,
               "minimum": 367,
               "type": "integer"
             },

@@ -254,6 +254,7 @@ def test_invalid_metadata_fails_closed(declaration, fault):
             schedule=None,
             historical_cohort=None,
             historical_requests_per_date=None,
+            historical_lookback_days=None,
         )
         f["capabilities"].update(acquisition=False, historical="unsupported")
     elif fault == "historical_without_source":
@@ -331,6 +332,7 @@ def test_retirement_removes_new_options_without_reintroducing_consumers(declarat
         schedule=None,
         historical_cohort=None,
         historical_requests_per_date=None,
+        historical_lookback_days=None,
     )
     feed["capabilities"].update(source=False, acquisition=False, historical="unsupported")
     feed["bounded_monitor"].update(enabled=False)
@@ -502,6 +504,7 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
         schedule=None,
         historical_cohort=None,
         historical_requests_per_date=None,
+        historical_lookback_days=None,
     )
     feed["capabilities"].update(acquisition=False, historical="unsupported")
     # Draining is not an instruction to remove installed consumers or Source scope.
@@ -618,6 +621,7 @@ def test_feeds_of_one_dataset_share_a_calendar_market(declaration):
     duplicate["capabilities"] = {**feed["capabilities"], "historical": "unsupported"}
     duplicate["historical_cohort"] = None
     duplicate["historical_requests_per_date"] = None
+    duplicate["historical_lookback_days"] = None
     declaration["feeds"].append(duplicate)
     with pytest.raises(ValidationError, match="share a calendar market"):
         ProviderCatalog.model_validate(declaration)
@@ -673,6 +677,7 @@ def test_seed_requires_exactly_one_catalog_source_feed(monkeypatch, declaration,
             schedule=None,
             historical_cohort=None,
             historical_requests_per_date=None,
+            historical_lookback_days=None,
         )
         feeds[index]["capabilities"].update(
             source=False, acquisition=False, historical="unsupported"

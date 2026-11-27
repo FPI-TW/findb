@@ -223,12 +223,77 @@ def test_a_feed_may_extend_only_the_production_window(monkeypatch) -> None:
     assert historical_backfill._max_backfill_days("fmp", "hk_index_eod") == 31
 
 
+def test_catalog_reaches_the_owner_targets_with_a_rolling_margin() -> None:
+    """#754: FinLab back to 2007-04-23, TAIFEX and FMP back to 2000, for about a year more."""
+    from app.services.provider_metadata import historical_lookback_days
+
+    targets = {
+        ("finlab", "tw_equity_eod"): date(2007, 4, 23),
+        ("finlab", "tw_etf_eod"): date(2007, 4, 23),
+        ("taifex", "tw_futures_eod"): date(2000, 1, 1),
+        ("fmp", "us_index_eod"): date(2000, 1, 1),
+        ("fmp", "hk_index_eod"): date(2000, 1, 1),
+        ("fmp", "us_dollar_index_eod"): date(2000, 1, 1),
+    }
+    for (provider, dataset_key), target in targets.items():
+        days = historical_lookback_days(provider, dataset_key)
+        assert days is not None
+        # The target stays inside the rolling window until at least late 2027.
+        assert target + timedelta(days=days - 1) >= date(2027, 11, 1), (provider, dataset_key)
+    # One-year feeds keep the production default.
+    assert historical_lookback_days("twelve_data", "us_equity_eod") is None
+    assert historical_lookback_days("factset", "hk_equity_eod") is None
+
+
+@pytest.mark.asyncio
+async def test_an_extended_window_still_caps_one_request_at_366_days(
+    test_session, monkeypatch
+) -> None:
+    today = date(2026, 9, 2)
+    await _seed_scope(test_session, today)
+    monkeypatch.setenv("APP_ENVIRONMENT", "production")
+    monkeypatch.setattr(
+        historical_backfill, "historical_lookback_days", lambda provider, dataset_key: 3000
+    )
+    start, end = date(2020, 1, 1), date(2021, 1, 1)
+    _, reason, days = await preview_request(
+        test_session,
+        provider="finlab",
+        dataset_key="tw_equity_eod",
+        start_date=start,
+        end_date=end,
+        today=today,
+    )
+    assert reason == "range_exceeds_366_days" and not any(valid for _, valid, _ in days)
+    with pytest.raises(HistoricalBackfillError, match="range exceeds 366 days"):
+        await create_request(
+            test_session,
+            provider="finlab",
+            dataset_key="tw_equity_eod",
+            start_date=start,
+            end_date=end,
+            request_key="too-long-segment",
+            created_by="operator",
+            today=today,
+        )
+    # A segment of the latest-year size is inside the window and passes the span check.
+    _, reason, _ = await preview_request(
+        test_session,
+        provider="finlab",
+        dataset_key="tw_equity_eod",
+        start_date=start,
+        end_date=date(2020, 12, 31),
+        today=today,
+    )
+    assert reason != "range_exceeds_366_days"
+
+
 @pytest.mark.parametrize(
     ("historical", "days", "message"),
     [
         ("unsupported", 731, "only historical feeds may extend the backfill window"),
         ("executable", 366, "greater than or equal to 367"),
-        ("executable", 3661, "less than or equal to 3660"),
+        ("executable", 10951, "less than or equal to 10950"),
     ],
 )
 def test_catalog_bounds_the_extended_backfill_window(historical, days, message) -> None:

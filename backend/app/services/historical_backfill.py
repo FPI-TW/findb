@@ -66,6 +66,10 @@ CAPABILITIES: dict[tuple[str, str], str] = {
 }
 STAGING_MAX_BACKFILL_DAYS = 31
 PRODUCTION_MAX_BACKFILL_DAYS = 366
+# One request spans at most this many calendar days even when its feed reaches further
+# back: creation binds every date in one transaction behind Cloudflare's timeout, and
+# deep history is submitted as consecutive segments (#754).
+MAX_REQUEST_SPAN_DAYS = PRODUCTION_MAX_BACKFILL_DAYS
 # Compatibility for existing staging callers; production uses the target-aware helper.
 MAX_BACKFILL_DAYS = STAGING_MAX_BACKFILL_DAYS
 # Cutoffs follow each feed's calendar market, matching the Fetcher clock; one
@@ -552,8 +556,9 @@ async def create_request(
         raise HistoricalBackfillError(
             f"backfill dates must be within the latest {max_days} calendar days"
         )
-    if (end_date - start_date).days >= max_days:
-        raise HistoricalBackfillError(f"backfill range exceeds {max_days} days")
+    span = min(max_days, MAX_REQUEST_SPAN_DAYS)
+    if (end_date - start_date).days >= span:
+        raise HistoricalBackfillError(f"backfill range exceeds {span} days")
     existing = (
         await db.execute(
             select(HistoricalBackfillRequest)
@@ -903,6 +908,9 @@ async def preview_request(
         scope_reason = "date_order_invalid"
     elif start_date < today - timedelta(days=max_days - 1) or end_date > today:
         scope_reason = f"outside_latest_{max_days}_days"
+    elif (end_date - start_date).days >= min(max_days, MAX_REQUEST_SPAN_DAYS):
+        # Creation refuses it; a longer reach is submitted as consecutive segments.
+        scope_reason = f"range_exceeds_{min(max_days, MAX_REQUEST_SPAN_DAYS)}_days"
     elif dataset is None or not dataset.is_active:
         scope_reason = "dataset_inactive"
     elif not _supports_backfill(provider, dataset_key):

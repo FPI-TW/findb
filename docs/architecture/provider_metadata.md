@@ -65,8 +65,11 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
 - `historical_requests_per_date` 是 planner 估算每個日期的 provider 請求數：固定次數（共用報表或表格，例如 TAIFEX
   五個商品、FinLab 五張表、FactSet 一次查詢），或 `per_member`（每個成員一次；Twelve Data），historical feed 必填。
   `per_member` 只能用在 `dated_release`，因為要有成員清單才能計數。
-- `historical_lookback_days` 可延長該 feed 在 production 的回補窗口（367–3660 個 calendar days），`null`
-  沿用預設的最近 366 天；只有 historical feed 可以設定，local／staging 一律維持 31 天。建立、preview、claim
+- `historical_lookback_days` 可延長該 feed 在 production 的回補窗口（367–10950 個 calendar days），`null`
+  沿用預設的最近 366 天；只有 historical feed 可以設定，local／staging 一律維持 31 天。窗口是滾動的，
+  設定值是 Owner 目標日期再加約一年餘裕（#754：FinLab 日線 7600 天到 2007-04-23，TAIFEX 與 FMP 三條
+  10200 天到 2000 年，目標都可維持到 2027 年底前後），到期前要再調大。不論窗口多長，一筆 request 最多涵蓋
+  366 個 calendar days，更早的範圍分段送出；preview 對超過的範圍回 `range_exceeds_366_days`。建立、preview、claim
   與過期判定都依 feed 計算這個邊界。
 - `universe_mode` 宣告交易日名單的來源：`refreshed` 由 maintenance 刷新清單，plan 凍結最新 published
   release；`dated` 由當天的 provider 觀測建立（TAIFEX 當天報表），plan 必須有該交易日的 release，
