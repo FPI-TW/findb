@@ -27,6 +27,21 @@ from findb_fetcher.provider_work import durable_response
 
 PRODUCTS = ("TX", "MTX", "TMF", "TE", "TF")
 _PRODUCTS = set(PRODUCTS)
+# First trading day of each product (futDataDown returns only the header the day before).
+# A historical date fetches only products already listed (#754); Backend keeps the same
+# table in ``app.schemas.historical_backfill``.
+PRODUCT_LISTED_DATES = {
+    "TX": date(1998, 7, 21),
+    "TE": date(1999, 7, 21),
+    "TF": date(1999, 7, 21),
+    "MTX": date(2001, 4, 9),
+    "TMF": date(2024, 7, 29),
+}
+
+
+def listed_products(trade_date: date) -> tuple[str, ...]:
+    """Products listed by the date, in report order."""
+    return tuple(product for product in PRODUCTS if PRODUCT_LISTED_DATES[product] <= trade_date)
 
 
 class TaifexOperationalError(RuntimeError):

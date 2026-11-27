@@ -33,16 +33,14 @@ def item():
     )
 
 
-def report(product, *, no_trade=False, month="202610F1"):
+def report(product, *, no_trade=False, month="202610F1", day="2026/10/01"):
     values = (
         ["-", "-", "-", "-", "0", "-", "-"]
         if no_trade
         else ["100", "110", "90", "105", "37", "-", "-"]
     )
     header = "交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,成交量,結算價,未沖銷契約數,交易時段\n"
-    return (header + ",".join(["2026/10/01", product, month, *values, "一般"]) + "\n").encode(
-        "cp950"
-    )
+    return (header + ",".join([day, product, month, *values, "一般"]) + "\n").encode("cp950")
 
 
 class RawStore:
@@ -142,6 +140,41 @@ def test_all_products_raw_first_and_source_batch_recovers_without_acquisition(tm
     assert result.result_evidence["manifest"]["ref"].endswith(".json")
     assert source.requests[0] == source.requests[1]
     assert len(raw.raw) == 6
+
+
+@pytest.mark.parametrize(
+    ("trade_date", "listed"),
+    [
+        # #754 PR D: only products already listed on the date are fetched and evidenced.
+        (date(2024, 7, 26), ["TX", "MTX", "TE", "TF"]),
+        (date(2000, 1, 4), ["TX", "TE", "TF"]),
+    ],
+)
+def test_a_date_fetches_only_products_listed_by_then(tmp_path, trade_date, listed):
+    from urllib.parse import parse_qs
+
+    fetched = []
+
+    def handler(request):
+        product = parse_qs(request.content.decode())["commodity_id"][0]
+        fetched.append(product)
+        return httpx.Response(
+            200,
+            content=report(
+                product, month=trade_date.strftime("%Y%m"), day=trade_date.strftime("%Y/%m/%d")
+            ),
+        )
+
+    result = runner(tmp_path, handler).run(replace(item(), trade_date=trade_date))
+    assert fetched == listed
+    assert [r["product_code"] for r in result.result_evidence["reports"]] == listed
+    assert {row["product_code"] for row in result.result_evidence["rows"]} == set(listed)
+
+
+def test_a_date_before_any_listing_stops_before_fetching(tmp_path):
+    runner_ = runner(tmp_path, lambda _: pytest.fail("fetched an unlisted date"))
+    with pytest.raises(ValueError, match="no TAIFEX product was listed"):
+        runner_.run(replace(item(), trade_date=date(1998, 7, 20)))
 
 
 def test_a_queued_run_is_read_again_with_short_growing_delays(tmp_path):

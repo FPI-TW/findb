@@ -34,10 +34,10 @@ from findb_fetcher.historical_backfill import (
 )
 from findb_fetcher.platform_limits import account_identity
 from findb_fetcher.providers.taifex import (
-    PRODUCTS,
     TaifexOperationalError,
     fetch_report,
     is_no_trade,
+    listed_products,
     persist_dated_report,
 )
 from findb_fetcher.raw_storage import (
@@ -275,8 +275,11 @@ class TaifexHistoricalRunner:
                     state["prepared"] = json.loads(restored[0])
                     state["evidence"] = owner.work["manifest"]["evidence"]
                     self._save(item, state)
+            products = listed_products(item.trade_date)
+            if not products:
+                raise ValueError("no TAIFEX product was listed on the historical date")
             if "prepared" not in state and "evidence" not in state:
-                for product in PRODUCTS:
+                for product in products:
                     if product in state["reports"]:
                         continue
                     if product not in state["bytes"]:
@@ -334,7 +337,7 @@ class TaifexHistoricalRunner:
                         "fetched_at": datetime.fromtimestamp(self.clock(), timezone.utc)
                         .isoformat()
                         .replace("+00:00", "Z"),
-                        "reports": [state["reports"][product]["reference"] for product in PRODUCTS],
+                        "reports": [state["reports"][product]["reference"] for product in products],
                         "rows": rows,
                     }
                     self._save(item, state)

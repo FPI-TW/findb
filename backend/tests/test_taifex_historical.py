@@ -42,15 +42,23 @@ def reference(raw, extension="json"):
     }
 
 
-def evidence(item_id, request_id, *, no_data=False, report_extension="csv"):
+def evidence(
+    item_id,
+    request_id,
+    *,
+    no_data=False,
+    report_extension="csv",
+    trade_date="2026-10-01",
+    products=tuple(PRODUCTS),
+):
     rows = []
-    for product in PRODUCTS:
+    for product in products:
         row = {
             "product_code": product,
             "contract_code": f"{product}:202610F1",
             "contract_month": "202610F1",
             "session": "regular",
-            "trade_date": "2026-10-01",
+            "trade_date": trade_date,
             "open": None,
             "high": None,
             "low": None,
@@ -67,7 +75,7 @@ def evidence(item_id, request_id, *, no_data=False, report_extension="csv"):
         "version": 1,
         "item_id": str(item_id),
         "request_id": str(request_id),
-        "trade_date": "2026-10-01",
+        "trade_date": trade_date,
         "fetched_at": "2026-10-01T10:00:00Z",
         "reports": [
             {
@@ -75,7 +83,7 @@ def evidence(item_id, request_id, *, no_data=False, report_extension="csv"):
                 "product_code": product,
                 "url": "https://www.taifex.com.tw/cht/3/futDataDown",
             }
-            for product in PRODUCTS
+            for product in products
         ],
         "rows": rows,
     }
@@ -394,6 +402,56 @@ def test_completion_evidence_rejects_incomplete_or_ambiguous_claims(kind):
         proof["rows"][0]["contract_code"] = "MTX:202610F1"
     with pytest.raises(ValueError):
         HistoricalResultEvidence.model_validate(proof)
+
+
+@pytest.mark.parametrize(
+    ("trade_date", "listed"),
+    [
+        # #754 PR D: a date requires only the products already listed on it.
+        ("2000-01-04", ("TX", "TE", "TF")),
+        ("2001-04-09", ("TX", "MTX", "TE", "TF")),
+        ("2024-07-26", ("TX", "MTX", "TE", "TF")),
+        ("2024-07-29", ("TX", "MTX", "TMF", "TE", "TF")),
+    ],
+)
+def test_completion_evidence_requires_exactly_the_listed_products(trade_date, listed):
+    proof = evidence(uuid7(), uuid7(), trade_date=trade_date, products=listed)
+    assert HistoricalResultEvidence.model_validate(proof).trade_date.isoformat() == trade_date
+    unlisted = [product for product in PRODUCTS if product not in listed]
+    if unlisted:
+        # A product before its listing date is not part of the date.
+        extra = evidence(uuid7(), uuid7(), trade_date=trade_date, products=(*listed, unlisted[0]))
+        with pytest.raises(ValueError, match="listed product"):
+            HistoricalResultEvidence.model_validate(extra)
+    # Every listed product still requires its report and rows.
+    short = evidence(uuid7(), uuid7(), trade_date=trade_date, products=listed[1:])
+    with pytest.raises(ValueError, match="listed product"):
+        HistoricalResultEvidence.model_validate(short)
+
+
+def test_fetcher_keeps_the_same_product_listing_dates():
+    import ast
+    from pathlib import Path
+
+    from app.schemas.historical_backfill import PRODUCT_LISTED_DATES
+
+    source = Path(__file__).resolve().parents[2] / "fetcher/src/findb_fetcher/providers/taifex.py"
+    tree = ast.parse(source.read_text())
+    node = next(
+        statement.value
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        and any(
+            getattr(target, "id", None) == "PRODUCT_LISTED_DATES" for target in statement.targets
+        )
+    )
+    assert isinstance(node, ast.Dict)
+    fetcher = {
+        key.value: date(*(arg.value for arg in value.args))
+        for key, value in zip(node.keys, node.values, strict=True)
+        if isinstance(key, ast.Constant) and isinstance(value, ast.Call)
+    }
+    assert fetcher == PRODUCT_LISTED_DATES
 
 
 @pytest.mark.parametrize("report_extension", ["csv", "json"])

@@ -1012,11 +1012,11 @@ No_data 沒有 run，所以回補項目完成時，Backend 直接重新分類這
 
 TAIFEX `tw_futures_eod` 的 historical 也會修復同日的 plan（#595），規則不同於逐檔日線：
 
-- 只認 completed 的回補項目。完成證據（第 1 版，含五個商品的官方報表與 manifest）在完成時已和報表、
+- 只認 completed 的回補項目。完成證據（第 1 版，含該日已上市商品的官方報表與 manifest）在完成時已和報表、
   run 的寫入證據核對過，成員鍵 `product|contract|session` 本身就是合約身份，所以不比對 work manifest。
 - Data：項目的 run（`historical_backfill_item.run_id`）為 completed 且對該成員有 `delivery_member_evidence`。
 - No_data：證據裡該列是無成交（成交量 0，開高低收、結算價與未平倉都空白），而且沒有寫入。
-- No_data（當天未掛牌）：五個商品的報表會列出當天所有掛牌中的合約，沒有成交的也會列。凍結的成員如果它的合約
+- No_data（當天未掛牌）：已上市商品的報表會列出當天所有掛牌中的合約，沒有成交的也會列。凍結的成員如果它的合約
   不在任何一份同日 completed 證據裡，表示當天已經沒有掛牌，也算 no_data。這是為了改成 dated universe 之前建立的
   plan：production 10/15–10/27 的 plan 凍結了 10/14 的名單，裡面有已到期的合約（W2 週合約 10/14、10 月月份合約
   10/21 到期，依期交所「期貨最後結算價」頁面）。現在每個 plan 都用當天的名單，不會再凍結到已到期的合約（#595）。

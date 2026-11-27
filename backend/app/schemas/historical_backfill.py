@@ -11,6 +11,23 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.schemas.ingress import FuturesEODRow
 
 PRODUCTS = frozenset({"TX", "MTX", "TMF", "TE", "TF"})
+# First trading day of each product on TAIFEX (verified against futDataDown: the day before
+# returns only the header). A historical date requires only products already listed (#754).
+# The Fetcher keeps the same table in ``findb_fetcher.providers.taifex``.
+PRODUCT_LISTED_DATES = {
+    "TX": date(1998, 7, 21),
+    "TE": date(1999, 7, 21),
+    "TF": date(1999, 7, 21),
+    "MTX": date(2001, 4, 9),
+    "TMF": date(2024, 7, 29),
+}
+
+
+def listed_products(trade_date: date) -> frozenset[str]:
+    """Products whose official report must carry rows on the date."""
+    return frozenset(
+        product for product, listed in PRODUCT_LISTED_DATES.items() if listed <= trade_date
+    )
 
 
 class HistoricalFuturesRow(FuturesEODRow):
@@ -68,7 +85,7 @@ class HistoricalResultEvidence(BaseModel):
     request_id: UUID
     trade_date: date
     fetched_at: datetime
-    reports: list[HistoricalProductReport] = Field(min_length=5, max_length=5)
+    reports: list[HistoricalProductReport] = Field(min_length=1, max_length=5)
     rows: list[HistoricalFuturesRow] = Field(min_length=1, max_length=5000)
     manifest: HistoricalRawReference
 
@@ -76,15 +93,17 @@ class HistoricalResultEvidence(BaseModel):
     def validate_manifest(self) -> "HistoricalResultEvidence":
         if self.fetched_at.tzinfo is None or self.fetched_at.utcoffset() is None:
             raise ValueError("fetched_at must be timezone-aware")
-        if {report.product_code for report in self.reports} != PRODUCTS:
-            raise ValueError("every product requires exactly one report")
+        listed = listed_products(self.trade_date)
+        codes = [report.product_code for report in self.reports]
+        if not listed or len(codes) != len(set(codes)) or set(codes) != listed:
+            raise ValueError("every listed product requires exactly one report")
         keys = [(row.contract_code, row.session) for row in self.rows]
         if len(keys) != len(set(keys)) or any(
             row.trade_date != self.trade_date for row in self.rows
         ):
             raise ValueError("historical member identities must be unique and match the date")
-        if {row.product_code for row in self.rows} != PRODUCTS:
-            raise ValueError("every product requires dated official rows")
+        if {row.product_code for row in self.rows} != listed:
+            raise ValueError("every listed product requires dated official rows")
         manifest = json.dumps(
             self.model_dump(mode="json", exclude={"manifest"}),
             ensure_ascii=False,
