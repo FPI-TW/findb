@@ -1,6 +1,6 @@
 """Every independent operation ledger distinguishes Source wait from dispatch."""
 
-from dataclasses import dataclass
+from datetime import date
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -9,10 +9,15 @@ import pytest
 
 from findb_fetcher import acquisition as acq
 from findb_fetcher.config import FetcherConfig
+from findb_fetcher.execution_metadata import historical_feed
 from findb_fetcher.factset_eod import FactSetEOD
 from findb_fetcher.full_market_client import FullMarketProtocolError
-from findb_fetcher.historical_backfill import HistoricalControlClient, HistoricalControlError
-from findb_fetcher.historical_runtime import _execute
+from findb_fetcher.historical_backfill import (
+    HistoricalControlClient,
+    HistoricalControlError,
+    HistoricalWorkItem,
+)
+from findb_fetcher.member_historical import MemberHistoricalRunner
 from findb_fetcher.provider_work import ProviderWorkSourceUnavailableError
 from findb_fetcher.taifex_historical import TaifexHistoricalRunner
 from provider_work_support import owned_unit_work
@@ -33,17 +38,41 @@ def test_source_wait_retains_only_undispatched_reservation(tmp_path, lane, dispa
                 raise ProviderWorkSourceUnavailableError("Source authorization unavailable")
 
             if lane == "historical":
-
-                @dataclass
-                class Job:
-                    job_key: str = "historical-original"
-                    attempt_count: int = 0
-
-                key = "historical-original"
-                owner.journal.reserve_attempt(key, 8)
+                # A frozen cohort member reserves its own operation inside the runner.
+                key = "member-historical:member:2330"
+                member = {"member_key": "2330", "provider_symbol": "2330"}
+                runner = MemberHistoricalRunner(
+                    "finlab",
+                    delivery=SimpleNamespace(),
+                    raw_store=SimpleNamespace(),
+                    http=SimpleNamespace(),
+                    adapter=SimpleNamespace(
+                        member_batch_limit=0,
+                        pending_shared_fetch=lambda *args: False,
+                        acquire=action,
+                        close=lambda: None,
+                    ),
+                    limits={"max_response_bytes": 1_000_000},
+                )
+                item = HistoricalWorkItem(
+                    UUID(int=1),
+                    UUID(int=2),
+                    "original",
+                    "finlab",
+                    "tw_equity_eod",
+                    "TW",
+                    date(2026, 10, 15),
+                    UUID(int=3),
+                )
                 with pytest.raises(ProviderWorkSourceUnavailableError):
-                    _execute(
-                        SimpleNamespace(execute=action), SimpleNamespace(max_attempts=8), Job()
+                    runner._acquire(
+                        owner,
+                        item,
+                        historical_feed("finlab", "tw_equity_eod"),
+                        member,
+                        [member],
+                        "2330",
+                        "historical-member:2330",
                     )
             elif lane == "maintenance":
                 key = "maintenance:universe_refresh"
@@ -79,10 +108,12 @@ def test_source_wait_retains_only_undispatched_reservation(tmp_path, lane, dispa
                 assert audit["outcome"] == ("unknown" if dispatched else "source_wait")
                 assert len(saved) == (1 if dispatched else 2)
                 return
+            # The historical member reserved its attempt itself; the others reserved one first.
+            reserved = 0 if lane == "historical" else 1
             with owner.journal.connection() as db:
                 assert db.execute(
                     "SELECT attempts FROM work_budget WHERE operation_key=?", (key,)
-                ).fetchone()[0] == 1 + int(dispatched)
+                ).fetchone()[0] == reserved + int(dispatched)
     finally:
         runtime.close()
 

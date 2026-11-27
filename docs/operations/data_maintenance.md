@@ -242,25 +242,11 @@ Historical capability 現由 provider catalog 推導；Source execution-config �
 planner 改讀 image 隨附的 `execution_descriptors.v1.json`，不讀 daily schedule／full-market config；
 FinLab `tw_etf_eod` historical 已開放（`executable`，沒有靜態 universe descriptor）。PR4 已移除 image／build／release 的舊排程檔；daily 改讀 Backend 快照，historical 不依賴該 API。
 
-Twelve Data 與 FinLab 新建的 historical request 不再使用靜態清單：每個日期凍結該日 Full plan 的 release
+Twelve Data 與 FinLab 的 historical request 不使用靜態清單：每個日期凍結該日 Full plan 的 release
 （沒有 plan 時為該日以前最新 published release）中已上市的 mapped 成員，另外補查之後才發布的清單多出的成員
 （有資料就記為清單外，不列入 expected），Fetcher 以 Full daily adapter 逐成員抓取，結果可為 `partial` 並附逐成員 evidence；規則見
-[以 historical 回補 Full 缺漏](full_market.md#以-historical-回補-full-缺漏twelve-datafinlab)。以下靜態 reviewed
-artifact 只供本變更前建立、尚未排空的 request 與 planner 估算使用：
-
-- Twelve Data historical descriptor 指向 `twelve_data_nasdaq_100_2026_09_14.v2.json`。快照保留公開QQQ持股中的全部101個
-  securities（包括多股類），每次最多claim 5個symbol；scheduler poll及批次間隔不得短於60秒。
-- FinLab使用`finlab_tw50_2026_09_21.v2.json`，固定50檔、每個交易日只讀五個SDK datasets，
-  完整50-symbol grid成立後才可送出full snapshot。
-- 已退役 Shioaji 的歷史證據曾使用`shioaji_tw50_2026_09_21.v2.json`，50檔股票與`0050`、`0056`、`006201`
-  分成兩個sequence；每個provider request仍只處理一檔且`SHIOAJI_SIMULATION=true`。
-
-三份v2 manifest均綁定來源URL、effective date、來源摘要與依序正規化symbol的SHA-256。
-來源更新必須以PR替換整份快照並重跑loader tests；checksum不符、重複symbol、錯誤筆數、未知欄位或
-production/staging target混用都會fail closed。`source_sha256`是該次review紀錄的
-`source_url`、effective date、篩選規則／定審異動所形成之canonical evidence摘要；
-`symbols_sha256`是依manifest順序、每行一個canonical symbol（Shioaji為
-`dataset_key:symbol`）且結尾換行的摘要。
+[以 historical 回補 Full 缺漏](full_market.md#以-historical-回補-full-缺漏twelve-datafinlab)。沒有 cohort 的舊 request
+已全部結束，舊 executor 與靜態 reviewed universe 已移除（2026-11-27）。
 
 Production EOD historical control plane允許最近366個calendar days；catalog 的 `historical_lookback_days`
 可為個別 feed 延長（見 [Provider metadata](../architecture/provider_metadata.md)）。Shioaji 已停止新申請，既有 minute request 的 31 天視窗語意保留。
@@ -268,8 +254,8 @@ Production EOD historical control plane允許最近366個calendar days；catalog
 建立、preview、claim 與過期判定共用同一個邊界。休市日是否略過，所有 provider 都跟 daily 使用同一個
 `*_SKIP_NON_TRADING_DAYS`；preview 與建立 request 套用相同規則。
 仍依published market calendar與 provider policy 建立
-open-day work items；舊 request 的 Twelve Data逐symbol、FinLab逐trade date保存lease/checkpoint並沿用raw-first、
-immutable idempotency與Source terminal驗證。Twelve Data historical與daily同樣以`adjust=none`抓取
+open-day work items；逐成員交付沿用raw-first、immutable idempotency與Source terminal驗證。
+Twelve Data historical與daily同樣以`adjust=none`抓取
 實際成交價；回補可依較新的`fetched_at`覆寫同來源舊列，但不會把拆股調整價寫入canonical。
 本變更前以`adjust=splits`完成的回補列，若之後已有拆股，可能與實際成交價不同，須依原raw
 與拆股日期個別核對後重跑，不得整批覆寫。切換前已保存回應或prepared body但尚未完成的
@@ -284,12 +270,10 @@ canonical與Serve前不可擴大下一批。
 
 `APP_ENVIRONMENT=production` 是 planner 的環境前提；`--schedule-file` 已移除，
 `FETCHER_HISTORICAL_SCHEDULE_FILE` 不再被 runner 或 planner 使用，沒有舊檔 fallback。
-Twelve Data／FinLab 的 `--universe-file` 只替換本次 planner 的估算輸入，不修改 worker 或 Backend
-request 的 universe；應使用與 worker 相同的 reviewed artifact。FinLab 原有
-`FETCHER_FINLAB_UNIVERSE_FILE` 保留，runner 與 planner 預設共同使用；未設定時讀 descriptor 的同環境預設。
-FactSet／TAIFEX 的成員由既有 Backend cohort／日期資料決定，不接受 planner universe override。
-Twelve Data／FinLab 新 request 的實際成員是 Backend 凍結的 Full release，planner 的靜態 universe 只是估算；
-FinLab `tw_etf_eod` 沒有靜態 universe，planner 以每日 5 次 SDK 呼叫估算，不估筆數。
+Planner 不讀 universe 檔：Admin preview 對每個有效日期回傳 `members`，也就是現在建立 request 時該日期會凍結的
+成員數（`dated_release` 為該日 release 已上市的 mapped 成員，`current_release` 為今天的 release；之後清單多出、
+會一併請求的成員不計入）。逐成員計費的 Twelve Data 以成員數估算呼叫與筆數，任一日期缺少成員數就拒絕估算；
+FinLab 每日固定 5 次 SDK 呼叫，筆數為成員數；TAIFEX 的成員由當日報表決定，preview 沒有成員數，筆數為 `null`。
 
 移除排程檔依賴不會擴大日期、權限或歷史 scope。新 Twelve Data／FinLab historical payload 的
 `delivery.scheduled_for` 為 request 交易日 UTC 00:00 的日期標記；request/job keys、target date、

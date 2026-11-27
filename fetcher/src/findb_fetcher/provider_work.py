@@ -270,6 +270,7 @@ class WorkJournal:
                 CREATE TABLE IF NOT EXISTS work_delivery(work_key TEXT NOT NULL, member_key TEXT NOT NULL,
                     body BLOB NOT NULL, sha256 TEXT NOT NULL, receipt TEXT, terminal TEXT,
                     PRIMARY KEY(work_key,member_key));
+                -- Written only by the retired legacy historical executor; retention and purge clear it.
                 CREATE TABLE IF NOT EXISTS work_job(work_key TEXT NOT NULL, job_key TEXT NOT NULL,
                     prepared TEXT NOT NULL, PRIMARY KEY(work_key,job_key));
                 CREATE TABLE IF NOT EXISTS work_budget(work_key TEXT NOT NULL, operation_key TEXT NOT NULL, attempts INTEGER NOT NULL, PRIMARY KEY(work_key,operation_key));
@@ -307,42 +308,6 @@ class WorkJournal:
                 "SELECT body FROM work_manifest WHERE work_key=?", (self.key,)
             ).fetchone()
         return json.loads(row[0]) if row else None
-
-    def save_prepared_request(self, job, request: dict, *, now: datetime) -> None:
-        owner = active()
-        if owner:
-            owner.reserve(request, job_key=job.job_key)
-        body = json.dumps(request, sort_keys=True, separators=(",", ":"))
-        with self.connection() as db:
-            db.execute(
-                "INSERT OR IGNORE INTO work_job VALUES(?,?,?)", (self.key, job.job_key, body)
-            )
-            stored = db.execute(
-                "SELECT prepared FROM work_job WHERE work_key=? AND job_key=?",
-                (self.key, job.job_key),
-            ).fetchone()
-            if stored[0] != body:
-                raise ProviderWorkRecoveryBlockedError("prepared job bytes changed")
-
-    def prepared(self, job_key: str) -> dict | None:
-        with self.connection() as db:
-            row = db.execute(
-                "SELECT prepared FROM work_job WHERE work_key=? AND job_key=?", (self.key, job_key)
-            ).fetchone()
-        if row:
-            return json.loads(row[0])
-        owner = active()
-        if owner:
-            bodies = owner.restore(job_key=job_key)
-            if bodies:
-                if len(bodies) != 1:
-                    raise ProviderWorkRecoveryBlockedError("prepared job identity is ambiguous")
-                request = json.loads(bodies[0])
-                self.save_prepared_request(
-                    type("Job", (), {"job_key": job_key})(), request, now=datetime.now(timezone.utc)
-                )
-                return request
-        return None
 
     def source_error(self, delivery, status: int, code: str | None) -> None:
         with self.connection() as db:

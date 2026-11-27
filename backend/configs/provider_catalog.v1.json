@@ -194,44 +194,6 @@
       "delivery": {
         "slot_id": "western_markets_window"
       },
-      "historical_execution": {
-        "local": {
-          "outputsize": 20,
-          "max_attempts": 5,
-          "retry_base_seconds": 60,
-          "retry_max_seconds": 3600,
-          "lease_seconds": 2400,
-          "poll_interval_seconds": 30,
-          "wait_timeout_seconds": 1800,
-          "max_credits_per_run": 5,
-          "max_records_per_run": 10000,
-          "universe_file": "twelve_data_us_common_stocks.v1.json"
-        },
-        "staging": {
-          "outputsize": 20,
-          "max_attempts": 5,
-          "retry_base_seconds": 60,
-          "retry_max_seconds": 3600,
-          "lease_seconds": 2400,
-          "poll_interval_seconds": 30,
-          "wait_timeout_seconds": 1800,
-          "max_credits_per_run": 5,
-          "max_records_per_run": 10000,
-          "universe_file": "twelve_data_us_common_stocks.v1.json"
-        },
-        "production": {
-          "outputsize": 20,
-          "max_attempts": 5,
-          "retry_base_seconds": 60,
-          "retry_max_seconds": 3600,
-          "lease_seconds": 2400,
-          "poll_interval_seconds": 60,
-          "wait_timeout_seconds": 1800,
-          "max_credits_per_run": 5,
-          "max_records_per_run": 1830,
-          "universe_file": "twelve_data_nasdaq_100_2026_09_14.v2.json"
-        }
-      },
       "historical_cohort": "dated_release",
       "historical_requests_per_date": "per_member",
       "historical_lookback_days": null,
@@ -278,7 +240,6 @@
       "delivery": {
         "slot_id": "asia_pacific_markets_window"
       },
-      "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 1,
       "historical_lookback_days": null,
@@ -328,44 +289,6 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": {
-        "local": {
-          "outputsize": 2,
-          "max_attempts": 5,
-          "retry_base_seconds": 60,
-          "retry_max_seconds": 3600,
-          "lease_seconds": 2400,
-          "poll_interval_seconds": 30,
-          "wait_timeout_seconds": 1800,
-          "max_credits_per_run": 5,
-          "max_records_per_run": 2,
-          "universe_file": "finlab_tw_review_required.v1.json"
-        },
-        "staging": {
-          "outputsize": 2,
-          "max_attempts": 5,
-          "retry_base_seconds": 60,
-          "retry_max_seconds": 3600,
-          "lease_seconds": 2400,
-          "poll_interval_seconds": 30,
-          "wait_timeout_seconds": 1800,
-          "max_credits_per_run": 5,
-          "max_records_per_run": 2,
-          "universe_file": "finlab_tw_review_required.v1.json"
-        },
-        "production": {
-          "outputsize": 50,
-          "max_attempts": 5,
-          "retry_base_seconds": 60,
-          "retry_max_seconds": 3600,
-          "lease_seconds": 2400,
-          "poll_interval_seconds": 60,
-          "wait_timeout_seconds": 1800,
-          "max_credits_per_run": 5,
-          "max_records_per_run": 50,
-          "universe_file": "finlab_tw50_2026_09_21.v2.json"
-        }
-      },
       "historical_cohort": "dated_release",
       "historical_requests_per_date": 5,
       "historical_lookback_days": null,
@@ -411,7 +334,6 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null,
       "historical_cohort": "dated_release",
       "historical_requests_per_date": 5,
       "historical_lookback_days": null,
@@ -457,7 +379,6 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
       "historical_lookback_days": null,
@@ -503,7 +424,6 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
       "historical_lookback_days": null,
@@ -549,7 +469,6 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
       "historical_lookback_days": null,
@@ -595,7 +514,6 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null,
       "historical_cohort": null,
       "historical_requests_per_date": null,
       "historical_lookback_days": null,
@@ -641,7 +559,6 @@
       "delivery": {
         "slot_id": "taiwan_market_window"
       },
-      "historical_execution": null,
       "historical_cohort": "daily_report",
       "historical_requests_per_date": 5,
       "historical_lookback_days": null,
@@ -687,7 +604,6 @@
       "delivery": {
         "slot_id": "asia_pacific_markets_window"
       },
-      "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 2,
       "historical_lookback_days": null,
@@ -733,7 +649,6 @@
       "delivery": {
         "slot_id": "asia_pacific_markets_window"
       },
-      "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 3,
       "historical_lookback_days": null,
@@ -779,7 +694,6 @@
       "delivery": {
         "slot_id": "western_markets_window"
       },
-      "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 72,
       "historical_lookback_days": null,
@@ -825,7 +739,6 @@
       "delivery": {
         "slot_id": "western_markets_window"
       },
-      "historical_execution": null,
       "historical_cohort": "current_release",
       "historical_requests_per_date": 1,
       "historical_lookback_days": null,

@@ -1,19 +1,30 @@
 """The environment and execution profile must not alter scheduler date decisions."""
 
 import copy
-import json
 from datetime import date, datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from findb_fetcher.execution_metadata import acquisition_feeds
 from findb_fetcher.full_market_runtime import ReadinessBlockedError
 from test_full_market import _member, _runtime
 from test_full_market_recovery import _frozen_plan, _release
 
-CONFIGS = Path(__file__).resolve().parents[1] / "tests/fixtures/legacy_schedules"
-FEEDS = json.loads((CONFIGS / "full_market.staging.v1.json").read_text())["feeds"]
+
+def _runtime_feed(feed: dict) -> dict:
+    """The installed descriptor's identity of one acquiring feed, as the runtime holds it."""
+    return {
+        "provider": feed["provider"],
+        "dataset_key": feed["dataset_key"],
+        "market": feed["market"],
+        "asset_class": feed["asset_class"],
+        "slot_id": feed["delivery"]["slot_id"],
+    }
+
+
+# Every acquiring feed the installed catalog publishes, in every lane.
+FEEDS = [_runtime_feed(feed) for feed in acquisition_feeds()]
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
@@ -28,8 +39,13 @@ def test_same_calendar_date_retry_and_frozen_membership(tmp_path, monkeypatch, e
             return datetime(2026, 7, 22, 22, tzinfo=timezone.utc).astimezone(tz)
 
     monkeypatch.setattr(module, "datetime", Clock)
-    manifest = json.loads((CONFIGS / f"full_market.{environment}.v1.json").read_text())
-    selected = next(row for row in manifest["feeds"] if row["dataset_key"] == feed["dataset_key"])
+    monkeypatch.setenv("APP_ENVIRONMENT", environment)
+    # Both environments install one descriptor: the feed's identity cannot differ.
+    selected = next(
+        _runtime_feed(row)
+        for row in acquisition_feeds(feed["provider"])
+        if row["dataset_key"] == feed["dataset_key"]
+    )
     assert selected == feed
     runtime, source, _ = _runtime(tmp_path, provider=feed["provider"])
     runtime.execution_profile = profile

@@ -83,27 +83,6 @@ class FetcherConfig:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class MarketCalendarConfig:
-    """Required read-only access to FinDB's published market calendar."""
-
-    serve_base_url: str
-    api_key: str
-    request_timeout_seconds: float = 10.0
-    cache_ttl_seconds: float = 300.0
-
-    @classmethod
-    def from_env(cls) -> "MarketCalendarConfig":
-        timeout = _positive_float_env("FETCHER_CALENDAR_TIMEOUT_SECONDS", 10.0)
-        cache_ttl = _positive_float_env("FETCHER_CALENDAR_CACHE_TTL_SECONDS", 300.0)
-        return cls(
-            serve_base_url=_https_origin_env("FINDB_SERVE_BASE_URL"),
-            api_key=_required_env("FETCHER_CALENDAR_SERVE_API_KEY"),
-            request_timeout_seconds=timeout,
-            cache_ttl_seconds=cache_ttl,
-        )
-
-
 def _required_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:

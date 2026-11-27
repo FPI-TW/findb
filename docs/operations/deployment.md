@@ -766,11 +766,10 @@ Twelve Data／FinLab 的 `partial`，新 Fetcher 送到舊 Backend 的 cohort �
 promote FinDB（Backend），確認可建立新 request 後，才 promote Fetcher。** 沒有 migration；Staging 同 SHA
 自動部署時 Fetcher CD 會等 FinDB CD 成功。
 
-舊 Fetcher 遇到新 cohort request 時沒有成員清單可用的新路徑，仍會執行舊 executor，因此在 Fetcher
-升級前不要為 Twelve Data／FinLab 建立新 historical request。本變更前建立的 request 沒有 cohort，新
-Backend 繼續以單一 Source run 驗證、新 Fetcher 繼續以舊 executor 執行。Fetcher rollback 前先確認沒有
-running 的 cohort request；Backend rollback 到本變更之前時，須先 rollback Fetcher 並取消未完成的
-cohort request。舊 executor、`scheduler_state.py` 與靜態清單的移除見 [backlog](../dev/backlog.md)。
+無 cohort 的舊 request 兩環境皆已結束（2026-11-27 唯讀查證），舊 executor、`scheduler_state.py`、
+靜態清單與 catalog 的 `historical_execution` 已移除。現行 Fetcher 遇到沒有凍結 cohort 的 Twelve Data／FinLab
+item 會拒絕，Backend 也不再以單一 Source run 完成 EOD historical item。Rollback 下限（`fetcher-v0.1.51`）
+仍含舊 executor，rollback 後也只會收到有 cohort 的 request。
 
 ## Pilot profile 退役與 rollback 下限
 

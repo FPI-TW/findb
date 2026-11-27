@@ -4,20 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-from dataclasses import dataclass
-from datetime import datetime, time, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from findb_fetcher.config import app_environment
 
-if TYPE_CHECKING:
-    from findb_fetcher.scheduler_state import ScheduledJob
-
 METADATA_PATH = Path(__file__).parent / "data/execution_descriptors.v1.json"
-CONFIGS_DIR = Path("/app/configs")
 # A provider's execution lane: its own Source FIFO, owner, consumer and local files.
 # The default lane keeps every pre-lane name; historical work always runs there.
 DEFAULT_LANE = "default"
@@ -28,26 +21,6 @@ _LANE_NAME = re.compile(r"[a-z][a-z0-9_]{0,29}")
 
 class ExecutionMetadataError(ValueError):
     """The installed descriptor cannot support the requested historical operation."""
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionDescriptor:
-    # Kept solely as an existing journal identity, not a schedule or authorization.
-    schedule_id: str
-    provider: str
-    dataset_key: str
-    market: str
-    slot_id: str
-    universe_file: Path
-    outputsize: int
-    max_attempts: int
-    retry_base_seconds: int
-    retry_max_seconds: int
-    lease_seconds: int
-    poll_interval_seconds: int
-    wait_timeout_seconds: int
-    max_credits_per_run: int
-    max_records_per_run: int
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -230,47 +203,3 @@ def historical_feed(provider: str, dataset_key: str) -> dict[str, Any]:
     if feed is None:
         raise ExecutionMetadataError("Unsupported historical adapter scope")
     return feed
-
-
-def historical_execution(
-    provider: str, dataset_key: str, *, universe_file: Path | None = None
-) -> ExecutionDescriptor:
-    feed = historical_feed(provider, dataset_key)
-    profile = feed["historical_execution"]
-    if not isinstance(profile, dict):
-        raise ExecutionMetadataError("Historical adapter has no bundle execution descriptor")
-    settings = dict(profile[app_environment()])
-    reference = settings.pop("universe_file")
-    if not isinstance(reference, str) or Path(reference).name != reference:
-        raise ExecutionMetadataError("Invalid historical universe reference")
-    if any(type(v) is not int or v <= 0 for v in settings.values()):
-        raise ExecutionMetadataError("Invalid historical execution limits")
-    if universe_file is None:
-        # Existing FinLab universe override remains shared by runner and estimator.
-        override = os.getenv("FETCHER_FINLAB_UNIVERSE_FILE") if provider == "finlab" else None
-        universe_file = Path(override) if override else CONFIGS_DIR / reference
-    slot = feed["delivery"]["slot_id"]
-    return ExecutionDescriptor(
-        schedule_id=f"{provider}_{slot}_{dataset_key}",
-        provider=provider,
-        dataset_key=dataset_key,
-        market=feed["market"],
-        slot_id=slot,
-        universe_file=universe_file,
-        **settings,
-    )
-
-
-def historical_delivery_metadata(
-    execution: ExecutionDescriptor, job: ScheduledJob
-) -> dict[str, str]:
-    # This contract field anchors the requested date, never a daily trigger/gate.
-    # Already-prepared deliveries bypass this function and keep their original bytes.
-    target = job.target_data_date
-    anchor = datetime.combine(target, time.min, tzinfo=timezone.utc)
-    return {
-        "slot_id": execution.slot_id,
-        "scheduled_for": anchor.isoformat().replace("+00:00", "Z"),
-        "target_data_date": target.isoformat(),
-        "work_item_id": job.work_item or job.symbol,
-    }

@@ -6,7 +6,6 @@ import base64
 import hashlib
 import json
 import sqlite3
-from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -292,39 +291,6 @@ def test_empty_pending_set_never_blocks_a_work_with_pre_basis_history(tmp_path, 
     session.settle("completed")
     assert ledger.settles[0]["outcome"] == "completed"
     assert _observations(journal) == []
-
-
-def test_historical_prepared_body_from_pre_basis_response_is_not_delivered(tmp_path, contracts_dir):
-    from test_twelve_data_scheduler import NOW, FakeProvider, FakeSource, _executor, _job
-
-    source = FakeSource()
-    assert _executor(contracts_dir, source=source).execute(_job(), now=NOW).succeeded
-    prepared = source.requests[0]
-    old = _adjusted_raw()
-    prepared["payload"]["batch"]["source_raw_sha256"] = hashlib.sha256(old).hexdigest()
-    journal = queue.WorkJournal(tmp_path / "journal.sqlite3", "original")
-    journal.response(_base(exchange="NASDAQ") + ":validated-target-v1", _encoded(old))
-    owner = queue.ProviderWorkSession(
-        None, "twelve_data", {"work_id": "original", "generation": 1, "token": "t"}, journal
-    )
-    replaying = FakeSource()
-    provider = FakeProvider(AssertionError("prepared replay must not refetch"))
-    token = queue._current.set(owner)
-    try:
-        with pytest.raises(queue.ProviderWorkBasisMismatchError):
-            _executor(contracts_dir, provider=provider, source=replaying).execute(
-                replace(_job(), prepared_request=prepared), now=NOW
-            )
-        assert replaying.requests == []
-        # A body whose raw bytes were acquired under the current basis still replays.
-        prepared["payload"]["batch"]["source_raw_sha256"] = "f" * 64
-        assert (
-            _executor(contracts_dir, provider=provider, source=replaying)
-            .execute(replace(_job(), prepared_request=prepared), now=NOW)
-            .succeeded
-        )
-    finally:
-        queue._current.reset(token)
 
 
 def test_historical_basis_failure_ends_item_through_manual_waiver(monkeypatch):

@@ -328,18 +328,3 @@ def full_release_cohort(monkeypatch):
         return await bind(db, provider=provider, dataset_key=dataset_key, days=days)
 
     monkeypatch.setattr(historical_backfill, "_bind_full_releases", bind_published)
-
-
-@pytest.fixture
-def legacy_single_run(full_release_cohort, monkeypatch):
-    """Create requests without a cohort, as before Full release cohorts existed.
-
-    Only tests of the retained legacy executor and its single-run completion use this;
-    they leave with that path, after every request without a cohort has drained.
-    """
-    from app.services import historical_backfill
-
-    async def legacy(*args, **kwargs):
-        return None
-
-    monkeypatch.setattr(historical_backfill, "_bind_full_releases", legacy)

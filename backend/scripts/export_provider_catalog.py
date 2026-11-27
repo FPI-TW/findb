@@ -118,7 +118,6 @@ def build_artifacts(catalog: ProviderCatalog) -> dict[Path, str]:
                     "lifecycle",
                     "capabilities",
                     "delivery",
-                    "historical_execution",
                     "historical_cohort",
                     "historical_requests_per_date",
                     "universe_mode",

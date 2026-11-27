@@ -47,15 +47,14 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   權威。Seed 的 delivery expectation 與 `scheduler_control` 的 slot、時鐘、時區都由 catalog 投影
   （`seed_datasets` 會更新現役 control 的 slot），既有列由 migration `c3f6a9d1e2b7` 投影一次；
   `test_cross_timezone_schedule.py` 強制 seed 與 catalog 一致。
-- Historical execution profiles 保留現行 local／staging／production 的靜態 universe reference 與 executor
-  預設值，不包含觸發時間。這些是打包預設，不是 DB request、operator overrides 或即時授權。
 - `historical_cohort` 宣告 historical 日期如何凍結成員，historical feed 必填、其它 feed 為 null：
   `dated_release`（每個日期綁定當天適用的 Full release，並補查之後清單多出的成員；Twelve Data、FinLab）、`current_release`
   （整個 request 綁定建立時的現行 release；FactSet 只能查當下名單）、`daily_report`（成員來自當天報表，
-  無凍結名單；TAIFEX）。只有 `dated_release` 可帶 `historical_execution` 的打包 universe。Backend 的
+  無凍結名單；TAIFEX）。Historical 沒有打包的靜態 universe。Backend 的
   cohort 綁定、成員驗證與 EOD completion 依此欄位，不再依 provider 名稱；`current_release` 的 frozen
-  snapshot 仍寫 `cohort: current_hkex`，這是 Fetcher executor 檢查的既有 wire 值。Fetcher 以同一欄位判斷 historical
-  item 以成員證據或 Source run 完成，並決定 planner 是否接受 `--universe-file`（只有 `dated_release` 接受）。
+  snapshot 仍寫 `cohort: current_hkex`，這是 Fetcher executor 檢查的既有 wire 值。兩種 release cohort 的
+  historical item 以成員證據完成，`daily_report` 以當日報表證據完成，沒有以單一 Source run 完成的路徑；
+  Admin preview 依同一欄位回傳每個日期將凍結的成員數，供 planner 估算。
   兩種 release cohort 的成員證據都可以把「沒有可引用回應」的成員（provider 沒有該檔序列，或每次嘗試都失敗、
   重試用完）記為 `missing` gap，該日期以 `partial` 結算，不會卡住同一 provider 之後的 historical 工作；
   daily plan 的成員不適用（Owner 於 2026-11-24 決定）。Mapping gap，以及 `current_release` 裡交易日當天

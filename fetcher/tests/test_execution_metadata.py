@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -10,38 +9,9 @@ import pytest
 from findb_fetcher import execution_metadata as metadata
 from findb_fetcher.config import ConfigError, FetcherConfig
 from findb_fetcher.contracts import ContractRegistry
-from findb_fetcher.schedule import load_schedule_manifest
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 CONTRACTS = CONFIGS.parents[1] / "contracts"
-
-
-@pytest.mark.parametrize("environment", ["local", "staging", "production"])
-@pytest.mark.parametrize("provider", ["twelve_data", "finlab"])
-def test_non_clock_settings_match_previous_historical_manifest(monkeypatch, environment, provider):
-    monkeypatch.setenv("APP_ENVIRONMENT", environment)
-    legacy = CONFIGS.parent / "tests/fixtures/legacy_schedules"
-    monkeypatch.setattr(metadata, "CONFIGS_DIR", legacy)
-    path = legacy / (
-        "daily_scheduler.production.v3.json"
-        if environment == "production"
-        else "daily_scheduler.v2.json"
-    )
-    old = next(f for f in load_schedule_manifest(path).feeds if f.provider == provider)
-    new = metadata.historical_execution(provider, old.dataset_key)
-    assert asdict(new) == asdict(old.execution_descriptor())
-    assert not any(
-        hasattr(new, k)
-        for k in (
-            "scheduled_time",
-            "scheduled_local_time",
-            "timezone_name",
-            "target_date_lag_days",
-            "enabled",
-            "target_date",
-            "grace_deadline",
-        )
-    )
 
 
 @pytest.mark.parametrize(
@@ -57,11 +27,11 @@ def test_unsupported_scope_remains_closed(provider, dataset):
         metadata.historical_feed(provider, dataset)
 
 
-def test_etf_historical_backfills_its_release_cohort_without_a_static_universe():
-    feed = metadata.historical_feed("finlab", "tw_etf_eod")
-    assert feed["capabilities"]["historical"] == "executable"
-    with pytest.raises(metadata.ExecutionMetadataError, match="no bundle execution"):
-        metadata.historical_execution("finlab", "tw_etf_eod")
+@pytest.mark.parametrize("provider", metadata.historical_provider_ids())
+def test_every_historical_feed_freezes_a_backend_cohort_without_a_packaged_list(provider):
+    for feed in metadata.historical_feeds(provider):
+        assert feed["historical_cohort"] in {"dated_release", "current_release", "daily_report"}
+        assert "historical_execution" not in feed
 
 
 def _write(monkeypatch, tmp_path, value):
@@ -122,12 +92,6 @@ def test_environment_mismatch_is_rejected_without_schedule(monkeypatch):
         metadata.historical_feed("factset", "hk_equity_eod")
 
 
-def test_finlab_universe_override_is_shared_with_estimation(monkeypatch, tmp_path):
-    monkeypatch.setenv("FETCHER_FINLAB_UNIVERSE_FILE", str(tmp_path / "reviewed.json"))
-    result = metadata.historical_execution("finlab", "tw_equity_eod")
-    assert result.universe_file == tmp_path / "reviewed.json"
-
-
 @pytest.mark.parametrize("provider", ["factset", "taifex"])
 def test_whole_market_historical_bootstrap_does_not_load_daily_config(
     monkeypatch, tmp_path, provider
@@ -165,14 +129,13 @@ def test_whole_market_historical_bootstrap_does_not_load_daily_config(
 
 @pytest.mark.parametrize("provider", metadata.provider_ids())
 def test_deployment_historical_check_works_without_schedule_files(monkeypatch, provider):
-    from findb_fetcher import full_market_cli, historical_backfill_cli, schedule
+    from findb_fetcher import full_market_cli, historical_backfill_cli
 
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
     monkeypatch.setenv("SOURCE_API_URL", "https://source.example")
     monkeypatch.setenv("SOURCE_CLIENT_KEY", "test-key")
     monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/missing/daily.json")
     monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/missing/full.json")
-    monkeypatch.setattr(schedule, "load_schedule_manifest", lambda *a: pytest.fail("schedule read"))
     monkeypatch.setattr(full_market_cli, "load_config", lambda *a: pytest.fail("full config read"))
     assert historical_backfill_cli.main(["--provider", provider, "--check"]) == 0
 

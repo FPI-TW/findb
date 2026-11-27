@@ -78,7 +78,6 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
         "test_full_market_finlab_rate.py",
         "test_daily_runtime_policy.py",
         "test_taifex_historical.py",
-        "test_historical_runtime_adapters.py",
         "test_full_market_recovery.py",
         "test_full_market_idle.py",
         "test_execution_profile_parity.py",
@@ -116,8 +115,6 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
     monkeypatch.setattr(
         provider_work, "require_owner", lambda provider: provider_work.active() or UnitOwner()
     )
-    if request.path.name == "test_historical_runtime_adapters.py":
-        monkeypatch.setattr("findb_fetcher.historical_runtime.require_owner", lambda provider: None)
     monkeypatch.setattr(provider_work, "require_acquisition", lambda provider, **kwargs: True)
     monkeypatch.setattr(
         provider_work, "acquisition_dispatch_deadline", lambda provider, deadline: deadline

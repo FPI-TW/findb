@@ -115,15 +115,14 @@ async def test_daily_prefetch_source_failure_closes_and_requeues_without_native(
         pass
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("twelve_data", "us_equity_eod", 5)], indirect=True)
 @pytest.mark.parametrize("prepared", [False, True])
 async def test_account_cooldown_skips_other_unprepared_dates_but_allows_retained_rerun(
     native_runtime, test_engine, monkeypatch, prepared
 ):
-    from findb_fetcher import historical_runtime
-    from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
+    from findb_fetcher.provider_adapters import twelve_data as twelve_adapter
+    from findb_fetcher.providers.twelve_data import TwelveDataClient
 
     from tests.provider_work_clock import drain_retained_rerun_during_cooldown
 
@@ -156,12 +155,12 @@ async def test_account_cooldown_skips_other_unprepared_dates_but_allows_retained
             request=request,
         )
 
+    # Frozen cohorts request each member through the Full daily adapter's client.
     monkeypatch.setattr(
-        historical_runtime,
+        twelve_adapter,
         "TwelveDataClient",
         lambda config: TwelveDataClient(
-            TwelveDataConfig("offline-twelve"),
-            client=httpx.Client(transport=httpx.MockTransport(native)),
+            config, client=httpx.Client(transport=httpx.MockTransport(native))
         ),
     )
     assert await h.run()
@@ -172,7 +171,8 @@ async def test_account_cooldown_skips_other_unprepared_dates_but_allows_retained
     assert not await h.run(), (
         "a fresh runner must not claim the next unfetched date into governor sleep"
     )
-    assert calls == ["AAPL"]
+    # The date requests its frozen members in one shared batch.
+    assert calls == ["AAPL,MSFT,NVDA"]
     if prepared:
         retry = await h.db.scalar(
             select(ProviderWorkAttempt).where(
@@ -187,7 +187,7 @@ async def test_account_cooldown_skips_other_unprepared_dates_but_allows_retained
         assert (
             retained.state == "queued" and (await prepared_map(h.db, retained.work_id)) == original
         )
-        assert calls == ["AAPL"] and h.runs
+        assert calls == ["AAPL,MSFT,NVDA"] and h.runs
         assert (
             await h.db.get(ProviderWorkOwner, (h.environment, h.provider, "default"))
         ).attempt_id is None

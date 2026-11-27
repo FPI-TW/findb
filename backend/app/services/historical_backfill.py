@@ -1384,7 +1384,6 @@ async def complete_item(
         or item.lease_expires_at <= now
     ):
         raise HistoricalBackfillConflictError("backfill item is not leased")
-    run: IngestionRun | None = None
     eod_evidence = None
     unavailable: dict[str, str] = {}
     halted: set[str] = set()
@@ -1447,13 +1446,9 @@ async def complete_item(
         await _validate_futures_completion(db, item, run_id, result_evidence, now)
         item.result_evidence = result_evidence
     elif outcome == "completed":
-        if run_id is None:
-            raise HistoricalBackfillValidationError("completed item requires a Source run")
-        run = await db.get(IngestionRun, run_id, with_for_update=True)
-        if not _valid_completed_run(run, item):
-            raise HistoricalBackfillValidationError(
-                "Source run does not match completed backfill item"
-            )
+        # Every historical date completes by its frozen members' or its report's
+        # evidence; requests from before cohorts existed have drained.
+        raise HistoricalBackfillValidationError("completed item requires member or report evidence")
     identity = db.info["provider_work"]
     fence_identity = {
         "provider": provider,

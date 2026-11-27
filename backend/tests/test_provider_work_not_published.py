@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.models.provider_work import ProviderWork, ProviderWorkAttempt
+from app.models.registry import HistoricalBackfillItem
 from app.services.provider_work import prepared_map
 from app.utils import utc_now
 from tests.provider_work_runtime_support import DAY
@@ -15,35 +16,33 @@ from tests.test_provider_work_adapters import native_runtime as native_runtime
 pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("twelve_data", "us_equity_eod")], indirect=True)
-async def test_historical_target_not_published_observation_allows_fresh_native_after_restart(
+async def test_a_date_twelve_data_has_not_published_settles_partial_with_every_member_missing(
     native_runtime, test_engine, monkeypatch
 ):
-    from findb_fetcher import historical_runtime
+    """Current behavior, recorded in #770: the date does not wait for its publication."""
+    from findb_fetcher.provider_adapters import twelve_data as twelve_adapter
     from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 
     h = native_runtime
-    successful = historical_runtime.TwelveDataClient(None)
+    successful = twelve_adapter.TwelveDataClient(TwelveDataConfig("offline-twelve"))
     handler = successful._client._transport.handle_request
     calls = []
 
     def native(request):
         calls.append(request.url.params["symbol"])
-        response = handler(request)
-        if len(calls) == 1:
-            payload = response.json()
-            payload["values"][0]["datetime"] = (DAY - timedelta(days=1)).isoformat()
-            return httpx.Response(200, json=payload, request=request)
-        return response
+        payload = handler(request).json()
+        # Twelve Data still serves the previous session for every symbol of the batch.
+        for series in [payload] if "values" in payload else payload.values():
+            series["values"][0]["datetime"] = (DAY - timedelta(days=1)).isoformat()
+        return httpx.Response(200, json=payload, request=request)
 
     monkeypatch.setattr(
-        historical_runtime,
+        twelve_adapter,
         "TwelveDataClient",
         lambda config: TwelveDataClient(
-            TwelveDataConfig("offline-twelve"),
-            client=httpx.Client(transport=httpx.MockTransport(native)),
+            config, client=httpx.Client(transport=httpx.MockTransport(native))
         ),
     )
     assert await h.run()
@@ -51,49 +50,14 @@ async def test_historical_target_not_published_observation_allows_fresh_native_a
     work = await h.db.scalar(
         select(ProviderWork).where(ProviderWork.stable_key == f"historical:{h.item_id}")
     )
-    work_id = work.work_id
-    assert work.state == "queued" and not (await prepared_map(h.db, work.work_id)) and not h.runs
-    frozen = work.manifest
-    journal = h.queue.WorkJournal(
-        h.path / f"account/provider-work-{h.provider}.sqlite3", str(work_id)
-    )
-    with journal.connection() as db:
-        rejected = db.execute(
-            "SELECT body,sha256,origin FROM work_response_observation WHERE work_key=?",
-            (str(work_id),),
-        ).fetchall()
-        before = db.execute(
-            "SELECT SUM(attempts) FROM work_budget WHERE work_key=?", (str(work_id),)
-        ).fetchone()[0]
-    assert len(rejected) == 1 and rejected[0][2] == "native"
-    assert hashlib.sha256(rejected[0][0]).hexdigest() == rejected[0][1]
-    attempt = await h.db.scalar(
-        select(ProviderWorkAttempt).where(
-            ProviderWorkAttempt.work_id == work_id, ProviderWorkAttempt.state == "queued"
-        )
-    )
-    attempt.not_before = utc_now() - timedelta(seconds=1)
-    await h.db.commit()
-    assert await h.run()
-    h.db.expire_all()
-    work = await h.db.get(ProviderWork, work_id)
-    assert work.state == "completed" and work.manifest == frozen and h.runs
-    assert calls == [frozen["members"][0]["symbol"], *[row["symbol"] for row in frozen["members"]]]
-    with journal.connection() as db:
-        assert (
-            db.execute(
-                "SELECT SUM(attempts) FROM work_budget WHERE work_key=?", (str(work_id),)
-            ).fetchone()[0]
-            >= before
-            >= 1
-        )
-        assert (
-            db.execute(
-                "SELECT body,sha256,origin FROM work_response_observation WHERE work_key=?",
-                (str(work_id),),
-            ).fetchall()
-            == rejected
-        )
+    item = await h.db.get(HistoricalBackfillItem, h.item_id)
+    assert work.state == item.status == "partial" and not h.runs
+    # One shared batch, and every frozen member is missing for want of a source row.
+    assert calls == ["AAPL,MSFT,NVDA"]
+    assert {
+        (row["member_key"], row["outcome"], row.get("reason"))
+        for row in item.result_evidence["members"]
+    } == {(key, "missing", "no_source_row") for key in ("AAPL", "MSFT", "NVDA")}
     successful.close()
 
 

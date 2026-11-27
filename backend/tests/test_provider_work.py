@@ -354,7 +354,6 @@ async def test_daily_owner_reports_new_published_closure_without_rewriting_froze
     assert unchanged.json()["repair_required"] is False
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 async def test_enforced_source_receipts_rerun_queue_and_legacy_fail_closed(
     client, source_headers, admin_headers, test_session, test_engine, monkeypatch
@@ -399,6 +398,8 @@ async def test_enforced_source_receipts_rerun_queue_and_legacy_fail_closed(
         today=date(2026, 7, 21),
     )
     history_item = history.items[0].item_id
+    history_request = history.request_id
+    release_id = history.universe_snapshot["dates"]["2026-07-21"]["release_id"]
     await test_session.commit()
     response = await client.post(
         "/api/v1/source/provider-work/claim",
@@ -420,7 +421,19 @@ async def test_enforced_source_receipts_rerun_queue_and_legacy_fail_closed(
     manifest = await client.post(
         f"/api/v1/source/provider-work/{work_id}/manifest",
         headers=source_headers,
-        json={**fence, "manifest": {"mode": "canonical", "members": [{"key": "2330"}]}},
+        json={
+            **fence,
+            # As the member runner freezes a dated Full release cohort.
+            "manifest": {
+                "mode": "canonical",
+                "contract": {"schema_id": "market_eod", "schema_version": 1},
+                "universe_release_id": release_id,
+                "members": [
+                    {"key": key, "source_symbol": key, "mapping_status": "mapped"}
+                    for key in ("2317", "2330")
+                ],
+            },
+        },
     )
     assert manifest.status_code == 200, manifest.text
     accepted = await client.post("/api/v1/source/ingest", json=body, headers=headers)
@@ -450,24 +463,46 @@ async def test_enforced_source_receipts_rerun_queue_and_legacy_fail_closed(
         f"/api/v1/source/provider-work/{work_id}/authorize", headers=source_headers, json=fence
     )
     assert no_acquisition.status_code == 409
+    # The date completes by its frozen members' evidence: 2330 delivered, 2317 not.
+    evidence = {
+        "version": 2,
+        "schema_id": "market_eod",
+        "schema_version": 1,
+        "trade_date": "2026-07-21",
+        "item_id": str(history_item),
+        "request_id": str(history_request),
+        "members": [
+            {"member_key": "2317", "outcome": "missing"},
+            {"member_key": "2330", "outcome": "data"},
+        ],
+    }
     settled = await client.post(
         f"/api/v1/source/historical-backfills/{history_item}/complete",
         headers=headers,
-        json={"status": "completed", "lease_token": owner["token"], "run_id": str(run_id)},
+        json={
+            "status": "partial",
+            "lease_token": owner["token"],
+            "result_evidence": evidence,
+        },
     )
     assert settled.status_code == 200, settled.text
     replay = await client.post("/api/v1/source/ingest", json=body, headers=headers)
     assert replay.status_code == 202 and replay.json()["run_id"] == str(run_id)
+    # Completion settled the work; replaying its exact durable proof is idempotent.
+    durable = await test_session.scalar(
+        select(ProviderWorkAttempt.proof).where(
+            ProviderWorkAttempt.work_id == UUID(work_id),
+            ProviderWorkAttempt.outcome == "partial",
+        )
+    )
+    assert durable["historical_item_id"] == str(history_item)
+    assert [row["member_key"] for row in durable["eod"]["members"]] == ["2317", "2330"]
     settled_replay = await client.post(
         f"/api/v1/source/provider-work/{work_id}/settle",
         headers=source_headers,
-        json={
-            **fence,
-            "outcome": "completed",
-            "proof": {"historical_item_id": str(history_item), "no_data": []},
-        },
+        json={**fence, "outcome": "partial", "proof": durable},
     )
-    assert settled_replay.status_code == 200
+    assert settled_replay.status_code == 200, settled_replay.text
     claimed = await client.post(
         "/api/v1/source/provider-work/claim",
         headers=source_headers,

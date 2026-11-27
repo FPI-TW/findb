@@ -3,18 +3,18 @@
 import time
 from datetime import date
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
 from findb_fetcher import acquisition as acq
 from findb_fetcher import provider_work as queue
+from findb_fetcher.execution_metadata import historical_feed
 from findb_fetcher.full_market_client import FullMarketProtocolError
 from findb_fetcher.full_market_state import QuotaBlockedError
-from findb_fetcher.historical_backfill import HistoricalWorkDeferredError
-from findb_fetcher.historical_runtime import _execute
+from findb_fetcher.historical_backfill import HistoricalWorkDeferredError, HistoricalWorkItem
+from findb_fetcher.member_historical import MemberHistoricalRunner
 from findb_fetcher.providers.finlab import FinLabSdkGateway
-from findb_fetcher.scheduler_state import ScheduledJob
-from findb_fetcher.twelve_data_scheduler import JobExecution
 from provider_work_support import work_authorization
 from test_full_market import _member, _plan, _runtime
 
@@ -107,42 +107,59 @@ def test_suspension_retains_only_dispatched_reservation(tmp_path, monkeypatch, l
                 with owner.journal.connection() as db:
                     attempts = db.execute("SELECT attempts FROM work_budget").fetchone()[0]
             else:
-                # Use the real historical reservation wrapper and SDK accounting;
-                # the executor seam mirrors the scheduler's public quota result.
-                def execute(job, **kwargs):
-                    try:
-                        acquire()
-                    except QuotaBlockedError as exc:
-                        return JobExecution(
-                            outcome="provider_rate_limited",
-                            succeeded=False,
-                            retryable=True,
-                            predispatch_quota_wait=exc.quota_wait and not exc.dispatched,
-                        )
+                # The member runner's real reservation, around an adapter whose member
+                # acquisition is the same real SDK accounting as the daily lane.
+                class Adapter:
+                    member_batch_limit = 0
 
-                job = ScheduledJob(
-                    job_key="original-job",
-                    schedule_id="finlab",
-                    scheduled_date=DAY,
-                    universe_id="frozen",
-                    universe_version=1,
-                    symbol="2330",
-                    canonical_symbol="2330",
-                    exchange="TWSE",
-                    status="pending",
-                    attempt_count=0,
-                    slot_id="daily",
+                    def pending_shared_fetch(self, *args):
+                        return False
+
+                    def acquire(self, member, context):
+                        return acquire()
+
+                    def member_outcome(self, exc):
+                        return None
+
+                    def close(self):
+                        pass
+
+                member = {
+                    "member_key": "2330",
+                    "symbol": "2330",
+                    "provider_symbol": "2330",
+                    "mapping_status": "mapped",
+                }
+                runner = MemberHistoricalRunner(
+                    "finlab",
+                    delivery=SimpleNamespace(),
+                    raw_store=SimpleNamespace(),
+                    http=SimpleNamespace(),
+                    adapter=Adapter(),
+                    limits={"max_response_bytes": 1_000_000},
+                )
+                item = HistoricalWorkItem(
+                    item_id=UUID(int=1),
+                    request_id=UUID(int=2),
+                    request_key="original",
                     provider="finlab",
                     dataset_key="tw_equity_eod",
-                    work_item="original",
-                    target_data_date=DAY,
-                    checkpoint_before=None,
-                    prepared_request=None,
+                    market="TW",
+                    trade_date=DAY,
+                    lease_token=UUID(int=3),
                 )
                 with pytest.raises(
                     (queue.ProviderWorkAcquisitionStopped, HistoricalWorkDeferredError)
                 ):
-                    _execute(SimpleNamespace(execute=execute), SimpleNamespace(max_attempts=3), job)
+                    runner._acquire(
+                        owner,
+                        item,
+                        historical_feed("finlab", "tw_equity_eod"),
+                        member,
+                        [member],
+                        "2330",
+                        "historical-member:2330",
+                    )
                 with owner.journal.connection() as db:
                     attempts = db.execute("SELECT attempts FROM work_budget").fetchone()[0]
         dispatched = phase in {"previous_field", "quota_after"}

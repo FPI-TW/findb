@@ -1,4 +1,9 @@
-"""Dispatched native 429s retain historical operation budget across queue restarts."""
+"""Dispatched native 429s retain historical member budget across queue restarts.
+
+A frozen cohort date requests its members in one batch; each limited round spends one
+attempt of the batch's first member, and a member whose budget runs out leaves the
+date as missing while the others continue.
+"""
 
 import sqlite3
 import time
@@ -20,7 +25,6 @@ from tests.test_provider_work_adapters import native_runtime as native_runtime
 pytestmark = pytest.mark.usefixtures("full_release_cohort")
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("twelve_data", "us_equity_eod")], indirect=True)
 @pytest.mark.parametrize("fault", ["http429", "payload429"])
@@ -28,15 +32,17 @@ pytestmark = pytest.mark.usefixtures("full_release_cohort")
 async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_across_restart(
     native_runtime, test_engine, monkeypatch, fault, recover
 ):
-    from findb_fetcher import historical_runtime
+    from findb_fetcher.provider_adapters import twelve_data as twelve_adapter
     from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 
     h = native_runtime
     offset = account_clock(monkeypatch)
-    successful = historical_runtime.TwelveDataClient(None)
+    successful = twelve_adapter.TwelveDataClient(TwelveDataConfig("offline-twelve"))
     handler = successful._client._transport.handle_request
     calls = []
-    maximum = historical_runtime.historical_execution(h.provider, h.dataset).max_attempts
+    from findb_fetcher.member_historical import MEMBER_ATTEMPTS
+
+    maximum = MEMBER_ATTEMPTS
 
     def native(request):
         calls.append(request.url.params["symbol"])
@@ -49,12 +55,12 @@ async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_
             request=request,
         )
 
+    # Frozen cohorts request each member through the Full daily adapter's client.
     monkeypatch.setattr(
-        historical_runtime,
+        twelve_adapter,
         "TwelveDataClient",
         lambda config: TwelveDataClient(
-            TwelveDataConfig("offline-twelve"),
-            client=httpx.Client(transport=httpx.MockTransport(native)),
+            config, client=httpx.Client(transport=httpx.MockTransport(native))
         ),
     )
     work = await h.db.scalar(
@@ -72,10 +78,11 @@ async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_
         )
         with journal.connection() as db:
             charged = db.execute(
-                "SELECT sum(attempts) FROM work_budget WHERE work_key=?", (str(work_id),)
+                "SELECT attempts FROM work_budget WHERE work_key=? AND operation_key=?",
+                (str(work_id), "member-historical:member:AAPL"),
             ).fetchone()[0]
-        expected_budget = number if number < maximum or not recover else maximum - 1
-        assert charged == expected_budget
+        # One shared batch per round; the recovered round's dispatch counts too.
+        assert charged == number and calls == ["AAPL,MSFT,NVDA"] * number
         if recover and number == maximum:
             break
         assert (
@@ -102,11 +109,26 @@ async def test_historical_native_rate_limit_preserves_budget_cooldown_and_scope_
         await h.db.commit()
         offset[0] += 121
     if not recover:
-        assert await h.run(), "budget exhaustion must settle manually without another dispatch"
+        # AAPL's budget is spent: it ends missing, and the rest of the date continues.
+        assert await h.run()
         h.db.expire_all()
         work = await h.db.get(ProviderWork, work_id)
-        assert work.state == "failed" and len(calls) == maximum
-        assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "failed"
+        assert work.state == "queued" and calls[-1] == "MSFT,NVDA" and len(calls) == maximum + 1
+        with journal.connection() as db:
+            budget = dict(
+                db.execute(
+                    "SELECT operation_key, attempts FROM work_budget WHERE work_key=?",
+                    (str(work_id),),
+                ).fetchall()
+            )
+            outcome = db.execute(
+                "SELECT body FROM work_response WHERE work_key=? AND response_key=?",
+                (str(work_id), "member-historical:outcome:AAPL"),
+            ).fetchone()
+        assert budget["member-historical:member:AAPL"] == maximum
+        assert budget["member-historical:member:MSFT"] == 1
+        assert outcome is not None and b'"outcome":"missing"' in outcome[0]
+        assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "running"
     else:
         assert work.state == "completed" and h.runs and (await prepared_map(h.db, work.work_id))
         assert (await h.db.get(HistoricalBackfillRequest, h.request_id)).status == "completed"

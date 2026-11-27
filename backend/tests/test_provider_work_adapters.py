@@ -66,8 +66,6 @@ async def test_enabled_historical_native_runtime_completes_every_supported_scope
 async def test_historical_ignores_daily_config_outage_and_stopped_daily_controls(
     native_runtime, test_engine, monkeypatch
 ):
-    from findb_fetcher import schedule
-
     h = native_runtime
     controls = list(
         await h.db.scalars(select(SchedulerControl).where(SchedulerControl.provider == h.provider))
@@ -75,11 +73,6 @@ async def test_historical_ignores_daily_config_outage_and_stopped_daily_controls
     for row in controls:
         row.desired_state = row.observed_state = "stopped"
     await h.db.commit()
-    monkeypatch.setattr(
-        schedule,
-        "load_schedule_manifest",
-        lambda *args: pytest.fail("historical loaded daily clock"),
-    )
     handle = h.handle
     schedule_reads = []
 
@@ -145,7 +138,6 @@ async def _assert_historical_completed(h):
     ).attempt_id is None
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "native_runtime",
@@ -225,7 +217,7 @@ async def test_cancel_after_local_prepared_save_before_confirmation_drains_exact
     )
     assert invented_intent.status_code == 409
     h.allow_confirm.set()
-    await asyncio.wait_for(h.accepted.wait(), 15)
+    await h.draining()
     with pytest.raises(h.queue.ProviderWorkWaitingError):
         with h.queue.host_lock(h.provider):
             pytest.fail("accepted normalization has not drained")
@@ -294,7 +286,6 @@ async def test_committed_intent_lost_ack_recovers_original_body_after_cancel_wit
     assert h.runs and h.native_calls() == calls
 
 
-@pytest.mark.usefixtures("legacy_single_run")  # legacy executor; leaves with it
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_runtime", [("finlab", "tw_equity_eod")], indirect=True)
 async def test_preparation_intent_transaction_serializes_cancel_before_local_save(
@@ -337,7 +328,7 @@ async def test_preparation_intent_transaction_serializes_cancel_before_local_sav
         await asyncio.wait_for(h.prepared.wait(), 15)
         calls = h.native_calls()
         h.allow_confirm.set()
-        await asyncio.wait_for(h.accepted.wait(), 15)
+        await h.draining()
         await h.normalize()
         h.hold_terminal = False
         h.allow_terminal.set()

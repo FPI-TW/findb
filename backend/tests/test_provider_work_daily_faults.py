@@ -52,12 +52,13 @@ DAILY_FAULT_CASES = [
 async def test_daily_actual_native_failure_stops_round_and_next_attempt_completes_original_scope(
     native_runtime, test_engine, admin_headers, monkeypatch, fault
 ):
-    from findb_fetcher import historical_runtime
     from findb_fetcher.full_market_client import FullMarketSourceClient
     from findb_fetcher.full_market_runtime import FullMarketRuntime
     from findb_fetcher.full_market_state import FullMarketState
     from findb_fetcher.platform_limits import limits
+    from findb_fetcher.provider_adapters import twelve_data as twelve_adapter
     from findb_fetcher.provider_wait import ProviderOutagePendingError
+    from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 
     from tests import test_full_market as fixtures
 
@@ -66,13 +67,11 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
     native_rate = fault in {"native-http429", "native-payload429"}
     member_no_data = fault == "native-no-data"
     if native_rate or not_published or member_no_data:
-        from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
-
         from tests.provider_work_clock import account_clock
 
         offset = account_clock(monkeypatch)
 
-        successful = historical_runtime.TwelveDataClient(None)
+        successful = twelve_adapter.TwelveDataClient(TwelveDataConfig("offline-twelve"))
         transport = successful._client._transport.handle_request
         observed_calls = []
 
@@ -112,11 +111,10 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
             )
 
         monkeypatch.setattr(
-            historical_runtime,
+            twelve_adapter,
             "TwelveDataClient",
             lambda config: TwelveDataClient(
-                TwelveDataConfig("offline-twelve"),
-                client=httpx.Client(transport=httpx.MockTransport(rate_limited)),
+                config, client=httpx.Client(transport=httpx.MockTransport(rate_limited))
             ),
         )
     assert h.request_id is None, "daily-only feeds must not create a historical request"
@@ -257,7 +255,9 @@ async def test_daily_actual_native_failure_stops_round_and_next_attempt_complete
             )
             runtime.proof = limits(h.provider)
             if h.provider == "twelve_data":
-                runtime.adapter.client = historical_runtime.TwelveDataClient(None)
+                runtime.adapter.client = twelve_adapter.TwelveDataClient(
+                    TwelveDataConfig("offline-twelve")
+                )
             acquire = runtime._acquire
 
             def traced(member, *args):
