@@ -166,7 +166,8 @@ errors、drift warning 皆 0，summary 與完整 reconcile 一致。當版計時
   consumer 是自己的 container，所以各 lane 分開；等鎖或持鎖達 30 秒的那一次另外輸出
   `{"account_lock": {"provider", "kind", "wait_seconds", "hold_seconds"}}`，日 K 整表下載這類不在成員交付計時內的持鎖也看得到。
   SDK 子行程（`supervised_call`）記 `worker <operation> first_message`（啟動到第一則訊息，含 Python 啟動與 import）、
-  `run`（啟動到回答）與 `teardown`（回答後收掉行程群組）；FinLab 盤中每檔再拆成子行程內的
+  `run`（啟動或借出到回答）與 `teardown`（回答後收掉行程群組）；重複使用的 worker（FinLab 盤中）不記 `first_message`／`teardown`，
+  改記 `worker <operation> reused` 次數。FinLab 盤中每檔再拆成子行程內的
   `worker finlab.intraday sdk_import`、`manifest`、`sign`、`download`、`map`（轉成契約欄位），失敗的步驟也會記。
   `run` 扣掉這五段與期間的 `GET full-market/authorization` 就是行程啟動與傳輸的成本。計時只進 log，不寫入 durable batch 或 settlement proof。Historical 逐成員回補輸出同一格式
   （`item_id` 取代 `plan_id`，另有 `step normalization_wait`）。部署中的 runtime

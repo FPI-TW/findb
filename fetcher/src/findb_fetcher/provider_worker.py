@@ -118,13 +118,21 @@ def main() -> None:
     # ``phase`` from the package module, which needs the same connection.
     setattr(importlib.import_module("findb_fetcher.provider_worker"), "_conn", conn)  # noqa: B010
     try:
-        operation, payload, checkpoint = conn.recv()
-        module, name = OPERATIONS[operation]
-        function: Callable[[dict[str, Any], Callable[[], None]], Any] = getattr(
-            importlib.import_module(module), name
-        )
-        conn.send(("result", function(payload, _authorizer(conn, checkpoint))))
-    except DispatchExpired:
+        request = conn.recv()
+        # A reused worker (``supervised_call(reuse=True)``) answers further calls of
+        # the same operation until the parent sends ``None`` or goes away. Any
+        # answer other than a result ends it: the parent reaps it either way.
+        while request is not None:
+            operation, payload, checkpoint, reuse = request
+            module, name = OPERATIONS[operation]
+            function: Callable[[dict[str, Any], Callable[[], None]], Any] = getattr(
+                importlib.import_module(module), name
+            )
+            conn.send(("result", function(payload, _authorizer(conn, checkpoint))))
+            if not reuse:
+                break
+            request = conn.recv()
+    except (DispatchExpired, EOFError):
         pass
     except BaseException as exc:
         conn.send(("error", failure_code(exc)))

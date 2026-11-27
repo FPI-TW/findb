@@ -252,7 +252,7 @@ async def test_the_daily_loop_stores_each_answer_finlab_gives_for_a_member(
     answers = {"0001": "ready", "0002": "no_trades", "0003": "absent"}
     native: list[dict] = []
 
-    def supervised_call(operation, payload, *, timeout=None, checkpoint=None):
+    def supervised_call(operation, payload, *, timeout=None, checkpoint=None, reuse=False):
         assert operation == "finlab.intraday" and payload["token"] == "offline-finlab"
         if checkpoint is not None:
             checkpoint()
