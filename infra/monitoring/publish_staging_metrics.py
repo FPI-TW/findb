@@ -499,6 +499,8 @@ WITH active_feed(dataset_key, source) AS (
         ('tw_futures_eod', 'taifex'),
         ('hk_equity_eod', 'factset'),
         ('hk_equity_official_eod', 'hkex'),
+        ('hk_index_constituents', 'hkex'),
+        ('hk_index_changes', 'hkex'),
         ('hk_index_eod', 'fmp'),
         ('us_index_eod', 'fmp'),
         ('us_dollar_index_eod', 'fmp'),

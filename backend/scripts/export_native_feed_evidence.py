@@ -79,18 +79,21 @@ async def export(spec):
     from app.services.provider_metadata import acquisition_feeds
 
     # Intraday feeds store objects, not table rows; an exchange's quotes are served
-    # only as corrections of the provider's EOD rows. This sampler covers neither yet.
+    # only as corrections of the provider's EOD rows; the exchanges' institutional
+    # tables are their own publication tables; index reference documents are
+    # archived whole, with no member rows. This sampler covers none of them yet.
+    unsampled = {
+        "intraday_partition",
+        "exchange_daily_quote",
+        "institutional_flow_summary",
+        "institutional_flow_stock",
+        "index_constituents",
+        "index_constituent_changes",
+    }
     catalog = [
         feed.model_dump()
         for feed in acquisition_feeds()
-        # Mirrors infra/acceptance/native_feed_evidence.py UNSAMPLED_SCHEMAS.
-        if feed.contract.schema_id
-        not in {
-            "intraday_partition",
-            "exchange_daily_quote",
-            "institutional_flow_summary",
-            "institutional_flow_stock",
-        }
+        if feed.contract.schema_id not in unsampled
     ]
     feeds = []
     async with async_session_maker() as db:

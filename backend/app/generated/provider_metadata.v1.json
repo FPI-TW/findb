@@ -501,6 +501,96 @@
       "unlisted_symbols": "none"
     },
     {
+      "asset_class": "index",
+      "bounded_monitor": {
+        "deadline": null,
+        "enabled": false
+      },
+      "calendar_market": "HK",
+      "calendar_required": false,
+      "capabilities": {
+        "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "09:05",
+        "timezone": "Asia/Hong_Kong",
+        "trade_date_day_offset": 1
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "index_constituent_changes"
+      },
+      "dataset_key": "hk_index_changes",
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": null,
+      "historical_lookback_days": null,
+      "historical_requests_per_date": null,
+      "lane": "default",
+      "lifecycle": "active",
+      "market": "HK",
+      "provider": "hkex",
+      "schedule": {
+        "local_time": "21:05",
+        "target_date_lag_days": 0,
+        "timezone": "Asia/Hong_Kong"
+      },
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
+      "asset_class": "index",
+      "bounded_monitor": {
+        "deadline": null,
+        "enabled": false
+      },
+      "calendar_market": "HK",
+      "calendar_required": false,
+      "capabilities": {
+        "acquisition": true,
+        "historical": "unsupported",
+        "source": true
+      },
+      "completion_deadline": {
+        "local_time": "09:05",
+        "timezone": "Asia/Hong_Kong",
+        "trade_date_day_offset": 1
+      },
+      "contract": {
+        "accepted_versions": [
+          1
+        ],
+        "current_version": 1,
+        "schema_id": "index_constituents"
+      },
+      "dataset_key": "hk_index_constituents",
+      "delivery": {
+        "slot_id": "asia_pacific_markets_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": null,
+      "historical_lookback_days": null,
+      "historical_requests_per_date": null,
+      "lane": "default",
+      "lifecycle": "active",
+      "market": "HK",
+      "provider": "hkex",
+      "schedule": {
+        "local_time": "21:05",
+        "target_date_lag_days": 0,
+        "timezone": "Asia/Hong_Kong"
+      },
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
       "asset_class": "future",
       "bounded_monitor": {
         "deadline": null,
@@ -1081,7 +1171,9 @@
       "us_index_eod"
     ],
     "hkex": [
-      "hk_equity_official_eod"
+      "hk_equity_official_eod",
+      "hk_index_changes",
+      "hk_index_constituents"
     ],
     "taifex": [
       "tw_futures_eod"
@@ -1100,5 +1192,5 @@
       "tw_twse_institutional_summary"
     ]
   },
-  "source_sha256": "c6d84ed4de726baa6d6cb2fbeb322c929504627b2682bf9b6a6783ee9b77c8f1"
+  "source_sha256": "6d13be8de446afe6def3a6fc3b691d7037f37fe059903ff283ba39c46c197cf8"
 }

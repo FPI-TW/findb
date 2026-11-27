@@ -1,7 +1,7 @@
 # Provider metadata
 
-`backend/configs/provider_catalog.v1.json` 定義八個 providers／十九條 feeds：
-Twelve Data US EOD、FactSet HK EOD、HKEX 官方每日行情（`hk_equity_official_eod`，契約 `exchange_daily_quote.v1`）、
+`backend/configs/provider_catalog.v1.json` 定義八個 providers／二十一條 feeds：
+Twelve Data US EOD、FactSet HK EOD、HKEX 官方每日行情（`hk_equity_official_eod`，契約 `exchange_daily_quote.v1`）、同一個 HKEX runtime 讀取的 HSIL 恒指參考資料（`hk_index_constituents`、`hk_index_changes`，契約 `index_constituents.v1`、`index_constituent_changes.v1`，固定成員、只走 daily）、
 FMP 市場指數日線（`hk_index_eod`、`us_index_eod` 與 `us_dollar_index_eod`，契約 `market_eod.v2`，`asset_class` 為 `index`；
 同一市場可有多個指數 dataset，Serve 依市場與資產類別讀取，`/datasets` 以各 dataset 自己寫入的資料計算涵蓋範圍）、
 TWSE 加權指數與 TPEx 櫃買指數的官方日線（`tw_twse_index_eod`、`tw_tpex_index_eod`，契約 `market_eod.v2`，各自一個 provider）、

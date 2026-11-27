@@ -55,6 +55,8 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         ("twelve_data", "us_equity_eod"),
         ("factset", "hk_equity_eod"),
         ("hkex", "hk_equity_official_eod"),
+        ("hkex", "hk_index_constituents"),
+        ("hkex", "hk_index_changes"),
         ("finlab", "tw_equity_eod"),
         ("finlab", "tw_etf_eod"),
         ("finlab", "tw_equity_bar_1m"),
@@ -107,6 +109,8 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "hk_equity_eod": ("Asia/Hong_Kong", "20:00", "Asia/Hong_Kong", "08:00", 1),
         # HKEX's report is downloadable around 21:00.
         "hk_equity_official_eod": ("Asia/Hong_Kong", "21:05", "Asia/Hong_Kong", "09:05", 1),
+        "hk_index_constituents": ("Asia/Hong_Kong", "21:05", "Asia/Hong_Kong", "09:05", 1),
+        "hk_index_changes": ("Asia/Hong_Kong", "21:05", "Asia/Hong_Kong", "09:05", 1),
         "tw_equity_eod": ("Asia/Taipei", "19:30", "Asia/Taipei", "07:30", 1),
         "tw_etf_eod": ("Asia/Taipei", "19:30", "Asia/Taipei", "07:30", 1),
         "tw_equity_bar_1m": ("Asia/Taipei", "19:35", "Asia/Taipei", "07:35", 1),
@@ -128,7 +132,10 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "tw_tpex_institutional_stock": ("Asia/Taipei", "17:30", "Asia/Taipei", "05:30", 1),
     }
     assert feeds["us_index_eod"].schedule.target_date_lag_days == 1
+    # HSIL's index reference documents are index datasets too, without a calendar rule.
     assert {f.dataset_key for f in catalog.feeds if f.asset_class == "index"} == {
+        "hk_index_constituents",
+        "hk_index_changes",
         "hk_index_eod",
         "us_index_eod",
         "us_dollar_index_eod",

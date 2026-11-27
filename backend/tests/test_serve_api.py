@@ -385,6 +385,58 @@ async def test_the_official_tw_index_datasets_are_served(client: AsyncClient, te
     assert [row["close"] for row in response.json()["data"]] == ["27000.00000000"]
 
 
+def index_reference_dataset(key: str, schema_id: str) -> DatasetRegistry:
+    value = dataset(key, market="HK", asset_class="index", schema_id=schema_id)
+    value.config.update(allowed_sources=["hkex"])
+    value.config["defaults"]["currency"] = None
+    return value
+
+
+@pytest.mark.asyncio
+async def test_active_index_reference_datasets_leave_the_other_scopes_served(
+    client: AsyncClient, test_session
+):
+    """Their documents are read by the index endpoints, not by the EOD scopes."""
+    taiex = uuid7()
+    test_session.add_all(
+        [
+            index_reference_dataset("hk_index_constituents", "index_constituents"),
+            index_reference_dataset("hk_index_changes", "index_constituent_changes"),
+            dataset("tw_twse_index_eod", market="TW", asset_class="index", schema_id="market_eod"),
+            instrument(taiex, "^TWII", asset_class="index"),
+            eod(taiex, date(2026, 11, 20), "27000"),
+        ]
+    )
+    await test_session.commit()
+
+    response = await client.get("/api/v1/serve/eod", params={"instruments": "TW:^TWII"})
+    assert response.status_code == 200, response.text
+    assert (await client.get("/api/v1/serve/datasets")).status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["source", "market", "frequency", "version", "duplicate"])
+async def test_a_wrongly_declared_index_reference_dataset_fails_closed(
+    client: AsyncClient, test_session, fault
+):
+    value = index_reference_dataset("hk_index_constituents", "index_constituents")
+    if fault == "source":
+        value.config.update(allowed_sources=["fmp"])
+    elif fault == "market":
+        value.market = "TW"
+        value.config["defaults"]["market"] = "TW"
+    elif fault == "frequency":
+        value.frequency = "minute"
+    elif fault == "version":
+        value.config.update(accepted_schema_versions=[1, 2])
+    else:
+        test_session.add(index_reference_dataset("hk_index_constituents_2", "index_constituents"))
+    test_session.add(value)
+    await test_session.commit()
+
+    assert_error(await client.get("/api/v1/serve/datasets"), 503, "SERVE_CONFIGURATION_INVALID")
+
+
 @pytest.mark.asyncio
 async def test_internally_consistent_unsupported_active_scope_fails_closed(
     client: AsyncClient, test_session

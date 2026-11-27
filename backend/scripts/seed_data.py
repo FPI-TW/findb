@@ -36,6 +36,8 @@ SUPPORTED_DATASETS = (
     "tw_etf_minute",
     "hk_equity_eod",
     "hk_equity_official_eod",
+    "hk_index_constituents",
+    "hk_index_changes",
     "hk_index_eod",
     "us_index_eod",
     "us_dollar_index_eod",
@@ -485,6 +487,37 @@ def _staged_flow_dataset(dataset_key: str, name: str) -> dict[str, Any]:
     )
 
 
+def _staged_reference_dataset(dataset_key: str, name: str, description: str) -> dict[str, Any]:
+    """A publisher's index reference documents: one whole document part per plan member.
+
+    The delivery policy does not judge documents by market baselines, so only the
+    frozen plan decides completeness.
+    """
+    feed = _catalog_feed(dataset_key)
+    assert feed.schedule is not None
+    expectation = _eod_delivery_expectation(
+        mode="full_snapshot",
+        market=feed.calendar_market,
+        source=feed.provider,
+        minimum_count=0,
+        slot_id=feed.delivery.slot_id,
+        local_time=time.fromisoformat(feed.schedule.local_time).isoformat(),
+    )
+    expectation["baseline"]["enabled"] = False
+    expectation["record_count"]["action"] = "disabled"
+    expectation["schedule"]["enabled"] = False
+    expectation["missing_delivery"] = {"action": "disabled", "expected_sources": []}
+    config = _catalog_contract_config(dataset_key, currency=None, delivery_expectation=expectation)
+    config["full_market"] = {
+        "enabled": False,
+        "required": True,
+        "activation_date": None,
+        "calendar_market": feed.calendar_market,
+    }
+    config["source_precedence"] = [feed.provider]
+    return _catalog_dataset(dataset_key, name=name, description=description, config=config)
+
+
 def _staged_intraday_dataset(dataset_key: str, name: str) -> dict[str, Any]:
     """One FinLab intraday dataset: delivered per symbol-day, only inside a daily plan.
 
@@ -543,6 +576,17 @@ DATASETS.extend(
         _staged_eod_dataset("tw_etf_eod", "台灣 ETF 日K", currency="TWD"),
         _staged_eod_dataset("tw_futures_eod", "台灣期貨契約日K", currency="TWD"),
         _staged_quote_dataset("hk_equity_official_eod", "港股交易所每日行情"),
+        # HSIL index reference documents, read by the HKEX runtime.
+        _staged_reference_dataset(
+            "hk_index_constituents",
+            "恒指成分股名單",
+            "Staged hkex index_constituents.v1 HSIL constituent reports (HSI, HSCI): lists, weights, HSICS",
+        ),
+        _staged_reference_dataset(
+            "hk_index_changes",
+            "恒指成分股變動",
+            "Staged hkex index_constituent_changes.v1 HSIL change workbooks: effective changes per index",
+        ),
         # Market indices: one dataset per publication-time group (FMP).
         _staged_eod_dataset("hk_index_eod", "港股指數日K", currency="HKD"),
         _staged_eod_dataset("us_index_eod", "美股指數日K", currency="USD"),
@@ -728,6 +772,8 @@ async def seed_datasets(session: AsyncSession) -> None:
         if dataset["dataset_key"] not in {
             "hk_equity_eod",
             "hk_equity_official_eod",
+            "hk_index_constituents",
+            "hk_index_changes",
             "hk_index_eod",
             "us_index_eod",
             "us_dollar_index_eod",

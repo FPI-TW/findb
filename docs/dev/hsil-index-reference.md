@@ -150,6 +150,13 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
   - 因此不需要放寬 `EODRawEvidence`（只有 EOD v2／historical 證據用它），`MEMBER_EOD_SCHEMAS` 與 `ROW_DQ_ERRORS` 也不加參考文件。
 - **已知限制**：Fetcher 回報 `document_later_than_date`、`missing_symbol` 的成員會是 blocked，plan 不會完成；這兩種情況只在 Fetcher 遲到或 HSIL 移除 sheet 時發生，上線觀察後再決定是否歸為 unavailable。
 
+## 啟用（PR 5）
+
+- 排程：香港 21:05 抓當天，期限隔日 09:05，和 `hk_equity_official_eod` 相同，HKEX control 時鐘不變。
+  - 發布時間尚未逐日實測（下載服務不回 Last-Modified）；本機歸檔每天台北 23:45 都已抓到當天的報告。21:05 若尚未發布，
+    依發布重試窗口重試到期限前 30 分鐘。
+- 部署順序與上線步驟見 `docs/operations/deployment.md` 的「HSIL 恒指參考資料 feed」。
+
 ## PR 進度
 
 | PR | 內容 | 狀態 |
@@ -157,7 +164,7 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 | 1 | 兩個契約與 artifacts、canonical 與歸檔表、migration `2bbe07b98293`；尚無 dataset 接收 | #692 已合併並部署 staging |
 | 2 | 重建演算法、歸檔服務、兩個 normalizer、DQ、`CONTRACT_NORMALIZER_MAP`、migration `ebb187773e30`（含刪除 `reference_delivery_evidence`） | #697 已合併 |
 | 3 | Fetcher 解析器（pdfminer 依字元位置、多 sheet xlsx）、raw 格式、hkex adapter 的固定成員與 acquire；權重容許值依檔數放寬；尚未註冊 dataset | #773 已合併 |
-| 4 | Backend plan 整合：batch 成員鍵、`validate_ingest_part`、delivery evidence | 進行中 |
-| 5 | 啟用兩條 feed（historical `unsupported`）、dataset／scheduler migration、Serve scope 分支、端到端 plan 測試 | 未開始 |
+| 4 | Backend plan 整合：batch 成員鍵、`validate_ingest_part`、delivery evidence | #778 已合併 |
+| 5 | 啟用兩條 feed（香港 21:05、historical `unsupported`）、migration `21e8f89c680b`（dataset、綁定 HKEX control、擴大 `fetcher-hkex` 範圍、schedule inspection）、seed、Serve scope 分支、`_IMPLEMENTED_ADAPTERS`、端到端 plan 測試 | 進行中 |
 | 6 | Serve 端點 | 未開始 |
 | 7 | staging 驗收、本機歸檔匯入、移除 launchd 排程、整併文件並刪除本檔 | 未開始 |

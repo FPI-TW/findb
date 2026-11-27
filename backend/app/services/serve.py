@@ -35,6 +35,7 @@ from app.models.canonical import (
 from app.models.institutional_flow import InstitutionalFlowPublication, InstitutionalFlowStock
 from app.models.registry import DatasetRegistry, IngestionRun
 from app.schemas.common import PaginationInfo
+from app.schemas.ingress import INDEX_REFERENCE_SCHEMAS
 from app.schemas.serve import (
     BIAS_RATIO_WINDOWS,
     BiasRatioListResponse,
@@ -202,6 +203,7 @@ async def _active_registry_scopes(
     intraday: list[IntradayDatasetScope] = []
     quotes: list[ExchangeQuoteScope] = []
     flows: list[FlowScope] = []
+    references: set[str] = set()
     for row in rows:
         try:
             declaration = DatasetContractDeclaration.model_validate(row.config)
@@ -239,6 +241,21 @@ async def _active_registry_scopes(
                         ),
                     )
                 )
+                continue
+            if schema_id in INDEX_REFERENCE_SCHEMAS:
+                # Index reference documents live in their own tables, read by the index
+                # endpoints; a correctly declared dataset is not one of these scopes.
+                sources = {source.strip().lower() for source in declaration.allowed_sources}
+                if (
+                    set(declaration.accepted_schema_versions) != {1}
+                    or declaration.defaults.market != market
+                    or (market, asset_class, frequency) != ("HK", "index", "daily")
+                    or sources != {"hkex"}
+                ):
+                    raise ValueError("active index reference dataset declaration is invalid")
+                if schema_id in references:
+                    raise ValueError("duplicate active index reference dataset")
+                references.add(schema_id)
                 continue
             if schema_id in FLOW_SCHEMA_KINDS:
                 # Each exchange publishes its own board's tables: one source, one board.

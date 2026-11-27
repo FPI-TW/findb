@@ -15,7 +15,7 @@ from tests.migration_database import get_active_migration_database_factory, run_
 
 def test_the_preflight_inspects_the_latest_schedule_revision():
     module = migration_module()
-    assert module.revision == "54a916bdb18f"
+    assert module.revision == "21e8f89c680b"
     assert module.FEEDS["tw_equity_eod"] == (
         "finlab",
         "Asia/Taipei",
@@ -41,6 +41,8 @@ def test_the_preflight_inspects_the_latest_schedule_revision():
         0,
     )
     assert module.FEEDS["tw_tpex_institutional_summary"][2] == "17:30:00"
+    for key in ("hk_index_constituents", "hk_index_changes"):
+        assert module.FEEDS[key] == ("hkex", "Asia/Hong_Kong", "21:05:00", (), None, 0)
     # The earlier feeds keep the rules of the revisions that installed them.
     assert {"us_dollar_index_eod", "hk_index_eod", "us_index_eod", "us_equity_eod"} <= set(
         module.FEEDS
