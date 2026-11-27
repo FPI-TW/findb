@@ -87,7 +87,8 @@ async def test_native_evidence_binds_daily_plan_lineage(
             "trade_date": DAY.isoformat(),
         }
     )
-    assert len(result["feeds"]) == 8
+    # Every sampled daily feed: five EOD, three FMP and two TW official indices.
+    assert len(result["feeds"]) == 10
     assert result["passed"] is False  # Other feeds lack plans.
     feed = next(f for f in result["feeds"] if f["dataset_key"] == key)
     assert feed["passed"] is True, feed

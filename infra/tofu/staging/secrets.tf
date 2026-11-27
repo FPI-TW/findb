@@ -132,6 +132,18 @@ locals {
       consumer      = "fmp"
       status        = "active"
     }
+    "fetcher/api/source/twse" = {
+      unit          = "fetcher"
+      relative_name = "api/source/twse"
+      consumer      = "twse"
+      status        = "active"
+    }
+    "fetcher/api/source/tpex" = {
+      unit          = "fetcher"
+      relative_name = "api/source/tpex"
+      consumer      = "tpex"
+      status        = "active"
+    }
     "fetcher/provider/twelve-data" = {
       unit          = "fetcher"
       relative_name = "provider/twelve-data"

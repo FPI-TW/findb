@@ -350,6 +350,35 @@
       "unlisted_symbols": "none"
     },
     {
+      "asset_class": "index",
+      "calendar_market": "TW",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          2
+        ],
+        "current_version": 2,
+        "schema_id": "market_eod"
+      },
+      "dataset_key": "tw_tpex_index_eod",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": "current_release",
+      "historical_requests_per_date": 1,
+      "lane": "default",
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "tpex",
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
+    },
+    {
       "asset_class": "equity",
       "calendar_market": "US",
       "capabilities": {
@@ -377,9 +406,38 @@
       "provider": "twelve_data",
       "universe_mode": "refreshed",
       "unlisted_symbols": "none"
+    },
+    {
+      "asset_class": "index",
+      "calendar_market": "TW",
+      "capabilities": {
+        "acquisition": true,
+        "historical": "executable",
+        "source": true
+      },
+      "contract": {
+        "accepted_versions": [
+          2
+        ],
+        "current_version": 2,
+        "schema_id": "market_eod"
+      },
+      "dataset_key": "tw_twse_index_eod",
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "frequency": "daily",
+      "historical_cohort": "current_release",
+      "historical_requests_per_date": 1,
+      "lane": "default",
+      "lifecycle": "active",
+      "market": "TW",
+      "provider": "twse",
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none"
     }
   ],
-  "projection_sha256": "86985d6a516513eb64a99dce7d61608bbc944591dcbf751fe3a358d3e8e021da",
+  "projection_sha256": "b8894240a545217d9bf6bc7f6e9c2839caa5db95eb986b857ee21e43e76b91d8",
   "providers": [
     {
       "credential_env_names": [
@@ -431,6 +489,14 @@
       "provider": "taifex"
     },
     {
+      "credential_env_names": [],
+      "platform_limits": {
+        "max_response_bytes": 16777216,
+        "requests_per_minute": 30
+      },
+      "provider": "tpex"
+    },
+    {
       "credential_env_names": [
         "TWELVE_DATA_API_KEY"
       ],
@@ -439,6 +505,14 @@
         "requests_per_minute": 1597
       },
       "provider": "twelve_data"
+    },
+    {
+      "credential_env_names": [],
+      "platform_limits": {
+        "max_response_bytes": 16777216,
+        "requests_per_minute": 10
+      },
+      "provider": "twse"
     }
   ],
   "schema_version": 1

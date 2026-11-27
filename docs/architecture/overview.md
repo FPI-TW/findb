@@ -34,14 +34,16 @@ backend-first expand/migrate/contract，不能假設兩個EC2同步更新。
 
 ## Active feeds
 
-十三條 active feeds（五條日線、HKEX 官方港股日線、三條 FMP 指數日線、四條 FinLab 盤中）的唯一靜態宣告在 `backend/configs/provider_catalog.v1.json`。Backend 消費生成 metadata 並發布 Source execution-config；Fetcher 每輪以完整動態快照規劃新日期，image 只包含非排程 descriptors 與 bootstrap。見 [provider metadata](provider_metadata.md)。
+十五條 active feeds（五條日線、HKEX 官方港股日線、三條 FMP 指數日線、TWSE 與 TPEx 兩條官方指數日線、四條 FinLab 盤中）的唯一靜態宣告在 `backend/configs/provider_catalog.v1.json`。Backend 消費生成 metadata 並發布 Source execution-config；Fetcher 每輪以完整動態快照規劃新日期，image 只包含非排程 descriptors 與 bootstrap。見 [provider metadata](provider_metadata.md)。
 
 | Provider | Datasets | Contract |
 | --- | --- | --- |
 | `twelve_data` | `us_equity_eod` | `market_eod.v1` |
 | `factset` | `hk_equity_eod` | `market_eod.v2` |
 | `hkex` | `hk_equity_official_eod` | `exchange_daily_quote.v1` |
-| `fmp` | `hk_index_eod`、`us_index_eod` | `market_eod.v2` |
+| `fmp` | `hk_index_eod`、`us_index_eod`、`us_dollar_index_eod` | `market_eod.v2` |
+| `twse` | `tw_twse_index_eod` | `market_eod.v2` |
+| `tpex` | `tw_tpex_index_eod` | `market_eod.v2` |
 | `finlab` | `tw_equity_eod`、`tw_etf_eod` | `market_eod.v1` |
 | `finlab` | `tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick` | `intraday_partition.v1` |
 | `taifex` | `tw_futures_eod` | `futures_eod.v1` |

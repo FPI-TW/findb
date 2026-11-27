@@ -39,6 +39,8 @@ SUPPORTED_DATASETS = (
     "hk_index_eod",
     "us_index_eod",
     "us_dollar_index_eod",
+    "tw_twse_index_eod",
+    "tw_tpex_index_eod",
     "tw_etf_eod",
     "tw_futures_eod",
     "tw_equity_bar_1m",
@@ -502,6 +504,9 @@ DATASETS.extend(
         _staged_eod_dataset("hk_index_eod", "港股指數日K", currency="HKD"),
         _staged_eod_dataset("us_index_eod", "美股指數日K", currency="USD"),
         _staged_eod_dataset("us_dollar_index_eod", "美元指數日K", currency="USD"),
+        # Taiwan market indices: one dataset per exchange (TWSE, TPEx official).
+        _staged_eod_dataset("tw_twse_index_eod", "加權指數日K", currency="TWD"),
+        _staged_eod_dataset("tw_tpex_index_eod", "櫃買指數日K", currency="TWD"),
     ]
 )
 
@@ -678,6 +683,8 @@ async def seed_datasets(session: AsyncSession) -> None:
             "hk_index_eod",
             "us_index_eod",
             "us_dollar_index_eod",
+            "tw_twse_index_eod",
+            "tw_tpex_index_eod",
             "tw_etf_eod",
             "tw_futures_eod",
         }:

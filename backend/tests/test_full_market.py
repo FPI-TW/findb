@@ -95,9 +95,12 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
     futures = key == "tw_futures_eod"
     hong_kong = key.startswith("hk_equity")
     index = key.endswith("_index_eod")
+    tw_index = {"tw_twse_index_eod": "twse", "tw_tpex_index_eod": "tpex"}.get(key)
     provider = (
         "taifex"
         if futures
+        else tw_index
+        if tw_index
         else "fmp"
         if index
         else "hkex"
@@ -132,8 +135,10 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
             {
                 "symbol": f"^IDX{i + 1}",
                 "provider_symbol": f"^IDX{i + 1}",
-                "exchange": "HKSE" if key.startswith("hk_") else "SNP",
-                "currency": "HKD" if key.startswith("hk_") else "USD",
+                "exchange": (
+                    tw_index.upper() if tw_index else "HKSE" if key.startswith("hk_") else "SNP"
+                ),
+                "currency": "TWD" if tw_index else "HKD" if key.startswith("hk_") else "USD",
                 "asset_class": "index",
             }
             for i in range(count)

@@ -25,7 +25,7 @@ ENVIRONMENT_BY_NAMESPACE = {DEFAULT_NAMESPACE: "staging", "FinDB/Production": "p
 # backend/scripts/export_provider_catalog.py; never edit it by hand. OpenTofu
 # derives the matching alarm identities from the same generated inventory.
 # BEGIN GENERATED PROVIDER INVENTORY
-PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
+PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "tpex", "twelve_data", "twse")
 CONSUMERS = (
     ("findb-full-market-factset", "factset", "full_market", "default", "factset"),
     ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
@@ -33,13 +33,17 @@ CONSUMERS = (
     ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
     ("findb-full-market-intraday-finlab", "finlab", "full_market", "intraday", "finlab"),
     ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-tpex", "tpex", "full_market", "default", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
+    ("findb-full-market-twse", "twse", "full_market", "default", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "default", "factset"),
     ("findb-historical-finlab", "finlab", "historical", "default", "finlab"),
     ("findb-historical-fmp", "fmp", "historical", "default", "twelve_data"),
     ("findb-historical-hkex", "hkex", "historical", "default", "twelve_data"),
     ("findb-historical-taifex", "taifex", "historical", "default", "twelve_data"),
+    ("findb-historical-tpex", "tpex", "historical", "default", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "default", "twelve_data"),
+    ("findb-historical-twse", "twse", "historical", "default", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
@@ -71,6 +75,8 @@ HISTORICAL_STATE_DIRS = {
     "fmp": "/var/lib/findb-fmp-fetcher/historical",
     "taifex": "/var/lib/findb-taifex-fetcher/historical",
     "twelve_data": "/var/lib/findb-fetcher/historical",
+    "twse": "/var/lib/findb-twse-fetcher/historical",
+    "tpex": "/var/lib/findb-tpex-fetcher/historical",
 }
 PROVIDER_CACHE_DIRS = {"finlab": "/var/lib/findb-finlab-fetcher/cache"}
 ACCOUNT_STATE_ROOT = "/var/lib/findb-account"
@@ -495,7 +501,9 @@ WITH active_feed(dataset_key, source) AS (
         ('hk_equity_official_eod', 'hkex'),
         ('hk_index_eod', 'fmp'),
         ('us_index_eod', 'fmp'),
-        ('us_dollar_index_eod', 'fmp')
+        ('us_dollar_index_eod', 'fmp'),
+        ('tw_twse_index_eod', 'twse'),
+        ('tw_tpex_index_eod', 'tpex')
 )
 SELECT
     (

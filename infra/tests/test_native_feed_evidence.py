@@ -158,15 +158,16 @@ def test_native_coordinator_scopes_readonly_probes(
         ],
     )
     assert collector.main() == 0
-    # The Backend, then each sampled provider: Twelve Data, FactSet, FinLab, TAIFEX and FMP.
-    assert len(calls) == 6
+    # The Backend, then each sampled provider: Twelve Data, FactSet, FinLab, TAIFEX, FMP,
+    # TWSE and TPEx.
+    assert len(calls) == 8
     assert os.stat(output).st_mode & 0o777 == 0o600
     assert json.loads(output.read_text())["assessment"]["passed"]
     monkeypatch.setattr(collector, "_aws_json", lambda args: {"Account": "wrong"})
     with pytest.raises(ValueError, match="account"):
         collector.main()
     # A wrong account is refused before any further probe.
-    assert len(calls) == 6
+    assert len(calls) == 8
 
 
 @pytest.mark.parametrize(

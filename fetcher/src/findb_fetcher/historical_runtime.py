@@ -1,7 +1,7 @@
 """Concrete provider runtimes for leased historical work.
 
-Every Twelve Data/FinLab request freezes each date's Full release cohort, and HKEX
-and FMP requests freeze the release current at creation; all of them are acquired
+Every Twelve Data/FinLab request freezes each date's Full release cohort, and HKEX,
+FMP, TWSE and TPEx requests freeze the release current at creation; all of them are acquired
 member by member through the Full daily adapters (``member_historical``).
 """
 
@@ -66,6 +66,18 @@ class FmpHistoricalRunner(_MemberRunner):
     """One request per index and date, through the same adapter as Full daily."""
 
     provider = "fmp"
+
+
+class TwseHistoricalRunner(_MemberRunner):
+    """The TAIEX: one fixed member, a month response serving each date of it."""
+
+    provider = "twse"
+
+
+class TpexHistoricalRunner(_MemberRunner):
+    """The TPEx index: one fixed member, a month response serving each date of it."""
+
+    provider = "tpex"
 
 
 class TwelveDataHistoricalRunner(_DatedReleaseRunner):

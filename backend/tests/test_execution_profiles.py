@@ -62,6 +62,8 @@ async def test_default_and_explicit_plan_reads_return_the_daily_plan(
         "tw_futures_eod",
         "hk_index_eod",
         "us_index_eod",
+        "tw_twse_index_eod",
+        "tw_tpex_index_eod",
     ],
 )
 async def test_shared_five_feed_source_queue_canonical_serve(

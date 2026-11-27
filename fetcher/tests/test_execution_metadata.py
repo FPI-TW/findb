@@ -259,7 +259,14 @@ def test_cli_provider_choices_follow_installed_descriptor(monkeypatch, tmp_path)
     assert "taifex" not in metadata.provider_ids()
     # FinLab keeps daily adapter metadata but offers no historical choice.
     assert "finlab" in metadata.provider_ids()
-    assert metadata.historical_provider_ids() == ("factset", "fmp", "hkex", "twelve_data")
+    assert metadata.historical_provider_ids() == (
+        "factset",
+        "fmp",
+        "hkex",
+        "tpex",
+        "twelve_data",
+        "twse",
+    )
     for provider in ("taifex", "finlab"):
         with pytest.raises(SystemExit) as raised:
             historical_backfill_cli.main(["--provider", provider, "--check"])

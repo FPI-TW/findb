@@ -15,7 +15,7 @@ from tests.migration_database import get_active_migration_database_factory, run_
 
 def test_the_preflight_inspects_the_latest_schedule_revision():
     module = migration_module()
-    assert module.revision == "7733f9692fe6"
+    assert module.revision == "e28706e77614"
     assert module.FEEDS["tw_equity_eod"] == (
         "finlab",
         "Asia/Taipei",
@@ -29,6 +29,9 @@ def test_the_preflight_inspects_the_latest_schedule_revision():
         "19:30:00",
         (("Asia/Taipei", "18:00:00"),),
     )
+    assert module.FEEDS["tw_twse_index_eod"] == ("twse", "Asia/Taipei", "14:15:00", (), None, 0)
+    assert module.FEEDS["tw_tpex_index_eod"] == ("tpex", "Asia/Taipei", "14:15:00", (), None, 0)
+    assert module.CONTROLS["twse"] == module.CONTROLS["tpex"] == ("Asia/Taipei", "14:15:00", ())
     # The earlier feeds keep the rules of the revisions that installed them.
     assert {"us_dollar_index_eod", "hk_index_eod", "us_index_eod", "us_equity_eod"} <= set(
         module.FEEDS

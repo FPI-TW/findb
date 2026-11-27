@@ -253,23 +253,36 @@ class FetcherHostPreflightTests(unittest.TestCase):
                 self.rows = rows
 
     LANE_CONSUMER = "/findb-full-market-intraday-finlab"
+    # The topology marker each newer bundle adds to the deploy script.
+    MARKERS = {8: "# finlab-intraday-lane-v1:", 9: "# twse-tpex-consumers-v1:"}
+    TW_OFFICIAL = {
+        provider: {f"/findb-full-market-{provider}", f"/findb-historical-{provider}"}
+        for provider in ("twse", "tpex")
+    }
 
-    def install_v7(self):
-        """Make the installed release a bundle v7 one: no FinLab intraday-lane topology."""
+    def install_version(self, version):
+        """Make the installed release an older bundle: without the newer topology markers."""
         script = self.root / "infra/deploy/runtime-secrets/deploy_fetcher_aws.sh"
+        newer = tuple(marker for since, marker in self.MARKERS.items() if since > version)
         script.write_text(
             "".join(
                 line
                 for line in script.read_text().splitlines(keepends=True)
-                if not line.startswith("# finlab-intraday-lane-v1:")
+                if not line.startswith(newer)
             )
         )
-        self.manifest["fetcher_bundle_version"] = 7
+        self.manifest["fetcher_bundle_version"] = version
         with release.SourceBundleReader(self.root) as source:
             self.manifest["deployment_source_bundle_sha256"] = (
-                source.deployment_source_bundle_sha256("fetcher", 3, 7)
+                source.deployment_source_bundle_sha256("fetcher", 3, version)
             )
         self.write_manifest()
+
+    def install_v7(self):
+        self.install_version(7)
+
+    def without(self, *names):
+        return [row for row in self.rows if row["Name"] not in names]
 
     def test_a_v7_host_may_lack_the_whole_intraday_lane_group(self):
         self.install_v7()
@@ -280,6 +293,11 @@ class FetcherHostPreflightTests(unittest.TestCase):
         # ...or, after a release that installed it but kept the v7 pointer, complete.
         self.rows = everything
         self.assertEqual(self.check(), "drained")
+        # A v7 host has none of the TWSE and TPEx consumers either.
+        self.rows = self.without(
+            self.LANE_CONSUMER, *self.TW_OFFICIAL["twse"], *self.TW_OFFICIAL["tpex"]
+        )
+        self.assertEqual(self.check(), "drained")
         # Every other consumer is still required on a v7 host.
         self.rows = [
             row
@@ -289,11 +307,42 @@ class FetcherHostPreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown consumer"):
             self.check()
 
+    def test_a_v8_host_may_lack_each_whole_twse_and_tpex_group(self):
+        self.install_version(8)
+        everything = self.rows
+        # Before this release installs them, both providers' consumers are absent...
+        self.rows = self.without(*self.TW_OFFICIAL["twse"], *self.TW_OFFICIAL["tpex"])
+        self.assertEqual(self.check(), "drained")
+        # ...each provider's as a whole, or complete.
+        self.rows = self.without(*self.TW_OFFICIAL["twse"])
+        self.assertEqual(self.check(), "drained")
+        self.rows = everything
+        self.assertEqual(self.check(), "drained")
+        # Never one of a provider's two consumers, and the intraday lane stays required.
+        for missing in (("/findb-historical-tpex",), (self.LANE_CONSUMER,)):
+            with self.subTest(missing=missing):
+                self.rows = [row for row in everything if row["Name"] not in missing]
+                with self.assertRaisesRegex(ValueError, "unknown consumer"):
+                    self.check()
+
     def test_a_v8_host_requires_the_intraday_lane_consumer(self):
-        self.assertEqual(release.FETCHER_BUNDLE_VERSION, 8)
+        self.install_version(8)
         self.rows = [row for row in self.rows if row["Name"] != self.LANE_CONSUMER]
         with self.assertRaisesRegex(ValueError, "unknown consumer"):
             self.check()
+
+    def test_a_v9_host_requires_every_consumer(self):
+        self.assertEqual(release.FETCHER_BUNDLE_VERSION, 9)
+        everything = self.rows
+        for missing in (
+            (self.LANE_CONSUMER,),
+            tuple(self.TW_OFFICIAL["twse"]),
+            tuple(self.TW_OFFICIAL["tpex"]),
+        ):
+            with self.subTest(missing=missing):
+                self.rows = [row for row in everything if row["Name"] not in missing]
+                with self.assertRaisesRegex(ValueError, "unknown consumer"):
+                    self.check()
 
     def test_a_v7_bundle_with_the_v8_topology_marker_is_rejected(self):
         self.manifest["fetcher_bundle_version"] = 7

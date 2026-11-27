@@ -221,6 +221,8 @@ provider_host_layout() {
     factset) printf '%s %s' /var/lib/findb-factset-fetcher/historical - ;;
     hkex) printf '%s %s' /var/lib/findb-hkex-fetcher/historical - ;;
     fmp) printf '%s %s' /var/lib/findb-fmp-fetcher/historical - ;;
+    twse) printf '%s %s' /var/lib/findb-twse-fetcher/historical - ;;
+    tpex) printf '%s %s' /var/lib/findb-tpex-fetcher/historical - ;;
     *) return 1 ;;
   esac
 }
@@ -835,6 +837,7 @@ export FETCHER_CONSUMER_PROFILE=historical
 # hkex-consumers-v1: accepted installations require the HKEX consumers (five providers, ten consumers).
 # fmp-consumers-v1: accepted installations require the FMP consumers (six providers, twelve consumers).
 # finlab-intraday-lane-v1: accepted installations require FinLab's intraday-lane consumer (six providers, thirteen consumers).
+# twse-tpex-consumers-v1: accepted installations require the TWSE and TPEx consumers (eight providers, seventeen consumers).
 for provider in "${providers[@]}"; do
   image="$(provider_image "$provider")"
   layout="$(provider_host_layout "$provider")"

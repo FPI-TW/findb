@@ -116,8 +116,9 @@ def test_registry_covers_every_published_provider_with_its_capabilities():
         }
         assert dated == ({"tw_futures_eod"} if provider == "taifex" else set())
         assert (type(adapter).dated_universe is not ProviderAdapter.dated_universe) is bool(dated)
-        # One shared observation serves the whole cohort: FinLab's tables, HKEX's reports.
-        assert adapter.outage_holds_plan is (provider in {"finlab", "hkex"})
+        # One shared observation serves the whole cohort: FinLab's tables, HKEX's reports,
+        # and the one fixed member of each TWSE and TPEx dataset.
+        assert adapter.outage_holds_plan is (provider in {"finlab", "hkex", "twse", "tpex"})
         assert (adapter.shared_response_prefix is not None) is (provider in {"finlab", "hkex"})
         # ``None``: the provider's list is read inside ``build_universe`` (FMP with its key).
         assert adapter.catalogue_datasets == {

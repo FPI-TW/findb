@@ -22,7 +22,9 @@ from findb_fetcher.historical_runtime import (
     FinLabHistoricalRunner,
     FmpHistoricalRunner,
     HkexHistoricalRunner,
+    TpexHistoricalRunner,
     TwelveDataHistoricalRunner,
+    TwseHistoricalRunner,
 )
 from findb_fetcher.scheduler_control import scheduler_stop_event
 from findb_fetcher.source_recovery import SourceWaitStoppedError, retry_source
@@ -58,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
                 "factset": FactSetHistoricalRunner.from_env,
                 "hkex": HkexHistoricalRunner.from_env,
                 "fmp": FmpHistoricalRunner.from_env,
+                "twse": TwseHistoricalRunner.from_env,
+                "tpex": TpexHistoricalRunner.from_env,
             }[args.provider](),
         )
         with HistoricalControlClient(FetcherConfig.from_env(), provider=args.provider) as control:
