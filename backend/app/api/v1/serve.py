@@ -29,6 +29,10 @@ from app.schemas.serve import (
     ExchangeQuoteListResponse,
     FuturesContractListResponse,
     FuturesEODListResponse,
+    HsicsClassificationListResponse,
+    IndexChangeListResponse,
+    IndexConstituentListResponse,
+    IndexListResponse,
     InstitutionalFlowListResponse,
     InstitutionalFlowSummaryListResponse,
     InstrumentDetailResponse,
@@ -48,7 +52,7 @@ from app.schemas.serve import (
     SortDirection,
 )
 from app.services import serve as serve_queries
-from app.services import serve_downloads, serve_flows, serve_intraday
+from app.services import serve_downloads, serve_flows, serve_indexes, serve_intraday
 from app.services.effective_calendar import published_calendar_year
 from app.services.index_quality import CLOSE_ONLY_INDICES
 from app.services.market_freshness import list_market_freshness
@@ -996,6 +1000,156 @@ async def list_institutional_flow_summary(
         order=order,
         cursor=cursor,
         page_size=page_size,
+    )
+
+
+HSIL_USE = "For internal use only, as Hang Seng Indexes publishes it."
+INDEX_NOT_FOUND = "`INDEX_NOT_FOUND`: no stored index has this code."
+INDEXES_NOT_ACTIVE = "`DATASET_NOT_AVAILABLE`: the Hang Seng index feeds are not active."
+IndexCodePath = Annotated[
+    str,
+    Path(
+        description="HSIL index code: `00001.00` HSI, `00001.01`-`.04` its sub-indexes, "
+        "`00011.00` HSCI, `00011.01`-`.14` its HSICS industry indexes. See `list_indexes`.",
+        examples=["00011.08"],
+    ),
+]
+AsOfQuery = Annotated[
+    date | None,
+    Query(
+        description="Hong Kong date the list is for (YYYY-MM-DD); today in Hong Kong when omitted.",
+        examples=["2026-11-27"],
+    ),
+]
+
+
+@router.get(
+    "/indexes",
+    response_model=IndexListResponse,
+    operation_id="list_indexes",
+    summary="Hang Seng indexes FinDB keeps constituents of (HK)",
+    description=(
+        "HSI with its four sub-indexes and HSCI with its twelve HSICS industry indexes: code, "
+        "names, parent, industry, the earliest published change, the first and latest stored "
+        "constituent report and the current constituent count. " + HSIL_USE
+    ),
+    responses=_errors({422: INDEXES_NOT_ACTIVE, 503: CONFIGURATION_INVALID}),
+)
+async def list_indexes(
+    _: str | None = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> IndexListResponse:
+    return await serve_indexes.list_indexes(db)
+
+
+@router.get(
+    "/indexes/{code}/constituents",
+    response_model=IndexConstituentListResponse,
+    operation_id="list_index_constituents",
+    summary="Constituents of a Hang Seng index on a date (HK)",
+    description=(
+        "Every constituent on `as_of` with the date it joined, its FinDB instrument when known, "
+        "and its weight and close from the latest stored report on or before `as_of` "
+        "(`weights_date`). From the series' first stored report the list is the reports' own; "
+        "before it, it is rolled back from HSIL's published changes (`derived: true`). " + HSIL_USE
+    ),
+    responses=_errors(
+        {
+            404: INDEX_NOT_FOUND,
+            422: (
+                f"{INDEXES_NOT_ACTIVE} `DATE_BEFORE_HISTORY`: `as_of` is before the index's "
+                "earliest published change (`details.history_start`)."
+            ),
+            503: CONFIGURATION_INVALID,
+        }
+    ),
+)
+async def list_index_constituents(
+    code: IndexCodePath,
+    as_of: AsOfQuery = None,
+    _: str | None = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> IndexConstituentListResponse:
+    return await serve_indexes.list_index_constituents(db, code=code, as_of=as_of)
+
+
+@router.get(
+    "/indexes/{code}/changes",
+    response_model=IndexChangeListResponse,
+    operation_id="list_index_changes",
+    summary="Constituent changes of a Hang Seng index (HK)",
+    description=(
+        "Every effective addition and deletion HSIL lists for the index, newest first, back "
+        "to 2008 or the index's launch, with the constituent count after each date. " + HSIL_USE
+    ),
+    responses=_errors(
+        {
+            404: INDEX_NOT_FOUND,
+            422: f"{INDEXES_NOT_ACTIVE} {INVALID_DATE_RANGE} {INVALID_CURSOR}",
+            503: CONFIGURATION_INVALID,
+        },
+        paginated=True,
+    ),
+)
+async def list_index_changes(
+    code: IndexCodePath,
+    start_date: StartDateQuery = None,
+    end_date: EndDateQuery = None,
+    cursor: CursorQuery = None,
+    page_size: Annotated[int, _page_size(500, 2500)] = 500,
+    _: str | None = Depends(verify_paginated_serve_api_key(500)),
+    db: AsyncSession = Depends(get_db),
+) -> IndexChangeListResponse:
+    return await serve_indexes.list_index_changes(
+        db,
+        code=code,
+        start_date=start_date,
+        end_date=end_date,
+        cursor=cursor,
+        page_size=page_size,
+    )
+
+
+@router.get(
+    "/classifications/hsics",
+    response_model=HsicsClassificationListResponse,
+    operation_id="list_hsics_classifications",
+    summary="HSICS industry of Hong Kong stocks on a date (HK)",
+    description=(
+        "The Hang Seng Industry Classification of each HSCI constituent on `as_of`, from the "
+        "HSCI industry index it belongs to (only HSCI constituents are classified; 12 "
+        "industries). Filter by `industry` or `symbols`. " + HSIL_USE
+    ),
+    responses=_errors(
+        {
+            422: (
+                f"{INDEXES_NOT_ACTIVE} `INVALID_SYMBOLS`: give 1 to 50 distinct HKEX stock codes."
+            ),
+            503: CONFIGURATION_INVALID,
+        }
+    ),
+)
+async def list_hsics_classifications(
+    as_of: AsOfQuery = None,
+    industry: Annotated[
+        str | None,
+        Query(
+            description="Two-digit HSICS industry code, e.g. `50` Financials, `70` IT.",
+            examples=["50"],
+        ),
+    ] = None,
+    symbols: Annotated[
+        str | None,
+        Query(
+            description="Comma-separated HKEX stock codes, at most 50 (leading zeros optional).",
+            examples=["00005,700"],
+        ),
+    ] = None,
+    _: str | None = Depends(verify_serve_api_key),
+    db: AsyncSession = Depends(get_db),
+) -> HsicsClassificationListResponse:
+    return await serve_indexes.list_hsics_classifications(
+        db, as_of=as_of, industry=industry, symbols=symbols
     )
 
 

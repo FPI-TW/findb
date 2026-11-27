@@ -985,3 +985,129 @@ class InstitutionalFlowSummaryListResponse(BaseModel):
         description="One row per board and trade date, ordered by trade date (see `order`)."
     )
     pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
+
+
+# --- Hang Seng indexes (HSIL reference documents) -------------------------------------
+
+INDEX_CODE = "HSIL index code, e.g. `00001.00` (HSI) or `00011.08` (HSCI Financials)."
+DERIVED = (
+    "True when the date is before the series' first stored constituent report: the list is "
+    "then rolled back from HSIL's published changes and may differ from what HSIL listed "
+    "(temporary trading counters are not in the change workbooks)."
+)
+
+
+class IndexClassificationResponse(BaseModel):
+    scheme: Literal["hsics"] = Field(description="Hang Seng Industry Classification System.")
+    code: str = Field(description="HSICS industry code, e.g. `50` (Financials).")
+    name_en: str = Field(description="Industry name in English.")
+    name_zh: str | None = Field(default=None, description="Industry name in Chinese.")
+
+
+class IndexDefinitionResponse(BaseModel):
+    code: str = Field(description=INDEX_CODE)
+    name_en: str = Field(description="Index name in English, as HSIL names it.")
+    name_zh: str | None = Field(default=None, description="Index name in Chinese.")
+    series: Literal["hsi", "hsci"] = Field(
+        description="`hsi`: Hang Seng Index and its four sub-indexes; `hsci`: Hang Seng "
+        "Composite Index and its twelve HSICS industry indexes."
+    )
+    parent_code: str | None = Field(
+        default=None, description="The series index a sub-index or industry index belongs to."
+    )
+    classification: IndexClassificationResponse | None = Field(
+        default=None, description="The HSICS industry an industry index stands for."
+    )
+    history_start: date | None = Field(
+        default=None,
+        description="Earliest effective date HSIL lists for this index; nothing earlier is served.",
+    )
+    observed_from: date | None = Field(
+        default=None, description="First stored constituent report of the series."
+    )
+    latest_report_date: date | None = Field(
+        default=None, description="Latest stored constituent report of this index."
+    )
+    constituent_count: int = Field(description="Current number of constituents.")
+
+
+class IndexListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    data: list[IndexDefinitionResponse] = Field(description="Every stored index, by code.")
+
+
+class IndexConstituentResponse(BaseModel):
+    symbol: str = Field(description="HKEX 5-digit stock code, e.g. `00005`.")
+    name_en: str | None = Field(default=None, description="Short name as HSIL lists it.")
+    instrument: InstrumentSummaryResponse | None = Field(
+        default=None,
+        description="The FinDB instrument of this code over the membership, when known.",
+    )
+    member_since: date | None = Field(
+        default=None,
+        description="Effective date the symbol joined; null when it joined before HSIL's "
+        "earliest recorded change.",
+    )
+    weight_pct: Decimal | None = Field(
+        default=None, description="Weight in the index (%) in the report of `weights_date`."
+    )
+    close: Decimal | None = Field(
+        default=None, description="Closing price in the report of `weights_date`."
+    )
+
+
+class IndexConstituentListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    index: IndexDefinitionResponse = Field(description="The index.")
+    as_of: date = Field(description="Exchange-local date the list is for.")
+    derived: bool = Field(description=DERIVED)
+    weights_date: date | None = Field(
+        default=None,
+        description="The latest stored report on or before `as_of` that weights come from; "
+        "null when there is none.",
+    )
+    data: list[IndexConstituentResponse] = Field(description="Constituents, by symbol.")
+
+
+class IndexChangeResponse(BaseModel):
+    effective_date: date = Field(description="Exchange-local date the change took effect.")
+    action: Literal["add", "delete"] = Field(description="Addition or deletion.")
+    symbol: str = Field(description="HKEX 5-digit stock code.")
+    name_en: str | None = Field(default=None, description="Short name as HSIL lists it.")
+    name_zh: str | None = Field(default=None, description="Chinese short name.")
+    constituents_after: int = Field(
+        description="Number of constituents once every change of that date is applied."
+    )
+
+
+class IndexChangeListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    index: IndexDefinitionResponse = Field(description="The index.")
+    data: list[IndexChangeResponse] = Field(
+        description="Effective changes, newest first, in HSIL's order within a date."
+    )
+    pagination: CursorPaginationInfo = Field(description="Cursor pagination.")
+
+
+class HsicsClassificationResponse(BaseModel):
+    symbol: str = Field(description="HKEX 5-digit stock code.")
+    name_en: str | None = Field(default=None, description="Short name as HSIL lists it.")
+    instrument: InstrumentSummaryResponse | None = Field(
+        default=None, description="The FinDB instrument of this code, when known."
+    )
+    industry: IndexClassificationResponse = Field(description="The HSICS industry.")
+    index_code: str = Field(description="The HSCI industry index the symbol is a member of.")
+    member_since: date | None = Field(
+        default=None,
+        description="Effective date it joined that industry index; null when before HSIL's "
+        "earliest recorded change.",
+    )
+
+
+class HsicsClassificationListResponse(BaseModel):
+    success: Literal[True] = Field(default=True, description="Always true on success.")
+    as_of: date = Field(description="Exchange-local date of the classification.")
+    derived: bool = Field(description=DERIVED)
+    data: list[HsicsClassificationResponse] = Field(
+        description="HSCI constituents with their industry, by symbol."
+    )

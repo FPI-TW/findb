@@ -157,6 +157,14 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
     依發布重試窗口重試到期限前 30 分鐘。
 - 部署順序與上線步驟見 `docs/operations/deployment.md` 的「HSIL 恒指參考資料 feed」。
 
+## Serve（PR 6）
+
+- 四個唯讀端點，說明見 `docs/api/api_usage_guide.md`：指數清單、某日成分股（含最新一份報告的權重）、
+  變動歷史（cursor 分頁）與 HSICS 分類。
+- 原計畫另列的 `/indexes/{code}/snapshots/{trade_date}` 與 `/instruments/{id}/...` 不另做：
+  前者等於 `constituents?as_of=<報告日>`，後者以 `classifications/hsics?symbols=` 查詢。
+- 某日早於系列第一份報告時標 `derived: true`；早於指數最早的變動日回 `DATE_BEFORE_HISTORY`，不推算。
+
 ## PR 進度
 
 | PR | 內容 | 狀態 |
@@ -166,5 +174,5 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 | 3 | Fetcher 解析器（pdfminer 依字元位置、多 sheet xlsx）、raw 格式、hkex adapter 的固定成員與 acquire；權重容許值依檔數放寬；尚未註冊 dataset | #773 已合併 |
 | 4 | Backend plan 整合：batch 成員鍵、`validate_ingest_part`、delivery evidence | #778 已合併 |
 | 5 | 啟用兩條 feed（香港 21:05、historical `unsupported`）、migration `21e8f89c680b`（dataset、綁定 HKEX control、擴大 `fetcher-hkex` 範圍、schedule inspection）、seed、Serve scope 分支、`_IMPLEMENTED_ADAPTERS`、端到端 plan 測試 | 進行中 |
-| 6 | Serve 端點 | 未開始 |
+| 6 | Serve 端點：`/indexes`、`/indexes/{code}/constituents`、`/indexes/{code}/changes`、`/classifications/hsics` | 進行中 |
 | 7 | staging 驗收、本機歸檔匯入、移除 launchd 排程、整併文件並刪除本檔 | 未開始 |

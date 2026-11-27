@@ -287,6 +287,20 @@ Serve只讀canonical tables，且只公開active registry可解析的EOD／minut
   - `total_net` 是交易所自己的合計，不含外資自營商（已計入自營商）。
 - `GET /serve/institutional-flows/summary`：三大法人市場彙總金額（TWD），每個板別、每天一列。
   - TWSE 沒印的外資合計與自營商合計，由 FinDB 從組成相加，並標 `reported: false`。
+- 恒生指數公司（HSIL）的指數參考資料，只供內部使用；需要 `hk_index_constituents`（變動歷史需要
+  `hk_index_changes`）為 active，否則回 `DATASET_NOT_AVAILABLE`：
+  - `GET /serve/indexes`：HSI 與 4 個分類指數、HSCI 與 12 個 HSICS 行業指數的代碼、中英文名、父指數、行業、
+    最早的變動日（`history_start`）、第一份與最新一份成分股報告日，以及目前檔數。
+  - `GET /serve/indexes/{code}/constituents?as_of=`：某日的成分股、加入日（`member_since`，null 表示早於
+    HSIL 最早的變動紀錄）、FinDB instrument（對得到時），以及 `as_of` 當天或之前最新一份報告的權重與收市價
+    （`weights_date`）。
+    - 第一份報告之後的名單與報告一致；之前由已公布的變動回推，標 `derived: true`，臨時櫃台不在變動檔內，
+      可能與當時的實際名單略有差異。
+    - `as_of` 省略時是香港當天；早於 `history_start` 回 `DATE_BEFORE_HISTORY`。
+  - `GET /serve/indexes/{code}/changes`：HSIL 變動檔列出的已生效加入與刪除，新到舊，含當日變動後檔數；
+    `start_date`／`end_date` 篩選，cursor 分頁（預設 500、最多 2,500 列）。
+  - `GET /serve/classifications/hsics?as_of=&industry=&symbols=`：HSCI 成分股在某日的 HSICS 行業（12 類），
+    由所屬的 HSCI 行業指數推得；只有 HSCI 成分股有分類。`symbols` 最多 50 個 HKEX 代號，前導 0 可省略。
 - `GET /serve/minute`：單一`instrument_id`；明確日期需成對且最多五個曆年。省略日期時以
   最新canonical minute日期向前一個曆月，resolved range會固定在cursor內。
 - `GET /serve/futures/eod`：實際到期合約與 `regular`／`after_hours` session，使用 opaque cursor；
