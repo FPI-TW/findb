@@ -994,6 +994,49 @@ def test_only_an_exact_refusal_leaves_a_no_record_claim_retryable(status, body, 
     assert refused.value.code == code
 
 
+def test_each_worker_step_reaches_the_timing_line(tmp_path, monkeypatch) -> None:
+    from findb_fetcher import rpc_timing
+
+    raw = provider_file("bar_1m")
+    _sdk(tmp_path, monkeypatch, _published(tmp_path, "bar_1m", raw))
+    rpc_timing.drain()
+
+    supervised_call("finlab.intraday", _payload(), timeout=30)
+
+    totals = rpc_timing.drain()
+    steps = ("sdk_import", "manifest", "sign", "download", "map")
+    parent = ("first_message", "run", "teardown")
+    # One report per step, with nothing but fixed names; the run covers them all.
+    assert {name: totals[f"worker finlab.intraday {name}"][0] for name in steps + parent} == {
+        name: 1 for name in steps + parent
+    }
+    assert set(totals) == {f"worker finlab.intraday {name}" for name in steps + parent}
+    run = totals["worker finlab.intraday run"][1]
+    assert sum(totals[f"worker finlab.intraday {name}"][1] for name in steps) <= run
+
+
+def test_an_absent_partition_still_reports_its_manifest_step(tmp_path, monkeypatch) -> None:
+    from findb_fetcher import rpc_timing
+
+    _sdk(tmp_path, monkeypatch, {"manifest": {"partitions": [], "closed_dates": []}})
+    rpc_timing.drain()
+
+    assert supervised_call("finlab.intraday", _payload(), timeout=30)[0] == "absent"
+
+    assert rpc_timing.drain()["worker finlab.intraday manifest"][0] == 1
+
+
+def test_a_malformed_step_report_is_dropped() -> None:
+    from findb_fetcher import provider_process, rpc_timing
+
+    rpc_timing.drain()
+    for value in (("Manifest", 1.0), ("manifest", "1"), ("manifest", -1.0), ["manifest", 1.0]):
+        provider_process._record_phase("finlab.intraday", value)
+    provider_process._record_phase("finlab.intraday", ("manifest", 2.5))
+
+    assert rpc_timing.drain() == {"worker finlab.intraday manifest": [1, 2.5]}
+
+
 def test_a_manifest_only_question_never_downloads(tmp_path, monkeypatch) -> None:
     raw = provider_file("bar_1m")
     replies = _published(tmp_path, "bar_1m", raw)

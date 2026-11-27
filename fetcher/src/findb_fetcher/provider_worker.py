@@ -11,7 +11,8 @@ import importlib
 import re
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from multiprocessing.connection import Connection
 from typing import Any
 
@@ -38,6 +39,33 @@ _NETWORK_NAMES = frozenset(
         "gaierror",
     }
 )
+
+
+_PHASE_NAME = re.compile(r"[a-z_]{1,24}")
+_conn: Connection | None = None
+
+
+@contextmanager
+def phase(name: str) -> Iterator[None]:
+    """Report how long one step of the operation took; diagnostics only (#753).
+
+    The parent adds it to the delivery timing line. Outside a worker (a direct
+    call in a test or the offline check) nothing is sent. A step that raises is
+    reported too (an absent partition is a manifest refusal); only a fixed name
+    and a duration ever cross the pipe, and a report that cannot be sent never
+    replaces the step's own outcome.
+    """
+    if _PHASE_NAME.fullmatch(name) is None:
+        raise ValueError("worker phase names are fixed lowercase words")
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        if _conn is not None:
+            try:
+                _conn.send(("phase", (name, (time.monotonic() - started) * 1000)))
+            except OSError:
+                pass
 
 
 class DispatchExpired(BaseException):
@@ -84,7 +112,11 @@ def _authorizer(conn: Connection, enabled: bool) -> Callable[[], None]:
 
 
 def main() -> None:
-    conn = Connection(int(sys.argv[1]))
+    global _conn
+    conn = _conn = Connection(int(sys.argv[1]))
+    # ``python -m`` runs this file as ``__main__``; provider modules import
+    # ``phase`` from the package module, which needs the same connection.
+    setattr(importlib.import_module("findb_fetcher.provider_worker"), "_conn", conn)  # noqa: B010
     try:
         operation, payload, checkpoint = conn.recv()
         module, name = OPERATIONS[operation]

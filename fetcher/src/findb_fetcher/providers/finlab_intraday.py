@@ -26,6 +26,7 @@ from typing import Any, Literal
 
 from findb_fetcher.acquisition import QuotaBlockedError
 from findb_fetcher.finlab_credentials import sdk_credential_scope
+from findb_fetcher.provider_worker import phase
 from findb_fetcher.providers.finlab import (
     FinLabConfigError,
     FinLabNativeError,
@@ -203,8 +204,10 @@ def native_intraday(
     """
     # Chosen before the SDK imports Arrow; see ``native_get``.
     os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
-    sdk = importlib.import_module("finlab")
-    utils: Any = importlib.import_module("finlab.utils")
+    # Each step reports its duration to the parent's timing line (#753).
+    with phase("sdk_import"):
+        sdk = importlib.import_module("finlab")
+        utils: Any = importlib.import_module("finlab.utils")
     utils.check_version = lambda: None
     seams = _intraday_seams(sdk)
     family = FAMILIES[payload["record_kind"]]
@@ -215,7 +218,8 @@ def native_intraday(
     absent = {"date": day, "status": "absent"}
     try:
         try:
-            manifest = _signed_request(seams, {**query, "mode": "manifest"})
+            with phase("manifest"):
+                manifest = _signed_request(seams, {**query, "mode": "manifest"})
         except FinLabNativeError as exc:
             if exc.native_failure_code == "not_ready_partition":
                 return "absent", absent, 0, b"", b""
@@ -236,19 +240,21 @@ def native_intraday(
             raise FinLabNativeError("not_ready_partition")
         if payload.get("manifest_only"):
             return "ready", evidence, int(part["rows"]), b"", b""
-        signed = _signed_request(
-            seams,
-            {
-                **query,
-                "mode": "download",
-                "request_id": uuid.uuid4().hex,
-                "partitions": [{"date": day, "generation": part["generation"]}],
-            },
-        )
+        with phase("sign"):
+            signed = _signed_request(
+                seams,
+                {
+                    **query,
+                    "mode": "download",
+                    "request_id": uuid.uuid4().hex,
+                    "partitions": [{"date": day, "generation": part["generation"]}],
+                },
+            )
         by_date = {item.get("date"): item for item in signed.get("partitions", ())}
-        original = seams.intraday._download(
-            seams.intraday._verify_signed_partition(by_date.get(day), part)
-        )
+        with phase("download"):
+            original = seams.intraday._download(
+                seams.intraday._verify_signed_partition(by_date.get(day), part)
+            )
     except seams.quota_error:
         raise FinLabNativeError("quota") from None
     except seams.auth_error:
@@ -258,18 +264,19 @@ def native_intraday(
         raise FinLabNativeError("bad_response") from None
     if len(original) != part["size"] or hashlib.sha256(original).hexdigest() != part["sha256"]:
         raise FinLabNativeError("bad_response")
-    rows = map_rows(
-        original,
-        record_kind=payload["record_kind"],
-        provider_symbol=provider_symbol,
-        symbol=payload["symbol"],
-        trade_date=day,
-        row_count=part["rows"],
-        layout=payload["layout"],
-        source_columns=tuple(
-            seams.intraday.TICK_COLUMNS if family == "tw_tick" else seams.intraday.BAR_COLUMNS
-        ),
-    )
+    with phase("map"):
+        rows = map_rows(
+            original,
+            record_kind=payload["record_kind"],
+            provider_symbol=provider_symbol,
+            symbol=payload["symbol"],
+            trade_date=day,
+            row_count=part["rows"],
+            layout=payload["layout"],
+            source_columns=tuple(
+                seams.intraday.TICK_COLUMNS if family == "tw_tick" else seams.intraday.BAR_COLUMNS
+            ),
+        )
     return "ready", evidence, int(part["rows"]), original, rows
 
 

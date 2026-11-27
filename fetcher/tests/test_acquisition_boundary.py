@@ -376,3 +376,47 @@ def test_rollover_after_authorization_rechecks_and_charges_actual_day(governor, 
             "2026-01-01",
             "2026-01-01T00:00",
         ]
+
+
+def test_lock_wait_and_hold_reach_the_timing_line_and_long_ones_their_own(
+    governor, monkeypatch, capsys
+):
+    import json
+    from threading import Event
+
+    from findb_fetcher import acquisition, rpc_timing
+
+    rpc_timing.drain()
+    monkeypatch.setattr(acquisition, "LONG_ACCOUNT_LOCK_SECONDS", 0.1)
+    entered, release = Event(), Event()
+
+    def holder():
+        with authorization_scope(_grant), Acquisition("twelve_data") as operation:
+            operation.start()
+            entered.set()
+            assert release.wait(5)
+            time.sleep(0.15)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(holder)
+        assert entered.wait(5)
+        release.set()
+        # The same account: this one queues behind the holder for the lock.
+        with authorization_scope(_grant), Acquisition("twelve_data") as operation:
+            operation.start()
+        future.result(timeout=5)
+
+    totals = rpc_timing.drain()
+    assert totals["account_lock wait"][0] == totals["account_lock hold"][0] == 2
+    assert totals["account_lock wait"][1] >= 100
+    lines = [
+        json.loads(line)["account_lock"]
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith('{"account_lock"')
+    ]
+    # The holder held it past the threshold; the follower waited past it.
+    assert sorted(entry["hold_seconds"] >= 0.1 for entry in lines) == [False, True]
+    assert all(
+        set(entry) == {"provider", "kind", "wait_seconds", "hold_seconds"} for entry in lines
+    )
+    assert {entry["provider"] for entry in lines} == {"twelve_data"}
