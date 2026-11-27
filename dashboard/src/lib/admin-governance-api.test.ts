@@ -67,8 +67,16 @@ describe("admin governance wire contracts", () => {
       factset: ["hk_equity_eod"],
       hkex: ["hk_equity_official_eod"],
       fmp: ["hk_index_eod", "us_dollar_index_eod", "us_index_eod"],
-      twse: ["tw_twse_index_eod"],
-      tpex: ["tw_tpex_index_eod"],
+      twse: [
+        "tw_twse_index_eod",
+        "tw_twse_institutional_stock",
+        "tw_twse_institutional_summary",
+      ],
+      tpex: [
+        "tw_tpex_index_eod",
+        "tw_tpex_institutional_stock",
+        "tw_tpex_institutional_summary",
+      ],
     })
   })
 

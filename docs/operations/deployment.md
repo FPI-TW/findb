@@ -1173,6 +1173,29 @@ Historical 目錄是 `/var/lib/findb-twse-fetcher/historical` 與 `/var/lib/find
 - 上線後兩個 control 仍為 stopped：先 universe refresh 發布第一份 baseline（各一檔固定成員，證據是交易所當月的
   指數回應），把首日設成單一日期，由 Owner start；之後才建立兩年回補。
 
+## TWSE 與 TPEx 三大法人 feeds
+
+Migration `54a916bdb18f` 新增四個 dataset，每個交易所的每張表各一個，每天一個固定成員（板別 `TWSE`／`TPEX`），
+一次請求取整張表：
+
+| Dataset | 契約 | 排程（台北，當天） | 期限 |
+| --- | --- | --- | --- |
+| `tw_twse_institutional_summary`（BFI82U） | `institutional_flow_summary.v1` | 15:30 | 隔日 03:30 |
+| `tw_twse_institutional_stock`（T86，含權證） | `institutional_flow_stock.v1` | 16:45 | 隔日 04:45 |
+| `tw_tpex_institutional_summary` | `institutional_flow_summary.v1` | 17:30 | 隔日 05:30 |
+| `tw_tpex_institutional_stock` | `institutional_flow_stock.v1` | 17:30 | 隔日 05:30 |
+
+- 排程依 11-25～27 的發布觀測：TPEx 每天約 17:15 修正一次外資買進與賣出金額，所以排在修正之後。
+- 四個 dataset 綁到既有的 stopped control `full_market_twse_v1`、`full_market_tpex_v1`，control 時鐘仍是
+  最早的 feed（指數，14:15）。
+- `fetcher-twse`／`fetcher-tpex` 的 Source credential 範圍只在正好是該交易所的指數 dataset 時擴為三個 dataset；
+  其他範圍（例如人工改過的）保留不動。
+- 本 revision 取代 `e28706e77614` 成為部署前 schedule inspection。已有使用紀錄時拒絕 downgrade；與所有
+  migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `e28706e77614`。
+- 沒有新 provider：bundle 版號、secrets 與 consumers 都不變。部署時兩個 control 必須是 stopped
+  （Fetcher 部署前檢查）；FinDB 先、Fetcher 後，落差期間舊 Fetcher 會略過還沒安裝的 feed。
+- Native feed evidence 不抽樣這兩個契約（它們寫入自己的發布表，不是 EOD canonical）。
+
 ## FinLab 日 K 改 19:30
 
 Migration `7733f9692fe6` 把 `tw_equity_eod`、`tw_etf_eod` 的排程由台北 18:00 改為 19:30（期限隔日 07:30），

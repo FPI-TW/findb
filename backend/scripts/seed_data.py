@@ -41,6 +41,10 @@ SUPPORTED_DATASETS = (
     "us_dollar_index_eod",
     "tw_twse_index_eod",
     "tw_tpex_index_eod",
+    "tw_twse_institutional_summary",
+    "tw_twse_institutional_stock",
+    "tw_tpex_institutional_summary",
+    "tw_tpex_institutional_stock",
     "tw_etf_eod",
     "tw_futures_eod",
     "tw_equity_bar_1m",
@@ -442,6 +446,45 @@ def _staged_quote_dataset(dataset_key: str, name: str) -> dict[str, Any]:
     )
 
 
+def _staged_flow_dataset(dataset_key: str, name: str) -> dict[str, Any]:
+    """An exchange's three institutional investors table: one fixed member, the board.
+
+    One request carries the whole day's table, so completeness is the frozen
+    plan's; a row count or a bounded monitor would measure nothing.
+    """
+    feed = _catalog_feed(dataset_key)
+    assert feed.schedule is not None
+    expectation = _eod_delivery_expectation(
+        mode="incremental",
+        market=feed.calendar_market,
+        source=feed.provider,
+        minimum_count=0,
+        slot_id=feed.delivery.slot_id,
+        local_time=time.fromisoformat(feed.schedule.local_time).isoformat(),
+    )
+    expectation["baseline"]["enabled"] = False
+    expectation["record_count"]["action"] = "disabled"
+    expectation["schedule"]["enabled"] = False
+    expectation["missing_delivery"] = {"action": "disabled", "expected_sources": []}
+    config = _catalog_contract_config(dataset_key, currency="TWD", delivery_expectation=expectation)
+    config["full_market"] = {
+        "enabled": False,
+        "required": True,
+        "activation_date": None,
+        "calendar_market": feed.calendar_market,
+    }
+    config["source_precedence"] = [feed.provider]
+    return _catalog_dataset(
+        dataset_key,
+        name=name,
+        description=(
+            f"Staged {feed.provider} {_contract_label(feed)} three institutional investors "
+            "table; one fixed member per board"
+        ),
+        config=config,
+    )
+
+
 def _staged_intraday_dataset(dataset_key: str, name: str) -> dict[str, Any]:
     """One FinLab intraday dataset: delivered per symbol-day, only inside a daily plan.
 
@@ -507,6 +550,11 @@ DATASETS.extend(
         # Taiwan market indices: one dataset per exchange (TWSE, TPEx official).
         _staged_eod_dataset("tw_twse_index_eod", "加權指數日K", currency="TWD"),
         _staged_eod_dataset("tw_tpex_index_eod", "櫃買指數日K", currency="TWD"),
+        # Three institutional investors tables (TWSE, TPEx official): amounts and shares.
+        _staged_flow_dataset("tw_twse_institutional_summary", "上市三大法人買賣金額"),
+        _staged_flow_dataset("tw_twse_institutional_stock", "上市三大法人個股買賣超"),
+        _staged_flow_dataset("tw_tpex_institutional_summary", "上櫃三大法人買賣金額"),
+        _staged_flow_dataset("tw_tpex_institutional_stock", "上櫃三大法人個股買賣超"),
     ]
 )
 
@@ -685,6 +733,10 @@ async def seed_datasets(session: AsyncSession) -> None:
             "us_dollar_index_eod",
             "tw_twse_index_eod",
             "tw_tpex_index_eod",
+            "tw_twse_institutional_summary",
+            "tw_twse_institutional_stock",
+            "tw_tpex_institutional_summary",
+            "tw_tpex_institutional_stock",
             "tw_etf_eod",
             "tw_futures_eod",
         }:

@@ -96,9 +96,18 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
     hong_kong = key.startswith("hk_equity")
     index = key.endswith("_index_eod")
     tw_index = {"tw_twse_index_eod": "twse", "tw_tpex_index_eod": "tpex"}.get(key)
+    # A three institutional investors table: its one member is the board.
+    flow_table = {
+        "tw_twse_institutional_summary": ("twse", "BFI82U"),
+        "tw_twse_institutional_stock": ("twse", "T86"),
+        "tw_tpex_institutional_summary": ("tpex", "insti_summary"),
+        "tw_tpex_institutional_stock": ("tpex", "insti_daily_trade"),
+    }.get(key)
     provider = (
         "taifex"
         if futures
+        else flow_table[0]
+        if flow_table
         else tw_index
         if tw_index
         else "fmp"
@@ -130,6 +139,16 @@ def _universe(key="tw_futures_eod", count=2, effective_date=DAY):
             for i in range(count)
         ]
         if futures
+        else [
+            {
+                "symbol": flow_table[0].upper(),
+                "provider_symbol": flow_table[1],
+                "exchange": flow_table[0].upper(),
+                "currency": "TWD",
+                "asset_class": "equity",
+            }
+        ][:count]
+        if flow_table
         else [
             # FMP's own index symbols, which only an index member may spell with a caret.
             {

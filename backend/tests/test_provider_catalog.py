@@ -67,6 +67,10 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         ("fmp", "us_dollar_index_eod"),
         ("twse", "tw_twse_index_eod"),
         ("tpex", "tw_tpex_index_eod"),
+        ("twse", "tw_twse_institutional_summary"),
+        ("twse", "tw_twse_institutional_stock"),
+        ("tpex", "tw_tpex_institutional_summary"),
+        ("tpex", "tw_tpex_institutional_stock"),
     }
     # Intraday feeds deliver minute bars or ticks by reference; nothing else is non-daily.
     assert {
@@ -117,6 +121,11 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "us_dollar_index_eod": ("America/New_York", "17:15", "America/New_York", "05:15", 1),
         "tw_twse_index_eod": ("Asia/Taipei", "14:15", "Asia/Taipei", "02:15", 1),
         "tw_tpex_index_eod": ("Asia/Taipei", "14:15", "Asia/Taipei", "02:15", 1),
+        # After each table's last observed change (TPEx revises at about 17:15).
+        "tw_twse_institutional_summary": ("Asia/Taipei", "15:30", "Asia/Taipei", "03:30", 1),
+        "tw_twse_institutional_stock": ("Asia/Taipei", "16:45", "Asia/Taipei", "04:45", 1),
+        "tw_tpex_institutional_summary": ("Asia/Taipei", "17:30", "Asia/Taipei", "05:30", 1),
+        "tw_tpex_institutional_stock": ("Asia/Taipei", "17:30", "Asia/Taipei", "05:30", 1),
     }
     assert feeds["us_index_eod"].schedule.target_date_lag_days == 1
     assert {f.dataset_key for f in catalog.feeds if f.asset_class == "index"} == {
@@ -132,6 +141,10 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "us_dollar_index_eod",
         "tw_twse_index_eod",
         "tw_tpex_index_eod",
+        "tw_twse_institutional_summary",
+        "tw_twse_institutional_stock",
+        "tw_tpex_institutional_summary",
+        "tw_tpex_institutional_stock",
     }
     assert us.bounded_monitor.deadline.local_time == "09:15"
     # One time point ends a date: an unpublished one is retried until 30 minutes before
@@ -568,6 +581,11 @@ def test_historical_cohorts_are_catalog_fields():
         ("fmp", "us_dollar_index_eod"): "current_release",
         ("twse", "tw_twse_index_eod"): "current_release",
         ("tpex", "tw_tpex_index_eod"): "current_release",
+        # One fixed member per table: the board.
+        ("twse", "tw_twse_institutional_summary"): "current_release",
+        ("twse", "tw_twse_institutional_stock"): "current_release",
+        ("tpex", "tw_tpex_institutional_summary"): "current_release",
+        ("tpex", "tw_tpex_institutional_stock"): "current_release",
         ("finlab", "tw_equity_eod"): "dated_release",
         ("finlab", "tw_etf_eod"): "dated_release",
         ("taifex", "tw_futures_eod"): "daily_report",
@@ -696,6 +714,11 @@ def test_historical_requests_per_date_rules(declaration):
         # One index each; a month response serves every date of it.
         ("twse", "tw_twse_index_eod"): 1,
         ("tpex", "tw_tpex_index_eod"): 1,
+        # One request carries the whole table.
+        ("twse", "tw_twse_institutional_summary"): 1,
+        ("twse", "tw_twse_institutional_stock"): 1,
+        ("tpex", "tw_tpex_institutional_summary"): 1,
+        ("tpex", "tw_tpex_institutional_stock"): 1,
         ("finlab", "tw_equity_eod"): 5,
         ("finlab", "tw_etf_eod"): 5,
         ("taifex", "tw_futures_eod"): 5,

@@ -83,7 +83,14 @@ async def export(spec):
     catalog = [
         feed.model_dump()
         for feed in acquisition_feeds()
-        if feed.contract.schema_id not in {"intraday_partition", "exchange_daily_quote"}
+        # Mirrors infra/acceptance/native_feed_evidence.py UNSAMPLED_SCHEMAS.
+        if feed.contract.schema_id
+        not in {
+            "intraday_partition",
+            "exchange_daily_quote",
+            "institutional_flow_summary",
+            "institutional_flow_stock",
+        }
     ]
     feeds = []
     async with async_session_maker() as db:

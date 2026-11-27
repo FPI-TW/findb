@@ -390,7 +390,7 @@
     "environment": "local",
     "execution_profile": "full_market",
     "provider": "tpex",
-    "schedule_digest": "68e5580a322ac9b3fb21be4dc01b0a7c9b1df62fcac9feb9c53222d8facdce7c",
+    "schedule_digest": "69d690164253ed15fdbfa0d3407e06423d0948dea8891bc33d01cf668d9f00c1",
     "feeds": [
       {
         "provider": "tpex",
@@ -413,6 +413,62 @@
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "02:15",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "tpex",
+        "dataset_key": "tw_tpex_institutional_stock",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "equity",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "institutional_flow_stock",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "17:30",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 41400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "05:30",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "tpex",
+        "dataset_key": "tw_tpex_institutional_summary",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "equity",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "institutional_flow_summary",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "17:30",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 41400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "05:30",
           "trade_date_day_offset": 1
         },
         "bounded_monitor": {
@@ -468,7 +524,7 @@
     "environment": "local",
     "execution_profile": "full_market",
     "provider": "twse",
-    "schedule_digest": "a90784a867bc51c67b98c4fc5d3a6600d9a9e96dfe8682d7a2ba3aca52395e08",
+    "schedule_digest": "408a91b1bec75a0fdd89b394009ff8208cd9bc7ef99c04ef43fcd64ad4b51cfa",
     "feeds": [
       {
         "provider": "twse",
@@ -491,6 +547,62 @@
         "completion_deadline": {
           "timezone": "Asia/Taipei",
           "local_time": "02:15",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "twse",
+        "dataset_key": "tw_twse_institutional_stock",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "equity",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "institutional_flow_stock",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "16:45",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 41400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "04:45",
+          "trade_date_day_offset": 1
+        },
+        "bounded_monitor": {
+          "enabled": false,
+          "deadline": null
+        }
+      },
+      {
+        "provider": "twse",
+        "dataset_key": "tw_twse_institutional_summary",
+        "market": "TW",
+        "calendar_market": "TW",
+        "asset_class": "equity",
+        "frequency": "daily",
+        "contract": {
+          "schema_id": "institutional_flow_summary",
+          "current_version": 1,
+          "accepted_versions": [
+            1
+          ]
+        },
+        "scheduled_time": "15:30",
+        "source_timezone": "Asia/Taipei",
+        "target_date_lag_days": 0,
+        "publication_retry_window_seconds": 41400,
+        "completion_deadline": {
+          "timezone": "Asia/Taipei",
+          "local_time": "03:30",
           "trade_date_day_offset": 1
         },
         "bounded_monitor": {
