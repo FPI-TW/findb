@@ -766,8 +766,11 @@ docker exec findb-ingest python scripts/reconcile_taifex_rollover.py \
   被納入，而第一份 baseline 只能由 Owner 在 Dashboard 的名單頁手動更新產生，排程的名單更新只處理已納入的
   dataset。control 啟動時凍結當下可用的 dataset，所以在 control 執行中才有 baseline 的 dataset，要停止再啟動
   control 才會納入。
-- **名單**：沿用台股日 K 的官方名單（TWSE／TPEx），不查 FinLab 的目錄。FinLab 沒有盤中標的清單，而且會提供
-  日 K 價格表還沒有的標的（例如新上市），所以每個已分類的成員都會嘗試。
+- **名單**：沿用台股日 K 的官方名單（TWSE／TPEx）。FinLab 沒有盤中標的清單，而且會提供日 K 價格表還沒有的
+  標的（例如新上市），所以每個已分類的成員都會嘗試，不查 FinLab 的目錄。官方名單上但公司名單還沒有的普通股
+  （`classification_gap`，常見於新上市或轉上櫃的第一天）是例外：名單更新時只對這些成員查一次 FinLab 日 K
+  價格表，有該代碼就是 mapped，和日 K 的規則相同；價格表沒有或查詢失敗就維持 gap（#767）。這次查詢的表存成
+  該 dataset 的 `price-close` 證據；帳號或額度錯誤時，名單更新照日 K 的規則停止。
 - **排程**：台北 19:35，完成期限為隔日 07:35（開始後 12 小時）。四條盤中 feed 在 FinLab 的 `intraday`
   [執行線](../architecture/provider_work.md#權威範圍與排序)，由 `findb-full-market-intraday-finlab` 執行，有自己的
   佇列與 owner；日 K（19:30）、名單更新與 historical 在 `default`，由 `findb-full-market-finlab` 執行，不再排在
