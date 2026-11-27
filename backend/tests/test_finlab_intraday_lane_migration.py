@@ -32,14 +32,14 @@ async def _work(db, dataset_key: str, state: str, *, provider: str = "finlab") -
     return work_id
 
 
-async def _attempt(db, work_id: str) -> str:
+async def _attempt(db, work_id: str, *, number: int = 1, state: str = "queued") -> str:
     attempt_id = str(uuid4())
     await db.execute(
         text(
             "INSERT INTO provider_work_attempt(attempt_id,work_id,attempt_number,state,"
-            "not_before,drain_only) VALUES (:attempt_id,:work_id,1,'queued',now(),false)"
+            "not_before,drain_only) VALUES (:attempt_id,:work_id,:number,:state,now(),false)"
         ),
-        {"attempt_id": attempt_id, "work_id": work_id},
+        {"attempt_id": attempt_id, "work_id": work_id, "number": number, "state": state},
     )
     return attempt_id
 
@@ -78,14 +78,46 @@ async def test_upgrade_refuses_intraday_work_a_default_round_holds(held):
 
 
 @pytest.mark.asyncio
+async def test_upgrade_refuses_unfinished_intraday_work_that_already_ran_a_round():
+    # The round's member progress sits in the default consumer's checkpoint; the lane
+    # consumer would start the plan over and re-report immutable no_data outcomes.
+    async with get_active_migration_database_factory().clone(
+        "1587769858c0", "finlab_intraday_lane_started"
+    ) as (url, engine):
+        await run_alembic(url, BEFORE)
+        async with engine.begin() as db:
+            work = await _work(db, "tw_equity_bar_1m", "queued")
+            await _attempt(db, work, state="settled")
+            await _attempt(db, work, number=2)
+            # A finished work that ran rounds is no obstacle.
+            done = await _work(db, "tw_etf_tick", "failed")
+            await _attempt(db, done, state="settled")
+
+        with pytest.raises(subprocess.CalledProcessError) as refused:
+            await run_alembic(url, LANE)
+        assert "already ran a round in the default lane" in refused.value.stderr
+        async with engine.connect() as db:
+            assert set((await _lanes(db)).values()) == {"default"}
+
+        async with engine.begin() as db:
+            await db.execute(
+                text("UPDATE provider_work SET state = 'partial' WHERE work_id = :work"),
+                {"work": work},
+            )
+        await run_alembic(url, LANE)
+        async with engine.connect() as db:
+            assert set((await _lanes(db)).values()) == {"intraday"}
+
+
+@pytest.mark.asyncio
 async def test_queued_and_finished_intraday_work_moves_and_downgrade_refuses_a_used_lane():
     async with get_active_migration_database_factory().clone(
         "1587769858c0", "finlab_intraday_lane"
     ) as (url, engine):
         await run_alembic(url, BEFORE)
         async with engine.begin() as db:
-            # Queued work left by a stopped round moves, prepared rows and all; so does
-            # finished work. The daily EOD and other providers' work stay where they are.
+            # Queued work that never ran moves; so does finished work. The daily EOD and
+            # other providers' work stay where they are.
             for dataset in INTRADAY:
                 await _work(db, dataset, "queued")
             await _work(db, "tw_equity_tick", "completed")

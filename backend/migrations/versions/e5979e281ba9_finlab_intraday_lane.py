@@ -9,9 +9,13 @@ moves from ``default`` to ``intraday``; finished work moves too, so every work o
 a dataset sits in the lane the catalog gives it. Only work no consumer holds may
 move: a running or recovering work, or one the default owner's attempt points at,
 belongs to a live default-lane round, so the upgrade refuses before any change.
-Queued work moves even when an earlier, stopped round left prepared rows or
-receipts: the lane consumer's journal lookup falls back to the provider's
-default-lane file, and Source idempotency deduplicates any re-delivery.
+Unfinished work that already ran a round is refused too: its member progress
+lives in the default consumer's Full checkpoint (``state-finlab.sqlite3``), which
+the lane consumer never reads. The lane consumer would rebuild the plan from its
+own empty checkpoint, deliver the finished members again and report their
+``no_data`` outcomes anew, which Source rejects as immutable evidence; staging
+saw both 11/19 intraday works fail this way. Such work must finish (or reach a
+terminal state) under the default consumer before the upgrade.
 
 ``scheduler_control_lane`` keeps each non-default lane consumer's poll report, so
 a lane consumer no longer overwrites the default consumer's heartbeat on the
@@ -62,12 +66,38 @@ def _held_work(bind: sa.engine.Connection, lane: str) -> bool:
     return running is not None or owned is not None
 
 
+def _started_work(bind: sa.engine.Connection) -> bool:
+    """Whether unfinished default-lane work of the four datasets already ran a round."""
+    return (
+        bind.execute(
+            sa.text(
+                "SELECT 1 FROM provider_work w WHERE w.provider = :provider "
+                "AND w.lane = 'default' AND w.dataset_key IN :datasets "
+                "AND w.state NOT IN ('completed', 'partial', 'failed', 'cancelled') AND ("
+                "EXISTS (SELECT 1 FROM provider_work_attempt a "
+                "WHERE a.work_id = w.work_id AND a.state <> 'queued') "
+                "OR EXISTS (SELECT 1 FROM provider_work_prepared p WHERE p.work_id = w.work_id) "
+                "OR EXISTS (SELECT 1 FROM provider_work_receipt r WHERE r.work_id = w.work_id)"
+                ") LIMIT 1"
+            ).bindparams(_DATASETS),
+            {"provider": PROVIDER},
+        ).first()
+        is not None
+    )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     if _held_work(bind, "default"):
         raise RuntimeError(
             "FinLab intraday work is running or owned in the default lane; "
             "stop the FinLab control and let the round settle before this upgrade"
+        )
+    if _started_work(bind):
+        raise RuntimeError(
+            "unfinished FinLab intraday work already ran a round in the default lane; "
+            "its progress is in the default consumer's checkpoint, so let it finish "
+            "before this upgrade"
         )
     bind.execute(
         sa.text(
