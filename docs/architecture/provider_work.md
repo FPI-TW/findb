@@ -515,9 +515,16 @@ work-fence 授權、再取得 fresh Source account grant，純本機重驗 fence
 此期限，過期直接停止，不在 child 增設重試。Parent 每個 boundary 沿用原最多三次
 授權限制；owner 或 account 證據持續過期時有界停止。
 
+FinLab 盤中（`finlab.intraday`）以 `reuse=True` 重複使用 worker（#753）：回答 result 的 worker 留在 parent 的
+idle pool（最多 2 個），等下一次同一 operation、同一 whole-work FD 與同一 launch environment 的呼叫；每次呼叫
+照舊送 READY、照舊在 dispatch 前取得授權。其他結果（error、expired、timeout、pipe 關閉）一律照原方式
+terminate／kill／reap 整個 process group；用滿 200 次（`REUSE_CALL_LIMIT`）也換新的。閒置 worker 持有繼承的
+host lock FD，所以 `host_lock()` 結束時先關閉 pool（`close_reusable`）再關 FD，同 lane 下一次 claim 不會看到
+host owner 仍在；parent 死亡時 worker 讀到 pipe EOF 自行結束。其他 operation 維持每次新開 worker。
+
 FinLab SDK（固定版本見 [Full market](../operations/full_market.md)）的 `login(token)` 只在 worker 內設定
 token、沒有網路 I/O，因此只在 login 與 `data.get` 前送出一次 READY；worker 另停用 SDK 的 PyPI 版本檢查，
-並在選取 token 後拒絕 SDK 之後的任何登入嘗試。送出 READY 之前先確認安裝的 SDK 具備 worker 依賴的名稱，
+並在選取 token 後拒絕 SDK 之後的任何登入嘗試（重複使用的 worker 再次選取時只核對已選的 token）。送出 READY 之前先確認安裝的 SDK 具備 worker 依賴的名稱，
 不符時不要求授權、不發出請求。`data.get` 一律載入整張 dataset；worker 只回傳 reviewed symbols 欄位，
 需要用量核對時另回傳完整表的 response bytes，父行程不再持有完整表。欄位或日期不合法時原表整份回傳，
 由父行程產生與 in-process 路徑相同的型別化驗證錯誤。FactSet `connect` 是真實網路 I/O，connect 與 SELECT 前各送出一次 READY。

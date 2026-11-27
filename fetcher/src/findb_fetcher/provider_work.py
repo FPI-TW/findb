@@ -243,8 +243,15 @@ def host_lock(
             _fd.reset(token)
             _fd_identity.reset(identity_token)
     finally:
-        if fd >= 0:
-            os.close(fd)
+        # Reused SDK workers inherited this descriptor; they end before it closes,
+        # or the lane's next claim would find its host owner still active.
+        from findb_fetcher.provider_process import close_reusable
+
+        try:
+            close_reusable()
+        finally:
+            if fd >= 0:
+                os.close(fd)
 
 
 class WorkJournal:

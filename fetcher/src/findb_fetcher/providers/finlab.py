@@ -752,8 +752,12 @@ def _select_api_token(sdk: Any, token: str) -> None:
     The pinned SDK answers an auth error, or a missing token, by starting its
     browser login. It also prefers a saved browser session over the API token;
     the accounted identity would then not be the one that downloads.
+
+    A reused worker (FinLab intraday) selects it again for every call: login is
+    already refused there, so only the selected token is checked.
     """
-    sdk.login(token)
+    if getattr(sdk, "login", None) is not _refused_login:
+        sdk.login(token)
     sdk.login = _refused_login
     if sdk.get_token() != (effective_token(token), "api_token"):
         raise FinLabNativeError("auth")

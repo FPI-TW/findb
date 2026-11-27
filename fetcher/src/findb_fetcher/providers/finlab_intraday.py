@@ -164,6 +164,8 @@ def fetch_partition(
                     },
                     checkpoint=operation.dispatch_checkpoint,
                     timeout=FINLAB_INTRADAY_TIMEOUT_SECONDS,
+                    # One worker serves a whole round of partitions (#753).
+                    reuse=True,
                 )
             except QuotaBlockedError:
                 raise

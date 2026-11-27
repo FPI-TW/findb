@@ -1015,6 +1015,23 @@ def test_each_worker_step_reaches_the_timing_line(tmp_path, monkeypatch) -> None
     assert sum(totals[f"worker finlab.intraday {name}"][1] for name in steps) <= run
 
 
+def test_one_reused_worker_serves_consecutive_partitions(tmp_path, monkeypatch) -> None:
+    from findb_fetcher import provider_process
+
+    raw = provider_file("bar_1m")
+    _sdk(tmp_path, monkeypatch, _published(tmp_path, "bar_1m", raw))
+    spawned = []
+    spawn = provider_process._spawn
+    monkeypatch.setattr(provider_process, "_spawn", lambda op: spawned.append(op) or spawn(op))
+
+    first = supervised_call("finlab.intraday", _payload(), timeout=30, reuse=True)
+    # The second call selects the token again without logging in twice.
+    second = supervised_call("finlab.intraday", _payload(), timeout=30, reuse=True)
+
+    assert spawned == ["finlab.intraday"]
+    assert first[:4] == second[:4] == ("ready", first[1], 3, raw)
+
+
 def test_an_absent_partition_still_reports_its_manifest_step(tmp_path, monkeypatch) -> None:
     from findb_fetcher import rpc_timing
 

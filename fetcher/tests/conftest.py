@@ -124,3 +124,12 @@ def isolated_unit_work_boundary(request, monkeypatch, tmp_path):
     )
     with provider_work.host_lock("unit-boundary", root=tmp_path):
         yield
+
+
+@pytest.fixture(autouse=True)
+def no_reused_worker_across_tests():
+    """A reused SDK worker never outlives the test that started it (#753)."""
+    yield
+    from findb_fetcher.provider_process import close_reusable
+
+    close_reusable()
