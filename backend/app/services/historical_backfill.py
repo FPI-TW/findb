@@ -286,6 +286,43 @@ async def _date_release(
     return plan, release
 
 
+# A date before a feed's first published release freezes that earliest release instead:
+# members delisted before it are absent (survivorship bias), FinLab members listed after
+# the date stay out by their listing date, and the binding records this basis.
+EARLIEST_RELEASE_BACKWARD = "earliest_release_backward"
+
+
+async def _cohort_release(
+    db: AsyncSession, *, provider: str, dataset_key: str, day: date
+) -> tuple[DailyDeliveryPlan | None, UniverseRelease | None, str | None]:
+    """The date's release as ``_date_release``, else the feed's earliest published one."""
+    plan, release = await _date_release(db, provider=provider, dataset_key=dataset_key, day=day)
+    if release is not None:
+        return plan, release, None
+    earliest = await db.scalar(
+        select(UniverseRelease)
+        .where(
+            UniverseRelease.dataset_key == dataset_key,
+            UniverseRelease.provider == provider,
+            UniverseRelease.status == "published",
+        )
+        .order_by(UniverseRelease.effective_date, UniverseRelease.created_at)
+        .limit(1)
+    )
+    return None, earliest, EARLIEST_RELEASE_BACKWARD if earliest is not None else None
+
+
+def release_basis(request: HistoricalBackfillRequest, trade_date: date) -> str | None:
+    """How a dated-release date chose its release: ``dated``, the earliest one, or none."""
+    snapshot = request.universe_snapshot
+    if not member_cohort(request) or not isinstance(snapshot, dict):
+        return None
+    binding = snapshot["dates"].get(trade_date.isoformat())
+    if not isinstance(binding, dict):
+        return None
+    return binding.get("release_basis", "dated")
+
+
 async def preview_member_counts(
     db: AsyncSession,
     *,
@@ -323,7 +360,9 @@ async def preview_member_counts(
     # Releases are immutable: each one's mapped members and listing dates are read once.
     listings: dict[UUID, list[date | None]] = {}
     for day in days:
-        _, release = await _date_release(db, provider=provider, dataset_key=dataset_key, day=day)
+        _, release, _ = await _cohort_release(
+            db, provider=provider, dataset_key=dataset_key, day=day
+        )
         if release is None:
             continue
         if release.release_id not in listings:
@@ -351,12 +390,15 @@ async def _bind_full_releases(
 ) -> dict:
     """Bind each date to its Full plan's release, else the latest one published by then.
 
+    A date before the feed's first published release binds that earliest release.
     Releases are immutable, so the request keeps only each date's release
     identity and member digest; the members are re-read and verified at claim.
     """
     bindings: dict[str, dict] = {}
     for day in days:
-        plan, release = await _date_release(db, provider=provider, dataset_key=dataset_key, day=day)
+        plan, release, basis = await _cohort_release(
+            db, provider=provider, dataset_key=dataset_key, day=day
+        )
         if release is None:
             raise HistoricalBackfillError(f"no published universe applies to {day.isoformat()}")
         members = await _release_cohort(db, release.release_id, day)
@@ -387,6 +429,8 @@ async def _bind_full_releases(
             "catalogue_supplement_id": str(catalogue_id) if catalogue_id else None,
             "supplement_sha256": _cohort_digest(supplement),
             "supplement_count": len(supplement),
+            # Only a borrowed release is labelled; absent means the date's own release.
+            **({"release_basis": basis} if basis else {}),
         }
     return {"version": 3, "cohort": DATED_RELEASE_SNAPSHOT, "dates": bindings}
 
@@ -807,6 +851,10 @@ async def list_request_summaries(
                 )
             ).mappings():
                 items[row["request_id"]].append({name: row[name] for name in ITEM_SUMMARY_FIELDS})
+        by_id = {row.request_id: row for row in requests}
+        for request_id, rows in items.items():
+            for item in rows:
+                item["release_basis"] = release_basis(by_id[request_id], item["trade_date"])
     return [(row, counts[row.request_id], items[row.request_id]) for row in requests], total
 
 
@@ -821,7 +869,8 @@ async def list_request_items(
     """One request's items by trade date; evidence only when asked for."""
     from sqlalchemy import func
 
-    if await db.get(HistoricalBackfillRequest, request_id) is None:
+    request = await db.get(HistoricalBackfillRequest, request_id)
+    if request is None:
         return None
     names = (
         (*ITEM_SUMMARY_FIELDS, "calendar_snapshot", "result_evidence")
@@ -845,7 +894,13 @@ async def list_request_items(
             .limit(page_size)
         )
     ).mappings()
-    return [{name: row[name] for name in names} for row in rows], total
+    return [
+        {
+            **{name: row[name] for name in names},
+            "release_basis": release_basis(request, row["trade_date"]),
+        }
+        for row in rows
+    ], total
 
 
 async def list_enabled_scopes(db: AsyncSession) -> list[tuple[str, str, str, bool]]:

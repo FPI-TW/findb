@@ -887,7 +887,14 @@ Twelve Data `us_equity_eod`、FinLab `tw_equity_eod` 與 `tw_etf_eod` 的 histor
 日期凍結一個 Full universe release：該日期已有 Full plan 時用 plan 的 release，沒有 plan 時用該日期以前
 最新的 published release；成員為該 release 中已上市（`listed_date` 不晚於該日）的 mapped 成員全部，
 不只 plan 的缺漏成員。Request 只保存每個日期的 release ID、release digest 與 cohort digest，claim 時
-從不可變 release 重讀並核對；任何日期沒有可用 release 或沒有 mapped 成員時拒絕建立。
+從不可變 release 重讀並核對；任何日期沒有 mapped 成員時拒絕建立。
+
+日期早於該 feed 第一份 published release 時（#754 PR C），沿用最早的那份 release，成員同樣只取該日已上市
+（`listed_date` 不晚於該日；沒有上市日也算）的 mapped 成員。該日期的 binding 記 `release_basis:
+earliest_release_backward`，Admin 的 item 讀取以 `release_basis` 顯示（`dated` 為該日期自己的 release）。
+這些日期有**倖存者偏差**：在最早名單之前就已下市的標的不在名單上，不會抓取，也不算缺漏；FinLab 依上市日排除
+當時還沒上市的標的；Twelve Data 名單沒有上市日，成員一律照列，當時還沒上市的成員取不到資料，該日期只能部分完成。
+Feed 完全沒有 published release 時仍拒絕建立。
 
 清單可能晚發布，所以每個日期另外凍結建立當下、在該 release 之後發布的同 feed release（#629，snapshot
 version 3）：這些 release 中已對上、上市日不晚於該日（沒有上市日也算）、但不在該日 cohort 的成員是**補查**成員，

@@ -189,13 +189,68 @@ async def test_each_date_freezes_its_plan_release_or_latest_published(
 
 
 @pytest.mark.asyncio
-async def test_date_without_any_published_release_is_rejected(test_session, monkeypatch):
+@pytest.mark.parametrize("provider", ["finlab", "twelve_data"])
+async def test_date_before_first_release_freezes_the_earliest_release(
+    test_session, monkeypatch, provider
+):
+    """#754 PR C: dates before the first list borrow it, labelled for survivorship bias."""
+    _, body, release = await setup(test_session, monkeypatch, provider)
+    before, own = date(2026, 9, 30), FIRST
+    assert await historical_backfill.preview_member_counts(
+        test_session, provider=provider, dataset_key=SCOPES[provider], days=[before, own]
+    ) == {before: 2, own: 2}
+    request, _ = await historical_backfill.create_request(
+        test_session,
+        provider=provider,
+        dataset_key=SCOPES[provider],
+        start_date=before,
+        end_date=own,
+        request_key=f"{provider}-before-baseline",
+        created_by="owner",
+    )
+    await test_session.commit()
+    dates = request.universe_snapshot["dates"]
+    borrowed = dates[before.isoformat()]
+    # The earliest release, its members listed by the date; the gap and later listing stay out.
+    assert (borrowed["release_id"], borrowed["plan_id"]) == (str(release.release_id), None)
+    assert borrowed["release_basis"] == historical_backfill.EARLIEST_RELEASE_BACKWARD
+    assert borrowed["member_count"] == 2
+    # A date the release already applies to keeps the unlabelled binding.
+    assert "release_basis" not in dates[own.isoformat()]
+    item = await test_session.scalar(
+        select(HistoricalBackfillItem).where(
+            HistoricalBackfillItem.request_id == request.request_id,
+            HistoricalBackfillItem.trade_date == before,
+        )
+    )
+    await test_session.refresh(item, ["request"])
+    cohort = await historical_backfill.frozen_cohort(test_session, item)
+    assert [m["member_key"] for m in cohort["members"]] == [m.symbol for m in body.members[:2]]
+    # Operators see each date's basis on both item reads.
+    listed = await historical_backfill.list_request_items(
+        test_session, request.request_id, page=1, page_size=100
+    )
+    assert listed is not None
+    bases = {row["trade_date"]: row["release_basis"] for row in listed[0]}
+    assert bases[before] == "earliest_release_backward" and bases[own] == "dated"
+    summaries, _ = await historical_backfill.list_request_summaries(
+        test_session, page=1, page_size=10
+    )
+    ((_, _, items),) = [row for row in summaries if row[0].request_id == request.request_id]
+    assert {row["trade_date"]: row["release_basis"] for row in items}[before] == (
+        "earliest_release_backward"
+    )
+
+
+@pytest.mark.asyncio
+async def test_feed_without_any_published_release_is_rejected(test_session, monkeypatch):
     await setup(test_session, monkeypatch)
+    # Only tw_equity_eod has a release; tw_etf_eod has none to borrow.
     with pytest.raises(historical_backfill.HistoricalBackfillError, match="no published universe"):
         await historical_backfill.create_request(
             test_session,
             provider="finlab",
-            dataset_key="tw_equity_eod",
+            dataset_key="tw_etf_eod",
             start_date=date(2026, 9, 29),
             end_date=date(2026, 9, 30),
             request_key="before-baseline",

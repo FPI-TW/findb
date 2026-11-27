@@ -271,7 +271,7 @@ canonical與Serve前不可擴大下一批。
 `APP_ENVIRONMENT=production` 是 planner 的環境前提；`--schedule-file` 已移除，
 `FETCHER_HISTORICAL_SCHEDULE_FILE` 不再被 runner 或 planner 使用，沒有舊檔 fallback。
 Planner 不讀 universe 檔：Admin preview 對每個有效日期回傳 `members`，也就是現在建立 request 時該日期會凍結的
-成員數（`dated_release` 為該日 release 已上市的 mapped 成員，`current_release` 為今天的 release；之後清單多出、
+成員數（`dated_release` 為該日 release 已上市的 mapped 成員，早於第一份 release 的日期用最早那份，`current_release` 為今天的 release；之後清單多出、
 會一併請求的成員不計入）。逐成員計費的 Twelve Data 以成員數估算呼叫與筆數，任一日期缺少成員數就拒絕估算；
 FinLab 每日固定 5 次 SDK 呼叫，筆數為成員數；TAIFEX 的成員由當日報表決定，preview 沒有成員數，筆數為 `null`。
 

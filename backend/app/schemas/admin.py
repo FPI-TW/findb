@@ -65,6 +65,9 @@ class HistoricalBackfillItemResponse(BaseModel):
     result_evidence: dict[str, Any] | None = None
     # Served symbols outside the frozen cohort that the date wrote.
     unlisted_symbols: list[str] | None = None
+    # Dated-release dates only: ``dated`` (the date's own release) or
+    # ``earliest_release_backward`` (before the first release; survivorship bias).
+    release_basis: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     failure_code: str | None = None
