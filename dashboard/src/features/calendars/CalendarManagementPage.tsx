@@ -269,7 +269,7 @@ export function CalendarManagementPage({
               <SelectContent>
                 {markets.map(item => (
                   <SelectItem key={item.market} value={item.market}>
-                    {item.display_name}（{item.market}）
+                    {item.display_name}({item.market})
                   </SelectItem>
                 ))}
               </SelectContent>

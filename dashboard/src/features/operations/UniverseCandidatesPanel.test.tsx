@@ -119,7 +119,9 @@ describe("universe candidates", () => {
   it("lists candidates and loads the selected member diff", async () => {
     renderPanel()
 
-    expect(await screen.findByText("tw_futures_eod")).toBeInTheDocument()
+    expect(
+      await screen.findByText("台灣期貨日K(tw_futures_eod)")
+    ).toBeInTheDocument()
     expect(mocks.loadUniverseCandidates).toHaveBeenCalledWith({
       data: {
         datasetKey: "",

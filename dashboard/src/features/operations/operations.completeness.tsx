@@ -31,6 +31,7 @@ import {
   completenessSearchSchema,
   type CompletenessSearch,
 } from "./operations.search"
+import { datasetLabel } from "../../lib/vocabulary"
 
 const MAX_DAYS = 62
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"]
@@ -139,7 +140,7 @@ function CellDetails({
     >
       <div className="space-y-1">
         <p className="font-mono text-sm font-bold wrap-anywhere">
-          {row.dataset_key}
+          {datasetLabel(row.dataset_key)}
         </p>
         <p className="text-xs text-muted">
           {row.provider} · {row.market} · 交易日 {cell.trade_date}
@@ -457,7 +458,7 @@ export function CompletenessPage({
                         className="sticky left-0 z-10 bg-surface px-2 text-left font-normal"
                       >
                         <span className="block font-mono font-bold whitespace-nowrap">
-                          {row.dataset_key}
+                          {datasetLabel(row.dataset_key)}
                         </span>
                         <span className="block text-muted whitespace-nowrap">
                           {row.provider} · {row.market}

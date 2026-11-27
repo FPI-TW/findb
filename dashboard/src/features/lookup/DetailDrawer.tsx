@@ -7,6 +7,7 @@ import { DataTable } from "../../components/data-table"
 import { Alert, AlertDescription } from "../../components/ui/alert"
 import { Button } from "../../components/ui/button"
 import { Skeleton } from "../../components/ui/skeleton"
+import { assetClassLabel } from "../../lib/vocabulary"
 import { loadEod, loadMinute } from "./data"
 import { FuturesFeed } from "./FuturesFeed"
 import type { EodRow, Instrument, MinuteRow } from "./types"
@@ -218,7 +219,7 @@ export function DetailDrawer({
 
   const meta = [
     ["市場", item.market],
-    ["資產類別", item.asset_class],
+    ["資產類別", assetClassLabel(item.asset_class)],
     ["幣別", item.currency],
     ["時區", item.timezone],
     ["狀態", item.status],

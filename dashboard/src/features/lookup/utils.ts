@@ -1,5 +1,6 @@
 import { z } from "zod"
 
+import { assetClassLabel } from "../../lib/vocabulary"
 import { DEFAULT_SEARCH, PAGE_SIZES } from "./config"
 import type {
   DatasetKey,
@@ -118,5 +119,6 @@ export function formatCell(item: Instrument, column: LookupColumn) {
         )
       : "—"
   }
+  if (column.key === "asset_class") return assetClassLabel(String(raw))
   return String(raw)
 }

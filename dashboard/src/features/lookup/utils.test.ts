@@ -94,6 +94,19 @@ describe("lookup utilities", () => {
     expect(buildCsv([hk], LOOKUP_COLUMNS)).toContain("HKD")
   })
 
+  it("shows the asset class name with its key, and exports the key", () => {
+    const index: Instrument = { ...INSTRUMENT, asset_class: "index" }
+    expect(
+      formatCell(
+        index,
+        LOOKUP_COLUMNS.find(column => column.key === "asset_class")!
+      )
+    ).toBe("指數(index)")
+    const csv = buildCsv([index], LOOKUP_COLUMNS)
+    expect(csv).toContain(",index,")
+    expect(csv).not.toContain("指數")
+  })
+
   it("keeps boundary pages and ellipses in long pagination", () => {
     expect(buildPageList(25, 51)).toEqual([1, "…", 23, 24, 25, 26, 27, "…", 51])
   })

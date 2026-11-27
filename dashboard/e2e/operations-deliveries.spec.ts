@@ -228,7 +228,9 @@ for (const role of ["operator", "owner"]) {
       })
       .click()
     await expect(page.locator("#backfill-provider")).toHaveText("finlab")
-    await expect(page.locator("#backfill-dataset")).toHaveText("tw_equity_eod")
+    await expect(page.locator("#backfill-dataset")).toHaveText(
+      "台股日K(tw_equity_eod)"
+    )
     await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
     await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
     const create = page.getByRole("button", { name: "建立回補", exact: true })
@@ -270,7 +272,9 @@ for (const role of ["operator", "owner"]) {
       .poll(() => reads(request, backfillsPath))
       .toBeGreaterThan(count)
     await expect(page.locator("#backfill-provider")).toHaveText("finlab")
-    await expect(page.locator("#backfill-dataset")).toHaveText("tw_equity_eod")
+    await expect(page.locator("#backfill-dataset")).toHaveText(
+      "台股日K(tw_equity_eod)"
+    )
     await expect(page.getByLabel("回補起始日期")).toHaveValue("2026-10-07")
     await expect(page.getByLabel("回補結束日期")).toHaveValue("2026-10-07")
     await expect(preview).toBeVisible()
@@ -281,14 +285,14 @@ for (const role of ["operator", "owner"]) {
       page
         .getByRole("table", { name: "回補請求紀錄" })
         .getByRole("row")
-        .filter({ hasText: "finlab/tw_equity_eod" })
+        .filter({ hasText: "finlab/台股日K(tw_equity_eod)" })
     ).toContainText("2026-10-07 – 2026-10-07")
     await page.getByRole("button", { name: "重新整理", exact: true }).click()
     await expect(
       page
         .getByRole("table", { name: "回補請求紀錄" })
         .getByRole("row")
-        .filter({ hasText: "finlab/tw_equity_eod" })
+        .filter({ hasText: "finlab/台股日K(tw_equity_eod)" })
     ).toHaveCount(1)
     const state = await (await request.get(`${backend}/fixture/state`)).json()
     expect(state.previews).toEqual([

@@ -130,6 +130,8 @@ URL 的 `tab=alerts|candidates|backfills`、告警 `p/ps`、Universe 名單分�
   `useOperationsRefresh().reportError(error)` 回報認證錯誤；mutation 由共用 MutationCache 監看。
   Server Functions 使用 `withDashboardAuthentication` 清除 upstream 拒絕的 cookie，避免登入守衛反向導回。
 - `liveQueryOptions` 統一定時更新與可見性策略；其餘查詢維持手動更新。
+- 資料集與資產類別的顯示名稱集中在 `dashboard/src/lib/vocabulary.ts`，畫面顯示為 `中文名(key)`（例如 `指數(index)`、
+  `台股日K(tw_equity_eod)`）；沒有名稱的 key 原樣顯示。篩選、URL、API 請求與 CSV 匯出仍使用原 key。
 - `QueryStatus` 使用固定高度呈現首次載入、背景更新、錯誤及最後成功時間；
   `hasData` 根據是否有成功 response，不能以資料列數判斷。
 - 表格初次載入使用共用欄位骨架；已有外部 QueryStatus 時傳入 `refreshingState={null}`，避免重複提示。

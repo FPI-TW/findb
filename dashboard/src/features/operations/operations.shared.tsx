@@ -46,6 +46,7 @@ import {
   useOperationsIsFetching,
 } from "./operations.queries"
 import { type OperationsDashboardState } from "./operations.queries"
+import { datasetLabel } from "../../lib/vocabulary"
 
 export type { OperationsDashboardQuery } from "./operations.queries"
 
@@ -520,7 +521,7 @@ export function FeedDetails({ feeds }: { feeds: MarketFreshness["feeds"] }) {
                 <Badge variant="secondary">待啟用範圍</Badge>
               )}
               <strong className="font-mono wrap-anywhere">
-                {feed.dataset_key}
+                {datasetLabel(feed.dataset_key)}
               </strong>
               <span className="text-muted">
                 {feed.source} · {feed.schema_id ?? "schema 未設定"}

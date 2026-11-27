@@ -61,13 +61,19 @@ test("normal login and retired profile deep links show one schedule section with
   await page.getByText("詳細", { exact: true }).first().click()
   await expect(page.getByText("環境：production").first()).toBeVisible()
   await expect(
-    page.getByText("本次凍結範圍：tw_equity_eod").first()
+    page.getByText("本次凍結範圍：台股日K(tw_equity_eod)").first()
   ).toBeVisible()
   await expect(
-    page.getByText("tw_equity_eod：Ready · 首次日期 2026-10-06").first()
+    page
+      .getByText("台股日K(tw_equity_eod)：Ready · 首次日期 2026-10-06")
+      .first()
   ).toBeVisible()
   await expect(
-    page.getByText("tw_etf_eod：baseline_missing · 首次日期 尚未啟動").first()
+    page
+      .getByText(
+        "台股 ETF 日K(tw_etf_eod)：baseline_missing · 首次日期 尚未啟動"
+      )
+      .first()
   ).toBeVisible()
   await expect(
     page.getByText(

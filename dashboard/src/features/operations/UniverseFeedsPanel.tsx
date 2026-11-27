@@ -33,6 +33,7 @@ import {
   requestUniverseRefresh,
 } from "../../lib/admin.functions"
 import { formatDate, Panel } from "./operations.shared"
+import { datasetLabel } from "../../lib/vocabulary"
 
 const NOTE_MIN_LENGTH = 5
 const NOTE_MAX_LENGTH = 500
@@ -106,7 +107,7 @@ function RefreshConfirmationDialog({
           <AlertDialogHeader>
             <AlertDialogTitle>確認手動更新名單？</AlertDialogTitle>
             <AlertDialogDescription>
-              將為 {feed.provider} 的「{feed.dataset_key}
+              將為 {feed.provider} 的「{datasetLabel(feed.dataset_key)}
               」排入一次名單更新。手動更新等同核准：這次取得的名單會直接發布，不受
               2% 變更門檻限制，發布者記為你；尚無 baseline 時會成為第一份
               baseline。
@@ -184,7 +185,7 @@ export function UniverseFeedsPanel({
           note: reason,
         },
       })
-      toast.success(`已排入 ${feed.dataset_key} 的名單更新`, {
+      toast.success(`已排入 ${datasetLabel(feed.dataset_key)} 的名單更新`, {
         description: "完成後名單會直接發布；進度顯示在「手動更新」欄。",
       })
       await Promise.all([
@@ -213,7 +214,7 @@ export function UniverseFeedsPanel({
         meta: { minWidth: 170, pin: "left" },
         cell: context => (
           <span className="font-mono wrap-anywhere">
-            {context.getValue<string>()}
+            {datasetLabel(context.getValue<string>())}
           </span>
         ),
       },

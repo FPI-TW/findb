@@ -37,6 +37,7 @@ import {
   SelectValue,
 } from "../../components/ui/select"
 import { Skeleton } from "../../components/ui/skeleton"
+import { assetClassLabel } from "../../lib/vocabulary"
 import { LOOKUP_COLUMNS, LOOKUP_STORAGE_KEY, PAGE_SIZES } from "./config"
 import { loadAllLookupItems, loadLookupPage } from "./data"
 import { DetailDrawer } from "./DetailDrawer"
@@ -96,12 +97,14 @@ function SelectField({
   label,
   value,
   options,
+  optionLabel = option => option,
   onChange,
 }: {
   id: string
   label: string
   value: string
   options: string[]
+  optionLabel?: (option: string) => string
   onChange: (value: string) => void
 }) {
   return (
@@ -109,13 +112,15 @@ function SelectField({
       <Label htmlFor={id}>{label}</Label>
       <Select value={value} onValueChange={onChange}>
         <SelectTrigger id={id} size="sm">
-          <SelectValue>{value === "ALL" ? "全部" : value}</SelectValue>
+          <SelectValue>
+            {value === "ALL" ? "全部" : optionLabel(value)}
+          </SelectValue>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="ALL">全部</SelectItem>
           {options.map(option => (
             <SelectItem key={option} value={option}>
-              {option}
+              {optionLabel(option)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -203,6 +208,7 @@ export function LookupPage({
       meta: {
         minWidth:
           column.key === "name" ? 160 : column.key === "symbol" ? 132 : 104,
+        ...(column.type === "number" ? { align: "right" as const } : {}),
       },
       cell: ({ row }: { row: { original: LookupItem } }) => {
         const copyColumn = column.key === "symbol"
@@ -251,6 +257,8 @@ export function LookupPage({
               type="button"
               size="icon-xs"
               variant="ghost"
+              // Sits on the row's first text line, like the other cells.
+              className="-my-1"
               aria-label={`查看 ${title} 詳情`}
               title={`查看 ${title} 詳情`}
               onClick={() => patchSearch({ id })}
@@ -418,6 +426,7 @@ export function LookupPage({
               label="類別"
               value={search.ac}
               options={secondaryOptions}
+              optionLabel={assetClassLabel}
               onChange={value => patchSearch({ ac: value, p: 1, id: "" })}
             />
             <SelectField
@@ -512,7 +521,7 @@ export function LookupPage({
               </div>
             </div>
           </CardHeader>
-          <CardContent className="px-0 pb-4">
+          <CardContent className="px-4 py-4 sm:px-5">
             <DataTable
               ariaLabel="金融商品查詢結果"
               caption="金融商品查詢結果"
@@ -538,6 +547,7 @@ export function LookupPage({
               }
               getRowId={item => item.instrument_id}
               isRefreshing={refreshing}
+              refreshingState={null}
               manualPagination
               manualSorting
               onPaginationChange={handlePaginationChange}

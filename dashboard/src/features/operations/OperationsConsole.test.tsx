@@ -86,6 +86,7 @@ import {
   useOperationsDashboardQuery,
   useRawPayloadDetailQuery,
 } from "./operations.queries"
+import { datasetLabel } from "../../lib/vocabulary"
 
 const timestamp = "2026-08-04T02:00:00Z"
 const audit: DashboardRequest["audit"] = {
@@ -243,7 +244,7 @@ function chooseBackfillOption(label: string, option: string) {
 
 function chooseBackfillScope(provider: string, dataset: string) {
   chooseBackfillOption("供應商", provider)
-  chooseBackfillOption("資料集", dataset)
+  chooseBackfillOption("資料集", datasetLabel(dataset))
 }
 
 function makeScheduler(overrides: Partial<Scheduler> = {}): Scheduler {
@@ -663,22 +664,26 @@ describe("Operations presentation", () => {
     expect(screen.getByRole("heading", { name: "US" })).toBeInTheDocument()
     expect(
       screen.getByText(
-        /us_equity_eod · US · 每日 17:00（America\/New_York）· 抓當日 US 資料/
+        /美股日K\(us_equity_eod\) · US · 每日 17:00（America\/New_York）· 抓當日 US 資料/
       )
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/tw_etf_eod · TW · 每日 18:00（Asia\/Taipei）/)
+      screen.getByText(
+        /台股 ETF 日K\(tw_etf_eod\) · TW · 每日 18:00（Asia\/Taipei）/
+      )
     ).toBeInTheDocument()
     // A control over two markets is shown once, under both together.
     expect(screen.getByRole("heading", { name: "HK / US" })).toBeInTheDocument()
     expect(screen.getAllByText("full_market_fmp_v1")).toHaveLength(1)
     expect(
       screen.getByText(
-        /us_index_eod · US · 每日 08:30（Asia\/Taipei）· 抓前 1 日的 US 資料/
+        /美股指數日K\(us_index_eod\) · US · 每日 08:30（Asia\/Taipei）· 抓前 1 日的 US 資料/
       )
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/hk_index_eod · HK · 每日 20:00（Asia\/Hong_Kong）/)
+      screen.getByText(
+        /港股指數日K\(hk_index_eod\) · HK · 每日 20:00（Asia\/Hong_Kong）/
+      )
     ).toBeInTheDocument()
     expect(
       screen.queryByText(/Slot|taiwan_market_window|western_markets_window/)
@@ -807,7 +812,7 @@ describe("Operations presentation", () => {
       expect(runtime.blockers).toEqual([
         "缺少已發布的官方 baseline",
         "目前不在每日抓取窗口內",
-        "全市場設定或 scope 無效（future_blocker）",
+        "全市場設定或 scope 無效(future_blocker)",
       ])
       expect(
         summarize(
@@ -1066,7 +1071,7 @@ describe("Operations presentation", () => {
       expect(screen.getByText("當期交付進度")).toBeInTheDocument()
       const progress = screen.getByText("當期交付進度").nextElementSibling
       expect(progress).toHaveTextContent(
-        "us_equity_eod · 2026-11-06：data 0 / 5,550 · blocked 12 · 延遲"
+        "美股日K(us_equity_eod) · 2026-11-06：data 0 / 5,550 · blocked 12 · 延遲"
       )
       expect(progress).toHaveTextContent(
         "us_etf_eod · 2026-11-06：尚未建立交付計畫 · 尚未到期"
@@ -1184,7 +1189,9 @@ describe("Operations presentation", () => {
       </QueryClientProvider>
     )
     expect(screen.getByText("尚未啟用")).toBeInTheDocument()
-    expect(screen.getByText("tw_futures_eod：尚未啟用")).toBeInTheDocument()
+    expect(
+      screen.getByText("台灣期貨日K(tw_futures_eod)：尚未啟用")
+    ).toBeInTheDocument()
     expect(
       screen.getByText("tw_futures_daily：baseline_not_published")
     ).toBeInTheDocument()
@@ -1236,7 +1243,9 @@ describe("Operations presentation", () => {
         })
       ).toBeInTheDocument()
       expect(
-        screen.getByText("tw_etf_eod：activation_disabled；dataset_inactive")
+        screen.getByText(
+          "台股 ETF 日K(tw_etf_eod)：activation_disabled；dataset_inactive"
+        )
       ).toBeInTheDocument()
       expect(screen.queryByText("尚未啟用")).not.toBeInTheDocument()
     }
@@ -1882,8 +1891,10 @@ describe("Operations presentation", () => {
     fireEvent.keyDown(dataset, { key: "Enter" })
     expect(
       screen.getAllByRole("option").map(option => option.textContent)
-    ).toEqual(["tw_equity_eod", "tw_etf_eod"])
-    fireEvent.click(screen.getByRole("option", { name: "tw_etf_eod" }))
+    ).toEqual(["台股日K(tw_equity_eod)", "台股 ETF 日K(tw_etf_eod)"])
+    fireEvent.click(
+      screen.getByRole("option", { name: "台股 ETF 日K(tw_etf_eod)" })
+    )
     expect(dataset).toHaveTextContent("tw_etf_eod")
 
     // A provider with a single dataset selects it; the other provider's dataset is gone.
@@ -1892,7 +1903,7 @@ describe("Operations presentation", () => {
     fireEvent.keyDown(dataset, { key: "Enter" })
     expect(
       screen.getAllByRole("option").map(option => option.textContent)
-    ).toEqual(["tw_futures_eod"])
+    ).toEqual(["台灣期貨日K(tw_futures_eod)"])
     fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" })
 
     // Reopening the provider menu still lists every provider, not just the selected one.
@@ -1961,11 +1972,11 @@ describe("Operations presentation", () => {
       </QueryClientProvider>
     )
     const table = await screen.findByRole("table", { name: "回補請求紀錄" })
-    await within(table).findByText("finlab/tw_equity_eod")
+    await within(table).findByText("finlab/台股日K(tw_equity_eod)")
     const row = within(table)
       .getAllByRole("row")
       .find(candidate =>
-        candidate.textContent?.includes("finlab/tw_equity_eod")
+        candidate.textContent?.includes("finlab/台股日K(tw_equity_eod)")
       )
     expect(row).toBeDefined()
     expect(row).toHaveTextContent("2026-08-28 – 2026-08-29")
@@ -2108,7 +2119,7 @@ describe("Operations presentation", () => {
     })
     fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
     await screen.findByText(
-      "範圍無效：供應商與資料集的回補範圍尚未啟用（provider_scope_inactive）"
+      "範圍無效：供應商與資料集的回補範圍尚未啟用(provider_scope_inactive)"
     )
     expect(screen.getByRole("checkbox")).toBeDisabled()
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
@@ -2149,7 +2160,7 @@ describe("Operations presentation", () => {
     fireEvent.click(screen.getByRole("button", { name: "驗證交易日" }))
 
     await screen.findByText(
-      "範圍無效：日期範圍必須在最近 31 天內，且不可晚於今日（outside_latest_31_days）"
+      "範圍無效：日期範圍必須在最近 31 天內，且不可晚於今日(outside_latest_31_days)"
     )
     expect(screen.getByRole("checkbox")).toBeDisabled()
     expect(mocks.createHistoricalBackfill).not.toHaveBeenCalled()
@@ -2527,7 +2538,9 @@ describe("Operations presentation", () => {
     )
 
     fireEvent.click(screen.getByRole("tab", { name: "缺漏告警" }))
-    expect(await screen.findByText("tw_futures_eod")).toBeInTheDocument()
+    expect(
+      await screen.findByText("台灣期貨日K(tw_futures_eod)")
+    ).toBeInTheDocument()
     expect(
       screen.queryByRole("button", {
         name: "帶入 tw_futures_eod 2026-08-31 回補參數",

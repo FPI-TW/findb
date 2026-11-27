@@ -8,6 +8,7 @@ import { SOURCE_PROVIDERS } from "../../lib/admin-governance-api"
 import { QueryStatus } from "../../components/AsyncState"
 import type { providerWorkSchema } from "../../lib/admin-api"
 import { useDeliveryResource } from "./delivery.queries"
+import { datasetLabel } from "../../lib/vocabulary"
 
 const waitLabels: Record<string, string> = {
   recovery_required: "等待確認舊程序已停止並復原原工作",
@@ -30,7 +31,9 @@ const providerWorkColumns: ColumnDef<ProviderWork, unknown>[] = [
     cell: ({ row }) => (
       <span className="font-medium">
         {row.original.provider}
-        <span className="block text-muted">{row.original.dataset_key}</span>
+        <span className="block text-muted">
+          {datasetLabel(row.original.dataset_key)}
+        </span>
       </span>
     ),
   },
