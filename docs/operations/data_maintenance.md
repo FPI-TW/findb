@@ -417,6 +417,14 @@ raw、prepared checkpoint 與原 daily gaps。不可刪除 gap 或改寫舊 plan
 schema migration 仍採 forward fix。Full-market 只補 activation 後缺口，不建立 continuous
 futures 或 historical backfill 工作；既有 bounded EOD historical workflow 維持獨立操作。
 
+## EOD 年度分區範圍
+
+`market_data_eod` 的年度分區由 migration 建立，目前涵蓋 2000～2031：
+- 原始分區建了 2026～2031。
+- Migration `e0649188f071` 補上 2000～2025。Owner 於 2026-11-27 決定歷史回補最遠到 2000 年（#754）。
+
+回補或匯入更早的日期，會在 normalization 以 `EOD_PARTITION_UNAVAILABLE` 失敗，要先用新的 migration 建立該年度分區。2032 年以後的分區也要在跨年前用 migration 補上。
+
 ## EOD default partition recovery
 
 `market_data_eod_default`正常必須為空；application在寫入前會確認目標年度的
