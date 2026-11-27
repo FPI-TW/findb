@@ -1116,8 +1116,11 @@ Catalog 把 FinLab 的四條盤中 feed（`tw_equity_bar_1m`、`tw_etf_bar_1m`�
 - **Migration `e5979e281ba9`**：把 FinLab 這四個 dataset 在 `default` 的 work（任何狀態）改為 `intraday`，
   並建立 `scheduler_control_lane`（非 default lane consumer 的 control poll 回報）。只要其中有 work 是
   `running`／`recovery_blocked`，或 FinLab default owner 的 `attempt_id` 指向這些 work 的 attempt，就在任何
-  變更前拒絕。已排入的 work 即使留有前一輪停止時的 prepared 或 receipts 也會移動：lane consumer 找不到自己的
-  journal 時會讀 FinLab default 的 journal 檔，重送由 Source 冪等去重。
+  變更前拒絕。還沒結束、但已經跑過至少一輪的 work（有非 queued 的 attempt、prepared 或 receipts）也拒絕：
+  它的成員進度記在 default consumer 的 Full checkpoint（`state-finlab.sqlite3`），lane consumer 不會讀這個檔，
+  會從空的 checkpoint 重建計畫、重送已完成的成員，並重新回報已記錄的 `no_data`；Source 視 no_data 證據為
+  不可改寫而回 409，work 以 `DAILY_SOURCE_REJECTED` 結束（staging 11/19 的兩筆盤中 work 即是如此）。這類 work
+  要先在舊 Fetcher 下跑完或結束，才能升級。從未跑過的 queued work 與已結束的 work 照常移動。
 - **Downgrade**：FinLab `intraday` owner 的 generation 已大於 0（或持有 attempt），或這些 work 有
   `running`／`recovery_blocked` 時拒絕；否則把 work 移回 `default`、刪除未使用的 intraday owner 與
   `scheduler_control_lane`。與所有 migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `36bfabaae072`。
@@ -1127,7 +1130,7 @@ Catalog 把 FinLab 的四條盤中 feed（`tw_equity_bar_1m`、`tw_etf_bar_1m`�
   沒有 `state-finlab-intraday.sqlite3` 不會被拒絕；`release_fetcher_provider.sh` 以 `--initialize-state` 建立
   checkpoint 與 lane host lock，再做 stopped-state 檢查。
 - **部署順序**（白天、沒有盤中工作在執行時進行）：
-  1. Owner 停止所有 controls，確認 FinLab 沒有 running 的盤中 work（migration 會拒絕）。
+  1. Owner 停止所有 controls，確認 FinLab 沒有 running 或跑到一半的盤中 work（migration 會拒絕）。
   2. 部署 FinDB（migration 在 ingest 啟動前執行），完成後立刻部署 Fetcher。Backend 新、Fetcher 舊的期間，
      舊的單一 FinLab consumer 只 claim `default`，盤中 work 會一直等；反過來（Fetcher 先）時，新的 lane
      consumer claim `intraday` 會被舊 Backend 以 409 拒絕，poll 也會覆寫 control 列的 heartbeat，所以必須 FinDB 先。
