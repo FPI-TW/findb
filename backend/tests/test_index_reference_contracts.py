@@ -260,3 +260,79 @@ async def test_delivery_policy_does_not_judge_a_document_by_market_baselines(sch
     result = await evaluate_delivery_policy(None, _validate(schema_id, payload), expectation)  # type: ignore[arg-type]
 
     assert (result.outcome, result.baseline_status, result.violations) == ("pass", "disabled", [])
+
+
+def test_a_document_part_delivers_the_member_of_its_series_or_index():
+    from app.schemas.ingress import delivered_members
+
+    report = constituents_payload(series="hsci")
+    sheet = changes_payload(index={**HSCI_UTILITIES, "parent_code": "00011.00"})
+    # The rows list constituents; the member is the document part.
+    assert delivered_members("index_constituents", report) == {"HSCI"}
+    assert delivered_members("index_constituent_changes", sheet) == {"00011.07"}
+    assert delivered_members("market_eod", {"data": [{"symbol": "AAPL"}]}) == {"AAPL"}
+    futures = {"data": [{"product_code": "TX", "contract_code": "202612", "session": "regular"}]}
+    assert delivered_members("futures_eod", futures) == {"TX|202612|regular"}
+
+
+def _frozen(key: str, provider_symbol: str, mapping_status: str = "mapped"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        member_key=key, provider_symbol=provider_symbol, mapping_status=mapping_status
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema_id", "payload", "universe", "message"),
+    [
+        ("index_constituents", constituents_payload(), {"HSI": _frozen("HSI", "hsi")}, None),
+        (
+            "index_constituent_changes",
+            changes_payload(),
+            {"00011.00": _frozen("00011.00", "00011.00")},
+            None,
+        ),
+        (
+            "index_constituents",
+            constituents_payload(),
+            {"HSCI": _frozen("HSCI", "hsci")},
+            "outside the declared plan part",
+        ),
+        (
+            "index_constituents",
+            constituents_payload(),
+            {"HSI": _frozen("HSI", "hsi", "gap")},
+            "Mapping-gap",
+        ),
+        (
+            "index_constituents",
+            constituents_payload(),
+            {"HSI": _frozen("HSI", "hsci")},
+            "provider symbol differs",
+        ),
+        (
+            "index_constituents",
+            constituents_payload(
+                [
+                    constituent("00001.00", "00005", "60", trade_date="2026-11-20"),
+                    constituent("00001.00", "00011", "40", trade_date="2026-11-20"),
+                    constituent("00001.01", "00005", "100", trade_date="2026-11-20"),
+                ],
+                trade_date=date(2026, 11, 20),
+            ),
+            {"HSI": _frozen("HSI", "hsi")},
+            "trade date differs",
+        ),
+    ],
+)
+def test_a_document_part_is_bound_as_its_one_frozen_member(schema_id, payload, universe, message):
+    from app.services.full_market import FullMarketError, _validate_reference_member
+
+    delivery = _validate(schema_id, payload)
+    plan_day = date(2026, 11, 23)
+    if message is None:
+        _validate_reference_member(delivery, plan_day, set(universe), universe)
+        return
+    with pytest.raises(FullMarketError, match=message):
+        _validate_reference_member(delivery, plan_day, set(universe), universe)

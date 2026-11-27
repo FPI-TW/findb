@@ -14,8 +14,13 @@ from app.models.canonical import (
     MarketDataMinute,
 )
 from app.models.institutional_flow import InstitutionalFlowPublication
+from app.models.raw import RawMarketPayload
 from app.models.registry import DailyDeliveryMember, DeliveryMemberEvidence, IngestionRun
-from app.schemas.ingress import INSTITUTIONAL_FLOW_SCHEMAS
+from app.schemas.ingress import (
+    INDEX_REFERENCE_SCHEMAS,
+    INSTITUTIONAL_FLOW_SCHEMAS,
+    index_reference_member,
+)
 from app.utils import utc_now
 
 
@@ -57,6 +62,16 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
                 )
             )
         )
+    elif run.schema_id in INDEX_REFERENCE_SCHEMAS:
+        # A document part stands for its member once it is kept: stored by this run,
+        # or already stored by an earlier delivery of it (repeats store nothing).
+        # A rejected document completes with errors and stands for none.
+        raw = (
+            await db.get(RawMarketPayload, run.raw_payload_id)
+            if run.status == "completed" and run.raw_payload_id is not None
+            else None
+        )
+        written = {index_reference_member(str(run.schema_id), raw.payload)} if raw else set()
     elif run.schema_id == "exchange_daily_quote":
         written = set(
             await db.scalars(

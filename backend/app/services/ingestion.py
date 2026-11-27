@@ -27,7 +27,7 @@ from app.models.registry import (
     NormalizationJob,
     NormalizationOutbox,
 )
-from app.schemas.ingress import IngressRequest
+from app.schemas.ingress import IngressRequest, delivered_members
 from app.services.delivery_policy import (
     DeliveryPolicyRejectedError,
     DeliveryPolicyResult,
@@ -897,12 +897,7 @@ class IngestionService:
                 work=work,
                 run_id=run.run_id,
                 payload_sha256=request_payload_sha256,
-                canonical_members={
-                    f"{row['product_code']}|{row['contract_code']}|{row['session']}"
-                    if request.schema_id == "futures_eod"
-                    else row["symbol"]
-                    for row in canonical_payload["data"]
-                },
+                canonical_members=delivered_members(request.schema_id, canonical_payload),
             )
             if policy_result.outcome == "warn":
                 self.db.add(

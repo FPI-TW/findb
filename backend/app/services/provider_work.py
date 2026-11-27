@@ -1051,6 +1051,7 @@ async def register_prepared(
     db: AsyncSession, *, body: str, stage: str, job_key: str | None, **identity
 ) -> None:
     """Bind immutable bytes before stop/cancel, under the cancellation lock."""
+    from app.schemas.ingress import delivered_members
     from app.services.ingestion import payload_sha256
     from app.services.ingress_contracts import validate_ingress_request
 
@@ -1060,12 +1061,7 @@ async def register_prepared(
     except ValueError as exc:
         raise ProviderWorkError("prepared contract is invalid") from exc
     payload = request.payload.model_dump(mode="json")
-    members = {
-        f"{row['product_code']}|{row['contract_code']}|{row['session']}"
-        if request.schema_id == "futures_eod"
-        else row["symbol"]
-        for row in payload["data"]
-    }
+    members = delivered_members(request.schema_id, payload)
     expected = {row["key"] for row in (work.manifest or {}).get("members", [])}
     if (
         request.source != work.provider
