@@ -147,13 +147,11 @@ Shioaji 歷史 owner／prepared／receipts 的保留與舊五-provider proof 拒
 測試不呼叫真實 provider，不能代替 production 根因驗收。
 
 所有五 provider 的設定／無 owner 拒絕矩陣在 Backend `test_provider_work_retirement.py`
-與 Fetcher `test_twelve_data_cli.py`；後者覆蓋八個舊 acquiring CLI 的 exit 2、無新檔案與原
-checkpoint bytes 不變，以及 daily cycle／drain 只呼叫 queue dispatcher。部署的 false 拒絕與
+與 Fetcher `test_provider_work_required.py`；後者另驗證 image 只安裝現行指令，
+以及 daily cycle／drain 只呼叫 queue dispatcher。部署的 false 拒絕與
 bootstrap shared account path 分別由 Infra `test_provider_work_retirement.py`、
 `test_aws_configuration.py`、`test_full_market_deployment_repairs.py` 覆蓋。
 
-`test_retired_cli.py` 另外驗證 console／`python -m` 的穩定 tombstone、模組只定義 `main`，
-且在 package 既有 public exports 載入後不再匯入其它 provider／legacy 模組。
 舊 CLI parser、summary、私人 smoke IPC 與 TAIFEX standalone executor tests 已移除；
 實際隔離 worker／FD／timeout／輸出抑制仍由現行 provider process／SDK suites 驗證。
 `test_runtime_owner_contract.py` 直接驗證真實空 claim 的 idle、缺少 owner 時不能動 retained state，

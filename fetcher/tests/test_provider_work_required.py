@@ -1,6 +1,6 @@
-"""Retired entry points cannot acquire, load secrets, or rewrite state."""
+"""Every provider needs a work owner; the protocol setting cannot be turned off."""
 
-import importlib
+import importlib.metadata
 import json
 
 import pytest
@@ -11,36 +11,20 @@ from findb_fetcher.execution_metadata import provider_ids
 from findb_fetcher.provider_process import provider_environment
 
 
-@pytest.mark.parametrize(
-    "module",
-    [
-        "scheduler_cli",
-        "finlab_scheduler_cli",
-        "shioaji_scheduler_cli",
-        "taifex_pilot",
-        "twelve_data_cli",
-        "finlab_smoke_cli",
-        "shioaji_smoke_cli",
-        "shioaji_staging_cli",
-    ],
-)
-@pytest.mark.parametrize("arguments", [[], ["--deliver"], ["--check"], ["--initialize-state"]])
-def test_retired_entrypoints_never_touch_existing_state(
-    module, arguments, tmp_path, monkeypatch, capsys
-):
-    state = tmp_path / "checkpoint.sqlite3"
-    original = b"retained checkpoint/prepared/receipt/budget evidence"
-    state.write_bytes(original)
-    monkeypatch.setenv("FETCHER_STATE_PATH", str(state))
-    monkeypatch.setenv("PROVIDER_WORK_REQUIRED", "false")
-    assert importlib.import_module(f"findb_fetcher.{module}").main(arguments) == 2
-    output = capsys.readouterr()
-    body = json.loads(output.err)
-    assert body["status"] == "retired"
-    assert body["code"] == ("PROVIDER_RETIRED" if "shioaji" in module else "PROVIDER_WORK_REQUIRED")
-    assert output.out == ""
-    assert state.read_bytes() == original
-    assert list(tmp_path.iterdir()) == [state]
+def test_only_the_current_commands_are_installed():
+    # The retired standalone commands were removed outright; an old name is simply not found.
+    commands = {
+        entry.name
+        for entry in importlib.metadata.entry_points(group="console_scripts")
+        if entry.name.startswith("findb-fetch-")
+    }
+    assert commands == {
+        "findb-fetch-runtime",
+        "findb-fetch-full-market",
+        "findb-fetch-historical-backfill",
+        "findb-fetch-backfill-plan",
+        "findb-fetch-retired-purge",
+    }
 
 
 @pytest.mark.parametrize("provider", provider_ids())

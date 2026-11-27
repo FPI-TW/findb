@@ -19,9 +19,8 @@ consumers 均正常且原 checkpoint／prepared／receipts／budgets 保留；�
 發布證據見 [production 維運](../operations/production.md)。
 
 舊 acquiring CLI（provider-specific scheduler、Twelve Data one-shot、FinLab／Shioaji smoke、
-Shioaji staging 與 TAIFEX pilot）只回傳 exit 2 的安全退役訊息，不載入 secrets、不建立 state、不抓取。
-八個入口模組只保留 tombstone `main()` 與 `python -m` guard；舊 parser、CLI worker、排程與
-獨立 TAIFEX pilot executor 已刪除，不以成功的私人 helper 測試保留已退役的執行路徑。
+Shioaji staging 與 TAIFEX pilot）的指令與模組都已移除，image 只安裝現行指令；呼叫舊名稱只會找不到指令，
+不會載入 secrets、建立 state 或抓取。
 使用 `findb-fetch-runtime`、`findb-fetch-historical-backfill` 與 runtime 的 queued universe refresh。
 共用 mapper／executor、舊 checkpoint parser、prepared bytes、receipts、raw lineage、operation budgets、
 account pins／debt／cooldown 全部保留；不執行清檔、重新入列全部 backlog 或資料 migration。
