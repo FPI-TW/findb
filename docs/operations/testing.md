@@ -13,6 +13,8 @@ Pre-commit 與 pre-push 皆只執行 check，不執行測試；不得使用 `--n
 `pnpm test:infra` 使用 Backend pytest 環境，預設 `-n 2 --dist worksteal --timeout=300`，
 可用 `--workers` 調整，不需要 PostgreSQL。Backend pytest 設定每個測試 300 秒 timeout；
 卡住的測試會留下 traceback，而不是耗盡 job timeout。
+`pnpm test:fetcher` 使用 `-n 2 --dist worksteal`，Fetcher CI 使用 4 個 workers。2026-11-27 在下方同一台主機
+量測：依序約 103 秒，2 個 workers 三次 48～57 秒。
 
 ### 並行執行全部測試
 
@@ -25,7 +27,7 @@ Pre-commit 與 pre-push 皆只執行 check，不執行測試；不得使用 `--n
 | `backend` | Backend 非 migration tests | `--workers` 個 xdist workers |
 | `migrations` | Backend `test_*migration*.py`，獨立序列 session | 單一 |
 | `infra` | `infra/tests` | `--workers` 個 xdist workers |
-| `fetcher` | `pnpm test:fetcher` | 單一 |
+| `fetcher` | `pnpm test:fetcher` 的同一組測試 | `--workers` 個 xdist workers |
 | `dashboard-unit`／`dashboard-browser`／`dashboard-e2e` | Dashboard 三個層級 | 各自的 runner |
 
 ```bash
@@ -39,7 +41,7 @@ pnpm test:parallel --skip dashboard-e2e # 本機 3000 port 已被 dev server 佔
 - 各套件的輸出寫入暫存目錄下各自的 log（開始時印出路徑），畫面只顯示每個套件完成的時間。
   失敗的套件才印出完整輸出，最後是每個套件的結果、耗時與 runner 自己的統計（含 skipped 數）。
   任一套件失敗時指令回傳非零狀態，其餘套件仍會跑完。
-- `--workers` 是 Backend 與 Infra 各自的 xdist worker 數（`0` 為序列）；`--jobs` 是同時執行的套件數上限，
+- `--workers` 是 Backend、Infra 與 Fetcher 各自的 xdist worker 數（`0` 為序列）；`--jobs` 是同時執行的套件數上限，
   較長的套件先啟動。兩者一起決定 CPU 負載。
 - 兩個 Backend session 需要 PostgreSQL：預設先啟動 Compose 的 `db`；若 PostgreSQL 已啟動，可加
   `--no-start-db` 沿用 `TEST_DATABASE_URL` 指定的連線（預設為本機 5435），避免從另一個 worktree 重新
@@ -67,19 +69,20 @@ pnpm test:parallel --skip dashboard-e2e # 本機 3000 port 已被 dev server 佔
 
 - 並行是用 CPU 換時間：同時執行的程序越多，總 CPU 時間越高，機器也越熱。預設值取中間，比依序快約 2.5 倍；
   要最快用 `--workers 4`，要降低負載用 `--jobs`。
-- 超過 4 個 workers 沒有幫助：Fetcher 與 migration 都是單一程序，並行時各需約 90 秒，決定了總耗時的下限。
+- 超過 4 個 workers 沒有幫助：當時 Fetcher 與 migration 都是單一程序，並行時各需約 90 秒，決定了總耗時的下限。
+  上表是 Fetcher 改用 xdist 之前的量測；現在只剩 migration 是單一程序。
 - 記憶體不是限制：測試程序合計最高約 6 GB，各組量測期間全機沒有記憶體壓力，swap 沒有增加，系統也沒有回報
   因過熱而降速。溫度本身需要 `sudo powermetrics` 才讀得到，未納入量測。
 - 測試數（預設設定）：Backend 2,316 passed／3 skipped、migration 45、Infra 977 passed／3 skipped 與 203 個
   subtests、Fetcher 1,905、Dashboard unit 223／browser 9／e2e 16。
 
-直接呼叫 `uv --directory backend run pytest` 仍預設序列執行；設定檔不注入 worker flags，
+直接呼叫 `uv --directory backend run pytest` 或 `uv --directory fetcher run pytest` 仍預設序列執行；設定檔不注入 worker flags，
 因此測試中的 nested pytest subprocess 不會意外再建立 workers。
 本機比對 [FinDB CI](../../.github/workflows/findb-ci.yml)／[Fetcher CI](../../.github/workflows/fetcher-ci.yml)
 時，Backend 非 migration 與 Infra suites 使用 CI 的四個 workers，migration 維持獨立序列
 session；另外執行 published contract checks、全 repo check、Node.js 22／pnpm 11.15.1 下的
-Dashboard unit／browser／e2e 與 build。Fetcher 使用 frozen `shioaji` extra 執行真 SDK 介面契約
-測試，並建置 generic／FinLab／Shioaji／FactSet images，檢查 SDK 隔離、CLI、TLS 與唯讀 bytecode。
+Dashboard unit／browser／e2e 與 build。Fetcher 使用 frozen `finlab` extra 執行真 SDK 介面契約
+測試，並建置 generic／FinLab／FactSet images，檢查 SDK 隔離、CLI、TLS 與唯讀 bytecode。
 Backend production image 的 migration regression 使用獨立容器 DB，涵蓋 fresh／accepted-upgrade；
 不在指定的本機基底 DB 直接執行 migration smoke。這些是本機 CI 同等檢查，不代表遠端 Actions 狀態。
 Backend 的三個 FactSet captured-native cases 需提供 `FINDB_FACTSET_NATIVE_SNAPSHOT_DIR`

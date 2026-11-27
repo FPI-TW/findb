@@ -302,6 +302,21 @@ def _infra_pytest(workers: int, pytest_args: Sequence[str] = ()) -> list[str]:
     ]
 
 
+def _fetcher_pytest(workers: int) -> list[str]:
+    # Same command as `pnpm test:fetcher`, with the worker count of this run; runs from REPO_ROOT.
+    return [
+        "uv",
+        "--directory",
+        "fetcher",
+        "run",
+        "pytest",
+        "-n",
+        str(workers),
+        "--dist",
+        "worksteal",
+    ]
+
+
 def cmd_test_db(args: argparse.Namespace) -> int:
     if not args.no_start_db:
         up_code = _start_test_db()
@@ -372,7 +387,7 @@ def _test_suites(args: argparse.Namespace) -> list[_Suite]:
         "backend": (_backend_pytest(args.workers), BACKEND_ROOT, db_env),
         "migrations": (_migration_pytest(), BACKEND_ROOT, db_env),
         "infra": (_infra_pytest(args.workers), BACKEND_ROOT, os.environ.copy()),
-        "fetcher": ([pnpm, "test:fetcher"], REPO_ROOT, repo_env),
+        "fetcher": (_fetcher_pytest(args.workers), REPO_ROOT, repo_env),
         "dashboard-unit": ([pnpm, "test:dashboard:unit"], REPO_ROOT, repo_env),
         "dashboard-browser": ([pnpm, "test:dashboard:browser"], REPO_ROOT, repo_env),
         "dashboard-e2e": ([pnpm, "test:dashboard:e2e"], REPO_ROOT, repo_env),
@@ -620,7 +635,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "--workers",
             type=_test_worker_count,
             default=2,
-            help="Workers for each of Backend and Infra (0 for serial; default: 2)",
+            help="Workers for each of Backend, Infra and Fetcher (0 for serial; default: 2)",
         )
     test_parallel.add_argument(
         "--jobs",

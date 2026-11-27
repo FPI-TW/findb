@@ -36,6 +36,7 @@ finlab = [
 dev = [
     "mypy>=1.20.1,<2.0.0",
     "pytest>=9.0.3,<10.0.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
     "ruff>=0.15.11,<0.16.0",
     "types-PyMySQL>=1.1.0",
 ]
