@@ -56,6 +56,10 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
     from findb_fetcher.providers.twelve_data import TwelveDataConfig
 
     h = native_runtime
+    import findb_fetcher.full_market_runtime as runtime_module
+
+    # An official listing that fails at once is asked again; this harness does not wait.
+    monkeypatch.setattr(runtime_module, "OFFICIAL_LISTING_RETRY_SECONDS", 0)
     monkeypatch.setenv("TWELVE_DATA_API_KEY", "offline-twelve")
     h.db.add(FullMarketEnvironment(environment=h.environment))
     for control in await h.db.scalars(select(SchedulerControl)):
@@ -190,8 +194,19 @@ async def test_maintenance_known_failure_settles_and_next_work_claims_with_stopp
         assert db.execute(
             "SELECT attempts FROM work_budget WHERE work_key=?", (work_id,)
         ).fetchone()[0] == (0 if fault == "quota" else 1)
+    # Twelve Data's catalogue is its provider API, not an official listing (#598).
+    listing_retry = fault == "transport" and h.provider != "twelve_data"
+    if fault == "transport":
+        assert attempts[0].failure_code == "MAINTENANCE_PROVIDER_TRANSPORT"
+        assert attempts[0].proof["transport"]["error"] == "ReadError"
     expected_calls = (
-        0 if fault == "quota" else 4 if fault == "format" and h.provider == "finlab" else 1
+        0
+        if fault == "quota"
+        else 4
+        if fault == "format" and h.provider == "finlab"
+        else 2
+        if listing_retry
+        else 1
     )
     assert len(calls) == expected_calls, (
         attempts[0].failure_code,

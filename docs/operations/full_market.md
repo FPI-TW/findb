@@ -1079,11 +1079,20 @@ universe request 的未來日期檢查亦依 source timezone 判定。
   已經排入的名單更新不受之後的停止影響，會照常完成。
 - 同一個排程時刻只有一筆名單更新（stable key 帶該時刻的 UTC 時間）。因傳輸問題重試的那一筆會排到佇列尾端，
   排在當天的 daily 後面。
+- 名單更新讀官方名單時，連線立刻失敗（請求後 30 秒內、不是逾時的 httpx 傳輸錯誤，例如連線被重設）會在同一筆 attempt 內
+  等 60 秒（`OFFICIAL_LISTING_RETRY_SECONDS`，期間維持 control heartbeat）再請求一次，並輸出一行
+  `{"official_listing_retry": {"url", "error", "wait_seconds"}}`。第二次請求照常經過 acquisition 檢查，等待期間
+  停止 control 就不再請求；逾時、HTTP 錯誤與第二次的失敗都不再重試，照下一點的分類結算。依據是 production
+  11-05～11-20 FinLab 名單第一次傳輸失敗的 6 次：5 次是緊接在股票名單之後的 ETF 名單；4 次在 1 秒內結束，
+  而 Source API 的 client 會先重試 3 次、至少睡 3 秒，所以這 4 次是官方網站；看得到恢復時間的 3 次在 30 秒
+  到 3 分鐘內恢復（#598）。
 - 傳輸失敗分兩種：官方網站或 provider API 是 `MAINTENANCE_PROVIDER_TRANSPORT`，Source API 是
-  `MAINTENANCE_SOURCE_TRANSPORT`。attempt 的 proof 帶 `{"transport": {"origin": "provider"|"source", "url"}}`，
+  `MAINTENANCE_SOURCE_TRANSPORT`。attempt 的 proof 帶
+  `{"transport": {"origin": "provider"|"source", "url", "error"}}`，
   `url` 只留 scheme、host、path 與 query，不留帳密與 fragment，`apikey`、`token` 等 query 值記為
-  `<redacted>`（官方頁面同一路徑靠 query 區分）；錯誤沒有帶 request 時 `url` 為 null。Source governance
-  的傳輸失敗本來就是 `MAINTENANCE_SOURCE_UNKNOWN`。
+  `<redacted>`（官方頁面同一路徑靠 query 區分）；錯誤沒有帶 request 時 `url` 為 null。`error` 是最後一次
+  失敗的類別名稱（例如 `ConnectError`、`ReadTimeout`、`RemoteProtocolError`；Source API 的 408 記為 `HTTP408`），
+  不記錯誤訊息。Source governance 的傳輸失敗本來就是 `MAINTENANCE_SOURCE_UNKNOWN`。
 - FinLab 與 Twelve Data 的名單在排程時刻取得，生效日就是當天的交易日。當天的 daily 建立 plan 時，若查到的最新名單
   生效日早於交易日，表示當天的名單還沒發布：daily 不建立 plan，以 `DAILY_UNIVERSE_REFRESH_PENDING` 延後
   5 分鐘（不扣重試次數）重新排隊，讓名單的重試先跑完。最多等到排程時刻後 30 分鐘；之後照舊用最新的名單建立

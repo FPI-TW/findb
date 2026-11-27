@@ -748,6 +748,8 @@ def test_midstream_transport_failure_exhaustion_is_safe(
     assert str(error.value) == "Source API transport retries exhausted"
     assert "credential-like-secret" not in str(error.value)
     assert attempts == 3
+    # #598: the last attempt's failure class, never its message.
+    assert error.value.error == "ReadError"
 
 
 def test_stream_deadline_is_absolute_and_prevents_success(
