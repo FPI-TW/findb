@@ -158,7 +158,7 @@ describe("CalendarManagementPage", () => {
     const submit = screen.getByRole("button", { name: "查詢" })
     expect(submit).toBeDisabled()
 
-    chooseSelectOption(screen.getByLabelText("市場"), "香港（HK）")
+    chooseSelectOption(screen.getByLabelText("市場"), "香港(HK)")
     const year = screen.getByLabelText("年度")
     // Each keystroke of a year is only a draft: nothing loads until 查詢.
     for (const value of ["2", "20", "202", "2025"]) {

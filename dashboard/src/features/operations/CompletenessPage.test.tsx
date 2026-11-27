@@ -191,8 +191,12 @@ describe("completeness matrix", () => {
   it("filters rows by market and by having gaps, client side", async () => {
     const updateSearch = renderPage({ gaps: true })
     const table = await screen.findByRole("table", { name: "完整性矩陣" })
-    expect(within(table).getByText("tw_equity_eod")).toBeInTheDocument()
-    expect(within(table).queryByText("us_index_eod")).not.toBeInTheDocument()
+    expect(
+      within(table).getByText("台股日K(tw_equity_eod)")
+    ).toBeInTheDocument()
+    expect(
+      within(table).queryByText("美股指數日K(us_index_eod)")
+    ).not.toBeInTheDocument()
     chooseSelectOption(screen.getByRole("combobox", { name: "市場" }), "US")
     expect(updateSearch).toHaveBeenCalledWith(
       expect.objectContaining({ market: "US", gaps: true })

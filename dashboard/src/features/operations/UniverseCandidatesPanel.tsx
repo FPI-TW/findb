@@ -19,6 +19,7 @@ import {
 import type { DeliveriesSearchUpdate } from "./operations.deliveries"
 import type { DeliveriesPageSearch } from "./operations.search"
 import { formatDate, Panel } from "./operations.shared"
+import { datasetLabel } from "../../lib/vocabulary"
 
 function formatMemberValue(value: unknown) {
   return value === null || value === undefined || value === ""
@@ -190,7 +191,7 @@ export function UniverseCandidatesPanel({
         meta: { minWidth: 180, pin: "left" },
         cell: context => (
           <span className="font-mono wrap-anywhere">
-            {context.getValue<string>()}
+            {datasetLabel(context.getValue<string>())}
           </span>
         ),
       },

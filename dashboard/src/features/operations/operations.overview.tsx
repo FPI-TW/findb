@@ -62,6 +62,7 @@ import {
   useOperationsDashboardState,
 } from "./operations.queries"
 import { OPERATIONS_OVERVIEW_AUDIT } from "./operations.search"
+import { datasetLabel } from "../../lib/vocabulary"
 
 type SchedulerCardControl = Pick<
   Scheduler,
@@ -408,7 +409,7 @@ export function describeSchedulerRuntime({
       ? (control.acquisition_blockers ?? []).map(
           code =>
             schedulerBlockerReason(code, control.provider) ??
-            `${UNKNOWN_BLOCKER_REASON}（${code}）`
+            `${UNKNOWN_BLOCKER_REASON}(${code})`
         )
       : []
   const explanations: Record<SchedulerRuntimeStatus, string> = {
@@ -1016,7 +1017,7 @@ function CurrentDeliveryProgress({
           key={`${feed.dataset_key}:${feed.source}`}
           className="list-none text-xs"
         >
-          <span className="font-mono">{feed.dataset_key}</span>
+          <span className="font-mono">{datasetLabel(feed.dataset_key)}</span>
           {" · "}
           {!feed.expected_data_date
             ? "尚無應交付交易日"
@@ -1057,13 +1058,13 @@ function IngestionCardView({
         </h3>
         <p className="mt-1 mb-0 text-xs text-muted">
           Provider：{control.provider} · Dataset：
-          {control.dataset_keys.join(", ") || "—"}
+          {control.dataset_keys.map(datasetLabel).join(", ") || "—"}
         </p>
         {control.feed_schedules?.length ? (
           control.feed_schedules.map(feed => (
             <p key={feed.dataset_key} className="mt-1 mb-0 text-xs text-muted">
-              {feed.dataset_key} · {describeFeedSchedule(feed)} · 下次{" "}
-              <DateWithRelative value={feed.next_scheduled_at} />
+              {datasetLabel(feed.dataset_key)} · {describeFeedSchedule(feed)} ·
+              下次 <DateWithRelative value={feed.next_scheduled_at} />
             </p>
           ))
         ) : (
@@ -1227,11 +1228,12 @@ function IngestionCardView({
               <p className="m-0">環境：{control.environment ?? "—"}</p>
               <p className="m-0">
                 本次凍結範圍：
-                {control.admitted_dataset_keys?.join(", ") || "無"}
+                {control.admitted_dataset_keys?.map(datasetLabel).join(", ") ||
+                  "無"}
               </p>
               {control.feed_readiness?.map(feed => (
                 <p className="m-0" key={feed.dataset_key}>
-                  {feed.dataset_key}：
+                  {datasetLabel(feed.dataset_key)}：
                   {feed.ready ? "Ready" : feed.blockers.join("；")} · 首次日期{" "}
                   {control.first_start_dates?.[feed.dataset_key] ??
                     feed.first_start_date ??
@@ -1244,7 +1246,8 @@ function IngestionCardView({
             <div className="grid gap-2 text-xs text-muted">
               <p className="m-0">
                 已啟用範圍：
-                {freshness.active_dataset_keys.join(", ") || "無"}
+                {freshness.active_dataset_keys.map(datasetLabel).join(", ") ||
+                  "無"}
                 。資料更新不代表此模式已啟用或排程已回報心跳。
               </p>
               {!control.last_heartbeat_at && (
@@ -1258,7 +1261,7 @@ function IngestionCardView({
                   <ul className="mt-1 mb-0 list-disc pl-5">
                     {freshness.pending_feeds.map(feed => (
                       <li key={feed.dataset_key}>
-                        {feed.dataset_key}：
+                        {datasetLabel(feed.dataset_key)}：
                         {feed.blockers.join("；") || "尚未啟用"}
                       </li>
                     ))}

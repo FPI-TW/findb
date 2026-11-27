@@ -116,6 +116,23 @@ describe("LookupPage", () => {
     })
   })
 
+  it("names asset classes in the filter and the table, filtering by key", async () => {
+    const updateSearch = vi.fn()
+    renderWithQuery(
+      <LookupPage search={DEFAULT_SEARCH} updateSearch={updateSearch} />
+    )
+
+    expect(
+      await screen.findByRole("cell", { name: "股票(equity)" })
+    ).toBeInTheDocument()
+    const filter = screen.getByRole("combobox", { name: "類別" })
+    fireEvent.keyDown(filter, { key: "Enter" })
+    fireEvent.click(screen.getByRole("option", { name: "股票(equity)" }))
+    expect(updateSearch).toHaveBeenCalledWith(
+      expect.objectContaining({ ac: "equity", p: 1 })
+    )
+  })
+
   it("maps DataTable sorting and pagination back to the existing API search", async () => {
     const updateSearch = vi.fn()
     renderWithQuery(

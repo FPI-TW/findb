@@ -110,7 +110,9 @@ describe("universe feeds", () => {
   it("shows each feed's published list, waiting candidate and missing baseline", async () => {
     renderPanel()
 
-    expect(await screen.findByText("tw_etf_eod")).toBeInTheDocument()
+    expect(
+      await screen.findByText("台股 ETF 日K(tw_etf_eod)")
+    ).toBeInTheDocument()
     expect(screen.getByText("生效日 2026-11-12 · 368 檔")).toBeInTheDocument()
     expect(screen.getByText("2026-11-13 · 變更 9（2.45%）")).toBeInTheDocument()
     expect(screen.getByText("尚未發布 baseline")).toBeInTheDocument()
@@ -187,7 +189,9 @@ describe("universe feeds", () => {
     async role => {
       renderPanel(role)
 
-      expect(await screen.findByText("tw_etf_eod")).toBeInTheDocument()
+      expect(
+        await screen.findByText("台股 ETF 日K(tw_etf_eod)")
+      ).toBeInTheDocument()
       expect(screen.queryByRole("button", { name: /手動更新/ })).toBeNull()
       expect(screen.getAllByText("僅 owner 可更新")).toHaveLength(2)
     }

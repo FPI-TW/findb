@@ -18,6 +18,7 @@ import {
 } from "../../components/ui/select"
 import { loadDeliveryPlanSummary } from "../../lib/admin.functions"
 import type { GapStatus } from "../../lib/admin-api"
+import { withName } from "../../lib/vocabulary"
 
 export const reasonLabels: Record<string, string> = {
   mapping_gap: "供應商未收錄",
@@ -41,7 +42,7 @@ const statusLabels: Record<GapStatus, string> = {
 const PAGE_SIZE = 200
 
 function reasonText(reason: string) {
-  return reasonLabels[reason] ? `${reasonLabels[reason]}（${reason}）` : reason
+  return withName(reasonLabels, reason)
 }
 
 /**

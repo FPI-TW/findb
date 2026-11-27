@@ -38,6 +38,7 @@ import {
   useRegisterOperationsQuery,
 } from "../../components/OperationsRefresh"
 import { QueryStatus } from "../../components/AsyncState"
+import { datasetLabel } from "../../lib/vocabulary"
 
 export type DeliveriesSearchUpdate =
   | DeliveriesPageSearch
@@ -54,7 +55,7 @@ const backfillScopeReasonLabels: Record<string, string> = {
 
 function formatBackfillScopeReason(reason: string | null) {
   const code = reason ?? "unknown"
-  return `${backfillScopeReasonLabels[code] ?? "未知錯誤"}（${code}）`
+  return `${backfillScopeReasonLabels[code] ?? "未知錯誤"}(${code})`
 }
 
 function BackfillStepHeader({
@@ -233,7 +234,7 @@ const baseBackfillColumns: ColumnDef<HistoricalBackfill, unknown>[] = [
     meta: { minWidth: 200, pin: "left" },
     cell: ({ row }) => (
       <span className="font-mono">
-        {row.original.provider}/{row.original.dataset_key}
+        {row.original.provider}/{datasetLabel(row.original.dataset_key)}
       </span>
     ),
   },
@@ -599,7 +600,7 @@ export function HistoricalBackfillsPanel({
                     <SelectContent>
                       {datasetOptions.map(dataset => (
                         <SelectItem key={dataset} value={dataset}>
-                          {dataset}
+                          {datasetLabel(dataset)}
                         </SelectItem>
                       ))}
                     </SelectContent>

@@ -212,7 +212,8 @@ function HeaderCell<TData extends RowData>({
           onClick={header.column.getToggleSortingHandler()}
           type="button"
         >
-          <span className="min-w-0 flex-1">
+          {/* A button centers its text; the label follows the column's cells. */}
+          <span className={cn("min-w-0 flex-1", cellAlignment(meta))}>
             {flexRender(header.column.columnDef.header, header.getContext())}
           </span>
           <span

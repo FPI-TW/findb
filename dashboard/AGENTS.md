@@ -118,4 +118,5 @@ tanstackIntent:
 - 使用 `QueryStatus` 的固定高度狀態列；已有區塊狀態列時，DataTable 傳 `refreshingState={null}`，避免重複更新提示。
 - 依成功 response 是否存在判斷初次載入，不能用空陣列長度判斷；最後成功時間不得因失敗刷新而更新。
 - 表格使用穩定業務 ID，mutation 草稿獨立於查詢生命週期；詳見 `docs/operations/dashboard.md`。
+- 畫面上顯示 API 的穩定 key（資料集、資產類別）時，一律經 `src/lib/vocabulary.ts` 的 `datasetLabel`／`assetClassLabel` 顯示為 `中文名(key)`，名稱只在該檔定義；篩選值、URL、請求與 CSV 匯出仍用原 key。provider catalog 新增 feed 時要在同檔補中文名，否則 `vocabulary.test.ts` 失敗。
 - 會輪詢的 query 只能打只讀已存計數的 Admin API；需要重新分類計畫的明細（例如計畫缺口）必須在使用者展開或按下按鈕時才載入，且不得加入 60 秒輪詢。新增 Admin 讀取時，後端要同時附 query budget 測試（見 `backend/AGENTS.md`「Admin 讀取的查詢預算」）。

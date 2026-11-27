@@ -5,6 +5,7 @@ import { DataTable } from "../../components/data-table"
 import { QueryStatus } from "../../components/AsyncState"
 import { Button } from "../../components/ui/button"
 import type { MissingDelivery } from "../../lib/admin-api"
+import { datasetLabel } from "../../lib/vocabulary"
 import type { AdminRole } from "../../lib/admin-governance-api"
 import { formatDate, Panel } from "./operations.shared"
 import { useDeliveryResource } from "./delivery.queries"
@@ -18,7 +19,7 @@ const columns: ColumnDef<MissingDelivery, unknown>[] = [
     meta: { minWidth: 180, pin: "left" },
     cell: context => (
       <span className="font-mono wrap-anywhere">
-        {context.getValue<string>()}
+        {datasetLabel(context.getValue<string>())}
       </span>
     ),
   },
