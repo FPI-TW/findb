@@ -881,6 +881,186 @@
       "universe_mode": "refreshed",
       "unlisted_symbols": "none",
       "calendar_required": true
+    },
+    {
+      "provider": "twse",
+      "dataset_key": "tw_twse_institutional_summary",
+      "lane": "default",
+      "market": "TW",
+      "calendar_market": "TW",
+      "asset_class": "equity",
+      "frequency": "daily",
+      "contract": {
+        "schema_id": "institutional_flow_summary",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "executable"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "15:30",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "03:30",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "historical_cohort": "current_release",
+      "historical_requests_per_date": 1,
+      "historical_lookback_days": null,
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none",
+      "calendar_required": true
+    },
+    {
+      "provider": "twse",
+      "dataset_key": "tw_twse_institutional_stock",
+      "lane": "default",
+      "market": "TW",
+      "calendar_market": "TW",
+      "asset_class": "equity",
+      "frequency": "daily",
+      "contract": {
+        "schema_id": "institutional_flow_stock",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "executable"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "16:45",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "04:45",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "historical_cohort": "current_release",
+      "historical_requests_per_date": 1,
+      "historical_lookback_days": null,
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none",
+      "calendar_required": true
+    },
+    {
+      "provider": "tpex",
+      "dataset_key": "tw_tpex_institutional_summary",
+      "lane": "default",
+      "market": "TW",
+      "calendar_market": "TW",
+      "asset_class": "equity",
+      "frequency": "daily",
+      "contract": {
+        "schema_id": "institutional_flow_summary",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "executable"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "17:30",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "05:30",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "historical_cohort": "current_release",
+      "historical_requests_per_date": 1,
+      "historical_lookback_days": null,
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none",
+      "calendar_required": true
+    },
+    {
+      "provider": "tpex",
+      "dataset_key": "tw_tpex_institutional_stock",
+      "lane": "default",
+      "market": "TW",
+      "calendar_market": "TW",
+      "asset_class": "equity",
+      "frequency": "daily",
+      "contract": {
+        "schema_id": "institutional_flow_stock",
+        "current_version": 1,
+        "accepted_versions": [
+          1
+        ]
+      },
+      "lifecycle": "active",
+      "capabilities": {
+        "source": true,
+        "acquisition": true,
+        "historical": "executable"
+      },
+      "schedule": {
+        "timezone": "Asia/Taipei",
+        "local_time": "17:30",
+        "target_date_lag_days": 0
+      },
+      "completion_deadline": {
+        "timezone": "Asia/Taipei",
+        "local_time": "05:30",
+        "trade_date_day_offset": 1
+      },
+      "bounded_monitor": {
+        "enabled": false,
+        "deadline": null
+      },
+      "delivery": {
+        "slot_id": "taiwan_market_window"
+      },
+      "historical_cohort": "current_release",
+      "historical_requests_per_date": 1,
+      "historical_lookback_days": null,
+      "universe_mode": "refreshed",
+      "unlisted_symbols": "none",
+      "calendar_required": true
     }
   ]
 }

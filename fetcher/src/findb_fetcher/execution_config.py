@@ -31,6 +31,10 @@ _IMPLEMENTED_ADAPTERS = frozenset(
         ("fmp", "us_dollar_index_eod"),
         ("twse", "tw_twse_index_eod"),
         ("tpex", "tw_tpex_index_eod"),
+        ("twse", "tw_twse_institutional_summary"),
+        ("twse", "tw_twse_institutional_stock"),
+        ("tpex", "tw_tpex_institutional_summary"),
+        ("tpex", "tw_tpex_institutional_stock"),
     }
 )
 

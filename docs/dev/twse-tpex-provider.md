@@ -96,27 +96,33 @@
 - Fetcher 登記 adapter 與 historical runner。
 - Fetcher bundle v9：十七個 consumers、secrets、部署腳本。
 - 部署順序見 [部署文件](../operations/deployment.md#twse-與-tpex-provider-加入)。
+- 已合併為 #777，staging 已部署：
+  - FinDB 與 Fetcher CD 成功；
+  - 17 個 consumers 都在執行，重啟 0 次；
+  - 告警已建立。
+
+**啟用二（本 PR）：四張三大法人表**
+- catalog 加入四條 feed，排程依上表。
+- migration `54a916bdb18f`：
+  - 把四個 dataset 接到既有 control；
+  - 擴大 Source credential 範圍；
+  - 建立新的凍結 inspection。
+- seed、`_IMPLEMENTED_ADAPTERS`。
+- 端到端管線測試：四個 dataset 都走完 Source → normalization → plan 完成 → Serve。
+- Fetcher 的 `STOCK_COLUMNS` 與 contract 的 `x-findb-row-layout` 一致，已由 #707 的測試涵蓋。
+- 部署見 [部署文件](../operations/deployment.md#twse-與-tpex-三大法人-feeds)。
 
 ## 剩下的工作
 
-1. **staging 驗收**（啟用一）：
-   - 建 secrets、登記 credential、部署 Fetcher；
-   - universe refresh 發布 baseline；
-   - 首日設成單一日期，只啟動 `twse`，確認 Source → raw → canonical → Serve 一致後停止；
-   - 再對 `tpex` 做一次；
-   - 用短區間驗證回補。
-2. **啟用二**：
-   - catalog 加四條三大法人 feed，排程依上表；
-   - migration 把四個 dataset 接到既有 control，並建立新的凍結 inspection；
-   - seed、`_IMPLEMENTED_ADAPTERS`；
-   - 測試 Fetcher 的 `STOCK_COLUMNS` 等於 contract 的 `x-findb-row-layout`；
-   - 沒有新 provider，所以 bundle 版號不變。
-3. **staging 驗收**（啟用二）：方法同第 1 項。
-4. **production 上線**：
+1. **staging 驗收**（兩個啟用都已部署，需 Owner 在 staging Dashboard 操作）：
+   - 對 `twse`、`tpex` 各個 dataset 做 universe refresh，發布 baseline；
+   - 建立 11-24～11-27 的短區間回補，確認 Source → raw → canonical → Serve 一致，並與官方網頁比對；
+   - 之後只啟動 `twse`、確認下一個交易日的 daily 準時完成後停止，再對 `tpex` 做一次。
+2. **production 上線**：
    - 順序是 FinDB、登記 credential、`tofu -target` 建 secrets、Fetcher；
    - Production 的 AWS 寫入由使用者執行腳本。
-5. **回補**：指數兩年、三大法人一年。
-6. **抽查與整併**：
+3. **回補**：指數兩年、三大法人一年。
+4. **抽查與整併**：
    - 乖離率抽 2330 與 `^TWII` 數天，人工計算後比對；
    - 上線後抽查各值與官方網頁一致；
    - 文件整併進 `docs/architecture/provider_metadata.md`、`docs/operations/full_market.md`、`docs/api/api_usage_guide.md`，刪除本文件。

@@ -19,7 +19,7 @@ def _require_calendar(monkeypatch, module) -> None:
     monkeypatch.setattr(module, "calendar_required", lambda provider, dataset_key: True)
 
 
-def test_only_index_feeds_require_a_calendar() -> None:
+def test_index_and_institutional_feeds_require_a_calendar() -> None:
     assert {
         (feed.provider, feed.dataset_key)
         for feed in provider_catalog().feeds
@@ -30,6 +30,11 @@ def test_only_index_feeds_require_a_calendar() -> None:
         ("fmp", "us_dollar_index_eod"),
         ("twse", "tw_twse_index_eod"),
         ("tpex", "tw_tpex_index_eod"),
+        # The exchanges' institutional tables are published on trading days only.
+        ("twse", "tw_twse_institutional_summary"),
+        ("twse", "tw_twse_institutional_stock"),
+        ("tpex", "tw_tpex_institutional_summary"),
+        ("tpex", "tw_tpex_institutional_stock"),
     }
     assert calendar_required("fmp", "us_index_eod") is True
     assert calendar_required("taifex", "tw_futures_eod") is False
