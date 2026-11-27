@@ -2128,3 +2128,19 @@ Staging FinDB／Fetcher current 為 `ca5da5fe9b76596028f95d18a520b17e7d334c06`�
 | Staging Fetcher／Source／bootstrap | `3d41e583-c366-45af-aa7c-19e0de28af9f` |
 | Production Fetcher／Source／bootstrap | `41868d31-b4df-4a39-b480-3d5bdf5c0d7e` |
 | Staging 與遷移前 frozen evidence 指紋比較 | `27653209-7c23-48cf-a0d6-9c8f7aab4110` |
+
+## EOD 歷史年度分區
+
+Migration `e0649188f071` 為 `market_data_eod` 建立 2000～2025 的年度分區（#754）。
+
+**為什麼需要**：normalizer 只寫入 migration 建立的年度分區。原本只有 2026～2031，所以 2026 年以前的回補都以 `EOD_PARTITION_UNAVAILABLE` 失敗。
+
+**Upgrade**
+- 只建立 26 個空分區，索引與約束由父表繼承。
+- `market_data_eod_default` 在 2000～2025 有任何一列時，會在任何變更前拒絕。
+- 沿用停止 writers 後執行 migration 的部署程序即可。
+
+**Downgrade**
+- 只刪除這些分區，任何一個已有資料時拒絕，schema rollback 不刪除已回補的歷史。
+- 已經回補過 2026 年以前的資料後，就不能 downgrade 到 `e5979e281ba9`，只能 forward fix。
+
