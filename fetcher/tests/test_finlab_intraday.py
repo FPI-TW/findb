@@ -501,7 +501,9 @@ def ungoverned(monkeypatch):
     answer: dict[str, Any] = {}
 
     @contextmanager
-    def acquiring(provider, credential=None):
+    def acquiring(provider, credential=None, lock_scope=None):
+        # Partitions run beside the account lock, under their own scope (#753).
+        assert lock_scope == "finlab_intraday"
         yield types_namespace(dispatch_checkpoint=lambda: 0.0)
 
     def call(operation, payload, **kwargs):
