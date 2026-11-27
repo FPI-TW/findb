@@ -21,7 +21,7 @@ pytestmark = pytest.mark.usefixtures("full_release_cohort")
 async def test_a_date_twelve_data_has_not_published_settles_partial_with_every_member_missing(
     native_runtime, test_engine, monkeypatch
 ):
-    """Current behavior, recorded in #770: the date does not wait for its publication."""
+    """A date the provider has not published yet settles partial; it does not wait."""
     from findb_fetcher.provider_adapters import twelve_data as twelve_adapter
     from findb_fetcher.providers.twelve_data import TwelveDataClient, TwelveDataConfig
 
