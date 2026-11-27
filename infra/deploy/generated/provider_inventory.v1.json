@@ -45,8 +45,22 @@
     {
       "image_key": "twelve_data",
       "lane": "default",
+      "name": "findb-full-market-tpex",
+      "provider": "tpex",
+      "role": "full_market"
+    },
+    {
+      "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-full-market-twelve-data",
       "provider": "twelve_data",
+      "role": "full_market"
+    },
+    {
+      "image_key": "twelve_data",
+      "lane": "default",
+      "name": "findb-full-market-twse",
+      "provider": "twse",
       "role": "full_market"
     },
     {
@@ -87,8 +101,22 @@
     {
       "image_key": "twelve_data",
       "lane": "default",
+      "name": "findb-historical-tpex",
+      "provider": "tpex",
+      "role": "historical"
+    },
+    {
+      "image_key": "twelve_data",
+      "lane": "default",
       "name": "findb-historical-twelve-data",
       "provider": "twelve_data",
+      "role": "historical"
+    },
+    {
+      "image_key": "twelve_data",
+      "lane": "default",
+      "name": "findb-historical-twse",
+      "provider": "twse",
       "role": "historical"
     }
   ],
@@ -97,14 +125,16 @@
     "finlab",
     "twelve_data"
   ],
-  "projection_sha256": "e426c7ba49775bfd9467fc3f4eea0ffb166431d2324f12a9837cef6f385e3acc",
+  "projection_sha256": "8a70fa170ad7f1fe9fdb0da13e8990b97bb8d54fc5c073b162f86fe90816cc71",
   "providers": [
     "factset",
     "finlab",
     "fmp",
     "hkex",
     "taifex",
-    "twelve_data"
+    "tpex",
+    "twelve_data",
+    "twse"
   ],
   "schema_version": 1
 }

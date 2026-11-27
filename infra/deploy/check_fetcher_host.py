@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 # BEGIN GENERATED PROVIDER INVENTORY
-PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
+PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "tpex", "twelve_data", "twse")
 CONSUMERS = (
     ("findb-full-market-factset", "factset", "full_market", "default", "factset"),
     ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
@@ -21,25 +21,37 @@ CONSUMERS = (
     ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
     ("findb-full-market-intraday-finlab", "finlab", "full_market", "intraday", "finlab"),
     ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-tpex", "tpex", "full_market", "default", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
+    ("findb-full-market-twse", "twse", "full_market", "default", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "default", "factset"),
     ("findb-historical-finlab", "finlab", "historical", "default", "finlab"),
     ("findb-historical-fmp", "fmp", "historical", "default", "twelve_data"),
     ("findb-historical-hkex", "hkex", "historical", "default", "twelve_data"),
     ("findb-historical-taifex", "taifex", "historical", "default", "twelve_data"),
+    ("findb-historical-tpex", "tpex", "historical", "default", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "default", "twelve_data"),
+    ("findb-historical-twse", "twse", "historical", "default", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
 
-# Lanes a bundle first installs: an older host lacks the whole group, never part.
+# Lanes and providers a bundle first installs: an older host lacks each whole
+# group, never part of one.
 LANE_SINCE_BUNDLE = {("finlab", "intraday"): 8}
+PROVIDER_SINCE_BUNDLE = {"twse": 9, "tpex": 9}
+
+
+def _newer_groups():
+    for key, since in LANE_SINCE_BUNDLE.items():
+        yield since, {row[0] for row in CONSUMERS if (row[1], row[3]) == key}
+    for provider, since in PROVIDER_SINCE_BUNDLE.items():
+        yield since, {row[0] for row in CONSUMERS if row[1] == provider}
 
 
 def required_consumers(version, names):
     required = set(EXPECTED_RUNTIMES)
-    for key, since in LANE_SINCE_BUNDLE.items():
-        group = {row[0] for row in CONSUMERS if (row[1], row[3]) == key}
+    for since, group in _newer_groups():
         if version < since and not names & group:
             required -= group
         elif not group <= names:
@@ -75,8 +87,8 @@ def installed_manifest(base, validator, target, registry):
         manifest = validator._load_manifest_bytes(source.read("release-manifest.json"))
         if type(manifest.get("fetcher_bundle_version")) is not int or manifest[
             "fetcher_bundle_version"
-        ] not in (7, 8):
-            # Bundle v7 is the rollback floor; v8 adds FinLab's intraday lane.
+        ] not in (7, 8, 9):
+            # Bundle v7 is the rollback floor; v8 adds FinLab's intraday lane, v9 TWSE and TPEx.
             raise ValueError("installed fetcher bundle format identity invalid")
         contracts = source.load_selected_contract_manifest(root / "contracts/manifest.json")
         validator.validate_manifest(manifest, contracts, source)

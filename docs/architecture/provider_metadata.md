@@ -1,9 +1,10 @@
 # Provider metadata
 
-`backend/configs/provider_catalog.v1.json` 定義六個 providers／十三條 feeds：
+`backend/configs/provider_catalog.v1.json` 定義八個 providers／十五條 feeds：
 Twelve Data US EOD、FactSet HK EOD、HKEX 官方每日行情（`hk_equity_official_eod`，契約 `exchange_daily_quote.v1`）、
 FMP 市場指數日線（`hk_index_eod`、`us_index_eod` 與 `us_dollar_index_eod`，契約 `market_eod.v2`，`asset_class` 為 `index`；
 同一市場可有多個指數 dataset，Serve 依市場與資產類別讀取，`/datasets` 以各 dataset 自己寫入的資料計算涵蓋範圍）、
+TWSE 加權指數與 TPEx 櫃買指數的官方日線（`tw_twse_index_eod`、`tw_tpex_index_eod`，契約 `market_eod.v2`，各自一個 provider）、
 FinLab TW equity／ETF EOD、TAIFEX futures EOD，以及 FinLab 的四條盤中 feed
 （`tw_equity_bar_1m`、`tw_etf_bar_1m`、`tw_equity_tick`、`tw_etf_tick`，契約 `intraday_partition.v1`）。
 只有盤中 feed 的頻率不是 `daily`：1 分 K 為 `minute`，逐筆為 `tick`。
@@ -78,7 +79,7 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   這些都是 `none`，Source 對清單外的列照樣回 409。
 - `calendar_required` 宣告 feed 的日期是否只能用已發布的交易所日曆。`true` 時缺日曆的日期不以 weekday
   預設代替，而是以 `CALENDAR_UNPUBLISHED` 等待重試，歷史回補也拒絕含未發布日期的範圍，見
-  [Full market 維運](../operations/full_market.md)。目前只有兩條 FMP 指數 feed 是 `true`。
+  [Full market 維運](../operations/full_market.md)。目前只有 FMP、TWSE 與 TPEx 的指數 feed 是 `true`。
   只有 Backend 讀這個欄位；Fetcher 只依 Source 回的錯誤碼等待，不在 execution descriptors 裡。
 - 同一 dataset 的 feeds 必須共用 `calendar_market`（loader 檢查）。Backend 以 dataset 查日曆市場時一律讀
   catalog，沒有 catalog feed 的退役 Shioaji 分 K dataset 沿用自身 market。

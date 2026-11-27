@@ -34,6 +34,8 @@ export const DATASET_NAMES: Readonly<Record<string, string>> = {
   tw_etf_minute: "台股 ETF 分鐘 K（已退役）",
   tw_etf_tick: "台股 ETF 逐筆成交",
   tw_futures_eod: "台灣期貨日K",
+  tw_tpex_index_eod: "櫃買指數日K",
+  tw_twse_index_eod: "加權指數日K",
   us_dollar_index_eod: "美元指數日K",
   us_equity_eod: "美股日K",
   us_index_eod: "美股指數日K",

@@ -29,6 +29,8 @@ _IMPLEMENTED_ADAPTERS = frozenset(
         ("fmp", "hk_index_eod"),
         ("fmp", "us_index_eod"),
         ("fmp", "us_dollar_index_eod"),
+        ("twse", "tw_twse_index_eod"),
+        ("tpex", "tw_tpex_index_eod"),
     }
 )
 

@@ -21,7 +21,9 @@ from findb_fetcher.provider_adapters.finlab import FinLabAdapter
 from findb_fetcher.provider_adapters.fmp import FMPAdapter
 from findb_fetcher.provider_adapters.hkex import HkexAdapter
 from findb_fetcher.provider_adapters.taifex import TaifexAdapter
+from findb_fetcher.provider_adapters.tpex import TpexAdapter
 from findb_fetcher.provider_adapters.twelve_data import TwelveDataAdapter
+from findb_fetcher.provider_adapters.twse import TwseAdapter
 
 ADAPTERS: dict[str, type[ProviderAdapter]] = {
     adapter.provider: adapter
@@ -32,6 +34,8 @@ ADAPTERS: dict[str, type[ProviderAdapter]] = {
         FactSetAdapter,
         HkexAdapter,
         FMPAdapter,
+        TwseAdapter,
+        TpexAdapter,
     )
 }
 
@@ -63,7 +67,9 @@ __all__ = [
     "ProviderAdapter",
     "ProviderFailure",
     "TaifexAdapter",
+    "TpexAdapter",
     "TwelveDataAdapter",
+    "TwseAdapter",
     "UniverseContext",
     "UniverseSnapshot",
     "adapter_for",

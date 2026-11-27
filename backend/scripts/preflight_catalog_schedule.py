@@ -14,7 +14,7 @@ from app.config import get_settings
 def migration_module():
     path = (
         Path(__file__).resolve().parents[1]
-        / "migrations/versions/7733f9692fe6_finlab_daily_1930_schedule.py"
+        / "migrations/versions/e28706e77614_twse_tpex_index_feeds.py"
     )
     spec = importlib.util.spec_from_file_location("catalog_schedule_migration", path)
     assert spec is not None and spec.loader is not None

@@ -65,6 +65,8 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         ("fmp", "hk_index_eod"),
         ("fmp", "us_index_eod"),
         ("fmp", "us_dollar_index_eod"),
+        ("twse", "tw_twse_index_eod"),
+        ("tpex", "tw_tpex_index_eod"),
     }
     # Intraday feeds deliver minute bars or ticks by reference; nothing else is non-daily.
     assert {
@@ -113,17 +115,23 @@ def test_supported_scopes_contracts_and_deadlines(declaration):
         "us_index_eod": ("Asia/Taipei", "08:30", "Asia/Taipei", "20:30", 1),
         # The dollar index after its 17:00 settlement, before the next session.
         "us_dollar_index_eod": ("America/New_York", "17:15", "America/New_York", "05:15", 1),
+        "tw_twse_index_eod": ("Asia/Taipei", "14:15", "Asia/Taipei", "02:15", 1),
+        "tw_tpex_index_eod": ("Asia/Taipei", "14:15", "Asia/Taipei", "02:15", 1),
     }
     assert feeds["us_index_eod"].schedule.target_date_lag_days == 1
     assert {f.dataset_key for f in catalog.feeds if f.asset_class == "index"} == {
         "hk_index_eod",
         "us_index_eod",
         "us_dollar_index_eod",
+        "tw_twse_index_eod",
+        "tw_tpex_index_eod",
     }
     assert {f.dataset_key for f in catalog.feeds if f.calendar_required} == {
         "hk_index_eod",
         "us_index_eod",
         "us_dollar_index_eod",
+        "tw_twse_index_eod",
+        "tw_tpex_index_eod",
     }
     assert us.bounded_monitor.deadline.local_time == "09:15"
     # One time point ends a date: an unpublished one is retried until 30 minutes before
@@ -340,9 +348,9 @@ def test_inventory_preserves_image_sharing_and_all_roles(declaration):
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
     assert inventory["images"] == ["factset", "finlab", "twelve_data"]
     # One historical and one Full consumer per provider, plus FinLab's intraday lane.
-    assert len(inventory["consumers"]) == 13
+    assert len(inventory["consumers"]) == 17
     # The public exchange providers and FMP run on the Twelve Data image.
-    for provider in ("taifex", "hkex", "fmp"):
+    for provider in ("taifex", "hkex", "fmp", "twse", "tpex"):
         assert {c["name"] for c in inventory["consumers"] if c["provider"] == provider} == {
             f"findb-full-market-{provider}",
             f"findb-historical-{provider}",
@@ -393,7 +401,7 @@ def test_fetcher_descriptors_and_inventory_carry_each_lane(declaration):
     assert {feed["lane"] for feed in descriptors["feeds"]} == {"default"}
     inventory = json.loads(artifacts[INVENTORY])
     # One historical and one Full consumer per provider.
-    assert len(inventory["consumers"]) == 12
+    assert len(inventory["consumers"]) == 16
     assert all(
         set(row) == {"name", "provider", "role", "lane", "image_key"} and row["lane"] == "default"
         for row in inventory["consumers"]
@@ -412,7 +420,7 @@ def test_a_lane_adds_one_full_consumer_and_no_historical_one(declaration):
         feed["dataset_key"] for feed in descriptors["feeds"] if feed["lane"] == "intraday"
     } == set(FINLAB_INTRADAY)
     inventory = json.loads(artifacts[INVENTORY])
-    assert len(inventory["consumers"]) == 13
+    assert len(inventory["consumers"]) == 17
     finlab = sorted(
         (row["name"], row["role"], row["lane"])
         for row in inventory["consumers"]
@@ -464,7 +472,7 @@ def test_new_feed_and_drain_derive_consumer_views(declaration):
     declaration["feeds"].append(feed)
     artifacts = build_artifacts(ProviderCatalog.model_validate(declaration))
     inventory = json.loads(artifacts[Path("infra/deploy/generated/provider_inventory.v1.json")])
-    assert len(inventory["consumers"]) == 15
+    assert len(inventory["consumers"]) == 19
     assert (
         'example: ["example_eod"]'
         in artifacts[Path("dashboard/src/lib/generated/provider-catalog.ts")]
@@ -558,6 +566,8 @@ def test_historical_cohorts_are_catalog_fields():
         ("fmp", "hk_index_eod"): "current_release",
         ("fmp", "us_index_eod"): "current_release",
         ("fmp", "us_dollar_index_eod"): "current_release",
+        ("twse", "tw_twse_index_eod"): "current_release",
+        ("tpex", "tw_tpex_index_eod"): "current_release",
         ("finlab", "tw_equity_eod"): "dated_release",
         ("finlab", "tw_etf_eod"): "dated_release",
         ("taifex", "tw_futures_eod"): "daily_report",
@@ -683,6 +693,9 @@ def test_historical_requests_per_date_rules(declaration):
         ("fmp", "hk_index_eod"): 3,
         ("fmp", "us_index_eod"): 72,
         ("fmp", "us_dollar_index_eod"): 1,
+        # One index each; a month response serves every date of it.
+        ("twse", "tw_twse_index_eod"): 1,
+        ("tpex", "tw_tpex_index_eod"): 1,
         ("finlab", "tw_equity_eod"): 5,
         ("finlab", "tw_etf_eod"): 5,
         ("taifex", "tw_futures_eod"): 5,

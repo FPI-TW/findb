@@ -102,6 +102,20 @@ case "$provider" in
     provider_key=""
     provider_env=()
     ;;
+  twse)
+    marker_identity="twse"
+    image_repository_suffix="twelve-data"
+    source_key="${FETCHER_TWSE_SOURCE_CLIENT_KEY:-}"
+    provider_key=""
+    provider_env=()
+    ;;
+  tpex)
+    marker_identity="tpex"
+    image_repository_suffix="twelve-data"
+    source_key="${FETCHER_TPEX_SOURCE_CLIENT_KEY:-}"
+    provider_key=""
+    provider_env=()
+    ;;
   fmp)
     marker_identity="fmp"
     image_repository_suffix="twelve-data"
@@ -159,9 +173,10 @@ require_value() {
 require_value source_api_url "${FETCHER_SOURCE_API_URL:-}"
 require_value source_client_key "$source_key"
 # Public exchange reports need no provider credential, only a Source key.
-if [ "$provider" != taifex ] && [ "$provider" != hkex ]; then
-  require_value provider_credential "$provider_key"
-fi
+case "$provider" in
+  taifex | hkex | twse | tpex) ;;
+  *) require_value provider_credential "$provider_key" ;;
+esac
 require_value r2_account "${CLOUDFLARE_R2_ACCOUNT_ID:-}"
 require_value r2_bucket "${CLOUDFLARE_R2_RAW_BUCKET:-}"
 require_value r2_access_key "${CLOUDFLARE_R2_RAW_ACCESS_KEY_ID:-}"

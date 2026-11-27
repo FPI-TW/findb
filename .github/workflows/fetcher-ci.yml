@@ -113,7 +113,7 @@ jobs:
       - name: Verify images bootstrap without local schedule files
         working-directory: .
         run: |
-          for pair in findb-fetcher:twelve_data findb-fetcher:taifex findb-fetcher:hkex findb-fetcher:fmp findb-fetcher-finlab:finlab findb-fetcher-factset:factset; do
+          for pair in findb-fetcher:twelve_data findb-fetcher:taifex findb-fetcher:hkex findb-fetcher:fmp findb-fetcher:twse findb-fetcher:tpex findb-fetcher-finlab:finlab findb-fetcher-factset:factset; do
             image="${pair%:*}:${{ github.sha }}"
             provider="${pair#*:}"
             docker run --rm --network none --read-only --tmpfs /tmp -e APP_ENVIRONMENT=local -e SOURCE_API_URL=https://source.invalid -e SOURCE_CLIENT_KEY=offline-validation -e FETCHER_ACCOUNT_STATE_PATH=/tmp/account/governor.sqlite3 "$image" sh -ec '

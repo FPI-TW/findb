@@ -642,7 +642,7 @@ Staging replay 不執行 image publish；FinDB／Fetcher CD 的 deploy job 使�
 
 ## Runtime 與持久化狀態
 
-每次 Fetcher bundle v8 部署固定安裝十三個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
+每次 Fetcher bundle v9 部署固定安裝十七個 consumers：每個 provider 一個 `findb-full-market-<suffix>`
 與一個 `findb-historical-<suffix>`，再加上 FinLab `intraday` 執行線的 `findb-full-market-intraday-finlab`。Daily 使用 `findb-fetch-runtime --execution-profile full_market`、
 catalog 的 feeds 與 calendar；沒有 Pilot profile 或 enable flag，安裝拓撲不隨設定改變。
 
@@ -699,9 +699,10 @@ Backend API 以 `exec uvicorn` 接收停止訊號，dispatcher 使用 init 轉�
 - Backend：migration `c7e9a1b3d5f8`（[交付計畫 unavailable 計數](#交付計畫-unavailable-計數的-rollback-下限)）。
   Migration 測試從前一版 `1587769858c0` 開始，container regression 從此 revision 升級。
 - Fetcher：`fetcher-v0.1.51`（provider-work journal 與 Full checkpoint 分檔，見下節）與 bundle v7
-  （十二個 consumers，見 [FMP provider 加入](#fmp-provider-加入與-rollback-下限)）。CD 只部署 bundle v8
-  （[FinLab 盤中執行線](#finlab-盤中改走-intraday-執行線)）；host preflight 接受已安裝 v7 或 v8，v7 主機
-  可以整組缺少 FinLab 盤中 lane 的 consumer，v8 主機必須十三個齊全。主機上只能有這些 consumers：
+  （十二個 consumers，見 [FMP provider 加入](#fmp-provider-加入與-rollback-下限)）。CD 只部署 bundle v9
+  （[TWSE 與 TPEx provider 加入](#twse-與-tpex-provider-加入)）；host preflight 接受已安裝 v7、v8 或 v9：
+  v7 主機可以整組缺少 FinLab 盤中 lane 的 consumer，v7／v8 主機可以整組缺少 TWSE 或 TPEx 的兩個 consumers
+  （每個 provider 各自整組，不能只缺一個），v9 主機必須十七個齊全。主機上只能有這些 consumers：
   Pilot／Shioaji 殘留與統一版以前的 scheduler 一律以 unknown consumer 拒絕，部署不再自動封存或移除它們。
   兩環境都 accepted bundle v8 與 migration `e5979e281ba9` 之後，下限前進到這兩項，host preflight 改為只接受 v8。
 
@@ -1141,6 +1142,36 @@ Catalog 把 FinLab 的四條盤中 feed（`tw_equity_bar_1m`、`tw_etf_bar_1m`�
 - **Rollback**：順序是先 Fetcher、後 Backend（先 downgrade 再換舊 image）。本變更後的 workflow 只部署 v8，而舊
   workflow 的 host preflight 只接受已安裝 v7，所以主機裝上 v8 之後，CD 無法回退到 v7 bundle；Fetcher 的下限實際上
   是 v8。intraday owner 用過之後 downgrade 也會拒絕。兩者都只能往前修。
+
+## TWSE 與 TPEx provider 加入
+
+Catalog 加入第七、第八個 provider `twse` 與 `tpex`（#647），各一條台股指數日線：`tw_twse_index_eod`（`^TWII`
+加權指數）與 `tw_tpex_index_eod`（`^TWOII` 櫃買指數），契約 `market_eod.v2`、`asset_class` 為 `index`、
+台北 14:15 抓當天（期限隔日 02:15）、必須有已發布的 TW 日曆、回補窗口 731 天（`historical_lookback_days`）。
+與 HKEX 相同：公開資料、沒有 provider credential、使用 Twelve Data image，各自一把 Source key：
+
+- `findb/<environment>/fetcher/api/source/twse` 的 `FETCHER_TWSE_SOURCE_CLIENT_KEY`（credential `fetcher-twse`）。
+- `findb/<environment>/fetcher/api/source/tpex` 的 `FETCHER_TPEX_SOURCE_CLIENT_KEY`（credential `fetcher-tpex`）。
+
+Historical 目錄是 `/var/lib/findb-twse-fetcher/historical` 與 `/var/lib/findb-tpex-fetcher/historical`。
+平台速率：TWSE 每分鐘 10 次（實測連續請求間隔 2 秒會被擋約 3.5 分鐘），TPEx 每分鐘 30 次。
+
+- **Backend migration `e28706e77614`** 建立兩個 dataset、兩個 stopped control（`full_market_twse_v1`、
+  `full_market_tpex_v1`，台北 14:15，`taiwan_market_window`）與各自的 scheduler 範圍，並取代 `7733f9692fe6`
+  成為部署前 schedule inspection；其他列沿用 `7733f9692fe6` 的凍結規則。已啟動過 control 或已有使用紀錄時
+  拒絕 downgrade。與所有 migration 相同，回退到舊 Backend image 前必須先 downgrade 到 `e0649188f071`。
+- **Fetcher bundle v9**（marker `# twse-tpex-consumers-v1:`）安裝十七個 consumers。CD 只接受部署 v9。Host
+  preflight 與 runtime recovery 容許 v7／v8 主機整組缺少 TWSE 或 TPEx 的 consumers（本版安裝），部分存在則拒絕。
+- **部署順序**與 HKEX 相同（未登記的 Source key 回 401，新 consumer 會結束、部署失敗）：
+  1. 從 PR head 或 main 以 `tofu apply -target` 建立兩個 Source key secret 的 metadata 與 instance role 的
+     讀取權限，再寫入兩把 key 的值。
+  2. 合併，暫停（取消）同時觸發的 Fetcher 部署。
+  3. FinDB 部署完成後，以 `reconcile_fetcher_credentials.py` 登記兩個 hash（`fetcher-twse` 範圍
+     `tw_twse_index_eod`、`fetcher-tpex` 範圍 `tw_tpex_index_eod`）。
+  4. 重新執行 Fetcher 部署；兩個 provider 的 host lock 在第一次 claim 時自動登記。完成後再完整 `tofu apply`，
+     建立新 consumers 的告警。
+- 上線後兩個 control 仍為 stopped：先 universe refresh 發布第一份 baseline（各一檔固定成員，證據是交易所當月的
+  指數回應），把首日設成單一日期，由 Owner start；之後才建立兩年回補。
 
 ## FinLab 日 K 改 19:30
 

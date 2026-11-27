@@ -561,7 +561,8 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             moves,
         )
     )
-    # TAIFEX Source, FactSet, HKEX Source and FMP metadata are newly created resources.
+    # TAIFEX Source, FactSet, HKEX Source, FMP, TWSE Source and TPEx Source metadata are
+    # newly created resources.
     # The original state addresses keep their existing moves; they have no legacy address.
     assert moved_pairs == {
         (secret_id, secret_id)
@@ -571,6 +572,8 @@ def test_runtime_secrets_are_metadata_only_kms_isolated_and_exactly_scoped() -> 
             "fetcher/api/source/hkex",
             "fetcher/api/source/fmp",
             "fetcher/provider/fmp",
+            "fetcher/api/source/twse",
+            "fetcher/api/source/tpex",
             "fetcher/api/source/factset",
             "fetcher/provider/factset",
             "fetcher/runtime/configuration",

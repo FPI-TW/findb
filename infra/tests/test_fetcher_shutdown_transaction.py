@@ -568,6 +568,8 @@ HOST_LAYOUT = {
     "factset": ("/var/lib/findb-factset-fetcher/historical", "-"),
     "hkex": ("/var/lib/findb-hkex-fetcher/historical", "-"),
     "fmp": ("/var/lib/findb-fmp-fetcher/historical", "-"),
+    "twse": ("/var/lib/findb-twse-fetcher/historical", "-"),
+    "tpex": ("/var/lib/findb-tpex-fetcher/historical", "-"),
 }
 
 

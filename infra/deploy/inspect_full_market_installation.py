@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # BEGIN GENERATED PROVIDER INVENTORY
-PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "twelve_data")
+PROVIDERS = ("factset", "finlab", "fmp", "hkex", "taifex", "tpex", "twelve_data", "twse")
 CONSUMERS = (
     ("findb-full-market-factset", "factset", "full_market", "default", "factset"),
     ("findb-full-market-finlab", "finlab", "full_market", "default", "finlab"),
@@ -20,13 +20,17 @@ CONSUMERS = (
     ("findb-full-market-hkex", "hkex", "full_market", "default", "twelve_data"),
     ("findb-full-market-intraday-finlab", "finlab", "full_market", "intraday", "finlab"),
     ("findb-full-market-taifex", "taifex", "full_market", "default", "twelve_data"),
+    ("findb-full-market-tpex", "tpex", "full_market", "default", "twelve_data"),
     ("findb-full-market-twelve-data", "twelve_data", "full_market", "default", "twelve_data"),
+    ("findb-full-market-twse", "twse", "full_market", "default", "twelve_data"),
     ("findb-historical-factset", "factset", "historical", "default", "factset"),
     ("findb-historical-finlab", "finlab", "historical", "default", "finlab"),
     ("findb-historical-fmp", "fmp", "historical", "default", "twelve_data"),
     ("findb-historical-hkex", "hkex", "historical", "default", "twelve_data"),
     ("findb-historical-taifex", "taifex", "historical", "default", "twelve_data"),
+    ("findb-historical-tpex", "tpex", "historical", "default", "twelve_data"),
     ("findb-historical-twelve-data", "twelve_data", "historical", "default", "twelve_data"),
+    ("findb-historical-twse", "twse", "historical", "default", "twelve_data"),
 )
 EXPECTED_RUNTIMES = tuple(row[0] for row in CONSUMERS)
 # END GENERATED PROVIDER INVENTORY
