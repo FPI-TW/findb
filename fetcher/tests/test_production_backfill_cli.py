@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import httpx
 import pytest
 
-from findb_fetcher import execution_metadata, production_backfill_cli
-
-CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
+from findb_fetcher import production_backfill_cli
 
 
 @pytest.fixture(autouse=True)
-def descriptor_universes(monkeypatch):
-    monkeypatch.setattr(execution_metadata, "CONFIGS_DIR", CONFIGS_DIR)
+def no_local_schedules(monkeypatch):
     monkeypatch.setenv("FETCHER_HISTORICAL_SCHEDULE_FILE", "/absent/daily.json")
     monkeypatch.setenv("FETCHER_BOOTSTRAP_CONFIG", "/absent/full-market.json")
 
@@ -45,9 +41,10 @@ def test_dry_run_is_default_and_estimates_calls_without_creating(
             200,
             json={
                 "scope_valid": True,
+                # Each date's frozen Full release, as the Backend counts it.
                 "days": [
-                    {"trade_date": "2026-09-14", "valid": True, "reason": None},
-                    {"trade_date": "2026-09-15", "valid": True, "reason": None},
+                    {"trade_date": "2026-09-14", "valid": True, "reason": None, "members": 2000},
+                    {"trade_date": "2026-09-15", "valid": True, "reason": None, "members": 2100},
                 ],
             },
         )
@@ -57,8 +54,9 @@ def test_dry_run_is_default_and_estimates_calls_without_creating(
 
     output = json.loads(capsys.readouterr().out)
     assert output["mode"] == "dry_run"
-    assert output["estimated_provider_calls"] == 202
-    assert output["estimated_rows"] == 202
+    # Twelve Data requests every frozen member of every date.
+    assert output["estimated_provider_calls"] == 4100
+    assert output["estimated_rows"] == 4100
     assert [request.url.path for request in requests] == [
         "/api/v1/admin/historical-backfills/preview"
     ]
@@ -77,7 +75,9 @@ def test_deliver_creates_only_after_successful_preview(
                 200,
                 json={
                     "scope_valid": True,
-                    "days": [{"trade_date": "2026-09-14", "valid": True, "reason": None}],
+                    "days": [
+                        {"trade_date": "2026-09-14", "valid": True, "reason": None, "members": 1950}
+                    ],
                 },
             )
         return httpx.Response(202, json={"request_id": "0199-request", "status": "queued"})
@@ -91,8 +91,9 @@ def test_deliver_creates_only_after_successful_preview(
         )
 
     output = json.loads(capsys.readouterr().out)
+    # FinLab reads five shared tables per date, whatever the cohort's size.
     assert output["estimated_provider_calls"] == 5
-    assert output["estimated_rows"] == 50
+    assert output["estimated_rows"] == 1950
     assert output["created"]["status"] == "queued"
 
 
@@ -200,10 +201,17 @@ def test_planner_cannot_expand_historical_scope(monkeypatch, provider, dataset):
         assert production_backfill_cli.main(_args(provider, dataset), client=client) == 2
 
 
-def test_planner_estimates_etf_release_cohort_without_a_static_universe(monkeypatch):
+def test_per_member_estimate_needs_every_dates_member_count():
+    # An older Backend or a date without a release gives no count: no guessed estimate.
+    with pytest.raises(production_backfill_cli.BackfillCLIError, match="member count"):
+        production_backfill_cli._estimate("per_member", [{"members": 3}, {"valid": True}])
+    assert production_backfill_cli._estimate("per_member", []) == (0, 0)
+    assert production_backfill_cli._estimate(5, [{"members": 3}, {}]) == (10, None)
+
+
+def test_planner_rejects_the_removed_universe_file_option(monkeypatch):
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
-    # The Backend freezes the ETF Full release; FinLab reads five shared tables per date.
-    assert production_backfill_cli._scope("finlab", "tw_etf_eod") == (5, None)
+    assert production_backfill_cli.main([*_args(), "--universe-file", "/absent/list.json"]) == 2
 
 
 def test_planner_requires_production_and_rejects_retired_schedule_option(monkeypatch):

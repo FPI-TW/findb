@@ -1218,8 +1218,9 @@ async def test_operator_can_preview_create_list_scope_and_cancel_historical_back
     preview = await client.post(
         "/api/v1/admin/historical-backfills/preview", headers=admin_headers, json=body
     )
+    # No release is published before creation here, so the date has no member count yet.
     assert preview.status_code == 200 and preview.json()["days"] == [
-        {"trade_date": today.isoformat(), "valid": True, "reason": None}
+        {"trade_date": today.isoformat(), "valid": True, "reason": None, "members": None}
     ]
     created = await client.post(
         "/api/v1/admin/historical-backfills", headers=admin_headers, json=body

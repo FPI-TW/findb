@@ -338,3 +338,12 @@ async def test_preview_marks_the_closed_days_creation_skips(test_session, monkey
     assert skipped == {date(2026, 10, 17), date(2026, 10, 18)}
     assert {day for day, valid, why in days if not valid and why == "market_closed"} == skipped
     assert all(valid for day, valid, _ in days if day not in skipped)
+    # Every date of a current-release request freezes the same members.
+    counts = await historical_backfill.preview_member_counts(
+        test_session,
+        provider="factset",
+        dataset_key="hk_equity_eod",
+        days=[day for day, valid, _ in days if valid],
+    )
+    assert set(counts.values()) == {len(request.universe_snapshot["members"])}
+    assert set(counts) == {day for day, valid, _ in days if valid}

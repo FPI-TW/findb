@@ -210,6 +210,9 @@ from app.services.historical_backfill import (
     list_request_summaries as list_historical_backfill_summaries,
 )
 from app.services.historical_backfill import (
+    preview_member_counts as preview_historical_members,
+)
+from app.services.historical_backfill import (
     preview_request as preview_historical_backfill,
 )
 from app.services.ingestion import IngestionService, RawPayloadNotFoundError
@@ -598,6 +601,12 @@ async def preview_historical_backfill_endpoint(
         start_date=body.start_date,
         end_date=body.end_date,
     )
+    members = await preview_historical_members(
+        db,
+        provider=body.provider.lower(),
+        dataset_key=body.dataset_key,
+        days=[value for value, valid, _ in days if valid],
+    )
     return HistoricalBackfillPreviewResponse(
         provider=body.provider,
         dataset_key=body.dataset_key,
@@ -605,7 +614,9 @@ async def preview_historical_backfill_endpoint(
         scope_valid=scope_reason is None,
         scope_reason=scope_reason,
         days=[
-            HistoricalBackfillPreviewDay(trade_date=value, valid=valid, reason=reason)
+            HistoricalBackfillPreviewDay(
+                trade_date=value, valid=valid, reason=reason, members=members.get(value)
+            )
             for value, valid, reason in days
         ],
     )

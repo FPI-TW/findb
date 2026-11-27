@@ -517,6 +517,8 @@ export const historicalBackfillPreviewResponseSchema = z.object({
       trade_date: z.iso.date(),
       valid: z.boolean(),
       reason: z.string().nullable(),
+      // Members the date would freeze; absent from an older Backend.
+      members: z.number().int().nonnegative().nullable().optional(),
     })
   ),
 })

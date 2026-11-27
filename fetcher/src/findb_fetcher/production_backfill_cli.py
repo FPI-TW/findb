@@ -8,19 +8,12 @@ import os
 import sys
 import time
 from datetime import date
-from pathlib import Path
-from typing import Any, Callable, Never, Sequence
+from typing import Any, Never, Sequence
 
 import httpx
 
 from findb_fetcher.config import app_environment
-from findb_fetcher.execution_metadata import (
-    historical_execution,
-    historical_feed,
-    historical_provider_ids,
-)
-from findb_fetcher.finlab_universe import load_finlab_universe
-from findb_fetcher.universe import load_symbol_universe
+from findb_fetcher.execution_metadata import historical_feed, historical_provider_ids
 
 
 class BackfillCLIError(RuntimeError):
@@ -43,9 +36,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-date", required=True, type=date.fromisoformat)
     parser.add_argument("--end-date", required=True, type=date.fromisoformat)
     parser.add_argument("--request-key")
-    parser.add_argument(
-        "--universe-file", type=Path, help="Reviewed Twelve Data/FinLab universe for estimation"
-    )
     parser.add_argument("--deliver", action="store_true")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--poll-seconds", type=int, default=15)
@@ -53,37 +43,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-# Reviewed universe file formats, by the provider that publishes them.
-_UNIVERSE_LOADERS: dict[str, Callable[[Path], Any]] = {
-    "twelve_data": load_symbol_universe,
-    "finlab": load_finlab_universe,
-}
-
-
-def _scope(
-    provider: str, dataset_key: str, universe_file: Path | None = None
-) -> tuple[int, int | None]:
-    """Provider requests and rows per date, from the feed's catalog declaration."""
+def _requests_per_date(provider: str, dataset_key: str) -> int | str:
+    """Provider requests one date costs: a fixed count, or ``per_member``."""
     if app_environment() != "production":
         raise BackfillCLIError("backfill planner requires production")
-    feed = historical_feed(provider, dataset_key)
-    per_date = feed["historical_requests_per_date"]
-    if feed["historical_cohort"] != "dated_release":
-        # The date's report or the request's current release decides the members.
-        if universe_file is not None:
-            raise BackfillCLIError("This provider uses a Backend-owned historical universe")
-        return per_date, None
-    if universe_file is None and feed["historical_execution"] is None:
-        # The Backend freezes each date's Full release; no packaged list to count.
-        if per_date == "per_member":
-            raise BackfillCLIError("Per-member estimate requires a reviewed universe file")
-        return per_date, None
-    execution = historical_execution(provider, dataset_key, universe_file=universe_file)
-    loader = _UNIVERSE_LOADERS.get(provider)
-    if loader is None:
-        raise BackfillCLIError("requested production EOD provider is unsupported")
-    symbols = len(loader(execution.universe_file).symbols)
-    return (symbols if per_date == "per_member" else per_date), symbols
+    return historical_feed(provider, dataset_key)["historical_requests_per_date"]
+
+
+def _estimate(per_date: int | str, days: list[dict[str, Any]]) -> tuple[int, int | None]:
+    """Provider calls and rows of the valid dates, from the members each would freeze.
+
+    The Backend preview counts the members a request created now freezes for each
+    date; a feed whose date report decides them has no count, so rows stay unknown.
+    """
+    counts = [item.get("members") for item in days]
+    members = [count for count in counts if type(count) is int and count >= 0]
+    known = len(members) == len(counts)
+    if per_date == "per_member":
+        if not known:
+            raise BackfillCLIError("Per-member estimate requires each date's member count")
+        return sum(members), sum(members)
+    return len(days) * int(per_date), sum(members) if known and members else None
 
 
 def _request(
@@ -125,7 +105,7 @@ def main(argv: Sequence[str] | None = None, *, client: httpx.Client | None = Non
         args = build_parser().parse_args(argv)
         if args.start_date > args.end_date or args.wait and not args.deliver:
             raise BackfillCLIError("invalid production backfill arguments")
-        calls_per_day, rows_per_day = _scope(args.provider, args.dataset_key, args.universe_file)
+        per_date = _requests_per_date(args.provider, args.dataset_key)
         base_url = os.environ["FINDB_ADMIN_API_URL"]
         api_key = os.environ["FINDB_BACKFILL_ADMIN_API_KEY"]
         request_key = args.request_key or (
@@ -152,16 +132,16 @@ def main(argv: Sequence[str] | None = None, *, client: httpx.Client | None = Non
             days = preview.get("days")
             if not isinstance(days, list):
                 raise BackfillCLIError("production backfill preview is invalid")
-            valid_days = sum(
-                1 for item in days if isinstance(item, dict) and item.get("valid") is True
-            )
+            valid = [item for item in days if isinstance(item, dict) and item.get("valid") is True]
+            valid_days = len(valid)
+            calls, rows = _estimate(per_date, valid)
             plan = {
                 "mode": "deliver" if args.deliver else "dry_run",
                 "request": body,
                 "scope_valid": preview.get("scope_valid") is True,
                 "valid_trade_dates": valid_days,
-                "estimated_provider_calls": valid_days * calls_per_day,
-                "estimated_rows": valid_days * rows_per_day if rows_per_day is not None else None,
+                "estimated_provider_calls": calls,
+                "estimated_rows": rows,
                 "preview": preview,
             }
             if not args.deliver:

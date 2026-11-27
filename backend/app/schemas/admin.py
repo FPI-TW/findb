@@ -127,6 +127,9 @@ class HistoricalBackfillPreviewDay(BaseModel):
     trade_date: date
     valid: bool
     reason: str | None = None
+    # Members a request created now would freeze for the date; None when the
+    # date's own report decides them or no release applies yet.
+    members: int | None = None
 
 
 class HistoricalBackfillPreviewResponse(BaseModel):

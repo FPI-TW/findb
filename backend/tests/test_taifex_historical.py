@@ -485,6 +485,16 @@ async def test_closed_dates_follow_the_daily_calendar_switch(test_session, monke
         end_date=date(2026, 9, 27),
     )
     assert reason is None and all(valid for _, valid, _ in days)
+    # The date's own report decides its contracts: there is nothing to count before.
+    assert (
+        await historical_backfill.preview_member_counts(
+            test_session,
+            provider="taifex",
+            dataset_key="tw_futures_eod",
+            days=[day for day, _, _ in days],
+        )
+        == {}
+    )
     request, _ = await historical_backfill.create_request(
         test_session,
         provider="taifex",

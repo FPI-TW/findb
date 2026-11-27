@@ -135,6 +135,10 @@ async def test_each_date_freezes_its_plan_release_or_latest_published(
     changed.members = [*changed.members[1:], late]
     changed.effective_date = date(2026, 10, 16)
     newer = await _publish(test_session, changed, first=False)
+    # The operator preview counts the members each date would freeze, before creation.
+    assert await historical_backfill.preview_member_counts(
+        test_session, provider=provider, dataset_key=SCOPES[provider], days=[FIRST, SECOND]
+    ) == {FIRST: 2, SECOND: 3}
     request, _ = await historical_backfill.create_request(
         test_session,
         provider=provider,
