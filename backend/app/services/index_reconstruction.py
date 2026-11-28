@@ -9,8 +9,9 @@ Two sources describe the same membership differently:
 
 Snapshots are authoritative where they exist.  A temporary counter (codes
 02900-02999, used while a stock consolidates or splits) is mapped back to the
-permanent code it stands in for, by the same-day swap the snapshots show, and a
-placeholder (``99999``) is not a member.  Before the earliest snapshot the
+permanent code it stands in for, by the same-day swap the snapshots show or,
+failing that, by the company name it keeps; a change listed under a counter
+code is mapped by name the same way.  A placeholder (``99999``) is not a member.  Before the earliest snapshot the
 membership is derived by rolling it back through the published changes: the
 members before a change date are the members after it, less that date's
 additions, plus its deletions.  Where the sources disagree the history keeps the
@@ -22,7 +23,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Hashable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Literal
 
@@ -64,6 +65,7 @@ class ChangeEvent:
     symbol: str
     constituents_after: int
     key: Hashable = None
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,8 +121,63 @@ class History:
         return sorted(result, key=lambda item: (item.symbol, item.valid_from or date.min))
 
 
+def _name_key(name: str) -> str:
+    return " ".join(name.split()).casefold()
+
+
+def permanent_codes_by_name(listed: Iterable[tuple[str, str | None]]) -> dict[str, str]:
+    """The one permanent code each company name is listed under, keyed by name.
+
+    A temporary counter trades under the company's own name, so the name finds
+    the code it stands in for.  A name listed under several permanent codes
+    (codes are reused, names repeat) decides nothing.
+    """
+    codes: dict[str, set[str]] = defaultdict(set)
+    for symbol, name in listed:
+        if name and not is_temporary_counter(symbol) and symbol not in PLACEHOLDER_SYMBOLS:
+            codes[_name_key(name)].add(symbol)
+    return {key: next(iter(found)) for key, found in codes.items() if len(found) == 1}
+
+
+def _by_name(name: str | None, by_name: Mapping[str, str]) -> str | None:
+    return by_name.get(_name_key(name)) if name else None
+
+
+def with_permanent_codes(
+    index_code: str, events: Iterable[ChangeEvent], by_name: Mapping[str, str]
+) -> tuple[list[ChangeEvent], list[Finding]]:
+    """Changes listed under a temporary counter, moved to the code the name keeps.
+
+    The change workbook lists a change under the code the stock traded as that
+    day; a counter it was added or deleted under would otherwise never meet the
+    permanent code the snapshots list.  A counter change whose name finds no
+    permanent code is kept as listed and reported.
+    """
+    findings: list[Finding] = []
+    result: list[ChangeEvent] = []
+    for event in events:
+        if is_temporary_counter(event.symbol):
+            permanent = _by_name(event.name, by_name)
+            if permanent is None:
+                findings.append(
+                    _finding(
+                        "temporary_counter_change_unpaired",
+                        index_code,
+                        day=event.effective_date,
+                        symbol=event.symbol,
+                    )
+                )
+            else:
+                event = replace(event, symbol=permanent)
+        result.append(event)
+    return result, findings
+
+
 def canonical_snapshots(
-    snapshots: Mapping[str, Mapping[date, Iterable[str]]], root: str
+    snapshots: Mapping[str, Mapping[date, Iterable[str]]],
+    root: str,
+    names: Mapping[tuple[str, date], str] | None = None,
+    by_name: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, dict[date, frozenset[str]]], list[Finding]]:
     """Family snapshots under permanent codes, without placeholders.
 
@@ -128,8 +185,10 @@ def canonical_snapshots(
     with the permanent code it replaces: the code that leaves the root the day
     the run starts, or joins it the day after the run ends.  A code is reused for
     other stocks later, so every run is paired on its own.  When several codes
-    swap on one day a pair must also share the child index; a run that cannot be
-    paired is left out and reported.
+    swap on one day a pair must also share the child index.  A run no swap
+    shows, such as one already under way at the first snapshot, is paired by the
+    name it is listed under (``names``, by code and day) through ``by_name``;
+    a run that still cannot be paired is left out and reported.
     """
     findings: list[Finding] = []
     cleaned = {
@@ -187,6 +246,8 @@ def canonical_snapshots(
                 }
                 partner = partner_on(counter, days[end], days[end + 1], joining)
             run = days[start : end + 1]
+            if partner is None and by_name and names:
+                partner = _by_name(names.get((counter, days[start])), by_name)
             if partner is None:
                 findings.append(
                     _finding("temporary_counter_unpaired", root, day=run[0], symbol=counter)

@@ -288,6 +288,47 @@ async def test_changes_roll_the_history_back_whichever_arrives_first(
 
 
 @pytest.mark.asyncio
+async def test_temporary_counters_meet_their_permanent_codes_by_name(
+    test_session, stores, datasets
+):
+    # A change listed under a counter, and a counter already trading at the only report.
+    history = changes_payload(
+        [
+            change(1, "2026-09-07", "add", "01440", 3, name_en="STAR SHINE HLDG"),
+            change(2, "2026-03-09", "add", "02910", 2, name_en="ZHIDA TECH"),
+        ],
+        index=HSI,
+        history_start="2026-03-09",
+        document_date=date(2026, 9, 7),
+        series="hsi",
+    )
+    await deliver(test_session, stores, history)
+    rows = [
+        constituent("00001.00", "00005", "50"),
+        constituent("00001.00", "02963", "30", name_en="STAR SHINE HLDG"),
+        constituent("00001.00", "02650", "20", name_en="ZHIDA TECH"),
+        constituent("00001.01", "00005", "100"),
+        constituent("00001.02", "02963", "60", name_en="STAR SHINE HLDG"),
+        constituent("00001.02", "02650", "40", name_en="ZHIDA TECH"),
+    ]
+    indexes = [
+        {**HSI, "constituent_count": 3},
+        {**HSI_FINANCE, "constituent_count": 1},
+        {**HSI_UTILITIES, "constituent_count": 2},
+    ]
+
+    run_id, result = await deliver(test_session, stores, constituents_payload(rows, indexes))
+
+    assert result.failed_records == 0
+    assert await issues(test_session, run_id) == []
+    assert await members(test_session, "00001.00") == [
+        ("00005", None, None),
+        ("01440", date(2026, 9, 7), None),
+        ("02650", date(2026, 3, 9), None),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_disagreements_are_warnings_and_the_history_is_still_rebuilt(
     test_session, stores, datasets
 ):

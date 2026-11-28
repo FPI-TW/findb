@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 from app.services.index_reconstruction import (
@@ -11,6 +12,8 @@ from app.services.index_reconstruction import (
     canonical_snapshots,
     is_temporary_counter,
     partition_findings,
+    permanent_codes_by_name,
+    with_permanent_codes,
 )
 
 D = date
@@ -210,3 +213,57 @@ def test_a_reused_counter_is_paired_again_for_each_run():
     assert findings == []
     assert canonical["00011.00"][D(2026, 10, 2)] == {"00001", "00002", "00003"}
     assert canonical["00011.00"][D(2026, 10, 6)] == {"00001", "00002", "00003"}
+
+
+def test_a_counter_already_trading_at_the_first_snapshot_is_paired_by_name():
+    # The swap into the counter came before the first snapshot: only the name pairs it.
+    by_name = permanent_codes_by_name(
+        [("01440", "STAR SHINE HLDG"), ("02963", "STAR SHINE HLDG"), ("00001", "CKH HOLDINGS")]
+    )
+    day = D(2026, 11, 27)
+    canonical, findings = canonical_snapshots(
+        {"00011.00": {day: {"00001", "02963"}}, "00011.12": {day: {"02963"}}},
+        "00011.00",
+        {("00001", day): "CKH HOLDINGS", ("02963", day): "STAR  shine HLDG"},
+        by_name,
+    )
+
+    assert findings == []
+    assert canonical["00011.00"][day] == {"00001", "01440"}
+    assert canonical["00011.12"][day] == {"01440"}
+
+
+def test_changes_listed_under_a_counter_move_to_the_code_the_name_keeps():
+    by_name = permanent_codes_by_name([("02650", "ZHIDA TECH"), ("02910", "ZHIDA TECH")])
+    listed = [
+        ChangeEvent(D(2026, 3, 9), "add", "02910", 532, "a", "ZHIDA TECH"),
+        ChangeEvent(D(2026, 3, 9), "add", "02911", 532, "b", "CIDI"),
+        ChangeEvent(D(2026, 3, 9), "add", "00005", 532, "c", "HSBC"),
+    ]
+
+    events, findings = with_permanent_codes("00011.00", listed, by_name)
+
+    assert [(event.symbol, event.key) for event in events] == [
+        ("02650", "a"),
+        ("02911", "b"),
+        ("00005", "c"),
+    ]
+    assert [(item.rule, dict(item.detail)) for item in findings] == [
+        ("temporary_counter_change_unpaired", {"day": "2026-03-09", "symbol": "02911"})
+    ]
+    # Rolled back under the permanent code, the addition explains the member.
+    history, found = build_history(
+        "00011.00",
+        snapshots(d2026_11_27={"00005", "02650", "02911"}),
+        [replace(events[0], constituents_after=3)],
+    )
+    assert found == []
+    assert history.members_on(D(2026, 3, 6)) == {"00005", "02911"}
+
+
+def test_a_name_under_several_permanent_codes_decides_nothing():
+    by_name = permanent_codes_by_name(
+        [("00001", "SAME NAME"), ("00002", "Same  Name"), ("00003", "OTHER"), ("99999", "X")]
+    )
+
+    assert by_name == {"other": "00003"}

@@ -35,12 +35,17 @@ from app.services.index_reconstruction import (
     build_history,
     canonical_snapshots,
     partition_findings,
+    permanent_codes_by_name,
+    with_permanent_codes,
 )
 
 # Findings of one rule and index beyond this many are counted, not listed.
 FINDING_SAMPLE = 20
 # Index codes are exchange-specific; membership is resolved against this market.
 INDEX_MARKET = "HK"
+# Part of every build's input digest: a change to how history is derived rebuilds
+# each family at its next delivery, even when no stored document changed.
+RECONSTRUCTION_VERSION = 2
 
 
 @dataclass
@@ -83,7 +88,7 @@ async def _snapshot_headers(db: AsyncSession, index_ids: list[UUID]) -> list[str
 
 async def _snapshots(
     db: AsyncSession, index_ids: list[UUID]
-) -> tuple[dict[UUID, dict[date, set[str]]], dict[str, str]]:
+) -> tuple[dict[UUID, dict[date, set[str]]], dict[tuple[str, date], str]]:
     rows = (
         await db.execute(
             select(
@@ -101,11 +106,11 @@ async def _snapshots(
         )
     ).all()
     members: dict[UUID, dict[date, set[str]]] = defaultdict(lambda: defaultdict(set))
-    names: dict[str, str] = {}
+    names: dict[tuple[str, date], str] = {}
     for index_id, trade_date, symbol, name in rows:
         members[index_id][trade_date].add(symbol)
         if name:
-            names[symbol] = name
+            names[(symbol, trade_date)] = name
     return members, names
 
 
@@ -157,6 +162,7 @@ def _digest(
     definitions: list[IndexDefinition], archives: list[str], events: list[IndexChangeEvent]
 ) -> str:
     material = {
+        "version": RECONSTRUCTION_VERSION,
         "indexes": [
             (item.code, item.parent_index_id and str(item.parent_index_id)) for item in definitions
         ],
@@ -168,6 +174,7 @@ def _digest(
                 event.action,
                 event.symbol,
                 event.constituents_after,
+                event.name_en,
             )
             for event in events
         ],
@@ -215,24 +222,41 @@ async def rebuild_family(
         await db.flush()
         return RebuildResult(build)
     root = roots[0]
-    snapshot_sets, names = await _snapshots(db, ids)
+    snapshot_sets, day_names = await _snapshots(db, ids)
     codes = {item.index_id: item.code for item in definitions}
-    canonical, findings = canonical_snapshots(
-        {codes[index_id]: days for index_id, days in snapshot_sets.items()}, root.code
+    by_name = permanent_codes_by_name(
+        [(symbol, name) for (symbol, _), name in day_names.items()]
+        + [(event.symbol, event.name_en) for event in events]
     )
-    grouped: dict[UUID, list[ChangeEvent]] = defaultdict(list)
+    canonical, findings = canonical_snapshots(
+        {codes[index_id]: days for index_id, days in snapshot_sets.items()},
+        root.code,
+        day_names,
+        by_name,
+    )
+    # The latest name each code is listed under labels its membership.
+    names = {symbol: name for (symbol, _), name in sorted(day_names.items(), key=lambda i: i[0][1])}
+    listed: dict[UUID, list[ChangeEvent]] = defaultdict(list)
     for event in events:
-        grouped[event.index_id].append(
+        listed[event.index_id].append(
             ChangeEvent(
                 event.effective_date,
                 event.action,  # type: ignore[arg-type]
                 event.symbol,
                 event.constituents_after,
                 event.event_id,
+                event.name_en,
             )
         )
-        if event.name_en:
-            names.setdefault(event.symbol, event.name_en)
+    grouped: dict[UUID, list[ChangeEvent]] = {}
+    for item in definitions:
+        grouped[item.index_id], found = with_permanent_codes(
+            item.code, listed[item.index_id], by_name
+        )
+        findings.extend(found)
+        for change in grouped[item.index_id]:
+            if change.name:
+                names.setdefault(change.symbol, change.name)
     histories: dict[UUID, History] = {}
     for item in definitions:
         history, found = build_history(
