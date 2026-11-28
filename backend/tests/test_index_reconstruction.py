@@ -267,3 +267,20 @@ def test_a_name_under_several_permanent_codes_decides_nothing():
     )
 
     assert by_name == {"other": "00003"}
+
+
+def test_a_detached_security_is_never_a_member_whatever_its_code():
+    day = D(2026, 11, 26)
+    detached = "Detached Sec (CHINA TRAVEL HK)"
+    canonical, findings = canonical_snapshots(
+        {"00011.00": {day: {"00001", "01821", "99999"}}, "00011.12": {day: {"01821"}}},
+        "00011.00",
+        {("00001", day): "CKH HOLDINGS", ("01821", day): detached, ("99999", day): detached},
+    )
+
+    assert findings == []
+    assert canonical["00011.00"][day] == {"00001"}
+    assert canonical["00011.12"][day] == frozenset()
+    assert permanent_codes_by_name([("01821", detached), ("00001", "CKH HOLDINGS")]) == {
+        "ckh holdings": "00001"
+    }

@@ -81,7 +81,9 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
       名稱（忽略大小寫與空白）在該系列的快照與 xlsx 中只對到一個正式代碼時才採用。
     - xlsx 也可能以臨時代碼記加入或刪除（例如 2026-03-09 的 02910、02911），同樣依名稱改記到正式代碼；
       對不到時保留原代碼，記 `temporary_counter_change_unpaired`。
-  - **佔位代碼 99999**：例如 2026-11-19 起 HSCI 快照出現 99999，看來是為即將納入的新股預留，不算成分股。
+  - **待售股份（Detached Sec）**：以實物分派的股份在可出售前會以 0 權重列入快照，不算成分股。
+    - 例如中旅分派的「Detached Sec (CHINA TRAVEL HK)」：11-19～11-25 列在佔位代碼 99999，11-26 改列在曾屬其他股票的 01821，11-27 移除。
+    - 重建時 99999 與名稱以「Detached Sec」開頭的列一律排除，不論列在哪個代碼下。
   - **同一天以同一代碼刪除再加入**：例如 2015-03-18 長和集團重組時的 00001。這不是錯誤，成員區間在當天切成兩段。
   - **HSI 報告的分類指數權重欄**：只印出所屬的那一欄，純文字抽取無法分辨是哪一欄，
     所以要依字元位置判斷（見下方「Fetcher 解析」）。
@@ -95,6 +97,11 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 - HSCI 只有一份快照時，01440 應星控股（11-23 起以臨時代碼 02963 交易）配不出正式代碼而被剔除，現行成員只有 579 檔；
   02910、02911 的正式代碼被推成 2008 年起就是成分股。PR 7b 以名稱對應修正兩者，
   以本機歸檔重播：只用 11-27 快照時現行成員為 580 檔，findings 只剩上面兩個 xlsx 缺口。
+- 歸檔匯入（2026-11-28 下午）：`hk_index_constituents` 首日改為 10-02 後補抓 40 個交易日，40/40 結清、80 份 run 完成，
+  10-02～11-26 的報告讀自歸檔（SHA-256 與 manifest 一致）。HSI 每天 95 檔、0 finding；HSCI 現行 580 檔，
+  02650、03881 從 2026-03-09 起才是成分股。
+  - 發現待售股份 01821 被當成 11-26 的成員（HSCI 回傳 581 檔）、01821 先前的成員名稱被標成待售股份、
+    01440 現行沒有權重；PR 7d 修正。
 
 ## 設計
 
@@ -118,6 +125,7 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
   - 輸入摘要包含重建版本（`RECONSTRUCTION_VERSION`）與變動的名稱；改變推算方式時調高版本，各系列在下次交付時重建。
   - 同一系列的歸檔、寫入與重建都在同一把 advisory lock 下進行。
   - 臨時代碼每「一段出現期間」各自配對，代碼日後被別的股票沿用也不會配錯。
+  - 成員名稱依區間取：區間內快照列出的名稱，沒有快照時用該區間加入或刪除事件上的名稱，所以沿用的代碼不會帶到別家公司的名稱。
 - **舊版文件**：同一天的報告或同一指數的變動檔，若晚到的是較舊的版本，不會取代較新的版本，只記 `INDEX_DOCUMENT_STALE` warning。
   - 文件沒寫父指數或行業時，保留已存的值。
   - 成員區間 `valid_from` 為空，代表「在 HSIL 最早紀錄之前」。
@@ -177,6 +185,8 @@ API 前綴：`https://www.hsi.com.hk/api/wsit-hsi-ddoc-ea-public-website-proxy/v
 
 ## Serve（PR 6）
 
+- 成員當天以臨時代碼交易時，權重與收市價取報告中名稱相同的那一列臨時代碼（例如 01440 取 02963 的值）。
+
 - 四個唯讀端點，說明見 `docs/api/api_usage_guide.md`：指數清單、某日成分股（含最新一份報告的權重）、
   變動歷史（cursor 分頁）與 HSICS 分類。
 - 原計畫另列的 `/indexes/{code}/snapshots/{trade_date}` 與 `/instruments/{id}/...` 不另做：
@@ -218,5 +228,6 @@ HSIL 只保留約 36 個交易日的報告，本機歸檔從 2026-10-02 起，�
 | 6 | Serve 端點：`/indexes`、`/indexes/{code}/constituents`、`/indexes/{code}/changes`、`/classifications/hsics` | #782 已合併 |
 | 7a | 本機歸檔匯入：`HSIL_DOCUMENT_ARCHIVE_DIR` 讀取 manifest 核對過的報告 | #783 已合併 |
 | 7b | 臨時代碼依名稱對回正式代碼（快照與 xlsx），重建版本納入輸入摘要 | #787 已合併 |
-| 7c | 主機上有歸檔時唯讀掛進 hkex daily consumer | 進行中 |
+| 7c | 主機上有歸檔時唯讀掛進 hkex daily consumer | #788 已合併；staging 已匯入 |
+| 7d | 待售股份不算成分股、成員名稱依區間取、臨時代碼成員的權重 | 進行中 |
 | 7 | staging 驗收、執行歸檔匯入、移除 launchd 排程、整併文件並刪除本檔 | 未開始 |

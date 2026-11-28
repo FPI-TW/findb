@@ -39,6 +39,7 @@ from app.schemas.serve import (
     IndexDefinitionResponse,
     IndexListResponse,
 )
+from app.services.index_reconstruction import is_temporary_counter, name_key
 from app.services.serve import (
     _date_text,
     _decode_cursor,
@@ -248,10 +249,20 @@ async def list_index_constituents(
                 )
             )
         }
+    # A member trading under a temporary counter is listed under the counter's
+    # code; its row is the one counter row with the member's name.
+    current = {member.symbol for member in members}
+    counters: dict[str, list[IndexSnapshotConstituent]] = {}
+    for row in weights.values():
+        if is_temporary_counter(row.symbol) and row.symbol not in current and row.name_en:
+            counters.setdefault(name_key(row.name_en), []).append(row)
     instruments = await _instruments(db, (member.instrument_id for member in members))
     data = []
     for member in members:
         listed = weights.get(member.symbol)
+        if listed is None and member.name_en:
+            named = counters.get(name_key(member.name_en), [])
+            listed = named[0] if len(named) == 1 else None
         instrument = instruments.get(member.instrument_id) if member.instrument_id else None
         data.append(
             IndexConstituentResponse(
