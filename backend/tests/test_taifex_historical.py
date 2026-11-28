@@ -432,13 +432,16 @@ async def test_taifex_window_uses_local_date_and_production_limit(test_session, 
     monkeypatch.setattr(
         historical_backfill, "utc_now", lambda: datetime(2026, 9, 30, 23, 0, tzinfo=timezone.utc)
     )
-    oldest = date(2026, 10, 1) - timedelta(days=365)
+    # The catalog extends TAIFEX to about 2000 (#754); one request still spans 366 days.
+    window = historical_backfill.historical_lookback_days("taifex", "tw_futures_eod")
+    assert window is not None and window > 366
+    oldest = date(2026, 10, 1) - timedelta(days=window - 1)
     _, reason, _ = await historical_backfill.preview_request(
         test_session,
         provider="taifex",
         dataset_key="tw_futures_eod",
         start_date=oldest,
-        end_date=date(2026, 10, 1),
+        end_date=oldest + timedelta(days=365),
     )
     assert reason is None
     _, reason, _ = await historical_backfill.preview_request(
@@ -446,9 +449,9 @@ async def test_taifex_window_uses_local_date_and_production_limit(test_session, 
         provider="taifex",
         dataset_key="tw_futures_eod",
         start_date=oldest - timedelta(days=1),
-        end_date=date(2026, 10, 1),
+        end_date=oldest + timedelta(days=364),
     )
-    assert reason == "outside_latest_366_days"
+    assert reason == f"outside_latest_{window}_days"
 
 
 @pytest.mark.asyncio

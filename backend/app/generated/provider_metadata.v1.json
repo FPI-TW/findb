@@ -126,7 +126,7 @@
       },
       "frequency": "daily",
       "historical_cohort": "dated_release",
-      "historical_lookback_days": null,
+      "historical_lookback_days": 7600,
       "historical_requests_per_date": 5,
       "lane": "default",
       "lifecycle": "active",
@@ -261,7 +261,7 @@
       },
       "frequency": "daily",
       "historical_cohort": "dated_release",
-      "historical_lookback_days": null,
+      "historical_lookback_days": 7600,
       "historical_requests_per_date": 5,
       "lane": "default",
       "lifecycle": "active",
@@ -351,7 +351,7 @@
       },
       "frequency": "daily",
       "historical_cohort": "current_release",
-      "historical_lookback_days": null,
+      "historical_lookback_days": 10200,
       "historical_requests_per_date": 3,
       "lane": "default",
       "lifecycle": "active",
@@ -396,7 +396,7 @@
       },
       "frequency": "daily",
       "historical_cohort": "current_release",
-      "historical_lookback_days": null,
+      "historical_lookback_days": 10200,
       "historical_requests_per_date": 1,
       "lane": "default",
       "lifecycle": "active",
@@ -441,7 +441,7 @@
       },
       "frequency": "daily",
       "historical_cohort": "current_release",
-      "historical_lookback_days": null,
+      "historical_lookback_days": 10200,
       "historical_requests_per_date": 72,
       "lane": "default",
       "lifecycle": "active",
@@ -621,7 +621,7 @@
       },
       "frequency": "daily",
       "historical_cohort": "daily_report",
-      "historical_lookback_days": null,
+      "historical_lookback_days": 10200,
       "historical_requests_per_date": 5,
       "lane": "default",
       "lifecycle": "active",
@@ -1192,5 +1192,5 @@
       "tw_twse_institutional_summary"
     ]
   },
-  "source_sha256": "6d13be8de446afe6def3a6fc3b691d7037f37fe059903ff283ba39c46c197cf8"
+  "source_sha256": "1c66f8bf305c25843a369a649abb527f8c3c53ad7581c24a831fe8102b40082a"
 }

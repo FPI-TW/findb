@@ -21,8 +21,9 @@ EnvName = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]*$", max_length=100)]
 Clock = Annotated[str, Field(pattern=r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")]
 PositiveInt = Annotated[int, Field(gt=0)]
 # A feed may reach further back than the production default of 366 days (the
-# latest year), never less, and at most about ten years.
-HistoricalLookbackDays = Annotated[int, Field(ge=367, le=3660)]
+# latest year), never less, and at most about thirty years: the Owner's deepest
+# target is 2000 (#754), plus room for the rolling window to keep it reachable.
+HistoricalLookbackDays = Annotated[int, Field(ge=367, le=10950)]
 DayOffset = Annotated[int, Field(ge=0, le=366)]
 ConsumerRole = Literal["full_market", "historical"]
 # Every acquiring feed is due this long after its scheduled start, in the schedule's timezone.
