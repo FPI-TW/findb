@@ -36,7 +36,14 @@ class EODCompletionEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: Literal[2]
-    schema_id: Literal["market_eod", "exchange_daily_quote"]
+    # Every contract in ``eod_completion.MEMBER_EOD_SCHEMAS``; an exchange's
+    # institutional table is its board's one member of the day.
+    schema_id: Literal[
+        "market_eod",
+        "exchange_daily_quote",
+        "institutional_flow_summary",
+        "institutional_flow_stock",
+    ]
     # FactSet delivers EOD v2; Full release cohorts deliver their feed contract (v1).
     schema_version: Literal[1, 2]
     trade_date: date
