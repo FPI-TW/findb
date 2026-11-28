@@ -32,8 +32,10 @@ from app.services.index_reconstruction import (
     ChangeEvent,
     Finding,
     History,
+    Interval,
     build_history,
     canonical_snapshots,
+    is_placeholder,
     partition_findings,
     permanent_codes_by_name,
     with_permanent_codes,
@@ -45,7 +47,7 @@ FINDING_SAMPLE = 20
 INDEX_MARKET = "HK"
 # Part of every build's input digest: a change to how history is derived rebuilds
 # each family at its next delivery, even when no stored document changed.
-RECONSTRUCTION_VERSION = 2
+RECONSTRUCTION_VERSION = 3
 
 
 @dataclass
@@ -234,8 +236,14 @@ async def rebuild_family(
         day_names,
         by_name,
     )
-    # The latest name each code is listed under labels its membership.
-    names = {symbol: name for (symbol, _), name in sorted(day_names.items(), key=lambda i: i[0][1])}
+    # Names each code is listed under, by day; a code is reused, so each
+    # membership takes the name listed while it lasted.
+    seen: dict[str, list[tuple[date, str]]] = defaultdict(list)
+    for (symbol, day), name in sorted(day_names.items(), key=lambda item: item[0][1]):
+        if not is_placeholder(symbol, name):
+            seen[symbol].append((day, name))
+    names = {symbol: rows[-1][1] for symbol, rows in seen.items()}
+    event_names = {event.event_id: event.name_en for event in events if event.name_en}
     listed: dict[UUID, list[ChangeEvent]] = defaultdict(list)
     for event in events:
         listed[event.index_id].append(
@@ -310,7 +318,7 @@ async def rebuild_family(
                     index_id=index_id,
                     symbol=interval.symbol,
                     instrument_id=match[0] if match is not None and resolved else None,
-                    name_en=names.get(interval.symbol),
+                    name_en=_interval_name(interval, seen, event_names, names),
                     valid_from=interval.valid_from,
                     valid_to=interval.valid_to,
                     from_event_id=_event_id(interval.from_event),
@@ -320,6 +328,27 @@ async def rebuild_family(
             )
     await db.flush()
     return RebuildResult(build, findings, sorted(unresolved))
+
+
+def _interval_name(
+    interval: Interval,
+    seen: dict[str, list[tuple[date, str]]],
+    event_names: dict[UUID, str],
+    latest: dict[str, str],
+) -> str | None:
+    """The name a report listed during the membership, else its own change's name."""
+    within = [
+        name
+        for day, name in seen.get(interval.symbol, ())
+        if (interval.valid_from is None or day >= interval.valid_from)
+        and (interval.valid_to is None or day < interval.valid_to)
+    ]
+    if within:
+        return within[-1]
+    for key in (interval.to_event, interval.from_event):
+        if isinstance(key, UUID) and key in event_names:
+            return event_names[key]
+    return latest.get(interval.symbol)
 
 
 def _event_id(key: Hashable) -> UUID | None:

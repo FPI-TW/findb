@@ -11,7 +11,9 @@ Snapshots are authoritative where they exist.  A temporary counter (codes
 02900-02999, used while a stock consolidates or splits) is mapped back to the
 permanent code it stands in for, by the same-day swap the snapshots show or,
 failing that, by the company name it keeps; a change listed under a counter
-code is mapped by name the same way.  A placeholder (``99999``) is not a member.  Before the earliest snapshot the
+code is mapped by name the same way.  A placeholder is not a member: the
+``99999`` code, or a detached security (a share distributed in specie, listed
+until it is sold) whichever code it is printed under.  Before the earliest snapshot the
 membership is derived by rolling it back through the published changes: the
 members before a change date are the members after it, less that date's
 additions, plus its deletions.  Where the sources disagree the history keeps the
@@ -28,6 +30,9 @@ from datetime import date
 from typing import Literal
 
 PLACEHOLDER_SYMBOLS = frozenset({"99999"})
+# A share distributed in specie is listed, unweighted, until it can be sold; the
+# report has printed one under 99999 and then under a code another stock had used.
+PLACEHOLDER_NAME_PREFIX = "detached sec"
 
 
 def is_temporary_counter(symbol: str) -> bool:
@@ -121,8 +126,16 @@ class History:
         return sorted(result, key=lambda item: (item.symbol, item.valid_from or date.min))
 
 
-def _name_key(name: str) -> str:
+def name_key(name: str) -> str:
+    """A company name compared without case or spacing."""
     return " ".join(name.split()).casefold()
+
+
+def is_placeholder(symbol: str, name: str | None = None) -> bool:
+    """A listed row that is not a member: the placeholder code or a detached security."""
+    return symbol in PLACEHOLDER_SYMBOLS or (
+        name is not None and name_key(name).startswith(PLACEHOLDER_NAME_PREFIX)
+    )
 
 
 def permanent_codes_by_name(listed: Iterable[tuple[str, str | None]]) -> dict[str, str]:
@@ -134,13 +147,13 @@ def permanent_codes_by_name(listed: Iterable[tuple[str, str | None]]) -> dict[st
     """
     codes: dict[str, set[str]] = defaultdict(set)
     for symbol, name in listed:
-        if name and not is_temporary_counter(symbol) and symbol not in PLACEHOLDER_SYMBOLS:
-            codes[_name_key(name)].add(symbol)
+        if name and not is_temporary_counter(symbol) and not is_placeholder(symbol, name):
+            codes[name_key(name)].add(symbol)
     return {key: next(iter(found)) for key, found in codes.items() if len(found) == 1}
 
 
 def _by_name(name: str | None, by_name: Mapping[str, str]) -> str | None:
-    return by_name.get(_name_key(name)) if name else None
+    return by_name.get(name_key(name)) if name else None
 
 
 def with_permanent_codes(
@@ -181,6 +194,8 @@ def canonical_snapshots(
 ) -> tuple[dict[str, dict[date, frozenset[str]]], list[Finding]]:
     """Family snapshots under permanent codes, without placeholders.
 
+    ``names`` (by code and day) also tells a detached security from a member.
+
     Each run of days a temporary counter is in the family's root index is paired
     with the permanent code it replaces: the code that leaves the root the day
     the run starts, or joins it the day after the run ends.  A code is reused for
@@ -192,7 +207,14 @@ def canonical_snapshots(
     """
     findings: list[Finding] = []
     cleaned = {
-        code: {day: frozenset(members) - PLACEHOLDER_SYMBOLS for day, members in days.items()}
+        code: {
+            day: frozenset(
+                symbol
+                for symbol in members
+                if not is_placeholder(symbol, (names or {}).get((symbol, day)))
+            )
+            for day, members in days.items()
+        }
         for code, days in snapshots.items()
     }
     root_snapshots = cleaned.get(root, {})

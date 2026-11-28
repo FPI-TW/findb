@@ -6,13 +6,16 @@ from datetime import date
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
+from app.models.index_reference import IndexMembership
 from app.models.registry import DatasetRegistry
 from app.services.normalize import index_reference
 from tests.index_reference_support import (
     HSCI,
     HSCI_UTILITIES,
     HSI,
+    HSI_FINANCE,
     change,
     changes_payload,
     constituent,
@@ -22,6 +25,7 @@ from tests.intraday_support import Stores
 from tests.test_index_reference_normalizers import (
     CHANGES,
     CONSTITUENTS,
+    HSI_UTILITIES,
     config,
     deliver,
     hsi_report,
@@ -145,6 +149,70 @@ async def test_constituents_on_a_date_carry_the_latest_stored_weights(
     assert_error(
         await client.get("/api/v1/serve/indexes/HSI/constituents"), 422, "INVALID_PARAMETER"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_member_on_a_counter_keeps_its_weight_and_a_reused_code_its_own_name(
+    client: AsyncClient, test_session, stores, datasets
+):
+    # 01440 trades as counter 02963 at the only report; 00017 named another stock before.
+    await deliver(
+        test_session,
+        stores,
+        changes_payload(
+            [
+                change(1, "2026-09-07", "add", "01440", 4, name_en="STAR SHINE HLDG"),
+                change(2, "2024-01-02", "add", "00017", 3, name_en="NEW CO"),
+                change(3, "2020-03-09", "delete", "00017", 2, name_en="OLD CO"),
+                change(4, "2015-03-09", "add", "00017", 3, name_en="OLD CO"),
+            ],
+            index=HSI,
+            history_start="2015-03-09",
+            document_date=date(2026, 9, 7),
+            series="hsi",
+        ),
+    )
+    rows = [
+        constituent("00001.00", "00005", "40"),
+        constituent("00001.00", "00017", "30", name_en="NEW CO"),
+        constituent("00001.00", "00002", "20"),
+        constituent("00001.00", "02963", "10", name_en="STAR SHINE HLDG"),
+        constituent("00001.01", "00005", "60"),
+        constituent("00001.01", "00017", "40", name_en="NEW CO"),
+        constituent("00001.02", "00002", "70"),
+        constituent("00001.02", "02963", "30", name_en="STAR SHINE HLDG"),
+    ]
+    indexes = [
+        {**HSI, "constituent_count": 4},
+        {**HSI_FINANCE, "constituent_count": 2},
+        {**HSI_UTILITIES, "constituent_count": 2},
+    ]
+    await deliver(test_session, stores, constituents_payload(rows, indexes))
+
+    response = await client.get(
+        "/api/v1/serve/indexes/00001.00/constituents", params={"as_of": "2026-11-23"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert [
+        (row["symbol"], row["name_en"], row["member_since"], row["weight_pct"])
+        for row in response.json()["data"]
+    ] == [
+        ("00002", "STOCK 00002", None, "20.0000"),
+        ("00005", "STOCK 00005", None, "40.0000"),
+        ("00017", "NEW CO", "2024-01-02", "30.0000"),
+        ("01440", "STAR SHINE HLDG", "2026-09-07", "10.0000"),
+    ]
+    earlier = await test_session.scalars(
+        select(IndexMembership)
+        .where(IndexMembership.symbol == "00017")
+        .order_by(IndexMembership.valid_from)
+    )
+    assert [
+        (row.name_en, row.valid_from, row.valid_to)
+        for row in earlier
+        if row.valid_from and row.valid_from.year < 2024
+    ] == [("OLD CO", date(2015, 3, 9), date(2020, 3, 9))]
 
 
 @pytest.mark.asyncio
