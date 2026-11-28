@@ -51,7 +51,8 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   （`seed_datasets` 會更新現役 control 的 slot），既有列由 migration `c3f6a9d1e2b7` 投影一次；
   `test_cross_timezone_schedule.py` 強制 seed 與 catalog 一致。
 - `historical_cohort` 宣告 historical 日期如何凍結成員，historical feed 必填、其它 feed 為 null：
-  `dated_release`（每個日期綁定當天適用的 Full release，並補查之後清單多出的成員；Twelve Data、FinLab）、`current_release`
+  `dated_release`（每個日期綁定當天適用的 Full release，早於第一份 release 的日期沿用最早那份，並補查之後
+  清單多出的成員；Twelve Data、FinLab）、`current_release`
   （整個 request 綁定建立時的現行 release；FactSet 只能查當下名單）、`daily_report`（成員來自當天報表，
   無凍結名單；TAIFEX）。Historical 沒有打包的靜態 universe。Backend 的
   cohort 綁定、成員驗證與 EOD completion 依此欄位，不再依 provider 名稱；`current_release` 的 frozen
