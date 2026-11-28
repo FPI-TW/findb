@@ -545,6 +545,22 @@ fi
 if [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ]; then
   common_args+=("${readiness_mount[@]}")
 fi
+# HSIL reports HSIL no longer serves are imported from the Owner's archive
+# (docs/dev/hsil-index-reference.md): only while a copy with its manifest is on
+# the host, read-only, for the HKEX daily consumer.  Removing the folder and
+# releasing again ends the import.
+hsil_archive_dir=/var/lib/findb-hsil-archive
+if [ "$provider" = hkex ] && [ "${FETCHER_CONSUMER_PROFILE:-}" != historical ] \
+  && [ -f "$hsil_archive_dir/manifest.json" ]; then
+  if [ -L "$hsil_archive_dir" ]; then
+    echo "release_fetcher_provider=failed reason=hsil_archive_unsafe" >&2
+    exit 1
+  fi
+  common_args+=(
+    --mount "type=bind,src=$hsil_archive_dir,dst=$hsil_archive_dir,readonly"
+    --env "HSIL_DOCUMENT_ARCHIVE_DIR=$hsil_archive_dir"
+  )
+fi
 # No consumer is memory-bounded: a table load that outgrows the host's free
 # memory goes to the host swap instead of being killed inside its container.
 expected_memory=0
