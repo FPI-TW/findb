@@ -372,7 +372,10 @@ Expand migration 匯入未完成 daily plans 時，以每個 minute snapshot gro
 checkpoint 與 sequence identity 均保留，復原 replay 原 receipts 後繼續原未交付 sequence。
 
 Canonical `delivery_member_evidence` 與實際 canonical writes 同 transaction 保存，不依賴會被後續 upsert
-替換的最新 canonical `run_id`。TAIFEX 仍需該日已上市商品各一份分產品 report（五個商品的上市日見 data_maintenance 的 TAIFEX 回補段）、
+替換的最新 canonical `run_id`。記錄證據時依 run 的 `data_date` 與 coverage 限定 `trade_date` 範圍，
+再以 `run_id` 找出寫入的列：canonical 表只索引 `trade_date`，`market_data_eod` 又依年度分區，不限定
+日期就會掃描所有分區，成本隨歷史資料成長；ingress 已保證每列落在這個範圍內（#725）。
+TAIFEX 仍需該日已上市商品各一份分產品 report（五個商品的上市日見 data_maintenance 的 TAIFEX 回補段）、
 whole-day raw manifest 與 no-trade 驗證；
 generic settle 不能代替 historical completion validator。
 
