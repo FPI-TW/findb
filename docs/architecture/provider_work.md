@@ -372,7 +372,8 @@ Expand migration 匯入未完成 daily plans 時，以每個 minute snapshot gro
 checkpoint 與 sequence identity 均保留，復原 replay 原 receipts 後繼續原未交付 sequence。
 
 Canonical `delivery_member_evidence` 與實際 canonical writes 同 transaction 保存，不依賴會被後續 upsert
-替換的最新 canonical `run_id`。TAIFEX 仍需五份分產品 report、whole-day raw manifest 與 no-trade 驗證；
+替換的最新 canonical `run_id`。TAIFEX 仍需該日已上市商品各一份分產品 report（五個商品的上市日見 data_maintenance 的 TAIFEX 回補段）、
+whole-day raw manifest 與 no-trade 驗證；
 generic settle 不能代替 historical completion validator。
 
 同日重疊範圍存在可達的 manual outcome：Full 原 prepared 因 503 tail retry 延後，期間其他 run（例如

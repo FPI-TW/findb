@@ -64,7 +64,7 @@ Historical runner／planner 不讀 daily 排程 API，也不再依賴本機排�
   daily plan 的成員不適用（Owner 於 2026-11-24 決定）。Mapping gap，以及 `current_release` 裡交易日當天
   名單尚未列入的成員是 unavailable，不讓日期 partial（#593）。
 - `historical_requests_per_date` 是 planner 估算每個日期的 provider 請求數：固定次數（共用報表或表格，例如 TAIFEX
-  五個商品、FinLab 五張表、FactSet 一次查詢），或 `per_member`（每個成員一次；Twelve Data），historical feed 必填。
+  五個商品；TMF 上市前的日期實際只有四個以下，估算偏高）、FinLab 五張表、FactSet 一次查詢），或 `per_member`（每個成員一次；Twelve Data），historical feed 必填。
   `per_member` 只能用在 `dated_release`，因為要有成員清單才能計數。
 - `historical_lookback_days` 可延長該 feed 在 production 的回補窗口（367–10950 個 calendar days），`null`
   沿用預設的最近 366 天；只有 historical feed 可以設定，local／staging 一律維持 31 天。窗口是滾動的，

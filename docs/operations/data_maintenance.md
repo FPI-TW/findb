@@ -320,7 +320,10 @@ claim 成功後須確認實際 item 與非空 lease token，再驗證 terminal s
 
 `taifex / tw_futures_eod` 支援 TX、MTX、TMF、TE、TF 全部官方實際月／週／F 契約與
 regular／after_hours；production 依 catalog 可回到 2000 年前後（一筆 request 最多 366 天），local／staging 最近 31 天。
-早於 2024-07 TMF 上市的日期仍會因五個商品缺一而失敗，要等 #754 PR D。
+每個日期只抓、只要求**當天已上市**的商品（#754 PR D）：TX 1998-07-21、TE 與 TF 1999-07-21、MTX 2001-04-09、
+TMF 2024-07-29 起。這些日期已用 `futDataDown` 實測：上市前一個交易日只回標題列，上市當天就有資料。
+Fetcher（`findb_fetcher.providers.taifex`）與 Backend（`app.schemas.historical_backfill`）各有一份上市日表，
+Backend 測試核對兩份相同。Daily 一律抓五個商品。
 日期邊界採 Asia/Taipei；日曆使用 TAIFEX published revision，缺少日期採 weekday default，
 建立時凍結 snapshot；`TAIFEX_SKIP_NON_TRADING_DAYS=true`（預設）時已知休市日為 skipped_calendar，避免把無報表誤報 no-data。當日必須已過 snapshot 收盤且至少 17:00 才能 claim／新抓取。
 年度 ZIP、多年建庫、價差及 continuous 不在此路徑。
