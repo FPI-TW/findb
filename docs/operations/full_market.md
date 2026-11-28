@@ -975,13 +975,14 @@ join 到的 part，再取 plan lock，避免與 worker 的 part 更新互相等�
 因此：
 
 - 建立 plan、分鐘資料（`sequenced_snapshot`）的 run、受控重建與缺少摘要的初始化，對整個
-  cohort 完整重算，並重寫所有 part 計數。
+  cohort 完整重算，並重寫所有 part 計數。建立 plan 的回應沿用這次重算的結果，不再分類第二次。
 - Daily run 的 terminal（完成、失敗、retry exhausted）與 no-data／blocked outcome，只在 plan
   lock 下重新分類該 part（約 50 個成員），把差值加到 plan 摘要；outcome 回應直接讀已更新的
   計數，`gaps` 為空，完整缺口由 GET plan 或 Admin reconcile 提供。
 - Historical run 只重新分類它實際寫入成員所在的 part（同 provider／dataset／date 的 plan）。
-- `resolve_missing_delivery_for_run` 以已存摘要加上該 part 的重新分類判斷 plan 是否完成，
-  不再分類整個 cohort。
+- Terminal run 先在 plan lock 下更新摘要，`resolve_missing_delivery_for_run` 再讀剛存的計數判斷
+  plan 是否完成，所以每筆 run 只分類該 part 一次（#725）。沒有先更新摘要的呼叫者，仍以已存摘要加上
+  該 part 的重新分類判斷，不分類整個 cohort。
 
 Part 計數為 NULL（既有 plan）或 `parts_synced_at` 不等於 `updated_at`（其他 release 寫過
 摘要）時不可信，該次寫入改走完整重算並重新初始化。接受非 terminal、非 `sequenced_snapshot`
@@ -994,6 +995,8 @@ queue worker 只在 terminal commit 前刷新一次，直接呼叫 normalizer �
 上次的位置記在 dispatcher process 內，到最後一個 plan 後從頭開始，重啟也從頭開始。稽核期間摘要未被寫入
 但計數不同時，記 `Plan summary drift corrected` warning 並完整重算修正，告警在下一次掃描跟著更新。
 2026-11-24 production 有 202 個逾期 plan，約 21 分鐘輪完一遍。
+分類 EOD plan 時，只有同 provider／dataset／date 有歷史回補項目（`historical_backfill_item`，
+任何狀態）才查 historical 寫入修復與 no-data 證據；兩者都屬於某個回補項目，沒有項目就不會有結果（#725）。
 Historical 實際寫入的修復會更新同 dataset／provider／date 的 plan 摘要：FactSet、Twelve Data 與
 FinLab 的 historical work 只要以相同契約、相同 provider symbol 凍結該成員並有本 work 的 receipt 與
 canonical 寫入證據，該成員即算 data，解除 gap 與 missing-delivery 告警；原 Full work 的結算不改寫。

@@ -24,6 +24,7 @@ from app.models.registry import (
     NormalizationWorkerHeartbeat,
 )
 from app.schemas.source import RunFailureCode
+from app.services.delivery_monitor import settle_run_summaries
 from app.services.delivery_plan_summary import refresh_summaries_for_run
 from app.services.ingestion import _select_normalizer_for_payload
 from app.services.ingress_contracts import (
@@ -605,7 +606,7 @@ async def execute_normalization(
                     run.attempt_count = attempt_count
                     run.failure_code = None
                     run.next_retry_at = None
-                    await refresh_summaries_for_run(session, run)
+                    await settle_run_summaries(session, run)
                     await session.commit()
                     committed = time.perf_counter()
                     logger.info(

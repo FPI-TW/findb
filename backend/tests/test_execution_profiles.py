@@ -178,9 +178,9 @@ async def test_shared_five_feed_source_queue_canonical_serve(
             job.delivery_id,
             database_url=test_engine.url.render_as_string(hide_password=False),
         )
-        # A daily run reclassifies only its part (alert check, then summary); a
-        # sequenced snapshot still classifies the whole cohort.
-        assert reconciles == ([plan.plan_id] * 2 if key.endswith("minute") else ["part"] * 2)
+        # A daily run reclassifies only its part, once: the alert check reads the
+        # summary that refresh stored. A sequenced snapshot classifies the cohort.
+        assert reconciles == ([plan.plan_id] if key.endswith("minute") else ["part"])
         monkeypatch.setattr(full_market_service, "classify_plan", classify)
         duplicate = await owned_client.post("/api/v1/source/ingest", headers=headers, json=request)
         assert duplicate.json()["run_id"] == str(run_id)

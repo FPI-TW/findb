@@ -907,11 +907,13 @@ async def create_plan(
             )
     from app.services.delivery_plan_summary import refresh_plan_summary
 
-    await refresh_plan_summary(db, plan.plan_id)
+    states = await refresh_plan_summary(db, plan.plan_id)
     await db.commit()
-    return await get_plan(
+    # The new plan's states were just classified for its summary; reuse them.
+    created = await _plan_scope(
         db, plan.plan_id, provider=body.provider, allowed_datasets=allowed_datasets
     )
+    return await plan_response(db, created, states=states)
 
 
 def _skip_response(row: DailyExecutionDecision) -> CalendarSkipResponse:
@@ -1105,8 +1107,9 @@ async def classify_plan(
         repaired, proven_no_data = await _historical_futures(db, plan, members)
         canonical_keys.update(repaired)
     elif plan.dataset_key not in SEQUENCED_DATASETS:
-        canonical_keys.update(await _historical_repairs(db, plan, members, scoped=scoped))
-        proven_no_data = await _historical_no_data(db, plan, members)
+        if await _has_historical_items(db, plan):
+            canonical_keys.update(await _historical_repairs(db, plan, members, scoped=scoped))
+            proven_no_data = await _historical_no_data(db, plan, members)
         proven_no_data |= await _corroborated_empty_responses(db, plan, members, canonical_keys)
     from app.services.official_halts import official_halts
 
@@ -1305,6 +1308,31 @@ async def reconcile_plan(
         unlisted=await plan_unlisted(db, plan),
         now=now,
         gap_limit=gap_limit,
+    )
+
+
+async def _has_historical_items(db: AsyncSession, plan: DailyDeliveryPlan) -> bool:
+    """Whether any historical backfill item targets the plan's feed and date.
+
+    Every historical work, write and no-data proof belongs to such an item, so
+    without one the historical lookups have nothing to find. Most plans have
+    none, and every run, outcome and monitor scan classifies its plan.
+    """
+    from app.models.registry import HistoricalBackfillItem, HistoricalBackfillRequest
+
+    return bool(
+        await db.scalar(
+            select(
+                select(HistoricalBackfillItem.item_id)
+                .join(HistoricalBackfillRequest)
+                .where(
+                    HistoricalBackfillRequest.provider == plan.provider,
+                    HistoricalBackfillRequest.dataset_key == plan.dataset_key,
+                    HistoricalBackfillItem.trade_date == plan.trade_date,
+                )
+                .exists()
+            )
+        )
     )
 
 
@@ -1642,8 +1670,14 @@ async def plan_summary_response(db: AsyncSession, plan: DailyDeliveryPlan) -> De
     )
 
 
-async def plan_response(db: AsyncSession, plan: DailyDeliveryPlan) -> DeliveryPlanResponse:
-    """Shape a stored plan without Source scope; retired providers stay readable."""
+async def plan_response(
+    db: AsyncSession, plan: DailyDeliveryPlan, *, states: list[MemberState] | None = None
+) -> DeliveryPlanResponse:
+    """Shape a stored plan without Source scope; retired providers stay readable.
+
+    ``states`` are the plan's member states when the caller has just classified
+    them in this transaction; otherwise the plan is classified here.
+    """
     plan_id = plan.plan_id
     parts = list(
         (
@@ -1666,7 +1700,12 @@ async def plan_response(db: AsyncSession, plan: DailyDeliveryPlan) -> DeliveryPl
     by_part: dict[UUID, list[str]] = {part.part_id: [] for part in parts}
     for member in members:
         by_part[member.part_id].append(member.member_key)
-    summary = await reconcile_plan(db, plan)
+    if states is None:
+        summary = await reconcile_plan(db, plan)
+    else:
+        from app.services.unlisted_symbols import plan_unlisted
+
+        summary = summarize_states(plan, states, unlisted=await plan_unlisted(db, plan))
     from app.services.universe_supplement import plan_supplement
 
     supplementary = [row for _, row in sorted((await plan_supplement(db, plan)).items())]

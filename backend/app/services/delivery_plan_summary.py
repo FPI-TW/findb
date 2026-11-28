@@ -4,6 +4,7 @@ import logging
 import time
 from collections import Counter
 from datetime import date, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import case, exists, func, or_, select, tuple_, update
@@ -22,6 +23,9 @@ from app.models.registry import (
 from app.schemas.full_market import DeliverySummaryResponse
 from app.services.eod_completion import MEMBER_EOD_SCHEMAS
 from app.utils import utc_now
+
+if TYPE_CHECKING:
+    from app.services.full_market import MemberState
 
 logger = logging.getLogger(__name__)
 
@@ -67,12 +71,13 @@ def _not_older(created_at, run_id):
     )
 
 
-async def refresh_plan_summary(db: AsyncSession, plan_id: UUID) -> None:
+async def refresh_plan_summary(db: AsyncSession, plan_id: UUID) -> list["MemberState"] | None:
     """Serialize refreshes for a plan, and publish within the writer's transaction.
 
     Flush before locking so the current run/evidence/outcome participates. The
     plan lock serializes competing writers; READ COMMITTED queries after acquiring
     it observe the previous holder's committed changes as well as our own.
+    Returns the member states it classified, or None without a plan.
     """
     from app.services.full_market import classify_plan
 
@@ -82,7 +87,7 @@ async def refresh_plan_summary(db: AsyncSession, plan_id: UUID) -> None:
         select(DailyDeliveryPlan).where(DailyDeliveryPlan.plan_id == plan_id).with_for_update()
     )
     if plan is None:
-        return
+        return None
     locked = time.perf_counter()
     states = await classify_plan(db, plan)
     reconciled = time.perf_counter()
@@ -162,6 +167,7 @@ async def refresh_plan_summary(db: AsyncSession, plan_id: UUID) -> None:
         (reconciled - locked) * 1000,
         (finished - started) * 1000,
     )
+    return states
 
 
 async def _parts_synced(db: AsyncSession, plan_id: UUID, part_id: UUID):
@@ -375,6 +381,24 @@ async def plan_complete_with_part(db: AsyncSession, plan: DailyDeliveryPlan, par
         for key in ("data_count", "no_data_count", "unavailable_count")
     )
     return settled == stored.expected_count
+
+
+async def stored_plan_complete(db: AsyncSession, plan_id: UUID) -> bool:
+    """Whether the plan's stored summary shows it complete.
+
+    Only for a caller that refreshed the summary in this transaction, under the
+    plan lock it still holds: the counts then include its own writes.
+    """
+    summary = DailyDeliveryPlanSummary
+    row = (
+        await db.execute(
+            select(
+                summary.expected_count,
+                summary.data_count + summary.no_data_count + summary.unavailable_count,
+            ).where(summary.plan_id == plan_id)
+        )
+    ).one_or_none()
+    return row is not None and row[0] == row[1]
 
 
 async def stored_counts(db: AsyncSession, plan_id: UUID) -> tuple | None:
