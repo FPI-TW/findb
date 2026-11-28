@@ -27,7 +27,9 @@ from app.models.registry import (
 from app.services.delivery_plan_summary import (
     correct_summary_drift,
     plan_complete_with_part,
+    refresh_summaries_for_run,
     stored_counts,
+    stored_plan_complete,
     stored_summary_response,
 )
 from app.services.delivery_policy import (
@@ -802,8 +804,14 @@ async def resolve_missing_delivery_for_run(
     data_date: date,
     resolved_at: datetime | None = None,
     delivery_mode: str | None = None,
+    summary_current: bool = False,
 ) -> int:
-    """Resolve the exact alert inside the accepting ingress transaction."""
+    """Resolve the exact alert inside the accepting ingress transaction.
+
+    ``summary_current`` means the caller refreshed the run's plan summary in
+    this transaction, so completeness reads the stored counts instead of
+    classifying the run's part a second time.
+    """
     run = await db.get(IngestionRun, run_id) if run_id is not None else None
     if (
         run is None
@@ -826,7 +834,12 @@ async def resolve_missing_delivery_for_run(
             return 0
         profile = plan.execution_profile
         # Only this run's part changed; the stored summary covers the others.
-        if not await plan_complete_with_part(db, plan, run.delivery_part_id):
+        complete = (
+            await stored_plan_complete(db, plan.plan_id)
+            if summary_current
+            else await plan_complete_with_part(db, plan, run.delivery_part_id)
+        )
+        if not complete:
             return 0
     if delivery_mode is None:
         dataset = await db.get(DatasetRegistry, dataset_key)
@@ -862,6 +875,27 @@ async def resolve_missing_delivery_for_run(
         .returning(MissingDeliveryAlert.alert_id)
     )
     return len(resolution.scalars().all())
+
+
+async def settle_run_summaries(db: AsyncSession, run: IngestionRun) -> None:
+    """Publish a terminal run's plan summary, then resolve its alert from it.
+
+    The refresh classifies the run's part under the plan lock; the alert check
+    reuses the counts it stored, so a run classifies its part once.
+    """
+    await refresh_summaries_for_run(db, run)
+    if run.status == "completed" and run.source and run.schema_id and run.schema_version:
+        await resolve_missing_delivery_for_run(
+            db,
+            run_id=run.run_id,
+            dataset_key=run.dataset_key,
+            source=run.source,
+            schema_id=run.schema_id,
+            schema_version=run.schema_version,
+            data_date=run.batch_data_date or run.created_at.date(),
+            delivery_mode=run.delivery_mode,
+            summary_current=True,
+        )
 
 
 async def list_missing_delivery_alerts(

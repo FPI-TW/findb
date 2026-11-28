@@ -23,7 +23,7 @@ from app.models.canonical import (
     TradingCalendar,
 )
 from app.models.registry import DQIssue, IngestionRun
-from app.services.delivery_monitor import resolve_missing_delivery_for_run
+from app.services.delivery_monitor import settle_run_summaries
 from app.services.dq.validators import DQIssueRecord, DQValidator
 from app.services.normalize.exchange_overlay import (
     EXCHANGE_QUOTE_MARKETS,
@@ -686,28 +686,15 @@ class BaseNormalizer(ABC):
                 from app.services.delivery_evidence import record_delivery_evidence
 
                 await record_delivery_evidence(self.db, run)
-            if status == "completed" and run.source and run.schema_id and run.schema_version:
-                await resolve_missing_delivery_for_run(
-                    self.db,
-                    run_id=run.run_id,
-                    dataset_key=run.dataset_key,
-                    source=run.source,
-                    schema_id=run.schema_id,
-                    schema_version=run.schema_version,
-                    data_date=run.batch_data_date or run.created_at.date(),
-                    delivery_mode=run.delivery_mode,
-                )
             # Processing moves no summary field. A queue caller publishes the
-            # terminal summary once, after it settles the run's final fields.
-            from app.services.delivery_plan_summary import (
-                TERMINAL_RUN_STATUSES,
-                refresh_summaries_for_run,
-            )
+            # terminal summary and resolves the alert once, after it settles the
+            # run's final fields.
+            from app.services.delivery_plan_summary import TERMINAL_RUN_STATUSES
 
             if status in TERMINAL_RUN_STATUSES and not self.dataset_config.get(
                 "_defer_summary_refresh"
             ):
-                await refresh_summaries_for_run(self.db, run)
+                await settle_run_summaries(self.db, run)
 
     def _build_processing_error_issue(
         self,

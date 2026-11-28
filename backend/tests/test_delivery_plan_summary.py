@@ -528,11 +528,11 @@ async def test_deferred_normalizer_leaves_one_terminal_refresh_to_caller(test_se
     )
     await normalizer.process({"data": [_quote(session=member.session)]}, run.run_id, commit=False)
     size = len(plan.parts[0].member_keys)
-    # Only the completion alert check has looked at the part so far.
-    assert parts == [size] and (await summary(test_session, plan.plan_id)).data_count == 0
+    # Nothing has classified the part yet; the caller settles summary and alert.
+    assert parts == [] and (await summary(test_session, plan.plan_id)).data_count == 0
     await refresh_summaries_for_run(test_session, run)
     # The terminal refresh reclassifies only the run's part, never the cohort.
-    assert calls == [] and parts == [size, size]
+    assert calls == [] and parts == [size]
     stored = await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
     assert stored.data_count == 1 and stored.last_completed_at is not None
     assert stored.latest_run_id == run.run_id
@@ -614,8 +614,8 @@ async def test_untrusted_part_counts_take_one_full_refresh(test_session, monkeyp
     )
     await normalizer.process({"data": [_quote(session=member.session)]}, run.run_id, commit=False)
     await refresh_summaries_for_run(test_session, run)
-    # The completion check and the refresh each classify the cohort once.
-    assert calls == [plan.plan_id, plan.plan_id]
+    # Untrusted counts make the refresh classify the cohort, once.
+    assert calls == [plan.plan_id]
     await _assert_matches_reconcile(test_session, plan.plan_id, reconcile)
     await _part_counts_match(test_session, plan.plan_id)
     # Counts are trusted again, so the next write is part-scoped.
