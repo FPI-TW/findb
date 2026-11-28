@@ -1,5 +1,7 @@
 """Persist actual canonical writes in the same normalization transaction."""
 
+from datetime import date
+
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,25 +26,56 @@ from app.schemas.ingress import (
 from app.utils import utc_now
 
 
+def run_row_dates(run: IngestionRun) -> tuple[date, date] | None:
+    """The trade dates a contract run's rows can hold, or None when unknown.
+
+    Ingress keeps every EOD, futures and exchange-quote row on ``data_date`` or
+    inside the declared coverage. The canonical tables index ``trade_date`` but
+    not ``run_id``, and ``market_data_eod`` is partitioned by year: without this
+    range a run lookup scans every partition, a cost that grows with history.
+    A legacy run without batch dates keeps the unbounded lookup.
+    """
+    dates = [
+        value
+        for value in (run.batch_data_date, run.coverage_start_date, run.coverage_end_date)
+        if value is not None
+    ]
+    return (min(dates), max(dates)) if dates else None
+
+
 async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
     """Counts alone never establish delivery; record only rows actually upserted."""
     if run.status not in {"completed", "completed_with_errors"}:
         return
+    dates = run_row_dates(run)
+
+    def on_run_dates(model):
+        return () if dates is None else (model.trade_date.between(*dates),)
+
     if run.schema_id == "futures_eod":
         rows = await db.execute(
             select(Instrument.symbol, FuturesContract.contract_code, FuturesContractEOD.session)
             .join(FuturesContract, FuturesContract.instrument_id == Instrument.instrument_id)
             .join(FuturesContractEOD, FuturesContractEOD.contract_id == FuturesContract.contract_id)
-            .where(FuturesContractEOD.run_id == run.run_id)
+            .where(FuturesContractEOD.run_id == run.run_id, *on_run_dates(FuturesContractEOD))
         )
         written = {f"{symbol}|{contract}|{session}" for symbol, contract, session in rows}
-    elif run.schema_id in {"market_eod", "market_minute"}:
-        model = MarketDataEOD if run.schema_id == "market_eod" else MarketDataMinute
+    elif run.schema_id == "market_eod":
         written = set(
             await db.scalars(
                 select(Instrument.symbol)
-                .join(model, model.instrument_id == Instrument.instrument_id)
-                .where(model.run_id == run.run_id)
+                .join(MarketDataEOD, MarketDataEOD.instrument_id == Instrument.instrument_id)
+                .where(MarketDataEOD.run_id == run.run_id, *on_run_dates(MarketDataEOD))
+                .distinct()
+            )
+        )
+    elif run.schema_id == "market_minute":
+        # Retired Shioaji minute bars: ingress does not tie their dates to the batch.
+        written = set(
+            await db.scalars(
+                select(Instrument.symbol)
+                .join(MarketDataMinute, MarketDataMinute.instrument_id == Instrument.instrument_id)
+                .where(MarketDataMinute.run_id == run.run_id)
                 .distinct()
             )
         )
@@ -79,7 +112,7 @@ async def record_delivery_evidence(db: AsyncSession, run: IngestionRun) -> None:
                 .join(
                     ExchangeDailyQuote, ExchangeDailyQuote.instrument_id == Instrument.instrument_id
                 )
-                .where(ExchangeDailyQuote.run_id == run.run_id)
+                .where(ExchangeDailyQuote.run_id == run.run_id, *on_run_dates(ExchangeDailyQuote))
             )
         )
     else:
