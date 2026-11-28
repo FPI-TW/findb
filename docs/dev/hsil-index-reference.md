@@ -194,13 +194,17 @@ HSIL 只保留約 36 個交易日的報告，本機歸檔從 2026-10-02 起，�
   - 歸檔沒有的日期照常向 HSIL 下載，所以設定可以一直保留到匯入結束。
   - 文件 evidence 的網址、ETag 與 Last-Modified 取自 manifest。
 - 只用於成分股報告。變動 xlsx 只有現行版本，一律向 HSIL 下載；歸檔中的舊版 xlsx 不送。
-- 匯入步驟（需要 Owner 決定執行方式與時間）：
-  1. 把歸檔複製到 Fetcher 主機，唯讀掛進 `findb-full-market-hkex`，並設定 `HSIL_DOCUMENT_ARCHIVE_DIR`
-     （目前的部署設定沒有這個掛載，要另外加上或手動執行一次）。
-  2. `hk_index_constituents` 的首日設為 2026-10-02，Owner start 後 runtime 從首日逐日補 plan。
-  3. `hk_index_changes` 的首日不得早於兩份 xlsx 的最新生效日（2026-11-27 時為 HSCI 10-23、HSI 09-07）：
+- 掛載（PR 7c）：Fetcher 主機上有 `/var/lib/findb-hsil-archive/manifest.json` 時，部署會把該目錄唯讀掛進
+  hkex 的 daily consumer（`findb-full-market-hkex`），並設定 `HSIL_DOCUMENT_ARCHIVE_DIR`；historical 與其他 provider 不掛。
+  目錄是 symlink 時部署失敗。沒有這個目錄時部署和以前相同。
+- 匯入步驟（2026-11-28 Owner 決定照此執行）：
+  1. 停止 hkex control。
+  2. 把本機 `~/findb-hsil-archive/data/` 複製到 Fetcher 主機的 `/var/lib/findb-hsil-archive/`
+     （root 擁有、目錄 0755、檔案 0644，容器以 10001 讀取），再部署 Fetcher，讓 consumer 帶上掛載。
+  3. `hk_index_constituents` 的首日與名單生效日改為 2026-10-02，Owner start 後 runtime 從首日逐日補 plan。
+  4. `hk_index_changes` 的首日不得早於兩份 xlsx 的最新生效日（2026-11-27 時為 HSCI 10-23、HSI 09-07）：
      更早的交易日會因 xlsx 內容晚於交易日（`document_later_than_date`）而受阻；設為上線當天一定可行。
-  4. 補完後移除掛載與環境變數。
+  5. 補完後刪除主機上的目錄並重新部署 Fetcher，掛載與環境變數隨之移除。
 
 ## PR 進度
 
@@ -213,5 +217,6 @@ HSIL 只保留約 36 個交易日的報告，本機歸檔從 2026-10-02 起，�
 | 5 | 啟用兩條 feed（香港 21:05、historical `unsupported`）、migration `21e8f89c680b`（dataset、綁定 HKEX control、擴大 `fetcher-hkex` 範圍、schedule inspection）、seed、Serve scope 分支、`_IMPLEMENTED_ADAPTERS`、端到端 plan 測試 | #780 已合併 |
 | 6 | Serve 端點：`/indexes`、`/indexes/{code}/constituents`、`/indexes/{code}/changes`、`/classifications/hsics` | #782 已合併 |
 | 7a | 本機歸檔匯入：`HSIL_DOCUMENT_ARCHIVE_DIR` 讀取 manifest 核對過的報告 | #783 已合併 |
-| 7b | 臨時代碼依名稱對回正式代碼（快照與 xlsx），重建版本納入輸入摘要 | 進行中 |
+| 7b | 臨時代碼依名稱對回正式代碼（快照與 xlsx），重建版本納入輸入摘要 | #787 已合併 |
+| 7c | 主機上有歸檔時唯讀掛進 hkex daily consumer | 進行中 |
 | 7 | staging 驗收、執行歸檔匯入、移除 launchd 排程、整併文件並刪除本檔 | 未開始 |
